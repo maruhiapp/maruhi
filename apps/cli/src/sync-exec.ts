@@ -8,11 +8,11 @@
 // テンプレート・stdin の形式・1 プロセスあたりの件数・テレメトリ off の環境
 // 変数・値の制約・オプションの宣言)で、追加はデータ + 偽 CLI の検査で済む
 // (`gh secret set NAME` は raw-value / 1 件ずつ / `GH_TELEMETRY=false` の
-// 宣言で載る — SY5)。
+// 宣言で載った — SY5)。
 //
 // ベンダー CLI の実測は SY1 の申し送り表(2026-09-05。Vercel CLI 59.11.7 は
 // 2026-09-06 に再確認 — 版・`readStandardInput` / `normalizeStdinEnvValue` とも
-// 不変):
+// 不変。gh は 2026-09-08 に v2.100.0 の `pkg/cmd/secret/set/set.go` で再確認):
 //   - wrangler 4.128.0 `secret bulk`: stdin の JSON `{"k":"v"}` を 1 リクエスト、
 //     `null` = 削除、1 回 100 件、空 stdin は「No content found」で exit 0
 //     (→ 空の入力では呼ばない)、`--name` / `--env`、`WRANGLER_SEND_METRICS=false`
@@ -24,6 +24,19 @@
 //     表現できないので拒否)、空 stdin は「値なし」= 対話(→ 空値は拒否)、
 //     `--force` = API の upsert(rm → add の窓は無い)、`--non-interactive` で
 //     全プロンプトが失敗に倒れる、`VERCEL_TELEMETRY_DISABLED=1`
+//   - gh 2.100.0 `secret set NAME`: `--body` 省略 + 非対話で stdin を **すべて**読み
+//     `bytes.TrimRight(body, "\r\n")`(→ 末尾の CR / LF を全部落とすので、改行で
+//     終わる値は単行・複数行とも表現できない = 拒否)、空 stdin は空の本文として
+//     封印して送る(API の受理は未確認 — 拒否は gh の文面で見える)、封印
+//     (libsodium sealed box)はクライアント側、上書き、`gh secret delete NAME`
+//     (不在名は API の 404 = 非 0)、`-R OWNER/REPO` / `--env <Environment>` /
+//     `--app {actions|agents|codespaces|dependabot}`(Environment secrets は
+//     actions のみ)、認証は `GH_TOKEN`(次いで `GITHUB_TOKEN`)か `gh auth login`、
+//     未ログインは終了コード 4、`GH_TELEMETRY=false` / `DO_NOT_TRACK=1`。名前は
+//     GitHub 側で英数字と `_`・数字始まり不可・`GITHUB_` 接頭辞不可・**大文字で
+//     保存**(大文字小文字を同一視)— 大小違いの 2 名が 1 つの secret に畳まれる
+//     形を作らないよう、大文字の名前だけを通す(docs.github.com「Secrets
+//     reference」2026-09-08)
 //
 // ベンダー CLI の stdout / stderr は値を含みうる前提で扱う: 成功時は捨て、失敗時も
 // 値を伏せた末尾だけを出す({@link scrubVendorOutput})。
@@ -33,7 +46,7 @@ import { Redacted } from "effect";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ExecInput } from "./run.ts";
-import type { OptionSpec, ValueConstraints } from "./sync-types.ts";
+import type { OptionSpec, ResolvedOptions, ValueConstraints } from "./sync-types.ts";
 
 /**
  * One argv token of a preset. A literal, the variable name, or a value taken
@@ -70,6 +83,14 @@ export interface ExecPreset {
   readonly delete: "json-null" | { readonly args: readonly ArgTemplate[] };
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
+  /**
+   * オプション同士の整合(1 つの `OptionSpec` では表せない — GitHub の Environment
+   * secrets は actions アプリだけ、など)。設定時に呼ばれ、不整合なら
+   * `<option>: <理由>` の形の文字列を返す(http プリセットの `check` と同じ契約)。
+   */
+  readonly check?: (options: ResolvedOptions) => string | null;
+  /** `sync init` が添えるサインインの案内(ベンダー CLI の資格の置き場と最小権限)。 */
+  readonly signInHint?: string;
 }
 
 // macOS のパイプは初期容量 16 KiB(それ以上は書き手がブロックし、Vercel CLI の
@@ -80,10 +101,40 @@ const VERCEL_MAX_VALUE_BYTES = 16 * 1024;
 const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
 /**
+ * Non-secret environment for every `gh` maruhi starts (`gh secret set` here, `gh
+ * workflow run` in sync-push.ts): telemetry off (SY1 の実測表の gh 行), no update
+ * check, and no interactive prompt (gh is already non-interactive when its stdio is
+ * not a terminal; this cuts the prompt structurally).
+ */
+export const GH_ENV: Readonly<Record<string, string>> = {
+  GH_TELEMETRY: "false",
+  DO_NOT_TRACK: "1",
+  GH_NO_UPDATE_NOTIFIER: "1",
+  GH_PROMPT_DISABLED: "1",
+};
+
+// gh 2.100.0 の `--app` の閉集合(shared.GetSecretApp)。省略 = actions
+const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as const;
+
+/**
+ * GitHub secret names (docs.github.com「Secrets reference」): alphanumerics and `_`,
+ * not starting with a digit, not starting with `GITHUB_`, stored in uppercase. Only
+ * uppercase names are accepted so that no two maruhi names fold into one secret.
+ */
+const GITHUB_SECRET_NAME = /^(?!GITHUB_)[A-Z_][A-Z0-9_]*$/;
+
+// gh の `-R [HOST/]OWNER/REPO`。各区切りの先頭は英数字(先頭 `-` = フラグと読まれる形を
+// 構造で除く — pullfrog 指摘: `-x/y` を通さない)
+const GITHUB_REPO = /^(?:[A-Za-z0-9][A-Za-z0-9.-]*\/)?[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/;
+
+// GitHub Environment 名(gh の argv に載る。フラグと読まれる先頭 `-` だけを除く)
+const GITHUB_ENVIRONMENT_NAME = /^[^-\s][^\n\r]*$/;
+
+/**
  * Built-in exec presets (first-class targets — 2026-09-05 owner decision: Vercel /
- * Cloudflare Workers). Netlify has none: `netlify env:set KEY value` takes the value
- * as an argument (SY1 の実測表), so the only safe recipe is the http driver
- * (sync-preset.ts declares why).
+ * Cloudflare Workers; GitHub Actions secrets through `gh` — SY5). Netlify has none:
+ * `netlify env:set KEY value` takes the value as an argument (SY1 の実測表), so the
+ * only safe recipe is the http driver (sync-preset.ts declares why).
  */
 export const EXEC_PRESETS = {
   "cloudflare-workers": {
@@ -99,7 +150,7 @@ export const EXEC_PRESETS = {
       { kind: "option", option: "config", flag: "--config" },
     ],
     delete: "json-null",
-    constraints: { maxBytes: null, nonEmpty: false, refuseSingleLineTrailingNewline: false },
+    constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       name: { type: "string", required: false },
       environment: { type: "string", required: false },
@@ -139,7 +190,8 @@ export const EXEC_PRESETS = {
     constraints: {
       maxBytes: VERCEL_MAX_VALUE_BYTES,
       nonEmpty: true,
-      refuseSingleLineTrailingNewline: true,
+      trailingNewline: "strippedFromSingleLine",
+      name: null,
     },
     options: {
       environment: { type: "string", required: true, values: VERCEL_ENVIRONMENTS },
@@ -148,6 +200,70 @@ export const EXEC_PRESETS = {
       scope: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
+  },
+  "github-actions": {
+    command: "gh",
+    env: GH_ENV,
+    transport: "raw-value",
+    batch: 1,
+    writeArgs: [
+      "secret",
+      "set",
+      { kind: "name" },
+      { kind: "option", option: "repo", flag: "--repo" },
+      { kind: "option", option: "environment", flag: "--env" },
+      { kind: "option", option: "app", flag: "--app" },
+    ],
+    delete: {
+      args: [
+        "secret",
+        "delete",
+        { kind: "name" },
+        { kind: "option", option: "repo", flag: "--repo" },
+        { kind: "option", option: "environment", flag: "--env" },
+        { kind: "option", option: "app", flag: "--app" },
+      ],
+    },
+    constraints: {
+      // GitHub の上限は 48 KB(docs)だが単位と測り方が未確認で、gh は stdin を全部
+      // 読んで API に渡す(切り詰めの経路が無い)= 超過は API の拒否が gh の文面で
+      // 見える。未確認の数に依存させない
+      maxBytes: null,
+      // gh は空 stdin を空の本文として封印して送る(値なしとは読まない)。
+      // 改行だけの値は trailingNewline が先に拒む
+      nonEmpty: false,
+      trailingNewline: "stripped",
+      name: {
+        regex: GITHUB_SECRET_NAME,
+        rule: "GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_",
+      },
+    },
+    options: {
+      repo: {
+        type: "string",
+        required: false,
+        pattern: { regex: GITHUB_REPO, hint: "OWNER/REPO (or HOST/OWNER/REPO)" },
+      },
+      environment: {
+        type: "string",
+        required: false,
+        pattern: {
+          regex: GITHUB_ENVIRONMENT_NAME,
+          hint: "a GitHub Environment name (not starting with -)",
+        },
+      },
+      app: { type: "string", required: false, values: GITHUB_SECRET_APPS },
+    },
+    // Environment secrets は actions アプリだけ(gh shared.IsSupportedSecretEntity)。
+    // gh は値を stdin から読んだ**後**にこれを拒むので、設定の段階で止める
+    check: (options) =>
+      options["environment"] !== undefined &&
+      options["app"] !== undefined &&
+      options["app"] !== "actions"
+        ? `app: environment secrets exist for GitHub Actions only, so app must be "actions" (or left out) when environment is set`
+        : null,
+    signInHint:
+      "the github-actions preset runs the gh CLI, which must be installed and signed in (`gh auth login`, or GH_TOKEN in the environment) with write access to the repository's secrets: in a fine-grained token, Secrets for repository secrets, Environments for Environment secrets, Dependabot secrets for app dependabot (see the Deploy targets page in the docs)",
   },
 } as const satisfies Readonly<Record<string, ExecPreset>>;
 
@@ -217,12 +333,31 @@ export function checkValueConstraints(
       `Variable ${shown} is ${plaintext.byteLength} bytes, above the ${constraints.maxBytes}-byte limit maruhi applies for ${label} (it reads only the first chunk of stdin, so a larger value could be cut off silently). Leave this variable out of the target, or set it through the platform's dashboard`,
     );
   }
-  if (constraints.refuseSingleLineTrailingNewline && endsWithSingleLineNewline(plaintext)) {
+  if (
+    constraints.trailingNewline === "strippedFromSingleLine" &&
+    endsWithSingleLineNewline(plaintext)
+  ) {
     return cliError(
       `Variable ${shown} is a single line ending with a newline, which ${label} strips from stdin. Push the value without the trailing newline (\`printf %s\` instead of \`echo\`), or leave this variable out of the target`,
     );
   }
+  if (constraints.trailingNewline === "stripped" && endsWithNewline(plaintext)) {
+    return cliError(
+      `Variable ${shown} ends with a newline, which ${label} strips from stdin (every trailing CR or LF, from a single-line and a multi-line value alike). Push the value without the trailing newline (\`printf %s\` instead of \`echo\`), or leave this variable out of the target`,
+    );
+  }
+  if (constraints.name !== null && !constraints.name.regex.test(name)) {
+    return cliError(
+      `Variable ${shown} has a name ${label} cannot store as is: ${constraints.name.rule}. Rename the variable in maruhi, or leave it out of the target`,
+    );
+  }
   return null;
+}
+
+/** 末尾が LF か CR か(gh の `TrimRight("\r\n")` が何かを落とす形)。 */
+function endsWithNewline(bytes: Uint8Array): boolean {
+  const last = bytes[bytes.length - 1];
+  return last === 0x0a || last === 0x0d;
 }
 
 /** 「末尾が改行 1 つ(LF / CRLF)で、それ以外に改行を含まない」か。 */

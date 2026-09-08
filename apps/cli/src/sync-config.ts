@@ -153,6 +153,9 @@ function parseOptionValue(
   if (spec.values !== undefined && !spec.values.includes(given)) {
     return `${path} must be one of ${spec.values.join(", ")}`;
   }
+  if (spec.pattern !== undefined && !spec.pattern.regex.test(given)) {
+    return `${path} must be ${spec.pattern.hint}`;
+  }
   return { value: given };
 }
 
@@ -544,8 +547,9 @@ function parseDriverAndOptions(
   if (typeof options === "string") {
     return options;
   }
-  // オプション同士の整合(http プリセットの `check` — Netlify の context / branch / secret)
-  const inconsistent = driver.kind === "http" ? (driver.spec.check?.(options) ?? null) : null;
+  // オプション同士の整合(プリセットの `check` — Netlify の context / branch / secret、
+  // GitHub の environment / app)
+  const inconsistent = driver.spec.check?.(options) ?? null;
   return inconsistent === null ? { driver, options } : `${path}.options.${inconsistent}`;
 }
 

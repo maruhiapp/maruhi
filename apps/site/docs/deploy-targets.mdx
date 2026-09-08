@@ -1,20 +1,20 @@
 ---
 title: Deploy targets
-description: Copy values from maruhi to Cloudflare Workers, Vercel, and Netlify with maruhi sync, through the vendor CLI you already use or the vendor API, locally, from CI, or right after every maruhi push.
+description: Copy values from maruhi to Cloudflare Workers, Vercel, Netlify, and GitHub Actions secrets with maruhi sync, through the vendor CLI you already use or the vendor API, locally, from CI, or right after every maruhi push.
 sidebar:
   order: 2
 ---
 
-Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers, Vercel functions, and Netlify builds read their environment variables from the platform's own store, so the values have to be copied there before a deploy. `maruhi sync` does that, driven by a small config file committed in your repository, through one of two drivers: the platform's CLI, signed in the way you normally use it (`exec`, the default), or the platform's API with a token you store in maruhi (`http`, for CI and for machines without the vendor CLI). Netlify has only the `http` driver: its CLI takes the value as a command-line argument, which `ps` can see. If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.
+Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers, Vercel functions, and Netlify builds read their environment variables from the platform's own store, so the values have to be copied there before a deploy. GitHub Actions is the same story for the few secrets a workflow cannot lease with `maruhi ci run`: a prebuilt action's input, a Dependabot secret. `maruhi sync` does that, driven by a small config file committed in your repository, through one of two drivers: the platform's CLI, signed in the way you normally use it (`exec`, the default), or the platform's API with a token you store in maruhi (`http`, for CI and for machines without the vendor CLI). Netlify has only the `http` driver: its CLI takes the value as a command-line argument, which `ps` can see. GitHub Actions has only the `exec` driver: its API takes the value sealed with libsodium, and maruhi leaves that to `gh`. If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.
 
 ## How maruhi sync works
 
-- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel`, `cloudflare-workers`, or `netlify`), the driver, the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file. It does decide where the plaintext goes, though: a change to a target's `command`, `cwd`, or `options` changes which program or which account receives the values, so review edits to this file the way you review a CI workflow. `apply` prints the command and directory, or the API host and the token variable, it is about to use.
+- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel`, `cloudflare-workers`, `netlify`, or `github-actions`), the driver, the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file. It does decide where the plaintext goes, though: a change to a target's `command`, `cwd`, or `options` changes which program or which account receives the values, so review edits to this file the way you review a CI workflow. `apply` prints the command and directory, or the API host and the token variable, it is about to use.
 - `maruhi sync plan <target>` shows what an apply would write or delete, by variable name and version. It does not decrypt the values.
 - `maruhi sync apply <target>` decrypts the target's variables in memory and hands each value to the vendor CLI on its standard input, and nowhere else. A value never appears on a command line, in `ps`, in your shell history, or in a file. The vendor CLI's own output is not shown unless it fails, and then only with the values filtered out. With the `http` driver, the values travel in the body of a request to the platform's API over TLS instead, and the API's response is treated the same way: discarded on success, shown on failure with values and the token filtered out.
 - The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.
 - maruhi stays the source of truth, and copying is one way. Nothing is read back from the platform. Instead, maruhi keeps a receipt of what it delivered (variable names and versions, never values) as an encrypted variable in a maruhi environment you choose, and `plan` compares that receipt with the current versions. A value edited in the platform's dashboard is not detected and is overwritten by the next apply.
-- The `exec` driver runs the vendor CLI you already installed and signed in with (`wrangler login`, `vercel login`). It never downloads one, and it switches the vendor CLI's telemetry off for the run. The `http` driver is not a fallback that fetches a CLI: it is a second way to reach the same target, with maruhi's own code and a token you create at the platform once. See [Without the vendor CLI: the http driver](#without-the-vendor-cli-the-http-driver).
+- The `exec` driver runs the vendor CLI you already installed and signed in with (`wrangler login`, `vercel login`, `gh auth login`). It never downloads one, and it switches the vendor CLI's telemetry off for the run. The `http` driver is not a fallback that fetches a CLI: it is a second way to reach the same target, with maruhi's own code and a token you create at the platform once. See [Without the vendor CLI: the http driver](#without-the-vendor-cli-the-http-driver).
 - A target can also be synced right after every `maruhi push` to its environment, either from the machine that pushed or by a CI workflow that the push triggers, so a Git-integrated platform such as Vercel never deploys with a stale value. It is opt-in per target and never writes a production target from the pushing machine. See [Sync on push](#sync-on-push).
 
 ## Set up
@@ -62,7 +62,7 @@ Some platforms do not let you put `maruhi run -- <command>` in front of your app
    maruhi sync apply web --yes
    ```
 
-`--yes` is needed for a production target: a Vercel target whose environment is `production`, a Cloudflare Workers target without a named wrangler environment, or a Netlify target whose context is `production` or `all`. For other targets, `apply` runs without it. You can set `"production": true` or `false` on a target to override that default.
+`--yes` is needed for a production target: a Vercel target whose environment is `production`, a Cloudflare Workers target without a named wrangler environment, a Netlify target whose context is `production` or `all`, or a GitHub Actions target that writes repository secrets or the secrets of an Environment named `production`. For other targets, `apply` runs without it. You can set `"production": true` or `false` on a target to override that default.
 
 The plan lists one line per variable: `+` new to the target, `~` changed since the last delivery (with both versions), `=` unchanged, `-` no longer synced (removed from the list, excluded, or deleted in maruhi; apply deletes it at the target), and `!` cannot be synced by this preset (apply sends nothing until it is resolved).
 
@@ -79,14 +79,14 @@ Each target:
 
 | Key           | Meaning                                                                                                                                                                                                                                                            |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `preset`      | `vercel`, `cloudflare-workers`, or `netlify`.                                                                                                                                                                                                                      |
-| `driver`      | Optional. `exec` (the default when the preset has one): the installed vendor CLI. `http`: the vendor API with a token stored in maruhi (see below). `netlify` has only `http`, so the key can be left out for it.                                                  |
+| `preset`      | `vercel`, `cloudflare-workers`, `netlify`, or `github-actions`.                                                                                                                                                                                                    |
+| `driver`      | Optional. `exec` (the default when the preset has one): the installed vendor CLI. `http`: the vendor API with a token stored in maruhi (see below). `netlify` has only `http` and `github-actions` has only `exec`, so the key can be left out for them.           |
 | `environment` | The maruhi environment to decrypt.                                                                                                                                                                                                                                 |
 | `variables`   | The names to copy, or `"all"` for every variable of the environment. A listed name that does not exist stops the command before anything is sent.                                                                                                                  |
 | `exclude`     | Only with `"all"`: names not to copy. Public configuration and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) belong here or outside maruhi altogether.                                                                |
 | `production`  | Optional. Whether `apply` needs `--yes`. Defaults as described above.                                                                                                                                                                                              |
 | `cwd`         | `exec` only, optional. Where to run the vendor CLI, relative to the config file. Default: the config file's directory.                                                                                                                                             |
-| `command`     | `exec` only, optional. The vendor CLI to run, relative to `cwd`. Default: `vercel` or `wrangler` on `PATH`. Use it when wrangler is a project dependency rather than a global install (for example `node_modules/.bin/wrangler`).                                  |
+| `command`     | `exec` only, optional. The vendor CLI to run, relative to `cwd`. Default: `vercel`, `wrangler`, or `gh` on `PATH`. Use it when wrangler is a project dependency rather than a global install (for example `node_modules/.bin/wrangler`).                           |
 | `token`       | `http` only, required. `{ "environment": "<maruhi environment ID>", "name": "<variable name>" }`: where the platform's token is stored in maruhi. The token itself is never copied to the target, even when it lives in the synced environment.                    |
 | `options`     | Preset-specific and driver-specific, below.                                                                                                                                                                                                                        |
 | `onPush`      | Optional. `apply`: sync the target from the pushing machine right after every `maruhi push` to its environment. `workflow`: trigger the repository's workflow with `gh` instead, so CI syncs it. Needs the top-level `project`. See [Sync on push](#sync-on-push). |
@@ -97,6 +97,8 @@ Vercel options with `exec`: `environment` (required: `production`, `preview`, or
 Cloudflare Workers options with `exec`: `name` (the Worker; otherwise wrangler reads it from its configuration file), `environment` (a named wrangler environment, passed as `--env`), and `config` (the path of the wrangler configuration file). With `http`: `accountId` (required), `name` (required: there is no wrangler configuration file to read it from), and `environment` (a named wrangler environment; the Worker is then `<name>-<environment>`, which is how wrangler names it).
 
 Netlify options (`http` only): `accountId` (required: the team's slug, the `<team>` in `app.netlify.com/teams/<team>`, or its ID), `siteId` (required: the site's ID, shown as the project ID in the project's configuration and stored by `netlify link` in `.netlify/state.json`; without it the API would write team-wide shared variables), `context` (required: the deploy context the value is for, one of `production`, `deploy-preview`, `branch-deploy`, `branch`, `dev`, `dev-server`, or `all`), `branch` (with `context: "branch"`, required: the branch name), and `secret` (whether the variable is marked as secret at Netlify; see [Netlify](#netlify) for the default).
+
+GitHub Actions options (`exec` only): `repo` (the repository as `OWNER/REPO`, passed as `--repo`; without it `gh` uses the git remote of the directory it runs in, and stops if that directory has several remotes), `environment` (a GitHub Environment name, passed as `--env`; without it the target writes repository secrets), and `app` (`actions`, the default, `dependabot`, `codespaces`, or `agents`, passed as `--app`; only `actions` has Environment secrets). See [GitHub Actions secrets](#github-actions-secrets).
 
 The config format is `version: 1` for every release of `maruhi sync`: a file from the first release still parses, and every key added since is optional. An older CLI rejects a file that uses the newer keys as "unknown keys", so upgrade the CLI rather than editing the file.
 
@@ -123,9 +125,39 @@ Required variables: if a variable in the target's selection is declared as requi
 - Scopes are left to Netlify's default (every scope) when the variable is created, except that a secret variable gets the builds, functions, and runtime scopes, the same three the Netlify CLI uses, because Netlify does not allow secrets in the post processing scope. Choosing scopes yourself is a Pro plan feature and is done in the dashboard.
 - A variable that is no longer synced loses its value for the target's context only, found by ID in the site's variable list. When that was the variable's last value, the variable is deleted as a whole so that no empty variable is left behind. A variable whose only value is for all contexts is not touched by a target with a specific context.
 
+## GitHub Actions secrets
+
+A GitHub Actions job normally needs no GitHub secret at all: `maruhi ci run` and `maruhi ci sync` lease the values with the job's OIDC token (see [GitHub Actions](/docs/github-actions)). What is left are the secrets a workflow reads through `${{ secrets.NAME }}` before any command of yours runs: the input of a prebuilt action, a Dependabot secret, a reusable workflow's `secrets: inherit`. The `github-actions` preset copies those from maruhi, so that they too have one source of truth. Where a prebuilt action is a thin wrapper around a vendor CLI, prefer running that CLI under `maruhi ci run` and drop the secret instead.
+
+`maruhi sync` runs `gh secret set <name>` once per variable, with the value on standard input, and `gh secret delete <name>` for a variable that is no longer synced. `gh` seals the value to the repository's public key on your machine before it leaves; that is why the preset has no `http` driver: the sealing needs libsodium, which maruhi does not implement. The run sets `GH_TELEMETRY=false` and `DO_NOT_TRACK=1`. It uses the `gh` you installed and signed in with (`gh auth login`, or a `GH_TOKEN` in the environment); the token needs write access to the repository's secrets.
+
+```json
+{
+  "version": 1,
+  "receipts": { "environment": "sync-receipts" },
+  "targets": {
+    "dependabot": {
+      "preset": "github-actions",
+      "environment": "ci",
+      "variables": ["NPM_TOKEN"],
+      "options": { "repo": "acme/app", "app": "dependabot" }
+    }
+  }
+}
+```
+
+`maruhi sync init dependabot --preset github-actions --env ci --receipts sync-receipts --variables NPM_TOKEN --option repo=acme/app --option app=dependabot` prints this target.
+
+- Repository secrets are written when the target has no `environment`; with one, the secrets of that GitHub Environment (Actions only). `gh secret set` looks the Environment's public key up first and does not create the Environment, so create it in the repository settings before the first apply. `app` selects Dependabot or Codespaces secrets instead of Actions secrets.
+- `gh` strips every trailing newline from the value it reads (a PEM key pushed from a file usually ends with one), for a single-line and a multi-line value alike. Rather than deliver something else than what maruhi holds, `apply` refuses a value that ends with a newline and names the variable; push it without the newline (`printf %s` instead of `echo`). An empty value is handed to `gh` unchanged.
+- GitHub stores secret names in uppercase and treats `Foo` and `FOO` as the same secret, which is how one maruhi variable could overwrite or delete another at the target. `apply` therefore accepts only names that GitHub keeps unchanged: uppercase letters, digits, and `_`, not starting with a digit or with `GITHUB_`. Rename other variables in maruhi first. `plan` does not mark such a name yet (it shows the variable as `+` or `~`); `apply` refuses it before anything is sent.
+- GitHub limits a secret to 48 KB and a repository or Environment to 100 secrets. `maruhi sync` does not check these itself: `gh` reports the API's refusal and `apply` stops at that variable, with the ones before it recorded in the receipt.
+- A variable that is no longer synced is deleted by name (`gh secret delete`), no list is read. A name that was already removed at GitHub makes that delete fail, and `apply` says how to reset the receipt.
+- Organization and user secrets (`--org`, `--user`) are not covered by the preset; use `gh` directly for them.
+
 ## Without the vendor CLI: the http driver
 
-In CI, or on a machine where you do not want the vendor CLI, set `"driver": "http"` on a target (for `netlify` it is implied). `maruhi sync` then talks to the platform's API itself, with a token that you create once at the platform and store in maruhi as a normal variable. The host is fixed by the preset (`api.cloudflare.com`, `api.vercel.com`, `api.netlify.com`) and cannot be changed in the config. `plan` never contacts the platform; only `apply` and `ci sync` do, and only for the target you name.
+In CI, or on a machine where you do not want the vendor CLI, set `"driver": "http"` on a target (for `netlify` it is implied; `github-actions` has no `http` driver, see above). `maruhi sync` then talks to the platform's API itself, with a token that you create once at the platform and store in maruhi as a normal variable. The host is fixed by the preset (`api.cloudflare.com`, `api.vercel.com`, `api.netlify.com`) and cannot be changed in the config. `plan` never contacts the platform; only `apply` and `ci sync` do, and only for the target you name.
 
 1. Create the token at the platform with the least permission the target needs:
    - **Cloudflare Workers**: an API token scoped to the account with the permission **Workers Scripts: Edit** (dashboard: My Profile, API Tokens, Create Token; pick a custom token and add that one permission for the account). The Worker must already exist: unlike wrangler, the http driver does not create a draft Worker.
@@ -323,10 +355,33 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `s
 - The Vercel CLI reads standard input only once. In a measurement of its reader (CLI 59.11.7, on Linux), a value larger than 64 KiB arrived cut off at 64 KiB with no error; the threshold depends on the system's pipe buffer, and a sensitive value cannot be inspected afterwards. Keep very large values out of this recipe.
 - Do not use `--value`: it puts the value on the command line.
 
+### GitHub Actions secrets
+
+`gh secret set` reads the value from standard input when it cannot prompt, and seals it to the repository's public key before sending it. Each secret is one call, so the recipe has the same shape as the Vercel one: it checks that every name has a value, then copies them. Run it in a clone of the repository (`gh` takes the repository from the git remote), or pass `--repo OWNER/REPO`.
+
+```sh
+maruhi run --env production -- sh -c '
+  for name in "$@"; do
+    printenv "$name" > /dev/null || { echo "$name has no value" >&2; exit 1; }
+  done
+  for name in "$@"; do
+    printenv "$name" | gh secret set "$name" || exit 1
+  done
+' sh NPM_TOKEN CODECOV_TOKEN
+```
+
+Replace `NPM_TOKEN CODECOV_TOKEN` with the names you want to copy; the `sh` before them is the script's `$0`. maruhi's `--env` chooses the maruhi environment to decrypt; add `--env <name>` after `gh secret set "$name"` to write the secrets of a GitHub Environment instead of repository secrets, and `--app dependabot` (or `codespaces`) for another app's secrets.
+
+- An existing secret with the same name is overwritten.
+- `printenv` ends the value with a newline, and `gh` strips every trailing newline from what it reads, from a multi-line value too. A PEM key pushed with its final newline therefore arrives without it.
+- Names arrive in uppercase: GitHub stores `Foo` as `FOO` and treats the two as one secret. Keep the names in maruhi uppercase and distinct.
+- Do not use `--body`: it puts the value on the command line. Do not use `--env-file -`: it takes a dotenv-formatted stream, whose parsing changes values that contain `#`, quotes, or `\n`.
+- The token `gh` signs in with (`gh auth login`, or `GH_TOKEN`) needs write access to the repository's secrets; in a fine-grained personal access token that is the **Secrets** repository permission (read and write) for repository secrets, **Environments** for Environment secrets, and **Dependabot secrets** for `--app dependabot`.
+
 ## Other platforms
 
 The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no recipe for it; use the `netlify` preset with `maruhi sync` instead, which talks to the Netlify API.
 
 ## Vendor CLI telemetry
 
-maruhi sends nothing about you anywhere. The only network peers of the CLI are your maruhi server and, when you `apply` or `ci sync` a target with the `http` driver, the platform you configured, which receives your own values and nothing else (the request carries a `maruhi-cli/<version>` user agent so that the platform can attribute traffic, and no other identifier). The vendor CLIs do send usage data by default; that is their setting, not maruhi's. `maruhi sync` switches it off for the vendor process it starts (it never starts the Netlify CLI), and `maruhi push` does the same for `gh` when it triggers a workflow (`GH_TELEMETRY=false`, `DO_NOT_TRACK=1`, and no update check). For the shell recipes, switch it off once and for all with `wrangler telemetry disable` and `vercel telemetry disable`, or for a single run set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.
+maruhi sends nothing about you anywhere. The only network peers of the CLI are your maruhi server and, when you `apply` or `ci sync` a target with the `http` driver, the platform you configured, which receives your own values and nothing else (the request carries a `maruhi-cli/<version>` user agent so that the platform can attribute traffic, and no other identifier). The vendor CLIs do send usage data by default; that is their setting, not maruhi's. `maruhi sync` switches it off for the vendor process it starts (it never starts the Netlify CLI), and `maruhi push` does the same for `gh` when it triggers a workflow (`GH_TELEMETRY=false`, `DO_NOT_TRACK=1`, and no update check). For the shell recipes, switch it off once and for all with `wrangler telemetry disable`, `vercel telemetry disable`, and `gh config set telemetry disabled`, or for a single run set `WRANGLER_SEND_METRICS=false`, `VERCEL_TELEMETRY_DISABLED=1`, or `GH_TELEMETRY=false` in your shell.

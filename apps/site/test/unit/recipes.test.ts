@@ -2,7 +2,7 @@
 // **ページの本文からそのまま切り出して実行**し、次を固定する(DP5 の golden と同じく「書いた文言」と
 // 「検査対象」を一致させ、docs の漂流を構造で防ぐ):
 //   1. 平文の値は外部コマンドの argv に一切現れず、`set -x` のトレースにも出ない(`ps` / シェル履歴 — 裁定 C)
-//   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel = 変数ごとに値 + 改行)
+//   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel / gh = 変数ごとに値 + 改行)
 //   3. 名前に値が無いときは何も送らずに失敗する(wrangler の JSON null = 削除を決して作らない)
 //   4. POSIX sh で書かれている(dash / bash / zsh のうち導入済みのもので同じ結果)
 // ベンダー CLI と maruhi は shims/ の偽コマンド(argv と stdin を記録するだけ)。実アカウントでの通し確認は
@@ -30,11 +30,18 @@ const RECIPE_PREFIX = "maruhi run --env production -- ";
 const blocks = allBlocks.filter((b) => b.startsWith(RECIPE_PREFIX));
 const workersRecipe = blocks.find((b) => b.includes("wrangler secret bulk"));
 const vercelRecipe = blocks.find((b) => b.includes("vercel env add"));
+const githubRecipe = blocks.find((b) => b.includes("gh secret set"));
 
 /** Values with every character class the recipes must carry intact (and one that starts with `-`). */
 const values = {
   DATABASE_URL: 'postgres://user:p@ss"word\\x#frag=1 ?a=b&c=d\n-- second line --',
   STRIPE_SECRET_KEY: "-sk_test_starts_with_a_dash",
+} as const;
+
+/** The GitHub recipe names other variables on the page; same character classes. */
+const githubValues = {
+  NPM_TOKEN: values.DATABASE_URL,
+  CODECOV_TOKEN: values.STRIPE_SECRET_KEY,
 } as const;
 
 interface MaruhiCall {
@@ -43,7 +50,7 @@ interface MaruhiCall {
   readonly command: string[];
 }
 interface VendorCall {
-  readonly tool: "wrangler" | "vercel";
+  readonly tool: "wrangler" | "vercel" | "gh";
   readonly argv: string[];
   readonly stdin: string;
 }
@@ -143,9 +150,10 @@ function expectValuesOffTrace(stderr: string): void {
 
 describe("deploy-targets.mdx recipes (extracted from the page)", () => {
   it("has exactly one recipe per target, each starting with `maruhi run --env`", () => {
-    expect(blocks).toHaveLength(2);
+    expect(blocks).toHaveLength(3);
     expect(workersRecipe).toBeDefined();
     expect(vercelRecipe).toBeDefined();
+    expect(githubRecipe).toBeDefined();
     // `maruhi sync` の使い方のブロック(env create / plan / apply)も同じページにある
     expect(allBlocks.some((b) => b.includes("maruhi sync apply"))).toBe(true);
     for (const block of allBlocks) {
@@ -253,6 +261,42 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
       });
       expect(status).toBe(1);
       expect(stderr).toContain("STRIPE_SECRET_KEY has no value");
+      expect(vendorCalls(calls)).toEqual([]);
+    });
+
+    it("GitHub Actions: one `gh secret set` per name, the value on stdin with one trailing newline, values off argv (no --body / -f)", () => {
+      const { calls, status } = runRecipe(shell, githubRecipe ?? "", githubValues);
+      expect(status).toBe(0);
+      const maruhi = maruhiCall(calls);
+      expect(maruhi.flags).toEqual({ "--env": "production" });
+      expect(maruhi.command[0]).toBe("sh");
+      expect(vendorCalls(calls)).toEqual(
+        Object.entries(githubValues).map(([name, value]) => ({
+          tool: "gh",
+          argv: ["secret", "set", name],
+          stdin: `${value}\n`,
+        })),
+      );
+      expectValuesOffCommandLines(calls);
+    });
+
+    it("GitHub Actions: `set -x` never echoes a value (outer shell and the inner `sh -c`)", () => {
+      const { calls, status, stderr } = runRecipe(shell, githubRecipe ?? "", githubValues, {
+        xtrace: true,
+      });
+      expect(status).toBe(0);
+      expect(vendorCalls(calls)).toHaveLength(2);
+      expect(stderr).toContain("printenv");
+      expect(stderr).toContain("CODECOV_TOKEN");
+      expectValuesOffTrace(stderr);
+    });
+
+    it("GitHub Actions: a name without a value stops before anything is copied", () => {
+      const { calls, status, stderr } = runRecipe(shell, githubRecipe ?? "", {
+        NPM_TOKEN: githubValues.NPM_TOKEN,
+      });
+      expect(status).toBe(1);
+      expect(stderr).toContain("CODECOV_TOKEN has no value");
       expect(vendorCalls(calls)).toEqual([]);
     });
   });

@@ -178,10 +178,13 @@ export function syncInitOp(input: SyncInitInput): Effect.Effect<void, CliError, 
         'the target copies every variable of the environment ("all"). Keep public configuration and platform-owned resources out with "exclude", or list the names to copy in "variables"',
       );
     }
-    if ((input.driver ?? defaultDriverOf(SYNC_PRESETS[input.preset as PresetId])) === "http") {
+    const preset = SYNC_PRESETS[input.preset as PresetId];
+    if ((input.driver ?? defaultDriverOf(preset)) === "http") {
       yield* logNote(
         `the http driver reads the vendor's token from the maruhi variable named in "token". Push it there before the first apply, and give the token the least permission the target needs (see the Deploy targets page in the docs)`,
       );
+    } else if (!isUnavailable(preset.exec) && preset.exec.signInHint !== undefined) {
+      yield* logNote(preset.exec.signInHint);
     }
     if (input.project === undefined) {
       yield* logNote(

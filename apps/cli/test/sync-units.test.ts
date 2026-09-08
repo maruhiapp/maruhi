@@ -42,6 +42,15 @@ function vercelTarget(overrides: Record<string, unknown> = {}): Record<string, u
   };
 }
 
+function githubTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    preset: "github-actions",
+    environment: "prod",
+    variables: ["A"],
+    ...overrides,
+  };
+}
+
 /** `project` つきの設定(onPush はこれを要求する)。 */
 function withProject(target: Record<string, unknown>): string {
   return JSON.stringify({
@@ -126,7 +135,7 @@ describe("parseSyncConfig", () => {
     ],
     [
       baseConfig({ preset: "railway" }),
-      "targets.t.preset must be one of cloudflare-workers, vercel, netlify",
+      "targets.t.preset must be one of cloudflare-workers, vercel, netlify, github-actions",
     ],
     [baseConfig({ preset: "__proto__" }), "targets.t.preset must be one of"],
     [
@@ -163,10 +172,82 @@ describe("parseSyncConfig", () => {
       baseConfig(vercelTarget({ environment: "sync-receipts" })),
       "targets.t.environment is the receipts environment",
     ],
+    [
+      baseConfig(githubTarget({ driver: "http" })),
+      'targets.t.driver: the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository\'s public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI; use "exec"',
+    ],
+    [
+      baseConfig(githubTarget({ options: { repo: "acme" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { repo: "--body" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { repo: "-x/y" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { repo: "-host/x/y" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { environment: "-r" } })),
+      "targets.t.options.environment must be a GitHub Environment name (not starting with -)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { app: "actions,dependabot" } })),
+      "targets.t.options.app must be one of actions, agents, codespaces, dependabot",
+    ],
+    [
+      baseConfig(githubTarget({ options: { environment: "production", app: "dependabot" } })),
+      'targets.t.options.app: environment secrets exist for GitHub Actions only, so app must be "actions" (or left out) when environment is set',
+    ],
+    [
+      baseConfig(githubTarget({ token: { environment: "tokens", name: "GH_TOKEN" } })),
+      "targets.t.token applies only to the http driver",
+    ],
   ])("拒否する: %s", (content, reason) => {
     const result = parseSyncConfig(content, "/repo");
     expect(typeof result).toBe("string");
     expect(result).toContain(reason);
+  });
+
+  it("GitHub Actions: exec だけ(driver 省略 = exec)、リポジトリ secrets と Environment production は production 扱い、他の Environment は違う", () => {
+    const repository = parsed(githubTarget());
+    expect(repository.driver.kind).toBe("exec");
+    expect(execOf(repository).command).toBe("gh");
+    expect(execOf(repository).cwd).toBe("/repo");
+    expect(repository.production).toBe(true);
+    expect(repository.options).toEqual({});
+    expect(parsed(githubTarget({ options: { environment: "production" } })).production).toBe(true);
+    // GitHub の Environment 名は大文字小文字を区別しない(pullfrog 指摘)
+    expect(parsed(githubTarget({ options: { environment: "Production" } })).production).toBe(true);
+    expect(parsed(githubTarget({ options: { environment: "PRODUCTION" } })).production).toBe(true);
+    expect(parsed(githubTarget({ options: { environment: "staging" } })).production).toBe(false);
+    // Dependabot secrets はリポジトリ単位 = production 扱い(明示で上書き可)
+    expect(parsed(githubTarget({ options: { app: "dependabot" } })).production).toBe(true);
+    expect(
+      parsed(githubTarget({ options: { app: "dependabot" }, production: false })).production,
+    ).toBe(false);
+    // Environment secrets は app を省くか actions と書く
+    const full = parsed(
+      githubTarget({
+        options: { repo: "acme/app", environment: "staging", app: "actions" },
+        cwd: "infra",
+        command: "tools/gh",
+      }),
+    );
+    expect(full.options).toEqual({ repo: "acme/app", environment: "staging", app: "actions" });
+    expect(execOf(full).cwd).toBe("/repo/infra");
+    expect(execOf(full).command).toBe("tools/gh");
+    expect(execOf(full).namedCommand).toBe(true);
+    expect(parsed(githubTarget({ options: { repo: "ghe.example.com/acme/app" } })).options).toEqual(
+      {
+        repo: "ghe.example.com/acme/app",
+      },
+    );
   });
 
   it("onPush: apply は production でないターゲットだけ、workflow は file / ref / command(cwd = 設定の場所)、project が要る", () => {
@@ -404,6 +485,75 @@ describe("buildInvocations(宣言的プリセット)", () => {
     expect(invocations[1]?.names).toContain("GONE");
   });
 
+  it("GitHub Actions: 名前ごとに `gh secret set` 1 プロセス、値は stdin そのもの、-R / --env / --app は argv、削除は `gh secret delete`、gh のテレメトリ off", () => {
+    const target = parsed(
+      githubTarget({
+        options: { repo: "acme/app", environment: "staging", app: "actions" },
+      }),
+    );
+    const invocations = buildInvocations({
+      preset: execOf(target).spec,
+      command: execOf(target).command,
+      cwd: execOf(target).cwd,
+      options: target.options,
+      writes: [write("API_KEY", "value-a"), write("PEM", "line1\nline2")],
+      deletes: ["OLD"],
+    });
+    expect(invocations.map((invocation) => invocation.command)).toEqual([
+      [
+        "gh",
+        "secret",
+        "set",
+        "API_KEY",
+        "--repo",
+        "acme/app",
+        "--env",
+        "staging",
+        "--app",
+        "actions",
+      ],
+      ["gh", "secret", "set", "PEM", "--repo", "acme/app", "--env", "staging", "--app", "actions"],
+      [
+        "gh",
+        "secret",
+        "delete",
+        "OLD",
+        "--repo",
+        "acme/app",
+        "--env",
+        "staging",
+        "--app",
+        "actions",
+      ],
+    ]);
+    expect(
+      invocations.map((invocation) => decoder.decode(Redacted.value(invocation.stdin))),
+    ).toEqual(["value-a", "line1\nline2", ""]);
+    for (const invocation of invocations) {
+      expect(invocation.extraEnv).toEqual({
+        GH_TELEMETRY: "false",
+        DO_NOT_TRACK: "1",
+        GH_NO_UPDATE_NOTIFIER: "1",
+        GH_PROMPT_DISABLED: "1",
+      });
+      expect(invocation.command.join(" ")).not.toContain("value-a");
+      expect(invocation.command).not.toContain("--body");
+      expect(invocation.command).not.toContain("--env-file");
+    }
+    // オプション無し = リポジトリ secrets(gh が cwd の git remote からリポジトリを解く)
+    const bare = buildInvocations({
+      preset: execOf(parsed(githubTarget())).spec,
+      command: "gh",
+      cwd: "/repo",
+      options: {},
+      writes: [write("API_KEY", "v")],
+      deletes: [],
+    });
+    expect(bare.map((invocation) => invocation.command)).toEqual([
+      ["gh", "secret", "set", "API_KEY"],
+    ]);
+  });
+
   it("UTF-8 でない値が届いたら空文字列を黙って書かずに落とす(prepareWork が先に弾く前提の防衛線)", () => {
     const target = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(() =>
@@ -468,6 +618,54 @@ describe("checkValueConstraints", () => {
     expect(checkValueConstraints(workers, "A", encoder.encode(""))).toBeNull();
     expect(checkValueConstraints(workers, "A", encoder.encode("x\n"))).toBeNull();
     expect(checkValueConstraints(workers, "A", new Uint8Array(70_000))).toBeNull();
+    expect(checkValueConstraints(workers, "lower-case:name", encoder.encode("x"))).toBeNull();
+  });
+
+  it("GitHub Actions: 末尾改行は単行も複数行も CR も拒否(gh の TrimRight)、名前は大文字・数字始まり不可・GITHUB_ 不可、空と大きな値は通す", () => {
+    const gh = {
+      constraints: EXEC_PRESETS["github-actions"].constraints,
+      label: "the gh CLI",
+    };
+    const secret = "s3cr3t-value";
+    for (const value of [
+      `${secret}\n`,
+      `${secret}\r\n`,
+      `${secret}\r`,
+      "a\nb\n",
+      "a\nb\n\n",
+      "\n",
+    ]) {
+      const refused = checkValueConstraints(gh, "A", encoder.encode(value));
+      expect(refused?.message).toContain(
+        "Variable A ends with a newline, which the gh CLI strips from stdin",
+      );
+      expect(refused?.message).not.toContain(secret);
+    }
+    expect(checkValueConstraints(gh, "A", encoder.encode("a\nb"))).toBeNull();
+    expect(checkValueConstraints(gh, "A", encoder.encode(secret))).toBeNull();
+    // 空 stdin は gh が空の本文として送る(拒まない)、上限は API が見る(切り詰めは無い)
+    expect(checkValueConstraints(gh, "A", encoder.encode(""))).toBeNull();
+    expect(checkValueConstraints(gh, "A", new Uint8Array(70_000))).toBeNull();
+    // 名前: GitHub が大文字で保存する = 大小違いの 2 名が 1 secret に畳まれるので大文字だけ
+    for (const name of [
+      "api_key",
+      "ApiKey",
+      "1KEY",
+      "GITHUB_TOKEN",
+      "github_x",
+      "A-B",
+      "A.B",
+      "A B",
+    ]) {
+      const refused = checkValueConstraints(gh, name, encoder.encode("v"));
+      expect(refused?.message).toContain(
+        `Variable ${name} has a name the gh CLI cannot store as is`,
+      );
+      expect(refused?.message).toContain("GitHub stores secret names in uppercase");
+    }
+    for (const name of ["API_KEY", "_KEY", "KEY2", "GITHUBX", "GIT_HUB_TOKEN"]) {
+      expect(checkValueConstraints(gh, name, encoder.encode("v"))).toBeNull();
+    }
   });
 });
 

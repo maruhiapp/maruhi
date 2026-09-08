@@ -239,7 +239,7 @@ N1 の付帯設計: 同期は環境ごとの opt-in(`autoSync`)とし、producti
 | G7. OIDC フェデレーションで secrets 自体を減らす | クラウド資格は OIDC → STS | ○ 立場として docs へ(§4 R7 / §6 D5)。サードパーティ API キーには効かない |
 | G8. sealed box 中継(S6) | サーバーが封印物を転送 | △ クライアント側で封印する時点で G3 の依存が要る。G2 があれば不要 |
 
-**結論**: **第 2 段は不要と判断できる**。G1(手元)+ G2(CI で自動)で、依存追加なしに手動と自動の両方が揃う。G3 は「`gh` を入れられない環境」の声が出たときの再検討項目に留める。
+**結論**: **第 2 段は不要と判断できる**。G1(手元)+ G2(CI で自動)で、依存追加なしに手動と自動の両方が揃う。G3 は「`gh` を入れられない環境」の声が出たときの再検討項目に留める。**(2026-09-08 SY5 で実装: G1 = Deploy targets のレシピ + `EXEC_PRESETS["github-actions"]`〔宣言 1 つ・依存追加ゼロ〕、G2 = 標準形 ② の sync step に bootstrap の `GH_TOKEN`〔GitHub Environment secret〕。G3 / G5 は取り込んでいない — 下の「SY5 実装時の裁定録」)**
 
 ### 補足 6: SY2 のエージェント環境の扱いの上位互換を探す(2026-09-04)
 
@@ -711,7 +711,7 @@ wrangler をプロジェクトの依存として入れている人はそれを�
 | Cloudflare Workers `wrangler secret bulk` | 4.128.0(リポジトリのピン) | file 省略で stdin。JSON `{"k":"v"}`(推奨)か `.env`(dotenv 16.3.1 — `#` / 空白 / 引用符で壊れる)。readline で EOF まで。値は文字列のみ。1 回 100 件 | 同名は上書き(1 リクエスト) | JSON で `null` のみ(`.env` 不可) | `--name <worker>` / `-e <env>`(wrangler の名前付き環境) | `WRANGLER_SEND_METRICS=false`(`true`/`false` 厳密)/ `DO_NOT_TRACK=1` / `wrangler telemetry disable` / `send_metrics=false` | `--help` + `cli.js` の `parseBulkInputToObject` / `validateFileSecrets` + dotenv 16.3.1 の実測 + 上流 telemetry.md。空 stdin は exit 0(注意)。デバッグログ `WRANGLER_LOG_PATH` は未監査 |
 | Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | 非対話なら stdin を EOF まで(`readFromStdin`) | 上書き | `secret delete` | 同上 | 同上 | `cli.js`。1 件ごとに新 version をデプロイ(bulk 推奨) |
 | Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**(実測: 65,536 バイトまでは完全に届き、それ以上は 64 KiB で切れる — 改訂 1)。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
-| GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す) |
+| GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す)  **2026-09-08 SY5 で実装**(exec プリセット `github-actions` + レシピ。v2.100.0 の `set.go` で再確認: `TrimRight` は複数行でも末尾の CR / LF を全部落とす・空 stdin は空の本文として送る・不在名の delete は 404 = 非 0・未ログインは終了コード 4) |
 | Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま。**2026-09-08 SY4 第 1 波で http プリセットを実装**) |
 
 SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエストで渡す形が正で、削除は `null` で表せる(レシートとの突合で
@@ -2069,6 +2069,261 @@ Vercel)での http / `ci sync` の通し、Vercel の一覧のページ分け、
 実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
 
 ---
+
+### SY5 実装時の裁定録(2026-09-08)
+
+対象は ROADMAP **SY5** = GitHub Actions secrets(案 S6 の部品 — 補足 5 G1 / G2)。第 1 段 = レシピ(docs のみ)、第 2 段 = exec
+プリセット + 標準形 ② への同期(CI)。設計は確定済みで蒸し返していない: 補足 5 の結論(ネイティブ封印 = libsodium 系の依存追加は
+不要。G1 + G2 で手動と自動が依存追加なしに揃う)、補足 8 Q2(目標は「GitHub secrets を空にする」)/ Q3(既製アクションは
+`maruhi ci run -- <vendor cli>` へ)、補足 10 V1 / 補足 11(GitHub は `gh` をドライバとする同期先の 1 つで特別扱いなし)、
+補足 16(手元は exec を先に使う)。出発点は SY4 の申し送り (1)(「exec プリセットの宣言だけで載る」「http は `{unavailable}`」
+「第 3 段の `GH_ENV` / `ghArgument` を流用可」「bootstrap トークンは唯一の例外」)。各裁定点は同じループ(3 案以上 → 上位互換の
+探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(末尾改行の消失・空 stdin・48 KB・名前の規則と
+大文字小文字の同一視・不在 Environment・`-R` 省略時の行き先・bootstrap の権限の境界・`GH_TOKEN` の優先順位・入れ子・同じ workflow
+が自分の secrets を書く再帰・不在名の delete・`runInvocations` の失敗の形)を問うた。**申し送り (1) の「宣言だけで載る」は 3/4 だけ
+成り立った**: 宣言 1 つで載ったが、gh の `TrimRight`(複数行でも末尾改行を全部落とす)と GitHub の名前の規則(大文字で保存 =
+大小を同一視)は既存の `ValueConstraints` では表せず、**型を広げた**(全プリセットに効く一般化 — 裁定 C。gh 専用コードは
+`buildInvocations` / `runInvocations` / `sync-plan.ts` に足していない。sync-plan.ts は無変更)。
+
+**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
+(1) **gh の版**: 最新リリースは **v2.100.0(2026-09-03)** — SY1 の実測(2026-09-05)と同じ版。この環境の gh は 2.99.0(`--help` の
+確認に使い、stdin の読みは v2.100.0 タグと trunk の `pkg/cmd/secret/set/set.go` を取得して読んだ — `getBody` は両者で同一)。
+(2) **`gh secret set` の stdin**(`set.go` の `getBody`): `--body` が空 → `IO.CanPrompt()`(stdin と stdout が TTY かつ
+`GH_PROMPT_DISABLED` 無し)ならパスワードプロンプト → それ以外は `io.ReadAll(stdin)` の後 **`bytes.TrimRight(body, "\r\n")`** =
+末尾の CR / LF を**すべて**落とす(複数行の値でも末尾の改行は残らない。Vercel の「1 行の値から 1 つだけ」とは違う。`"\n"` だけの
+値は空になる)。**空 stdin はエラーにならず**空の本文を `box.SealAnonymous` で封印して PUT する(API が空の secret を受理するかは
+**未確認** — 拒否なら gh の文面が出る。実測できない: この環境の gh トークンは `secrets: read` を持たず `--no-store` の公開鍵
+取得が 403)。順序: `BaseRepo()`(リポジトリの解決)→ `getSecretsFromOptions`(stdin を読む)→ 公開鍵取得 → `IsSupportedSecretEntity`
+の検査(**stdin を読んだ後**)→ 封印 → PUT。`-f -` は `godotenv.Parse`(dotenv 形式 — SY1 で JSON 一択にした理由がそのまま当たる)。
+(3) **リポジトリの解決**(`set.go` の `RunE`): `-R` / `GH_REPO` が無ければ cwd の git remote。remote が複数で対話できなければ
+`RequireNoAmbiguityBaseRepoFunc` が**エラー**(黙って片方を選ばない)。git リポジトリでなければ「failed to run git: fatal: not a
+git repository」で終了コード **1**(実測)。
+(4) **終了コード**(実測): 認証情報が全く無い = **4**(`gh auth login` / `GH_TOKEN` の案内。`workflow run` と同じ `exitAuth`)、
+不正なトークン = **1**(「failed to fetch public key: HTTP 401: Bad credentials」)。`gh secret delete` は
+`client.REST("DELETE", …)` の非 2xx をそのまま `failed to delete secret X: HTTP 404` で返す(`delete.go`)= **不在名は非 0** =
+Vercel の `env rm` の wart と同じ形(既存の `failDriver` のレシート作り直しの案内がそのまま当たる — 裁定 G)。
+(5) **`--app` と置き場の組み合わせ**(`shared.go` の `IsSupportedSecretEntity`): actions = repository / organization / environment、
+agents = repository / organization、codespaces = user / organization / repository、dependabot = repository / organization。
+**Environment secrets は actions だけ**。`--app` 省略 = actions(user なら codespaces)。
+(6) **GitHub の secrets の規則**(docs.github.com「Secrets reference」): 名前は英数字と `_`、空白不可、**`GITHUB_` 接頭辞で
+始まらない**、**数字で始まらない**、**参照は大文字小文字を区別せず、GitHub は名前を大文字で保存する**、同じ階層で一意。上限は
+**48 KB**(単位・測り方の記述なし)、リポジトリ 100 / Environment 100 / 組織 1,000。組織・リポジトリ secrets は run のキュー時に、
+Environment secrets は job 開始時に読まれる。「Using secrets」: 未設定の secret を参照した式は**空文字列**。
+(7) **権限**(REST docs の各エンドポイントの「Fine-grained access tokens」節): リポジトリ secrets の PUT / DELETE =
+**"Secrets" repository permissions (write)**(公開鍵の GET は read)、Environment secrets の PUT / DELETE = **"Environments"
+repository permissions (write)**(公開鍵は read)、Dependabot secrets = **"Dependabot secrets" (write)**。使えるトークンは
+GitHub App user access token / GitHub App installation access token / fine-grained PAT。**`GITHUB_TOKEN` は secrets を書けない**
+= workflow-syntax の `permissions` の鍵の一覧(actions / attestations / checks / contents / deployments / discussions / id-token /
+issues / packages / pages / pull-requests / security-events / statuses)に `secrets` も `environments` も**無い**(与える手段が無い)。
+(8) **gh の認証の優先順位**(`gh help environment`): `GH_TOKEN`、次いで `GITHUB_TOKEN`。保存済みの資格より環境変数が勝つ。
+**ランナーの既定の環境変数に `GITHUB_TOKEN` は無い**(docs「Store information in variables」の Default environment variables の
+一覧に無い。`${{ github.token }}` / `${{ secrets.GITHUB_TOKEN }}` は式でだけ得る)= step の `env: GH_TOKEN:` と競合するものは無い。
+(9) **テレメトリ**(`gh help environment` / `gh help config`): `GH_TELEMETRY=false|0`(`DO_NOT_TRACK` に優先)、`DO_NOT_TRACK=1|true`、
+恒久設定は **`gh config set telemetry disabled`**(`{enabled | disabled | log}`)。`GH_NO_UPDATE_NOTIFIER`(アップデート確認)、
+`GH_PROMPT_DISABLED`(対話)。
+(10) **GitHub Environment の自動作成**: workflow が参照すると作られる(SY3 前提 (2))が、`gh secret set --env X` は
+**`GET …/environments/X/secrets/public-key` を先に呼ぶ**(`getEnvPubKey`)。不在 Environment に対する応答は実測できず
+(**未確認** — 404 と推定)、docs は「gh は Environment を作らない(公開鍵を先に引く)ので先に作る」とだけ書いた。
+(11) **コード側**: `SyncPreset.exec / http` は `宣言 | {unavailable}`(SY4 裁定 A)、`PRESET_IDS`(sync-types.ts)が id の単一の正で
+レシートの許容値・`--preset` の検査は追随する(`--help` の文言は手書き = golden)。`ExecPreset` に `check` は無く(http には
+ある)、`OptionSpec` は `values`(閉集合)だけ。`checkValueConstraints`(sync-exec.ts)は apply の `prepareWork` から 1 変数ずつ
+呼ばれ、**名前**を受け取る(値の制約に名前の規則を載せる口はここにしかない — plan の `classifyVariable` は sync-plan.ts)。
+`buildChildEnvironment`(run.ts)は `MARUHI_*` だけを落とすので、step の `GH_TOKEN` は `maruhi ci sync` → gh へ届く。
+
+**操作 × 置き場 × 値の形 × 失敗(裁定 C〜G の入力。「未確認」は上の (2) / (10))**:
+
+| 操作 | repository(`-R` / cwd の remote) | environment(`--env`) | app(`--app`) | 値の形 | 失敗 |
+|---|---|---|---|---|---|
+| `gh secret set NAME`(stdin) | 上書き(PUT)。remote が曖昧なら止まる・git 外なら 1 | actions のみ。公開鍵を先に引く(不在 = 未確認・作らない) | actions(既定)/ agents / codespaces / dependabot | `TrimRight("\r\n")`(全部)、空 = 空を送る(API 未確認)、48 KB(単位未確認・切り詰めの経路なし) | 未ログイン 4・401 / 403 / 404 は 1・名前の規則違反は API の拒否(gh は検査しない)|
+| `gh secret delete NAME` | 名前で消す(一覧不要) | 同上 | 同上 | — | 不在名 = HTTP 404 = 1(Vercel と同じ wart)|
+| 名前 | 英数字 `_`・数字始まり不可・`GITHUB_` 不可・**大文字で保存** = `Foo` と `FOO` は同じ secret(片方の delete が両方を消す) | 同上 | 同上 | — | — |
+| 権限(fine-grained PAT / App) | Secrets: write | Environments: write | Dependabot secrets: write(codespaces / agents は別の permission — docs では触れない) | — | `GITHUB_TOKEN` には与えられない |
+
+**A. 段割りと PR の切り方** — 列挙: (i) **第 1 段(レシピ)と第 2 段(プリセット + CI docs)を 1 本の PR** / (ii) 2 本(レシピを先に)
+/ (iii) 3 本(レシピ / プリセット / workflow の docs)。第 1 周の新案: なし。第 2 周(壊れ方): (ii) / (iii) は同じ 2 ページ
+(deploy-targets.mdx の「GitHub Actions secrets」節と「Without maruhi sync」節、github-actions.mdx の標準形 ②)を複数 PR が触り
+競合する(SY2 第 2 段の裁定 A′ と同じ論点)。レシピの `printenv | gh secret set` と exec プリセットの `gh secret set NAME` は
+同じ形で、片方だけ先に出すと末尾改行の注記(レシピ = 落ちる、プリセット = 拒む)が 2 回書き直しになる。(i) は差分が大きいが
+CLI の変更は宣言 1 つ + 型の一般化で、レビューの単位として読める(なし)。**選定 = (i)**(draft → ready)。棄却: (ii) / (iii)。
+
+**B. プリセット id と表現** — 列挙: (i) **`github-actions`** / (ii) `github` / (iii) `gh`。第 1 周の新案: なし。第 2 周(壊れ方):
+(iii) はコマンド名で同期先ではない(`wrangler` ではなく `cloudflare-workers` の規則)。(ii) は Dependabot / Codespaces secrets も
+書ける事実に近いが、docs のページ名・ROADMAP の項目名・「GitHub Actions secrets」という GitHub 自身の呼称と揃わない。(i) は
+`cloudflare-workers` と同じ「製品名」の規則で、`app: dependabot` は節の中のオプションとして自然に読める(なし)。**選定 = (i)**。
+`PRESET_IDS` の末尾に足す(表示順 = 追加順)。http の不在理由 = 「the github-actions preset has no http driver: the GitHub API
+takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh
+CLI」(Netlify の文と対称。`driver: "http"` を名指しした設定はこの文 + `use "exec"`、`sync init --driver http` は同じ文 +
+`use --driver exec`)。
+
+**C. exec 宣言の形と制約** — 宣言: `command: "gh"`、`env: GH_ENV`、`transport: "raw-value"` / `batch: 1`、`writeArgs: ["secret",
+"set", {name}, {option repo --repo}, {option environment --env}, {option app --app}]`、`delete: {args: ["secret", "delete", {name},
+…同じ 3 オプション]}`。**末尾改行**の列挙: (i) `ValueConstraints` に `refuseTrailingNewline: boolean` を足す(2 つの boolean で
+片方が他方を含む)/ (ii) 黙って落ちることを docs に書くだけ / (iii) gh 専用の検査 / (iv) 警告して送る。第 1 周の新案:
+**(v) `refuseSingleLineTrailingNewline` を 3 値の `trailingNewline: "kept" | "strippedFromSingleLine" | "stripped"` に置き換える**
+(あり — 「CLI の stdin の読み手が末尾改行に何をするか」を宣言が述べ、拒否はそこから導かれる。boolean 2 つの「片方が他方を含む」
+組み合わせが型から消える。Workers / Vercel / http 3 プリセットの宣言は機械的に写す。挙動不変)。第 2 周(壊れ方): (ii) は
+「maruhi が持つ値と違うものを届ける」を黙って許す(PEM の末尾改行は多くのパーサで無害だが、それを決めるのは maruhi ではない)。
+(iv) は届いた version をレシートに記録しながら内容が違う(レシートの意味が崩れる)。(iii) は規律違反。(v) で `"\n"` だけの値も
+拒まれる(空になる形を先に塞ぐ)(なし)。**選定 = (v)**。**空 stdin**の列挙: (a) `nonEmpty: true`(Vercel と同じ文面「treats an
+empty value on stdin as no value」— gh には**当たらない**: gh は空を送る)/ (b) **`nonEmpty: false`**(gh に渡す。API の受理は
+未確認だが、拒否なら gh の文面で見える = fail-visible。切り詰めや無言の変形は無い)/ (c) 文面を一般化して拒む。第 1 周: なし。
+第 2 周: (a) は嘘の文面、(c) は「maruhi の空は同期先でも空」という wrangler と同じ意味論を gh でだけ曲げる(なし)。**選定 = (b)**。
+**48 KB** の列挙: (a) `maxBytes: 48 * 1024` / (b) `48_000` / (c) **`null`**。周: 単位も測る対象(平文か封印後の base64 か)も
+docs に無く(前提 (6))、`maxBytes` の拒否文面は「it reads only the first chunk of stdin, so a larger value could be cut off
+silently」= Vercel の切り詰めの話で gh には当たらない(gh は全部読む)。gh には切り詰めの経路が無く、超過は API の拒否として
+gh の文面で見える → **未確認の数に実装を依存させない**(なし)。**選定 = (c)** + docs で「48 KB は GitHub の上限。maruhi は
+検査せず gh が API の拒否を報告する」。**名前の規則**の列挙: (a) 検査しない(API が拒む — ただし**大文字小文字の同一視は API も
+拒まない** = `foo` と `FOO` が 1 secret に畳まれ、片方の rename で `- foo` の delete が `FOO` を消す**無言の破壊**)/ (b)
+`ValueConstraints.name = {regex, rule}` で英数字・`_`・数字始まり不可・`GITHUB_` 不可を 1 変数ずつ検査し、大小の衝突は docs に
+書く / (c) 選択全体で大小の衝突を検査する(**集合が要る** = `prepareWork` か `computePlan` = sync-plan.ts — 所有者確認事項)/
+(d) **(b) の regex を大文字だけにする**(`^(?!GITHUB_)[A-Z_][A-Z0-9_]*$`)。第 1 周の新案: (d)(あり — maruhi の名前は環境内で
+一意なので、全部大文字なら大小を畳んでも一意 = 衝突と rename の破壊が**構造で**起きない。1 変数ずつの検査で足り、sync-plan.ts を
+触らない。代償は小文字混じりの maruhi 名を「rename せよ」と拒むこと — GitHub 自身がそれを大文字に変えて保存する以上「maruhi が
+持つ名前がそのまま届く」ものだけを通すのは他の制約と同じ規律)。第 2 周(壊れ方): (a) は無言の破壊、(c) は sync-plan.ts、(b) だけ
+では rename の破壊が残る。`maruhi run` は既に大小違いの名前の同居を拒む(Windows)ので (d) の代償に当たる利用者は少ない(なし)。
+**選定 = (d)**。文面は「Variable X has a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts
+only …」(名前だけを運ぶ)。plan には出ない(内容の制約と同じく apply で全件検査 → 1 件でも駄目なら「Nothing was sent」— 第 1 段の
+裁定 P の線)。**オプションの形**: `repo` は gh の `[HOST/]OWNER/REPO` の形を `OptionSpec.pattern`(新設 — `{regex, hint}`)で
+検査し、`environment` は先頭 `-` を除く(第 3 段の `ghArgument` と同じ理由 — フラグと読まれる形を設定で作らせない。`ghArgument`
+自体は workflow の `file` / `ref` 用の関数で、宣言のデータにはならないため `pattern` に一般化した)。`app` は閉集合(前提 (5))。
+**`environment` × `app`** の整合(Environment secrets は actions のみ)は `OptionSpec` では表せない → **`ExecPreset.check`**(http の
+`check` と同じ契約)を足し、sync-config.ts の呼び出しをドライバ種別に依らない形にした(gh は stdin を読んだ**後**にこれを拒む
+〔前提 (2) の順序〕ので、設定の段階で止める)。
+
+**D. オプションと production の既定** — `repo` の列挙: (i) 必須 / (ii) **省略可(gh が cwd の git remote から解く。曖昧なら gh が
+止まる)** / (iii) 省略可 + `sync init` で note。第 1 周の新案: なし。第 2 周(壊れ方): (i) は「設定がコミットされているリポジトリ
+自身に書く」という最も普通の形で `OWNER/REPO` を重複して書かせる。(ii) の「平文の行き先が cwd で変わる」は Vercel の linked
+directory / wrangler の設定ファイルと同じ既存の規律(設定の `cwd` は設定ファイルからの相対、`Running gh in <cwd>` を出力に残す)で、
+fork のクローンで打てば fork に書くが、書けるのは書き手のログインで書ける先だけ。remote が複数なら gh は黙って選ばない(前提 (3))
+(なし)。**選定 = (ii)**、docs で「without it gh uses the git remote of the directory it runs in, and stops if that directory has
+several remotes」。**`environment`**: GitHub Environment(`--env`)。Vercel の `environment` と「デプロイ環境」の同じ意味なので同じ
+名前(Netlify の `context` は別の意味なので別名 — SY4 裁定 B の規律の裏)。`describeDestination`(sync-plan.ts)は `options.environment`
+をヘッダー行に出すので gh も自動で載る。**`app`**: `actions`(既定)/ `agents` / `codespaces` / `dependabot` = gh の閉集合を
+そのまま(`agents` を外す理由が無い — 1 語で gh が検査する)。`org` / `visibility` / `user` / `repos` は**入れない**(組織 secrets は
+`admin:org` の資格と別の権限モデルで、需要が出たら第一級にするか裁定。docs で「use gh directly」)。**`isProduction`** の列挙:
+(i) 常に true / (ii) `environment === "production"`(Vercel と同じ)/ (iii) **`environment` 未指定 = リポジトリ secrets = true、
+指定あり = 名前が `production` のとき true**。第 1 周: なし。第 2 周(壊れ方): (ii) はリポジトリ secrets(全 workflow に効く =
+production のデプロイにも効く)を `--yes` 無しで書ける。(i) は staging Environment の secrets にまで `--yes` を課し、`onPush:
+"apply"` を全ターゲットで塞ぐ。(iii) は Workers(名前付き環境なし = production)と Vercel(`production` の名前)の両方の規則の
+合成で、Dependabot / Codespaces secrets(リポジトリ単位)も production 扱い(`production: false` で上書き可)(なし)。**選定 = (iii)**。
+
+**E. 第 1 段レシピの形** — 列挙: (i) **Vercel と同じ `sh -c` の 2 段ループ**(全名前の存在検査 → `printenv "$name" | gh secret set
+"$name"`)/ (ii) `gh secret set -f -` の dotenv 一括(**採らない** — 値の所在の規律 + dotenv の解釈で壊れる)/ (iii) 名前ごとに
+`maruhi run --only` を回す(`--only` は無い)。第 1 周の新案: なし。第 2 周(壊れ方): `printenv` の末尾改行は gh が落とす(単行・
+複数行とも — 前提 (2))ので、レシピの注記は「PEM の末尾改行は届かない」。大文字小文字は「Names arrive in uppercase … keep the
+names in maruhi uppercase and distinct」。`--body`(argv)と `--env-file -`(dotenv)を「使わない」と明記。fine-grained PAT の
+permission 3 種を箇条書きに(前提 (7))。`--env` / `--app` はコマンド行に足す位置を prose で(ブロックは 1 つ)(なし)。**選定 = (i)**。
+`recipes.test.ts`: 偽 `gh`(`shims/gh.ts` = `recordVendorCall("gh")` + `bin/gh`。`.fallowrc.json` の glob が既に `shims/*.ts` を
+entry に含む)で 3 態(正常 = 名前ごと 1 呼び出し・argv は `["secret","set",NAME]`・stdin = 値 + 改行 / 欠落名 = 1 件も送る前に 1 /
+xtrace = 外側と内側の `sh -x` に値が出ない)× 4 シェル(この環境に zsh を入れて sh / bash / zsh / dash で 40 件)。レシピの数の
+断言を 2 → 3 に。レシピ内の変数名は節の例(`NPM_TOKEN` / `CODECOV_TOKEN`)で、値は Vercel の態と同じ字種を写す。
+
+**F. 第 2 段 CI の形(bootstrap トークンの置き場と渡し方)** — 列挙: (i) **GitHub secret に fine-grained PAT を置き、標準形 ② の
+sync step の `env: GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}`**(唯一の例外。`workflows.test.ts` の `secrets.` 禁止をこの 1 か所
+だけ許す)/ (ii) PAT を maruhi の `tokens` 環境に置き、入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(GitHub
+secrets ゼロ)/ (iii) `actions/create-github-app-token` で App の短命トークン(GitHub secret に残るのは App の秘密鍵 = やはり 1 つ +
+SHA ピンの action 1 つ)/ (iv) step を別 job / 別 workflow に。第 1 周の新案: **(v) (i) の PAT を**リポジトリ secret でなく
+**ターゲットの GitHub Environment の secret** に置く(あり — 標準形 ② は `environment: ${{ matrix.target }}` なので、その
+Environment の required reviewers が bootstrap トークンの**払い出し**も守る〔Environment secrets は job 開始時 = 承認後に読まれる —
+前提 (6)〕。他のターゲットの job では `${{ secrets.GH_SECRETS_TOKEN }}` は空文字(前提 (6))になり、Vercel の http の job に PAT が
+届かない。step を分けずに済み〔(iv) 不要〕、リポジトリ secret なら write 権限の誰でも workflow 編集で持ち出せる形も避ける)。
+第 2 周(壊れ方): (ii) は SY3 申し送り (5) のとおり**未検証**(内側の OIDC 端点の継承・トークン 2 本・リース 3 回・stdio)で、
+matrix の step が gh ターゲットだけ違う形になるか、全 leg を `ci run --env tokens --` で包んで他ベンダーのトークンが gh の env に
+入る形になる。「GitHub secrets を空にする」の目標には最も近いが、検証なしにテンプレートへ載せない(SY1 の「検証していないことを
+書かない」)→ 申し送りのまま。(iii) は差し替え可能な後段(補足 8 Q1)で、初回のテンプレートには action の SHA ピンと App 登録の
+手順が増える → docs で「a GitHub App installation token with the same permissions works too」の 1 文(前提 (7) の一次資料の範囲)。
+**再帰**: gh ターゲットが `variables: "all"` で bootstrap と同じ名前の maruhi 変数を運べば自分のトークンを上書きする → docs で
+「The target must not write its own bootstrap」。**`GH_TOKEN` の優先順位**: ランナーは `GITHUB_TOKEN` を環境変数に置かない
+(前提 (8))ので競合なし。**権限の境界**: fine-grained PAT は 1 リポジトリに絞れ、Secrets / Environments / Dependabot secrets の
+write だけ(前提 (7))。**四眼**: Environment 名 = ターゲット名(SY3 裁定 D)のまま。**concurrency**: 既存の group で直列(なし)。
+**選定 = (i) + (v)**。secret 名は `GH_SECRETS_TOKEN`(`GITHUB_` 接頭辞は GitHub が拒む・`GH_TOKEN` そのままは環境変数名と混ざる)。
+`workflows.test.ts` は「`secrets.` の参照は `maruhi sync` workflow の `secrets.GH_SECRETS_TOKEN` ちょうど 1 つ、それを env に持つ
+step は 1 つで maruhi を実行する step、他の 2 workflow は 0」と断言し、`expectMaruhiStepKeepsValues` の env の検査は `GH_TOKEN`
+キーだけこの式を許す。棄却: (ii)(未検証)、(iii)(後段)、(iv)(不要になった)。
+
+**G. 削除の意味論** — `gh secret delete NAME`(名前で消す = 一覧不要 — 一方通行の規律にそのまま乗る)。不在名は HTTP 404 = 非 0
+(前提 (4))= Vercel の `env rm` と同じ wart。列挙: (i) **既存の `failDriver` の案内(レシートの作り直し + 未試行の削除の名指し)で
+足りる** / (ii) 宣言に「不在は成功扱い」を表す口を足す(全プリセット)/ (iii) gh 専用。第 1 周: なし。第 2 周: (ii) は「ネット
+ワーク起因の失敗でも消すべき秘密が同期先に残る」= SY2 改訂 2 で棄却した理由がそのまま当たる(gh の出力から 404 だけを読み分ける
+のは出力の形式に依存する)(なし)。**選定 = (i)**。CI は削除しない(既存)。
+
+**H. docs** — deploy-targets.mdx: 冒頭 / `description` に GitHub Actions、「How maruhi sync works」の preset 列挙と `gh auth login`、
+`--yes` の production の定義、設定の表(`preset` / `driver` / `command`)、GitHub Actions のオプション段落、**新節「GitHub Actions
+secrets」**(位置づけ = `ci run` で借りられない secrets だけ〔Q2 / Q3〕、`gh secret set` / `delete`・封印はクライアント・http が無い
+理由・`GH_TELEMETRY`・設定例 + `sync init` の 1 行・Environment は作らない・末尾改行の拒否・大文字の名前・48 KB と 100 件は API・
+名前で削除・org / user は `gh` を直接)、http 節の冒頭に「github-actions has no http driver」、「Without maruhi sync」に**レシピ節**、
+「Vendor CLI telemetry」に `gh config set telemetry disabled` / `GH_TELEMETRY=false`。github-actions.mdx: 冒頭に例外の 1 文、
+「Sync a deploy target from CI」に 3 つ目の箇条(GitHub 自身が同期先)、標準形 ② の step に `GH_TOKEN` + コメント、**新節「GitHub
+secrets as a target」**(Q2 の目標 → 届かないもの 3 種 → Q3 → 設定の断片 → `SCHEDULED_TARGETS` に足す → 2 点: bootstrap は唯一の
+例外〔`GITHUB_TOKEN` に `secrets` permission が無い・fine-grained PAT の 3 permission・Environment secret に置く理由・`GH_TOKEN` の
+優先順位・期限と回転〕/ 自分の bootstrap を書かない)、「What can go wrong」に gh の 4 / 401 / 403 / 404 と maruhi の拒否
+(末尾改行・名前)。index の Card / getting-started の Next steps / README の Docs 一覧に 1 句ずつ。
+
+**I. テスト** — `sync-units.test.ts`: 設定の検証(exec のみ・production の 5 態・`repo` / `environment` / `app` の形・`environment` ×
+`app` の整合・`token` の拒否・`driver: "http"` の理由つき拒否・HOST/OWNER/REPO)、`buildInvocations`(argv の `--repo` / `--env` /
+`--app`・stdin = 値・delete・`GH_ENV`・オプション無しの素の形)、`checkValueConstraints`(末尾 LF / CRLF / CR・複数行・`"\n"` だけ /
+空と 70,000 バイトは通す / 名前 8 拒否 + 5 受理)、宣言の走査(値のトークンの不在 — 既存の断言が新プリセットも走る)。
+`sync-command.test.ts`: apply の通し 2 態(リポジトリ secrets = `--yes`・argv に値なし・stdin・`GH_ENV`・cwd・レシート・`gh secret
+delete` / 末尾改行の BETA と小文字名 `apiKey` は「Nothing was sent」で 0 起動)。`ci-sync.test.ts`: exec の gh 1 態(`--env staging`・
+`extraEnv` は `GH_ENV` だけ = `GH_TOKEN` は継承)。`sync-init.test.ts`: 往復(`repo` / `app`)・`--driver http` の 2・`environment` ×
+`codespaces` の 2・`signInHint` の Note。`--help` golden(`--preset` / `--driver` の文言)。`message-style.test.ts`・
+`redacted.test.ts` の棚卸し表は**変更なし**(`sync-exec.ts: 3` のまま — 新プリセットは `Redacted` に触れない)。`recipes.test.ts`
+(裁定 E)・`workflows.test.ts`(裁定 F)。fallow: `workflows.test.ts` の `secrets.` の検査は `expectedBootstrap` /
+`bootstrapCarriers` / `secretReferences` に割って CRAP 閾値内。
+
+**J. 検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段: 115 files / 2,846 tests)。`apps/site` の `validate --strict` /
+`build` / `e2e`(Chromium: `~/.cache/ms-playwright` の 1243 を 1.62.1 が期待する 1234 の名前でリンク)。docs の light / dark の
+スクリーンショットと、偽 gh に対する `sync plan / apply` の出力例は所有者向けの非公開 Artifact。実リポジトリでの `gh secret set`
+の通し(レシピ・プリセット・CI の step)は**人間タスク**(この環境の gh トークンは secrets を読めない)。
+
+**K. ROADMAP と裁定録** — SY5 行を完了注記へ(`- [x]`)。補足 5 の結論に実装状況、SY1 実測表の gh 行に「SY5 で実装」。本節は SY4 の
+後、`## 4.` の前。**所有者への確認事項**: SY1〜SY5 が揃った = ROADMAP 完了条件の SY 系列が閉じる。**SY4 全体を `- [x]` にするか**
+(第 1 波 = Netlify で完了扱い、残り候補は需要駆動 — SY4 裁定 K の提案)と、それに伴い SY 系列の親項目を `- [x]` にするかは
+所有者判断(本 PR では SY5 行だけを閉じた)。
+
+**不変条件の確認**: 仕様改訂なし・依存ゼロ(暗号操作の追加なし。libsodium 系 / `@noble/*` / WASM を足していない。サーバー・Web・
+チェーン・wire・`packages/crypto`・レシートの形式は無変更。`preset` 許容値は `PRESET_IDS` から追随)/ 値の所在(値は gh の stdin
+だけ。`--body` / `-f -` は使わず、`ArgTemplate` に値のトークンは無い〔型 + 走査テスト〕。`$GITHUB_ENV` / `$GITHUB_OUTPUT` に書かない。
+`Redacted` を剥がす箇所は増えていない — 棚卸し表据え置き)/ 宣言的プリセットの規律(gh は `EXEC_PRESETS` の宣言 1 つ。型の一般化
+= `trailingNewline` / `name` / `OptionSpec.pattern` / `ExecPreset.check` / `signInHint` は全プリセットに効き、`buildInvocations` /
+`runInvocations` / `sync-plan.ts` に gh の分岐は無い)/ GitHub secrets を空に(bootstrap 1 つだけを例外として docs で位置づけ、
+maruhi トークンを GitHub secret に置く形・`$GITHUB_ENV` で渡す形は案内しない)/ 一方通行(同期先を読み戻さない。削除は名前で。
+CI は削除しない)/ production(リポジトリ secrets と Environment `production` は `--yes`。四眼は SY3 の形にそのまま載る)/
+テレメトリ off(`GH_ENV` を sync-exec.ts に置き `gh secret set` と `gh workflow run` で共有。レシピは docs で案内)/ ADR-0016 /
+ADR-0017(型付きエラー・stdout はコマンドの出力だけ・文言は英語・golden / message-style)/ エージェント環境の扱いは無変更 /
+スコープ(SY4 の残り・`--all`・`sync diff`・ネイティブ封印・GitLab / CircleCI・組織 secrets・sync-plan.ts の 3 点は取り込まない)。
+
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔92be3d3〕)**: (1) `isProduction` が Environment 名を `=== "production"` で
+比べていたが、**GitHub の Environment 名は大文字小文字を区別しない**(docs「Managing environments for deployment」: 「Environment
+names are not case sensitive」)ので、`Production` / `PRODUCTION` の Environment が `--yes` の門をすり抜けていた → 小文字に畳んで
+比べる(態を 2 つ追加)。secret 名で既に採っている「大小を畳む」の規律を Environment 名にも。(2) `repo` の regex が先頭 `-` を
+通していた(`-x/y` が一致。コメントは「構造で除く」と言っていた — pflag は `--repo` の次のトークンを無条件に値として取るので実害
+は無いが、コードとコメントの不一致)→ 各区切りの先頭を英数字に(態を 2 つ追加)。(3) 名前の制約を plan の `!` にも載せる提案
+(名前だけで判定でき平文が要らない。いまは `plan` で `+` に見え `apply` で「Nothing was sent」)— `classifyVariable` = sync-plan.ts
+の変更なので**所有者確認事項**として申し送り (3) に据え置き(pullfrog 自身も「追認と優先度の提案」)。docs の「GitHub Actions
+secrets」節に「`plan` はまだこの名前に印を付けず、`apply` が送る前に拒む」の 1 文を足して、`!` の定義とのずれを隠さない。
+(4) pullfrog の nit: `buildChildEnvironment` は `MARUHI_*` 以外の親環境を全部ベンダー CLI の子に渡すので、bootstrap の
+`GH_TOKEN` を**リポジトリ secret** に置くと他の leg の `ci sync` が起動する wrangler / vercel にも届く(Environment secret なら
+他 leg では空文字)→ github-actions.mdx の bootstrap の箇条に「リポジトリ secret だと全 job と exec ターゲットのベンダー CLI に
+届く(maruhi は `MARUHI_*` 以外を子に渡す)」の 1 文を足し、Environment secret に置く理由をもう 1 つ明示。
+
+**確認できなかったこと(人間タスクに追加)**: **実リポジトリでの `gh secret set` の通し**(レシピ・`sync apply` の gh ターゲット・
+標準形 ② の gh ターゲット〔Environment secret の `GH_SECRETS_TOKEN` が承認後の job にだけ届くこと・他の leg で空文字になること〕)、
+空 stdin に対する API の応答、48 KB の単位(平文か封印後か)、不在 Environment に対する公開鍵取得の status、`gh secret delete` の
+不在名の文面、fine-grained PAT の Dependabot secrets / Environments permission で実際に書けること、`gh` 2.100.0 以降の
+`TrimRight` の不変(trunk は同一 — 版が上がれば再確認)。
+
+**次への申し送り(SY5 完了 = SY 系列が揃う)**: (1) **入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`**(GitHub
+secrets を**真に**空にする形。bootstrap を maruhi の変数に置き、gh ターゲットの leg だけ包む)は未検証のまま。検証するなら:
+内側の `ci sync` が `ACTIONS_ID_TOKEN_REQUEST_*` を継承して自分でリースできること(`buildChildEnvironment` は `MARUHI_*` だけを
+落とす)、トークン 2 本・リース 3 回の窓、外側が注入した他ベンダーのトークンが gh の env に入らない形(専用の環境)、剥がし箇所の
+棚卸し。実機での通しが先。(2) **SY4 の残り**(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。
+(3) **sync-plan.ts の 3 点**(SY4 申し送り (3))+ 本セッションで見つけた 2 点: plan の `classifyVariable` に名前の制約(`constraints.
+name`)を載せて `!` で示す(いまは apply で「Nothing was sent」)、`describeDestination` に `repo`(gh)/ `context`(Netlify)を出す
+一般化(プリセットに `describe`)。(4) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。
+(5) `actions/create-github-app-token` への差し替え手順(補足 8 Q1)は実機で通してから docs に。(6) 既存の未消化: `gh workflow run`
+の実機、Windows の実行体解決、実アカウント(Cloudflare / Vercel / Netlify)での通し、Vercel の一覧のページ分け、macOS のパイプ容量、
+`vercel env rm` の不在名、SY3 の workflow 2 本の実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
 
 ---
 

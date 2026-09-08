@@ -1,4 +1,4 @@
-// Shared body of the vendor CLI shims (`wrangler` / `vercel`): record argv and the whole of stdin
+// Shared body of the vendor CLI shims (`wrangler` / `vercel` / `gh`): record argv and the whole of stdin
 // into RECIPE_TEST_LOG so the test can assert where the plaintext went. Exit 0 like a successful
 // vendor call.
 import { appendFileSync, readFileSync } from "node:fs";

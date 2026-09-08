@@ -112,7 +112,9 @@ describe("maruhi sync init", () => {
     expect(missing.stderr).toContain("sync init requires --receipts");
     const preset = await init("web", "--preset", "railway", "--env", "p", "--receipts", "r");
     expect(preset.code).toBe(2);
-    expect(preset.stderr).toContain("--preset must be one of cloudflare-workers, vercel, netlify");
+    expect(preset.stderr).toContain(
+      "--preset must be one of cloudflare-workers, vercel, netlify, github-actions",
+    );
     const option = await init(
       "web",
       "--preset",
@@ -242,6 +244,75 @@ describe("maruhi sync init", () => {
     expect(missing.code).toBe(2);
     expect(missing.stderr).toContain(
       "The config would be invalid: targets.site.options.branch is required when context is branch",
+    );
+  });
+
+  it("github-actions: exec だけ(driver は省略で出る)、options は repo / environment / app、--driver http は理由つきの書き方の誤り", async () => {
+    const result = await init(
+      "dependabot",
+      "--preset",
+      "github-actions",
+      "--env",
+      "ci",
+      "--receipts",
+      "sync-receipts",
+      "--variables",
+      "NPM_TOKEN",
+      "--option",
+      "repo=acme/app",
+      "--option",
+      "app=dependabot",
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      version: 1,
+      receipts: { environment: "sync-receipts" },
+      targets: {
+        dependabot: {
+          preset: "github-actions",
+          environment: "ci",
+          variables: ["NPM_TOKEN"],
+          options: { repo: "acme/app", app: "dependabot" },
+        },
+      },
+    });
+    expect(typeof parseSyncConfig(result.stdout, "/repo")).not.toBe("string");
+    expect(result.stderr).not.toContain("http driver");
+    expect(result.stderr).toContain(
+      "Note: the github-actions preset runs the gh CLI, which must be installed and signed in (`gh auth login`, or GH_TOKEN in the environment) with write access to the repository's secrets",
+    );
+    const http = await init(
+      "actions",
+      "--preset",
+      "github-actions",
+      "--driver",
+      "http",
+      "--env",
+      "ci",
+      "--receipts",
+      "sync-receipts",
+    );
+    expect(http.code).toBe(2);
+    expect(http.stdout).toBe("");
+    expect(http.stderr).toContain(
+      "--driver http: the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI; use --driver exec",
+    );
+    const inconsistent = await init(
+      "actions",
+      "--preset",
+      "github-actions",
+      "--env",
+      "ci",
+      "--receipts",
+      "sync-receipts",
+      "--option",
+      "environment=production",
+      "--option",
+      "app=codespaces",
+    );
+    expect(inconsistent.code).toBe(2);
+    expect(inconsistent.stderr).toContain(
+      "The config would be invalid: targets.actions.options.app: environment secrets exist for GitHub Actions only",
     );
   });
 

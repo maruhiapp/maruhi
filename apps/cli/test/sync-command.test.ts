@@ -135,7 +135,7 @@ async function sourceVariable(input: {
 /** レシート環境に置かれた既存レシート(前回の同期の結果)。 */
 async function storedReceipt(input: {
   readonly target: string;
-  readonly preset: "vercel" | "cloudflare-workers";
+  readonly preset: "vercel" | "cloudflare-workers" | "github-actions";
   readonly variables: Readonly<Record<string, number>>;
   readonly version?: number;
 }): Promise<StoredVariable> {
@@ -729,6 +729,114 @@ describe("maruhi sync apply", () => {
     expect(JSON.parse(stdinText(workers.env.execCalls[0] as ExecCall))).toEqual({
       NEWLINE: "one line\n",
     });
+  });
+
+  it("GitHub Actions: 名前ごとに `gh secret set` 1 プロセス、値は stdin だけ、-R / --app は argv、gh のテレメトリ off、リポジトリ secrets は --yes、削除は `gh secret delete`", async () => {
+    const config = defaultConfig({
+      targets: {
+        actions: {
+          preset: "github-actions",
+          environment: SOURCE_ENV,
+          variables: ["ALPHA"],
+          options: { repo: "acme/app", app: "dependabot" },
+        },
+      },
+    });
+    const fixture = await startFixture({ config });
+    // リポジトリ secrets(Environment なし)は production 扱い
+    expect(await sync(fixture, "apply", "actions")).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Target actions is a production target, so apply needs an explicit --yes",
+    );
+    expect(fixture.env.execCalls).toEqual([]);
+
+    expect(await sync(fixture, "apply", "actions", "--yes")).toBe(0);
+    const calls = fixture.env.execCalls;
+    expect(calls.map((call) => call.command)).toEqual([
+      ["gh", "secret", "set", "ALPHA", "--repo", "acme/app", "--app", "dependabot"],
+    ]);
+    expect(calls.map(stdinText)).toEqual([ALPHA_VALUE]);
+    expect(calls[0]?.extraEnv).toEqual({
+      GH_TELEMETRY: "false",
+      DO_NOT_TRACK: "1",
+      GH_NO_UPDATE_NOTIFIER: "1",
+      GH_PROMPT_DISABLED: "1",
+    });
+    expect(calls[0]?.cwd).toBe(fixture.configDir);
+    expectNoSecretLeak(fixture.env);
+    expect(fixture.env.logs.join("\n")).toContain(`Running gh in ${fixture.configDir}`);
+    expect(await decryptReceipt(fixture, "actions")).toMatchObject({
+      preset: "github-actions",
+      variables: { ALPHA: 3 },
+    });
+
+    // 選択から外れた名前は `gh secret delete`(名前で消す — 一覧は読まない)
+    const deleting = await startFixture({
+      config,
+      receipts: [
+        await storedReceipt({
+          target: "actions",
+          preset: "github-actions",
+          variables: { ALPHA: 3, OLD_NAME: 4 },
+        }),
+      ],
+    });
+    expect(await sync(deleting, "apply", "actions", "--yes")).toBe(0);
+    expect(deleting.env.execCalls.map((call) => call.command)).toEqual([
+      ["gh", "secret", "delete", "OLD_NAME", "--repo", "acme/app", "--app", "dependabot"],
+    ]);
+    expect(deleting.env.execCalls.map(stdinText)).toEqual([""]);
+    expect(await decryptReceipt(deleting, "actions")).toMatchObject({ variables: { ALPHA: 3 } });
+  });
+
+  it("GitHub Actions: 末尾改行で終わる値(複数行でも)と小文字の名前は送る前に止める(Nothing was sent)", async () => {
+    // 既定の BETA は末尾改行つきの複数行(Vercel には運べ、gh には運べない)
+    const fixture = await startFixture({
+      config: defaultConfig({
+        targets: {
+          actions: {
+            preset: "github-actions",
+            environment: SOURCE_ENV,
+            variables: ["ALPHA", "BETA"],
+            options: { environment: "staging" },
+          },
+        },
+      }),
+    });
+    expect(await sync(fixture, "apply", "actions")).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Variable BETA ends with a newline, which the gh CLI strips from stdin (every trailing CR or LF, from a single-line and a multi-line value alike). Push the value without the trailing newline (`printf %s` instead of `echo`), or leave this variable out of the target. Nothing was sent",
+    );
+    expect(fixture.env.execCalls).toEqual([]);
+    expect(fixture.receipts.writes).toEqual([]);
+    expectNoSecretLeak(fixture.env);
+
+    const lower = await startFixture({
+      sourceVariables: [
+        await sourceVariable({
+          variableId: "va",
+          name: "ALPHA",
+          version: 3,
+          plaintext: ALPHA_VALUE,
+        }),
+        await sourceVariable({ variableId: "vl", name: "apiKey", version: 1, plaintext: "k" }),
+      ],
+      config: defaultConfig({
+        targets: {
+          actions: {
+            preset: "github-actions",
+            environment: SOURCE_ENV,
+            variables: "all",
+            options: { environment: "staging" },
+          },
+        },
+      }),
+    });
+    expect(await sync(lower, "apply", "actions")).toBe(1);
+    expect(lower.env.errors.join("\n")).toContain(
+      "Variable apiKey has a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_. Rename the variable in maruhi, or leave it out of the target. Nothing was sent",
+    );
+    expect(lower.env.execCalls).toEqual([]);
   });
 
   it("ベンダー CLI が起動できなければ型付きエラー(取りに行かない)", async () => {

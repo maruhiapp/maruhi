@@ -9,8 +9,11 @@
 //
 // 片方のドライバしか持てない同期先がある(SY4 の裁定 A): Netlify の CLI は値を
 // 引数に取る(argv = `ps` で見える)ので exec の安全なレシピが書けず、http だけを
-// 持つ。宣言の代わりに**理由**(`unavailable`)を置き、設定がそのドライバを選んだ
-// ときの文面にする。`driver` を省いた設定は exec があれば exec、無ければ http。
+// 持つ。GitHub Actions secrets は逆に http を持てない(API はリポジトリ公開鍵への
+// libsodium sealed box を要し、WebCrypto に無い — 補足 5。maruhi は封印を実装せず
+// `gh` に任せる)。宣言の代わりに**理由**(`unavailable`)を置き、設定がその
+// ドライバを選んだときの文面にする。`driver` を省いた設定は exec があれば exec、
+// 無ければ http。
 
 import { type ExecPreset, EXEC_PRESETS } from "./sync-exec.ts";
 import { type HttpPreset, HTTP_PRESETS } from "./sync-http.ts";
@@ -45,7 +48,7 @@ export function defaultDriverOf(preset: SyncPreset): DriverKind {
 // Netlify の deploy context のうち production 扱い(`all` は production を含む)
 const NETLIFY_PRODUCTION_CONTEXTS = new Set(["production", "all"]);
 
-/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers; Netlify = SY4, http only). */
+/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers; Netlify = SY4, http only; GitHub Actions secrets = SY5, exec only). */
 export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
   "cloudflare-workers": {
     id: "cloudflare-workers",
@@ -68,5 +71,19 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
     },
     http: HTTP_PRESETS.netlify,
     isProduction: (options) => NETLIFY_PRODUCTION_CONTEXTS.has(String(options["context"])),
+  },
+  "github-actions": {
+    id: "github-actions",
+    exec: EXEC_PRESETS["github-actions"],
+    http: {
+      unavailable:
+        "the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI",
+    },
+    // リポジトリ secrets(Environment なし)は全 workflow に効く = production 扱い。
+    // Environment secrets はその名前が production のときだけ — GitHub の Environment 名は
+    // 大文字小文字を区別しない(docs「Managing environments」)ので畳んで比べる(pullfrog 指摘)
+    isProduction: (options) =>
+      options["environment"] === undefined ||
+      String(options["environment"]).toLowerCase() === "production",
   },
 };

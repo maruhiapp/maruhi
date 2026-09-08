@@ -443,6 +443,44 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env);
   });
 
+  it("exec(GitHub Actions): リースした値を `gh secret set` の stdin に渡す(ランナー同梱の gh。認証は step の GH_TOKEN が gh に届く形)", async () => {
+    const fixture = await startCi({
+      environments: [SOURCE_ENV],
+      targets: {
+        actions: {
+          preset: "github-actions",
+          environment: SOURCE_ENV,
+          variables: ["ALPHA"],
+          options: { environment: "staging" },
+        },
+      },
+    });
+    expect(await ciSync(fixture, "actions"), fixture.env.errors.join("\n")).toBe(0);
+    expect(fixture.leased.keys).toHaveLength(1);
+    expect(fixture.env.execCalls).toHaveLength(1);
+    expect(fixture.env.execCalls[0]?.command).toEqual([
+      "gh",
+      "secret",
+      "set",
+      "ALPHA",
+      "--env",
+      "staging",
+    ]);
+    expect(new TextDecoder().decode(fixture.env.execCalls[0]?.stdin)).toBe(ALPHA_VALUE);
+    // 子に足すのはテレメトリ off だけ(GH_TOKEN は step の env から継承 — live.ts の
+    // buildChildEnvironment が MARUHI_* 以外を通す)
+    expect(fixture.env.execCalls[0]?.extraEnv).toEqual({
+      GH_TELEMETRY: "false",
+      DO_NOT_TRACK: "1",
+      GH_NO_UPDATE_NOTIFIER: "1",
+      GH_PROMPT_DISABLED: "1",
+    });
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Applied to target actions: 1 variable written (no receipt is kept in CI, and nothing is deleted)",
+    );
+    expectNoSecretLeak(fixture.env);
+  });
+
   it("production ターゲットは --yes が無ければ plan だけを出して何も送らない", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
