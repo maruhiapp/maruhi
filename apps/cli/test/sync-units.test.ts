@@ -84,6 +84,7 @@ describe("parseSyncConfig", () => {
     expect(top.production).toBe(true);
     expect(execOf(top).cwd).toBe("/repo");
     expect(execOf(top).command).toBe("wrangler");
+    expect(execOf(top).namedCommand).toBe(false);
     const named = parsed({
       preset: "cloudflare-workers",
       environment: "prod",
@@ -95,6 +96,17 @@ describe("parseSyncConfig", () => {
     expect(named.production).toBe(false);
     expect(execOf(named).cwd).toBe("/repo/apps/worker");
     expect(execOf(named).command).toBe("node_modules/.bin/wrangler");
+    expect(execOf(named).namedCommand).toBe(true);
+    // 既定と同じ綴りでも、設定が書けば「名指し」
+    const spelled = parsed({
+      preset: "vercel",
+      environment: "prod",
+      variables: "all",
+      command: "vercel",
+      options: { environment: "preview" },
+    });
+    expect(execOf(spelled).command).toBe("vercel");
+    expect(execOf(spelled).namedCommand).toBe(true);
   });
 
   it.each([
@@ -181,6 +193,7 @@ describe("parseSyncConfig", () => {
       file: "maruhi-sync.yml",
       ref: "main",
       command: "tools/gh",
+      namedCommand: true,
       cwd: "/repo",
     });
     const defaults = parseSyncConfig(
@@ -188,7 +201,11 @@ describe("parseSyncConfig", () => {
       "/repo",
     );
     if (typeof defaults === "string") throw new Error(defaults);
-    expect(defaults.targets.get("t")?.onPush).toMatchObject({ ref: undefined, command: "gh" });
+    expect(defaults.targets.get("t")?.onPush).toMatchObject({
+      ref: undefined,
+      command: "gh",
+      namedCommand: false,
+    });
     // 省略 = 手動のみ
     expect(parsed(vercelTarget()).onPush).toBeNull();
   });

@@ -392,6 +392,14 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
           onPush: "workflow",
           workflow: { file: "maruhi-sync.yml", command: "tools/gh" },
         }),
+        // 既定の綴りを書いても「名指し」(設定が実行体を書いた事実で判定する)
+        spelled: previewTarget({ command: "vercel" }),
+        // 名指し無しの workflow = 既定パスでも PATH 上の gh が動く
+        dispatch: previewTarget({
+          options: { environment: "production" },
+          onPush: "workflow",
+          workflow: { file: "maruhi-sync.yml" },
+        }),
       }),
       receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
     });
@@ -399,11 +407,13 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(await push(fixture, NEW_VALUE)).toBe(0);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain(
-      "Note: target tool names the program to run (its command in maruhi.sync.json), and a config found in the working directory does not start one after a push. Pass --config maruhi.sync.json to sync it after this push, or run `maruhi sync apply tool`",
+      "Note: target tool names the program to run (its command in maruhi.sync.json), and a config found in the working directory does not start one after a push. Run `maruhi sync apply tool` now, or pass --config maruhi.sync.json on the next push",
     );
     expect(errors).toContain("Note: target ci names the program to run");
-    // 動いたのは web だけ(PATH 上の vercel)
-    expect(fixture.env.execCalls.map((call) => call.command[0])).toEqual(["vercel"]);
+    expect(errors).toContain("Note: target spelled names the program to run");
+    expect(errors).not.toContain("Note: target dispatch names");
+    // 動いたのは web(PATH 上の vercel)と dispatch(PATH 上の gh)だけ
+    expect(fixture.env.execCalls.map((call) => call.command[0])).toEqual(["vercel", "gh"]);
     expect(await decryptReceipt(fixture, "web")).toMatchObject({
       variables: { ALPHA: 4, BETA: 1 },
     });

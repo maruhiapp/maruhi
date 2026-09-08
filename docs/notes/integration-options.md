@@ -1554,6 +1554,22 @@ push 前の床のスナップショットから始まり、1 つ目のトーク�
 X\``)を出して飛ばす。態を追加(既定パス: 名指しの 2 ターゲットは動かず note・名指し無しの 1 つは動く / 明示: 名指しも動く)。
 (2) docs の「says nothing」を明示 `--config` の note に合わせて訂正。(3) env.ts の errors.ts の import を 1 文に。
 
+**改訂 3(2026-09-08、pullfrog の差分レビュー〔9fdbc55〕)**: (1) 「名指し」の判定を文字列比較(exec: `command !== spec.command` /
+workflow: `command !== "gh"`)で行っていた — 既定の綴り `"gh"` を sync-push.ts が写しており、解析側の既定が変われば全 workflow
+ターゲットが黙って「名指し」になる(既定パスの workflow ターゲットが gh を起動する態が無く、検出できない)。加えて明示の
+`"command": "vercel"` を名指しでない扱いにしていた → **解析時に `namedCommand: boolean`(設定が `command` / `workflow.command` を
+書いた事実)を持ち**、sync-push.ts はそれを読む。既定の綴りを書いても名指し(設定が実行体を書いた事実で判定する — 綴りの一致で
+免除しない)。態を追加(既定パス: `"command": "vercel"` は飛ばす・`workflow.command` 無しの workflow ターゲットは PATH 上の gh で
+起動する)。(2) note の文面: 既に push は済んでいるので「Pass --config … to sync it after this push」は成り立たない → 「Run
+`maruhi sync apply X` now, or pass --config … on the next push」。(3) **検証の穴の申告**: 改訂 2 の「`cwd` は実行体を変えない
+(PATH 探索)」は Linux で確かめた事実(本セッション: Bun 1.4.0 の `Bun.spawn({ cmd: ["vercel"], cwd })` は cwd に実行可能な
+`vercel` があっても PATH に無ければ ENOENT。pullfrog も Bun 1.4.2 で同じ結果)で、**Windows は未確認**(Bun は Windows で別の
+解決経路〔`PATHEXT`〕を持ち、`windows-x64` は配布対象)。Windows が cwd を探索するなら、fork に置かれた `vercel.exe` が既定パスの
+設定から平文を受け取る。人間タスクに追加(Windows で `command` 無しのターゲット + 設定ディレクトリの `vercel.exe` で PATH 側が
+動くことの確認)。cwd を探索すると分かれば、既定パスでは「解決済み `cwd` がプロセスの cwd と違うターゲットも名指し扱い」でなく、
+**既定パスの exec ターゲットを Windows では動かさない**方向で閉じる(実行体の解決規則に依存しない形 — 判定材料は `Stdio` 等の
+サービス経由で取る)。
+
 **第 3 段以降への申し送り(SY2 完了)**: (1) **SY3** = workflow テンプレート 2 標準形 + 四眼の docs。第 3 段の `onPush: "workflow"`
 の起動先は「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes`」の契約を満たす workflow で、docs
 「Sync on push」の YAML 断片がその契約。標準形 ②(Vercel)のテンプレートは `workflow_dispatch`(第 3 段からの起動)と `schedule`
@@ -1561,7 +1577,7 @@ X\``)を出して飛ばす。態を追加(既定パス: 名指しの 2 ターゲ
 宣言 1 つ + モック)。(4) SY5 gh プリセット(`gh secret set` — 第 3 段の `GH_ENV` と `ghArgument` は流用できる)。(5) `sync plan` /
 `push` の既定パス探索を git ルートまで遡る案(裁定 B (d))は需要が出たら両方同時に。(6) debounce(裁定 E (iii))は需要が出たら
 再裁定(名前も値も持たない印の形を先に)。(7) 人間タスク(未消化 — 本 PR で追加: `gh workflow run` の実機での通し〔既定ブランチ
-の workflow 不在・`workflow_dispatch` 不在・未ログインの各文面〕): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、
+の workflow 不在・`workflow_dispatch` 不在・未ログインの各文面〕、**Windows での実行体の解決**〔改訂 3 (3)〕): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、
 Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
 
 ---

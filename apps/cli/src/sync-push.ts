@@ -167,21 +167,19 @@ export function decidePushSync(
 }
 
 /**
- * The target names the program to run (an exec `command` other than the
- * preset's own CLI name, or a `workflow.command` other than `gh`): the
- * preset's default is looked up on PATH, a named one is whatever the file
- * says. Only an explicitly passed config may do that after a push.
+ * The target names the program to run (the config wrote an exec `command` or
+ * a `workflow.command` — decided at parse time, sync-config.ts): the preset's
+ * default is looked up on PATH, a named one is whatever the file says, even
+ * when it spells the default. Only an explicitly passed config may do that
+ * after a push.
  */
 function namesCommandToRun(target: SyncTarget): boolean {
   const onPush = target.onPush;
   if (onPush?.kind === "workflow") {
-    return onPush.command !== DEFAULT_GH_COMMAND;
+    return onPush.namedCommand;
   }
-  return target.driver.kind === "exec" && target.driver.command !== target.driver.spec.command;
+  return target.driver.kind === "exec" && target.driver.namedCommand;
 }
-
-/** `gh` の既定の実行体(PATH 上)。 */
-const DEFAULT_GH_COMMAND = "gh";
 
 /** `gh` に足す非機密の環境変数(テレメトリ off — SY1 の実測表の gh 行。対話とアップデート確認も切る)。 */
 const GH_ENV: Readonly<Record<string, string>> = {
@@ -348,7 +346,7 @@ export function syncAfterPush(input: {
     }
     for (const target of decision.namesCommand) {
       yield* logNote(
-        `target ${displayText(target.name)} names the program to run (its command in ${displayText(setup.path)}), and a config found in the working directory does not start one after a push. Pass --config ${displayText(setup.path)} to sync it after this push, or run \`maruhi sync apply ${displayText(target.name)}\``,
+        `target ${displayText(target.name)} names the program to run (its command in ${displayText(setup.path)}), and a config found in the working directory does not start one after a push. Run \`maruhi sync apply ${displayText(target.name)}\` now, or pass --config ${displayText(setup.path)} on the next push`,
       );
     }
     const floorOf = floorLedger(context);

@@ -49,6 +49,8 @@ export type TargetDriver =
       readonly cwd: string;
       /** 起動する実行体(既定はプリセットのコマンド名 = PATH 上の導入済み CLI)。 */
       readonly command: string;
+      /** 設定が `command` を書いた(= 設定が実行体を名指しした。既定の綴りと同じでも true)。 */
+      readonly namedCommand: boolean;
     }
   | {
       readonly kind: "http";
@@ -73,6 +75,8 @@ export type OnPush =
       readonly ref: string | undefined;
       /** The `gh` executable (default: `gh` on PATH). */
       readonly command: string;
+      /** The config wrote `workflow.command` (it names the program to run, even if it spells the default). */
+      readonly namedCommand: boolean;
       /** Where `gh` runs (the config file's directory; gh resolves the repository from its git remote). */
       readonly cwd: string;
     };
@@ -293,6 +297,7 @@ function parseExecDriver(
     spec,
     cwd: cwd.value === undefined ? configDir : join(configDir, cwd.value),
     command: command.value ?? spec.command,
+    namedCommand: command.value !== undefined,
   };
 }
 
@@ -470,7 +475,14 @@ function parseWorkflow(value: unknown, path: string, configDir: string): OnPush 
   if (typeof command === "string") {
     return command;
   }
-  return { kind: "workflow", file, ref, command: command.value ?? "gh", cwd: configDir };
+  return {
+    kind: "workflow",
+    file,
+    ref,
+    command: command.value ?? "gh",
+    namedCommand: command.value !== undefined,
+    cwd: configDir,
+  };
 }
 
 /** `workflow` の形(存在・オブジェクト・既知のキー)。 */
