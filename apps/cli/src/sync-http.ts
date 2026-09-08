@@ -1358,11 +1358,17 @@ function withRecheckFailure(
 /**
  * Runs one batch against the vendor API: the write request(s), or the
  * lookup-then-delete pair for presets whose delete does not ride along.
+ *
+ * バッチの送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、その
+ * バッチの失敗として返す: 呼び出し側(sync-plan.ts の runBatches)は前のバッチで
+ * 届いた名前を畳んでいる途中で、ここで落とすとその進みごと消える(削除バッチの
+ * 一覧・DELETE、upsert の 2 つ目以降のバッチ — pullfrog 指摘・改訂 5)。
+ * create-or-update の書き込みは中で 1 変数ずつ受け、届いた分を保つ。
  */
 export function runBatch(
   input: HttpTargetInput,
   batch: HttpBatch,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
+): Effect.Effect<HttpRequestResult, never, HttpClient.HttpClient> {
   return Effect.gen(function* () {
     if (batch.kind === "write") {
       const { write } = input.preset;
@@ -1377,7 +1383,11 @@ export function runBatch(
       throw new Error("a delete batch was built for a preset whose deletes ride along");
     }
     return yield* lookupAndRemove(input, spec, batch);
-  });
+  }).pipe(
+    Effect.catch((error: CliError) =>
+      Effect.succeed({ delivered: [], failure: { names: batch.names, lines: [error.message] } }),
+    ),
+  );
 }
 
 /** 削除バッチ(1 名前): 一覧で ID を引き、値ごと(または項目ごと)に消す。 */

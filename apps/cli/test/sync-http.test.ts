@@ -1305,6 +1305,49 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, down.requests);
   });
 
+  it("削除バッチの一覧が試行を使い切っても、その削除の失敗として報告し、先の書き込みバッチで届いた名前はレシートに残る", async () => {
+    let gets = 0;
+    const flaky = netlifyFake({
+      override: (_call, request) => {
+        if (request.method !== "GET") {
+          return undefined;
+        }
+        gets += 1;
+        return gets === 1 ? undefined : { status: 503, headers: { "retry-after": "0" } };
+      },
+    });
+    const fixture = await startFixture({
+      targets: { site: netlifyTarget({ variables: ["ALPHA"] }) },
+      receipts: [
+        await receiptVariable({
+          target: "site",
+          preset: "netlify",
+          variables: { ALPHA: 1, GONE: 1 },
+        }),
+      ],
+      vendorHandlers: flaky.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture, "apply", "site")).toBe(1);
+    // 書き込みバッチ(GET → POST ALPHA)は届き、削除バッチの GET が 503 × 3
+    expect(flaky.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "POST",
+      "GET",
+      "GET",
+      "GET",
+    ]);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
+    expect(errors).toContain(
+      "while deleting GONE (delivered before that: 1 variable written, 0 deleted)",
+    );
+    expect(await decryptReceipt(fixture, "site")).toMatchObject({
+      variables: { ALPHA: 3, GONE: 1 },
+    });
+    expectNoSecretLeak(fixture.env, flaky.requests);
+  });
+
   it("作成の応答が失われて再送されると既存 key で拒まれる — 一覧を引き直して PATCH に切り替え、届いたと記録する", async () => {
     const lossy = netlifyFake({ loseFirstCreateResponse: true });
     const fixture = await startFixture({

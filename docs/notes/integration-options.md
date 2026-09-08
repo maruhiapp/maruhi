@@ -2030,10 +2030,21 @@ re-check the target after the failed create: <理由>」を添えて返す(届�
 
 **改訂 4(2026-09-08、pullfrog の 3 回目〔bdae445〕)**: 改訂 3 と同じ指摘 + 「1 変数の送信の `send` が試行を使い切る形は
 どの変数でも起きる(改訂 2 は引き金を 1 つ足しただけ)— `writeOneByOne` で部分的な進みを出すか」という問い。create-or-update は
-書き込み全部が 1 バッチなので、途中の型付きエラーで実行全体の進みが消える(upsert のプリセットは 1 バッチ = 1 リクエストで、
-前のバッチの分は `runBatches` が畳んでいる)。→ `writeOneByOne` で 1 変数の送信(create / update)の型付きエラーを受け、その変数の
-失敗として報告し(文面は `send` の文面)、先に届いた名前はレシートへ。態を追加(2 つ目の POST が 503 × 3 → exit 1・ALPHA は
-レシートに残る)。
+書き込み全部が 1 バッチなので、途中の型付きエラーで実行全体の進みが消える。→ `writeOneByOne` で 1 変数の送信(create / update)
+の型付きエラーを受け、その変数の失敗として報告し(文面は `send` の文面)、先に届いた名前はレシートへ。態を追加(2 つ目の POST が
+503 × 3 → exit 1・ALPHA はレシートに残る)。(改訂 4 の時点で「upsert のプリセットは前のバッチの分を `runBatches` が畳んでいる」と
+書いたが、これは誤り — 改訂 5)
+
+**改訂 5(2026-09-08、pullfrog の 4 回目〔972e104〕)**: 同じ形が 1 段上に残っていた — `runBatches`(sync-plan.ts)の `written` /
+`deleted` は `Effect.gen` のローカルで、後のバッチ(削除バッチの一覧・DELETE、upsert の 2 つ目以降のバッチ)の `runBatch` が
+型付きエラーで落ちると generator ごと中断し、**前のバッチで届いた名前も**レシートに残らない(改訂 4 の理由「`runBatches` が
+畳んでいる」は成り立たない。docs の「Variables written before a failure stay in the receipt」が削除バッチの失敗では偽)。SY2 から
+ある形で次の apply で自己修復するが、直し方は小さい。候補: (i) `runBatches` で `runBatch` の CliError を受ける(sync-plan.ts を
+触る)/ (ii) **`runBatch` 自身が型付きエラーをそのバッチの失敗に変える**(全ドライバ・全バッチ種別に一様。`runBatch` の失敗型が
+`never` になり、sync-plan.ts は無変更のまま呼び出し側の畳みが必ず走る)/ (iii) 据え置いて docs と裁定録の文を直す。(ii) を採った
+(`writeOneByOne` の受けは create-or-update の**中の**届いた分を保つために残る)。態を追加(書き込みバッチは届き、削除バッチの
+GET が 503 × 3 → exit 1・ALPHA はレシートに残り GONE も残る)。文面の nit(`sync-plan.ts` の「refused the request」が試行の
+使い切りにも付く — 下の行が理由を言う)は sync-plan.ts の既存文言なので据え置き、申し送りに。
 
 **確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
 Support Forums の報告どおり 422)、
@@ -2048,8 +2059,8 @@ Support Forums の報告どおり 422)、
 bootstrap トークン(fine-grained PAT か App トークン — 補足 8 Q1)は「GitHub secrets を空にする」目標の唯一の例外。(2) **SY4 の残り**
 (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。`create-or-update` / `lookup` の一般化で REST の
 先はほぼ宣言で載る。GraphQL(Railway / Fly.io)は `contentType` + `body` テンプレートで表せるが応答の読み(`ResponseKind`)が要る。
-(3) `describeDestination` のヘッダー行に `context`(Netlify)を出す小さな一般化(プリセットに `describe` を持たせる)— sync-plan.ts
-を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
+(3) `describeDestination` のヘッダー行に `context`(Netlify)を出す小さな一般化(プリセットに `describe` を持たせる)と、
+`runBatches` の「refused the request」の文言(試行の使い切りにも付く — 改訂 5 の nit)— sync-plan.ts を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
 (上の「確認できなかったこと」)。(6) 既存の未消化: `gh workflow run` の実機、Windows の実行体解決、実アカウント(Cloudflare /
 Vercel)での http / `ci sync` の通し、Vercel の一覧のページ分け、macOS のパイプ容量、`vercel env rm` の不在名、SY3 の workflow 2 本の
 実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
