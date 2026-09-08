@@ -1580,6 +1580,230 @@ workflow: `command !== "gh"`)で行っていた — 既定の綴り `"gh"` を s
 の workflow 不在・`workflow_dispatch` 不在・未ログインの各文面〕、**Windows での実行体の解決**〔改訂 3 (3)〕): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、
 Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
 
+### SY3 実装時の裁定録(2026-09-08)
+
+対象は ROADMAP **SY3** = CI から同期(案 S3)の残り = **workflow テンプレート 2 標準形 + 四眼(GitHub Environments の required
+reviewers)の docs**。コマンド(`maruhi ci sync` — 第 2 段 2a、`onPush: "workflow"` — 第 3 段)は揃っており、**CLI のコード変更は
+ない**。設計は §3 冒頭「同期の最終形」の表(「2 つの家族」の行)と補足 7 P1 / P3・補足 8 Q2 / Q3・補足 15 X4 が正で、蒸し返して
+いない。出発点は第 3 段の申し送り (1)(起動先の契約 = 「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }}
+--yes`」、標準形 ② は `workflow_dispatch` と `schedule` を 1 ファイルに)。各裁定点は同じループ(3 案以上 → 上位互換の探索 →
+新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(多重実行・fork・既定ブランチ以外の設定・承認待ちの
+間の push・古いアンカー・リースポリシーの claim と Environment の対応・権限の境界)を問うた。
+
+**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
+(1) **GitHub Actions の OIDC claim**(docs.github.com「OpenID Connect reference」): `environment` = 「The name of the environment used
+by the job. If the environment claim is included, an environment is required and must be provided」= **job が `environment:` を持つ
+ときだけ載る**。`repository` = 「The repository from where the workflow is running」(fork の自前 run は fork の名前)。`ref` は
+起動した git ref(`workflow_dispatch` = 叩いた ref、PR は `refs/pull/<n>/merge`)。`workflow_ref` = 「`octocat/hello-world/.github/
+workflows/my-workflow.yml@refs/heads/my_branch`」。**`sub` の既定形式は 2026-07-15 以降に作られたリポジトリで
+`repo:OWNER@OWNER-ID/REPO@REPO-ID:…` に変わった**(既存は旧形式のまま・opt-in で移行)= `sub` を制約に使うとリポジトリの作成日で
+値が変わる → docs で「`sub` は制約しない」。
+(2) **Environments**(「Managing environments for deployment」/「Deployments and environments」): required reviewers は 6 人 / チーム
+まで・**1 人の承認で進む**・reviewer は read 以上・**Prevent self-review**(起動者は自分の run を承認できない)・reject で run は
+失敗・**Free / Pro / Team プランでは public リポジトリのみ**・設定は personal repo = owner、org repo = admin。「Running a workflow
+that references an environment that does not exist will create an environment with the referenced name」(保護規則なしで自動作成)。
+Environment を削除すると待機中の job は失敗。deployment branches で参照できる ref を絞れる。**承認待ちの上限日数は docs に無い**
+(wait timer の上限 30 日とは別)→ 書かない。
+(3) **concurrency**(「Control the concurrency of workflows and jobs」/ workflow-syntax): job レベルの `concurrency.group` の式は
+「`github`, `inputs`, `vars`, `needs`, `strategy`, and `matrix`」を使える(workflow レベルは `github` / `inputs` / `vars` のみ)。
+`environment.name` の式も同じ 6 コンテキスト。既定(`queue: single`)= **pending は 1 つだけ**で、新しい queued が古い pending を
+取って代わる(`cancel-in-progress: false` でも)。`queue: max` で 100 まで並ぶ。FIFO は「waiting を始めた時刻」順で保証なし。
+(4) **workflow_dispatch / schedule**(「Events that trigger workflows」/「Manually run a workflow」): 叩けるのは **write 権限**、
+workflow ファイルは**既定ブランチ**に要る(第 3 段の前提 (3) と一致)。`inputs` は 25 個まで。`schedule` は最短 5 分・UTC(timezone
+指定可)・**既定ブランチの最新コミットで走る**・public リポジトリで 60 日活動が無いと自動停止・高負荷時は遅れる。fork: 「typically
+you can't grant write access」(fork からの PR の job は `id-token: write` を得られない = OIDC エンドポイントが出ない → `maruhi ci
+run` は「endpoint is not available」で止まる。fork の**自前**の dispatch / schedule は fork の `repository` claim で走り、ポリシーに
+合わない = 404)。
+(5) **maruhi 側**: `grant_server` は**サーバー鍵ごとに 1 つ**で、再 grant で lease_policy は自由に差し替え・開示スコープは拡大のみ
+(CRYPTO_SPEC §6.3 再 grant 規則の二層化)。認可は**存在量化**(AUTH_SPEC §14-1: 要素のどれかが全制約で一致すれば認可)で、
+**要素と環境の対応は無い** = ある要素に合致した job は開示スコープ内の**全環境**を借りられる。この事実が裁定 D / F の「四眼を
+maruhi 側でも強制する」条件を決める(下記)。`ciSyncOp`(sync-ci.ts)は同期元(+ http でトークンが別環境ならその環境)を
+`leaseEnvironments` で 1 本のトークン・1 つの一時鍵で借り、`receipt: null` で全件 add・削除なし・`requireProductionConsent` で
+production の `--yes` を要求(無ければ plan を出して型付きエラー = 非 0)。`ci run` は子に `MARUHI_*` を渡さず、それ以外の親環境
+(`ACTIONS_ID_TOKEN_REQUEST_*` を含む)は継承する(run.ts `buildChildEnvironment`)。**アンカー**(anchor.ts): 検査は「genesis 一致・
+チェーンがアンカーのヘッドを含む・環境エポックがアンカー以上」= **アンカーが古い(ローテーション後に未更新)のは受理される
+(床が低いだけ)**。本セッションの依頼文の「アンカーが古い = `ci sync` が拒む」は逆で、docs は実物どおり「古いアンカーは通るが
+その分だけ弱い。ローテーション後に更新する」と書いた。リースの窓は `MAX_LEASES_PER_WINDOW = 300` / 時(プロジェクト単位 —
+policy.ts)。http ドライバの Workers は Worker 不在(10007 / 10090)で draft を作らず案内する(sync-http.ts)。
+(6) **Bun 1.4.0 に `Bun.YAML.parse` がある**(実測: `bun -e 'Bun.YAML.parse(…)'`)。vitest は Node で走るが、リポジトリは
+`.bun-version` で Bun を要求し、recipes.test.ts の偽コマンドも `exec bun` で動いている = **YAML パーサを依存追加なしで使える**
+(裁定 H の銀の弾丸)。`node_modules/.bun` に `yaml@2.8.3` / `js-yaml` は推移的にあるが直接 import は依存追加。
+(7) タグは `v0.1.0-rc.1` / `v0.1.0-rc.2` のみで、**`actions/setup-maruhi` を含むリリースタグはまだ無い**(action の README が
+「tags up to v0.1.0-rc.2 predate it」と言うとおり)→ テンプレートの `@<tag>` / `version: <tag>` はプレースホルダのまま。
+
+**標準形 × ドライバ × ターゲット × trigger × 失敗(裁定 B〜D・G の入力)**:
+
+| 標準形 | ドライバ | ターゲット | trigger | 平文の行き先 | GitHub secrets | 失敗 |
+|---|---|---|---|---|---|---|
+| ① デプロイ時再適用 | http(標準) | production(Workers) | `push` to main(+ Environment `production`) | `ci sync` → API 本文、`ci run` → wrangler の env | **空**(`CLOUDFLARE_API_TOKEN` / `ACCOUNT_ID` は maruhi の `tokens`) | Worker 不在 = 10007 で停止(初回は deploy が先)・リース 404 = ポリシー / Environment・ベンダー失敗 = 非 0・次回全件再適用 |
+| ① | exec(代替・prose のみ) | 同上 | 同上 | wrangler の stdin | `CLOUDFLARE_API_TOKEN` が GitHub secret | draft は作られる(bootstrap 不要)・トークンは GitHub に残る |
+| ① | SY1 レシピ(代替・prose のみ) | 同上 | 同上 | jq → wrangler の stdin | 同上 | 設定もレシートも無い |
+| ② 起動 + 定期 | http(標準) | production(Vercel `web`。Environment `web`) | `workflow_dispatch`(`maruhi push` / 人)| `ci sync` → API 本文 | 空(`VERCEL_TOKEN` は maruhi の `tokens`) | 不在ターゲット = `targets` job で停止(Environment を作らない)・404 = ポリシー・多重 = concurrency で直列(pending は最新 1 つ) |
+| ② | http | production | `schedule` | 同上 | 空 | **required reviewers があれば毎回承認待ち**(docs で明示。`SCHEDULED_TARGETS` から外せる)|
+| ② | http | 非 production(`preview` を CI で同期する場合) | 両方 | 同上 | 空 | ポリシー要素が 1 つ増え、その job 同一性は production も借りられる(前提 (5))→ docs の「2 つの限界」の 1 つ目 |
+| ② | exec(手元の `onPush: "apply"`) | 非 production(`preview`) | push 時に手元 | vercel CLI の stdin(手元) | — | CI は関与しない = `SCHEDULED_TARGETS` に載せない(載せれば 404)|
+| 共通 | — | — | fork からの PR | — | — | `id-token: write` を得られず OIDC 端点が無い = `maruhi ci run` が止まる。fork 自前の run は `repository` 不一致 = 404 |
+| 共通 | — | — | 既定ブランチ以外に置いた設定 / workflow | — | — | `gh` は既定ブランチを叩く = 新ターゲットはマージまで存在しない(`targets` job の名指しで止まる)|
+| 共通 | — | — | 承認待ちの間の push | — | — | 待機 run は**実行時点**の現在値を書く(古い値は書かない)。新しい queued が古い pending を置き換える |
+| 共通 | — | — | ローテーション後 | — | — | 次回の再適用が再暗号化後の値(同じ平文)を書く = 無害。アンカーは更新しないと弱いまま(拒みはしない)|
+
+**A. テンプレートの置き場と配布形** — 列挙: (i) docs に全文(```yaml)/ (ii) リポジトリに `.yml`(`examples/workflows/`)を置き
+docs から参照 / (iii) 両方(docs が正でファイルは機械的に一致検査)/ (iv) `sync init --workflow-template`(CLI 変更 = 所有者確認)。
+第 1 周の新案: **座標(server / project)を workflow 単位の `env:` に 1 か所で持つ**(あり — ① は `ci sync` と `ci run` の 2 step が
+同じ座標を要るので、置き換え箇所を「`<tag>` 2 つ + `env` 2 値」に固定できる。名前は `MARUHI_SERVER` / `MARUHI_PROJECT` で、CLI は
+CI モードで環境変数を読まない〔`MARUHI_TOKEN` 系はセッション解決専用で ci は使わない〕・`ci run` は `MARUHI_*` を子に渡さないので
+wrangler にも漏れない — コメントで「names are yours; the CLI reads no environment variable in CI mode」と言う)。第 2 周(壊れ方):
+(ii) / (iii) は docs とファイルの 2 か所(乖離の検査を足しても、利用者がコピーする単位は結局 docs のブロック)。`<tag>` はどの
+置き場でも更新漏れが起きる(前提 (7) — 含むタグがまだ無い)ので、置き場で解けない = 案内文で「the same tag is the version to
+install」と 1 種類に畳む。(iv) は段の拡大。(なし)。**選定 = (i) + 新案**(docs `github-actions.mdx` の ```yaml が正。機械検査
+〔裁定 H〕は本文から切り出す = recipes.test.ts と同じ規律)。棄却: (ii) / (iii)(2 か所)、(iv)(CLI 変更)。
+
+**B. 標準形 ① の中身** — 列挙: (i) `maruhi ci sync <target> --yes`(http)を deploy の直前 + deploy は `maruhi ci run --env tokens --
+wrangler deploy` / (ii) SY1 レシピ `maruhi ci run --env production -- jq … | wrangler secret bulk` / (iii) 両方を YAML で示す /
+(iv) exec ドライバ(ランナーの wrangler + GitHub secret の `CLOUDFLARE_API_TOKEN`)。第 1 周の新案: **入れ子 `maruhi ci run --env
+tokens -- maruhi ci sync worker --yes …`**(exec ドライバを GitHub secrets ゼロで — 内側の `ci sync` は自分で OIDC を借り〔前提 (5):
+`ACTIONS_ID_TOKEN_REQUEST_*` は継承される〕、wrangler は外側が注入した `CLOUDFLARE_API_TOKEN` を読む。第 1 段の裁定 G「`ci run --
+maruhi sync` は成り立たない」はセッション前提の `sync` の話で、`ci sync` なら資格の問題は無い)(あり — ただし**未検証**〔テスト
+も実機も無い〕で、トークン 2 本・リース 3 回・内側の stdio と剥がし箇所の棚卸しを要する。テンプレートには載せず申し送りへ)。
+第 2 周(壊れ方): (i) の順序 = 同期 → deploy は「新版が新しい値で始まる」を保証するが、**Worker 不在の初回**は http が draft を
+作らないので 10007 で止まる → docs で「初回は deploy が先(または 2 step を入れ替える)」。逆順(deploy → 同期)は毎回「新コードが
+旧値で走る窓」を作る。OIDC トークンは呼び出しごと(トークン 2 本・リース 3: sync = production + tokens、run = tokens)= 窓 300 /
+時に数える(docs)。(iii) は YAML 2 本で「どちらが標準か」を曖昧にする。(iv) は Q2(GitHub secrets を空に)に反するので YAML に
+しない(prose で代替として明示)。(なし)。**選定 = (i)**(+ (ii) / (iv) は prose の代替)。棄却: (iii)(標準形が曖昧)、入れ子
+(未検証 — 申し送り)。
+
+**C. 標準形 ② の trigger と全ターゲットの回し方** — 列挙: (i) `matrix` にターゲット名を列挙 / (ii) `jq` で `maruhi.sync.json` の
+`targets` を全部読んで matrix を作る(設定の二重管理なし)/ (iii) `--all` を CLI に足す(所有者確認)/ (iv) 1 job の中で for ループ。
+第 1 周の新案: **`SCHEDULED_TARGETS`(workflow の `env:`、空白区切り)= 「schedule が再適用するターゲット」を明示の選択にし、
+dispatch は入力の 1 つ**(あり — 「全ターゲット」は 2 つの常態で誤る: production に required reviewers があれば毎日承認待ちに
+なり、手元の exec で同期する非 production〔docs の `preview` — `onPush: "apply"`〕は CI が借りられず 404 になる。ターゲット名の
+写しであって対応付けの写しではない = 二重管理ではない)。第 2 周(壊れ方): (ii) は上の 2 つの常態で壊れる。(iii) は CI 変更 +
+「全ターゲット」の意味論が同じ問題を CLI 側に持ち込む。(iv) は Environment を per target にできない(裁定 D)。dispatch の入力は
+設定に**実在するか**を `targets` job で先に検査する(誤字で無保護の Environment が自動作成されるのを防ぐ — 前提 (2))。空リストは
+`if: needs.targets.outputs.list != '[]'` で matrix のエラーを避ける。`inputs.target` は `env:` 経由でだけシェルに渡す(GitHub の
+インジェクション対策。`$GITHUB_OUTPUT` に書くのはターゲット名だけで、maruhi を実行する step には無い — 裁定 H で固定)。
+**多重実行**: job レベルの `concurrency: group: maruhi-sync-${{ matrix.target }}, cancel-in-progress: false`(前提 (3): matrix は job
+レベルで使える。pending は最新 1 つ = 「最後に走った run が現在値を書く」で正しい)。cron は `37 4 * * *`(毎日 1 回・毎時 0 分を
+避ける)。(なし)。**選定 = 新案 + dispatch は `[input]`**。棄却: (i)(対応付けの写し)、(ii)(2 つの常態で誤る)、(iii)(CLI 変更・
+段の拡大)、(iv)(Environment を分けられない)。
+
+**D. 四眼の形** — 列挙: (i) 固定 `environment: production` / (ii) **`environment: ${{ matrix.target }}`**(Environment 名 = ターゲット
+名の規約)/ (iii) 設定の `production` に応じて `if:` で分ける。第 1 周の新案: **リースポリシーの `claimConstraints` に `environment`
+claim を入れる**(あり = 銀の弾丸候補 — 前提 (1) のとおり claim は job が Environment を参照するときだけ載り、GitHub はその job を
+reviewer の承認後にしかランナーへ送らないので、**サーバーは承認済みの run にしか production のリースを出さない**。workflow を
+編集して Environment を外しても 404)。第 2 周(壊れ方): **ただし前提 (5)**(ポリシーは 1 本・存在量化・要素と環境の対応なし)
+により、この強制は「**ポリシーの全要素が保護された Environment を名指すとき**」だけ成り立つ。無保護の job の要素(CI で同期する
+preview、`ci run` の test job)が同じポリシーにあれば、その job 同一性でも production を借りられ、production を書かないのは
+workflow ファイルだけになる → docs「Four eyes」の限界 1 として明記し、非 production は手元の `onPush: "apply"` で運ぶ形を勧める。
+(iii) は production の判定(プリセットの既定 + 上書き)を jq に写す = 規則の二重化。(i) は ② で全ターゲットが承認待ちになる。
+① は deploy workflow の慣習どおり固定 `production`。`schedule` も保護規則を通る(毎回承認 — 裁定 C の `SCHEDULED_TARGETS`)。
+承認待ちの間の push: 待機 run は実行時点の現在値を読むので古い値を書くことは無い(docs: 「approve the newest and reject the
+rest」)。**「待機中の run が concurrency group を占めるか」は docs に無い**ので書かない(pending 1 つの規則だけを書く)。Prevent
+self-review・deployment branches(既定ブランチだけ)・public リポジトリ限定(Free / Pro / Team)・admin が規則を変えられることを docs
+で分けて言う(「誰が叩けるか = write」と「誰が承認するか = reviewers」)。(なし)。**選定 = (ii) + 新案(限界つき)**。棄却: (i)
+(② で過剰)、(iii)(規則の二重化)。
+
+**E. 導入とピン留め** — `maruhiapp/maruhi/actions/setup-maruhi@<tag>` + `with: version: <tag>`(同じタグ = 置き換え 1 種類)。
+第 1 周の新案: なし(前提 (7) で含むタグがまだ無い以上、具体値は書けない)。第 2 周: `<tag>` の案内はコメント行に置き、機械検査は
+コメントを除いた本文で `<tag>` がちょうど 2 回であることを見る。他の action は commit SHA(リポジトリ自身の workflow と同じ規律 —
+`actions/checkout@11d5960a…` v4.4.0、`persist-credentials: false`)。ベンダー CLI はプロジェクトの依存(`npm ci` →
+`./node_modules/.bin/wrangler`。`npx` / `curl` を置かない)。(なし)。
+
+**F. リースポリシーの例** — 列挙: (i) `repository` + `ref` / (ii) **`repository` + `environment`** / (iii) `sub` / (iv) `workflow_ref`。
+第 1 周の新案: claim の表(`repository` = 常に・fork 対策 / `environment` = production / `ref` = Environment を持たない job /
+`workflow_ref` = 1 ファイル固定)+ **`sub` を使わない**(前提 (1) の形式変更)(あり)。第 2 周: http でトークンが別環境なら
+`--environments production,tokens`(docs の例)。`server grant` は owner の手元の儀式と明記。「ポリシーは 1 本」と再 grant の二層
+(ポリシーは自由・スコープは拡大のみ・縮小は `revoke`)を docs で言う。PR の run は `refs/pull/<n>/merge` なので `ref` だけの要素
+では通らない(`event_name: pull_request` の例)。(なし)。**選定 = (ii) を標準、表で他を案内**。棄却: (iii)。
+
+**G. 定期突合の意味** — `ci sync` は再適用であって差分検出ではない。docs は「re-applies the current values … does not compare
+them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly」と
+書き、「drift を報告する」とは書かない(`sync diff` — 補足 7 P5 — は未実装)。第 1 周: なし。第 2 周: なし。
+
+**H. テンプレートの機械検査** — 列挙: (i) 無し / (ii) 正規表現 / (iii) YAML パーサを依存追加(所有者確認)/ (iv) installer.yml の
+`action-smoke` に倣い実走。第 1 周の新案: **`Bun.YAML.parse` を子プロセスで呼ぶ**(あり = 前提 (6)。依存ゼロで構造検査ができる)。
+第 2 周(壊れ方): (iv) は `@<tag>` が解決できず(前提 (7))、偽サーバーも無いので「`--help` まで」の価値しか無い(setup-maruhi の
+結合は既に `action-smoke` が踏む)。(ii) は `permissions` / `concurrency` / `environment` の構造を見られない。(なし)。**選定 =
+新案**: `apps/site/test/unit/workflows.test.ts`(site-unit = `bun run check` の 7 段目)。固定するのは: 3 workflow(test / deploy /
+maruhi sync)・deploy-targets.mdx の契約断片との一致・`permissions: {}` + maruhi を実行する job は `id-token: write` と
+`contents: read` だけ・setup-maruhi は `@<tag>` + `version: <tag>`(コメント除きちょうど 2 回)・他の action は 40 hex・checkout は
+`persist-credentials: false`・`npx` / `bunx` / `curl` / `wget` 不在・`secrets.` / `GITHUB_ENV` 不在・`run:` に `${{` 不在(式は env
+経由)・maruhi を実行する step に `GITHUB_OUTPUT` / `echo` / `set -x` / `printenv` / `--value` / リダイレクト無し・step env の値は
+`${{ inputs.* }}` / `${{ matrix.* }}` だけ・全 `maruhi ci` に `--server "$MARUHI_SERVER"` / `--project "$MARUHI_PROJECT"` / `--anchor
+.maruhi/anchor.json`・`ci sync` に `--yes`・①: `on: push main`・group `deploy-production`・Environment `production`・`ci sync` が
+`ci run … -- ./node_modules/.bin/wrangler deploy` より前・`npm ci` が先・②: `workflow_dispatch` + `schedule`(5 欄の cron)・
+`SCHEDULED_TARGETS: web`・`sync` job = `needs: targets`・空リストの `if`・`fail-fast: false`・`environment: ${{ matrix.target }}`・
+group `maruhi-sync-${{ matrix.target }}` + `cancel-in-progress: false`・**`targets` job のスクリプトを sh で実走**(実在ターゲット =
+`["web"]`・不在 = 1 で停止・schedule の一覧 = 空白の正規化・空 = `[]`。jq は CI で存在を断言 — recipes.test.ts と同じ)。棄却:
+(i)(漂流を構造で防げない)、(ii)、(iii)(依存追加)、(iv)(価値が低い)。
+
+**I. docs の構成** — 列挙: (i) `deploy-targets.mdx`「In CI」を膨らませる / (ii) **新ページ `/docs/github-actions`** / (iii) 新ページ +
+「In CI」は要約とリンク。第 1 周の新案: なし。第 2 周(壊れ方): (i) は Deploy targets が「同期の使い方」と「GitHub Actions の
+導入(ポリシー・アンカー・`ci run`)」を抱えて肥大し、`ci run` の workflow 例(いま action の README にしかない — 裁定 I の入力)の
+置き場にならない。(ii) 単独だと「In CI」と重複する。(なし)。**選定 = (iii)**: 新ページ = What a job needs / Set up once(grant +
+claim の表 + anchor)/ Run a command with leased values(`ci run` の workflow — README から docs へ)/ Sync a deploy target from CI
+(2 標準形の選び方 → ① → ②)/ Four eyes on production(4 手順 + 2 つの限界)/ What can go wrong。「In CI」は `ci sync` の使い方と
+箇条書きを残し(recipes.test.ts が `maruhi sync apply` のブロックの存在を見るので ```sh はそのまま)、末尾の「planned」を新ページへの
+リンクに。「Sync on push」の契約断片はそのまま(機械検査で新ページの dispatch と一致を固定)。index の Card 4 枚(2 × 2)・
+`sidebar.order` = getting-started 1 / deploy-targets 2 / **github-actions 3** / self-hosting 4。README の Docs 一覧に 1 行、
+getting-started の Next steps に 1 文、action の README は**action の参照**として残し冒頭に新ページへの案内(正は docs)。
+
+**J. テスト・検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段)、`apps/site` の `validate --strict` / `build` / `e2e`
+(e2e の Card 検査に `/docs/github-actions` と llms.txt の行を追加)、裁定 H の検査、light / dark のスクリーンショット(Artifact)。
+
+**K. ROADMAP と裁定録** — SY3 行を完了注記へ(`- [x]`)。SY5 行(「SY3 の workflow 内で自動化」)は「SY3 の標準形 ②〔`maruhi-sync.yml`〕
+に `gh secret set` の step を足す形」に読み替えられるので文言を合わせ、SY6 行の降格理由(「push 時同期 + デプロイ時再適用 / 定期
+突合が上位互換」)に「SY3 で着地」を添える。本節を第 3 段の末尾に追記。
+
+**不変条件の確認**: 仕様改訂なし・CLI のコード変更なし(暗号操作の追加なし。サーバー・Web・チェーン・wire・`packages/crypto`・
+`apps/cli` は無変更。`--all` は取り込まない)/ 平文は CI の中だけ(テンプレートに `$GITHUB_ENV` / `echo "$VALUE"` / `set -x` /
+`::set-output` を置かない — 機械検査で固定。`$GITHUB_OUTPUT` はターゲット名だけ、maruhi を実行しない job)/ GitHub secrets を空に
+(maruhi トークンは無い〔OIDC〕、ベンダーのトークンは maruhi の `tokens` 環境〔http〕。exec + GitHub secret は prose の代替。
+`gh secret set` は載せない = SY5)/ production は自動で書かない(`--yes` は workflow に見え、Environment に置く形を標準。「誰が
+叩けるか = write」と「誰が承認するか = reviewers」を分けて言う)/ 一方通行(同期先を読み戻さない。「差分報告」と書かない)/
+アンカー(全テンプレートに `--anchor .maruhi/anchor.json`)/ 導入済みのものだけ(setup-maruhi をタグで固定・`npx` / `curl` なし・
+他の action は SHA)/ 英語(docs)・日本語(裁定録・コミット・PR)/ 新規依存ゼロ(YAML は `Bun.YAML`)/ エージェント環境に関わる
+変更なし / スコープ(SY4 / SY5 / SY6 / `--all` / `sync diff` / マーケットプレイス / Windows ランナーは取り込まない)。
+
+**改訂 1(2026-09-08、Cursor Bugbot の初回レビュー〔5e138fa〕)**: 標準形 ② の `sync` job の `if: needs.targets.outputs.list != '[]'` は
+独自の `if` であり、GitHub は job の `if` に状態関数が無いとき暗黙の `success()` を置き換えうる(docs は「all jobs that need it are
+skipped unless the jobs use a conditional expression that causes the job to continue」と言い、独自の式がそれに当たるかを明言しない)
+→ `targets` が失敗(不在ターゲット)したとき出力が空文字で条件が真になり、`fromJson('')` の別エラーで落ちる形を作らない
+ため、**`if: success() && needs.targets.outputs.list != '[]'`** と明示(暗黙の規則に依存しない — 綴りの一致で免除しないのと
+同じ規律)。機械検査の期待値とテンプレートのコメントを更新。docs の説明文は変えない(「stops with the target's name」のまま)。
+
+**改訂 2(2026-09-08、pullfrog の初回レビュー〔5e138fa〕)**: (1) **トークン変数名の不一致** — 新ページの `worker` ターゲットは
+「Deploy targets の http ドライバ例」を名指ししつつ `CLOUDFLARE_API_TOKEN` と書き、名指し先は `CF_API_TOKEN` だった(両ページを
+なぞると `ci run --env tokens` が渡す名前を wrangler が読まず deploy が落ちる)→ **deploy-targets.mdx 側を `CLOUDFLARE_API_TOKEN`
+に**(push の行と JSON の `token.name`。wrangler が読む名前に揃える。CLI テストのフィクスチャ名 `CF_API_TOKEN` は docs ではないので
+据え置き)。(2) **`SCHEDULED_TARGETS` も設定の実在で検査** — dispatch の入力だけ検査していたので、リストの誤字や設定から消した
+ターゲットが毎回の schedule で無保護の Environment を自動作成してから 404 で落ちる形だった → `targets` job のスクリプトを
+「dispatch なら入力、schedule ならリスト」を同じ `for name in $names` で検査してから JSON 化する形に(態を追加: `web wep` = 1・
+出力なし)。(3) 「CI mode reads no config file」は `ci sync` が `maruhi.sync.json` を読む事実に反する → CLI の文面(「except the
+sync config」)に合わせた。(4) 機械検査の契約一致で `inputOf(contractDispatch)` が `undefined` なら `toMatchObject({})` が無条件に
+通る → 存在を先に断言。(5) nit: 標準形 ① の Environment `production` に reviewers を置くと**毎回の push to main が承認待ち**になる
+(schedule 側は言っていて deploy 側は言っていなかった非対称)→ Four eyes の手順 1 に 1 文。(6) nit: jq 不要の `it` を
+`describe.skipIf(!hasJq)` の外へ。
+
+**改訂 3(2026-09-08、pullfrog の差分レビュー〔c0176f1〕)**: `targets` job の検査ループ(シェルの語分割 = 空白・タブ・改行)と JSON 化
+(jq の `split(" ")`)が別の分割で、タブ・改行区切りの `SCHEDULED_TARGETS`(YAML の `|` ブロック等)では検査は個別に通り JSON は
+1 要素 `"web\napi"` になって未検査のまま `environment:` に届く(この job が防ぐはずの無保護 Environment の自動作成)→ JSON 化を
+**同じ語分割**から作る(`printf '%s\n' $names | jq -cRn '[inputs | select(. != "")]'`)。態を追加(`"web\tpreview\n"` →
+`["web","preview"]`)。コメントの「separated by spaces」を「whitespace」に。
+
+**SY4 以降への申し送り(SY3 完了)**: (1) **SY4** Netlify(http プリセットの宣言 1 つ + モック応答 — 第 2 段の裁定録の http
+プリセットの形)。(2) **SY5** `gh secret set`(第 1 段 = レシピ、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形が自然。
+第 3 段の `GH_ENV` / `ghArgument` を流用可。bootstrap は fine-grained PAT か App トークン — 補足 8 Q1)。(3) 全ターゲット一括の plan
+(`--all`)— SY3 では `SCHEDULED_TARGETS` で代替したので需要待ち。(4) `sync diff`(補足 7 P5)— 未実装のまま。docs は「報告しない」
+と明記済み。(5) 入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(exec ドライバを GitHub secrets ゼロで — 裁定 B の
+新案)は未検証。需要が出たらテスト(内側の OIDC 端点の継承・剥がし箇所の棚卸し)を先に。(6) `setup-maruhi` を含む最初のリリース
+タグが切られたら、テンプレートの `<tag>` の案内文と action README の「tags up to v0.1.0-rc.2 predate it」を実タグに(機械検査は
+`<tag>` の 2 回を見ているので、具体値にするなら検査も同時に)。(7) 人間タスク(未消化 — 本 PR で追加: **実リポジトリでの
+workflow 2 本の通し**〔Environment の自動作成・required reviewers の待ち・`environment` claim を入れたポリシーでの 404 / 200・
+`schedule` の承認待ち・`concurrency` の pending 置き換え〕、**Free / Pro / Team の private リポジトリで required reviewers が出ない
+ことの実機確認**): `gh workflow run` の実機での通し、Windows での実行体の解決、実アカウント(Cloudflare / Vercel)での http /
+`ci sync` の通し、Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
+
 ---
 
 ---

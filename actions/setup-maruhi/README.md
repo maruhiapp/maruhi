@@ -13,6 +13,14 @@ macOS runners are supported (`linux-x64` / `linux-arm64` / `darwin-x64` /
 > `maruhiapp/maruhi/actions/setup-maruhi@<ref>`. A Marketplace listing will
 > follow when the repository goes public.
 
+> The complete guide — the lease policy, the repository anchor, `maruhi ci
+> run`, the two workflow shapes for `maruhi ci sync` (re-apply on every
+> deploy; dispatched by `maruhi push` plus a schedule), and required reviewers
+> on production through GitHub Environments — is
+> [maruhi.app/docs/github-actions](https://maruhi.app/docs/github-actions)
+> (source: `apps/site/docs/github-actions.mdx`). This README is the action's
+> reference.
+
 ## Requirements
 
 - **`permissions: id-token: write` on the job.** `maruhi ci run`

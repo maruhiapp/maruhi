@@ -285,7 +285,12 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
     // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される(pullfrog 指摘の固定)
-    for (const target of ["/docs/getting-started", "/docs/deploy-targets", "/docs/self-hosting"]) {
+    for (const target of [
+      "/docs/getting-started",
+      "/docs/deploy-targets",
+      "/docs/github-actions",
+      "/docs/self-hosting",
+    ]) {
       await expect(page.locator(`a[data-blume-card][href='${target}']`).count()).resolves.toBe(1);
     }
     // 本文から LP(サイトルート)へのリンクは basePath の書き換えを受けない絶対 URL
@@ -315,6 +320,7 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     const llms = await (await fetch(`${BASE}/llms.txt`)).text();
     expect(llms).toContain("https://maruhi.app/docs/getting-started");
     expect(llms).toContain("https://maruhi.app/docs/deploy-targets");
+    expect(llms).toContain("https://maruhi.app/docs/github-actions");
     const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
     expect(sitemap).toContain("<loc>https://maruhi.app/</loc>");
     expect(sitemap).toContain("<loc>https://maruhi.app/docs</loc>");
