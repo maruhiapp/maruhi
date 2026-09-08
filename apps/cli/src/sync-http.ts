@@ -293,7 +293,7 @@ export const HTTP_PRESETS = {
     },
     delete: { kind: "in-write" },
     response: "cloudflare-v4",
-    constraints: { maxBytes: null, nonEmpty: false, refuseSingleLineTrailingNewline: false },
+    constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       accountId: { type: "string", required: true },
       name: { type: "string", required: true },
@@ -359,7 +359,7 @@ export const HTTP_PRESETS = {
     },
     response: "vercel-env",
     // API は値をそのまま保存する(CLI の stdin 由来の制約は無い)
-    constraints: { maxBytes: null, nonEmpty: false, refuseSingleLineTrailingNewline: false },
+    constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       environment: { type: "string", required: true, values: VERCEL_ENVIRONMENTS },
       gitBranch: { type: "string", required: false },
@@ -452,7 +452,7 @@ export const HTTP_PRESETS = {
     },
     response: "netlify-env",
     // 値の上限は 5,000 文字(docs)— 超過は API の失敗として文面に出る(黙って切らない)
-    constraints: { maxBytes: null, nonEmpty: false, refuseSingleLineTrailingNewline: false },
+    constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       accountId: { type: "string", required: true },
       siteId: { type: "string", required: true },

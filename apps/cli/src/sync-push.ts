@@ -57,7 +57,7 @@ import {
   type SyncConfig,
   type SyncTarget,
 } from "./sync-config.ts";
-import { scrubVendorOutput } from "./sync-exec.ts";
+import { GH_ENV, scrubVendorOutput } from "./sync-exec.ts";
 import { syncApplyOp } from "./sync-plan.ts";
 
 /** The sync config `maruhi push` found, and how. */
@@ -180,14 +180,6 @@ function namesCommandToRun(target: SyncTarget): boolean {
   }
   return target.driver.kind === "exec" && target.driver.namedCommand;
 }
-
-/** `gh` に足す非機密の環境変数(テレメトリ off — SY1 の実測表の gh 行。対話とアップデート確認も切る)。 */
-const GH_ENV: Readonly<Record<string, string>> = {
-  GH_TELEMETRY: "false",
-  DO_NOT_TRACK: "1",
-  GH_NO_UPDATE_NOTIFIER: "1",
-  GH_PROMPT_DISABLED: "1",
-};
 
 /** gh の終了コード 4 = 認証が要る(cli/cli internal/ghcmd/cmd.go の exitAuth)。 */
 const GH_EXIT_AUTH = 4;
