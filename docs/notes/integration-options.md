@@ -1537,6 +1537,23 @@ push 前の床のスナップショットから始まり、1 つ目のトーク�
 指した設定を読まずに済ませていた → 併用は書き方の誤り(2)。裁定 E を改める。(3) 新規の名前の初回 push(plan が `+`)の態が
 無かった → `GAMMA` の push(値は 1 回だけ stdin へ・レシートに version 1)を追加。(4) テストの生の ESC バイトを `\u001b` に。
 
+**改訂 2(2026-09-08、pullfrog の再レビュー〔6fd9b5d〕)**: (1) 設計の指摘 — `onPush` により、同期の意図の無い `maruhi push` が cwd で
+見つけた `maruhi.sync.json` の名指しする**実行体**(exec の `command` / `workflow.command`)を起動し、平文を stdin で渡す形が
+できた。関門はプロジェクト ID の一致だが、設定はリポジトリにコミットされるので公開リポジトリではプロジェクト ID は公開情報で、
+「fork に置かれた設定 + `cd` してからの日常の push」で成立する。`sync apply` も既定パスを読むが、そちらは利用者が同期を打つ
+(`Running … in …` を見る)。候補: (A) 現状維持 + docs の 1 文 / (B) **既定パスの設定は実行体を名指しできない**(名指しする
+ターゲットは note で飛ばし、`--config` 明示 = 利用者がそのファイルを指す動作でだけ動く。プリセットの既定 = PATH 上の
+`vercel` / `wrangler` / `gh` は動く)/ (C) 既定パスの探索をやめる(裁定 B の (a) — 第 3 段の目的を解かない)。第 1 周の新案:
+`cwd` の上書きも拒む案(なし — `cwd` は実行体を変えない〔PATH 探索〕。変わるのはベンダー CLI が解決する同期先で、それは手で
+その dir で打つのと同じ。fork の `.vercel/project.json` が別プロジェクトを指しても、書き手のログインで書ける先は書き手の
+プロジェクトだけ)。`node_modules/.bin/…` を例外にする案(なし — 判定が曖昧になる。fork に `bun install` した時点で postinstall に
+既に負けているので例外を作る意味も薄い)。第 2 周(壊れ方): (B) は docs が勧める `node_modules/.bin/wrangler` の利用者に既定
+パスの自動同期を与えない(`--config` を毎回、または PATH に載せる)— 安全側の代償として受容し、docs に書く。(A) は平文の
+持ち出し経路を「cwd に入ること」だけで作る(なし)。**選定 = (B)**。`decidePushSync` が既定パスのとき名指しのターゲットを
+`namesCommand` に分け、`syncAfterPush` が note(`target X names the program to run …; pass --config … or run \`maruhi sync apply
+X\``)を出して飛ばす。態を追加(既定パス: 名指しの 2 ターゲットは動かず note・名指し無しの 1 つは動く / 明示: 名指しも動く)。
+(2) docs の「says nothing」を明示 `--config` の note に合わせて訂正。(3) env.ts の errors.ts の import を 1 文に。
+
 **第 3 段以降への申し送り(SY2 完了)**: (1) **SY3** = workflow テンプレート 2 標準形 + 四眼の docs。第 3 段の `onPush: "workflow"`
 の起動先は「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes`」の契約を満たす workflow で、docs
 「Sync on push」の YAML 断片がその契約。標準形 ②(Vercel)のテンプレートは `workflow_dispatch`(第 3 段からの起動)と `schedule`

@@ -379,6 +379,48 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.source.writes).toEqual([]);
   });
 
+  it("既定パスの設定が実行体を名指しするターゲット(command / workflow.command)は動かさず note(明示 --config なら動く)", async () => {
+    const fixture = await startFixture({
+      config: config({
+        // command を名指し = 既定パスからは動かさない
+        tool: previewTarget({ command: "tools/vercel" }),
+        // 名指し無し = 既定パスでも動く
+        web: previewTarget(),
+        // gh の実行体を名指し = 既定パスからは動かさない
+        ci: previewTarget({
+          options: { environment: "production" },
+          onPush: "workflow",
+          workflow: { file: "maruhi-sync.yml", command: "tools/gh" },
+        }),
+      }),
+      receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
+    });
+    process.chdir(fixture.configDir);
+    expect(await push(fixture, NEW_VALUE)).toBe(0);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "Note: target tool names the program to run (its command in maruhi.sync.json), and a config found in the working directory does not start one after a push. Pass --config maruhi.sync.json to sync it after this push, or run `maruhi sync apply tool`",
+    );
+    expect(errors).toContain("Note: target ci names the program to run");
+    // 動いたのは web だけ(PATH 上の vercel)
+    expect(fixture.env.execCalls.map((call) => call.command[0])).toEqual(["vercel"]);
+    expect(await decryptReceipt(fixture, "web")).toMatchObject({
+      variables: { ALPHA: 4, BETA: 1 },
+    });
+
+    // 明示 --config = 利用者がそのファイルを指した: 名指しの実行体も動く
+    const explicit = await startFixture({
+      config: config({ tool: previewTarget({ command: "tools/vercel" }) }),
+    });
+    expect(await pushWithConfig(explicit, NEW_VALUE)).toBe(0);
+    // レシートが無い初回なので ALPHA と BETA の 2 回、どちらも名指しの実行体
+    expect(explicit.env.execCalls.map((call) => call.command[0])).toEqual([
+      "tools/vercel",
+      "tools/vercel",
+    ]);
+    expect(explicit.env.errors.join("\n")).not.toContain("names the program to run");
+  });
+
   it("--no-sync: 設定を読まず push だけを行う(ベンダー CLI 0・レシート環境へのリクエスト 0)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     process.chdir(fixture.configDir);

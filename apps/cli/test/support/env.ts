@@ -12,8 +12,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
-import { cliError } from "../../src/errors.ts";
-import { CliError } from "../../src/errors.ts";
+import { CliError, cliError } from "../../src/errors.ts";
 import { makeFileFloorStore } from "../../src/floor-log.ts";
 import { floorDirOf, FloorStore } from "../../src/floor.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";

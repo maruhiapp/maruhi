@@ -30,6 +30,12 @@
 // (2b の裁定 B)。`--no-sync` は設定を読まずに push だけを行う(補足 14 M8 —
 // 連続 push の末尾で 1 回 `maruhi sync apply`)。
 //
+// 既定パスの設定が**実行体を名指し**するターゲット(exec の `command` /
+// `workflow.command`)は動かさない(改訂 2): プロジェクト ID は公開リポジトリでは
+// 公開情報で、fork に置かれた設定が「その ID + 任意のプログラム」を名指しして書き手の
+// 平文を stdin で受け取る形を、cwd だけで成立させない。プリセットの既定の実行体
+// (PATH 上の `vercel` / `wrangler` / `gh`)だけが既定パスから動く。
+//
 // エージェント環境の専用ゲートは無い(補足 9 — `sync` は `run` と同じ扱い)。
 // 出力に出るのはターゲット名・workflow 名・件数・version・変数名(displayText)だけ。
 
@@ -97,7 +103,17 @@ export type PushSyncDecision =
   | { readonly kind: "other-project" }
   /** push 先の環境からこの変数を運ぶ `onPush` ターゲットが無い。 */
   | { readonly kind: "none" }
-  | { readonly kind: "targets"; readonly targets: readonly SyncTarget[] };
+  | {
+      readonly kind: "targets";
+      readonly targets: readonly SyncTarget[];
+      /**
+       * 既定パスの設定が**実行体を名指し**しているターゲット(exec の `command` /
+       * `workflow.command`)。cwd で見つけただけの設定から、その設定が名指しする
+       * プログラムに平文を渡す形を作らない: 同期しない旨を note で言い、`--config`
+       * 明示(利用者がそのファイルを指す動作)でだけ動かす(pullfrog 指摘 — 改訂 2)
+       */
+      readonly namesCommand: readonly SyncTarget[];
+    };
 
 /** ターゲットがこの変数を運ぶか(明示リスト / `"all"` − exclude)。 */
 function targetCarries(target: SyncTarget, name: string): boolean {
@@ -136,11 +152,36 @@ export function decidePushSync(
     }
     return Effect.succeed({ kind: "other-project" });
   }
-  const targets = onPush.filter(
+  const selected = onPush.filter(
     (target) => target.environment === input.environmentId && targetCarries(target, input.name),
   );
-  return Effect.succeed(targets.length === 0 ? { kind: "none" } : { kind: "targets", targets });
+  if (selected.length === 0) {
+    return Effect.succeed({ kind: "none" });
+  }
+  const namesCommand = setup.explicit ? [] : selected.filter(namesCommandToRun);
+  return Effect.succeed({
+    kind: "targets",
+    targets: selected.filter((target) => !namesCommand.includes(target)),
+    namesCommand,
+  });
 }
+
+/**
+ * The target names the program to run (an exec `command` other than the
+ * preset's own CLI name, or a `workflow.command` other than `gh`): the
+ * preset's default is looked up on PATH, a named one is whatever the file
+ * says. Only an explicitly passed config may do that after a push.
+ */
+function namesCommandToRun(target: SyncTarget): boolean {
+  const onPush = target.onPush;
+  if (onPush?.kind === "workflow") {
+    return onPush.command !== DEFAULT_GH_COMMAND;
+  }
+  return target.driver.kind === "exec" && target.driver.command !== target.driver.spec.command;
+}
+
+/** `gh` の既定の実行体(PATH 上)。 */
+const DEFAULT_GH_COMMAND = "gh";
 
 /** `gh` に足す非機密の環境変数(テレメトリ off — SY1 の実測表の gh 行。対話とアップデート確認も切る)。 */
 const GH_ENV: Readonly<Record<string, string>> = {
@@ -304,6 +345,11 @@ export function syncAfterPush(input: {
         );
       }
       return;
+    }
+    for (const target of decision.namesCommand) {
+      yield* logNote(
+        `target ${displayText(target.name)} names the program to run (its command in ${displayText(setup.path)}), and a config found in the working directory does not start one after a push. Pass --config ${displayText(setup.path)} to sync it after this push, or run \`maruhi sync apply ${displayText(target.name)}\``,
+      );
     }
     const floorOf = floorLedger(context);
     for (const target of decision.targets) {
