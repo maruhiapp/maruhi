@@ -125,8 +125,8 @@ describe("parseSyncConfig", () => {
       "targets must be an object with at least one target",
     ],
     [
-      baseConfig({ preset: "netlify" }),
-      "targets.t.preset must be one of cloudflare-workers, vercel",
+      baseConfig({ preset: "railway" }),
+      "targets.t.preset must be one of cloudflare-workers, vercel, netlify",
     ],
     [baseConfig({ preset: "__proto__" }), "targets.t.preset must be one of"],
     [
@@ -293,7 +293,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
       }),
     );
     const invocations = buildInvocations({
-      preset: target.preset.exec,
+      preset: execOf(target).spec,
       command: execOf(target).command,
       cwd: execOf(target).cwd,
       options: target.options,
@@ -369,7 +369,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     });
     const writes = Array.from({ length: 150 }, (_, index) => write(`V${index}`, `value ${index}`));
     const invocations = buildInvocations({
-      preset: target.preset.exec,
+      preset: execOf(target).spec,
       command: "npx-free/wrangler",
       cwd: "/repo",
       options: target.options,
@@ -408,7 +408,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     const target = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(() =>
       buildInvocations({
-        preset: target.preset.exec,
+        preset: execOf(target).spec,
         command: execOf(target).command,
         cwd: execOf(target).cwd,
         options: target.options,

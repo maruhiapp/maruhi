@@ -18,7 +18,7 @@ import { type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 import { parseSyncConfig } from "./sync-config.ts";
-import { SYNC_PRESETS } from "./sync-preset.ts";
+import { defaultDriverOf, isUnavailable, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId } from "./sync-types.ts";
 
 /** `maruhi sync init` の入力(すべて明示フラグ由来)。 */
@@ -109,6 +109,7 @@ function targetObjectOf(
       : { environment: input.tokenEnvironment, name: input.tokenName };
   return compact({
     preset: input.preset,
+    // exec は省略が既定。http は、それしか無いプリセットでも明示する(平文の行き先を読める形)
     driver: driver === "exec" ? undefined : driver,
     environment: input.environment,
     variables: variables === undefined || variables.length === 0 ? "all" : variables,
@@ -132,12 +133,21 @@ function buildSyncConfigJson(input: SyncInitInput): Effect.Effect<string, CliErr
       );
     }
     const preset = SYNC_PRESETS[input.preset as PresetId];
-    const driver = input.driver ?? "exec";
+    const driver = input.driver ?? defaultDriverOf(preset);
     if (driver !== "exec" && driver !== "http") {
-      return yield* Effect.fail(usageError("--driver must be exec (the default) or http"));
+      return yield* Effect.fail(
+        usageError("--driver must be exec (the default when the preset has one) or http"),
+      );
     }
-    const declared = driver === "exec" ? preset.exec.options : preset.http.options;
-    const options = parseOptionFlags(input.options, declared);
+    const declaration = driver === "exec" ? preset.exec : preset.http;
+    if (isUnavailable(declaration)) {
+      return yield* Effect.fail(
+        usageError(
+          `--driver ${driver}: ${declaration.unavailable}; use --driver ${defaultDriverOf(preset)}`,
+        ),
+      );
+    }
+    const options = parseOptionFlags(input.options, declaration.options);
     if (options instanceof Error) {
       return yield* Effect.fail(options);
     }
@@ -168,7 +178,7 @@ export function syncInitOp(input: SyncInitInput): Effect.Effect<void, CliError, 
         'the target copies every variable of the environment ("all"). Keep public configuration and platform-owned resources out with "exclude", or list the names to copy in "variables"',
       );
     }
-    if (input.driver === "http") {
+    if ((input.driver ?? defaultDriverOf(SYNC_PRESETS[input.preset as PresetId])) === "http") {
       yield* logNote(
         `the http driver reads the vendor's token from the maruhi variable named in "token". Push it there before the first apply, and give the token the least permission the target needs (see the Deploy targets page in the docs)`,
       );

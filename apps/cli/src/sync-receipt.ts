@@ -32,7 +32,7 @@ import type { FloorHandle } from "./floor-check.ts";
 import { parseJsonRecord } from "./json-record.ts";
 import { pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
-import type { PresetId } from "./sync-types.ts";
+import { PRESET_IDS, type PresetId } from "./sync-types.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** What the last apply delivered to one target: variable name → version. */
@@ -68,7 +68,7 @@ export function decodeReceipt(text: string, expectedTarget: string): SyncReceipt
     return "the receipt names a different target";
   }
   const preset = record["preset"];
-  if (preset !== "cloudflare-workers" && preset !== "vercel") {
+  if (typeof preset !== "string" || !PRESET_IDS.includes(preset as PresetId)) {
     return "unknown preset";
   }
   const syncedAt = record["syncedAt"];
@@ -88,7 +88,7 @@ export function decodeReceipt(text: string, expectedTarget: string): SyncReceipt
     }
     variables[name] = version;
   }
-  return { version: 1, target: expectedTarget, preset, syncedAt, variables };
+  return { version: 1, target: expectedTarget, preset: preset as PresetId, syncedAt, variables };
 }
 
 /** レシートのファイル表現(決定論的: 名前の昇順 — 同じ内容は同じバイト列)。 */

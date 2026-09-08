@@ -6,21 +6,46 @@
 // レシートはプリセット id だけを持つので、ドライバを切り替えても前回の届き先の
 // 記録はそのまま使える(同じ同期先に同じ名前・version を届けたという事実は
 // ドライバに依らない)。
+//
+// 片方のドライバしか持てない同期先がある(SY4 の裁定 A): Netlify の CLI は値を
+// 引数に取る(argv = `ps` で見える)ので exec の安全なレシピが書けず、http だけを
+// 持つ。宣言の代わりに**理由**(`unavailable`)を置き、設定がそのドライバを選んだ
+// ときの文面にする。`driver` を省いた設定は exec があれば exec、無ければ http。
 
 import { type ExecPreset, EXEC_PRESETS } from "./sync-exec.ts";
 import { type HttpPreset, HTTP_PRESETS } from "./sync-http.ts";
-import type { PresetId, ResolvedOptions } from "./sync-types.ts";
+import type { DriverKind, PresetId, ResolvedOptions } from "./sync-types.ts";
+
+/** A driver the preset does not offer, with the reason shown to whoever configures it. */
+export interface UnavailableDriver {
+  readonly unavailable: string;
+}
 
 /** One deploy target kind: the same destination reachable through either driver. */
 export interface SyncPreset {
   readonly id: PresetId;
-  readonly exec: ExecPreset;
-  readonly http: HttpPreset;
+  readonly exec: ExecPreset | UnavailableDriver;
+  readonly http: HttpPreset | UnavailableDriver;
   /** 明示が無いときの production 判定(誤操作ガードの既定 — sync-config.ts)。 */
   readonly isProduction: (options: ResolvedOptions) => boolean;
 }
 
-/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers). */
+/** 宣言が無い(理由だけの)ドライバか。 */
+export function isUnavailable(
+  declaration: ExecPreset | HttpPreset | UnavailableDriver,
+): declaration is UnavailableDriver {
+  return "unavailable" in declaration;
+}
+
+/** `driver` を省いた設定の既定: exec があれば exec、無ければ http。 */
+export function defaultDriverOf(preset: SyncPreset): DriverKind {
+  return isUnavailable(preset.exec) ? "http" : "exec";
+}
+
+// Netlify の deploy context のうち production 扱い(`all` は production を含む)
+const NETLIFY_PRODUCTION_CONTEXTS = new Set(["production", "all"]);
+
+/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers; Netlify = SY4, http only). */
 export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
   "cloudflare-workers": {
     id: "cloudflare-workers",
@@ -34,5 +59,14 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
     exec: EXEC_PRESETS.vercel,
     http: HTTP_PRESETS.vercel,
     isProduction: (options) => options["environment"] === "production",
+  },
+  netlify: {
+    id: "netlify",
+    exec: {
+      unavailable:
+        "the netlify preset has no exec driver: the Netlify CLI takes the value as a command-line argument (visible in ps), so maruhi only talks to the Netlify API",
+    },
+    http: HTTP_PRESETS.netlify,
+    isProduction: (options) => NETLIFY_PRODUCTION_CONTEXTS.has(String(options["context"])),
   },
 };

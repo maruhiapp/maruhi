@@ -1,8 +1,11 @@
 // `maruhi sync` のドライバ 2 種(exec = sync-exec.ts / http = sync-http.ts)が
 // 共有する宣言の型。プリセットの合成は sync-preset.ts。
 
-/** Preset identifiers accepted by the sync config (`targets.<name>.preset`). */
-export type PresetId = "cloudflare-workers" | "vercel";
+/** Preset identifiers accepted by the sync config (`targets.<name>.preset`), in display order. */
+export const PRESET_IDS = ["cloudflare-workers", "vercel", "netlify"] as const;
+
+/** One of {@link PRESET_IDS}. */
+export type PresetId = (typeof PRESET_IDS)[number];
 
 /** Driver identifiers accepted by the sync config (`targets.<name>.driver`). */
 export type DriverKind = "exec" | "http";

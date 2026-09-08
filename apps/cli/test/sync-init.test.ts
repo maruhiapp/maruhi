@@ -110,9 +110,9 @@ describe("maruhi sync init", () => {
     expect(missing.code).toBe(2);
     expect(missing.stdout).toBe("");
     expect(missing.stderr).toContain("sync init requires --receipts");
-    const preset = await init("web", "--preset", "netlify", "--env", "p", "--receipts", "r");
+    const preset = await init("web", "--preset", "railway", "--env", "p", "--receipts", "r");
     expect(preset.code).toBe(2);
-    expect(preset.stderr).toContain("--preset must be one of cloudflare-workers, vercel");
+    expect(preset.stderr).toContain("--preset must be one of cloudflare-workers, vercel, netlify");
     const option = await init(
       "web",
       "--preset",
@@ -165,6 +165,86 @@ describe("maruhi sync init", () => {
     expect(http.code).toBe(2);
     expect(http.stderr).toContain("targets.worker.token is required for the http driver");
   });
+  it("netlify: --driver 省略で http(唯一のドライバ)を明示して組み、--driver exec は理由つきの書き方の誤り", async () => {
+    const result = await init(
+      "site",
+      "--preset",
+      "netlify",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+      "--token-env",
+      "tokens",
+      "--token-name",
+      "NETLIFY_TOKEN",
+      "--option",
+      "accountId=my-team",
+      "--option",
+      "siteId=0f1e2d3c",
+      "--option",
+      "context=production",
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      version: 1,
+      receipts: { environment: "sync-receipts" },
+      targets: {
+        site: {
+          preset: "netlify",
+          driver: "http",
+          environment: "production",
+          variables: "all",
+          token: { environment: "tokens", name: "NETLIFY_TOKEN" },
+          options: { accountId: "my-team", siteId: "0f1e2d3c", context: "production" },
+        },
+      },
+    });
+    expect(typeof parseSyncConfig(result.stdout, "/repo")).not.toBe("string");
+    expect(result.stderr).toContain(
+      "Note: the http driver reads the vendor's token from the maruhi variable",
+    );
+    const exec = await init(
+      "site",
+      "--preset",
+      "netlify",
+      "--driver",
+      "exec",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+    );
+    expect(exec.code).toBe(2);
+    expect(exec.stdout).toBe("");
+    expect(exec.stderr).toContain(
+      "--driver exec: the netlify preset has no exec driver: the Netlify CLI takes the value as a command-line argument (visible in ps), so maruhi only talks to the Netlify API; use --driver http",
+    );
+    const missing = await init(
+      "site",
+      "--preset",
+      "netlify",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+      "--token-env",
+      "tokens",
+      "--token-name",
+      "NETLIFY_TOKEN",
+      "--option",
+      "accountId=my-team",
+      "--option",
+      "siteId=0f1e2d3c",
+      "--option",
+      "context=branch",
+    );
+    expect(missing.code).toBe(2);
+    expect(missing.stderr).toContain(
+      "The config would be invalid: targets.site.options.branch is required when context is branch",
+    );
+  });
+
   it("--on-push workflow --workflow: onPush と workflow.file を組み、project が無ければ書き方の誤り", async () => {
     const result = await init(
       "web",

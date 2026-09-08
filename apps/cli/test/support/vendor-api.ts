@@ -328,3 +328,249 @@ export function makeFakeVercel(input: {
   ];
   return { handlers, envs, requests };
 }
+
+/** Netlify の 1 変数の 1 context の値(同期先側の保存形)。 */
+export interface FakeNetlifyValue {
+  readonly id: string;
+  readonly value: string;
+  readonly context: string;
+  readonly context_parameter?: string;
+}
+
+/** Netlify の 1 変数(`envVar` — key / scopes / values / is_secret)。 */
+export interface FakeNetlifyVar {
+  readonly key: string;
+  readonly scopes: readonly string[];
+  readonly values: FakeNetlifyValue[];
+  readonly is_secret: boolean;
+}
+
+/**
+ * Netlify の偽 API(2026-09-08 に swagger 2.57.1 と netlify-cli で確かめた形):
+ * `GET /api/v1/accounts/{account_id}/env?site_id=`(配列)、`POST …/env?site_id=`(配列で
+ * 新規作成。**既存 key は 422** — 文言は Netlify Support Forums #88738 で報告された実物。
+ * swagger には無い)、
+ * `PATCH …/env/{key}?site_id=`(既存 key の 1 context の値を作る / 更新する。不在 key は 404)、
+ * `DELETE …/env/{key}?site_id=`(key ごと)、`DELETE …/env/{key}/value/{id}?site_id=`。
+ * 一覧・作成・更新の応答は値を echo する(secret は空 — 実物は「返さない」)。
+ */
+export interface FakeNetlify {
+  readonly handlers: readonly MockHandler[];
+  /** key → 変数(このサイトのもの)。 */
+  readonly vars: Map<string, FakeNetlifyVar>;
+  readonly requests: MockRequest[];
+}
+
+const NETLIFY_ENV = /^\/api\/v1\/accounts\/([^/]+)\/env$/;
+const NETLIFY_KEY = /^\/api\/v1\/accounts\/([^/]+)\/env\/([^/]+)$/;
+const NETLIFY_VALUE = /^\/api\/v1\/accounts\/([^/]+)\/env\/([^/]+)\/value\/([^/]+)$/;
+
+function netlifyError(status: number, message: string): MockResponse {
+  return { status, json: { code: status, message } };
+}
+
+/** 一覧 / 応答の形(secret の値は伏せる — 実物は返さない)。 */
+function netlifyView(variable: FakeNetlifyVar): Record<string, unknown> {
+  return {
+    ...variable,
+    values: variable.values.map((value) => ({
+      ...value,
+      value: variable.is_secret && value.context !== "dev" ? "" : value.value,
+    })),
+  };
+}
+
+export function makeFakeNetlify(input: {
+  readonly token: string;
+  readonly accountId: string;
+  readonly siteId: string;
+  readonly initial?: readonly FakeNetlifyVar[];
+  readonly override?: VendorOverride;
+  /** 作成(POST)を失敗させる名前(部分成功の再現)。 */
+  readonly rejectKeys?: readonly string[];
+  /** 最初に受理した作成(POST)を保存した**うえで** 503 を返す(応答が失われた形の再現)。 */
+  readonly loseFirstCreateResponse?: boolean;
+}): FakeNetlify {
+  const vars = new Map<string, FakeNetlifyVar>();
+  for (const variable of input.initial ?? []) {
+    vars.set(variable.key, { ...variable, values: [...variable.values] });
+  }
+  const requests: MockRequest[] = [];
+  let calls = 0;
+  let nextId = 1;
+  let loseCreate = input.loseFirstCreateResponse === true;
+  const newId = () => {
+    nextId += 1;
+    return `val_${nextId - 1}`;
+  };
+  /** 記録・差し込み・認証・site_id の前段(通れば null)。 */
+  const preflight = (request: MockRequest, accountId: string): MockResponse | null => {
+    requests.push(request);
+    calls += 1;
+    const forced = input.override?.(calls, request);
+    if (forced !== undefined) {
+      return {
+        status: forced.status,
+        json: forced.json ?? { code: forced.status, message: "forced" },
+        headers: forced.headers ?? {},
+      };
+    }
+    if (request.headers["authorization"] !== `Bearer ${input.token}`) {
+      return netlifyError(401, "Access Denied: Bad token");
+    }
+    if (accountId !== input.accountId || request.query["site_id"] !== input.siteId) {
+      return netlifyError(404, "Not Found");
+    }
+    return null;
+  };
+  const handlers: MockHandler[] = [
+    (request) => {
+      const match = request.path.match(NETLIFY_ENV);
+      if (match === null || (request.method !== "GET" && request.method !== "POST")) {
+        return null;
+      }
+      const rejected = preflight(request, match[1] as string);
+      if (rejected !== null) {
+        return rejected;
+      }
+      if (request.method === "GET") {
+        return { status: 200, json: [...vars.values()].map(netlifyView) };
+      }
+      const created = createVars(vars, request.body, input.rejectKeys ?? [], newId);
+      if (created.status === 201 && loseCreate) {
+        loseCreate = false;
+        return {
+          status: 503,
+          json: { code: 503, message: "upstream timeout" },
+          headers: { "retry-after": "0" },
+        };
+      }
+      return created;
+    },
+    (request) => {
+      const match = request.path.match(NETLIFY_KEY);
+      if (match === null || (request.method !== "PATCH" && request.method !== "DELETE")) {
+        return null;
+      }
+      const rejected = preflight(request, match[1] as string);
+      if (rejected !== null) {
+        return rejected;
+      }
+      const key = decodeURIComponent(match[2] as string);
+      const variable = vars.get(key);
+      if (variable === undefined) {
+        return netlifyError(404, "Not Found");
+      }
+      if (request.method === "DELETE") {
+        vars.delete(key);
+        return { status: 204 };
+      }
+      return setValue(variable, request.body, newId);
+    },
+    (request) => {
+      const match = request.path.match(NETLIFY_VALUE);
+      if (match === null || request.method !== "DELETE") {
+        return null;
+      }
+      const rejected = preflight(request, match[1] as string);
+      if (rejected !== null) {
+        return rejected;
+      }
+      const variable = vars.get(decodeURIComponent(match[2] as string));
+      const index = variable?.values.findIndex((value) => value.id === match[3]) ?? -1;
+      if (variable === undefined || index < 0) {
+        return netlifyError(404, "Not Found");
+      }
+      variable.values.splice(index, 1);
+      return { status: 204 };
+    },
+  ];
+  return { handlers, vars, requests };
+}
+
+interface NetlifyCreateItem {
+  readonly key: string;
+  readonly scopes?: string[];
+  readonly values: { value: string; context: string; context_parameter?: string }[];
+  readonly is_secret?: boolean;
+}
+
+/** 作成を拒む理由(既存 key・拒否名)。通れば null。 */
+function rejectCreate(
+  vars: ReadonlyMap<string, FakeNetlifyVar>,
+  item: NetlifyCreateItem,
+  rejectKeys: readonly string[],
+): MockResponse | null {
+  if (vars.has(item.key)) {
+    // 実物の文言(Netlify Support Forums #88738 で報告された応答。swagger には無い)
+    return netlifyError(
+      422,
+      "Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
+    );
+  }
+  if (rejectKeys.includes(item.key)) {
+    return netlifyError(422, `Value for ${item.key} is invalid: ${item.values[0]?.value ?? ""}`);
+  }
+  return null;
+}
+
+/** `POST …/env`: 配列で新規作成(既存 key = 422〔報告された実物〕・拒否名 = 422。全体を拒む)。 */
+function createVars(
+  vars: Map<string, FakeNetlifyVar>,
+  body: unknown,
+  rejectKeys: readonly string[],
+  newId: () => string,
+): MockResponse {
+  if (!Array.isArray(body)) {
+    return netlifyError(400, "expected an array of environment variables");
+  }
+  const items = body as NetlifyCreateItem[];
+  for (const item of items) {
+    const rejected = rejectCreate(vars, item, rejectKeys);
+    if (rejected !== null) {
+      return rejected;
+    }
+  }
+  const created: FakeNetlifyVar[] = [];
+  for (const item of items) {
+    const variable: FakeNetlifyVar = {
+      key: item.key,
+      // scopes 省略 = Netlify の既定(全 scope。実物は post_processing の綴り)
+      scopes: item.scopes ?? ["builds", "functions", "runtime", "post_processing"],
+      values: item.values.map((value) => ({ ...value, id: newId() })),
+      is_secret: item.is_secret ?? false,
+    };
+    vars.set(item.key, variable);
+    created.push(variable);
+  }
+  return { status: 201, json: created.map(netlifyView) };
+}
+
+/** `PATCH …/env/{key}`: 1 context の値を作る / 置き換える(応答は変数全体の echo)。 */
+function setValue(variable: FakeNetlifyVar, body: unknown, newId: () => string): MockResponse {
+  const patch = body as { context?: string; context_parameter?: string; value?: string };
+  if (typeof patch.context !== "string" || typeof patch.value !== "string") {
+    return netlifyError(400, "context and value are required");
+  }
+  if (patch.context === "branch" && typeof patch.context_parameter !== "string") {
+    return netlifyError(400, "context_parameter is required for the branch context");
+  }
+  const index = variable.values.findIndex(
+    (value) =>
+      value.context === patch.context && value.context_parameter === patch.context_parameter,
+  );
+  const next: FakeNetlifyValue = {
+    id: index >= 0 ? (variable.values[index] as FakeNetlifyValue).id : newId(),
+    value: patch.value,
+    context: patch.context,
+    ...(patch.context_parameter === undefined
+      ? {}
+      : { context_parameter: patch.context_parameter }),
+  };
+  if (index >= 0) {
+    variable.values[index] = next;
+  } else {
+    variable.values.push(next);
+  }
+  return { status: 201, json: netlifyView(variable) };
+}

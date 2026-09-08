@@ -76,7 +76,7 @@ ADR-0018 の 3 段のうち第 3 段。値を表示・編集できる画面の�
 |---|---|
 | 運ぶ主体 | 値を変えられるのは人間だけ → **変更の瞬間には書き手の CLI がいる**。書き手の CLI が直接同期する(push 時同期)か、`gh workflow run` で CI を起動する。サーバーの変更通知(webhook)は不要(需要駆動へ降格) |
 | 2 つの家族 | ① **CI がデプロイを握る対象**(Cloudflare Workers / Fly / Railway / AWS / GCP)= デプロイ時再適用(デプロイ workflow 内で毎回 maruhi から作り直す。ドリフトが構造的に消える)。② **Git 連携で相手がデプロイする対象**(Vercel)= push 時同期 + `schedule` の定期突合 |
-| ドライバ | 1 インターフェース × 2 種類。**手元 = `exec` を先に使う**(導入済み・ログイン済みのベンダー CLI〔`vercel` / `wrangler` / `gh`〕を stdin で駆動 — トークン作成が不要。`npx` で取りに行かない・テレメトリ off・ログ抑止)。**CI と未導入時 = `http`**(第一級 = Vercel / Cloudflare Workers。maruhi 自身のコード・一括 upsert・型付きエラー。トークンは maruhi の変数)。Netlify は第 2 波(http)。プリセットは両種類とも宣言的(JSON + モック応答) — 補足 16 |
+| ドライバ | 1 インターフェース × 2 種類。**手元 = `exec` を先に使う**(導入済み・ログイン済みのベンダー CLI〔`vercel` / `wrangler` / `gh`〕を stdin で駆動 — トークン作成が不要。`npx` で取りに行かない・テレメトリ off・ログ抑止)。**CI と未導入時 = `http`**(第一級 = Vercel / Cloudflare Workers。maruhi 自身のコード・一括 upsert・型付きエラー。トークンは maruhi の変数)。Netlify は第 2 波(http — **2026-09-08 SY4 第 1 波で実装済み**。exec は無い = 宣言の代わりに理由を置く)。プリセットは両種類とも宣言的(JSON + モック応答) — 補足 16 |
 | 設定の置き場 | 同期先の対応付け(maruhi 環境 → 同期先 / project id / 環境)は**非機密の設定としてリポジトリにコミット**(既存のアンカーファイルと同じ扱い)。統合トークンは**任意の環境の普通の変数**(E2EE・メモリで取り出す)。資格を絞りたいチームは別プロジェクトに置く |
 | 同期レシート | 「どの先に、どの変数の version まで届いたか」。設定で指定した環境の変数として保存(E2EE + §4.1 の書き込み署名 = 改竄検出つき・仕様改訂なし)。値由来のダイジェストは使わない。**エポックローテーションは現在値を新 version にするため、`env rotate` の実行者がレシートを進める**。ローテーション工程 ④「行き渡らせる」の追跡器を兼ねる |
 | UX | `sync plan` / `sync apply`。production は既定で plan のみ(手動 apply)、preview / development は自動。複数 push はセッション末尾で 1 回同期。スキーマの `required` で同期先の完全性を検査 |
@@ -182,7 +182,7 @@ K8s の ESO、AWS の Secrets Manager 参照のように「プラットフォー
 
 ### 補足 1: 同期先の候補(第 2 陣以降 — 2026-09-04 追記)
 
-初期プリセットは Cloudflare Workers / Vercel / Netlify(所有者決定)。その後の候補を 4 系統で整理する。「アダプタで足りる」= SY2 の汎用 HTTP アダプタのプリセット(設定)で済むもの、「専用」= 認証方式が特殊で専用コードが要るもの。
+初期プリセットは Cloudflare Workers / Vercel / Netlify(所有者決定。**実装状況(2026-09-08)**: Cloudflare Workers / Vercel = exec + http〔SY2〕、Netlify = http のみ〔SY4 第 1 波 — 下の「SY4 実装時の裁定録」〕)。その後の候補を 4 系統で整理する。「アダプタで足りる」= SY2 の汎用 HTTP アダプタのプリセット(設定)で済むもの、「専用」= 認証方式が特殊で専用コードが要るもの。
 
 | 系統 | 候補 | 作り | 備考 |
 |---|---|---|---|
@@ -712,7 +712,7 @@ wrangler をプロジェクトの依存として入れている人はそれを�
 | Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | 非対話なら stdin を EOF まで(`readFromStdin`) | 上書き | `secret delete` | 同上 | 同上 | `cli.js`。1 件ごとに新 version をデプロイ(bulk 推奨) |
 | Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**(実測: 65,536 バイトまでは完全に届き、それ以上は 64 KiB で切れる — 改訂 1)。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
 | GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す) |
-| Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま) |
+| Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま。**2026-09-08 SY4 第 1 波で http プリセットを実装**) |
 
 SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエストで渡す形が正で、削除は `null` で表せる(レシートとの突合で
 「消すべき名前」を `null` にする)。空入力で exit 0 になる wart はドライバ側で「入力が空なら呼ばない」で吸収する。
@@ -1803,6 +1803,270 @@ workflow 2 本の通し**〔Environment の自動作成・required reviewers の
 `schedule` の承認待ち・`concurrency` の pending 置き換え〕、**Free / Pro / Team の private リポジトリで required reviewers が出ない
 ことの実機確認**): `gh workflow run` の実機での通し、Windows での実行体の解決、実アカウント(Cloudflare / Vercel)での http /
 `ci sync` の通し、Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
+
+---
+
+### SY4 実装時の裁定録(2026-09-08)
+
+対象は ROADMAP **SY4**(第 2 陣の同期先)のうち **Netlify** = 第 1 波。SY2 第 2 段 2a(PR #155)の宣言的 http プリセット
+(`HTTP_PRESETS` — JSON テンプレート + モック応答)に Netlify を載せ、`sync plan / apply`・`ci sync`・`sync init --preset netlify` を
+動かす。Netlify を http 限定にする理由は確定済み(CLI の `env:set KEY value` は値を引数に取る — §3 冒頭の表のドライバ行・補足 10 V2・
+補足 14 M6・SY1 実測表)で蒸し返していない。他の候補(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は
+本セッションでは扱わない(裁定 K)。出発点は SY3 の申し送り (1)「http プリセットの宣言 1 つ + モック応答」。各裁定点は同じループ
+(3 案以上 → 上位互換の探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(既存 key への POST・
+1 変数 1 リクエストとレート制限・`all` と個別 context の重なり・secret は読めない・scopes のプラン制約・`site_id` 省略・部分成功・
+429・一覧と送信の間の競合・空の変数の残骸)を問うた。**申し送り (1) の「宣言 1 つ + モック」は半分だけ成り立った**: Netlify には
+upsert が無く、既存の宣言の型(1 リクエストで upsert)では表せないので、型を広げる(全プリセットに効く一般化 — 裁定 A / C / D)
+方を採り、Netlify 専用コードは `runBatch` / `sync-plan.ts` に足していない。
+
+**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
+(1) **open-api.netlify.com の swagger(2.57.1)**: host `api.netlify.com`、base `/api/v1`。環境変数は**アカウント(= チーム)単位**の
+エンドポイントに `site_id` クエリでサイトを指す(`site_id` の説明: 「If provided, create an environment variable on the site level,
+not the account level」= 省くと**チーム共有の変数**を書く)。`GET /accounts/{account_id}/env?site_id=&context_name=&scope=` は
+配列(`envVar` = `{key, scopes[], values[{id, value, context, context_parameter}], is_secret, updated_at, updated_by}`)。`POST
+/accounts/{account_id}/env?site_id=` = 配列で **「Creates new environment variables」**(201、配列を echo)。`PUT …/env/{key}` =
+「Updates an existing environment variable and all of its values. **Existing values will be replaced** by values provided」(200)。
+`PATCH …/env/{key}` = 本文 `{context, context_parameter?, value}` で **「Updates or creates a new value for an existing environment
+variable」**(201。key は「The existing environment variable key name」)。`DELETE …/env/{key}` = 変数ごと(204)、`DELETE
+…/env/{key}/value/{id}` = 1 context の値だけ(204)。既定応答(エラー)は `{code: int64, message: string(required)}`。`context` の
+閉集合は `all / dev / dev-server / branch-deploy / deploy-preview / production / branch`(`branch` は `context_parameter` にブランチ名 —
+PATCH の説明「`branch` must be provided with a value in `context_parameter`」)。`scopes` = `builds / functions / runtime /
+post-processing`「Granular scopes are available on Pro plans and above」。`is_secret` = 「Secret values are only readable by code
+running on Netlify's systems. With secrets, only the local development context values are readable from the UI, API, and CLI」。
+認証は OAuth2(Bearer)。`GET /api/v1/sites/{site_id}/env` は `account_id` 不要の便宜メソッド(読みだけ)。
+(2) **netlify-cli(github.com/netlify/cli main、`src/commands/env/env-set.ts` / `env-unset.ts` / `src/utils/env/index.ts`)**:
+`env:set` は **`getEnvVars({accountId, siteId})` で一覧を取ってから分岐**する — 既存 key + `--context` → `setEnvVarValue`(PATCH)を
+context ごと、既存 key + context なし → `updateEnvVar`(PUT。`all` なら secret 時に dev を空にして 4 context に展開)、不在 →
+`createEnvVars`(POST。配列 1 件)。**単独の upsert は無い**。`accountId` は `siteInfo.account_slug`(チームの slug)。secret の制約は
+CLI が先に弾く: `all` / `dev` を含む context は「specify a non-development context」、`post_processing` scope は「Secret values cannot
+be used within the post-processing scope」で拒み、secret の scopes は `builds / functions / runtime` の 3 つを明示して送る。既定の
+scopes は全 4 つ(`ALL_ENVELOPE_SCOPES`。API が**返す**綴りは `post_processing`、受けるのは `post-processing` — CLI のコメント)。
+`env:unset --context X` は X と **`all` の value id を消し**(`deleteEnvVarValue`)、`all` だったら残る context を PATCH で作り直す;
+context 指定なしは `deleteEnvVar`(key ごと)。`getValueForContext` は `values.find(context === "all" || context === X)`(配列順)。
+(3) **docs.netlify.com**: API get-started — PAT は **User settings → Applications → Personal access tokens**(`app.netlify.com/user/
+applications#personal-access-tokens`。New access token・名前・SAML チームへのアクセス・**有効期限**)。**レート制限 500 requests /
+minute**(`X-RateLimit-Limit / Remaining / Reset` ヘッダー。**429 の status も `Retry-After` も docs に無い**)。30 秒超のリクエストは
+打ち切り。Environment variables overview — 値は **5,000 文字**・key は 255 文字まで、Functions は AWS Lambda の上限、サイト変数が
+共有変数に勝つ(scope × context ごと)、context 別の値は **deploy context の優先規則**(`branch` > `production` / `deploy-preview` /
+`branch-deploy` / `dev` > 全 context)に従う、scopes の選択は Pro / Enterprise、「Local development」は secret にできない。Secrets
+Controller — 「**Secret values are write-only**. After setting a value using the UI, CLI, or API, you will no longer have access to a
+human-readable version」「won't return unmasked values … for any deploy context besides `dev`」「Secret values must be set to explicit
+deploy contexts and scopes」「cannot have the `post processing` scope」、secret scanning がビルド出力に値を見つけたら**ビルドを失敗**
+させる。プランの制限は書かれていない(全プラン扱い)。
+(4) **未確認(docs / swagger に無く、実アカウントで確かめる = 人間タスク)**: 既存 key への `POST` の応答(Support Forums の報告では
+422 + 「Environment variable with the same key name already exists on this site …」— 一次資料には無い)、`PUT` が不在 key を作るか、`PATCH` 不在 key の status(404 と推定するが実装は依存しない)、配列 `POST` の部分失敗の形、
+Starter プランで scopes の部分集合(secret の 3 scope)が通るか、429 の `Retry-After` の有無、空文字列の受理、`all` の値と個別
+context の値が同居したときの API の応答(docs の優先規則には依る)、値を全部消した変数が空のまま残るか。
+(5) **コード側の事実**: `SyncPreset` は `exec` / `http` を**両方必須**、`EXEC_PRESETS: Record<PresetId, …>` が全 id の exec を要求、
+`decodeReceipt` が `"cloudflare-workers" | "vercel"` を直書き、`PathToken` に名前のトークンが**無い**(Netlify の PATCH / DELETE は
+**key をパスに置く**)、`buildBatches` は `preset.batch` で分割、`describeDestination`(sync-plan.ts)は `options.environment` だけを
+ヘッダー行に出す。`Redacted.value(` は `sync-http.ts` に 1 か所(本文のエントリの値の葉)。
+
+**操作の表(裁定 B〜F の入力。「未確認」は (4))**:
+
+| 操作 | 不在 key | 既存 key | `all` × 個別 context | secret | 失敗 |
+|---|---|---|---|---|---|
+| `POST …/env`(配列) | 作る(201、値を echo) | **未確認**(CLI は呼ばない) | 本文の `values[]` に両方置ける(CLI の PUT 展開の形) | `is_secret` + scopes 3 つ(`all` / `dev` 不可) | `{code, message}`。部分失敗の形は未確認 |
+| `PATCH …/env/{key}` | **既存 key 限定**(swagger 原文。status 未確認) | 1 context の値を作る / 更新(201) | 個別を足しても `all` は残る(優先規則で個別が勝つ) | フラグ・scopes は**変えない** | `{code, message}` |
+| `PUT …/env/{key}` | 未確認 | **全 values を置換**(他 context の値が消える) | — | 変えられる | — |
+| `DELETE …/env/{key}` | 404 | 変数ごと(全 context) | — | — | 204 |
+| `DELETE …/env/{key}/value/{id}` | 404 | 1 context の値だけ(id は一覧から) | `all` の値は別 id | 一覧に値は返らないが id は返る | 204 |
+| `GET …/env?site_id=` | — | 配列(値つき。secret は返らない) | 両方の値が `values[]` に並ぶ | — | ページ分けの記述なし |
+
+**A. http 限定プリセットの表現** — 列挙: (i) `SyncPreset.exec` を省略可(`exec?:`)にして `defaultDriver` を足す / (ii) 起動時に落ちる
+「拒否する exec 宣言」(`command` 無し)を置く / (iii) Netlify では `driver: "http"` を**必須**にし、省略・`"exec"` は設定の誤り /
+(iv) プリセットを exec 系 / http 系の 2 表に分けて合成(いまの `SYNC_PRESETS` がそれ)。第 1 周の新案: **(v) `exec: ExecPreset |
+{unavailable: string}`** — 宣言が無い理由を**宣言自身が文面として持つ**(あり — 「なぜ無いか」の単一の正が 1 か所になり、設定の
+検証・`sync init` の両方が同じ文を言う。既定は `defaultDriverOf` = exec があれば exec、無ければ http で、「driver 省略 = exec」の
+規則は exec を持つプリセットでは不変。SY5 の gh は逆に http を持てない〔GitHub の secrets API は libsodium 封印が要る〕ので同じ形で
+`http: {unavailable}` と書ける)。第 2 周(壊れ方): (i) は `exec` が無いことと「なぜ無いか」が別の場所に散る。(ii) は起動まで誤りが
+分からない。(iii) は「`driver` 省略 = exec」を例外つきの規則にし、Netlify だけ 1 キー多く打たせる — 平文の行き先が CLI か API か
+という区別は Netlify では存在しない(API しか無い)ので、明示させる理由(第 2 段の裁定 B「キー 1 つで行き先が変わる形は明示」)が
+当たらない。(v) は `EXEC_PRESETS` / `HTTP_PRESETS` を `Record<PresetId, …>` から `satisfies Record<string, …>` に緩める(id ごとに
+片方だけ持てる)(なし)。**選定 = (v)**。`sync init` は http しか無いプリセットでも生成物に `driver: "http"` を**明示して出す**
+(読者が平文の行き先を読める形。省略しても通る)。棄却: (i)(理由の置き場が散る)、(ii)(遅い失敗)、(iii)(例外つきの規則)、
+(iv)(既にその形で、問題は型の要求)。レシートの `preset` 許容値は `PRESET_IDS`(sync-types.ts の定数配列 — 型もそこから導く)から
+引く形にした = 検査の緩和であって形式変更ではない(`sync-receipt:<target>` の中身・`version: 1` は不変)。
+
+**C. 書き込みの意味論(upsert の作り方)** — 列挙: (i) `PATCH …/env/{key}` だけ(不在 key が作れるなら 1 手) / (ii) `POST`(配列)で
+作り、失敗した既存 key を `PUT` で更新 / (iii) `PUT …/env/{key}` で常に全体を書く / (iv) 一覧で有無を見てから `POST` / `PATCH` に
+分ける。第 1 周の新案: (v) `PATCH` を送り **404 なら `POST`**(宣言に `fallback: {onStatus, request}` を足す一般化)/ (vi) `POST` を
+送り既存 key の失敗なら `PATCH`(あり — どちらも「応答を読んで分岐」だが宣言のデータで表せる)。第 2 周(壊れ方): (i) は swagger
+原文が「existing environment variable」で不在 key を作らない(前提 (1))。(v) / (vi) は**未確認の status**(不在 key の PATCH が
+404 か、既存 key の POST が何を返すか — 前提 (4))に依存し、外れると新規変数を 1 つも書けない・最悪 (vi) は二重に作る。実アカウントの
+通しが本セッションでできない以上、芯を未確認の事実に載せない。(iii) は `PUT` が**他 context の値を置き換える**(前提 (1))= 「同期先の
+他の値に触れない」に反し、secret の値は一覧に返らないので保存して書き戻すこともできない(secret を空にする)。(iv) は **netlify-cli
+自身の形**(前提 (2))で、依存するのは docs に書かれた意味論(`POST` = 新規、`PATCH` = 既存)だけ。一覧は名前の有無にしか使わない
+(値は捨てる = Vercel の削除の突合と同じ規律。読み戻しではない)。一覧に続きがある(不完全)ときは何も送らずに止める(fail-closed —
+Netlify の一覧にページ分けの記述は無いので `nextPage` 無し = 常に完全)。一覧と送信の間に同名が作られる競合は `POST` が同期先の
+失敗として文面に出て、次の apply は一覧で見つけて `PATCH` になる(自己修復。テストで固定)(なし)。**選定 = (iv)** を一般化した
+**`HttpWriteStrategy`**: `{kind: "upsert", request, batch}`(Workers / Vercel — いままでの形)| `{kind: "create-or-update", list,
+create, update}`。**1 変数 1 リクエスト**にした理由: `PATCH` は形からして 1 変数、`POST` は配列を受けるが**部分失敗の形が未確認**
+(前提 (4))なので件数 1 に固定し、届いた名前を正確に割る(レート制限 500 / min に対し 1 変数 1 リクエスト + 一覧 1 回 = 100 変数で
+101 リクエスト。CLI と同じ密度)。`buildBatches` は create-or-update では**書き込み全部を 1 バッチ**にし(一覧を 1 回だけ読む)、
+`runBatch` が中で 1 変数ずつ送って最初の失敗で止める(`delivered` = それまでの名前 → レシートに残る。`sync-plan.ts` の
+`runBatches` は無変更)。`entries: "single"`(本文 = エントリそのもの)と `PathToken` の `{kind: "name"}`(**1 変数リクエストの
+パスにだけ**許す — 値のトークンは相変わらずパスに存在しない。宣言の走査テストで固定)を足した。棄却: (i)(不在 key を作らない)、
+(ii)(PUT が他 context を壊す)、(iii)(同上 + secret を空にする)、(v) / (vi)(未確認の status に依存)。
+
+**D. 削除の意味論** — 列挙: (i) `DELETE …/env/{key}`(変数ごと = 他 context の値も消える)/ (ii) 一覧で該当 context の value id を引いて
+`DELETE …/env/{key}/value/{id}`(Vercel の `lookup` と同じ形)/ (iii) 削除しない(レシートに残して警告)。第 1 周の新案: **(iv) (ii) +
+照合した値が変数の全値なら `DELETE …/env/{key}`**(あり — maruhi が作った変数〔この context の値しか無い〕は変数ごと消え、他の
+context の値を持つ変数は値 1 つだけ消える。空の変数の残骸を作らず、他の値にも触れない)。第 2 周(壊れ方): (i) は「同期先の他の値に
+触れない」に反する(production ターゲットの削除が deploy-preview の手書きの値を消す)。(iii) は Vercel と非対称で、レシートが詰まる。
+(ii) は値を全部消した変数が空のまま残るか未確認(前提 (4))で、残るなら dashboard に空の変数が並ぶ。(iv) の判定は一覧の `values[]` で
+できる(id は secret でも返る)。一覧の直後に別の値が足された競合で key ごと消す窓は Vercel の 404 と同じ幅で、netlify-cli の
+`env:unset` も同じ一覧 → 削除の 2 手。`all` の値しか無い変数は個別 context のターゲットからは**照合されない**(値が無い = 消えた
+扱い。maruhi は `all` を書いていないので触れない — docs に明記)(なし)。**選定 = (iv)**。`lookup` の宣言の一般化: `itemsField: null`
+(本文そのものが配列)、`match.valuesField`(id を持つ要素の入れ子 — Netlify の `values[]`)、`targetField` は**文字列一致 or 配列
+includes**(Vercel の `target[]` / Netlify の `context`)、`nextPage` 省略可、`removeItem`(全値のとき)。Vercel の宣言は同じ型に
+そのまま乗る(挙動不変 — 既存テストが固定)。棄却: (i)(他の値に触れる)、(ii)(残骸)、(iii)(非対称)。
+
+**B. 設定の形(オプション)** — `accountId`(**必須**。`GET /accounts` で引く案は通信と権限が増える — 第 2 段の裁定 G の Cloudflare の
+accountId と同じ理由。値はチームの slug〔`app.netlify.com/teams/<slug>`。netlify-cli の `account_slug`〕か ID)、`siteId`(**必須**。
+省くと API はチーム共有の変数を書く — 前提 (1)。値はサイトの ID = dashboard の Project ID、`netlify link` の `.netlify/state.json`
+の `siteId`)、`context`(**必須**。閉集合 = swagger の 7 値〔`dev-server` を含む〕)、`branch`(`context: "branch"` のときだけ・
+そのとき必須。Vercel の `gitBranch` は preview 環境をブランチで絞る別の意味〔Netlify の `context_parameter` はプレフィックス
+`release/*` も取る〕なので同じ名前にしない — 「違う意味には違う名前」)、`secret`(boolean・省略可。既定は裁定 F)。`scopes` は
+**入れない**: 配列型のオプション(`OptionSpec` に無い)が要り、Pro 以上の機能で、`PATCH` では変えられない(既存変数に効かない)ので
+需要駆動へ。secret のときだけ CLI と同じ 3 scope を `derive` で足す。オプション同士の整合(branch は context=branch のときだけ・
+secret は `all` / `dev` / `dev-server` に置けない)は `OptionSpec` の型・閉集合では表せない → **`HttpPreset.check`**(設定の検証で呼ぶ
+一般のフック。理由の文字列を返す)を足した(設定時に fail-closed。API まで行って落ちる形にしない)。`isProduction` の既定 =
+`context` が `production` / `all`。`describeDestination` のヘッダー行(sync-plan.ts)は `options.environment` しか見ないので Netlify
+は「netlify via http」と出る — 変更しない前提(申し送り)。
+
+**E. 応答の読み** — `ResponseKind` に `"netlify-env"`: 成功 = 2xx。書き込み(`POST` = 配列 / `PATCH` = 変数 1 つ)は応答の `key` が
+運んだ名前を含むことまで見る(形の違う 2xx を「届いた」と読まない — Vercel の `created` と対称。pullfrog 指摘の再発防止)。削除は
+204 で本文が無い。失敗は `{code, message}` を `error <code>: <message>` の 1 行にし(本文が JSON でなければ `HTTP <status>` だけ)、
+値・トークンの断片は `scrubVendorOutput` で伏せる(応答は `values[].value` を echo するので成功時は捨てる)。
+
+**F. `is_secret` と scopes の既定** — 列挙: (i) 既定 false / (ii) 既定 true(置けない context では false)/ (iii) 必須にして選ばせる。
+周: (ii) は Vercel の sensitive の既定と同じ向き(「同期先で読めない値」= 一方通行と整合。secret は write-only で一覧に値が返らないが
+突合は key / id でできる)。壊れ方: secret は**変数の作成時にだけ**効く(PATCH はフラグを変えない — 前提 (1))ので、既存の非 secret
+変数に maruhi が値を書いても secret にはならない → docs に「dashboard で変えるか、消して apply し直す」。secret scanning がビルドを
+落としうる(値がビルド出力に出るとき)のは Netlify の仕様で、Vercel と同じく既定を secret に倒す判断に含める。Starter プランで
+scopes の部分集合(3 scope)が通るかは未確認だが、CLI が全プランで同じ 3 つを送っている(前提 (2))ので同じ形を写す(なし)。
+**選定 = (ii)**。棄却: (i)(読み返せる値を既定にしない)、(iii)(打鍵が増える)。
+
+**G. `sync init --preset netlify`** — `--driver` の既定は `defaultDriverOf`(= http)。生成物には `driver: "http"` を明示(裁定 A)。
+`--driver exec` は理由つきの書き方の誤り(2)。http の案内文(トークンの置き場と最小権限)は**実効の**ドライバで判定する(以前は
+`--driver http` の明示だけを見ていた)。`--preset` / `--driver` の `--help` 文言を更新(golden)。
+
+**H. docs** — `deploy-targets.mdx`: frontmatter の `description`、冒頭(Netlify builds / http のみ)、「How maruhi sync works」の
+preset 列挙、`--yes` の production の定義、設定の表(`preset` / `driver`)、Netlify のオプション段落、**新節「Netlify」**(変数の
+モデル = key × context・`all` との優先・secret の既定と作成時限定・scopes・削除の意味論)、http 節(ホストの列挙・PAT の作り方と
+最小権限〔トークンにスコープが無いので専用アカウント + `siteId`〕・設定例に `site` ターゲット + `sync init` の 1 行・Netlify の
+箇条書き〔一覧 → POST / PATCH・競合・削除・5,000 文字・500 / min〕・404 の読み)、「Other platforms」を「レシピは無い、`netlify`
+プリセットを使う」に、「Vendor CLI telemetry」に「Netlify CLI は起動しない」。index の Card・README の Docs 一覧・getting-started の
+Next steps に Netlify を足し、github-actions.mdx の「Git 連携で相手がデプロイする対象」に Netlify を添えた(標準形 ② はターゲット名を
+足すだけで netlify ターゲットも回る — 変更不要を確かめた)。
+
+**I. テスト** — `vendor-api.ts` に `makeFakeNetlify`(状態つき: key → `{scopes, values[{id, value, context, context_parameter}],
+is_secret}`。一覧は secret の値を空で返す〔実物は返さない〕、`POST` は配列で新規作成し**既存 key は 400 で拒む**〔実物の形は
+未確認 — モックの仮定と明記〕、`rejectKeys` は 422 で値を echo、`PATCH` は不在 key で 404・既存の (context, context_parameter) を
+置換、`DELETE` は key / value id、`override` で 429 / 5xx、認証は 401、`account_id` / `site_id` の不一致は 404)。`sync-http.test.ts`:
+宣言の走査(値のトークンの不在は据え置き、`name` は `single` の書き込みと項目ごとの削除のパスにだけ)、`buildBatches`(Netlify =
+書き込み全部で 1 バッチ + 削除 1 件ずつ)、設定(driver 省略 = http・exec は理由つき拒否・必須 3 つ・branch / secret の整合・
+production の既定 6 態)、通し(一覧 → POST〔配列 1 件・`is_secret` + 3 scope〕/ PATCH〔1 context〕・他 context の値は残る・
+Authorization 以外にトークンが出ない・レシート・2 回目は PATCH だけ・plan は API に触れない、`all` / `secret: false` / `branch` の本文と
+`--yes`、削除〔value id / 最後の値は key ごと / 一覧に無ければ消えた扱い〕、部分成功と競合〔既存 key への POST の失敗 → 次は
+PATCH〕、429 → 再送・503 × 3 → exit 1 と echo の伏せ字化・401、形の違う 2xx、同一環境のトークンを運ばない)。`ci-sync.test.ts` に
+netlify の 1 態(POST / PATCH の分岐・レシート無し)。`sync-init.test.ts` に netlify の往復・`--driver exec` の 2・branch 欠落。
+`sync-units.test.ts` の「netlify を拒む」態は `railway` に(受理側は sync-http.test.ts)。`--help` golden。`redacted.test.ts` の
+棚卸し表は**変更なし**(`sync-http.ts: 1` のまま — 1 変数リクエストも同じ `renderEntries` を通る)。fallow の複雑度は
+`renderEntries` / `writeOneByOne` / `lookupAndRemove` / `isListingComplete` / `parseDriver` / `driverKindOf` / `rejectCreate` /
+テストの `pathTokensOf` に割って閾値内。
+
+**J. 検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段: 115 files / 2,809 tests)。`apps/site` の `validate --strict` /
+`build` / `e2e`(Chromium 1194 を 1234 の名前でリンク)。docs の light / dark と偽 Netlify に対する `sync plan / apply` の出力例は
+所有者向けの非公開 Artifact。
+
+**K. ROADMAP と裁定録** — SY4 行を「Netlify 完了(第 1 波・PR #159・裁定の要約)+ 残り候補は需要駆動」の形に。**SY4 全体を
+`- [x]` にするかは所有者判断**(提案: Netlify で「第 1 波完了」とし、Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare
+Pages は需要が出た順に 1 プリセット 1 PR。宣言の型は create-or-update / lookup の一般化で GraphQL 以外は載るはず)。本裁定録は SY3 の
+後、`## 4.` の前。補足 1 の冒頭に実装状況、§3 冒頭の表のドライバ行と SY1 実測表の Netlify 行に「SY4 で実装」を添えた。
+
+**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。サーバー・Web・チェーン・wire・`packages/crypto`・レシートの形式は無変更。
+`preset` 許容値の緩和は読み戻し検査のみ)。宣言的プリセットの規律(Netlify は `HTTP_PRESETS.netlify` の宣言 1 つ + `makeFakeNetlify`。
+`runBatch` の分岐は `write.kind`〔全プリセットに効く型〕で、ベンダー名の分岐は `readResponse` の閉集合だけ)。値の所在(値のトークン
+は本文のエントリのみ — 型 + 走査テスト。パスに載るのは名前と ID。ログ・エラー文面は変数名と伏せた断片)。一方通行(一覧は名前 / ID の
+突合だけ。値は捨てる。secret は読めない)。production(`context` = production / all は `--yes`)。削除(このターゲットの context の値
+だけ。最後の値なら key ごと。`all` だけの変数には触れない)。依存ゼロ(新規依存なし。Netlify CLI を起動する経路なし)。英語(CLI・
+docs)/ 日本語(裁定録・コミット・PR)。エージェント環境の扱いは無変更。スコープ(他の候補・SY5・`--all`・`sync diff`・Netlify の
+exec・レシート形式の版上げは取り込まない)。`Redacted` を剥がす箇所は増えていない。
+
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔a3e0357〕)**: (1) **secret が update の経路で黙って落ちる** — 既存 key への
+書き込みは `PATCH`(値しか取らない)なので、非 secret で既にある変数に、設定が secret のつもり(既定 true)の値を置いても
+非 secret のまま(UI / API から読める)で、CLI は何も言わなかった。docs には「作成時にだけ効く」と書いていたが、書いた**後に**
+読者が気づく形。候補: (i) 文面で止める(fail-closed。一覧が `is_secret` を返すので追加のリクエスト無しに判定できる)/ (ii) `PUT`
+で secret にする(全 values を置換 = 他 context の値を壊す — 裁定 C で棄却済み)/ (iii) 警告して書く(読める場所に置いてから
+言う)。(i) を採り、宣言の一般化 **`create-or-update.updateGuards`**(「update では変えられない属性: 導いたオプションが true なら
+一覧の項目の `field` も true でなければ送らない」)を足した。Netlify = `{field: "is_secret", option: "isSecret"}`。文面は変数名と
+属性名だけ(値は載らない)+ 宣言の `hint`(dashboard で secret にする / 消して apply し直す / `"secret": false`)。届いた分は
+レシートへ、その変数以降は送らない(他の失敗と同じ形)。逆向き(既に secret の変数に非 secret のつもりの値)は止めない —
+`dev` context は secret を要求できない(`check`)ので、止めると secret 変数の dev 値が書けなくなる。態を 2 つ追加(止まる /
+`secret: false` なら書く)。docs の「Netlify」節に 1 文。(2) **既存 key への `POST` の応答**は Netlify Support Forums(#88738)で
+報告された実物が **422** + 「Environment variable with the same key name already exists on this site. Try a different key or edit
+the existing variable.」— swagger には無い(pullfrog の「open-api で確認」は当たらない)が、二次資料として偽 API をその形に写した
+(実アカウントでの確認は人間タスクのまま)。
+
+**改訂 2(2026-09-08、Cursor Bugbot〔456417e〕+ pullfrog の 2 回目〔456417e〕)**: **create の `POST` は upsert でない**のに
+`send` がリトライする(通信層の失敗 + 429 / 5xx)ので、届いたのに応答が失われた create は再送されて「既存 key」で拒まれ、
+書けているのに exit 1・レシート無し(次の apply で自己修復はする)。docs の「Writes are idempotent, so a retry is safe」も
+Netlify の create には当たらない。候補: (i) create だけ通信層の失敗をリトライしない(宣言に `idempotent: false`)— 429 / 5xx は
+残るが 502 / 504 も処理後に起きうる / (ii) 既存 key の応答(422 + 文言)を読んで update に切り替える — 文言は二次資料 / (iii)
+**create が失敗したら一覧を引き直し、名前があれば update に切り替える**(応答の文言に依らず、一覧と送信の間の競合〔既存の態〕も
+同じ経路で同じ apply の中に収まる。追加の GET は失敗経路だけ)/ (iv) docs だけ直す。(iii) を採り、`createOrRecover` を
+`create-or-update` の一般の規則にした(`updateGuards` はこの経路でも通る)。偽 API に `loseFirstCreateResponse`(保存したうえで
+503)を足し、態を 1 つ追加・競合の態を「同じ apply で PATCH」に書き換え。docs の Retries の 1 文を「Workers / Vercel は冪等。
+Netlify の create は再送で重複として拒まれるので一覧を引き直して update する」に。Security Agent の指摘(secret が update で落ちる)は
+改訂 1 と同じもの。
+
+**改訂 3(2026-09-08、Cursor Bugbot〔bdae445〕)**: 改訂 2 の引き直しの一覧が**型付きエラーで落ちる**形(通信層・試行の使い切り・
+`Retry-After` が上限超)では、create の失敗の報告に戻らず apply 全体が落ち、同じバッチで先に届いた名前がレシートに残らなかった
+(応答が失敗〔非 2xx〕の形だけを扱っていた)→ 引き直しの `fetchListing` を `Effect.catch` で受け、create の失敗に「Could not
+re-check the target after the failed create: <理由>」を添えて返す(届いた分はレシートへ。理由は `send` の文面 = status と試行数
+だけで値を含まない)。態を追加(422 の後の GET が 503 × 3 → exit 1・ALPHA はレシートに残る)。
+
+**改訂 4(2026-09-08、pullfrog の 3 回目〔bdae445〕)**: 改訂 3 と同じ指摘 + 「1 変数の送信の `send` が試行を使い切る形は
+どの変数でも起きる(改訂 2 は引き金を 1 つ足しただけ)— `writeOneByOne` で部分的な進みを出すか」という問い。create-or-update は
+書き込み全部が 1 バッチなので、途中の型付きエラーで実行全体の進みが消える。→ `writeOneByOne` で 1 変数の送信(create / update)
+の型付きエラーを受け、その変数の失敗として報告し(文面は `send` の文面)、先に届いた名前はレシートへ。態を追加(2 つ目の POST が
+503 × 3 → exit 1・ALPHA はレシートに残る)。(改訂 4 の時点で「upsert のプリセットは前のバッチの分を `runBatches` が畳んでいる」と
+書いたが、これは誤り — 改訂 5)
+
+**改訂 5(2026-09-08、pullfrog の 4 回目〔972e104〕)**: 同じ形が 1 段上に残っていた — `runBatches`(sync-plan.ts)の `written` /
+`deleted` は `Effect.gen` のローカルで、後のバッチ(削除バッチの一覧・DELETE、upsert の 2 つ目以降のバッチ)の `runBatch` が
+型付きエラーで落ちると generator ごと中断し、**前のバッチで届いた名前も**レシートに残らない(改訂 4 の理由「`runBatches` が
+畳んでいる」は成り立たない。docs の「Variables written before a failure stay in the receipt」が削除バッチの失敗では偽)。SY2 から
+ある形で次の apply で自己修復するが、直し方は小さい。候補: (i) `runBatches` で `runBatch` の CliError を受ける(sync-plan.ts を
+触る)/ (ii) **`runBatch` 自身が型付きエラーをそのバッチの失敗に変える**(全ドライバ・全バッチ種別に一様。`runBatch` の失敗型が
+`never` になり、sync-plan.ts は無変更のまま呼び出し側の畳みが必ず走る。**http の**全プリセット・全バッチ種別に一様で、exec の
+`runInvocations` は別の経路 — 後の起動が失敗すると前の分が残らない形は従来どおり。起動の失敗は普通 1 つ目で起きる〔申し送り〕)/
+(iii) 据え置いて docs と裁定録の文を直す。(ii) を採った
+(`writeOneByOne` の受けは create-or-update の**中の**届いた分を保つために残る)。態を追加(書き込みバッチは届き、削除バッチの
+GET が 503 × 3 → exit 1・ALPHA はレシートに残り GONE も残る)。文面の nit(`sync-plan.ts` の「refused the request」が試行の
+使い切りにも付く — 下の行が理由を言う)は sync-plan.ts の既存文言なので据え置き、申し送りに。
+
+**確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
+Support Forums の報告どおり 422)、
+`PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、
+値を全部消した変数が残るか(残らないなら `removeItem` は無害な 404)、429 の `Retry-After`、5,000 文字超の応答、PAT の作成 UI の
+文言(docs の「Applications, Personal access tokens」は docs.netlify.com の記述に依る)、`accountId` に slug と ID のどちらも通るか。
+
+**SY5 以降への申し送り(SY4 第 1 波完了)**: (1) **SY5** `gh secret set` — 第 1 段 = レシピ(Deploy targets の recipes と同じ ```sh +
+`recipes.test.ts` の偽 `gh`)、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形。**exec プリセットの宣言だけで載る**
+(`gh secret set NAME` = raw-value / 1 件ずつ / `GH_TELEMETRY=false`)。http は GitHub の secrets API が libsodium 封印を要るので
+**`http: {unavailable: …}`**(裁定 A の形をそのまま使う — プリセット側の型は用意済み)。第 3 段の `GH_ENV` / `ghArgument` を流用可。
+bootstrap トークン(fine-grained PAT か App トークン — 補足 8 Q1)は「GitHub secrets を空にする」目標の唯一の例外。(2) **SY4 の残り**
+(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。`create-or-update` / `lookup` の一般化で REST の
+先はほぼ宣言で載る。GraphQL(Railway / Fly.io)は `contentType` + `body` テンプレートで表せるが応答の読み(`ResponseKind`)が要る。
+(3) `describeDestination` のヘッダー行に `context`(Netlify)を出す小さな一般化(プリセットに `describe` を持たせる)と、
+`runBatches` の「refused the request」の文言(試行の使い切りにも付く — 改訂 5 の nit)、exec の `runInvocations` で後の起動の
+失敗が前の分をレシートから落とす形(改訂 5 と同じ形。起動の失敗は普通 1 つ目で起きる)— sync-plan.ts を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
+(上の「確認できなかったこと」)。(6) 既存の未消化: `gh workflow run` の実機、Windows の実行体解決、実アカウント(Cloudflare /
+Vercel)での http / `ci sync` の通し、Vercel の一覧のページ分け、macOS のパイプ容量、`vercel env rm` の不在名、SY3 の workflow 2 本の
+実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
 
 ---
 
