@@ -388,6 +388,8 @@ export function makeFakeNetlify(input: {
   readonly override?: VendorOverride;
   /** 作成(POST)を失敗させる名前(部分成功の再現)。 */
   readonly rejectKeys?: readonly string[];
+  /** 最初に受理した作成(POST)を保存した**うえで** 503 を返す(応答が失われた形の再現)。 */
+  readonly loseFirstCreateResponse?: boolean;
 }): FakeNetlify {
   const vars = new Map<string, FakeNetlifyVar>();
   for (const variable of input.initial ?? []) {
@@ -396,6 +398,7 @@ export function makeFakeNetlify(input: {
   const requests: MockRequest[] = [];
   let calls = 0;
   let nextId = 1;
+  let loseCreate = input.loseFirstCreateResponse === true;
   const newId = () => {
     nextId += 1;
     return `val_${nextId - 1}`;
@@ -433,7 +436,16 @@ export function makeFakeNetlify(input: {
       if (request.method === "GET") {
         return { status: 200, json: [...vars.values()].map(netlifyView) };
       }
-      return createVars(vars, request.body, input.rejectKeys ?? [], newId);
+      const created = createVars(vars, request.body, input.rejectKeys ?? [], newId);
+      if (created.status === 201 && loseCreate) {
+        loseCreate = false;
+        return {
+          status: 503,
+          json: { code: 503, message: "upstream timeout" },
+          headers: { "retry-after": "0" },
+        };
+      }
+      return created;
     },
     (request) => {
       const match = request.path.match(NETLIFY_KEY);

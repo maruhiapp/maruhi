@@ -1192,7 +1192,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, netlify.requests);
   });
 
-  it("作成が拒まれれば(422)届いた名前だけレシートに残し、応答の値の echo は伏せて exit 1。次の apply は作られた分を PATCH にする", async () => {
+  it("作成が拒まれれば(422)届いた名前だけレシートに残し、応答の値の echo は伏せて exit 1。同名が先に作られていれば一覧を引き直して PATCH に切り替える", async () => {
     const netlify = netlifyFake({ rejectKeys: ["BETA"] });
     const fixture = await startFixture({
       targets: { site: netlifyTarget() },
@@ -1225,14 +1225,42 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHandlers: raced.handlers,
       vendorHosts: ["api.netlify.com"],
     });
-    expect(await sync(fixture2, "apply", "site")).toBe(1);
-    expect(fixture2.env.errors.join("\n")).toContain(
-      "error 422: Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
-    );
-    expect(fixture2.receipts.writes).toEqual([]);
-    // 次の apply は一覧に ALPHA があるので PATCH
+    // POST が既存 key で拒まれる(422)→ 一覧を引き直す → ALPHA がある → PATCH。同じ apply で届く
     expect(await sync(fixture2, "apply", "site"), fixture2.env.errors.join("\n")).toBe(0);
-    expect(raced.requests.at(-1)?.method).toBe("PATCH");
+    expect(raced.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "POST",
+      "GET",
+      "PATCH",
+    ]);
+    expect(raced.vars.get("ALPHA")?.values[0]?.value).toBe(ALPHA_VALUE);
+    expect(await decryptReceipt(fixture2, "site")).toMatchObject({ variables: { ALPHA: 3 } });
+    expectNoSecretLeak(fixture2.env, raced.requests);
+  });
+
+  it("作成の応答が失われて再送されると既存 key で拒まれる — 一覧を引き直して PATCH に切り替え、届いたと記録する", async () => {
+    const lossy = netlifyFake({ loseFirstCreateResponse: true });
+    const fixture = await startFixture({
+      targets: { site: netlifyTarget() },
+      vendorHandlers: lossy.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
+    // GET → POST ALPHA(保存されたが 503)→ POST ALPHA(再送 = 422)→ GET → PATCH ALPHA → POST BETA
+    expect(lossy.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "POST",
+      "POST",
+      "GET",
+      "PATCH",
+      "POST",
+    ]);
+    expect(lossy.vars.get("ALPHA")?.values).toHaveLength(1);
+    expect(lossy.vars.get("ALPHA")?.values[0]?.value).toBe(ALPHA_VALUE);
+    expect(await decryptReceipt(fixture, "site")).toMatchObject({
+      variables: { ALPHA: 3, BETA: 1 },
+    });
+    expectNoSecretLeak(fixture.env, lossy.requests);
   });
 
   it("非 secret で既にある変数に secret のつもりの値は送らずに止める(届いた分はレシートへ)。secret: false なら書く", async () => {

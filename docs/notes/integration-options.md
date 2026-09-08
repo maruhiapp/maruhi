@@ -2010,6 +2010,18 @@ exec・レシート形式の版上げは取り込まない)。`Redacted` を剥�
 the existing variable.」— swagger には無い(pullfrog の「open-api で確認」は当たらない)が、二次資料として偽 API をその形に写した
 (実アカウントでの確認は人間タスクのまま)。
 
+**改訂 2(2026-09-08、Cursor Bugbot〔456417e〕+ pullfrog の 2 回目〔456417e〕)**: **create の `POST` は upsert でない**のに
+`send` がリトライする(通信層の失敗 + 429 / 5xx)ので、届いたのに応答が失われた create は再送されて「既存 key」で拒まれ、
+書けているのに exit 1・レシート無し(次の apply で自己修復はする)。docs の「Writes are idempotent, so a retry is safe」も
+Netlify の create には当たらない。候補: (i) create だけ通信層の失敗をリトライしない(宣言に `idempotent: false`)— 429 / 5xx は
+残るが 502 / 504 も処理後に起きうる / (ii) 既存 key の応答(422 + 文言)を読んで update に切り替える — 文言は二次資料 / (iii)
+**create が失敗したら一覧を引き直し、名前があれば update に切り替える**(応答の文言に依らず、一覧と送信の間の競合〔既存の態〕も
+同じ経路で同じ apply の中に収まる。追加の GET は失敗経路だけ)/ (iv) docs だけ直す。(iii) を採り、`createOrRecover` を
+`create-or-update` の一般の規則にした(`updateGuards` はこの経路でも通る)。偽 API に `loseFirstCreateResponse`(保存したうえで
+503)を足し、態を 1 つ追加・競合の態を「同じ apply で PATCH」に書き換え。docs の Retries の 1 文を「Workers / Vercel は冪等。
+Netlify の create は再送で重複として拒まれるので一覧を引き直して update する」に。Security Agent の指摘(secret が update で落ちる)は
+改訂 1 と同じもの。
+
 **確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
 Support Forums の報告どおり 422)、
 `PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、

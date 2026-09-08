@@ -1264,21 +1264,59 @@ function writeOneByOne(
     for (const item of batch.writes) {
       const one = singleBatch(item);
       const listed = existing.get(item.name);
-      const refused =
-        listed === undefined ? null : guardUpdate(write, item.name, listed, input.options);
-      if (refused !== null) {
-        // 送らずに止める(値は残らない。届いた分はレシートへ)
-        return { delivered, failure: { names: one.names, lines: [refused] } };
-      }
-      const spec = listed === undefined ? write.create : write.update;
-      const outcome = yield* send(input, buildWriteRequest(input, spec, one));
-      const result = readResponse(input.preset.response, outcome, one, input);
+      const result =
+        listed === undefined
+          ? yield* createOrRecover(input, write, one)
+          : yield* updateOne(input, write, one, listed);
       if (result.failure !== null) {
         return { delivered, failure: result.failure };
       }
       delivered.push(item.name);
     }
     return { delivered, failure: null };
+  });
+}
+
+/** 一覧にある名前: 守り(`updateGuards`)を通してから update を 1 件送る。 */
+function updateOne(
+  input: HttpTargetInput,
+  write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
+  one: HttpBatch,
+  listed: Record<string, unknown>,
+): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const refused = guardUpdate(write, one.names[0] ?? "", listed, input.options);
+  if (refused !== null) {
+    // 送らずに止める(値は残らない。届いた分はレシートへ)
+    return Effect.succeed({ delivered: [], failure: { names: one.names, lines: [refused] } });
+  }
+  return Effect.map(send(input, buildWriteRequest(input, write.update, one)), (outcome) =>
+    readResponse(input.preset.response, outcome, one, input),
+  );
+}
+
+/**
+ * 一覧に無い名前: create を送る。create は upsert でない(既存 key を拒む)ので、届いた
+ * のに応答が失われて再送された形(`send` のリトライ)や、一覧と送信の間に同名が作られた
+ * 競合では、同期先の失敗として返る。そのときは**一覧を引き直し**、名前があれば update に
+ * 切り替える(応答の文言に依らない — Bugbot 指摘・改訂 2)。無ければ create の失敗をそのまま。
+ */
+function createOrRecover(
+  input: HttpTargetInput,
+  write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
+  one: HttpBatch,
+): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const outcome = yield* send(input, buildWriteRequest(input, write.create, one));
+    const created = readResponse(input.preset.response, outcome, one, input);
+    if (created.failure === null) {
+      return created;
+    }
+    const listing = yield* fetchListing(input, write.list);
+    if ("failure" in listing || !listing.complete) {
+      return created;
+    }
+    const listed = listedByKey(listing.items, write.list.keyField).get(one.names[0] ?? "");
+    return listed === undefined ? created : yield* updateOne(input, write, one, listed);
   });
 }
 
