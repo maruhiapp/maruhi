@@ -2302,6 +2302,10 @@ names are not case sensitive」)ので、`Production` / `PRODUCTION` の Environ
 (名前だけで判定でき平文が要らない。いまは `plan` で `+` に見え `apply` で「Nothing was sent」)— `classifyVariable` = sync-plan.ts
 の変更なので**所有者確認事項**として申し送り (3) に据え置き(pullfrog 自身も「追認と優先度の提案」)。docs の「GitHub Actions
 secrets」節に「`plan` はまだこの名前に印を付けず、`apply` が送る前に拒む」の 1 文を足して、`!` の定義とのずれを隠さない。
+(4) pullfrog の nit: `buildChildEnvironment` は `MARUHI_*` 以外の親環境を全部ベンダー CLI の子に渡すので、bootstrap の
+`GH_TOKEN` を**リポジトリ secret** に置くと他の leg の `ci sync` が起動する wrangler / vercel にも届く(Environment secret なら
+他 leg では空文字)→ github-actions.mdx の bootstrap の箇条に「リポジトリ secret だと全 job と exec ターゲットのベンダー CLI に
+届く(maruhi は `MARUHI_*` 以外を子に渡す)」の 1 文を足し、Environment secret に置く理由をもう 1 つ明示。
 
 **確認できなかったこと(人間タスクに追加)**: **実リポジトリでの `gh secret set` の通し**(レシピ・`sync apply` の gh ターゲット・
 標準形 ② の gh ターゲット〔Environment secret の `GH_SECRETS_TOKEN` が承認後の job にだけ届くこと・他の leg で空文字になること〕)、
