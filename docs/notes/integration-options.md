@@ -1765,6 +1765,13 @@ getting-started の Next steps に 1 文、action の README は**action の参�
 他の action は SHA)/ 英語(docs)・日本語(裁定録・コミット・PR)/ 新規依存ゼロ(YAML は `Bun.YAML`)/ エージェント環境に関わる
 変更なし / スコープ(SY4 / SY5 / SY6 / `--all` / `sync diff` / マーケットプレイス / Windows ランナーは取り込まない)。
 
+**改訂 1(2026-09-08、Cursor Bugbot の初回レビュー〔5e138fa〕)**: 標準形 ② の `sync` job の `if: needs.targets.outputs.list != '[]'` は
+独自の `if` であり、GitHub は job の `if` に状態関数が無いとき暗黙の `success()` を置き換えうる(docs は「all jobs that need it are
+skipped unless the jobs use a conditional expression that causes the job to continue」と言い、独自の式がそれに当たるかを明言しない)
+→ `targets` が失敗(不在ターゲット)したとき出力が空文字で条件が真になり、`fromJson('')` の別エラーで落ちる形を作らない
+ため、**`if: success() && needs.targets.outputs.list != '[]'`** と明示(暗黙の規則に依存しない — 綴りの一致で免除しないのと
+同じ規律)。機械検査の期待値とテンプレートのコメントを更新。docs の説明文は変えない(「stops with the target's name」のまま)。
+
 **SY4 以降への申し送り(SY3 完了)**: (1) **SY4** Netlify(http プリセットの宣言 1 つ + モック応答 — 第 2 段の裁定録の http
 プリセットの形)。(2) **SY5** `gh secret set`(第 1 段 = レシピ、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形が自然。
 第 3 段の `GH_ENV` / `ghArgument` を流用可。bootstrap は fine-grained PAT か App トークン — 補足 8 Q1)。(3) 全ターゲット一括の plan

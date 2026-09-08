@@ -273,7 +273,9 @@ jobs:
 
   sync:
     needs: targets
-    if: needs.targets.outputs.list != '[]'
+    # success(): a custom `if` decides on its own, so say that a failed
+    # targets job (unknown target) skips the sync rather than starting it
+    if: success() && needs.targets.outputs.list != '[]'
     strategy:
       fail-fast: false
       matrix:

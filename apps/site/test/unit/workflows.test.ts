@@ -248,7 +248,8 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
 
     it("runs one target per matrix leg, in the Environment named after it, one run per target at a time", () => {
       expect(sync.needs).toBe("targets");
-      expect(sync.if).toBe("needs.targets.outputs.list != '[]'");
+      // 独自の `if` は暗黙の success() を置き換えうるので明示する(targets の失敗で sync を始めない — Bugbot 指摘)
+      expect(sync.if).toBe("success() && needs.targets.outputs.list != '[]'");
       expect(sync.strategy).toEqual({
         "fail-fast": false,
         matrix: { target: "${{ fromJson(needs.targets.outputs.list) }}" },
