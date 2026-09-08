@@ -53,21 +53,27 @@ jobs:
 
       # 既知脆弱性の監査(GHSA アドバイザリ照合)。厳密ピン留め運用は意図しない
       # 更新を防ぐ代わりに既知 CVE の放置に気づきにくいため、CI で常時検知する
-      # --ignore は Blume(apps/site — ビルド時のみ動くメンテナ側ツールチェーン。配信物に
-      # 載らない)の推移依存で、上流に修正版が無いもの(2026-09-03 時点。DP2 — PR #147):
+      # --ignore はビルド・テスト時のみ動くメンテナ側ツールチェーンの推移依存で、
+      # 範囲内更新では直せないもの(ignore は ID 単位。新しい advisory は引き続き検知する):
       #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2(ICNS / JXL / HEIF の
       #     解析で無限ループ = DoS)。latest が 2.0.2 で修正版なし。Blume の画像最適化がビルド時に
       #     読むのは自リポジトリの PNG / SVG のみで、信頼できない画像を渡す経路がない
+      #     (2026-09-03 時点。DP2 — PR #147。Blume の更新で消える見込み)
       #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0(ReDoS)— @astrojs/vercel > @vercel/routing-utils
       #     の厳密ピン。Vercel へはデプロイしないため実行経路がない。名前単位の overrides で 6.3.0 に
-      #     すると router(express 5 系、^8)まで巻き込むので採らない
-      # いずれも Blume の更新で消える見込み。新しい advisory は引き続き検知する(ignore は ID 単位)
+      #     すると router(express 5 系、^8)まで巻き込むので採らない(同上)
+      #   GHSA-rgj7-g3m4-5g8c: sharp@0.35.2(同梱 libheif の脆弱性。修正は 0.35.4)—
+      #     miniflare が 0.35.2 を完全ピンしており範囲内更新で直せない(bun audit fix は無効)。
+      #     miniflare は @cloudflare/vitest-plugin / wrangler dev のテスト・開発専用で、
+      #     信頼できない HEIF 画像を渡す経路がなく配信物にも載らない。blume > astro 側の sharp は
+      #     既に 0.35.4。wrangler / miniflare の更新で消える見込み(2026-09-08 時点。PR #161)
       - name: Audit (bun audit)
         run: >-
           bun audit
           --ignore GHSA-w3rx-r6r6-pgpr
           --ignore GHSA-5p2g-fcmc-qvqq
           --ignore GHSA-9wv6-86v2-598j
+          --ignore GHSA-rgj7-g3m4-5g8c
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
