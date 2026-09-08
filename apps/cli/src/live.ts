@@ -135,7 +135,7 @@ function execStartFailure(input: ExecInput, error: unknown): string {
     return `Cannot run ${input.command[0] ?? ""}: the target's working directory does not exist or is not a directory (${error.cwd}). Fix the target's cwd in the sync config`;
   }
   const code = (error as NodeJS.ErrnoException).code;
-  return `Cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it installed and on PATH, or named by the target's command in the sync config? maruhi never downloads a vendor CLI: install it and sign in with it, then retry`;
+  return `Cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it installed and on PATH, or named by a \`command\` in the sync config? maruhi never downloads a vendor CLI: install it and sign in with it, then retry`;
 }
 
 function makeBunProcessRunner(): ProcessRunnerShape {

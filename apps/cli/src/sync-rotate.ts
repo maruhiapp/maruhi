@@ -31,7 +31,7 @@ import type { MaruhiClient } from "./api.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { ReencryptedVariable } from "./env-rotate.ts";
-import { type CliError, usageError } from "./errors.ts";
+import { asCleanupOutcome, type CliError, usageError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
@@ -236,28 +236,6 @@ function reportTarget(
         return;
     }
   });
-}
-
-/**
- * 後始末の失敗の仕分け: 証拠(再実行では解消しない矛盾)はそのまま失敗として
- * 通し、それ以外は値として持ち帰って警告にする。
- */
-function asCleanupOutcome<A, R>(
-  effect: Effect.Effect<A, CliError, R>,
-): Effect.Effect<
-  | { readonly kind: "ok"; readonly value: A }
-  | { readonly kind: "failed"; readonly error: CliError },
-  CliError,
-  R
-> {
-  return effect.pipe(
-    Effect.map((value) => ({ kind: "ok", value }) as const),
-    Effect.catch((error: CliError) =>
-      error.evidence === true
-        ? Effect.fail(error)
-        : Effect.succeed({ kind: "failed", error } as const),
-    ),
-  );
 }
 
 /**

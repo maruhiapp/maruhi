@@ -40,6 +40,10 @@ export interface SyncInitInput {
   readonly command: string | undefined;
   readonly tokenEnvironment: string | undefined;
   readonly tokenName: string | undefined;
+  /** push 直後の同期(`--on-push apply|workflow` — 第 3 段)。 */
+  readonly onPush: string | undefined;
+  /** `--on-push workflow` の workflow ファイル名(`--workflow`)。 */
+  readonly workflow: string | undefined;
   /** `key=value` の列(`--option`)。boolean オプションは true / false。 */
   readonly options: readonly string[];
 }
@@ -114,6 +118,8 @@ function targetObjectOf(
     command: input.command,
     token,
     options: Object.keys(options).length === 0 ? undefined : options,
+    onPush: input.onPush,
+    workflow: input.workflow === undefined ? undefined : { file: input.workflow },
   });
 }
 
@@ -170,6 +176,11 @@ export function syncInitOp(input: SyncInitInput): Effect.Effect<void, CliError, 
     if (input.project === undefined) {
       yield* logNote(
         'add "project": "<project ID>" to pin the config to one project (`maruhi sync` then refuses a --project flag that names another)',
+      );
+    }
+    if (input.onPush === "workflow") {
+      yield* logNote(
+        `the workflow must have a workflow_dispatch trigger with a "target" input and run \`maruhi ci sync\` for it (see the Deploy targets page in the docs). \`maruhi push\` triggers it with gh, which must be installed and signed in`,
       );
     }
   });

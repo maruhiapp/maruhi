@@ -14,7 +14,7 @@ SUBCOMMANDS
   logout      Revoke this machine's token and remove it from the OS keychain
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
-  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -45,7 +45,7 @@ SUBCOMMANDS
   logout      Revoke this machine's token and remove it from the OS keychain
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
-  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -129,7 +129,7 @@ GLOBAL FLAGS
 
 $ maruhi push --help
 DESCRIPTION
-  Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+  Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
 
 USAGE
   maruhi push [flags] <name>
@@ -141,6 +141,8 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --config string     Path to the sync config whose "onPush" targets are synced after the push (default: maruhi.sync.json in the working directory, when it exists and names this project)
+  --no-sync           Skip the sync after the push (the sync config is not read; run `maruhi sync apply` once after several pushes)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1095,6 +1097,8 @@ FLAGS
   --command string       exec driver: path of the installed vendor CLI (default: on PATH)
   --token-env string     http driver: maruhi environment ID that holds the vendor's token
   --token-name string    http driver: name of the maruhi variable that holds the vendor's token
+  --on-push string       Sync after every `maruhi push` to the environment: apply (from this machine) or workflow (trigger the repository's workflow with gh so CI syncs); needs --project
+  --workflow string      With --on-push workflow: the workflow file that runs `maruhi ci sync` (for example maruhi-sync.yml)
   --option string        Preset option as key=value (repeatable; for example environment=production, name=my-worker)
 
 GLOBAL FLAGS
