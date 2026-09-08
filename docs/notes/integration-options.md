@@ -2041,7 +2041,9 @@ re-check the target after the failed create: <理由>」を添えて返す(届�
 畳んでいる」は成り立たない。docs の「Variables written before a failure stay in the receipt」が削除バッチの失敗では偽)。SY2 から
 ある形で次の apply で自己修復するが、直し方は小さい。候補: (i) `runBatches` で `runBatch` の CliError を受ける(sync-plan.ts を
 触る)/ (ii) **`runBatch` 自身が型付きエラーをそのバッチの失敗に変える**(全ドライバ・全バッチ種別に一様。`runBatch` の失敗型が
-`never` になり、sync-plan.ts は無変更のまま呼び出し側の畳みが必ず走る)/ (iii) 据え置いて docs と裁定録の文を直す。(ii) を採った
+`never` になり、sync-plan.ts は無変更のまま呼び出し側の畳みが必ず走る。**http の**全プリセット・全バッチ種別に一様で、exec の
+`runInvocations` は別の経路 — 後の起動が失敗すると前の分が残らない形は従来どおり。起動の失敗は普通 1 つ目で起きる〔申し送り〕)/
+(iii) 据え置いて docs と裁定録の文を直す。(ii) を採った
 (`writeOneByOne` の受けは create-or-update の**中の**届いた分を保つために残る)。態を追加(書き込みバッチは届き、削除バッチの
 GET が 503 × 3 → exit 1・ALPHA はレシートに残り GONE も残る)。文面の nit(`sync-plan.ts` の「refused the request」が試行の
 使い切りにも付く — 下の行が理由を言う)は sync-plan.ts の既存文言なので据え置き、申し送りに。
@@ -2060,7 +2062,8 @@ bootstrap トークン(fine-grained PAT か App トークン — 補足 8 Q1)は
 (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。`create-or-update` / `lookup` の一般化で REST の
 先はほぼ宣言で載る。GraphQL(Railway / Fly.io)は `contentType` + `body` テンプレートで表せるが応答の読み(`ResponseKind`)が要る。
 (3) `describeDestination` のヘッダー行に `context`(Netlify)を出す小さな一般化(プリセットに `describe` を持たせる)と、
-`runBatches` の「refused the request」の文言(試行の使い切りにも付く — 改訂 5 の nit)— sync-plan.ts を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
+`runBatches` の「refused the request」の文言(試行の使い切りにも付く — 改訂 5 の nit)、exec の `runInvocations` で後の起動の
+失敗が前の分をレシートから落とす形(改訂 5 と同じ形。起動の失敗は普通 1 つ目で起きる)— sync-plan.ts を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
 (上の「確認できなかったこと」)。(6) 既存の未消化: `gh workflow run` の実機、Windows の実行体解決、実アカウント(Cloudflare /
 Vercel)での http / `ci sync` の通し、Vercel の一覧のページ分け、macOS のパイプ容量、`vercel env rm` の不在名、SY3 の workflow 2 本の
 実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。

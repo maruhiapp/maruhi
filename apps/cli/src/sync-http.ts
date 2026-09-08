@@ -1362,8 +1362,10 @@ function withRecheckFailure(
  * バッチの送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、その
  * バッチの失敗として返す: 呼び出し側(sync-plan.ts の runBatches)は前のバッチで
  * 届いた名前を畳んでいる途中で、ここで落とすとその進みごと消える(削除バッチの
- * 一覧・DELETE、upsert の 2 つ目以降のバッチ — pullfrog 指摘・改訂 5)。
- * create-or-update の書き込みは中で 1 変数ずつ受け、届いた分を保つ。
+ * 一覧・DELETE、upsert の 2 つ目以降のバッチ — pullfrog 指摘・改訂 5)。http の
+ * 全プリセット・全バッチ種別に一様(exec の runInvocations は別の経路で、起動の失敗は
+ * 従来どおり型付きエラーのまま — 申し送り)。create-or-update の書き込みは中で 1 変数
+ * ずつ受け、届いた分を保つ。
  */
 export function runBatch(
   input: HttpTargetInput,
