@@ -2320,10 +2320,114 @@ secrets を**真に**空にする形。bootstrap を maruhi の変数に置き�
 棚卸し。実機での通しが先。(2) **SY4 の残り**(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。
 (3) **sync-plan.ts の 3 点**(SY4 申し送り (3))+ 本セッションで見つけた 2 点: plan の `classifyVariable` に名前の制約(`constraints.
 name`)を載せて `!` で示す(いまは apply で「Nothing was sent」)、`describeDestination` に `repo`(gh)/ `context`(Netlify)を出す
-一般化(プリセットに `describe`)。(4) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。
+一般化(プリセットに `describe`)。**→ 済(下の「SY 系列の締め」— 2026-09-08)**。(4) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。
 (5) `actions/create-github-app-token` への差し替え手順(補足 8 Q1)は実機で通してから docs に。(6) 既存の未消化: `gh workflow run`
 の実機、Windows の実行体解決、実アカウント(Cloudflare / Vercel / Netlify)での通し、Vercel の一覧のページ分け、macOS のパイプ容量、
 `vercel env rm` の不在名、SY3 の workflow 2 本の実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
+
+### SY 系列の締め(sync-plan.ts の積み残し 5 点)— 実装時の裁定録(2026-09-08)
+
+対象は SY5 申し送り (3) = SY4 申し送り (3) の 3 点(`describeDestination` の一般化・`runBatches` の「refused」の誤用・exec の
+`runInvocations` の起動失敗の畳み)+ SY5 で見つけた 2 点(plan の名前検査・大小衝突の集合検査の裁定)。**所有者裁定(セッションの
+プロンプトで確定)**: (a) `sync-plan.ts` の変更を承認(SY2 第 1 段以来の「触らない前提」を解除)、(b) ROADMAP の SY4 を「第 1 波 =
+Netlify で完了扱い、残り候補は需要駆動」として `- [x]`、SY 系列の親項目も `- [x]`。仕様改訂・依存追加・新プリセット・レシート /
+設定形式の版上げは無し。各裁定点は同じループ(3 案以上 → 上位互換の探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、
+「新案なし」の周では壊れ方(1 つ目の起動失敗でレシートを書かない規律・`blocked` と `delete` の同居・rename `foo` → `FOO` の
+大小畳み delete・`describe` に秘密が載らないか・`ci sync` / push 直後の同じ経路・既存テストの文面固定)を問うた。
+
+**前提の確認(コードで確かめた事実 — 2026-09-08)**: (1) `classifyVariable`(sync-plan.ts)は `nonEmpty` / `maxBytes` だけを見て、
+SY5 の `constraints.name` は apply の `prepareWork` → `checkValueConstraints`(sync-exec.ts)でしか検査されない = 小文字名は
+`plan` で `+` に見え `apply --yes` で「Nothing was sent」(pullfrog が #160 で 2 度指摘)。(2) `describeDestination` は
+`options.environment` しか見ない(Netlify の `context`・gh の `repo` / `app` はヘッダー行に出ない)。(3) `runBatches` の
+`failure.what` は常に `${label} refused the request`(429 / 5xx × 3 の試行の使い切りにも付く — SY4 改訂 5 の nit)。
+(4) `runInvocations` は `runner.exec` の型付きエラー(`CliError` — live.ts の `execStartFailure`)で `Effect.gen` ごと中断し、
+それまでに届いた名前が `written` / `deleted` に畳まれずレシートに残らない(http は SY4 改訂 5 で `runBatch` = `never` 済)。
+(5) 偽 `ProcessRunner` の `setExecHandler` は `ExecOutcome | CliError` を返せる(第 3 段前提 (7))— 「2 つ目の起動が失敗」の態は
+support の変更なしに書ける(sync-command.test.ts の「偽ランナーは起動失敗を表現できない」というコメントは古かった → 削除)。
+(6) `computePlan` は `selected` と `previous`(レシート)の両方を持つ = 集合の検査を置ける唯一の場所(裁定 E の入力)。
+(7) `ci sync` も `reviewPlan` を通る(`receipt: null` で計画し `{kind: "none-in-ci"}` で見直す — `blocked` の検査は同じ)= plan の
+名前検査は CI 経路にも効く。
+
+**D. `runInvocations` の起動失敗の畳み(最初に確定 — 失敗の方向)** — 列挙: (i) **`runInvocations` の中で `runner.exec` を
+`Effect.catch` し、その呼び出しの失敗として `DriverResult` に返す(失敗型 = `never`。http の `runBatch` と同じ形)** / (ii) 呼び出しの
+外側で `Effect.either` に包み分岐 / (iii) `ProcessRunner.exec` 自体を `never` にして `ExecOutcome` に起動失敗の口を足す。第 1 周の
+新案: なし。第 2 周(壊れ方): (iii) は `run` にも効く広い変更で、exec の全呼び手の意味が変わる(スコープ外)。(ii) は畳む場所が
+ループの外に出て `written` / `deleted` のローカル状態から離れ、同じ畳みをもう 1 段書く。(i) は「型付きエラーで先に届いた分が
+レシートから消える」形が**型から**消える(`DriverResult` の失敗型 = `never`)。選定 = **(i)**。`what` =
+`${command} could not be started`(`execStartFailure` の「Cannot start …: install it …」は完成した文で、`failDriver` の
+「… while writing X」と繋げると読めないため、`CliError.message` は `output` に置いてベンダー出力と同じ場所で見せる — 値は運ばない)。
+付随裁定: `failDriver` の「Its output is shown above with values filtered out.」は `output` が空のとき言わない(嘘になる)。
+1 つ目の起動失敗 = `written` / `deleted` が空 → `sameVariables` でレシートを書かない既存規律がそのまま成立(態で固定)。
+`sync-push` 経路は `asCleanupOutcome` で警告・終了コード 0 のまま(態を更新)、`ci sync` はレシート無しで同じ `failDriver` の文面
+(態を追加)。棄却: (ii)(重複した畳み)、(iii)(スコープ外)。
+
+**A. plan の名前検査の置き場(D の次)** — 列挙: (i) **`classifyVariable` に `constraints.name` の分岐を足す(理由 =
+`constraints.name.rule` をそのまま)** / (ii) `SourceVariable` に `nameProblem` を事前計算して載せる / (iii) `checkNameConstraints`
+を sync-exec.ts に切り出し、plan と apply が同じ関数を呼ぶ。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は `SourceVariable` の
+作り手(通常 / CI の 2 か所)に検査が散り、plan の判定が入力の作り方に依存する。(iii) は関数を共有しても呼び出しの形が違い
+(plan = `PlanEntry`、apply = 型付きエラー)、共有できる本体は `regex.test` の 1 行 = 切り出しの得が無い。二重管理の懸念は
+「規則の正が `constraints.name`(宣言)1 か所」で消えている — plan と apply のどちらの検査も同じ宣言を読む(ベンダー固有の分岐を
+sync-plan.ts に足さない規律も保たれる: 分岐は宣言の有無だけ)。選定 = **(i)**。理由文 =
+`a name ${driverLabel} cannot store as is: ${constraints.name.rule}`(**名前と規則だけを運ぶ** — 値・環境・オプションは載せない)。
+`reviewPlan` の失敗文に「rename them」を足し、複数の理由が混在しても行が言うよう「(each line above says which)」を添えた。
+apply の `checkValueConstraints` は防衛線として据え置き(plan と apply の一致: 平文の要らない制約〔空・サイズ・名前〕は plan、
+平文の要る制約〔UTF-8・末尾改行〕は apply)。docs の「`plan` does not mark such a name yet」の 1 文は削除。棄却: (ii)(検査の分散)、
+(iii)(共有の実体が無い)。
+
+**E. 大小衝突の集合検査(大文字限定を緩めるか — A と同時に確定)** — 列挙: (i) **据え置き**(大文字限定 = 1 変数ずつの検査で衝突が
+構造的に起きない。小文字名は「rename せよ」)/ (ii) `constraints.name` に `foldCase` を足し、plan で選択同士・選択 × レシート
+(削除)を畳んで衝突を `blocked` にし、regex から大文字限定を外す(小文字名も通る)/ (iii) 緩めるが衝突は apply でだけ止める。
+第 1 周の新案: なし。第 2 周(壊れ方): (iii) は plan と apply の非対称 = 今回消す方向の逆で即棄却。(ii) は rename `foo` → `FOO` の
+`+ FOO` と `- foo` の同居に解が要る — 削除を落として update に読み替えれば独自の `if` が暗黙の規則(delete はレシートの名前どおり)
+を置き換え、`blocked` にすれば rename が二段階になる。さらに `maruhi run` は大小違いの同居を既に拒む(Windows の環境変数)ので、
+(ii) が通せるようになる名前の実益が小さい。(i) は SY5 裁定 C の理由(無言の破壊を構造で塞ぐ)がそのまま生きており、A で plan の
+`!` になったことで「apply まで気づけない」という UX の穴も塞がった。選定 = **(i) 据え置き**。**`blocked` と `delete` の同居**
+(レシートに今の規則で不正な名前)は**削除だけ通す**: 削除は値を運ばず、gh の不正名 delete は 404 → `failDriver` のレシート
+作り直しの案内が既に当たる。不正な名前が gh ターゲットのレシートに居るのは**プリセットを切り替えた場合だけ**(apply は不正名を
+記録する前に止まる。レシートは preset を記録しない)で、その場合は削除自体が別プラットフォーム由来 = 名前規則の問題ではなく
+レシートのリセットで解く(docs の Receipts が既に案内)。棄却: (ii)(rename の同居に良い解が無く実益が小さい)、(iii)(非対称)。
+
+**B. `describeDestination` の一般化** — 列挙: (i) `SyncPreset.describe?: (options) => string`(関数 — `isProduction` と同じ置き場)
+/ (ii) **`ExecPreset` / `HttpPreset` に `describeOptions: readonly string[]`(載せるオプション名の宣言 — データ)** / (iii) 全
+オプションを `k=v` で並べる。第 1 周の新案: なし。第 2 周(壊れ方): (iii) は boolean(`sensitive` / `secret`)や不透明な ID
+(`projectId` / `accountId` / `siteId`)まで並んで冗長。(i) は関数 = プリセットごとに文の組み立てを再発明し、宣言的プリセットの
+規律(データで表す)から一歩出る — `isProduction` が関数なのは**判定**だから。呼び名は「どのオプションをどの順で並べるか」だけ =
+データで足りる。(ii) は宣言順に、設定されている**文字列の値だけ**を並べる(boolean は型で落ちる)。トークン系は options に
+そもそも無く、ID 系は宣言に載せないことで冗長さも秘密の面も増やさない。選定 = **(ii)**。宣言: exec = workers `[name, environment]`
+/ vercel `[project, environment, gitBranch]` / gh `[repo, environment, app]`、http = workers `[name, environment]` / vercel
+`[environment, gitBranch]` / netlify `[context, branch]`。既存の文面「vercel production via exec」は `environment` を宣言に
+含めることで不変(既存テストは修正なしで通る)。棄却: (i)(データで足りるのに関数)、(iii)(冗長・非文字列が混ざる)。
+
+**C. 「refused the request」の文言** — 列挙: (i) **`HttpRequestResult.failure` に `what` を持たせ、失敗の作り手が言い分ける** /
+(ii) `runBatches` が `lines` の先頭から推定 / (iii) 中立な文言に一本化(「did not accept the request」)。第 1 周の新案: なし。
+第 2 周(壊れ方): (ii) は `lines` の形式への暗黙依存 = 伏せ字化や文面の変更で黙って壊れる。(iii) は「送ってすらいない」場合
+(ページ分けガード・Netlify の `is_secret` 更新ガード・一覧の失敗)にも accept 系の語が付き、誤読が残る。(i) は失敗を作る場所が
+何が起きたかを知っている。選定 = **(i)**。4 文型: `${label} refused the request`(非 2xx の拒否)/ `${label} did not confirm the
+write`(2xx だが応答の形が予期と違う)/ `the request to ${label} failed`(転送の失敗・リトライの使い切り — `runBatch` /
+`writeOneByOne` の `Effect.catch`)/ `maruhi did not send the request`(送信前のガード・一覧の失敗)。`sync-http.test.ts` の
+文面固定は新文言に更新(リトライ使い切り = 「the request to … failed」、Netlify の更新ガード = 「maruhi did not send the
+request」)。棄却: (ii)(脆い)、(iii)(誤読が残る)。
+
+**F. ROADMAP と裁定録** — 所有者裁定 (b) のとおり SY4 行と親項目を `- [x]` に(SY4 = 第 1 波完了扱いの注記付き)。この節が裁定録。
+
+**G. docs** — deploy-targets: `!` の定義に名前を足し「each line says which」と plan / apply の検査の分担(平文の要る規則は apply)
+を 1 文で、ヘッダー行(同期先の呼び名)の説明を追加、「GitHub Actions secrets」節の「`plan` does not mark such a name yet」を
+削除して `!` の記述へ、Receipts に「失敗した apply も届いた分を記録する(両ドライバ — 起動できなかった場合も)」を追記。
+github-actions.mdx: 「What can go wrong」の名前の項を「plan が `!` で先に示す」形へ。```sh は増やしていない(recipes.test.ts の
+禁止パターンの対象は不変)。
+
+**確認できなかったこと(人間タスク)**: 増減なし — 今回の変更はすべて偽ベンダー / 偽 API(`setExecHandler` の `CliError`・
+`MockServer`)で検証できる形で、SY5 の一覧(実リポジトリでの `gh secret set` の通し等)を据え置く。
+
+**次への申し送り(SY 系列 完了)**: (1) 入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(SY5 申し送り (1))は
+未検証のまま。(2) SY4 の残り候補(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動(1 プリセット
+1 PR)。(3) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。(4)
+`actions/create-github-app-token` への差し替え手順は実機で通してから docs に。(5) 実機の人間タスクは SY5 の一覧のまま。
+**SY 系列はこれで閉じ、ROADMAP の順序では次 = H4 法務**(ToS / プライバシーポリシー / AUP・サブプロセッサ整理・security@ 窓口・
+ステータスページ・アカウント削除〔gap 6〕・通知経路〔gap 8〕・法務文書の配信面 = web の未認証静的ページ〔hosted-design.md §9〕。
+人間タスクの列挙は hosted-design.md §7)。同期まわりから H4 へ渡す事実: 同期先プラットフォーム(Vercel / Cloudflare / Netlify /
+GitHub)は**サブプロセッサではない**(ユーザーが自分のアカウントへ自分の資格で書く。maruhi のサーバーは値に触れない)、レシートは
+E2EE でサーバーは読めない、テレメトリ・外部送信は無い — プライバシーポリシーの「maruhi が見られないもの」の節にそのまま使える。
 
 ---
 
