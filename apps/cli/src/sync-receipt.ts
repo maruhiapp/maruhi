@@ -122,6 +122,9 @@ export interface LoadedReceipt {
 /**
  * Reads the receipt for `target` from the receipts environment (a verified,
  * decrypted pull of that environment — the same path as `maruhi pull`).
+ * A receipt written by another preset is refused: its deliveries describe a
+ * different platform, so acting on it (deletes by name, versions treated as
+ * delivered) would be wrong — reset the receipt instead.
  */
 export function loadReceipt(input: {
   readonly client: MaruhiClient;
@@ -131,6 +134,8 @@ export function loadReceipt(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
   readonly target: string;
+  /** ターゲットの現在の preset(レシートの書き手の preset と突合する)。 */
+  readonly preset: PresetId;
 }): Effect.Effect<LoadedReceipt, CliError> {
   return Effect.gen(function* () {
     const pulled = yield* pullVariables(input);
@@ -153,6 +158,24 @@ export function loadReceipt(input: {
       return yield* Effect.fail(
         cliError(
           `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} is not a valid sync receipt (${decoded}). Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
+        ),
+      );
+    }
+    // preset が違うレシートの届け先は別のプラットフォーム: 名前で消す削除も
+    // 「届いた」扱いの version も意味を失う。作り直しを名指しで案内する。
+    // このレシートは旧届け先に何が居るかの唯一の記録なので、消させる前に
+    // 名前の一覧をここで見せる(pullfrog 指摘 — driverFailureMessage の
+    // pendingHint と同型。maruhi は旧届け先を消しに行かない: 設定が今指して
+    // いない先に書く・消すことはしない)
+    if (decoded.preset !== input.preset) {
+      const delivered = Object.keys(decoded.variables).toSorted();
+      const orphanHint =
+        delivered.length === 0
+          ? ""
+          : ` Those deliveries stay at the ${decoded.preset} destination and this receipt is their only record, so remove them there yourself first: ${delivered.map(displayText).join(", ")}.`;
+      return yield* Effect.fail(
+        cliError(
+          `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} was written by the ${decoded.preset} preset, but target ${displayText(input.target)} is now configured with preset ${input.preset}, so its deliveries do not describe this destination.${orphanHint} Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
         ),
       );
     }

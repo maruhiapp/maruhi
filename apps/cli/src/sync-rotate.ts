@@ -163,6 +163,7 @@ function advanceTarget(
       resync: input.resync,
       floor: input.receiptsFloor,
       target: target.name,
+      preset: target.preset.id,
     });
     yield* logWarnings(loaded.warnings);
     if (loaded.receipt === null) {

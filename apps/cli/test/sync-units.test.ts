@@ -826,6 +826,30 @@ describe("computePlan", () => {
     ]);
   });
 
+  it("名前の規則(gh = 大文字限定)は plan で blocked になり、レシートだけにある名前は規則に関わらず delete のまま", () => {
+    const gh = parsed(githubTarget({ variables: "all" }));
+    const result = plan({
+      targetOverride: gh,
+      source: [
+        { name: "API_KEY", version: 2 },
+        { name: "apiKey", version: 1 },
+      ],
+      // レシートに残った名前が今の規則で不正でも、削除は値を運ばないので通す
+      receipt: { API_KEY: 2, oldName: 1 },
+    });
+    expect(result.entries).toEqual([
+      { action: "unchanged", name: "API_KEY", version: 2 },
+      {
+        action: "blocked",
+        name: "apiKey",
+        version: 1,
+        reason:
+          "a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_",
+      },
+      { action: "delete", name: "oldName", previousVersion: 1 },
+    ]);
+  });
+
   it("明示リストに無い名前は失敗(値の名前だけを言う)", () => {
     const exit = Effect.runSyncExit(
       computePlan({

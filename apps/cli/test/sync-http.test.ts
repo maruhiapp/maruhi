@@ -623,6 +623,10 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.cloudflare.com with the token from variable CF_API_TOKEN in environment tokens",
     );
+    // ヘッダー行はプリセットの describeOptions(name / environment)で同期先を名指す
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Sync plan for target worker (environment prod -> cloudflare-workers my-worker staging via http)",
+    );
     expect(fixture.env.logs.join("\n")).toContain(
       "Applied to target worker: 2 variables written, 0 deleted",
     );
@@ -721,9 +725,10 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     });
     expect(await sync(fixture2, "apply", "worker")).toBe(1);
     expect(down.requests).toHaveLength(3);
-    expect(fixture2.env.errors.join("\n")).toContain(
-      "the Cloudflare API answered 503 (3 attempts)",
-    );
+    const errors2 = fixture2.env.errors.join("\n");
+    expect(errors2).toContain("the Cloudflare API answered 503 (3 attempts)");
+    // 試行の使い切りは「拒否」ではない — 送信の失敗として言う
+    expect(errors2).toContain("the request to the Cloudflare API failed while writing");
     expectNoSecretLeak(fixture2.env, down.requests);
   });
 
@@ -1054,6 +1059,10 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.netlify.com with the token from variable NETLIFY_TOKEN in environment tokens",
     );
+    // ヘッダー行はプリセットの describeOptions(context / branch)で同期先を名指す
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Sync plan for target site (environment prod -> netlify deploy-preview via http)",
+    );
     expect(fixture.env.logs.join("\n")).toContain(
       "Applied to target site: 2 variables written, 0 deleted",
     );
@@ -1298,9 +1307,11 @@ describe("maruhi sync apply (http, Netlify)", () => {
     ]);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
+    // 試行の使い切りは「拒否」ではない — 送信の失敗として言う
     expect(errors).toContain(
-      "while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+      "the request to the Netlify API failed while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
+    expect(errors).not.toContain("refused the request");
     expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
     expectNoSecretLeak(fixture.env, down.requests);
   });
@@ -1340,7 +1351,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
     expect(errors).toContain(
-      "while deleting GONE (delivered before that: 1 variable written, 0 deleted)",
+      "the request to the Netlify API failed while deleting GONE (delivered before that: 1 variable written, 0 deleted)",
     );
     expect(await decryptReceipt(fixture, "site")).toMatchObject({
       variables: { ALPHA: 3, GONE: 1 },
@@ -1393,8 +1404,9 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(errors).toContain(
       "BETA already exists at the target with is_secret off, and the config asks for it on. Netlify cannot turn an existing variable into a secret",
     );
+    // 送っていないものを「拒否された」と言わない
     expect(errors).toContain(
-      "the Netlify API refused the request while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+      "maruhi did not send the request while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
     // BETA には何も送っていない(値は readable のまま = maruhi の値を置いていない)
     expect(netlify.requests.map((request) => request.method)).toEqual(["GET", "POST"]);
@@ -1462,9 +1474,10 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture3, "apply", "site")).toBe(1);
-    expect(fixture3.env.errors.join("\n")).toContain(
-      "HTTP 401 while listing variables at the target",
-    );
+    const listingErrors = fixture3.env.errors.join("\n");
+    expect(listingErrors).toContain("HTTP 401 while listing variables at the target");
+    // 一覧には応答が返っている: 「送っていない」ではなく一覧の失敗として言う
+    expect(listingErrors).toContain("the Netlify API did not list the existing variables");
     expect(fixture3.receipts.writes).toEqual([]);
     expectNoSecretLeak(fixture3.env, wrongToken.requests);
   });

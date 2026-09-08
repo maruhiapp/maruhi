@@ -565,15 +565,18 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.env.logs.join("\n")).toContain("~ ALPHA\tversion 3 -> 4");
   });
 
-  it("ベンダー CLI が無い(起動失敗)も警告で 0", async () => {
+  it("ベンダー CLI が無い(起動失敗)も警告で 0(起動失敗はその呼び出しの失敗 — 文面は failDriver の形)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     fixture.env.setExecHandler(() =>
       cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
     );
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
-    expect(fixture.env.errors.join("\n")).toContain(
-      "Warning: the push is done, but target web could not be synced (Cannot start vercel (ENOENT)",
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "Warning: the push is done, but target web could not be synced (vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
+    // 何も届いていないのでレシートは書かない
+    expect(fixture.receipts.writes).toEqual([]);
   });
 
   it("運べない値(Vercel の末尾改行)は警告で、値は送られない", async () => {

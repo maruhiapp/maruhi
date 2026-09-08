@@ -84,6 +84,12 @@ export interface ExecPreset {
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
   /**
+   * 同期先の呼び名を組み立てるオプション名(plan / apply のヘッダー行 —
+   * sync-plan.ts の describeDestination)。宣言順に、設定されている文字列の値だけが
+   * 並ぶ。非機密のオプションだけを載せる(トークン系のオプションはそもそも無い)。
+   */
+  readonly describeOptions: readonly string[];
+  /**
    * オプション同士の整合(1 つの `OptionSpec` では表せない — GitHub の Environment
    * secrets は actions アプリだけ、など)。設定時に呼ばれ、不整合なら
    * `<option>: <理由>` の形の文字列を返す(http プリセットの `check` と同じ契約)。
@@ -156,6 +162,8 @@ export const EXEC_PRESETS = {
       environment: { type: "string", required: false },
       config: { type: "string", required: false },
     },
+    // name 未設定 = wrangler の設定ファイルが持つ(cwd の出力行で見える)
+    describeOptions: ["name", "environment"],
   },
   vercel: {
     command: "vercel",
@@ -200,6 +208,8 @@ export const EXEC_PRESETS = {
       scope: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
+    // project 未設定 = Vercel CLI の linked directory が決める(cwd の出力行で見える)
+    describeOptions: ["project", "environment", "gitBranch"],
   },
   "github-actions": {
     command: "gh",
@@ -254,6 +264,8 @@ export const EXEC_PRESETS = {
       },
       app: { type: "string", required: false, values: GITHUB_SECRET_APPS },
     },
+    // repo 未設定 = gh が cwd の git remote から解く(cwd の出力行で見える)
+    describeOptions: ["repo", "environment", "app"],
     // Environment secrets は actions アプリだけ(gh shared.IsSupportedSecretEntity)。
     // gh は値を stdin から読んだ**後**にこれを拒むので、設定の段階で止める
     check: (options) =>
