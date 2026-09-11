@@ -33,6 +33,8 @@ maruhi login
 
 `maruhi login` opens your browser for a GitHub sign-in and shows a confirmation code in both places — compare them before approving. During the private preview, creating an account requires an invite code; see [how to get access](https://maruhi.app/#access) on the landing page.
 
+The token is stored in the OS keychain. On a headless Linux box, in WSL, or in a dev container there may be no keychain yet and this command fails — [Keychain on Linux and in containers](/docs/linux-keychain) shows the five-line setup.
+
 ## 4. Generate your master key (first time only)
 
 ```sh
@@ -58,4 +60,4 @@ Commands that display plaintext values are refused when the CLI detects it is no
 
 ## Next steps
 
-Deploying to Cloudflare Workers, Vercel, or Netlify, or keeping a few GitHub Actions secrets in step with maruhi? [Deploy targets](/docs/deploy-targets) shows how to copy values there with `maruhi sync` and the platform's CLI or API. Running tests or deploys in GitHub Actions? [GitHub Actions](/docs/github-actions) shows how a job leases values with no secrets stored on GitHub.
+Deploying to Cloudflare Workers, Vercel, or Netlify, or keeping a few GitHub Actions secrets in step with maruhi? [Deploy targets](/docs/deploy-targets) shows how to copy values there with `maruhi sync` and the platform's CLI or API. Running tests or deploys in GitHub Actions? [GitHub Actions](/docs/github-actions) shows how a job leases values with no secrets stored on GitHub. Working on a server, in WSL, or in a dev container where sign-in fails? [Keychain on Linux and in containers](/docs/linux-keychain) has the setup.
