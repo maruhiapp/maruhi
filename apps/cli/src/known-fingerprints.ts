@@ -86,6 +86,13 @@ export interface FingerprintBookConsult {
   /** 表示用のファイルパス(エントリ削除で儀式を強制再実行できる導線)。 */
   readonly filePath: string;
   /**
+   * 帳の記録と提示指紋の**不一致**の警告(一致・記録なしでは no-op)。フラグ
+   * 経路の判定**後**に呼ぶ — フラグが提示指紋と一致していて帳だけが古い場合
+   * (正当な鍵更新の直後にフラグで回す等)に「the out-of-band check is
+   * required again」がフラグ成功と矛盾して出るのを避けるため。
+   */
+  readonly warnIfChanged: Effect.Effect<void, never, CliIo>;
+  /**
    * 儀式 / フラグ照合の**成功後**に呼ぶ追記。書き込み失敗は警告に落とす
    * (fail-open — 帳は SHOULD 水準で、儀式の成立を妨げない)。
    */
@@ -112,11 +119,12 @@ export function consultFingerprintBook(input: {
         `the verified-fingerprint book is corrupt and was ignored: ${book.filePath} — inspect it, and delete it if the change was not intentional`,
       );
     }
-    if (looked.state === "hit" && looked.entry.fingerprintHex !== input.fingerprintHex) {
-      yield* logWarning(
-        `this fingerprint differs from the one verified for ${displayText(input.userId)} on this machine on ${formatUtcMinutes(looked.entry.verifiedAtMs)}. The person may have legitimately rebuilt their key (\`maruhi key generate\`), or this is not their key — the out-of-band check is required again`,
-      );
-    }
+    const warnIfChanged =
+      looked.state === "hit" && looked.entry.fingerprintHex !== input.fingerprintHex
+        ? logWarning(
+            `this fingerprint differs from the one verified for ${displayText(input.userId)} on this machine on ${formatUtcMinutes(looked.entry.verifiedAtMs)}. The person may have legitimately rebuilt their key (\`maruhi key generate\`), or this is not their key — the out-of-band check is required again`,
+          )
+        : Effect.void;
     const record = book.record(input.origin, input.userId, input.fingerprintHex).pipe(
       Effect.flatMap(() =>
         logNote(
@@ -133,7 +141,7 @@ export function consultFingerprintBook(input: {
       looked.state === "hit" && looked.entry.fingerprintHex === input.fingerprintHex
         ? looked.entry
         : null;
-    return { hit, filePath: book.filePath, record };
+    return { hit, filePath: book.filePath, warnIfChanged, record };
   });
 }
 

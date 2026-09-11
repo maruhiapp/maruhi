@@ -510,12 +510,16 @@ describe("maruhi invite accept", () => {
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
     // 2 回目(同じ招待者からの別招待に相当): 帳のヒットで 12 語の読み上げ
-    // 再実施は免除されるが、受諾そのものの明示確認(yes)は残る
+    // 再実施は免除されるが、受諾そのものの明示確認(yes)は残る。読み上げ
+    // 照合の指示 2 行はヒット時は出さない(指示直後に免除を言わない)
+    const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
     expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(2);
     expect(env.prompts[1]).toContain("Type yes to accept this invite attributed to");
-    expect(env.logs.join("\n")).toContain("not required again");
+    const secondRunLogs = env.logs.slice(logsBeforeSecondRun).join("\n");
+    expect(secondRunLogs).toContain("not required again");
+    expect(secondRunLogs).not.toContain("reads to you out of band");
     expect(bodies).toHaveLength(2);
   });
 

@@ -916,12 +916,16 @@ describe("maruhi member add", () => {
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
     // 2 回目(在籍済み → バックフィルのみの再実行): 帳のヒットで 12 語の
-    // 読み上げ再実施は免除されるが、付与そのものの明示確認(yes)は残る
+    // 読み上げ再実施は免除されるが、付与そのものの明示確認(yes)は残る。
+    // 読み上げ照合の指示 2 行はヒット時は出さない(指示直後に免除を言わない)
+    const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(2);
     expect(env.prompts[1]).toContain("Type yes to add");
-    expect(env.logs.join("\n")).toContain("not required again");
+    const secondRunLogs = env.logs.slice(logsBeforeSecondRun).join("\n");
+    expect(secondRunLogs).toContain("not required again");
+    expect(secondRunLogs).not.toContain("reads to you out of band");
 
     // 3 回目(エージェント環境): 帳のヒットがあっても代行は拒否(フラグ必須)
     env.setAgent({ isAgent: true, name: "test-agent" });
@@ -996,7 +1000,7 @@ describe("maruhi member add", () => {
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
-  it("検証済み指紋帳: --expect-fingerprint の一致成功も記録する(KF)", async () => {
+  it("検証済み指紋帳: --expect-fingerprint の一致成功も記録する(古い記録の警告はフラグ経路では出ない)(KF)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -1016,10 +1020,24 @@ describe("maruhi member add", () => {
       ],
     });
     const env = await startAddEnv(state, built.projectId);
+    // 古い記録(正当な鍵更新の直後にフラグで回す形): フラグが実指紋と一致して
+    // いるので「the out-of-band check is required again」を出さず、記録を上書き
+    await writeFile(
+      env.fingerprintBookPath,
+      JSON.stringify({
+        v: 1,
+        known: {
+          [env.serverOrigin]: {
+            [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+          },
+        },
+      }),
+    );
 
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
+    expect(env.errors.join("\n")).not.toContain("differs from the one verified");
     const recorded = await readBook(env);
     expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
       acceptor.fingerprintHex,

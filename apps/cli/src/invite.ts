@@ -335,22 +335,30 @@ function confirmInviterFingerprint(input: {
       input.link.inviterKeyFingerprintHex,
       "The link's inviter fingerprint (if=) is malformed",
     );
-    const lines = [
-      "Inviter's key fingerprint (if= in the link — mutual confirmation, CRYPTO_SPEC §6.5):",
-      `  inviter: ${displayText(input.link.inviterUserId)}`,
-      `  hex:  ${input.link.inviterKeyFingerprintHex}`,
-      "  word: " + formatWordList(words),
-      "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
-      "If they do not match, the link has been swapped (luring you into an attacker's project = reverse phishing) — abort the acceptance.",
-    ];
-    for (const line of lines) {
-      yield* io.log(line);
-    }
     const book = yield* consultFingerprintBook({
       origin: input.origin,
       userId: input.link.inviterUserId,
       fingerprintHex: input.link.inviterKeyFingerprintHex,
     });
+    // 帳のヒットを使えるのは対話 + フラグなしの経路だけ。そのときは読み上げ
+    // 照合の指示 2 行を落とす(通話を指示した直後に「要らない」と言わない)
+    const useHit =
+      book.hit !== null && input.expectInviterFingerprintHex === null && !io.agentProfile().isAgent;
+    const lines = [
+      "Inviter's key fingerprint (if= in the link — mutual confirmation, CRYPTO_SPEC §6.5):",
+      `  inviter: ${displayText(input.link.inviterUserId)}`,
+      `  hex:  ${input.link.inviterKeyFingerprintHex}`,
+      "  word: " + formatWordList(words),
+      ...(useHit
+        ? []
+        : [
+            "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
+            "If they do not match, the link has been swapped (luring you into an attacker's project = reverse phishing) — abort the acceptance.",
+          ]),
+    ];
+    for (const line of lines) {
+      yield* io.log(line);
+    }
     if (input.expectInviterFingerprintHex !== null) {
       if (input.expectInviterFingerprintHex !== input.link.inviterKeyFingerprintHex) {
         return yield* Effect.fail(
@@ -365,6 +373,7 @@ function confirmInviterFingerprint(input: {
       yield* book.record;
       return;
     }
+    yield* book.warnIfChanged;
     // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢。
     // 帳のヒットも代行の根拠にしない — フラグの明示指定だけが非対話経路)
     if (io.agentProfile().isAgent) {

@@ -293,23 +293,31 @@ function confirmInviteeFingerprint(input: {
       input.fingerprintHex,
       "The acceptance key's fingerprint is malformed",
     );
+    const book = yield* consultFingerprintBook({
+      origin: input.origin,
+      userId: input.targetUserId,
+      fingerprintHex: input.fingerprintHex,
+    });
+    // 帳のヒットを使えるのは対話 + フラグなしの経路だけ。そのときは読み上げ
+    // 照合の指示 2 行を落とす(通話を指示した直後に「要らない」と言わない)
+    const useHit =
+      book.hit !== null && input.expectFingerprintHex === null && !io.agentProfile().isAgent;
     const lines = [
       "Acceptor's key fingerprint (mutual confirmation — CRYPTO_SPEC §6.5):",
       `  invitee: ${displayText(input.targetUserId)}`,
       `  role:    ${input.role} (will be granted to this member)`,
       `  hex:  ${input.fingerprintHex}`,
       "  word: " + formatWordList(words),
-      "Check that this word list matches the 12 words the acceptor reads to you out of band (e.g. over a call).",
-      "If they do not match, the acceptance has been hijacked (an attacker's key was injected) — abort add_member and revoke the invite.",
+      ...(useHit
+        ? []
+        : [
+            "Check that this word list matches the 12 words the acceptor reads to you out of band (e.g. over a call).",
+            "If they do not match, the acceptance has been hijacked (an attacker's key was injected) — abort add_member and revoke the invite.",
+          ]),
     ];
     for (const line of lines) {
       yield* io.log(line);
     }
-    const book = yield* consultFingerprintBook({
-      origin: input.origin,
-      userId: input.targetUserId,
-      fingerprintHex: input.fingerprintHex,
-    });
     if (input.expectFingerprintHex !== null) {
       if (input.expectFingerprintHex !== input.fingerprintHex) {
         return yield* Effect.fail(
@@ -324,6 +332,7 @@ function confirmInviteeFingerprint(input: {
       yield* book.record;
       return;
     }
+    yield* book.warnIfChanged;
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
