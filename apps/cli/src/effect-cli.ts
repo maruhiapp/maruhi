@@ -1938,6 +1938,7 @@ function memberAddCommand(
       expectFingerprintHex,
       pins: loaded.pins,
       signerUserId: context.session.userId,
+      origin: context.session.origin,
       signingKeyPair: context.masterKeys.sigKeyPair,
       recipient: context.recipient,
       resync: context.resync,

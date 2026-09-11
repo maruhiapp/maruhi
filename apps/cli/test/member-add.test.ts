@@ -10,7 +10,7 @@
 //     (鍵履歴ゲート — 同一鍵の再実行では削除しない)
 //  4. duplicate-member-key の早期検査・受諾鍵不一致の在籍検出
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { WrappedDek } from "@maruhi/api-schema";
@@ -300,13 +300,28 @@ function invitationRow(
   };
 }
 
-async function startAddEnv(state: AddServerState, projectId: string): Promise<TestEnv> {
+async function startAddEnv(
+  state: AddServerState,
+  projectId: string,
+): Promise<TestEnv & { readonly serverOrigin: string }> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
   const env = await makeTestEnv();
   seedSession(env, server.origin, inviter);
   await seedConfig(env, { server: server.origin, defaultProject: projectId });
-  return env;
+  return { ...env, serverOrigin: server.origin };
+}
+
+/** 検証済み指紋帳(KF)のファイル内容を読み出す。 */
+async function readBook(
+  env: TestEnv,
+): Promise<Record<string, Record<string, { fingerprintHex: string; verifiedAtMs: number }>>> {
+  const json = await readFile(env.fingerprintBookPath, "utf8");
+  return (
+    JSON.parse(json) as {
+      known: Record<string, Record<string, { fingerprintHex: string; verifiedAtMs: number }>>;
+    }
+  ).known;
 }
 
 describe("maruhi member add", () => {
@@ -862,5 +877,144 @@ describe("maruhi member add", () => {
     );
     expect(env.errors.join("\n")).toContain("The acceptance may have been hijacked");
     expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  it("検証済み指紋帳: 儀式の成功が記録され、再実行はエージェント環境でも再入力なしで通る(KF)", async () => {
+    const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
+    if (acceptorFpBytes === null) throw new Error("fp");
+    const words = await fingerprintToWords(acceptorFpBytes);
+    if (!words.ok) throw new Error("words");
+
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+    ]);
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    // 1 回目: 儀式(最終語再入力)→ 成功が帳へ記録される
+    env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    const recorded = await readBook(env);
+    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
+      acceptor.fingerprintHex,
+    );
+    expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
+
+    // 2 回目(在籍済み → バックフィルのみの再実行): 儀式そのものは省略しないが、
+    // 帳のヒット(機械照合)で再入力が自動で通る — フラグ経路と等価なので
+    // エージェント環境でも通る
+    env.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    expect(env.logs.join("\n")).toContain("skipping the read-out ceremony");
+  });
+
+  it("検証済み指紋帳: 不一致は自動で通さず警告して儀式へ戻し、成功で上書きする(KF)", async () => {
+    const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
+    if (acceptorFpBytes === null) throw new Error("fp");
+    const words = await fingerprintToWords(acceptorFpBytes);
+    if (!words.ok) throw new Error("words");
+
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+    ]);
+    const invitation = invitationRow(
+      built.projectId,
+      await acceptanceFor(built.projectId, acceptor),
+    );
+    const ownDeks = [
+      await wrapDekFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        dek: dek1,
+        recipient: inviter,
+        signer: inviter,
+      }),
+    ];
+    const seedStaleBook = async (env: TestEnv & { readonly serverOrigin: string }) => {
+      await writeFile(
+        env.fingerprintBookPath,
+        JSON.stringify({
+          v: 1,
+          known: {
+            [env.serverOrigin]: {
+              [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+            },
+          },
+        }),
+      );
+    };
+
+    // 対話環境: 警告 + 儀式は省略されない。成功で帳が新指紋へ上書きされる
+    // (`maruhi key generate` による正当な鍵更新の反映)
+    const state = await makeAddServer({ built, invitation, ownDeks });
+    const env = await startAddEnv(state, built.projectId);
+    await seedStaleBook(env);
+    env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain("differs from the one verified");
+    const recorded = await readBook(env);
+    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
+      acceptor.fingerprintHex,
+    );
+
+    // エージェント環境 + 不一致 + フラグなし = 従来どおり拒否(auto-pass しない)
+    const state2 = await makeAddServer({ built, invitation, ownDeks });
+    const env2 = await startAddEnv(state2, built.projectId);
+    await seedStaleBook(env2);
+    env2.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["member", "add"], env2.layer)).toBe(1);
+    expect(env2.errors.join("\n")).toContain(
+      "Refused to run the acceptance-key confirmation ceremony",
+    );
+    expect(state2.appendedEntries).toHaveLength(0);
+  });
+
+  it("検証済み指紋帳: --expect-fingerprint の一致成功も記録する(KF)", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+    ]);
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(0);
+    const recorded = await readBook(env);
+    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
+      acceptor.fingerprintHex,
+    );
   });
 });

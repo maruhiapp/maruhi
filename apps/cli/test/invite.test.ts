@@ -489,6 +489,33 @@ describe("maruhi invite accept", () => {
     expect(bodies).toHaveLength(1);
   });
 
+  it("検証済み指紋帳: 儀式の成功が招待者の指紋を記録し、同じ招待者の次の受諾は再入力なしで通る(KF)", async () => {
+    const bodies: unknown[] = [];
+    const server = await start([acceptHandler((body) => bodies.push(body))]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, acceptor);
+    await seedConfig(env, { server: server.origin });
+
+    // 1 回目: 儀式(最終語再入力)→ 成功が帳へ記録される
+    env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    const json = await readFile(env.fingerprintBookPath, "utf8");
+    const stored = JSON.parse(json) as {
+      known: Record<string, Record<string, { fingerprintHex: string }>>;
+    };
+    expect(stored.known[server.origin]?.[inviter.userId]?.fingerprintHex).toBe(
+      inviter.fingerprintHex,
+    );
+    expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
+
+    // 2 回目(同じ招待者からの別招待に相当): 帳のヒットで再入力なしに通る
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    expect(env.logs.join("\n")).toContain("skipping the read-out ceremony");
+    expect(bodies).toHaveLength(2);
+  });
+
   it("鍵未生成: 対話確認 → 生成 → リカバリー儀式 → 生成鍵で受諾(§15-3 の連結)", async () => {
     const bodies: unknown[] = [];
     const server = await start([

@@ -41,6 +41,7 @@ import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "./invite-link.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { Keychain, masterKeyEntryName } from "./keychain.ts";
+import { consultFingerprintBook, type FingerprintBook } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
@@ -310,11 +311,17 @@ export type AcceptTarget =
  *   機械照合する(非対話の明示確認 + リンク改竄の第二経路検出)
  * - 対話: 12 語を表示し、最終語の再入力を要求する(server-grant と同じ儀式)
  * - エージェント環境ではフラグなしの儀式代行を拒否する
+ * - 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの招待者
+ *   (origin × user_id)と指紋が一致すれば再入力を省略する。フラグは帳より
+ *   優先し、不一致は警告して儀式へ戻す。成功は帳へ記録する(リンクの iu= は
+ *   受諾時点ではチェーン未照合だが、不一致が auto-pass に化ける経路はなく、
+ *   userId ↔ FP の機械照合は初回同期のアンカー検査 — context.ts — が行う)
  */
 function confirmInviterFingerprint(input: {
+  readonly origin: string;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo> {
+}): Effect.Effect<void, CliError, CliIo | FingerprintBook> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
@@ -332,6 +339,11 @@ function confirmInviterFingerprint(input: {
     for (const line of lines) {
       yield* io.log(line);
     }
+    const book = yield* consultFingerprintBook({
+      origin: input.origin,
+      userId: input.link.inviterUserId,
+      fingerprintHex: input.link.inviterKeyFingerprintHex,
+    });
     if (input.expectInviterFingerprintHex !== null) {
       if (input.expectInviterFingerprintHex !== input.link.inviterKeyFingerprintHex) {
         return yield* Effect.fail(
@@ -343,7 +355,11 @@ function confirmInviterFingerprint(input: {
       yield* io.log(
         "--inviter-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
+      yield* book.record;
       return;
+    }
+    if (book.autoPass !== null) {
+      return yield* book.autoPass;
     }
     // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢)
     if (io.agentProfile().isAgent) {
@@ -353,7 +369,7 @@ function confirmInviterFingerprint(input: {
         ),
       );
     }
-    return yield* confirmByLastWord({
+    yield* confirmByLastWord({
       words,
       promptText:
         "Once you have checked against the inviter's out-of-band read-out (e.g. a call), type the last of the 12 words shown above",
@@ -361,6 +377,7 @@ function confirmInviterFingerprint(input: {
       exhaustedText:
         "Inviter fingerprint confirmation failed (the re-typed word does not match). The acceptance was not performed — re-run once you can check with the inviter",
     });
+    yield* book.record;
   });
 }
 
@@ -440,14 +457,18 @@ export function inviteAcceptOp(input: {
 }): Effect.Effect<
   InviteAcceptSummary,
   CliError,
-  CliIo | Keychain | PinStore | Stdio.Stdio | HttpClient.HttpClient
+  CliIo | Keychain | PinStore | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     // §15-3 の順序: 相互確認 → 鍵生成〔未生成時〕→ 受諾署名 → 受諾 →
     // アンカーのピン留め(受諾成立後のみ — 同節の追補)
     const { projectId, token } =
       input.target.kind === "link"
-        ? yield* prepareLinkAccept(input.target.link, input.expectInviterFingerprintHex)
+        ? yield* prepareLinkAccept(
+            input.session.origin,
+            input.target.link,
+            input.expectInviterFingerprintHex,
+          )
         : yield* prepareTokenAccept(input.target, input.expectInviterFingerprintHex);
 
     const masterKeys = yield* ensureMasterKeysForAccept({
@@ -531,15 +552,16 @@ export function inviteAcceptOp(input: {
  * なる。初回同期(add_member 後)より前に書ければアンカーの目的は満たされる。
  */
 function prepareLinkAccept(
+  origin: string,
   link: InviteLinkData,
   expectInviterFingerprintHex: string | null,
 ): Effect.Effect<
   { readonly projectId: string; readonly token: Redacted.Redacted<string> },
   CliError,
-  CliIo
+  CliIo | FingerprintBook
 > {
   return Effect.gen(function* () {
-    yield* confirmInviterFingerprint({ link, expectInviterFingerprintHex });
+    yield* confirmInviterFingerprint({ origin, link, expectInviterFingerprintHex });
     return { projectId: link.projectId, token: link.token };
   });
 }

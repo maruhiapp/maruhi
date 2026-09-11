@@ -34,6 +34,7 @@ import {
   verifyAcceptanceBlock,
 } from "./invite.ts";
 import { CliIo } from "./io.ts";
+import { consultFingerprintBook, type FingerprintBook } from "./known-fingerprints.ts";
 import { logNote } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -266,13 +267,20 @@ function selectInvitation(
  * 表示し、帯域外照合の明示確認を要求する。儀式は再実行(バックフィルのみの
  * 中断復旧)でも省略しない(server-grant と同じ規律 — これからラップを配る鍵の
  * 照合を省略しない)。
+ *
+ * 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの相手
+ * (origin × user_id)の指紋と一致すれば、最終語の再入力を省略して続行する
+ * (--expect-fingerprint と等価の機械照合なのでエージェント環境でも通る)。
+ * フラグの明示指定は帳より優先し、不一致は警告して通常の儀式へ戻す(自動失敗に
+ * しない — 正当な鍵更新があり得る)。儀式 / フラグ照合の成功は帳へ記録する。
  */
 function confirmInviteeFingerprint(input: {
+  readonly origin: string;
   readonly targetUserId: string;
   readonly role: Role;
   readonly fingerprintHex: string;
   readonly expectFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo> {
+}): Effect.Effect<void, CliError, CliIo | FingerprintBook> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
@@ -291,6 +299,11 @@ function confirmInviteeFingerprint(input: {
     for (const line of lines) {
       yield* io.log(line);
     }
+    const book = yield* consultFingerprintBook({
+      origin: input.origin,
+      userId: input.targetUserId,
+      fingerprintHex: input.fingerprintHex,
+    });
     if (input.expectFingerprintHex !== null) {
       if (input.expectFingerprintHex !== input.fingerprintHex) {
         return yield* Effect.fail(
@@ -302,7 +315,11 @@ function confirmInviteeFingerprint(input: {
       yield* io.log(
         "--expect-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
+      yield* book.record;
       return;
+    }
+    if (book.autoPass !== null) {
+      return yield* book.autoPass;
     }
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
@@ -311,7 +328,7 @@ function confirmInviteeFingerprint(input: {
         ),
       );
     }
-    return yield* confirmByLastWord({
+    yield* confirmByLastWord({
       words,
       promptText:
         "Once you have checked against the acceptor's out-of-band read-out (e.g. a call), type the last of the 12 words shown above",
@@ -319,6 +336,7 @@ function confirmInviteeFingerprint(input: {
       exhaustedText:
         "Acceptance key fingerprint confirmation failed (the re-typed word does not match). add_member was not performed — re-run once you can check with the acceptor",
     });
+    yield* book.record;
   });
 }
 
@@ -505,13 +523,14 @@ function prepareMemberAdd(input: {
   readonly expectFingerprintHex: string | null;
   readonly pins: InvitePins | null;
   readonly signerUserId: string;
+  readonly origin: string;
 }): Effect.Effect<
   {
     readonly row: InvitationRow & { readonly acceptance: InviteAcceptance };
     readonly alreadyAdded: boolean;
   },
   CliError,
-  CliIo
+  CliIo | FingerprintBook
 > {
   return Effect.gen(function* () {
     const listed = yield* listInvitations(input.client, input.verified.projectId);
@@ -556,6 +575,7 @@ function prepareMemberAdd(input: {
     });
 
     yield* confirmInviteeFingerprint({
+      origin: input.origin,
       targetUserId: row.acceptance.inviteeUserId,
       role: row.role,
       fingerprintHex: acceptanceVerified.fingerprintHex,
@@ -614,10 +634,11 @@ export function memberAddOp(input: {
   readonly expectFingerprintHex: string | null;
   readonly pins: InvitePins | null;
   readonly signerUserId: string;
+  readonly origin: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<MemberAddSummary, CliError, CliIo> {
+}): Effect.Effect<MemberAddSummary, CliError, CliIo | FingerprintBook> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const { row, alreadyAdded } = yield* prepareMemberAdd(input);
