@@ -2,11 +2,11 @@
 //
 // 前半: 床ストア(floor-log.ts)の単体 — 追記 + fold の単調 join・typed
 // conflict(同座標・異ハッシュの両証拠保存)・破損末尾レコードの自己回復・
-// スナップショットレコードのコンパクション・intent / resolution(3-F)・
-// 旧保存形からの移行。session-31 §3 M1-A5 の固定テスト(3-E 読み替え)は
-// 「2 ストアインスタンスの並行追記で両観測がログに残り、同版異 hash が
-// 両証拠付き typed conflict になり、異なる変数の並行 commit は union される」
-// 形で固定する。後半(結線テスト)は floor-detection.test.ts。
+// スナップショットレコードのコンパクション・intent / resolution・
+// 旧保存形からの移行。並行追記は「2 ストアインスタンスの並行追記で両観測が
+// ログに残り、同版異 hash が両証拠付き typed conflict になり、異なる変数の
+// 並行 commit は union される」形で固定する。後半(結線テスト)は
+// floor-detection.test.ts。
 
 import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -171,7 +171,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(environment?.variables["va"]).toMatchObject({ status: "deleted" });
   });
 
-  it("commitMetadata は環境水準のみ join する(M1-A3 — 値床を捏造せず pull 基準も動かさない)", async () => {
+  it("commitMetadata は環境水準のみ join する(値床を捏造せず pull 基準も動かさない)", async () => {
     await Effect.runPromise(
       store.commitMetadata(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -225,7 +225,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(environment?.variables["va"]).toMatchObject({ version: 3 });
   });
 
-  describe("並行 2 ストアインスタンス(= 2 プロセス相当)の追記(M1-A5 の 3-E 読み替え)", () => {
+  describe("並行 2 ストアインスタンス(= 2 プロセス相当)の追記", () => {
     it("異なる変数の並行 commit は union され、どちらの観測も失われない", async () => {
       // 2 プロセスが同じ古い床から出発して独立に commit する形
       const storeA = makeFileFloorStore(dir);
@@ -419,7 +419,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     });
   });
 
-  describe("破損末尾レコードの自己回復(3-E — ロック回復テストの置き換え)", () => {
+  describe("破損末尾レコードの自己回復", () => {
     it("torn 行(クラッシュした書きかけ)は fold が無視し、後続の追記を壊さない", async () => {
       await Effect.runPromise(
         store.commitPull(PROJECT_ID, {
@@ -455,7 +455,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     });
   });
 
-  describe("intent / resolution(3-F — journal-before-send)", () => {
+  describe("intent / resolution(journal-before-send)", () => {
     const intentInput = {
       op: "rotate_epoch" as const,
       environmentId: "prod",

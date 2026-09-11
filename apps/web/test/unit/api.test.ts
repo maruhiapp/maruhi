@@ -1,8 +1,6 @@
 // api.ts(セッション認証つき fetch 層 — 裁定 BP・BR)のユニットテスト。
-// HTTP 状態 → 型付き結果の分類と、mutation への CSRF ヘッダー付与
-// (AUTH_SPEC §11-4)を fetch スタブで固定する。CSRF ヘッダー名の**実送信値**は
-// api-schema の CSRF_HEADER_NAME と照合する(裁定 CN — 型束縛〔satisfies〕と
-// 相補の二層目。値 import はテストプロセスのみ — 裁定 BV と同じ位置づけ)。
+// HTTP 状態 → 型付き結果の分類と、mutation への CSRF ヘッダー付与(AUTH_SPEC §11-4)を fetch スタブで固定。
+// CSRF ヘッダー名は実送信値を api-schema の CSRF_HEADER_NAME と照合する(裁定 CN — 型束縛〔satisfies〕と相補の二層目。値 import はテストプロセスのみ — 裁定 BV と同じ位置づけ)。
 import { CSRF_HEADER_NAME } from "@maruhi/api-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

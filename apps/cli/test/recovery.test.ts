@@ -170,7 +170,7 @@ describe("maruhi key generate のリカバリー発行", () => {
     const blob = await unwrapWithDisplayedCode(env, body, "user-0001");
     expect(blob).toBe(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001")));
     expect(env.errors.join("\n")).toContain("Save confirmation complete");
-    // 鍵素材(コード)はリダイレクトされうる stdout に出ない(レビュー①)
+    // 鍵素材(コード)はリダイレクトされうる stdout に出ない
     expect(env.logs.join("\n")).not.toContain(displayedCode(env));
   });
 
@@ -244,7 +244,7 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(env.errors.join("\n")).toContain("AI agent environment");
   });
 
-  it("stdin / stdout / stderr のどれかが非TTYなら発行前に拒否する(S2)", async () => {
+  it("stdin / stdout / stderr のどれかが非TTYなら発行前に拒否する", async () => {
     for (const terminal of [
       { stdin: false, stdout: true, stderr: true },
       { stdin: true, stdout: false, stderr: true },
@@ -462,7 +462,7 @@ describe("maruhi key recover(復元)", () => {
     expect(fetched).toBe(false);
   });
 
-  it("stdin / stdout / stderr のどれかが非TTYならブロブ取得前に拒否する(S2)", async () => {
+  it("stdin / stdout / stderr のどれかが非TTYならブロブ取得前に拒否する", async () => {
     for (const terminal of [
       { stdin: false, stdout: true, stderr: true },
       { stdin: true, stdout: false, stderr: true },

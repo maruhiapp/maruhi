@@ -1,17 +1,9 @@
-// e2e 検証(スパイク A 起源)。ビルド済み dist/public を **combined 構成
-// (apps/server の wrangler dev — 本番と同じ maruhi-server が Workers Static
-// Assets として配信する形。裁定 BM/BT — docs/notes/session-43.md)**で配信し、
-// Playwright(Chromium)で以下を検証する:
-//   1. 静的シェル(ビルド時 RSC)の配信と hydrate
-//   2. 厳格 CSP(script-src 'self' / style-src 'self')下での全機能動作
-//   3. SPA ナビゲーション(Navigation API)と、非対応ブラウザ相当での MPA 劣化
-//   4. Astryx プリビルド CSS + maruhi テーマ + xstyle(StyleX コンパイラあり)の適用
-//   5. 配信トポロジ(run_worker_first の API 到達・SPA フォールバック・
-//      per-path ヘッダー)を**デプロイされる実構成**に対して固定する(裁定 BT。
-//      preview も同じ構成を使い、wrangler 設定は apps/server の 1 本のみ — 裁定 BX)
-// 事前に `bun run build` が必要。API はテスト内で page.route によりモックする
-// (裁定 BS)ため、ローカルサーバーの D1 / OAuth 設定は不要(素の 401 / 503 応答
-// 自体が「Worker に届いた」ことの検証材料になる)。
+// combined 構成(apps/server の wrangler dev — 本番と同じ maruhi-server が Workers
+// Static Assets としてビルド済み dist/public を配信する形。裁定 BM/BT/BX —
+// docs/notes/session-43.md)に対して、静的シェルの hydrate・厳格 CSP・SPA / MPA 遷移・
+// テーマ適用・配信トポロジを Playwright(Chromium)で検証する。事前に `bun run build`
+// が必要。API は page.route でモックする(裁定 BS)ため D1 / OAuth 設定は不要
+// (素の 401 / 503 応答自体が「Worker に届いた」ことの検証材料になる)。
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -100,7 +92,7 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 
 // SIGTERM で終了しない場合に SIGKILL へフォールバックする。SIGTERM のみだと
 // wrangler が残留したとき vitest プロセスが終了できず、CI がステップではなく
-// ジョブ上限(30 分)までハングした実績がある(2026-08-19 run 32217317312)
+// ジョブ上限(30 分)までハングした実績がある
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   if (proc === undefined) return;
   try {
@@ -121,7 +113,7 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   } finally {
     // パイプの読み口を無条件に閉じる: wrangler の子孫が書き口を握ったまま
     // 生き残ると EOF が来ず、ref 付き handle が vitest の終了を妨げる
-    // (stdio をパイプ化したことで生じる新たなハング経路 — レビュー指摘)。
+    // (stdio をパイプ化したことで生じるハング経路)。
     // wrangler 自身が先に死んで子孫だけ残るケースも踏むため早期 return 側も通す
     proc.stdout?.destroy();
     proc.stderr?.destroy();
@@ -239,7 +231,7 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(res.status).toBe(200);
     const csp = res.headers.get("content-security-policy") ?? "";
     expect(csp).toContain("script-src 'none'");
-    // スタイルとロゴは自己配信のみ(DP4 — /theme.css + /pages.css + ロゴ SVG)
+    // スタイルとロゴは自己配信のみ(/theme.css + /pages.css + ロゴ SVG)
     expect(csp).toContain("style-src 'self'");
     expect(csp).toContain("img-src 'self'");
     expect(csp).not.toContain("unsafe-inline");
@@ -283,7 +275,7 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(inviteRes.status).toBe(200);
   });
 
-  // スクリプトなしページの共有アセット(DP4 — docs/notes/web-design-pass.md §5):
+  // スクリプトなしページの共有アセット(docs/notes/web-design-pass.md §5):
   // /invite とサーバー配信の儀式ページ(apps/server/src/auth.package/cli-pages.ts)が
   // 参照する /theme.css(apps/web/theme/maruhi.css の無変換同梱)と /pages.css が、
   // 本番と同じ combined 構成で正しい content-type で届き、配信バイトがソースと一致すること
@@ -340,8 +332,8 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(maxWidth).toBe("640px");
     const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     expect(background).not.toBe("rgba(0, 0, 0, 0)");
-    // 太さの回帰(pullfrog レビュー反映): 初版は未定義トークンの var() で font-weight が
-    // 無言に落ち、h1 と強調文が normal になっていた。h1 と outcome 行が太字であること
+    // 太さの回帰: 未定義トークンの var() は font-weight を無言に落とす。
+    // h1 と outcome 行が太字であること
     for (const selector of ["h1", ".outcome"]) {
       const weight = await page.locator(selector).evaluate((el) => getComputedStyle(el).fontWeight);
       expect(weight, selector).toBe("700");
@@ -402,7 +394,7 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 });
 
 // ---------------------------------------------------------------------------
-// W2: 読み取りダッシュボード(S3〜S7)の e2e(裁定 BS — docs/notes/session-43.md)。
+// 読み取りダッシュボードの e2e(裁定 BS — docs/notes/session-43.md)。
 // 配信・実描画・CSP は実物(wrangler dev + Chromium)のまま、API 応答だけを
 // Playwright の page.route で差し替える(同一オリジンのままなので
 // connect-src 'self' の検証を弱めない)。フィクスチャは api-schema 由来の型
@@ -419,7 +411,7 @@ function unauthorized(route: Route): Promise<void> {
 }
 
 /**
- * セッション確認のモック。DP3 のアプリシェル(DashboardShell)は認証が要る全画面で
+ * セッション確認のモック。アプリシェル(DashboardShell)は認証が要る全画面で
  * `GET /auth/me` を 1 回呼び、ok のときだけ本文を描く — 実サーバーの 401 応答は
  * ボディ未読のまま networkidle を妨げるため、認証済み画面のテストはすべてこれを登録する
  */
@@ -428,8 +420,7 @@ async function routeSession(page: Page): Promise<void> {
 }
 
 /**
- * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(W3b の S8 テストで
- * 共用)。
+ * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(招待タブのテストと共用)。
  */
 async function routeProjectOverview(page: Page): Promise<void> {
   await routeSession(page);
@@ -444,8 +435,8 @@ async function routeProjectOverview(page: Page): Promise<void> {
 }
 
 /**
- * 失効の確認(DP3 改訂 4 — 裁定 CO のインライン 2 段階から AlertDialog へ)。行の Revoke で
- * モーダルが開き、その中の Revoke で DELETE が飛ぶ。
+ * 失効の確認(DP3 改訂 4 / 裁定 CO)。行の Revoke でモーダルが開き、
+ * その中の Revoke で DELETE が飛ぶ。
  */
 async function confirmRevoke(page: Page): Promise<void> {
   const dialog = page.getByRole("alertdialog");
@@ -453,7 +444,6 @@ async function confirmRevoke(page: Page): Promise<void> {
   await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
 }
 
-/** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 /** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
 function panelDisplay(page: Page, tab: string): Promise<string> {
   return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
@@ -467,7 +457,7 @@ function collectViolations(page: Page): string[] {
   return violations;
 }
 
-describe("web e2e: serving topology (W2 裁定 BM/BT — combined worker)", () => {
+describe("web e2e: serving topology (裁定 BM/BT — combined worker)", () => {
   it("routes API paths to the worker, not the asset layer", async () => {
     // run_worker_first の実効(navigation 吸収の遮断)をデプロイされる実構成で
     // 固定する。未設定ローカルサーバーの素の応答(503 / 401 の JSON)自体が
@@ -490,7 +480,7 @@ describe("web e2e: serving topology (W2 裁定 BM/BT — combined worker)", () =
   });
 });
 
-describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", () => {
+describe("web e2e: read dashboard (mocked API via page.route)", () => {
   it("keeps every mocked fixture wire-valid against the api-schema contracts (裁定 BV)", () => {
     // 型適合(tsc)は hex 長・パターン等の実行時制約を見ない。フィクスチャを
     // 実 Schema でデコードし、モックとワイヤ契約の漂流を機械検査にする
@@ -523,7 +513,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
   it("serves /dashboard routes with the strict SPA CSP header", async () => {
     // violation ゼロの検査(下の各テスト)は「CSP ヘッダーが無い」場合も通って
-    // しまうため、ヘッダーの実在を直接固定する(pullfrog レビュー反映)。
+    // しまうため、ヘッダーの実在を直接固定する。
     // SPA フォールバック経由の深いパスにも /* の CSP が付くこと
     for (const path of [
       "/dashboard",
@@ -640,12 +630,12 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       page.locator("#project-panel-audit").getAttribute("aria-labelledby"),
     ).resolves.toBe(await page.getByRole("tab", { name: "Audit" }).getAttribute("id"));
     // 非選択パネルは空(高さ 0)なので isVisible() では `display` の上書き負けを
-    // 検知できない。computed display を直接固定する(pullfrog レビュー反映)
+    // 検知できない。computed display を直接固定する
     await expect(panelDisplay(page, "overview")).resolves.toBe("flex");
     await expect(panelDisplay(page, "audit")).resolves.toBe("none");
     await expect(page.getByRole("tabpanel").count()).resolves.toBe(1);
 
-    // S5 概要: チェーン導出メンバー(サーバー申告)+ 環境 + 変数名(メタのみ pull)
+    // 概要: チェーン導出メンバー(サーバー申告)+ 環境 + 変数名(メタのみ pull)
     await page.getByTestId("member-table").waitFor();
     await expect(page.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
     await page.getByTestId("env-table").waitFor();
@@ -653,7 +643,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("variable-list").waitFor();
     await expect(page.getByText("DATABASE_URL").count()).resolves.toBeGreaterThan(0);
 
-    // S6 監査: 規定文言 + admin 応答由来の seq 列(応答適応)
+    // 監査: 規定文言 + admin 応答由来の seq 列(応答適応)
     await page.getByRole("tab", { name: "Audit" }).click();
     await expect(
       page.getByRole("tab", { name: "Audit" }).getAttribute("aria-selected"),
@@ -684,12 +674,11 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       list.getByText("user_colleague", { exact: true }).locator("visible=true").count(),
     ).resolves.toBe(2);
     // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
-    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、ToggleButtonGroup(DP3 で
-    // SegmentedControl から置換)の押下ボタンを role で指す
+    // 管理タブ "Invites" が同語で並ぶため、ToggleButtonGroup の押下ボタンを role で指す
     await page.getByRole("button", { name: "Invites", pressed: false }).click();
     await page.getByText("Not available to your role").first().waitFor();
 
-    // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
+    // フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
     await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
     await expect(page.getByTestId("rotation-note").textContent()).resolves.toContain(
@@ -703,7 +692,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   it("resumes to /dashboard after sign-in, driven through the real affordance (裁定 BU)", async () => {
     // マーカーはテストが注入せず、**実クリック**(Link の onClick)に書かせる —
     // Link がマーカーを書かなくなる退行・consume ガードの退行がこのテストで
-    // 割れる(pullfrog レビュー反映)。OAuth 実フローだけは e2e 不能(裁定 BS)
+    // 割れる。OAuth 実フローだけは e2e 不能(裁定 BS)
     // なので、/auth/github/start への実ナビゲーションを「認可成功 → callback が
     // ${origin}/ へ 302」まで畳んで差し替える
     const page = await browser.newPage();
@@ -764,14 +753,14 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("lists invitations, revokes via inline confirm with the CSRF header, and refreshes (S8)", async () => {
+  it("lists invitations, revokes via inline confirm with the CSRF header, and refreshes", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
     let revoked = false;
     let deleteMethod: string | null = null;
     let deleteCsrf: string | null = null;
     // Overview タブ(初期表示)の消費面もモックする: 実サーバーの 401 応答は
-    // ボディ未読のまま networkidle を妨げる(W2 テストが全面モックである理由)
+    // ボディ未読のまま networkidle を妨げる(このファイルが全面モックである理由)
     await routeProjectOverview(page);
     await page.route(
       (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
@@ -796,7 +785,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
     await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
-    // 2 段階確認(裁定 CO — DP3 改訂 4 で AlertDialog に): 行の Revoke → モーダルの Revoke で実行
+    // 2 段階確認(裁定 CO): 行の Revoke → モーダルの Revoke で実行
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
     // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
@@ -807,7 +796,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("shows the server-reported gone wording when a revocation races to 410 (S8)", async () => {
+  it("shows the server-reported gone wording when a revocation races to 410", async () => {
     // 失効 CAS が負けた側(他所で completed / revoked に遷移済み)のサーバー
     // 申告 reason を写す(api 層の gone 分類 — 裁定 CN 付随の文言検証)
     const page = await browser.newPage();
@@ -829,7 +818,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("shows the role wording when the invites listing reports 403 (S8 — admin 未満)", async () => {
+  it("shows the role wording when the invites listing reports 403 (admin 未満)", async () => {
     const page = await browser.newPage();
     await routeProjectOverview(page);
     await page.route(
@@ -843,7 +832,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
+  it("lists tokens with server-reported expiry: Expired, no expiry recorded, never", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await routeSession(page);
@@ -864,7 +853,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("revokes a token via inline confirm with the CSRF header and refreshes (S9)", async () => {
+  it("revokes a token via inline confirm with the CSRF header and refreshes", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
     let revoked = false;
@@ -891,7 +880,6 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
     // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
     // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
-    // (PR #148 CI の 1 回目で顕在化した競合)
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
@@ -901,7 +889,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("keeps the confirmation modal open and other rows locked while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
+  it("keeps the confirmation modal open and other rows locked while a revoke is in flight", async () => {
     // DELETE の in-flight 中に別行を武装できると、後着の完了が武装状態を
     // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード)。DP3 改訂 4
     // では確認が AlertDialog(モーダル)なので、実行中はダイアログが開いたまま
@@ -951,7 +939,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("shows the token 404 wording on the uniform not-found of targeted revocation (S9)", async () => {
+  it("shows the token 404 wording on the uniform not-found of targeted revocation", async () => {
     const page = await browser.newPage();
     await routeSession(page);
     await page.route(
@@ -971,10 +959,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P — HP5)", async () => {
+  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P)", async () => {
     // 監査一覧は幅によらず 1 列の行(Collapsible)で、モバイルでも同じ形のまま行の直下に
     // 詳細が開く。768px 以下(AppShell の md)ではサイドバーがドロワーへ移る。
-    // pullfrog レビュー反映: この経路を CI で固定する
+    // この経路を CI で固定する
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1032,7 +1020,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   });
 
   it("keeps the shell mounted across SPA navigation without re-checking the session", async () => {
-    // DP3 改訂 11(PR #148 Bugbot 指摘): 認証が要る画面は pathless の親ルート
+    // DP3 改訂 11: 認証が要る画面は pathless の親ルート
     // (DashboardLayout)の子なので、画面間の遷移でシェルは再マウントされず、
     // /auth/me の再取得も「Checking your session」の再表示も起きない。サイドバーの
     // DOM ノードが同一のまま(= 折りたたみ状態などが保たれる)ことで再マウント無しを検査する
@@ -1086,7 +1074,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   });
 
   it("returns to the sign-in screen in place when a screen fetch reports 401", async () => {
-    // 改訂 11 でシェルが遷移をまたいで残るようになった副作用(pullfrog 指摘): 途中で
+    // シェルが遷移をまたいで残ることの副作用: 途中で
     // セッションが失効しても、画面の 401 → シェルへの通知 → その場でサインイン画面
     // (再読込・再遷移なし)
     const page = await browser.newPage();

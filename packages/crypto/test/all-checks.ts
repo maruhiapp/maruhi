@@ -25,7 +25,7 @@ import { valueSignatureChecks } from "./checks/value-signature.ts";
 import { variableChecks } from "./checks/variable.ts";
 import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
 
-// 総チェック数の下限(観点 7 — テストの実効性): チェック群の脱落(all-checks
+// 総チェック数の下限(テストの実効性): チェック群の脱落(all-checks
 // からの取り外し・早期 return 化など)を「黙って母数が減る」形でなく明示的な
 // 失敗として検出する。チェックを追加しても失敗しない(下限のみ)。意図して
 // チェックを削減する変更では、この値も同じ変更で引き下げる

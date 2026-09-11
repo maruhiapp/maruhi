@@ -91,14 +91,14 @@ export const LeaseResponseSchema = Schema.Struct({
   declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   leases: Schema.Array(LeasedDekSchema),
   /**
-   * 最新の環境マニフェスト + issuer 情報(§14-2 — 2026-08-18)。ワークロードの
+   * 最新の環境マニフェスト + issuer 情報(§14-2)。ワークロードの
    * 検証義務 §9.1 (5)(ダイジェスト再計算・エポック整合)の材料。欠落 = 拒否は
    * pull と同一(optional は移行完了までの過渡状態のみ)。
    */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
   /**
-   * チェックポイント時点の値スナップショット列挙(§14-2 — §12-7 と同じ材料。
-   * 2026-08-28 PR-M3)。同梱チェーン上に当該環境の基準 `checkpoint` が存在する
+   * チェックポイント時点の値スナップショット列挙(§14-2 — §12-7 と同じ材料)。
+   * 同梱チェーン上に当該環境の基準 `checkpoint` が存在する
    * のに列挙を欠く応答は、ワークロードのチェックポイント整合検証(CRYPTO_SPEC
    * §6.3 規則 2)が拒否する。基準を持たない環境では載らない(その場合は警告 —
    * §6.3 SHOULD)。
@@ -115,7 +115,7 @@ export const LeaseResponseSchema = Schema.Struct({
  *
  * 判定順(§14-3): OIDC 検証(401)→ lease_policy 一致 + 開示スコープ
  * (不一致は一律 404)→ 先着束縛(同一トークン + 別鍵は 401 `token-replayed` —
- * §14-1。2026-08-15 裁定)→ 環境の存在(404)→ レート制限(429)→ サーバー宛
+ * §14-1)→ 環境の存在(404)→ レート制限(429)→ サーバー宛
  * ラップの存在(503)。レート制限を認可の後ろに置くのは §11-2 の存在秘匿のため
  * (errors/lease.ts)。`token-replayed` は認可通過後にのみ到達する唯一の 401 で、
  * 存在秘匿と両立する(errors/lease.ts の LeaseUnauthorizedReasonSchema)。

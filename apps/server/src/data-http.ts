@@ -370,7 +370,7 @@ const rejectionErrors = {
     new DekWrapExistsError({
       epoch: rejection.epoch,
       recipientUserId: rejection.recipientUserId,
-      // 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15)
+      // 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)
       storedRecipientEncPubHex: rejection.storedRecipientEncPubHex,
     }),
   "dek-wrap-not-found": (rejection) =>
@@ -385,7 +385,8 @@ const rejectionErrors = {
     }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
-  // ヘッド申告(AUTH_SPEC §16-1 — 2026-08-28 PR-M4)
+  // ヘッド申告(AUTH_SPEC §16-1)
+
   "attestation-rejected": (rejection) => new AttestationRejectedError({ reason: rejection.reason }),
   "attestation-regression": (rejection) =>
     new AttestationRegressionError({ storedSeq: rejection.storedSeq }),

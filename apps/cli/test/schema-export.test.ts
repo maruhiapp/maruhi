@@ -1,4 +1,4 @@
-// 値なしスキーマ S5 のテスト(設計文書 §1-6): `maruhi schema export`(派生
+// 値なしスキーマのテスト(設計文書 §1-6): `maruhi schema export`(派生
 // スナップショットの生成 — JSON Schema サブセット写像・generated 枠付け・
 // 決定性)と `maruhi schema verify-snapshot`(CI の乖離検査 — fail-loud・
 // 変数名 / 欄名のみの報告・description 非出力)。両コマンドとも読み取り・
@@ -209,7 +209,7 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     expect(exportedText(first)).toBe(exportedText(second));
   });
 
-  it("`__proto__` という名前の変数も properties の own key として現れる(pullfrog レビュー対応)", async () => {
+  it("`__proto__` という名前の変数も properties の own key として現れる", async () => {
     // 名前は署名済みステートメント由来の自由文字列 — 素のオブジェクト代入だと
     // setter に食われて properties から黙って消え、required だけに残る自己矛盾の
     // 生成物になる(export / verify が生成器を共有するためバイト比較でも検出不能)
@@ -321,7 +321,7 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(errors).toContain("SHOP_URL");
   });
 
-  it("title の不一致は「別環境のスナップショット」の可能性として名指しする(pullfrog nitpick)", async () => {
+  it("title の不一致は「別環境のスナップショット」の可能性として名指しする", async () => {
     // 変数集合がたまたま一致する別環境のファイルを generic な整形差の文言に
     // 落とさない。ファイル側 title の内容(攻撃者が書ける)は報告に出さない
     const file = await exportedSnapshotFile();

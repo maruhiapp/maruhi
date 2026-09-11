@@ -1,7 +1,6 @@
 "use client";
 
-// 単発 GET リソースの 3 状態フック(W2 で ProjectScreen 内に置いていたものを
-// W3b で S9 と共用するため独立モジュール化 — 挙動は不変)。
+// 単発 GET リソースの 3 状態フック(複数画面で共用)。
 import { useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
@@ -15,8 +14,7 @@ export type ResourceState<T> =
 /**
  * 単発 GET の 3 状態(loading / failure / value)を持つ小さなフック。
  * path 変更・再読込で古い in-flight 応答は捨てる(effect のクリーンアップで
- * stale マーク — 後着の旧プロジェクト応答が新しい画面を上書きしない。
- * PR #107 Bugbot 指摘の修正)。
+ * stale マーク — 後着の旧プロジェクト応答が新しい画面を上書きしない)。
  */
 export function useApiResource<T>(path: string): {
   state: ResourceState<T>;

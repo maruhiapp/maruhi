@@ -1,8 +1,5 @@
 // §7 の全環境走査へ注入する 1 環境ローテーション(server revoke / member
-// remove / change-role で共用)。
-//
-// ADR-0016 第 2 段階の移行で cli.ts(gunshi 側)から切り出した。第 2 段階の
-// 完了により、利用者は全員 effect/unstable/cli 側(effect-cli.ts)になった。
+// remove / change-role で共用)。利用側は effect-cli.ts。
 
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -49,7 +46,7 @@ export function sweepRotateFor(
         reason: mode === "force" ? reason : undefined,
         forceNewEpoch: mode === "force",
         // 全環境走査は移行操作ではない — マニフェスト欠落の許容は明示の
-        // `maruhi env rotate <env> --init-manifest` に限る(session-27 §14)
+        // `maruhi env rotate <env> --init-manifest` に限る
         initManifest: false,
         signerUserId: context.session.userId,
         signingKeyPair: context.masterKeys.sigKeyPair,

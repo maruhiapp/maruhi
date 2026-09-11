@@ -1,6 +1,5 @@
 // コマンド前段の共通化: ID 検証 → セッション → master 鍵 → §6.3 同期検査 →
-// 床検査 → 環境床ハンドル。config ファイルはコマンドごとに前段で 1 回だけ読む
-// (旧 cli.ts はコマンド本体 / openProject / openSession で 3 回読んでいた)。
+// 床検査 → 環境床ハンドル。config ファイルはコマンドごとに前段で 1 回だけ読む。
 //
 // 前段は master 鍵の要否で 2 つに分かれるが、**同期と床の意味論は attachProject
 // に一本化**してある:
@@ -185,8 +184,7 @@ export interface CheckedFloor {
  * **床ヘッドの前進はここでは行わない**: 前進はヘッドゴシップの照合
  * (reconcileGossip)を通過した後だけ。検査より先に記録すると、照合が硬い証拠で
  * 中断したビューのヘッドが床の恒久記録になり、以後の正直なチェーンを床の
- * ハッシュ不一致として拒否させられる(拒否ビューの床汚染 — Cursor Security
- * Agent 指摘、PR #101)。
+ * ハッシュ不一致として拒否させられる(拒否ビューの床汚染)。
  *
  * 床ヘッドが自ビューより先(headSeq の後退)は、同期と床ロードの間に兄弟
  * プロセスが床を前進させた正直なレースでも起きるため、即時証拠にせず
@@ -230,7 +228,7 @@ export function loadCheckedFloor(
       if (violation !== null && violation.kind === "chain-shortened") {
         // 延長検査付き再同期: 初回ビューが単に古いだけなら再同期ビューの接頭辞に
         // なっているはず。延長でなければ、初回ビュー自体が分岐していた
-        // (短縮 + 分岐の複合)証拠として拒否する(レビュー②)
+        // (短縮 + 分岐の複合)証拠として拒否する
         view = yield* resyncExtended(resync, view);
         violation = checkChainFloor(loaded.floor, view);
       }
@@ -298,8 +296,8 @@ function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
  * 未解決の複合 intent(create / rotate — 3-F)の起動時照合。複合の効果確認は
  * チェーン同期(§12-10 (3))であり、コマンド前段は毎回チェーンを全検証する
  * ため、ここで解決できる: intent の複合エントリがチェーン上に存在すれば
- * 受理済み — 自己発行マニフェストを床へ昇格する(M1-A4 の「エラー終了・
- * クラッシュを跨いだ床コミット」の回収)。存在しなければ受理されていない
+ * 受理済み — 自己発行マニフェストを床へ昇格する(「エラー終了・クラッシュを
+ * 跨いだ床コミット」の回収)。存在しなければ受理されていない
  * (チェーンは全同期済み = 完全な真実源)。meta-op intent はチェーンに痕跡を
  * 残さないため、次の検証済み pull(values.ts)が照合する。
  */
@@ -393,7 +391,7 @@ export function checkInviteAnchor(
     }
     // 拒否文言には検証材料の所在(ピンファイル)まで含める: 硬い証拠での恒久
     // 停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける導線を
-    // 残す(pullfrog レビュー反映)
+    // 残す
     const evidenceHint = `The verification material is invites/${projectId}.json (the pinned anchor) in the config directory, plus the distributed chain`;
     if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
       return yield* Effect.fail(
@@ -437,7 +435,7 @@ export interface OpenProjectOptions {
  * **床ヘッドの前進はここで、全検査(床・アンカー・ゴシップ)の通過後に行う**。
  * 中断したビューのヘッドを床に残すと、拒否したはずの fork が床の恒久記録に
  * なり、以後の正直なチェーンをハッシュ不一致として拒否させられる(拒否
- * ビューの床汚染 — Cursor Security Agent 指摘、PR #101)。
+ * ビューの床汚染)。
  */
 export function reconcileGossip(
   projectId: string,

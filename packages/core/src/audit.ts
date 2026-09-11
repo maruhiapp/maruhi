@@ -117,8 +117,7 @@ export const CHAIN_MIRROR_EVENTS: readonly string[] = Object.values(MIRROR_EVENT
  * The `chain.` event namespace (AUDIT_SPEC §3.4). Mirror verification reads the
  * whole namespace by prefix rather than the known names one by one: a row that
  * claims a `chain.*` event outside `CHAIN_MIRROR_EVENTS` is evidence of forgery
- * and must not be able to hide from the verifier by using an unmapped name
- * (deepsec R1).
+ * and must not be able to hide from the verifier by using an unmapped name.
  */
 export const CHAIN_MIRROR_EVENT_PREFIX = "chain.";
 
@@ -145,7 +144,7 @@ const mirrorTails: {
     targetUserId: entry.payload.targetUserId,
     payload: { newRole: entry.payload.newRole },
   }),
-  // dek_commitment は payload に写す(AUDIT_SPEC §3.4。2026-08-03 — 監査行と
+  // dek_commitment は payload に写す(AUDIT_SPEC §3.4 — 監査行と
   // チェーン掲載コミットメントの突合用)
   create_environment: (entry) => ({
     event: MIRROR_EVENT_NAME.create_environment,
@@ -174,7 +173,7 @@ const mirrorTails: {
   }),
   // 公証対象のダイジェスト(環境ごとの epoch / manifest_version /
   // manifest_sig_hash / values_digest と audit_head_hash)を payload に写す
-  // (AUDIT_SPEC §3.4 — 2026-08-18 起草。監査 seq・行数は payload にも写さない:
+  // (AUDIT_SPEC §3.4。監査 seq・行数は payload にも写さない:
   // チェーン payload 自体が seq を含まない設計 — CRYPTO_SPEC §6.2)
   checkpoint: (entry) => ({
     event: MIRROR_EVENT_NAME.checkpoint,
@@ -206,7 +205,7 @@ export function chainMirrorEvent(entry: ChainEntry, serverTs: number): AuditEven
 }
 
 // ---------------------------------------------------------------------------
-// `var.read` の集約形(AUDIT_SPEC §3.3 — 2026-09-02): 値付き一括 pull ごとに
+// `var.read` の集約形(AUDIT_SPEC §3.3): 値付き一括 pull ごとに
 // 環境単位 1 行、返した変数の列挙を payload に持つ。payload の構築(サーバーの
 // pull)と解釈(サーバーの要ローテーション検出・§7 フィルタ、CLI の表示)が
 // 同一実装を共有する — 列挙の形(ソート・キー順)は row_digest(§5.1)の入力

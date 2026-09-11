@@ -1,10 +1,10 @@
-// ローカル床の意味論(CRYPTO_SPEC §6.3 — 2026-08-19 セッション 32 改訂)。
+// ローカル床の意味論(CRYPTO_SPEC §6.3)。
 //
 // 床 = **これまでに検証へ成功した事実の単調 join(結合半束)**であり、
 // 「最後に成功した pull のスナップショット」ではない(3-D)。保存形は
 // 追記専用の観測ログ + fold(3-E — floor-log.ts)で、本モジュールは
 // 格子の型と join 演算だけを持つ。ディスク上のマージとプロセス内マージが
-// **同一の join 実装**を共有する(session-31 §3 M1-A5 — `>=` 後勝ちの
+// **同一の join 実装**を共有する(session-31 §3 — `>=` 後勝ちの
 // 重複実装が同版異ハッシュの証拠を上書きした温床の構造的解消)。
 //
 // エポック観測は型付きの 2 座標として分けて join する(§6.3 規範):
@@ -178,8 +178,8 @@ export interface ProjectFloor {
 }
 
 /**
- * 矛盾ヘッド申告の証拠レコード(CRYPTO_SPEC §6.6 照合 (a) / §14.2-5 —
- * 2026-08-28 PR-M4)。申告全文(署名込み — §6.6 検証を通過した否認不能な材料)+
+ * 矛盾ヘッド申告の証拠レコード(CRYPTO_SPEC §6.6 照合 (a) / §14.2-5)。
+ * 申告全文(署名込み — §6.6 検証を通過した否認不能な材料)+
  * 自ビューのチェーンダイジェストを対で保存する。**床の join 格子には入れない**:
  * 申告は他メンバーの署名済み宣言であって「自分の検証済み観測」ではなく、格子へ
  * 流し込むと 1 メンバーの偽ヘッド申告(鍵漏洩)が全コマンドの恒久拒否を招く。
@@ -238,7 +238,7 @@ export interface PushCommit {
 }
 
 /**
- * metadata-only pull の環境水準コミット(session-31 §3 M1-A3)。値床は
+ * metadata-only pull の環境水準コミット(session-31 §3)。値床は
  * 捏造しない・pull 基準(規則 (c))は前進させない — 前進するのは環境メタ床・
  * マニフェスト床・環境水準エポック観測(座標 (ii))・チェーンヘッドのみ。
  */
@@ -253,7 +253,7 @@ export interface MetadataCommit {
 }
 
 /**
- * 受理確認済みの自己発行マニフェストの床昇格(session-31 §3 M1-A4)。
+ * 受理確認済みの自己発行マニフェストの床昇格(session-31 §3)。
  * pullEpoch・変数床は動かさない。環境水準エポック観測はマニフェストの
  * epoch で join される(検証済み観測 — 座標 (ii))。
  */
@@ -282,12 +282,12 @@ export interface FloorStoreShape {
     projectId: string,
     commit: PushCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /** metadata-only pull の環境水準コミット(M1-A3 — 値床は捏造しない)。 */
+  /** metadata-only pull の環境水準コミット(値床は捏造しない)。 */
   readonly commitMetadata: (
     projectId: string,
     commit: MetadataCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /** 受理確認済みマニフェストの床昇格(M1-A4)。 */
+  /** 受理確認済みマニフェストの床昇格。 */
   readonly commitManifest: (
     projectId: string,
     commit: ManifestCommit,
@@ -309,7 +309,7 @@ export interface FloorStoreShape {
   ) => Effect.Effect<void, CliError>;
   /**
    * 前回提出したヘッド申告のヘッド(CRYPTO_SPEC §6.3 ヘッドゴシップの
-   * 「前回申告より前進していれば提出」の判定材料 — 2026-08-28 PR-M4)。
+   * 「前回申告より前進していれば提出」の判定材料)。
    * 床の join 格子には入れない別クラス: 自分の送信記録であって検証済み観測では
    * なく、喪失の帰結は「同一 seq の再提出(サーバー側で冪等 204)」のみで
    * 安全性を担わない。missing / 破損は null(ベストエフォート)。

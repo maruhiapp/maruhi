@@ -1,4 +1,4 @@
-// `maruhi push` 直後の同期(SY2 第 3 段 — sync-push.ts)のテスト: リポジトリ設定の
+// `maruhi push` 直後の同期(sync-push.ts)のテスト: リポジトリ設定の
 // `onPush` を持つターゲットへ、push の後始末として直接 apply する(値は stdin だけ・
 // レシートが進む)か、`gh workflow run` で CI を起動する(値も変数名も argv に
 // 載らない・レシートは触らない)。
@@ -441,7 +441,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(receiptsRequests(fixture)).toBe(0);
   });
 
-  it("設定が cwd に無ければ従来どおりの push(何も読まない・何も言わない)", async () => {
+  it("設定が cwd に無ければ push だけを行う(何も読まない・何も言わない)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     // cwd は repo ルート(maruhi.sync.json は無い)
     expect(await push(fixture, NEW_VALUE)).toBe(0);

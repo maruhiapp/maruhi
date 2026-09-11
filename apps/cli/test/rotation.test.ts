@@ -1,4 +1,4 @@
-// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7 — Wave 2 B2)と
+// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7)と
 // 未収束ローテーション義務の常時警告 / project verify 詳細の統合テスト。
 //
 // 固定する性質:
@@ -350,7 +350,7 @@ describe("maruhi rotation dismiss", () => {
   });
 });
 
-describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 — B2)", () => {
+describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7)", () => {
   it("義務エントリより後に現エポックが始まっていない環境を、収束コマンドの案内つきで警告する", async () => {
     const built = await unconvergedChain();
     const state = await makeRotationServer({ built, currentEpoch: 1, flags: [] });
@@ -408,7 +408,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).toContain("role-demoted");
     expect(errors).toContain("the target has been removed");
     expect(errors).not.toContain("maruhi member change-role");
-    // 削除義務の行は従来どおり member remove の再実行を案内する
+    // 削除義務の行は member remove の再実行を案内する
     expect(errors).toContain(
       `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );
@@ -423,7 +423,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
       environmentsAvailable: false,
     });
     const env = await startEnv(state, built.projectId);
-    // チェーン検証は成功しているので exit 0(Cursor bot 指摘 — 検証失敗は注意のみ)
+    // チェーン検証は成功しているので exit 0(検証失敗は注意のみ)
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("Chain verification OK");
     const errors = env.errors.join("\n");

@@ -1,4 +1,4 @@
-// `maruhi sync init`(SY2 第 2 段 — 裁定 F)のテスト: フラグから設定 JSON を
+// `maruhi sync init`(裁定 F)のテスト: フラグから設定 JSON を
 // 組んで stdout に出し、生成物が厳格なパーサ(sync-config.ts)をそのまま通る
 // (往復)。ネットワークにもファイルにも触れない。
 

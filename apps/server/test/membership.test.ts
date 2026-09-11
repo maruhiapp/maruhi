@@ -111,7 +111,7 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
 describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate は複合経由)", () => {
   it("accepts the full vector chain with interleaved boundary checkpoints, append-only", async () => {
     // 複合(vector seq 3 / 4 / 8 / 10 / 11)ごとに境界 checkpoint(H+2)が
-    // 挿入される(§12-4 — 2026-08-27)。ベクターの 12 op はこの順序で全受理される
+    // 挿入される(§12-4)。ベクターの 12 op はこの順序で全受理される
     const { head } = await replayVectorChain(12);
 
     const response = await getChain(vectorProjectId);

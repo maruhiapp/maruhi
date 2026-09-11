@@ -1,4 +1,4 @@
-// プロジェクト数 / org の受理上限(AUTH_SPEC §11-3 — 2026-09-02 H2)の統合テスト。
+// プロジェクト数 / org の受理上限(AUTH_SPEC §11-3)の統合テスト。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
 //
 // 上限件数の init を実経路で回すのは重い(1 init = チェーン検証 + D1 batch)ため、
@@ -56,7 +56,7 @@ describe("projectQuotaExceeded(純関数 — §11-3)", () => {
   });
 });
 
-describe("POST /projects × プロジェクト数 / org 上限(§11-3 — H2)", () => {
+describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
   it("rejects a fresh genesis with 429 ProjectLimit at the limit and leaves the DO uninitialized", async () => {
     await seedProjectRows(VECTOR_ORG, MAX_ACTIVE_PROJECTS_PER_ORG);
     const response = await initChain(genesisEntry());

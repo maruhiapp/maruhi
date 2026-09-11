@@ -1,4 +1,4 @@
-// `maruhi sync plan` / `sync apply`(SY2 第 1 段)のテスト: リポジトリ設定 →
+// `maruhi sync plan` / `sync apply` のテスト: リポジトリ設定 →
 // レシート環境の読み → 同期元の検証(plan は復号しない)→ ベンダー CLI の駆動
 // (値は stdin だけ)→ レシートの書き込み(§4.1 の署名つき push)。
 //
@@ -868,7 +868,7 @@ describe("maruhi sync apply", () => {
     const errors = missing.env.errors.join("\n");
     // 起動失敗の理由(maruhi 自身の文)は本文の続き。走らなかったプロセスに出力は
     // 無いので、ベンダー出力の置き場(`  vercel: …`)と「Its output is shown above」
-    // では言わない(pullfrog 指摘・改訂 1)
+    // では言わない
     expect(errors).toContain(
       "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
@@ -930,7 +930,7 @@ describe("maruhi sync apply", () => {
 
   it("別プリセットが書いたレシートは拒む(preset の切り替え = 届け先が別。作り直しを名指し)", async () => {
     // vercel 時代のレシートに、gh の規則では不正な名前が「届いた版のまま」残っている
-    // 形: 名前規則のエラーではなくレシートの取り違えとして先に止まる(pullfrog 指摘)
+    // 形: 名前規則のエラーではなくレシートの取り違えとして先に止まる
     const fixture = await startFixture({
       sourceVariables: [
         await sourceVariable({ variableId: "vl", name: "apiKey", version: 1, plaintext: "k" }),

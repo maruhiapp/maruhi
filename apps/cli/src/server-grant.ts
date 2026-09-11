@@ -1,4 +1,4 @@
-// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6 — Wave 2 A1)。
+// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6)。
 //
 // grant_server をチェーンへ追記し、開示スコープ内の全環境 × 全エポックの
 // サーバー宛ラップをバックフィルする(grant 実行者 = owner がラップ実行者 —
@@ -15,7 +15,7 @@
 //
 // 中断復旧: grant がチェーンに載った後で落ちても、再実行が「同一内容の有効
 // grant を検出 → 追記スキップ → バックフィル(409 = 登録済み)」で収束する。
-// A2 のリースは不足時に 503 `server-wraps-missing` へ倒れる(AUTH_SPEC §14-3)。
+// リースは不足時に 503 `server-wraps-missing` へ倒れる(AUTH_SPEC §14-3)。
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";

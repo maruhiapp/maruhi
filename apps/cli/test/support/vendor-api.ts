@@ -1,7 +1,7 @@
 // ベンダー API(`maruhi sync` の http ドライバの宛先)の「正直な」インメモリ
 // モック: 受理した upsert / 削除で状態を進め、次の一覧・次の書き込みに反映する。
-// 応答を手で組み替えず、実物の wire 形(2026-09-07 に wrangler 4.128.0 / Vercel
-// CLI 59.11.7 / 公開 REST docs で確かめた形)で返す。
+// 応答を手で組み替えず、実物の wire 形(wrangler 4.128.0 / Vercel CLI 59.11.7 /
+// 公開 REST docs で確かめた形)で返す。
 //
 // 検査用に、受理したリクエスト(ヘッダー・本文)と保存された値を公開する —
 // 「値は本文の決まった位置にだけ現れ、URL・ヘッダー・ログには現れない」を
@@ -346,7 +346,7 @@ export interface FakeNetlifyVar {
 }
 
 /**
- * Netlify の偽 API(2026-09-08 に swagger 2.57.1 と netlify-cli で確かめた形):
+ * Netlify の偽 API(swagger 2.57.1 と netlify-cli で確かめた形):
  * `GET /api/v1/accounts/{account_id}/env?site_id=`(配列)、`POST …/env?site_id=`(配列で
  * 新規作成。**既存 key は 422** — 文言は Netlify Support Forums #88738 で報告された実物。
  * swagger には無い)、

@@ -1,4 +1,4 @@
-// `maruhi sync` のリポジトリ設定(SY2 第 1 段 — integration-options.md §3
+// `maruhi sync` のリポジトリ設定(第 1 段 — integration-options.md §3
 // 補足 15 X1「同期の対応付け設定はリポジトリへ(非機密)」。第 2 段で `driver` /
 // `token` を追加)。
 //
@@ -60,7 +60,7 @@ export type TargetDriver =
 
 /**
  * What `maruhi push` does for the target right after a push lands in its
- * source environment (SY2 第 3 段 — integration-options.md §3 補足 4 N1 /
+ * source environment (第 3 段 — integration-options.md §3 補足 4 N1 /
  * 補足 7 P1): apply directly from the writer's CLI, or trigger the repository's
  * workflow with `gh workflow run` so CI applies it (`maruhi ci sync`). The
  * writer then never holds the target's token. `null` = only by hand.

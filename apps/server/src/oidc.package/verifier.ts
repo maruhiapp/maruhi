@@ -68,9 +68,9 @@ export interface VerifiedOidcToken {
    * デコード結果のバイト列を変えずに文字だけ差し替えられる(RS256 の末尾 1 文字は
    * 15 通りの同値、ES256 はさらに `s`-malleability を持つ)。生トークンを束縛
    * キーにすると、署名検証・claims_digest を一切変えずにハッシュだけ変える 1 文字
-   * 編集で束縛照合を空振りさせられ、リプレイ防御が丸ごと無効化される
-   * (2026-08-15 pullfrog レビュー指摘)。signing input は issuer が実際に署名した
-   * バイト列そのもので、妥当性を保つ変異に対して不変であり、この経路を閉じる。
+   * 編集で束縛照合を空振りさせられ、リプレイ防御が丸ごと無効化される。signing
+   * input は issuer が実際に署名したバイト列そのもので、妥当性を保つ変異に対して
+   * 不変であり、この経路を閉じる。
    */
   readonly signingInputHashHex: string;
 }

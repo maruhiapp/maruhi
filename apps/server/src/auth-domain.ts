@@ -23,7 +23,8 @@ export interface ResolvedUser {
 }
 
 /**
- * サインアップ拒否の理由(AUTH_SPEC §3 のサインアップ制御 — 2026-09-01 H1)。
+ * サインアップ拒否の理由(AUTH_SPEC §3 のサインアップ制御)。
+
  * 監査 `auth.signup_denied` の payload reason と同語彙(AUDIT_SPEC §3.1)。
  */
 export type SignupDenialReason = "policy-closed" | "invite-required" | "invite-invalid";

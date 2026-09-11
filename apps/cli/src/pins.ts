@@ -234,8 +234,7 @@ export function makeFilePinStore(dir: string): PinStoreShape {
           // 破損ファイルへの書き込みは拒否する(床の「書き込み失敗を fail-open に
           // しない」と同じ規律)。空からの再構築にすると、検証済みアンカーが
           // 破損 1 回 + 次の書き込みで黙って失われ、「アンカーが最初から無い」と
-          // 区別できなくなる(§6.3 (a) の検出そのものがアンカーに依存する —
-          // pullfrog レビュー反映)
+          // 区別できなくなる(§6.3 (a) の検出そのものがアンカーに依存する)
           throw new Error("corrupt");
         }
         const base: InvitePins = loaded.pins ?? { v: 1, anchor: null, issued: {} };

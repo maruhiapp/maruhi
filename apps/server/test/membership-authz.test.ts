@@ -208,7 +208,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(body.reason).toBe("insufficient-permission");
   });
 
-  it("rejects session-principal init even with the CSRF header (§5 能力制限 — W2b)", async () => {
+  it("rejects session-principal init even with the CSRF header (§5 能力制限)", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const session = await loginSession(9001);
@@ -266,7 +266,7 @@ describe("CAS(§6.4 楽観ロック)", () => {
       throw new Error("missing vector entries");
     }
     // テスト時署名の remove_member(seq 3。汎用 append の対象 op)で CAS を検査する
-    // (ベクター seq 3 は create_environment になり複合経由 — data.test.ts が担う)
+    // (ベクター seq 3 は create_environment で複合経由 — data.test.ts が担う)
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
@@ -296,8 +296,8 @@ describe("CAS(§6.4 楽観ロック)", () => {
       actorUserId: "user-owner-0001",
       operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
     });
-    // CAS の比較対象の形式は Sha256Hex(64 文字小文字 hex)で固定する(意図的な
-    // 受理変更): 不正形式は 409(現ヘッド情報付き)へ到達せず schema 境界の 400
+    // CAS の比較対象の形式は Sha256Hex(64 文字小文字 hex)で固定する:
+    // 不正形式は 409(現ヘッド情報付き)へ到達せず schema 境界の 400
     for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
       const response = await appendEntry(vectorProjectId, bad, entry);
       expect(response.status).toBe(400);

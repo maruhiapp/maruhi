@@ -1,7 +1,7 @@
 // 認証エンドポイントの HttpApi 定義(AUTH_SPEC §3 / §5 / §6 / §11-4)。
 // CLI ログイン(§4 — サーバー仲介 web-flow ハンドオフ)は auth-cli-api.ts。
 //
-// 2026-08-02 裁定 4: OAuth リダイレクト系(start / callback)も含めてすべて
+// OAuth リダイレクト系(start / callback)も含めてすべて
 // api-schema に置く(サーバー実装とクライアント導出の共有源を単一に保つ)。
 // start / callback の成功応答は 302 リダイレクト(+ Set-Cookie)であり、
 // ハンドラが HttpServerResponse を直接返す(success スキーマは Void)。
@@ -44,7 +44,7 @@ const Redirect = HttpApiSchema.Empty(302);
  */
 export const MAX_TOKEN_NAME_LENGTH = 128;
 
-// トークン名に許さない文字クラス(AUTH_SPEC §6 — 2026-08-31 文字種制約):
+// トークン名に許さない文字クラス(AUTH_SPEC §6 文字種制約):
 // 制御文字(C0 / DEL / C1)と双方向制御文字(bidi — ALM・LRM/RLM・埋め込み /
 // 上書き・分離子)。名前は承認ページ(§4-1 (4))・一覧 API・ダッシュボードに
 // 呼び出し側由来のテキストとして描画されるため、表示面共通の保護を受理時に
@@ -71,8 +71,7 @@ export const TokenNameSchema = Schema.String.check(
 );
 
 /**
- * API トークンの既定 TTL(AUTH_SPEC §6 — 2026-08-30 W3a。SECURITY_REVIEW
- * 2026-08-14 L-2 の解消)。expires_at は発行時に固定する(セッション §5 の
+ * API トークンの既定 TTL(AUTH_SPEC §6)。expires_at は発行時に固定する(セッション §5 の
  * スライディング更新と意図的に非対称 — トークンには定期再認証を強制する)。
  * セルフホストでの値の調整は許される(受理ポリシーであり合意規則ではない)。
  */
@@ -95,9 +94,9 @@ export const TokenTtlDays = Schema.Number.check(
 );
 
 /**
- * サインアップ受理ポリシー(AUTH_SPEC §3 — 2026-09-01 H1)。デプロイメント
+ * サインアップ受理ポリシー(AUTH_SPEC §3)。デプロイメント
  * 単位のサーバー受理ポリシーで、チェーン・署名には載せない(§12-11 の
- * schemaPolicy と同じクラス)。既定 `open` = 従来挙動と同一。
+ * schemaPolicy と同じクラス)。既定は `open`。
  */
 export const SignupPolicySchema = Schema.Literals(["open", "invite", "closed"]);
 export type SignupPolicy = (typeof SignupPolicySchema)["Type"];
@@ -114,16 +113,16 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  * OAuth client_id is public information — it appears in the authorize URL —
  * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
  *
- * serverKeyFingerprintHex(AUTH_SPEC §4 — 2026-08-12)はデプロイメント keypair
+ * serverKeyFingerprintHex(AUTH_SPEC §4)はデプロイメント keypair
  * (CRYPTO_SPEC §9)が設定済みの場合のみ載る。grant_server 実行時の照合対象。
  * serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の配布チャネル
  * (公開鍵は公開情報。FP はその SHA-256 先頭 16 バイトで、CLI は両者の整合を
  * 再計算検証する)。
  *
- * signupPolicy(AUTH_SPEC §3 — 2026-09-01 H1)は advisory(公開情報 —
+ * signupPolicy(AUTH_SPEC §3)は advisory(公開情報 —
  * ランディングの案内文言と同じ内容。検証・認可規則の入力にしない)。
  * optionalKey なのは本フィールドを持たない旧サーバーの応答を導出クライアントが
- * 壊さないため(欠落時は従来どおり進む — CLI の fail-fast は advisory の
+ * 壊さないため(欠落時はそのまま進む — CLI の fail-fast は advisory の
  * 欠落でログインを止めない)。新サーバーは常に載せる。
  */
 export const AuthConfigSchema = Schema.Struct({
@@ -172,7 +171,7 @@ export const MeSchema = Schema.Struct({
    * 許可列挙に限られ、その中ではチェーン role が束縛 — W2b)。
    * クライアントが実効権限(min(スコープ, チェーン role) — §9-2)を**事前に**
    * 判定するための材料(checkpoint の監査ヘッド公証で 403 を踏まない —
-   * §16-2。2026-08-28 PR-M2)。
+   * §16-2)。
    */
   tokenScopes: Schema.optionalKey(Schema.Array(TokenScopeSchema)),
   /**
@@ -221,13 +220,13 @@ export const RecoveryStatusSchema = Schema.Struct({
  * Authentication endpoints (AUTH_SPEC §3 web OAuth, §5 sessions, §6 tokens).
  * Token issuance happens only through the CLI login handoff (§4 —
  * auth-cli-api.ts の authCli グループ); management is the presented-token
- * self-revocation (CLI logout 用) plus the W3a token-management surface:
- * self-inventory listing and targeted revocation (2026-08-28 W0 裁定で更新
- * された §6 の線引き — 追加発行 UI / API は作らない).
+ * self-revocation (CLI logout 用) plus the token-management surface:
+ * self-inventory listing and targeted revocation (§6 の線引き — 追加発行
+ * UI / API は作らない).
  */
 export const authGroup = HttpApiGroup.make("auth")
   .add(
-    // 公開設定エンドポイント(AUTH_SPEC §4。セッション 11 裁定 B)。未認証。
+    // 公開設定エンドポイント(AUTH_SPEC §4)。未認証。
     // 未設定サーバー(§3 の自己診断条件: client_id がプレースホルダ / 空 / 欠落、
     // または client_secret 未登録)は 503 でセットアップガイドへ誘導する
     HttpApiEndpoint.get("authConfig", "/auth/config", {
@@ -236,11 +235,11 @@ export const authGroup = HttpApiGroup.make("auth")
     }),
   )
   .add(
-    // signup_code(AUTH_SPEC §3 — 2026-09-01 H1): サインアップ招待コードの
+    // signup_code(AUTH_SPEC §3): サインアップ招待コードの
     // 運搬起点。存在すればハンドラが開始時事前検証(per-IP レート制限つき)を
     // 行い、無効ならスクリプトなし案内ページ(HTML — 成功宣言の 302 を
     // 経由しない直接応答)で終了、有効なら __Host- クッキーに載せて callback
-    // まで運ぶ。プレーンな start(コードなし)= 従来のログイン導線は不変
+    // まで運ぶ。プレーンな start(コードなし)= 通常のログイン導線
     HttpApiEndpoint.get("githubStart", "/auth/github/start", {
       query: { signup_code: Schema.optionalKey(SignupCodeSchema) },
       success: Redirect,
@@ -251,11 +250,11 @@ export const authGroup = HttpApiGroup.make("auth")
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
       // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換。
       // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
-      // (512 文字)を課す(セキュリティレビュー L-3 / 追補 3 A-6)。code の
+      // (512 文字)を課す。code の
       // 形式は OAuth 仕様が定めないため長さのみ検査する(実 GitHub の code /
       // state はこの上限より桁違いに短い)。長さ上限はペイロードを縛るだけで
       // 頻度は縛らないため、交換の**回数**は発信元 IP 単位の Workers Rate
-      // Limiting が有界にする(deepsec R7 — OAuth App 共有クォータを消費する経路)
+      // Limiting が有界にする(OAuth App 共有クォータを消費する経路)
       query: {
         code: Schema.String.check(Schema.isMaxLength(512)),
         state: Schema.String.check(Schema.isMaxLength(512)),

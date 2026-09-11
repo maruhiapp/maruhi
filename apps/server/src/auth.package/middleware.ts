@@ -2,7 +2,7 @@
 //
 // - 資格情報の優先順: `Authorization: Bearer maruhi_pat_…` → セッションクッキー。
 //   どちらも解決できなければ 401(認証必須エンドポイントにのみ適用される)
-// - セッション能力制限(§5 — W2b): セッション主体は肯定列挙
+// - セッション能力制限(§5): セッション主体は肯定列挙
 //   (@maruhi/api-schema の SESSION_ALLOWED_ENDPOINTS)の外の全エンドポイントで
 //   403 `session-not-allowed`。ミドルウェアが受け取る { group, endpoint } の
 //   識別子で判定する単一実装点であり、ハンドラごとの手動検査を持たない
@@ -27,7 +27,8 @@ export const SESSION_COOKIE = "__Host-maruhi_session";
 /**
  * CSRF 対抗ヘッダー。状態を持つ GET(値付き一括 pull・リカバリーブロブ取得)も
  * ハンドラ側で要求する(下の statefulGetCsrfViolated がヘッダー名ごと閉じ込める)。
- * 名前の真実源は api-schema の共有定数(session-43 §14 申し送りの解消 — W3a)。
+ * 名前の真実源は api-schema の共有定数。
+
  */
 const CSRF_HEADER = CSRF_HEADER_NAME;
 // RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する

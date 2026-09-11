@@ -1,8 +1,5 @@
 // `maruhi server grant --lease-policy <file>` の読み込みと正規化
-// (lease_policy — CRYPTO_SPEC §6.2)。
-//
-// cli.ts(gunshi 側)から切り出したのは ADR-0016 第 2 段階の移行のため
-// (server grant の引数層は effect-cli.ts)。文言は ADR-0017 に従い英語。
+// (lease_policy — CRYPTO_SPEC §6.2)。引数層は effect-cli.ts。文言は ADR-0017 に従い英語。
 
 import { readFile } from "node:fs/promises";
 

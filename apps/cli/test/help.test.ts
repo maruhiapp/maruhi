@@ -1,4 +1,4 @@
-// `--help` の整合(DP5 裁定 F): 全コマンド段 + bare `maruhi` + `maruhi --help` の
+// `--help` の整合(裁定 F): 全コマンド段 + bare `maruhi` + `maruhi --help` の
 // 出力を golden ファイル(test/golden/help.txt)で固定する。
 //
 // - 文言を変えたら `UPDATE_GOLDEN=1 bunx vitest run --project cli test/help.test.ts`

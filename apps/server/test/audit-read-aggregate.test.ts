@@ -1,11 +1,11 @@
-// `var.read` の集約形(AUDIT_SPEC §3.3 — 2026-09-02 監査ログの成長密度対策 ②)の
+// `var.read` の集約形(AUDIT_SPEC §3.3 — 監査ログの成長密度対策 ②)の
 // テスト。@cloudflare/vitest-plugin(workerd 実環境)。
 //
 // 固定するもの:
 // - 記録形: 値付き一括 pull 1 回 = 環境単位 1 行。variable_id / epoch / version
 //   列は NULL、payload = { variables: [{ variableId, epoch, version }, …] }
 //   (variableId 昇順)。返した変数が 0 の pull は行を書かない
-// - 密度: 100 変数の環境を 1 回 pull → 監査行 1 行(旧: 100 行)。行 + 索引の
+// - 密度: 100 変数の環境を 1 回 pull → 監査行 1 行。行 + 索引の
 //   バイト数の実測(仕様 §3.3 / AUTH_SPEC §12-8 余裕の会計の数値の出所)
 // - 要ローテーション検出の同値性(§4.1 手順 3 の (a)): 旧形のみ / 集約形のみ /
 //   混在の 3 形で detectMemberRemoval の basis が一致する(集約は検出の入力を
@@ -96,7 +96,7 @@ describe("集約形の記録(§3.3)", () => {
     expect(varReadRows(await readAuditEvents(projectId))).toHaveLength(0);
   });
 
-  it("100 変数の環境を 1 回 pull → 監査行 1 行(旧: 100 行)。列挙は 100 件", async () => {
+  it("100 変数の環境を 1 回 pull → 監査行 1 行。列挙は 100 件", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     for (let index = 0; index < 100; index += 1) {
       await createVariableOk(
@@ -419,7 +419,7 @@ function readEnvironments(
   return rows.filter((row) => row.event === "var.read").map((row) => row.environmentId);
 }
 
-describe("variable_id フィルタの走査範囲(第 2 次探索 — 判定前に消費する共有資源の有界化)", () => {
+describe("variable_id フィルタの走査範囲(判定前に消費する共有資源の有界化)", () => {
   const E = "env-scan-0001";
   const ts = 1_700_000_000_000;
 

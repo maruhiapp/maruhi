@@ -1,4 +1,4 @@
-// CRYPTO_SPEC §6.2 checkpoint op(PR-F3a — 2026-08-27 セッション 33)のチェック:
+// CRYPTO_SPEC §6.2 checkpoint op のチェック:
 // - values_digest 正規形(chain-entries.json の values_digests セクション)を
 //   computeEnvValuesDigest が再現する(入力順非依存・重複拒否・境界)
 // - 検証済みチェーンからの導出(ChainState.checkpoints)と履歴索引の照会
@@ -85,7 +85,7 @@ async function valuesDigestInvalidInputChecks(c: Checks): Promise<void> {
     { name: "version zero", entry: { ...validEntry, version: 0 } },
     { name: "fractional version", entry: { ...validEntry, version: 1.5 } },
     // MAX_SAFE_INTEGER + 1 = float64 の精度喪失域(10 進文字列化が一意でない —
-    // §2.1 / session-31 M1-T2)
+    // §2.1)
     {
       name: "unsafe integer version",
       entry: { ...validEntry, version: Number.MAX_SAFE_INTEGER + 1 },
@@ -178,7 +178,7 @@ async function signAs(userId: string, entry: UnsignedChainEntry): Promise<ChainE
  * (env-prod, manifestVersion 2) を**異なる manifest_sig_hash** で公証する
  * checkpoint を追記する。この追記自体は合意規則で有効(非後退は等号を許し、
  * 内容はチェーン検証で検証不能)だが、履歴索引の照会は conflicting へ落ち、
- * マニフェスト検証(§4.3 (2) — PR-F3b)が硬い証拠として拒否する材料になる。
+ * マニフェスト検証(§4.3 (2))が硬い証拠として拒否する材料になる。
  */
 async function equivocationChecks(c: Checks): Promise<void> {
   const view = await baselineView();

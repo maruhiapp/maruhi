@@ -36,8 +36,8 @@ import { Schema } from "effect";
  *   from `missing-claim`: the `aud` claim *is* present, and an operator
  *   reading the reason code should not go looking for a claim that exists
  * - `token-replayed` — the token was already used to issue a lease to a
- *   *different* ephemeral key (first-use binding — AUTH_SPEC §14-1 の先着束縛,
- *   2026-08-15 裁定). Retrying with the same token never succeeds; a runtime
+ *   *different* ephemeral key (first-use binding — AUTH_SPEC §14-1 の先着束縛).
+ *   Retrying with the same token never succeeds; a runtime
  *   issuer (GitHub Actions) should mint a fresh token and retry once. Unlike
  *   the other reasons this is checked after authorization (it needs the
  *   project's binding state), which keeps existence hiding intact: only a
@@ -84,7 +84,7 @@ export class LeaseUnauthorizedError extends Schema.TaggedError<LeaseUnauthorized
  *   (§14-1) — this reason only changes *how* the refusal is reported: a
  *   transient issuer / network outage is not the workload's credential being
  *   bad, and a 401 would make CI jobs fail permanently on a retryable
- *   condition (2026-08-15 起草 — §14-3 の 1 行改訂)
+ *   condition (§14-3)
  * - `server-key-unconfigured` — this deployment has no `SERVER_ENC_KEY_IKM`
  *   (CRYPTO_SPEC §9)。チェーン上に grant があるのにサーバー鍵が未設定なのは
  *   デプロイ設定の欠落であり、SetupIncomplete と同じ「セットアップへ誘導する」
@@ -108,7 +108,7 @@ export class LeaseUnavailableError extends Schema.TaggedError<LeaseUnavailableEr
 ) {}
 
 /**
- * Which limit produced a lease 429 (deepsec M5 — 2026-08-24):
+ * Which limit produced a lease 429:
  *
  * - `project-window` — the per-project fixed window (AUTH_SPEC §14-3, judged
  *   after authorization to preserve existence hiding)

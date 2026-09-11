@@ -1,6 +1,6 @@
 "use client";
 
-// S6 の本人軸: GET /auth/audit/events(AUDIT_SPEC §3.1 / §6 — 本人のみ)。
+// 本人軸: GET /auth/audit/events(AUDIT_SPEC §3.1 / §6 — 本人のみ)。
 // D1 経路のため seq は常に応答に載らない(§7)— AuditEventList の応答適応で
 // 列は自然に出ない。
 import { Text } from "@astryxdesign/core/Text";

@@ -84,7 +84,7 @@ export interface RotationSummary {
   readonly failure: string | null;
   /**
    * この実行が**受理された**再暗号化の書き込み(名前と新 version。巡と再開を
-   * 跨いで集約)。同期レシートの前進(SY2 第 2 段 2b — M1)の材料: 再暗号化は
+   * 跨いで集約)。同期レシートの前進の材料: 再暗号化は
    * 平文を変えないので、ここに載った version は直前 version と同じ平文を持つ。
    * `alreadyCurrent`(並行 push — 平文が変わりうる)と未完了分は載らない。
    * 受理済みの書き込みは取り消せないため、再走査に到達できなかった実行
@@ -119,8 +119,8 @@ interface RotateInput {
    */
   readonly forceNewEpoch: boolean;
   /**
-   * マニフェスト**欠落**の許容(`--init-manifest` — 移行経路 session-27 §14
-   * PR-M1)。マニフェスト導入前に作成された環境の manifest_version 1 初期化に
+   * マニフェスト**欠落**の許容(`--init-manifest` — 移行経路)。
+   * マニフェスト導入前に作成された環境の manifest_version 1 初期化に
    * 限る明示操作。配布された場合の検証は緩和しない(manifest.ts の規約)。
    */
   readonly initManifest: boolean;
@@ -305,7 +305,7 @@ function signRotateEntry(input: {
 }
 
 /**
- * 送信結果の判別可能な outcome(session-31 §3 M1-A4 修正案 2)。受理の確認は
+ * 送信結果の判別可能な outcome。受理の確認は
  * チェーン上の自 DEK commitment の一致で行い(§12-10 (3) — 複合の効果確認は
  * チェーン同期)、accepted 系は**コマンドがエラー終了する経路でも**床
  * (自己発行マニフェスト)を前進させる材料になる。
@@ -499,10 +499,10 @@ function appendRotation(
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
     /**
-     * 境界 checkpoint(§12-4 — 2026-08-27)の values_digest 材料: 検証済み pull の
+     * 境界 checkpoint(§12-4)の values_digest 材料: 検証済み pull の
      * 値レベル最新形(active 変数のみ。未再暗号化 = 旧エポックの現在値 — §12-7 の
      * 正当な状態)。再暗号化のために実読した値そのもので、追加の読み取りは
-     * 発生しない(session-32 §5-1)。
+     * 発生しない。
      */
     readonly checkpointValues: readonly EnvValuesDigestEntry[];
   },
@@ -681,7 +681,7 @@ function appendRotation(
               return { verified: resynced, member, deks };
             }),
           // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
-          // (pullfrog PR #102 レビュー対応 — 到達可能になった場合の誤案内を防ぐ)
+          // (到達可能になった場合の誤案内を防ぐ)
           exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
         },
       ),
@@ -695,7 +695,7 @@ function appendRotation(
         return yield* Effect.fail(attempted.error);
       }
       // 送信の失敗を「何も起きなかった」と読ませない: チェーンを probe して
-      // 判別可能な outcome(M1-A4)へ落とし、必ず失敗として返す
+      // 判別可能な outcome へ落とし、必ず失敗として返す
       return yield* settleAmbiguousRotation(input, lastSent, attempted.error.message);
     }
     // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で
@@ -715,7 +715,7 @@ interface RotationConfirmInput {
 }
 
 /**
- * 受理確認済みマニフェストの床昇格(M1-A4 — §6.3 記録契機の「受理確認」。
+ * 受理確認済みマニフェストの床昇格(§6.3 記録契機の「受理確認」。
  * コマンドがエラー終了する経路でも、チェーン上の自 commitment 一致を確認
  * できた時点で必ず走る)。床の書き込み失敗で受理済みのローテーションを
  * 失敗扱いにしない(床は SHOULD — 警告で開示)。
@@ -753,7 +753,7 @@ function resolveRotationIntent(
 }
 
 /**
- * 応答が消えた送信の決着(M1-A4): チェーンを probe して判別可能な outcome へ
+ * 応答が消えた送信の決着: チェーンを probe して判別可能な outcome へ
  * 落とす。accepted 系はコマンドがエラー終了しても床を前進させ、intent を閉じる。
  * acceptance-unknown は床を前進させず intent も未解決のまま残す(受理を確認して
  * いない事実を床に書かない — 次の実行の照合〔チェーン同期〕が解決する)。
@@ -776,7 +776,7 @@ function settleAmbiguousRotation(
     const outcome = probed.outcome;
     if (outcome.kind === "accepted-and-current" || outcome.kind === "accepted-but-superseded") {
       // 受理をチェーンで確認した = コマンドがエラー終了しても床は前進する
-      // (M1-A4 — 受理前の manifest / epoch 基準へ戻される窓を閉じる)
+      // (受理前の manifest / epoch 基準へ戻される窓を閉じる)
       const floorWarning = yield* promoteAcceptedManifest(input.floor, sent, outcome.view);
       yield* resolveRotationIntent(
         input.floor,
@@ -847,7 +847,7 @@ function confirmAcceptedRotation(
     if (environment.currentEpoch !== input.newEpoch) {
       // accepted-but-superseded: 自分の rotate は受理された(commitment 一致)が、
       // 直後の別 rotate が現エポックを追い越した。自己発行マニフェストは最低床
-      // として残す(M1-A4 の固定テスト —「200 + 直後に別 rotate」)
+      // として残す(固定テスト:「200 + 直後に別 rotate」)
       const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
       yield* resolveRotationIntent(input.floor, accepted, "accepted-superseded");
       return yield* Effect.fail(
@@ -1713,7 +1713,7 @@ function settlePass(input: {
     if (rescan.kind === "failed") {
       if (rescan.error.evidence === true) {
         // 再走査の pull が証拠付きで拒否された(床違反・チェックポイント整合
-        // 規則 2 — PR-M3)。復号段の証拠(rescan.value.evidence)と同じ扱いの
+        // 規則 2)。復号段の証拠(rescan.value.evidence)と同じ扱いの
         // 即時中断とし、「再実行で直る部分完了」へ格下げしない
         return {
           warnings,
@@ -1937,7 +1937,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
 /**
  * values_digest 突合の 422(§12-4 — 宣言ヘッド確定後の並行 push)に対する
  * 有界再試行の上限。再試行は検証済み pull からのやり直し(再暗号化に必要な
- * 読み取りと同一 — 取りこぼしの防止を兼ねる。session-33 §5 F-2)。
+ * 読み取りと同一 — 取りこぼしの防止を兼ねる)。
  */
 const MAX_VALUES_CONFLICT_ATTEMPTS = 3;
 
@@ -2004,7 +2004,7 @@ function resumeReencryption(input: {
     const environmentId = input.input.environmentId;
     // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
     // role 変更・削除が起きていれば、古い検証状態のまま再開経路だけが素通り
-    // してしまう — Cursor Security Reviewer 指摘。再開経路は push のみで
+    // してしまう。再開経路は push のみで
     // ラップ集合を作らないため、grant の有効化はここでは義務を生まない)
     const member = yield* ensureRotatable(
       input.pulled.verified,
@@ -2075,7 +2075,7 @@ function resumeReencryption(input: {
     // 発行契機 (i)(CRYPTO_SPEC §6.3): 再開経路による**完了**も同じ節目 —
     // 初回実行はクラッシュで発行へ到達しておらず、中断していた再暗号化が
     // ここで完了して初めて「完了後のデータ状態」が成立する。通常経路と同じ
-    // 条件(完全完了のみ)で発行する(PR #99 Bugbot 指摘対応)
+    // 条件(完全完了のみ)で発行する
     if (outcome.remaining === 0 && outcome.failure === null) {
       yield* issuePostRotationCheckpoint(input.input, input.pulled.verified, warnings);
     }
@@ -2095,7 +2095,7 @@ function resumeReencryption(input: {
 }
 
 /**
- * `--init-manifest` が不要だった実行の警告文言(session-31 §4 M1-B2)。
+ * `--init-manifest` が不要だった実行の警告文言。
  * **rotatePathOf の結果確定後に選ぶ**: path が resume / up-to-date の実行は
  * rotate 複合を送らない = 次 manifestVersion を発行しないので、「この rotation は
  * 次版を再発行する」という文言は嘘になる(フラグを渡した利用者に、発行されて
@@ -2242,7 +2242,7 @@ function rotateWithWarnings(
       environmentId: input.environmentId,
       resync: input.resync,
       floor: input.floor,
-      // --init-manifest(移行経路 — session-27 §14 PR-M1)のみマニフェストの
+      // --init-manifest(移行経路)のみマニフェストの
       // **欠落**を許容する。配布された場合の検証はフラグに関わらず全て行う
       allowMissingManifest: input.initManifest,
     });
@@ -2265,7 +2265,7 @@ function rotateWithWarnings(
       // 初期化が実際に必要(欠落を確認した)実行は rotate 複合を必ず送る
       mustInitialize: input.initManifest && pulled.manifest === null,
     });
-    // --init-manifest の不要フラグ文言は経路の確定後に選ぶ(M1-B2 — resume /
+    // --init-manifest の不要フラグ文言は経路の確定後に選ぶ(resume /
     // up-to-date の実行は複合を送らない = 「次版を再発行する」とは言わない)
     warnings.push(...initManifestNotices(input, pulled.manifest, path));
 
@@ -2383,7 +2383,7 @@ function rotateWithWarnings(
   });
 }
 
-/** --init-manifest が実際には不要だった実行の案内(M1-B2 — 文言は経路確定後に選ぶ)。 */
+/** --init-manifest が実際には不要だった実行の案内(文言は経路確定後に選ぶ)。 */
 function initManifestNotices(
   input: RotateInput,
   manifest: { readonly manifestVersion: number } | null,
@@ -2431,7 +2431,7 @@ function computeRotationCommitmentHex(input: {
  * する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
  * 部分完了・失敗時は呼ばない(公証すべき「完了後のデータ状態」がない)。
  * 再開経路(resumeReencryption)による完了も同じ節目として発行する —
- * 初回実行はクラッシュで発行へ到達していない(PR #99 Bugbot 指摘)。
+ * 初回実行はクラッシュで発行へ到達していない。
  * SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する。
  */
 function issuePostRotationCheckpoint(

@@ -54,10 +54,9 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
   "variables-digest-mismatch": "manifest-digest-mismatch",
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
-  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1 — 2026-08-27
-  // セッション 33 = PR-F3b)。ワイヤも同名の理由で返す(複合の同梱物一致
-  // 〔§12-4 の tuple ↔ manifest ハッシュ一致〕は本束縛検査が一意に担う —
-  // §6.4 の「分担は実装 PR で一意化」)
+  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1)。ワイヤも
+  // 同名の理由で返す(複合の同梱物一致〔§12-4 の tuple ↔ manifest ハッシュ
+  // 一致〕は本束縛検査が一意に担う — §6.4 の「分担は実装 PR で一意化」)
   "checkpoint-binding-mismatch": "checkpoint-binding-mismatch",
   "checkpoint-equivocation": "checkpoint-equivocation",
   "checkpoint-regressed": "checkpoint-regressed",
@@ -136,17 +135,17 @@ export const acceptManifestForMetaOp = (input: {
   readonly envMeta?: EnvManifestEnvMeta;
 }) =>
   Effect.gen(function* () {
-    // v1 ブートストラップのヘッドピン留め(AUTH_SPEC §12-5 (6) の明確化 —
-    // 2026-08-18 PR #81 pullfrog レビュー対応): 保存済みマニフェストなし →
-    // v1 受理では、宣言ヘッド後にローテーションが挟まっても manifestVersion
+    // v1 ブートストラップのヘッドピン留め(AUTH_SPEC §12-5 (6) の明確化):
+    // 保存済みマニフェストなし → v1 受理では、宣言ヘッド後にローテーションが
+    // 挟まっても manifestVersion
     // CAS(最新 0 のまま)が 409 で落とせず、「受理時点の現エポック独立検査を
     // 置かない」論証(§12-5)が v1 に限って成立しない。複合経路のピン留め
     // (composite-programs.ts の manifestChainHead)と同型に、宣言ヘッド =
     // 受理時点の現ヘッドを要求して stale エポックの焼き込みを塞ぐ(ハッシュの
     // 一致は crypto のヘッド束縛検査が担う — ここは位置のみ)。
-    // **ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ**
-    // (session-31 M1-B1 — 2026-08-27 修正): 初期化済み環境への stale v1 は
-    // ピンで 422 にせず、CAS の 409(currentManifestVersion 付き)へ落とす —
+    // **ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ**:
+    // 初期化済み環境への stale v1 はピンで 422 にせず、CAS の 409
+    // (currentManifestVersion 付き)へ落とす —
     // 正当クライアントの再取得・再署名ループに合流させる
     const pinAnchor = yield* Effect.flatMap(DataStore, (store) =>
       store.environmentManifestAnchor(input.environmentId),

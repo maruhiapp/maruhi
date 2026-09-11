@@ -185,7 +185,7 @@ describe("JWKS キャッシュ(§14-1)", () => {
     // TTL 切れ + issuer 障害では `isUsable` が TTL の分岐で false を返し、
     // 強制リフレッシュのクールダウンには到達しない。失敗側に独立の間隔が
     // ないと、猶予窓の残り(最長 6 時間弱)にわたって「未認証リクエスト 1 本 =
-    // 外向き fetch 1 回」が続く(pullfrog 指摘 — PR #65)
+    // 外向き fetch 1 回」が続く
     let failing = false;
     const log = stubFetch({ failJwks: () => failing });
     let currentMs = 1_000_000;

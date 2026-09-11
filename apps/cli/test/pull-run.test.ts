@@ -313,7 +313,7 @@ describe("maruhi pull", () => {
     expect(output).not.toContain("beta-value");
   });
 
-  it("自分宛ラップの欠けエポックを警告する(§7 の全エポック配布との差分 — B2 の本人側検出)", async () => {
+  it("自分宛ラップの欠けエポックを警告する(§7 の全エポック配布との差分の本人側検出)", async () => {
     // 全アクティブ値は epoch 2 = 復号は成功する(現在値だけでは永遠に顕在化
     // しない静かな欠け)。epoch 1 の自分宛ラップが無いことを SHOULD 警告する
     const env = await startEnv([
@@ -363,11 +363,10 @@ describe("maruhi pull", () => {
   });
 
   it("--show=false / --show false は**書いたとおり**に読まれ、値を表示しない", async () => {
-    // gunshi は boolean のインライン値を読まずに true にし、空白区切りの値も
-    // 消費しなかった(= 表示しないと書いた実行が全シークレットを出す)。
-    // effect/unstable/cli は両方とも false として読む — 拒否ではなく**正しく
-    // 読まれる**ことが直り方(直前のテストが、この配布データで --show が
-    // 実際に値を出すことを示す)
+    // boolean のインライン値(`--show=false`)も空白区切りの値(`--show false`)も
+    // false として読まれる。読み損ねて true に化けると「表示しない」と書いた実行が
+    // 全シークレットを出す — 拒否ではなく**正しく読まれる**ことが要点(直前の
+    // テストが、この配布データで --show が実際に値を出すことを示す)
     const inline = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(0);
     expect(inline.logs.join("\n")).not.toContain("alpha-value");
@@ -379,10 +378,10 @@ describe("maruhi pull", () => {
   });
 
   it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
-    // gunshi は最後の指定で解決するため、明示した `--no-show` が黙って捨てられて
-    // 全シークレットが端末へ出る(`maruhi pull --no-show $FLAGS` の形)。
-    // effect の素の Flag.boolean は first-wins で沈黙するので、どちらにしても
-    // **打った順で結果が変わる**。Flag.atMost(1) が順序に依らず落とす
+    // 重複を黙って解決すると(素の Flag.boolean は first-wins で沈黙する)、明示した
+    // `--no-show` が捨てられて全シークレットが端末へ出うる(`maruhi pull --no-show
+    // $FLAGS` の形)。どの規則でも**打った順で結果が変わる**ので、Flag.atMost(1) が
+    // 順序に依らず落とす
     const later = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
@@ -571,8 +570,7 @@ describe("maruhi pull", () => {
 
   it("別変数の暗号文の差し替え(メタデータと AAD の不一致)は復号より前に拒否される", async () => {
     // BETA の暗号文を ALPHA のスロットで配る。値署名の検証(§6.3-5 の座標整合)が
-    // 復号より前に申告 AAD と外側メタデータの不一致を検出する(旧実装では
-    // 復号失敗まで進んでいた — 検出が前段化した)
+    // 復号より前に申告 AAD と外側メタデータの不一致を検出する
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -632,7 +630,7 @@ describe("maruhi pull", () => {
     // 正規メンバー(owner)が §5.1 署名した実在エポック宛のラップでも、中身が
     // チェーン掲載のコミットメントと一致しない DEK なら使用前に拒否する
     // (悪意サーバー + チェーン履歴上の鍵保持者の共謀による偽 DEK 注入の遮断 —
-    // CRYPTO_SPEC §14.2-1。セッション 11 の既知残余を閉じる本 PR の本丸)
+    // CRYPTO_SPEC §14.2-1)
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
     const poison = await wrapDekFor({
       projectId: fixture.built.projectId,
@@ -697,8 +695,8 @@ describe("maruhi pull", () => {
   });
 
   it("チェーンに create_environment がない環境(ファントム環境)の配布を拒否する", async () => {
-    // 「未観測なら epoch 1」の既定値は廃止(§6.2): チェーンが知らない環境の値は
-    // 値署名の検証(§6.3-4 — 環境作成前ヘッドの拒否)が復号より前に落とす
+    // チェーンが知らない環境に既定エポックを与えない(§6.2): その値は値署名の
+    // 検証(§6.3-4 — 環境作成前ヘッドの拒否)が復号より前に落とす
     const ghostValue = await encryptValueFor({
       dek: fixture.dek1,
       projectId: fixture.built.projectId,
@@ -772,7 +770,7 @@ describe("maruhi pull", () => {
 
   it("別環境の座標で暗号化された暗号文の差し替えは復号より前に拒否される", async () => {
     // environmentId だけ他所(other-env)の値を prod として配布 → 申告 AAD の
-    // 座標整合(§6.3-5)が復号より前に検出する(値署名の導入で前段化)
+    // 座標整合(§6.3-5)が復号より前に検出する
     const crossEnv = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -1040,7 +1038,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("Duplicate variable IDs within one response");
   });
 
-  it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する(レビューループ 1 [低])", async () => {
+  it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する", async () => {
     // 旧ビュー = genesis のみ(seq 1)。新メンバーを seq 2 で追加し、その新メンバーが
     // seq 3 で環境作成 + 値を書く。旧ビューでは writer が未知(writer-unknown)だが
     // 宣言 seq が自ヘッドより先なので即時拒否せず再同期して受理する
@@ -1649,9 +1647,8 @@ describe("maruhi run", () => {
   });
 
   it("`--` の後ろの空文字列の引数も落とさずに渡す", async () => {
-    // gunshi の ctx.rest は値が truthy のものしか入れないため、空文字列の
-    // 引数は rest から落ちて positionals へ紛れ込む。素直に使うと子プロセスの
-    // 引数が黙って 1 つ減り、引数検査も誤爆する(トークンから組み直している)
+    // 空文字列の引数を truthy 判定で落とすと、子プロセスの引数が黙って 1 つ減り、
+    // 引数検査も誤爆する。`--` の後ろは argv のトークンをそのまま渡す
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "printenv", "", "ALPHA"], env.layer)).toBe(0);
     expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
@@ -1686,19 +1683,17 @@ describe("maruhi run", () => {
   });
 
   it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {
-    // args-tokens が出す option-terminator は先頭の 1 つだけで、内側の `--` は
-    // 位置引数トークンになる。restArguments はそれを落とさない(落とすと
-    // npm / cargo / docker 形式の引数転送が壊れる)
+    // maruhi の終端として扱う `--` は先頭の 1 つだけで、内側の `--` は子プロセスの
+    // 引数として残す(落とすと npm / cargo / docker 形式の引数転送が壊れる)
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "npm", "test", "--", "--watch"], env.layer)).toBe(0);
     expect(env.runnerCalls[0]?.command).toEqual(["npm", "test", "--", "--watch"]);
   });
 
   it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
-    // 引数の書き方の検査(args.ts / strict)が子プロセスの引数に及ぶと、
-    // `maruhi run -- <cmd>` は任意のコマンドを実行できなくなる。`--` 以降は
-    // 位置引数トークンとして ctx.rest にだけ入る(ctx.positionals にも
-    // オプショントークンにも現れない)ため、検査の対象にならない
+    // 引数の書き方の検査(strict)が子プロセスの引数に及ぶと、`maruhi run -- <cmd>`
+    // は任意のコマンドを実行できなくなる。`--` 以降は maruhi のフラグ・位置引数
+    // として解釈されないため、検査の対象にならない
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(
       await runCli(["run", "--", "printenv", "--show=false", "--shwo", "extra"], env.layer),

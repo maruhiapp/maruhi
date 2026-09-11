@@ -95,10 +95,11 @@ if (hosted.observability?.redact_query_string !== true) {
   );
 }
 
-// 単一オリジンの不変条件(2026-09-03 所有者裁定 — hosted-ops.md §7 O3): 認証エンドポイント
+// 単一オリジンの不変条件(所有者裁定 — hosted-ops.md §7): 認証エンドポイント
 // (OAuth callback・__Host- cookie・CLI の server URL)の origin は custom domain 1 つに固定し、
 // workers.dev を第 2 のオリジンとして生かさない。外れると `maruhi-server-hosted.<sub>.workers.dev`
-// が黙って復活する(PR #139 pullfrog 指摘 — 設定値の検査で固定する)
+// が黙って復活する(設定値の検査で固定する)
+
 if (hosted.workers_dev !== false) {
   failures.push(
     "workers_dev: env.hosted must set workers_dev to false (auth endpoints must have a single origin)",

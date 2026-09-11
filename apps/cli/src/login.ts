@@ -1,9 +1,9 @@
 // maruhi login / logout(AUTH_SPEC §4 / §6)。
 //
-// login はサーバー仲介の web-flow ハンドオフ(§4 — 2026-08-31 全面改訂):
+// login はサーバー仲介の web-flow ハンドオフ(§4):
 // start → verificationUrl と userCode の表示(対話端末 × 非エージェントのみ
 // ブラウザ自動起動を試みる)→ poll。CLI はアイデンティティプロバイダと直接
-// 通信しない(client_id 解決は廃止)。
+// 通信しない。
 //
 // - flowToken は CLI 専用の bearer 資格情報(§4-1 (1))。ローカル変数にのみ
 //   存在し、表示・ログ・保存をしない(poll の payload にのみ載る)
@@ -36,7 +36,7 @@ import {
 import { logNote } from "./notice.ts";
 import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
-// サーバー申告値の運用上限(device flow 時代の B3 と同じ論拠): 敵対的・誤設定
+// サーバー申告値の運用上限: 敵対的・誤設定
 // サーバーの巨大値で deadline 検査に到達しないまま長時間 sleep しない。実値
 // (サーバーの TTL 15 分・間隔 5 秒)に余裕を持たせた丸め
 const MAX_POLL_INTERVAL_SECONDS = 900;
@@ -124,15 +124,15 @@ function flowExpiredMessage(window: string): string {
 }
 
 /**
- * login の事前 fail-fast(AUTH_SPEC §3 / hosted-design.md §2-2 (i)(ii) —
- * 2026-09-01 H1)。`POST /auth/cli/start` を呼ぶ**前**に `GET /auth/config` の
+ * login の事前 fail-fast(AUTH_SPEC §3 / hosted-design.md §2-2 (i)(ii))。
+ * `POST /auth/cli/start` を呼ぶ**前**に `GET /auth/config` の
  * `signupPolicy` advisory を確認し、`invite` / `closed` のサーバーでは新規希望者に
  * 「Web でサインアップしてから `maruhi login`」の案内を出す。
  *
  * - **誤操作ガードであって認可ではない**(受理の正はサーバー — CLI ログインは
  *   アカウントを作らない〔裁定 DH〕ため、アカウント不在者はブラウザ脚の
  *   サインアップ案内ページで必ず止まる。ここで止めるのは無駄なブラウザ往復)
- * - advisory の取得失敗・フィールド欠落(旧サーバー)では従来どおり進む
+ * - advisory の取得失敗・フィールド欠落(旧サーバー)では止めずに進む
  *   (advisory の欠落で login を壊さない — AUTH_SPEC §3)
  * - 対話確認(既存アカウント保持の自己申告)は「対話端末 × 非エージェント」の
  *   ときのみ。判定材料は Stdio / AgentProfileRef サービス経由(ADR-0016 決定 7 の
@@ -252,11 +252,10 @@ export function loginOp(input: {
    * tokenName がこの端末の既定名(`cli:<hostname>`)か(裁定 CM — 既定名の
    * 真実源は呼び出し側の引数層なのでここでは判定しない)。身元スワップ注記の
    * 分岐に使う: 既定名で供給した場合に「素の再ログイン」を勧めると、同名
-   * ローテーションが**いま表示したトークン自体を失効させる**(PR #108
-   * Bugbot 指摘)。
+   * ローテーションが**いま表示したトークン自体を失効させる**。
    */
   readonly tokenNameIsDefault: boolean;
-  /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
+  /** 明示 TTL(日。AUTH_SPEC §6。省略時はサーバー既定の 90 日)。 */
   readonly expiresInDays?: number;
   /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
   readonly minIntervalSeconds?: number;
@@ -285,8 +284,8 @@ export function loginOp(input: {
     // 対話の案内は stderr(裁定 D-2: プロンプトと同じ経路。`maruhi login >
     // file` でも案内が見える)。stdout に出るのはログインの**結果**だけ。
     // verificationUrl / userCode はサーバー由来の外部文字列。制御文字・ANSI を
-    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ(DP4 —
-    // cli-pages.ts)と揃える: "Confirmation code" / 「一致するときだけ承認」
+    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ
+    // (cli-pages.ts)と揃える: "Confirmation code" / 「一致するときだけ承認」
     yield* io.logError("Open this URL in your browser to approve the sign-in:");
     yield* io.logError("");
     yield* io.logError(`    ${displayText(started.verificationUrl)}`);
@@ -367,7 +366,7 @@ export function loginOp(input: {
       // token はワイヤ上無制約の Schema.String(サーバーが全バイトを選べる)
       // なので中和して出す — ただしコピーする値なので displayText(U+FFFD への
       // 破壊的置換)でなく escapeText(allow-list — 正直な Base62 値は素通し、
-      // 注入は可視のエスケープ列になる)を使う(PR #108 pullfrog 指摘)
+      // 注入は可視のエスケープ列になる)を使う
       yield* io.log("");
       yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
       yield* io.log("");
@@ -376,7 +375,7 @@ export function loginOp(input: {
       );
       // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
       // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
-      // 復し方は発行名で分岐する(PR #108 Bugbot 指摘): 既定名で発行した場合に
+      // 復し方は発行名で分岐する: 既定名で発行した場合に
       // 「素の再ログイン」を勧めると、同名ローテーションが**いま表示した
       // トークン自体を失効させ**、貼り付け先の環境を切断する。既定名なら
       // 「別名で発行し直す」が正しい復し方
@@ -386,10 +385,10 @@ export function loginOp(input: {
           : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
       );
     }
-    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
+    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL)。期限が
     // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
     // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
-    // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律)
+    // Date#toISOString へ直接渡さない)
     yield* io.log(
       `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Signing in again with the same token name (${input.tokenName}) rotates it and revokes the old one`,
     );

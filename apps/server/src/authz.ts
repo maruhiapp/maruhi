@@ -91,8 +91,7 @@ export function tokenScopeAllowsForProject(
  *
  * 交差を**候補索引の段**で行うのは応答行の絞り込みのためだけではない:
  * `nextAfter` カーソルは候補ページの末尾から出るため、後段の絞り込みだけでは
- * スコープ外の project_id(ID = capability)がカーソルに載って漏れる
- * (PR #106 Cursor Security Agent 指摘)。
+ * スコープ外の project_id(ID = capability)がカーソルに載って漏れる。
  */
 export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly string[] | null {
   if (principal.kind !== "token") {
@@ -155,7 +154,8 @@ export function ensureSelfAuditAccess(
 }
 
 /**
- * トークン管理面(AUTH_SPEC §6 — W3a: 一覧 `GET /auth/tokens`・指定失効)の
+ * トークン管理面(AUTH_SPEC §6: 一覧 `GET /auth/tokens`・指定失効)の
+
  * 主体条件: セッション主体は可(§5 の許可列挙)、トークン主体は `*` × admin
  * スコープを含む場合のみ。指定失効は §13-2 の鍵素材条件と同水準(スコープ限定
  * トークンの窃取で他のトークンを失効させる可用性攻撃の遮断 — §6)。一覧も同条件

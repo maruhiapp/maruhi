@@ -1,9 +1,9 @@
-// サインアップ制御の統合テスト(AUTH_SPEC §3 — 2026-09-01 H1)。
+// サインアップ制御の統合テスト(AUTH_SPEC §3)。
 //
 // 検査の骨子:
-// - 既定(deployment_settings に行なし)= 'open' = 従来挙動と完全に同一
-//   (従来挙動そのものの回帰は auth.test.ts が担う — 本ファイルは advisory と
-//   ゲートの H1 追加面のみを見る)
+// - 既定(deployment_settings に行なし)= 'open'
+//   (open の挙動そのものの回帰は auth.test.ts が担う — 本ファイルは advisory と
+//   ゲートのみを見る)
 // - 塞ぐのは「不在 → 作成」だけ(既存ユーザーのログインはどのポリシーでも不変)
 // - 拒否時に users / linked_identities / organizations / memberships の行を
 //   作らない(fail-closed)+ auth.signup_denied の記録
@@ -109,7 +109,7 @@ describe("signupPolicy = closed(§3 — 新規作成の全拒否)", () => {
     expect(callback.status).toBe(403);
     const html = await callback.text();
     expect(html).toContain("Sign-ups are closed");
-    // 拒否ページは「アカウントは作られていない」を明示する(§3 — DP4 で outcome 行に)
+    // 拒否ページは「アカウントは作られていない」を明示する(§3)
     expect(html).toContain("No account was created.");
     // スクリプトなし配信規律(§15-3 と同じ — cli-pages の応答点を共用)
     expect(callback.headers.get("content-security-policy")).toContain("script-src 'none'");
@@ -231,7 +231,7 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(row?.status).toBe("pending");
   });
 
-  it("a cookie carried into a different flow is not treated as a presented code (state 束縛 — PR #133 レビュー対応)", async () => {
+  it("a cookie carried into a different flow is not treated as a presented code (state 束縛)", async () => {
     const invite = await seedSignupInvite();
     // コード付き start でクッキーを得る(このフローは放棄し、コードは使わない)
     const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {

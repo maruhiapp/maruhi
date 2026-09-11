@@ -1,9 +1,9 @@
-// 値なしスキーマ S3 のテスト(設計文書 §1-1 / §1-2 / §1-4・CRYPTO_SPEC §4.2 /
+// 値なしスキーマのテスト(設計文書 §1-1 / §1-2 / §1-4・CRYPTO_SPEC §4.2 /
 // §6.3・AUTH_SPEC §12-7): `maruhi schema`(表示 — agent-gate 許可の固定込み)、
 // `maruhi schema set`(部分更新・宣言作成・locked 事前検査・エントロピー
 // fail-closed)、declared を含む配布の検証(ダイジェスト算入・値配布要求)、
 // run の fail-fast(presence 硬 / type 柔)、push の activation、v3 レイアウトの
-// 誠実な破壊様式(session-46 §8 第 5 周のテスト要件)。
+// 誠実な破壊様式。
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -49,7 +49,7 @@ let activeV2: {
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
 };
-/** v1 の active ステートメントと値(スキーマ欄なし — 従来形)。 */
+/** v1 の active ステートメントと値(スキーマ欄なし)。 */
 let activeV1: {
   variableId: string;
   statement: WireDistributedVariableStatement;
@@ -409,7 +409,7 @@ describe("maruhi schema(表示 — §1-1)", () => {
 
 describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
   it("declared を含む値付き pull がダイジェスト一致で成功し、宣言行を表示する", async () => {
-    // S2 の既知ギャップ: declared をダイジェスト再計算へ算入しないと
+    // declared をダイジェスト再計算へ算入しないと
     // variables-digest-mismatch で全 pull が落ちる — 成功すること自体が固定
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -461,7 +461,7 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
     expect(env.errors.join("\n")).toContain("declared statement together with a value");
   });
 
-  it("layoutVersion v3 は『未対応レイアウト(クライアント更新)』の型付きエラーで割れる(session-46 §8 第 5 周)", async () => {
+  it("layoutVersion v3 は『未対応レイアウト(クライアント更新)』の型付きエラーで割れる", async () => {
     // 配布 decode は Literal ではない(上限を固定しない整数)ため v3 は decode を
     // 通過し、署名検証より前のサポート範囲検査が誠実な破壊様式で拒否する —
     // Schema エラー・署名不正(改ざん疑い)に化けない
@@ -510,7 +510,7 @@ describe("maruhi run の fail-fast(§1-4 — presence 硬 / type 柔)", () => {
     expect(errors).toContain("Required variables are declared but have no value yet");
     expect(errors).toContain("SHOP_URL");
     expect(errors).toContain("The command was not started");
-    // エラー文面に description を含めない(ログ経由の注入面 — session-46 §8 第 3 周)
+    // エラー文面に description を含めない(ログ経由の注入面)
     expect(errors).not.toContain(DESCRIPTION_REQUIRED);
   });
 
@@ -680,7 +680,7 @@ describe("maruhi schema set(§1-2)", () => {
   it("v1 変数への最初の v2 再発行は required の明示を要求する(署名・送信前のローカル拒否)", async () => {
     // v1 ステートメントに required の引き継ぎ元はない(§1-2 の部分更新は
     // 「直前の値」の規則)。作成既定 true を黙って適用すると、ユーザーが
-    // 打っていない presence 契約が署名に載る — 明示必須(PR #121 レビュー対応)
+    // 打っていない presence 契約が署名に載る — 明示必須
     const env = await startEnv([
       chainHandler(),
       metadataHandler({ variables: [activeV1.statement] }),
@@ -876,7 +876,7 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
       statements: [],
     });
     // 再解決の集合(declared が着地した後)は manifestVersion 2 で、prev を
-    // 1 回目のマニフェストへ実際に連鎖させる(隣接版の prev 検証 — M1-A1)
+    // 1 回目のマニフェストへ実際に連鎖させる(隣接版の prev 検証)
     const declaredManifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

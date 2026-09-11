@@ -3,7 +3,7 @@
 // 規律: メッセージは識別子(ID・理由コード・上限値・HTTP ステータス)のみで
 // 構成し、平文値・鍵素材・トークン生値を運ばない(CLAUDE.md)。
 // `_tag` への直接アクセスは oxlint が禁止するため、判定は instanceof で行う
-// (Schema.TaggedError は instanceof が使える — session-07 の知見)。
+// (Schema.TaggedError は instanceof が使える)。
 
 import {
   AuditHeadNotReadyError,
@@ -64,7 +64,7 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  * 「エンドポイントの宣言済みエラー | `HttpClientError` | `Schema.SchemaError`」
  * の 3 種で、前 2 つは上の写像が受け持つ。**残る 1 種がこれ**。
  *
- * **向きは型からは分からない**(レビュー指摘): 上流は応答の decode だけでなく
+ * **向きは型からは分からない**: 上流は応答の decode だけでなく
  * リクエストの encode(`encodePayload` / `encodeParams` / `encodeHeaders` /
  * `encodeQuery`)も**同じエラーチャネル**へ流すので、`Schema.isSchemaError` は
  * 両方を捕まえる。したがって文面で**サーバー側の異常と断定しない**し、
@@ -216,7 +216,7 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ValueTooLargeError),
     (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
-  // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2)は resource で見分ける:
+  // DO ストレージ総量ガード(AUTH_SPEC §12-8)は resource で見分ける:
   // 他の数量上限と違い「この要求が足す量」でなく実測量の閾値なので、次の一手
   // (削除で空ける — 削除・読み取りは拒否下でも通る)を案内する
   when(isInstanceOf(DataLimitExceededError), (e) =>
@@ -266,7 +266,7 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(TokenLimitError),
     (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,
   ),
-  // プロジェクト数 / org の受理上限(AUTH_SPEC §11-3 — H2)。新規 init のみが
+  // プロジェクト数 / org の受理上限(AUTH_SPEC §11-3)。新規 init のみが
   // 対象(既存プロジェクトの修復再 init は上限に依らず通る)
   when(
     isInstanceOf(ProjectLimitError),

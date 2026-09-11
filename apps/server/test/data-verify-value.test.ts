@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 値署名の受理検証(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -467,8 +467,8 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     // ヘッドを宣言する(署名は有効 → ヘッド時点の束縛鍵 = 旧鍵 ≠ 受理時点の新鍵で
     // 落ちる)。context を手で組んで新鍵で署名する
     // prev は保存済み v1 の実 signed-bytes ハッシュにする(ダミーだと
-    // prev-hash-mismatch が同じ 422 理由を返して tenure 検査の変異が隠れる —
-    // レビューループ 2 [低])。tenure 検査(head 時点状態)が prev 検査より先
+    // prev-hash-mismatch が同じ 422 理由を返して tenure 検査の変異が隠れる)。
+    // tenure 検査(head 時点状態)が prev 検査より先
     const context = {
       suite: "maruhi/v1" as const,
       projectId,

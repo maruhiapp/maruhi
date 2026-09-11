@@ -35,7 +35,7 @@ export interface MemberStateAtSeq {
 /**
  * Lookup result for the `checkpoint` tuple covering one
  * (environment_id, manifest_version) coordinate on the verified chain
- * (CRYPTO_SPEC §4.3 検証規則 (2) の照合材料 — 2026-08-27 セッション 33).
+ * (CRYPTO_SPEC §4.3 検証規則 (2) の照合材料).
  *
  * - `unique` — every checkpoint entry carrying this coordinate agrees on
  *   (epoch, manifest_sig_hash); `seq` is the first entry that carried it

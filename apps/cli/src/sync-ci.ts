@@ -1,5 +1,5 @@
-// `maruhi ci sync <target>`: CI ジョブからの同期(SY2 第 2 段 — integration-options.md
-// §3 補足 7 P3「デプロイ時再適用」/ 補足 16 G1「CI は http」)。
+// `maruhi ci sync <target>`: CI ジョブからの同期(integration-options.md §3
+// 補足 7 P3「デプロイ時再適用」/ 補足 16 G1「CI は http」)。
 //
 // 資格の経路は `ci run` と同じワークロードリース(ci-lease.ts — OIDC → DEK →
 // 復号)で、maruhi トークン・キーチェーン・セッション・config ファイルに依存

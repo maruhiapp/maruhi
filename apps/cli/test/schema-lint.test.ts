@@ -1,4 +1,4 @@
-// 値なしスキーマ S5 のテスト(設計文書 §1-7): `maruhi schema lint` — ソースの
+// 値なしスキーマのテスト(設計文書 §1-7): `maruhi schema lint` — ソースの
 // env 参照の静的走査とストア側スキーマの突合。best-effort の位置づけ(注意書きの
 // 常時出力)・レポートは変数名のみ(description 非出力)・終了コードの非対称
 // (undeclared = exit 1 / unread のみ = exit 0)・鍵なしクラスを固定する。
@@ -189,7 +189,7 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     ]);
   });
 
-  it("env オブジェクトの分割代入と optional chaining を拾う(消費者反転の第 2 周)", () => {
+  it("env オブジェクトの分割代入と optional chaining を拾う", () => {
     const found = scanEnvReferences(
       [
         "const { FOO, BAR: renamed, BAZ = 'fallback' } = process.env;",
@@ -229,7 +229,7 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     expect(found.size).toBe(0);
   });
 
-  it("識別子の末尾が形にたまたま一致する参照は拾わない(左境界 — pullfrog レビュー対応)", () => {
+  it("識別子の末尾が形にたまたま一致する参照は拾わない(左境界)", () => {
     const found = scanEnvReferences(
       [
         'const a = MY_ENV["FOO"];',

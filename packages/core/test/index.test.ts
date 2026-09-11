@@ -27,7 +27,7 @@ import {
 } from "../src/index.ts";
 
 // CryptoError の全 kind とマッピング先クラスの対応(判別子は crypto 側 kind →
-// Effect 側タグ付きエラー。セッション 04 裁定 (b) の帰結)
+// Effect 側タグ付きエラー)
 const KIND_TO_CLASS: readonly [
   CryptoError,
   abstract new (...args: never[]) => WrappedCryptoError,

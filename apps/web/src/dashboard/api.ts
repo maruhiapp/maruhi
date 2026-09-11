@@ -4,7 +4,7 @@
 //   CSP connect-src 'self' と __Host- セッションクッキーの下で相対パスのみを叩く)
 // - HTTP 状態を型付きの結果に写し、401 / 403 / 404 / 410 の分岐と文言を全画面で
 //   一元化する(表示規律 §4 — 文言はサーバー申告の言い回しに限る)
-// - mutation(ログアウト・失効 DELETE — W3b)には CSRF ヘッダーを一律付与する
+// - mutation(ログアウト・失効 DELETE)には CSRF ヘッダーを一律付与する
 //   (AUTH_SPEC §11-4)
 // - Schema デコードは持たない(裁定 BR — 検証を実装しない Web の型は
 //   type-only import で拘束し、ランタイム防御は表示層の optional アクセス)
@@ -101,7 +101,7 @@ export function apiPost(path: string): Promise<ApiResult<void>> {
 }
 
 /**
- * DELETE a resource (the revocation surfaces — S8 invites / S9 tokens, W3b).
+ * DELETE a resource (the revocation surfaces — S8 invites / S9 tokens).
  * Carries the CSRF custom header (AUTH_SPEC §11-4).
  */
 export function apiDelete(path: string): Promise<ApiResult<void>> {

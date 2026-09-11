@@ -67,8 +67,7 @@ export const VariableAadSchema = Schema.Struct({
  * An encrypted variable value on the wire (AUTH_SPEC §12-2): the only shape a
  * secret value ever takes across the API boundary (CRYPTO_SPEC §10).
  *
- * 2026-08-04(CRYPTO_SPEC §4.1 = セッション 12 仕様の実装 PR-2)以降、値は
- * writer の書き込み署名ブロックを伴う: prev 連鎖(prevValueSigHashHex)、
+ * 値は(CRYPTO_SPEC §4.1)writer の書き込み署名ブロックを伴う: prev 連鎖(prevValueSigHashHex)、
  * 認可時点のチェーンヘッド束縛(chainHeadHashHex + chainHeadSeq)、Ed25519
  * 署名(signatureHex)。push / create では writer = 呼び出し主体が契約
  * (§12-5)のため、writer の ID / FP / signed-bytes hash はワイヤに載せない。
@@ -117,7 +116,7 @@ const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.is
 
 const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
 // 変数ステートメントのレイアウト v2 は第 3 の状態 declared を持つ(CRYPTO_SPEC
-// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは従来の 2 値のまま)
+// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは 2 値のまま)
 const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
 // metaVersion 1 は作成専用(status active・prev 空)なので、rename / 削除の
 // リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
@@ -169,8 +168,8 @@ const anyLifecycleFields = {
 };
 
 // ---------------------------------------------------------------------------
-// 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2 —
-// 2026-08-30)。v1 ステートメントは従来のフィールド構成のまま(layoutVersion・
+// 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。
+// v1 ステートメントは v1 のフィールド構成のまま(layoutVersion・
 // スキーマ欄の 4 フィールドすべて不在 — strict 受理がこれを強制する)、v2 は
 // layoutVersion とスキーマ欄を持つ。環境メタステートメントは対象外(v1 のまま)。
 // ---------------------------------------------------------------------------
@@ -339,7 +338,7 @@ export type DistributedEnvironmentMetaStatement =
   typeof DistributedEnvironmentMetaStatementSchema.Type;
 
 // ---------------------------------------------------------------------------
-// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-2。2026-08-18)。
+// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-2)。
 // 環境のメタ状態の全体像(全変数ステートメント — tombstone 込み — のダイジェスト +
 // 環境メタステートメント)を、メタ状態を変える操作の実行者が発行時点の現エポックを
 // 焼き込んで署名する。メタ層の鮮度アンカー(値の §4.1 エポック整合の対応物)。
@@ -377,7 +376,7 @@ export const CreateEnvironmentManifestSchema = Schema.Struct({
  * マニフェスト(§12-5 (6) の manifestVersion CAS = 申告 == 最新 + 1)。
  * manifestVersion 1 も受理する: マニフェスト導入前に作成された環境の最初の
  * メタ操作 / rotate は保存済みマニフェストなし(= 最新 0)から v1 を発行する
- * (移行手順 — session-27 §14 PR-M1)。
+ * (移行手順)。
  */
 export const EnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -410,8 +409,8 @@ export const DistributedEnvironmentManifestSchema = Schema.Struct({
 export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
 
 // ---------------------------------------------------------------------------
-// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2 —
-// 2026-08-28 PR-M3)。checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を
+// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2)。
+// checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を
 // 値付き応答へ同梱し、クライアントのチェックポイント整合・規則 2(値の非後退 —
 // CRYPTO_SPEC §6.3)の材料にする。metadata-only pull は対象外(値を運ばない)。
 // ---------------------------------------------------------------------------
@@ -465,7 +464,7 @@ export const SchemaPolicySchema = Schema.Literals(["disabled", "enabled", "locke
 export type SchemaPolicy = typeof SchemaPolicySchema.Type;
 
 /**
- * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の
+ * DEK ラップの受信者クラス(AUTH_SPEC §12-6): member = チェーン上の
  * 現メンバー(user_id + enc 公開鍵で同定)、server = 有効な grant_server の
  * サーバー鍵(FP + enc 公開鍵で同定 — user_id を持たない)。省略時は member
  * (受信者クラス導入前のワイヤと同形)。
@@ -479,7 +478,7 @@ const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
  * `signatureHex` is the per-wrap registration signature (CRYPTO_SPEC §5.1);
  * the signer must be the calling principal, so the wire carries no signer id.
  *
- * 受信者クラス server(2026-08-12)では recipientUserId 位置に**サーバー鍵 FP
+ * 受信者クラス server では recipientUserId 位置に**サーバー鍵 FP
  * (hex 小文字 32 文字)**を運ぶ — HPKE info / §5.1 署名対象の recipient_user_id
  * 位置と同じ置き換え(CRYPTO_SPEC §9)。同定は FP + enc 公開鍵の両方が
  * チェーン導出の有効 grant_server の payload と厳密一致すること。

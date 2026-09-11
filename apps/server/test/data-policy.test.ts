@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — suite の永続化・数量ポリシー・判定順・エラー契約導出(AUTH_SPEC §12-2 / §12-3 / §12-8)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 
 import {
   auditGroup,
@@ -345,7 +345,7 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
   });
 
   it("rejects a malformed composite parentHeadHashHex with 400 (Schema)", async () => {
-    // CAS の親ヘッド形式は Sha256Hex で固定(意図的な受理変更): 不正形式は
+    // CAS の親ヘッド形式は Sha256Hex で固定: 不正形式は
     // 409(ChainHeadConflict)へ到達せず schema 境界の 400 で落ちる
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
@@ -449,7 +449,7 @@ const rejectedOutcome = (rejection: DataRejection) => ({ kind: "rejected", rejec
  * エンドポイントの宣言エラーのタグ集合。実行時判定(Schema.is)から独立な
  * 経路として identifier 注釈(Schema.TaggedError がタグと同値で付与)から
  * 読む。effect 更新で注釈の形が変わったらここで明示的に落とし、契約導出の
- * 再検証(PR #49 で beta.107 に対して行った手動検証の再実行)を促す。
+ * 再検証を促す。
  */
 const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
   new Set(
@@ -476,9 +476,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
   // 実際には到達しないため、HTTP 統合ではなくこの単体で契約を検証する
 
   it("dek-wrap-exists は create / rotate の契約エラー(409 DekWrapExists)として返る", () => {
-    // 契約ギャップ修正: 従来は create / rotate の宣言・allowed に無く、チェーン
-    // 規則が緩んだ瞬間に defect(500)へ落ちる構造だった。宣言に加えたことで
-    // 409 の型付きエラーとして返る
+    // 宣言に無いとチェーン規則が緩んだ瞬間に defect(500)へ落ちる構造になる
+    // ため、宣言に含めて 409 の型付きエラーとして返す
     for (const endpoint of [
       environmentsGroup.endpoints.create,
       environmentsGroup.endpoints.rotate,
@@ -499,7 +498,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       );
       expect(error).toBeInstanceOf(DekWrapExistsError);
       // 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ(AUTH_SPEC §12-6 —
-      // 2026-08-15。再追加バックフィルの修復判定の材料)
+      // 再追加バックフィルの修復判定の材料)
       expect(error).toMatchObject({
         epoch: 2,
         recipientUserId: READER,
@@ -699,10 +698,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
   });
 
   it("全データプレーンエンドポイント × 全拒否 kind で fail / die 判定が宣言と厳密一致する", () => {
-    // effect 更新(Schema.is / endpoint.error の意味変化)へのドリフト検出器。
-    // beta.107 では全 14 エンドポイント × 全エラー種の厳密一致を手動検証済み
-    // (PR #49)— このテストはその検証の自動再実行。以後のピン更新(rc.109 /
-    // rc.111)はこの検出器が green のまま通っている(手動検証の再実行は不要)
+    // effect 更新(Schema.is / endpoint.error の意味変化)へのドリフト検出器
     const results = contractCases.map(judgeContractCase);
     // toEqual の diff で不一致の (endpoint, kind) がそのまま読めるようにする
     expect(results.map((result) => result.observed)).toEqual(

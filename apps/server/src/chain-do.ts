@@ -13,7 +13,7 @@
 //   共有する(並行 push の欠損・交錯防止)。**読み取りも同じ permit で直列化する**:
 //   permit 外で読むと「メンバーシップ判定(チェーン導出)→ データ読み」の間に
 //   remove_member の受理が割り込み、削除直後のメンバーへ値を配布しうる
-//   (§11-2 違反の TOCTOU。Bugbot 指摘 2026-08-02)。permit 下では全操作が
+//   (§11-2 違反の TOCTOU)。permit 下では全操作が
 //   チェーン書き込みに対して線形化される。PRIMARY KEY 制約が最終防衛
 // - 受理ポリシー: チェーンは §6.4(1 MiB / 10,000 エントリ / 32 MiB)、データは
 //   §12-8(policy.ts)
@@ -123,8 +123,8 @@ export interface Env {
   /**
    * 未認証 CLI ログイン start の発信元 IP レート制限(AUTH_SPEC §4-1 (1) —
    * wrangler.jsonc の ratelimits。無記録 start なので DB 保護ではなく CPU 保護)。
-   * 旧設定のままの self-host デプロイでは undefined になりうるため optional
-   * (不在は制限なしで従来挙動)。
+   * binding を持たない self-host デプロイでは undefined になりうるため optional
+   * (不在は制限なし)。
    */
   readonly CLI_START_RATE_LIMIT?: RateLimit;
   /**
@@ -134,7 +134,7 @@ export interface Env {
    */
   readonly CLI_POLL_RATE_LIMIT?: RateLimit;
   /**
-   * 未認証 OAuth callback の発信元 IP レート制限(deepsec R7)。callback は
+   * 未認証 OAuth callback の発信元 IP レート制限。callback は
    * リクエストごとに GitHub の token endpoint を叩き、OAuth App 単位の共有
    * クォータを消費する。state は cookie と query の二重送信(サーバー側状態
    * なし)なので、非ブラウザの発信元は両方を自分で用意できて検査を通せる —
@@ -144,21 +144,21 @@ export interface Env {
    */
   readonly OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
   /**
-   * lease 発行の発信元 IP レート制限(deepsec M5)。DO は名前指定で暗黙生成
+   * lease 発行の発信元 IP レート制限。DO は名前指定で暗黙生成
    * されるため、有効な OIDC token だけで任意の project ID の DO を量産できる —
    * projectStub 到達前の request-level 制限で生成レートを有界にする。
    */
   readonly LEASE_RATE_LIMIT?: RateLimit;
   /**
    * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
-   * (AUTH_SPEC §3 — 2026-09-01 H1)。コード付き start は事前検証の D1 読みを
+   * (AUTH_SPEC §3)。コード付き start は事前検証の D1 読みを
    * 伴う未認証面(検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルに
-   * ならない — 制限は資源保護)。プレーンな start は従来どおり制限なし
+   * ならない — 制限は資源保護)。プレーンな start は制限なし
    * (ログイン導線 — サーバー側の状態・外部呼び出しを持たない 302 のみ)。
    */
   readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
   /**
-   * DO → R2 退避の保管先(H3 — docs/notes/hosted-ops.md §2-D / §2-F)。hosted 環境
+   * DO → R2 退避の保管先(docs/notes/hosted-ops.md §2-D / §2-F)。hosted 環境
    * (`wrangler deploy --env hosted`)のみが持つ optional バインディング。不在 =
    * 退避しない(セルフホストの既定。スイープは静的 1 行を残して no-op)。
    */
@@ -171,7 +171,7 @@ export interface Env {
 }
 
 // ---------------------------------------------------------------------------
-// 運用 RPC(H3 — hosted-ops.md §2-D / §2-E)の入出力。worker 内部(cron の
+// 運用 RPC(hosted-ops.md §2-D / §2-E)の入出力。worker 内部(cron の
 // スイープ・復元 worker)からのみ呼ばれ、HTTP ハンドラは呼ばない。
 // ---------------------------------------------------------------------------
 
@@ -423,14 +423,14 @@ export const appendProgram = (
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
-    // standalone(周期)checkpoint(AUTH_SPEC §16-2 — 2026-08-28 PR-M2):
+    // standalone(周期)checkpoint(AUTH_SPEC §16-2):
     // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
     // スナップショットの原子保存を伴う専用経路へ分岐する
     if (entry.op === "checkpoint") {
       return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): アクセス集合を拡げる
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8): アクセス集合を拡げる
     // add_member / grant_server のみ(自然な後続のラップバックフィルが拒否対象
     // のため入口で揃える)。remove_member / revoke_server / change_role(失効・
     // 権限縮小 = セキュリティ是正)と checkpoint(有界)は拒否下でも受理する。
@@ -833,7 +833,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache));
   }
 
-  // --- 要ローテーションフラグ RPC(AUDIT_SPEC §4.1 / §7 — Wave 2 B2) ----
+  // --- 要ローテーションフラグ RPC(AUDIT_SPEC §4.1 / §7) ------------------
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   rotationFlags(actor: DataActor): Promise<DataOutcome<readonly EffectiveRotationFlag[]>> {
@@ -848,7 +848,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
   }
 
-  // --- 監査イベント読み取り RPC(AUDIT_SPEC §6 / §7 — C1) ---------------
+  // --- 監査イベント読み取り RPC(AUDIT_SPEC §6 / §7) --------------------
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   auditEvents(
@@ -894,12 +894,13 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- 運用 RPC(H3 — hosted-ops.md §2-D / §2-E。HTTP から呼ばれない) ------
+  // --- 運用 RPC(hosted-ops.md §2-D / §2-E。HTTP から呼ばれない) -----------
 
   /**
    * DO → R2 退避(permit 下 = 全表が一貫)。読み出しと書き込みは do-snapshot.ts。
-   * census(AUTH_SPEC §12-8 の判定)は既存の meter と純関数を共有する(H2 の警告行
-   * への接続 — hosted-ops.md §2-C。警告行そのものの文言・1 回規律は変えない)。
+   * census(AUTH_SPEC §12-8 の判定)は既存の meter と純関数を共有する(§12-8 の
+   * 警告行への接続 — hosted-ops.md §2-C。警告行そのものの文言・1 回規律は変えない)。
+
    * 退避の失敗は静的コードで返す(次回スイープで再試行)。
    */
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(cron のスイープがスタブ経由で呼ぶ)

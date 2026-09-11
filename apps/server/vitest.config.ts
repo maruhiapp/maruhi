@@ -58,8 +58,7 @@ export default defineConfig({
     // workerd 実環境の HTTP 往復が多いテスト(1 テスト 10 リクエスト超)は
     // スイート全体の負荷次第で既定 5s を超えることがある(実測フレーク)。
     // 遅い CI ランナー(2 コア)ではベクター駆動のチェーン再生テストが
-    // 30s 超の実測もある(2026-08-31 の CI run 33416421984)。ハング検出の
-    // 有界性は保ったまま余裕を持たせる
+    // 30s 超の実測もある。ハング検出の有界性は保ったまま余裕を持たせる
     testTimeout: 60_000,
     // データプレーンの fixture(beforeEach)は PAT をユーザーごとに実経路
     // (CLI ログインハンドオフ = 6 往復 — AUTH_SPEC §11-1 の裁定でスタブ不可)
@@ -67,7 +66,7 @@ export default defineConfig({
     // 超える(実測フレーク)。同じくハング検出は保ったまま余裕を持たせる
     hookTimeout: 30_000,
     // ファイルごとに workerd を作り直さず、ワーカー(既定 = コア数 - 1)ごとに
-    // 1 つの workerd を使い回す(2026-09-03)。既定の isolate: true ではテスト
+    // 1 つの workerd を使い回す。既定の isolate: true ではテスト
     // ファイル 1 本ごとに Effect + サーバー本体の再 import(実測 5〜6s/ファイル、
     // 50 ファイルで合計 ~290s CPU)が走り、これがスイート時間の過半を占めていた。
     // 実測(4 コア): 壁時計 160s → 51s。
@@ -86,11 +85,9 @@ export default defineConfig({
     // 走査せざるを得ない場合は beforeEach で当該プレフィックスを自分で空にする
     // (ops-restore.test.ts の `restore/`)。
     //
-    // 前提: @cloudflare/vitest-plugin 1.1.2 以降。それ以前(vitest-pool-workers
-    // 0.22.0 まで)は SELF.fetch のリクエスト単価が累積リクエスト数に比例して増える
-    // ハーネス側の不具合(workers-sdk#15092 / #15446 — 実測 2ms → 125ms/req @800
-    // リクエスト)があり、workerd を使い回すとスイート全体が二次的に遅くなっていた
-    // (PR #120 のファイル分割はその回避策)。
+    // 前提: @cloudflare/vitest-plugin 1.1.2 以降。それ以前のハーネスには SELF.fetch の
+    // リクエスト単価が累積リクエスト数に比例して増える不具合があり、workerd を
+    // 使い回すとスイート全体が二次的に遅くなる。
     isolate: false,
     // 通過したテストの console 出力は捨てる。サーバーは応答ごとに Effect の
     // HttpMiddleware.logger が INFO 行("Sent HTTP response")を出すため、CI の

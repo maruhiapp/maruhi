@@ -1,16 +1,4 @@
 // `maruhi audit reconcile`(AUDIT_SPEC §6 — admin の監査突合)の統合テスト。
-//
-// 固定する性質:
-//  1. 正例: 公証 2 個の前進(所属 (a)・非後退 (b)・位置下限 (c) と申告ヘッドの
-//     所属がすべて成立)で exit 0
-//  2. 所属違反 (a) = 行改竄の証拠として報告(Row-tampering evidence)
-//  3. 位置違反 (b)(c) = 受理ポリシー不執行のサーバーの証拠として報告
-//     (Acceptance-policy violation — 陳腐化リプレイ可能状態)
-//  4. seq 欠番 = 削除の痕跡として報告し、以後の派生誤報を出さずに打ち切る
-//  5. GET /audit-head の申告値も再計算列への所属を検査する(裁定 AK)
-//  6. AuditHeadNotReady(503)は有界再試行で吸収する
-//  7. 実効 admin 未満(write スコープ)は行取得より前に明確なエラー
-//
 // 監査行はテストが構成する「サーバー申告」であり、公証ヘッドは実際の
 // computeAuditRowDigest / computeAuditHeadHash(audit-head.json が固定する
 // 正規実装)で計算する — 突合の合否が本物のハッシュ連鎖に依存することを固定する。

@@ -1,13 +1,8 @@
 // SPA ルート空間と run_worker_first の非交差スイープ(裁定 BZ — session-43 §12)。
-//
-// 裁定 BO は「SPA は /dashboard 前置、API は /auth・/projects・/invites 前置」で
-// 両空間を素に分離した。この分離の半分(API 側の被覆)はサーバー側の
-// serving-topology.test.ts が検査するが、逆方向 —「SPA のルートが Worker に
-// 飲まれない」— はこれまで手検証だった: run_worker_first に過剰な前置
-// (例: `/*`)が入ると、SPA ルートへの navigation が Worker の 404 JSON に
-// なって画面ごと消える。ここでは実ルート定義(SPA_ROUTES — App.tsx が
-// bindRoute する唯一の目録)と実配信設定(apps/server/wrangler.jsonc)を
-// そのまま突合し、非交差を fail-loud にする。
+// 裁定 BO の空間分離(SPA は /dashboard 前置、API は /auth・/projects・/invites 前置)の
+// SPA 側を、実ルート定義(SPA_ROUTES)と実配信設定(apps/server/wrangler.jsonc)の突合で
+// fail-loud にする: run_worker_first に過剰な前置が入ると、SPA ルートへの navigation が
+// Worker の 404 JSON になって画面ごと消える。
 import { describe, expect, it } from "vitest";
 import { unstable_readConfig } from "wrangler";
 

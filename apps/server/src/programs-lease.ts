@@ -15,7 +15,7 @@
 //      **区別できないのは応答(ステータス + ボディ)であってレイテンシではない**:
 //      未知プロジェクトはストレージ 1 読みで短絡し、実在プロジェクトはチェーン
 //      検証と監査書き込みを行うため測定可能な差がある。タイミングは脅威モデル外
-//      (未認証面で定数時間を狙うのは非現実的)という判断(pullfrog 指摘)
+//      (未認証面で定数時間を狙うのは非現実的)という判断
 //   1.5 先着束縛(§14-1。2026-08-15 裁定)— 同一トークン + 別鍵は 401
 //      `token-replayed`。認可の直後・環境存在の判定より前(束縛済みトークンの
 //      コピー保持者に、環境の実在によらず一様 401 を返す — §14-3)。読み取りのみで
@@ -189,9 +189,9 @@ export const leaseProgram = (
     // 要求を繰り返してチェーン導出のコストを課し、100 行/時を使い切った後は
     // 以降の拒否が記録されない状態を作れる)。また DO のコンストラクタは到達
     // 時点で空テーブル群を作るため、任意プロジェクト ID へのプローブは監査行を
-    // 残さなくても DO 実体化のストレージを消費する(セキュリティレビュー A-4)。
+    // 残さなくても DO 実体化のストレージを消費する。
     // 要求レート自体の上限は未実装で、AUDIT_SPEC §3.5 の記録上限とは別の
-    // 設計判断として申し送る(pullfrog 指摘)
+    // 設計判断として申し送る
     const chain = yield* loadInitializedChain.pipe(
       Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
     );
@@ -231,7 +231,6 @@ export const leaseProgram = (
     // サーバー宛ラップ欠落(4)や開封失敗(5)で 503 になるプロジェクトの CI が
     // 再試行のたびに枠を食い、300 回目以降は「直せる診断」である 503 が無関係な
     // 429 に化ける — §14-3 が 503 をわざわざ設けた意図が打ち消される
-    // (pullfrog 指摘 — PR #65)
     const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
     if (!window.allowed) {
       yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
@@ -258,11 +257,11 @@ export const leaseProgram = (
     // declared 変数のステートメント(§12-7 の配布規則をリース応答にも適用 —
     // ワークロードのマニフェストダイジェスト再計算〔§9.1 (5)〕の材料)
     const declaredVariables = yield* store.declaredVariableStatements(environmentId);
-    // 最新マニフェスト(§14-2 — 2026-08-18。ワークロードの検証義務 §9.1 (5) の
+    // 最新マニフェスト(§14-2 — ワークロードの検証義務 §9.1 (5) の
     // 材料。null は移行前の過渡状態のみ — 受信側は欠落を一律拒否する)
     const manifest = yield* store.environmentManifest(environmentId);
     // チェックポイント時点の値スナップショット(§14-2 — §12-7 と同じ材料。
-    // 2026-08-28 PR-M3。基準を持たない環境では null = 載せない)
+    // 基準を持たない環境では null = 載せない)
     const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
 
     // 応答内の最新値が使用する全エポック + 現エポック(§14-2)。過不足なく

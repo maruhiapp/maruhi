@@ -169,7 +169,7 @@ describe("Web OAuth ログイン(§3.1)", () => {
   });
 
   it("caps auth.login_failed writes per fixed window (unauthenticated write amplification bound)", async () => {
-    // 窓の状態はカウンタ行が持つ(deepsec R5: 監査ログを走査しない)ので、
+    // 窓の状態はカウンタ行が持つ(監査ログを走査しない)ので、
     // 上限到達はカウンタを直接シードして作る
     const now = Date.now();
     await seedLoginFailedWindow("github_oauth", "state-mismatch", now, LOGIN_FAILED_WINDOW_LIMIT);
@@ -177,7 +177,7 @@ describe("Web OAuth ログイン(§3.1)", () => {
     // 拒否応答は変わらず、監査行だけが増えない
     expect(blocked.status).toBe(400);
     expect(await countEvent("auth.login_failed")).toBe(0);
-    // 抑制は黙って行わない(deepsec M4/R4): 最初の抑制でマーカーが 1 行残る
+    // 抑制は黙って行わない: 最初の抑制でマーカーが 1 行残る
     const suppressedOnce = await env.DB.prepare(
       "SELECT COUNT(*) AS n, MAX(actor_user_id) AS actor, MAX(payload) AS payload FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
     ).first<{ n: number; actor: string | null; payload: string }>();
@@ -216,7 +216,7 @@ describe("Web OAuth ログイン(§3.1)", () => {
     expect(await countEvent("auth.login_failed")).toBe(1);
   });
 
-  it("counts the cap per auth_method + reason bucket, so one path cannot blind another (R4/S5)", async () => {
+  it("counts the cap per auth_method + reason bucket, so one path cannot blind another", async () => {
     // CLI ハンドオフ側の窓を使い切った状態で、Web OAuth の失敗は記録され続ける
     // (同じ reason でも auth_method でバケットが分かれる)
     await seedLoginFailedWindow(
@@ -243,7 +243,7 @@ describe("Web OAuth ログイン(§3.1)", () => {
     });
   });
 
-  it("a flood of one OAuth failure reason cannot suppress another reason (S5)", async () => {
+  it("a flood of one OAuth failure reason cannot suppress another reason", async () => {
     await seedLoginFailedWindow(
       "github_oauth",
       "state-mismatch",
@@ -317,7 +317,7 @@ describe("CLI ログインハンドオフ(§3.1 — AUTH_SPEC §4)", () => {
     // 置換された旧行の削除はローテーションの一部であり、明示失効イベントに
     // ならない(§3.1 の線引きの否定側)
     expect(events.filter((row) => row.event === "auth.token_revoked")).toHaveLength(0);
-    // が、置換されたことと対象はログから再構成できる(deepsec R6): 1 本目の
+    // が、置換されたことと対象はログから再構成できる: 1 本目の
     // 発行行にはキーが無く、2 本目は 1 本目の id を replacedTokenId に持つ
     const first = payloadOf(created[0] as AuditRow);
     const second = payloadOf(created[1] as AuditRow);
@@ -421,7 +421,7 @@ describe("セッション / トークンの失効(§3.1)", () => {
     expect(after.filter((row) => row.event === "auth.token_revoked")).toHaveLength(1);
   });
 
-  it("does not revoke or audit a token owned by another user (S8)", async () => {
+  it("does not revoke or audit a token owned by another user", async () => {
     await cliToken(702);
     const tokenRow = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
     if (tokenRow === null) {

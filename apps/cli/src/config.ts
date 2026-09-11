@@ -6,9 +6,9 @@
 // OS キーチェーンのみ(keychain.ts)。
 //
 // サーバー URL に既定値はない(セルフホスト前提でホステッドのデフォルトが
-// 存在しない — タスク裁定)。旧 `githubClientId` は 2026-08-31 の AUTH_SPEC §4
-// 改訂(CLI の client_id 解決の廃止)で消費者ごと削除された — 既存ファイルに
-// 残っていても未知キーとして無害に無視される(decodeConfig は許可キーのみ拾う)。
+// 存在しない — タスク裁定)。旧 `githubClientId` は AUTH_SPEC §4 改訂(CLI の
+// client_id 解決の廃止)で消費者ごと削除された — 既存ファイルに残っていても
+// 未知キーとして無害に無視される(decodeConfig は許可キーのみ拾う)。
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -89,7 +89,7 @@ class ConfigUnreadableError extends Error {}
  * 設定ファイルの**内容**が JSON として解釈できない失敗(CliError の下位型)。
  * `config set` はこの場合のみ「破棄して作り直す」を許す — 読み取り自体の失敗
  * (EACCES / EISDIR / EIO 等)は内容の破損ではないため、既存設定の置換に
- * 進んではならない(deepsec B2)。
+ * 進んではならない。
  */
 export class ConfigFileCorruptError extends CliError {}
 
@@ -104,7 +104,7 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
         } catch (error) {
           // 未作成(ENOENT)**だけ**を空設定として扱う(初回実行)。EACCES /
           // EISDIR / EIO 等の読み取り失敗まで空設定に畳むと、読めなかっただけの
-          // 既存設定を後続の `config set` が警告なしで置換する(deepsec B2)
+          // 既存設定を後続の `config set` が警告なしで置換してしまう
           if ((error as NodeJS.ErrnoException).code === "ENOENT") {
             return {};
           }

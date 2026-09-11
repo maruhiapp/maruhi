@@ -128,9 +128,9 @@ export const ensureMetaStatementSignature = (input: {
     }
     // 申告 layoutVersion がこのサーバーのサポート範囲({1, 2})を超える形は、
     // ワイヤに layoutVersion が乗った本改訂以降「古いサーバー × 新しい
-    // クライアント」の**正常系**として発生する(裁定 CR — PR #116 レビュー
-    // 対応)。一次判定は各受理列の最前段の ensureSupportedLayout が担い、
-    // ここは fail-closed の二重防衛(新しい受理経路が最前段の検査を落としても
+    // クライアント」の**正常系**として発生する(裁定 CR)。一次判定は各受理列の
+    // 最前段の ensureSupportedLayout が担い、ここは fail-closed の二重防衛
+    // (新しい受理経路が最前段の検査を落としても
     // defect = 改ざん警告と区別のつかない 500 にはならない)
     if (verified.error.kind === "UnsupportedMetaLayout") {
       return yield* rejectData({ kind: "meta-rejected", reason: "unsupported-layout" });
@@ -323,12 +323,12 @@ export const acceptMetaStatement = (input: {
       });
     }
     if (input.target.kind === "variable" && input.statement.status === "deleted") {
-      // 削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5 — S2 義務)。
+      // 削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5)。
       // description の受理ポリシーは**削除には適用しない**: 削除の規則は保存済み
       // 値の byte-exact 保持であり、その値は受理時に検査済み。適用すると、
       // セルフホストが上限を引き下げた後に既存 v2 変数が削除不能になる
-      // (§12-8 の「上限で削除を遮断しない」原則との衝突。PR #119 Bugbot 指摘 —
-      // 契約外の description-rejected が 500 に落ちる経路もこれで消える:
+      // (§12-8 の「上限で削除を遮断しない」原則との衝突。契約外の
+      // description-rejected が 500 に落ちる経路もこれで消える:
       // 改変された description は本検査の payload-mismatch が先に捕捉する)
       const field = deletePreservationMismatch(anchor, input.statement);
       if (field !== null) {

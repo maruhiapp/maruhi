@@ -140,7 +140,7 @@ const SERVER_COLUMNS: TableColumn<ServerRow>[] = [
   },
 ];
 
-/** 付与済みサーバー鍵(行 = Table — 集合は行で描く。改訂 7)。 */
+/** 付与済みサーバー鍵(行 = Table — 集合は行で描く)。 */
 function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): ReactNode {
   if (servers.length === 0) return null;
   const rows: ServerRow[] = servers.map((server) => ({
@@ -237,7 +237,7 @@ const VARIABLE_COLUMNS: TableColumn<VariableRow>[] = [
   },
 ];
 
-/** 選択環境の変数名(行 = Table — 集合は行で描く。改訂 7)。値は構造上応答に無い。 */
+/** 選択環境の変数名(行 = Table — 集合は行で描く)。値は構造上応答に無い。 */
 function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
   const rows: VariableRow[] = [
     ...pull.variables.map((s) => ({ id: s.variableId, name: s.name, deleted: false })),
@@ -422,7 +422,7 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
           Events visible to your role, as reported by the server.
         </Text>
         {/* 軸の切替は ToggleButtonGroup(single)。SegmentedControl は dark で非選択ラベルの
-            コントラストが 4.26:1(12px)で AA に届かない(DP3 a11y 監査 — 上流候補) */}
+            コントラストが 4.26:1(12px)で AA に届かない(a11y 監査 — 上流候補) */}
         <ToggleButtonGroup
           label="Audit source"
           type="single"

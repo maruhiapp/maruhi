@@ -39,7 +39,7 @@ export type DataActor = AuditActor;
 export type WireSuite = "maruhi/v1";
 
 /**
- * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の
+ * DEK ラップの受信者クラス(AUTH_SPEC §12-6): member = チェーン上の
  * 現メンバー、server = 有効な grant_server のサーバー鍵。省略時は member。
  * server クラスでは recipientUserId 位置にサーバー鍵 FP(hex 小文字)が入る
  * (HPKE info / §5.1 署名対象と同じ置き換え — CRYPTO_SPEC §9)。
@@ -271,7 +271,7 @@ export interface CheckpointSnapshotEntryValue {
 
 /**
  * 配布されるチェックポイント時点の値スナップショット(api-schema の
- * CheckpointValueSnapshot と構造一致 — §12-7 / §14-2。2026-08-28 PR-M3)。
+ * CheckpointValueSnapshot と構造一致 — §12-7 / §14-2)。
  * 供給源は checkpoint 受理時に原子保存した行そのもの(§16-2 — 再構成しない)。
  * chainSeq / entryHashHex は保存済みの対応 checkpoint の位置(クライアント側では
  * advisory locator — 検証基準はチェーン導出)。
@@ -321,13 +321,13 @@ export interface EnvironmentPullValue {
   /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
   readonly schemaPolicy: SchemaPolicy;
   /**
-   * 最新の環境マニフェスト(§12-7 — 2026-08-18)。undefined はマニフェスト
+   * 最新の環境マニフェスト(§12-7)。undefined はマニフェスト
    * 導入前に作成された環境の移行完了までの過渡状態のみ(保存行があれば必ず
    * 同梱する — クライアント側は欠落 = 一律拒否 §6.3)。
    */
   readonly manifest?: DistributedEnvManifestValue;
   /**
-   * チェックポイント時点の値スナップショット列挙(§12-7 — 2026-08-28 PR-M3)。
+   * チェックポイント時点の値スナップショット列挙(§12-7)。
    * 当該環境のエントリを含む最新 checkpoint の保存行があれば必ず同梱する
    * (クライアント規則 2 は「基準あり + 列挙なし」を拒否する — CRYPTO_SPEC §6.3)。
    * undefined は基準 checkpoint を持たない環境のみ。
@@ -336,7 +336,7 @@ export interface EnvironmentPullValue {
 }
 
 /**
- * メタデータのみモードの応答(§12-7 — 2026-08-10): 値(暗号文)と DEK を
+ * メタデータのみモードの応答(§12-7): 値(暗号文)と DEK を
  * 含まない。§6.3 のメタ検証材料(環境 + アクティブ変数の最新ステートメント +
  * tombstone)のみを運ぶ。var.read は記録されない(AUDIT_SPEC §3.3)。
  */
@@ -371,8 +371,8 @@ export interface EnvironmentListValue {
 export type ResourceConflictReason = "exists" | "retired" | "duplicate-name";
 
 /**
- * 環境の 409 は表示名の衝突のみ(2026-08-03): ID の一意性(旧 exists / retired)は
- * チェーン合意規則 `duplicate-environment`(chain-entry-invalid)へ吸収された
+ * 環境の 409 は表示名の衝突のみ: ID の一意性はチェーン合意規則
+ * `duplicate-environment`(chain-entry-invalid)が担う
  * (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)。
  */
 export type EnvironmentConflictReason = "duplicate-name";
@@ -400,7 +400,7 @@ export type ValueSignatureRejectReason =
   | "chain-head-state-mismatch";
 
 /**
- * メタステートメントの 422 理由: 値署名の 3 語彙(session-12 §6-7)に、仕様が
+ * メタステートメントの 422 理由: 値署名の 3 語彙に、仕様が
  * エラー名を明示するレイアウト v2 の 2 理由を加える — `layout-regression` =
  * v2 変数への v1 後続(レイアウト単調性 — §12-5)、`unsupported-layout` =
  * 申告 layoutVersion がサポート範囲超過(「古いサーバー × 新しいクライアント」の
@@ -435,7 +435,7 @@ export type SchemaDescriptionRejectReason = "too-long" | "control-characters";
 export type AttestationRejectReason = ValueSignatureRejectReason;
 
 /**
- * 環境マニフェストの 422 理由(AUTH_SPEC §12-5 — 2026-08-18): 既存 3 語彙を
+ * 環境マニフェストの 422 理由(AUTH_SPEC §12-5): 既存 3 語彙を
  * 共有し、マニフェスト固有の 2 理由(ダイジェスト再計算不一致・エポック不整合)を
  * 加える。api-schema の ManifestRejectReasonSchema と一致させる。
  */
@@ -443,15 +443,14 @@ export type ManifestRejectReason =
   | ValueSignatureRejectReason
   | "manifest-digest-mismatch"
   | "manifest-epoch-mismatch"
-  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1 —
-  // 2026-08-27 セッション 33 = PR-F3b)
+  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1)
   | "checkpoint-binding-mismatch"
   | "checkpoint-equivocation"
   | "checkpoint-regressed";
 
 /**
- * checkpoint 内容突合の 422 理由(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 —
- * 2026-08-28 PR-M2)。api-schema の CheckpointMismatchReasonSchema と一致させる。
+ * checkpoint 内容突合の 422 理由(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2)。
+ * api-schema の CheckpointMismatchReasonSchema と一致させる。
  */
 export type CheckpointMismatchReason =
   | "manifest-mismatch"
@@ -471,7 +470,7 @@ export type DataLimitResource =
   | "dek-wraps-per-request"
   | "dek-wrap-rows"
   | "rotation-dismissals-per-request"
-  // DO ストレージ総量ガード(§12-8 — H2。storage-guard.ts。limit = 拒否閾値バイト)
+  // DO ストレージ総量ガード(§12-8。storage-guard.ts。limit = 拒否閾値バイト)
   | "project-storage-bytes";
 
 export type DataRejection =
@@ -498,7 +497,7 @@ export type DataRejection =
       readonly kind: "checkpoint-state-mismatch";
       readonly reason: CheckpointMismatchReason;
     }
-  // 監査ヘッド派生列の有界伸長が未完了(AUDIT_SPEC §5.1 — セッション 38)。
+  // 監査ヘッド派生列の有界伸長が未完了(AUDIT_SPEC §5.1)。
   // 監査ヘッドを読む全経路(GET /audit-head・standalone 受理・境界複合の
   // 非空公証)で、上限到達時に古い列で unknown / stale を判定する代わりに
   // 返す retryable 拒否(worker が api-schema の AuditHeadNotReady〔503〕へ写像)
@@ -550,7 +549,7 @@ export type DataRejection =
       readonly epoch: number;
       readonly recipientUserId: string;
       /**
-       * 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15)。
+       * 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)。
        * 非機密(全歴史鍵はチェーン配布済み)。再追加バックフィルの 409 で、
        * クライアントが登録済み / 旧鍵ラップを厳密比較で判定する材料。
        */
@@ -571,7 +570,7 @@ export type DataRejection =
       readonly resource: DataLimitResource;
       readonly limit: number;
     }
-  // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — 2026-08-28 PR-M4)
+  // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)
   | { readonly kind: "attestation-rejected"; readonly reason: AttestationRejectReason }
   // seq 後退(黙って成功させない — 保存済み seq を返す。同一 seq は冪等 204)
   | { readonly kind: "attestation-regression"; readonly storedSeq: number }
@@ -672,9 +671,10 @@ export const requireMemberState = (
   });
 
 /**
- * 環境の現エポック = チェーン導出値(CRYPTO_SPEC §6.2 / §6.3。2026-08-03)。
- * 環境の存在自体がチェーン導出(`create_environment`)になったため「未観測なら
- * 初期値 1」の既定値は廃止した。データ行は複合受理(§12-4)でチェーンエントリと
+ * 環境の現エポック = チェーン導出値(CRYPTO_SPEC §6.2 / §6.3)。
+ * 環境の存在自体がチェーン導出(`create_environment`)なので「未観測なら
+ * 初期値 1」の既定値は持たない。データ行は複合受理(§12-4)でチェーンエントリと
+
  * 原子的に作られるため、アクティブなデータ行があるのにチェーンに環境がないのは
  * 不変条件違反(ストレージ / 実装バグ)であり defect として落とす。
  */

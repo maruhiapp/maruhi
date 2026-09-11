@@ -7,8 +7,8 @@
 //   entry_hash   = SHA-256(entry_bytes)
 // バイナリ値(prev_hash / 公開鍵 / FP / 署名)は hex 小文字文字列として LP に載せる。
 // grant_server の scope_environments は環境 ID リストの LP の hex 文字列(入れ子 LP)。
-// grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2。2026-08-12)。
-// checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2。2026-08-27)。
+// grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2)。
+// checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2)。
 
 import { encodeHex } from "./bytes.ts";
 import type {

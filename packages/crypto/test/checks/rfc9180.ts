@@ -1,7 +1,7 @@
 // RFC 9180 公式テストベクター(Base mode, DHKEM(X25519,HKDF-SHA256), HKDF-SHA256,
 // AES-256-GCM)による HPKE 層の検証(CRYPTO_SPEC §11)。
 // 実装が採用する panva hpke を直接検証する: DeriveKeyPair 一致 + Open 方向一致
-// (Seal 方向の derandomize は panva では不可。spike-c の知見)。
+// (Seal 方向の derandomize は panva では不可)。
 
 import * as HPKE from "hpke";
 
@@ -24,7 +24,6 @@ export async function rfc9180Checks(): Promise<CheckResult[]> {
     return c.results;
   }
 
-  // DeriveKeyPair(ikmR) == (pkRm, skRm)
   {
     const s = suite();
     const pair = await s.DeriveKeyPair(fromHex(vector.ikmR), true);

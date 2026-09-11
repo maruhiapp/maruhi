@@ -94,7 +94,7 @@ export function keyGenerateOp(input: {
       sigSkSeedHex: Redacted.make(encodeHex(sigSeed.value), { label: "master-sig-seed" }),
     };
     // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
-    // レコードをキーチェーンに残さない — レビューループ 1 [低])。
+    // レコードをキーチェーンに残さない)。
     // 失敗の文言は**この経路専用**にする: 既定の文言はキーチェーンのレコードを
     // 指して削除を促すが、ここはまだ何も保存していない — 無い物の削除を案内する
     // ことになる。原因が環境(WebCrypto 非対応)なら鍵の問題ではないので、
@@ -116,7 +116,7 @@ export function keyGenerateOp(input: {
     );
     // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
     // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)。
-    // 保存は上書き検出つき(deepsec R2): ガードから鍵生成を挟んだこの位置では
+    // 保存は上書き検出つき: ガードから鍵生成を挟んだこの位置では
     // 並行実行が先に書いている可能性があり、素の set は後勝ちで一方の鍵を
     // 黙って消す。後段のリカバリーコード発行より前に失敗させる
     yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));

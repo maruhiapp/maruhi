@@ -1,6 +1,6 @@
 "use client";
 
-// S6 監査ビューアの共通リスト(裁定 BQ — docs/notes/session-43.md)。
+// 監査ビューアの共通リスト(裁定 BQ — docs/notes/session-43.md)。
 // project 軸・invite 軸・本人軸の 3 消費点で同一部品を使う。
 //
 // - 見出しは役割適応の規定文言「Events visible to your role」(AUDIT_SPEC §7 —
@@ -12,12 +12,12 @@
 //   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
 //   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
 //
-// DP3 改訂 5(docs/notes/web-design-pass.md §5 裁定 P): 形は「1 列の行 + その場で展開」。
+// 裁定 P(docs/notes/web-design-pass.md §5): 形は「1 列の行 + その場で展開」。
 // 1 行 = Astryx `Collapsible`(CollapsibleGroup hasDividers — `CollapsibleDividedAccordion`
 // ブロックの形)。トリガー = イベント名・主体・座標・サーバー時刻(+ seq)、展開部 = 全
-// フィールド(MetadataList)+ 記録どおりの payload + var.read の列挙。左右分割(改訂 3 の
-// `incident-console` 形)は広い画面で行と詳細の間が空きすぎ、1024px で形が変わるため撤回。
-// 1 列は幅によらず同じ形で、行の直下に詳細が出る(HP5 — モバイルで監査を読む)。
+// フィールド(MetadataList)+ 記録どおりの payload + var.read の列挙。左右分割
+// (`incident-console` 形)は広い画面で行と詳細の間が空きすぎ、1024px で形が変わるため撤回。
+// 1 列は幅によらず同じ形で、行の直下に詳細が出る(モバイルで監査を読む)。
 // Table は使わない(行が読める幅を保つ)。文言・項目・順序は不変(§4 の表示規律 —
 // 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
 import { Button } from "@astryxdesign/core/Button";
@@ -333,7 +333,7 @@ export function AuditEventList({
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(false);
   // 消費軸(fetchPage)の世代。軸が変わったら旧 in-flight 応答を捨てる —
-  // 後着の旧軸ページが新しい軸のリストへ混入しない(PR #107 Bugbot 指摘の修正)
+  // 後着の旧軸ページが新しい軸のリストへ混入しない
   const generationRef = useRef(0);
 
   const loadMore = useCallback(
@@ -374,7 +374,7 @@ export function AuditEventList({
       <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
-        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(pullfrog 指摘 — 裁定 E-(c))
+        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(裁定 E-(c))
         headingLevel={2}
         testId={`${testId}-empty`}
       />

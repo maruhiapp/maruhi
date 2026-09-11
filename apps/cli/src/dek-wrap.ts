@@ -3,7 +3,7 @@
 //
 // 複合リクエスト(環境作成 = エポック 1、ローテーション = 新エポック)が同梱する
 // 「ラップ完全集合」を、検証済み ChainState の「現メンバー集合 + 対象環境が
-// 開示スコープに含まれる有効 grant_server のサーバー鍵」(2026-08-12 — §12-4)と
+// 開示スコープに含まれる有効 grant_server のサーバー鍵」(§12-4)と
 // 厳密一致させて生成する共有実装。ラップ先一致検査(§6.3 のゴーストメンバー
 // 対策)のクライアント側が本線であり、サーバーの §12-6 検証は補助線
 // (session-07 §5)。サーバー宛ラップの HPKE info / 登録署名の recipient 位置は
@@ -146,7 +146,7 @@ export async function wrapAndSignFor(input: {
 /**
  * Builds the wrap set for one epoch: exactly the verified current member set
  * plus the server keys of active grants whose scope covers the environment
- * (§6.3 / §12-4 — 2026-08-12), each wrap signed by the caller (§5.1).
+ * (§6.3 / §12-4), each wrap signed by the caller (§5.1).
  * Deterministic recipient order for reproducible requests.
  */
 export function buildWrapCompleteSet(input: {
@@ -230,8 +230,7 @@ export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies 
  * 現メンバーであること・role が **member 以上**であること(§6.2)。いずれも
  * DEK 生成・HPKE ラップ・pull(= `var.read` の記録)より**前**に落とすための
  * もので、サーバーの汎用 403 を待たない。grant_server 有効時の拒否ガードは
- * 2026-08-12 の受信者クラス server 実装で廃止 — 完全集合がサーバー鍵宛を含む
- * (buildWrapCompleteSet / §12-4)。
+ * 持たない — 完全集合がサーバー鍵宛を含む(buildWrapCompleteSet / §12-4)。
  *
  * 環境の存在検査(rotate)や ID の重複検査(create)は操作固有なので呼び出し側に残す。
  */

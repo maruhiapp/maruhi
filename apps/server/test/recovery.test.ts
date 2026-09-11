@@ -54,8 +54,8 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
 
   it("rejects a session principal for both PUT and GET (§5 能力制限 — §13-2 の表 = トークンのみ)", async () => {
     const session = await loginSession(502);
-    // W2b で反転: 登録・取得ともセッションからの正当な導線がない(2026-08-28
-    // W0 裁定)。CSRF ヘッダー込みでも 403 session-not-allowed
+    // 登録・取得ともセッションからの正当な導線がない(W0 裁定)。
+    // CSRF ヘッダー込みでも 403 session-not-allowed
     const put = await putWrap(sessionHeaders(session));
     expect(put.status).toBe(403);
     expect(((await put.json()) as Record<string, unknown>)["reason"]).toBe("session-not-allowed");
@@ -162,7 +162,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect(afterReissue.status).toBe(200);
   });
 
-  it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches (B9)", async () => {
+  it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches", async () => {
     const token = await cliToken(516);
     expect((await putWrap(bearer(token))).status).toBe(204);
     // 上限越えの同時リクエスト: 計数は条件付き相対 UPDATE(1 文)なので、
@@ -223,7 +223,7 @@ describe("GET /auth/recovery/status(§13-2)", () => {
     expect(await before.json()).toEqual({ registered: false, updatedAtMs: null });
 
     // 登録は同一ユーザーの別名トークンで行う(セッションは §5 の能力制限で
-    // 登録不可 — W2b。同名トークンの再発行はローテーションで既存トークンを
+    // 登録不可。同名トークンの再発行はローテーションで既存トークンを
     // 失効させてしまうため、別名で併存させる)
     const adminToken = await cliToken(521, undefined, "recovery-secondary");
     expect((await putWrap(bearer(adminToken))).status).toBe(204);

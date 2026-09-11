@@ -181,7 +181,7 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
     return { status: "failed", code: "snapshot-missing" };
   }
   // 破損した退避物(非 gzip・切れた gzip・非 JSON 行)は静的コードで返す — 例外を
-  // 逃がすとジョブが消えず毎分の cron が永久に同じ失敗を繰り返す(PR #137 レビュー)
+  // 逃がすとジョブが消えず毎分の cron が永久に同じ失敗を繰り返す
   let projectId: string | null;
   try {
     projectId = await projectIdFromSnapshot(object.body);
@@ -212,7 +212,7 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
  * 実行前に `restore/jobs/` → `restore/running/` へ移して claim する: 復元は分単位で
  * かかりうるのに cron は毎分走るため、ジョブを残したまま実行すると次の呼び出しが同じ
  * ジョブを拾い、2 回目の RPC が(復元済みで非空の DO に対して)`not-empty` を書いて
- * 成功の結果を上書きする(PR #137 Bugbot 指摘)。worker が実行中に死んだジョブは
+ * 成功の結果を上書きする。worker が実行中に死んだジョブは
  * `restore/running/` に残る = 運営が結果と突き合わせて再投入する(hosted-ops.md §5-2)。
  */
 export async function processRestoreJobs(env: RestoreEnv): Promise<readonly string[]> {

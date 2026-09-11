@@ -1,5 +1,4 @@
-// `maruhi audit reconcile` — admin の監査突合(AUDIT_SPEC §6。2026-08-28
-// セッション 38 = PR-M2 残余の解消)。
+// `maruhi audit reconcile` — admin の監査突合(AUDIT_SPEC §6)。
 //
 // 「発行時未検証の公証」(§6)の検証側: 全監査行から累積ハッシュ列を再計算し、
 // 検証済みチェーン上の公証あり checkpoint それぞれについて
@@ -429,8 +428,7 @@ export function auditReconcileOp(
     ];
     const summary = `${countNoun(rows.length, "audit row")} recomputed, ${countNoun(checkpoints.notarized, "notarized checkpoint")} checked against the verified chain`;
     if (violations.length === 0) {
-      // 成功文言は証明した内容に忠実にする(pullfrog PR #102 レビュー対応):
-      // 公証ゼロでは (a)(b)(c) は空虚に真で、実証したのは欠番なし + 申告所属
+      // 成功文言は証明した内容に忠実にする: 公証ゼロでは (a)(b)(c) は空虚に真で、実証したのは欠番なし + 申告所属
       // だけ。無条件の「checks passed」を出さない
       if (checkpoints.notarized === 0) {
         yield* io.log(

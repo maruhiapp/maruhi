@@ -1,5 +1,5 @@
 // 環境非依存のチェック基盤。vitest(node / workerd / browser)と Bun 直接実行
-// (test/run-in-bun.ts)の両方から同じチェックを呼ぶ(spike-c の構成を移植)。
+// (test/run-in-bun.ts)の両方から同じチェックを呼ぶ。
 
 import { decodeHex, encodeHex } from "../../src/index.ts";
 

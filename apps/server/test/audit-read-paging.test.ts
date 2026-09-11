@@ -1,4 +1,4 @@
-// 監査イベント読み取り API(AUDIT_SPEC §6 / §7 — C1)の統合テスト。
+// 監査イベント読み取り API(AUDIT_SPEC §6 / §7)の統合テスト。
 // 可視性クラス・フィルタは audit-read.test.ts(共有ヘルパは
 // support/audit-read-scenario.ts)。
 //
@@ -204,7 +204,7 @@ describe("invite.* の読み取り(§7 の例外規定 — D1)", () => {
     const inviteId = await issueInvite("member");
     // マイグレーション適用後・新 worker 配信前の旧コードが書く形(row_id なし)
     // を直接シードする。補填(読み取り前段の遅延 backfill)が無いと id の
-    // Schema encode が失敗し、このページは恒久に 500/400 になる(pullfrog 指摘)
+    // Schema encode が失敗し、このページは恒久に 500/400 になる
     await env.DB.prepare(
       "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (99, 'invite.created', 'user', ?, ?, '{\"inviteId\":\"legacy\"}')",
     )
@@ -221,7 +221,7 @@ describe("invite.* の読み取り(§7 の例外規定 — D1)", () => {
     expect(inviteIds).toEqual(expect.arrayContaining(["legacy", inviteId]));
   });
 
-  it("row_id 補填はページで観測した行に限定される(B8: 全 NULL 行への UPDATE をしない)", async () => {
+  it("row_id 補填はページで観測した行に限定される(全 NULL 行への UPDATE をしない)", async () => {
     await issueInvite("member");
     // NULL row_id の歴史行を 2 行シードする。limit=1 の読み取りページに載るのは
     // 新しい方(seq 大)だけ — 補填の UPDATE がページ外の NULL 行へ波及しない

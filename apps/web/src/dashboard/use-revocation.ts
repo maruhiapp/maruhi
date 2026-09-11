@@ -33,7 +33,7 @@ export function useRevocation(
   confirm: (id: string) => void;
 } {
   const [revocation, setRevocation] = useState<RevocationState>(IDLE);
-  // in-flight ガード(PR #109 Bugbot 指摘): DELETE の実行中は arm / confirm を
+  // in-flight ガード: DELETE の実行中は arm / confirm を
   // 受け付けない — 後着の完了が別行の武装状態を上書きし、失敗の帰属が別の
   // 失効に見える競合を塞ぐ。UI 側も pendingId を見て他行の Revoke を無効化する
   // (RevokeControl の isLocked)— ガードは見えないボタンでなく効かないボタンを

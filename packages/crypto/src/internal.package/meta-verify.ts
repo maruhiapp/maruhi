@@ -1,6 +1,5 @@
 // CRYPTO_SPEC §6.3(メタデータステートメントの検証)/ §6.4(サーバー受理検証)の
-// 履歴ベース複合検証。value-verify.ts の同型(session-14 の申し送り — 検証機構を
-// 二重実装しない)。
+// 履歴ベース複合検証。value-verify.ts の同型(検証機構を二重実装しない)。
 //
 // 検証済みチェーンの履歴索引(chain-history.ts)に対して、配布(または受理)
 // されたステートメントの §6.3 の 1〜3・6 を検査する:
@@ -22,7 +21,7 @@
 // ステートメントの宣言ヘッド時点に環境は未存在。値署名との意図された非対称)。
 // この構造的帰結として、前進 meta_version への偽ステートメント注入(在籍区間内の
 // 宣言ヘッド)は署名・連鎖検証を通る — v1 の明示的な残余(§14.3-5。fork 証拠化
-// = prev 連鎖の分岐までが本 PR の保証)。
+// = prev 連鎖の分岐までが保証範囲)。
 //
 // latest-only の限界(session-14 裁定 B の同型): predecessor が無い場合でも
 // 署名・ヘッド・鍵・role・prev の形は必ず検査する。prev の実在一致と削除後の
@@ -66,9 +65,9 @@ export interface MetaPredecessor {
    * omitted-means-1 default would make the fail-closed monotonicity check
    * fail-open — a caller that forgets the field would silently wave a v2 → v1
    * regression through, which is the exact schema erasure the rule exists to
-   * stop (PR #116 レビュー対応). Wire omission = 1 (§4.2) is the *wire* rule;
+   * stop. Wire omission = 1 (§4.2) is the *wire* rule;
    * callers holding a v1 predecessor write `layoutVersion: 1` explicitly, so
-   * the type checker catches S2 migration gaps.
+   * the type checker catches layout-migration gaps.
    */
   readonly layoutVersion: number;
 }
@@ -126,13 +125,12 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
 }
 
 // 本層の predecessor 検査が見るのは**ハッシュ連鎖・遷移・レイアウト単調性のみ**。
-// crypto 層が意図的に検査しないもの(独立レビュー第 2 ラウンド — 所有者裁定で
-// S2 受理面の領分と確定。v1 の前例と一貫):
+// crypto 層が意図的に検査しないもの(受理面の領分。v1 の前例と一貫):
 // - 削除ステートメントのスキーマ欄・name の「直前からの完全保持」(§4.2)は
 //   **受理検査**(AUTH_SPEC §12-5 — name の「直前の active 名を保持」と同じ
 //   規約の受理検査。v1 の name 保持も同型で apps/server/src/programs-variable.ts
-//   が検査する)。**S2 の実装 PR は v2 削除の「スキーマ欄・レイアウトの直前一致」
-//   受理検査を必ず追加すること** — 実装しないと、有効署名を持つ改変削除
+//   が検査する)。**v2 削除の「スキーマ欄・レイアウトの直前一致」受理検査は
+//   受理面に必須** — 無いと、有効署名を持つ改変削除
 //   (スキーマ欄を書き換えた status = deleted)が受理される
 // - metaVersion 1 + status deleted は署名 API(signMetaStatement)が拒否するが、
 //   分散検証は拒否しない(v1 からの既知の非対称 — 受理面〔§12-5: 作成は active

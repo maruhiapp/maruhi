@@ -159,7 +159,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         if (orgRole === null) {
           return yield* Effect.fail(new ForbiddenError({ reason: "org-membership-required" }));
         }
-        // §11-3 プロジェクト数 / org 上限(H2): 判定は org 権限確認の後(org 外の
+        // §11-3 プロジェクト数 / org 上限: 判定は org 権限確認の後(org 外の
         // 主体に上限到達の有無を返さない)・DO init の前。判定材料は D1 の
         // 索引付き count(best-effort — DO 受理と原子化しない: 並行 init の僅かな
         // 超過は受容。§11-3 の比較と棄却案)。上限到達時も DO には admitFresh =
@@ -181,9 +181,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // トークン主体のスコープ交差は**候補索引の段**で行う(スコープ外 =
         // 不出現 — 他所の「スコープ外 = 404」§11-2 と同じ情報量)。後段の
         // 絞り込みだけに置くと、候補ページ末尾から出る nextAfter にスコープ外の
-        // project_id(ID = capability)が載って漏れる(Cursor Security Agent
-        // 指摘 — PR #106)。セッション主体・`*` スコープは制限なし(§5 の許可
-        // 列挙を通過済み — ensureTokenScopeForProject と同じ規律)
+        // project_id(ID = capability)が載って漏れる。セッション主体・`*`
+        // スコープは制限なし(§5 の許可列挙を通過済み —
+        // ensureTokenScopeForProject と同じ規律)
         const scopeFilter = scopedProjectIdsFor(principal);
         if (scopeFilter !== null && scopeFilter.length === 0) {
           return { projects: [] };
@@ -215,7 +215,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
             Effect.gen(function* () {
               // 確認 RPC の defect(DO 到達不能・保存チェーンの破損等)は候補
               // 単位で隔離する: 発見エンドポイントで 1 プロジェクトの障害が
-              // 残り全部の列挙を 500 にしない(pullfrog 指摘 — PR #106)。
+              // 残り全部の列挙を 500 にしない。
               // 当該行は応答から省くだけで**保持**する(ghost 削除は DO の
               // 明確な非メンバー回答のみ — 障害の回復後に再出現できる)。
               // 契約違反の検出線(下の想定外 rejection kind の die)はこの
@@ -300,7 +300,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
       }),
     )
     .handle("attest", ({ params, payload, endpoint }) =>
-      // ヘッド申告の提出(AUTH_SPEC §16-1 — 2026-08-28 PR-M4)。トークン
+      // ヘッド申告の提出(AUTH_SPEC §16-1)。トークン
       // スコープは read(申告は読み取り同期の付随 — reader 常在の認可モデルで
       // read トークンの同期クライアントがゴシップに参加できる水準)。attester =
       // 呼び出し主体は構造的(ワイヤに attester フィールドがなく、DO が署名
@@ -315,13 +315,13 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
     .handle("append", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        // AUTH_SPEC §6 / §12-4(2026-08-03): create_environment / rotate_epoch は
+        // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は
         // 複合エンドポイント(付随データとの原子受理)経由のみ。汎用追記での
         // 迂回は「エポックはあるがラップがない」中間状態を作るため型付きで拒否
         // (DO 側にも同じガードがあり composite-required 拒否として届く — 多層防御)。
         // standalone(周期)checkpoint は本エンドポイントが受理する(§16-2 —
-        // 2026-08-28 PR-M2。DO 側の standaloneCheckpointProgram が内容突合 +
-        // スナップショット原子保存を行う)
+        // DO 側の standaloneCheckpointProgram が内容突合 + スナップショット
+        // 原子保存を行う)
         if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
         }

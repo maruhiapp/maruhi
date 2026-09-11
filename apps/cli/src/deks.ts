@@ -8,7 +8,7 @@
 // wrap の epoch は申告値だが、登録署名(§5.1)と HPKE info(§5)の両方に
 // 束縛されるため、別エポックへの移植は検証・復号失敗に落ちる。
 //
-// §5.2(2026-08-03): unwrap した DEK は、チェーン導出の (environment, epoch)
+// §5.2: unwrap した DEK は、チェーン導出の (environment, epoch)
 // コミットメントと照合するまでいかなる暗号操作(復号・暗号化)にも使わない。
 // 不一致は毒ラップ(共謀サーバーによる偽 DEK 注入の遮断 — §14.2-1)。
 
@@ -154,7 +154,7 @@ export function requireChainEnvironment(
  * epoch (§12-7: latest versions may span epochs, so all epochs are needed).
  * Any failure aborts — silently skipping a wrap would hide tampering.
  *
- * ファントムエポック対策(レビューループ 1 [中]): wrap の epoch はチェーン
+ * ファントムエポック対策: wrap の epoch はチェーン
  * 導出の現エポック以下でなければならない。§12-6 の「1〜現エポック」は
  * サーバー側強制であり、サーバー不信の下ではこのクライアント検査が本線
  * (チェーンに rotate_epoch がないエポックの DEK を受理すると、共謀サーバーが
@@ -167,7 +167,7 @@ function verifyAndUnwrapDeks(input: {
   readonly deks: readonly RecipientDek[];
 }): Effect.Effect<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
   return Effect.gen(function* () {
-    // 環境の存在自体がチェーン導出(§6.2。「未観測なら 1」の既定値は廃止):
+    // 環境の存在自体がチェーン導出(§6.2):
     // チェーンに無い環境の配布はファントム環境として全体を拒否する
     const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
     const chainEpoch = environment.currentEpoch;

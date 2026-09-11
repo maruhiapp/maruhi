@@ -541,7 +541,7 @@ describe("maruhi env create", () => {
     const env = await makeTestEnv();
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // gunshi が required positional を parse 層で弾く(usage エラー = exit 2)。
+    // required positional は引数層が弾く(usage エラー = exit 2)。
     // ハンドラ内の undefined ガードは、その前段が外れても "undefined" が
     // RESOURCE_ID_PATTERN を通らないための多層防御。いずれにせよ HTTP は起きない
     const code = await runCli(["env", "create"], env.layer);
@@ -655,7 +655,7 @@ describe("maruhi env create", () => {
     expect(logs).not.toContain("epoch=7");
   });
 
-  it("受理確認後に v1 床(空変数集合 + 自己発行マニフェスト)を確立し、intent を閉じる(M1-A3 / 3-F)", async () => {
+  it("受理確認後に v1 床(空変数集合 + 自己発行マニフェスト)を確立し、intent を閉じる", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });
@@ -675,7 +675,7 @@ describe("maruhi env create", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("2xx でもチェーンに自エントリがなければ成功と言わず、床も前進させない(1-E′ — §12-10 (3))", async () => {
+  it("2xx でもチェーンに自エントリがなければ成功と言わず、床も前進させない(§12-10 (3))", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     // 200 を返すがチェーンへ追記しない = 虚偽 2xx(悪意・バグのあるサーバー)
@@ -700,7 +700,7 @@ describe("maruhi env create", () => {
     const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
     // 床は前進していない(自分の思い込みを床に書かない)
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
-    // 確認義務の記録(intent)は未解決のまま残る(3-F — 次の実行の照合対象)
+    // 確認義務の記録(intent)は未解決のまま残る(次の実行の照合対象)
     expect(loaded.floor?.intents).toHaveLength(1);
     expect(loaded.floor?.intents[0]).toMatchObject({
       op: "create_environment",
@@ -708,7 +708,7 @@ describe("maruhi env create", () => {
     });
   });
 
-  it("受理確認の再同期に失敗した実行の intent は、次の実行の照合(チェーン同期)が解決し床を前進させる(3-F)", async () => {
+  it("受理確認の再同期に失敗した実行の intent は、次の実行の照合(チェーン同期)が解決し床を前進させる", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     // フェーズ 1: 受理(チェーン追記)は起きるが、確認の再同期(2 回目の chain
@@ -788,7 +788,7 @@ describe("maruhi env create", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("intent(3-F)の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+  it("intent の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });

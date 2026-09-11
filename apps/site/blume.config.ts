@@ -34,7 +34,7 @@ const description =
 export default defineConfig({
   title: "maruhi",
   description,
-  // ヘッダーのブランド: ㊙ の自前 SVG(DP1)。light は朱 #C1330B の原本、dark は fill を dark accent に
+  // ヘッダーのブランド: ㊙ の自前 SVG。light は朱 #C1330B の原本、dark は fill を dark accent に
   // 差し替えた生成物(scripts/build-theme.ts)。ワードマークはテキスト
   logo: {
     image: { light: "/logo.svg", dark: "/logo-dark.svg", alt: "maruhi" },
@@ -83,7 +83,7 @@ export default defineConfig({
     openInChat: false,
   },
   seo: {
-    // OG カードはビルド時にローカルで描画される(外部通信なし)。LP は DP1 の og.png を使う
+    // OG カードはビルド時にローカルで描画される(外部通信なし)。LP は og.png を使う
     og: {
       logo: "/logo.svg",
       palette: {

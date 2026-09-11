@@ -120,7 +120,7 @@ export const apiTokens = sqliteTable(
 );
 
 /**
- * デプロイメント単位のサーバー設定(AUTH_SPEC §3 — 2026-09-01 H1)。現状の
+ * デプロイメント単位のサーバー設定(AUTH_SPEC §3)。現状の
  * キーは `signup_policy`('open' | 'invite' | 'closed'。行なし = 'open')のみ。
  * 書き込み経路はコードに存在しない — 変更は運営の wrangler / SQL 経路のみ
  * (docs/SELF_HOSTING.md。管理 UI・設定 API は作らない)。読み手は未知の値を
@@ -133,7 +133,7 @@ export const deploymentSettings = sqliteTable("deployment_settings", {
 });
 
 /**
- * サインアップ招待コード(AUTH_SPEC §3 — 2026-09-01 H1)。256-bit 乱数 bearer
+ * サインアップ招待コード(AUTH_SPEC §3)。256-bit 乱数 bearer
  * (`maruhi_sgn_` + Base62)の SHA-256 ハッシュのみ保存・単回(消費 CAS)・
  * 期限つき(§15 invitations の型の踏襲)。コードはアカウント作成の許可だけを
  * 運ぶ — プロジェクト・org・role・プロバイダ識別子と結びつけない。
@@ -251,7 +251,7 @@ export const projects = sqliteTable(
 );
 
 /**
- * チェーン導出 membership の D1 投影(AUTH_SPEC §11-5 — W2a)。
+ * チェーン導出 membership の D1 投影(AUTH_SPEC §11-5)。
  *
  * **発見(discovery)専用の候補索引**であり、いかなる認可判定にも使わない
  * (プロジェクトアクセスの真実源はメンバーシップチェーン — CRYPTO_SPEC §6.4 の
@@ -357,7 +357,7 @@ const auditEventColumns = {
 };
 
 /**
- * `auth.login_failed` の記録窓カウンタ(AUDIT_SPEC §3.1 — deepsec R4/R5)。
+ * `auth.login_failed` の記録窓カウンタ(AUDIT_SPEC §3.1)。
  *
  * 監査行ではなく可変のカウンタ状態(§1-4 の append-only は監査テーブルの規律)。
  * 窓内件数を監査ログの走査で求めると、append-only で伸び続けるテーブルを未認証
@@ -392,12 +392,13 @@ export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns,
   index("oae_target").on(t.targetUserId, t.seq),
   index("oae_event").on(t.event, t.seq),
   index("oae_org").on(t.orgId, t.seq),
-  // invite.* の project_id スコープ読み取り(AUDIT_SPEC §7 — C1)のページング用
+  // invite.* の project_id スコープ読み取り(AUDIT_SPEC §7)のページング用
   index("oae_project").on(t.projectId, t.seq),
 ]);
 
 // ---------------------------------------------------------------------------
-// 運用(H3 — docs/notes/hosted-ops.md §6)。監査ログではない**運営限定の可変状態**
+// 運用(docs/notes/hosted-ops.md §6)。監査ログではない**運営限定の可変状態**
+
 // (hosted-design.md §5-5 — 監査と運用ログを混ぜない)。いずれの表もリクエスト
 // 由来の識別子のうちプロジェクト ID 以外を持たない(ops_backups の project_id は
 // `projects` 表と同じ運営ストア内の参照で、退避オブジェクトのキーには載せない)。

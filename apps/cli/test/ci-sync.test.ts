@@ -1,4 +1,4 @@
-// `maruhi ci sync <target>`(SY2 第 2 段 — 裁定 D)のテスト: OIDC リース(ci-lease.ts —
+// `maruhi ci sync <target>`(裁定 D)のテスト: OIDC リース(ci-lease.ts —
 // `ci run` と同じ前段)→ 復号 → ドライバ(exec / http)。レシートは読まない・書かない
 // (CI は §4.1 の署名鍵を持たない): 選択した変数の全件再適用で、削除は生まれない。
 //

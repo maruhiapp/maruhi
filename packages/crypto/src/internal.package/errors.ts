@@ -1,6 +1,6 @@
 // @maruhi/crypto の型付きエラー(判別可能 union)と Result 型。
 //
-// 設計判断(セッション 04、裁定待ちのデフォルト (b)):
+// 設計判断:
 // crypto は Effect に依存しない純粋なエラー値を返し、Effect ラップは packages/core 側で行う。
 // 判別子は `kind`(oxlint の no-underscore-dangle と衝突しない中立名)。
 // core 側の Effect ラップでは kind ごとに Data.TaggedError へマッピングする。
@@ -31,7 +31,7 @@ export type ChainInvalidReason =
   | "grant-scope-narrowed"
   | "duplicate-server-key"
   | "epoch-out-of-sequence"
-  // checkpoint op(§6.2。2026-08-27 セッション 33 — PR-F3a)。重複 environment_id は
+  // checkpoint op(§6.2)。重複 environment_id は
   // payload 構造検査(invalid-payload)に属し、専用理由コードを持たない
   | "checkpoint-audit-role-insufficient"
   | "checkpoint-epoch-mismatch"
@@ -131,7 +131,7 @@ export type MetaInvalidReason =
  *   発行契機はすべて member 以上のメタ操作 — §4.3)
  * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
  *   `environment-not-created-at-head` / `epoch-not-current-at-head` —
- *   エポック整合(§4.3 (2)。2026-08-27 セッション 33 で改訂 — 旧 H+1 例外の廃止):
+ *   エポック整合(§4.3 (2)):
  *   検証済みチェーン上に当該 (environment_id, manifest_version) の `checkpoint`
  *   タプルが存在すれば、その (epoch, manifest_sig_hash) と完全一致必須(不一致 =
  *   binding-mismatch。strict は代替経路にならない)。同座標に相違タプルが併存

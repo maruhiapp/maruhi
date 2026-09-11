@@ -30,7 +30,7 @@ export const setSchemaPolicyProgram = (
 ) =>
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "admin", cache);
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 設定変更は内容の成長面
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 設定変更は内容の成長面
     // ではないが、退出・解放・セキュリティ是正のいずれにも要らず、変更のたびに
     // 監査行を積む(admin の反復で非有界)ため拒否対象に含める。取得
     // (getSchemaPolicyProgram)は読み取り = 拒否下でも通る

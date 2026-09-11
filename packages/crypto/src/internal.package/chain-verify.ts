@@ -32,11 +32,11 @@ const ROLES: readonly Role[] = ["owner", "admin", "member", "reader"];
 const FINGERPRINT_BYTES = 16;
 const SIGNATURE_BYTES = 64;
 const SHA256_BYTES = 32;
-// フィールドサイズ上限(CRYPTO_SPEC §6.1。2026-08-02 決定): チェーン有効性の
+// フィールドサイズ上限(CRYPTO_SPEC §6.1): チェーン有効性の
 // 合意規則。巨大 payload による検証クライアントの資源消費(可用性)対策
 const MAX_FIELD_BYTES = 1024;
 const MAX_SCOPE_ENVIRONMENTS = 256;
-// lease_policy の上限(CRYPTO_SPEC §6.2。2026-08-12): 要素 8・要素あたり claim
+// lease_policy の上限(CRYPTO_SPEC §6.2): 要素 8・要素あたり claim
 // 制約 8(各文字列は MAX_FIELD_BYTES)。仕様適合 grant_server エントリの正規化
 // サイズが §6.4 の受理ポリシー上限を数学的に下回り続けるように選ばれた合意規則
 const MAX_LEASE_POLICY_ISSUERS = 8;
@@ -232,8 +232,8 @@ function shapeGrantServer(p: {
     Array.isArray(p.scopeEnvironmentIds) &&
     p.scopeEnvironmentIds.length <= MAX_SCOPE_ENVIRONMENTS &&
     p.scopeEnvironmentIds.every((id) => isBoundedId(id)) &&
-    // lease_policy(§6.2。2026-08-12): 構造のみ合意規則(評価意味論は AUTH_SPEC §14)。
-    // 旧 3 フィールド形式(leasePolicy 欠落)はここで invalid-payload になる
+    // lease_policy(§6.2): 構造のみ合意規則(評価意味論は AUTH_SPEC §14)。
+    // leasePolicy 欠落はここで invalid-payload になる
     Array.isArray(p.leasePolicy) &&
     p.leasePolicy.length <= MAX_LEASE_POLICY_ISSUERS &&
     p.leasePolicy.every((element) => shapeLeasePolicyIssuer(element))
@@ -297,7 +297,7 @@ const PAYLOAD_SHAPES: {
 };
 
 function operationShapeOk(entry: ChainEntry): boolean {
-  // 未知の op は表引きの**前**に membership で拒否する(deepsec B12): TS 型は
+  // 未知の op は表引きの**前**に membership で拒否する: TS 型は
   // op の網羅を主張するが、入力はサーバー配布 JSON のキャストであり乖離しうる。
   // 確認せずに PAYLOAD_SHAPES[entry.op] を呼ぶと TypeError となり、「不正入力は
   // invalid-payload を返し throw しない」という公開 verifier の契約に反する。
@@ -404,7 +404,7 @@ async function applyAddMember(
   if (state.members.has(entry.payload.targetUserId)) {
     return "duplicate-member";
   }
-  // メンバー鍵の一意性(§6.2。2026-08-03 決定): enc / sig のいずれかが現メンバー
+  // メンバー鍵の一意性(§6.2): enc / sig のいずれかが現メンバー
   // 集合の同種鍵と一致する追加を拒否する。判定は個別鍵単位(FP 単位ではない —
   // 片鍵だけ流用したソック垢も拒否)。禁止範囲は現メンバー集合のみで、削除済み
   // メンバーの同一鍵 re-add(同一人物の復帰)は拒否しない。検査順序(role →
@@ -492,9 +492,9 @@ async function applyGrantServer(
   state: MutableChainState,
   actorRole: Role,
 ): Promise<ChainInvalidReason | null> {
-  // 認可段の検査順序(§6.2。2026-08-12 — ベクターで固定): role 規則 →
+  // 認可段の検査順序(§6.2。ベクターで固定): role 規則 →
   // 再 grant 規則(§6.3)→ サーバー鍵の重複。FP 整合は payload 自体の
-  // 自己整合(§9)であり role の直後に検査する(従来位置を維持)
+  // 自己整合(§9)であり role の直後に検査する
   if (actorRole !== "owner") {
     return "insufficient-role";
   }
@@ -504,7 +504,7 @@ async function applyGrantServer(
   if (encodeHex(digest.slice(0, FINGERPRINT_BYTES)) !== entry.payload.serverKeyFingerprintHex) {
     return "invalid-payload";
   }
-  // 同一サーバー鍵への再 grant の二層判定(2026-08-02 所有者裁定。2026-08-12 二層化):
+  // 同一サーバー鍵への再 grant の二層判定:
   // 開示スコープはスコープ拡大(旧 ⊆ 新)のみ受理する。縮小を許すと revoke_server +
   // rotate_epoch(§7 の全環境ローテーション義務)を迂回して「開示を止めたつもり」に
   // なれてしまうため、縮小は必ず失効経路を通す。拡大は未開示環境を足すだけなので無害。
@@ -517,7 +517,7 @@ async function applyGrantServer(
       return "grant-scope-narrowed";
     }
   }
-  // サーバー鍵の一意性(§6.2。2026-08-12): サーバー enc 公開鍵が現メンバーの
+  // サーバー鍵の一意性(§6.2): サーバー enc 公開鍵が現メンバーの
   // enc 公開鍵と一致する grant は拒否する(「鍵 → 主体」逆引きの一意性の
   // 受信者クラス横断版)。逆方向(有効 grant のサーバー鍵を add_member に流用)は
   // 仕様の明示的な対象外のまま(§6.2 メンバー鍵一意性の「注意」)
@@ -591,12 +591,12 @@ function applyRotateEpoch(
   }
   // 認可段の検査順序(§6.2。ベクターで固定): role → unknown-environment →
   // エポック順序。当該 environment_id の create_environment が先行していなければ
-  // 無効(「未観測なら初期値 1」の既定値フォールバックは廃止 — 2026-08-03)
+  // 無効(「未観測なら初期値 1」の既定値フォールバックは持たない)
   const environment = state.environments.get(entry.payload.environmentId);
   if (environment === undefined) {
     return "unknown-environment";
   }
-  // エポックは環境ごとのカウンタで必ず +1(2026-08-02 所有者裁定・案 3)。
+  // エポックは環境ごとのカウンタで必ず +1。
   // 巻き戻し(削除済みメンバーが保持する旧 DEK で新しい値が暗号化される)、
   // 重複、ジャンプ(member 権限の 1 署名で safe integer 上限まで飛ばして
   // 以後のローテーションを不能にする DoS)をすべて拒否する
@@ -610,7 +610,7 @@ function applyRotateEpoch(
 }
 
 /**
- * checkpoint の認可 + 状態遷移(§6.2。2026-08-27 セッション 33 — PR-F3a)。
+ * checkpoint の認可 + 状態遷移(§6.2)。
  * 検査順序(ベクターで固定): role(member 以上)→ 非空監査ヘッドの admin role →
  * unknown-environment → checkpoint-epoch-mismatch → checkpoint-regression。
  * 複数環境エントリ間は**検査段ごとに全エントリを走査**する(stage-wise —

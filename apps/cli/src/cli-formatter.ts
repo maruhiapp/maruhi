@@ -76,7 +76,7 @@ function unrecognizedOptionMessage(
   // 未宣言だったか)を優先する。振り分けのキーは argv からの推定なので、
   // `maruhi env --new-epoch rotate dev` のように**親の段に書いたフラグ**でも
   // 葉(`env rotate`)へ解決してしまい、拒否したフラグを「受け付ける一覧」に
-  // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
+  // 載せる自己矛盾の診断になる。親の段の宣言を引ければ、
   // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
   const errorKey = (error.command ?? []).slice(1).join(" ");
   // root(errorKey が空)も root の spec(空のキー)で組む: `maruhi --show
@@ -94,8 +94,8 @@ function unrecognizedOptionMessage(
   // 解決済みの段の宣言に**在る**フラグが未宣言として報告された = 書いた位置が
   // サブコマンドより前(`audit --limit 5 list` — 上流は親のローカルフラグを
   // サブコマンドへ継承しない)。「存在しない」とも「受け付ける一覧」とも
-  // 言わない — 同じフラグを拒否しつつ一覧に載せる自己矛盾の診断になる
-  // (レビュー第 2 巡の指摘)。置き場所だけを案内する
+  // 言わない — 同じフラグを拒否しつつ一覧に載せる自己矛盾の診断になる。
+  // 置き場所だけを案内する
   if (spec?.flags.includes(option) === true) {
     return `Unknown flag position (--${option} belongs after the subcommand — e.g. ${commandLabel(errorCommandKey)} --${option} …)`;
   }
@@ -109,8 +109,8 @@ function unrecognizedOptionMessage(
 /** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
 function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
   // 入れ子の段(サブコマンドを持つ親)は**普通は**自分のフラグを持たない。
-  // gunshi 時代は操作名より前に書いたフラグも通ったため、その形で来た利用者に
-  // 「フラグが存在しない」と嘘をつかず、**置き場所**を案内する。例外は
+  // 操作名より前にフラグを書いた利用者に「フラグが存在しない」と嘘をつかず、
+  // **置き場所**を案内する。例外は
   // 親自身が宣言を持つ段(bare `audit` = list)で、そちらは葉と同じく
   // 受け付けるフラグの一覧を出す
   const subcommands = (spec?.flags.length ?? 0) === 0 ? (spec?.subcommands ?? []) : [];
@@ -176,8 +176,7 @@ function userErrorMessage(error: CliError.UserError): string {
 
 /**
  * 不明なサブコマンド。候補(編集距離)があればそれを、無ければ**その段が取る
- * サブコマンドの一覧**を出す — gunshi 時代の「不明な操作です(create | rotate |
- * diff)」と同じ水準を保つ(打ち間違いの直し先を探させない)。
+ * サブコマンドの一覧**を出す(打ち間違いの直し先を探させない)。
  */
 function unknownSubcommandMessage(
   error: CliError.UnknownSubcommand,
@@ -236,7 +235,7 @@ export function describeError(
  * `helpRequested` で本文の量を変える: `--help` を明示した実行は既定の
  * フォーマッタの全文(ヘルプは maruhi の出力であって診断ではない)、
  * 書き方の誤りに添えるのは**使い方の 1 行だけ**にする。誤りのたびに全文が
- * 出ると、肝心の診断が埋もれる(gunshi 時代も同じ理由でヘルプを止めていた)。
+ * 出ると、肝心の診断が埋もれる。
  */
 function maruhiFormatter(
   commandKey: string,
@@ -271,15 +270,14 @@ function maruhiFormatter(
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
       adjustUsage(helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`),
-    // `--version` は**版番号だけ**を出す(gunshi 時代からの契約 —
-    // version.test.ts が固定。`V=$(maruhi --version)` がそのまま使える形)
+    // `--version` は**版番号だけ**を出す(version.test.ts が固定。
+    // `V=$(maruhi --version)` がそのまま使える形)
     formatVersion: (_name: string, version: string) => version,
     formatError: describe,
     formatCliError: describe,
     // コマンド名が解決できなかった実行では、フラグは root の宣言と突き合わ
     // されるため、正しく綴られたフラグまで不明として並ぶ。誤りはコマンド名の
-    // 方なので、綴りの合っているフラグを探させない(gunshi 時代の
-    // usageErrorMessages と同じ規律)
+    // 方なので、綴りの合っているフラグを探させない
     formatErrors: (errors: ReadonlyArray<CliError.CliError>) => {
       // 抑えるのは **root 段**(コマンド名そのものが解決できなかった実行)
       // だけ: 深い段の UnknownSubcommand(`server abc` の abc)では、親の段に

@@ -1,12 +1,7 @@
-// apex サイト(LP + docs — Blume)の e2e。ビルド済み dist(+ scripts/postbuild.ts の
-// _headers)を **本番と同じ wrangler 設定**(apps/site/wrangler.jsonc — Workers Static Assets のみ)
-// で配信し、Playwright(Chromium)で次を固定する(docs/notes/web-design-pass.md §4 の検証項目):
-//   1. 全リクエストが同一オリジン(外部への通信ゼロ — 「言わざる」)
-//   2. CSP 違反ゼロ、`script-src 'self'` / `style-src 'self'` 基調で 'unsafe-inline' なし
-//   3. フォントは自己配信(Archivo / Martian Mono が実際に適用され、OFL 全文が /fonts/ から読める)
-//   4. 朱の accent が light / dark(システム追従)で DP1 のテーマ値と一致する
-//   5. `/docs` が開き、末尾スラッシュの正規化と 404 が wrangler.jsonc の設定どおり
-// 事前に `bun run build` が必要。
+// apex サイト(LP + docs — Blume)の e2e。ビルド済み dist を本番と同じ wrangler 設定
+// (apps/site/wrangler.jsonc — Workers Static Assets のみ)で配信し、Playwright で
+// 同一オリジン限定・CSP・自己配信フォント・テーマ値・ルーティングを固定する
+// (docs/notes/web-design-pass.md §4)。事前に `bun run build` が必要。
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -284,7 +279,7 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される(pullfrog 指摘の固定)
+    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される
     for (const target of [
       "/docs/getting-started",
       "/docs/deploy-targets",

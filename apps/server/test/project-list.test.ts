@@ -1,4 +1,4 @@
-// プロジェクト一覧 API(AUTH_SPEC §11-5 — W2a)の統合テスト。
+// プロジェクト一覧 API(AUTH_SPEC §11-5)の統合テスト。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
 //
 // このスイートが固定するもの(session-42 裁定 BL):
@@ -167,9 +167,9 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     expect((await listOk(bearer(outOfScope))).projects).toEqual([]);
   });
 
-  it("nextAfter はスコープ外の project_id を運ばない(候補索引段の交差 — PR #106 セキュリティレビューの回帰)", async () => {
-    // スコープ外の合成候補を満杯ページぶん挿入(修正前は候補ページ末尾 =
-    // スコープ外 ID が nextAfter に載って漏れていた)
+  it("nextAfter はスコープ外の project_id を運ばない(候補索引段の交差)", async () => {
+    // スコープ外の合成候補を満杯ページぶん挿入(候補ページ末尾 = スコープ外 ID が
+    // nextAfter に載って漏れる経路)
     for (let index = 1; index <= PROJECT_LIST_PAGE_SIZE; index += 1) {
       await insertProjectionRow(fakeProjectId(index), OWNER);
     }
@@ -187,10 +187,10 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     expect(raw).not.toContain(fakeProjectId(PROJECT_LIST_PAGE_SIZE));
   });
 
-  it("スコープ上限(100 エントリ)のトークンでも全ページ成功する(D1 束縛パラメータ上限 — PR #106 pullfrog 指摘の回帰)", async () => {
-    // スキーマ上限いっぱいの 100 スコープ(実プロジェクト + 合成 99)。修正前は
-    // 単一 IN が userId / after / limit と合わせて D1 の 100 パラメータ上限を
-    // 超え、一覧が hard fail した(2 ページ目は after 込みで最悪 103)
+  it("スコープ上限(100 エントリ)のトークンでも全ページ成功する(D1 束縛パラメータ上限)", async () => {
+    // スキーマ上限いっぱいの 100 スコープ(実プロジェクト + 合成 99)。単一 IN だと
+    // userId / after / limit と合わせて D1 の 100 パラメータ上限を超え、一覧が
+    // hard fail する(2 ページ目は after 込みで最悪 103)
     const fakes = Array.from({ length: 99 }, (_unused, index) => fakeProjectId(index + 1));
     const scopes = [
       { project: projectId, permission: "read" as const },
@@ -211,7 +211,7 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     expect(second.nextAfter).toBeUndefined();
   });
 
-  it("確認に答えられない DO の候補は省き、残りの列挙は成立する(行は保持 — PR #106 pullfrog 指摘の回帰)", async () => {
+  it("確認に答えられない DO の候補は省き、残りの列挙は成立する(行は保持)", async () => {
     // 破損チェーン(JSON 非適合の保存行)の DO を候補に混ぜる — memberRoleFor が
     // defect になる形。他テストと衝突しない専用 ID を使い、終了時に片付ける
     const broken = fakeProjectId(0xb0b);
@@ -234,7 +234,7 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     }
   });
 
-  it("セッション主体で一覧できる(§5 の許可列挙 — S4 の消費経路)", async () => {
+  it("セッション主体で一覧できる(§5 の許可列挙)", async () => {
     const session = await loginSession(9001);
     const viaSession = await listOk(sessionHeaders(session));
     expect(viaSession.projects).toEqual([{ projectId, role: "owner" }]);

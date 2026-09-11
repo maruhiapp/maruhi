@@ -1,7 +1,7 @@
 // サインイン後の /dashboard 復帰マーカー(裁定 BU — docs/notes/session-43.md §10)。
 //
 // OAuth callback は `${origin}/`(S1 ランディング)へ固定リダイレクトする(API
-// 挙動 — 本 PR で不変)。ダッシュボードの Sign in クリック時に sessionStorage へ
+// 側の挙動)。ダッシュボードの Sign in クリック時に sessionStorage へ
 // ワンショットのマーカーを置き、S1 側がマーカーを消費したときだけ `/auth/me` を
 // 1 回確認して /dashboard へ戻す。マーカーなしの S1(P1 訪問者)は API を一切
 // 呼ばない(BP 第 3 周で棄却した「S1 での常時 /auth/me 照会」を避けたまま、

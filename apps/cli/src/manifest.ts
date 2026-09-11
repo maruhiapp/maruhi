@@ -9,8 +9,8 @@
 // §4.3)へ委譲する。
 //
 // **マニフェスト欠落 = 一律拒否**(§6.3 — 「未初期化なら警告」の分岐は攻撃者が
-// 選べる緩和経路になるため置かない)。唯一の例外は移行経路(session-27 §14
-// PR-M1): マニフェスト導入前に作成された環境の manifest_version 1 初期化は
+// 選べる緩和経路になるため置かない)。唯一の例外は移行経路(session-27 §14):
+// マニフェスト導入前に作成された環境の manifest_version 1 初期化は
 // `maruhi env rotate --init-manifest` の明示操作でのみ、**欠落の許容**(検証の
 // 緩和ではない — マニフェストが配布された場合は通常どおり全検証する)を許す。
 
@@ -171,8 +171,8 @@ export type ManifestVerifyOutcome =
  * @maruhi/crypto. Coordinates are rebuilt from expected values, never from
  * wire claims (§6.3-5).
  *
- * **隣接版の prev 連鎖検証(CRYPTO_SPEC §4.3 検証規則 (1) — session-31 §3
- * M1-A1)**: 床がマニフェスト記録を持ち、配布版が床の直後
+ * **隣接版の prev 連鎖検証(CRYPTO_SPEC §4.3 検証規則 (1) — session-31 §3)**:
+ * 床がマニフェスト記録を持ち、配布版が床の直後
  * (pulled.manifestVersion = floor.manifestVersion + 1)なら、床は直前
  * マニフェストそのものなので、床の signed_bytes ハッシュを predecessor として
  * 共有検証器へ渡し `prevManifestSigHashHex` を厳密検証する。version の差が
@@ -261,7 +261,7 @@ export async function verifyDistributedManifest(input: {
     if (predecessor !== undefined && error.reason === "prev-hash-mismatch") {
       // 隣接 prev 不一致は床(検証済みの直前マニフェスト)との矛盾 = マニフェスト
       // 連鎖の分岐の証拠。第三者へ提示可能な材料(両ハッシュ・発行者・宣言ヘッド)
-      // を含める(session-31 §3 M1-A1 修正案 3)
+      // を含める(session-31 §3)
       return {
         kind: "rejected",
         message: [

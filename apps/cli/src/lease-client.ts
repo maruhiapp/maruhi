@@ -14,8 +14,7 @@
 //       リースラップは §5.1 登録署名を持たない(サーバー生成・応答スコープ —
 //       LeasedDek 型が構造的に区別する)ため deks.ts の署名検証段は適用されず、
 //       エポック上限・重複・コミットメント存在の検査をここに置く。DEK 長の
-//       検査は発明しない(32 バイト以外の Seal はコミットメント照合で落ちる —
-//       セキュリティレビュー A-5)
+//       検査は発明しない(32 バイト以外の Seal はコミットメント照合で落ちる)
 //   (4) 値署名・メタステートメント検証 — values.ts の verifyLeaseDistribution
 //       (future head は再同期せず即時拒否 — チェーンが同梱される以上、
 //       「自分のチェーンが古いだけ」という正直な説明が存在しない)
@@ -185,7 +184,7 @@ function unwrapLeases(input: {
     const environment = yield* requireChainEnvironment(verified, environmentId);
     const chainEpoch = environment.currentEpoch;
     // claims digest は検証付きの入口(computeLeaseClaimsDigest)のみを使う —
-    // builder 直接使用は空フィールドガードを迂回する(セキュリティレビュー A-5)
+    // builder 直接使用は空フィールドガードを迂回する
     const digest = yield* Effect.tryPromise({
       try: () => computeLeaseClaimsDigest(input.claims),
       catch: () => cliError("Failed to compute the lease claims digest (crypto error)"),

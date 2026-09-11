@@ -132,7 +132,7 @@ export function issueRecoveryCodeOp(input: {
     yield* io.logError("");
     // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
     // 表示可否はこの関数の冒頭の TTY + agent ゲートで判定済みで、剥がすのは
-    // その後ろ。stderr 自体も TTY であることを確認済み(S2)
+    // その後ろ。stderr 自体も TTY であることを確認済み
     yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
@@ -233,7 +233,7 @@ export function recoverMasterKeyOp(input: {
         Effect.flatMap(corruptBlobMessage(), (message) => Effect.fail(cliError(message))),
       ),
     );
-    // keygen と同じ上書き検出つき保存(deepsec R2): ガードからブロブ取得と
+    // keygen と同じ上書き検出つき保存: ガードからブロブ取得と
     // コード入力を挟むため窓はさらに広く、素の set では並行実行の鍵を
     // 黙って消しうる
     yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));

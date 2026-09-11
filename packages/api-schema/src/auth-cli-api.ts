@@ -1,5 +1,5 @@
 // CLI ログイン(サーバー仲介 web-flow ハンドオフ)の HttpApi 定義
-// (AUTH_SPEC §4 — 2026-08-31 全面改訂。旧 GitHub Device Flow を置換)。
+// (AUTH_SPEC §4)。
 //
 // 原則(§4): CLI はアイデンティティプロバイダを知らない。本グループのワイヤに
 // プロバイダ固有フィールドを置かず、verificationUrl は CLI にとって不透明な

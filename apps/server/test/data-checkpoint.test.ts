@@ -1,11 +1,11 @@
 // standalone(周期)checkpoint の受理面と GET /audit-head の統合テスト
-// (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1 — 2026-08-28 PR-M2)。
+// (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1)。
 //
-// - 認可 2 水準(session-27 §13-5 の権限マトリクス): 空 audit head =
+// - 認可 2 水準(実効権限マトリクス): 空 audit head =
 //   write スコープ × member 以上、非空 = 実効権限 admin(不足 403)
 // - 受理時点突合の 5 理由(manifest-mismatch / values-digest-mismatch /
 //   audit-head-unknown / audit-head-stale / environment-deleted)。
-//   実在しない先行 manifest_version の公証拒否(session-33 §5 の申し送り)を含む
+//   実在しない先行 manifest_version の公証拒否を含む
 // - 原子性(拒否はチェーン・ミラー・スナップショットの何も残さない)と
 //   スナップショット保存規律の経路同一性(A のみ再 checkpoint しても B の
 //   基準は維持 — §16-2「経路によらず同一」)
@@ -209,7 +209,7 @@ describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", ()
   });
 });
 
-describe("standalone checkpoint の認可 2 水準(session-27 §13-5 の権限マトリクス)", () => {
+describe("standalone checkpoint の認可 2 水準(実効権限マトリクス)", () => {
   it("(a) admin role × admin token + a fresh audit head is accepted, (d) member × write token + empty head is accepted", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     // (d): member role × write スコープ × 空 audit head = データ層 checkpoint
@@ -273,7 +273,7 @@ async function expectMismatch(response: Response, reason: string): Promise<void>
 }
 
 describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 理由)", () => {
-  it("rejects notarizing a manifest_version that does not exist yet (manifest-mismatch — session-33 §5 の申し送り)", async () => {
+  it("rejects notarizing a manifest_version that does not exist yet (manifest-mismatch)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const manifest = await currentManifestTuple(ENV);
     const headBefore = fixture.head.seq;
@@ -406,7 +406,7 @@ describe("境界 checkpoint の監査ヘッド公証(§16-2 — standalone と�
   it("accepts a rotate composite whose boundary checkpoint attests a fresh audit head (effective admin)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const head = await auditHeadOk(token(OWNER));
-    // 受理まで進める正例はラップした DEK 自身のコミットメントを渡す(M1-T1)
+    // 受理まで進める正例はラップした DEK 自身のコミットメントを渡す
     const next = makeDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -477,7 +477,7 @@ async function pullBody(environmentId: string): Promise<PullSnapshotBody> {
   return (await response.json()) as PullSnapshotBody;
 }
 
-describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2 — PR-M3)", () => {
+describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2)", () => {
   it("value pull bundles the stored enumeration of the latest covering checkpoint", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     // 作成複合の境界 checkpoint(空列挙)が誕生時からの基準(§12-4)
@@ -540,7 +540,7 @@ describe("スナップショット保存規律の経路同一性(§16-2 — 部�
     // B の基準(最新包含 checkpoint)は維持される — payload に含まれない環境の
     // 既存スナップショットは変更しない(§16-2)
     expect(await snapshotRow(ENV_B)).toEqual(baselineB);
-    // 配布(§12-7 — PR-M3)も環境ごとの最新包含 checkpoint に対応する:
+    // 配布(§12-7)も環境ごとの最新包含 checkpoint に対応する:
     // A は再 checkpoint の位置、B は元の位置の列挙を配る
     expect((await pullBody(ENV)).checkpointSnapshot?.chainSeq).toBe(onlyA.entry.seq);
     const pulledB = await pullBody(ENV_B);

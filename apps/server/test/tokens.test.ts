@@ -1,4 +1,4 @@
-// トークン管理 API + 既定 TTL(AUTH_SPEC §6 — W3a)の統合テスト。
+// トークン管理 API + 既定 TTL(AUTH_SPEC §6)の統合テスト。
 //
 // - TTL は発行時固定(§6: セッション §5 のスライディングと意図的に非対称)
 // - 一覧は本人のメタデータのみ(生値・token_hash は構造ごと返さない)
@@ -46,7 +46,7 @@ beforeEach(async () => {
   await resetAuthDb();
 });
 
-describe("既定 TTL(AUTH_SPEC §6 — L-2 の解消)", () => {
+describe("既定 TTL(AUTH_SPEC §6)", () => {
   it("fixes expires_at to created_at + 90 days at issuance and reports it in the response", async () => {
     const issued = await exchange(801);
     const row = await tokenRow(issued.tokenId);

@@ -146,13 +146,13 @@ export const auditGroup = HttpApiGroup.make("audit")
       query: {
         ...pageQuery,
         event: Schema.optionalKey(EventNameFilter),
-        // event 名前空間の前置一致(AUDIT_SPEC §7 — 2026-08-24 deepsec R1)。
+        // event 名前空間の前置一致(AUDIT_SPEC §7)。
         // `maruhi audit verify` が `chain.` 名前空間の**全行**を引くために要る:
         // 既知のミラー名を完全一致で 1 つずつ引く形では、集合外の `chain.*` を
         // 名乗る偽造行が 1 度も取得されず、検証が OK で終わる。サーバー側は
         // LIKE ではなく substr 比較で実装する(ワイルドカード意味論を持たせない)
         eventPrefix: Schema.optionalKey(EventNameFilter),
-        // chain_seq を持つ行だけを返す(AUDIT_SPEC §7 — deepsec S1)。
+        // chain_seq を持つ行だけを返す(AUDIT_SPEC §7)。
         // 正直なサーバーで chain_seq を設定するのは chain.* ミラーだけだが、
         // tampered な監査ログは別イベント名で同じ座標を名乗りうる。verify が
         // 名前空間の外にある偽の provenance claim も拾うための presence filter。
@@ -201,10 +201,10 @@ export const auditGroup = HttpApiGroup.make("audit")
       params: { projectId: ProjectIdSchema },
       success: AuditHeadSchema,
       // AuditHeadNotReady(503): 遅延実体化の伸長が 1 呼び出しの上限に達した
-      // (AUDIT_SPEC §5.1 の有界伸長 — セッション 38)。retryable — 進捗は保存
+      // (AUDIT_SPEC §5.1 の有界伸長)。retryable — 進捗は保存
       // 済みで再試行は前進する。認可判定(404 / 403)より後にのみ返るため
       // §11-2 の存在秘匿と両立する
-      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8 H2):
+      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8):
       // 派生列が MAX(seq) 未到達で実体化(監査行数比例の書き込み)を要する
       // ときだけ、拒否閾値以上の DO で返る。列が最新なら読み取りのみで通る
       error: [ProjectNotFoundError, ForbiddenError, AuditHeadNotReadyError, DataLimitExceededError],

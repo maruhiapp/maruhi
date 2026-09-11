@@ -5,7 +5,7 @@
 // 任意の issuer 文字列で外部 fetch を誘発できると増幅攻撃になる。issuer の
 // 許可リスト照合は fetch より前に行う(verifier.ts の判定順)。
 //
-// **stale-while-revalidate**(2026-08-15): 再取得に失敗しても、猶予窓
+// **stale-while-revalidate**: 再取得に失敗しても、猶予窓
 // (STALE_GRACE_MS)内に取得できていた JWKS があればそれで検証を続ける。
 // これは fail-closed(§14-1)と矛盾しない — 署名検証は必ず実施し、鍵が
 // 1 つも無い場合にだけ拒否する。この設計にする理由は 2 つ:
@@ -16,7 +16,6 @@
 //      未認証の攻撃者が存在しない kid を投げるだけで TTL 内の正常な鍵を
 //      落とし、以後の正当なトークンを 503 に落とせてしまう。最後に成功した
 //      JWKS を保持し、失敗が既存キャッシュを**決して**壊さない構造にする
-//      (Cursor Bugbot の指摘と同じ経路 — PR #65)
 // 猶予窓は「issuer が鍵を失効させてから、それを受理しなくなるまでの上限」でも
 // あるため、可用性と失効追随のトレードオフとして明示的な定数に置く。
 //
@@ -49,7 +48,7 @@ const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
  * (最長 6 時間弱)にわたって「未認証リクエスト 1 本 = issuer への外向き
  * fetch 1 回(各 5 秒タイムアウト)」が続く。`inFlight` が畳むのは**同時**
  * リクエストだけで、逐次リクエストは畳まれない。増幅が効くのは issuer が
- * すでに弱っているときなので、最も避けたい形になる(pullfrog 指摘 — PR #65)。
+ * すでに弱っているときなので、最も避けたい形になる。
  */
 const FAILED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
@@ -317,7 +316,7 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     // 直近の再取得が失敗しているなら、クールダウンが明けるまで叩き直さない。
     // TTL 切れ + issuer 障害の状態では `isUsable` が最初の分岐(TTL)で false を
     // 返し、強制リフレッシュのクールダウンには到達しないため、失敗側に独立の
-    // 間隔が要る(pullfrog 指摘 — PR #65)
+    // 間隔が要る
     const failedAt = lastFailureAtMs.get(issuer);
     if (failedAt !== undefined && now() - failedAt < FAILED_REFRESH_COOLDOWN_MS) {
       if (isWithinGrace(cached)) {
@@ -337,9 +336,9 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
       if (!isWithinGrace(cached)) {
         throw error;
       }
-      // **失敗した強制リフレッシュもクールダウンの起点にする**(Cursor Bugbot の
-      // 指摘)。TTL 内の未知 kid 連打で 1 リクエスト 1 fetch にしないための、
-      // 上の失敗クールダウンとは独立な不変条件
+      // **失敗した強制リフレッシュもクールダウンの起点にする**。TTL 内の未知
+      // kid 連打で 1 リクエスト 1 fetch にしないための、上の失敗クールダウンとは
+      // 独立な不変条件
       const held = { ...cached, forcedRefreshAtMs };
       lastGoodJwks.set(issuer, held);
       return held;

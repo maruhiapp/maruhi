@@ -1,8 +1,8 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 環境マニフェストの複合受理
-// (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.3。PR-M1)。
+// (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.3)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 //
-// session-27 §13-5 のマニフェスト項の実装テスト: メタ操作との複合受理 /
+// 固定する性質: メタ操作との複合受理 /
 // manifestVersion CAS(409 は最新番号のみ)/ サーバーのダイジェスト再計算 /
 // 保持は最新 1 通のみ / pull 両モードへの同梱(tombstone 込み)/ 環境削除
 // カスケード / 移行経路(マニフェスト導入前の環境の rotate による v1 初期化)。
@@ -401,7 +401,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect(((await mismatched.json()) as { field: string }).field).toBe("manifestEpoch");
   });
 
-  it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (移行経路 — session-27 §14)", async () => {
+  it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (移行経路)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     // マニフェスト・checkpoint 導入前に作成された環境をシミュレートする:
     // チェーン末尾の境界 checkpoint を取り除き(旧世代チェーンにはタプルが
@@ -429,8 +429,8 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       head: fixture.head,
     });
     expect(manifest.manifestVersion).toBe(1);
-    // 単一の DEK をラップとコミットメントの両方に使う(session-31 M1-T1 —
-    // 別々の makeDek() では、サーバーは member 宛ラップの平文を開けないため
+    // 単一の DEK をラップとコミットメントの両方に使う(別々の makeDek() では、
+    // サーバーは member 宛ラップの平文を開けないため
     // 受理するが、配布される新エポック DEK がチェーンのコミットメントと
     // 一致せず、peer CLI が拒否する形をテストが固定してしまう)
     const nextDek = makeDek();
@@ -486,7 +486,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     );
   });
 
-  it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6) — PR #81 review)", async () => {
+  it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6))", async () => {
     // v1 は保存済みマニフェストなし(最新 0)から受理されるため、宣言ヘッド後に
     // ローテーションが挟まっても manifestVersion CAS が 409 で落とせない —
     // 非複合経路の v1 は宣言ヘッド = 受理時点の現ヘッドを要求し、rotate 前の
@@ -565,7 +565,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 2 });
   });
 
-  it("routes a stale v1 against an initialized environment to the CAS 409, not the bootstrap pin (session-31 M1-B1 — 2026-08-27)", async () => {
+  it("routes a stale v1 against an initialized environment to the CAS 409, not the bootstrap pin", async () => {
     // ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ。初期化済み
     // 環境(最新 2)への stale v1 は 422(manifestChainHead)ではなく CAS の 409
     // (currentManifestVersion 付き)へ落とし、正当クライアントの再取得・再署名

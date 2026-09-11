@@ -4,8 +4,8 @@
 //   Credential Manager)。キーチェーン不在環境では型付きエラーで案内し、
 //   平文ファイルへのフォールバックは行わない(ディスクレス不変条件)
 // - ProcessRunner = Bun.spawn(環境変数へのメモリ注入のみ。stdio は継承)
-// - エージェント検出 = std-env の agentInfo(gunshi/agent の実体と同一 —
-//   ADR-0016 決定 7 の二次層。一次境界は Stdio の TTY 判定)
+// - エージェント検出 = std-env の agentInfo(ADR-0016 決定 7 の二次層。
+//   一次境界は Stdio の TTY 判定)
 // - Stdio = @effect/platform-bun(argv と端末の有無。`process.*` を直に読む
 //   のはこの実装の中だけ = 引数層はサービス経由で受け取る)
 
@@ -43,11 +43,11 @@ const keychainUnavailable = () =>
   );
 
 // keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
-// ブロックすることを実測(Cursor Cloud 環境)。キーチェーンのロック解除
+// ブロックすることを実測。キーチェーンのロック解除
 // プロンプト(ユーザー操作)を待つ余地を残しつつ、ハングは案内エラーに落とす
 const KEYCHAIN_TIMEOUT = Duration.seconds(30);
 
-// 変更系タイムアウト専用の文言(deepsec B6): Effect の timeout は進行中の
+// 変更系タイムアウト専用の文言: Effect の timeout は進行中の
 // Bun.secrets.set / delete の Promise を取り消せないため、CLI が失敗を報告した
 // **後に**変更が完了しうる(set は次回実行時の上書きガード、delete は「まだ
 // あるはず」の鍵の消失)。「完了した可能性がある」ことと確認・復旧手順を明示する
@@ -92,12 +92,12 @@ function makeBunKeychain(): KeychainShape {
  * 読み方に合わせる)。stdout / stderr は継承せず捕捉する: ベンダーの出力は
  * 値を含みうるので、そのまま端末へ流さない(表示は呼び出し側が scrub してから)。
  * ここでは**切らない**: 伏せ字化の前に切ると、切れ目にかかった値の後半が
- * 断片に一致しなくなって漏れる(Security Agent 指摘)。表示の上限は伏せた後に
+ * 断片に一致しなくなって漏れる。表示の上限は伏せた後に
  * sync-exec.ts が掛ける。
  */
 async function execVendor(input: ExecInput): Promise<ExecOutcome> {
   // cwd の不在・非ディレクトリは spawn の ENOENT / ENOTDIR として現れ、実行体の
-  // 不在と区別が付かない(Bugbot 指摘)。先に見て、原因を名指しする
+  // 不在と区別が付かない。先に見て、原因を名指しする
   const cwdStat = await stat(input.cwd).catch(() => null);
   if (cwdStat === null || !cwdStat.isDirectory()) {
     throw new CwdUnavailableError(input.cwd);
@@ -108,7 +108,7 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
   const child = Bun.spawn({
     cmd: [...input.command],
     cwd: input.cwd,
-    // run と同じ規律: 親の一般環境は継承し、MARUHI_* は渡さない(deepsec S6)
+    // run と同じ規律: 親の一般環境は継承し、MARUHI_* は渡さない
     env: buildChildEnvironment(process.env, input.extraEnv),
     stdin,
     stdout: "pipe",
@@ -147,7 +147,7 @@ function makeBunProcessRunner(): ProcessRunnerShape {
           const child = Bun.spawn({
             cmd: [...command],
             // keychain-less / CI の MARUHI_TOKEN は親のセッション解決専用。
-            // 子へは注入値より広い長寿命 credential を渡さない(deepsec S6)
+            // 子へは注入値より広い長寿命 credential を渡さない
             env: buildChildEnvironment(process.env, extraEnv),
             stdin: "inherit",
             stdout: "inherit",
@@ -345,8 +345,7 @@ function nextChunk(stdin: NodeJS.ReadStream): Promise<string | null> {
 /**
  * AI コーディングエージェントの検出(二次層)。
  *
- * `gunshi/agent` は std-env の `agentInfo` の薄いラッパにすぎなかったので、
- * 乗り換えても検出規則は変わらない(`CLAUDECODE` / `CURSOR_AGENT` /
+ * 検出規則は std-env の `agentInfo`(`CLAUDECODE` / `CURSOR_AGENT` /
  * `GEMINI_CLI` / `AI_AGENT` ほかの環境変数表)。`agentInfo` はモジュール
  * 初期化時に 1 回だけ評価される同期の値。
  */
@@ -402,7 +401,7 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
  * 読み手が先に閉じたパイプ(`maruhi pull | head -1` の 2 行目以降)への書き込みは
  * `EPIPE` を投げる。console.log はこれを黙って捨てていた(実測)ので同じにする —
  * 読み手はもう要らないと言っており、報告する相手も経路も無い(defect にすると
- * 「読み手が満足した実行」が internal error で終わる — PR #151 Bugbot 指摘)。
+ * 「読み手が満足した実行」が internal error で終わる)。
  * `EAGAIN`(非ブロッキング fd)は書き切るまで再試行し、部分書き込みは続きから
  * 書く。それ以外の書き込み失敗はそのまま投げる(握り潰さない)。テスト用に公開する。
  */
@@ -410,7 +409,7 @@ export function writeLine(fd: number, line: string): void {
   const buffer = Buffer.from(`${line}\n`);
   let offset = 0;
   // 部分書き込み(戻り値 < 残り)は続きから、EAGAIN(非ブロッキング fd)は
-  // 書き切るまで再試行、EPIPE は読み手が去ったので終わる(pullfrog 指摘)
+  // 書き切るまで再試行、EPIPE は読み手が去ったので終わる
   while (offset < buffer.length) {
     try {
       offset += writeSync(fd, buffer, offset);

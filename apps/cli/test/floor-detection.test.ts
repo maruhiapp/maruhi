@@ -1,5 +1,5 @@
-// ローカル床の結線テスト(CRYPTO_SPEC §6.3 規則 (a)(b)(c) — session-12 §8-5 の
-// 床項目)。同一 TestEnv(= 同一の床ファイル)に対してモックサーバーを差し替え、
+// ローカル床の結線テスト(CRYPTO_SPEC §6.3 規則 (a)(b)(c))。
+// 同一 TestEnv(= 同一の床ファイル)に対してモックサーバーを差し替え、
 // セッション(プロセス実行)を跨ぐ巻き戻し・欠落・forward injectionの永続検出を検査する。
 //
 // フェーズ 1 は常に正直な応答で床を確立し、フェーズ 2 以降で改竄された配布を
@@ -163,7 +163,7 @@ interface PullPayload {
   readonly manifestVersion?: number;
   /**
    * manifestVersion > 1 の prev(直前マニフェストの signed-bytes ハッシュ)。
-   * 床が直前版を記録しているフィクスチャは、隣接 prev 検証(M1-A1)を満たす
+   * 床が直前版を記録しているフィクスチャは、隣接 prev 検証を満たす
    * 正しい連鎖を渡す(prevOfPhase ヘルパ)。未指定はフィクスチャのダミー。
    */
   readonly prevManifestSigHashHex?: string;
@@ -196,7 +196,7 @@ async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   });
 }
 
-/** 前フェーズのマニフェストの signed-bytes ハッシュ(次版の prev — M1-A1 の連鎖材料)。 */
+/** 前フェーズのマニフェストの signed-bytes ハッシュ(次版の prev の連鎖材料)。 */
 async function prevOfPhase(payload: ManifestPayload): Promise<string> {
   return manifestHashOf(
     projectId,
@@ -350,7 +350,7 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
   });
 });
 
-describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
+describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
   it("version の後退を拒否し、両 signed bytes ハッシュと宣言ヘッドを証拠として出す", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -385,8 +385,8 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
   });
 
   it("variableId `constructor`(正当な ID)でも床の確立と巻き戻し検出が機能する", async () => {
-    // Object.prototype の継承プロパティ名と衝突する §12-1 適合 ID(レビュー①
-    // 再指摘)。素のブラケット参照だと「床にない ID」が Function に解決され、
+    // Object.prototype の継承プロパティ名と衝突する §12-1 適合 ID。
+    // 素のブラケット参照だと「床にない ID」が Function に解決され、
     // 床が自己破損・誤検査になる — own-property 参照で正しく動くことを固定する
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "constructor", name: "CTOR_VAR" });
@@ -596,7 +596,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
   });
 });
 
-describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
+describe("欠落の永続検出(§6.3 規則 (a))", () => {
   async function twoVariablePhases(env: TestEnv): Promise<void> {
     const alpha = await valueOf({ variableId: "va", version: 1, epoch: 1, plaintext: "a" });
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -677,7 +677,7 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
   });
 });
 
-describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / session-12 §12 ループ 2 の両縁)", () => {
+describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — 検出と誤拒否なしの両縁)", () => {
   it("ローテーション前の正当な旧エポック新版は受理し、基準前進後の旧エポック新版は拒否する", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -699,7 +699,7 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
       prevValueSigHashHex: await valueHashOf(v1, owner.userId),
     });
     // 隣接版(床 v1 の直後 = v2)の prev は床のマニフェスト hash と厳密検証される
-    // (M1-A1)ため、正当な連鎖を組む
+    // ため、正当な連鎖を組む
     const prevHash = await prevOfPhase({ variables: [statement] });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -775,7 +775,7 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         deks: [wrap1, wrap2],
         currentEpoch: 2,
         // 「vc が作られた」ことになっている = マニフェストも前進している形
-        // (隣接版なので prev は正しく連鎖させる — M1-A1 とは独立の検査を固定)
+        // (隣接版なので prev は正しく連鎖させる — prev 検証とは独立の検査を固定)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement], currentEpoch: 2 }),
       }),
@@ -847,7 +847,7 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
   });
 });
 
-describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状態)", () => {
+describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", () => {
   const tombstoneOf = () =>
     statementOf({ variableId: "vb", name: "BETA", metaVersion: 2, status: "deleted" });
 
@@ -867,7 +867,7 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
         deletedVariables: [await tombstoneOf()],
         deks: [wrap1],
         // 削除のメタ操作がマニフェストを再発行済み(§12-4)の形。隣接版の
-        // prev は床 v1 のマニフェスト hash と厳密検証される(M1-A1)
+        // prev は床 v1 のマニフェスト hash と厳密検証される
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -933,7 +933,7 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
   });
 });
 
-describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
+describe("分岐 2 種の区別(§6.3-2)", () => {
   it("床 seq 以下のハッシュ不一致(同一 genesis の別分岐)は即時証拠として拒否する", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -976,8 +976,8 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // rotate 複合がマニフェストを再発行済み(§12-4)の形(隣接版 — M1-A1 の
-        // prev 連鎖を満たす)
+        // rotate 複合がマニフェストを再発行済み(§12-4)の形(隣接版 — prev
+        // 連鎖を満たす)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -989,7 +989,7 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
     // 再同期(チェーン同期)で知ったエポック 2 を基準へ昇格させると、応答生成と
     // 再同期の間に rotate が挟まった場合に「ローテーション後・再暗号化完了前」の
     // 正当な旧エポック最新値を次回 pull で誤拒否する(§6.3 の「チェーン同期単独で
-    // 基準を前進させない」規範の再同期経路への適用 — レビュー②)
+    // 基準を前進させない」規範の再同期経路への適用)
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 2 });
   });
@@ -1068,7 +1068,7 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
     // メタステートメントはエポックアンカーを持たず(§4.2)、値の規則 (c) に
     // 相当する検出は構造的に存在しない。床の保証は巻き戻し検出のみであり、
     // このテストは「検出済み」と誤認しないための非保証の固定である。
-    // 閉包は Phase 2 の環境マニフェスト / チェックポイント(未決 #12)の責務
+    // 閉包は環境マニフェスト / チェックポイントの責務
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const original = await statementOf({ variableId: "vb", name: "BETA" });
@@ -1091,7 +1091,7 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
         deks: [wrap1],
         // サーバー共謀のforward injectionはマニフェストも一緒に前進させられる
         // (issuer 資格を持つ攻撃鍵 — §14.3-5 の非保証はこの形まで含めて成立)。
-        // 隣接 prev(M1-A1)も、共謀サーバーは実マニフェストの hash を知って
+        // 隣接 prev も、共謀サーバーは実マニフェストの hash を知って
         // いるため正しく連鎖できる — 非保証はこの検査の導入後も変わらない
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [original] }),
@@ -1136,15 +1136,14 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
   });
 });
 
-describe("未解決 intent の起動時照合(3-F — 宣言ヘッド位置のエントリ同一性で確定する)", () => {
+describe("未解決 intent の起動時照合(宣言ヘッド位置のエントリ同一性で確定する)", () => {
   it("残置 intent は accepted / rejected / pending を宣言ヘッド位置で区別する(同一 commitment の旧試行を昇格させない)", async () => {
     // CAS リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
     // 再署名する。拒否された旧試行の intent(resolution の追記失敗・クラッシュ)を
     // commitment の一致だけで「受理済み」と誤認して昇格させると、受理された試行の
-    // マニフェスト(同版・異ハッシュ)との typed conflict で床が恒久拒否になる
-    // (Bugbot 指摘の固定)。逆に、スロットが空なだけの intent を not-accepted に
-    // 潰すと、輸送中の複合が後から着地したときに誰も回収しない(Security
-    // Reviewer 指摘の固定)— pending は未解決のまま残す
+    // マニフェスト(同版・異ハッシュ)との typed conflict で床が恒久拒否になる。
+    // 逆に、スロットが空なだけの intent を not-accepted に潰すと、輸送中の複合が
+    // 後から着地したときに誰も回収しない — pending は未解決のまま残す
     const env = await makeTestEnv();
     const store = makeFileFloorStore(env.floorDir);
     const rotateEntry = chain2.entries[2];

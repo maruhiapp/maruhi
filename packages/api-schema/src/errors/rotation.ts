@@ -1,4 +1,4 @@
-// 要ローテーションフラグ API の型付きエラー(AUDIT_SPEC §4.1 / §7 — Wave 2 B2)。
+// 要ローテーションフラグ API の型付きエラー(AUDIT_SPEC §4.1 / §7)。
 
 import { Schema } from "effect";
 

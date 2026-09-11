@@ -1,6 +1,6 @@
-// レート制限キーの正規化(worker-env.ts — レビューループ 5)のユニットテスト。
+// レート制限キーの正規化(worker-env.ts)のユニットテスト。
 // IPv6 の /64 集約が要点: 標準割当 /64 内の下位 bit ローテーションで毎リクエストが
-// 新規キーになると、M3/B11/M5 の窓が一切効かなくなる。
+// 新規キーになると、発信元 IP 単位のレート制限の窓が一切効かなくなる。
 
 import { describe, expect, it } from "vitest";
 
@@ -34,8 +34,8 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     expect(rateLimitKeyOf("2001:db8:1:2:3:4:5:6:7:8")).toBe("2001:db8:1:2:3:4:5:6:7:8");
   });
 
-  it("埋め込み IPv4 の octet は厳密な 10 進のみ(deepsec R9)", () => {
-    // Number() の強制変換で通っていた形。素の文字列キーへ落ちる(= 別バケット
+  it("埋め込み IPv4 の octet は厳密な 10 進のみ", () => {
+    // Number() の強制変換なら通ってしまう形。素の文字列キーへ落ちる(= 別バケット
     // に化けたり、不正表記が正当なアドレスとして畳まれたりしない)
     for (const malformed of [
       "::ffff:0x1.2.3.4",
@@ -49,7 +49,7 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     ]) {
       expect(rateLimitKeyOf(malformed)).toBe(malformed);
     }
-    // 正当な形は従来どおり畳まれる(0 と 255 の境界を含む)
+    // 正当な形は畳まれる(0 と 255 の境界を含む)
     expect(rateLimitKeyOf("::ffff:0.0.0.0")).toBe("0.0.0.0");
     expect(rateLimitKeyOf("::ffff:255.255.255.255")).toBe("255.255.255.255");
   });

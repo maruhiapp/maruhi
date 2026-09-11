@@ -23,7 +23,7 @@ export const SAMPLE_TOKEN_ID = "tok-sample";
 /**
  * カーソルクエリ名(裁定 CB — session-43 §13)。ビルダーと目録が同じ定数を
  * 読むため、呼び出し側は名前に触れない(取り違えは構文上あり得ない — 裁定 CA
- * と同じ共有定数の形。PR #107 pullfrog 指摘の反映)。`after` = プロジェクト
+ * と同じ共有定数の形)。`after` = プロジェクト
  * 一覧(AUTH_SPEC §11-5)、`before` = 監査ページング(AUDIT_SPEC §7)。
  */
 const PROJECTS_CURSOR = "after";
@@ -144,7 +144,7 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     access: "session",
     sample: apiPaths.rotationFlags(SAMPLE_PROJECT_ID),
   },
-  // W3b(S8 招待管理・S9 トークン管理 — 失効系画面): 一覧 + 指定失効の 4 面
+  // S8 招待管理・S9 トークン管理(失効系画面): 一覧 + 指定失効の 4 面
   {
     group: "invites",
     endpoint: "list",

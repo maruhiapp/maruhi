@@ -95,7 +95,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // 受理される正例はラップした DEK 自身のコミットメント(session-31 M1-T1)
+    // 受理される正例はラップした DEK 自身のコミットメント
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -396,7 +396,7 @@ const expectPayloadMismatch = async (response: Response, field: string) => {
   expect(((await response.json()) as { field: string }).field).toBe(field);
 };
 
-describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2) — 2026-08-27)", () => {
+describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))", () => {
   it("rejects a tuple naming another environment (payload-mismatch checkpointEnvironment)", async () => {
     const response = await createWithCheckpoint(
       await shapeCheckpoint({ environmentId: "env-other-0009", epoch: 1, manifestVersion: 1 }),
@@ -420,7 +420,7 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2) �
 
   it("rejects a fabricated audit head on a boundary checkpoint (audit-head-unknown)", async () => {
     // 非空 audit_head_hash は §16-2 の規則(実効権限 admin + §6.4 の存在・位置
-    // 検査)で受理する(2026-08-28 PR-M2 — F3b の暫定 fail-closed を置換)。
+    // 検査)で受理する。
     // 保存済みの累積ハッシュ列に存在しない申告 = 偽公証は受理段で落ちる
     const response = await createWithCheckpoint(
       await shapeCheckpoint({

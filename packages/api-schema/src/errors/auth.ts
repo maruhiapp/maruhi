@@ -71,7 +71,7 @@ export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteErro
 
 /**
  * 429: too many requests to an unauthenticated auth surface from this source
- * address (AUTH_SPEC §3 / §4 — deepsec M3/B11)。OAuth callback は GitHub への
+ * address (AUTH_SPEC §3 / §4)。OAuth callback は GitHub への
  * アウトバウンド(OAuth App 単位の共有クォータ)を伴い、CLI ログインの
  * start / poll は未認証の CPU 消費面なので、発信元 IP 単位の best-effort
  * 制限を既定デプロイでも強制する(§4-1 の Workers Rate Limiting binding

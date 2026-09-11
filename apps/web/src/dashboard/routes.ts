@@ -39,7 +39,7 @@ export const projectRoute = route({ id: "dashboard-project", path: PROJECT_PATH 
  * 認証が要る画面(S4〜S9)の親ルート(pathless — パス名を消費しない)。App.tsx が
  * `DashboardLayout`(セッション状態 + AppShell + SideNav + Outlet)を結合し、上の 4 ルートを
  * 子にする。シェルは遷移をまたいで 1 回だけマウントされ、`GET /auth/me` の再取得と
- * サイドバーの再生成が起きない(DP3 改訂 11 — PR #148 Bugbot 指摘)。パスを持たないので
+ * サイドバーの再生成が起きない。パスを持たないので
  * SPA_ROUTES(非交差スイープの目録 — 全件パス付き)には載せない。
  */
 export const dashboardShellRoute = route({ id: "dashboard-shell" });

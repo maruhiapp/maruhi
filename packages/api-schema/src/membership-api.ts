@@ -76,8 +76,8 @@ export const DistributedHeadAttestationSchema = Schema.Struct({
 /**
  * Full chain as stored by the project DO (entries in seq order).
  *
- * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1 — 2026-08-28
- * PR-M4 の加法追加)。optionalKey なのは新 CLI × 旧サーバーの応答に欠けるため —
+ * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1)。
+ * optionalKey なのは新 CLI × 旧サーバーの応答に欠けるため —
  * **欠落は拒否にしない**(配布の省略は CRYPTO_SPEC §6.3 の規範的非保証 = G8。
  * 欠落拒否の分岐は攻撃検出を足さず、旧サーバーとの併用だけを壊す)。
  */
@@ -120,16 +120,16 @@ export const ProjectListSchema = Schema.Struct({
  *   権限 = org member 以上)。非メンバー・スコープ外への応答は一律 404(§11-2)。
  *   org のアクティブプロジェクト数が上限(AUTH_SPEC §11-3 — 起草値 100)に
  *   達している場合、**新規の** genesis は 429 `ProjectLimit`(修復経路 =
- *   already-initialized の再 init は上限に依らず通る — 2026-09-02 H2)。
+ *   already-initialized の再 init は上限に依らず通る)。
  * - `get`: fetch the stored chain for client-side verification (§6.3).
  * - `append`: append one entry; `parentHeadHashHex` is the compare-and-swap
  *   parent (§6.4)。§6.3 の「署名付き申告ヘッド」(ヘッドゴシップ)とは別物。
  *   認証主体と entry.actor の厳密一致を要求する(§11-1)。
  *   `create_environment` / `rotate_epoch` は複合エンドポイント
  *   (environments group の create / rotate — AUTH_SPEC §12-4)経由のみ受理し、
- *   ここでは CompositeRequired で拒否する(AUTH_SPEC §6。2026-08-03)。
+ *   ここでは CompositeRequired で拒否する(AUTH_SPEC §6)。
  *   standalone(周期)`checkpoint` は本エンドポイントが受理する(AUTH_SPEC
- *   §16-2 — 2026-08-28 PR-M2): 認可は空 audit_head_hash = write × member 以上、
+ *   §16-2): 認可は空 audit_head_hash = write × member 以上、
  *   非空 = 実効権限 admin(不足 403)。受理時点の保存状態との突合失敗は 422
  *   `CheckpointStateMismatch`。
  */
@@ -144,7 +144,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ForbiddenError,
-        // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3 — H2)。新規
+        // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3)。新規
         // genesis のみ。判定は org 権限確認(403)の後 = org 外の主体に上限
         // 到達の有無を返さない
         ProjectLimitError,
@@ -152,7 +152,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // プロジェクト一覧(AUTH_SPEC §11-5 — 2026-08-29 W2a)。本人がチェーン
+    // プロジェクト一覧(AUTH_SPEC §11-5)。本人がチェーン
     // 導出メンバーであるプロジェクトのみを返す。対象指定(パス・クエリ)を
     // 持たないため 404 系エラーが構造的に存在しない(存在秘匿 §11-2 と自明に
     // 両立)。トークン主体はスコープとの交差のみ(スコープ外 = 不出現)、
@@ -188,12 +188,12 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainCapacityExceededError,
         CheckpointStateMismatchError,
         // 非空 audit_head_hash の受理検査の前段: 監査ヘッド派生列の有界伸長が
-        // 未完了(AUDIT_SPEC §5.1 — セッション 38)。retryable 503 — 古い列で
+        // 未完了(AUDIT_SPEC §5.1)。retryable 503 — 古い列で
         // audit-head-unknown / stale を判定しない(fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
         ForbiddenError,
-        // DO ストレージ総量ガード(AUTH_SPEC §12-8 — 2026-09-02 H2): 拒否閾値
+        // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
         // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
         // `project-storage-bytes` で拒否する。remove_member / revoke_server /
         // change_role / checkpoint は拒否下でも受理される(同節の明示列挙)
@@ -202,7 +202,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — 2026-08-28 PR-M4)。
+    // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。
     // 認可はトークンスコープ read × チェーン role reader 以上(申告は読み取り
     // 同期の付随で、書けるのは自分の署名済み申告 1 行のみ — §16-1)。受理検証
     // (署名・ヘッド実在・seq 単調前進)は §6.4。後退 = 409(保存済み seq を

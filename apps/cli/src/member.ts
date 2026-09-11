@@ -1,5 +1,5 @@
 // `maruhi member add|remove|change-role`(CRYPTO_SPEC §6.2 / §6.5 / §7、
-// AUTH_SPEC §12-6 / §15 — Wave 2 B1b)。
+// AUTH_SPEC §12-6 / §15)。
 //
 // - add: 一覧の受諾ブロックから §6.5 独立検証 + 発行ピン突合 + FP 確認の儀式 →
 //   add_member 追記(CAS リトライ)→ 全環境 × 全エポックのバックフィル
@@ -64,7 +64,7 @@ export const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
  * 判定のズレを構造的に防ぐ)。
  *
  * 対象スコープにするのは、各コマンドが収束させる義務を**自分の操作の分**に
- * 限定するため(Cursor bot 指摘): 大域の最終義務を基準にすると、born-reader への
+ * 限定するため: 大域の最終義務を基準にすると、born-reader への
  * no-op 再実行が**他人の**未収束義務を拾って全環境ローテーションを開始する。
  * 対象の義務エントリ以降のローテーションは対象の偽造可能座標を閉じる(§7)ため、
  * 対象スコープでも自分の義務を過小に満たすことはない(他人の未収束義務は
@@ -244,7 +244,7 @@ function selectInvitation(
   if (first === undefined) {
     // completed 行は自動選択しない(過去メンバー全員の行が completed のまま
     // 蓄積するため曖昧)。add_member 済み招待のバックフィル再開は id 明示の
-    // 経路が受ける — その導線をここで示す(Cursor bot 指摘)
+    // 経路が受ける — その導線をここで示す
     return Effect.fail(
       cliError(
         "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with `maruhi invite list` and pass it explicitly: `maruhi member add <invite-id>`",
@@ -421,7 +421,7 @@ interface MemberBackfillResult {
  * 1 環境の全エポックの新メンバー宛バックフィル(CRYPTO_SPEC §7 — 新規メンバーは
  * 履歴も読める。共有核 = backfill.ts)。
  *
- * **再追加の自動修復(B1b 裁定 + B2 の §12-6 追補)**: エポック単位の 409 は
+ * **再追加の自動修復(B1b 裁定 + §12-6 追補)**: エポック単位の 409 は
  * 「旧在籍時の旧鍵ラップがスロットを占有している」可能性がある。放置すると
  * 再追加メンバーは当該エポックを復号できない(409 を登録済み扱いにすると
  * 不可視化する)ため、旧鍵ラップと判定したら §12-6 の修復経路(削除 → 再登録)で

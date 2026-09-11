@@ -51,7 +51,7 @@ registerDataScenario();
 
 describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   it("rejects wraps signed by someone other than the caller (422 signature-invalid, 登録 API 経路)", async () => {
-    // 登録 API は修復再登録・バックフィル専用に縮退した(§12-6)。修復経路で
+    // 登録 API は修復再登録・バックフィル専用(§12-6)。修復経路で
     // エポック 1 の全ラップを削除し、OWNER が署名した完全集合を MEMBER が
     // 持ち込む → 呼び出し主体 = 署名者の厳密一致に反するため拒否。
     // 何も挿入されず監査行も残らない
@@ -158,12 +158,11 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   it("rejects third-party re-submission into a deleted slot (signer mismatch)", async () => {
     // CRYPTO_SPEC §5.1 の名指しシナリオ: 削除済みスロットへ「他人の署名済み
     // ラップ」を第三者が再投入する経路は署名者不一致で塞がる。
-    // かつては「MEMBER の鍵一式を流用したソック垢(STRANGER)」の最強形
-    // (鍵一致・user_id 不一致)をここで固定していたが、§6.2 のメンバー鍵一意性
-    // (2026-08-03)により鍵重複メンバーはチェーン追記の時点で成立しなくなった
+    // 最強形「MEMBER の鍵一式を流用したソック垢(STRANGER)」(鍵一致・user_id
+    // 不一致)は §6.2 のメンバー鍵一意性によりチェーン追記の時点で成立しない
     // (下の chain-level テストと membership.test.ts の authz ベクターループが
     // 固定する)。鍵一致のまま signer_user_id だけが異なる署名の拒否は
-    // ベクター negative `transplant-signer` が crypto 層で固定し続ける
+    // ベクター negative `transplant-signer` が crypto 層で固定する
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
@@ -214,8 +213,8 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   });
 
   it("rejects the key-reuse sock puppet at the chain layer (422 duplicate-member-key)", async () => {
-    // かつて上のテストが利用していた「MEMBER の鍵一式を流用した STRANGER の
-    // add_member」は、§6.2 のメンバー鍵一意性(合意規則)によりチェーン追記の
+    // 「MEMBER の鍵一式を流用した STRANGER の add_member」は、§6.2 の
+    // メンバー鍵一意性(合意規則)によりチェーン追記の
     // 時点で拒否される(帰属付け替えの根本原因の解消 — 防衛の多層化)。
     // ベクター固定チェーンに対する網羅は membership.test.ts の authz ループ
     // (authz-add-member-duplicate-key ほか 2 件)が担い、ここではデータプレーンの
@@ -256,7 +255,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // 正例はラップした DEK 自身のコミットメントを渡す(session-31 M1-T1)
+    // 正例はラップした DEK 自身のコミットメントを渡す
     const created = await createEnvironmentWith(
       fixture,
       ENV,
@@ -281,10 +280,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   });
 
   it("rejects an empty registration list with 400 (§12-6: 削除側の空列挙と同じ規律)", async () => {
-    // 空の deks: [] はかつて 204 の silent no-op だった(session-08/09 の
-    // 申し送り)。呼び出し形として意味のあるユースケースがなく、silent no-op は
-    // クライアントバグ(空配列の送信を登録完了と誤認)を隠すため、削除側の
-    // 空 wraps 400 と同じ minItems 1 の Schema 検証で拒否する(2026-08-03 統一)
+    // 空の deks: [] は呼び出し形として意味のあるユースケースがなく、silent
+    // no-op(204)はクライアントバグ(空配列の送信を登録完了と誤認)を隠すため、
+    // 削除側の空 wraps 400 と同じ minItems 1 の Schema 検証で拒否する
     await createEnvironmentOk(fixture, ENV, "App");
     const before = await queryProjectDo(
       projectId,

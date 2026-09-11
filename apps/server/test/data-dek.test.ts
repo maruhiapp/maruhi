@@ -1,13 +1,13 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — DEK 配布・新メンバーの
 // バックフィル・修復経路(AUTH_SPEC §12-6 / CRYPTO_SPEC §7)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 //
 // スイートの分担(分割の動機は support/membership-scenario.ts 冒頭を参照):
 // - 本ファイル: DEK 配布と新メンバーのバックフィル・修復経路
 // - data-dek-signature.test.ts: DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)
 // - data-dek-server.test.ts: 受信者クラス server(§12-6 / CRYPTO_SPEC §9)と
-//   expectedWrapRecipientCount(deepsec B10)
+//   expectedWrapRecipientCount
 
 import type { TokenScope } from "@maruhi/core";
 import {
@@ -138,7 +138,7 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
     expect(new TextDecoder().decode(decrypted.value)).toBe("postgres://alpha");
   });
 
-  it("rejects session-principal data writes uniformly (§5 能力制限 — W2b)", async () => {
+  it("rejects session-principal data writes uniformly (§5 能力制限)", async () => {
     const session = await loginSession(9001);
     const dek = makeDek();
     const deks = await wrapDekForAll({

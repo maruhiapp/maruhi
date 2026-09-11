@@ -265,9 +265,8 @@ function resolveTarget(input: {
     }
     if (latest.name !== input.name) {
       // 解決と値取得の間の並行 rename。入力した名前と別の名前へ変わった変数に
-      // push を向けない(単一応答で解決していた旧フローのスナップショット整合の
-      // 回復 — PR #41 レビュー指摘)。latest.name は検証済みステートメントの
-      // name(§12-2)なので byte-exact 比較で足りる
+      // push を向けない。latest.name は検証済みステートメントの name(§12-2)
+      // なので byte-exact 比較で足りる
       return yield* Effect.fail(
         cliError(
           `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
@@ -679,7 +678,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     const latest = state.target.latest;
     // 既存変数への値 push は 1-E′ / 3-F の適用外(§12-10 (3) — 効果確認に使える
     // 配布物が値 pull しかなく、書き込み経路へ var.read 監査を持ち込むため)。
-    // 成功は従来どおりサーバーの CAS + 値署名検証と自床の commitPush が担う
+    // 成功はサーバーの CAS + 値署名検証と自床の commitPush が担う
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
       payload: { value: signed.payload },
@@ -1050,8 +1049,8 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         },
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
-    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢 —
-    // deepsec B7)。サーバー echo は突合のみに使い、食い違えば型付きエラーで
+    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢)。
+    // サーバー echo は突合のみに使い、食い違えば型付きエラーで
     // 明示する(echo を表示に昇格させると、サーバー申告の座標をユーザーが
     // 事実として引用しうる)
     const floorVariable = outcome.floorVariable;

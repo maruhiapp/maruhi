@@ -10,7 +10,7 @@
 //
 // future head(宣言 seq > 自ビューのヘッド)は値・ステートメントとも即時拒否
 // せず、**1 回だけ**再同期して延長検査(sync.ts の ensureExtensionOf)を通し、
-// 新ビューで全体を再検証する(有界 — §6.3-2b。PR-2 の機構の流用)。
+// 新ビューで全体を再検証する(有界 — §6.3-2b)。
 //
 // 同一環境内で同名の active ステートメントが複数検証に通る場合(サーバーの
 // equivocation)は解決を拒否する(§4.2)。非 NFC 名の配布は警告(SHOULD —
@@ -20,7 +20,7 @@
 // latest-only の限界(裁定 B): pull は最新版のみ運ぶため predecessor を持たず、
 // 値の prev 実在一致・エポック非減少、メタの prev 実在一致・削除後の再 active 化
 // はここでは検査できない(形の検査のみ)。検査済みと偽らない — 永続床による
-// 検出は PR-4 の領分。**メタはエポックアンカーを持たないため、前進 meta_version
+// 検出は floor-check.ts の領分。**メタはエポックアンカーを持たないため、前進 meta_version
 // への注入は床を持っても検出されない**(§14.3-5 の既知残余)。
 
 import type {
@@ -172,7 +172,7 @@ function coordinatesMatch(
  * 検証失敗理由 → future / rejected。chain-head-future と「未同期区間の新規
  * メンバーが宣言する自ビューより先のヘッド(writer / author が未知 かつ 宣言
  * seq > 自ヘッド)」は有界再同期の入口(future)へ。それ以外は拒否
- * (PR-2 レビューループ 1 [低] の分類を値・メタで共有する)。
+ * (分類は値・メタで共有する)。
  *
  * UnsupportedMetaLayout(サポート範囲 {1, 2} 超過の layoutVersion — crypto が
  * **署名検証より前**に検査する)は「クライアント更新が必要」の誠実な破壊様式で
@@ -700,7 +700,7 @@ async function verifyDeclaredStatements(
     seenIds.add(statement.variableId);
     if (statement.status !== "declared") {
       // active がここに現れる = 検証済み active ステートメントの値が値付き応答に
-      // 欠けている(値の欠落 G6 — §6.3 の値配布要求)。deleted の混入も拒否
+      // 欠けている(§6.3 の値配布要求)。deleted の混入も拒否
       return {
         kind: "rejected",
         evidence: true,
@@ -779,8 +779,8 @@ function verifyStage<T>(
     });
     if (outcome.kind === "rejected") {
       // 配布された署名済みデータが検証を通らない = 証拠(再実行では解消しない —
-      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない — PR #156 改訂 6)。
-      // 例外は誠実な破壊様式(UnsupportedMetaLayout — 改訂 7)
+      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない)。
+      // 例外は誠実な破壊様式(UnsupportedMetaLayout)
       return yield* Effect.fail(
         outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
       );
@@ -803,7 +803,7 @@ function verifyManifestStage(input: {
   readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
-  /** 床のマニフェスト記録(隣接 prev 検証の predecessor — M1-A1。床なし = null)。 */
+  /** 床のマニフェスト記録(隣接 prev 検証の predecessor。床なし = null)。 */
   readonly floorManifest: ManifestFloor | null;
 }): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
   const wireManifest = input.manifest;
@@ -871,7 +871,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   digestEntryOf: (value: T) => ManifestDigestEntry,
   /** 移行経路(--init-manifest)のみ true — 欠落の許容であって検証の緩和ではない。 */
   allowMissingManifest: boolean,
-  /** 床のマニフェスト記録(隣接 prev 検証 — M1-A1。床を持たない経路は null)。 */
+  /** 床のマニフェスト記録(隣接 prev 検証。床を持たない経路は null)。 */
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
@@ -978,7 +978,7 @@ function verifyAll(
    * 応答を**取得した時点**のビューのヘッド seq(pull = 取得時ビュー、lease =
    * 同梱チェーンのヘッド)。有界再同期の再検証は同じ応答本文を前進後のビューで
    * 再検証するため、規則 2 の基準が応答より新しい良性競合の判別に要る
-   * (checkpoint-integrity.ts — PR #100 Bugbot 指摘)。
+   * (checkpoint-integrity.ts)。
    */
   fetchedAtHeadSeq: number,
 ): Effect.Effect<
@@ -1014,7 +1014,7 @@ function verifyAll(
     // evidence 付き拒否 = 検証済みデータとチェーン公証の矛盾(rotate の巡末分類が
     // 「再実行で直る」案内へ格下げしないための型付け)。evidence なしの拒否 =
     // 取得ビューより後に基準が前進した良性競合でも説明できる形(再 pull で解消
-    // しうる — PR #100 Bugbot 指摘)
+    // しうる)
     const checkpoint = yield* Effect.tryPromise({
       try: () =>
         checkCheckpointIntegrity({
@@ -1102,7 +1102,7 @@ function enforceFloor(input: {
    * 基準を導出すると、応答生成と再同期の間の rotate で基準が過前進し、
    * 「ローテーション後・再暗号化完了前の正当な旧エポック最新値」(§12-7)を
    * 次回 pull で誤拒否する(§6.3 の「チェーン同期単独で基準を前進させない」
-   * 規範の再同期経路への適用 — レビュー②)。基準 ≤ 応答生成時点のエポックなら、
+   * 規範の再同期経路への適用)。基準 ≤ 応答生成時点のエポックなら、
    * 以後に受理される正規 push のエポックは常に基準以上で誤拒否がない。
    */
   readonly baselineView: VerifiedProject;
@@ -1208,8 +1208,8 @@ export function pullVerifiedEnvironment(input: {
   /** ローカル床(§6.3)。検査(規則 (a)(b)(c))と検証成功後の原子コミットを担う。 */
   readonly floor: FloorHandle;
   /**
-   * マニフェスト**欠落**の許容(移行経路 `maruhi env rotate --init-manifest` のみ
-   * — session-27 §14 PR-M1)。配布された場合の検証は緩和しない。既定 false =
+   * マニフェスト**欠落**の許容(移行経路 `maruhi env rotate --init-manifest` のみ)。
+   * 配布された場合の検証は緩和しない。既定 false =
    * 欠落は一律拒否(§6.3)。
    */
   readonly allowMissingManifest?: boolean;
@@ -1229,7 +1229,7 @@ export function pullVerifiedEnvironment(input: {
           input.environmentId,
           wire,
           input.allowMissingManifest === true,
-          // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
+          // 隣接版の prev 検証: 床のマニフェスト記録を predecessor として渡す
           input.floor.current()?.manifest ?? null,
           // 応答は input.verified のビューの下で取得された(再同期後の再検証でも
           // 取得時点は変わらない — 規則 2 の良性競合判別の基準)
@@ -1297,11 +1297,11 @@ export function verifyLeaseDistribution(input: {
   CliError
 > {
   return Effect.gen(function* () {
-    // マニフェスト検証は義務(CRYPTO_SPEC §9.1 (5) — 2026-08-18)で、欠落 =
+    // マニフェスト検証は義務(CRYPTO_SPEC §9.1 (5))で、欠落 =
     // 一律拒否(移行許容はない: ワークロードは初期化を行えない — 初期化は
-    // メンバーの明示操作 §14 PR-M1)。床由来の prev 検査は適用しない —
-    // ワークロードは床を持たない初回同期クラス(§14.3-3。session-31 §3 M1-A1
-    // の lease 適用外の注記): 署名・digest・エポック整合・欠落拒否は pull と
+    // メンバーの明示操作 §14)。床由来の prev 検査は適用しない —
+    // ワークロードは床を持たない初回同期クラス(§14.3-3): 署名・digest・
+    // エポック整合・欠落拒否は pull と
     // 同水準のまま、predecessor は null(共有検証器の同一性)
     // lease は応答がチェーンを同梱する自己完結形 — 取得ビュー = 同梱チェーンの
     // ヘッドそのもの(基準が取得ビューより新しい形は構造的に存在せず、規則 2 の
@@ -1324,7 +1324,7 @@ export function verifyLeaseDistribution(input: {
     // 基準なし警告(§6.3 SHOULD — 床を持たないクライアントは、値付き配布を
     // 受けた環境に基準 checkpoint が存在しないことを検出したら警告する。
     // 不在の黙認は「このクラスの主要保証 = チェックポイント整合が働いていない」
-    // ことの不可視化になる — session-36 裁定 V)
+    // ことの不可視化になる — 裁定 V)
     const warnings =
       input.verified.history.latestCheckpointFor(input.environmentId) === undefined
         ? [
@@ -1420,7 +1420,7 @@ function verifyAllMetadata(
 /**
  * メタデータのみ pull の床検査(値を運ばない形 — メタ水準の規則 (a)(b) と
  * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)と**環境水準の
- * 床コミット**(session-31 §3 M1-A3): チェーンヘッド・環境メタ床・マニフェスト
+ * 床コミット**: チェーンヘッド・環境メタ床・マニフェスト
  * 床・環境水準エポック観測(§6.3 座標 (ii))を join する。**値床は捏造しない・
  * pull 基準(規則 (c))は前進させない** — 値を読んでいない観測から値水準の
  * 基準を作ると、ローテーション後・再暗号化完了前の正当な旧エポック値を
@@ -1491,7 +1491,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
   readonly environmentId: EnvironmentId;
   /** future head 時の有界再同期(1 回)。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor — M1-A3)。 */
+  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor)。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
   return Effect.map(
@@ -1508,7 +1508,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
           view,
           input.environmentId,
           wire,
-          // 隣接版の prev 検証(M1-A1): metadata-only / value pull の両経路で同一
+          // 隣接版の prev 検証: metadata-only / value pull の両経路で同一
           input.floor.current()?.manifest ?? null,
         ).pipe(
           Effect.flatMap(

@@ -1,5 +1,5 @@
 // standalone(周期)checkpoint の受理と、checkpoint 内容突合の共有実装
-// (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2。2026-08-28 セッション 35 = PR-M2)。
+// (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2)。
 //
 // - standalone は汎用チェーン追記 API 経由(§16-2 — クライアント供給の付随
 //   データがなく、複合で束ねる別入力がない)。合意規則(形式・role・監査
@@ -59,7 +59,7 @@ export const ensureCheckpointValuesDigest = (
  * 空文字列 = 公証なしは検査対象外。検査の前に累積ハッシュ列を MAX(seq) まで
  * 伸ばす(遅延 materialize — audit-store.ts)。
  *
- * - 有界伸長(セッション 38): 伸長が 1 呼び出しの上限に達し MAX(seq) 未到達の
+ * - 有界伸長: 伸長が 1 呼び出しの上限に達し MAX(seq) 未到達の
  *   場合は retryable な audit-head-not-ready(503)で拒否する。**古い列で
  *   unknown / stale を判定しない**(fail-closed — 途中までの列に対する所属・
  *   位置の判定は、正当な申告の誤拒否〔unknown〕と保護接頭辞の誤った基底を
@@ -78,7 +78,7 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
       return;
     }
     const audit = yield* AuditStore;
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 派生列の実体化(監査
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 派生列の実体化(監査
     // 行数比例の書き込み)を要するときだけ成長面として判定する。空の公証
     // (CLI の境界 / 周期 checkpoint)はここへ来ない = 拒否下でも受理される
     yield* ensureStorageAdmitsAuditHeadExtension;
@@ -98,7 +98,8 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
 /**
  * 1 環境タプルの受理時点突合(§6.4): tombstone(environment-deleted)→
  * 最新マニフェストとの一致(manifest-mismatch — 実在しない先行
- * manifest_version の公証もここで落ちる。session-33 §5 の申し送り)→
+ * manifest_version の公証もここで落ちる)→
+
  * values_digest。通過したら保存済みの値列挙(スナップショット保存の材料)を
  * 返す。環境のチェーン存在は合意規則(unknown-environment)が先に保証して
  * いる前提 — チェーンに在るのにデータ行が無いのは複合受理の原子性違反

@@ -1,4 +1,4 @@
-// `maruhi var rm`(S4 — 変数削除)のテスト。
+// `maruhi var rm`(変数削除)のテスト。
 //
 // 固定する不変条件:
 //  1. **v2 変数の削除はスキーマ欄・レイアウトの直前 byte-exact 保持**
@@ -45,7 +45,7 @@ let envStatement: WireDistributedEnvironmentStatement;
 let declaredV2: WireDistributedVariableStatement;
 /** v2 active(スキーマ欄付き)。 */
 let activeV2: WireDistributedVariableStatement;
-/** v1 active(スキーマ欄なし — 従来形)。 */
+/** v1 active(スキーマ欄なし)。 */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -252,7 +252,7 @@ describe("CAS リトライと確認済み対象の束縛", () => {
   it("再解決が別の variableId を返したら型付きエラーで止まる(確認していない変数を消さない)", async () => {
     // 確認後の 409(並行メタ操作)→ 再解決で、同じ名前に**別の変数**が載って
     // いる形(並行削除 + 同名の新規作成)。確認は variableId を束縛するので、
-    // このリトライは進んではならない(pullfrog レビュー対応)
+    // このリトライは進んではならない
     const replacement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

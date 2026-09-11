@@ -128,8 +128,8 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
     expect(issued[0]?.["actor_key_fingerprint"]).toBe(fpHex);
     const payload = JSON.parse(String(issued[0]?.["payload"])) as Record<string, unknown>;
     // grant_chain_seq はチェーン導出の grant_seq(サーバー側で再実装しない)。
-    // **値で固定する**: 本 PR で新設した導出値であり、型だけ見ていると誤った
-    // seq(再 grant 前の古い seq 等)が載っても素通りする(pullfrog 指摘)
+    // **値で固定する**: 型だけ見ていると誤った seq(再 grant 前の古い seq 等)が
+    // 載っても素通りする
     const granted = await queryProjectDo(
       projectId,
       "SELECT chain_seq FROM audit_events WHERE event = 'chain.server_granted'",
@@ -252,7 +252,7 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
     expect(response.status).toBe(429);
     const body = (await response.json()) as { retryAfterSeconds: number };
     // 窓は直前に window_start = now で仕込んだので、残りは窓長(1 時間)近傍と
-    // 決まっている。> 0 だけだと桁違いの退行を捕まえられない(pullfrog 指摘)
+    // 決まっている。> 0 だけだと桁違いの退行を捕まえられない
     expect(body.retryAfterSeconds).toBeGreaterThan(3500);
     expect(body.retryAfterSeconds).toBeLessThanOrEqual(3600);
   });
@@ -260,7 +260,7 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
   it("does not consume the window when the lease cannot be issued (503 stays diagnosable)", async () => {
     // 窓を 503 経路で消費すると、バックフィル漏れのプロジェクトの CI が再試行の
     // たびに枠を食い、300 回目以降は「直せる診断」の 503 が無関係な 429 に
-    // 化ける(pullfrog 指摘)。消費は実際に発行したときだけ
+    // 化ける。消費は実際に発行したときだけ
     await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] }); // バックフィルしない = server-wraps-missing
     const workload = await workloadKeyPair();

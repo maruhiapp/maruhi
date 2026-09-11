@@ -8,7 +8,7 @@ import { EncPubHex } from "../hex.ts";
 
 /**
  * Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6).
- * 受信者クラス server(2026-08-12): FP に一致する有効 grant がない =
+ * 受信者クラス server: FP に一致する有効 grant がない =
  * `recipient-not-granted`、grant はあるが対象環境が開示スコープ外 =
  * `scope-out-of-range`(いずれも 422)。enc 公開鍵の不一致はクラス共通の
  * `recipient-key-mismatch`。
@@ -44,7 +44,7 @@ export class DekWrapRejectedError extends Schema.TaggedError<DekWrapRejectedErro
  * detect).
  *
  * `storedRecipientEncPubHex` carries the occupying wrap's stored recipient
- * X25519 public key (§12-6, 2026-08-15 — non-secret: every historical member
+ * X25519 public key (§12-6 — non-secret: every historical member
  * key is already distributed to members via the chain). A client repairing a
  * re-added member's backfill compares it against the accepted key to decide
  * between "already registered" (equal) and the delete-then-re-register repair

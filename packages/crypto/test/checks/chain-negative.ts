@@ -111,7 +111,7 @@ function payloadTamperVariants(): readonly TamperVariant[] {
       },
       expect: "bad-signature",
     },
-    // lease_policy の順序(要素・制約とも)も署名対象(§6.2。2026-08-12)
+    // lease_policy の順序(要素・制約とも)も署名対象(§6.2)
     {
       name: "grant-server-lease-policy-reorder",
       entry: {
@@ -715,7 +715,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
 
 /**
  * 実行時型が TS 型と乖離した悪意ある/破損エントリ(サーバー配布 JSON 想定)は
- * 例外でなく invalid-payload になる(Bugbot セキュリティ指摘 2026-08-02 の再発防止)
+ * 例外でなく invalid-payload になる
  */
 async function malformedInputChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
@@ -838,7 +838,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
-    // checkpoint payload(§6.2 — PR-F3a): 実行時型の乖離も invalid-payload に落とす
+    // checkpoint payload(§6.2): 実行時型の乖離も invalid-payload に落とす
     {
       name: "checkpoint environments is not an array",
       entry: {
@@ -900,7 +900,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         },
       },
     },
-    // 未知の op(deepsec B12): PAYLOAD_SHAPES の表引きが membership を確認せずに
+    // 未知の op: PAYLOAD_SHAPES の表引きが membership を確認せずに
     // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し
     // throw しない」という公開 verifier の契約(defense-in-depth)をここで固定する
     {

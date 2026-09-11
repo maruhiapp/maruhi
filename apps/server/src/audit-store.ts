@@ -106,13 +106,13 @@ export interface AuditRotationRead {
  *
  * 1. 将来の op 追加で列挙が漏れると、そのミラー行が admin 未満に不可視になり、
  *    全メンバー実行可能なはずの `maruhi audit verify` が健全なサーバーを
- *    「欠落 = 削除の隠蔽」と誤断定する(pullfrog 指摘)
+ *    「欠落 = 削除の隠蔽」と誤断定する
  * 2. 写像に**無い** `chain.*` を名乗る偽造行がサーバー側で落とされ、admin 未満の
- *    verify には 1 行も届かない — R1 で閉じたはずの偽造方向の被覆漏れが、
- *    非 admin では残ったままになる(pullfrog / Cursor Security Reviewer 指摘)
+ *    verify には 1 行も届かない — 偽造方向の被覆漏れが非 admin では残ったまま
+ *    になる
  * 3. `chain.*` の外で `chain_seq` を名乗る偽造行がクラス 2 として落ちると、
- *    verify は名前空間の 1 歩外にある provenance claim を検査できない
- *    (deepsec S1)。正直な書き手でこの形は存在しないため、chain_seq の存在を
+ *    verify は名前空間の 1 歩外にある provenance claim を検査できない。
+ *    正直な書き手でこの形は存在しないため、chain_seq の存在を
  *    クラス 1 に昇格するのは正常なクラス 2 行を開示せず、tamper evidence だけを
  *    全メンバーへ届ける
  *
@@ -169,9 +169,9 @@ interface AuditEventsQuery {
   readonly beforeRowId: string | null;
   readonly limit: number;
   readonly event: string | null;
-  /** event 名前空間の前置一致(§7 — deepsec R1)。LIKE ではなく substr 比較。 */
+  /** event 名前空間の前置一致(§7)。LIKE ではなく substr 比較。 */
   readonly eventPrefix: string | null;
-  /** chain_seq が NULL でない行だけを返す(§7 — deepsec S1)。 */
+  /** chain_seq が NULL でない行だけを返す(§7)。 */
   readonly chainSeqPresent: boolean;
   readonly actorUserId: string | null;
   readonly targetUserId: string | null;
@@ -236,7 +236,7 @@ interface AuditStoreShape {
    * どの読み手も拡張後の完全な列しか観測しないため、行と列の食い違いは
    * 観測不能(設計の裁定は docs/notes/session-35.md)。DO permit 下で呼ぶこと。
    *
-   * **有界契約(セッション 38 — PR #99 レビュー申し送りの解消)**: 1 呼び出しの
+   * **有界契約**: 1 呼び出しの
    * 伸長はチャンク数で有界({@link MAX_HEAD_EXTENSION_CHUNKS_PER_CALL})。
    * `"more-remains"` が返った呼び出しでは列は MAX(seq) に達していないので、
    * 呼び出し側は**ヘッドを読まず**(currentHeadHexSync / headPositionSync を
@@ -247,7 +247,7 @@ interface AuditStoreShape {
   readonly ensureHeadCurrent: Effect.Effect<AuditHeadExtensionOutcome>;
   /**
    * 累積ハッシュ列が MAX(seq) に未到達か(= 次の ensureHeadCurrent が実体化の
-   * 書き込みを伴うか)。DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2)の入力:
+   * 書き込みを伴うか)。DO ストレージ総量ガード(AUTH_SPEC §12-8)の入力:
    * 実体化は監査行数に比例する書き込み(1 行あたりハッシュ 1 行 + 索引)で、
    * 拒否閾値以上の DO では未実体化の backlog を書かない(storage-guard.ts)。
    * 読み取りのみ(2 つの索引付き MAX / 存在検査)。
@@ -589,7 +589,7 @@ function visibilityCondition(
   // chain.* は名前の列挙ではなく前置一致で覆う(isClass1Event と同じ判定 —
   // 理由は CLASS1_EVENTS の doc)。さらに chain_seq を持つ行はイベント名に
   // かかわらず provenance claim = 全メンバーが検証すべき tamper evidence として
-  // クラス 1 にする(deepsec S1)。前置比較は LIKE ではなく substr で行い、
+  // クラス 1 にする。前置比較は LIKE ではなく substr で行い、
   // ワイルドカード意味論を持たせない
   return {
     clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR substr(event, 1, ?) = ? OR chain_seq IS NOT NULL OR actor_user_id = ?)`,
@@ -776,7 +776,8 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   }
   filter("event = ?", query.event);
   if (query.eventPrefix !== null) {
-    // 前置一致は LIKE を使わない(deepsec R1): LIKE だと入力の % / _ が
+    // 前置一致は LIKE を使わない: LIKE だと入力の % / _ が
+
     // ワイルドカードとして働き、フィルタが名前空間の指定でなくなる。
     // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
     where = withCondition(where, "substr(event, 1, ?) = ?", [

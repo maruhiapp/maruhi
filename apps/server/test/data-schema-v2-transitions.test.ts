@@ -1,7 +1,6 @@
-// レイアウト v2 — 値なしスキーマのサーバー受理面(S2)の統合テスト —
+// レイアウト v2(値なしスキーマ)のサーバー受理面の統合テスト —
 // 遷移とレイアウト単調性・削除ステートメントの直前一致・スキーマ再発行と可逆性
-// (AUTH_SPEC §12-5 / §12-11)。スイート全体の分担は data-schema-v2.test.ts 冒頭、
-// 共有ヘルパは support/schema-v2-scenario.ts を参照。
+// (AUTH_SPEC §12-5 / §12-11)。
 
 import { describe, expect, it } from "vitest";
 
@@ -235,8 +234,7 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     // 削除の規則は保存済み値の byte-exact 保持であり、description の受理
     // ポリシー(§12-8)は適用しない — 適用するとセルフホストの上限引き下げ後に
     // 既存 v2 変数が削除不能になる(「上限で削除を遮断しない」原則)。
-    // 上限超過の description を持つ改変削除は preservation の payload-mismatch が
-    // 捕捉する(PR #119 Bugbot 指摘: 以前は契約外 description-rejected → 500)
+    // 上限超過の description を持つ改変削除は preservation の payload-mismatch が捕捉する。
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
     const statement = await nextVariableStatement({
@@ -324,7 +322,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
       description: "connection string",
       metaVersion: 2,
     });
-    // 監査は var.schema_reissued(名前不変の再発行 — AUDIT_SPEC §3.3 2026-09-01。
+    // 監査は var.schema_reissued(名前不変の再発行 — AUDIT_SPEC §3.3。
     // 改名していない操作を var.renamed と記録しない)。author 鍵 FP を写し、
     // payload は名前スナップショットのみ(スキーマ欄の内容は載せない)
     expect(await reissueAuditRows("var.renamed")).toHaveLength(0);

@@ -6,9 +6,9 @@
 //   各リポジトリが自分の batch へ挿入文(userAuditInsert / orgAuditInsert)を
 //   同梱することで実現する。単独追記(login_failed 等、主データ書き込みを
 //   伴わないイベント)だけが D1AuditRepo を使う
-// - 読み取り(§7 — C1)は invite.* の project_id スコープ(権限軸は worker が
+// - 読み取り(§7)は invite.* の project_id スコープ(権限軸は worker が
 //   チェーン role admin で強制)と user 系の本人軸のみ。org admin 軸は org 管理
-//   API の導入時に同時実装する(C1 裁定)
+//   API の導入時に同時実装する
 // - アイデンティティ規則(§1-2): actor / target は内部 user_id(+ maruhi 発行
 //   トークン id)と auth_method 種別名のみ。プロバイダ ID・login・メールを
 //   この層に持ち込まないこと
@@ -70,7 +70,7 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
  * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
  * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
  * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
- * 個別に書き写すと、行形状の変更時に黙って食い違う(レビューループ 2)。
+ * 個別に書き写すと、行形状の変更時に黙って食い違う。
  * FROM・WHERE(ガード条件)と追加列(invites の project_id)は呼び出し側が持つ。
  */
 export function guardedAuditSelectColumns(input: {
@@ -109,8 +109,8 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
  * auth.login_failed の記録上限(AUDIT_SPEC §3.1)。login_failed は唯一の
  * 未認証経路からの D1 書き込みであり、無効リクエストの洪水による書き込み増幅
  * (可用性・コスト面の攻撃)を有界にするため、固定窓の上限を超えた分は
- * 記録しない。上限は `auth_method + reason` 単位のバケットで数える
- * (deepsec R4/S5): 単一枠や method だけの枠だと、別経路・別理由の洪水が
+ * 記録しない。上限は `auth_method + reason` 単位のバケットで数える:
+ * 単一枠や method だけの枠だと、別経路・別理由の洪水が
  * 標的型失敗の reason まで消してしまう。
  */
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
@@ -127,7 +127,7 @@ function loginFailedBucketKey(bucket: LoginFailedBucket): string {
 }
 
 /**
- * 上限到達の窓に残す集約マーカー(deepsec M4/R4 / AUDIT_SPEC §3.1)。抑制が
+ * 上限到達の窓に残す集約マーカー(AUDIT_SPEC §3.1)。抑制が
  * **起きたこと**に加えて**量**も観測可能にするため、バケットの抑制件数が 10 の
  * 冪(1・10・100・…)に達した時点で 1 行残す — 書き込みは抑制件数に対して対数的
  * (洪水下でも窓あたり数行)。個別行と同じく actor は user_id なしの type=user
@@ -136,7 +136,7 @@ function loginFailedBucketKey(bucket: LoginFailedBucket): string {
 const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
 
 /**
- * auth.signup_denied の抑制マーカー(AUDIT_SPEC §3.1 — 2026-09-01 H1)。
+ * auth.signup_denied の抑制マーカー(AUDIT_SPEC §3.1)。
  * login_failed と同じ固定窓・10 の冪規律で、バケットはイベント名 + reason。
  */
 const SIGNUP_DENIED_SUPPRESSED_EVENT = "auth.signup_denied_suppressed";
@@ -155,7 +155,7 @@ function isSuppressionMilestone(suppressedCount: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
+// 読み取り面(AUDIT_SPEC §7)。seq カーソルページング(新しい順)。
 // ---------------------------------------------------------------------------
 
 /**
@@ -168,7 +168,7 @@ interface D1AuditReadPage {
   readonly limit: number;
 }
 
-/** D1 監査行の読み取り形(共通列のうち C1 の応答が運ぶもの。NULL は null)。 */
+/** D1 監査行の読み取り形(共通列のうち §7 の応答が運ぶもの。NULL は null)。 */
 export interface D1StoredAuditEventRow {
   readonly seq: number;
   /**
@@ -198,7 +198,7 @@ interface D1AuditRepoShape {
    * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら個別行は
    * 落とし、抑制マーカーだけ残す(SHOULD 記録 — AUDIT_SPEC §3.1)。
    *
-   * `bucket` は上限を数える単位(auth_method + reason — deepsec R4/S5)。
+   * `bucket` は上限を数える単位(auth_method + reason)。
    * 発信元識別子を渡さないこと(§1-2 の線引き。理由は §3.1)。
    */
   readonly appendLoginFailed: (
@@ -207,7 +207,7 @@ interface D1AuditRepoShape {
     bucket: LoginFailedBucket,
   ) => Effect.Effect<void>;
   /**
-   * auth.signup_denied 専用の追記(AUDIT_SPEC §3.1 — 2026-09-01 H1)。
+   * auth.signup_denied 専用の追記(AUDIT_SPEC §3.1)。
    * login_failed と同じ固定窓上限規律で、バケットは reason 単位(拒否理由ごとに
    * 独立の枠 — 別理由の洪水が標的型の拒否まで消さない)。提示された外部
    * provider ID を渡さないこと(§1-2)。
@@ -260,15 +260,15 @@ type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
  * row_id の遅延 backfill。マイグレーション(20260816030340)の backfill 後も、
  * デプロイ間隙(`db:migrate` 適用後・旧 worker 稼働中、およびロールバック時)に
  * 旧コードが row_id なしの行を書く窓が残る。その行をワイヤへ出すと `id` の
- * Schema encode が失敗して読み取りが恒久 500 になる(pullfrog 指摘)ため、
+ * Schema encode が失敗して読み取りが恒久 500 になるため、
  * NULL 行を観測した読み取りだけがマイグレーションと同一の文を冪等に再適用する
  * (無条件に走らせると、全テナント共有の D1 writer に監査読み取りのたびに
- * 書き込みが乗る — 同指摘のフォローアップ)。監査内容の列には触れない
+ * 書き込みが乗る)。監査内容の列には触れない
  * (§1-4 の append-only は内容の不変性 — row_id はサーバー採番の合成識別子で、
  * この補填は §5.1 backfill の繰り延べにすぎない)。randomblob は行ごとに評価
  * され、WHERE row_id IS NULL は一意索引の NULL エントリを seek する。
  *
- * 更新対象は**このページで観測した seq に限定する**(deepsec B8): テーブル全体の
+ * 更新対象は**このページで観測した seq に限定する**: テーブル全体の
  * NULL 行を触ると、1 回の読み取りが無関係テナントの行まで UPDATE し、並行 reader
  * や(ロールバック中の)旧 worker の並行挿入と衝突する。観測 seq への限定で
  * 1 読み取りあたりの書き込みは高々ページサイズに有界になる。
@@ -281,7 +281,7 @@ async function backfillMissingRowIds(
   // D1 の 1 クエリあたりバインドパラメータ上限(100)より下で分割する: ページ
   // 上限は 200 で、全行 NULL の legacy ページでは inArray が seq ごとに 1
   // パラメータを束縛する — 分割しないと、まさに補填が要るページの読み取りが
-  // 決定的に失敗する(レビューループ 3)
+  // 決定的に失敗する
   const CHUNK = 90;
   for (let offset = 0; offset < seqs.length; offset += CHUNK) {
     await db
@@ -373,7 +373,7 @@ async function selectAuditPage(
  * 固定窓上限つきの未認証イベント追記(AUDIT_SPEC §3.1 — auth.login_failed と
  * auth.signup_denied の共通機構)。
  *
- * 窓の計数は監査ログの走査ではなく専用カウンタ行で行う(deepsec R5):
+ * 窓の計数は監査ログの走査ではなく専用カウンタ行で行う:
  * append-only で伸び続ける user_audit_events を未認証経路の追記ごとに走査すると、
  * 有界にしたい洪水そのものがコスト増幅器になる。窓のリセット・加算・上限判定は
  * 1 文の条件付き UPSERT に畳み、RETURNING の新しい計数から判定を導く
@@ -422,7 +422,8 @@ async function appendWithFixedWindow(
   const recorded = counted?.recordedCount ?? 1;
   const suppressed = counted?.suppressedCount ?? 0;
   if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
-    // 個別行は落とすが、抑制を黙って行わない(deepsec M4/R4): 抑制件数が
+    // 個別行は落とすが、抑制を黙って行わない: 抑制件数が
+
     // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
     // 抑制の規模が読め、書き込みは件数に対して対数的に有界
     if (isSuppressionMilestone(suppressed)) {

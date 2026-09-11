@@ -1,18 +1,17 @@
-// `maruhi sync` の exec ドライバ(SY2 第 1 段 — integration-options.md §3
-// 補足 10 V1 / 補足 13 W1 / 補足 14 M2 / 補足 16)。
+// `maruhi sync` の exec ドライバ(integration-options.md §3
+// 補足 10 / 補足 13 / 補足 14 / 補足 16)。
 //
 // 導入済み・ログイン済みのベンダー CLI(`wrangler` / `vercel`)を子プロセスと
 // して起動し、値を **stdin だけ**で渡す。argv には名前とオプションしか載らない:
-// 引数テンプレート({@link ArgTemplate})に値のトークンは存在しない(型で禁止 —
-// SY1 申し送りの含意 (d))。プリセットは宣言的なデータ(コマンド・引数
+// 引数テンプレート({@link ArgTemplate})に値のトークンは存在しない(型で禁止)。
+// プリセットは宣言的なデータ(コマンド・引数
 // テンプレート・stdin の形式・1 プロセスあたりの件数・テレメトリ off の環境
 // 変数・値の制約・オプションの宣言)で、追加はデータ + 偽 CLI の検査で済む
 // (`gh secret set NAME` は raw-value / 1 件ずつ / `GH_TELEMETRY=false` の
-// 宣言で載った — SY5)。
+// 宣言で載った)。
 //
-// ベンダー CLI の実測は SY1 の申し送り表(2026-09-05。Vercel CLI 59.11.7 は
-// 2026-09-06 に再確認 — 版・`readStandardInput` / `normalizeStdinEnvValue` とも
-// 不変。gh は 2026-09-08 に v2.100.0 の `pkg/cmd/secret/set/set.go` で再確認):
+// ベンダー CLI の実測(Vercel CLI は `readStandardInput` / `normalizeStdinEnvValue`、
+// gh は `pkg/cmd/secret/set/set.go` で確認):
 //   - wrangler 4.128.0 `secret bulk`: stdin の JSON `{"k":"v"}` を 1 リクエスト、
 //     `null` = 削除、1 回 100 件、空 stdin は「No content found」で exit 0
 //     (→ 空の入力では呼ばない)、`--name` / `--env`、`WRANGLER_SEND_METRICS=false`
@@ -36,7 +35,7 @@
 //     GitHub 側で英数字と `_`・数字始まり不可・`GITHUB_` 接頭辞不可・**大文字で
 //     保存**(大文字小文字を同一視)— 大小違いの 2 名が 1 つの secret に畳まれる
 //     形を作らないよう、大文字の名前だけを通す(docs.github.com「Secrets
-//     reference」2026-09-08)
+//     reference」)
 //
 // ベンダー CLI の stdout / stderr は値を含みうる前提で扱う: 成功時は捨て、失敗時も
 // 値を伏せた末尾だけを出す({@link scrubVendorOutput})。
@@ -108,7 +107,7 @@ const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
 /**
  * Non-secret environment for every `gh` maruhi starts (`gh secret set` here, `gh
- * workflow run` in sync-push.ts): telemetry off (SY1 の実測表の gh 行), no update
+ * workflow run` in sync-push.ts): telemetry off, no update
  * check, and no interactive prompt (gh is already non-interactive when its stdio is
  * not a terminal; this cuts the prompt structurally).
  */
@@ -130,16 +129,16 @@ const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as 
 const GITHUB_SECRET_NAME = /^(?!GITHUB_)[A-Z_][A-Z0-9_]*$/;
 
 // gh の `-R [HOST/]OWNER/REPO`。各区切りの先頭は英数字(先頭 `-` = フラグと読まれる形を
-// 構造で除く — pullfrog 指摘: `-x/y` を通さない)
+// 構造で除く: `-x/y` を通さない)
 const GITHUB_REPO = /^(?:[A-Za-z0-9][A-Za-z0-9.-]*\/)?[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/;
 
 // GitHub Environment 名(gh の argv に載る。フラグと読まれる先頭 `-` だけを除く)
 const GITHUB_ENVIRONMENT_NAME = /^[^-\s][^\n\r]*$/;
 
 /**
- * Built-in exec presets (first-class targets — 2026-09-05 owner decision: Vercel /
- * Cloudflare Workers; GitHub Actions secrets through `gh` — SY5). Netlify has none:
- * `netlify env:set KEY value` takes the value as an argument (SY1 の実測表), so the
+ * Built-in exec presets (first-class targets — owner decision: Vercel /
+ * Cloudflare Workers; GitHub Actions secrets through `gh`). Netlify has none:
+ * `netlify env:set KEY value` takes the value as an argument, so the
  * only safe recipe is the http driver (sync-preset.ts declares why).
  */
 export const EXEC_PRESETS = {
@@ -469,7 +468,7 @@ const SHOWN_TAIL_LINES = 20;
 /**
  * 失敗時に見せるベンダー出力の文字数の上限(UTF-16 の文字数。表示の上限であって
  * 記憶量の上限ではない)。**伏せた後に**掛ける — 伏せる前に切ると、切れ目に
- * かかった値の後半が断片に一致しなくなって漏れる(Security Agent 指摘)。
+ * かかった値の後半が断片に一致しなくなって漏れる。
  */
 const SHOWN_TAIL_CHARS = 64 * 1024;
 
@@ -512,7 +511,7 @@ export function scrubVendorOutput(
       }
       fragments.add(fragment);
       // wrangler は JSON を受け取るので、失敗時に本文を echo すると値は JSON
-      // 文字列として(`\"` / `\\` / `\n` に逃がされて)現れる(Bugbot 指摘)。
+      // 文字列として(`\"` / `\\` / `\n` に逃がされて)現れる。
       // 逃がした形も断片に加える(素の形と同じなら集合が吸収する)
       fragments.add(JSON.stringify(fragment).slice(1, -1));
     }

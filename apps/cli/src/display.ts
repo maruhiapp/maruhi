@@ -64,7 +64,7 @@ export function displayText(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// サーバー申告 unix ms の total な表示(deepsec B1/B4/B5)
+// サーバー申告 unix ms の total な表示
 //
 // serverTs / createdAtMs / expiresAtMs / updatedAtMs はワイヤの無制限 number で、
 // ECMA-262 の Date 範囲(±8.64e15 ms)外を Date#toISOString に渡すと RangeError
@@ -78,8 +78,8 @@ const MAX_TIMESTAMP_MS = 8_640_000_000_000_000;
 
 // 標準形("YYYY-MM-DDTHH:mm:ss.sssZ")のみ受ける: Date 範囲内でも年が 0〜9999 の
 // 外だと toISOString は拡張年形式("+010000-…" / "-…")を返し、固定オフセットの
-// slice が黙って別の位置を切り出す(レビューループ 1 — 「明示劣化」の約束が
-// 崩れる)。形式で検査すれば slice の前提そのものを固定できる
+// slice が黙って別の位置を切り出す(「明示劣化」の約束が崩れる)。形式で
+// 検査すれば slice の前提そのものを固定できる
 const STANDARD_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** 範囲内(年 0〜9999)なら標準形 ISO 文字列、それ以外は null。 */
@@ -167,7 +167,7 @@ function displayValue(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// コマンド出力の整形ヘルパ(旧 cli.ts から移動)
+// コマンド出力の整形ヘルパ
 // ---------------------------------------------------------------------------
 
 /** pull 一覧行の対象(pull.ts の DecryptedVariable の表示部分)。 */
@@ -203,8 +203,7 @@ const strictValueDecoder = new TextDecoder("utf-8", { fatal: true });
  *
  * 方針の選定: run(環境変数注入)は fatal 必須であり、表示側だけ置換文字で
  * 通すと「--show では表示できるのに run では失敗する」非対称と、置換文字で
- * 静かに壊れた値のコピー事故を生む。両経路とも fatal に統一する(pull --show の
- * 不正 UTF-8 値は置換表示からハードエラーへの挙動変更)。
+ * 静かに壊れた値のコピー事故を生む。両経路とも fatal に統一する。
  */
 export function decodeValueText(value: Uint8Array): string | null {
   try {

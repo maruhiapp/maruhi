@@ -279,7 +279,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
+  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
   c.push(
     "value-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
@@ -309,8 +309,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...baseContext, suite: "" } },
     { name: "empty project id", context: { ...baseContext, projectId: "" } },
     { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
-    // 空の variable id も他の座標と同水準で拒否する(deepsec B13 —
-    // meta-sig の "empty variable id" と同じ期待値)
+    // 空の variable id も他の座標と同水準で拒否する(meta-sig の
+    // "empty variable id" と同じ期待値)
     { name: "empty variable id", context: { ...baseContext, variableId: "" } },
     { name: "empty writer", context: { ...baseContext, writerUserId: "" } },
   ];

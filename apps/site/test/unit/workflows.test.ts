@@ -1,20 +1,6 @@
-// docs/github-actions.mdx の workflow テンプレート(SY3 — docs/notes/integration-options.md §3「SY3 実装時の
-// 裁定録」裁定 H)を**ページの本文からそのまま切り出して**検査する(recipes.test.ts と同じ規律: 「書いた文言」と
-// 「検査対象」を一致させ、docs の漂流を構造で防ぐ)。YAML の解釈は Bun 1.4.0 同梱の `Bun.YAML`(リポジトリが
-// `.bun-version` で要求する実行環境。依存追加なし)を子プロセスで呼ぶ — vitest は Node で走るため。固定するのは:
-//   1. 起動先の契約(`workflow_dispatch` + `target` 入力)が deploy-targets.mdx の断片と一致する(第 3 段の契約)
-//   2. maruhi を実行する job は `permissions: id-token: write` + `contents: read` だけ(他の write なし)
-//   3. 導入は setup-maruhi をタグで固定(`@<tag>` + `version: <tag>`)、他の action は 40 hex の commit SHA、
-//      checkout は `persist-credentials: false`、`npx` / `curl` で取りに行かない
-//   4. 平文は CI の中だけ: `secrets.` を参照しない(唯一の例外 = 標準形 ② の sync step の
-//      `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` — GitHub secrets を書く github-actions ターゲットの
-//      bootstrap トークン。SY5 裁定 F)、maruhi を実行する step は `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
-//      `echo "$…"` / `set -x` / `printenv` / `--value` を持たず、`run:` に `${{ }}` を直接展開しない(env 経由)
-//   5. `maruhi ci sync` は `--yes` / `--server` / `--project` / `--anchor .maruhi/anchor.json` を持つ
-//   6. 標準形 ②: `schedule` を持ち、`sync` job は Environment = ターゲット名・ターゲット単位の concurrency
-//      (cancel-in-progress: false)・fail-fast: false・空リストのガード。`targets` job のスクリプトは実際に
-//      sh で走らせる(dispatch の実在 / 不在ターゲット・schedule の一覧)
-//   7. 標準形 ①: Environment `production`、`ci sync` が deploy の前、deploy は `maruhi ci run … -- <wrangler>`
+// docs/github-actions.mdx の workflow テンプレート(docs/notes/integration-options.md §3「SY3 実装時の
+// 裁定録」裁定 H)をページの本文からそのまま切り出して検査し、docs の漂流を構造で防ぐ(recipes.test.ts と
+// 同じ規律)。YAML は Bun 1.4.0 同梱の `Bun.YAML` を子プロセスで解釈する(vitest は Node で走るため)。
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -182,7 +168,7 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       .workflow_dispatch;
     const contractDispatch = (contract.on as { workflow_dispatch: Record_ }).workflow_dispatch;
     const inputOf = (d: Record_) => (d["inputs"] as Record<string, Record_>)["target"];
-    // 契約側の入力が消えたり改名されたりしても検査が黙って通らないよう、存在を先に断言する(pullfrog 指摘)
+    // 契約側の入力が消えたり改名されたりしても検査が黙って通らないよう、存在を先に断言する
     expect(inputOf(contractDispatch)).toBeDefined();
     expect(inputOf(dispatch)).toMatchObject(inputOf(contractDispatch) ?? {});
     expect(inputOf(dispatch)).toMatchObject({ required: true, type: "string" });
@@ -296,7 +282,7 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
 
     it("runs one target per matrix leg, in the Environment named after it, one run per target at a time", () => {
       expect(sync.needs).toBe("targets");
-      // 独自の `if` は暗黙の success() を置き換えうるので明示する(targets の失敗で sync を始めない — Bugbot 指摘)
+      // 独自の `if` は暗黙の success() を置き換えうるので明示する(targets の失敗で sync を始めない)
       expect(sync.if).toBe("success() && needs.targets.outputs.list != '[]'");
       expect(sync.strategy).toEqual({
         "fail-fast": false,
@@ -369,7 +355,7 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web  preview " }).output).toBe(
           'list=["web","preview"]\n',
         );
-        // 検査のループと JSON 化が同じ分割から出る(タブ・改行区切りでも 1 要素に潰れない — pullfrog 指摘)
+        // 検査のループと JSON 化が同じ分割から出る(タブ・改行区切りでも 1 要素に潰れない)
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web\tpreview\n" }).output).toBe(
           'list=["web","preview"]\n',
         );

@@ -1,4 +1,4 @@
-// ユーザーに見える文言の規約を機械検査にする(DP5 追補 E — 用語集を「守る」から
+// ユーザーに見える文言の規約を機械検査にする(用語集を「守る」から
 // 「壊れたら落ちる」へ)。対象は apps/cli/src の cliError / usageError /
 // evidenceError / io.log / io.logError / logNote / logWarning に直接渡された
 // 文字列リテラル(テンプレートリテラルを含む)。

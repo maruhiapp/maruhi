@@ -1,14 +1,6 @@
-// 環境マニフェストの CLI 結線テスト(CRYPTO_SPEC §4.3 / §6.3、AUTH_SPEC §12 —
-// session-27 §13-5 のマニフェスト項)。
-//
-// 検証の柱:
-//  1. 配布時検証: 欠落 = 一律拒否・ダイジェスト再計算(変数 / tombstone の欠落)・
-//     エポック整合・issuer の役割不足(crypto の共有実装への結線)
-//  2. 床のマニフェスト拡張: 規則 (a) 後退・(b) 同版相違・(c) 前進 version の
-//     旧エポック焼き込み(セッションを跨ぐ永続検出)
-//  3. 移行経路(session-27 §14 PR-M1): マニフェスト未初期化サーバーへの操作は
-//     既定で拒否され、`env rotate --init-manifest` だけが欠落を許容して
-//     manifestVersion 1 を発行する(配布された場合の検証は緩和しない)
+// 環境マニフェストの CLI 結線テスト(CRYPTO_SPEC §4.3 / §6.3、AUTH_SPEC §12、
+// session-27 §13-5 のマニフェスト項)。配布時検証・床のマニフェスト拡張
+// (規則 (a)(b)(c))・移行経路(--init-manifest による v1 初期化)を検証する。
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -209,7 +201,7 @@ function manifestV1(
     readonly head?: { readonly seq: number; readonly hashHex: string };
     readonly issuer?: TestUser;
     readonly manifestVersion?: number;
-    /** version > 1 の prev(隣接 prev 検証 — M1-A1 — を満たすフィクスチャ用)。 */
+    /** version > 1 の prev(隣接 prev 検証を満たすフィクスチャ用)。 */
     readonly prevManifestSigHashHex?: string;
   } = {},
 ): Promise<WireDistributedManifest> {
@@ -362,7 +354,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("manifestVersion=1");
   });
 
-  it("チェーンの checkpoint 基準線(F3)は床の規則 (a)(F2)を代替しない — 基準線以上・床未満の配布は床が拒否する(PR-F4 cross-layer)", async () => {
+  it("チェーンの checkpoint 基準線は床の規則 (a)を代替しない — 基準線以上・床未満の配布は床が拒否する", async () => {
     // チェーン上の最新 checkpoint は mv1 を公証している(境界 checkpoint の形)。
     // 床は pull で v3 を知っている。v2 の配布は §4.3 (4) の基準線(mv1 以上)を
     // 通り checkpoint-regressed は発火しないが、床の規則 (a)(v3 未満)が落とす —
@@ -370,7 +362,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     // 遅れて進む)が、細かいローカル基準(床)を短絡しないことの固定
     const v1 = await manifestV1();
     // 基準 checkpoint の values_digest は配布集合([ALPHA v1])の実計算値 —
-    // 対応する列挙(checkpointSnapshot)を pull に同梱する(規則 2 — PR-M3)
+    // 対応する列挙(checkpointSnapshot)を pull に同梱する(規則 2)
     const snapshotValues = await checkpointSnapshotValuesOf([alphaValue1]);
     const valuesDigest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
     if (!valuesDigest.ok) throw new Error("values digest failed");
@@ -501,7 +493,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("forward meta injection");
   });
 
-  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓 — bugbot 指摘の回帰)", async () => {
+  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓)", async () => {
     // 有界再同期の形では pullEpoch は応答取得**前**ビュー(= 旧エポック)に
     // 据え置かれる一方、床マニフェストは epoch 2 を検証済みで知っている。
     // 基準を pullEpoch だけにすると、旧エポックを焼き込んだ前進 manifestVersion
@@ -559,7 +551,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
   });
 });
 
-describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) — session-31 M1-A1)", () => {
+describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1))", () => {
   /** metadata-only pull(§12-7)の応答(push の名前解決経路 = metadata 経路の固定用)。 */
   function metadataHandler(manifest: WireDistributedManifest): MockHandler {
     return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
@@ -625,7 +617,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("declares a prev that does not match the verified predecessor");
-    // 証拠: 床側ハッシュ・配布側 prev・issuer・宣言ヘッド(M1-A1 修正案 3)
+    // 証拠: 床側ハッシュ・配布側 prev・issuer・宣言ヘッド
     expect(errors).toContain(v1Hash);
     expect(errors).toContain("ab".repeat(32));
     expect(errors).toContain(`issuer=${owner.userId}`);
@@ -702,7 +694,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
 });
 
 /* -------------------------------------------------------------------------- */
-/* 移行経路(session-27 §14 PR-M1 — マニフェスト導入前の環境の v1 初期化)      */
+/* 移行経路(session-27 §14 — マニフェスト導入前の環境の v1 初期化)            */
 /* -------------------------------------------------------------------------- */
 
 interface RotateBody {
@@ -761,7 +753,7 @@ function makeLegacyServer(input: {
   let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
   // 保存済みチェックポイントスナップショット(§16-2 — 境界 checkpoint の受理で
-  // 保存し、以後の値付き pull に同梱する。規則 2 の材料 — PR-M3)
+  // 保存し、以後の値付き pull に同梱する。規則 2 の材料)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -872,12 +864,10 @@ function makeLegacyServer(input: {
 
 describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
   it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査が検出する", async () => {
-    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する
-    // (bugbot 指摘の回帰)。2026-08-27(PR-F3b)以降は境界 checkpoint が
-    // 受理 version の基準線をチェーン上にも固定するため、旧マニフェストを
-    // 配布し続けるサーバー(受理した v2 の握り潰し)は床検査(規則 (a))より
-    // 先に §4.3 検証規則 (4)(checkpoint-regressed)で落ちる — 検出層が
-    // 増えただけで、握り潰しが同一実行内で落ちる固定点は変わらない
+    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する。
+    // 境界 checkpoint が受理 version の基準線をチェーン上にも固定するため、
+    // 旧マニフェストを配布し続けるサーバー(受理した v2 の握り潰し)は床検査
+    // (規則 (a))より先に §4.3 検証規則 (4)(checkpoint-regressed)で落ちる
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
@@ -913,7 +903,7 @@ describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
   });
 });
 
-describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
+describe("--init-manifest(移行経路 — session-27 §14)", () => {
   it("マニフェスト未初期化サーバーへの rotate は既定で拒否される(欠落 = 拒否は移行でも例外にしない)", async () => {
     const state = makeLegacyServer({});
     const env = await startEnv(state.handlers);
@@ -1001,9 +991,9 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
   });
 
   it("--init-manifest は「確認だけ」の早期完了を取らない(--reason なしは usage エラー)", async () => {
-    // 未初期化環境 + 未完了なし + --reason なし = 従来なら up-to-date の
-    // 早期 return。初期化が必要な実行でこれを取ると、成功に見えるのに v1 が
-    // 発行されない(bugbot 指摘)。複合送信経路へ倒し、理由を要求する
+    // 未初期化環境 + 未完了なし + --reason なし で up-to-date の早期 return を
+    // 取ると、成功に見えるのに v1 が発行されない。複合送信経路へ倒し、
+    // 理由を要求する
     const state = makeLegacyServer({});
     const env = await startEnv(state.handlers);
     expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(2);
@@ -1013,8 +1003,8 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
 
   it("--init-manifest は中断復旧(複合なしの再開)を取らず、新エポックの複合で v1 を発行する", async () => {
     // エポックは 2 まで進んでいるが epoch 1 の stale 値が残る形(中断復旧の
-    // 入口)。従来の再開経路は複合を送らないため v1 が発行されない(bugbot
-    // 指摘)。初期化が必要な実行は --new-epoch と同じく新エポックの複合へ倒す
+    // 入口)。再開経路は複合を送らないため v1 が発行されない。初期化が必要な
+    // 実行は --new-epoch と同じく新エポックの複合へ倒す
     const staleEntry = {
       variableId: "va",
       statement: alphaStatement,

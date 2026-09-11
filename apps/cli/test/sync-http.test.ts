@@ -1,4 +1,4 @@
-// `maruhi sync` の http ドライバ(SY2 第 2 段)のテスト: 宣言的プリセットの
+// `maruhi sync` の http ドライバのテスト: 宣言的プリセットの
 // 組み立て(値は本文のエントリにしか置けない — sync-http.ts)と、偽ベンダー API
 // (test/support/vendor-api.ts — 状態つき)に対する `sync apply` の通し。
 //
@@ -8,7 +8,7 @@
 // 429 / 5xx のリトライ、失敗応答の伏せ字化(値・トークンの echo)、Worker 不在
 // (10007)の案内、部分成功(Vercel の failed)を名前で割ってレシートに残す、
 // 統合トークンは同期先へ運ばない、plan はベンダー API に触れない。
-// Netlify(SY4): 一覧で有無を引いて POST(新規)/ PATCH(既存 key の 1 context)を
+// Netlify: 一覧で有無を引いて POST(新規)/ PATCH(既存 key の 1 context)を
 // 1 変数ずつ、secret の既定と scopes、削除は value id(最後の値なら key ごと)、
 // 既存 key への POST の失敗は次の apply で PATCH に変わる、部分成功、429 / 5xx。
 
@@ -582,7 +582,7 @@ describe("http プリセットの宣言", () => {
         }),
       ),
     ).toContain("targets.t.variables lists the token variable");
-    // 第 1 段の設定(driver 無し)はそのまま読める(後方互換)
+    // driver 無しの設定はそのまま exec として読める(後方互換)
     const legacy = base({
       preset: "vercel",
       environment: "p",

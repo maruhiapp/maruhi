@@ -1,7 +1,5 @@
-// レイアウト v2(値なしスキーマ — S2)統合テストの共有ヘルパ(旧
-// data-schema-v2.test.ts の冒頭ヘルパの分割先 — 分割の動機は
-// membership-scenario.ts 冒頭を参照)。data-scenario.ts の fixture
-// (registerDataScenario)を前提とする。
+// レイアウト v2(値なしスキーマ — S2)統合テストの共有ヘルパ。
+// data-scenario.ts の fixture(registerDataScenario)を前提とする。
 
 import { encryptValue } from "./data-crypto.ts";
 import { MEMBER, projectId, requestJson } from "./data-fixture.ts";

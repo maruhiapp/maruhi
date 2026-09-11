@@ -1,4 +1,4 @@
-// `maruhi push` 直後の同期(SY2 第 3 段 — integration-options.md §3「同期の最終形」
+// `maruhi push` 直後の同期(integration-options.md §3「同期の最終形」
 // の表「運ぶ主体」の行: 値を変えられるのは人間だけ → 変更の瞬間には書き手の CLI
 // がいる → 書き手の CLI が直接同期するか、`gh workflow run` で CI を起動する。
 // 補足 4 N1 / 補足 7 P1)。
@@ -26,12 +26,12 @@
 // 設定の所在(裁定 B): `--config` 明示か、cwd の既定パス(`maruhi.sync.json`)。
 // 既定パスは黙って使うので、`project` を名乗る設定にしか使わず(sync-config.ts が
 // `onPush` に `project` を要求する)、push 先のプロジェクトと違えば何もしない
-// (note)。明示の `--config` で食い違えば書き方の誤り(2)— push の前に止める
+// (note)。明示の `--config` で食い違えば書き方の誤り — push の前に止める
 // (2b の裁定 B)。`--no-sync` は設定を読まずに push だけを行う(補足 14 M8 —
 // 連続 push の末尾で 1 回 `maruhi sync apply`)。
 //
 // 既定パスの設定が**実行体を名指し**するターゲット(exec の `command` /
-// `workflow.command`)は動かさない(改訂 2): プロジェクト ID は公開リポジトリでは
+// `workflow.command`)は動かさない: プロジェクト ID は公開リポジトリでは
 // 公開情報で、fork に置かれた設定が「その ID + 任意のプログラム」を名指しして書き手の
 // 平文を stdin で受け取る形を、cwd だけで成立させない。プリセットの既定の実行体
 // (PATH 上の `vercel` / `wrangler` / `gh`)だけが既定パスから動く。
@@ -81,7 +81,7 @@ export function loadPushSyncConfig(input: {
   return Effect.gen(function* () {
     if (input.noSync) {
       if (input.config !== undefined) {
-        // 指した設定を読まずに済ませる形を黙って通さない(pullfrog 指摘)
+        // 指した設定を読まずに済ませる形を黙って通さない
         return yield* Effect.fail(
           usageError("--no-sync and --config cannot be combined (drop one of them)"),
         );
@@ -110,7 +110,7 @@ export type PushSyncDecision =
        * 既定パスの設定が**実行体を名指し**しているターゲット(exec の `command` /
        * `workflow.command`)。cwd で見つけただけの設定から、その設定が名指しする
        * プログラムに平文を渡す形を作らない: 同期しない旨を note で言い、`--config`
-       * 明示(利用者がそのファイルを指す動作)でだけ動かす(pullfrog 指摘 — 改訂 2)
+       * 明示(利用者がそのファイルを指す動作)でだけ動かす
        */
       readonly namesCommand: readonly SyncTarget[];
     };
@@ -210,7 +210,7 @@ function buildWorkflowDispatch(
   };
 }
 
-/** 回収の案内(直接 apply と CI 起動の失敗で共通 — 2b の文面と同じ方向)。 */
+/** 回収の案内(直接 apply と CI 起動の失敗で共通)。 */
 function recoveryHint(target: SyncTarget): string {
   return `The next \`maruhi sync plan ${displayText(target.name)}\` shows the pushed variable as pending; \`maruhi sync apply ${displayText(target.name)}\` or CI delivers it`;
 }
@@ -252,7 +252,7 @@ function triggerWorkflow(
 /**
  * 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(同じ環境に 2 つのハンドルを
  * 開かない — `openSyncTarget` と同じ規律。複数ターゲットが 1 つのトークン環境を共有
- * するとき、2 つ目が push 前の床のスナップショットから始まらないように — pullfrog 指摘)。
+ * するとき、2 つ目が push 前の床のスナップショットから始まらないように)。
  */
 function floorLedger(
   context: EnvironmentContext,

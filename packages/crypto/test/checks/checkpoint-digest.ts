@@ -1,5 +1,5 @@
-// CRYPTO_SPEC §6.2 の values_digest **対象選別**のチェック(2026-08-30 —
-// §4.2 レイアウト v2 の declared 導入): status = declared(値未設定)の変数は
+// CRYPTO_SPEC §6.2 の values_digest **対象選別**のチェック(§4.2 レイアウト v2
+// の declared): status = declared(値未設定)の変数は
 // values_digest に現れない。LP 正規形そのものは chain-entries.json の
 // values_digests セクション(checkpoint.ts)が固定済みで不変 — 本ファイルは
 // selectEnvValuesDigestEntries の選別規則だけを checkpoint-digest.json で固定する。
