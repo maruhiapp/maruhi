@@ -111,7 +111,7 @@ export function renderCliErrorPage(): string {
  * 作らない)。載せるのは Web ログイン(サインアップの唯一の入口)への導線と
  * フロー再開リンク(verificationUrl)のみ。副作用ゼロ。
  *
- * `signupPolicy`(AUTH_SPEC §3 — 2026-09-01 H1)で 1 段目の文言を追随させる:
+ * `signupPolicy`(AUTH_SPEC §3)で 1 段目の文言を追随させる:
  * invite 制下でプレーンなサインアップリンクを案内すると invite-required の
  * 拒否ページへ誘導するだけになる(hosted-design.md §2-2 の「案内文言の追随」)。
  * 表示のみの分岐であり、受理の正はサーバーゲート(§3)のまま。

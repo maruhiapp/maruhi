@@ -30,10 +30,8 @@ function baseContext(): VariableContext {
 }
 
 async function vectorChecks(c: Checks): Promise<void> {
-  // AAD 構築がベクターと一致
   c.push("var-enc: aad construction", toHex(buildVariableAad(baseContext())) === base.aad_hex);
 
-  // 固定ベクターの復号
   const pt = await decryptVariable({
     dek: fromHex(base.key_hex),
     context: baseContext(),
@@ -135,7 +133,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
       toHex(decrypted.value) === toHex(plaintext),
   );
 
-  // 別 DEK では復号できない
   const wrongDek = await decryptVariable({
     dek: generateDek(),
     context: baseContext(),

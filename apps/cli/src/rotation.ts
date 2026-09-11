@@ -1,4 +1,4 @@
-// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §6 / §7 — Wave 2 B2)。
+// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §6 / §7)。
 //
 // - list: サーバーの導出ビュー(現在有効な rotation.recommended − 解消)を
 //   取得して表示する。表示名はサーバー申告を信用せず、検証済みメタステート
@@ -209,8 +209,7 @@ export type DismissRequest =
 /**
  * `maruhi rotation dismiss` の要求の解釈。ネットワークを要さない検査
  * (`--all` と変数 id の矛盾・対象の欠落)はここで落とす — 前段の同期より
- * 後ろに置くと、案内が接続エラーに隠れるうえ往復が無駄になる(レビュー
- * 第 4 巡の指摘)。
+ * 後ろに置くと、案内が接続エラーに隠れるうえ往復が無駄になる。
  */
 export function parseDismissRequest(input: {
   readonly all: boolean;

@@ -7,7 +7,7 @@
 //  3. 位置違反 (b)(c) = 受理ポリシー不執行のサーバーの証拠として報告
 //     (Acceptance-policy violation — 陳腐化リプレイ可能状態)
 //  4. seq 欠番 = 削除の痕跡として報告し、以後の派生誤報を出さずに打ち切る
-//  5. GET /audit-head の申告値も再計算列への所属を検査する(裁定 AK)
+//  5. GET /audit-head の申告値も再計算列への所属を検査する(session-38 裁定 AK)
 //  6. AuditHeadNotReady(503)は有界再試行で吸収する
 //  7. 実効 admin 未満(write スコープ)は行取得より前に明確なエラー
 //
@@ -359,7 +359,7 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(output).not.toContain("membership check (a)");
   });
 
-  it("GET /audit-head の申告値も再計算列への所属を検査する(裁定 AK)", async () => {
+  it("GET /audit-head の申告値も再計算列への所属を検査する(session-38 裁定 AK)", async () => {
     const { rows, built } = await makeFixture();
     const state = makeReconcileServer({
       built,

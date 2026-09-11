@@ -1,13 +1,10 @@
-// `effect/unstable/cli` へ移した引数層(pull / run / env create / env rotate /
+// 引数層(`effect/unstable/cli` — pull / run / env create / env rotate /
 // env diff)の適合検査。
 //
-// gunshi で実際に踏んだ形(docs/notes/cli-parser-alternatives.md の 12 形)を
-// 同じ argv で流し、maruhi の規律が保たれることを固定する: 書き方の誤り =
+// パーサの落とし穴(docs/notes/cli-parser-alternatives.md の 12 形)を同じ
+// argv で流し、maruhi の規律が保たれることを固定する: 書き方の誤り =
 // exit 2 / 診断は stderr / stdout は汚さない / 打たれた値は診断に出さない /
-// 値の表示は人間の対話端末だけ。
-//
-// スパイク(PR #72 の apps/cli/test/support/)の置き換え。あちらは測定用に
-// オペレーションをスタブしていたが、ここは**本番の runCli** を通す。
+// 値の表示は人間の対話端末だけ。オペレーションをスタブせず**本番の runCli** を通す。
 
 import { Exit, Runtime } from "effect";
 import { CliError as EffectCliError } from "effect/unstable/cli";
@@ -56,8 +53,8 @@ function expectNoLeak(env: TestEnv, secrets: readonly string[]): void {
   }
 }
 
-describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
-  it("1. 未宣言のオプションは実行前に落ちる(gunshi は黙って無視していた)", async () => {
+describe("パーサの落とし穴 12 形が引数層で落ちる", () => {
+  it("未宣言のオプションは実行前に落ちる", async () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["pull", "--shwo"], env.layer)).toBe(2);
@@ -68,7 +65,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("2 / 3. boolean への値は書いたとおりに読まれる(gunshi は true に化けた)", async () => {
+  it("boolean への値は書いたとおりに読まれる", async () => {
     // `--show=false` / `--show false` を通信より前に測るため、環境 ID を
     // 壊して落とす(値の表示に進んでいないことは pull-run.test.ts が固定)
     for (const argv of [
@@ -84,7 +81,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     }
   });
 
-  it("4. 同じオプションの重複は落ちる(勝つ側を語らずに拒否する)", async () => {
+  it("同じオプションの重複は落ちる(勝つ側を語らずに拒否する)", async () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["pull", "--env", "prod", "--env", "dev"], env.layer)).toBe(2);
@@ -93,7 +90,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("4b. boolean の重複も落とす(順序に依存させない — ef7cba1 の形)", async () => {
+  it("boolean の重複も落とす(順序に依存させない)", async () => {
     // `maruhi pull --no-show $FLAGS`($FLAGS に --show)= 全シークレットの表示。
     // 素の Flag.boolean は重複を沈黙で解決し、**打った順で結果が変わる**
     for (const argv of [
@@ -108,7 +105,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     }
   });
 
-  it("5. `--` の後ろの空文字列は落ちない(gunshi は rest から落としていた)", async () => {
+  it("`--` の後ろの空文字列は落ちない", async () => {
     // 実行対象は保たれ、通信(pull)まで進む = 引数層は受理している
     const { env, server } = await startEnv();
 
@@ -117,29 +114,29 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
-  it("6. 先頭の空の位置引数は落ちる(gunshi は読み飛ばして段がずれた)", async () => {
+  it("先頭の空の位置引数は落ちる", async () => {
     const { env, server } = await startEnv();
 
-    // gunshi は falsy な位置引数を読み飛ばして 1 段ずれたまま実行していた。
-    // 移行先は空のトークンをコマンド名として解決しようとして落ちる
+    // 空のトークンをコマンド名として解決しようとして落ちる(読み飛ばして
+    // 段をずらしたまま実行しない)
     expect(await runCli(["", "pull"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown subcommand");
     expect(env.logs).toEqual([]);
     expect(server.requests).toHaveLength(0);
   });
 
-  it("7. `--` を跨いでコマンドを解決しない", async () => {
+  it("`--` を跨いでコマンドを解決しない", async () => {
     const { env, server } = await startEnv();
 
-    // gunshi は `--` を跨いで run として解決し、`--` の後ろの先頭
-    // (= コマンド名そのもの)を実行対象として渡していた
+    // `--` を跨いで run として解決すると、`--` の後ろの先頭
+    // (= コマンド名そのもの)を実行対象として渡してしまう
     expect(await runCli(["--", "run", "printenv"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Write the command name before `--`");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
 
-  it("8. 必須の位置引数の欠落が落ちる", async () => {
+  it("必須の位置引数の欠落が落ちる", async () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["env", "create"], env.layer)).toBe(2);
@@ -147,7 +144,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("10. 位置引数の名前をオプションとして書いた形は直し方まで案内する", async () => {
+  it("位置引数の名前をオプションとして書いた形は直し方まで案内する", async () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(2);
@@ -173,7 +170,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("11. オプションへの空 / 空白だけの値は落ちる(既定へ黙って落ちない)", async () => {
+  it("オプションへの空 / 空白だけの値は落ちる(既定へ黙って落ちない)", async () => {
     // `maruhi push API_KEY --env "$ENV"` で ENV が未設定のとき、既定環境へ
     // 黙って書き込む事故と同じ形。Schema の宣言 1 つで両方を落とす
     const empty = await startEnv();
@@ -192,7 +189,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(blank.env.errors.join("\n")).not.toContain('"  "');
   });
 
-  it("12. 余分な位置引数は個数だけを言い、中身は出さない", async () => {
+  it("余分な位置引数は個数だけを言い、中身は出さない", async () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["pull", "SUPER_SECRET_VALUE"], env.layer)).toBe(2);
@@ -288,8 +285,8 @@ describe("maruhi 固有の規律", () => {
     expect(await runCli(["pull", "--help"], help.env.layer)).toBe(0);
     const full = help.env.errors.join("\n");
     expect(full).toContain("FLAGS");
-    // 宣言の説明文はヘルプに出る(gunshi 側の各コマンドと同じ水準を保つ —
-    // 昇格時に説明を落とすと、ヘルプが名前と型だけの一覧に痩せる)
+    // 宣言の説明文はヘルプに出る(説明を落とすと、ヘルプが名前と型だけの
+    // 一覧に痩せる)
     expect(full).toContain("Server URL (defaults to config server)");
     expect(full).toContain("Print the values");
   });
@@ -445,7 +442,7 @@ describe("終了コードは Effect の機構に載る", () => {
     expect(helpCodes).toEqual([0]);
 
     // errors 空でもヘルプ・バージョンを明示していない実行 = サブコマンド必須の
-    // 親コマンド単体(`maruhi env`)。gunshi 時代と同じく書き方の誤り(2)
+    // 親コマンド単体(`maruhi env`)。書き方の誤り(2)
     const bareCodes: number[] = [];
     maruhiTeardown(false)(
       Exit.fail(new EffectCliError.ShowHelp({ commandPath: ["maruhi", "env"], errors: [] })),
@@ -456,9 +453,8 @@ describe("終了コードは Effect の機構に載る", () => {
 });
 
 describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)", () => {
-  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
-    // gunshi 時代の ENV_ACTION_FLAGS / optionRestrictedTo が受け持っていた形。
-    // 宣言が操作ごとに分かれたので、未宣言フラグとして構造的に落ちる
+  it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
+    // 宣言が操作ごとに分かれているので、未宣言フラグとして構造的に落ちる
     for (const argv of [
       ["env", "rotate", "dev", "--name", "x"],
       ["env", "diff", "dev", "prod", "--reason", "x"],
@@ -505,8 +501,8 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
   });
 
   it("rotate: 空 / 空白だけの --reason は既定へ潰さず落とす(打たれた値は出さない)", async () => {
-    // `--reason "$REASON"` の未設定形。gunshi 時代は args.ts の走査、いまは宣言
-    // (NonBlank)が受け持つ — 空の理由がチェーンへ記録される形を塞ぐ
+    // `--reason "$REASON"` の未設定形。宣言(NonBlank)が受け持つ — 空の理由が
+    // チェーンへ記録される形を塞ぐ
     for (const reason of ["", "  "]) {
       const { env, server } = await startEnv();
       expect(await runCli(["env", "rotate", "dev", "--reason", reason], env.layer)).toBe(2);
@@ -520,7 +516,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
   it("rotate: boolean フラグの後ろに置いた位置引数は消費されない(順序の固定)", async () => {
     // 上流は boolean の直後のトークンを **真偽値リテラルのときだけ**値として
     // 消費する(asBooleanLiteral)。通常の環境 ID はストリームに残るので、
-    // フラグを先に書いた形も引数層を通る(Pullfrog 指摘のテスト固定)
+    // フラグを先に書いた形も引数層を通る
     const ordered = await startEnv();
     expect(
       await runCli(["env", "rotate", "--new-epoch", "dev", "--reason", "x"], ordered.env.layer),
@@ -530,7 +526,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
 
     // 残余: 環境 ID が真偽値リテラルと同形(`on` / `off` 等)だと boolean の
     // 値として消費され、必須位置引数の欠落として**大きな音で**落ちる
-    // (gunshi は消費しなかった形。黙って別環境を回すのではなく exit 2)
+    // (黙って別環境を回すのではなく exit 2)
     const literal = await startEnv();
     expect(
       await runCli(["env", "rotate", "--new-epoch", "on", "--reason", "x"], literal.env.layer),
@@ -539,7 +535,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(literal.server.requests).toHaveLength(0);
   });
 
-  it("rotate: boolean への値は書いたとおりに読まれる(gunshi は読まずに true にした)", async () => {
+  it("rotate: boolean への値は書いたとおりに読まれる", async () => {
     // `--new-epoch=false` は effect では **false として解釈される**(12 形の #2)。
     // 引数層は通り、コマンド本体(通信)まで進む = 拒否ではなく正しい解釈
     const { env, server } = await startEnv();
@@ -577,7 +573,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     }
   });
 
-  it("diff: 2 つ目の環境 ID は必須(gunshi の optional 位置引数 + 本体検査の置き換え)", async () => {
+  it("diff: 2 つ目の環境 ID は必須", async () => {
     const { env, server } = await startEnv();
     expect(await runCli(["env", "diff", "dev"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Missing positional argument other-environment-id");
@@ -601,8 +597,8 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
   it("先頭の空引数は不明なコマンドとして落ち、無関係なフラグの指摘を重ねない", async () => {
     // 先頭の "" はコマンド名として解決できない(root の UnknownSubcommand)。
     // このときフラグは root の宣言と突き合わされているので、後続のフラグを
-    // 不明扱いで並べない(formatErrors の畳み込み — 第 3 段階 ④ で、gunshi の
-    // 読み飛ばしに合わせていた旧挙動から「空のトークンも 1 つの引数」へ揃えた)
+    // 不明扱いで並べない(formatErrors の畳み込み — 第 3 段階 ④。空のトークン
+    // も 1 つの引数として数える)
     const { env } = await startEnv();
     expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
       2,
@@ -615,7 +611,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
 
   it("`maruhi env` 単体は usage エラー(2)で、env 段の使い方を stderr へ出す", async () => {
     // 上流は「サブコマンド未指定」を errors 空の ShowHelp(exit 0)にするが、
-    // maruhi では書き方の誤り(gunshi 時代の「不明な操作です」も exit 2)。
+    // maruhi では書き方の誤り(exit 2)。
     // teardown が「ヘルプ・バージョンの明示なし」で読み分ける(cli-teardown.ts)。
     // stdout は汚さない(コマンドの出力だけ — 決定 9)
     const { env, server } = await startEnv();
@@ -632,8 +628,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
   });
 
   it("親の段に書いたフラグは、置き場所(サブコマンドの後ろ)を案内して落ちる", async () => {
-    // gunshi は操作名より前のフラグも通した(1 つの引数表)。effect の入れ子
-    // では親の段のフラグは未宣言になる — 「フラグが存在しない」と嘘をつかず、
+    // 入れ子では親の段のフラグは未宣言になる — 「フラグが存在しない」と嘘をつかず、
     // 直し方を言う
     const { env, server } = await startEnv();
     expect(
@@ -650,7 +645,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     // 残るため、診断の宛先(commandKey)は葉へ解決する。宣言の選択を
     // commandKey で行うと、拒否したフラグを「このコマンドが受け付ける一覧」に
     // 載せる自己矛盾の診断になる — 上流が報告する段(UnrecognizedOption.command)
-    // で選ぶことを固定する(Bugbot 指摘)
+    // で選ぶことを固定する
     const envRotate = await startEnv();
     expect(await runCli(["env", "--new-epoch", "rotate", "dev"], envRotate.env.layer)).toBe(2);
     const rotateErrors = envRotate.env.errors.join("\n");
@@ -670,8 +665,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
 });
 
 describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ②)", () => {
-  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
-    // gunshi 時代の SERVER_ACTION_FLAGS / serverActionFlagRejection の置き換え
+  it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["server", "revoke", "--environments", "dev"],
       ["server", "revoke", "--lease-policy", "policy.json"],
@@ -756,9 +750,9 @@ describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     }
   });
 
-  it("server は位置引数を取らない(操作を位置引数で書いた旧形は落ちる)", async () => {
+  it("server は位置引数を取らない", async () => {
     const { env, server } = await startEnv();
-    // 旧 gunshi 形の名残(`server grant extra`)= grant 段の余分な位置引数
+    // `server grant extra` = grant 段の余分な位置引数
     expect(await runCli(["server", "grant", "extra", "--environments", "dev"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Unexpected extra arguments (1;");
@@ -768,7 +762,7 @@ describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
 });
 
 describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ③)", () => {
-  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
+  it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["invite", "list", "--role", "member"],
       ["invite", "create", "--inviter-fingerprint", "aaaabbbbccccddddeeeeffff00001111"],
@@ -848,7 +842,7 @@ describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
 });
 
 describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ④)", () => {
-  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
+  it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["member", "remove", "user-1", "--role", "member"],
       ["member", "remove", "user-1", "--expect-fingerprint", "aaaabbbbccccddddeeeeffff00001111"],
@@ -1014,9 +1008,9 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
   });
 
   it("コマンド名より前に書いたフラグは、自己矛盾せず置き場所を案内する", async () => {
-    // `maruhi --show pull`(gunshi が通していた形)。振り分けの葉(pull)の
+    // `maruhi --show pull`。振り分けの葉(pull)の
     // 宣言で診断を組むと「--show を拒否しつつ受け付ける一覧に --show を載せる」
-    // 自己矛盾になる — root の宣言(置き場所の案内)で組む(レビュー指摘)
+    // 自己矛盾になる — root の宣言(置き場所の案内)で組む
     const { env, server } = await startEnv();
     expect(await runCli(["--show", "pull"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
@@ -1026,7 +1020,7 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
   });
 
   it("`--version` の出力は stdout、`--help` 併記時はヘルプが勝ち stderr へ出る", async () => {
-    // `V=$(maruhi --version)` はコマンドの出力(gunshi 時代からの契約)。
+    // `V=$(maruhi --version)` はコマンドの出力。
     // `--help --version` は上流で Help が勝つ = 集めた行はヘルプ本文なので
     // stdout へ流さない(決定 9 / ADR-0016 追記 2)
     const version = await startEnv();
@@ -1049,8 +1043,8 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
   });
 
   it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
-    // gunshi はエントリコマンドを自分自身の名前でも登録していた。effect の
-    // root に `maruhi` サブコマンドは無い = ただの未知のコマンド
+    // root に `maruhi` サブコマンドは無い = ただの未知のコマンド(エントリ
+    // コマンドを自分自身の名前で登録しない)
     const { env } = await startEnv();
     expect(await runCli(["maruhi", "extra"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
@@ -1059,7 +1053,7 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
   });
 });
 
-describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
+describe("login / logout の引数層(ADR-0016 第 3 段階 ④)", () => {
   it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
     // 期待する型は宣言由来なので出してよいが、与えられた値は平文が混ざりうる
     // ので出さない
@@ -1071,10 +1065,9 @@ describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("値の無い number は usage エラー(2)になる(gunshi は内部エラー = 1 だった)", async () => {
-    // gunshi では値の無い number オプションで gunshi 自身が TypeError を投げ、
-    // 内部エラー(exit 1)として報告していた(args.test.ts の旧ケース)。
-    // effect では InvalidValue = 書き方の誤り(exit 2)— 移行後の正へ更新
+  it("値の無い number は usage エラー(2)になる", async () => {
+    // 値の無い number オプションは InvalidValue = 書き方の誤り(exit 2)。
+    // 内部エラー(exit 1)として報告しない
     const { env, server } = await startEnv();
     expect(await runCli(["login", "--token-ttl-days"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unacceptable value for flag --token-ttl-days");
@@ -1129,7 +1122,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
 
   it("`audit --help` の usage はサブコマンドを任意(`[subcommand]`)と描く", async () => {
     // bare `maruhi audit` = list が動く以上、上流の一律 `<subcommand>`(必須)
-    // は嘘になる(Pullfrog レビューの指摘)。判定は宣言駆動 — フラグと
+    // は嘘になる。判定は宣言駆動 — フラグと
     // サブコマンドの両方を持つ段(ハンドラ付き親)だけを直す
     const help = await startEnv();
     expect(await runCli(["audit", "--help"], help.env.layer)).toBe(0);
@@ -1149,8 +1142,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     expect(range.env.errors.join("\n")).toContain("--limit must be an integer between 1 and 200");
     expect(range.server.requests).toHaveLength(0);
 
-    // 値の無い / 数として読めない number は gunshi では内部エラー(exit 1)
-    // だったが、effect では InvalidValue = usage エラー(exit 2)になる
+    // 値の無い / 数として読めない number は InvalidValue = usage エラー(exit 2)
     const typed = await startEnv();
     expect(await runCli(["audit", "--limit", "s3cr3t"], typed.env.layer)).toBe(2);
     const typedErrors = typed.env.errors.join("\n");
@@ -1167,10 +1159,10 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
   });
 
   it("自段のフラグをサブコマンドより前に書いた形は、自己矛盾せず置き場所を案内する", async () => {
-    // `audit --limit 5 list`(gunshi が通していた形)。上流は親のローカル
+    // `audit --limit 5 list`。上流は親のローカル
     // フラグをサブコマンドへ継承しない = 未宣言として報告するが、bare 親
     // (= list)の宣言に同じフラグがあるため、「受け付ける一覧」に載せると
-    // 自己矛盾になる(レビュー第 2 巡の指摘)
+    // 自己矛盾になる
     const { env, server } = await startEnv();
     expect(await runCli(["audit", "--limit", "5", "list"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
@@ -1179,9 +1171,8 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     expect(server.requests).toHaveLength(0);
   });
 
-  it("その操作に無いフラグは usage エラー(2)で落ちる(AUDIT_ACTION_FLAGS の置き換え)", async () => {
-    // gunshi 時代の optionRestrictedTo / auditActionFlagRejection が受け持って
-    // いた形。宣言が操作ごとに分かれたので、未宣言フラグとして構造的に落ちる
+  it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
+    // 宣言が操作ごとに分かれているので、未宣言フラグとして構造的に落ちる
     for (const argv of [
       ["audit", "verify", "--limit", "5"],
       ["audit", "self", "--project", "x"],
@@ -1215,9 +1206,8 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
   });
 
   it("rotation dismiss の boolean(--all)は重複を拒否し、値は書いたとおりに読む", async () => {
-    // gunshi に最後まで残っていた boolean。`--all=false` は gunshi では
-    // **値を読まずに true**(全フラグの取り下げに化ける)だったが、effect は
-    // 書いたとおり false として読む(12 形の #2)。重複は atMost(1) が落とす
+    // `--all=false` は書いたとおり false として読む(12 形の #2 — 値を読まずに
+    // true にすると全フラグの取り下げに化ける)。重複は atMost(1) が落とす
     for (const argv of [
       ["rotation", "dismiss", "--all", "--no-all"],
       ["rotation", "dismiss", "--all", "--all"],
@@ -1233,7 +1223,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     // `--all=false` は「--all を書いていない」実行として読まれ、引数層は通る
     // (対象未指定はコマンド本体が exit 1 で報告する — 書いたことと逆にならない)。
     // 退行(true に化ける)と resolveAllTargets が必ず通信するので、
-    // 「対象未指定の案内 + 通信ゼロ」で判別する(Pullfrog 指摘のテスト強化)
+    // 「対象未指定の案内 + 通信ゼロ」で判別する
     const explicit = await startEnv();
     expect(await runCli(["rotation", "dismiss", "--all=false"], explicit.env.layer)).toBe(1);
     expect(explicit.env.errors.join("\n")).not.toContain("Unknown flag");
@@ -1278,11 +1268,11 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
   });
 });
 
-describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
+describe("push の引数層(ADR-0016 第 3 段階 ①)", () => {
   it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
     // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した
     // 引数の中身は出さない(平文でありうる)代わりに、直し方を必ず添える —
-    // でないと直しようがない(args.test.ts の旧ケースの規律)
+    // でないと直しようがない
     const secret = "hunter2-plaintext-value";
     for (const argv of [
       ["push", "API_KEY", secret],
@@ -1325,8 +1315,8 @@ describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
   });
 
   it("空 / 空白だけのオプション値は既定へ潰さず落とす(既定環境への書き込み事故)", async () => {
-    // gunshi は空の値を「未指定」に潰すため、`--env "$ENV"` の未設定形が
-    // **既定環境への書き込み**に化けた(取り消せない)。宣言(NonBlank)が塞ぐ
+    // 空の値を「未指定」に潰すと、`--env "$ENV"` の未設定形が**既定環境への
+    // 書き込み**に化ける(取り消せない)。宣言(NonBlank)が塞ぐ
     for (const argv of [
       ["push", "API_KEY", "--env", ""],
       ["push", "API_KEY", "--env", "  "],
@@ -1400,7 +1390,7 @@ describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () 
 
   it("`config set` の空 / 空白だけの値は既存の設定を上書きせずに落ちる", async () => {
     // `config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
-    // 上書きして成功を報告する事故(gunshi 時代は args.ts の走査、いまは宣言)
+    // 上書きして成功を報告する事故(宣言が塞ぐ)
     for (const value of ["", "  "]) {
       const { env } = await startEnv();
       expect(await runCli(["config", "set", "defaultEnvironment", value], env.layer)).toBe(2);
@@ -1435,7 +1425,7 @@ describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () 
     expect(errors).toContain("maruhi config get only takes these positional arguments: key");
     expect(single.env.logs).toHaveLength(0);
 
-    // 個数は過少報告しない(gunshi 時代は optional スロットが 1 つ吸っていた)
+    // 個数は過少報告しない(optional スロットに吸わせない)
     const multiple = await startEnv();
     expect(
       await runCli(["config", "get", "defaultEnvironment", "a", "b"], multiple.env.layer),

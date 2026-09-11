@@ -1,4 +1,4 @@
-// 監査イベント読み取り API(AUDIT_SPEC §6 / §7 — C1)の統合テスト。
+// 監査イベント読み取り API(AUDIT_SPEC §6 / §7)の統合テスト。
 //
 // 固定する性質:
 //  1. 可視性クラス(§6): admin 未満はクラス 1 の行 + 本人が actor の行のみ。
@@ -153,7 +153,7 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("eventPrefix は名前空間ごと絞る(ミラー検証の全取得 — deepsec R1)", async () => {
+  it("eventPrefix は名前空間ごと絞る(ミラー検証の全取得)", async () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(OWNER), {
       eventPrefix: "chain.",
@@ -169,11 +169,10 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     expect(events.length).toBe(all.events.filter((e) => e.event.startsWith("chain.")).length);
   });
 
-  it("写像に無い chain.* 行も admin 未満に届く(§6 は名前空間全体をクラス 1 とする — R1)", async () => {
+  it("写像に無い chain.* 行も admin 未満に届く(§6 は名前空間全体をクラス 1 とする)", async () => {
     // verify は admin を要求しない(全メンバーが実行できる)。可視性述語が
     // 写像済みの名前だけを許すと、偽造行はサーバー側で落ちて reader の verify に
-    // 1 行も届かず、R1 で閉じたはずの偽造方向の被覆漏れが非 admin では残る
-    // (pullfrog / Cursor Security Reviewer 指摘)
+    // 1 行も届かず、偽造方向の被覆漏れが非 admin では残る
     await seedProjectActivity();
     await queryProjectDo(
       projectId,
@@ -198,7 +197,7 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("chain_seq を名乗る非 chain.* 行も全メンバーの検証用フィルタへ届く(S1)", async () => {
+  it("chain_seq を名乗る非 chain.* 行も全メンバーの検証用フィルタへ届く", async () => {
     await seedProjectActivity();
     await queryProjectDo(
       projectId,

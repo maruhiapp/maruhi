@@ -1,5 +1,5 @@
 // スキーマ欄への実値混入(発見 D)の書き込み時クライアント検査(裁定 CW —
-// fail-closed)。`maruhi schema set`(将来は schema import — S4)の name /
+// fail-closed)。`maruhi schema set`(将来は schema import)の name /
 // description 入力に「秘密らしき高エントロピー部分文字列」を検出したら、
 // 対話環境では警告 + 明示確認、非対話環境では明示フラグなしに型付きエラーで
 // 拒否する。メタは平文でサーバー可視であり、実値の混入はゼロ知識の約束に

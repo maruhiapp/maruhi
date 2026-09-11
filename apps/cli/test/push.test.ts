@@ -1,6 +1,6 @@
 // push(§12-5 CAS)のテスト: create / 新バージョン、409 リトライ
 // (VersionConflict / EpochConflict = 再同期 → 再暗号化 → 再試行)、
-// スキーマ外の素の 413 分岐(session-07 §5 申し送りの決着)。
+// スキーマ外の素の 413 分岐。
 
 import { decryptVariable } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -163,7 +163,7 @@ async function pullJsonOf(
   currentEpoch = 1,
   /** メタ集合が変わる応答は次 version を渡す(同 version の集合差は equivocation)。 */
   manifestVersion = 1,
-  /** version > 1 の prev(直前マニフェストの hash — 隣接 prev 検証 M1-A1 の連鎖)。 */
+  /** version > 1 の prev(直前マニフェストの hash — 隣接 prev 検証の連鎖)。 */
   prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return {
@@ -240,7 +240,7 @@ function distributedStatementOf(body: CreateBody): WireDistributedVariableStatem
 /**
  * メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で
  * 止まる)。variant 間のマニフェストは prev を実際に連鎖させる(隣接版の prev
- * 検証 — M1-A1 — を満たす正当な「他メンバーのメタ操作」のモデル化)。
+ * 検証を満たす正当な「他メンバーのメタ操作」のモデル化)。
  * `echo` が受理済み作成を持つ場合は、その配布(variant + 作成ステートメント +
  * 受理したマニフェスト)を返す — 効果確認(§12-10 (3))の材料。
  */
@@ -450,7 +450,7 @@ describe("maruhi push", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("受理後にサーバー echo がローカル署名値と食い違えば型付きエラーで報告する(B7)", async () => {
+  it("受理後にサーバー echo がローカル署名値と食い違えば型付きエラーで報告する", async () => {
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -529,7 +529,7 @@ describe("maruhi push", () => {
     // strict 受理(§12-10 (1))未導入の旧サーバーの形: 変数作成の 200 は返すが
     // 同梱マニフェストを保存せず、以後も旧マニフェスト(v1・作成前の集合)を
     // 配布し続ける。成功の定義 = 検証可能な配布物での効果確認なので、CLI は
-    // 成功と言わず、自己発行マニフェストを床に書かない(M1-A2 の受理後照合)
+    // 成功と言わず、自己発行マニフェストを床に書かない(受理後照合)
     let created: CreateBody | null = null;
     let metadataCalls = 0;
     const server = await MockServer.start([
@@ -594,12 +594,12 @@ describe("maruhi push", () => {
     const record = loaded.floor?.environments[ENV_ID];
     // 自己発行マニフェスト(v2)は床に書かれない — 記録されるのは検証済み観測
     // (解決 pull の v1)のみ。旧サーバーへ「保存されていないマニフェスト」を
-    // 床に固定して以後の欠落を omission と誤判定する事故(M1-A2)を作らない
+    // 床に固定して以後の欠落を omission と誤判定する事故を作らない
     expect(record?.manifest?.manifestVersion).toBe(1);
     // **変数床も書かれない**(§12-10 (3) — 床への記録は確認通過後のみ)。
     // 2xx だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
     // いなかった場合に、以後の全 pull が variable-omitted で恒久拒否される
-    // (未確認の思い込みが equivocation 証拠に化ける — Bugbot 指摘の固定)
+    // (未確認の思い込みが equivocation 証拠に化ける)
     const body = created as CreateBody | null;
     expect(record?.variables[body?.statement.variableId ?? ""]).toBeUndefined();
     // 確認義務の記録(intent — 3-F)は未解決のまま残る
@@ -650,7 +650,7 @@ describe("maruhi push", () => {
               variables: statements,
               deletedVariables: [],
               // 同じ manifestVersion(2)だが別集合を覆う = 別の signed bytes。
-              // prev は正しく v1 へ連鎖させる(M1-A1 は通る形 — hash 照合の固定)
+              // prev は正しく v1 へ連鎖させる(隣接 prev 検証は通る形 — hash 照合の固定)
               manifest: await manifestOf(statements, 1, 2, await manifestHashAt([])),
             },
           };
@@ -785,7 +785,7 @@ describe("maruhi push", () => {
     ).toHaveLength(0);
   });
 
-  it("409 の申告が検証済み latest より古い(巻き戻し)なら拒否する(レビューループ 1 [高])", async () => {
+  it("409 の申告が検証済み latest より古い(巻き戻し)なら拒否する", async () => {
     // クライアントは v4 を検証済み。悪意サーバーは v2 まで巻き戻した 409 を返し、
     // 再取得でも巻き戻しビュー(v2 = 単体では全検証を通る古い正規値)を配布する。
     // セッション内で保持している検証済み latest(v4)からの後退として拒否する
@@ -844,12 +844,11 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // セッション 16 以降は初回 pull がコミットした床の規則が先に検出する
-    // (floor-check.ts の文言)
+    // 初回 pull がコミットした床の規則が先に検出する(floor-check.ts の文言)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
-  it("409 後の winner の prev が検証済み直前 version と連鎖しなければ拒否する(レビューループ 1 [中])", async () => {
+  it("409 後の winner の prev が検証済み直前 version と連鎖しなければ拒否する", async () => {
     // クライアントは v4 を検証済み。winner は v5 だが prev が v4 でなく別の
     // 履歴(fork)に連鎖している → 隣接 predecessor の §6.3-6 検査で拒否する
     const head = headOf(chainV1, chainV1.entries.length);
@@ -914,12 +913,12 @@ describe("maruhi push", () => {
     );
   });
 
-  it("409 後の winner が版番号ギャップ越しにエポック後退していたら拒否する(レビューループ 2 [低])", async () => {
+  it("409 後の winner が版番号ギャップ越しにエポック後退していたら拒否する", async () => {
     // known = epoch 2 の v4(検証済み)。winner は version 6(ギャップ 2 で prev
     // 隣接検査は対象外)だが epoch 1 = 旧エポックへ後退している(削除済みメンバーの
-    // 旧エポック署名の版番号ずらし注入の形)。セッション 16 以降は初回 pull が
-    // コミットした床の規則 (a) が再取得 pull の時点で先に検出する(winner 検査は
-    // 床が使えない場合の防衛層として残る)
+    // 旧エポック署名の版番号ずらし注入の形)。初回 pull がコミットした床の規則 (a)
+    // が再取得 pull の時点で先に検出する(winner 検査は床が使えない場合の防衛層
+    // として残る)
     const head3 = headOf(chainV2, 3); // rotate(epoch 2 が現)を含むヘッド
     const head2 = headOf(chainV2, 2); // create(epoch 1 が現)のヘッド
     const knownV4 = await encryptValueFor({
@@ -1232,7 +1231,7 @@ describe("maruhi push", () => {
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         // 並行作成のメタ操作がマニフェストを v2 へ進めた形(メタデータ側の
-        // variant 2 と同じマニフェスト — 隣接 prev は v1 へ連鎖 M1-A1)
+        // variant 2 と同じマニフェスト — 隣接 prev は v1 へ連鎖)
         return {
           status: 200,
           json: await pullJsonOf([entryRacer], [wrap1], 1, 2, await manifestHashAt([])),
@@ -1470,8 +1469,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // セッション 16 以降は初回 pull がコミットした床の規則 (a) が先に検出する
-    // (floor-check.ts の文言)
+    // 初回 pull がコミットした床の規則 (a) が先に検出する(floor-check.ts の文言)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
@@ -1542,8 +1540,8 @@ describe("maruhi push", () => {
             [wrap1],
             1,
             // 2 回目は metaVersion 2 の勝者 = メタ操作 1 回分マニフェストも前進
-            // (隣接版なので prev は v1 マニフェストへ連鎖させる — M1-A1 とは
-            // 独立に、勝者ステートメントの prev 不一致だけを固定する)
+            // (隣接版なので prev は v1 マニフェストへ連鎖させる — マニフェストの
+            // prev 検証とは独立に、勝者ステートメントの prev 不一致だけを固定する)
             pullCalls === 1 ? 1 : 2,
             pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
           ),
@@ -1782,10 +1780,10 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("did not resolve");
   });
 
-  it("名前解決と値取得の間に並行 rename が入ったら push を向けずに拒否する(PR #41 レビュー指摘)", async () => {
+  it("名前解決と値取得の間に並行 rename が入ったら push を向けずに拒否する", async () => {
     // メタデータ解決は API_KEY → v-existing。値付き pull では同じ変数が
     // API_KEY_V2 へ改名済み(metaVersion 2)= 入力した名前と別の名前に変わった
-    // 変数への push を防ぐ(単一応答で解決していた旧フローのスナップショット整合)
+    // 変数への push を防ぐ
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,

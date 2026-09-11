@@ -174,7 +174,7 @@ export function verifyChainSnapshot(input: {
           ? verified.error
           : { seq: 0, reason: "invalid-payload" };
       // 配布されたチェーンが検証を通らない = 署名済みデータの矛盾(証拠 — 再実行では
-      // 解消しない。後始末の警告に畳まれてはならない — PR #156 改訂 3)
+      // 解消しない。後始末の警告に畳まれてはならない)
       return yield* Effect.fail(
         evidenceError(
           `Chain verification failed (seq=${seq}, reason=${reason}). The server may be distributing an invalid chain`,

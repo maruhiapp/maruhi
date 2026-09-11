@@ -1,9 +1,7 @@
 // ワークロードリースの認可と存在秘匿(AUTH_SPEC §14-1 / §11-2 — 一律 404)の
-// 統合テスト。スイート全体の分担は lease.test.ts 冒頭、共有ヘルパは
-// support/lease-scenario.ts を参照。
-//
-// このスイートが固定するもの(§14-1): grant なし・ポリシー不一致・スコープ外・
-// 環境なし・未初期化プロジェクトが**すべて同じ 404** であること(理由が漏れない)。
+// 統合テスト。grant なし・ポリシー不一致・スコープ外・環境なし・未初期化プロジェクトが
+// **すべて同じ 404**(理由が漏れない)であることを固定する。共有ヘルパは
+// support/lease-scenario.ts、スイート全体の分担は lease.test.ts 冒頭を参照。
 
 import { describe, expect, it } from "vitest";
 
@@ -128,8 +126,7 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   });
 
   it("hides a deleted environment that is still inside the disclosure scope", async () => {
-    // 判定順コメントが列挙する 5 つの 404 分岐のうち、これだけ未検証だった
-    // (pullfrog 指摘)。スコープには入っているが tombstone 済みの環境
+    // スコープには入っているが tombstone 済みの環境
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -144,14 +141,13 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   });
 
   it("returns a byte-identical 404 body for every cause (存在秘匿の中核)", async () => {
-    // 各ケースがステータスコードしか見ていないと、将来どれか 1 分岐に
-    // フィールドが増えても検出できない(pullfrog 指摘)。本 PR の中核主張なので
-    // ボディまで同一であることを 1 本で固定する。
+    // ステータスコードしか見ていないと、将来どれか 1 分岐にフィールドが
+    // 増えても検出できない。ボディまで同一であることを 1 本で固定する。
     //
     // **4 分岐を別々に踏ませる**: 空 lease_policy にすると policy-mismatch が
     // 先に成立して scope-out-of-range / environment-not-found に到達せず、
-    // 同じ経路の body を 2 回集めるだけになる(pullfrog 指摘)。実在するポリシーを
-    // 張り、トークンとリクエスト環境の側で分岐を撃ち分ける。踏んだ分岐は
+    // 同じ経路の body を 2 回集めるだけになる。実在するポリシーを張り、
+    // トークンとリクエスト環境の側で分岐を撃ち分ける。踏んだ分岐は
     // lease_denied の reason で事後確認する(黙って縮退したら落ちる)
     const workload = await workloadKeyPair();
     const bodyOf = async (

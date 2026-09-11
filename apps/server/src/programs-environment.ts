@@ -189,9 +189,9 @@ const requirePullContext = (actor: DataActor, environmentId: string, cache: Stat
     if (statement === null) {
       return yield* Effect.die(new Error("environment meta statement row missing"));
     }
-    // 最新マニフェスト(§12-7 の同梱材料 — 2026-08-18)。null はマニフェスト
-    // 導入前に作成された環境の移行完了までの過渡状態のみ(初期化後の環境は
-    // 全メタ操作 / rotate が原子的に upsert するため必ず存在する)
+    // 最新マニフェスト(§12-7 の同梱材料)。null はマニフェスト導入前に作成
+    // された環境の移行完了までの過渡状態のみ(初期化後の環境は全メタ操作 /
+    // rotate が原子的に upsert するため必ず存在する)
     const manifest = yield* store.environmentManifest(environmentId);
     return { state, store, statement, manifest };
   });
@@ -210,8 +210,8 @@ export const pullEnvironmentProgram = (
     // DO ストレージ総量ガードの観測のみ(§12-8 — 拒否しない): 値付き pull は
     // var.read を書く読み取りで、pull 主体のプロジェクトの支配的な成長項。
     // 警告帯(8〜9 GB)の運用ログがここでも出ないと、そのプロジェクトは一度も
-    // 警告されずに拒否帯へ入る(PR #134 pullfrog レビュー指摘)。メンバーシップの
-    // 後(requirePullContext)= 非メンバーには何も観測されない
+    // 警告されずに拒否帯へ入る。メンバーシップの後(requirePullContext)=
+    // 非メンバーには何も観測されない
     yield* observeStorageLevel;
     const variables = yield* store.latestVersions(environmentId);
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
@@ -221,15 +221,15 @@ export const pullEnvironmentProgram = (
     // 存在しない。マニフェストのダイジェスト再計算の材料として必須)
     const declaredVariables = yield* store.declaredVariableStatements(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
-    // チェックポイント時点の値スナップショット(§12-7 — 2026-08-28 PR-M3):
-    // 当該環境を含む最新 checkpoint の保存行(§16-2)があれば必ず同梱する。
-    // クライアント規則 2(CRYPTO_SPEC §6.3)は基準あり + 列挙なしを拒否する
+    // チェックポイント時点の値スナップショット(§12-7): 当該環境を含む最新
+    // checkpoint の保存行(§16-2)があれば必ず同梱する。クライアント規則 2
+    // (CRYPTO_SPEC §6.3)は基準あり + 列挙なしを拒否する
     const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
-    // 監査(AUDIT_SPEC §3.3 — 集約形。2026-09-02): 値付き一括 pull は環境単位
-    // 1 行で、返した変数の列挙(variableId / epoch / version — 昇順)を payload に
-    // 持つ(variable_id / epoch / version 列は NULL)。返した行に対して記録する
-    // ため、列挙と応答は常に一致する。返した変数が 0 なら記録しない(暗号文を
-    // 配布していない — 記録条件は不変。旧形でも 0 行だった)
+    // 監査(AUDIT_SPEC §3.3 — 集約形): 値付き一括 pull は環境単位 1 行で、
+    // 返した変数の列挙(variableId / epoch / version — 昇順)を payload に持つ
+    // (variable_id / epoch / version 列は NULL)。返した行に対して記録するため、
+    // 列挙と応答は常に一致する。返した変数が 0 なら記録しない(暗号文を配布
+    // していない — 記録条件は不変)
     const audit = yield* AuditStore;
     const now = Date.now();
     if (variables.length > 0) {
@@ -263,10 +263,10 @@ export const pullEnvironmentProgram = (
   });
 
 /**
- * メタデータのみモード(§12-7 — 2026-08-10): 値(暗号文)と DEK を返さず、
- * §6.3 のメタ検証材料のみ返す。認可は一括 pull と同一(reader)。監査は
- * **何も記録しない** — var.read の記録条件は暗号文の配布であり、読んでいない
- * ものを読んだと記録しない(AUDIT_SPEC §3.3)。
+ * メタデータのみモード(§12-7): 値(暗号文)と DEK を返さず、§6.3 のメタ検証
+ * 材料のみ返す。認可は一括 pull と同一(reader)。監査は**何も記録しない** —
+ * var.read の記録条件は暗号文の配布であり、読んでいないものを読んだと記録し
+ * ない(AUDIT_SPEC §3.3)。
  */
 export const pullEnvironmentMetadataProgram = (
   actor: DataActor,

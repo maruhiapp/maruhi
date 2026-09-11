@@ -54,7 +54,7 @@ interface VectorServerGrant {
   readonly grant_seq: number;
 }
 
-/** 受理後の環境ごとの最新チェックポイント期待値(§6.2 checkpoint — 2026-08-27)。 */
+/** 受理後の環境ごとの最新チェックポイント期待値(§6.2 checkpoint)。 */
 export interface VectorCheckpointState {
   readonly seq: number;
   readonly epoch: string;
@@ -67,9 +67,9 @@ interface VectorValidAppend {
   readonly name: string;
   readonly entry: VectorEntry;
   readonly expected_members: Readonly<Record<string, string>>;
-  /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル — 2026-08-03)。 */
+  /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル)。 */
   readonly expected_environments: Readonly<Record<string, string>>;
-  /** 受理後の有効 grant 集合(§6.2 再 grant 二層 — 2026-08-12)。 */
+  /** 受理後の有効 grant 集合(§6.2 再 grant 二層)。 */
   readonly expected_server_grants: readonly VectorServerGrant[];
   /** 受理後の環境ごとの最新チェックポイント(checkpoint の valid append のみ)。 */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
@@ -152,7 +152,7 @@ export const vectorKeys = chainVectors.keys as Readonly<
     }
   >
 >;
-/** checkpoint の values_digest 正規形の単体ベクター(§6.2 — 2026-08-27)。 */
+/** checkpoint の values_digest 正規形の単体ベクター(§6.2)。 */
 export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly name: string;
   readonly entries: readonly {

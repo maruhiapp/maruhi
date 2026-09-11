@@ -1,6 +1,6 @@
 // プロジェクト識別子のドメイン型。
 //
-// CRYPTO_SPEC §6.4(2026-08-02 追加): プロジェクト ID = genesis エントリの
+// CRYPTO_SPEC §6.4: プロジェクト ID = genesis エントリの
 // エントリハッシュ(hex 小文字 64 文字)。チェーンと ID を暗号学的に束縛する。
 
 import { Schema } from "effect";

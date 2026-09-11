@@ -6,7 +6,7 @@
 //
 // フラグメント(# 以降)はサーバーへ送信されない。`p/h/s` は招待リンクアンカー
 // (CRYPTO_SPEC §6.3 (a))、`iu/if` は相互確認(§6.5)の照合材料、`r` は付与予定
-// role の表示専用パラメータ(省略可 — 2026-08-15 追補。真実源は招待レコード)。
+// role の表示専用パラメータ(省略可。真実源は招待レコード)。
 //
 // <web-origin> には CLI セッションの server origin を使う(B1b 裁定):
 // 招待は 7 日で失効するため(§15-1)、Web 受諾画面が別 origin に載る将来が
@@ -39,7 +39,7 @@ export interface InviteLinkData {
   readonly headSeq: number;
   readonly inviterUserId: string;
   readonly inviterKeyFingerprintHex: string;
-  /** 表示専用の付与予定 role(r — 省略可。追補前のリンクは null)。 */
+  /** 表示専用の付与予定 role(r — 省略可。省略時は null)。 */
   readonly role: InviteRole | null;
 }
 
@@ -152,7 +152,7 @@ export function parseInviteAcceptInput(
   raw: Redacted.Redacted<string>,
 ): InviteAcceptInput | { readonly kind: "rejected"; readonly reason: InviteInputRejection } {
   // 剥がす理由: リンク / トークンの構文解釈にはバイト列そのものが要る。入力は
-  // 引数層(`Argument.redacted` — ADR-0016 第 2 段階の invite 移行)から
+  // 引数層(`Argument.redacted` — ADR-0016)から
   // Redacted のまま届き、生値はこの関数の外へ出ない — トークンは再び Redacted で
   // 包んで返し、リンクの他パラメータ(p/h/s/iu/if/r)は非機密メタデータである
   const trimmed = Redacted.value(raw).trim();

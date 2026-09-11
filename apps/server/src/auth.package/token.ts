@@ -2,10 +2,9 @@
 //
 // - 形式: `maruhi_pat_` + Base62 乱数(256-bit 相当、43 文字)
 // - 検証: 提示トークンの SHA-256 を DB と照合し、タイミング安全比較で確認する
-// - 発行経路は CLI ログイン(§4 — 2026-08-31 追随。旧 device flow)のみ
-//   (2026-08-02 v1 線引き。管理系 = 自トークンの失効 + W3a の一覧・指定失効は
-//   ハンドラが TokenRepo を直接使う)
-// - expires_at は発行時に固定(§6 の既定 TTL — W3a)。期限切れ・失効・不明は
+// - 発行経路は CLI ログイン(§4)のみ(v1 線引き。管理系 = 自トークンの失効 +
+//   一覧・指定失効はハンドラが TokenRepo を直接使う)
+// - expires_at は発行時に固定(§6 の既定 TTL)。期限切れ・失効・不明は
 //   一様に匿名へ畳む(= 401。区別をワイヤに出さない)
 // - 生値・ハッシュをログに出さない(AUTH_SPEC §10)
 
@@ -43,7 +42,7 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
   if (expiresAtMs === null || expiresAtMs <= nowMs) {
     return anonymousPrincipal;
   }
-  // 判定を通過した主体は常に非 null の期限を持つ(裁定 CI — /auth/me の自己開示)
+  // 判定を通過した主体は常に非 null の期限を持つ(W3a 裁定 CI — /auth/me の自己開示)
   return {
     kind: "token",
     userId: record.userId,
@@ -83,7 +82,7 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
         const expiresAtMs = createdAtMs + ttlMs;
         // 同一 (user, name) は再発行 = ローテーション(旧行の失効と新行の挿入を
         // atomic batch で行う)。別名の新規発行は repo の条件付き INSERT で
-        // ユーザー上限と同じ文に畳む(deepsec S7): サービス側の count → insert は
+        // ユーザー上限と同じ文に畳む: サービス側の count → insert は
         // 異名の並行発行が同じ under-limit を観測して上限を超えられる
         const admitted = yield* tokens.issueForUserWithinLimit(
           {

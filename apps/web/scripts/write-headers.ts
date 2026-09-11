@@ -90,7 +90,7 @@ if (metaCspMatch?.[1] === undefined || !metaCspMatch[1].includes("script-src 'no
 // ルート相対)。href 属性に限り、自リポジトリの GitHub(CLI 導入への導線のナビゲーション
 // リンク)を許可する。実行時の強制は CSP(default-src 'none' 基調)が担い、この検査は
 // ビルド時に早く落とすための二重化
-// (プロトコル相対 `//` はルート相対と区別して弾く — pullfrog レビュー反映)
+// (プロトコル相対 `//` はルート相対と区別して弾く)
 const allowedExternalNavPrefix = "https://github.com/maruhiapp/maruhi";
 for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
   const ok =
@@ -106,8 +106,7 @@ for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
 // ソースの字面がそのまま配信バイトであること)をバイト等価で固定する。将来の
 // ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する。/theme.css は
 // 上で本スクリプト自身が無変換に書いており(vite を経由しない)、同じ実行内で比べても
-// 常に一致するため対象にしない(pullfrog レビュー反映 — 代わりに下のトークン解決
-// 検査が /theme.css の契約を担う)
+// 常に一致するため対象にしない(代わりに下のトークン解決検査が /theme.css の契約を担う)
 const sourceDir = join(import.meta.dirname, "..", "public");
 for (const asset of ["invite.html", "pages.css"]) {
   if (
@@ -119,7 +118,7 @@ for (const asset of ["invite.html", "pages.css"]) {
   }
 }
 
-// ---- pages.css のトークン解決検査(DP4 改訂 1 — pullfrog レビュー反映) ----
+// ---- pages.css のトークン解決検査(DP4 改訂 1) ----
 // スクリプトなしページが読むトークン源は /theme.css(= theme/maruhi.css)だけで、
 // ダッシュボードが追加で読む Astryx core の stylesheet(reset.css / astryx.css)は
 // 届かない。theme/maruhi.css は Astryx core のトークン(font-weight 系)を**参照する
@@ -129,7 +128,7 @@ for (const asset of ["invite.html", "pages.css"]) {
 // 固定する: 名前の存在だけでは足りない — theme/maruhi.css には「定義はあるが値が Astryx
 // core のトークンを var() で参照する」ものが 16 種以上あり(`--text-heading-1-weight:
 // var(--font-weight-semibold)` 等)、それを pages.css が使うと名前の検査は通って値だけ
-// 落ちる(pullfrog 再レビュー反映 — 推移的に辿り、未定義に当たったら経路つきで落とす)。
+// 落ちる(推移的に辿り、未定義に当たったら経路つきで落とす)。
 // フォールバック付き `var(--x, …)` は pages.css で使わない(改訂 1 の裁定)ので考慮しない
 const pagesCss = readFileSync(join(sourceDir, "pages.css"), "utf8");
 const themeCss = readFileSync(themeSource, "utf8");
@@ -174,7 +173,7 @@ if (unresolvedPaths.length > 0) {
 // できず誤検知するため棄却した(実測は session-41 裁定 BG)。正当な `hash` 利用が
 // 将来必要になったら、この検査が落ちて明示的な裁定を強制する(「インライン script は
 // 厳密に 1 本」検査と同じ、上流変化で意図的に割れる型)
-// 走査は publicDir 全体の再帰列挙(pullfrog レビュー反映): assets/ 直下・非再帰に
+// 走査は publicDir 全体の再帰列挙: assets/ 直下・非再帰に
 // 固定すると、ビルドの出力レイアウト変更(サブディレクトリ・.mjs 化)で検査が
 // 落ちずに被覆だけ縮む。再帰なら被覆が自己維持される
 const bundleFiles = [
@@ -206,7 +205,7 @@ const inviteCsp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-// HSTS(セキュリティレビュー L-5): workers.dev はプリロード済みだが、routes で
+// HSTS: workers.dev はプリロード済みだが、routes で
 // custom domain を割り当てた場合の初回接続ダウングレードを塞ぐ。includeSubDomains
 // は付けない(_headers はこのアプリの応答にしか効かず、デプロイ先ゾーンの
 // サブドメイン構成はセルフホスト側の管轄のため、越権のリスクだけがある)
@@ -242,7 +241,7 @@ if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
 // ---- _redirects: near-miss パスの /invite への正規化 ----
 // 資産キー照合は大文字小文字を区別するため、`/Invite` 等の大小変種はアセットに一致せず
 // SPA フォールバック(script を持つシェル)へ落ちる。系統的な発生源(モバイルの
-// 自動大文字化・貼り付け時の末尾ゴミ〔小文字パスに落ちる — pullfrog 指摘〕)を含む
+// 自動大文字化・貼り付け時の末尾ゴミ〔小文字パスに落ちる〕)を含む
 // 「大小変種 × 任意の末尾続き」のクラス全体を、機械生成した _redirects で /invite へ
 // 301 正規化して閉じる(フラグメントはブラウザがリダイレクト越しに保持する)。
 //

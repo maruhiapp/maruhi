@@ -54,7 +54,7 @@ export interface CheckpointCheckedValue {
  * rejected の evidence は「検証済みデータとチェーン公証の矛盾 = 再実行では
  * 解消しない証拠」かの型付け(false = 応答の取得ビューより後に基準が前進した
  * 良性競合でも説明できる形 — 再 pull で解消しうるため、rotate の巡末分類が
- * 証拠中断へ格上げしない。PR #100 Bugbot 指摘)。
+ * 証拠中断へ格上げしない)。
  */
 export type CheckpointIntegrityOutcome =
   | { readonly kind: "ok" }

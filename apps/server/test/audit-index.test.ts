@@ -1,5 +1,5 @@
-// audit_events の対象・鍵 FP 索引の部分索引化(src/do-schema.ts 末尾ステップ —
-// 2026-09-02 監査ログの成長密度対策 ①)のテスト。
+// audit_events の対象・鍵 FP 索引の部分索引化(src/do-schema.ts — 監査ログの
+// 成長密度対策 ①)のテスト。
 //
 // workerd 実環境の SqlStorage で 3 点を固定する:
 // (a) マイグレーション適用後のスキーマが `WHERE <列> IS NOT NULL` の部分索引を持つ
@@ -9,7 +9,7 @@
 //     含意する」を実証で固定する(含意されなくなる書き換えは fail-open ではなく
 //     フルスキャンだが、監査表は最大 10 GB — 性能退行として検出したい)
 // (c) 効果の実測: 10,000 行の var.read(対象・鍵 FP が全て NULL)で、素の索引と
-//     部分索引の databaseSize 差を測る(PR 本文の数値の出所)
+//     部分索引の databaseSize 差を測る
 //
 // このファイルは専用の DO 名を使い、他のテストのプロジェクト DO と storage を
 // 共有しない。audit-store のクエリ文は SqlStorage を薄く包んで捕捉し、同じ文を
@@ -190,7 +190,7 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
       const store = makeAuditStore(sql);
       store.appendManySync(Array.from({ length: ROWS }, (_row, index) => readEvent(index)));
       const partial = sql.databaseSize;
-      // 旧形(素の索引)へ戻して再構築 — NULL 行にも索引エントリが積まれる
+      // 素の索引(述語なし)で再構築 — NULL 行にも索引エントリが積まれる
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
         sql.exec(`DROP INDEX ${name}`);
         sql.exec(`CREATE INDEX ${name} ON audit_events (${column}, seq)`);
@@ -207,7 +207,7 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
       }
       const rebuildMs = Date.now() - startedAt;
       // 既存 DO が実際に通る向き(素の索引 → 部分索引)の後の実測。解放された
-      // ページが databaseSize(#134 のガードが読む指標)に戻るかを固定する
+      // ページが databaseSize(容量ガードが読む指標)に戻るかを固定する
       const rebuilt = sql.databaseSize;
       sql.exec("DELETE FROM audit_events");
       return { partial, full, rebuildMs, rebuilt };

@@ -501,7 +501,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("forward meta injection");
   });
 
-  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓 — bugbot 指摘の回帰)", async () => {
+  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓)", async () => {
     // 有界再同期の形では pullEpoch は応答取得**前**ビュー(= 旧エポック)に
     // 据え置かれる一方、床マニフェストは epoch 2 を検証済みで知っている。
     // 基準を pullEpoch だけにすると、旧エポックを焼き込んだ前進 manifestVersion
@@ -872,12 +872,12 @@ function makeLegacyServer(input: {
 
 describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
   it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査が検出する", async () => {
-    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する
-    // (bugbot 指摘の回帰)。2026-08-27(PR-F3b)以降は境界 checkpoint が
-    // 受理 version の基準線をチェーン上にも固定するため、旧マニフェストを
-    // 配布し続けるサーバー(受理した v2 の握り潰し)は床検査(規則 (a))より
-    // 先に §4.3 検証規則 (4)(checkpoint-regressed)で落ちる — 検出層が
-    // 増えただけで、握り潰しが同一実行内で落ちる固定点は変わらない
+    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する。
+    // 境界 checkpoint(PR-F3b)が受理 version の基準線をチェーン上にも固定する
+    // ため、旧マニフェストを配布し続けるサーバー(受理した v2 の握り潰し)は
+    // 床検査(規則 (a))より先に §4.3 検証規則 (4)(checkpoint-regressed)で
+    // 落ちる — 検出層が増えただけで、握り潰しが同一実行内で落ちる
+    // 固定点は変わらない
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
@@ -1003,7 +1003,7 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
   it("--init-manifest は「確認だけ」の早期完了を取らない(--reason なしは usage エラー)", async () => {
     // 未初期化環境 + 未完了なし + --reason なし = 従来なら up-to-date の
     // 早期 return。初期化が必要な実行でこれを取ると、成功に見えるのに v1 が
-    // 発行されない(bugbot 指摘)。複合送信経路へ倒し、理由を要求する
+    // 発行されない。複合送信経路へ倒し、理由を要求する
     const state = makeLegacyServer({});
     const env = await startEnv(state.handlers);
     expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(2);
@@ -1013,8 +1013,8 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
 
   it("--init-manifest は中断復旧(複合なしの再開)を取らず、新エポックの複合で v1 を発行する", async () => {
     // エポックは 2 まで進んでいるが epoch 1 の stale 値が残る形(中断復旧の
-    // 入口)。従来の再開経路は複合を送らないため v1 が発行されない(bugbot
-    // 指摘)。初期化が必要な実行は --new-epoch と同じく新エポックの複合へ倒す
+    // 入口)。従来の再開経路は複合を送らないため v1 が発行されない。初期化が
+    // 必要な実行は --new-epoch と同じく新エポックの複合へ倒す
     const staleEntry = {
       variableId: "va",
       statement: alphaStatement,

@@ -444,7 +444,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 何のための控えかが消える(両方が要る)
     expect(message).toContain("you can put it back");
     // 控えは master 秘密鍵そのもの。作らせる以上、消す指示まで書く
-    // (この PR の主題は「鍵素材を残さない」こと — 手作業の控えも同じ)
+    // (鍵素材を残さない規律は手作業の控えにも同じく及ぶ)
     // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める
     // 書き方にしない(この経路では recover 自体が失敗しうる)
     expect(message).toContain("once it is no longer needed");

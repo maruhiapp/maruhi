@@ -103,9 +103,9 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
   });
 
   it("appends the declared cursor name from inside the paged builders (裁定 CB)", () => {
-    // 呼び出し側は名前に触れない(取り違えは構文上あり得ない — PR #107
-    // pullfrog 指摘の反映)。ビルダーが実際に付ける名前をここで固定する:
-    // 期待値のリテラルは意図的(ビルダー同士の同語反復を避ける)
+    // 呼び出し側は名前に触れない(取り違えは構文上あり得ない)。ビルダーが
+    // 実際に付ける名前をここで固定する: 期待値のリテラルは意図的
+    // (ビルダー同士の同語反復を避ける)
     expect(apiPaths.projects("x")).toBe("/projects?after=x");
     expect(apiPaths.auditEvents(SAMPLE_PROJECT_ID, "y")).toBe(
       `/projects/${SAMPLE_PROJECT_ID}/audit/events?before=y`,
@@ -145,10 +145,9 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
         // サブパス import(effect/schema 等 — 本リポジトリの主流形)も対象。
         // 行頭アンカー(m): import 文はトップレベル宣言で行頭に現れる —
         // アンカーなしだとコメント中の語「import」から実 import 文の from 句
-        // までを 1 マッチに繋げて誤検知する(W3b で実測 — api.ts の裁定 CN
-        // 注記コメントが最初の踏み抜き)。再 export(`export { X } from …` /
+        // までを 1 マッチに繋げて誤検知する(api.ts の裁定 CN 注記コメントが
+        // 最初の踏み抜き)。再 export(`export { X } from …` /
         // `export * from …`)も同じ実行コードをバンドルへ引き込むため対象
-        // (PR #109 pullfrog 指摘)
         /^(?:import|export)\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
         new Set(),
       ),
@@ -159,7 +158,7 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
   it("keeps route() declarations inside the SPA route catalog (裁定 BZ/CA)", () => {
     // SPA_ROUTES の権威性は「route() の宣言は routes.ts のみ」という規律に
     // 依存する(App.tsx へのインライン route() は非交差スイープを黙って
-    // 狭める — PR #107 pullfrog 指摘)。bindRoute( は別名なので誤検知しない
+    // 狭める)。bindRoute( は別名なので誤検知しない
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(srcRoot, /\broute\(/, new Set([join(srcRoot, BUILDER_SPA_MODULE)])),

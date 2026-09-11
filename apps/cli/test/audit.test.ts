@@ -1,4 +1,4 @@
-// `maruhi audit`(AUDIT_SPEC §6 / §7 — C1)の統合テスト。
+// `maruhi audit`(AUDIT_SPEC §6 / §7 — Phase 2 C1)の統合テスト。
 //
 // 固定する性質:
 //  1. list は監査行を表示し、変数の表示名は検証済みステートメントからのみ解決
@@ -6,7 +6,7 @@
 //     区別表示され、表示名の位置に昇格しない(TCB 規律 — AUDIT_SPEC §7)
 //  2. chain.* ミラー行は検証済みチェーンと突合され(共有写像 chainMirrorEvent)、
 //     一致は 突合=OK、不一致は警告 + 終了コード 1。chain.* 外で chain_seq を
-//     名乗る行も無ラベル表示せず整合性違反にする(改竄の証拠 — §6 / S1)
+//     名乗る行も無ラベル表示せず整合性違反にする(改竄の証拠 — §6)
 //  3. verify はミラーの全単射検証(§1-5): 欠落(削除の隠蔽)・改変・重複の
 //     いずれも検出して終了コード 1
 //  4. invites / self は D1 側の行を表示し、self は要監視イベント
@@ -114,7 +114,7 @@ function mirrorRowsOf(built: BuiltChain): WireRow[] {
 /**
  * 監査イベントエンドポイントのモック: event / eventPrefix / before / limit を
  * サーバーと同じ意味論(seq 降順・row id カーソルの解決、不明な id は空ページ)で
- * 適用する。eventPrefix は前置一致(AUDIT_SPEC §7 — deepsec R1)。
+ * 適用する。eventPrefix は前置一致(AUDIT_SPEC §7)。
  */
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
   return (request) => {
@@ -259,7 +259,7 @@ function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = 
 describe("maruhi audit(list)", () => {
   it("集約形 var.read は件数の要約で出し、--expand-reads で 1 変数 1 行に展開する", async () => {
     const built = await baseChain();
-    // seq=5 は変数の列挙以外の payload(authMethod — 旧形なら recorded= に出ていた)を持つ
+    // seq=5 は変数の列挙以外の payload(authMethod)を持つ
     const rows = [
       ...mirrorRowsOf(built),
       aggregatedReadRow(4),
@@ -361,7 +361,7 @@ describe("maruhi audit(list)", () => {
     expect(errors).toContain("actor.user_id");
   });
 
-  it("chain.* 外で chain_seq を名乗る行は明示的な不信ラベル + 終了コード 1(S1)", async () => {
+  it("chain.* 外で chain_seq を名乗る行は明示的な不信ラベル + 終了コード 1", async () => {
     const built = await baseChain();
     const forged = {
       ...pushRow(4),
@@ -493,8 +493,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // head(3)の遠く先を名乗る偽造行 — 旧実装では「未検証」に数えられるだけで
-    // exit 0 +「検証 OK」になっていた(pullfrog 指摘)
+    // head(3)の遠く先を名乗る偽造行 — 「未検証」に数えて OK と言ってはならない
     rows.push({ ...template, id: idOf(50), seq: 50, chainSeq: 50000 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -503,15 +502,15 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
-  it("写像に無い chain.* 名を名乗る偽造行を検出する(deepsec R1)", async () => {
+  it("写像に無い chain.* 名を名乗る偽造行を検出する", async () => {
     const built = await baseChain();
     const rows = mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // 既知のミラー名を 1 つずつ完全一致で引く旧実装では、この行はそもそも
-    // 取得されず(欠落も重複も起きない)、exit 0 +「検証 OK」になっていた
+    // 既知のミラー名の完全一致だけで引くと、この行は取得されず(欠落も重複も
+    // 起きない)OK に見えてしまう — 前置一致で取得して未知の op として落とす
     rows.push({ ...template, id: idOf(9), seq: 9, event: "chain.role_granted" });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -521,7 +520,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
-  it("chain.* 外で chain_seq を名乗る偽造行も presence filter で取得して検出する(S1)", async () => {
+  it("chain.* 外で chain_seq を名乗る偽造行も presence filter で取得して検出する", async () => {
     const built = await baseChain();
     const rows = mirrorRowsOf(built);
     const forged = {
@@ -596,7 +595,7 @@ describe("maruhi audit invites / self", () => {
     expect(logs).toContain("inv-0001");
   });
 
-  it("D1 経路の chain_seq も無ラベル表示せず整合性違反にする(S1)", async () => {
+  it("D1 経路の chain_seq も無ラベル表示せず整合性違反にする", async () => {
     const built = await baseChain();
     const handlers = [
       ...(await makeAuditServer({ built, rows: mirrorRowsOf(built) })),

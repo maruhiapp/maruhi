@@ -46,7 +46,6 @@ function claimsDigestFor(token: VerifiedOidcToken): Effect.Effect<string, LeaseU
   if (audience === undefined) {
     // `aud` は存在する(複数あるだけ)ので missing-claim ではない — 運用者が
     // 理由コードを頼りに「存在する claim」を探しに行かないよう別語彙にする
-    // (pullfrog 指摘 — PR #65)
     return Effect.fail(new LeaseUnauthorizedError({ reason: "ambiguous-audience" }));
   }
   return Effect.flatMap(
@@ -104,7 +103,7 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
 export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
   handlers.handle("issue", ({ params, payload, request }) =>
     Effect.gen(function* () {
-      // 0. 発信元 IP の request-level レート制限(deepsec M5)。DO は名前指定で
+      // 0. 発信元 IP の request-level レート制限。DO は名前指定で
       // 暗黙生成されるため、有効な OIDC トークンさえあれば異なる project ID で
       // DO(constructor がテーブルを作る)を量産できる — projectStub の手前で
       // 生成レートを有界にする。DO 内の per-project 窓(認可後 — §11-2 の存在

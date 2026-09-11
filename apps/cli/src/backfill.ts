@@ -20,8 +20,8 @@ import type { VerifiedProject } from "./sync.ts";
 
 /**
  * 登録試行の結果(409 = 既存スロット)。`storedRecipientEncPubHex` は 409 が
- * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15。
- * 追補以前のサーバーは載せない = null)。
+ * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6。追補以前の
+ * サーバーは載せない = null)。
  */
 export type RegisterOutcome =
   | { readonly kind: "ok" }
@@ -80,7 +80,7 @@ export function backfillEnvironmentFor(input: {
         // §7: 全メンバーは全エポックの DEK を受け取る。欠けは毒ラップ・欠落の
         // 兆候なので黙って飛ばさない(§12-6 の修復経路を案内)。単純な再実行では
         // 解消しない(自分宛ラップが無い限り毎回同じ欠けに当たる)ため、
-        // 「再実行してください」とは言わない(pullfrog レビュー反映)
+        // 「再実行してください」とは言わない
         return yield* Effect.fail(
           cliError(
             `No DEK wrap addressed to you exists for epoch ${epoch} of environment ${input.environmentId} (contradicts the all-epoch distribution of §7). Have another member who holds wraps for every epoch run this operation, or fill the gap via the repair path (re-registering wraps addressed to you) and re-run`,

@@ -1,11 +1,10 @@
 // ログ衛生の回帰検査(hosted-ops.md §1 Workers Logs 行・DC-2)。
 //
-// 「リクエスト URL(= /projects/:id の capability — AUTH_SPEC §11-2)がログストアに残る」
-// 欠陥は 2 回起きた: PR #137 の invocation log(wrangler 設定で塞ぐ — CI 8c)と、
-// 2026-09-03 の演習で見つかった Effect `HttpMiddleware.logger`("Sent HTTP response" に
-// `http.url` を注釈 — index.ts の disableLogger で塞ぐ)。設定検査はコード経路の退行を
-// 見ないため、ここで「正常系リクエストを worker の fetch に通しても console のどこにも
-// リクエストパスが現れない」ことを機械的に固定する(PR #139 pullfrog 指摘)。
+// リクエスト URL(= /projects/:id の capability — AUTH_SPEC §11-2)がログストアに残る
+// 経路は 2 つある: invocation log(wrangler 設定で塞ぐ)と Effect `HttpMiddleware.logger`
+// ("Sent HTTP response" に `http.url` を注釈 — index.ts の disableLogger で塞ぐ)。
+// 設定検査はコード経路の退行を見ないため、ここで「正常系リクエストを worker の fetch に
+// 通しても console のどこにもリクエストパスが現れない」ことを機械的に固定する。
 //
 // vitest-pool-workers ではテストと worker が同じ isolate で動くため、テスト側の
 // console spy が worker 側の console 呼び出しを捕まえる(storage-guard.test.ts と同じ型)。

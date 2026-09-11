@@ -1,4 +1,4 @@
-// `maruhi server revoke`(CRYPTO_SPEC §7 / §6.2 — Wave 2 A1)の統合テスト。
+// `maruhi server revoke`(CRYPTO_SPEC §7 / §6.2)の統合テスト。
 //
 // 固定する性質:
 //  1. revoke_server の追記(payload = 失効対象のサーバー鍵 FP)と、§7 の
@@ -98,7 +98,7 @@ interface RotateBody {
   readonly deks: readonly WrappedDek[];
   /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  /** 境界 checkpoint(§12-4 の必須同梱)。 */
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 

@@ -1,4 +1,4 @@
-// レイアウト v2 — 値なしスキーマのサーバー受理面(S2)の統合テスト。
+// レイアウト v2 — 値なしスキーマのサーバー受理面の統合テスト。
 //
 // 対象: AUTH_SPEC §12-5「レイアウト v2・declared・activation の受理」全項 +
 // §12-8(description の受理検査)+ §12-11(schemaPolicy)+ §12-7(declared の
@@ -353,8 +353,8 @@ describe("declared 作成と activation(§12-5)", () => {
       dek,
     }).then((response) => expect(response.status).toBe(200));
     // version 1(CAS で落ちる形)と latest + 1(CAS を通過する形)の両方で
-    // 同じ 422 になること — 対象判定を値 CAS に依存させない(pullfrog 指摘:
-    // version 1 固定のヘルパでは「active 変数を狙えない」性質を検証できない)
+    // 同じ 422 になること — 対象判定を値 CAS に依存させない(version 1 固定の
+    // ヘルパでは「active 変数を狙えない」性質を検証できない)
     for (const version of [1, 2]) {
       const response = await activateVariableRequest({
         variableId: VAR,
@@ -373,8 +373,8 @@ describe("declared 作成と activation(§12-5)", () => {
   });
 
   it("disabled 下の active v1 変数は activation 経路でも v2 へ昇格できない(§12-11 迂回の遮断)", async () => {
-    // pullfrog 指摘の再現形: activation は schemaPolicy を検査しない(declared の
-    // 直前は必ず v2 のため)が、その免除は対象の declared 限定が前提。ガードが
+    // activation は schemaPolicy を検査しない(declared の直前は必ず v2 の
+    // ため)が、その免除は対象の declared 限定が前提。ガードが
     // 無いと disabled のまま v1 active 変数 + version latest+1 で v2 再発行が通る
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

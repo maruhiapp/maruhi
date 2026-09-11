@@ -1,7 +1,7 @@
 // @maruhi/crypto の CryptoResult(kind 判別 union)を Effect の型付きエラーへ
 // マッピングするラッパー。
 //
-// 設計判断(セッション 04 裁定 (b)、2026-08-02 確定): crypto は Effect 非依存の
+// 設計判断: crypto は Effect 非依存の
 // 純粋関数 + エラー値、Effect ラップは core 側で行う。判別は crypto 側が `kind`、
 // Effect 側は Data.TaggedError の `_tag`(タグ名は "Crypto" プレフィックス)。
 //

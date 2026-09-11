@@ -11,7 +11,7 @@
 // 署名の意味論は「writer_user_id が、チェーン位置 (chain_head_hash, chain_head_seq)
 // の状態を知った上で、この座標のこの暗号文を書いた」の帰属・内容真正性・認可時点
 // 束縛である(§4.1)。平文の正しさ・鮮度は証明しない。値署名は名前を認証しない
-// (名前 ↔ ID の真正性は §4.2 のメタステートメント — PR-3)。
+// (名前 ↔ ID の真正性は §4.2 のメタステートメント)。
 // 宣言ヘッド・認可時点・prev 連鎖の検証は value-verify.ts(履歴照会は
 // chain-history.ts)が担い、本モジュールは正規化・署名・ハッシュの低水準のみ。
 
@@ -102,15 +102,15 @@ function contextInvalidField(context: ValueSignatureContext): string | null {
     return "context suite";
   }
   // projectId / environmentId の非空検査は防御的一貫性のため(LP により空でも
-  // 符号化は無曖昧 = 脆弱性ではないが、他フィールドと検査水準を揃える —
-  // session-15 レビュー①)。空の座標を署名する正当な呼び出しは存在しない
+  // 符号化は無曖昧 = 脆弱性ではないが、他フィールドと検査水準を揃える)。
+  // 空の座標を署名する正当な呼び出しは存在しない
   if (context.projectId.length === 0) {
     return "context projectId";
   }
   if (context.environmentId.length === 0) {
     return "context environmentId";
   }
-  // variable id も他の座標と同水準で非空を要求する(deepsec B13)。API schema は
+  // variable id も他の座標と同水準で非空を要求する。API schema は
   // 空をワイヤで拒否するため外部からの forgery 経路ではないが、空の座標を署名
   // する正当な呼び出しは存在しない(meta-sign.ts の variableId 検査と同じ規律)
   if (context.variableId.length === 0) {

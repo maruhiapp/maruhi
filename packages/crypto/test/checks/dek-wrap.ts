@@ -77,7 +77,6 @@ async function serverKeyPair() {
 }
 
 async function vectorOpenChecks(c: Checks): Promise<void> {
-  // info 構築がベクターと一致
   c.push("dek-wrap: info construction", toHex(buildDekWrapInfo(baseContext())) === base.info_hex);
 
   // 固定ベクターの Open(KeyPair は非抽出でインポート)

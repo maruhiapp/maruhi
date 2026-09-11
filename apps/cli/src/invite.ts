@@ -1,5 +1,4 @@
-// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 —
-// Wave 2 B1b)。
+// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5)。
 //
 // - create: 招待の発行 + §15-3 リンクの組み立て(アンカー = 発行時点の検証済み
 //   ヘッド)+ 発行ピンの保存(member add 時のサーバー申告突合の材料)
@@ -445,7 +444,7 @@ export function inviteAcceptOp(input: {
 > {
   return Effect.gen(function* () {
     // §15-3 の順序: 相互確認 → 鍵生成〔未生成時〕→ 受諾署名 → 受諾 →
-    // アンカーのピン留め(受諾成立後のみ — 同節の 2026-08-15 追補)
+    // アンカーのピン留め(受諾成立後のみ — 同節の追補)
     const { projectId, token } =
       input.target.kind === "link"
         ? yield* prepareLinkAccept(input.target.link, input.expectInviterFingerprintHex)
@@ -525,7 +524,7 @@ export function inviteAcceptOp(input: {
 
 /**
  * リンク受諾の前段(§6.5): 招待者 FP の相互確認。アンカーのピン留めは
- * **受諾の成立後**に行う(pinAnchorAfterAccept — pullfrog レビュー反映):
+ * **受諾の成立後**に行う(pinAnchorAfterAccept):
  * 受諾成立前に書くと、在籍中のプロジェクトの projectId を持つ細工リンクを
  * 開いただけ(受諾は署名検証 422 / 410 で失敗する)で正規アンカーが偽の
  * ヘッドへ差し替わり、以後の全同期が硬い証拠として恒久失敗する自己 DoS 経路に
@@ -550,12 +549,12 @@ function prepareLinkAccept(
  * (verifiedAtSeq ≠ null)の既存アンカーは上書きしない**: チェーンは
  * append-only であり検証済みアンカーの包含検査は以後も常に成立する(古くても
  * 無害・検出力は同等)ため、置換には利得がなく、上書き経路を一切残さない方が
- * 攻撃面が狭い(再招待の新アンカーより検証済みの実績を優先 — pullfrog
- * レビュー反映)。未照合アンカーは最新の受諾で置き換える(最後の正規受諾が勝つ)。
+ * 攻撃面が狭い(再招待の新アンカーより検証済みの実績を優先)。未照合アンカーは
+ * 最新の受諾で置き換える(最後の正規受諾が勝つ)。
  *
  * 戻り値 = アンカーが有効に存在するか(保存成功 or 検証済み維持)。呼び出し側の
  * 完了報告が「初回同期で機械照合される」と案内してよいかの根拠になる — 警告で
- * 劣化を明示した直後に照合を約束する矛盾出力を作らない(pullfrog レビュー反映)。
+ * 劣化を明示した直後に照合を約束する矛盾出力を作らない。
  */
 function pinAnchorAfterAccept(
   link: InviteLinkData,
@@ -755,7 +754,7 @@ export function inviteListOp(input: {
       const pin = issuedPinOf(input.pins, row.id);
       if (pin === undefined) {
         // 別端末発行は正当なので integrity failure にはしないが、「照合なし」を
-        // 「照合成功」と同じ無言状態にしない(deepsec 08-27 follow-up)
+        // 「照合成功」と同じ無言状態にしない
         yield* logNote(
           `this machine has no issuance pin for invite ${displayText(row.id)} (it may have been issued on another device). The token_hash / role cross-check was not performed; confirm the displayed role matches what was intended at issuance`,
         );

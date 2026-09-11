@@ -1,7 +1,7 @@
 // SPA ルート空間と run_worker_first の非交差スイープ(裁定 BZ — session-43 §12)。
 //
-// 裁定 BO は「SPA は /dashboard 前置、API は /auth・/projects・/invites 前置」で
-// 両空間を素に分離した。この分離の半分(API 側の被覆)はサーバー側の
+// 裁定 BO(session-43 §3)は「SPA は /dashboard 前置、API は /auth・/projects・/invites
+// 前置」で両空間を素に分離した。この分離の半分(API 側の被覆)はサーバー側の
 // serving-topology.test.ts が検査するが、逆方向 —「SPA のルートが Worker に
 // 飲まれない」— はこれまで手検証だった: run_worker_first に過剰な前置
 // (例: `/*`)が入ると、SPA ルートへの navigation が Worker の 404 JSON に

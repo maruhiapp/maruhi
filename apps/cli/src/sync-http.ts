@@ -1,4 +1,4 @@
-// `maruhi sync` の http ドライバ(SY2 第 2 段 — integration-options.md §3
+// `maruhi sync` の http ドライバ(第 2 段 — integration-options.md §3
 // 補足 13 W1「CI と未導入時 = http」/ 補足 14 M2「プリセットは宣言的」/ 補足 15 X2
 // 「統合トークンは普通の変数」)。
 //
@@ -14,7 +14,7 @@
 //   - 統合トークンは `Redacted` のまま `HttpClientRequest.bearerToken` に渡す
 //     (上流が内側で剥がす — api.ts と同じ理由で手書きのヘッダー組み立てをしない)
 //
-// ベンダー API の実物(2026-09-07 に実装で確かめた):
+// ベンダー API の実物(実装で確かめた):
 //   - wrangler 4.128.0 `secret bulk` = `PATCH /accounts/{account}/workers/scripts/
 //     {script}/secrets-bulk`、`Content-Type: application/merge-patch+json`、本文
 //     `{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}`(null =
@@ -29,7 +29,7 @@
 //     `env rm` = `GET /v10/projects/{id}/env?target=&gitBranch=` で id を引いてから
 //     `DELETE /v10/projects/{id}/env/{envId}`。team は `?teamId=`。
 //     429 / Retry-After を CLI も再試行する(sleep + skew)
-//   - Netlify(SY4 — 2026-09-08 に open-api.netlify.com の swagger 2.57.1・docs.netlify.com・
+//   - Netlify(open-api.netlify.com の swagger 2.57.1・docs.netlify.com・
 //     netlify-cli の `env:set` / `env:unset` で確かめた): base `https://api.netlify.com/api/v1`、
 //     環境変数は**アカウント(チーム)単位**のエンドポイントに `site_id` クエリでサイトを
 //     指す。`POST /accounts/{account_id}/env?site_id=`(配列。**新規作成**)、
@@ -430,7 +430,7 @@ export const HTTP_PRESETS = {
         },
       },
       // PATCH は is_secret を変えられない(前提 (1))。非 secret で既にある変数に secret の
-      // つもりの値を置かない(pullfrog 指摘 — 改訂 1)
+      // つもりの値を置かない
       updateGuards: [
         {
           field: "is_secret",
@@ -936,7 +936,7 @@ function readVercel(
   }
   if (!("created" in body)) {
     // 書き込みの 2xx に `created` が無い = 期待した形の応答でない(schema の変化・
-    // 中継の応答)。届いたと読まない(pullfrog 指摘)
+    // 中継の応答)。届いたと読まない
     return {
       delivered: [],
       failure: {
@@ -1265,7 +1265,7 @@ function createOrUpdate(
     const listing = yield* fetchListing(input, write.list);
     if ("failure" in listing) {
       // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
-      // 言わない — 何が失敗したかは一覧の失敗として言う(pullfrog 指摘・改訂 1)
+      // 言わない — 何が失敗したかは一覧の失敗として言う
       return {
         delivered: [],
         failure: {
@@ -1312,8 +1312,7 @@ function writeOneByOne(
       const listed = existing.get(item.name);
       // 1 変数の送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、この
       // バッチで先に届いた名前を失わない: その変数の失敗として報告し、届いた分はレシートへ
-      // (create-or-update は書き込み全部が 1 バッチなので、落とすと実行全体の進みが消える —
-      // pullfrog 指摘・改訂 4)
+      // (create-or-update は書き込み全部が 1 バッチなので、落とすと実行全体の進みが消える)
       const result = yield* (
         listed === undefined
           ? createOrRecover(input, write, one)
@@ -1363,7 +1362,7 @@ function updateOne(
  * 一覧に無い名前: create を送る。create は upsert でない(既存 key を拒む)ので、届いた
  * のに応答が失われて再送された形(`send` のリトライ)や、一覧と送信の間に同名が作られた
  * 競合では、同期先の失敗として返る。そのときは**一覧を引き直し**、名前があれば update に
- * 切り替える(応答の文言に依らない — Bugbot 指摘・改訂 2)。無ければ create の失敗をそのまま。
+ * 切り替える(応答の文言に依らない)。無ければ create の失敗をそのまま。
  */
 function createOrRecover(
   input: HttpTargetInput,
@@ -1377,7 +1376,7 @@ function createOrRecover(
       return created;
     }
     // 引き直しの一覧が失敗しても(通信層・試行の使い切り = 型付きエラー)create の失敗の
-    // 報告に戻す: ここで落とすと、同じバッチで先に届いた名前がレシートに残らない(Bugbot 指摘)
+    // 報告に戻す: ここで落とすと、同じバッチで先に届いた名前がレシートに残らない
     const listing = yield* fetchListing(input, write.list).pipe(
       Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
     );
@@ -1419,10 +1418,9 @@ function withRecheckFailure(
  * バッチの送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、その
  * バッチの失敗として返す: 呼び出し側(sync-plan.ts の runBatches)は前のバッチで
  * 届いた名前を畳んでいる途中で、ここで落とすとその進みごと消える(削除バッチの
- * 一覧・DELETE、upsert の 2 つ目以降のバッチ — pullfrog 指摘・改訂 5)。http の
- * 全プリセット・全バッチ種別に一様(exec の runInvocations も SY 系列の締めで
- * 同じ形になった — 起動の失敗をその呼び出しの失敗に畳む)。create-or-update の
- * 書き込みは中で 1 変数ずつ受け、届いた分を保つ。
+ * 一覧・DELETE、upsert の 2 つ目以降のバッチ)。http の全プリセット・全バッチ
+ * 種別に一様(exec の runInvocations も同じ形 — 起動の失敗をその呼び出しの
+ * 失敗に畳む)。create-or-update の書き込みは中で 1 変数ずつ受け、届いた分を保つ。
  */
 export function runBatch(
   input: HttpTargetInput,
@@ -1467,7 +1465,7 @@ function lookupAndRemove(
     const listing = yield* fetchListing(input, spec.list);
     if ("failure" in listing) {
       // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
-      // 言わない(pullfrog 指摘・改訂 1)
+      // 言わない
       return {
         delivered: [],
         failure: {
@@ -1480,7 +1478,7 @@ function lookupAndRemove(
     const looked = lookupIds(listing.items, spec, name, input.options);
     if (looked.ids.length === 0 && !listing.complete) {
       // 一覧に続きがあるのに名前が無い: 「消えている」とは言えない。届いたと記録せず
-      // レシートに残す(次の apply が再び試す — pullfrog 指摘。fail-closed)
+      // レシートに残す(次の apply が再び試す — fail-closed)
       return {
         delivered: [],
         failure: {

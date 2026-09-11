@@ -1,7 +1,7 @@
-// 運用(H3)のリポジトリ — docs/notes/hosted-ops.md §2-A / §2-B / §4-2 / §6。
+// 運用のリポジトリ — docs/notes/hosted-ops.md §2-A / §2-B / §4-2 / §6。
 //
 // 監査ログではない運営限定の可変状態(ops_counters / ops_backups / ops_state)と、
-// 既存の監査行(user_audit_events の auth.* — AUDIT_SPEC §3.1 が「H3 のトリップ
+// 既存の監査行(user_audit_events の auth.* — AUDIT_SPEC §3.1 が「運用のトリップ
 // ワイヤはこの行を数える」と規定)の窓集計。Drizzle の型はこの境界の外に出さない。
 
 import { and, asc, count, eq, gt, gte, isNull, lt, or, type SQL, sql } from "drizzle-orm";
@@ -62,7 +62,7 @@ export type OpsBackupAttempt =
   | {
       /**
        * 上限超過で退避しない(hosted-ops §4-2)。失敗ではない — 連続失敗カウンタを
-       * 触らず、`backup_oversize_projects` だけを点灯させる(PR #137 レビュー)。
+       * 触らず、`backup_oversize_projects` だけを点灯させる。
        */
       readonly kind: "oversize";
       readonly storageLevel: OpsStorageLevel;

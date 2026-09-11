@@ -1,6 +1,6 @@
 // ブラウザ(Chromium headless)でのテスト実行(CRYPTO_SPEC §11)。
 // ルート vitest.config.ts の glob には載せず、CI の独立ステップ(Playwright
-// Chromium 導入後)/ `bun run test:browser` から実行する(spike-c の構成)。
+// Chromium 導入後)/ `bun run test:browser` から実行する。
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 

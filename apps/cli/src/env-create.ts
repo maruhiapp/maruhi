@@ -1,4 +1,4 @@
-// 環境作成の複合リクエスト(AUTH_SPEC §12-4。2026-08-03 の環境作成チェーン op 化):
+// 環境作成の複合リクエスト(AUTH_SPEC §12-4):
 // `create_environment` チェーンエントリ(エポック 1 の DEK コミットメント込み —
 // CRYPTO_SPEC §5.2 / §6.2)+ `EnvironmentMetaStatement`(metaVersion 1 — §4.2。
 // 表示名は署名前に NFC 正規化し、宣言ヘッドは追記前の現ヘッド = 同梱エントリの
@@ -9,13 +9,13 @@
 // 成功の定義(AUTH_SPEC §12-10 (3) — 1-E′): 2xx は輸送層の事実でしかない。
 // 複合の効果確認は**チェーン同期**で行う — 検証済みチェーン上に自エントリ
 // (エポック 1 の DEK commitment が自分の生成した DEK のもの)を確認してから、
-// 自己発行マニフェスト込みの v1 床(空変数集合 — session-31 §3 M1-A3)を確立し、
+// 自己発行マニフェスト込みの v1 床(空変数集合 — session-31 §3)を確立し、
 // 成功を報告する。送信前には intent レコード(§6.3 記録規律 (ii) — 3-F)を
 // 床ログへ追記する(応答消失・クラッシュ時は次の実行の照合が解決する)。
 //
 // ラップ集合の生成は dek-wrap.ts の共有実装(env-rotate.ts と共通)。
 // grant_server が有効で作成環境が開示スコープに含まれる場合、完全集合は
-// サーバー鍵宛ラップを含む(§12-4 — 2026-08-12 の受信者クラス server 実装)。
+// サーバー鍵宛ラップを含む(§12-4)。
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import { AuditHeadNotReadyError, ChainHeadConflictError } from "@maruhi/api-schema";
@@ -135,7 +135,7 @@ interface AcceptedCreation {
  *
  * 受理後はチェーン同期で効果を確認し(§12-10 (3) — チェーン上の自エントリの
  * エポック 1 commitment が自分の生成した DEK のもの)、確認を通過して初めて
- * v1 床(空変数集合 + 自己発行マニフェスト — M1-A3)を確立し成功を報告する。
+ * v1 床(空変数集合 + 自己発行マニフェスト)を確立し成功を報告する。
  */
 export function envCreateOp(input: {
   readonly client: MaruhiClient;
@@ -226,7 +226,7 @@ export function envCreateOp(input: {
             return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
           }),
         // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
-        // (pullfrog PR #102 レビュー対応 — 到達可能になった場合の誤案内を防ぐ)
+        // (到達可能になった場合の誤案内を防ぐ)
         exhaustedMessage: `The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
       },
     );
@@ -270,7 +270,7 @@ function attemptCreate(
       authorUserId: input.signerUserId,
       signingKey: input.signingKeyPair.privateKey,
     });
-    // 同梱マニフェスト(§12-4 — 2026-08-18): manifestVersion 1・変数
+    // 同梱マニフェスト(§12-4): manifestVersion 1・変数
     // 空集合・epoch 1。envMeta は同梱ステートメント自身。CAS リトライでは
     // エントリ・ステートメント・マニフェストの全部を再署名する
     const signedManifest = yield* signNextManifest({
@@ -292,7 +292,7 @@ function attemptCreate(
     if (manifest.manifestVersion !== 1 || manifest.prevManifestSigHashHex !== "") {
       return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
     }
-    // 境界 checkpoint(H+2 — §12-4。2026-08-27 セッション 33): 当該環境 1 タプル
+    // 境界 checkpoint(§12-4): 当該環境 1 タプル
     // (epoch 1・manifestVersion 1・同梱マニフェストのハッシュ・変数空集合の
     // values_digest)。CAS リトライでは他の同梱物とともに再署名される
     const checkpoint = yield* signBoundaryCheckpoint({
@@ -356,7 +356,7 @@ function attemptCreate(
 }
 
 /**
- * 受理後の効果確認(§12-10 (3) — チェーン同期)と v1 床の確立(M1-A3)。
+ * 受理後の効果確認(§12-10 (3) — チェーン同期)と v1 床の確立。
  * 確認を通過するまで床は前進させず、成功も報告しない。
  */
 function confirmCreation(
@@ -386,7 +386,7 @@ function confirmCreation(
         ),
       );
     }
-    // 確認済み — v1 床の確立(M1-A3): 空変数集合の環境床。作成複合は変数
+    // 確認済み — v1 床の確立: 空変数集合の環境床。作成複合は変数
     // 空集合をエポック 1 で確立する(変数は環境より先に存在できない)ため、
     // 規則 (c) の pull 基準も値床カバレッジ(空)と原子的に 1 で確立できる。
     // journal-before-release: 床の永続化が成功報告に先行する

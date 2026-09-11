@@ -1,5 +1,5 @@
 // 周期チェックポイントの発行(`maruhi project checkpoint` — CRYPTO_SPEC §6.3 /
-// AUTH_SPEC §16-2。2026-08-28 PR-M2)のテスト。
+// AUTH_SPEC §16-2)のテスト。
 //
 // 検証の柱:
 //  1. 構築: 検証済みビュー(検証済み pull)からタプルを組み立てる — 環境 ID の
@@ -672,7 +672,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     });
     expect(await propose(freshPlain, member.userId)).toBeNull();
     // 実効権限 admin: 公証なしの新しい基準では満たされない(公証あり基準 —
-    // 第 5 ラウンド: member の発行が admin の契機を潰さない)
+    // member の発行が admin の契機を潰さない)
     expect(await propose(freshPlain, owner.userId)).toContain("notarized audit prefix");
     // 新しい公証あり基準 → 提案なし
     const freshAttested = await appendCheckpoint(base, {

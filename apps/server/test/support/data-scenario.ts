@@ -1,8 +1,8 @@
-// データプレーン統合テストの共有シナリオ(旧 data.test.ts の冒頭ヘルパの分割先)。
+// データプレーン統合テストの共有シナリオ。
 //
 // fixture / varStatements は ESM の live binding としてエクスポートし、各テスト
 // ファイルは registerDataScenario() で beforeEach(リセット + 再シード)を登録
-// してから describe を書く。ヘルパの意味論は旧 data.test.ts と同一。
+// してから describe を書く。
 
 import { beforeEach, expect } from "vitest";
 
@@ -430,8 +430,8 @@ export async function activateVariableRequest(input: {
   readonly schema?: Partial<WireSchemaFields>;
   /**
    * 値の version(既定 1 = 正当な activation)。1 以外は negative 用 —
-   * 「active 変数へ latest + 1 を送る」迂回形の再現(PR #119 pullfrog 指摘。
-   * ヘルパが 1 を固定すると『active 変数を狙えない』という性質が検証できない)。
+   * 「active 変数へ latest + 1 を送る」迂回形の再現(ヘルパが 1 を固定すると
+   * 『active 変数を狙えない』という性質が検証できない)。
    */
   readonly version?: number;
   readonly prevValueSigHashHex?: string;

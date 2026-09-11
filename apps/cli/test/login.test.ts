@@ -18,7 +18,7 @@ import {
 
 let servers: MockServer[] = [];
 
-/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6: 2099-01-01T00:00:00Z)。 */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
 
 /** 公開相関子(128-bit hex — api-schema の CliFlowIdSchema に一致)。 */
@@ -140,7 +140,7 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).not.toContain("Waiting for approval");
   });
 
-  it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6 — W3a)", async () => {
+  it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6)", async () => {
     // 上限は api-schema の MAX_TOKEN_TTL_DAYS と共有(--token-name と同じ規律:
     // 書き方の誤りをブラウザ承認の完走後に出さない)
     const handoff = fakeHandoff();
@@ -301,7 +301,7 @@ describe("maruhi login", () => {
       expect(env.errors.join("\n")).not.toContain("invite-only");
     });
 
-    it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも従来どおり進む(advisory の欠落で login を壊さない)", async () => {
+    it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも進む(advisory の欠落で login を壊さない)", async () => {
       // 未申告: フィールドなしの 200
       const withoutField = handoffWithConfig({});
       const oldServer = await start(withoutField.handlers);
@@ -548,8 +548,7 @@ describe("maruhi login", () => {
 
   it("範囲外の expiresAtMs でもクラッシュせず明示劣化する(display.ts の total 表示)", async () => {
     // ワイヤの expiresAtMs は無制限 number — Date 範囲(±8.64e15)外を
-    // toISOString へ渡すと RangeError の defect になる(deepsec B1/B4/B5 の
-    // display.ts 規律)
+    // toISOString へ渡すと RangeError の defect になる(display.ts の規律)
     const handoff = fakeHandoff({ expiresAtMs: 9.9e15 });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -572,7 +571,7 @@ describe("maruhi login", () => {
     expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
     // 供給ログインの身元スワップの注記(裁定 CM)— **既定名で発行した**この
     // ケースでは「素の再ログイン」を勧めてはならない(同名ローテーションが
-    // いま表示したトークン自体を失効させる — PR #108 Bugbot 指摘)。正しい
+    // いま表示したトークン自体を失効させる)。正しい
     // 復し方 = 別名での発行し直し
     const notes = env.errors.join("\n");
     expect(notes).toContain("default token name");

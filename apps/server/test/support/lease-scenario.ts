@@ -1,5 +1,4 @@
-// ワークロードリース統合テストの共有ヘルパ(旧 lease.test.ts の冒頭ヘルパの
-// 分割先 — 分割の動機は membership-scenario.ts 冒頭を参照)。
+// ワークロードリース統合テストの共有ヘルパ。
 //
 // data-scenario.ts の fixture(registerDataScenario)を前提とする: 各テスト
 // ファイルは registerDataScenario() を呼んでから describe を書き、ここの

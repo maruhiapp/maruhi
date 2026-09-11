@@ -1,6 +1,6 @@
 // cli / server のテスト支援(apps/cli/test/support/crypto.ts /
 // apps/server/test/support/data-crypto.ts)が共有する実 crypto フィクスチャの
-// 共通コア(session-11 §5 裁定の共有抽出先)。@maruhi/crypto の公開 API のみを
+// 共通コア。@maruhi/crypto の公開 API のみを
 // 使う。鍵の出所は両側で異なる(cli = 都度生成 / server = ベクター固定鍵)ため、
 // チェーン署名の手段は呼び出し側が signEntry 関数として注入する。
 

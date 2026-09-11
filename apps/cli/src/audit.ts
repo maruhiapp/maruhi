@@ -1,4 +1,4 @@
-// `maruhi audit`(AUDIT_SPEC §6 / §7 — Phase 2 C1)。
+// `maruhi audit`(AUDIT_SPEC §6 / §7)。
 //
 // - list: project DO の監査イベント(新しい順、seq カーソル)。可視性クラス
 //   (§6)はサーバーが強制し、ここは表示だけを担う
@@ -142,7 +142,7 @@ function mirrorMismatches(entry: ChainEntry, observed: WireAuditEvent): readonly
   );
   // 写像はミラー行に api_token_id を設定しない(§3.4 の actor はチェーン
   // エントリの写し)。期待は常に undefined だが、偽の「トークン経由」表示への
-  // 誤導(pullfrog 指摘)を塞ぐため明示的に突合する
+  // 誤導を塞ぐため明示的に突合する
   check("actor.api_token_id", expected.actorApiTokenId, observed.actor.apiTokenId);
   check("environment_id", expected.environmentId, observed.environmentId);
   check("variable_id", expected.variableId, observed.variableId);
@@ -193,7 +193,7 @@ function mirrorTrustOf(
 }
 
 /**
- * event 名が chain.* 外なのに chain_seq を持つ行の明示的な不信ラベル(S1)。
+ * event 名が chain.* 外なのに chain_seq を持つ行の明示的な不信ラベル。
  *
  * 正直なサーバーで chainSeq を設定する唯一の書き手は chainMirrorEvent なので、
  * この組み合わせは provenance claim の偽造を示す。イベント名だけを起点にすると
@@ -251,7 +251,7 @@ function mirrorWarnings(event: WireAuditEvent, trust: MirrorTrust | null): reado
 // 表示
 // ---------------------------------------------------------------------------
 
-// serverTs はサーバー申告の無制限 number(B1): total な共有フォーマッタで表示し、
+// serverTs はサーバー申告の無制限 number: total な共有フォーマッタで表示し、
 // Date 範囲外の値が defect(RangeError)にならないようにする
 const formatTs = formatUtcSeconds;
 
@@ -323,7 +323,7 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
     const seqPart = event.chainSeq === undefined ? "" : `chain_seq=${event.chainSeq}`;
     if (trust === null) {
       // 呼び出し側が trust 計算を忘れても、chain_seq を検証済み座標のように
-      // 無ラベル表示しない(S1 の最後の防衛線)
+      // 無ラベル表示しない(最後の防衛線)
       parts.push(`${seqPart} (mirror=unverified — no chain verification context)`);
     } else {
       parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
@@ -651,7 +651,7 @@ export function auditSelfOp(
 
 // §3.4 のミラーイベント名は共有写像(@maruhi/core の CHAIN_MIRROR_EVENTS —
 // ChainOp の全域マップから導出)を使う。手書きリストだと将来の op 追加時に
-// ここだけ漏れ、連続性検査が正直なサーバーを偽造と誤断定する(pullfrog 指摘)
+// ここだけ漏れ、連続性検査が正直なサーバーを偽造と誤断定する
 
 const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // チェーン受理ポリシー(10,000 エントリ)÷ ページ 200 = 50 ページが理論最大。
@@ -750,8 +750,8 @@ function fetchMirrorRowsForSelector(
 /**
  * verify のミラー候補全体。2 つの集合を和集合にする:
  *
- * 1. `chain.` 名前空間の全行 — 写像に無い名前・chain_seq 欠落も拾う(R1)
- * 2. chain_seq を持つ全行 — 名前空間の 1 歩外にある偽 provenance を拾う(S1)
+ * 1. `chain.` 名前空間の全行 — 写像に無い名前・chain_seq 欠落も拾う
+ * 2. chain_seq を持つ全行 — 名前空間の 1 歩外にある偽 provenance を拾う
  *
  * 正当なミラー行は両方に入るので row id で重複排除する。同じ id なのに内容が
  * フィルタ間で変わったら、サーバー応答が自己矛盾しており検証を続けられない。
@@ -793,7 +793,7 @@ interface MirrorBuckets {
  * 進んだ)なら、その行の chain_seq は head+1 から欠番・重複なく連続する — ミラーは
  * 受理と同一トランザクションで書かれ、seq は無欠番だからである(§3.4 / §5.1)。
  * 連続しない・重複する行は「実在しないエントリを名乗る偽造行」の証拠として
- * 扱う(pullfrog 指摘 — 到達し得ない chain_seq による検証回避を塞ぐ)。
+ * 扱う(到達し得ない chain_seq による検証回避を塞ぐ)。
  */
 function aheadContiguityProblems(ahead: readonly number[], headSeq: number): readonly string[] {
   const problems: string[] = [];
@@ -815,7 +815,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   const problems: string[] = [];
   const ahead: number[] = [];
   for (const row of rows) {
-    // chain_seq の存在をイベント名より先に信頼境界として扱う(S1)。正当な
+    // chain_seq の存在をイベント名より先に信頼境界として扱う。正当な
     // chain_seq の唯一の書き手は chainMirrorEvent なので、名前空間外の行は
     // 実在する op と突合する余地のない偽 provenance claim である
     if (!row.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
@@ -824,7 +824,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
       );
       continue;
     }
-    // 名前空間内で写像に無いイベント名は、それ自体が偽造の証拠(deepsec R1):
+    // 名前空間内で写像に無いイベント名は、それ自体が偽造の証拠:
     // 実在する op のミラーは必ず chainMirrorEvent の像に入る。chain_seq の
     // 突合に進める行ではないので、ここで問題として確定させて次の行へ進む
     if (!CHAIN_MIRROR_EVENTS.includes(row.event)) {
@@ -896,8 +896,8 @@ export function auditVerifyOp(
       return 0;
     }
     if (buckets.aheadRows > 0) {
-      // 未検証の行が残る限り「OK」とは言わない(pullfrog 指摘 — 偽造行が
-      // 未検証枠に恒久に居座る形を、成功終了で覆い隠さない)
+      // 未検証の行が残る限り「OK」とは言わない(偽造行が未検証枠に恒久に
+      // 居座る形を、成功終了で覆い隠さない)
       yield* io.logError(
         `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run \`maruhi audit verify\` — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
       );

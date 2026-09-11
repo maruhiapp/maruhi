@@ -89,7 +89,7 @@ const variableParams = {
  * One environment in the listing (current epoch is chain-derived —
  * CRYPTO_SPEC §3). The display name travels as the latest verified-able
  * metadata statement + author info instead of a bare snapshot (AUTH_SPEC
- * §12-2 — 2026-08-04 改訂)。削除済み環境も最新の deleted ステートメント付きで
+ * §12-2)。削除済み環境も最新の deleted ステートメント付きで
  * 列挙される(削除の否認・無断復活の検出材料 — §12-4)。
  */
 export const EnvironmentSummarySchema = Schema.Struct({
@@ -144,7 +144,7 @@ export const EnvironmentPullSchema = Schema.Struct({
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   /**
-   * declared 変数の最新ステートメント(§12-7 — 2026-08-30 レイアウト v2)。
+   * declared 変数の最新ステートメント(§12-7 — レイアウト v2)。
    * 値・バージョンは存在しない(declared だけが正当な値なし状態 — CRYPTO_SPEC
    * §6.3 の値配布要求)。マニフェストのダイジェスト再計算(§4.3)の材料として
    * 必須の同梱。declared 変数が無い環境では載らない(optionalKey — 旧サーバー
@@ -159,14 +159,14 @@ export const EnvironmentPullSchema = Schema.Struct({
    */
   schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
   /**
-   * 最新の環境マニフェスト + issuer 情報(§12-7 — 2026-08-18)。クライアントは
+   * 最新の環境マニフェスト + issuer 情報(§12-7)。クライアントは
    * ダイジェスト再計算・エポック整合を検証し、**欠落は一律拒否**(CRYPTO_SPEC
    * §6.3)。optional なのはマニフェスト導入前に作成された環境の移行完了までの
    * 過渡状態のみ(サーバーは保存行があれば必ず同梱する)。
    */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
   /**
-   * チェックポイント時点の値スナップショット列挙(§12-7 — 2026-08-28 PR-M3)。
+   * チェックポイント時点の値スナップショット列挙(§12-7)。
    * 当該環境のエントリを含む最新 `checkpoint` が存在する場合に必ず同梱する
    * (checkpoint 受理時に保存した列挙そのもの — §16-2)。クライアント規則 2
    * (CRYPTO_SPEC §6.3 — 値の非後退)は、検証済みチェーン上に基準が存在する
@@ -177,7 +177,7 @@ export const EnvironmentPullSchema = Schema.Struct({
 });
 
 /**
- * Metadata-only bulk pull (§12-7 メタデータのみモード — 2026-08-10): the same
+ * Metadata-only bulk pull (§12-7 メタデータのみモード): the same
  * environment-scoped read without values (ciphertexts) or DEKs. The response
  * carries the environment statement, the chain-derived current epoch, every
  * active variable's latest statement and the deleted statements — the full
@@ -201,8 +201,7 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
 });
 
 /**
- * Environment management (AUTH_SPEC §12-4。2026-08-03 セッション 12 改訂 —
- * 環境作成のチェーン op 化に追随)。
+ * Environment management (AUTH_SPEC §12-4 — 環境作成はチェーン op)。
  *
  * - `create` is a composite request: the `create_environment` chain entry
  *   (environment id + epoch-1 DEK commitment, appended with a parent-head
@@ -231,9 +230,9 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           entry: CreateEnvironmentEntrySchema,
           statement: CreateEnvironmentMetaStatementSchema,
           deks: Schema.Array(WrappedDekSchema),
-          // manifestVersion 1・変数空集合・epoch 1(§12-4 — 2026-08-18)
+          // manifestVersion 1・変数空集合・epoch 1(§12-4)
           manifest: CreateEnvironmentManifestSchema,
-          // 境界 checkpoint(§12-4 — 2026-08-27 セッション 33 = 2-G′)。
+          // 境界 checkpoint(§12-4)。
           // create = H+1、checkpoint = H+2 の 2 エントリを原子受理する。
           // カバーは当該環境 1 タプルのみ(epoch 1・manifestVersion 1・同梱
           // マニフェストの signed_bytes ハッシュ・変数空集合の values_digest)
@@ -287,9 +286,9 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           // 新エポックを焼き込んだマニフェスト(manifestVersion = 最新 + 1。
           // メタ集合は不変でもエポック前進を反映する — CRYPTO_SPEC §4.3。
           // マニフェスト導入前に作成された環境の最初の rotate は v1 を同梱する
-          // = 移行経路 — session-27 §14 PR-M1)
+          // = 移行経路)
           manifest: EnvironmentManifestSchema,
-          // 境界 checkpoint(§12-4 — 2026-08-27 セッション 33 = 2-G′)。
+          // 境界 checkpoint(§12-4)。
           // rotate = H+1、checkpoint = H+2。タプルは new_epoch・同梱マニフェストの
           // (manifestVersion, signed_bytes ハッシュ)・受理時点の現在値
           // (未再暗号化 = 旧エポックの値 — §12-7 の正当な状態)の values_digest
@@ -404,7 +403,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
       // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
       // 併置しない — 二重運搬の不一致面を作らない)。
       //
-      // レイアウト v2(2026-08-30)で作成は 2 形の Union になる: active(値
+      // レイアウト v2 で作成は 2 形の Union になる: active(値
       // 同梱 — statement は v1 / v2 のどちらでもよい)と declared(値なし —
       // v2 限定の宣言。「値のない変数は存在しない」の唯一の例外)。deleted の
       // 創出はどちらの形にも存在しない(Schema 400 — §12-5 の遷移規則の
@@ -465,7 +464,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
       {
         params: variableParams,
-        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5 — 2026-08-15)。
+        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5)。
         // 「直前バージョンと同一平文の新エポックへの再暗号化(CRYPTO_SPEC §7)」の
         // writer 自己申告で、受理判定・値署名には影響しない。要ローテーション
         // 検出の解消導出(AUDIT_SPEC §4.1-5)だけがこれを読む
@@ -494,7 +493,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
     ).middleware(AuthMiddleware),
   )
   .add(
-    // activation(declared → active — §12-5。2026-08-30 レイアウト v2):
+    // activation(declared → active — §12-5。レイアウト v2):
     // declared 変数への最初の値 push を「値 version 1 + status active の v2
     // ステートメント(metaVersion + 1)+ マニフェスト」の複合として受理する。
     // メタ状態が変わるためマニフェスト再発行を伴う(「値の push はマニフェストに
@@ -650,7 +649,7 @@ export const deksGroup = HttpApiGroup.make("deks")
     HttpApiEndpoint.post("register", "/projects/:projectId/environments/:environmentId/deks", {
       params: environmentParams,
       // 空の deks は 400(§12-6。削除側の空 wraps と同じ「黙って成功させない」
-      // 規律 — 2026-08-03 に 204 no-op から統一)。環境作成の deks は対象外
+      // 規律)。環境作成の deks は対象外
       // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
       payload: strictPayload(
         Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
@@ -696,7 +695,7 @@ export const deksGroup = HttpApiGroup.make("deks")
 
 /**
  * Project schema-policy setting (AUTH_SPEC §12-11 — 有効化ゲートと
- * schema-locked。2026-08-30)。
+ * schema-locked)。
  *
  * - GET: read スコープ × チェーン role reader 以上(200 = `{ schemaPolicy }`)
  * - PUT: **admin スコープ × チェーン role admin 以上**(204)。セッション主体は
@@ -720,7 +719,7 @@ export const schemaPolicyGroup = HttpApiGroup.make("schemaPolicy")
       params: projectParams,
       payload: Schema.Struct({ schemaPolicy: SchemaPolicySchema }),
       success: HttpApiSchema.NoContent,
-      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8 H2): 拒否
+      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8): 拒否
       // 閾値以上の DO では設定変更も受理しない(変更ごとに監査行を積む。GET は
       // 読み取りで通る)
       error: [ProjectNotFoundError, ForbiddenError, DataLimitExceededError],

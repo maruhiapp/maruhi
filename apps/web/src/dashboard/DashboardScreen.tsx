@@ -123,10 +123,10 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
 /**
  * 空ページはリストの終端ではない(AUTH_SPEC §11-5): 候補ページは ghost 除外・
  * 確認失敗の省略で `{ projects: [], nextAfter }` になりうる。行が増えるか
- * nextAfter が尽きるまでカーソルを進める(PR #107 Bugbot 指摘の修正 —
- * 深さは候補ページ数で有界)。既出カーソルの再出現(壊れた・敵対的な
- * サーバー — 交互カーソルを含む)は終端扱いにして追跡を打ち切る: 追跡回数は
- * 相異なるカーソル数で全域有界(クライアントのサーバー不信の姿勢の均一化)。
+ * nextAfter が尽きるまでカーソルを進める(深さは候補ページ数で有界)。既出
+ * カーソルの再出現(壊れた・敵対的なサーバー — 交互カーソルを含む)は終端
+ * 扱いにして追跡を打ち切る: 追跡回数は相異なるカーソル数で全域有界
+ * (クライアントのサーバー不信の姿勢の均一化)。
  */
 function shouldFollowCursor(
   page: ProjectList,

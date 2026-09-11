@@ -1,4 +1,4 @@
-// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6 — Wave 2 A1)の統合テスト。
+// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6)の統合テスト。
 // サーバー鍵確認の儀式・grant_server 追記(4 フィールド payload)・全環境 ×
 // 全エポックのバックフィル・中断復旧(409 = 登録済み)を wire レベルで固定する。
 

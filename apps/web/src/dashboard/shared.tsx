@@ -14,8 +14,7 @@
 //       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
 //           行から再操作できる失敗(失効)は onRetry を渡さない
 //     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
-//     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1 — 旧 DashboardScreen のセッション
-//     失敗表示を移したもの)= 置換 9 / 追記 4
+//     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1)= 置換 9 / 追記 4
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -69,7 +68,7 @@ const SERVER_TIME_TOOLTIP = [
  * 時間帯の略称)。値はサーバー申告の serverTs / expiresAtMs そのもので、換算は閲覧者の
  * 時間帯での描画だけ。hover card に UTC と Unix 秒(コピー可)。`hasTooltip={false}` は
  * ボタンの中(監査行のトリガー)で使う — 入れ子の対話要素を作らない。
- * 範囲外の ms(Date が Invalid — deepsec 2026-08-22)は生の数値を出す。
+ * 範囲外の ms(Date が Invalid)は生の数値を出す。
  */
 export function ServerTime({
   ms,
@@ -108,7 +107,7 @@ const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> 
 /**
  * チェーン導出 role のサーバー申告値の表示(設計文書 §4 — 検証済みを名乗らない)。
  * Object.hasOwn: 想定外の role 文字列(プロトタイプ鎖の鍵名を含む)は
- * default 色へ落とす(PR #107 pullfrog 指摘)。
+ * default 色へ落とす。
  */
 export function RoleToken({ role }: { role: string }): ReactNode {
   const color = Object.hasOwn(ROLE_TOKEN_COLOR, role)
@@ -164,8 +163,7 @@ function UnreachableNotice({ onRetry }: { onRetry: (() => void) | undefined }): 
 /**
  * 410 の表示(現状は invite 失効面のみが受ける — サーバー申告の reason を写す)。
  * 名詞は NOT_FOUND_DESCRIPTION と同じく subject から取る(裁定 BP の単一
- * 実装点 — 他の消費面が 410 を持ったとき片方だけ名詞が固定される形を残さない。
- * PR #109 pullfrog 指摘)。
+ * 実装点 — 他の消費面が 410 を持ったとき片方だけ名詞が固定される形を残さない)。
  */
 function GoneNotice({
   reason,
@@ -311,7 +309,7 @@ export function LoadingRow({ label }: { label: string }): ReactNode {
 /**
  * 注記のブロック(Astryx `CardCallout` ブロックの形: muted の Card + 見出し + 本文)。
  * CLI への静的案内(発行・失効・dismiss)に使う。`headingLevel` は置かれる場所の
- * 文書構造に合わせる(見た目は level 4)。改訂 7 で 3 画面の同形を 1 定義に寄せた。
+ * 文書構造に合わせる(見た目は level 4)。
  */
 export function Callout({
   title,
@@ -365,7 +363,7 @@ export function EmptyNotice({
 // 識別子(64 hex の project ID / チェーンハッシュ / 鍵 FP / row_id)の表示。空白を
 // 含まない長い文字列は Text の wordBreak だけでは折れない(inline 要素の幅が親の
 // flex 項目の min-content を押し広げる)ため、xstyle で anywhere 折りを明示する。
-// DP3 で同じ上書きが繰り返し必要になったので本モジュールに 1 定義だけ置き、
+// DP3 で同じ上書きが繰り返し必要になるので本モジュールに 1 定義だけ置き、
 // 画面側は HexText を使う(variant / ui.package への昇格は人間の判断 — 裁定 H)
 const hexStyles = stylex.create({
   breakable: {
@@ -421,7 +419,7 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
  * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
  * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
  * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
- * `isLocked` = 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。
+ * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。
  */
 export function RevokeButton({
   onArm,

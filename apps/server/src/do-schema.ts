@@ -25,7 +25,7 @@ const PROJECT_DO_DDL = [
    )`,
   // name / latest_meta_version は最新ステートメント(*_meta_statements)の
   // 導出キャッシュ(名前一意性クエリと metaVersion CAS 用)。真実源は
-  // ステートメント行で、書き込みフェーズで同期更新する(2026-08-04 PR-3)
+  // ステートメント行で、書き込みフェーズで同期更新する
   `CREATE TABLE IF NOT EXISTS environments (
      environment_id TEXT PRIMARY KEY,
      name TEXT NOT NULL,
@@ -43,8 +43,8 @@ const PROJECT_DO_DDL = [
      deleted_at INTEGER,
      PRIMARY KEY (environment_id, variable_id)
    )`,
-  // メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5。2026-08-04
-  // PR-3): metaVersion ごとに signed_bytes ハッシュ(サーバー再計算 — prev
+  // メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5):
+  // metaVersion ごとに signed_bytes ハッシュ(サーバー再計算 — prev
   // 検査・409 再試行の検証材料。配布しない)・署名・author(user_id + 受理
   // 時点のチェーン導出鍵 FP)・name・status・prev・宣言ヘッドを保存する。
   // 削除ステートメント(status deleted)も保存・配布し続ける(§12-4/-5 —
@@ -85,7 +85,7 @@ const PROJECT_DO_DDL = [
   // suite 列: すべての永続データ構造はスイート識別子を持つ(CRYPTO_SPEC §2
   // 設計原則 4 / AUTH_SPEC §12-2。将来のアルゴリズム移行時に行単位で判別する)
   //
-  // 値の書き込み署名列(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5。2026-08-04 PR-2):
+  // 値の書き込み署名列(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5):
   // prev_value_sig_hash_hex(version 1 は空文字列)/ 宣言ヘッド(hash + seq)/
   // 署名 / サーバー再計算の signed_bytes ハッシュ(prev 検査と 409 再試行の
   // 検証材料 — 配布はしない)/ 受理時点の writer(user_id + チェーン導出鍵 FP)。
@@ -166,7 +166,7 @@ const LEASE_WINDOWS_DDL = `CREATE TABLE IF NOT EXISTS lease_windows (
    )`;
 
 /**
- * ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定 —
+ * ワークロードリースの先着束縛(AUTH_SPEC §14-1 の裁定 —
  * docs/notes/session-24.md)。発行時に「束縛キー → 一時公開鍵」を記録し、
  * 同一キー + 別鍵の再要求を拒否する材料にする。
  *
@@ -174,7 +174,7 @@ const LEASE_WINDOWS_DDL = `CREATE TABLE IF NOT EXISTS lease_windows (
  * あって、生トークンのハッシュ**ではない**: 生トークンの署名セグメントは署名の
  * 保護外で可鍛(base64url 末尾ビット / ES256 s-malleability)であり、それを
  * キーにすると 1 文字編集で束縛を素通りできる(verifier.ts の
- * signingInputHashHex の doc — 2026-08-15 pullfrog レビュー)。列名を
+ * signingInputHashHex の doc)。列名を
  * token_hash ではなく binding_key にしているのは、この「何をハッシュするか」の
  * 取り違えを名前の段階で防ぐため。
  *
@@ -229,7 +229,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // 受信者クラス server(AUTH_SPEC §12-6。2026-08-12): dek_wraps に受信者
+    // 受信者クラス server(AUTH_SPEC §12-6): dek_wraps に受信者
     // クラス列を追加する。server 行の recipient_user_id 列にはサーバー鍵 FP
     // (hex 小文字 32 文字)が入る(列名は歴史的経緯で user_id のまま。意味は
     // 「受信者クラス内の受信者識別子」)。member の user_id と「実際上形式が
@@ -238,14 +238,14 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     // (environment_id, epoch, recipient_user_id) のクラス跨ぎ衝突は受理段が
     // 守る: 初回登録はリクエスト内の保存粒度重複検出(dek-wraps.ts の
     // wrapStorageKey = 422)、既存エポックへの追記はクラス無視の保存存在検査
-    // (= 409)(セキュリティレビュー 2026-08-14 A-1)
+    // (= 409)(A-1)
     tables: [],
     apply(sql) {
       sql.exec("ALTER TABLE dek_wraps ADD COLUMN recipient_class TEXT NOT NULL DEFAULT 'member'");
     },
   },
   {
-    // ワークロードリースの固定窓カウンタ(AUTH_SPEC §14-3。2026-08-15)。
+    // ワークロードリースの固定窓カウンタ(AUTH_SPEC §14-3)。
     // 発行(1 時間 300 回 / プロジェクト)と拒否記録(同 100 行 — AUDIT_SPEC
     // §3.5 の lease_denied の上限)を 1 テーブルの 2 行で持つ。窓の状態は
     // 監査ログ(append-only)には置けない — 上書き更新が必要なため
@@ -255,10 +255,9 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)。
+    // ワークロードリースの先着束縛(AUTH_SPEC §14-1 の裁定)。
     // 注: このステップの DDL 列名は同 PR 内で token_hash_hex → binding_key_hex に
-    // 修正した(pullfrog レビュー — 生トークンではなく signing input をハッシュ
-    // する変更に伴う改名)。末尾追記のみの規則の例外だが、本ステップは未マージ・
+    // 修正した(生トークンではなく signing input をハッシュする変更に伴う改名)。末尾追記のみの規則の例外だが、本ステップは未マージ・
     // 未デプロイで適用済みの外部 DO が存在しないため in-place 編集が正しい
     // (rename ステップの追記は誰も持たないテーブルに恒久ノイズを残す)。
     // ローカル wrangler dev で中間コミットを適用済みの場合のみ永続ストレージの
@@ -270,7 +269,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   },
 
   {
-    // 監査行のワイヤ識別子 row_id(AUDIT_SPEC §5.1 / §7 — 2026-08-16 C1 裁定)。
+    // 監査行のワイヤ識別子 row_id(AUDIT_SPEC §5.1 / §7 — C1 裁定)。
     // 16 バイト乱数 hex。無欠番採番 seq をワイヤに出すと admin 未満が可視行の
     // seq 差分からクラス 2 の件数・時刻窓を推論できるため、行識別子・カーソルは
     // この乱数を使う(seq は admin 可視の応答にのみ載る)。既存行は SQLite の
@@ -286,7 +285,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   },
 
   {
-    // 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5。2026-08-18 PR-M1)。
+    // 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。
     // **保持は環境ごとに最新 1 通のみ**(PRIMARY KEY = environment_id の upsert —
     // §12-5: prev 検査・配布・チェックポイント受理のすべてが最新しか参照せず、
     // 行が蓄積しないため行数上限も置かない — §12-8)。signed_bytes_hash_hex は
@@ -294,7 +293,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     // しない)。issuer は受理時点のチェーン導出メンバー(user_id + 鍵 FP)。
     // 環境削除のカスケード対象(§12-4 — retireEnvironment が行を消す)。
     // マニフェスト導入前に作成された環境は行なしで始まり、最初のメタ操作 /
-    // rotate が manifest_version 1 を確立する(移行手順 — session-27 §14 PR-M1)
+    // rotate が manifest_version 1 を確立する(移行手順 — session-27 §14)
     tables: ["environment_manifests"],
     apply(sql) {
       sql.exec(
@@ -319,14 +318,14 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // チェックポイントの値スナップショット(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2。
-    // 2026-08-27 セッション 33 = PR-F3b — 境界 checkpoint の複合原子同梱)。
+    // チェックポイントの値スナップショット(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2
+    // — 境界 checkpoint の複合原子同梱)。
     // 環境ごとの**最新包含 checkpoint** のタプル(environment_checkpoints —
     // PRIMARY KEY = environment_id の upsert)と、その時点の値スナップショット
     // 列挙(checkpoint_snapshot_values — 受理時点状態そのもの。upsert は環境
     // 単位の全置換)。payload に含まれない環境の既存スナップショットは変更
     // しない(§6.4)。配布(§12-7 の値付き応答への同梱)とクライアント側の
-    // 整合規則 2 の検証は M2(session-32 §5-1 のスコープ境界)。
+    // 整合規則 2 の検証は今後(session-32 §5-1 のスコープ境界)。
     // 環境削除のカスケード対象(§12-4 — retireEnvironment が両テーブルを消す)
     tables: ["environment_checkpoints", "checkpoint_snapshot_values"],
     apply(sql) {
@@ -354,8 +353,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // 監査ヘッド累積ハッシュの計算列(AUDIT_SPEC §5.1。2026-08-28 セッション 35 =
-    // PR-M2)。行 seq → h_seq(正規形は @maruhi/crypto の computeAuditRowDigest /
+    // 監査ヘッド累積ハッシュの計算列(AUDIT_SPEC §5.1)。行 seq → h_seq(正規形は @maruhi/crypto の computeAuditRowDigest /
     // computeAuditHeadHash — audit-head.json ベクターが固定)。audit_events の
     // 決定論的な導出値であり(append-only の行が真実源)、materialize は遅延
     // 拡張(audit-store.ts の ensureHeadCurrent — 監査ヘッド読み取り・checkpoint
@@ -377,7 +375,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1。2026-08-28 PR-M4)。
+    // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。
     // **保存はメンバーごと最新 1 行**(PRIMARY KEY = attester_user_id の upsert —
     // チェーンに載せない: 申告は同期のたびに更新される可変データで、チェーン op に
     // するとエントリ上限を同期活動が消費する — §6.4)。attester_key_fingerprint は
@@ -411,7 +409,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   },
   {
     // 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC
-    // §12-2・§12-5 — 2026-08-30 S2)+ プロジェクト設定 schemaPolicy(§12-11)。
+    // §12-2・§12-5)+ プロジェクト設定 schemaPolicy(§12-11)。
     //
     // - layout_version: 保存済みステートメントのワイヤレイアウト(既存行 =
     //   全部レイアウト 1 — DEFAULT 1 の backfill が正)。次ステートメントの
@@ -441,9 +439,8 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // audit_events の対象・鍵 FP 索引の部分索引化(2026-09-02 — 監査ログの
-    // 成長密度対策 ①。AUDIT_SPEC §5.1 の索引集合は不変で、述語の追加は
-    // 実装詳細)。
+    // audit_events の対象・鍵 FP 索引の部分索引化(監査ログの成長密度対策 ①。
+    // AUDIT_SPEC §5.1 の索引集合は不変で、述語の追加は実装詳細)。
     //
     // ae_target(target_user_id)/ ae_target_fp(target_key_fingerprint)/
     // ae_actor_fp(actor_key_fingerprint)は、支配的な行種 `var.read`(値の読み

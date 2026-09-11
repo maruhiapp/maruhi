@@ -5,9 +5,7 @@
 // api-schema のパス空間の手書き複製であり、ドリフトは**無音で壊れる**:
 // compatibility_date 2026-07-01 では navigation リクエストがアセット配信を優先
 // (assets_navigation_prefers_asset_serving)するため、列挙漏れのエンドポイントは
-// SPA シェルの 200 に飲まれてエラーにも記録にも現れない(本 PR 自身が
-// /invites/accept でこのドリフトを 1 度踏んだ — session-43 §9 の欠陥修正。
-// PR #107 pullfrog レビューの提案による検査化)。
+// SPA シェルの 200 に飲まれてエラーにも記録にも現れない(session-43 §9)。
 //
 // そこで session-capability.ts のスイープと同じ型で、登録済み HttpApi の全
 // エンドポイントパスが run_worker_first のいずれかのルールに被覆されることを

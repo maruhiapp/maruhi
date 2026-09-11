@@ -1,5 +1,5 @@
-// `maruhi member remove` / `maruhi member change-role`(CRYPTO_SPEC §6.2 / §7 —
-// Wave 2 B1b)の統合テスト。
+// `maruhi member remove` / `maruhi member change-role`(CRYPTO_SPEC §6.2 / §7)の
+// 統合テスト。
 //
 // 固定する性質:
 //  1. remove_member の追記 + 全環境の強制ローテーション(reason=member-removed)。
@@ -393,7 +393,7 @@ describe("maruhi member remove", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
-    // 収束系コマンドでは未収束義務の常時警告(rotation-sweep.ts — B2)を出さない:
+    // 収束系コマンドでは未収束義務の常時警告(rotation-sweep.ts)を出さない:
     // このチェーンは同期時点で未収束(remove 後の rotate なし)だが、自分の
     // sweep 報告が同じ事実をより正確に伝えるため二重に警告しない
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
@@ -565,7 +565,7 @@ describe("maruhi member change-role", () => {
 
   it("born-reader への no-op 再実行は、他人の未収束義務があっても sweep を拾わない(対象スコープの基準)", async () => {
     // target は最初から reader(自身の降格義務なし)。他人(admin2)の remove が
-    // 後段にあり、そのローテーションは未収束 — Cursor bot 指摘の回帰: 大域基準だと
+    // 後段にあり、そのローテーションは未収束 — 大域基準だと
     // この no-op が admin2 の義務を拾って全環境ローテーションを開始してしまう
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

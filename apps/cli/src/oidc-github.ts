@@ -52,7 +52,7 @@ function readIssuanceEndpoint(io: {
 }
 
 /**
- * 発行エンドポイント URL の検証(M1)と audience パラメータの付与。`https:`
+ * 発行エンドポイント URL の検証と audience パラメータの付与。`https:`
  * 以外・埋め込み資格情報・パース不能は null(呼び出し元が型付きエラーにする)。
  */
 function validatedIssuanceUrl(requestUrl: string, audience: string): string | null {
@@ -65,7 +65,7 @@ function validatedIssuanceUrl(requestUrl: string, audience: string): string | nu
   // `http:` は loopback のみ許す(テスト・ローカルモック用 — 平文がネットワークを
   // 渡らない)。それ以外は `https:` 必須。loopback 判定は CLI 共通の
   // isLoopbackHostname(session.ts)— IPv4 リテラル厳密検査で "127.evil.com" の
-  // ような公開 DNS 名は通らない(レビューループ 1)
+  // ような公開 DNS 名は通らない
   const schemeOk =
     url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
   if (!schemeOk || url.username !== "" || url.password !== "") {
@@ -100,7 +100,7 @@ export function fetchGitHubOidcToken(
     if (endpoint === null) {
       return yield* Effect.fail(cliError(OIDC_ENV_MISSING_MESSAGE));
     }
-    // ランナートークン(bearer 資格情報)を送る前に URL を検証する(deepsec M1):
+    // ランナートークン(bearer 資格情報)を送る前に URL を検証する:
     // `https:` 以外(平文 http・独自スキーム)と埋め込み資格情報を拒否する。
     // ホストは固定しない — GitHub Hosted Runner のホストは固定名でなく、GHES は
     // 任意ホストであるため、許可リストは正当な実行を壊すだけで攻撃(環境変数を
@@ -115,7 +115,7 @@ export function fetchGitHubOidcToken(
     }
     const body = yield* Effect.tryPromise({
       try: async () => {
-        // redirect は追従しない(M1): 既定の follow は bearer ヘッダー付きの
+        // redirect は追従しない: 既定の follow は bearer ヘッダー付きの
         // リクエストをリダイレクト先へ再送しうる。3xx は !ok として失敗に落ちる
         const response = await fetch(url, {
           method: "GET",
@@ -231,8 +231,8 @@ function claimsOfPayload(payload: unknown | null): LeaseClaims | ClaimsFailure {
 /**
  * Reads the claims the lease path binds (CRYPTO_SPEC §9.1: issuer / sub /
  * aud) from the workload's own token. The digest itself is computed by
- * `computeLeaseClaimsDigest` — never from the raw builder (security review
- * A-5: the builder skips the empty-field guard).
+ * `computeLeaseClaimsDigest` — never from the raw builder (the builder skips
+ * the empty-field guard).
  *
  * `aud` が複数のトークンは拒否する: claims_digest が一意に決まらず、サーバーも
  * 同じ理由で `ambiguous-audience` として拒否する(errors/lease.ts)。往復する

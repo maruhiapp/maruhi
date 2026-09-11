@@ -1,5 +1,4 @@
-// DO ストレージ総量ガード(AUTH_SPEC §12-8 — 2026-09-02 H2。hosted-design.md §3-3 /
-// §8 gap 3。旧「Phase 2 予告」の実装)。
+// DO ストレージ総量ガード(AUTH_SPEC §12-8。hosted-design.md §3-3 / §8 gap 3)。
 //
 // プロジェクト DO の SQLite 実測量(`SqlStorage.databaseSize`)に警告 / 拒否の
 // 2 段の閾値(policy.ts — 起草値 8 GB / 9 GB)を置き、10 GB の SQLITE_FULL
@@ -30,7 +29,7 @@
 //   メンバー向けの 404 で、サポート範囲は「更新が必要」の正直なエラーを先に
 //   立てる裁定 CR)・CAS / 署名検証 / 数量ポリシー等の意味論的検査の前(資源
 //   保護は意味論に優先)
-// - 警告(8 GB)は運用ログのみ(H3 の監視・アラートは未実装)。**静的メッセージ
+// - 警告(8 GB)は運用ログのみ(監視・アラートは未実装)。**静的メッセージ
 //   のみ**(§11-5 / hosted-design.md §5-1 — プロジェクト ID = capability 等の
 //   リクエスト由来識別子を書かない)。DO インスタンスの生存中に警告域・拒否域
 //   それぞれ 1 回(毎受理で出すとログが書き込み計数器になる)。運営側の特定は
@@ -125,9 +124,8 @@ export const storageMeterLayer = (sql: SqlStorage): Layer.Layer<StorageMeter> =>
  * §12-8 の列挙 (a)(e))からも呼ぶ: 支配的な成長項が var.read であるプロジェクト
  * (SELF_HOSTING の記述どおり pull 主体のプロジェクト)は成長面の書き込みを
  * 伴わずに 8 GB → 9 GB を通過しうるため、警告の観測点を成長面だけに置くと
- * 「警告帯が運営の対応時間を買う」設計が pull 主体で成立しない(PR #134
- * pullfrog レビュー指摘)。databaseSize は即時値で I/O を伴わないため、pull の
- * ホットパスに置いても費用は無視できる。
+ * 「警告帯が運営の対応時間を買う」設計が pull 主体で成立しない。databaseSize は
+ * 即時値で I/O を伴わないため、pull のホットパスに置いても費用は無視できる。
  */
 export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, StorageMeter> =
   Effect.gen(function* () {
@@ -135,7 +133,7 @@ export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, Sto
     const decision = storageGuardDecision(meter.databaseSizeBytes());
     if (decision === "warn" && meter.noteLogged("warn")) {
       // 静的メッセージのみ(プロジェクト ID・サイズ等の可変値は書かない —
-      // サイズは監視〔H3〕の領分。ここは「到達した」という事実の 1 行)
+      // サイズは監視の領分。ここは「到達した」という事実の 1 行)
       console.warn(
         "project storage crossed the warning threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are still accepted until the rejection threshold",
       );

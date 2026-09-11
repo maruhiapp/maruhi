@@ -12,8 +12,7 @@
 // - 規則 (c): 床の version より新しい version の epoch が、当該環境の pull 時点
 //   エポック基準(pullEpoch)より小さい配布の拒否(削除済みメンバーの鍵による
 //   「前進 version への旧エポック注入」の検出 — §14.3-5)。基準は前回成功 pull
-//   の値を使い、チェーン同期単独では前進させない(誤拒否と検出喪失の両縁 —
-//   セッション 12 ノート §12 ループ 2)
+//   の値を使い、チェーン同期単独では前進させない(誤拒否と検出喪失の両縁)。
 //
 // **メタステートメントの床は巻き戻し検出のみ**: メタはエポックアンカーを
 // 持たないため(§4.2)、前進 metaVersion の注入は床を持っても検出されない
@@ -229,7 +228,7 @@ export type FloorViolation =
       readonly floor: ManifestFloor;
     }
   | {
-      // 規則 (c) のマニフェスト適用(§6.3 — 2026-08-18): 床の manifest_version
+      // 規則 (c) のマニフェスト適用(§6.3): 床の manifest_version
       // より新しいマニフェストの epoch が pull 時点エポック床より小さい配布
       readonly kind: "stale-manifest-injection";
       readonly baselineEpoch: number;
@@ -383,7 +382,7 @@ function checkManifestAgainstFloor(
 }
 
 /**
- * 規則 (c) のマニフェスト適用(§6.3 — 2026-08-18): 床の manifest_version より
+ * 規則 (c) のマニフェスト適用(§6.3): 床の manifest_version より
  * 新しいマニフェストの epoch が基準より小さい配布は、旧エポック鍵による前進
  * manifestVersion 注入の証拠。マニフェスト床がない場合は version 0 相当
  * (値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの epoch は
@@ -628,8 +627,7 @@ export function checkEnvironmentPull(
  * メタデータのみ pull(§12-7)の床検査: 規則 (a)(b) のメタ部分(環境・変数
  * ステートメントの後退 / 同一 metaVersion の相違)、検証済み変数の欠落、
  * 削除の無断取り消し・tombstone の差し替え。値を運ばない形のため値水準の
- * 検査と規則 (c) は対象外。検査合格後の**環境水準の床コミット**(M1-A3 —
- * チェーンヘッド・環境メタ床・マニフェスト床・座標 (ii) のみ。値床は捏造
+ * 検査と規則 (c) は対象外。検査合格後の**環境水準の床コミット**(チェーンヘッド・環境メタ床・マニフェスト床・座標 (ii) のみ。値床は捏造
  * しない・pull 基準は前進させない)は呼び出し側(enforceMetadataFloor)が行う。
  */
 export function checkEnvironmentMetadataPull(
@@ -746,7 +744,7 @@ export interface FloorHandle {
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * metadata-only pull の環境水準コミット(M1-A3 — 値床は捏造しない・pull
+   * metadata-only pull の環境水準コミット(値床は捏造しない・pull
    * 基準は前進させない。環境メタ床・マニフェスト床・座標 (ii) のみ)。
    */
   readonly commitMetadata: (
@@ -754,7 +752,7 @@ export interface FloorHandle {
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * 受理確認済みの自己発行マニフェストの床昇格(M1-A4 — pullEpoch・変数床は
+   * 受理確認済みの自己発行マニフェストの床昇格(pullEpoch・変数床は
    * 動かさない)。怠ると受理後の床が旧 manifestVersion のままになり、旧版を
    * 配布し続けるサーバーを規則 (a) が検出できない窓が生まれる。
    */
@@ -839,7 +837,7 @@ export function makeFloorHandle(input: {
         // 自分が受理させた manifestVersion を知っている事実は、書き込みに失敗
         // しても同一実行内の再走査の検出材料であり続ける(受理後に旧版を配布し
         // 続けるサーバーの検出)。前進はディスク側と同一の join 実装で行う
-        // (M1-A5 — `>=` 後勝ちの別実装を持たない)。join が conflict(同版・
+        // (`>=` 後勝ちの別実装を持たない)。join が conflict(同版・
         // 異ハッシュ)を検出した場合は**前進を採用しない**: 証拠を捨てた側を
         // 検査基準にすると、ディスク書き込みが I/O 失敗で警告に落ちた実行の
         // 残りが equivocation を見ないまま走る(ディスクが書けた場合は fold が

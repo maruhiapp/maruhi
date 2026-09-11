@@ -1,4 +1,4 @@
-// 運用基盤 H3 — トリップワイヤの計数・評価・通知(docs/notes/hosted-ops.md §2-A / §2-B / §3)。
+// 運用基盤 — トリップワイヤの計数・評価・通知(docs/notes/hosted-ops.md §2-A / §2-B / §3)。
 //
 // - 計数の出所: GitHub token 請求は exchangeCode の装飾(実経路 = CLI ハンドオフの
 //   ログイン 1 回 = 1 計上)、フロー上限到達は noteOpsCounter

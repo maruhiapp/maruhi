@@ -24,7 +24,7 @@ export async function encodingChecks(): Promise<CheckResult[]> {
     toHex(encodeLengthPrefixed(["epoch", 42])) === toHex(encodeLengthPrefixed(["epoch", "42"])),
   );
 
-  // 数値境界(§2.1 / session-31 M1-T2): 10 進文字列化の対象は非負の安全整数のみ。
+  // 数値境界(§2.1): 10 進文字列化の対象は非負の安全整数のみ。
   // 非整数(1.5)・MAX_SAFE_INTEGER + 1(float64 の精度喪失域 — 10 進文字列化が
   // 一意でない)・負数は TypeError で拒否する(JSON ベクターで表現しない分担は
   // docs/notes/session-34.md の裁定)

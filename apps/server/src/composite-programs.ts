@@ -5,8 +5,7 @@
 //   §4.2。宣言ヘッドは追記前の現ヘッド = 同梱エントリの prev)+ エポック 1 の
 //   ラップ完全集合
 // - ローテーション = `rotate_epoch` エントリ(新エポックのコミットメント込み)+
-//   新エポックのラップ完全集合(従来の「汎用チェーン追記 + DEK 登録 API」の
-//   2 往復を置換。現在値の再暗号化は後続の通常 push — §12-7)
+//   新エポックのラップ完全集合(現在値の再暗号化は後続の通常 push — §12-7)
 //
 // チェーン追記(親ヘッド CAS + verifyChain 再実行)とデータ登録を単一の同期
 // ブロックで原子的に受理し、「エポックはあるがラップがない」「コミットメントは
@@ -108,17 +107,17 @@ const ensureCompositeWrapSet = (input: {
     );
     // 完全一致(§12-6 の初回登録)を個数で明示要求する: checkWrapSets は
     // リクエストに現れたエポックしか見ないため、空集合が素通りしないように。
-    // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順も
-    // 旧・環境作成プログラムと同じ「個別検査 → 完全性」を保つ)。対象は
+    // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順は
+    // 環境作成プログラムと同じ「個別検査 → 完全性」を保つ)。対象は
     // 現メンバー集合 + 開示スコープ内の有効 grant_server のサーバー鍵
-    // (§12-4 — 2026-08-12 改訂。dek-wraps.ts の期待数定義を共有する)
+    // (§12-4。dek-wraps.ts の期待数定義を共有する)
     if (input.deks.length !== expectedWrapRecipientCount(input.appliedState, input.environmentId)) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
     }
   });
 
 /**
- * 境界 checkpoint の同梱物一致検査(AUTH_SPEC §12-4 — 2026-08-27 セッション 33):
+ * 境界 checkpoint の同梱物一致検査(AUTH_SPEC §12-4):
  * 当該環境 1 タプルのみ・座標一致・epoch = 同梱エントリが確立するエポック・
  * manifestVersion = 同梱マニフェストの版。タプルの manifest_sig_hash と同梱
  * マニフェストのハッシュ一致は、両エントリ適用後の履歴に対する acceptEnvManifest
@@ -148,8 +147,7 @@ const ensureBoundaryCheckpointShape = (input: {
     }
     // 非空 audit_head_hash は §16-2 の規則(実効権限 admin + §6.4 の存在・位置
     // 検査)で受理する — role 半分と内容検査は呼び出し側の
-    // ensureCheckpointAuditHead(checkpoint-accept.ts と共有)が担う(2026-08-28
-    // PR-M2 — F3b の暫定 fail-closed〔payload-mismatch: checkpointAuditHead〕を置換)
+    // ensureCheckpointAuditHead(checkpoint-accept.ts と共有)が担う
     return tuple;
   });
 
@@ -285,7 +283,7 @@ export const createEnvironmentCompositeProgram = (
     readonly statement: MetaStatementInput;
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
-    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4。2026-08-27 セッション 33)。 */
+    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4)。 */
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
@@ -295,7 +293,7 @@ export const createEnvironmentCompositeProgram = (
       actor.userId,
       cache,
     );
-    // DO ストレージ総量ガード(§12-8 — H2): 環境作成は成長面(環境行・
+    // DO ストレージ総量ガード(§12-8): 環境作成は成長面(環境行・
     // ステートメント・マニフェスト・全メンバー宛ラップ・スナップショット)。
     // ローテーション複合(下)は呼ばない — remove 後の義務ローテーション
     // (CRYPTO_SPEC §7)はセキュリティ是正で、書き込み量は有界(同節 (d))
@@ -459,7 +457,7 @@ export const rotateEpochCompositeProgram = (
     readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
-    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4。2026-08-27 セッション 33)。 */
+    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4)。 */
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
@@ -506,7 +504,7 @@ export const rotateEpochCompositeProgram = (
     // ハッシュ一致検査を兼ねる)。メタ集合は不変(エポック前進の反映だけの
     // 再発行 — §4.3)なので entries は保存済みの最新形そのまま。
     // マニフェスト導入前に作成された環境の最初の rotate は保存行なし(最新 0)
-    // から manifestVersion 1 を確立する(移行経路 — session-27 §14 PR-M1)
+    // から manifestVersion 1 を確立する(移行経路 — session-27 §14)
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
       projectId,
       environmentId,

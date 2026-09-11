@@ -1,5 +1,5 @@
 // ヘッドゴシップのクライアント面(CRYPTO_SPEC §6.3 ヘッドゴシップ / §6.6、
-// AUTH_SPEC §16-1 — 2026-08-28 PR-M4)。
+// AUTH_SPEC §16-1)。
 //
 // 照合(reconcileDistributedAttestations): チェーン取得応答に同梱された
 // 他メンバーの申告を §6.6 で検証した上で自ビューと照合する。
@@ -199,11 +199,11 @@ export function reconcileDistributedAttestations(input: {
     // 正常形だが、置き換わらず消えた場合も元申告の解決可否で判定する)。
     // 和集合は同一申告(attester が再申告していなければ新集合にも同じレコードが
     // 現れる)を重複排除する — 証拠 JSONL・警告に同内容が 2 回並ぶと「2 人の
-    // メンバーが矛盾している」ように読める(pullfrog レビュー — PR #101)。
+    // メンバーが矛盾している」ように読める。
     // キーはワイヤの全フィールド: 部分キーだと、悪意あるサーバーが 1 フィールド
     // だけ書き換えたレコードを新集合に混ぜて本物の持ち越し分(first.future)を
     // キー衝突で捨てさせられる(偽側は署名検証で無言 skip → 持ち越し照合が
-    // 空振りし、裁定 AA が閉じた omission bypass が再び開く)
+    // 空振りし、session-37 裁定 AA が閉じた omission bypass が再び開く)
     const seen = new Set<string>();
     const union = [...advanced.attestations, ...first.future].filter((attestation) => {
       const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
@@ -255,9 +255,9 @@ export function submitHeadAttestationIfAdvanced(input: {
       // 「前進していれば」— 提出もレート窓消費も行わない)。seq だけで判定
       // しないのは、床が missing / corrupt の初回・破損時に同一 seq・異ハッシュの
       // 別チェーン(equivocation)を見せられた場合、この端末の申告経由で他
-      // メンバーが分岐を検出する経路まで閉じてしまうため(pullfrog レビュー —
-      // PR #101)。seq 後退(必然的に異ハッシュ)も提出し、サーバーの 409
-      // AttestationRegression が床破損・並行 CLI の徴候として警告に浮かぶ
+      // メンバーが分岐を検出する経路まで閉じてしまうため。seq 後退(必然的に
+      // 異ハッシュ)も提出し、サーバーの 409 AttestationRegression が床破損・
+      // 並行 CLI の徴候として警告に浮かぶ
       return;
     }
     const signed = yield* Effect.promise(() =>

@@ -547,7 +547,7 @@ export async function manifestFor(input: {
 
 /**
  * 配布形マニフェスト → signed-bytes ハッシュ(自計算 — §4.3)。隣接版の prev
- * 連鎖(M1-A1)を満たすフィクスチャを組むときの prevManifestSigHashHex の材料。
+ * 連鎖を満たすフィクスチャを組むときの prevManifestSigHashHex の材料。
  */
 export async function manifestHashOf(
   projectId: string,

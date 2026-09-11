@@ -1,7 +1,6 @@
 // maruhi CLI のエントリ: 引数層は `effect/unstable/cli`(effect-cli.ts)。
 //
-// ADR-0016 第 3 段階(最終)で gunshi は完全に廃止した(決定 1)。runCli に
-// 残るのは (1) `--` より前にコマンド名が無い実行の専用診断(effect 側は
+// runCli が持つのは (1) `--` より前にコマンド名が無い実行の専用診断(effect 側は
 // 「余分な引数」としか言えず、直し方を伝えられない)、(2) 診断の宛先
 // (コマンド段)の解決、(3) 内部エラーの最終網、の 3 つだけ。
 //
@@ -29,13 +28,11 @@ const TERMINATOR_BEFORE_COMMAND =
 /**
  * `--` より前の位置引数(コマンド名の候補)を argv から集める。
  *
- * gunshi 廃止(決定 1)に伴い、gunshi の `parseArgs` に頼っていた走査
- * (旧 args.ts の commandTokens / commandNameAfterTerminator)を最小の自前
- * 字句に置き換えた。これは決定 2 が禁じる「引数の**検査**の走査」ではなく
+ * 最小の自前字句。これは ADR-0016 決定 2 が禁じる「引数の**検査**の走査」ではなく
  * **振り分けの材料**で、宣言には載らない。`-` で始まるトークンはオプション
  * (またはその綴りの誤り)、それ以外を位置引数として拾う。値を取るオプションの
- * 値も位置引数として並ぶ(gunshi の parseArgs も同じ — 引数表を知らない
- * 字句だけの走査)が、利用側は「先頭の非空トークン」と「`--` より前に
+ * 値も位置引数として並ぶ(引数表を知らない字句だけの走査)が、
+ * 利用側は「先頭の非空トークン」と「`--` より前に
  * 位置引数があるか」しか見ないので、effect 側の解決と食い違わない。
  */
 function positionalTokens(argv: readonly string[]): {
@@ -100,8 +97,7 @@ export async function runCli(
 
   // コマンド名が `--` の**後ろ**にある実行(`maruhi -- run printenv`)は、
   // どのコマンドへ振り分けるかを決めるより先に落とす(上記の専用診断)。
-  // 空のトークンはコマンド名として解決されない(gunshi も読み飛ばしていた)
-  // ので、`maruhi "" -- run` も同じ形として扱う
+  // 空のトークンはコマンド名として解決されないので、`maruhi "" -- run` も同じ形として扱う
   const tokens = positionalTokens(argv);
   if (tokens.beforeTerminator.every((token) => token === "") && tokens.afterTerminatorHasTokens) {
     await reportError([TERMINATOR_BEFORE_COMMAND]);

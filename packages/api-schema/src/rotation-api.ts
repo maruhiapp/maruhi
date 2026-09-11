@@ -38,7 +38,7 @@ export const RotationFlagBasisSchema = Schema.Literals(["read", "readable"]);
  * variant) is present. `triggerChainSeq` is the chain seq of the removal /
  * revocation entry that produced the flag.
  *
- * 監査 seq は運ばない(2026-08-16 C1 裁定 — AUDIT_SPEC §7): 無欠番採番の
+ * 監査 seq は運ばない(AUDIT_SPEC §7): 無欠番採番の
  * 序数はクラス 2 行の件数を漏らすため、クラス 1 ビューにも載せない。解消の
  * seq 順判定(§4.1 手順 5)はサーバー内部の導出であり、表示順は
  * recommendedAtMs で足りる。

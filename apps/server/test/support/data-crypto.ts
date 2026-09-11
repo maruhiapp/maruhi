@@ -510,8 +510,8 @@ export async function encryptValue(
 
 /**
  * 変数ステートメントのワイヤ表現(VariableMetaStatement — §12-2)。レイアウト
- * v2(2026-08-30)では layoutVersion とスキーマ欄の 4 フィールドが揃って存在
- * する(v1 では全部不在。required はワイヤの boolean)。
+ * v2 では layoutVersion とスキーマ欄の 4 フィールドが揃って存在する
+ * (v1 では全部不在。required はワイヤの boolean)。
  */
 export interface WireVariableMetaStatement {
   readonly suite: string;
@@ -623,7 +623,7 @@ export async function metaSignedBytesHashOf(
 }
 
 // ---------------------------------------------------------------------------
-// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5 — PR-M1)
+// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)
 // ---------------------------------------------------------------------------
 
 /** variables_digest の 1 エントリ(§4.3 — tombstone 込みの全変数の最新形)。 */

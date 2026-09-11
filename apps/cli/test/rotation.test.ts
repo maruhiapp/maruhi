@@ -423,7 +423,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
       environmentsAvailable: false,
     });
     const env = await startEnv(state, built.projectId);
-    // チェーン検証は成功しているので exit 0(Cursor bot 指摘 — 検証失敗は注意のみ)
+    // チェーン検証は成功しているので exit 0(検証失敗は注意のみ)
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("Chain verification OK");
     const errors = env.errors.join("\n");

@@ -122,7 +122,7 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
   // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
   const grantsMatch = serverGrantsMatchVector(state.serverGrants, expected.server_grants);
   // 環境集合はチェーン導出(§6.2): 期待に無い環境が導出されてもならない
-  // (「未観測なら初期値 1」の廃止 — 2026-08-03)
+  // (「未観測なら初期値 1」の既定値は存在しない)
   const environmentsMatch =
     state.environments.size === Object.keys(expected.environments).length &&
     Object.entries(expected.environments).every(([environmentId, environment]) =>

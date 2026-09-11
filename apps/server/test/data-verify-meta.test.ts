@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — メタステートメントの受理検証(AUTH_SPEC §12-5 のメタ規則 = CRYPTO_SPEC §4.2)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
@@ -56,7 +56,7 @@ async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]):
   );
   expect(rows.map((row) => row["meta_version"])).toEqual([...expectedMetaVersions]);
   // 受理されたメタ操作数との不変条件(rename 経路は名前の変更有無で
-  // var.renamed / var.schema_reissued に分岐する — AUDIT_SPEC §3.3 2026-09-01。
+  // var.renamed / var.schema_reissued に分岐する — AUDIT_SPEC §3.3。
   // 名前不変の受理ケースを将来足しても不変条件が黙って割れないよう両方数える)
   const renamedAudits = await queryProjectDo(
     projectId,
@@ -539,8 +539,8 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
 
   it("accepts the delete statement even at the meta version cap (deleted は上限対象外)", async () => {
     // 上限で削除まで遮断すると、rename 連打で上限到達したリソースがどの role
-    // でも恒久的に削除不能になる(レビュー②③ [major])。tombstone は連鎖の
-    // 終端で追加行は高々 1 行なので上限の対象外とする
+    // でも恒久的に削除不能になる。tombstone は連鎖の終端で追加行は高々 1 行
+    // なので上限の対象外とする
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);

@@ -1,6 +1,6 @@
 // scripts/reorder-d1-dump.ts(D1 復元 runbook の道具 — hosted-ops.md §5-1 (3))の純関数部を
-// 合成ダンプで固定する。2026-09-03 の演習で素の import が 2 回失敗した形(子表 → 親表の順・
-// `PRAGMA defer_foreign_keys` が効かない)を最小の入力で再現する(PR #139 pullfrog 指摘)。
+// 合成ダンプで固定する。素の import が失敗する形(子表 → 親表の順・
+// `PRAGMA defer_foreign_keys` が効かない)を最小の入力で再現する。
 import { describe, expect, it } from "vitest";
 
 import { reorderD1Dump, UnclassifiedStatementsError } from "../scripts/reorder-d1-dump.lib.ts";

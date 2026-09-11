@@ -105,7 +105,7 @@ export interface GrantServerPayload {
    */
   readonly scopeEnvironmentIds: readonly string[];
   /**
-   * Workload lease policy (CRYPTO_SPEC §6.2, 2026-08-12): the on-chain
+   * Workload lease policy (CRYPTO_SPEC §6.2): the on-chain
    * authorization source for the §9.1 lease path. Canonicalized as a
    * three-level nested length-prefixed encoding whose lowercase-hex form is
    * the fourth payload field — element and constraint order are part of the
@@ -240,7 +240,7 @@ export interface EnvironmentCheckpointState {
  * State derived from a verified chain (CRYPTO_SPEC §6.3): the current member
  * set (with roles), active server grants, and the environment set with per
  * epoch state. Environments exist only via `create_environment` (§6.2) —
- * there is no implicit "epoch defaults to 1" for unknown ids (2026-08-03).
+ * there is no implicit "epoch defaults to 1" for unknown ids.
  * This is the input for DEK-wrap recipient checks, the §5.2 commitment
  * matching, and head gossip (implemented with the sync logic later).
  */

@@ -1,11 +1,11 @@
-// `maruhi ci run`(A3 — CRYPTO_SPEC §9.1 / AUTH_SPEC §14)のテスト。
+// `maruhi ci run`(CRYPTO_SPEC §9.1 / AUTH_SPEC §14)のテスト。
 //
 // lease エンドポイントは MockServer 偽装(実 crypto フィクスチャで応答を組み、
 // リクエストの ephemeralPubHex へ動的に wrapLeaseDek する)。OIDC 発行は
 // MockServer の別パス(署名はダミー — クライアントは検証しない)、env 読みは
 // テスト層の setEnvVar。サーバー側の判定は apps/server/test/lease.test.ts が
-// 固定済みで、ここはクライアント挙動(§9.1 の検証義務・session-24 §8 の
-// 再試行規律・エラー区分の案内)に集中する。
+// 固定済みで、ここはクライアント挙動(§9.1 の検証義務・再試行規律・
+// エラー区分の案内)に集中する。
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -457,7 +457,7 @@ describe("maruhi ci run(正常系)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("Required variables are declared but have no value yet");
     expect(errors).toContain("MUST_HAVE");
-    // エラー文面に description を含めない(session-46 §8 第 3 周)
+    // エラー文面に description を含めない
     expect(errors).not.toContain("internal note");
     expectNoSecretLeak(env);
   });
@@ -617,7 +617,7 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* token-replayed / 429 / 503(session-24 §8 / AUTH_SPEC §14-3)               */
+/* token-replayed / 429 / 503(AUTH_SPEC §14-3)                                */
 /* -------------------------------------------------------------------------- */
 
 /** 先頭 `failures` 回だけ指定エラーを返し、以後は正常応答する lease ハンドラ。 */
@@ -789,7 +789,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(0);
   });
 
-  it("非 loopback の http: 発行 URL には bearer token を送らない(M1)", async () => {
+  it("非 loopback の http: 発行 URL には bearer token を送らない", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     // ルーティング不能な TEST-NET-1 アドレス: 検証が甘くても実送信は起きないが、
     // 検証が正しければ**通信自体が発生しない**ことを応答時間と文言で固定する
@@ -799,7 +799,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it('"127." で始まるだけの DNS 名は loopback 扱いしない(M1 レビューループ 1)', async () => {
+  it('"127." で始まるだけの DNS 名は loopback 扱いしない', async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     // "127.evil.com" は 127.0.0.0/8 のリテラルではなく任意 IP へ解決できる公開
     // DNS 名 — 接頭辞判定だと平文 http でも通ってしまう形の固定
@@ -809,7 +809,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("パース不能な発行 URL も通信前に拒否する(M1)", async () => {
+  it("パース不能な発行 URL も通信前に拒否する", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     env.setEnvVar(OIDC_REQUEST_URL_ENV, "not a url");
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
@@ -817,7 +817,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("発行エンドポイントの redirect には追従しない(M1: bearer の再送を塞ぐ)", async () => {
+  it("発行エンドポイントの redirect には追従しない(bearer の再送を塞ぐ)", async () => {
     const { env, server } = await startCiEnv([
       (request) =>
         request.path.startsWith("/oidc/redirect")

@@ -1,8 +1,7 @@
 // プロジェクト DO のスキーママイグレーション機構(src/do-schema.ts)のテスト。
+// workerd 実環境の SqlStorage で、空 DB / 途中版 DB への適用、失敗ステップの
+// ロールバックと再実行、適用済み DB への再適用 no-op を検証する。
 //
-// workerd 実環境の SqlStorage で検証する: (a) 空 DB への全ステップ適用、
-// (b) 途中版 DB への残ステップのみの適用、(c) 途中失敗ステップのロールバックと
-// 再実行、(d) 適用済み DB への再適用 no-op。
 // 実 DO(ProjectChainDO)のコンストラクタは runInDurableObject のインスタンス化
 // 時点でマイグレーションを適用してしまうため、「空 DB」「途中版 DB」は全テーブルの
 // DROP + schema_meta の初期化で再現する。このファイルは専用の DO 名を使い、他の

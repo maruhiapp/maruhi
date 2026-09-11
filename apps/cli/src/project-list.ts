@@ -1,4 +1,4 @@
-// `maruhi project list`(AUTH_SPEC §11-5 — W2a): 自分がチェーン導出メンバーで
+// `maruhi project list`(AUTH_SPEC §11-5): 自分がチェーン導出メンバーで
 // あるプロジェクトの一覧。同 API の第一消費者としてサーバー実装を検証する。
 //
 // TCB 規律: 応答(projectId / role)は**サーバー申告**である(§11-5 — role は

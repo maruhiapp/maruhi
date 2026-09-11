@@ -174,7 +174,7 @@ describe("invite issue", () => {
     expect(body.limit).toBe(MAX_PENDING_INVITES_PER_PROJECT);
   });
 
-  it("concurrent issuance cannot exceed the pending cap and audits only the winner (S4)", async () => {
+  it("concurrent issuance cannot exceed the pending cap and audits only the winner", async () => {
     const now = Date.now();
     const oldCreated = now - 2 * 60 * 60 * 1000;
     for (let index = 0; index < MAX_PENDING_INVITES_PER_PROJECT - 1; index += 1) {
@@ -206,7 +206,7 @@ describe("invite issue", () => {
     );
   });
 
-  it("concurrent issuance cannot exceed the lookback window and audits only the winner (S4)", async () => {
+  it("concurrent issuance cannot exceed the lookback window and audits only the winner", async () => {
     const now = Date.now();
     for (let index = 0; index < INVITE_ISSUE_WINDOW_LIMIT - 1; index += 1) {
       await seedInvitation({

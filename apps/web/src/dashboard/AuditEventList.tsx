@@ -333,7 +333,7 @@ export function AuditEventList({
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(false);
   // 消費軸(fetchPage)の世代。軸が変わったら旧 in-flight 応答を捨てる —
-  // 後着の旧軸ページが新しい軸のリストへ混入しない(PR #107 Bugbot 指摘の修正)
+  // 後着の旧軸ページが新しい軸のリストへ混入しない
   const generationRef = useRef(0);
 
   const loadMore = useCallback(
@@ -374,7 +374,7 @@ export function AuditEventList({
       <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
-        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(pullfrog 指摘 — 裁定 E-(c))
+        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(DP3 裁定 E-(c))
         headingLevel={2}
         testId={`${testId}-empty`}
       />

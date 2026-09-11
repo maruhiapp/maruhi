@@ -1,4 +1,4 @@
-// レイアウト v2 — 値なしスキーマのサーバー受理面(S2)の統合テスト —
+// レイアウト v2 — 値なしスキーマのサーバー受理面の統合テスト —
 // schema-locked(§12-11 作成時の一回検査)・description の受理検査(§12-8)・
 // 未対応レイアウト(§12-2 裁定 CR)。スイート全体の分担は data-schema-v2.test.ts
 // 冒頭、共有ヘルパは support/schema-v2-scenario.ts を参照。
@@ -223,7 +223,7 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     }
   });
 
-  it("サポート範囲検査は作成の前段検査(重複名)より前(pullfrog 指摘 — 名前衝突の v3 に duplicate-name を返さない)", async () => {
+  it("サポート範囲検査は作成の前段検査(重複名)より前(名前衝突の v3 に duplicate-name を返さない)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     // v3 宣言と同名の既存変数を先に作り、名前衝突の状況を用意する
@@ -286,7 +286,7 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
       reason: "unsupported-layout",
     });
     // v3 の activation(status / name ガード・値 CAS でなく unsupported-layout —
-    // PR #119 Bugbot 指摘: activate 経路も rename / 削除と同じ巻き上げ)
+    // activate 経路も rename / 削除と同じ巻き上げ)
     const activated = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/activate`,

@@ -332,8 +332,8 @@ interface AcceptedSchemaSet {
  *   明示を要求する。§1-2 の部分更新は「直前ステートメントの値」の引き継ぎ規則で
  *   あり、v1 には required の引き継ぎ元が存在しない — 作成既定(true)を黙って
  *   適用すると、ユーザーが打っていない presence 契約が署名済みステートメントに
- *   載る(PR #121 pullfrog レビュー対応)。varType / description の既定("")は
- *   「未指定」の表現で契約を主張しないため、明示は要求しない
+ *   載る。varType / description の既定("")は「未指定」の表現で契約を主張
+ *   しないため、明示は要求しない
  * - locked の advisory 下の作成は varType 非空を要求する(§1-2 — 作成時の
  *   一回検査。サーバーは 422 schema-required で強制する)
  */
@@ -359,7 +359,7 @@ function preSignRejection(
 
 /**
  * 検証済みビュー上の環境(無ければ型付きエラー)。schema set / var rm の
- * 試行が共有する前段(fallow の重複検出の解消 — DP5)。
+ * 試行が共有する前段(fallow の重複検出の解消)。
  */
 export function requireVerifiedEnvironment(
   state: SchemaSetState,

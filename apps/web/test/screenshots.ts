@@ -48,7 +48,7 @@ function before(route: Route): string | null {
 /**
  * 全消費面のモック。admin=false は監査 invites 軸 / S8 が 403(役割文言)になる。
  * empty=true は各集合を空で返す(空状態 — 見出し階層は集合があるときと変わるので、
- * axe / 目視の対象に含める。pullfrog 指摘: 空状態は fixtures だけでは決して描かれない)。
+ * axe / 目視の対象に含める。空状態は fixtures だけでは決して描かれない)。
  */
 async function mockApi(
   page: Page,
@@ -199,7 +199,7 @@ const SHOTS: ReadonlyArray<Shot> = [
     act: async (page) => {
       await openTab(page, "Invites", "[data-testid=invite-table]");
       // 失効の確認モーダル(AlertDialog — 改訂 4)を写す。mount / アニメーションと競合しない
-      // よう dialog の出現を待つ(pullfrog 指摘: 待たないと素の表を写して黙って通る)
+      // よう dialog の出現を待つ(待たないと素の表を写して黙って通る)
       await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
       await page.getByRole("alertdialog").waitFor();
     },

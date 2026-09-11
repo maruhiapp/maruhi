@@ -10,7 +10,7 @@
 // (リポジトリ内任意ファイルと同クラス)。
 //
 // **形式は JSON Schema(サブセット)**(裁定 CX — フォーマットを発明しない)。
-// S5 で確定した写像(比較・棄却案は実装 PR 本文):
+// 確定した写像:
 //
 //   - 1 スナップショット = 1 環境(トップレベルがそのまま 1 つの JSON Schema に
 //     なる形 — エディタ・エージェント・docs 生成が単体で消費できる)。スキーマは
@@ -110,7 +110,7 @@ function buildSchemaSnapshot(
   const sorted = variables.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   // Object.fromEntries は CreateDataProperty で own key を作る: 素の代入だと
   // `__proto__` という名前の変数が setter に食われて properties から黙って
-  // 消える(required には残るため生成物が自己矛盾する — pullfrog レビュー対応)
+  // 消える(required には残るため生成物が自己矛盾する)
   const properties: Record<string, SnapshotProperty> = Object.fromEntries(
     sorted.map((statement) => [statement.name, propertyOf(statement)]),
   );

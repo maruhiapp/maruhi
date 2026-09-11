@@ -36,7 +36,7 @@ export const ResourceConflictReasonSchema = Schema.Literals([
  * Reason codes for a 409 on environment creation or rename. Only the display
  * name remains a data-plane check: id uniqueness (`exists` / `retired`) was
  * absorbed into the chain consensus rule `duplicate-environment`
- * (ChainEntryInvalid — CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4, 2026-08-03).
+ * (ChainEntryInvalid — CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4).
  */
 export const EnvironmentConflictReasonSchema = Schema.Literals(["duplicate-name"]);
 
@@ -88,7 +88,7 @@ export class PayloadMismatchError extends Schema.TaggedError<PayloadMismatchErro
 
 /**
  * Reason codes for a 422 on a value push / create (AUTH_SPEC §12-5 =
- * CRYPTO_SPEC §4.1 / §6.4 のサーバー検証。仮裁定 — 確定条件 = PR レビュー承認):
+ * CRYPTO_SPEC §4.1 / §6.4 のサーバー検証):
  *
  * - `signature-invalid` — valid-format の Ed25519 検証失敗
  * - `chain-head-unknown` — 署名は有効だが宣言 seq が自チェーンに存在しない、
@@ -96,8 +96,8 @@ export class PayloadMismatchError extends Schema.TaggedError<PayloadMismatchErro
  * - `chain-head-state-mismatch` — ヘッドは既知だがヘッド時点の鍵 / role / 環境 /
  *   エポックが不一致、または保存 predecessor と prev が不一致
  *
- * 検査順: 署名壊れ → unknown head → state mismatch。仕様(session-12 §6-7)の
- * 3 理由のみ — 4 つ目の理由はワイヤ変更なので本 PR では作らない。
+ * 検査順: 署名壊れ → unknown head → state mismatch。仕様の 3 理由のみ —
+ * 4 つ目の理由はワイヤ変更になる。
  */
 export const ValueSignatureRejectReasonSchema = Schema.Literals([
   "signature-invalid",
@@ -203,7 +203,7 @@ export class SchemaDescriptionRejectedError extends Schema.TaggedError<SchemaDes
 
 /**
  * Reason codes for a 422 on an environment manifest (AUTH_SPEC §12-5 =
- * CRYPTO_SPEC §4.3。2026-08-18): 既存の 3 語彙(署名・ヘッド系)を共有し、
+ * CRYPTO_SPEC §4.3): 既存の 3 語彙(署名・ヘッド系)を共有し、
  * マニフェスト固有の 2 理由を加える —
  *
  * - `manifest-digest-mismatch` — サーバーが受理後のメタ状態(同梱ステートメント
@@ -213,8 +213,8 @@ export class SchemaDescriptionRejectedError extends Schema.TaggedError<SchemaDes
  * - `manifest-epoch-mismatch` — エポック整合の失敗(§12-5 (4): 宣言ヘッド時点の
  *   現エポック — rotate / 作成複合の同梱分は同梱エントリ適用後の状態)
  * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
- *   `checkpoint-regressed` — チェックポイント束縛(CRYPTO_SPEC §4.3 (2) —
- *   2026-08-27 セッション 33: 検証済みチェーン上の当該 (environment_id,
+ *   `checkpoint-regressed` — チェックポイント束縛(CRYPTO_SPEC §4.3 (2):
+ *   検証済みチェーン上の当該 (environment_id,
  *   manifest_version) タプルとの完全一致必須 / 同座標の相違タプル併存 =
  *   equivocation の証拠 / 最新チェックポイント基準に対する非後退〔§6.3 整合
  *   規則 1〕の失敗)
@@ -249,7 +249,7 @@ export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedEr
  * - `manifest-mismatch` — タプルの (manifest_version, manifest_sig_hash) が
  *   受理時点の当該環境の**最新**マニフェストと不一致(発行者のビューが古い
  *   場合と、実在しない先行 manifest_version の公証 — 悪意 member による
- *   checkpoint-regressed 詰まらせ — の両方を含む。session-33 §5 の申し送り)
+ *   checkpoint-regressed 詰まらせ — の両方を含む)
  * - `values-digest-mismatch` — タプルの values_digest が受理時点の保存状態
  *   (全 active 変数の最新 version とその value_signed_bytes ハッシュ)からの
  *   再計算と不一致。宣言ヘッド確定後の並行 push で正当に起きる —
@@ -285,7 +285,7 @@ export class CheckpointStateMismatchError extends Schema.TaggedError<CheckpointS
 /**
  * 503: the audit-head derived column (AUDIT_SPEC §5.1 の遅延実体化) has not
  * reached MAX(seq) within this call's bounded extension budget (AUTH_SPEC
- * §16-2 — 2026-08-28 セッション 38)。Retryable: 伸長の進捗はサーバー側に保存
+ * §16-2)。Retryable: 伸長の進捗はサーバー側に保存
  * 済みで、再試行は必ず前進する。監査ヘッドを読む全経路(GET /audit-head・
  * standalone checkpoint 受理・境界複合の非空公証)が共有する。**本文は空**:
  * 残行数・進捗を載せると監査行数の序数情報になる(AUDIT_SPEC §7 の件数非漏洩)。
@@ -346,16 +346,16 @@ export const DataLimitResourceSchema = Schema.Literals([
   "variables",
   "variable-rows",
   "versions",
-  // metaVersion 行 / 変数(環境)。仮裁定: §12-8 の「バージョン数 / 変数」と
+  // metaVersion 行 / 変数(環境)。§12-8 の「バージョン数 / 変数」と
   // 同値(1,000)を rename / 削除のステートメント行にも適用する(無制限の
-  // rename 連打による DO ストレージ肥大の遮断。確定条件 = PR レビュー承認)
+  // rename 連打による DO ストレージ肥大の遮断)
   "meta-versions",
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
   "dek-wrap-rows",
-  // 取り下げ対象の列挙上限(AUDIT_SPEC §7 の取り下げ操作 — Wave 2 B2)
+  // 取り下げ対象の列挙上限(AUDIT_SPEC §7 の取り下げ操作)
   "rotation-dismissals-per-request",
-  // DO ストレージ総量ガード(§12-8 — 2026-09-02 H2): プロジェクト DO の SQLite
+  // DO ストレージ総量ガード(§12-8): プロジェクト DO の SQLite
   // 実測量(databaseSize)が拒否閾値(起草値 9 GB)以上のとき、内容の成長面
   // (値 push・変数 / 環境の作成・改名・DEK 登録・add_member / grant_server)を
   // 拒否する。limit = 拒否閾値バイト。読み取り・削除・失効・ローテーションは

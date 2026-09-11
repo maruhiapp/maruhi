@@ -1,4 +1,4 @@
-// 運用基盤 H3 — 復元 worker のジョブ処理(docs/notes/hosted-ops.md §2-E / §5-2)。
+// 運用基盤 — 復元 worker のジョブ処理(docs/notes/hosted-ops.md §2-E / §5-2)。
 //
 // HTTP を持たない復元 worker は R2 の restore/jobs/ を読んで DO RPC(opsRestore)を呼び、
 // restore/results/ に静的コード + 検証値を書く。DO 名(= プロジェクト ID)はジョブに

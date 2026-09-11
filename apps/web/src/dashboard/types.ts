@@ -61,8 +61,8 @@ export interface InvitationList {
   readonly invitations: ReadonlyArray<InvitationSummary>;
 }
 
-/** One token row of the S9 self-inventory listing (AUTH_SPEC §6 — W3a). */
+/** One token row of the S9 self-inventory listing (AUTH_SPEC §6). */
 export type TokenSummary = typeof TokenSummarySchema.Type;
 
-/** `{ tokens }` shape of the token listing (AUTH_SPEC §6 — W3a). */
+/** `{ tokens }` shape of the token listing (AUTH_SPEC §6). */
 export type TokenList = typeof TokenListSchema.Type;

@@ -1,14 +1,6 @@
-// 招待 API(AUTH_SPEC §15)の統合テスト。
-//
-// - 認可(トークンスコープ admin × チェーン role admin 以上 / role=admin は
-//   owner のみ)、存在秘匿(非メンバー 404)、受諾の判定順(404 → 410 → 422 →
-//   CAS)を理由コードごとに固定する
-// - 受諾署名(CRYPTO_SPEC §6.5)は @maruhi/crypto の実装で実署名を作る。
-//   サーバーは signed_bytes を保存行 + 呼び出し主体から再構成するため、
-//   リンク改竄(別プロジェクト・別トークン)・鍵すり替え・別人の署名は
-//   すべて 422 に落ちることを実データで検証する
-// - invite.* 監査(AUDIT_SPEC §3.2)がレコード操作と同一 batch で書かれ、
-//   CAS 敗北時に監査行が増えないこと(changes() ガード)を D1 直読で検証する
+// 招待 API(AUTH_SPEC §15)の統合テスト。認可・存在秘匿・受諾の判定順(404 →
+// 410 → 422 → CAS)、受諾署名(CRYPTO_SPEC §6.5)の実データ検証、invite.* 監査
+// (AUDIT_SPEC §3.2)の同一 batch 書き込みと CAS 敗北時のガードを固定する。
 
 import { SUITE_ID, verifyInviteAcceptSignature } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
@@ -247,7 +239,7 @@ describe("invite accept", () => {
     });
   });
 
-  it("rejects a session principal even with the CSRF header (§5 能力制限 — §15-2 の反転。W2b)", async () => {
+  it("rejects a session principal even with the CSRF header (§5 能力制限 — §15-2 の反転)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const session = await loginSession(9009);
@@ -379,7 +371,7 @@ describe("invite list / revoke", () => {
     expect((await revoke("01ARZ3NDEKTSV4RRFFQ69G5FAV")).status).toBe(404);
   });
 
-  it("session principals can list and revoke (§5 の許可列挙 — 読み取り + 失効系。W2b)", async () => {
+  it("session principals can list and revoke (§5 の許可列挙 — 読み取り + 失効系)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const session = await loginSession(9001);
 

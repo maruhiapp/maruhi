@@ -1,5 +1,5 @@
 // チェックポイント整合のクライアント規則 2(CRYPTO_SPEC §6.3 — 値の非後退。
-// PR-M3 / session-27 §13-5 のスナップショット同梱検証)の結線テスト。
+// session-27 §13-5 のスナップショット同梱検証)の結線テスト。
 //
 // 検証の柱:
 //  1. 受理正例: 列挙一致・checkpoint 後の前進 version(基準 epoch 以上)・
@@ -10,7 +10,7 @@
 //  3. locator の 2 分類(裁定 S): 申告 seq > 自ヘッド = 有界再同期(pull)/
 //     lease は自己矛盾として即時拒否
 //  4. cross-layer(裁定 W): 規則 2 を通過する配布でも床の規則 (a) は独立に落とす
-//     (チェーンの粗い基準がローカルの細かい基準を短絡しない — F4 と同型)
+//     (チェーンの粗い基準がローカルの細かい基準を短絡しない)
 //  5. lease 経路: 同一実装の到達 + 基準なし環境の値付き配布での警告(SHOULD)
 
 import type { ChainOperation } from "@maruhi/crypto";
@@ -565,7 +565,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
   });
 });
 
-describe("良性競合の分類(PR #100 Bugbot 指摘 — 取得ビュー後の基準前進は evidence にしない)", () => {
+describe("良性競合の分類(取得ビュー後の基準前進は evidence にしない)", () => {
   it("再同期の窓に第 2 の checkpoint が着地した正直な応答は、証拠ではなく retriable として拒否する", async () => {
     // fetch 時のビュー = baseChain(checkpoint なし)。応答は checkpoint(seq 4)の
     // 列挙を運ぶが、再同期後のチェーンには第 2 の checkpoint(seq 5)まで載って
@@ -646,7 +646,7 @@ describe("良性競合の分類(PR #100 Bugbot 指摘 — 取得ビュー後の�
   });
 });
 
-describe("cross-layer: 規則 2 は床の規則 (a) を代替しない(裁定 W — F4 と同型)", () => {
+describe("cross-layer: 規則 2 は床の規則 (a) を代替しない(裁定 W)", () => {
   it("checkpoint 基準以上・床未満の値配布は床が拒否する", async () => {
     // フェーズ 1: va v3(基準 v2 より前進・epoch 2)で床を確立する
     const v3 = await encryptValueFor({

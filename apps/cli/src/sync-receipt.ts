@@ -1,4 +1,4 @@
-// 同期レシート(SY2 第 1 段 — integration-options.md §3 補足 13 W2 / 補足 15 X3 (a))。
+// 同期レシート(integration-options.md §3 補足 13 W2 / 補足 15 X3 (a))。
 //
 // 「どの同期先に、どの変数の version まで届いたか」を、設定で指した環境
 // (`receipts.environment`)の**普通の変数**として保存する: E2EE + §4.1 の
@@ -13,10 +13,10 @@
 //
 // 読み = 値付き pull(pull.ts の pullVariables — レシート環境を復号する)、
 // 書き = push.ts の pushVariable(人間の master 鍵で署名する。CI はこの鍵を
-// 持たないので書けない — 第 2 段の申し送り)。
+// 持たないので書けない)。
 //
-// 名前を `MARUHI_` で始めない理由: `run` は `MARUHI_*` の注入を拒否する
-// (deepsec S3)ので、レシート環境を誤って `run` に使うと失敗する — それ自体は
+// 名前を `MARUHI_` で始めない理由: `run` は `MARUHI_*` の注入を拒否するので、
+// レシート環境を誤って `run` に使うと失敗する — それ自体は
 // 望ましいが、拒否文が「実行制御名」を言い読者を惑わせる。`:` を含む名前は
 // POSIX 識別子でないため、`run` は「環境変数として注入できない名前」として
 // 変数名だけを添えて止まる(同じ fail-closed で、文面が事実を言う)。
@@ -164,9 +164,9 @@ export function loadReceipt(input: {
     // preset が違うレシートの届け先は別のプラットフォーム: 名前で消す削除も
     // 「届いた」扱いの version も意味を失う。作り直しを名指しで案内する。
     // このレシートは旧届け先に何が居るかの唯一の記録なので、消させる前に
-    // 名前の一覧をここで見せる(pullfrog 指摘 — driverFailureMessage の
-    // pendingHint と同型。maruhi は旧届け先を消しに行かない: 設定が今指して
-    // いない先に書く・消すことはしない)
+    // 名前の一覧をここで見せる(driverFailureMessage の pendingHint と同型。
+    // maruhi は旧届け先を消しに行かない: 設定が今指していない先に書く・消す
+    // ことはしない)
     if (decoded.preset !== input.preset) {
       const delivered = Object.keys(decoded.variables).toSorted();
       const orphanHint =

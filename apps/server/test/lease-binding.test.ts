@@ -1,5 +1,5 @@
-// ワークロードリースの先着束縛(AUTH_SPEC §14-1 — 2026-08-15 裁定)と
-// 発信元 IP の request-level レート制限(deepsec M5)の統合テスト。
+// ワークロードリースの先着束縛(AUTH_SPEC §14-1)と
+// 発信元 IP の request-level レート制限の統合テスト。
 // スイート全体の分担は lease.test.ts 冒頭、共有ヘルパは
 // support/lease-scenario.ts を参照。
 //
@@ -32,7 +32,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定)", () => {
+describe("ワークロードリース: 先着束縛(§14-1)", () => {
   it("rejects the same token presented with a different ephemeral key (401 token-replayed)", async () => {
     await readyProject();
     const legit = await workloadKeyPair();
@@ -41,7 +41,7 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
       200,
     );
 
-    // 盗まれたトークンのコピー + 攻撃者自身の一時鍵(裁定前はこれが通っていた)
+    // 盗まれたトークンのコピー + 攻撃者自身の一時鍵
     const thief = await workloadKeyPair();
     const replay = await requestLease({ oidcToken, ephemeralPubHex: thief.publicKeyHex });
     expect(replay.status).toBe(401);
@@ -118,7 +118,7 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
     // 束縛はトークン単位でプロジェクト DO を跨がず共有される(environmentId は
     // キーに含まない)。エンドポイントは環境単位なので、1 トークンで N 環境を
     // リースするジョブは**全リクエストで同じ一時鍵**を提示しなければならない。
-    // これは A3 の義務(トークンあたり一時鍵は 1 つ・リクエストごとに
+    // これはクライアントの義務(トークンあたり一時鍵は 1 つ・リクエストごとに
     // ローテーションしない — AUTH_SPEC §14-1)。ランタイム再発行できない
     // 事前発行型 issuer(GitLab 等)で特に効くため、緩いうちに固定する。
     const SECOND = "env-second-0002";
@@ -199,7 +199,7 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
   });
 
   it("binds on the signed material, not the raw token: a malleated signature segment cannot dodge the binding", async () => {
-    // 🚨 リグレッションガード(2026-08-15 pullfrog 指摘): 束縛キーが生トークンの
+    // リグレッションガード: 束縛キーが生トークンの
     // ハッシュだと、署名で保護されない第 3 セグメントの base64url 末尾を
     // 「デコード結果が同一になる別文字」へ差し替えるだけで、署名検証・
     // claims_digest を一切変えずにハッシュだけ変えられ、束縛照合が空振りして
@@ -229,7 +229,7 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
   });
 });
 
-// 実在しないプロジェクト ID への連投(deepsec M5 検査用): 制限が projectStub より
+// 実在しないプロジェクト ID への連投: 制限が projectStub より
 // 手前にあるため DO は生成されない。Schema(base64url + `.` の文字集合)は通し、
 // OIDC 検証段で落ちる形 — 制限判定はハンドラ内(Schema 通過後)なので、Schema で
 // 弾かれる形だとそもそも計数されない
@@ -241,7 +241,7 @@ function rateLimitedLeaseAttempt(): Promise<Response> {
   });
 }
 
-describe("ワークロードリース: 発信元 IP の request-level レート制限(deepsec M5)", () => {
+describe("ワークロードリース: 発信元 IP の request-level レート制限", () => {
   it("固定 IP からの連投は OIDC 検証・DO 生成に到達する前に 429 になる", async () => {
     // 判定は IP のみでプロジェクト状態と無関係なので、429 の露出は存在秘匿
     // (§11-2)を壊さない
@@ -273,8 +273,8 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
     expect(body["scope"]).toBe("source-address");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
     // 124 リクエストのバーストはスイート全体の負荷次第で既定 15s を越える
-    // (実測 — フルスイート実行時)。fixture の beforeEach が PAT を実経路
-    // (CLI ログインハンドオフ = 6 往復/ユーザー)で発行するようになった分も
-    // この計測に含まれる。ハング検出の有界性は保ったまま延長する
+    // (フルスイート実行時の実測)。fixture の beforeEach が PAT を実経路
+    // (CLI ログインハンドオフ = 6 往復/ユーザー)で発行する分もこの計測に
+    // 含まれる。ハング検出の有界性は保ったまま延長する
   }, 120_000);
 });

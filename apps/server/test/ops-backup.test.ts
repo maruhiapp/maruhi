@@ -1,4 +1,4 @@
-// 運用基盤 H3 — DO → R2 退避と復元(docs/notes/hosted-ops.md §2-D / §2-E / §4-2)。
+// 運用基盤 — DO → R2 退避と復元(docs/notes/hosted-ops.md §2-D / §2-E / §4-2)。
 //
 // 実プロジェクト DO(@cloudflare/vitest-plugin)に対し、fixture(API 経由で作った
 // チェーン・環境・変数・監査行)を退避し、空にした DO へ書き戻して、チェーンヘッド・
@@ -351,7 +351,7 @@ describe("退避スイープ(ops-backup.ts)と毎時 cron", () => {
   it("records oversize without counting it as a consecutive failure (and clears earlier ones)", async () => {
     await seedProjectActivity();
     // 先に失敗を 1 回積んでおく: oversize の記録が UPDATE 分岐でもカウンタを 0 へ戻す
-    // ことを検証する(行が無い状態からでは INSERT 分岐しか通らない — PR #137 レビュー)
+    // ことを検証する(行が無い状態からでは INSERT 分岐しか通らない)
     await opsRepo()
       .recordBackupAttempt(
         projectId,

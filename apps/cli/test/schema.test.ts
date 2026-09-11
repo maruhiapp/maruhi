@@ -680,7 +680,7 @@ describe("maruhi schema set(§1-2)", () => {
   it("v1 変数への最初の v2 再発行は required の明示を要求する(署名・送信前のローカル拒否)", async () => {
     // v1 ステートメントに required の引き継ぎ元はない(§1-2 の部分更新は
     // 「直前の値」の規則)。作成既定 true を黙って適用すると、ユーザーが
-    // 打っていない presence 契約が署名に載る — 明示必須(PR #121 レビュー対応)
+    // 打っていない presence 契約が署名に載る — 明示必須
     const env = await startEnv([
       chainHandler(),
       metadataHandler({ variables: [activeV1.statement] }),

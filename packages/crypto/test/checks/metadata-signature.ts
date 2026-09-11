@@ -282,10 +282,9 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   }
 }
 
-// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
+// 理由空間の網羅固定(support.ts の reasonCoverageChecks で検査):
 // Record 型が union との同期を **コンパイル時に** 強制するため、新しい拒否規則を
-// 実装したのにベクター・ハーネスのどちらにも負例が無い、を型 + テストで捕まえる
-// (S1 の declared-after-active / layout-regression の追加で顕在化した欠落様式)。
+// 実装したのにベクター・ハーネスのどちらにも負例が無い、を型 + テストで捕まえる。
 const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "signature-invalid": true,
   "author-unknown": true,
@@ -412,7 +411,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると各ふるいから漏れる — session-13 の教訓)
+  // kind 語彙の固定(第三の値が導入されると各ふるいから漏れる)
   c.push(
     "meta-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every(

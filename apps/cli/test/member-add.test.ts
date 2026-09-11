@@ -1,5 +1,4 @@
-// `maruhi member add`(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 / §15 —
-// Wave 2 B1b)の統合テスト。
+// `maruhi member add`(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 / §15)の統合テスト。
 //
 // 固定する性質:
 //  1. add_member は一覧の受諾ブロックから組む(鍵・user_id。role は招待行から)。
@@ -430,7 +429,7 @@ describe("maruhi member add", () => {
 
   it("修復経路の削除後に再登録が失敗したら、スロットが空である事実を明示して失敗する", async () => {
     // 削除 → 再登録は原子的でない: 間で失敗すると対象はそのエポックのラップを
-    // 一つも持たない。汎用文言に紛れると気づけない(pullfrog レビュー反映)
+    // 一つも持たない。汎用文言に紛れると気づけない
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -619,11 +618,11 @@ describe("maruhi member add", () => {
     expect(logs).toContain("1 old-key wrap repaired");
   });
 
-  it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
-    // PR #69 レビューの本丸: 「過去に別鍵で在籍 + 直前の member add が現行鍵で
-    // 部分完了」の再実行。鍵履歴ヒューリスティックは stale を疑う(旧判定なら
-    // 誤削除)が、409 が保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で
-    // 登録済みと判定できる(AUTH_SPEC §12-6 追補)
+  it("409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
+    // 「過去に別鍵で在籍 + 直前の member add が現行鍵で部分完了」の再実行。
+    // 鍵履歴ヒューリスティックは stale を疑う(旧判定なら誤削除)が、409 が
+    // 保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で登録済みと判定できる
+    // (AUTH_SPEC §12-6 追補)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -673,7 +672,7 @@ describe("maruhi member add", () => {
     expect(logs).not.toContain("old-key wraps repaired");
   });
 
-  it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
+  it("409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
     // 鍵履歴に別鍵はない(ヒューリスティックは stale を疑わない)が、409 の
     // フィールドが別鍵を申告する形。フィールドがヒューリスティックに**優先**
     // することを固定する(比較を外して推定へ戻す変異でこのテストだけが落ちる)
@@ -716,7 +715,7 @@ describe("maruhi member add", () => {
     expect(logs).toContain("1 old-key wrap repaired");
   });
 
-  it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する(Cursor bot 指摘の回帰)", async () => {
+  it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する", async () => {
     // add_member 済み(サーバーが行を completed へ更新済み)+ バックフィル中断の形
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },

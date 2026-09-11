@@ -1,6 +1,6 @@
-// docs/deploy-targets.mdx のレシピ(SY1 — docs/notes/integration-options.md §3「SY1 実装時の裁定録」裁定 H)を
-// **ページの本文からそのまま切り出して実行**し、次を固定する(DP5 の golden と同じく「書いた文言」と
-// 「検査対象」を一致させ、docs の漂流を構造で防ぐ):
+// docs/deploy-targets.mdx のレシピ(docs/notes/integration-options.md §3 裁定 H)を**ページの本文から
+// そのまま切り出して実行**し、DP5 の golden と同じく「書いた文言」と「検査対象」を一致させ、docs の漂流を
+// 構造で防ぐ。固定するのは:
 //   1. 平文の値は外部コマンドの argv に一切現れず、`set -x` のトレースにも出ない(`ps` / シェル履歴 — 裁定 C)
 //   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel / gh = 変数ごとに値 + 改行)
 //   3. 名前に値が無いときは何も送らずに失敗する(wrangler の JSON null = 削除を決して作らない)
@@ -24,8 +24,8 @@ function shellBlocks(markdown: string): string[] {
 }
 
 const allBlocks = shellBlocks(page);
-// レシピ = `maruhi run --env production -- ` で始まるブロック(SY2 で `maruhi sync` の
-// 使い方の ```sh も同じページに載ったので、本文の順ではなく形で選ぶ)
+// レシピ = `maruhi run --env production -- ` で始まるブロック(`maruhi sync` の使い方の
+// ```sh も同じページにあるので、本文の順ではなく形で選ぶ)
 const RECIPE_PREFIX = "maruhi run --env production -- ";
 const blocks = allBlocks.filter((b) => b.startsWith(RECIPE_PREFIX));
 const workersRecipe = blocks.find((b) => b.includes("wrangler secret bulk"));
@@ -170,14 +170,14 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
   });
 
   it("has jq in CI, so the Workers recipe is never skipped there", () => {
-    // 手元で jq が無いときは Workers の 2 態をスキップするが、CI では静かな劣化にしない(pullfrog 指摘)
+    // 手元で jq が無いときは Workers の 2 態をスキップするが、CI では静かな劣化にしない
     if (process.env["CI"] === undefined) return;
     expect(hasJq, "install jq on the CI runner: the Workers recipe check needs it").toBe(true);
   });
 
   it("has every shell the page names in CI (bash, zsh, dash), so none is silently skipped there", () => {
     // ページは「bash, zsh, and dash run them unchanged」と約束している。手元では導入済みのものだけを回し、
-    // CI(ci.yml が zsh を入れる)では 4 シェルすべての存在を断言する(pullfrog 指摘)
+    // CI(ci.yml が zsh を入れる)では 4 シェルすべての存在を断言する
     if (process.env["CI"] === undefined) return;
     expect(shells, "install bash, zsh, and dash on the CI runner").toEqual([
       "sh",

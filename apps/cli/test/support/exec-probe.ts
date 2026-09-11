@@ -5,7 +5,7 @@
 // 検査対象: 値が stdin に**丸ごと**届く(16 KiB — Vercel の上限ぶん)、子の環境に
 // テレメトリ off の変数が入り MARUHI_* は入らない、出力が捕捉される(親の
 // stdout に流れない)、出力は**切らずに丸ごと**返る(伏せる前に切ると値の後半が
-// 漏れる — Security Agent 指摘)、非 0 の終了コードが返る、起動できないコマンドは
+// 漏れる)、非 0 の終了コードが返る、起動できないコマンドは
 // 型付きエラー。子は sh の 1 行(値を stdin から読み、長さと環境の有無だけを
 // 報告する — 値そのものは出力しない)。
 
@@ -15,11 +15,11 @@ import { liveLayer } from "../../src/live.ts";
 import { ProcessRunner } from "../../src/run.ts";
 
 const value = "v".repeat(16 * 1024);
-// 子に渡してはならない名前空間(deepsec S6)を親に置いておく
+// 子に渡してはならない名前空間を親に置いておく
 process.env["MARUHI_TOKEN"] = "maruhi_pat_probe_dummy";
 process.env["MARUHI_TOKEN_ORIGIN"] = "https://probe.invalid";
 
-// 70,000 文字の行を先に出す(以前の 64 K 文字の切り詰めが無いことの証拠)
+// 70,000 文字の行を先に出す(64 K 文字での切り詰めが無いことの証拠)
 const script =
   'head -c 70000 /dev/zero | tr "\\0" x; echo; input=$(cat); printf "len=%s telemetry=%s maruhi=%s\\n" "${#input}" "${WRANGLER_SEND_METRICS:-unset}" "${MARUHI_TOKEN:-unset}"; echo "to-stderr" >&2; exit 3';
 

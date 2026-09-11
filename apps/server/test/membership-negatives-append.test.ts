@@ -25,8 +25,8 @@ import {
 registerMembershipScenario();
 
 /**
- * checkpoint op の汎用 append テスト(2026-08-28 — PR-M2 で standalone 受理へ
- * 移行): 固定長 hex の形式違反は api-schema の hex Schema が先に 400 で拒否する
+ * checkpoint op の汎用 append テスト: 固定長 hex の形式違反は api-schema の
+ * hex Schema が先に 400 で拒否する
  * (create-env-commitment-* の複合期待と同じ分担)。それ以外の合意規則 negative
  * (role / audit role / unknown / epoch / regression と検査順序)は crypto 層の
  * 4 実行環境テストが理由コードごと固定済みで、前提チェーン(checkpoint-baseline

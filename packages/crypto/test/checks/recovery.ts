@@ -49,7 +49,6 @@ async function negativeChecks(c: Checks): Promise<void> {
     !otherUser.ok && otherUser.error.kind === "DecryptFailed",
   );
 
-  // ciphertext-bit-flip
   const flip = recoveryVectors.negative.find((n) => n.name === "ciphertext-bit-flip");
   const tampered = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
@@ -114,7 +113,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
     wrapped.value.nonce.length === 12 && unwrapped.ok && toHex(unwrapped.value) === toHex(blob),
   );
 
-  // 別のリカバリーコードでは復号できない
   const wrongSecret = await unwrapMasterSecret({
     recoverySecret: generateRecoverySecret(),
     userId: "user-roundtrip-0001",

@@ -1,7 +1,7 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 環境管理(§12-4 複合
 // リクエスト)・複合作成の DEK ラップ検証(§12-6)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 // エポックとローテーション・境界 checkpoint の複合内整合は
 // data-environment-rotation.test.ts(分割の動機は
 // support/membership-scenario.ts 冒頭を参照)。
@@ -61,7 +61,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // 正例はラップした DEK 自身のコミットメントを渡す(session-31 M1-T1)
+    // 正例はラップした DEK 自身のコミットメントを渡す
     const created = await createEnvironmentWith(
       fixture,
       ENV,
@@ -82,7 +82,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     expect(body.headSeq).toBe(headBefore.seq + 2);
 
     // チェーンに create_environment + checkpoint の 2 エントリが追記されている
-    // (複合の原子性の片翼 — 2026-08-27)
+    // (複合の原子性の片翼)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: { op: string; seq: number }[] };
     expect(chainBody.entries.at(-2)?.op).toBe("create_environment");
@@ -137,7 +137,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // ID の一意性は合意規則へ昇格(旧 409 exists の吸収 — CRYPTO_SPEC §6.2)
+    // ID の一意性は合意規則(CRYPTO_SPEC §6.2)
     const response = await createEnvironmentWith(fixture, ENV, "App2", deks);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { seq: number; reason: string };
@@ -170,7 +170,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     expect(pull.status).toBe(404);
 
     // チェーンは削除を観測しないため、再作成は合意規則(履歴全体一意)で拒否される
-    // (旧 409 retired の吸収 — CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
+    // (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
     const recreated = await createEnvironmentWith(fixture, ENV, "App3", []);
     expect(recreated.status).toBe(422);
     const body = (await recreated.json()) as { reason: string };
@@ -255,7 +255,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
 
-    // 再試行の正例はラップした DEK 自身のコミットメント(session-31 M1-T1)
+    // 再試行の正例はラップした DEK 自身のコミットメント
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -282,7 +282,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const body = (await duplicate.json()) as { reason: string };
     expect(body.reason).toBe("duplicate-name");
 
-    // 受理(200)まで進む正例はラップした DEK のコミットメント(session-31 M1-T1)
+    // 受理(200)まで進む正例はラップした DEK のコミットメント
     const second = await createEnvironmentWith(
       fixture,
       "env-app-0002",
@@ -430,7 +430,7 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
   });
 
   it("rejects an empty wrap set atomically (§12-4: エポック 1 の完全集合の同梱は必須)", async () => {
-    // レビューループ 1 の指摘: 空集合はエポック単位の検査をすり抜けて
+    // 空集合はエポック単位の検査をすり抜けて
     // 「誰も DEK を持てない環境」を作れてしまう。個数 = 現メンバー数の明示検査で塞ぐ
     const response = await createEnvironmentWith(fixture, ENV, "App", []);
     expect(response.status).toBe(422);

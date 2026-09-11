@@ -157,7 +157,7 @@ function hexFieldInvalid(context: MetaStatementContext): string | null {
 
 // suite と署名対象の座標(projectId / environmentId)は非空。座標の非空検査は
 // 防御的一貫性のため(LP により空でも符号化は無曖昧 = 脆弱性ではないが、
-// 他フィールドと検査水準を揃える — session-15 レビュー①)。空の座標を署名する
+// 他フィールドと検査水準を揃える)。空の座標を署名する
 // 正当な呼び出しは存在しない
 function coordinateFieldInvalid(context: MetaStatementContext): string | null {
   if (context.suite.length === 0) {

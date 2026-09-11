@@ -1,5 +1,5 @@
-// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 —
-// Wave 2 B1b)の統合テスト。
+// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5)の
+// 統合テスト。
 //
 // 固定する性質:
 //  1. リンクの組み立て・解釈(§15-3): パラメータ順・r 省略可・壊れたリンクの
@@ -137,7 +137,7 @@ describe("invite link(§15-3)", () => {
     });
   });
 
-  it("r なしのリンク(追補前の発行分)も有効として解釈する(role = null)", () => {
+  it("r なしのリンクも有効として解釈する(role = null)", () => {
     const link = sampleLink().replace("&r=member", "");
     const parsed = parseInviteAcceptInput(Redacted.make(link));
     if (parsed.kind !== "link") throw new Error("expected link");
@@ -626,7 +626,7 @@ describe("maruhi invite accept", () => {
 
   it("受諾が成立しなければアンカーをピン留めしない(410 でピンファイルを作らない)", async () => {
     // 受諾前にピン留めすると、失敗する受諾(失効・偽トークン)を含む細工リンクの
-    // 投入だけで既存アンカーを差し替えられる(自己 DoS / 置換)— §15-3 追補の回帰
+    // 投入だけで既存アンカーを差し替えられる(自己 DoS / 置換)
     const server = await start([
       onRequest("POST", "/invites/accept", () => ({
         status: 410,

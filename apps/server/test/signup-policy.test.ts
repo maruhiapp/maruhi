@@ -1,4 +1,4 @@
-// サインアップ制御の統合テスト(AUTH_SPEC §3 — 2026-09-01 H1)。
+// サインアップ制御の統合テスト(AUTH_SPEC §3 — H1)。
 //
 // 検査の骨子:
 // - 既定(deployment_settings に行なし)= 'open' = 従来挙動と完全に同一
@@ -231,7 +231,7 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(row?.status).toBe("pending");
   });
 
-  it("a cookie carried into a different flow is not treated as a presented code (state 束縛 — PR #133 レビュー対応)", async () => {
+  it("a cookie carried into a different flow is not treated as a presented code (state 束縛)", async () => {
     const invite = await seedSignupInvite();
     // コード付き start でクッキーを得る(このフローは放棄し、コードは使わない)
     const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {

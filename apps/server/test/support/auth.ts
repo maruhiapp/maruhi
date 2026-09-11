@@ -42,10 +42,10 @@ const AUTH_TABLES = [
   // フロー署名鍵(AUTH_SPEC §4-2)も消す = 各テストが初回生成(冪等・先勝ち)
   // 経路を通る
   "flow_signing_keys",
-  // サインアップ制御(AUTH_SPEC §3 — H1)。既定は行なし = signupPolicy 'open'
+  // サインアップ制御(AUTH_SPEC §3)。既定は行なし = signupPolicy 'open'
   "signup_invites",
   "deployment_settings",
-  // 運用基盤 H3(hosted-ops.md §6)— 監査ではない運営限定の可変状態
+  // 運用基盤(hosted-ops.md §6)— 監査ではない運営限定の可変状態
   "ops_counters",
   "ops_backups",
   "ops_state",

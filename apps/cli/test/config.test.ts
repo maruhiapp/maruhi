@@ -27,8 +27,8 @@ describe("maruhi config", () => {
   it("set → get が往復し、ファイルには known key のみ永続化される", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
-    // 報告文は**設定キー名**を言う(宣言オブジェクトの取り違え — レビュー指摘 —
-    // の回帰検査。Effect の内部表現が stdout へ出る形を固定で塞ぐ)
+    // 報告文は**設定キー名**を言う(宣言オブジェクトの取り違えで Effect の
+    // 内部表現が stdout へ出る形を塞ぐ)
     expect(env.logs).toContain("Set server");
     expect(env.logs.join("\n")).not.toContain("_id");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
@@ -58,7 +58,7 @@ describe("maruhi config", () => {
     expect(env.logs).toContain("https://maruhi.example");
   });
 
-  it("ENOENT 以外の読み取り失敗は空設定に畳まず、型付きエラーで報告する(B2)", async () => {
+  it("ENOENT 以外の読み取り失敗は空設定に畳まず、型付きエラーで報告する", async () => {
     const env = await makeTestEnv();
     const { mkdir } = await import("node:fs/promises");
     // 設定ファイルの位置にディレクトリを置く(EISDIR: ENOENT ではない読み取り失敗)
@@ -81,9 +81,8 @@ describe("maruhi config", () => {
   });
 
   it("サブコマンドなしは使い方を表示する(exit 0・出力は stderr)", async () => {
-    // bare `maruhi` はヘルプ要求として扱う(第 3 段階の裁定 — gunshi 時代の
-    // exit 0 を維持。出力先は決定 9 に合わせて stdout → stderr へ変更)。
-    // 一覧はコマンド定義から描かれる(手書きだと、コマンドを増やしたときに
+    // bare `maruhi` はヘルプ要求として扱う(exit 0。出力先は決定 9 に合わせて
+    // stderr)。一覧はコマンド定義から描かれる(手書きだと、コマンドを増やしたときに
     // ヘルプだけ古いまま残る)
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
@@ -91,7 +90,7 @@ describe("maruhi config", () => {
     const help = env.errors.join("\n");
     expect(help).toContain("maruhi <subcommand>");
     // 部分一致だと他コマンドの説明文("run the command…" 等)で満たされて
-    // しまい、一覧からの脱落を検出できない(Pullfrog 指摘)。SUBCOMMANDS
+    // しまい、一覧からの脱落を検出できない。SUBCOMMANDS
     // 節に**行として**並んでいることを見る
     const section = help.slice(help.indexOf("SUBCOMMANDS"));
     expect(section).toContain("SUBCOMMANDS");

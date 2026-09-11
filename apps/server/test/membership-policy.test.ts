@@ -32,7 +32,7 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
     if (genesis === undefined) throw new Error("missing genesis vector");
     // §6.1 のフィールド上限(1024 B)には違反するが、正規化は可能な巨大エントリ。
     // 受理ポリシー(1 MiB)の検査は verifyChain より先に行われるため 413 になる
-    // (op は汎用 append の対象のもの — rotate_epoch は複合経由になったため
+    // (op は汎用 append の対象のもの — rotate_epoch は複合経由なので
     // remove_member の巨大 targetUserId で構成する)
     const oversized: ChainEntry = {
       suite: "maruhi/v1",

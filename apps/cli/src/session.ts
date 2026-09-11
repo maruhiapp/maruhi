@@ -74,7 +74,7 @@ export interface MasterKeys {
  * IPv4 リテラル(DNS 名・別記法は不可)。「http を許してよいのはどこか」の
  * 判定は CLI 内でこの 1 関数に集約する(サーバー origin — 下の
  * normalizeHttpOrigin — と OIDC 発行 URL — oidc-github.ts — で規則が割れると、
- * 片方だけ直した将来の変更が他方を黙って取り残す — レビューループ 10)。
+ * 片方だけ直した将来の変更が他方を黙って取り残す)。
  */
 export function isLoopbackHostname(hostname: string): boolean {
   if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]") {
@@ -499,7 +499,7 @@ export function ensureNoStoredMasterKey(
  * Stores a master-key record, re-checking absence immediately before the write
  * and verifying afterwards that the stored record is the one just written.
  *
- * なぜ「保存の直前に再確認 + 直後に読み戻す」のか(deepsec R2): 上書き防止
+ * なぜ「保存の直前に再確認 + 直後に読み戻す」のか: 上書き防止
  * ガード({@link ensureNoStoredMasterKey})は読み取りだけでロックを取らず、
  * その後に鍵生成(WebCrypto 6 回)と再インポート自己検証が挟まるため、
  * 判定と書き込みの間に数十 ms の窓が開く。`Bun.secrets.set` は無条件 put で

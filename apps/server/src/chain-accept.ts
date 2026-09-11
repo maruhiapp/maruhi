@@ -4,7 +4,7 @@
 // 受理 4 手順は、汎用チェーン API(chain-do.ts の init / append)と複合リクエスト
 // (composite-programs.ts の create / rotate)の全経路がここを通る。上限意味論の
 // 修正が片側にしか当たらないズレを構造的に防ぐ。エラーは DataRejection で運び、
-// 呼び出し側には outcome への畳み込みだけを残す(A-4 の写像一本化と対)。
+// 呼び出し側には outcome への畳み込みだけを残す。
 
 import type { ChainInvalidError } from "@maruhi/core";
 import { chainMirrorEvent } from "@maruhi/core";
@@ -118,8 +118,8 @@ export const verifyAcceptableEntry = (
   });
 
 /**
- * 複合の 2 エントリ受理検査(AUTH_SPEC §12-4 — 2026-08-27 セッション 33:
- * H+1 = create / rotate、H+2 = 境界 `checkpoint`)。サイズ検査は各エントリ、
+ * 複合の 2 エントリ受理検査(AUTH_SPEC §12-4: H+1 = create / rotate、
+ * H+2 = 境界 `checkpoint`)。サイズ検査は各エントリ、
  * 容量検査は 2 エントリ分の合算、verifyChain(§6.4 の合意規則 — checkpoint の
  * エポック厳密一致は「エントリ時点 = H+1 適用後」基準で自然に成立する —
  * CRYPTO_SPEC §6.2)は両エントリを適用した全チェーンに対して 1 回。返す

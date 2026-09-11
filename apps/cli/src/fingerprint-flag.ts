@@ -1,8 +1,5 @@
 // 鍵フィンガープリントを受けるフラグの形式検証(server grant / revoke、
-// invite accept、member add で共用)。
-//
-// ADR-0016 第 2 段階の移行で cli.ts(gunshi 側)から切り出した。第 2 段階の
-// 完了により、利用者は全員 effect/unstable/cli 側(effect-cli.ts)になった。
+// invite accept、member add で共用)。利用側は effect-cli.ts。
 // 文言は ADR-0017 に従い英語。
 
 import { Effect } from "effect";

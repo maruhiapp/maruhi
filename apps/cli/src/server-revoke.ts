@@ -1,9 +1,9 @@
-// `maruhi server revoke`(CRYPTO_SPEC §7 / §9 — Wave 2 A1)。
+// `maruhi server revoke`(CRYPTO_SPEC §7 / §9)。
 //
 // revoke_server をチェーンへ追記し、**プロジェクトの全環境**を強制ローテーション
 // する(§7 — 失効の実効性はローテーションが担う。ローテーションなしの revoke は
-// 「開示を止めたつもり」の見せかけになる)。ローテーションは PR-1 の
-// envRotateOp を環境ごとに再利用する(reason は固定文字列)。
+// 「開示を止めたつもり」の見せかけになる)。ローテーションは envRotateOp を
+// 環境ごとに再利用する(reason は固定文字列)。
 //
 // 中断復旧(進捗ファイルなし — 分散状態から導出): revoke がチェーンに載った後で
 // 落ちても、再実行が「最後の revoke_server の seq」を基準に収束する:
@@ -135,7 +135,7 @@ export function serverRevokeOp<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /**
-   * 1 環境のローテーション(PR-1 の envRotateOp を環境ごとの床付きで包んだもの —
+   * 1 環境のローテーション(envRotateOp を環境ごとの床付きで包んだもの —
    * cli.ts が注入する)。force = reason 固定 + forceNewEpoch(§7 の強制)、
    * verify = reason なし + forceNewEpoch なし(未完了の再暗号化があれば再開、
    * なければ確認のみ — 新エポックは作らない)。

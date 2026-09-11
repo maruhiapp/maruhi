@@ -1,6 +1,6 @@
 // App エントリポイント(サーバーコンポーネント)。ルート定義はサーバーモジュールに置き、
 // ページ本体(サーバーコンポーネント)を RSC ペイロードとしてビルド時に固める。
-// ダッシュボード(W2 — S3〜S7)はクライアントコンポーネントで、共有ルート定義
+// ダッシュボードはクライアントコンポーネントで、共有ルート定義
 // (dashboard/routes.ts)を bindRoute で結合する(裁定 BO — docs/notes/session-43.md)。
 import { Router } from "@funstack/router";
 import { bindRoute } from "@funstack/router/server";

@@ -194,7 +194,7 @@ describe("チェーンミラー(§3.4)", () => {
     expect(JSON.parse(String(addMember["payload"]))).toEqual({ role: "member" });
   });
 
-  it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4, 2026-08-03)", async () => {
+  it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4)", async () => {
     // 作成・ローテーションとも複合リクエスト(§12-4)経由でチェーンに載る。
     // ミラー payload のコミットメントは同梱 DEK の §5.2 実計算値と一致する
     // (形式だけでなく値まで固定: 別エポックの値や定数を写す変異を落とす)
@@ -219,7 +219,7 @@ describe("チェーンミラー(§3.4)", () => {
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
     // 複合は create / rotate(H+1)に続けて境界 checkpoint(H+2)を追記する
-    // (§12-4 — 2026-08-27)ため、rotate のチェーン seq は 6
+    // (§12-4)ため、rotate のチェーン seq は 6
     expect(rotated["chain_seq"]).toBe(6);
     expect(JSON.parse(String(rotated["payload"]))).toEqual({
       reason: "scheduled",
@@ -358,7 +358,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "chain.member_added",
       "chain.member_added",
       // 複合の環境作成(§12-4)はチェーンミラー(create + 境界 checkpoint の
-      // 2 エントリ — 2026-08-27)+ env.created + 同梱ラップの dek.registered
+      // 2 エントリ)+ env.created + 同梱ラップの dek.registered
       // (1 受信者 1 行 — §3.3)を原子的に書く
       "chain.environment_created",
       "chain.checkpointed",
@@ -370,8 +370,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "var.version_pushed",
       "var.created",
       "var.version_pushed",
-      // 値付き一括 pull は環境単位 1 行(集約形 — §3.3。2026-09-02。旧: 変数
-      // ごとに 1 行)。返した変数の列挙は payload が持つ
+      // 値付き一括 pull は環境単位 1 行(集約形 — §3.3)。返した変数の列挙は
+      // payload が持つ
       "var.read",
       "env.renamed",
       "var.renamed",
@@ -491,8 +491,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     // multi-row INSERT の 1 文あたり行数(audit-store.ts の 5 行)を越える
     // 8 変数を作り、環境削除のカスケード(var.deleted 8 行 + env.deleted —
-    // §12-4)が複数チャンクに割れて追記される(値付き pull は集約形で 1 行に
-    // なったため — §3.3 — 一括追記の経路は削除カスケードで踏む)
+    // §12-4)が複数チャンクに割れて追記される(値付き pull は集約形の 1 行
+    // — §3.3 — なので一括追記の経路は削除カスケードで踏む)
     for (let index = 0; index < 8; index += 1) {
       await createVariableOk(dek, `var-batch-${index}`, `BATCH_${index}`);
     }
@@ -527,13 +527,12 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(envCreated["actor_user_id"]).toBe(OWNER);
     expect(envCreated["actor_api_token_id"]).toBeTypeOf("string");
     // env.created はメタステートメント(CRYPTO_SPEC §4.2)を伴う操作なので
-    // author の鍵 FP を写す(AUDIT_SPEC §3.3 — 2026-08-04 PR-3)
+    // author の鍵 FP を写す(AUDIT_SPEC §3.3)
     expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // セッション経由のデータ mutation は §5 の能力制限(W2b)で 403 になり、
-    // 監査行を残さない(セッション actor の DO 側監査は成立面ごと消えた —
-    // D1 側の auth.* / invite.* イベントのセッション actor 帰属は audit-d1 /
-    // invites のテストが担う)
+    // セッション経由のデータ mutation は §5 の能力制限で 403 になり、
+    // 監査行を残さない(D1 側の auth.* / invite.* イベントのセッション actor
+    // 帰属は audit-d1 / invites のテストが担う)
     const session = await loginSession(9002);
     const dek = makeDek();
     const deks = await wrapDekForAll({

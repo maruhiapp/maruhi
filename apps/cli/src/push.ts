@@ -265,9 +265,8 @@ function resolveTarget(input: {
     }
     if (latest.name !== input.name) {
       // 解決と値取得の間の並行 rename。入力した名前と別の名前へ変わった変数に
-      // push を向けない(単一応答で解決していた旧フローのスナップショット整合の
-      // 回復 — PR #41 レビュー指摘)。latest.name は検証済みステートメントの
-      // name(§12-2)なので byte-exact 比較で足りる
+      // push を向けない。latest.name は検証済みステートメントの name(§12-2)
+      // なので byte-exact 比較で足りる
       return yield* Effect.fail(
         cliError(
           `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
@@ -1050,10 +1049,9 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         },
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
-    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢 —
-    // deepsec B7)。サーバー echo は突合のみに使い、食い違えば型付きエラーで
-    // 明示する(echo を表示に昇格させると、サーバー申告の座標をユーザーが
-    // 事実として引用しうる)
+    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢)。
+    // サーバー echo は突合のみに使い、食い違えば型付きエラーで明示する(echo を
+    // 表示に昇格させると、サーバー申告の座標をユーザーが事実として引用しうる)
     const floorVariable = outcome.floorVariable;
     if (floorVariable.status !== "active") {
       // attemptOnce は常に active の床レコードを組む — ここに来たら内部不整合

@@ -160,7 +160,7 @@ function unconvergedMandates(
 /**
  * 巻き戻された義務(対象が再追加・再昇格・再 grant 済み)の案内。義務コマンドの
  * 再実行を案内すると**現役の対象へ元の破壊的操作を再適用させてしまう**
- * (Cursor bot 指摘)ため、負っているのはローテーションだけであることを明示し、
+ * ため、負っているのはローテーションだけであることを明示し、
  * 非破壊の env rotate へ誘導する。義務自体は残る(remove/降格の残余は
  * エポックアンカーの健全性 — §7 — であり、対象の復帰では消えない)。
  */
@@ -201,7 +201,7 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
  * 未収束義務の解決: チェーン導出のみの前段判定が空なら通信ゼロで空を返し、
  * 候補があるときだけ削除済み環境の検証済みフィルタ(環境一覧の GET 1 回)を
  * 行う。取得・検証の失敗は null(= 判定不能。注意は出力済み)— 呼び出し側の
- * コマンドを失敗させない(チェーン検証自体は成功している — Cursor bot 指摘)。
+ * コマンドを失敗させない(チェーン検証自体は成功している)。
  * 常時警告(warnUnconvergedMandates)と project verify の詳細表示が共有する。
  */
 export function resolveUnconvergedMandates(input: {

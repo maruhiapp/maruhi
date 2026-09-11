@@ -18,7 +18,7 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
 /**
  * ratelimits binding の固定窓の周期(秒)。binding からは period を読めないため、
  * wrangler.jsonc の `ratelimits[].simple.period` と**手動で一致**させること
- * (429 応答の retryAfterSeconds / Retry-After ヘッダーに使う — レビューループ 2)。
+ * (429 応答の retryAfterSeconds / Retry-After ヘッダーに使う)。
  * 片方だけ変えると案内する待ち時間が実際の窓とずれる(制限自体は正しく効く —
  * 安全側でなく利便側の劣化)。型・テストでの強制は不可(wrangler 設定は
  * 実行時に読めず、workerd テストからファイルも読めない)ため、両側のコメントで
@@ -27,7 +27,7 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
 export const IP_RATE_LIMIT_PERIOD_SECONDS = 60;
 
 /**
- * レート制限キーの正規化(レビューループ 5): IPv6 は /64 プレフィックスへ丸める。
+ * レート制限キーの正規化: IPv6 は /64 プレフィックスへ丸める。
  * 標準割当の /64 内で下位 64 bit をローテーションすると、素のアドレスキーでは
  * 毎リクエストが新規キーになり窓が一切効かない(Cloudflare WAF のレート制限が
  * 既定で /64 集約するのと同じ理由)。IPv4 はそのまま。パースできない値は素の
@@ -41,7 +41,7 @@ export function rateLimitKeyOf(ip: string): string {
   if (groups === null) {
     return ip;
   }
-  // IPv4-mapped(::ffff:a.b.c.d)は埋め込み IPv4 をキーにする(レビューループ 6):
+  // IPv4-mapped(::ffff:a.b.c.d)は埋め込み IPv4 をキーにする:
   // /64 集約へ入れると、v4-mapped で到達する全 IPv4 クライアントが単一バケット
   // "0:0:0:0::/64" に畳まれ、1 発信元が全 IPv4 ユーザーの窓を食い潰せてしまう
   const upperZero = groups.slice(0, 5).every((group) => Number.parseInt(group, 16) === 0);
@@ -65,8 +65,8 @@ function splitIpv6Halves(
   const compressed = halves.length === 2;
   const tailRaw = halves[1] ?? "";
   // IPv4 埋め込みはアドレス**末尾**にしか置けない(RFC 4291 §2.2 (3))。
-  // 末尾を含む側の半分だけに許可を渡し、その中でも最後のピースに限る
-  // (deepsec R9): "1.2.3.4::" や "::ffff:1.2.3.4:0" のような形を弾く
+  // 末尾を含む側の半分だけに許可を渡し、その中でも最後のピースに限る:
+  // "1.2.3.4::" や "::ffff:1.2.3.4:0" のような形を弾く
   const ipv4InTail = compressed && tailRaw !== "";
   const head = parseIpv6Groups(halves[0] ?? "", !compressed);
   const tail = parseIpv6Groups(tailRaw, ipv4InTail);
@@ -108,7 +108,7 @@ function parseIpv6Groups(raw: string, ipv4Tail: boolean): string[] | null {
 }
 
 /**
- * 10 進 octet の厳密形(deepsec R9): 0-255 で、先頭ゼロ・空・16 進・指数表記・
+ * 10 進 octet の厳密形: 0-255 で、先頭ゼロ・空・16 進・指数表記・
  * 空白を許さない。`Number()` の強制変換は "" → 0、"0x10" → 16、"1e2" → 100 を
  * 通してしまい、後段の範囲検査では捕まらない(変換が先に成功しているため)。
  */
@@ -134,8 +134,8 @@ function groupsOfPiece(piece: string, ipv4Allowed: boolean): readonly string[] |
 let warnedMissingRateLimitBinding = false;
 
 /**
- * 発信元 IP 単位の best-effort レート制限(Workers Rate Limiting binding —
- * deepsec M3/B11/M5)。true = 許可。
+ * 発信元 IP 単位の best-effort レート制限(Workers Rate Limiting binding)。
+ * true = 許可。
  *
  * fail-open の線引き(すべて可用性側に倒す):
  * - binding 不在(ratelimits 未設定の旧 wrangler.jsonc のまま self-host)は
@@ -151,7 +151,7 @@ export function ipRateLimitAllowed(
 ): Effect.Effect<boolean> {
   return Effect.promise(async () => {
     if (limiter === undefined) {
-      // fail-open だが無言にしない(pullfrog 指摘): コードだけ更新して旧
+      // fail-open だが無言にしない: コードだけ更新して旧
       // wrangler.jsonc のまま再デプロイした self-host は、レート制限が恒久に
       // 無効なまま何の signal も出ない — catch 側より現実的に当たる経路
       if (!warnedMissingRateLimitBinding) {
@@ -176,8 +176,8 @@ export function ipRateLimitAllowed(
       // 落ちていると、制限が全て無効のまま誰も気づけない。Workers のログ
       // (wrangler tail / Workers Logs — 運用者のみが読む。外部送信ではない)へ
       // 静的メッセージだけ残す(リクエスト内容・IP は書かない)
-      // error.message は管理下にない文字列(将来 limiter 実装が key を載せうる —
-      // pullfrog 指摘)。「IP は書かない」の約束に合わせ、種別名だけ残す
+      // error.message は管理下にない文字列(将来 limiter 実装が key を載せうる)。
+      // 「IP は書かない」の約束に合わせ、種別名だけ残す
       console.warn(
         "rate limiter binding failed; allowing the request (fail-open)",
         error instanceof Error ? error.name : "unknown",

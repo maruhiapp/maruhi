@@ -1,7 +1,7 @@
 // 要ローテーション検出(AUDIT_SPEC §4.1)+ フラグビュー / 取り下げ(§6 / §7)+
-// B1a 追補(AUTH_SPEC §12-6 — 409 の保存済み受信者 enc 公開鍵と再追加時掃除)の
-// 統合テスト。@cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と
-// DO SQLite を検証する。
+// 受信者鍵の整合(AUTH_SPEC §12-6 の B1a 追補 — 409 の保存済み受信者 enc 公開鍵と
+// 再追加時掃除)の統合テスト。@cloudflare/vitest-plugin(workerd 実環境)で SELF
+// 経由の HttpApi と DO SQLite を検証する。
 //
 // このスイートが固定するもの(変異検証の対応):
 // - 候補集合 = 在籍区間 × 存在期間の重なり(区間外の変数の除外・削除済み変数の
@@ -19,9 +19,9 @@
 //   server.lease_issued(発行時点のアクティブ変数)、拡大再 grant は
 //   「環境ごとの開示窓」(拡大 seq 起点 — 最初のスコープ固定でも区間開始への
 //   繰り上げでもない)
-// - B1a: 409 が占有ラップの保存済み enc 公開鍵を運ぶ / add_member 受理時の
-//   旧鍵宛ラップ掃除(dek.deleted actor = system + 原因 payload。同一鍵の
-//   再追加は掃除しない・他メンバーのラップは触らない)
+// - 受信者鍵の整合(§12-6 の B1a 追補): 409 が占有ラップの保存済み enc 公開鍵を
+//   運ぶ / add_member 受理時の旧鍵宛ラップ掃除(dek.deleted actor = system +
+//   原因 payload。同一鍵の再追加は掃除しない・他メンバーのラップは触らない)
 
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -636,7 +636,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
   });
 });
 
-describe("B1a 追補(AUTH_SPEC §12-6 — 2026-08-15)", () => {
+describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
   it("上書き禁止 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     // 既存スロット (ENV, 1, MEMBER) への追記は 409 + 保存済み enc 公開鍵

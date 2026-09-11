@@ -1,4 +1,4 @@
-// e2e 検証(スパイク A 起源)。ビルド済み dist/public を **combined 構成
+// e2e 検証。ビルド済み dist/public を **combined 構成
 // (apps/server の wrangler dev — 本番と同じ maruhi-server が Workers Static
 // Assets として配信する形。裁定 BM/BT — docs/notes/session-43.md)**で配信し、
 // Playwright(Chromium)で以下を検証する:
@@ -100,7 +100,7 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 
 // SIGTERM で終了しない場合に SIGKILL へフォールバックする。SIGTERM のみだと
 // wrangler が残留したとき vitest プロセスが終了できず、CI がステップではなく
-// ジョブ上限(30 分)までハングした実績がある(2026-08-19 run 32217317312)
+// ジョブ上限(30 分)までハングした実績がある
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   if (proc === undefined) return;
   try {
@@ -121,7 +121,7 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   } finally {
     // パイプの読み口を無条件に閉じる: wrangler の子孫が書き口を握ったまま
     // 生き残ると EOF が来ず、ref 付き handle が vitest の終了を妨げる
-    // (stdio をパイプ化したことで生じる新たなハング経路 — レビュー指摘)。
+    // (stdio をパイプ化したことで生じるハング経路)。
     // wrangler 自身が先に死んで子孫だけ残るケースも踏むため早期 return 側も通す
     proc.stdout?.destroy();
     proc.stderr?.destroy();
@@ -340,8 +340,8 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(maxWidth).toBe("640px");
     const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     expect(background).not.toBe("rgba(0, 0, 0, 0)");
-    // 太さの回帰(pullfrog レビュー反映): 初版は未定義トークンの var() で font-weight が
-    // 無言に落ち、h1 と強調文が normal になっていた。h1 と outcome 行が太字であること
+    // 太さの回帰: 初版は未定義トークンの var() で font-weight が無言に落ち、
+    // h1 と強調文が normal になっていた。h1 と outcome 行が太字であること
     for (const selector of ["h1", ".outcome"]) {
       const weight = await page.locator(selector).evaluate((el) => getComputedStyle(el).fontWeight);
       expect(weight, selector).toBe("700");
@@ -428,8 +428,8 @@ async function routeSession(page: Page): Promise<void> {
 }
 
 /**
- * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(W3b の S8 テストで
- * 共用)。
+ * プロジェクト画面の初期表示(Overview タブ)の消費面のモック
+ * (W3b の S8 テストで共用)。
  */
 async function routeProjectOverview(page: Page): Promise<void> {
   await routeSession(page);
@@ -453,12 +453,12 @@ async function confirmRevoke(page: Page): Promise<void> {
   await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
 }
 
-/** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 /** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
 function panelDisplay(page: Page, tab: string): Promise<string> {
   return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
 }
 
+/** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 function collectViolations(page: Page): string[] {
   const violations: string[] = [];
   page.on("console", (msg) => {
@@ -523,7 +523,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
   it("serves /dashboard routes with the strict SPA CSP header", async () => {
     // violation ゼロの検査(下の各テスト)は「CSP ヘッダーが無い」場合も通って
-    // しまうため、ヘッダーの実在を直接固定する(pullfrog レビュー反映)。
+    // しまうため、ヘッダーの実在を直接固定する。
     // SPA フォールバック経由の深いパスにも /* の CSP が付くこと
     for (const path of [
       "/dashboard",
@@ -640,7 +640,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       page.locator("#project-panel-audit").getAttribute("aria-labelledby"),
     ).resolves.toBe(await page.getByRole("tab", { name: "Audit" }).getAttribute("id"));
     // 非選択パネルは空(高さ 0)なので isVisible() では `display` の上書き負けを
-    // 検知できない。computed display を直接固定する(pullfrog レビュー反映)
+    // 検知できない。computed display を直接固定する
     await expect(panelDisplay(page, "overview")).resolves.toBe("flex");
     await expect(panelDisplay(page, "audit")).resolves.toBe("none");
     await expect(page.getByRole("tabpanel").count()).resolves.toBe(1);
@@ -703,7 +703,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   it("resumes to /dashboard after sign-in, driven through the real affordance (裁定 BU)", async () => {
     // マーカーはテストが注入せず、**実クリック**(Link の onClick)に書かせる —
     // Link がマーカーを書かなくなる退行・consume ガードの退行がこのテストで
-    // 割れる(pullfrog レビュー反映)。OAuth 実フローだけは e2e 不能(裁定 BS)
+    // 割れる。OAuth 実フローだけは e2e 不能(裁定 BS)
     // なので、/auth/github/start への実ナビゲーションを「認可成功 → callback が
     // ${origin}/ へ 302」まで畳んで差し替える
     const page = await browser.newPage();
@@ -891,7 +891,6 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
     // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
     // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
-    // (PR #148 CI の 1 回目で顕在化した競合)
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
@@ -901,7 +900,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("keeps the confirmation modal open and other rows locked while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
+  it("keeps the confirmation modal open and other rows locked while a revoke is in flight", async () => {
     // DELETE の in-flight 中に別行を武装できると、後着の完了が武装状態を
     // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード)。DP3 改訂 4
     // では確認が AlertDialog(モーダル)なので、実行中はダイアログが開いたまま
@@ -971,10 +970,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P — HP5)", async () => {
+  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P)", async () => {
     // 監査一覧は幅によらず 1 列の行(Collapsible)で、モバイルでも同じ形のまま行の直下に
     // 詳細が開く。768px 以下(AppShell の md)ではサイドバーがドロワーへ移る。
-    // pullfrog レビュー反映: この経路を CI で固定する
+    // この経路を CI で固定する
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1032,7 +1031,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   });
 
   it("keeps the shell mounted across SPA navigation without re-checking the session", async () => {
-    // DP3 改訂 11(PR #148 Bugbot 指摘): 認証が要る画面は pathless の親ルート
+    // DP3 改訂 11: 認証が要る画面は pathless の親ルート
     // (DashboardLayout)の子なので、画面間の遷移でシェルは再マウントされず、
     // /auth/me の再取得も「Checking your session」の再表示も起きない。サイドバーの
     // DOM ノードが同一のまま(= 折りたたみ状態などが保たれる)ことで再マウント無しを検査する
@@ -1086,7 +1085,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   });
 
   it("returns to the sign-in screen in place when a screen fetch reports 401", async () => {
-    // 改訂 11 でシェルが遷移をまたいで残るようになった副作用(pullfrog 指摘): 途中で
+    // DP3 改訂 11 でシェルが遷移をまたいで残るようになった副作用: 途中で
     // セッションが失効しても、画面の 401 → シェルへの通知 → その場でサインイン画面
     // (再読込・再遷移なし)
     const page = await browser.newPage();

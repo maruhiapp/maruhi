@@ -78,7 +78,7 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     expect(callback.status).toBe(302);
     // Set-Cookie は 2 本(セッションの付与 + state の失効)がそのまま残ること。
     // 応答は index.ts の withSecurityHeaders(new Headers コピー → new Response)
-    // を通るため、複数 Set-Cookie の保全はここで固定する(L-5 の退行ガード)
+    // を通るため、複数 Set-Cookie の保全はここで固定する
     const setCookies = callback.headers.getSetCookie();
     expect(setCookies).toHaveLength(2);
     const cookie = setCookies.find((c) => c.startsWith(`${SESSION_COOKIE}=`));
@@ -211,7 +211,7 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     expect(body.reason).toBe("code-exchange-failed");
   });
 
-  it("rate-limits callbacks per source IP before any GitHub outbound (R7)", async () => {
+  it("rate-limits callbacks per source IP before any GitHub outbound", async () => {
     // state 検査は cookie と query の二重送信のみでサーバー側状態を持たないため、
     // 非ブラウザの発信元は両方を自分で用意して常に通せる(githubStart を経由
     // しなくてよい)。頻度を縛るのは発信元 IP のレート制限だけ、という位置関係を
@@ -514,7 +514,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     expect(rotated.userId).toBe(seed.userId);
   });
 
-  it("admits exactly the remaining slot under concurrent distinct-name issuance (S7)", async () => {
+  it("admits exactly the remaining slot under concurrent distinct-name issuance", async () => {
     const seed = await cliIssue(206, { tokenName: "seed" });
     const userId = seed.userId;
     // 上限100の残り1枠まで直接シード。異名なので UNIQUE(user_id,name)では
@@ -1243,8 +1243,8 @@ describe("scheduled: 期限切れセッションの定期掃除", () => {
   });
 });
 
-// 旧テンプレート(client_id を wrangler vars で配布していた時期)のプレースホルダ。
-// 現テンプレートには現れないが、旧フォークへの後方互換防御として検出を維持している
+// 旧フォークの wrangler テンプレートが配布していた client_id のプレースホルダ。
+// 現テンプレートには現れないが、後方互換防御として検出を維持している
 // (handlers-auth.ts の CLIENT_ID_PLACEHOLDER と同期)
 const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 
@@ -1288,7 +1288,7 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
   it("treats a missing client_secret as unconfigured (`wrangler secret put` 漏れ)", async () => {
     // client_id は実値でも secret 未登録なら 503: 素通しすると認証は不透明な
     // トークン交換失敗(GitHub 401 → AuthFlow 400)に落ち、/auth/config の
-    // 200 が誤った安心を与える(pullfrog レビュー指摘)
+    // 200 が誤った安心を与える
     const { GITHUB_CLIENT_SECRET: _removed, ...missing } = env;
     const config = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
     expect(config.status).toBe(503);
@@ -1374,7 +1374,7 @@ describe("GET /auth/config のサーバー鍵公開面(AUTH_SPEC §4 / CRYPTO_SP
   });
 });
 
-describe("共通セキュリティヘッダー(index.ts withSecurityHeaders — セキュリティレビュー L-5)", () => {
+describe("共通セキュリティヘッダー(index.ts withSecurityHeaders)", () => {
   it("attaches nosniff / no-store / HSTS to every API response, including errors", async () => {
     // 応答にはトークン生値・暗号文・ラップが載る経路があるため、全応答に
     // nosniff + no-store を付与する。HSTS は API worker にも custom domain を

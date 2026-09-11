@@ -252,7 +252,7 @@ describe("CAS リトライと確認済み対象の束縛", () => {
   it("再解決が別の variableId を返したら型付きエラーで止まる(確認していない変数を消さない)", async () => {
     // 確認後の 409(並行メタ操作)→ 再解決で、同じ名前に**別の変数**が載って
     // いる形(並行削除 + 同名の新規作成)。確認は variableId を束縛するので、
-    // このリトライは進んではならない(pullfrog レビュー対応)
+    // このリトライは進んではならない
     const replacement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

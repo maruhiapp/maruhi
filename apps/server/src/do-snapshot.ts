@@ -81,7 +81,7 @@ export interface DoWatermarks {
   /**
    * ヘッド申告(head_attestations)の最新受理時刻(無ければ 0)。申告の upsert は
    * チェーン行も監査行も書かない(AUTH_SPEC §16-1)ため、監査 / チェーン seq だけの
-   * skip 規則では申告だけが動くプロジェクトが最大 7 日退避されない(PR #137 レビュー)。
+   * skip 規則では申告だけが動くプロジェクトが最大 7 日退避されない。
    */
   readonly attestationMark: number;
 }
@@ -203,7 +203,7 @@ class GzipObjectWriter {
       await this.bucket.put(this.key, last);
     } else {
       // 圧縮後の総量が partBytes の倍数ちょうどだと残りは 0 バイト — R2 は空パートを
-      // 拒否するため送らない(PR #137 レビュー)
+      // 拒否するため送らない
       if (last.byteLength > 0) {
         this.#parts.push(await this.#upload.uploadPart(this.#parts.length + 1, last));
       }

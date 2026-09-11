@@ -1,4 +1,4 @@
-// project DO 監査イベント読み取りの Effect プログラム(AUDIT_SPEC §6 / §7 — C1)。
+// project DO 監査イベント読み取りの Effect プログラム(AUDIT_SPEC §6 / §7)。
 //
 // - 可視性クラス(§6)は認可段で強制する: admin 可視(全行)は「チェーン role
 //   admin 以上 × トークンスコープ admin」(§12-3 の min(スコープ, role) 規律 —
@@ -29,9 +29,9 @@ export interface AuditEventsQueryInput {
   readonly beforeRowId?: string;
   readonly limit?: number;
   readonly event?: string;
-  /** event 名前空間の前置一致(AUDIT_SPEC §7 — deepsec R1)。 */
+  /** event 名前空間の前置一致(AUDIT_SPEC §7)。 */
   readonly eventPrefix?: string;
-  /** chain_seq が NULL でない行だけを返す(AUDIT_SPEC §7 — deepsec S1)。 */
+  /** chain_seq が NULL でない行だけを返す(AUDIT_SPEC §7)。 */
   readonly chainSeqPresent?: true;
   readonly actorUserId?: string;
   readonly targetUserId?: string;
@@ -144,10 +144,10 @@ export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
     // (派生列の遅延実体化 = 「読む経路が読む前に伸ばす」契約)。op permit 下で
     // 直列化され、拡張は冪等なので再試行は安全だが、応答キャッシュの導入や
     // 「GET = 副作用なし」を前提にした経路変更はこの副作用を壊す。
-    // 有界伸長(セッション 38): 上限到達 = MAX(seq) 未到達なら古いヘッドを
+    // 有界伸長: 上限到達 = MAX(seq) 未到達なら古いヘッドを
     // 返さず retryable な audit-head-not-ready(503)— 拒否は認可判定(上の
     // 404 / 403)より後なので §11-2 の存在秘匿と両立する
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 上の実体化が書き込みを
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 上の実体化が書き込みを
     // 要する(列が MAX(seq) 未到達)ときだけ、拒否閾値以上の DO では 422
     // project-storage-bytes で拒否する(監査行そのものの読み取り — auditEvents —
     // はガード対象外)。認可判定(404 / 403)より後 = §11-2 と両立

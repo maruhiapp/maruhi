@@ -1,4 +1,4 @@
-// DO ストレージ総量ガード(AUTH_SPEC §12-8 — 2026-09-02 H2)のテスト。
+// DO ストレージ総量ガード(AUTH_SPEC §12-8)のテスト。
 //
 // 8〜9 GB の実生成は非現実的なため 2 層で固定する:
 // 1. 判定の純関数(storageGuardDecision — 閾値の境界)
@@ -201,12 +201,12 @@ describe("エラー契約 — 拒否が効く面の全エンドポイントが 4
       "environments.create": environmentsGroup.endpoints.create,
       "environments.rename": environmentsGroup.endpoints.rename,
       "deks.register": deksGroup.endpoints.register,
-      // add_member / grant_server の拒否面(本改訂で宣言を追加)
+      // add_member / grant_server の拒否面
       "membership.append": membershipGroup.endpoints.append,
-      // schemaPolicy 変更(本改訂で宣言を追加)
+      // schemaPolicy 変更
       "schemaPolicy.set": schemaPolicyGroup.endpoints.set,
-      // 監査ヘッド派生列の実体化を要する読み取り(本改訂で宣言を追加)と、
-      // 非空公証の境界 checkpoint を同梱しうる rotate(既存宣言)
+      // 監査ヘッド派生列の実体化を要する読み取りと、非空公証の境界 checkpoint を
+      // 同梱しうる rotate
       "audit.auditHead": auditGroup.endpoints.auditHead,
       "environments.rotate": environmentsGroup.endpoints.rotate,
     };
@@ -619,7 +619,7 @@ describe("警告閾値(§12-8 — 運用ログ)", () => {
   });
 
   it("warns from the value pull path too (pull-only projects cross the band without growth writes)", async () => {
-    // PR #134 pullfrog レビュー指摘: 支配的な成長項が var.read のプロジェクトは
+    // 支配的な成長項が var.read のプロジェクトは
     // 成長面の書き込みなしに 8 GB → 9 GB を通過する。観測点が成長面だけだと
     // 警告帯が「運営の対応時間を買う」設計が pull 主体で成立しない
     const dek = await createEnvironmentOk(fixture, ENV, "App");

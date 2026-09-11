@@ -121,8 +121,7 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
-  // activation 複合(§12-5 — 2026-08-30。§12-10 (1) の「値 push・メタ操作」
-  // クラスに属する)
+  // activation 複合(§12-5 — §12-10 (1) の「値 push・メタ操作」クラスに属する)
   ["variables", "activate"],
   ["variables", "rename"],
   ["variables", "remove"],

@@ -14,8 +14,7 @@ export class CliError extends Data.TaggedError("CliError")<{
   /**
    * 暗号学的証拠(署名検証済みデータとチェーン公証・床の矛盾 — 再実行では
    * 解消しない)を運ぶ失敗か。rotate の巡末分類(env-rotate.ts の settlePass)が
-   * 「再実行すれば直る」案内への格下げを避けるために読む(PR-F4 の規律の
-   * 規則 2 / 床違反への適用 — PR-M3)。
+   * 「再実行すれば直る」案内への格下げを避けるために読む。
    */
   readonly evidence?: boolean;
 }> {

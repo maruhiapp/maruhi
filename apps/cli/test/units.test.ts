@@ -53,12 +53,12 @@ afterEach(async () => {
 });
 
 describe("total timestamp formatters", () => {
-  it("Date 範囲外・非有限でも RangeError にせず明示表示へ劣化する(B1/B4/B5)", () => {
+  it("Date 範囲外・非有限でも RangeError にせず明示表示へ劣化する", () => {
     expect(formatUtcSeconds(0)).toBe("1970-01-01 00:00:00 UTC");
     expect(formatUtcMinutes(0)).toBe("1970-01-01 00:00 UTC");
     expect(formatUtcDate(0)).toBe("1970-01-01");
     // Date 範囲内でも年 0〜9999 の外(toISOString が拡張年形式を返す領域)は
-    // 固定 slice が黙って別位置を切るため、明示劣化に倒す(レビューループ 1)
+    // 固定 slice が黙って別位置を切るため、明示劣化に倒す
     expect(formatUtcSeconds(Date.UTC(9999, 11, 31, 23, 59, 59))).toBe("9999-12-31 23:59:59 UTC");
     for (const bad of [
       253_402_300_800_000, // 年 10000
@@ -146,7 +146,7 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   };
 }
 
-describe("storeMasterKeyGuarded(上書き検出つき保存 — deepsec R2)", () => {
+describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
   const ENTRY = masterKeyEntryName("https://maruhi.test", "user-1");
 
   /**
@@ -286,7 +286,7 @@ describe("showValues(復号後の防衛線)", () => {
     expect(Exit.isFailure(headless)).toBe(true);
     expect(JSON.stringify(headless)).toContain("stdin is not an interactive terminal");
 
-    // CI・非対話シェルで一番多い形 = 両方が非端末(pullfrog 指摘 — 3 分岐すべてを固定)
+    // CI・非対話シェルで一番多い形 = 両方が非端末(3 分岐すべてを固定)
     const detached = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: false });
     expect(Exit.isFailure(detached)).toBe(true);
     expect(JSON.stringify(detached)).toContain(
@@ -491,7 +491,7 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("M2 で追加した POSIX / Windows の実行制御名への注入も拒否する", async () => {
+  it("POSIX / Windows の実行制御名への注入も拒否する", async () => {
     for (const name of [
       // POSIX: rc / 設定ディレクトリの差し替えとプロンプト評価
       "HOME",
@@ -519,7 +519,7 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("R3 で追加した「別プログラムを起動する」名前への注入も拒否する", async () => {
+  it("「別プログラムを起動する」名前への注入も拒否する", async () => {
     for (const name of [
       // 子プロセスが起動する先(pager / editor / browser / askpass)
       "LESSOPEN",
@@ -543,7 +543,7 @@ describe("buildInjectionEnv", () => {
       "NLSPATH",
       "TERMINFO",
       "TERMCAP",
-      // shell autoload / TLS trust / Python user-site (08-27 follow-up)
+      // shell autoload / TLS trust / Python user-site
       "FPATH",
       "KSH_ENV",
       "SSL_CERT_FILE",
@@ -553,7 +553,7 @@ describe("buildInjectionEnv", () => {
       "AWS_CA_BUNDLE",
       "PYTHONUSERBASE",
       "PYTHONWARNINGS",
-      // Windows home/config・shell探索・npm設定(08-27追加再検証)
+      // Windows home/config・shell 探索・npm 設定
       "HOMEDRIVE",
       "HOMEPATH",
       "APPDATA",
@@ -614,7 +614,7 @@ describe("buildInjectionEnv", () => {
     ]);
   });
 
-  it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する(deepsec S3)", async () => {
+  it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する", async () => {
     // resolveSession は MARUHI_TOKEN をキーチェーンより先に見るため、この名前の
     // 変数を作れる共同メンバーは、被害者の `maruhi run -- make deploy` の中の
     // 入れ子 `maruhi` を自分のトークンで認証させられる。予約名前空間なので
@@ -637,7 +637,7 @@ describe("buildInjectionEnv", () => {
   });
 });
 
-describe("buildChildEnvironment(deepsec S6)", () => {
+describe("buildChildEnvironment", () => {
   it("親・追加envのMARUHI_*だけをcase-insensitiveに除外する", () => {
     expect(
       buildChildEnvironment(
@@ -675,7 +675,7 @@ describe("decodeValueText(値デコード方針の一本化)", () => {
 });
 
 describe("toCliError(サーバー由来文字列の端末中和)", () => {
-  it("401 は期限切れ・失効の両方の可能性と再ログインを案内する(AUTH_SPEC §6 — W3a)", () => {
+  it("401 は期限切れ・失効の両方の可能性と再ログインを案内する(AUTH_SPEC §6)", () => {
     // 期限切れは失効と同じ 401 に畳まれる(区別はワイヤに出ない)ため、
     // 案内は両方の可能性を言い、次の一手(再ログイン)を示す
     const rendered = toCliError(new UnauthorizedError());
@@ -683,7 +683,7 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(rendered.message).toContain("maruhi login");
   });
 
-  it("テナント quota の型付きエラーは不透明な未知へ落ちず、次の一手を案内する(AUTH_SPEC §11-3 / §12-8 — H2)", () => {
+  it("テナント quota の型付きエラーは不透明な未知へ落ちず、次の一手を案内する(AUTH_SPEC §11-3 / §12-8)", () => {
     // 429 ProjectLimit(org のプロジェクト数上限 — 新規 init のみ)
     const projectLimit = toCliError(new ProjectLimitError({ limit: 100 }));
     expect(projectLimit.message).not.toContain("Unexpected error");
@@ -915,7 +915,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Authentication with MARUHI_TOKEN failed");
-    // W3a 以降、無人環境のこの 401 の最有力原因は期限切れ(裁定 CJ)。
+    // 無人環境のこの 401 の最有力原因は期限切れ(W3a 裁定 CJ)。
     // 直し先は env 差し替えであることまで案内する(`maruhi login` 単独の
     // キーチェーン向け案内へ退行させない)
     expect(errors).toContain("expired or revoked");

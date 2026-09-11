@@ -1,7 +1,5 @@
-// 監査読み取り API(AUDIT_SPEC §6 / §7)統合テストの共有ヘルパ(旧
-// audit-read.test.ts の冒頭ヘルパの分割先 — 分割の動機は
-// membership-scenario.ts 冒頭を参照)。data-scenario.ts の fixture
-// (registerDataScenario)を前提とする。
+// 監査読み取り API(AUDIT_SPEC §6 / §7)統合テストの共有ヘルパ。
+// data-scenario.ts の fixture(registerDataScenario)を前提とする。
 
 import type { TokenScope } from "@maruhi/core";
 import { expect } from "vitest";

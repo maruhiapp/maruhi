@@ -1,4 +1,4 @@
-// live.ts の対話入力プリミティブの単体テスト(レビュー修正の回帰防止)。
+// live.ts の対話入力プリミティブの単体テスト。
 //
 // - makeStdinLineReader: 複数プロンプトにまたがる未消費行の保持(readline を
 //   都度閉じる形は次行を捨てていた)、CRLF、改行なし終端、EOF
@@ -115,7 +115,7 @@ describe("writeLine(同期書き込みと閉じたパイプ)", () => {
 
   it("読み手が先に閉じたパイプへの書き込み(EPIPE)は defect にせず、プロセスは 0 で終わる", () => {
     // `maruhi … | head -1` の形。writeSync は 2 行目以降で EPIPE を投げるが、
-    // console.log と同じく黙って捨てる(PR #151 Bugbot 指摘)。実プロセスで検査する:
+    // console.log と同じく黙って捨てる。実プロセスで検査する:
     // 書き手を bun で走らせ、読み手 head が 1 行で閉じた後の終了コードを見る
     const script =
       'import { writeLine } from "./apps/cli/src/live.ts"; for (let i = 0; i < 200000; i += 1) writeLine(1, `line${i}`); process.exit(0);';

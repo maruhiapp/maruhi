@@ -110,7 +110,7 @@ describe("deriveReportedView", () => {
 
   it("ignores a hostile op name without touching the prototype chain", () => {
     // 敵対的サーバーが op: "__proto__" 等を名乗ってもプロトタイプ鎖の値を
-    // 呼び出して throw しない(PR #107 pullfrog 指摘の回帰テスト)
+    // 呼び出して throw しない
     const hostile = { ...base(), op: "__proto__", payload: {} } as unknown as ChainEntry;
     const view = deriveReportedView([genesis, hostile]);
     expect(view.members).toHaveLength(1);

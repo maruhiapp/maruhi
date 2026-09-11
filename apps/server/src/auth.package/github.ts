@@ -5,8 +5,7 @@
 // - 識別子は数値 ID(providerUserId)。login 名は表示用スナップショットのみ
 // - email はプロバイダ側で verified な primary のみ拾う(§3)
 // - トークンは常に自分の code 交換で得る(§3-2 / §4-1 (4))。外部持ち込み
-//   トークンの検証(旧 device flow の check-token audience 検証)は §4 の
-//   2026-08-31 改訂で経路ごと削除された
+//   トークンの検証経路は持たない
 // - テストは miniflare の outboundService で GitHub をスタブする(実ネットワーク禁止)。
 //   本番コードにスタブ分岐は存在しない
 

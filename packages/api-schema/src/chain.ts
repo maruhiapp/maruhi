@@ -64,7 +64,7 @@ const ChangeRoleEntrySchema = Schema.Struct({
 });
 
 /**
- * `create_environment` entry (CRYPTO_SPEC §6.2, 2026-08-03): carries the
+ * `create_environment` entry (CRYPTO_SPEC §6.2): carries the
  * epoch-1 DEK commitment (§5.2). Submitted only through the composite
  * environment-creation endpoint (AUTH_SPEC §12-4) — the generic append
  * rejects it (§6). Exported for that endpoint's payload schema.
@@ -86,8 +86,8 @@ export const CreateEnvironmentEntrySchema = Schema.Struct({
 });
 
 /**
- * `rotate_epoch` entry: carries the new-epoch DEK commitment (§5.2,
- * 2026-08-03). Submitted only through the composite rotation endpoint
+ * `rotate_epoch` entry: carries the new-epoch DEK commitment (§5.2).
+ * Submitted only through the composite rotation endpoint
  * (AUTH_SPEC §12-4). Exported for that endpoint's payload schema.
  */
 export const RotateEpochEntrySchema = Schema.Struct({
@@ -140,8 +140,8 @@ const RevokeServerEntrySchema = Schema.Struct({
 });
 
 /**
- * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2,
- * 2026-08-27 — PR-F3a)。environmentId は create/rotate と同じ受理ポリシー
+ * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2)。
+ * environmentId は create/rotate と同じ受理ポリシー
  * 形式。epoch / manifestVersion の数値範囲・重複 environment_id・
  * audit_head の「空または 64 hex」は合意規則であり verifyChain が検査する
  * (冒頭の方針どおり Schema へ重複させない。固定長 hex のみここで検査)。
@@ -157,10 +157,9 @@ const CheckpointEnvironmentEntrySchema = Schema.Struct({
 /**
  * `checkpoint` entry (CRYPTO_SPEC §6.2): the issuer's attestation of its
  * verified data-layer view. Boundary checkpoints are submitted only through
- * the composite create/rotate endpoints (AUTH_SPEC §12-4 — PR-F3b);
- * standalone (periodic) checkpoints flow through the generic append
- * (AUTH_SPEC §16-2) once their acceptance-time content matching lands (M2 —
- * until then the generic append rejects the op, fail-closed). Exported for
+ * the composite create/rotate endpoints (AUTH_SPEC §12-4);
+ * standalone (periodic) checkpoints flow through the generic append with
+ * acceptance-time content matching (AUTH_SPEC §16-2). Exported for
  * the composite payload schemas (data-api.ts).
  */
 export const CheckpointEntrySchema = Schema.Struct({

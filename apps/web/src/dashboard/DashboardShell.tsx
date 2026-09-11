@@ -19,7 +19,7 @@
 // POST /auth/logout + CSRF ヘッダー(api.ts が一律付与)。表示規律の但し書き
 // (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
 //
-// 2 層構造(DP3 改訂 11 — PR #148 Bugbot 指摘): `DashboardLayout` は pathless の親ルート
+// 2 層構造(DP3 改訂 11): `DashboardLayout` は pathless の親ルート
 // (routes.ts の dashboardShellRoute)の部品で、セッション状態 + AppShell + SideNav を持ち
 // `Outlet` に子ルートを描く。画面間の遷移で再マウントされないので、/auth/me の再取得・
 // 「Checking your session」の再表示・サイドバーの折りたたみ状態の消失が起きない。

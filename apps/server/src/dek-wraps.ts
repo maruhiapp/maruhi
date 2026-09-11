@@ -40,28 +40,26 @@ export function wrapRefKey(ref: {
  * 型も合意規則もそれを保証しない。クラス込みのキーで検査すると「member の
  * user_id = 有効 grant のサーバー鍵 FP」の衝突集合が受理段を通過し、書き込み
  * フェーズの主キー違反 = defect(500)で当該環境のローテーション・作成が
- * 塞がる — セキュリティレビュー(2026-08-14)A-1。受理前にここで 422
- * (duplicate-recipient)に倒す。
+ * 塞がる(A-1)。受理前にここで 422(duplicate-recipient)に倒す。
  */
 function wrapStorageKey(ref: { readonly epoch: number; readonly recipientUserId: string }): string {
   return `${ref.epoch}:${ref.recipientUserId}`;
 }
 
 /**
- * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6 —
- * 2026-08-12 改訂): 現メンバー全員 + 当該環境が開示スコープに含まれる有効な
- * grant_server のサーバー鍵。初回登録の完全一致と複合リクエストの個数検査の
- * 両方がこの 1 定義を使う(受理境界をズラさない)。
+ * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6):
+ * 現メンバー全員 + 当該環境が開示スコープに含まれる有効な grant_server の
+ * サーバー鍵。初回登録の完全一致と複合リクエストの個数検査の両方が
+ * この 1 定義を使う(受理境界をズラさない)。
  */
 export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
   // 保存キー(= 登録経路の重複検出キー wrapStorageKey)は受信者クラスを含まない
   // ため、member の user_id と有効 grant のサーバー鍵 FP が衝突した場合、その
   // 2 受信者は 1 スロットしか占められない。期待数をクラス別の単純和で数えると
   // 「重複拒否」と「個数一致」を同時に満たせず環境作成・ローテーションが恒久に
-  // 塞がる(deepsec B10)。期待数も保存キーと同じ粒度 — 識別子の重複除去済み
-  // 和集合 — で数える。
-  // 残余の制約(意図的な線引き — レビューループ 7): 衝突ペアはどのみち
-  // (epoch, id) 1 スロットに 1 ラップしか登録できないため、両クラス分を送る
+  // 塞がる。期待数も保存キーと同じ粒度 — 識別子の重複除去済み和集合 — で数える。
+  // 残余の制約(意図的な線引き): 衝突ペアはどのみち (epoch, id) 1 スロットに
+  // 1 ラップしか登録できないため、両クラス分を送る
   // クライアントは duplicate-recipient(422)で明確に拒否され、片方だけ送る
   // クライアントはもう片方の受信者がラップなしのまま(サーバー宛欠落は
   // server-wraps-missing 503 として顕在化)になる。これを完全に解くには保存
@@ -252,9 +250,9 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
         // class 違いの同一 ID も挿入すれば主キー衝突なので、ここで 409 に倒す
         const stored = yield* store.wrapStoredRecipient(environmentId, epoch, wrap.recipientUserId);
         if (stored !== null) {
-          // 占有ラップの保存済み受信者 enc 公開鍵を載せる(AUTH_SPEC §12-6 —
-          // 2026-08-15)。非機密(チェーン配布済みの公開情報)で、再追加
-          // バックフィルのクライアントが「登録済み(同一鍵)/ 旧鍵ラップ
+          // 占有ラップの保存済み受信者 enc 公開鍵を載せる(AUTH_SPEC §12-6)。
+          // 非機密(チェーン配布済みの公開情報)で、再追加バックフィルの
+          // クライアントが「登録済み(同一鍵)/ 旧鍵ラップ
           // (修復対象)」を推定でなく厳密比較で判定する材料になる
           return yield* rejectData({
             kind: "dek-wrap-exists",

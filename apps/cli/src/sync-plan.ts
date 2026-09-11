@@ -1,7 +1,7 @@
-// `maruhi sync plan` / `maruhi sync apply`(SY2 第 1 段 — integration-options.md
-// §3「同期の最終形」の表: ドライバ × リポジトリ設定 × レシート × plan / apply。
-// 第 2 段で http ドライバと、レシートを持たない CI の経路〔sync-ci.ts〕が同じ
-// 芯〔{@link runDriver}〕に載った)。
+// `maruhi sync plan` / `maruhi sync apply`(integration-options.md §3「同期の
+// 最終形」の表: ドライバ × リポジトリ設定 × レシート × plan / apply。http ドライバ
+// と、レシートを持たない CI の経路〔sync-ci.ts〕も同じ芯〔{@link runDriver}〕に
+// 載る)。
 //
 // plan = 「レシート(前回届いた version)と maruhi の現在の version の差」を
 // 名前と version だけで示す。同期先は**読み戻さない**(一方通行 — ADR-0014。
@@ -296,7 +296,7 @@ function describeDestination(target: SyncTarget): string {
   return `${[target.preset.id, ...shown].join(" ")} via ${target.driver.kind}`;
 }
 
-/** plan の描画の選択(push 直後の apply は unchanged の行を省く — 第 3 段)。 */
+/** plan の描画の選択(push 直後の apply は unchanged の行を省く)。 */
 interface PlanDisplay {
   /** `=` の行を出すか(既定 true。ヘッダーの件数は常に全部)。 */
   readonly showUnchanged: boolean;
@@ -539,7 +539,7 @@ export interface DriverResult {
     /**
      * maruhi 自身の説明(起動失敗の理由と案内 — 完成した文)。ベンダーの出力では
      * ないので `output` に置かない(failDriver は output をベンダーの発言として
-     * 実行体名 / ホスト名の接頭辞つきで見せる — pullfrog 指摘・改訂 1)。
+     * 実行体名 / ホスト名の接頭辞つきで見せる)。
      */
     readonly detail: string | null;
     /** 伏せ字化済みの出力・応答の断片(ベンダーの発言。無ければ空)。 */
@@ -575,7 +575,7 @@ function runInvocations(
     for (const invocation of invocations) {
       // 起動の失敗(型付きエラー — live.ts の execStartFailure)もこの呼び出しの失敗に
       // 畳む: ここで generator ごと中断すると、前の呼び出しで届いた名前が written /
-      // deleted に畳まれずレシートに残らない(http の runBatch と同じ形 — SY4 改訂 5)
+      // deleted に畳まれずレシートに残らない(http の runBatch と同じ形)
       const outcome = yield* runner
         .exec(invocation)
         .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
@@ -688,7 +688,7 @@ export function runDriver(
     const { driver } = input.target;
     if (driver.kind === "exec") {
       // どの実行体に・どこで渡すかを出力に残す(設定の command / cwd で平文の行き先が
-      // 変わるので、差分だけでなく端末と CI ログでも見えるように — pullfrog 指摘)
+      // 変わるので、差分だけでなく端末と CI ログでも見えるように)
       yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
       return yield* runInvocations(driver, input.target.options, input.work);
     }
@@ -848,7 +848,7 @@ function driverFailureMessage(
   // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
   // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
   // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
-  // 先に同期先で手で消すよう言う(pullfrog 指摘)
+  // 先に同期先で手で消すよう言う
   const failed = new Set(failure.names);
   const notAttempted = input.work.deletes.filter(
     (name) => !result.deleted.includes(name) && !failed.has(name),
@@ -1008,7 +1008,7 @@ export function syncApplyOp(
       syncedAt: input.now().toISOString(),
     });
     // レシートの push は、同期元(とトークン環境)の pull で前進していることのある
-    // ビューから始める(loadReceipt 時点のビューは古いことがある — Bugbot 指摘)
+    // ビューから始める(loadReceipt 時点のビューは古いことがある)
     const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
     yield* reportApply(input, work, result, receiptVersion);
   });

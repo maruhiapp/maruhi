@@ -1,4 +1,4 @@
-// `maruhi var rm <NAME>` — 変数の削除(S3 PR #121 レビュー申し送りの採用)。
+// `maruhi var rm <NAME>` — 変数の削除。
 //
 // ワイヤ・受理・検証は既存(DeleteVariableMetaStatement v1 / V2 + マニフェスト
 // 複合 — AUTH_SPEC §12-5)。本モジュールは CLI 側の署名・送信・確認だけを足す:
@@ -306,7 +306,7 @@ export function varRmOp(
     // 確認は署名・送信・リトライループより前に 1 回だけ。確認が束縛するのは
     // **variableId**(名前ではない): 再解決は名前で行うため、並行削除 + 同名の
     // 新規作成で別の変数が同じ名前に載ることがある — その形は下の recover が
-    // 型付きエラーで止める(確認していない変数を消さない — pullfrog レビュー対応)
+    // 型付きエラーで止める(確認していない変数を消さない)
     yield* ensureDeletionConfirmed(input, initial.target, name);
     const confirmedVariableId = initial.target.variableId;
     const accepted = yield* retryOnConflict(initial, {

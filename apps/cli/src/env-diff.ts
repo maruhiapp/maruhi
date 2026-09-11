@@ -76,7 +76,7 @@ export type RequiredContract = "required" | "optional" | "none";
 /** 片側にしかない 1 変数(名前・状態・required — description は運ばない §2)。 */
 export interface DiffSideEntry {
   readonly name: string;
-  /** true = declared(値なし — S3 申し送りの注記)。 */
+  /** true = declared(値なし)。 */
   readonly declared: boolean;
   readonly required: RequiredContract;
 }

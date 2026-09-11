@@ -1,4 +1,4 @@
-// セッション主体の能力制限の固定テスト(AUTH_SPEC §5 — W2b)。
+// セッション主体の能力制限の固定テスト(AUTH_SPEC §5)。
 //
 // 全エンドポイント × セッション主体の許可 / 拒否マトリクスを、api-schema の
 // エンドポイント列挙(maruhiApi.groups — メソッド・パス・AuthMiddleware 有無)
@@ -266,7 +266,7 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     // チェーン取得(§11)— fixture の OWNER はチェーン導出メンバー
     const chain = await SELF.fetch(concreteUrl("/projects/:projectId/chain"), { headers });
     expect(chain.status).toBe(200);
-    // プロジェクト一覧(§11-5 — W2a。S4 の消費経路)
+    // プロジェクト一覧(§11-5)
     const projectList = await SELF.fetch(`${BASE}/projects`, { headers });
     expect(projectList.status).toBe(200);
     // 環境一覧(§12-4)

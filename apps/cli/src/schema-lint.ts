@@ -76,7 +76,7 @@ const REFERENCE_SOURCES: readonly string[] = [
  * 全パターン共通の左境界: 直前が識別子の続き(英数字・`_`・`$`)やメンバー
  * アクセスの `.` なら一致させない。`MY_ENV["FOO"]` / `TEST_ENV.fetch("BAR")`
  * のような「たまたま ENV で終わる識別子」を env 参照と誤認して CI を exit 1 に
- * する形を塞ぐ(pullfrog レビュー対応)。`\b` では足りない(`_` は単語文字)。
+ * する形を塞ぐ。`\b` では足りない(`_` は単語文字)。
  */
 const LEFT_BOUNDARY_SOURCE = String.raw`(?<![A-Za-z0-9_$.])`;
 

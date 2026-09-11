@@ -18,8 +18,8 @@
 // Stdio / AgentProfileRef サービス経由で取り、process.* を直に読まない。
 //
 // 登録は変数ごとの複合 × マニフェスト CAS の直列実行(O(N) 往復 — 発見 F′。
-// 一括複合受理の要否は S4 の実測報告 — 本 PR 本文 — を材料にオーナーが判断
-// する。先取りしない)。競合は schemaSetOp / pushVariable の既存リトライ規律
+// 一括複合受理の要否は実測報告を材料にオーナーが判断する。先取りしない)。
+// 競合は schemaSetOp / pushVariable の既存リトライ規律
 // (retryOnConflict)をそのまま再利用する。
 
 import { unlink } from "node:fs/promises";
@@ -311,7 +311,7 @@ function approvalStep(
     if (finding !== null) {
       // 警告は検出値そのものを運ばない(秘密でありうる — entropy.ts の規律)
       // 候補ごとの警告(同じ候補の再試行・同じ形の別候補でも毎回出す — 台帳の
-      // 抑制対象にしない。pullfrog 指摘)。候補の直下に字下げして付ける
+      // 抑制対象にしない)。候補の直下に字下げして付ける
       yield* logWarning(
         `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
         { scope: "prompt" },
@@ -384,9 +384,9 @@ function approveCandidate(
     };
     if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
       // 候補の提示(approvalStep の describeCandidate)より前に出るので、項目に
-      // ぶら下がる prompt スコープにはしない(字下げが直前の項目に付いてしまう
-      // — PR #151 Bugbot 指摘)。行番号を含むので候補ごとに一意で、再試行で
-      // 繰り返す必要もない(捨てたのは 1 回)
+      // ぶら下がる prompt スコープにはしない(字下げが直前の項目に付いてしまう)。
+      // 行番号を含むので候補ごとに一意で、再試行で繰り返す必要もない
+      // (捨てたのは 1 回)
       yield* logNote(
         `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
       );
@@ -548,7 +548,7 @@ function runApprovalLoop(
     const importedNames = new Set<string>();
     // 編集(e)での改名は、ファイル内の**未処理の候補**の名前とも衝突させない
     // (後続の候補が requireCreation の「already exists」で import ごと止まる
-    // ローカル衝突を、編集時点の警告で防ぐ — pullfrog レビュー対応)
+    // ローカル衝突を、編集時点の警告で防ぐ)
     const fileNames = new Set(entries.map((candidate) => candidate.name));
     const counts = { declared: 0, activated: 0, skipped: 0, stopped: false };
     for (const entry of entries) {
@@ -621,8 +621,7 @@ export function schemaImportOp(
     // 完了時の削除提案(設計文書 §1-3 (4))は「ファイルの全候補が今回宣言
     // された」実行に限る: q での中断・スキップした候補(s / 既存名)・解釈
     // できなかった行が 1 つでも残るなら、ファイルの「最後の仕事」はまだ
-    // 終わっていない(pullfrog レビュー対応 — 全スキップの実行に「宣言済み」を
-    // 主張する提案を出さない)
+    // 終わっていない(全スキップの実行に「宣言済み」を主張する提案を出さない)
     const everyCandidateDeclared =
       !stopped && declared > 0 && skipped === 0 && parsed.skipped.length === 0;
     if (!everyCandidateDeclared) {

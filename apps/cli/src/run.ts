@@ -7,7 +7,7 @@
 // CT / CU): presence は硬く(required = true の declared → 子プロセスを
 // **起動せず**型付きエラー)、型は柔らかく(注入直前の平文への advisory 検証 —
 // 不一致は警告のみで実行続行 §14.3-7)。**エラー・警告文面に description を
-// 含めない**(ログ経由の注入面を作らない — session-46 §8 第 3 周)。
+// 含めない**(ログ経由の注入面を作らない)。
 
 import { Context, Effect, Redacted } from "effect";
 
@@ -66,14 +66,13 @@ export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerS
 
 const MARUHI_ENV_PREFIX = "MARUHI_";
 
-// 実行制御系の環境変数名は注入を拒否する(レビューループ 1 [低]): 変数名は
+// 実行制御系の環境変数名は注入を拒否する: 変数名は
 // 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
 // 対応を付け替えても復号は成功する。正当な秘密値がこれらの名前で注入されると
 // 子プロセスのコード実行制御になるため、名前空間ごと塞ぐ。
 // このリストは best-effort の緩和策であり網羅ではない — 根本策は名前の
-// 暗号学的束縛(仕様側の検討事項 — session-11.md 申し送り)。
-// 比較は大文字化して行う(Windows の環境変数名は大文字小文字を区別しない —
-// レビューループ 2 [低])
+// 暗号学的束縛(仕様側の検討事項)。
+// 比較は大文字化して行う(Windows の環境変数名は大文字小文字を区別しない)
 const DENIED_ENV_NAMES = new Set([
   "PATH",
   "NODE_OPTIONS",
@@ -88,7 +87,7 @@ const DENIED_ENV_NAMES = new Set([
   "IFS",
   "SHELL",
   "ZDOTDIR",
-  // rc ファイル・設定ディレクトリの参照先を差し替えられる名前(deepsec M2):
+  // rc ファイル・設定ディレクトリの参照先を差し替えられる名前:
   // HOME を差し替えると bash / zsh / 各種ツールが攻撃者パスの rc・設定を読む
   "HOME",
   "USERPROFILE",
@@ -133,7 +132,7 @@ const DENIED_ENV_NAMES = new Set([
   "COMSPEC",
   "SYSTEMROOT",
   "WINDIR",
-  // 子プロセスが**別のプログラムを起動する**ときの起動先(deepsec R3):
+  // 子プロセスが**別のプログラムを起動する**ときの起動先:
   // LESSOPEN / LESSCLOSE は `|cmd %s` 形式でそのままコマンド実行、PAGER 系と
   // EDITOR / VISUAL / BROWSER は git・systemctl・各種 CLI が直接 spawn する
   "LESSOPEN",
@@ -143,16 +142,16 @@ const DENIED_ENV_NAMES = new Set([
   "EDITOR",
   "VISUAL",
   "BROWSER",
-  // パスフレーズ入力の代行プログラム(R3): ssh / sudo が指定先を実行する
+  // パスフレーズ入力の代行プログラム: ssh / sudo が指定先を実行する
   "SSH_ASKPASS",
   "SUDO_ASKPASS",
-  // インタプリタの初期化フック・モジュール探索(R3)。LUA_INIT は任意の Lua を
+  // インタプリタの初期化フック・モジュール探索。LUA_INIT は任意の Lua を
   // 実行し、LUA_PATH / LUA_CPATH は require の探索先を差し替える
   "LUA_INIT",
   "LUA_PATH",
   "LUA_CPATH",
   "PSMODULEPATH",
-  // glibc / ローダの挙動と補助データの探索先(R3)。GLIBC_TUNABLES は
+  // glibc / ローダの挙動と補助データの探索先。GLIBC_TUNABLES は
   // チューナブル経由で挙動を変え、LOCPATH / NLSPATH / TERMINFO / TERMCAP は
   // プロセスが読み込むバイナリ記述子(ロケール・端末定義)の出所を差し替える
   "GLIBC_TUNABLES",
@@ -164,7 +163,7 @@ const DENIED_ENV_NAMES = new Set([
   "TERMCAP",
   "CDPATH",
   // shell function autoload と TLS trust root。既存の BASH_ENV / ZDOTDIR /
-  // NODE_EXTRA_CA_CERTS と同じ実行・信頼境界(deepsec 08-27 follow-up)
+  // NODE_EXTRA_CA_CERTS と同じ実行・信頼境界
   "FPATH",
   "KSH_ENV",
   "SSL_CERT_FILE",
@@ -193,11 +192,11 @@ const DENIED_ENV_NAMES = new Set([
   "GEM_PATH",
   "HOSTALIASES",
 ]);
-// NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない(M2 の要検討事項の裁定):
+// NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない:
 // NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
 // 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す。
 //
-// `MARUHI_` だけは包括 prefix で塞ぐ(deepsec S3)。上の裁定と矛盾しない理由は
+// `MARUHI_` だけは包括 prefix で塞ぐ。上の方針と矛盾しない理由は
 // **maruhi 自身が予約する名前空間**だから: 巻き込む「正当な変数」が原理的に
 // 存在せず(この名前空間の意味は maruhi が決める)、逆にここへ 1 つでも通すと
 // 入れ子の `maruhi` の挙動を注入側が決められる。実際 `MARUHI_TOKEN` /
@@ -221,7 +220,7 @@ function isDeniedEnvName(name: string): boolean {
 
 /**
  * 子プロセスへ渡す環境。親の一般環境は継承するが、maruhi 自身の制御・資格情報
- * 名前空間は除く(deepsec S6)。
+ * 名前空間は除く。
  *
  * keychain-less / CI の MARUHI_TOKEN は run のセッション解決には必要だが、
  * 子へ渡すと注入値より長寿命・広スコープな PAT まで依存コードが読める。
@@ -350,7 +349,7 @@ export function enforceDeclaredPresence(
     if (missing.length > 0) {
       // 子プロセス未起動の硬いエラー(presence — verified statements only)。
       // 復旧導線は 2 つ明示する: 値を設定する(activation)か、宣言が誤りなら
-      // --optional で required を下げる(宣言の削除コマンドは未提供 — PR #121)
+      // --optional で required を下げる(宣言の削除コマンドは未提供)
       return yield* Effect.fail(
         cliError(
           `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. ${outcome}`,

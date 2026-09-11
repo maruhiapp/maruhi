@@ -216,7 +216,7 @@ export const createVariableProgram = (
     // ensureVariableCreatable)より前(rename / 削除 / activation と同じ規律 —
     // 名前が衝突している v3 クライアントに duplicate-name を返さない)
     yield* ensureSupportedLayout(input.statement);
-    // DO ストレージ総量ガード(§12-8 — H2): メンバーシップ・role・存在・
+    // DO ストレージ総量ガード(§12-8): メンバーシップ・role・存在・
     // レイアウトのサポート範囲の後、CAS / 署名 / 数量ポリシー等の意味論的検査の
     // 前(資源保護は意味論に優先。storage-guard.ts)
     yield* ensureStorageAdmitsGrowth;
@@ -253,7 +253,7 @@ export const createVariableProgram = (
             variableId: input.variableId,
             value: input.value,
           });
-    // 環境マニフェストの複合受理(§12-5 — 2026-08-18): 作成後のメタ状態
+    // 環境マニフェストの複合受理(§12-5): 作成後のメタ状態
     // (新変数のステートメントを含む集合)からダイジェストを再計算して申告と
     // 突合する。manifestVersion CAS は metaVersion CAS と同一トランザクション
     // (同一プログラム・同一 permit)で判定される
@@ -346,7 +346,7 @@ export const pushVersionProgram = (
     if (variable.latestStatus === "declared") {
       return yield* rejectData({ kind: "activation-required", variableId });
     }
-    // DO ストレージ総量ガード(§12-8 — H2): 存在・種別の検査の後、CAS / 署名の
+    // DO ストレージ総量ガード(§12-8): 存在・種別の検査の後、CAS / 署名の
     // 前。再暗号化 push も対象(拒否下では新しい値は書けない — 一貫した帰結。
     // 同節の (d))
     yield* ensureStorageAdmitsGrowth;
@@ -425,7 +425,7 @@ export const activateVariableProgram = (
     // 規律 — v3 クライアントには下の status / name ガードや値 CAS の誤誘導
     // エラーでなく、常に正直な update-required を返す)
     yield* ensureSupportedLayout(input.statement);
-    // DO ストレージ総量ガード(§12-8 — H2): 存在・サポート範囲の後、status /
+    // DO ストレージ総量ガード(§12-8): 存在・サポート範囲の後、status /
     // name ガード・CAS・署名の前
     yield* ensureStorageAdmitsGrowth;
     // activation の対象は declared のみ(§12-5 — 「値 push + メタ再発行」の
@@ -434,7 +434,6 @@ export const activateVariableProgram = (
     // しまう)、この明示ガードが下の schemaPolicy 免除の前提「直前は必ず v2
     // (declared は v2 限定)」を成立させる — 無いと disabled 下で active な
     // v1 変数を v2 へ昇格でき、§12-11 の有効化ゲートが迂回される
-    // (PR #119 pullfrog レビュー指摘)
     if (variable.latestStatus !== "declared") {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
@@ -538,7 +537,7 @@ export const renameVariableProgram = (
     // サポート範囲検査は statement 依存の全検査より前(裁定 CR — サポート外
     // レイアウトには以降の検査の誤誘導エラーを返さない)
     yield* ensureSupportedLayout(statement);
-    // DO ストレージ総量ガード(§12-8 — H2): rename / スキーマ再発行はステート
+    // DO ストレージ総量ガード(§12-8): rename / スキーマ再発行はステート
     // メント行 + マニフェストを積む成長面(metaVersion 上限とは独立に適用)。
     // 位置は存在・レイアウト検査の後・CAS / 署名検証の前(削除経路と前段を
     // 共有する形を保つ — 削除はガードを呼ばない)
@@ -583,7 +582,7 @@ export const renameVariableProgram = (
     });
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 監査イベントの分岐(AUDIT_SPEC §3.3 — 2026-09-01): 名前が実際に変わった
+    // 監査イベントの分岐(AUDIT_SPEC §3.3): 名前が実際に変わった
     // 再発行のみ var.renamed、名前不変の再発行(スキーマ欄の設定・変更 —
     // §12-5 のスキーマ再発行)は var.schema_reissued。ワイヤは同一操作形の
     // ため受理時の直前ステートメント名との byte 比較で分岐する(改名して

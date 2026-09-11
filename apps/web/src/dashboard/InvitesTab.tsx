@@ -62,8 +62,7 @@ const STATUS_TOKEN_COLOR: Record<InviteStatus, "blue" | "orange" | "green" | "gr
 
 /**
  * 招待状態のサーバー申告値の表示。Object.hasOwn: 想定外の status 文字列
- * (プロトタイプ鎖の鍵名を含む)は default 色へ落とす(RoleToken と同じ自衛 —
- * PR #107 pullfrog 指摘の型)。
+ * (プロトタイプ鎖の鍵名を含む)は default 色へ落とす(RoleToken と同じ自衛)。
  */
 function InviteStatusToken({ status }: { status: string }): ReactNode {
   const color = Object.hasOwn(STATUS_TOKEN_COLOR, status)

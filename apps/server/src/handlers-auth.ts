@@ -50,18 +50,18 @@ import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./w
 /**
  * サインアップコードクッキーの値の形: `<state>.<sha256(code)>`(AUTH_SPEC §3)。
  *
- * **生値ではなくハッシュを運ぶ**(PR #133 第 2 次探索): callback が必要とする
- * のはハッシュ照合(signup_invites.token_hash)と消費 CAS のみで、生値の再登場
- * 点が存在しない。ハッシュ運搬により、コード生値のワイヤ出現は start リクエスト
- * の 1 回だけになり、ブラウザのクッキーストア(devtools・同期・拡張の可視面)に
- * 生値が残らない — 「生値は発行時に一度だけ」(§5 / §15)の規律の運搬面への適用。
+ * **生値ではなくハッシュを運ぶ**: callback が必要とするのはハッシュ照合
+ * (signup_invites.token_hash)と消費 CAS のみで、生値の再登場点が存在しない。
+ * ハッシュ運搬により、コード生値のワイヤ出現は start リクエストの 1 回だけに
+ * なり、ブラウザのクッキーストア(devtools・同期・拡張の可視面)に生値が残らない
+ * — 「生値は発行時に一度だけ」(§5 / §15)の規律の運搬面への適用。
  *
  * クッキーは発行時の OAuth state にも**束縛**する: `__Host-` / path=/ のクッキーは
  * 同一ブラウザの後続の無関係な OAuth 完了(別の state)にも同送されるため、
- * 束縛が無いと持ち越されたコードが「そのフローの提示コード」として消費されうる
- * (PR #133 pullfrog レビュー指摘)。callback は state 一致のときだけハッシュを
- * 採用する — 型付きエラー終端(Set-Cookie を運ばない応答)にクッキーが残っても、
- * 別フローの資格にはならない(残存の無害化)。
+ * 束縛が無いと持ち越されたコードが「そのフローの提示コード」として消費されうる。
+ * callback は state 一致のときだけハッシュを採用する — 型付きエラー終端
+ * (Set-Cookie を運ばない応答)にクッキーが残っても、別フローの資格には
+ * ならない(残存の無害化)。
  */
 function signupCookieValue(state: string, tokenHashHex: string): string {
   return `${state}.${tokenHashHex}`;
@@ -187,7 +187,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("githubCallback", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // 発信元 IP のレート制限をハンドラ最初に置く(deepsec R7): callback は
+        // 発信元 IP のレート制限をハンドラ最初に置く: callback は
         // 未認証で到達でき、1 回ごとに GitHub token endpoint への交換を起こす。
         // その枠は device exchange と**同じ** OAuth App 単位の共有クォータで、
         // 枯渇すると全ユーザーのログインが止まる。
@@ -360,7 +360,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // セッション主体の CSRF はミドルウェアが担う(DELETE は書き込み系)
         yield* ensureTokenManagementAccess(principal);
         const tokens = yield* TokenRepo;
-        // 所有条件(id × userId)は repo 境界が強制する(deepsec S8)。
+        // 所有条件(id × userId)は repo 境界が強制する。
         // auth.token_revoked は削除の成立と同時に記録され、actor = 実行主体
         // (セッション / 別トークン)、payload.tokenId = 失効対象(AUDIT_SPEC §3.1)
         const revoked = yield* tokens.revokeById(

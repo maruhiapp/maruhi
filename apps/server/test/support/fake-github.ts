@@ -201,7 +201,7 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
 }
 
 /**
- * 運用基盤 H3 のトリップワイヤ通知 webhook(vitest.config.ts の OPS_ALERT_WEBHOOK_URL)。
+ * 運用基盤のトリップワイヤ通知 webhook(vitest.config.ts の OPS_ALERT_WEBHOOK_URL)。
  * 受け口は 204 を返すだけ(本文の検査は OpsNotifier の差し替えで — ops-alerts.test.ts)。
  */
 function fakeOpsWebhook(url: URL): Response | null {

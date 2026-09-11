@@ -1,5 +1,5 @@
 // `maruhi sync` のプリセット = 1 つの同期先に対する 2 種類のドライバの宣言
-// (SY2 第 2 段 — integration-options.md §3 補足 13 W1「1 インターフェース × 2 種類」)。
+// (integration-options.md §3 補足 13 W1「1 インターフェース × 2 種類」)。
 //
 // exec(sync-exec.ts — 導入済みのベンダー CLI)と http(sync-http.ts — ベンダー
 // API)は同じプリセット id を共有し、設定の `driver` でどちらを使うかを選ぶ。
@@ -48,7 +48,7 @@ export function defaultDriverOf(preset: SyncPreset): DriverKind {
 // Netlify の deploy context のうち production 扱い(`all` は production を含む)
 const NETLIFY_PRODUCTION_CONTEXTS = new Set(["production", "all"]);
 
-/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers; Netlify = SY4, http only; GitHub Actions secrets = SY5, exec only). */
+/** Built-in presets (first-class targets — owner decision: Vercel / Cloudflare Workers; Netlify = http only; GitHub Actions secrets = exec only). */
 export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
   "cloudflare-workers": {
     id: "cloudflare-workers",
@@ -81,7 +81,7 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
     },
     // リポジトリ secrets(Environment なし)は全 workflow に効く = production 扱い。
     // Environment secrets はその名前が production のときだけ — GitHub の Environment 名は
-    // 大文字小文字を区別しない(docs「Managing environments」)ので畳んで比べる(pullfrog 指摘)
+    // 大文字小文字を区別しない(docs「Managing environments」)ので畳んで比べる
     isProduction: (options) =>
       options["environment"] === undefined ||
       String(options["environment"]).toLowerCase() === "production",

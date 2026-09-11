@@ -50,7 +50,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
     .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         // §12-4: チェーンエントリ(create と境界 checkpoint の両方)の actor は
-        // 呼び出し主体と厳密一致(2026-08-27 セッション 33 — 2 エントリ複合化)
+        // 呼び出し主体と厳密一致(2 エントリ複合化)
         yield* ensureCompositeActor(payload.entry);
         yield* ensureCompositeActor(payload.checkpoint);
         // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメント /

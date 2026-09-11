@@ -1,4 +1,4 @@
-// `maruhi schema import`(S4 — 設計文書 §1-3)のテスト。
+// `maruhi schema import`(設計文書 §1-3)のテスト。
 //
 // 固定する不変条件:
 //  1. **儀式系 deny(ADR-0016 決定 7 の類型)**: 既知エージェント検出と非対話
@@ -486,7 +486,7 @@ describe("受理面の周辺(advisory・直列 O(N) — 発見 F′)", () => {
 
   it("登録は変数ごとの複合の直列で、宣言 1 件あたり 3 往復(解決 + 複合 + 効果確認)", async () => {
     // 発見 F′ の実測の固定形: N 宣言 = 初回解決 1 + N × (解決 1 + create 1 +
-    // 効果確認 1)。一括複合受理は実装しない(オーナー判断待ち — PR 本文の報告)
+    // 効果確認 1)。一括複合受理は実装しない
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B=", "C="].join("\n"));
     env.setPromptResponses(["y", "y", "y", ""]);

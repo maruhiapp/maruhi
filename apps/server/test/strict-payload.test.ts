@@ -1,4 +1,4 @@
-// strict 受理の実効性の固定テスト(AUTH_SPEC §12-10 (1) — PR-F1)。
+// strict 受理の実効性の固定テスト(AUTH_SPEC §12-10 (1))。
 //
 // 対象は §12-10 (1) の列挙面のうち実装済みの全エンドポイント payload ルート
 // (packages/api-schema/src/strict.ts の SECURITY_CRITICAL_PAYLOAD_ENDPOINTS)。
@@ -150,7 +150,7 @@ describe("ヘッド申告の提出(§16-1)", () => {
   });
 });
 
-// 形式のみ有効なゼロ署名の境界 checkpoint(§12-4 の必須同梱 — 2026-08-27)
+// 形式のみ有効なゼロ署名の境界 checkpoint(§12-4 の必須同梱)
 const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<string, unknown> =>
   unsignedEntry("checkpoint", {
     environments: [
@@ -185,8 +185,7 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       entry: unsignedEntry("create_environment", { ...entryPayload, [PROBE_KEY]: true }),
     });
-    // F3b が複合へ追加した checkpoint フィールドにも strict が伝播する
-    // (PR-F4 cross-layer — F1 の strict 面は F3 で増えたネスト構造も覆う)
+    // 複合の checkpoint フィールドにも strict が伝播する
     await expectNestedReject(send, {
       ...clean,
       checkpoint: { ...(clean.checkpoint as Record<string, unknown>), [PROBE_KEY]: true },
@@ -217,8 +216,8 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       manifest: { ...(clean.manifest as Record<string, unknown>), [PROBE_KEY]: true },
     });
-    // F3b が複合へ追加した checkpoint フィールドの内側にも strict が伝播する
-    // (PR-F4 cross-layer): エントリ payload とその環境タプルの両ネスト位置
+    // checkpoint フィールドの内側にも strict が伝播する: エントリ payload と
+    // その環境タプルの両ネスト位置
     const cleanCheckpoint = clean.checkpoint as Record<string, unknown>;
     const checkpointPayload = cleanCheckpoint["payload"] as Record<string, unknown>;
     await expectNestedReject(send, {
@@ -241,13 +240,13 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
     });
   });
 
-  it("rejects a composite without the boundary checkpoint field with 400 (旧 CLI fail-closed — 2-G′)", async () => {
+  it("rejects a composite without the boundary checkpoint field with 400 (旧 CLI fail-closed)", async () => {
     // §12-4 の必須同梱: checkpoint を知らない旧 CLI の create / rotate 複合は
-    // Schema 段の 400 で fail-closed になる(session-33 裁定 E-3 の承認済み帰結の
-    // テスト固定 — SELF_HOSTING の更新順序が運用面を担う)。冒頭の規約どおり
-    // probe / control を本テスト内で対にする(pullfrog レビュー反映 — 先行
-    // テストの clean に依存すると、400 が checkpoint 欠落起因である保証が
-    // 先行側の変更で黙って失われる): 差分は checkpoint フィールドの有無のみ
+    // Schema 段の 400 で fail-closed になる(session-33 裁定 E-3 の帰結 —
+    // SELF_HOSTING の更新順序が運用面を担う)。冒頭の規約どおり probe / control を
+    // 本テスト内で対にする(先行テストの clean に依存すると、400 が checkpoint
+    // 欠落起因である保証が先行側の変更で黙って失われる): 差分は checkpoint
+    // フィールドの有無のみ
     const create = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
     const createClean = {
       parentHeadHashHex: fixture.head.hashHex,

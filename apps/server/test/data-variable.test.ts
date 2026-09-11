@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 変数の push→pull→クライアント復号とメタデータのみモード(AUTH_SPEC §12-5 / §12-7)。
 // @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
+// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -652,10 +652,9 @@ describe("セッション主体の値付き一括 pull の拒否(§5 能力制�
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
 
-    // W2b で反転: 値付き一括 pull は §5 の明示拒否面(セッション経由の監査証跡
-    // 汚染 = SECURITY_REVIEW L-1 の発生面自体を消す)。CSRF ヘッダーなし = 従来の
-    // csrf-header-required だった形も、能力判定の先行により一様に
-    // session-not-allowed になる
+    // 値付き一括 pull は §5 の明示拒否面(W2b — セッション経由の監査証跡汚染 =
+    // SECURITY_REVIEW L-1 の発生面自体を消す)。能力判定が CSRF 検査に先行するため、
+    // CSRF ヘッダーがなくても一様に session-not-allowed になる
     const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });

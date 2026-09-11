@@ -284,7 +284,7 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される(pullfrog 指摘の固定)
+    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される
     for (const target of [
       "/docs/getting-started",
       "/docs/deploy-targets",

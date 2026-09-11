@@ -222,7 +222,7 @@ describe("parseSyncConfig", () => {
     expect(repository.production).toBe(true);
     expect(repository.options).toEqual({});
     expect(parsed(githubTarget({ options: { environment: "production" } })).production).toBe(true);
-    // GitHub の Environment 名は大文字小文字を区別しない(pullfrog 指摘)
+    // GitHub の Environment 名は大文字小文字を区別しない
     expect(parsed(githubTarget({ options: { environment: "Production" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "PRODUCTION" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "staging" } })).production).toBe(false);
@@ -682,8 +682,8 @@ describe("scrubVendorOutput", () => {
   });
 
   it("上限を超える出力でも、切る前に伏せる(切れ目にかかった値の後半を残さない)", () => {
-    // Security Agent 指摘: 伏せる前に末尾 64 K 文字で切ると、切れ目をまたいだ値の
-    // 後半が断片に一致せず、そのまま表示された。値の 20 文字目に切れ目が来る長さ
+    // 伏せる前に末尾 64 K 文字で切ると、切れ目をまたいだ値の後半が断片に
+    // 一致せず、そのまま表示されてしまう。値の 20 文字目に切れ目が来る長さ
     const value = "S".repeat(40);
     const values = [write("A", value)];
     const tail = "\nError: request failed";

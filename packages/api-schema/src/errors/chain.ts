@@ -28,7 +28,7 @@ const CHAIN_INVALID_REASONS = [
   "grant-scope-narrowed",
   "duplicate-server-key",
   "epoch-out-of-sequence",
-  // checkpoint op(CRYPTO_SPEC §6.2。2026-08-27 セッション 33 — PR-F3a)
+  // checkpoint op(CRYPTO_SPEC §6.2)
   "checkpoint-audit-role-insufficient",
   "checkpoint-epoch-mismatch",
   "checkpoint-regression",
@@ -60,7 +60,7 @@ export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAl
 
 /**
  * 429: the org already holds the maximum number of active projects (AUTH_SPEC
- * §11-3 — H2 テナント quota。起草値 100). Returned only for a **fresh** genesis:
+ * §11-3 — テナント quota。起草値 100). Returned only for a **fresh** genesis:
  * the §11-3 repair path (already-initialized + missing `projects` row +
  * genesis actor) is never blocked by this limit. Carries the limit only.
  */
@@ -110,14 +110,13 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
 
 /**
  * 422: `create_environment` / `rotate_epoch` entries may only be submitted
- * through their composite endpoints (AUTH_SPEC §6 / §12-4, 2026-08-03) — the
+ * through their composite endpoints (AUTH_SPEC §6 / §12-4) — the
  * generic chain append rejects them so the entry-plus-data atomicity cannot
  * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
  *
- * `checkpoint` は本エラーの対象ではない(2026-08-28 — PR-M2): standalone
+ * `checkpoint` は本エラーの対象ではない: standalone
  * (周期)チェックポイントは §16-2 のとおり汎用 append が受理検証(内容突合 +
- * スナップショット原子保存)つきで受理する。PR-F3a〜M2 実装前の過渡期のみ
- * fail-closed の拒否対象だった。
+ * スナップショット原子保存)つきで受理する。
  */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",

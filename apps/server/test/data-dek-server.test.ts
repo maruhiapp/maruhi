@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 受信者クラス server
-// (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)と expectedWrapRecipientCount(deepsec
-// B10)。スイート全体の分担は data-dek.test.ts 冒頭を参照。
+// (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)と expectedWrapRecipientCount。
+// スイート全体の分担は data-dek.test.ts 冒頭を参照。
 
 import type { ChainState } from "@maruhi/crypto";
 import {
@@ -49,7 +49,7 @@ async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<str
   return encodeHex(fp.value);
 }
 
-describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-08-12)", () => {
+describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   /** owner が grant_server を追記する(汎用チェーン API — AUTH_SPEC §6 の admin op)。 */
   async function grantServer(scope: readonly string[]): Promise<string> {
     const fpHex = await serverFingerprintHex();
@@ -230,7 +230,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
     expect(full.status).toBe(200);
   });
 
-  it("rejects a cross-class recipient collision with 422 duplicate-recipient, not a defect (セキュリティレビュー A-1)", async () => {
+  it("rejects a cross-class recipient collision with 422 duplicate-recipient, not a defect", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
 
@@ -272,8 +272,8 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
       recipientEncPubHex: sockEncPubHex,
       signerUserId: MEMBER,
     });
-    // 受理前の検査で 422(duplicate-recipient)に倒れること。修正前は受理段を
-    // 通過して書き込みフェーズの主キー違反 = defect(500)になっていた
+    // 受理前の検査で 422(duplicate-recipient)に倒れること(受理段を通過させると
+    // 書き込みフェーズの主キー違反 = defect(500)になる)
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -299,7 +299,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
     );
     expect(rows[0]?.["n"]).toBe(0);
 
-    // 運用復旧(レビュー A-1 の「影響と緩和要素」): 衝突メンバーを
+    // 運用復旧: 衝突メンバーを
     // remove_member すれば完全集合が再び充足可能になり、ローテーションが通る
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
@@ -443,7 +443,7 @@ const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
     },
   ] as const;
 
-describe("expectedWrapRecipientCount(deepsec B10)", () => {
+describe("expectedWrapRecipientCount", () => {
   it("member user_id と in-scope サーバー鍵 FP の重複除去済み和集合で数える", () => {
     // add_member の対象 user_id は存在検証されない自由文字列(AUTH_SPEC §11-1)
     // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーはクラスを

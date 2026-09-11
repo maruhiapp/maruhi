@@ -3,7 +3,7 @@
 // `my.maruhi.app/` は製品オリジン(TCB)のトップ。LP と docs は apex `maruhi.app`(apps/site —
 // Blume)に移ったため、ここは最小の案内(ロゴ + ダッシュボードへの導線 + 製品サイトへのリンク)だけ
 // を置く(DP2 裁定 F — docs/notes/web-design-pass.md §4)。e2e の機構検証フック(built-at /
-// counter / to-about)は /about(AboutPage — 「このデプロイについて」)へ移した。
+// counter / to-about)は /about(AboutPage — 「このデプロイについて」)にある。
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 

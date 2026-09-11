@@ -198,7 +198,7 @@ async function negativeChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
       await tamperNegativeCheck(c, negative);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
+  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
   c.push(
     "head-attestation negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),

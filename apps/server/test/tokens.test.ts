@@ -46,7 +46,7 @@ beforeEach(async () => {
   await resetAuthDb();
 });
 
-describe("既定 TTL(AUTH_SPEC §6 — L-2 の解消)", () => {
+describe("既定 TTL(AUTH_SPEC §6)", () => {
   it("fixes expires_at to created_at + 90 days at issuance and reports it in the response", async () => {
     const issued = await exchange(801);
     const row = await tokenRow(issued.tokenId);

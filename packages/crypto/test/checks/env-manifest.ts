@@ -7,8 +7,7 @@
 // マニフェスト固有の固定点(metadata-signature との差):
 // - variables_digest の LP 正規形(空集合・単一・tombstone・バイト昇順)を
 //   computeVariablesDigest が再現する(digests セクション)
-// - チェックポイント束縛のエポック整合(§4.3 (2) — 2026-08-27 セッション 33 で
-//   旧 H+1 例外を廃止): 複合発行の positive(manifest-v1-create /
+// - チェックポイント束縛のエポック整合(§4.3 (2)): 複合発行の positive(manifest-v1-create /
 //   manifest-rotate)は境界 checkpoint タプルを含む派生チェーン
 //   (chain-entries.json の checkpoint-boundary-*)に対して通り、checkpoint を
 //   欠く正規チェーンに対する同データは composite-head-without-checkpoint-* の
@@ -191,13 +190,13 @@ async function digestChecks(c: Checks): Promise<void> {
   }
 }
 
-/** サロゲート境界の判別性と数値・hex 境界の拒否(session-31 M1-T2 — 分担は session-34.md 裁定 G)。 */
+/** サロゲート境界の判別性と数値・hex 境界の拒否(分担は session-34.md 裁定 G)。 */
 async function digestBoundaryChecks(c: Checks): Promise<void> {
   // サロゲートペア境界のベクターが実際に判別対であること(UTF-16 コード単位順
   // = JS の素の文字列比較ではバイト昇順と異なる並びになる)。裁定 G
   // (session-34.md)の唯一のメタチェックなので、ベクターの欠落はスキップで
-  // なく失敗にする(pullfrog レビュー反映 — リネーム・削除が PASS 件数の
-  // 減少だけで緑のまま通る形を残さない)
+  // なく失敗にする(リネーム・削除が PASS 件数の減少だけで緑のまま通る形を
+  // 残さない)
   const surrogate = manifestVectors.digests.find((d) => d.name === "surrogate-boundary-order");
   if (surrogate === undefined) {
     c.push(
@@ -213,8 +212,8 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
       utf16Sorted.join(" ") !== canonicalIds.join(" "),
     );
   }
-  // 数値・hex 境界の拒否(session-31 M1-T2 — JSON ベクターで表現しない分担は
-  // session-34.md の裁定): 非整数 / MAX_SAFE_INTEGER + 1 の metaVersion、同じ
+  // 数値・hex 境界の拒否(JSON ベクターで表現しない分担は session-34.md の
+  // 裁定): 非整数 / MAX_SAFE_INTEGER + 1 の metaVersion、同じ
   // 長さの大文字 hex(正規形は hex 小文字 — 受理して小文字化する実装は同一値に
   // 複数の正規形を作るため、拒否が仕様の期待挙動)
   const validEntry: VariablesDigestEntry = {
@@ -493,7 +492,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
+  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
   c.push(
     "env-manifest negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
@@ -513,13 +512,13 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "bad manifest version", context: { ...baseContext, manifestVersion: 0 } },
     { name: "bad env meta version", context: { ...baseContext, envMetaVersion: 0 } },
     { name: "bad head seq", context: { ...baseContext, chainHeadSeq: 0 } },
-    // 数値境界(session-31 M1-T2): §2.1 の 10 進文字列化は非負の安全整数のみ
+    // 数値境界: §2.1 の 10 進文字列化は非負の安全整数のみ
     { name: "fractional epoch", context: { ...baseContext, epoch: 1.5 } },
     {
       name: "unsafe integer manifest version",
       context: { ...baseContext, manifestVersion: Number.MAX_SAFE_INTEGER + 1 },
     },
-    // 同じ長さの大文字 hex(正規形は hex 小文字 — session-31 M1-T2)
+    // 同じ長さの大文字 hex(正規形は hex 小文字)
     {
       name: "uppercase digest",
       context: { ...baseContext, variablesDigestHex: "AB".repeat(32) },

@@ -10,7 +10,7 @@
 // - lease-authz.test.ts: 認可と存在秘匿(§14-1 / §11-2 — 一律 404)
 // - lease-policy.test.ts: 503 と監査(§14-3 / AUDIT_SPEC §3.5)・サーバー鍵
 //   未設定・受理ポリシー
-// - lease-binding.test.ts: 先着束縛(§14-1)と発信元 IP レート制限(deepsec M5)
+// - lease-binding.test.ts: 先着束縛(§14-1)と発信元 IP レート制限
 
 import { decryptVariable, encodeHex } from "@maruhi/crypto";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -57,14 +57,14 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     const body = (await response.json()) as LeaseBody;
 
     // 応答はチェーンを同梱する(非メンバーはチェーン API から 404 — §11-2)。
-    // 長さはフィクスチャから正確に決まるので値で固定する(pullfrog 指摘)
+    // 長さはフィクスチャから正確に決まるので値で固定する
     const stored = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries");
     expect(body.chain.length).toBe(stored[0]?.["n"]);
     expect(body.headSeq).toBe(body.chain.length);
     expect(body.currentEpoch).toBe(1);
 
     // 最新の環境マニフェスト + issuer 情報を同梱する(§14-2 — ワークロードの
-    // 検証義務 §9.1 (5) の材料。2026-08-18)
+    // 検証義務 §9.1 (5) の材料)
     expect(
       (body as { manifest?: { manifestVersion: number; epoch: number; issuerUserId: string } })
         .manifest,
@@ -86,7 +86,7 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
   });
 
-  it("bundles the stored checkpoint-time value snapshot (§14-2 — PR-M3)", async () => {
+  it("bundles the stored checkpoint-time value snapshot (§14-2)", async () => {
     await readyProject();
     const workload = await workloadKeyPair();
     const response = await requestLease({
@@ -239,7 +239,7 @@ describe("ワークロードリース: OIDC 検証(§14-1 の認証段 — 401)"
 
   it("rejects a multi-audience token with ambiguous-audience, not missing-claim", async () => {
     // `aud` は存在する(複数あるだけ)。運用者が理由コードを頼りに存在する
-    // claim を探しに行かないよう別語彙にしてある(pullfrog 指摘)
+    // claim を探しに行かないよう別語彙にしてある
     const workload = await workloadKeyPair();
     const response = await requestLease({
       oidcToken: await makeOidcToken({ audience: [LEASE_AUDIENCE, "https://other.example"] }),

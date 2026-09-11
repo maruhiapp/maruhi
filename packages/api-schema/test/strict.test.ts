@@ -97,7 +97,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("covers every §12-10 (1) implemented surface", () => {
-    // 列挙の退行防止(§16-1 ヘッド申告 = membership.attest を含む — PR-M4)
+    // 列挙の退行防止(§16-1 ヘッド申告 = membership.attest を含む)
     expect(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS).toEqual([
       ["membership", "init"],
       ["membership", "append"],
@@ -108,7 +108,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["environments", "remove"],
       ["variables", "create"],
       ["variables", "push"],
-      // activation 複合(§12-5 — 2026-08-30 S2)
+      // activation 複合(§12-5)
       ["variables", "activate"],
       ["variables", "rename"],
       ["variables", "remove"],

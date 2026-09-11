@@ -28,7 +28,6 @@ describe("shouldUseColor(色の可否)", () => {
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({ NO_COLOR: "yes" }) })).toBe(
       false,
     );
-    // 空文字列は未設定と同じ
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({ NO_COLOR: "" }) })).toBe(true);
   });
 
@@ -62,7 +61,6 @@ describe("formatNotice(接頭辞の描画)", () => {
   it("色は接頭辞だけに付き、本文には ANSI を混ぜない", () => {
     const line = formatNotice("warning", "value=abc", true);
     expect(line).toBe(`${ESC}[33mWarning:${ESC}[0m value=abc`);
-    // 本文側(接頭辞の後ろ)は無変換
     expect(line.slice(line.indexOf(" ") + 1)).toBe("value=abc");
     expect(formatNotice("note", "x", true).startsWith(`${ESC}[36mNote:${ESC}[0m `)).toBe(true);
     expect(formatNotice("error", "x", true).startsWith(`${ESC}[31mmaruhi:${ESC}[0m `)).toBe(true);

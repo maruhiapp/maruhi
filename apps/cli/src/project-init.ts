@@ -26,7 +26,7 @@ type UserOrg = typeof UserOrgSchema.Type;
 
 const GENESIS_PREV_HASH = "0".repeat(64);
 
-/** org 選択の純関数はタグ付き Result で返す(instanceof 判別をしない — B-5 の慣用統一)。 */
+/** org 選択の純関数はタグ付き Result で返す(instanceof 判別をしない — 慣用の統一)。 */
 type PickedOrg =
   | { readonly kind: "ok"; readonly org: UserOrg }
   | { readonly kind: "rejected"; readonly message: string };

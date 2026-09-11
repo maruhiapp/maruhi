@@ -729,8 +729,8 @@ describe("maruhi env diff", () => {
     });
 
     it("diff 専用の 3 つ目の位置引数は create / rotate では余分な引数になる", async () => {
-      // create は effect/unstable/cli 側(ADR-0016 の第 1 段階)。入れ子の
-      // サブコマンドなので「取る位置引数は environment-id だけ」と言える
+      // create は入れ子のサブコマンドなので「取る位置引数は environment-id
+      // だけ」と言える
       const created = await startEnv([]);
       expect(await runCli(["env", "create", DEV, PROD], created.layer)).toBe(2);
       expect(created.errors.join("\n")).toContain("Unexpected extra arguments (1");
@@ -738,7 +738,7 @@ describe("maruhi env diff", () => {
         "maruhi env create only takes these positional arguments: environment-id",
       );
 
-      // rotate は gunshi のまま(1 引数表なので 3 つ目は diff 専用として除く)
+      // rotate でも 3 つ目は余分な引数になる
       const rotated = await startEnv([]);
       expect(await runCli(["env", "rotate", DEV, PROD], rotated.layer)).toBe(2);
       expect(rotated.errors.join("\n")).toContain("Unexpected extra arguments (1");
@@ -758,8 +758,8 @@ describe("maruhi env diff", () => {
     it("未知の操作 + 空の位置引数は、操作名の誤りを先に報告する(usage エラー = 2)", async () => {
       const env = await startEnv([]);
 
-      // effect/unstable/cli への移行(ADR-0016)後は、サブコマンドの解決が
-      // 位置引数の検査より先に走るため、未知の操作がまず報告される
+      // サブコマンドの解決が位置引数の検査より先に走るため、未知の操作が
+      // まず報告される
       // (直して再実行すれば空の位置引数の誤りが出る)。終了コードは同じ 2
       expect(await runCli(["env", "bogus", DEV, " "], env.layer)).toBe(2);
       expect(env.errors).toEqual([

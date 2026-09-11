@@ -8,7 +8,7 @@ import { defineConfig, type Plugin } from "vite";
 
 // publicDir の無変換コピーを layer-split の HTML 注入から守る。
 // write-headers.ts がバイト等価を検査する対象と揃える(pages.css は /invite と
-// サーバー配信の儀式ページが共有する自己配信スタイル — DP4)。
+// サーバー配信の儀式ページが共有する自己配信スタイル)。
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
 // FunStack は Vite 環境を rsc / client / ssr に分ける。ssr は JS のみで

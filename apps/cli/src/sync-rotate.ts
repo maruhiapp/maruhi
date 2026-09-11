@@ -1,4 +1,4 @@
-// `maruhi env rotate --config` によるレシートの前進(SY2 第 2 段 2b — integration-options.md
+// `maruhi env rotate --config` によるレシートの前進(integration-options.md
 // §3 補足 14 M1)。
 //
 // エポックローテーション(CRYPTO_SPEC §7 / §4.1)は現在値を**新 version として
@@ -46,7 +46,7 @@ import {
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /**
- * 設定の `project` と、実際に回したプロジェクトの照合(食い違いは書き方の誤り = 2)。
+ * 設定の `project` と、実際に回したプロジェクトの照合(食い違いは書き方の誤り)。
  * `--project` の有無に関わらず解決済みのプロジェクト ID と比べる — ローテーションの
  * **前**に呼び、別プロジェクトの設定でエポックを進めてしまう形を塞ぐ。
  */

@@ -12,9 +12,8 @@ import { ForbiddenError, UnauthorizedError } from "./errors/index.ts";
 /**
  * CSRF 対抗のカスタムヘッダー名(AUTH_SPEC §11-4: `x-maruhi-csrf: 1`)。
  * サーバーのミドルウェア・クライアントの送信側が同じ名前を見るための共有定数
- * (session-43 §14 の申し送り — 名前のリネームが「CLI 誘導文言 → 一般 403」の
- * 無音フォールバックにならないよう、真実源を api-schema に 1 箇所化する)。
- * apps/web の消費側の束縛は W3b(web を触る次 PR)で行う。
+ * (名前のリネームが「CLI 誘導文言 → 一般 403」の無音フォールバックに
+ * ならないよう、真実源を api-schema に 1 箇所化する)。
  */
 export const CSRF_HEADER_NAME = "x-maruhi-csrf";
 

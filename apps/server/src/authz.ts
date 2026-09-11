@@ -91,8 +91,7 @@ export function tokenScopeAllowsForProject(
  *
  * 交差を**候補索引の段**で行うのは応答行の絞り込みのためだけではない:
  * `nextAfter` カーソルは候補ページの末尾から出るため、後段の絞り込みだけでは
- * スコープ外の project_id(ID = capability)がカーソルに載って漏れる
- * (PR #106 Cursor Security Agent 指摘)。
+ * スコープ外の project_id(ID = capability)がカーソルに載って漏れる。
  */
 export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly string[] | null {
   if (principal.kind !== "token") {

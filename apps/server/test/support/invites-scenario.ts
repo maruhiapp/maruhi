@@ -1,5 +1,4 @@
-// 招待 API(AUTH_SPEC §15)統合テストの共有ヘルパ(旧 invites.test.ts の冒頭
-// ヘルパの分割先 — 分割の動機は membership-scenario.ts 冒頭を参照)。
+// 招待 API(AUTH_SPEC §15)統合テストの共有ヘルパ。
 //
 // 受諾署名(CRYPTO_SPEC §6.5)は @maruhi/crypto の実装で実署名を作る。fixture
 // は data-fixture の setupDataProject(ベースチェーン再生込み)を register 形

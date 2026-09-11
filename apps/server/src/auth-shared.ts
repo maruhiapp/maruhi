@@ -31,7 +31,7 @@ export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 export const CLI_STATE_PREFIX = "cli.";
 
 /**
- * サインアップ招待コードの運搬クッキー(AUTH_SPEC §3 — 2026-09-01 H1)。
+ * サインアップ招待コードの運搬クッキー(AUTH_SPEC §3)。
  * `GET /auth/github/start?signup_code=…` の開始時事前検証を通ったコードの
  * **SHA-256 ハッシュ**を、発行時 state に束縛して callback まで運ぶ
  * (HttpOnly。生値のワイヤ出現は start の 1 回だけで、クッキーストアには
@@ -131,7 +131,7 @@ export function authFlowFailure(
  * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
  * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
  *
- * 上限は authMethod + reason をバケットとして数える(deepsec R4/S5):
+ * 上限は authMethod + reason をバケットとして数える:
  * 片方の経路・理由への匿名洪水が、別理由の失敗まで黙って消さないようにする。
  */
 export function recordLoginFailed(
@@ -148,11 +148,11 @@ export function recordLoginFailed(
 }
 
 /**
- * auth.signup_denied の記録(AUDIT_SPEC §3.1 — 2026-09-01 H1)。actor は
+ * auth.signup_denied の記録(AUDIT_SPEC §3.1)。actor は
  * login_failed と同じ user_id なしの type=user(拒否時点で内部 user_id は
  * 存在しない)。提示された外部 ID・コード生値は記録しない。固定窓上限つき
  * (拒否の洪水による書き込み増幅の有界化 — バケットは reason 単位)。
- * H3 の「サインアップ拒否の計数」トリップワイヤはこの行を数える。
+ * 運用の「サインアップ拒否の計数」トリップワイヤはこの行を数える。
  */
 export function recordSignupDenied(
   reason: SignupDenialReason,

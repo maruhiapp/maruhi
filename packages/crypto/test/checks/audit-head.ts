@@ -1,5 +1,4 @@
-// AUDIT_SPEC §5.1 監査ヘッド累積ハッシュのチェック(PR-M2 — 2026-08-28
-// セッション 35):
+// AUDIT_SPEC §5.1 監査ヘッド累積ハッシュのチェック:
 // - audit-head.json の chain セクション(row_digest と h_n の連鎖)を
 //   computeAuditRowDigest / computeAuditHeadHash が再現する
 // - NULL と空文字列のプリイメージ相違(null_vs_empty セクション)

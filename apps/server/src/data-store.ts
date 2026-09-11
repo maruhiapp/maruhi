@@ -114,7 +114,7 @@ interface VariableDigestEntryRow {
 /**
  * checkpoint values_digest の 1 エントリ(CRYPTO_SPEC §6.2 — @maruhi/crypto の
  * EnvValuesDigestEntry と構造一致。data-store は crypto に依存しないため
- * 構造型で持つ)。2026-08-27 セッション 33 = PR-F3b。
+ * 構造型で持つ)。
  */
 export interface CheckpointValueEntryRow {
   readonly variableId: string;
@@ -220,7 +220,7 @@ export interface DataWriteOps {
   ) => void;
   /**
    * 境界 checkpoint の値スナップショットの保存(CRYPTO_SPEC §6.4 / AUTH_SPEC
-   * §16-2 — 2026-08-27): 環境ごとの最新包含 checkpoint のタプルを upsert し、
+   * §16-2): 環境ごとの最新包含 checkpoint のタプルを upsert し、
    * 値スナップショット列挙を環境単位で全置換する。payload に含まれない環境の
    * 既存スナップショットは変更しない(A のみ再 checkpoint しても B の基準は
    * 失われない — §6.4)。チェーン追記と同じ同期ブロック内から呼ぶ。
@@ -254,7 +254,7 @@ export interface DataWriteOps {
   /** §12-6 修復経路: 1 ラップの削除(存在検証は呼び出し側が済ませる)。 */
   readonly deleteWrap: (environmentId: string, epoch: number, recipientUserId: string) => void;
   /**
-   * §12-6 の再追加受理時掃除(2026-08-15): 対象 user_id 宛(受信者クラス
+   * §12-6 の再追加受理時掃除: 対象 user_id 宛(受信者クラス
    * member)で受信者 enc 公開鍵が `keepEncPubHex` と一致しないラップを削除し、
    * 削除した (環境, エポック) を返す(dek.deleted の監査行の材料)。現行チェーン
    * 鍵のラップは対象にならない(上書き禁止の不変条件は不変)。add_member 受理の
@@ -394,8 +394,8 @@ interface DataStoreShape {
     environmentId: string,
   ) => Effect.Effect<readonly CheckpointValueEntryRow[]>;
   /**
-   * チェックポイント時点の値スナップショットの配布形(§12-7 / §14-2 —
-   * 2026-08-28 PR-M3): checkpoint 受理時に原子保存した最新包含 checkpoint の
+   * チェックポイント時点の値スナップショットの配布形(§12-7 / §14-2):
+   * checkpoint 受理時に原子保存した最新包含 checkpoint の
    * タプル + 列挙をそのまま返す(再構成しない — §16-2)。基準を持たない環境は
    * null(応答に載せない)。
    */
@@ -425,7 +425,7 @@ interface DataStoreShape {
    * 保存済みラップの受信者クラスと enc 公開鍵(行がなければ null)。削除経路は
    * クラスとリクエストの class を突合する — クライアント申告の class をそのまま
    * 監査列の選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
-   * enc 公開鍵は上書き禁止 409 の応答材料(AUTH_SPEC §12-6 — 2026-08-15)。
+   * enc 公開鍵は上書き禁止 409 の応答材料(AUTH_SPEC §12-6)。
    */
   readonly wrapStoredRecipient: (
     environmentId: string,
@@ -451,7 +451,7 @@ interface DataStoreShape {
    * 固定窓の**判定のみ**(消費しない — §14-3 / AUDIT_SPEC §3.5)。窓が切れて
    * いれば 0 から数え直した扱いになる。判定と消費を分けているのは、
    * 「窓を消費してよいのは実際に発行した(記録した)ときだけ」という規律を
-   * 呼び出し側で表現するため(pullfrog 指摘 — PR #65)。
+   * 呼び出し側で表現するため。
    */
   readonly checkLeaseWindow: (
     kind: LeaseWindowKind,
@@ -464,7 +464,7 @@ interface DataStoreShape {
    */
   readonly recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => void;
   /**
-   * 先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)の照会: 生存期限内の束縛行が
+   * 先着束縛(AUTH_SPEC §14-1)の照会: 生存期限内の束縛行が
    * あれば束縛先の一時公開鍵を返す。期限切れ行は**行の物理削除(GC)に依存せず**
    * expires_at 条件で無視する — 判定の正しさを GC のタイミングから切り離す。
    * `bindingKeyHex` は JWS signing input のハッシュ(生トークンのハッシュでは
@@ -1587,12 +1587,13 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
-    // 環境マニフェストもカスケード削除する(§12-4 — 2026-08-18: 削除済み環境には
+    // 環境マニフェストもカスケード削除する(§12-4: 削除済み環境には
     // 配布チャネルが存在せず、配布されないサーバー保存物に検出材料としての残存
     // 価値がない。環境自身の deleted ステートメントが終端の検出材料)
     sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
     // チェックポイントのタプル・値スナップショットも同じ論法でカスケード削除
-    // (§12-4 — 2026-08-27: 削除済み環境のスナップショットに配布チャネルはない)
+    // (§12-4: 削除済み環境のスナップショットに配布チャネルはない)
+
     sql.exec("DELETE FROM environment_checkpoints WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
   },

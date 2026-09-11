@@ -1,4 +1,4 @@
-// `maruhi project list`(AUTH_SPEC §11-5 — W2a)のワイヤレベルテスト。
+// `maruhi project list`(AUTH_SPEC §11-5)のワイヤレベルテスト。
 //
 // 固定するもの:
 // - ページ追跡: nextAfter を排他カーソルとして次ページへ渡し、尽きるまで集める

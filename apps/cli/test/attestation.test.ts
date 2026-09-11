@@ -1,4 +1,4 @@
-// ヘッドゴシップのクライアント面(CRYPTO_SPEC §6.3 / §6.6 — PR-M4)のテスト。
+// ヘッドゴシップのクライアント面(CRYPTO_SPEC §6.3 / §6.6)のテスト。
 // session-27 §13-5 の申告項: 配布照合の 2 種区別(seq ≤ 自ヘッドの不一致 =
 // 即時証拠 / seq > 自ヘッド = 再同期 → 解決)・証拠保存(floor-evidence 様式)・
 // 矛盾申告での中断・提出契機(前進時のみ — 前回申告の追跡)。
@@ -256,7 +256,7 @@ describe("reconcileDistributedAttestations(照合 — §6.3 / §6.6)", () => {
     const records = evidenceRaw.split("\n").filter((line) => line.trim() !== "");
     // 同一申告は「持ち越した future 分」と「再同期ビュー自身の申告集合」の
     // 両方に現れるが、証拠は 1 レコードに重複排除される(2 行あると 2 人の
-    // メンバーが矛盾しているように読める — pullfrog レビュー)
+    // メンバーが矛盾しているように読める)
     expect(records).toHaveLength(1);
     expect(records[0]).toContain('"kind":"unresolved-after-resync"');
   });
@@ -329,8 +329,8 @@ describe("コマンド前段への接続(project verify — 矛盾申告での�
     });
     const env = await verifyCommandEnv(built, [matching]);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
-    // 照合を通過したビューのヘッドは従来どおり床に記録される(前進の位置が
-    // 全検査通過後へ移っただけで、成功時の床の材料は落とさない)
+    // 照合を通過したビューのヘッドは従来どおり床に記録される(床前進は全検査
+    // 通過後だが、成功時の床の材料は落とさない)
     const floorLog = await readFile(join(env.floorDir, `${built.projectId}.jsonl`), "utf8");
     expect(floorLog).toContain('"r":"head"');
   });
@@ -353,7 +353,7 @@ describe("コマンド前段への接続(project verify — 矛盾申告での�
     expect(evidenceRaw).toContain('"kind":"head-mismatch"');
     // 中断したビューのヘッドは床に記録されない: 照合前に記録すると、拒否した
     // はずの fork が床の恒久記録になり、以後の正直なチェーンをハッシュ不一致と
-    // して拒否させられる(Cursor Security Agent 指摘 — 床前進は全検査通過後)
+    // して拒否させられる(床前進は全検査通過後)
     const floorLog = await readFile(join(env.floorDir, `${built.projectId}.jsonl`), "utf8").catch(
       () => "",
     );
@@ -438,7 +438,7 @@ describe("submitHeadAttestationIfAdvanced(提出 — SHOULD)", () => {
     // 床破損・初回の fail-open 下で、同一 seq・異ハッシュの別チェーン
     // (equivocation)を見せられた形を模す: 追跡の hash を別値に書き換える。
     // seq は前進していないがハッシュが違うので提出は抑制されない — この端末の
-    // 申告経由で他メンバーが分岐を検出する経路を保つ(pullfrog レビュー)
+    // 申告経由で他メンバーが分岐を検出する経路を保つ
     const { writeFile } = await import("node:fs/promises");
     await writeFile(
       join(env.floorDir, `${built.projectId}.attested.json`),
