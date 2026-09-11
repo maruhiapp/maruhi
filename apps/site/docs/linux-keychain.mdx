@@ -1,0 +1,60 @@
+---
+title: Keychain on Linux and in containers
+description: maruhi stores its token and your master key in the OS keychain and never falls back to plaintext files. Set up a Secret Service on headless Linux, WSL, dev containers, and Codespaces.
+sidebar:
+  order: 5
+---
+
+maruhi persists exactly two secrets on a machine: the API token that `maruhi login` obtains, and the master key that `maruhi key generate` (or `maruhi key recover`) creates. Both live in the OS keychain, under the service name `maruhi`, and nowhere else — when no keychain is available, the commands fail instead of writing a plaintext file.
+
+On macOS this is the system Keychain and on Windows the Credential Manager (experimental), with nothing to set up. On Linux, maruhi uses the freedesktop **Secret Service**: a D-Bus API provided by GNOME Keyring or KWallet. Desktop distributions ship one out of the box, so this page is about the machines that do not — servers, WSL, dev containers, and GitHub Codespaces.
+
+## How the failure looks
+
+You will see one of two messages. Both mean the same thing — no usable Secret Service in this environment — and both have the same fix (the next section). Which one appears depends on the operation, not on the exact cause, so do not diagnose from the wording:
+
+> Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead
+
+This is the general failure: the keychain answered with an error right away (a bus exists but nothing provides the Secret Service on it), or a keychain _read_ hung — without a session bus the operation never gets an answer, and maruhi cuts the wait after 30 seconds.
+
+> Writing to the OS keychain timed out. […] maruhi does not fall back to plaintext files
+
+This one appears when a keychain _write_ hangs — `maruhi login` or `maruhi key generate` storing a value. It carries extra instructions because a timed-out write cannot be cancelled and may still complete in the background.
+
+## Set up a keyring on a headless machine
+
+Verified on Ubuntu 24.04. Install GNOME Keyring, D-Bus session support, and the Secret Service client library once (the `dbus-run-session` tool used below ships in `dbus-bin`, which `dbus-user-session` pulls in):
+
+```sh
+sudo apt-get install -y gnome-keyring dbus-user-session libsecret-1-0
+```
+
+Then, in each shell session where you want to use maruhi, start a session bus and unlock the keyring inside it. Type these lines into an interactive terminal — the first one starts a nested shell that the rest run in, so this block is not meant to be saved as a script:
+
+```sh
+dbus-run-session -- bash            # a session bus for this shell and its children
+read -rsp "Keyring password: " pw && echo
+printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets
+unset pw
+maruhi login                        # keychain-backed commands now work in this shell
+```
+
+What this does, and what to expect:
+
+- The first unlock creates `~/.local/share/keyrings/login.keyring`, encrypted with the password you typed. Later unlocks open the same file, so tokens and keys survive reboots and new sessions — only the daemon is per-session, the data is not.
+- The password must not be empty. With empty input the daemon tries to open a graphical prompt instead, which a headless shell cannot show, and the command hangs until maruhi's 30-second guard reports the timeout.
+- The keyring file is only as strong as that password: anyone who has both the file and the password can read every secret in it. Treat it like the credential it is.
+- `dbus-run-session` needs no systemd and no desktop session, which is why the same five lines work unchanged over SSH, in WSL2, and inside container shells.
+
+## Dev containers and Codespaces
+
+The setup above applies inside containers too: put the three packages in the image (or `postCreateCommand`), and run the session-bus + unlock lines in each shell — both paths below need a working Secret Service first (`maruhi login` writes to the keychain). On top of that, a container rebuild discards the home directory, and with it `~/.local/share/keyrings` — the new container is, from maruhi's point of view, a new machine with no token and no master key. The two bullets only decide whether the keyring _data_ survives the rebuild:
+
+- **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. After the per-shell unlock, your token and master key are right where you left them.
+- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. Know the limits before relying on it: entering a recovery code requires a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery fetches per user per hour. Recovery codes are made for occasional loss, not for daily container churn — prefer the volume when rebuilds are frequent or driven by automation.
+
+## What works without a keychain
+
+- **GitHub Actions needs none of this.** `maruhi ci run` and `maruhi ci sync` authenticate with the job's OIDC token and hold key material in memory only — see [GitHub Actions](/docs/github-actions).
+- **Session-only commands accept `MARUHI_TOKEN`.** Commands that need a session but not your master key (metadata-only reads such as `maruhi schema`) authenticate with the `MARUHI_TOKEN` environment variable, bound to one server with `MARUHI_TOKEN_ORIGIN`. The provisioning procedure — issuing a named token on an interactive workstation with `maruhi login --token-name <name> --token-ttl-days <days> --show-token` — is described in the [self-hosting runbook](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md) under "Provisioning unattended runtimes".
+- **Value operations do not.** `maruhi run`, `push`, and `pull` decrypt with your master key, and the master key lives only in the keychain. There is no environment-variable substitute for it, by design.
