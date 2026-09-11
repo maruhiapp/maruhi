@@ -521,6 +521,16 @@ describe("maruhi invite accept", () => {
     expect(secondRunLogs).toContain("not required again");
     expect(secondRunLogs).not.toContain("reads to you out of band");
     expect(bodies).toHaveLength(2);
+
+    // 3 回目(エージェント環境): 帳のヒットがあっても代行は拒否(フラグ必須 —
+    // member add 側と対称の固定)
+    env.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(env.prompts).toHaveLength(2);
+    expect(env.errors.join("\n")).toContain(
+      "Refused to run the inviter-fingerprint confirmation ceremony",
+    );
+    expect(bodies).toHaveLength(2);
   });
 
   it("鍵未生成: 対話確認 → 生成 → リカバリー儀式 → 生成鍵で受諾(§15-3 の連結)", async () => {
