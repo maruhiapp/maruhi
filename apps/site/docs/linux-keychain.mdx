@@ -1,0 +1,58 @@
+---
+title: Keychain on Linux and in containers
+description: maruhi stores its token and your master key in the OS keychain and never falls back to plaintext files. Set up a Secret Service on headless Linux, WSL, dev containers, and Codespaces.
+sidebar:
+  order: 5
+---
+
+maruhi persists exactly two secrets on a machine: the API token that `maruhi login` obtains, and the master key that `maruhi key generate` (or `maruhi key recover`) creates. Both live in the OS keychain, under the service name `maruhi`, and nowhere else — when no keychain is available, the commands fail instead of writing a plaintext file.
+
+On macOS this is the system Keychain and on Windows the Credential Manager (experimental), with nothing to set up. On Linux, maruhi uses the freedesktop **Secret Service**: a D-Bus API provided by GNOME Keyring or KWallet. Desktop distributions ship one out of the box, so this page is about the machines that do not — servers, WSL, dev containers, and GitHub Codespaces.
+
+## How the failure looks
+
+Without a D-Bus session bus, the keychain operation cannot even start; maruhi cuts the wait after 30 seconds:
+
+> Writing to the OS keychain timed out. […] maruhi does not fall back to plaintext files
+
+When a bus exists but no Secret Service is listening on it, the failure is immediate:
+
+> Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead
+
+## Set up a keyring on a headless machine
+
+Verified on Ubuntu 24.04. Install GNOME Keyring, the D-Bus session tools, and the Secret Service client library once:
+
+```sh
+sudo apt-get install -y gnome-keyring dbus-user-session libsecret-1-0
+```
+
+Then, in each shell session where you want to use maruhi, start a session bus and unlock the keyring inside it:
+
+```sh
+dbus-run-session -- bash            # a session bus for this shell and its children
+read -rsp "Keyring password: " pw && echo
+printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets
+unset pw
+maruhi login                        # keychain-backed commands now work in this shell
+```
+
+What this does, and what to expect:
+
+- The first unlock creates `~/.local/share/keyrings/login.keyring`, encrypted with the password you typed. Later unlocks open the same file, so tokens and keys survive reboots and new sessions — only the daemon is per-session, the data is not.
+- The password must not be empty. With empty input the daemon tries to open a graphical prompt instead, which a headless shell cannot show, and the command hangs until maruhi's 30-second guard reports the timeout.
+- The keyring file is only as strong as that password: anyone who has both the file and the password can read every secret in it. Treat it like the credential it is.
+- `dbus-run-session` needs no systemd and no desktop session, which is why the same five lines work unchanged over SSH, in WSL2, and inside container shells.
+
+## Dev containers and Codespaces
+
+A container rebuild discards the home directory, and with it `~/.local/share/keyrings` — the new container is, from maruhi's point of view, a new machine with no token and no master key. Two ways to handle that:
+
+- **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. The keychain then behaves like on any other machine.
+- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. This is the honest trade-off today — recovery codes are made for occasional loss, not for daily container churn, so prefer the volume when rebuilds are frequent.
+
+## What works without a keychain
+
+- **GitHub Actions needs none of this.** `maruhi ci run` and `maruhi ci sync` authenticate with the job's OIDC token and hold key material in memory only — see [GitHub Actions](/docs/github-actions).
+- **Session-only commands accept `MARUHI_TOKEN`.** Commands that need a session but not your master key (metadata-only reads such as `maruhi schema`) authenticate with the `MARUHI_TOKEN` environment variable, bound to one server with `MARUHI_TOKEN_ORIGIN`. The provisioning procedure — issuing a named token on an interactive workstation with `maruhi login --token-name <name> --show-token` — is described in the [self-hosting runbook](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md) under "Provisioning unattended runtimes".
+- **Value operations do not.** `maruhi run`, `push`, and `pull` decrypt with your master key, and the master key lives only in the keychain. There is no environment-variable substitute for it, by design.
