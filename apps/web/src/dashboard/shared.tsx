@@ -363,7 +363,7 @@ export function EmptyNotice({
 // 識別子(64 hex の project ID / チェーンハッシュ / 鍵 FP / row_id)の表示。空白を
 // 含まない長い文字列は Text の wordBreak だけでは折れない(inline 要素の幅が親の
 // flex 項目の min-content を押し広げる)ため、xstyle で anywhere 折りを明示する。
-// 同じ上書きが繰り返し必要になるので本モジュールに 1 定義だけ置き、
+// DP3 で同じ上書きが繰り返し必要になるので本モジュールに 1 定義だけ置き、
 // 画面側は HexText を使う(variant / ui.package への昇格は人間の判断 — 裁定 H)
 const hexStyles = stylex.create({
   breakable: {

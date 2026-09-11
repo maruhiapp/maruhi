@@ -1,4 +1,4 @@
-// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7)と
+// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7 — Wave 2 B2)と
 // 未収束ローテーション義務の常時警告 / project verify 詳細の統合テスト。
 //
 // 固定する性質:
@@ -350,7 +350,7 @@ describe("maruhi rotation dismiss", () => {
   });
 });
 
-describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7)", () => {
+describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 — B2)", () => {
   it("義務エントリより後に現エポックが始まっていない環境を、収束コマンドの案内つきで警告する", async () => {
     const built = await unconvergedChain();
     const state = await makeRotationServer({ built, currentEpoch: 1, flags: [] });
@@ -408,7 +408,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7)",
     expect(errors).toContain("role-demoted");
     expect(errors).toContain("the target has been removed");
     expect(errors).not.toContain("maruhi member change-role");
-    // 削除義務の行は member remove の再実行を案内する
+    // 削除義務の行は従来どおり member remove の再実行を案内する
     expect(errors).toContain(
       `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );

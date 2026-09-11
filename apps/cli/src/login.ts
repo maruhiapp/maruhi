@@ -255,7 +255,7 @@ export function loginOp(input: {
    * ローテーションが**いま表示したトークン自体を失効させる**。
    */
   readonly tokenNameIsDefault: boolean;
-  /** 明示 TTL(日。AUTH_SPEC §6。省略時はサーバー既定の 90 日)。 */
+  /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
   readonly expiresInDays?: number;
   /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
   readonly minIntervalSeconds?: number;
@@ -284,7 +284,7 @@ export function loginOp(input: {
     // 対話の案内は stderr(裁定 D-2: プロンプトと同じ経路。`maruhi login >
     // file` でも案内が見える)。stdout に出るのはログインの**結果**だけ。
     // verificationUrl / userCode はサーバー由来の外部文字列。制御文字・ANSI を
-    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ
+    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ(DP4)
     // (cli-pages.ts)と揃える: "Confirmation code" / 「一致するときだけ承認」
     yield* io.logError("Open this URL in your browser to approve the sign-in:");
     yield* io.logError("");
@@ -385,7 +385,7 @@ export function loginOp(input: {
           : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
       );
     }
-    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL)。期限が
+    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
     // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
     // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
     // Date#toISOString へ直接渡さない)

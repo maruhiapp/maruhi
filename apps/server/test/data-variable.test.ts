@@ -645,14 +645,14 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
   });
 });
 
-describe("セッション主体の値付き一括 pull の拒否(§5 能力制限。§12-7)", () => {
+describe("セッション主体の値付き一括 pull の拒否(§5 能力制限 — W2b。§12-7)", () => {
   it("rejects session pulls with values regardless of the CSRF header; bearer and metadata-only stay open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
 
-    // 値付き一括 pull は §5 の明示拒否面(セッション経由の監査証跡汚染 =
+    // 値付き一括 pull は §5 の明示拒否面(W2b — セッション経由の監査証跡汚染 =
     // SECURITY_REVIEW L-1 の発生面自体を消す)。能力判定が CSRF 検査に先行するため、
     // CSRF ヘッダーがなくても一様に session-not-allowed になる
     const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
@@ -663,7 +663,7 @@ describe("セッション主体の値付き一括 pull の拒否(§5 能力制�
     expect(body["reason"]).toBe("session-not-allowed");
 
     // CSRF ヘッダーを自分で付けても同じ(同一オリジン XSS はヘッダーを付けられる
-    // — 設計文書 §6。この面を閉じるのが目的)
+    // — 設計文書 §6。この面を閉じるのが W2b の目的)
     const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as Record<string, unknown>)["reason"]).toBe(

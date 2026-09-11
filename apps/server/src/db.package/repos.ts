@@ -4,7 +4,7 @@
 //   ドメイン型(../auth-domain.ts)と Effect のみ
 // - D1 の障害(接続・SQL エラー)は defect として扱う(Effect.promise)。ドメイン上
 //   予期される分岐(該当なし・一意制約競合)だけを値で表現する
-// - Drizzle は classic drizzle-orm/d1 を採用。
+// - Drizzle 採用の確定判断はセッション 06: classic drizzle-orm/d1 を採用。
 //   effect-d1 ドライバは rc.4 時点で transaction / batch 未対応のため、原子性が
 //   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
 
@@ -89,9 +89,9 @@ interface IdentityRepoShape {
   /**
    * 単一の冪等な入口。新規作成時は本人 owner のパーソナル org を同時に作る。
    *
-   * signupPolicy ゲート(AUTH_SPEC §3)は「不在 → 作成」分岐の
-   * 直前にあり、既存ユーザーの解決には一切影響しない。`signupInviteTokenHash`
-   * はサインアップ招待コード(提示文字列全体)の SHA-256(未提示は null)。
+   * signupPolicy ゲート(AUTH_SPEC §3)は「不在 → 作成」分岐の直前にあり、
+   * 既存ユーザーの解決には一切影響しない。`signupInviteTokenHash` はサインアップ
+   * 招待コード(提示文字列全体)の SHA-256(未提示は null)。
    * `invite` 下の作成はコード消費 CAS と同一 D1 batch で行われる。
    */
   readonly getOrCreateUser: (
@@ -218,8 +218,8 @@ class SignupGateLostError extends Data.TaggedError("SignupGateLost")<object> {}
  * 作成する。並行サインアップは (provider, provider_user_id) の PK で片方が失敗する
  * ので、競合時は呼び出し側が再ルックアップする。競合以外の失敗は defect。
  *
- * signupPolicy ゲート(AUTH_SPEC §3)は batch 先頭の条件として
- * 畳む: open は先頭 INSERT の WHERE にポリシー条件、invite は先頭の消費 CAS
+ * signupPolicy ゲート(AUTH_SPEC §3)は batch 先頭の条件として畳む: open は
+ * 先頭 INSERT の WHERE にポリシー条件、invite は先頭の消費 CAS
  * (UPDATE — pending・未失効・ポリシー 'invite' のときのみ効く)。後続の全文は
  * `changes() = 1` で直前の成立に連鎖する(tokenInsertSelect と同じ D1 batch の
  * 作法)ため、ゲートが負けた batch は**何も書かずに**コミットされる(コードだけ
@@ -604,9 +604,9 @@ function makeSessionRepo(db: Db): SessionRepoShape {
       run(async () => {
         // 削除の成立を returning で観測してからイベントを書く(actor もここから
         // 写す)。読み → 削除の 2 段だと並行ログアウトが両方 SELECT に成功して
-        // 1 失効に 2 行記録し得る。削除と追記が 2 文になる分
-        // 「削除だけ成功しイベントが欠ける」窓は理論上残るが、重複より欠落側に
-        // 倒す。行がなければ no-op(存在しない失効をイベント化しない)
+        // 1 失効に 2 行記録し得る。削除と追記が 2 文になる分「削除だけ成功し
+        // イベントが欠ける」窓は理論上残るが、重複より欠落側に倒す。行がなければ
+        // no-op(存在しない失効をイベント化しない)
         const deleted = await db
           .delete(sessions)
           .where(eq(sessions.id, idHash))
@@ -844,8 +844,8 @@ function makeTokenRepo(db: Db): TokenRepoShape {
         // (過大計上)。重複より欠落側に倒す
         const deleted = await db
           .delete(apiTokens)
-          // id だけで消すと token-id 指定の管理 API が別 user の token を失効し、
-          // 監査 actor だけ呼び出し user と誤記録する。
+          // id だけで消すと token-id 指定の管理 API(W3a の指定失効)が別 user の
+          // token を失効し、監査 actor だけ呼び出し user と誤記録する。
           // 所有条件は repo 境界で強制し、0 行 = 呼び出し側の一様 404(§6)
           .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
           .returning({ id: apiTokens.id });
@@ -989,9 +989,9 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
     recordFetch: (userId, nowMs, actor) =>
       run(async () => {
         // 取得計数は**単一の条件付き相対 UPDATE**で行う: 読み → 書き 2 段だと
-        // 並行リクエストが同じ count を読み、複数成功しても計数が 1 しか
-        // 進まない。窓のリセット / 加算 / 上限判定を 1 文の
-        // CASE / WHERE に畳み、更新できた(= RETURNING が 1 行)ことを許可の
+        // 並行リクエストが同じ count を読み、複数成功しても計数が 1 しか進まない。
+        // 窓のリセット / 加算 / 上限判定を 1 文の CASE / WHERE に畳み、
+        // 更新できた(= RETURNING が 1 行)ことを許可の
         // 定義にする。auth.recovery_blob_fetched は invites の CAS と同じ
         // changes() = 1 ガードの INSERT…SELECT を同一 batch に同梱し、許可された
         // 取得と 1:1 のまま原子的に記録する(AUDIT_SPEC §5.2)
@@ -1110,8 +1110,8 @@ interface ProjectRepoShape {
   readonly exists: (projectId: string) => Effect.Effect<boolean>;
   /**
    * org のアクティブプロジェクト数(AUTH_SPEC §11-3 の受理上限の判定材料)。
-   * v1 では当該 org の全 `projects` 行(削除 API が無く tombstone
-   * も存在しない — 削除導入時に除外条件を足す)。`proj_org` 索引の count。
+   * v1 では当該 org の全 `projects` 行(削除 API が無く tombstone も存在しない —
+   * 削除導入時に除外条件を足す)。`proj_org` 索引の count。
    * best-effort の判定入力であり、DO 受理との原子性は持たない(§11-3 —
    * 並行 init の僅かな超過は受容)。
    */
@@ -1135,8 +1135,7 @@ interface ProjectRepoShape {
    * `withinProjectIds` はトークンスコープとの交差を**候補索引の段で**行う
    * フィルタ(null = 制限なし)。`nextAfter` は候補ページの末尾から出るため、
    * 交差を後段(応答行の絞り込み)だけに置くとスコープ外の project_id が
-   * カーソルに載って漏れる — 候補空間
-   * 自体をスコープ内に閉じる。
+   * カーソルに載って漏れる — 候補空間自体をスコープ内に閉じる。
    */
   readonly listMemberProjectIds: (
     userId: string,
@@ -1237,9 +1236,9 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
         if (withinProjectIds === null) {
           return (await pageQuery(null)).map((row) => row.projectId);
         }
-        // スコープ交差の IN はチャンクして発行する:
-        // D1 の 1 クエリ束縛パラメータ上限は 100 で、トークンスコープの
-        // スキーマ上限も 100 エントリ(api-schema auth-api.ts)— 単一 IN だと
+        // スコープ交差の IN はチャンクして発行する: D1 の 1 クエリ束縛パラメータ
+        // 上限は 100 で、トークンスコープのスキーマ上限も 100 エントリ
+        // (api-schema auth-api.ts)— 単一 IN だと
         // userId / after / limit の 3 パラメータと合わせて上限を超え、正当に
         // 発行されたワイドスコープトークンの一覧が hard fail する。各チャンクは
         // limit 件までの昇順列を返すので、連結 + 全体ソート + limit 切りが
@@ -1288,7 +1287,7 @@ interface InviteRepoShape {
   /**
    * 発行(§15-2)。受理ポリシーの判定順は仕様の記載順に固定: pending 上限 →
    * レート窓(lookback 計数 — INVITE_ISSUE_WINDOW_MS の注記参照)。両カウントを
-   * `INSERT … SELECT … WHERE` の同一文で再評価し、並行発行でも上限を超えない
+   * `INSERT … SELECT … WHERE` の同一文で再評価し、並行発行でも上限を超えない。
    * 受理時は invite.created(AUDIT_SPEC §3.2)を changes() ガード付き
    * INSERT…SELECT と同一 batch に入れ、作成と 1:1 で記録する。
    */
@@ -1496,8 +1495,8 @@ function makeInviteRepo(db: Db): InviteRepoShape {
   return {
     create: (input, nowMs, actor) =>
       run(async () => {
-        // 判定と挿入を単一 INSERT…SELECT に畳む。別リクエストの
-        // SELECT → INSERT では、並行した全員が同じ under-limit を観測して
+        // 判定と挿入を単一 INSERT…SELECT に畳む。別リクエストの SELECT → INSERT
+        // では、並行した全員が同じ under-limit を観測して
         // 並行度ぶん上限を超えられる。audit は直前の INSERT が 1 行に効いた
         // ときだけ changes() ガードで書く
         const results = await db.batch([

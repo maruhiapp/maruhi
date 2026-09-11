@@ -1,12 +1,18 @@
 // メンバーシップログ統合テストの共有シナリオ(data-scenario.ts と同じ
-// 「共有 fixture + register」パターン)。テストは describe 単位でファイルに割って
-// あり、ファイル間の並列度(コア数ぶん)と可読性のためにその分割を維持している。
+// 「共有 fixture + register」パターン)。
+//
+// 分割の経緯: vitest-pool-workers 0.22.0 には SELF.fetch のリクエスト単価が
+// 累積リクエスト数に比例して増えるハーネス側の不具合があり(workers-sdk#15092 /
+// #15446)、ファイルごとに workerd が作り直されることを利用して describe 単位で
+// 割り、劣化をリセットしていた。不具合は @cloudflare/vitest-plugin 1.1.2 で修正され
+// (移行済み)、現在この分割は性能上必須ではない。ファイル間の並列度(コア数ぶん)と
+// 可読性のために維持している。
 //
 // テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
 // - 正常系 seq 1〜12 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT
 //   認証。create_environment / rotate_epoch は複合エンドポイント経由 — §12-4)。
-//   複合は境界 checkpoint(H+2)を挿入するため、最初の複合
-//   以降はベクターの固定 seq / prev からヘッドがずれる。以降のエントリは op /
+//   複合は境界 checkpoint(H+2)を挿入するため、最初の複合以降はベクターの固定
+//   seq / prev からヘッドがずれる。以降のエントリは op /
 //   payload / actor を保って実ヘッドで再署名して追従する(バイト固定は crypto 層の
 //   4 実行環境テストが担い、ここでは同じ op 列の API 受理を固定する)
 // - 認可系 negative 全件を拒否テストとして再生する(同じく実ヘッドで再署名)
@@ -332,8 +338,8 @@ export interface ReplayResult {
  * ベクターの seq 1..upTo をサーバーへ再生する(init + append + 複合。actor ごとの
  * PAT)。複合のラップ集合が要る現メンバー集合は op を追いながら導出する。
  *
- * 複合は境界 checkpoint(H+2)を挿入するため、最初の複合
- * 以降のヘッドはベクターの固定 seq / prev からずれる。以降のエントリは op /
+ * 複合は境界 checkpoint(H+2)を挿入するため、最初の複合以降のヘッドはベクターの
+ * 固定 seq / prev からずれる。以降のエントリは op /
  * payload / actor を保ったまま実ヘッドで再署名して追従する(正規チェーンの
  * バイト固定は crypto 層の 4 実行環境テストが担い、ここでは「同じ op 列を API が
  * 受理する」ことを固定する)。

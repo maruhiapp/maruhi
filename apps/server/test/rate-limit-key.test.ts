@@ -49,7 +49,7 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     ]) {
       expect(rateLimitKeyOf(malformed)).toBe(malformed);
     }
-    // 正当な形は畳まれる(0 と 255 の境界を含む)
+    // 正当な形は従来どおり畳まれる(0 と 255 の境界を含む)
     expect(rateLimitKeyOf("::ffff:0.0.0.0")).toBe("0.0.0.0");
     expect(rateLimitKeyOf("::ffff:255.255.255.255")).toBe("255.255.255.255");
   });

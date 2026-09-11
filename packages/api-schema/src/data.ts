@@ -67,10 +67,11 @@ export const VariableAadSchema = Schema.Struct({
  * An encrypted variable value on the wire (AUTH_SPEC §12-2): the only shape a
  * secret value ever takes across the API boundary (CRYPTO_SPEC §10).
  *
- * 値は(CRYPTO_SPEC §4.1)writer の書き込み署名ブロックを伴う: prev 連鎖(prevValueSigHashHex)、
- * 認可時点のチェーンヘッド束縛(chainHeadHashHex + chainHeadSeq)、Ed25519
- * 署名(signatureHex)。push / create では writer = 呼び出し主体が契約
- * (§12-5)のため、writer の ID / FP / signed-bytes hash はワイヤに載せない。
+ * 値は(CRYPTO_SPEC §4.1 = セッション 12 仕様の実装 PR-2)writer の書き込み署名
+ * ブロックを伴う: prev 連鎖(prevValueSigHashHex)、認可時点のチェーンヘッド束縛
+ * (chainHeadHashHex + chainHeadSeq)、Ed25519 署名(signatureHex)。push / create
+ * では writer = 呼び出し主体が契約(§12-5)のため、writer の ID / FP /
+ * signed-bytes hash はワイヤに載せない。
  */
 export const EncryptedPayloadSchema = Schema.Struct({
   suite: SuiteSchema,
@@ -116,7 +117,7 @@ const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.is
 
 const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
 // 変数ステートメントのレイアウト v2 は第 3 の状態 declared を持つ(CRYPTO_SPEC
-// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは 2 値のまま)
+// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは従来の 2 値のまま)
 const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
 // metaVersion 1 は作成専用(status active・prev 空)なので、rename / 削除の
 // リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
@@ -169,9 +170,9 @@ const anyLifecycleFields = {
 
 // ---------------------------------------------------------------------------
 // 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。
-// v1 ステートメントは v1 のフィールド構成のまま(layoutVersion・
-// スキーマ欄の 4 フィールドすべて不在 — strict 受理がこれを強制する)、v2 は
-// layoutVersion とスキーマ欄を持つ。環境メタステートメントは対象外(v1 のまま)。
+// v1 ステートメントは従来のフィールド構成のまま(layoutVersion・スキーマ欄の
+// 4 フィールドすべて不在 — strict 受理がこれを強制する)、v2 は layoutVersion と
+// スキーマ欄を持つ。環境メタステートメントは対象外(v1 のまま)。
 // ---------------------------------------------------------------------------
 
 /**
@@ -376,7 +377,7 @@ export const CreateEnvironmentManifestSchema = Schema.Struct({
  * マニフェスト(§12-5 (6) の manifestVersion CAS = 申告 == 最新 + 1)。
  * manifestVersion 1 も受理する: マニフェスト導入前に作成された環境の最初の
  * メタ操作 / rotate は保存済みマニフェストなし(= 最新 0)から v1 を発行する
- * (移行手順)。
+ * (移行手順 — session-27 §14 PR-M1)。
  */
 export const EnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -409,10 +410,10 @@ export const DistributedEnvironmentManifestSchema = Schema.Struct({
 export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
 
 // ---------------------------------------------------------------------------
-// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2)。
-// checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を
-// 値付き応答へ同梱し、クライアントのチェックポイント整合・規則 2(値の非後退 —
-// CRYPTO_SPEC §6.3)の材料にする。metadata-only pull は対象外(値を運ばない)。
+// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2 — PR-M3)。
+// checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を値付き応答へ同梱し、
+// クライアントのチェックポイント整合・規則 2(値の非後退 — CRYPTO_SPEC §6.3)の
+// 材料にする。metadata-only pull は対象外(値を運ばない)。
 // ---------------------------------------------------------------------------
 
 /**

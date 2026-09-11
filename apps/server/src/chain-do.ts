@@ -13,8 +13,8 @@
 //   共有する(並行 push の欠損・交錯防止)。**読み取りも同じ permit で直列化する**:
 //   permit 外で読むと「メンバーシップ判定(チェーン導出)→ データ読み」の間に
 //   remove_member の受理が割り込み、削除直後のメンバーへ値を配布しうる
-//   (§11-2 違反の TOCTOU)。permit 下では全操作が
-//   チェーン書き込みに対して線形化される。PRIMARY KEY 制約が最終防衛
+//   (§11-2 違反の TOCTOU)。permit 下では全操作がチェーン書き込みに対して
+//   線形化される。PRIMARY KEY 制約が最終防衛
 // - 受理ポリシー: チェーンは §6.4(1 MiB / 10,000 エントリ / 32 MiB)、データは
 //   §12-8(policy.ts)
 // - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
@@ -123,8 +123,8 @@ export interface Env {
   /**
    * 未認証 CLI ログイン start の発信元 IP レート制限(AUTH_SPEC §4-1 (1) —
    * wrangler.jsonc の ratelimits。無記録 start なので DB 保護ではなく CPU 保護)。
-   * binding を持たない self-host デプロイでは undefined になりうるため optional
-   * (不在は制限なし)。
+   * 旧設定のままの self-host デプロイでは undefined になりうるため optional
+   * (不在は制限なしで従来挙動)。
    */
   readonly CLI_START_RATE_LIMIT?: RateLimit;
   /**
@@ -134,27 +134,26 @@ export interface Env {
    */
   readonly CLI_POLL_RATE_LIMIT?: RateLimit;
   /**
-   * 未認証 OAuth callback の発信元 IP レート制限。callback は
-   * リクエストごとに GitHub の token endpoint を叩き、OAuth App 単位の共有
-   * クォータを消費する。state は cookie と query の二重送信(サーバー側状態
-   * なし)なので、非ブラウザの発信元は両方を自分で用意できて検査を通せる —
-   * 頻度を縛るのはこの binding だけ。ブラウザの対話ログイン(CLI ブラウザ脚
-   * 含む)は共有 egress で束になるため、start より緩い上限にする
-   * (docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
+   * 未認証 OAuth callback の発信元 IP レート制限。callback はリクエストごとに
+   * GitHub の token endpoint を叩き、OAuth App 単位の共有クォータを消費する。
+   * state は cookie と query の二重送信(サーバー側状態なし)なので、非ブラウザ
+   * の発信元は両方を自分で用意できて検査を通せる — 頻度を縛るのはこの binding
+   * だけ。ブラウザの対話ログイン(CLI ブラウザ脚含む)は共有 egress で束になるため、
+   * start より緩い上限にする(docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
    */
   readonly OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
   /**
-   * lease 発行の発信元 IP レート制限。DO は名前指定で暗黙生成
-   * されるため、有効な OIDC token だけで任意の project ID の DO を量産できる —
-   * projectStub 到達前の request-level 制限で生成レートを有界にする。
+   * lease 発行の発信元 IP レート制限。DO は名前指定で暗黙生成されるため、有効な
+   * OIDC token だけで任意の project ID の DO を量産できる — projectStub 到達前の
+   * request-level 制限で生成レートを有界にする。
    */
   readonly LEASE_RATE_LIMIT?: RateLimit;
   /**
    * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
-   * (AUTH_SPEC §3)。コード付き start は事前検証の D1 読みを
-   * 伴う未認証面(検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルに
-   * ならない — 制限は資源保護)。プレーンな start は制限なし
-   * (ログイン導線 — サーバー側の状態・外部呼び出しを持たない 302 のみ)。
+   * (AUTH_SPEC §3)。コード付き start は事前検証の D1 読みを伴う未認証面
+   * (検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルにならない —
+   * 制限は資源保護)。プレーンな start は従来どおり制限なし(ログイン導線 —
+   * サーバー側の状態・外部呼び出しを持たない 302 のみ)。
    */
   readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
   /**
@@ -900,7 +899,6 @@ export class ProjectChainDO extends DurableObject<Env> {
    * DO → R2 退避(permit 下 = 全表が一貫)。読み出しと書き込みは do-snapshot.ts。
    * census(AUTH_SPEC §12-8 の判定)は既存の meter と純関数を共有する(§12-8 の
    * 警告行への接続 — hosted-ops.md §2-C。警告行そのものの文言・1 回規律は変えない)。
-
    * 退避の失敗は静的コードで返す(次回スイープで再試行)。
    */
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(cron のスイープがスタブ経由で呼ぶ)

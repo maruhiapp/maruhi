@@ -1,5 +1,5 @@
 // `maruhi sync init <target>`: リポジトリ設定(`maruhi.sync.json`)の生成
-// (裁定 F)。
+// (SY2 第 2 段 — 裁定 F)。
 //
 // 先例は `maruhi project anchor`(anchor.ts): 非機密の設定を **JSON として
 // stdout に出し**、利用者がリダイレクトしてコミットする。ファイルは書かない
@@ -40,7 +40,7 @@ export interface SyncInitInput {
   readonly command: string | undefined;
   readonly tokenEnvironment: string | undefined;
   readonly tokenName: string | undefined;
-  /** push 直後の同期(`--on-push apply|workflow`)。 */
+  /** push 直後の同期(`--on-push apply|workflow` — 第 3 段)。 */
   readonly onPush: string | undefined;
   /** `--on-push workflow` の workflow ファイル名(`--workflow`)。 */
   readonly workflow: string | undefined;

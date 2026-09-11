@@ -8,7 +8,7 @@
 // /invite と共有する枠・余白・確認コードの見せ方)。ロゴは自己配信 SVG
 // (`img-src 'self'`)。どちらも apps/web のビルド出力として同じ Worker から配信
 // される(apps/server/wrangler.jsonc の assets — セルフホストでも同梱)。文言は
-// すべて英語(ADR-0017)。裁定は docs/notes/web-design-pass.md §5。
+// すべて英語(ADR-0017)。裁定は docs/notes/web-design-pass.md §5(DP4)。
 //
 // - tokenName は未認証入力として**不活性描画**する(HTML エスケープ +
 //   <code> による承認文言との視覚的分離。書式・マークアップの解釈なし —
@@ -112,7 +112,6 @@ export function renderCliErrorPage(): string {
  * フロー再開リンク(verificationUrl)のみ。副作用ゼロ。
  *
  * `signupPolicy`(AUTH_SPEC §3)で 1 段目の文言を追随させる:
-
  * invite 制下でプレーンなサインアップリンクを案内すると invite-required の
  * 拒否ページへ誘導するだけになる(hosted-design.md §2-2 の「案内文言の追随」)。
  * 表示のみの分岐であり、受理の正はサーバーゲート(§3)のまま。

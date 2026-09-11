@@ -63,7 +63,6 @@ export type OpsBackupAttempt =
       /**
        * 上限超過で退避しない(hosted-ops §4-2)。失敗ではない — 連続失敗カウンタを
        * 触らず、`backup_oversize_projects` だけを点灯させる。
-
        */
       readonly kind: "oversize";
       readonly storageLevel: OpsStorageLevel;

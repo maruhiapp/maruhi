@@ -398,7 +398,6 @@ export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns,
 
 // ---------------------------------------------------------------------------
 // 運用(docs/notes/hosted-ops.md §6)。監査ログではない**運営限定の可変状態**
-
 // (hosted-design.md §5-5 — 監査と運用ログを混ぜない)。いずれの表もリクエスト
 // 由来の識別子のうちプロジェクト ID 以外を持たない(ops_backups の project_id は
 // `projects` 表と同じ運営ストア内の参照で、退避オブジェクトのキーには載せない)。

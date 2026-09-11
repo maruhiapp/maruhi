@@ -49,9 +49,10 @@ export interface StoredToken {
   readonly userId: string;
   readonly tokenId: string;
   /**
-   * 発行時に固定された有効期限(AUTH_SPEC §6)。期限接近の事前警告
-   * (裁定 CL — 無通信のローカル判定)に使う非機密メタデータ。古いログインが
-   * 書いたレコードには無い(欠落 = 警告なしで動く。再ログインで付く)。
+   * 発行時に固定された有効期限(AUTH_SPEC §6 — W3a)。期限接近の事前警告
+   * (W3a 裁定 CL — 無通信のローカル判定)に使う非機密メタデータ。W3a より前の
+   * ログインが書いたレコードには無い(欠落 = 警告なしで従来どおり動く。
+   * 再ログインで付く)。
    */
   readonly expiresAtMs?: number;
 }
@@ -332,7 +333,7 @@ export function parseStoredToken(json: string): StoredToken | null {
       nonEmptyString(value["userId"]) &&
       nonEmptyString(value["tokenId"])
     ) {
-      // expiresAtMs は後方互換の optional(裁定 CL): 欠落・数値以外は
+      // expiresAtMs は後方互換の optional(W3a 裁定 CL): 欠落・数値以外は
       // 「不明」に畳む(警告が出ないだけで、レコードを壊れ扱いにしない)
       const expiresAtMs = value["expiresAtMs"];
       return {

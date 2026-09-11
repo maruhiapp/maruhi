@@ -9,8 +9,8 @@
 //   SideNav が AppShell 生成のドロワーへ移る(スキップリンク・main ランドマークも AppShell)
 // - ページ = `table-page` / `LayoutHeaderWithActions`: Layout(auto)の header スロットに
 //   戻りリンク + h1 + 説明(+ タブ)、content スロットに本文。ページ全体がスクロールする
-//   (header は固定しない — 見出しと本文を分ける線を引かず余白で分ける。固定 header は
-//   線なしでは本文と重なって読めないので固定もやめる)
+//   (header は固定しない — DP3 改訂 5: 見出しと本文を分ける線を引かず余白で分ける。固定
+//   header は線なしでは本文と重なって読めないので固定もやめる)
 // - サインイン = `astryx template login`: Center(ビューポート全高)+ ロゴ + Card(見出し・説明・主ボタン)
 //
 // セッション状態(`GET /auth/me`)はシェルが 1 か所で持つ。401 は全画面で同じサインイン
@@ -19,8 +19,8 @@
 // POST /auth/logout + CSRF ヘッダー(api.ts が一律付与)。表示規律の但し書き
 // (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
 //
-// 2 層構造: `DashboardLayout` は pathless の親ルート(routes.ts の dashboardShellRoute)
-// の部品で、セッション状態 + AppShell + SideNav を持ち
+// 2 層構造(DP3 改訂 11): `DashboardLayout` は pathless の親ルート
+// (routes.ts の dashboardShellRoute)の部品で、セッション状態 + AppShell + SideNav を持ち
 // `Outlet` に子ルートを描く。画面間の遷移で再マウントされないので、/auth/me の再取得・
 // 「Checking your session」の再表示・サイドバーの折りたたみ状態の消失が起きない。
 // `DashboardShell` は各画面が使うページの枠(Layout の header = 見出し、content = 本文)。
@@ -65,13 +65,13 @@ import type { Me } from "./types.ts";
 /** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
 type ShellDestination = "projects" | "tokens" | "account";
 
-/** 親階層(パンくずの先頭。現在地はプロジェクトの短縮 ID か title)。 */
+/** 親階層(パンくずの先頭。現在地はプロジェクトの短縮 ID か title — 改訂 7 で `Breadcrumbs` に)。 */
 interface BackLink {
   label: string;
   href: string;
 }
 
-// ブランド資産(apps/web/public)。反転版 = 朱の円盤に白抜きの「秘」= favicon と同形。
+// ブランド資産(DP1 — apps/web/public)。反転版 = 朱の円盤に白抜きの「秘」= favicon と同形。
 // サイドバー見出しとサインイン画面で同じファイルを使う。色はテーマに追随せず
 // 朱で固定(ブラウザのタブの favicon と同じ見え方)
 const LOGO_INVERTED_SRC = "/logo-inverted.svg";
@@ -84,7 +84,7 @@ const SIGN_IN_LOGO_PX = 40;
 // 収まる
 const CONTENT_WIDTH = 1200;
 
-// 区切りの規律(裁定 O): 見出し・節・本文の境界は線でなく余白(SECTION_GAP)で
+// 区切りの規律(DP3 改訂 5 — 裁定 O): 見出し・節・本文の境界は線でなく余白(SECTION_GAP)で
 // 示す。線は集合の内側(表の行・監査行の hairline)と、タブ行(TabList hasDivider — タブの
 // 下線が header と本文の唯一の境界を兼ねる)だけ
 

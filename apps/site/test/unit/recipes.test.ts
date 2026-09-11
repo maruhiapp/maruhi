@@ -1,10 +1,12 @@
 // docs/deploy-targets.mdx のレシピ(docs/notes/integration-options.md §3 裁定 H)を**ページの本文から
-// そのまま切り出して実行**し、「書いた文言」と「検査対象」を一致させて docs の漂流を構造で防ぐ。固定するのは:
+// そのまま切り出して実行**し、DP5 の golden と同じく「書いた文言」と「検査対象」を一致させ、docs の漂流を
+// 構造で防ぐ。固定するのは:
 //   1. 平文の値は外部コマンドの argv に一切現れず、`set -x` のトレースにも出ない(`ps` / シェル履歴 — 裁定 C)
 //   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel / gh = 変数ごとに値 + 改行)
 //   3. 名前に値が無いときは何も送らずに失敗する(wrangler の JSON null = 削除を決して作らない)
 //   4. POSIX sh で書かれている(dash / bash / zsh のうち導入済みのもので同じ結果)
-// ベンダー CLI と maruhi は shims/ の偽コマンド(argv と stdin を記録するだけ)。jq が無い環境ではスキップする。
+// ベンダー CLI と maruhi は shims/ の偽コマンド(argv と stdin を記録するだけ)。実アカウントでの通し確認は
+// 所有者の人間タスク。jq が無い環境ではスキップする(CI の ubuntu には入っている)。
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

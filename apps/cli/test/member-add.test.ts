@@ -1,6 +1,14 @@
-// `maruhi member add`(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 / §15)の
-// 統合テスト。受諾ブロックからの add_member 生成、§6.5 の FP 儀式、全環境 ×
-// 全エポックのバックフィルと、中断からの再開・旧鍵ラップの修復経路を固定する。
+// `maruhi member add`(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 / §15)の統合テスト。
+//
+// 固定する性質:
+//  1. add_member は一覧の受諾ブロックから組む(鍵・user_id。role は招待行から)。
+//     §6.5 の独立検証・発行ピン突合・FP 儀式(--expect-fingerprint / 最終語
+//     再入力 / エージェント拒否)が追記の前に立つ
+//  2. バックフィル: 全環境 × 全エポックを新メンバーへラップし、409 = 登録済みで
+//     冪等に再開する(既に同一鍵で在籍 → 追記スキップ)
+//  3. 再追加(過去在籍が別鍵)では 409 スロットを削除 → 再登録で修復する
+//     (鍵履歴ゲート — 同一鍵の再実行では削除しない)
+//  4. duplicate-member-key の早期検査・受諾鍵不一致の在籍検出
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -612,8 +620,9 @@ describe("maruhi member add", () => {
 
   it("409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
     // 「過去に別鍵で在籍 + 直前の member add が現行鍵で部分完了」の再実行。
-    // 鍵履歴ヒューリスティックは stale を疑うが、409 が保存済み enc 公開鍵
-    // (= 現行鍵)を運ぶため厳密比較で登録済みと判定できる(AUTH_SPEC §12-6 追補)
+    // 鍵履歴ヒューリスティックは stale を疑う(旧判定なら誤削除)が、409 が
+    // 保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で登録済みと判定できる
+    // (AUTH_SPEC §12-6 追補)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },

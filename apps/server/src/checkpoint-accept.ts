@@ -99,7 +99,6 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
  * 1 環境タプルの受理時点突合(§6.4): tombstone(environment-deleted)→
  * 最新マニフェストとの一致(manifest-mismatch — 実在しない先行
  * manifest_version の公証もここで落ちる)→
-
  * values_digest。通過したら保存済みの値列挙(スナップショット保存の材料)を
  * 返す。環境のチェーン存在は合意規則(unknown-environment)が先に保証して
  * いる前提 — チェーンに在るのにデータ行が無いのは複合受理の原子性違反

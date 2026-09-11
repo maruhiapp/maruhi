@@ -1,6 +1,10 @@
-// install script(packaging/install.sh)と Homebrew formula が、shared.ts の TARGETS・
-// build-binaries.ts のアーカイブ命名・formula のプラットフォーム対応付けという
-// 3 つの「表の複製」からズレていないことを固定する(実インストールの検証は packaging/install-test.sh)。
+// install script(packaging/install.sh)と Homebrew formula の、対象表・命名規約に
+// 対する追従を固定する。
+//
+// 実インストールの検証は packaging/install-test.sh(実 OS 4 種 ×
+// .github/workflows/installer.yml)が行う。ここで押さえるのは、そこへ届く前に
+// 静かにズレうる「表の複製」— shared.ts の TARGETS、build-binaries.ts の
+// アーカイブ命名、formula のプラットフォーム対応付け — の 3 点。
 
 import { readFileSync } from "node:fs";
 

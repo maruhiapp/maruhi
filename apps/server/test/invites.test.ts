@@ -1,8 +1,15 @@
-// 招待 API(AUTH_SPEC §15)の統合テスト。認可・存在秘匿・受諾の判定順
-// (404 → 410 → 422 → CAS)を理由コードごとに固定し、受諾署名(CRYPTO_SPEC §6.5)は
-// @maruhi/crypto の実署名で改竄・鍵すり替え・別人署名が 422 に落ちることを検証する。
-// invite.* 監査(AUDIT_SPEC §3.2)はレコード操作と同一 batch で書かれ、CAS 敗北時に
-// 増えないことを D1 直読で確認する。
+// 招待 API(AUTH_SPEC §15)の統合テスト。
+//
+// - 認可(トークンスコープ admin × チェーン role admin 以上 / role=admin は
+//   owner のみ)、存在秘匿(非メンバー 404)、受諾の判定順(404 → 410 → 422 →
+//   CAS)を理由コードごとに固定する
+// - 受諾署名(CRYPTO_SPEC §6.5)は @maruhi/crypto の実装で実署名を作る。
+//   サーバーは signed_bytes を保存行 + 呼び出し主体から再構成するため、
+//   リンク改竄(別プロジェクト・別トークン)・鍵すり替え・別人の署名は
+//   すべて 422 に落ちることを実データで検証する
+// - invite.* 監査(AUDIT_SPEC §3.2)がレコード操作と同一 batch で書かれ、
+//   CAS 敗北時に監査行が増えないこと(changes() ガード)を D1 直読で検証する
+
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -85,6 +92,7 @@ describe("invite issue", () => {
   });
 
   it("role=admin invites are owner-only (admin can issue member invites)", async () => {
+    // owner は admin 招待を発行できる
     await issueInvite(fixture, OWNER, "admin");
     // member を admin へ昇格(change_role は owner 操作)
     await appendOperation(fixture, OWNER, {

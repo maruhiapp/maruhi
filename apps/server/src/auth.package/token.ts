@@ -34,7 +34,7 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
   if (record === null || !constantTimeEqual(tokenHash, record.tokenHash)) {
     return anonymousPrincipal;
   }
-  // 期限判定(AUTH_SPEC §6 — 裁定 CE)。null(旧無期限行)は**期限切れとして
+  // 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)。null(旧無期限行)は**期限切れとして
   // 扱う**(fail-closed): 移行(既存 NULL 行への expires_at 再アンカー)を適用
   // せず新コードだけをデプロイした場合でも、無期限トークンが復活しない。
   // 再ログイン = 同名ローテーションが expires_at 付きの行を発行して自己回復する
@@ -42,7 +42,7 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
   if (expiresAtMs === null || expiresAtMs <= nowMs) {
     return anonymousPrincipal;
   }
-  // 判定を通過した主体は常に非 null の期限を持つ(裁定 CI — /auth/me の自己開示)
+  // 判定を通過した主体は常に非 null の期限を持つ(W3a 裁定 CI — /auth/me の自己開示)
   return {
     kind: "token",
     userId: record.userId,
@@ -83,7 +83,6 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
         // 同一 (user, name) は再発行 = ローテーション(旧行の失効と新行の挿入を
         // atomic batch で行う)。別名の新規発行は repo の条件付き INSERT で
         // ユーザー上限と同じ文に畳む: サービス側の count → insert は
-
         // 異名の並行発行が同じ under-limit を観測して上限を超えられる
         const admitted = yield* tokens.issueForUserWithinLimit(
           {

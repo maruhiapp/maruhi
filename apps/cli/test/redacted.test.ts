@@ -53,7 +53,7 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
-/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6: 2099-01-01T00:00:00Z)。 */
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
 
 let servers: MockServer[] = [];
@@ -453,7 +453,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(message).not.toContain("if you have your recovery code");
     // エントリ名はエスケープ表記である旨まで書く(書かないと名前を探せない)
     expect(message).toContain("the unescaped form");
-    // 本当に壊れているものは破損扱い(削除の出口を示す)
+    // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
     // 現行の形が揃っているのに読めない = 中身の破損(消してよい)
     expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
@@ -775,7 +775,7 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
  * 「なぜここで剥がすか」を実装側のコメントに残し、この表を更新すること。
  */
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
-  // ワイヤ境界: lease リクエストの oidcToken フィールド(AUTH_SPEC §14-2)
+  // ワイヤ境界: lease リクエストの oidcToken フィールド(A3 — AUTH_SPEC §14-2)
   "ci-lease.ts": 1,
   // HPKE ラップの入力(暗号境界)
   "dek-wrap.ts": 1,
@@ -797,7 +797,7 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // --show-token の発行時端末表示(AUTH_SPEC §6 の 1 箇所 — 値表示ゲート
   // 通過後。裁定 CK)
   "login.ts": 1,
-  // 自 OIDC トークンの claims 読み出し(payload セグメントの decode)
+  // 自 OIDC トークンの claims 読み出し(payload セグメントの decode — A3)
   "oidc-github.ts": 1,
   // 復号の鍵入力(暗号境界)
   "pull.ts": 1,

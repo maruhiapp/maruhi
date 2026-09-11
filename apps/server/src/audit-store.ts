@@ -777,7 +777,6 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   filter("event = ?", query.event);
   if (query.eventPrefix !== null) {
     // 前置一致は LIKE を使わない: LIKE だと入力の % / _ が
-
     // ワイルドカードとして働き、フィルタが名前空間の指定でなくなる。
     // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
     where = withCondition(where, "substr(event, 1, ?) = ?", [

@@ -423,7 +423,6 @@ async function appendWithFixedWindow(
   const suppressed = counted?.suppressedCount ?? 0;
   if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
     // 個別行は落とすが、抑制を黙って行わない: 抑制件数が
-
     // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
     // 抑制の規模が読め、書き込みは件数に対して対数的に有界
     if (isSuppressionMilestone(suppressed)) {

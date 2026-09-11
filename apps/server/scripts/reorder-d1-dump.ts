@@ -2,7 +2,6 @@
 // docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md "Restoring a D1 export")。
 //
 // リストア演習(hosted-ops.md §5-3)で判明した実機の挙動:
-
 // - export はテーブルを作成順に「CREATE TABLE → その表の INSERT」の塊で並べるため、
 //   外部キーの親表(users)より先に子表(api_tokens 等)の INSERT が現れる
 // - 先頭の `PRAGMA defer_foreign_keys=TRUE` は `wrangler d1 execute --file` の

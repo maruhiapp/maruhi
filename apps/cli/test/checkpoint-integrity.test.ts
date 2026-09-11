@@ -1,5 +1,5 @@
 // チェックポイント整合のクライアント規則 2(CRYPTO_SPEC §6.3 — 値の非後退。
-// スナップショット同梱検証)の結線テスト。
+// session-27 §13-5 のスナップショット同梱検証)の結線テスト。
 //
 // 検証の柱:
 //  1. 受理正例: 列挙一致・checkpoint 後の前進 version(基準 epoch 以上)・
@@ -390,7 +390,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
   });
 });
 
-describe("規則 2 の拒否経路(全件が検証済みデータとチェーン公証の矛盾)", () => {
+describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済みデータとチェーン公証の矛盾)", () => {
   async function expectRejected(
     overrides: PullOverrides,
     fragment: string,

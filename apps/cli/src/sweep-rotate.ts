@@ -46,7 +46,7 @@ export function sweepRotateFor(
         reason: mode === "force" ? reason : undefined,
         forceNewEpoch: mode === "force",
         // 全環境走査は移行操作ではない — マニフェスト欠落の許容は明示の
-        // `maruhi env rotate <env> --init-manifest` に限る
+        // `maruhi env rotate <env> --init-manifest` に限る(session-27 §14)
         initManifest: false,
         signerUserId: context.session.userId,
         signingKeyPair: context.masterKeys.sigKeyPair,

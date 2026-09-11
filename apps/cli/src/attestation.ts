@@ -203,7 +203,7 @@ export function reconcileDistributedAttestations(input: {
     // キーはワイヤの全フィールド: 部分キーだと、悪意あるサーバーが 1 フィールド
     // だけ書き換えたレコードを新集合に混ぜて本物の持ち越し分(first.future)を
     // キー衝突で捨てさせられる(偽側は署名検証で無言 skip → 持ち越し照合が
-    // 空振りし、裁定 AA が閉じた omission bypass が再び開く)
+    // 空振りし、session-37 裁定 AA が閉じた omission bypass が再び開く)
     const seen = new Set<string>();
     const union = [...advanced.attestations, ...first.future].filter((attestation) => {
       const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
@@ -256,8 +256,8 @@ export function submitHeadAttestationIfAdvanced(input: {
       // しないのは、床が missing / corrupt の初回・破損時に同一 seq・異ハッシュの
       // 別チェーン(equivocation)を見せられた場合、この端末の申告経由で他
       // メンバーが分岐を検出する経路まで閉じてしまうため。seq 後退(必然的に
-      // 異ハッシュ)も提出し、サーバーの 409
-      // AttestationRegression が床破損・並行 CLI の徴候として警告に浮かぶ
+      // 異ハッシュ)も提出し、サーバーの 409 AttestationRegression が床破損・
+      // 並行 CLI の徴候として警告に浮かぶ
       return;
     }
     const signed = yield* Effect.promise(() =>

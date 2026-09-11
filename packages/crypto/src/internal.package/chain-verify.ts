@@ -494,7 +494,7 @@ async function applyGrantServer(
 ): Promise<ChainInvalidReason | null> {
   // 認可段の検査順序(§6.2。ベクターで固定): role 規則 →
   // 再 grant 規則(§6.3)→ サーバー鍵の重複。FP 整合は payload 自体の
-  // 自己整合(§9)であり role の直後に検査する
+  // 自己整合(§9)であり role の直後に検査する(従来位置を維持)
   if (actorRole !== "owner") {
     return "insufficient-role";
   }
@@ -504,7 +504,7 @@ async function applyGrantServer(
   if (encodeHex(digest.slice(0, FINGERPRINT_BYTES)) !== entry.payload.serverKeyFingerprintHex) {
     return "invalid-payload";
   }
-  // 同一サーバー鍵への再 grant の二層判定:
+  // 同一サーバー鍵への再 grant の二層判定(所有者裁定):
   // 開示スコープはスコープ拡大(旧 ⊆ 新)のみ受理する。縮小を許すと revoke_server +
   // rotate_epoch(§7 の全環境ローテーション義務)を迂回して「開示を止めたつもり」に
   // なれてしまうため、縮小は必ず失効経路を通す。拡大は未開示環境を足すだけなので無害。
@@ -596,7 +596,7 @@ function applyRotateEpoch(
   if (environment === undefined) {
     return "unknown-environment";
   }
-  // エポックは環境ごとのカウンタで必ず +1。
+  // エポックは環境ごとのカウンタで必ず +1(所有者裁定・案 3)。
   // 巻き戻し(削除済みメンバーが保持する旧 DEK で新しい値が暗号化される)、
   // 重複、ジャンプ(member 権限の 1 署名で safe integer 上限まで飛ばして
   // 以後のローテーションを不能にする DoS)をすべて拒否する

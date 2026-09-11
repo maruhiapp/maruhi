@@ -400,7 +400,7 @@ export type ValueSignatureRejectReason =
   | "chain-head-state-mismatch";
 
 /**
- * メタステートメントの 422 理由: 値署名の 3 語彙に、仕様が
+ * メタステートメントの 422 理由: 値署名の 3 語彙(session-12 §6-7)に、仕様が
  * エラー名を明示するレイアウト v2 の 2 理由を加える — `layout-regression` =
  * v2 変数への v1 後続(レイアウト単調性 — §12-5)、`unsupported-layout` =
  * 申告 layoutVersion がサポート範囲超過(「古いサーバー × 新しいクライアント」の
@@ -674,7 +674,6 @@ export const requireMemberState = (
  * 環境の現エポック = チェーン導出値(CRYPTO_SPEC §6.2 / §6.3)。
  * 環境の存在自体がチェーン導出(`create_environment`)なので「未観測なら
  * 初期値 1」の既定値は持たない。データ行は複合受理(§12-4)でチェーンエントリと
-
  * 原子的に作られるため、アクティブなデータ行があるのにチェーンに環境がないのは
  * 不変条件違反(ストレージ / 実装バグ)であり defect として落とす。
  */

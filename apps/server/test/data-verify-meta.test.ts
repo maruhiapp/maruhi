@@ -426,7 +426,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       metaVersion: 2,
       authorUserId: OWNER,
     });
-    // 削除済み環境への pull は 404(tombstone)
+    // 削除済み環境への pull は従来どおり 404(tombstone)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(404);
   });
@@ -539,8 +539,8 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
 
   it("accepts the delete statement even at the meta version cap (deleted は上限対象外)", async () => {
     // 上限で削除まで遮断すると、rename 連打で上限到達したリソースがどの role
-    // でも恒久的に削除不能になる。tombstone は連鎖の
-    // 終端で追加行は高々 1 行なので上限の対象外とする
+    // でも恒久的に削除不能になる。tombstone は連鎖の終端で追加行は高々 1 行
+    // なので上限の対象外とする
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);

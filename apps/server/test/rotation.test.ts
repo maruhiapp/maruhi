@@ -1,5 +1,5 @@
 // 要ローテーション検出(AUDIT_SPEC §4.1)+ フラグビュー / 取り下げ(§6 / §7)+
-// 受信者鍵の整合(AUTH_SPEC §12-6 — 409 の保存済み受信者 enc 公開鍵と再追加時掃除)の
+// B1a 追補(AUTH_SPEC §12-6 — 409 の保存済み受信者 enc 公開鍵と再追加時掃除)の
 // 統合テスト。@cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と
 // DO SQLite を検証する。
 //
@@ -19,7 +19,7 @@
 //   server.lease_issued(発行時点のアクティブ変数)、拡大再 grant は
 //   「環境ごとの開示窓」(拡大 seq 起点 — 最初のスコープ固定でも区間開始への
 //   繰り上げでもない)
-// - §12-6: 409 が占有ラップの保存済み enc 公開鍵を運ぶ / add_member 受理時の
+// - B1a: 409 が占有ラップの保存済み enc 公開鍵を運ぶ / add_member 受理時の
 //   旧鍵宛ラップ掃除(dek.deleted actor = system + 原因 payload。同一鍵の
 //   再追加は掃除しない・他メンバーのラップは触らない)
 
@@ -628,7 +628,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       basis: "readable",
       targetServerKeyFingerprintHex: key.fingerprintHex,
     });
-    // 最初のスコープの環境も検出される
+    // 最初のスコープの環境は従来どおり検出される
     expect(byVariable.get(VAR)).toMatchObject({ environmentId: ENV, basis: "readable" });
     // 拡大前に削除された変数は窓と重ならない(窓を区間開始まで繰り上げない —
     // 繰り上げると grant #1 と拡大の間に存在した preVar へ誤検出が出る)
@@ -636,7 +636,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
   });
 });
 
-describe("受信者鍵の整合(AUTH_SPEC §12-6)", () => {
+describe("B1a 追補(AUTH_SPEC §12-6)", () => {
   it("上書き禁止 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     // 既存スロット (ENV, 1, MEMBER) への追記は 409 + 保存済み enc 公開鍵

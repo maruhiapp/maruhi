@@ -154,8 +154,7 @@ export function ensureSelfAuditAccess(
 }
 
 /**
- * トークン管理面(AUTH_SPEC §6: 一覧 `GET /auth/tokens`・指定失効)の
-
+ * トークン管理面(AUTH_SPEC §6 — W3a: 一覧 `GET /auth/tokens`・指定失効)の
  * 主体条件: セッション主体は可(§5 の許可列挙)、トークン主体は `*` × admin
  * スコープを含む場合のみ。指定失効は §13-2 の鍵素材条件と同水準(スコープ限定
  * トークンの窃取で他のトークンを失効させる可用性攻撃の遮断 — §6)。一覧も同条件

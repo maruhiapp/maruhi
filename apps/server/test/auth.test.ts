@@ -186,7 +186,7 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     expect(response.status).toBe(400);
   });
 
-  it("rejects an oversized code at the wire schema, before any outbound call", async () => {
+  it("rejects an oversized code at the wire schema, before any outbound call (追補 3 A-6)", async () => {
     // code / state クエリの 512 文字上限(api-schema)。超過はワイヤ Schema の
     // 400 で落ち、ハンドラ(= GitHub への code 交換)に到達しない — 到達して
     // いれば fake GitHub 経由で code-exchange-failed になるので、その不在が
@@ -284,7 +284,7 @@ const startWithPayload = (payload: unknown): Promise<Response> =>
   });
 
 /**
- * スクリプトなしページの配信規律: スタイルは自己配信の外部 CSS のみ。ヘッダーと
+ * スクリプトなしページの配信規律(DP4): スタイルは自己配信の外部 CSS のみ。ヘッダーと
  * meta の両方の CSP が style-src / img-src を 'self' に限定し、inline の許可
  * ('unsafe-inline' / ハッシュ)を持たず、HTML にも script / style 要素・style 属性が無い。
  * 参照先(/theme.css / /pages.css)の実配信は apps/web の e2e が固定する。

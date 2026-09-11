@@ -700,7 +700,7 @@ async function verifyDeclaredStatements(
     seenIds.add(statement.variableId);
     if (statement.status !== "declared") {
       // active がここに現れる = 検証済み active ステートメントの値が値付き応答に
-      // 欠けている(§6.3 の値配布要求)。deleted の混入も拒否
+      // 欠けている(値の欠落 G6 — §6.3 の値配布要求)。deleted の混入も拒否
       return {
         kind: "rejected",
         evidence: true,
@@ -803,7 +803,7 @@ function verifyManifestStage(input: {
   readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
-  /** 床のマニフェスト記録(隣接 prev 検証の predecessor。床なし = null)。 */
+  /** 床のマニフェスト記録(隣接 prev 検証の predecessor — M1-A1。床なし = null)。 */
   readonly floorManifest: ManifestFloor | null;
 }): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
   const wireManifest = input.manifest;
@@ -871,7 +871,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   digestEntryOf: (value: T) => ManifestDigestEntry,
   /** 移行経路(--init-manifest)のみ true — 欠落の許容であって検証の緩和ではない。 */
   allowMissingManifest: boolean,
-  /** 床のマニフェスト記録(隣接 prev 検証。床を持たない経路は null)。 */
+  /** 床のマニフェスト記録(隣接 prev 検証 — M1-A1。床を持たない経路は null)。 */
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
@@ -1229,7 +1229,7 @@ export function pullVerifiedEnvironment(input: {
           input.environmentId,
           wire,
           input.allowMissingManifest === true,
-          // 隣接版の prev 検証: 床のマニフェスト記録を predecessor として渡す
+          // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
           input.floor.current()?.manifest ?? null,
           // 応答は input.verified のビューの下で取得された(再同期後の再検証でも
           // 取得時点は変わらない — 規則 2 の良性競合判別の基準)
@@ -1300,8 +1300,8 @@ export function verifyLeaseDistribution(input: {
     // マニフェスト検証は義務(CRYPTO_SPEC §9.1 (5))で、欠落 =
     // 一律拒否(移行許容はない: ワークロードは初期化を行えない — 初期化は
     // メンバーの明示操作 §14)。床由来の prev 検査は適用しない —
-    // ワークロードは床を持たない初回同期クラス(§14.3-3): 署名・digest・
-    // エポック整合・欠落拒否は pull と
+    // ワークロードは床を持たない初回同期クラス(§14.3-3。session-31 §3 M1-A1
+    // の lease 適用外の注記): 署名・digest・エポック整合・欠落拒否は pull と
     // 同水準のまま、predecessor は null(共有検証器の同一性)
     // lease は応答がチェーンを同梱する自己完結形 — 取得ビュー = 同梱チェーンの
     // ヘッドそのもの(基準が取得ビューより新しい形は構造的に存在せず、規則 2 の
@@ -1324,7 +1324,7 @@ export function verifyLeaseDistribution(input: {
     // 基準なし警告(§6.3 SHOULD — 床を持たないクライアントは、値付き配布を
     // 受けた環境に基準 checkpoint が存在しないことを検出したら警告する。
     // 不在の黙認は「このクラスの主要保証 = チェックポイント整合が働いていない」
-    // ことの不可視化になる — 裁定 V)
+    // ことの不可視化になる — session-36 裁定 V)
     const warnings =
       input.verified.history.latestCheckpointFor(input.environmentId) === undefined
         ? [
@@ -1420,7 +1420,7 @@ function verifyAllMetadata(
 /**
  * メタデータのみ pull の床検査(値を運ばない形 — メタ水準の規則 (a)(b) と
  * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)と**環境水準の
- * 床コミット**: チェーンヘッド・環境メタ床・マニフェスト
+ * 床コミット**(session-31 §3 M1-A3): チェーンヘッド・環境メタ床・マニフェスト
  * 床・環境水準エポック観測(§6.3 座標 (ii))を join する。**値床は捏造しない・
  * pull 基準(規則 (c))は前進させない** — 値を読んでいない観測から値水準の
  * 基準を作ると、ローテーション後・再暗号化完了前の正当な旧エポック値を
@@ -1491,7 +1491,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
   readonly environmentId: EnvironmentId;
   /** future head 時の有界再同期(1 回)。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor)。 */
+  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor — M1-A3)。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
   return Effect.map(
@@ -1508,7 +1508,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
           view,
           input.environmentId,
           wire,
-          // 隣接版の prev 検証: metadata-only / value pull の両経路で同一
+          // 隣接版の prev 検証(M1-A1): metadata-only / value pull の両経路で同一
           input.floor.current()?.manifest ?? null,
         ).pipe(
           Effect.flatMap(

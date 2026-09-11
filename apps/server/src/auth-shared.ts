@@ -153,7 +153,6 @@ export function recordLoginFailed(
  * 存在しない)。提示された外部 ID・コード生値は記録しない。固定窓上限つき
  * (拒否の洪水による書き込み増幅の有界化 — バケットは reason 単位)。
  * 運用の「サインアップ拒否の計数」トリップワイヤはこの行を数える。
-
  */
 export function recordSignupDenied(
   reason: SignupDenialReason,

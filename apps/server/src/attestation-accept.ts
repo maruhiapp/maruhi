@@ -1,5 +1,4 @@
 // ヘッド申告の受理(CRYPTO_SPEC §6.4 / §6.6、AUTH_SPEC §16-1)。
-
 //
 // 受理検証の判定順:
 //   1. メンバーシップ(reader 以上 — 非メンバーは not-member → worker が 404。

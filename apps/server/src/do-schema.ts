@@ -439,7 +439,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // audit_events の対象・鍵 FP 索引の部分索引化(監査ログの成長密度対策。
+    // audit_events の対象・鍵 FP 索引の部分索引化(監査ログの成長密度対策 ①。
     // AUDIT_SPEC §5.1 の索引集合は不変で、述語の追加は実装詳細)。
     //
     // ae_target(target_user_id)/ ae_target_fp(target_key_fingerprint)/

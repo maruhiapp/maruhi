@@ -678,7 +678,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     const latest = state.target.latest;
     // 既存変数への値 push は 1-E′ / 3-F の適用外(§12-10 (3) — 効果確認に使える
     // 配布物が値 pull しかなく、書き込み経路へ var.read 監査を持ち込むため)。
-    // 成功はサーバーの CAS + 値署名検証と自床の commitPush が担う
+    // 成功は従来どおりサーバーの CAS + 値署名検証と自床の commitPush が担う
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
       payload: { value: signed.payload },
@@ -1050,9 +1050,8 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
     // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢)。
-    // サーバー echo は突合のみに使い、食い違えば型付きエラーで
-    // 明示する(echo を表示に昇格させると、サーバー申告の座標をユーザーが
-    // 事実として引用しうる)
+    // サーバー echo は突合のみに使い、食い違えば型付きエラーで明示する(echo を
+    // 表示に昇格させると、サーバー申告の座標をユーザーが事実として引用しうる)
     const floorVariable = outcome.floorVariable;
     if (floorVariable.status !== "active") {
       // attemptOnce は常に active の床レコードを組む — ここに来たら内部不整合

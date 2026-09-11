@@ -117,7 +117,8 @@ export class ValueSignatureRejectedError extends Schema.TaggedError<ValueSignatu
 
 /**
  * Reason codes for a 422 on a metadata statement (CRYPTO_SPEC §4.2 /
- * AUTH_SPEC §12-5): the three value-signature reasons (語彙を共有する。state-mismatch はヘッド時点の在籍・鍵束縛・role、prev の形 /
+ * AUTH_SPEC §12-5): the three value-signature reasons (session-12 §6-7 —
+ * 語彙を共有する。state-mismatch はヘッド時点の在籍・鍵束縛・role、prev の形 /
  * 保存 predecessor との不一致、削除後の再ステートメント、active → declared の
  * 遷移を含む)plus two layout-v2 reasons the spec names explicitly:
  *

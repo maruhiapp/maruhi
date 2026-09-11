@@ -1,4 +1,4 @@
-// `maruhi audit`(AUDIT_SPEC §6 / §7)の統合テスト。
+// `maruhi audit`(AUDIT_SPEC §6 / §7 — Phase 2 C1)の統合テスト。
 //
 // 固定する性質:
 //  1. list は監査行を表示し、変数の表示名は検証済みステートメントからのみ解決
@@ -273,7 +273,7 @@ describe("maruhi audit(list)", () => {
     expect(readLine).toContain("read=2 variables");
     // 列挙(payload)は recorded= として 1 行に流し込まない・展開もしない
     expect(readLine).not.toContain("recorded=");
-    // 列挙以外の payload は recorded= に出る(列挙は除く)
+    // 列挙以外の payload は引き続き recorded= に出る(列挙は除く)
     const withMethod = env.logs.find((line) => line.startsWith("seq=5\t"));
     expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
     expect(withMethod).not.toContain('"variables"');

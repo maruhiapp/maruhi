@@ -698,7 +698,7 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(storage.message).toContain("9000000000 bytes");
     expect(storage.message).toContain("reading values");
     expect(storage.message).toContain("deleting");
-    // 他の §12-8 数量上限は一般形のまま
+    // 他の §12-8 数量上限は従来の一般形のまま
     const generic = toCliError(new DataLimitExceededError({ resource: "variables", limit: 1000 }));
     expect(generic.message).toBe("Exceeds a server acceptance limit (variables limit 1000)");
   });
@@ -847,7 +847,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).not.toContain("Warning: the maruhi token expires");
   });
 
-  it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は警告なしで動く", async () => {
+  it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は従来どおり", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([]);
     servers.push(server);
@@ -870,7 +870,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
     expect(server.requests).toHaveLength(0);
 
-    // 期限を持たない旧レコード(expiresAtMs なし)は警告なしで動く
+    // W3a 前のログインが書いた旧レコード(expiresAtMs なし)は警告なしで動く
     const legacyEnv = await makeTestEnv();
     await seedConfig(legacyEnv, { server: server.origin });
     legacyEnv.keychain.set(
@@ -915,7 +915,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Authentication with MARUHI_TOKEN failed");
-    // 無人環境のこの 401 の最有力原因は期限切れ(裁定 CJ)。
+    // 無人環境のこの 401 の最有力原因は期限切れ(W3a 裁定 CJ)。
     // 直し先は env 差し替えであることまで案内する(`maruhi login` 単独の
     // キーチェーン向け案内へ退行させない)
     expect(errors).toContain("expired or revoked");

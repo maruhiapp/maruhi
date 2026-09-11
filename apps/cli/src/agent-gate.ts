@@ -71,7 +71,7 @@ export function ensureSensitiveTerminalAllowed(input: {
 }
 
 /**
- * 一次境界(stdin と stdout が端末か)に落ちた側を名指しする(裁定 G)。
+ * 一次境界(stdin と stdout が端末か)に落ちた側を名指しする(DP5 追補 G)。
  * 「両方が端末ではない」と一括りに言うと、`| less` を外せばよいのか
  * ヒアドキュメントをやめればよいのかが分からない。判定の意味論は不変で、
  * 文面の材料に判定結果をそのまま使うだけ(新しい検査は足していない)。
@@ -90,7 +90,7 @@ export function describeNonTerminal(input: {
 
 /**
  * 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。
- * 文面の順は「何が拒否されたか → なぜ → どうすればよいか」(裁定 G —
+ * 文面の順は「何が拒否されたか → なぜ → どうすればよいか」(DP5 裁定 G —
  * 判定の意味論は不変)。
  */
 function agentRejection(name: string | undefined): CliError {

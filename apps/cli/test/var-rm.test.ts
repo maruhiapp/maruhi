@@ -1,4 +1,4 @@
-// `maruhi var rm`(変数削除)のテスト。
+// `maruhi var rm`(S4 — 変数削除)のテスト。
 //
 // 固定する不変条件:
 //  1. **v2 変数の削除はスキーマ欄・レイアウトの直前 byte-exact 保持**
@@ -45,7 +45,7 @@ let envStatement: WireDistributedEnvironmentStatement;
 let declaredV2: WireDistributedVariableStatement;
 /** v2 active(スキーマ欄付き)。 */
 let activeV2: WireDistributedVariableStatement;
-/** v1 active(スキーマ欄なし)。 */
+/** v1 active(スキーマ欄なし — 従来形)。 */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 

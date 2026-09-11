@@ -1,4 +1,7 @@
-// `effect/unstable/cli` の引数層(ADR-0016 決定 1)。エントリは cli.ts の runCli。
+// `effect/unstable/cli` の引数層(ADR-0016 決定 1 — 第 1 段階: pull / run /
+// env create、第 2 段階: env rotate / diff、server、invite、member、
+// 第 3 段階: push、config、key、project、rotation、audit、login、logout)。
+// エントリは cli.ts の runCli。
 //
 // `env` / `server` / `invite` / `member` は**真の入れ子サブコマンド**
 // (ADR-0016 決定 6): 宣言が操作ごとに分かれるため、「その操作に適用されない
@@ -364,7 +367,7 @@ const ciRunConfig = {
 };
 
 /**
- * `maruhi ci sync <target>` の宣言(裁定 D): `ci run` と同じく
+ * `maruhi ci sync <target>` の宣言(SY2 第 2 段 — 裁定 D): `ci run` と同じく
  * config ファイルを読まない(server / project はフラグで必須)。環境は同期設定の
  * ターゲットが決めるので `--env` は無い。`--yes` は手元の apply と同じ語。
  */
@@ -1368,7 +1371,7 @@ function projectVerify(
  * チェックポイントの鮮度(7 日超・未発行 = genesis から 7 日超)を検出したら
  * 提案を **Note 1 行**で出す。提案の判定失敗でコマンド本体の成功を覆さない
  * (提案は SHOULD の付随)。push ではアンカー更新の提案を
- * 同じ 1 行の末尾に同梱する(裁定 C — 2 行に分けない)。
+ * 同じ 1 行の末尾に同梱する(DP5 裁定 C — 2 行に分けない)。
  */
 function proposeCheckpointRefresh(
   context: Pick<ProjectContext, "client" | "verified" | "session">,
@@ -1611,7 +1614,7 @@ function ciSyncCommand(values: {
 
 /**
  * `--environments dev,prod` の解釈(grant では必須 — 最小開示の既定として
- * 環境は明示指定)。空要素は書き間違いとして拒否する。
+ * 環境は明示指定。session-22 §2 の裁定)。空要素は書き間違いとして拒否する。
  */
 function parseEnvironmentsFlag(
   value: string | undefined,
@@ -2179,7 +2182,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       const io = yield* CliIo;
       // 同期設定は**ネットワークより先に**読む: 壊れたファイル・明示された
-      // 別プロジェクトの設定の検出を push の後ろに置かない(裁定 B と同じ)
+      // 別プロジェクトの設定の検出を push の後ろに置かない(SY2 第 2 段 2b の裁定 B と同じ)
       const syncSetup = yield* loadPushSyncConfig({
         config: values.config,
         noSync: values["no-sync"],
@@ -2427,7 +2430,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // **bare `maruhi audit` = list**。
+  // **bare `maruhi audit` = list**(現行仕様の維持 — 第 3 段階の裁定)。
   // 親自身が list の宣言とハンドラを持つ(実測: ハンドラ付き親 +
   // withSubcommands で、bare 親はハンドラを実行し、サブコマンド指定時は
   // 子だけが走る。不明なサブコマンドは UnknownSubcommand で exit 2)
@@ -3279,7 +3282,8 @@ export async function runEffectCli(
   // の `-h` は cmd のもので、maruhi へのヘルプ要求ではない
   const terminator = argv.indexOf("--");
   const ownArgs = terminator < 0 ? argv : argv.slice(0, terminator);
-  // **bare `maruhi`(引数なし)はヘルプ要求として扱う**(ADR-0016 追記):
+  // **bare `maruhi`(引数なし)はヘルプ要求として扱う**(第 3 段階の裁定 —
+  // ADR-0016 追記):
   // 使い方 + コマンド一覧を exit 0 で出す。出力先は stderr
   // (決定 9: stdout はコマンドの出力だけ — `maruhi --help` と同じ扱い)。
   // bare の**サブコマンド段**(`maruhi env` 単体)はこれに含めない: そちらは

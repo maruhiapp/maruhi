@@ -1,6 +1,9 @@
 // ダッシュボード消費面のスイープ(裁定 BW — docs/notes/session-43.md §11)。
+//
 // 目録(src/dashboard/endpoints.ts)を登録済み HttpApi(api-schema — 値 import は
-// テストプロセスのみ)と突合し、「パス整合」と「セッション許可」を fail-loud にする。
+// テストプロセスのみ)と突合し、「パス整合」と「セッション許可」を fail-loud に
+// する。serving-topology.test.ts(サーバー側の run_worker_first 被覆)の
+// クライアント側対応物。
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 

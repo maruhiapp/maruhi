@@ -13,7 +13,7 @@
 //  5. **前段は 1 回だけ**(チェーン同期は 1 回)で、1 つ目の pull が有界再同期で
 //     前進させたビューを 2 つ目の pull が引き継ぐ
 //  6. 環境水準の床(メタ・マニフェスト・座標 (ii))はコミットするが、値床と
-//     規則 (c) の pull 基準は捏造しない(チェーン床のヘッドは pull ごとに前進)
+//     規則 (c) の pull 基準は捏造しない(M1-A3 — チェーン床のヘッドは pull ごとに前進)
 //  7. 順に読むことによる標本のずれを、**差分の有無によらず** stderr で開示する
 //     (差分ゼロこそ、ずれに覆されうる結論)
 //  8. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
@@ -333,7 +333,7 @@ describe("maruhi env diff", () => {
     ]);
   });
 
-  it("環境水準の床はコミットし、値床・規則 (c) の pull 基準は捏造しない", async () => {
+  it("環境水準の床はコミットし、値床・規則 (c) の pull 基準は捏造しない(M1-A3)", async () => {
     const env = await startEnv(await handlersFor(["ONLY_DEV"], ["ONLY_PROD"]));
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
@@ -467,7 +467,7 @@ describe("maruhi env diff", () => {
     // 巻き戻しを次回以降に検出できない(pull / push は同じヘッドを書いている)
     const floor = await loadFloor(env);
     expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain.hashes[2] });
-    // 値を読んでいないので値床は作らない(環境水準の観測のみ)
+    // 値を読んでいないので値床は作らない(環境水準の観測のみ — M1-A3)
     expect(floor.environments[DEV]?.pullEpoch).toBe(0);
     expect(floor.environments[DEV]?.variables).toEqual({});
   });
@@ -543,7 +543,7 @@ describe("maruhi env diff", () => {
     expect(env.errors.some((line) => line.includes("No master key"))).toBe(false);
   });
 
-  describe("スキーマ考慮(設計文書 §1-5 の required 軸)", () => {
+  describe("スキーマ考慮(S4 — 設計文書 §1-5 の required 軸)", () => {
     /** レイアウト v2 のステートメント(status / schema 指定形)。 */
     function schemaVariableOf(
       environmentId: string,
@@ -590,7 +590,7 @@ describe("maruhi env diff", () => {
       expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
       expect(env.logs).toContain("  REQ_DECL (required, declared — no value set)");
       expect(env.logs).toContain("  OPT_DECL (optional, declared — no value set)");
-      // v1(スキーマ欄なし)は名前だけ(required を捏造しない)
+      // v1(スキーマ欄なし)は従来どおり名前だけ(required を捏造しない)
       expect(env.logs).toContain("  V1_ONLY");
       // description は diff 出力に出さない(§2 の消費点規律)し、
       // 「verified」の語も使わない(§14.3 の表示規律)
@@ -653,7 +653,7 @@ describe("maruhi env diff", () => {
       expect(env.logs).toContain(`  SHARED_REQ — ${DEV}: required / ${PROD}: optional`);
       expect(env.logs).toContain(`  SHARED_V1 — ${DEV}: required / ${PROD}: no schema (layout v1)`);
       expect(env.logs.some((line) => line.includes("SHARED_SAME —"))).toBe(false);
-      // 両方にある件数は変わらない(契約の食い違いは共有名の部分集合)
+      // 両方にある件数は従来どおり(契約の食い違いは共有名の部分集合)
       expect(env.logs).toContain(
         "Variables in both: 4 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
       );

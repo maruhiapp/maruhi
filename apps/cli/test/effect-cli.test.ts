@@ -452,7 +452,7 @@ describe("終了コードは Effect の機構に載る", () => {
   });
 });
 
-describe("env の入れ子サブコマンド(ADR-0016 決定 6)", () => {
+describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)", () => {
   it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     // 宣言が操作ごとに分かれているので、未宣言フラグとして構造的に落ちる
     for (const argv of [
@@ -597,8 +597,8 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6)", () => {
   it("先頭の空引数は不明なコマンドとして落ち、無関係なフラグの指摘を重ねない", async () => {
     // 先頭の "" はコマンド名として解決できない(root の UnknownSubcommand)。
     // このときフラグは root の宣言と突き合わされているので、後続のフラグを
-    // 不明扱いで並べない(formatErrors の畳み込み。空のトークンも 1 つの引数
-    // として数える)
+    // 不明扱いで並べない(formatErrors の畳み込み — 第 3 段階 ④。空のトークン
+    // も 1 つの引数として数える)
     const { env } = await startEnv();
     expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
       2,
@@ -664,7 +664,7 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6)", () => {
   });
 });
 
-describe("server の入れ子サブコマンド(ADR-0016 決定 6)", () => {
+describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ②)", () => {
   it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["server", "revoke", "--environments", "dev"],
@@ -761,7 +761,7 @@ describe("server の入れ子サブコマンド(ADR-0016 決定 6)", () => {
   });
 });
 
-describe("invite の入れ子サブコマンド(ADR-0016 決定 6)", () => {
+describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ③)", () => {
   it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["invite", "list", "--role", "member"],
@@ -841,7 +841,7 @@ describe("invite の入れ子サブコマンド(ADR-0016 決定 6)", () => {
   });
 });
 
-describe("member の入れ子サブコマンド(ADR-0016 決定 6)", () => {
+describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ④)", () => {
   it("その操作に無いフラグは usage エラー(2)で落ちる", async () => {
     for (const argv of [
       ["member", "remove", "user-1", "--role", "member"],
@@ -926,7 +926,7 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6)", () => {
   });
 });
 
-describe("key / project の入れ子サブコマンド(ADR-0016)", () => {
+describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②)", () => {
   it("不明な操作は取りうる操作の一覧を出し、ログインやサーバー接続より前に落ちる", async () => {
     // セッション解決の後ろに置くと、`key bogus` が「Not logged in」で
     // 落ちて打ち間違いが伝わらない(しかも exit 1)。effect ではサブコマンド
@@ -979,7 +979,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016)", () => {
   });
 });
 
-describe("未知のコマンドの診断(root の UnknownSubcommand)", () => {
+describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSubcommand)", () => {
   it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
     // 未解決のコマンドではフラグが root の宣言と突き合わされるため、綴りの
     // 合っている --show まで不明として並ぶ(探させない — formatErrors が
@@ -1053,7 +1053,7 @@ describe("未知のコマンドの診断(root の UnknownSubcommand)", () => {
   });
 });
 
-describe("login / logout の引数層(ADR-0016)", () => {
+describe("login / logout の引数層(ADR-0016 第 3 段階 ④)", () => {
   it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
     // 期待する型は宣言由来なので出してよいが、与えられた値は平文が混ざりうる
     // ので出さない
@@ -1104,7 +1104,7 @@ describe("login / logout の引数層(ADR-0016)", () => {
   });
 });
 
-describe("rotation / audit の入れ子サブコマンド(ADR-0016)", () => {
+describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 ③)", () => {
   it("bare `maruhi audit` は list として実行される(現行仕様の維持)", async () => {
     // ハンドラ付き親(実測済み): bare 親は list を実行し、コマンド本体
     // (通信)まで進む = usage エラー(2)にならない
@@ -1130,7 +1130,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016)", () => {
     expect(full).toContain("maruhi audit [subcommand]");
     expect(full).not.toContain("<subcommand>");
 
-    // 通常の親(bare がエラーになる段)は必須と描く
+    // 通常の親(bare がエラーになる段)は従来どおり必須と描く
     const env = await startEnv();
     expect(await runCli(["env", "--help"], env.env.layer)).toBe(0);
     expect(env.env.errors.join("\n")).toContain("maruhi env <subcommand>");
@@ -1268,7 +1268,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016)", () => {
   });
 });
 
-describe("push の引数層(ADR-0016)", () => {
+describe("push の引数層(ADR-0016 第 3 段階 ①)", () => {
   it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
     // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した
     // 引数の中身は出さない(平文でありうる)代わりに、直し方を必ず添える —
@@ -1354,7 +1354,7 @@ describe("push の引数層(ADR-0016)", () => {
   });
 });
 
-describe("config の入れ子サブコマンド(ADR-0016)", () => {
+describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () => {
   it("不明な操作・bare `maruhi config` は usage エラー(2)", async () => {
     const bogus = await startEnv();
     expect(await runCli(["config", "bogus"], bogus.env.layer)).toBe(2);

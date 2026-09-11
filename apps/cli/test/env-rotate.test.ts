@@ -1,6 +1,20 @@
-// エポックローテーション(`maruhi env rotate`)のテスト。複合リクエスト(§12-4)・
-// 現在値の再暗号化(§7 / §4.1)・中断復旧(冪等な再開)・CAS 競合 / 並行ローテーション /
-// 部分完了 / 認可の分岐を、実サーバーの状態遷移を模したモックサーバー上で検証する。
+// エポックローテーション(`maruhi env rotate`)のテスト。
+//
+// 検証の柱:
+//  1. 複合リクエスト(§12-4): rotate_epoch エントリ(new_epoch = 現 + 1・reason・
+//     新エポックのコミットメント — §5.2 / §6.2)+ 現メンバー集合と厳密一致する
+//     ラップ完全集合。各ラップは §5.1 署名を持ち、受信者が開封した DEK は
+//     エントリのコミットメントと一致する
+//  2. 現在値の再暗号化(§7 / §4.1): 全アクティブ変数の最新値が新 DEK で
+//     再暗号化され、実行者が writer として署名した通常 push で送られる
+//  3. **中断復旧**: 複合受理後・再暗号化完了前に中断した状態(= エポックは
+//     進んだが最新値の epoch が現エポック未満)を再実行が検出し、エポックを
+//     進めずに残りだけを再暗号化する(冪等な再開)
+//  4. CAS 競合・並行ローテーション・部分完了・認可の各分岐
+//
+// モックサーバーは実サーバーの状態遷移を模す(受理したエントリをチェーンへ
+// 追記し、複合のラップを配布集合へ入れ、push を最新値へ反映する)— これにより
+// 「1 回目でクラッシュ → 2 回目で再開」を同一フィクスチャ上で通しで検査できる。
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -221,7 +235,7 @@ interface ServerOptions {
   readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
   /**
    * 受理した境界 checkpoint を配布チェーンへ追記しない(rotate エントリのみを
-   * 配布する「checkpoint 隠し」サーバーのモデル化。
+   * 配布する「checkpoint 隠し」サーバーのモデル化 — PR-F4 cross-layer。
    * checkpoint はチェーン合意規則上は任意なのでチェーン自体は有効なまま、
    * §4.3 (2) の束縛タプルだけが消える)。
    */
@@ -229,7 +243,8 @@ interface ServerOptions {
   /**
    * standalone checkpoint の受理(汎用 append)+ /auth/me + /audit-head を
    * 有効にする(契機 (i) — rotate + 再暗号化完了後の周期 checkpoint 発行 —
-   * のモデル化)。省略時は未実装(発行は失敗し警告になる)。
+   * のモデル化。PR-M2)。省略時は従来どおり未実装(発行は失敗し警告になる —
+   * 既存テストの前提を変えない)。
    */
   readonly standaloneCheckpoint?: { readonly auditHeadHashHex: string };
 }
@@ -302,8 +317,8 @@ function makeServer(options: ServerOptions): ServerState {
       return manifestState.manifest;
     }
     const version = (manifestState?.version ?? 0) + 1;
-    // 再発行は直前マニフェストへ prev を連鎖させる(隣接版の prev 検証を満たす
-    // 正直なメタ操作のモデル化。実サーバーの §12-5 (5) と同じ)
+    // 再発行は直前マニフェストへ prev を連鎖させる(隣接版の prev 検証 —
+    // M1-A1 — を満たす正直なメタ操作のモデル化。実サーバーの §12-5 (5) と同じ)
     const previous = manifestState?.manifest;
     const manifest = await manifestFor({
       projectId,
@@ -400,7 +415,7 @@ function makeServer(options: ServerOptions): ServerState {
     currentEpoch = target.epoch;
   };
 
-  // 契機 (i) の周期 checkpoint 発行用の追加エンドポイント(オプション)
+  // 契機 (i) の周期 checkpoint 発行(PR-M2)用の追加エンドポイント(オプション)
   const standaloneHandlers: MockHandler[] =
     options.standaloneCheckpoint === undefined
       ? []
@@ -557,7 +572,7 @@ function makeServer(options: ServerOptions): ServerState {
   return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
 
-/** 床(観測ログの fold)を読む(床前進 / 非前進の固定用)。 */
+/** 床(観測ログの fold)を読む(M1-A4 の床前進 / 非前進の固定用)。 */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(chainBase.projectId),
@@ -753,7 +768,7 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
   });
 
-  it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3)", async () => {
+  it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3 — PR-M2)", async () => {
     const auditHead = "ab".repeat(32);
     const variables = [
       await variableAt({
@@ -1438,7 +1453,7 @@ describe("maruhi env rotate", () => {
       first.checkpoint.payload.environments[0]?.valuesDigestHex,
     );
     expect(env.logs.join("\n")).toContain("re-pulling and retrying the rotation");
-    // intent 規律(3-F)× 有界再試行(F-2)の cross-layer: 1 試行目の
+    // intent 規律(3-F)× 有界再試行(F-2)の cross-layer(PR-F4): 1 試行目の
     // intent は 422(確定拒否)が閉じ、2 試行目の intent は受理確認が閉じる —
     // 再試行ループが未解決 intent を積み残さない
     const floor = await loadFloor(env);
@@ -1474,7 +1489,7 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("values-digest-mismatch");
     expect(errors).toContain("Re-run `maruhi env rotate` to rebuild the checkpoint");
-    // intent 規律(3-F)× 有界再試行の cross-layer: 422 は確定拒否
+    // intent 規律(3-F)× 有界再試行の cross-layer(PR-F4): 422 は確定拒否
     // (isServerRejection)なので 3 試行分の intent はすべて rejected で閉じ、
     // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)。
     // 床は初回 pull が配った mv1 のまま(打ち切り後の正しい床状態そのものを
@@ -1487,10 +1502,10 @@ describe("maruhi env rotate", () => {
     });
   });
 
-  it("受理した境界 checkpoint をチェーン配布から落とすサーバーは、受理後の再走査が strict 検証で検出する", async () => {
+  it("受理した境界 checkpoint をチェーン配布から落とすサーバーは、受理後の再走査が strict 検証で検出する(PR-F4 cross-layer)", async () => {
     // 2-G′ の帰結の end-to-end 固定: 複合発行のマニフェスト(epoch = new_epoch・
     // 宣言ヘッド = 追記前)は境界 checkpoint タプルとの完全一致でのみ検証できる
-    // (§4.3 (2))。受理した checkpoint をチェーン配布から
+    // (H+1 例外は存在しない — §4.3 (2))。受理した checkpoint をチェーン配布から
     // 隠すサーバー(チェーン自体は合意規則上有効なまま)は、受理後の再走査 pull の
     // マニフェスト検証が strict へ落ちて epoch-not-current-at-head で検出される —
     // 「checkpoint 隠し」で H+1 相当の緩い受理へ戻す経路が存在しないことの固定
@@ -1519,7 +1534,7 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
     // 受理の確認(チェーン上の自 commitment 一致)は checkpoint の有無と独立に
-    // 成立するため、床の自己発行マニフェスト昇格自体は行われている
+    // 成立するため、床の自己発行マニフェスト昇格(M1-A4)自体は行われている
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
       manifestVersion: 2,
@@ -2356,7 +2371,7 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
-    // チェーン上の自 commitment 一致を確認した時点で、コマンドが
+    // M1-A4: チェーン上の自 commitment 一致を確認した時点で、コマンドが
     // エラー終了でも床(自己発行マニフェスト)は前進している
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
@@ -2422,7 +2437,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("this run's entry was not accepted");
     // 自分の分が受理されたと読ませない
     expect(errors).not.toContain("this rotation itself was accepted");
-    // チェーン上の commitment が別物 = 床は前進しない(自己発行
+    // M1-A4: チェーン上の commitment が別物 = 床は前進しない(自己発行
     // マニフェストの記録なし)。受理されていないことは確認済みなので intent は
     // not-accepted として閉じる
     const floor = await loadFloor(env);
@@ -2460,7 +2475,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
     expect(errors).not.toContain("was not accepted");
-    // 追い越されても自分のマニフェスト(v2)は最低床として残る
+    // M1-A4: 追い越されても自分のマニフェスト(v2)は最低床として残る
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
       manifestVersion: 2,
@@ -2469,7 +2484,7 @@ describe("maruhi env rotate", () => {
     expect(floor?.intents).toEqual([]);
   });
 
-  it("200 直後の別 rotate で受理後確認が追い越しを見ても、自分のマニフェストは最低床として残る", async () => {
+  it("200 直後の別 rotate で受理後確認が追い越しを見ても、自分のマニフェストは最低床として残る(M1-A4)", async () => {
     // 200 は返った(受理確定)が、受理後確認の再同期までに別メンバーが epoch 3 へ
     // 進めた形。現エポック(3)≠ 目標(2)でコマンドはエラー終了するが、
     // チェーン上の epoch 2 commitment は自分のものなので床は前進する
@@ -2507,7 +2522,7 @@ describe("maruhi env rotate", () => {
     expect(floor?.intents).toEqual([]);
   });
 
-  it("--init-manifest が不要で再開だけの実行は、次版の再発行を言わない", async () => {
+  it("--init-manifest が不要で再開だけの実行は、次版の再発行を言わない(M1-B2)", async () => {
     // 中断復旧の形(エポック 2・最新値は epoch 1 のまま)+ 不要な --init-manifest。
     // 経路は resume = rotate 複合を送らない = 「次版を再発行する」と言うのは嘘
     const variables = [
@@ -2559,7 +2574,7 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("--init-manifest が不要で確認だけの実行は、何も発行しないと言う", async () => {
+  it("--init-manifest が不要で確認だけの実行は、何も発行しないと言う(M1-B2)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -2665,7 +2680,7 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("may already have advanced to epoch 2");
     expect(errors).toContain("Restore connectivity and re-run");
-    // probe 失敗 = acceptance-unknown — 受理を確認していない事実を
+    // M1-A4: probe 失敗 = acceptance-unknown — 受理を確認していない事実を
     // 床へ書かない(前進しない)。確認義務の記録(intent — 3-F)は未解決で残り、
     // 次の実行の照合(チェーン同期)が解決する
     const floor = await loadFloor(env);
@@ -2792,7 +2807,7 @@ describe("maruhi env rotate", () => {
     ];
     // 初回 pull には現れず、複合受理の後(= 巡末の再走査)にだけ現れる旧
     // エポックの値。署名は妥当だが、境界 checkpoint のスナップショットに存在
-    // しない旧エポックの「作成」であり、規則 2(CRYPTO_SPEC §6.3)が
+    // しない旧エポックの「作成」であり、規則 2(CRYPTO_SPEC §6.3 — PR-M3)が
     // backdated 作成の証拠として pull ごと拒否する
     const tampered = await variableAt({
       built: chainBase,
@@ -2828,7 +2843,7 @@ describe("maruhi env rotate", () => {
     // 初回 pull のケースと違い、ここではローテーション自体は起きている
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
-    // 規則 2 の backdated 作成の証拠として拒否される
+    // 規則 2 の backdated 作成の証拠として拒否される(PR-M3)
     expect(errors).toContain("below the checkpoint baseline epoch");
     expect(errors).toContain("This is evidence that re-running will not resolve");
     // 「再実行すれば片付く」系の案内へ格下げしない
@@ -3606,7 +3621,7 @@ describe("maruhi env rotate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `--config`: 同期レシートの前進。回す環境(dev — makeServer が
+// `--config`: 同期レシートの前進(SY2 第 2 段 2b — M1)。回す環境(dev — makeServer が
 // ローテーションの複合受理と再暗号化 push を模す)とレシート環境(ops —
 // makeValueEnvironmentServer。epoch 1 固定の状態つき値環境)を 1 つのモックサーバーに
 // 合成し、rotate → レシートの書き込み → `sync plan` / `sync apply` を同じ状態上で通す。
@@ -3622,7 +3637,7 @@ function output(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-describe("maruhi env rotate --config(同期レシートの前進)", () => {
+describe("maruhi env rotate --config(同期レシートの前進 — M1)", () => {
   let dekReceipts: Uint8Array;
   /** genesis + create dev(epoch 1、dek1)+ create ops(epoch 1、dekReceipts)。 */
   let chainWithReceipts: BuiltChain;
@@ -4177,7 +4192,7 @@ describe("maruhi env rotate --config(同期レシートの前進)", () => {
     );
   });
 
-  it("レシート環境の読みの通信失敗は警告に留め、終了コードは変えない(裁定 D の範囲)", async () => {
+  it("レシート環境の読みの通信失敗は警告に留め、終了コードは変えない(SY2 第 2 段 2b 裁定 D の範囲)", async () => {
     const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
     const fixture = await startFixture({
       server: {

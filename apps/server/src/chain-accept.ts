@@ -120,7 +120,6 @@ export const verifyAcceptableEntry = (
 /**
  * 複合の 2 エントリ受理検査(AUTH_SPEC §12-4: H+1 = create / rotate、
  * H+2 = 境界 `checkpoint`)。サイズ検査は各エントリ、
-
  * 容量検査は 2 エントリ分の合算、verifyChain(§6.4 の合意規則 — checkpoint の
  * エポック厳密一致は「エントリ時点 = H+1 適用後」基準で自然に成立する —
  * CRYPTO_SPEC §6.2)は両エントリを適用した全チェーンに対して 1 回。返す

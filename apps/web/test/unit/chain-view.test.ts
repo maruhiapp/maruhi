@@ -1,4 +1,4 @@
-// chain-view(表示用の畳み込み — 検証ではない)のユニットテスト。
+// chain-view(S5 の表示用畳み込み — 検証ではない)のユニットテスト。
 // 入力は api-schema のワイヤ型に適合するフィクスチャ(型は tsc が拘束する)。
 import { describe, expect, it } from "vitest";
 
@@ -72,6 +72,7 @@ describe("deriveReportedView", () => {
       ["user_owner", "owner"],
       ["user_a", "admin"],
     ]);
+    // role を更新したエントリの seq が sinceSeq に反映される
     expect(view.members[1]?.sinceSeq).toBe(change.seq);
   });
 
