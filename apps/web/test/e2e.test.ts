@@ -453,12 +453,12 @@ async function confirmRevoke(page: Page): Promise<void> {
   await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
 }
 
-/** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 /** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
 function panelDisplay(page: Page, tab: string): Promise<string> {
   return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
 }
 
+/** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 function collectViolations(page: Page): string[] {
   const violations: string[] = [];
   page.on("console", (msg) => {
