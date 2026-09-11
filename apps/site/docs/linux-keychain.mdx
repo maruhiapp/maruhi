@@ -11,23 +11,25 @@ On macOS this is the system Keychain and on Windows the Credential Manager (expe
 
 ## How the failure looks
 
-Without a D-Bus session bus, the keychain operation cannot even start; maruhi cuts the wait after 30 seconds:
-
-> Writing to the OS keychain timed out. […] maruhi does not fall back to plaintext files
-
-When a bus exists but no Secret Service is listening on it, the failure is immediate:
+You will see one of two messages. Both mean the same thing — no usable Secret Service in this environment — and both have the same fix (the next section). Which one appears depends on the operation, not on the exact cause, so do not diagnose from the wording:
 
 > Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead
 
+This is the general failure: the keychain answered with an error right away (a bus exists but nothing provides the Secret Service on it), or a keychain _read_ hung — without a session bus the operation never gets an answer, and maruhi cuts the wait after 30 seconds.
+
+> Writing to the OS keychain timed out. […] maruhi does not fall back to plaintext files
+
+This one appears when a keychain _write_ hangs — `maruhi login` or `maruhi key generate` storing a value. It carries extra instructions because a timed-out write cannot be cancelled and may still complete in the background.
+
 ## Set up a keyring on a headless machine
 
-Verified on Ubuntu 24.04. Install GNOME Keyring, the D-Bus session tools, and the Secret Service client library once:
+Verified on Ubuntu 24.04. Install GNOME Keyring, D-Bus session support, and the Secret Service client library once (the `dbus-run-session` tool used below ships in `dbus-bin`, which `dbus-user-session` pulls in):
 
 ```sh
 sudo apt-get install -y gnome-keyring dbus-user-session libsecret-1-0
 ```
 
-Then, in each shell session where you want to use maruhi, start a session bus and unlock the keyring inside it:
+Then, in each shell session where you want to use maruhi, start a session bus and unlock the keyring inside it. Type these lines into an interactive terminal — the first one starts a nested shell that the rest run in, so this block is not meant to be saved as a script:
 
 ```sh
 dbus-run-session -- bash            # a session bus for this shell and its children
@@ -46,13 +48,13 @@ What this does, and what to expect:
 
 ## Dev containers and Codespaces
 
-A container rebuild discards the home directory, and with it `~/.local/share/keyrings` — the new container is, from maruhi's point of view, a new machine with no token and no master key. Two ways to handle that:
+The setup above applies inside containers too: put the three packages in the image (or `postCreateCommand`), and run the session-bus + unlock lines in each shell — both paths below need a working Secret Service first (`maruhi login` writes to the keychain). On top of that, a container rebuild discards the home directory, and with it `~/.local/share/keyrings` — the new container is, from maruhi's point of view, a new machine with no token and no master key. The two bullets only decide whether the keyring _data_ survives the rebuild:
 
-- **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. The keychain then behaves like on any other machine.
-- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. This is the honest trade-off today — recovery codes are made for occasional loss, not for daily container churn, so prefer the volume when rebuilds are frequent.
+- **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. After the per-shell unlock, your token and master key are right where you left them.
+- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. Know the limits before relying on it: entering a recovery code requires a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery fetches per user per hour. Recovery codes are made for occasional loss, not for daily container churn — prefer the volume when rebuilds are frequent or driven by automation.
 
 ## What works without a keychain
 
 - **GitHub Actions needs none of this.** `maruhi ci run` and `maruhi ci sync` authenticate with the job's OIDC token and hold key material in memory only — see [GitHub Actions](/docs/github-actions).
-- **Session-only commands accept `MARUHI_TOKEN`.** Commands that need a session but not your master key (metadata-only reads such as `maruhi schema`) authenticate with the `MARUHI_TOKEN` environment variable, bound to one server with `MARUHI_TOKEN_ORIGIN`. The provisioning procedure — issuing a named token on an interactive workstation with `maruhi login --token-name <name> --show-token` — is described in the [self-hosting runbook](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md) under "Provisioning unattended runtimes".
+- **Session-only commands accept `MARUHI_TOKEN`.** Commands that need a session but not your master key (metadata-only reads such as `maruhi schema`) authenticate with the `MARUHI_TOKEN` environment variable, bound to one server with `MARUHI_TOKEN_ORIGIN`. The provisioning procedure — issuing a named token on an interactive workstation with `maruhi login --token-name <name> --token-ttl-days <days> --show-token` — is described in the [self-hosting runbook](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md) under "Provisioning unattended runtimes".
 - **Value operations do not.** `maruhi run`, `push`, and `pull` decrypt with your master key, and the master key lives only in the keychain. There is no environment-variable substitute for it, by design.

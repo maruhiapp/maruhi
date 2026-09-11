@@ -359,6 +359,8 @@ N1 の付帯設計: 同期は環境ごとの opt-in(`autoSync`)とし、producti
 (4) **空パスワードは不可**: キーリングを作らず GUI プロンプタ(Gcr)の起動を試みてハング → 30 秒ガードで timeout。レシピは非空パスワード必須と明記(「空パスワード = 平文キーリング」の古典的警告はこの経路では発生し得ないため書かない)。
 docs に書いたのは検証事実と既存コードの実文言のみ(systemd 経路など未検証の主張は書かない — `dbus-run-session` は systemd 不要で WSL / コンテナでもそのまま通る)。
 
+**改訂 2(2026-09-11 — PR #163 レビュー対応)**: pullfrog の精度指摘 3 点を反映。(a) メッセージと原因は 1 対 1 でない — `keychainOp` の `onTimeout` 既定は `keychainUnavailable` で、**read のタイムアウトも "Cannot access…" に落ちる**(専用文言を持つのは set / delete のみ)。ページは「文言から原因を診断しない。どちらも同じ修正」へ書き換え、timeout 文言は write(`login` / `key generate`)のハングで出ると明記。(b) devcontainer 節にパッケージ導入(イメージ / postCreateCommand)+ セッションごとの unlock が両経路の前提であることを先頭に明記(2 択はキーリング**データ**の永続化の選択のみ)。(c) `key recover` の硬い制限を数値で明記 — ブロブ取得は 1 時間 5 回 / ユーザー(`RECOVERY_FETCH_LIMIT` — AUTH_SPEC §13-3)+ コード入力は人間の対話端末必須(エージェント環境拒否)なので、エージェント駆動の devcontainer は volume 永続化一択。ニトピック 2 点も反映(`dbus-run-session` の出所は `dbus-bin`〔`dbus-user-session` が引き込む〕/ レシピは対話貼り付け用でスクリプト保存不可 / SELF_HOSTING 引用コマンドに `--token-ttl-days` を追加)。
+
 ### 補足 13: ベンダー CLI ドライバの欠点と第 5 ラウンド(2026-09-04)
 
 **V1(ベンダー CLI ドライバ)の欠点 — 正直に**。V1 は「上位互換」ではなく、HTTP アダプタ(S8)とのトレードオフだった。
