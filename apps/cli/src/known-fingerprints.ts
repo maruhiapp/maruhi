@@ -3,8 +3,13 @@
 // maruhi の鍵は**ユーザー単位**(1 人 1 master 鍵)なので、一度 12 語の儀式で
 // 帯域外確認した相手の指紋は、その鍵が変わらない限り有効であり続ける。CLI が
 // 「自分が確認した (origin, user_id) → 指紋」を非機密設定として保持すれば
-// (SSH の known_hosts と同じ発想)、同じ相手が関わる次の儀式は機械照合で
-// 自動的に通せる(--expect-fingerprint / --inviter-fingerprint と等価の照合)。
+// (SSH の known_hosts と同じ発想)、同じ相手が関わる次の儀式では 12 語の
+// 帯域外読み上げの**再実施**を免除できる。ただし帳の一致は「以前この鍵を
+// 確認した」ことしか意味せず、**この受諾・付与への人間の同意を代替しない**:
+// ヒット時も受諾単位の明示確認(yes 入力)を残し、エージェント環境では帳を
+// auto-pass に使わない(フラグ必須のまま)。招待リンクは無記名(bearer)で
+// 受諾者の同一性を運ばないため、帳の一致だけで付与まで自動化しない
+// (CRYPTO_SPEC §6.5 の相互確認 UX の範囲内に留める)。
 //
 // - 内容は公開情報(鍵フィンガープリント)のみ — ディスクレス不変条件と両立
 // - **不一致は絶対に自動で通さない**(警告 + 通常の儀式へフォールバック)。
@@ -72,11 +77,14 @@ export function fingerprintBookPathOf(configPath: string): string {
 /** 儀式前の照会の結果(呼び出し側の分岐材料)。 */
 export interface FingerprintBookConsult {
   /**
-   * 帳の一致による auto-pass の表示(null = ヒットなし・不一致・破損 =
-   * 従来どおり儀式かフラグが必要)。フラグ(明示指定)が儀式より優先される
-   * 規律はそのままにするため、表示のタイミングは呼び出し側が決める。
+   * 帳の一致エントリ(null = ヒットなし・不一致・破損 = 従来どおり儀式か
+   * フラグが必要)。ヒットは confirmKnownFingerprint(受諾単位の明示確認)へ
+   * 渡す。フラグ(明示指定)が帳より優先される規律・エージェント環境の拒否は
+   * 呼び出し側が保つ(帳はどちらも迂回しない)。
    */
-  readonly autoPass: Effect.Effect<void, CliError, CliIo> | null;
+  readonly hit: KnownFingerprint | null;
+  /** 表示用のファイルパス(エントリ削除で儀式を強制再実行できる導線)。 */
+  readonly filePath: string;
   /**
    * 儀式 / フラグ照合の**成功後**に呼ぶ追記。書き込み失敗は警告に落とす
    * (fail-open — 帳は SHOULD 水準で、儀式の成立を妨げない)。
@@ -86,10 +94,10 @@ export interface FingerprintBookConsult {
 
 /**
  * 儀式前の帳の照会(member add の受諾鍵確認・invite accept の招待者確認の共有):
- * 一致 = auto-pass 可(--expect-fingerprint / --inviter-fingerprint と等価の
- * 機械照合)、不一致 = 警告して儀式へフォールバック(**自動失敗にしない** —
- * `maruhi key generate` による正当な鍵更新があり得る)、破損 = 警告して記録なし
- * として扱う。
+ * 一致 = 12 語の帯域外読み上げの再実施を免除できる(受諾単位の明示確認は
+ * confirmKnownFingerprint が要求する)、不一致 = 警告して儀式へフォールバック
+ * (**自動失敗にしない** — `maruhi key generate` による正当な鍵更新があり得る)、
+ * 破損 = 警告して記録なしとして扱う。
  */
 export function consultFingerprintBook(input: {
   readonly origin: string;
@@ -112,25 +120,51 @@ export function consultFingerprintBook(input: {
     const record = book.record(input.origin, input.userId, input.fingerprintHex).pipe(
       Effect.flatMap(() =>
         logNote(
-          `recorded the verified fingerprint for ${displayText(input.userId)} — future ceremonies with this person auto-pass while their key is unchanged (delete the entry in ${book.filePath} to force the ceremony again)`,
+          `recorded the verified fingerprint for ${displayText(input.userId)} — future ceremonies with this person skip the 12-word read-out while their key is unchanged (delete the entry in ${book.filePath} to force the full ceremony again)`,
         ),
       ),
       Effect.catch((error) =>
         logWarning(
-          `could not record the verified fingerprint (${error.message}). The next ceremony with this person will not auto-pass`,
+          `could not record the verified fingerprint (${error.message}). The next ceremony with this person will require the full read-out again`,
         ),
       ),
     );
-    const autoPass =
+    const hit =
       looked.state === "hit" && looked.entry.fingerprintHex === input.fingerprintHex
-        ? Effect.gen(function* () {
-            const io = yield* CliIo;
-            yield* io.log(
-              `This fingerprint was verified out of band on this machine on ${formatUtcMinutes(looked.entry.verifiedAtMs)} (the verified-fingerprint book) — skipping the read-out ceremony. To force the ceremony again, delete the entry in ${book.filePath}`,
-            );
-          })
+        ? looked.entry
         : null;
-    return { autoPass, record };
+    return { hit, filePath: book.filePath, record };
+  });
+}
+
+/**
+ * 帳のヒット時の受諾単位の明示確認: 12 語の帯域外読み上げの再実施は免除する
+ * が、**この操作(付与 / 受諾)への同意そのものは省略しない** — 帳は「以前この
+ * 鍵を帯域外確認した」記録であって、今回の操作の意図を代替しないため。
+ * `prompt` は対象と操作を名指しする文言(呼び出し側が与える)。yes 以外は
+ * 中止し、完全な儀式へ戻す導線(エントリ削除)を示す。
+ */
+export function confirmKnownFingerprint(input: {
+  readonly entry: KnownFingerprint;
+  readonly filePath: string;
+  /** `: ` の直前までのプロンプト本文(例: "Type yes to add … as …")。 */
+  readonly prompt: string;
+  /** 中止時の先頭文(例: "add_member was cancelled.")。 */
+  readonly cancelText: string;
+}): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* io.log(
+      `This fingerprint was verified out of band on this machine on ${formatUtcMinutes(input.entry.verifiedAtMs)} (the verified-fingerprint book), so the 12-word read-out is not required again`,
+    );
+    const answer = yield* io.promptLine({ prompt: `${input.prompt}: ` });
+    if (answer.trim().toLowerCase() !== "yes") {
+      return yield* Effect.fail(
+        cliError(
+          `${input.cancelText} To run the full 12-word ceremony instead, delete this person's entry in ${input.filePath} and re-run`,
+        ),
+      );
+    }
   });
 }
 

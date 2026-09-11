@@ -489,7 +489,7 @@ describe("maruhi invite accept", () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it("検証済み指紋帳: 儀式の成功が招待者の指紋を記録し、同じ招待者の次の受諾は再入力なしで通る(KF)", async () => {
+  it("検証済み指紋帳: 儀式の成功が招待者の指紋を記録し、同じ招待者の次の受諾は yes 確認のみで通る(KF)", async () => {
     const bodies: unknown[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
@@ -509,10 +509,13 @@ describe("maruhi invite accept", () => {
     );
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
-    // 2 回目(同じ招待者からの別招待に相当): 帳のヒットで再入力なしに通る
+    // 2 回目(同じ招待者からの別招待に相当): 帳のヒットで 12 語の読み上げ
+    // 再実施は免除されるが、受諾そのものの明示確認(yes)は残る
+    env.setPromptResponses(["yes"]);
     expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
-    expect(env.prompts).toHaveLength(1);
-    expect(env.logs.join("\n")).toContain("skipping the read-out ceremony");
+    expect(env.prompts).toHaveLength(2);
+    expect(env.prompts[1]).toContain("Type yes to accept this invite attributed to");
+    expect(env.logs.join("\n")).toContain("not required again");
     expect(bodies).toHaveLength(2);
   });
 

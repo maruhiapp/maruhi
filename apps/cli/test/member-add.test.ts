@@ -879,7 +879,7 @@ describe("maruhi member add", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("検証済み指紋帳: 儀式の成功が記録され、再実行はエージェント環境でも再入力なしで通る(KF)", async () => {
+  it("検証済み指紋帳: 儀式の成功が記録され、再実行は yes 確認のみで通る(エージェント環境は据え置き拒否)(KF)", async () => {
     const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
     if (acceptorFpBytes === null) throw new Error("fp");
     const words = await fingerprintToWords(acceptorFpBytes);
@@ -915,13 +915,21 @@ describe("maruhi member add", () => {
     );
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
-    // 2 回目(在籍済み → バックフィルのみの再実行): 儀式そのものは省略しないが、
-    // 帳のヒット(機械照合)で再入力が自動で通る — フラグ経路と等価なので
-    // エージェント環境でも通る
-    env.setAgent({ isAgent: true, name: "test-agent" });
+    // 2 回目(在籍済み → バックフィルのみの再実行): 帳のヒットで 12 語の
+    // 読み上げ再実施は免除されるが、付与そのものの明示確認(yes)は残る
+    env.setPromptResponses(["yes"]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
-    expect(env.prompts).toHaveLength(1);
-    expect(env.logs.join("\n")).toContain("skipping the read-out ceremony");
+    expect(env.prompts).toHaveLength(2);
+    expect(env.prompts[1]).toContain("Type yes to add");
+    expect(env.logs.join("\n")).toContain("not required again");
+
+    // 3 回目(エージェント環境): 帳のヒットがあっても代行は拒否(フラグ必須)
+    env.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["member", "add"], env.layer)).toBe(1);
+    expect(env.prompts).toHaveLength(2);
+    expect(env.errors.join("\n")).toContain(
+      "Refused to run the acceptance-key confirmation ceremony",
+    );
   });
 
   it("検証済み指紋帳: 不一致は自動で通さず警告して儀式へ戻し、成功で上書きする(KF)", async () => {

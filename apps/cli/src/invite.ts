@@ -41,7 +41,11 @@ import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "./invite-link.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { Keychain, masterKeyEntryName } from "./keychain.ts";
-import { consultFingerprintBook, type FingerprintBook } from "./known-fingerprints.ts";
+import {
+  confirmKnownFingerprint,
+  consultFingerprintBook,
+  type FingerprintBook,
+} from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
@@ -310,12 +314,15 @@ export type AcceptTarget =
  * - `--inviter-fingerprint <hex>`: 帯域外で控えた招待者 FP をリンクの `if=` と
  *   機械照合する(非対話の明示確認 + リンク改竄の第二経路検出)
  * - 対話: 12 語を表示し、最終語の再入力を要求する(server-grant と同じ儀式)
- * - エージェント環境ではフラグなしの儀式代行を拒否する
+ * - エージェント環境ではフラグなしの儀式代行を拒否する(帳のヒットでも)
  * - 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの招待者
- *   (origin × user_id)と指紋が一致すれば再入力を省略する。フラグは帳より
- *   優先し、不一致は警告して儀式へ戻す。成功は帳へ記録する(リンクの iu= は
- *   受諾時点ではチェーン未照合だが、不一致が auto-pass に化ける経路はなく、
- *   userId ↔ FP の機械照合は初回同期のアンカー検査 — context.ts — が行う)
+ *   (origin × user_id)と指紋が一致すれば、12 語の帯域外読み上げの再実施を
+ *   免除する。**受諾そのものの明示確認(yes 入力)はヒット時も要求する** —
+ *   リンクの iu= / if= はチェーン未照合の自己申告であり、帳の一致は「以前この
+ *   鍵を帯域外確認した」ことしか意味しない(この受諾の意図を代替しない)。
+ *   フラグは帳より優先し、不一致は警告して儀式へ戻す。儀式 / フラグ照合の
+ *   成功は帳へ記録する(userId ↔ FP の機械照合は初回同期のアンカー検査 —
+ *   context.ts — が行う)
  */
 function confirmInviterFingerprint(input: {
   readonly origin: string;
@@ -358,16 +365,22 @@ function confirmInviterFingerprint(input: {
       yield* book.record;
       return;
     }
-    if (book.autoPass !== null) {
-      return yield* book.autoPass;
-    }
-    // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢)
+    // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢。
+    // 帳のヒットも代行の根拠にしない — フラグの明示指定だけが非対話経路)
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
           "Refused to run the inviter-fingerprint confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the inviter fingerprint noted out of band via --inviter-fingerprint",
         ),
       );
+    }
+    if (book.hit !== null) {
+      return yield* confirmKnownFingerprint({
+        entry: book.hit,
+        filePath: book.filePath,
+        prompt: `Type yes to accept this invite attributed to ${displayText(input.link.inviterUserId)} for project ${displayText(input.link.projectId)}`,
+        cancelText: "The acceptance was cancelled.",
+      });
     }
     yield* confirmByLastWord({
       words,

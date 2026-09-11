@@ -34,7 +34,11 @@ import {
   verifyAcceptanceBlock,
 } from "./invite.ts";
 import { CliIo } from "./io.ts";
-import { consultFingerprintBook, type FingerprintBook } from "./known-fingerprints.ts";
+import {
+  confirmKnownFingerprint,
+  consultFingerprintBook,
+  type FingerprintBook,
+} from "./known-fingerprints.ts";
 import { logNote } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -269,8 +273,10 @@ function selectInvitation(
  * 照合を省略しない)。
  *
  * 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの相手
- * (origin × user_id)の指紋と一致すれば、最終語の再入力を省略して続行する
- * (--expect-fingerprint と等価の機械照合なのでエージェント環境でも通る)。
+ * (origin × user_id)の指紋と一致すれば、12 語の帯域外読み上げの再実施を
+ * 免除する。**付与そのものの明示確認(yes 入力)はヒット時も要求し**、
+ * エージェント環境では帳を auto-pass に使わない(フラグ必須のまま — 帳は
+ * 過去の検証の記録であって、この付与への人間の同意を代替しない)。
  * フラグの明示指定は帳より優先し、不一致は警告して通常の儀式へ戻す(自動失敗に
  * しない — 正当な鍵更新があり得る)。儀式 / フラグ照合の成功は帳へ記録する。
  */
@@ -318,15 +324,20 @@ function confirmInviteeFingerprint(input: {
       yield* book.record;
       return;
     }
-    if (book.autoPass !== null) {
-      return yield* book.autoPass;
-    }
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
           "Refused to run the acceptance-key confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the acceptance key fingerprint noted out of band via --expect-fingerprint",
         ),
       );
+    }
+    if (book.hit !== null) {
+      return yield* confirmKnownFingerprint({
+        entry: book.hit,
+        filePath: book.filePath,
+        prompt: `Type yes to add ${displayText(input.targetUserId)} as ${input.role} with this previously verified key`,
+        cancelText: "add_member was cancelled.",
+      });
     }
     yield* confirmByLastWord({
       words,
