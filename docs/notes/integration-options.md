@@ -352,6 +352,13 @@ N1 の付帯設計: 同期は環境ごとの opt-in(`autoSync`)とし、producti
 
 **結論(推奨)**: 順序は **L1(即日・docs)→ L2 + L3(仕様変更ゼロの実用経路)→ L4-b(本命。設計セッション → CRYPTO_SPEC §8 改訂 → 実装)**。L4-a(パスフレーズ)は規律衝突が 2 つあるので、L4-b で足りるなら採らない。L4 は「キーチェーン不在」「端末移行」「リカバリー UX」「パスキー PRF(将来項)」を 1 つの機構で解くため、**設計セッションは招待制ベータ前に置く価値がある**(実装がベータ後になっても、設計が決まっていれば L2 + L3 の暫定経路を正しい方向に置ける)。
 
+**L1 = KL1 実装録(2026-09-11 — PR #163)**: 公開 docs の新ページ `/docs/linux-keychain`(`apps/site/docs/linux-keychain.mdx`。getting-started から導線 2 本・索引カードは 4 枚のまま)。レシピは Ubuntu 24.04 + Bun 1.4.0 の実機で検証してから書いた(SY1 の前例):
+(1) D-Bus セッション不在では `Bun.secrets.set` が**無期限ブロック**(10 分放置でも返らない)— `live.ts` の `KEYCHAIN_TIMEOUT`(30 秒)のコメントにある実測の再現。バスがあって Secret Service 不在なら即時失敗(`keychainUnavailable`)。
+(2) `apt-get install gnome-keyring dbus-user-session libsecret-1-0` → `dbus-run-session -- bash` 内で `printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets` → `Bun.secrets` の set / get / delete が動作。
+(3) 永続性: 別の dbus セッションで unlock し直すと前セッションの保存値が読める。実体は `~/.local/share/keyrings/login.keyring`(AES・入力パスワードで暗号化)。デーモンはセッション単位・データは永続 — ephemeral コンテナへの助言は「このディレクトリを volume 永続化 or 再構築ごとに `key recover`」の 2 択で書いた。
+(4) **空パスワードは不可**: キーリングを作らず GUI プロンプタ(Gcr)の起動を試みてハング → 30 秒ガードで timeout。レシピは非空パスワード必須と明記(「空パスワード = 平文キーリング」の古典的警告はこの経路では発生し得ないため書かない)。
+docs に書いたのは検証事実と既存コードの実文言のみ(systemd 経路など未検証の主張は書かない — `dbus-run-session` は systemd 不要で WSL / コンテナでもそのまま通る)。
+
 ### 補足 13: ベンダー CLI ドライバの欠点と第 5 ラウンド(2026-09-04)
 
 **V1(ベンダー CLI ドライバ)の欠点 — 正直に**。V1 は「上位互換」ではなく、HTTP アダプタ(S8)とのトレードオフだった。
