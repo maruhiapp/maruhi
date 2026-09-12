@@ -664,6 +664,10 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }),
     handoffApprove: ({ requestId, wardUserId, approverUserId, approval, limit, nowMs, actor }) =>
       run(async () => {
+        // 上限は受理ポリシーの宣言(§13-8)。実効の境界は PK `(request_id, source,
+        // share_index)` と handler の役割検査が構造的に担う(limit = 1 + グループ数 ×
+        // 分片上限 = 到達しうる最大行数)ので、この read-then-write に競合窓があっても
+        // 行数が limit を超えることはない
         const existing = await db
           .select({ n: count() })
           .from(keyHandoffApprovals)
