@@ -43,6 +43,7 @@
 // 動くことを実測)。vitest(Node)でサーバーとクライアントを実ソケットで
 // 検査できる。判定材料(環境変数)は CliIo 経由で受け取る。
 
+import type { Stats } from "node:fs";
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { platform, tmpdir } from "node:os";
@@ -314,17 +315,28 @@ const GONE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
  * (同一ユーザーの攻撃者は止められない — OS キーチェーンと同じ境界)。
  */
 async function assertTrustedSocket(socketPath: string): Promise<void> {
-  let stat: Awaited<ReturnType<typeof lstat>>;
+  const reason = socketRejectionReason(await lstatAgentSocket(socketPath));
+  if (reason !== null) {
+    throw new AgentSocketRejectedError(reason);
+  }
+}
+
+/** lstat の失敗を接続側と同じ語彙(終わった / 会話不能)に写す。 */
+async function lstatAgentSocket(socketPath: string): Promise<Stats> {
   try {
-    stat = await lstat(socketPath);
+    return await lstat(socketPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code ?? "lstat";
     // 接続側と同じ分類: 無い・辿れない(EACCES 等)は「セッションが終わった」、
     // それ以外は会話が成立しない側。同じ状態が経路で違う話にならないように
     throw GONE_CODES.has(code) ? new AgentGoneError(code) : new AgentProtocolError(code);
   }
+}
+
+/** 使ってはいけない理由(利用者向けの語)。問題なければ null。 */
+function socketRejectionReason(stat: Stats): string | null {
   if (!stat.isSocket()) {
-    throw new AgentSocketRejectedError("it is not a socket");
+    return "it is not a socket";
   }
   // 自分の uid は `process.getuid`(システムコールのみ)で取る。`os.userInfo()` は
   // passwd を引くので、数値 uid だけのコンテナ(まさにこの機能の対象環境)では
@@ -336,11 +348,9 @@ async function assertTrustedSocket(socketPath: string): Promise<void> {
   // サービス経由にせずここで読む
   const uid = process.getuid?.() ?? -1;
   if (uid >= 0 && stat.uid !== uid) {
-    throw new AgentSocketRejectedError("it is not owned by you");
+    return "it is not owned by you";
   }
-  if ((stat.mode & 0o077) !== 0) {
-    throw new AgentSocketRejectedError("other users can access it");
-  }
+  return (stat.mode & 0o077) === 0 ? null : "other users can access it";
 }
 
 async function sendAgentRequest(socketPath: string, request: AgentRequest): Promise<AgentResponse> {
