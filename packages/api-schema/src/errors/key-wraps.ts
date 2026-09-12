@@ -42,10 +42,12 @@ export class HandoffConflictError extends Schema.TaggedError<HandoffConflictErro
  * - source-mismatch: 承認の source / share_index / blob の組み合わせが呼び出し
  *   主体の役割(ward = device のみ、保護者 = 自分の分片のみ)と合わない
  * - approvals-exceeded: 1 要求あたりの承認数上限
+ * - duplicate-id: クライアント採番の wrap_id / group_id が既存行と衝突
  */
 export const KeyWrapPolicyReasonSchema = Schema.Literals([
   "too-many-passkeys",
   "too-many-groups",
+  "duplicate-id",
   "share-count",
   "unknown-guardian",
   "self-guardian",

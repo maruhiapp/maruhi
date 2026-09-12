@@ -35,14 +35,31 @@ const FP = "22".repeat(16);
 const HPKE_ENC = "33".repeat(32);
 const SHARE_CT = "44".repeat(48);
 
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/** クライアント採番の台帳 id(ULID 形 — 26 文字)。 */
+const ledgerId = () =>
+  Array.from(
+    crypto.getRandomValues(new Uint8Array(26)),
+    (byte) => CROCKFORD[byte % 32] ?? "0",
+  ).join("");
+
 const passkeyBody = (label?: string) =>
   JSON.stringify({
+    wrapId: ledgerId(),
     wrap: WRAP,
     credentialIdHex: "55".repeat(16),
     prfSaltHex: "66".repeat(32),
     rpId: "localhost",
     ...(label === undefined ? {} : { label }),
   });
+
+/** グループ作成の body(groupId はクライアント採番)。 */
+const guardianBody = (mode: "any" | "all", shares: readonly unknown[], groupId = ledgerId()) => ({
+  groupId,
+  mode,
+  wrap: WRAP,
+  shares,
+});
 
 const share = (shareIndex: number, guardianUserId: string) => ({
   shareIndex,
@@ -89,13 +106,12 @@ async function guardianFixture() {
   const b = await cliToken(702);
   const c = await cliToken(703);
   const [aId, bId, cId] = await Promise.all([userIdOf(a), userIdOf(b), userIdOf(c)]);
-  const created = await post("/auth/key-wraps/guardians", a, {
-    mode: "all",
-    wrap: WRAP,
-    shares: [share(1, bId), share(2, cId)],
-  });
+  const body = guardianBody("all", [share(1, bId), share(2, cId)]);
+  const created = await post("/auth/key-wraps/guardians", a, body);
   expect(created.status).toBe(200);
   const { groupId } = await json<{ groupId: string }>(created);
+  // サーバーはクライアント採番の id をそのまま使う
+  expect(groupId).toBe(body.groupId);
   return { a, b, c, aId, bId, cId, groupId };
 }
 
@@ -311,14 +327,11 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const b = await cliToken(722);
     const [aId, bId] = await Promise.all([userIdOf(a), userIdOf(b)]);
     const cases: readonly [string, unknown][] = [
-      ["share-count", { mode: "all", wrap: WRAP, shares: [share(1, bId)] }],
-      ["share-count", { mode: "any", wrap: WRAP, shares: [share(2, bId)] }],
-      ["self-guardian", { mode: "any", wrap: WRAP, shares: [share(1, aId)] }],
-      ["duplicate-guardian", { mode: "all", wrap: WRAP, shares: [share(1, bId), share(2, bId)] }],
-      [
-        "unknown-guardian",
-        { mode: "any", wrap: WRAP, shares: [share(1, "01ARZ3NDEKTSV4RRFFQ69G5FAV")] },
-      ],
+      ["share-count", guardianBody("all", [share(1, bId)])],
+      ["share-count", guardianBody("any", [share(2, bId)])],
+      ["self-guardian", guardianBody("any", [share(1, aId)])],
+      ["duplicate-guardian", guardianBody("all", [share(1, bId), share(2, bId)])],
+      ["unknown-guardian", guardianBody("any", [share(1, "01ARZ3NDEKTSV4RRFFQ69G5FAV")])],
     ];
     for (const [reason, body] of cases) {
       const response = await post("/auth/key-wraps/guardians", a, body);
@@ -334,19 +347,17 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const a = await cliToken(731);
     const b = await cliToken(732);
     const bId = await userIdOf(b);
-    for (let i = 0; i < 5; i += 1) {
-      const ok = await post("/auth/key-wraps/guardians", a, {
-        mode: "any",
-        wrap: WRAP,
-        shares: [share(1, bId)],
-      });
+    const first = guardianBody("any", [share(1, bId)]);
+    expect((await post("/auth/key-wraps/guardians", a, first)).status).toBe(200);
+    // 同じ id の再登録は 422 duplicate-id(上限より先に判定される)
+    const duplicate = await post("/auth/key-wraps/guardians", a, first);
+    expect(duplicate.status).toBe(422);
+    expect((await json(duplicate))["reason"]).toBe("duplicate-id");
+    for (let i = 1; i < 5; i += 1) {
+      const ok = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
       expect(ok.status).toBe(200);
     }
-    const sixth = await post("/auth/key-wraps/guardians", a, {
-      mode: "any",
-      wrap: WRAP,
-      shares: [share(1, bId)],
-    });
+    const sixth = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
     expect(sixth.status).toBe(422);
     expect((await json(sixth))["reason"]).toBe("too-many-groups");
   });

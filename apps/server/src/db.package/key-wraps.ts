@@ -105,7 +105,7 @@ export interface KeyWrapRepoShape {
     readonly limit: number;
     readonly nowMs: number;
     readonly actor: D1AuditActor;
-  }) => Effect.Effect<"created" | "limit">;
+  }) => Effect.Effect<"created" | "limit" | "conflict">;
   readonly passkeyFind: (userId: string, wrapId: string) => Effect.Effect<PasskeyWrapRecord | null>;
   readonly passkeyList: (userId: string) => Effect.Effect<readonly PasskeyWrapRecord[]>;
   readonly passkeyDelete: (
@@ -127,7 +127,7 @@ export interface KeyWrapRepoShape {
     readonly limit: number;
     readonly nowMs: number;
     readonly actor: D1AuditActor;
-  }) => Effect.Effect<"created" | "limit">;
+  }) => Effect.Effect<"created" | "limit" | "conflict">;
   readonly guardianFind: (
     userId: string,
     groupId: string,
@@ -333,7 +333,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       run(async () => {
         // 上限判定と挿入を同一の INSERT…SELECT…WHERE で行う(並行登録で上限を
         // 超えない — invitations の pending 上限と同じ形)
-        const underLimit = sql<boolean>`(select count(*) from ${masterKeyWraps} where ${masterKeyWraps.userId} = ${userId}) < ${limit}`;
+        // 上限と id 衝突(クライアント採番 — AAD が wrap_id を束縛するため)を同じ
+        // WHERE で判定し、0 行のときは id の存在で conflict / limit を切り分ける
+        const underLimit = sql<boolean>`(select count(*) from ${masterKeyWraps} where ${masterKeyWraps.userId} = ${userId}) < ${limit} and not exists (select 1 from ${masterKeyWraps} where ${masterKeyWraps.id} = ${wrapId})`;
         const results = await db.batch([
           db
             .insert(masterKeyWraps)
@@ -368,7 +370,15 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(and(eq(masterKeyWraps.id, wrapId), sql`changes() = 1`)),
           ),
         ]);
-        return results[0].length === 1 ? "created" : "limit";
+        if (results[0].length === 1) {
+          return "created";
+        }
+        const taken = await db
+          .select({ id: masterKeyWraps.id })
+          .from(masterKeyWraps)
+          .where(eq(masterKeyWraps.id, wrapId))
+          .get();
+        return taken === undefined ? "limit" : "conflict";
       }),
     passkeyFind: (userId, wrapId) =>
       run(async () => {
@@ -426,7 +436,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }),
     guardianCreate: ({ userId, groupId, mode, wrap, shares, limit, nowMs, actor }) =>
       run(async () => {
-        const underLimit = sql<boolean>`(select count(*) from ${guardianGroups} where ${guardianGroups.userId} = ${userId}) < ${limit}`;
+        const underLimit = sql<boolean>`(select count(*) from ${guardianGroups} where ${guardianGroups.userId} = ${userId}) < ${limit} and not exists (select 1 from ${guardianGroups} where ${guardianGroups.id} = ${groupId})`;
         // グループ行は上限付き INSERT…SELECT、分片行と監査は「グループ行が入った
         // (changes() = 1)」ときだけ入る同一 batch。D1 の batch は原子的
         const groupInsert = db
@@ -446,7 +456,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(underLimit),
           )
           .returning({ id: guardianGroups.id });
-        const created = sql`exists (select 1 from ${guardianGroups} where ${guardianGroups.id} = ${groupId})`;
+        // 分片は「直前の文が 1 行入れた」ときだけ入れる(changes() の連鎖: グループ
+        // 行が入らなければ最初の分片が 0 行になり、以降も 0 行のまま)。id の存在で
+        // 条件を組むと、クライアント採番 id の衝突時に既存グループへ分片を足そうと
+        // して PK 違反 = defect になる
+        const created = sql`changes() = 1`;
         const shareInserts = shares.map((share) =>
           db.insert(guardianShares).select(
             db
@@ -488,7 +502,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         // 順なら「行があるのに監査がない」窓が極小の障害時にしか生じない)
         const first = await db.batch([groupInsert, ...shareInserts]);
         if (first[0].length !== 1) {
-          return "limit";
+          const taken = await db
+            .select({ id: guardianGroups.id })
+            .from(guardianGroups)
+            .where(eq(guardianGroups.id, groupId))
+            .get();
+          return taken === undefined ? "limit" : "conflict";
         }
         await db.batch([audits[0]!, ...audits.slice(1)]);
         return "created";

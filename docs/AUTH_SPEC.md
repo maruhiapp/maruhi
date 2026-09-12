@@ -612,10 +612,10 @@ key_wrap_windows (                      -- 13-8 の固定窓(監査行ではな�
 
 ```
 MasterKeyWrap = { suite: "maruhi/v1", nonceHex, ciphertextHex }          // RecoveryWrap(§13-4)と同形
-PasskeyWrapRegistration = { wrap: MasterKeyWrap, credentialIdHex, prfSaltHex /* 64 */, rpId: "localhost", label? }
+PasskeyWrapRegistration = { wrapId /* クライアント採番 ULID — AAD が束縛するため。衝突は 422 duplicate-id */, wrap: MasterKeyWrap, credentialIdHex, prfSaltHex /* 64 */, rpId: "localhost", label? }
 PasskeyWrapResult       = PasskeyWrapRegistration + { wrapId, updatedAtMs }
 GuardianShare = { shareIndex, guardianUserId, guardianEncPubHex, guardianKeyFingerprintHex, encHex, ciphertextHex }
-GuardianGroupRegistration = { mode: "any" | "all", wrap: MasterKeyWrap, shares: GuardianShare[] }
+GuardianGroupRegistration = { groupId /* クライアント採番 ULID(同上) */, mode: "any" | "all", wrap: MasterKeyWrap, shares: GuardianShare[] }
 GuardianGroupResult       = { groupId, mode, wrap: MasterKeyWrap, createdAtMs }
 HandoffApproval = { source: "device" | groupId, shareIndex, encHex, ciphertextHex, blob?: MasterKeyWrap /* device のみ必須 */ }
 HandoffApprovalResult = HandoffApproval + { approverUserId, approverKeyFingerprintHex, createdAtMs }

@@ -40,7 +40,6 @@ import {
   KeyWrapRepo,
   RecoveryRepo,
 } from "./db.package/index.ts";
-import { ulid } from "./ids.ts";
 import type {
   GuardianGroupRecord,
   HandoffRequestRecord,
@@ -238,7 +237,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        const wrapId = ulid();
+        // wrap_id はクライアント採番(AAD が束縛する — CRYPTO_SPEC §8.1)
+        const wrapId = payload.wrapId;
         const params: PasskeyParams = {
           credentialIdHex: payload.credentialIdHex,
           prfSaltHex: payload.prfSaltHex,
@@ -254,8 +254,12 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           nowMs: Date.now(),
           actor: auditActorOf(principal),
         });
-        if (decision === "limit") {
-          return yield* Effect.fail(new KeyWrapPolicyError({ reason: "too-many-passkeys" }));
+        if (decision !== "created") {
+          return yield* Effect.fail(
+            new KeyWrapPolicyError({
+              reason: decision === "limit" ? "too-many-passkeys" : "duplicate-id",
+            }),
+          );
         }
         return { wrapId };
       }),
@@ -335,7 +339,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         if (missing.length > 0) {
           return yield* Effect.fail(new KeyWrapPolicyError({ reason: "unknown-guardian" }));
         }
-        const groupId = ulid();
+        // group_id はクライアント採番(AAD / 分片 info が束縛する — CRYPTO_SPEC §8.3)
+        const groupId = payload.groupId;
         const decision = yield* repo.guardianCreate({
           userId: principal.userId,
           groupId,
@@ -346,8 +351,12 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           nowMs: Date.now(),
           actor: auditActorOf(principal),
         });
-        if (decision === "limit") {
-          return yield* Effect.fail(new KeyWrapPolicyError({ reason: "too-many-groups" }));
+        if (decision !== "created") {
+          return yield* Effect.fail(
+            new KeyWrapPolicyError({
+              reason: decision === "limit" ? "too-many-groups" : "duplicate-id",
+            }),
+          );
         }
         return { groupId };
       }),
