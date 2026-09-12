@@ -748,7 +748,11 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 - **`guardian list --project`** は台帳の保護者 FP をチェーン導出の現鍵と突合し、離脱 / 鍵更新の保護者を STALE + 警告(all では「このグループでは復元できない」と明示)
 - **台帳 id の採番は `@maruhi/core` の `ulid`** へ共有化(サーバーの `ids.ts` は再エクスポート。fallow の重複検出で判明)
 - テスト: `apps/cli/test/handoff.test.ts`(9 件 — 端末移行 / 保護者 any の roundtrip、文脈不一致の中止、既存鍵 / エージェント / 非端末の拒否、承認者の device / 保護者経路、yes 以外・不明要求・不正コード)、`guardian.test.ts`(9 件 — any / all の roundtrip、儀式失敗、前提検査、エージェント拒否、STALE 表示、remove / wards)。`bun run check` 通過(121 ファイル / 2980 件)
-- 残: K5(passkey PRF の localhost ページ + `agent --key-ttl`。K0 スパイク前置 — PRF の実機確認に所有者のハードウェアが要る)→ K6(docs: `/docs/linux-keychain` の更新・getting-started・リカバリーの新ページ)
+
+**K5(部分 — agent TTL)**: `maruhi agent --key-ttl <n><s|m|h>`(19-3 (c))。`apps/cli/src/agent.ts` の保持先を `makeAgentStore` に切り出し、master 鍵エントリ(`master::` 接頭辞)だけを期限で忘れる(トークンは残す = 再ログイン不要。set のたびに期限が延びるので取り直した鍵は新しい期限を持つ。掃除は要求ごと)。ワイヤプロトコルは不変(期限切れは `get` の null / `list` の不在として現れる)。「次の鍵操作は取り直しの案内になる」は `loadMasterKeys` の「鍵なし」文言を全キーチェーン共通で改めて満たした(`maruhi key recover` / `--handoff` / 初回なら `generate` の順 — 旧文言「Generate one」は鍵を持つ人へ新規生成を勧める誤誘導だった)。テストは `agent.test.ts`(偽時計での期限・延長・トークン残存、書式違いの exit 2、案内の stderr)。**passkey PRF(localhost ページ・`key seal passkey` / `key recover --passkey`)は未着手** — K0 スパイクに所有者のハードウェア(認証器 × ブラウザの PRF 対応)が要るため、所有者の K0 実施を待つ。
+
+**K6(docs — 実装済み経路ぶん)**: 新ページ `/docs/recover-your-key`(3 経路: リカバリーコード / 端末ハンドオフ / 保護者。上限とゲートの明記。passkey は書かない — 未実装)、`/docs/linux-keychain` は Codespaces / dev container の手順をハンドオフ最上位へ書き換え(`maruhi agent -- bash` → `login` → `key recover --handoff` → 手元で `key approve`)+ `--key-ttl` の節、getting-started の step 4 から導線。ROADMAP KL 行を更新。`bun run check` 通過(121 ファイル / 2982 件)。
+- 残: K0 スパイク(所有者)→ K5 の passkey 部分 → `/docs/recover-your-key` へ passkey 経路を追記
 
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 

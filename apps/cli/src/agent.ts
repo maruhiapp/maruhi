@@ -54,7 +54,7 @@ import { Effect } from "effect";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
-import type { KeychainShape } from "./keychain.ts";
+import { isMasterKeyEntryName, type KeychainShape } from "./keychain.ts";
 import { logWarning } from "./notice.ts";
 import { ProcessRunner } from "./run.ts";
 
@@ -181,6 +181,77 @@ export function handleAgentRequest(
   }
 }
 
+/**
+ * 保持先(`--key-ttl` — integration-options.md 補足 19-3 (c))。master 鍵の
+ * エントリだけを期限で忘れ、トークンは残す(再ログイン不要。鍵は
+ * `maruhi key recover` で取り直す)。期限は set のたびに延びる(取り直した
+ * 鍵は新しい期限を持つ)。時計は差し替え可能(テスト)。
+ */
+export interface AgentStore {
+  /** 1 要求を適用する(期限切れの掃除 → 適用 → 期限の記録)。 */
+  readonly apply: (request: AgentRequest) => AgentResponse;
+  /** 保持内容をすべて捨てる。 */
+  readonly clear: () => void;
+}
+
+export interface AgentStoreOptions {
+  /** master 鍵エントリの寿命(ms)。未指定 = 子の寿命(従来どおり)。 */
+  readonly keyTtlMs?: number | undefined;
+  readonly now?: (() => number) | undefined;
+}
+
+export function makeAgentStore(options: AgentStoreOptions = {}): AgentStore {
+  const records = new Map<string, string>();
+  const expiries = new Map<string, number>();
+  const now = options.now ?? Date.now;
+  const sweep = (): void => {
+    const at = now();
+    for (const [name, expiresAt] of expiries) {
+      if (expiresAt <= at) {
+        records.delete(name);
+        expiries.delete(name);
+      }
+    }
+  };
+  return {
+    apply(request) {
+      sweep();
+      const response = handleAgentRequest(records, request);
+      if (
+        request.op === "set" &&
+        options.keyTtlMs !== undefined &&
+        isMasterKeyEntryName(request.name)
+      ) {
+        expiries.set(request.name, now() + options.keyTtlMs);
+      } else if (request.op === "remove") {
+        expiries.delete(request.name);
+      }
+      return response;
+    },
+    clear() {
+      records.clear();
+      expiries.clear();
+    },
+  };
+}
+
+/** `--key-ttl` の書式(数 + s / m / h。1 単位)。 */
+const KEY_TTL_PATTERN = /^(\d+)([smh])$/;
+const KEY_TTL_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000 } as const;
+
+/** `--key-ttl` の値を ms に読む(書式違い・0 は書き方の誤り)。 */
+export function parseKeyTtl(text: string): Effect.Effect<number, CliError> {
+  const match = KEY_TTL_PATTERN.exec(text.trim());
+  const amount = match === null ? 0 : Number(match[1]);
+  const unit = match?.[2] as keyof typeof KEY_TTL_UNIT_MS | undefined;
+  if (match === null || unit === undefined || !Number.isSafeInteger(amount) || amount <= 0) {
+    return Effect.fail(
+      usageError("Write --key-ttl as a number followed by s, m, or h (examples: 30m, 2h)"),
+    );
+  }
+  return Effect.succeed(amount * KEY_TTL_UNIT_MS[unit]);
+}
+
 /* -------------------------------------------------------------------------- */
 /* サーバー(agent プロセス側)                                                 */
 /* -------------------------------------------------------------------------- */
@@ -199,7 +270,7 @@ export interface AgentServer {
  * `server.close()`(全接続の終了を待つ)が戻らず、子が終わっても agent が
  * 残る(後始末が走らず、子の終了コードも返せない)。
  */
-function serveConnection(store: Map<string, string>, socket: Socket): void {
+function serveConnection(store: AgentStore, socket: Socket): void {
   let buffered = "";
   let answered = false;
   const answer = (response: AgentResponse): void => {
@@ -227,7 +298,7 @@ function serveConnection(store: Map<string, string>, socket: Socket): void {
     answer(
       request === null
         ? { ok: false, error: "malformed request (protocol version mismatch?)" }
-        : handleAgentRequest(store, request),
+        : store.apply(request),
     );
   });
   // 相手側(CLI)の切断・書き込み失敗。報告先が無い: 失敗したのは相手の要求で
@@ -244,9 +315,12 @@ function serveConnection(store: Map<string, string>, socket: Socket): void {
  * Starts listening on `<dir>/agent.sock` (mode 0600) with an empty in-memory
  * store. `dir` must already exist and be private to the user (0700).
  */
-export function startAgentServer(dir: string): Promise<AgentServer> {
+export function startAgentServer(
+  dir: string,
+  options: AgentStoreOptions = {},
+): Promise<AgentServer> {
   const socketPath = join(dir, SOCKET_FILE_NAME);
-  const store = new Map<string, string>();
+  const store = makeAgentStore(options);
   // 開いている接続の台帳。close はこれを切ってから server.close を待つ
   // (server.close は自然に閉じるのを待つだけで、切ってはくれない)
   const connections = new Set<Socket>();
@@ -507,6 +581,8 @@ function socketBaseDir(envVar: (name: string) => string | undefined): string {
  */
 export function agentOp(input: {
   readonly command: readonly string[];
+  /** `--key-ttl`(ms)。未指定 = master 鍵も子の寿命まで保持する。 */
+  readonly keyTtl?: { readonly ms: number; readonly text: string } | undefined;
 }): Effect.Effect<number, CliError, CliIo | ProcessRunner> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -557,7 +633,7 @@ export function agentOp(input: {
     }).pipe(Effect.catch((error) => logWarning(error.message)));
     return yield* Effect.acquireUseRelease(
       Effect.tryPromise({
-        try: () => startAgentServer(dir),
+        try: () => startAgentServer(dir, { keyTtlMs: input.keyTtl?.ms }),
         catch: (error) =>
           cliError(
             `Cannot listen on the agent socket${errnoSuffix(error)}. Nothing was stored; check that the directory is on a filesystem that supports Unix domain sockets`,
@@ -570,6 +646,11 @@ export function agentOp(input: {
           yield* io.logError(
             "Agent session started: tokens and keys you sign in with or recover here stay in memory only, and are discarded when the command exits",
           );
+          if (input.keyTtl !== undefined) {
+            yield* io.logError(
+              `The master key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. Recover the key again with \`maruhi key recover\` when a command reports it is missing`,
+            );
+          }
           return yield* runner.runSession({
             command: input.command,
             env: { [AGENT_SOCKET_ENV]: server.socketPath },

@@ -23,6 +23,7 @@ import {
   encodeAgentRequest,
   handleAgentRequest,
   makeAgentKeychain,
+  makeAgentStore,
   parseAgentRequest,
   parseAgentResponse,
   startAgentServer,
@@ -157,6 +158,33 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     const listed = handleAgentRequest(store, { v: 1, op: "list" });
     expect(listed).toEqual({ ok: true, names: ["token::https://a", "master::https://a::u1"] });
     expect(JSON.stringify(listed)).not.toContain("secret");
+  });
+
+  it("--key-ttl: master 鍵エントリだけを期限で忘れ、トークンは残す(set で期限が延びる)", () => {
+    let clock = 1_000;
+    const store = makeAgentStore({ keyTtlMs: 100, now: () => clock });
+    const token = tokenEntryName("https://a");
+    const master = masterKeyEntryName("https://a", "u1");
+    store.apply({ v: 1, op: "set", name: token, value: "t" });
+    store.apply({ v: 1, op: "set", name: master, value: "m" });
+    clock = 1_099;
+    expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m" });
+    // 取り直し(set)は新しい期限を持つ
+    store.apply({ v: 1, op: "set", name: master, value: "m2" });
+    clock = 1_150;
+    expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m2" });
+    clock = 1_198;
+    expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token, master] });
+    // 期限到来(1099 + 100): 鍵は消え、トークンは残る(status の一覧からも消える)
+    clock = 1_199;
+    expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: null });
+    expect(store.apply({ v: 1, op: "get", name: token })).toEqual({ ok: true, value: "t" });
+    expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token] });
+    // TTL 無しなら期限は付かない
+    const forever = makeAgentStore({ now: () => clock });
+    forever.apply({ v: 1, op: "set", name: master, value: "m" });
+    clock = Number.MAX_SAFE_INTEGER;
+    expect(forever.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m" });
   });
 });
 
@@ -371,6 +399,18 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(await runCli(["agent", "sh", "--", "bash"], env.layer)).toBe(2);
     expect(env.sessionCalls).toEqual([]);
     expect(env.errors.join("\n")).toContain("after `--`");
+  });
+
+  it("--key-ttl は数 + s/m/h だけを受け、案内を stderr に出す(書式違いは 2)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["agent", "--key-ttl", "90", "--", "bash"], env.layer)).toBe(2);
+    expect(await runCli(["agent", "--key-ttl", "0m", "--", "bash"], env.layer)).toBe(2);
+    expect(await runCli(["agent", "--key-ttl", "1d", "--", "bash"], env.layer)).toBe(2);
+    expect(env.sessionCalls).toEqual([]);
+    expect(env.errors.join("\n")).toContain("Write --key-ttl as a number followed by s, m, or h");
+    expect(await runCli(["agent", "--key-ttl", "2h", "--", "bash"], env.layer)).toBe(0);
+    expect(env.sessionCalls).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain("The master key is forgotten 2h after it is stored");
   });
 
   it("`agent -- status` は子コマンドの実行であってサブコマンドではない(`--` を跨がない)", async () => {

@@ -65,7 +65,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
-import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp } from "./agent.ts";
+import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
@@ -357,6 +357,10 @@ const runConfig = {
  * 保持先を用意するだけ)。
  */
 const agentConfig = {
+  "key-ttl": singleValued(
+    "key-ttl",
+    "Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits",
+  ),
   command: Argument.string("command").pipe(
     Argument.withDescription(
       "The command to run inside the agent session, written after `--` (usually a shell)",
@@ -2267,7 +2271,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
       const command = yield* commandAfterTerminator(values.command);
-      onExitCode(yield* agentOp({ command }));
+      const keyTtl =
+        values["key-ttl"] === undefined
+          ? undefined
+          : { ms: yield* parseKeyTtl(values["key-ttl"]), text: values["key-ttl"] };
+      onExitCode(yield* agentOp({ command, keyTtl }));
     }),
   ).pipe(
     Command.withDescription(

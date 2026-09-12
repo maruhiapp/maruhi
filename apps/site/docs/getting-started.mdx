@@ -41,7 +41,7 @@ The token is stored in the OS keychain. On a headless Linux box, in WSL, or in a
 maruhi key generate
 ```
 
-This runs on a human's machine and issues a recovery code. Keep it somewhere safe: maruhi is zero-knowledge, so nobody can recover your key for you.
+This runs on a human's machine and issues a recovery code. Keep it somewhere safe: maruhi is zero-knowledge, so nobody can recover your key for you. To bring the same key to a second machine later, run `maruhi key recover --handoff` there and approve from this one — [Recover your key](/docs/recover-your-key) covers that, the recovery code, and guardians (teammates who can help restore the key when everything else is lost).
 
 ## 5. Create a project and push a secret
 

@@ -1,0 +1,90 @@
+---
+title: Recover your key
+description: Three ways to get your master key onto a machine that does not have it — a recovery code, an approval from another device of yours, or approvals from guardians you designated.
+sidebar:
+  order: 6
+---
+
+Your master key is created once, by `maruhi key generate`, and lives only in the OS keychain (or in a running `maruhi agent`). maruhi is zero-knowledge: the server holds encrypted copies at most, so it can never hand the key back to you on its own. When a new laptop, a rebuilt dev container, or a Codespace needs the key, one of the three paths below brings the _same_ key there — you keep your place in every project without being re-invited.
+
+| Path                                                        | What you need                                              | Typical use                                       |
+| ----------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------- |
+| [Recovery code](#recovery-code)                             | The 52-character code shown by `maruhi key generate`       | Lost every device, or a machine you set up rarely |
+| [Handoff from another device](#handoff-from-another-device) | A device that still has the key, and you at both keyboards | A new laptop, a Codespace, a container rebuild    |
+| [Guardians](#guardians)                                     | Teammates you designated beforehand, and a call to them    | Lost every device _and_ the recovery code         |
+
+Every path ends in the same state: the key is stored on the new machine, and `maruhi key show` prints its fingerprint. All of them run only on a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI agent environments are refused), because the recovered key lands on that machine.
+
+## Recovery code
+
+`maruhi key generate` wraps your key with a random code, stores the wrapped copy on the server, and shows the code once. On a machine without the key:
+
+```sh
+maruhi login
+maruhi key recover            # asks for the recovery code
+```
+
+The server allows five recovery fetches per user per hour, so this is for occasional loss, not for daily container churn — use a handoff for that. `maruhi key recovery` issues a new code (the old one stops working) if you suspect the code was seen by someone else.
+
+## Handoff from another device
+
+A handoff moves the key from a device that has it to one that does not, without the recovery code and without registering anything on the server in advance. The new device shows a short code, you type that code on the old device and approve, and the key arrives.
+
+On the **new** device:
+
+```sh
+maruhi login
+maruhi key recover --handoff
+```
+
+It prints a code in groups of four letters and waits. The code is a one-time public key, not a secret: anyone who sees it can only send _you_ an approval. On the **old** device, in the same account:
+
+```sh
+maruhi key approve <code>      # asks you to type yes
+```
+
+The new device picks up the approval within a few seconds, stores the key, and prints who approved it. Requests expire after 15 minutes; run `maruhi key recover --handoff` again for a fresh code. Only approve codes you generated yourself moments ago — approving sends your master key to whichever device showed the code.
+
+Why this is safe to do over a screenshot or a chat window: the old device encrypts the key to the one-time key inside the code, so the server relays ciphertext it cannot open, and the new device's one-time key never leaves its memory. The server never sees the code itself; it only knows a hash of it.
+
+## Guardians
+
+Guardians are project teammates you designate in advance. Each guardian gets an encrypted share of a key that unlocks a copy of your master key. When you have lost every device and the recovery code, a guardian's approval (or all of them, depending on the mode you chose) restores it.
+
+### Designating guardians
+
+Guardians must be members of a project you share, because their public keys come from that project's verified membership chain — maruhi has no global key directory. Pick the mode:
+
+- `any` — one approval from any guardian is enough. Convenient, and each guardian alone could approve a request they believe is yours.
+- `all` — every guardian in the group must approve. Nobody can act alone; losing contact with one guardian makes the group unusable.
+
+```sh
+maruhi guardian add --project <project-id> --mode any <user-id> [<user-id> …]
+```
+
+For each guardian, the command shows their key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag, and it is refused in AI agent environments.
+
+`maruhi guardian list` shows your groups; with `--project <id>` it also checks every guardian's key against the project's current membership and marks a guardian who left, or who rebuilt their key with `maruhi key generate`, as `STALE`. A stale guardian cannot open their share, so remove that group and add it again. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
+
+### Recovering with guardians
+
+The requester's side is identical to a device handoff:
+
+```sh
+maruhi login
+maruhi key recover --handoff
+```
+
+Send the code to a guardian and ask them to run, on their own machine:
+
+```sh
+maruhi key approve <code>      # shows whose key it is, and asks for yes
+```
+
+Before typing `yes`, the guardian should confirm out of band — over a call to a number they already know — that you asked for this right now. Anyone who took over your account could show them a code. The guardian's command opens their share and re-seals it to the one-time key in the code; nothing is stored on the guardian's machine. In `all` mode, the new device keeps waiting until every guardian has approved.
+
+## Limits and rate limits
+
+- The new device refuses to start a handoff when it already holds a key (it would overwrite it); use `maruhi key show` to check.
+- Handoff requests: five per user per hour. Approvals: 20 per user per hour. Fetches of the encrypted key copies (recovery code and guardian groups together): five per user per hour.
+- Nothing on this page is scriptable on purpose: every path needs a human at a terminal, and the code entry or approval is refused when maruhi detects an AI agent environment.

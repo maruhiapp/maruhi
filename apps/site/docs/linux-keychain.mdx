@@ -37,7 +37,7 @@ Inside that shell, every maruhi command uses the agent instead of the OS keychai
 
 ```sh
 maruhi login                        # the token now lives in the agent, not in a keychain
-maruhi key recover                  # restores your existing master key into the agent …
+maruhi key recover --handoff        # restores your existing master key into the agent (approve on a device that has it) …
 maruhi key generate                 # … or, on a brand-new account, creates one there
 maruhi run -- npm run dev           # works as on any other machine
 exit                                # the agent forgets everything and exits with the shell
@@ -46,7 +46,8 @@ exit                                # the agent forgets everything and exits wit
 What to know before relying on it:
 
 - **Lifetime is the shell's lifetime.** When the command you started exits, the agent discards the token and key and removes its socket. There is nothing to clean up and nothing to leak into the next session — and nothing survives, so a new shell means `maruhi login` (and `maruhi key recover`) again. For machines you return to daily, set up the keyring below instead.
-- **Recovery limits still apply.** `maruhi key recover` needs a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery-blob fetches per user per hour. Do not script it.
+- **Getting the key in is a ceremony.** `maruhi key recover --handoff` shows a code; type it into `maruhi key approve` on a device that already has the key (a guardian can approve too — see [Recover your key](/docs/recover-your-key)). Both ends need a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five handoff requests per user per hour. Do not script it. `maruhi key recover` with the recovery code works as well, with the same terminal rule and five fetches per hour.
+- **Optionally forget the key early.** `maruhi agent --key-ttl 2h -- bash` drops the master key from memory two hours after it is stored while keeping the token, so a shell left open on a shared machine does not hold the key indefinitely. The next command that needs the key says it is missing; run `maruhi key recover --handoff` again. Accepted units are `s`, `m`, and `h`.
 - **Same trust boundary as a keychain.** Any process running as your user can talk to the socket (the directory and the socket are `0700` / `0600`), just as it could read a Secret Service keyring you unlocked. Commands started by `maruhi run` do not inherit `MARUHI_AGENT_SOCK` — like every other `MARUHI_*` variable, it is not passed to the child — so the tool you run with injected values does not silently get a session of its own.
 - **One agent at a time.** Starting `maruhi agent` inside an agent session is refused; the outer one already holds your keys. `maruhi logout` inside the session removes the token from the agent and revokes it on the server, the same as it would with a keychain. `maruhi agent status` lists what the session holds (which server's token, whose master key) without showing any value.
 - **Linux and macOS.** Windows has the Credential Manager and needs none of this; `maruhi agent` is refused there.
@@ -81,9 +82,9 @@ What this does, and what to expect:
 The setup above applies inside containers too: put the three packages in the image (or `postCreateCommand`), and run the session-bus + unlock lines in each shell — both paths below need a working Secret Service first (`maruhi login` writes to the keychain). On top of that, a container rebuild discards the home directory, and with it `~/.local/share/keyrings` — the new container is, from maruhi's point of view, a new machine with no token and no master key. The two bullets only decide whether the keyring _data_ survives the rebuild:
 
 - **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. After the per-shell unlock, your token and master key are right where you left them.
-- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. Know the limits before relying on it: entering a recovery code requires a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery fetches per user per hour. Recovery codes are made for occasional loss, not for daily container churn — prefer the volume when rebuilds are frequent or driven by automation.
+- **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover --handoff`: the container shows a code, you run `maruhi key approve <code>` on your laptop (which has the key), and the _same_ master key arrives — no recovery code to type, nothing registered in advance, and you keep your place in every project without being re-invited. Both ends need a human interactive terminal, and the server allows five handoff requests per user per hour. `maruhi key recover` with the recovery code is the fallback when no device of yours has the key (five fetches per hour). Neither is made for automated container churn — prefer the volume when rebuilds are frequent or driven by automation.
 
-If you would rather not install a keyring in the container at all, run the same two commands inside `maruhi agent -- bash` ([above](#keep-secrets-in-memory-for-one-shell-maruhi-agent)): no packages, no unlock step, and the same recovery limits.
+If you would rather not install a keyring in the container at all, run the same two commands inside `maruhi agent -- bash` ([above](#keep-secrets-in-memory-for-one-shell-maruhi-agent)): no packages, no unlock step, and the same limits. This is the shortest path for a Codespace: `maruhi agent -- bash`, `maruhi login`, `maruhi key recover --handoff`, approve on your laptop.
 
 ## What works without a keychain
 

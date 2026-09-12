@@ -768,6 +768,9 @@ USAGE
 ARGUMENTS
   command... string    The command to run inside the agent session, written after `--` (usually a shell)
 
+FLAGS
+  --key-ttl string    Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits
+
 GLOBAL FLAGS
   --help, -h       Show help information
   --version, -v    Show version information
