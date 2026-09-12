@@ -603,6 +603,121 @@ maruhi は既に半分「分散型」(署名付きハッシュチェーン・ク
 - **可用性の正直な穴**: デプロイ時再適用も CI リースもホステッドの稼働に依存する。maruhi が落ちるとデプロイが止まる。分散型の答えはミラーだけで、それが後回しである以上、脅威モデル文書に「可用性は保証しない(G8)」として明記し、ステータスページで補う
 - 一回限りの共有(`maruhi share` — メンバーでない相手の公開鍵へ HPKE で包む。Doppler Share の CLI 版)・他 maruhi サーバーとの連合・オフラインの暗号文レプリカ(永続化規律に反する)は今は採らない
 
+### 補足 19: KL3 設計録 — master 鍵ラップ台帳(2026-09-12 — フェーズ 1 設計セッション。所有者承認待ち)
+
+KL3 = 封印バックアップを CRYPTO_SPEC §8 の一般化として設計する回。仕様改訂の**ドラフト本文**は docs/notes/kl3-spec-drafts.md(CRYPTO_SPEC §8 / AUTH_SPEC §13 / AUDIT_SPEC §3.1 の差し替え・追記案。正本は承認まで書き換えない)。本補足は設計の全体像・裁定の反復記録・KL2 保留項目の裁定・実装分割・承認依頼項目を持つ。
+
+#### 19-1. 全体像 — 台帳の構造と受信者
+
+**問題の再定義**: 今の §8 は「master 鍵ブロブ B を、リカバリーコード由来の KEK 1 つで包んでサーバーに置く」1 経路しかない。KL(キーチェーン不在)・端末移行・保護者リカバリー・パスキー PRF は、いずれも「**B をもう 1 つの受信者へ包む**」問題であり、受信者の型が違うだけである。よって「master 鍵ラップ台帳」= **同じ B に対する、受信者ごとのラップの集合**として一般化する。B(キーチェーンの `StoredMasterKey` レコードの JSON 直列化)・スイート・master 鍵そのものは変えない。
+
+```
+master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
+│
+├─ クラス S: 対称 KEK(台帳行 1 = ラップ 1)
+│   ├─ recovery-code  KEK = HKDF(code, salt=空, info="maruhi/v1/recovery")        … 既存 §8 と 1 バイトも変えない
+│   └─ passkey-prf    KEK = HKDF(prf_out, salt=空, info="maruhi/v1/passkey-prf")  … prf_out = WebAuthn PRF(credential, prf_salt〔登録ごとの乱数〕)
+│        ラップ = AES-256-GCM(KEK, B, AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode))
+│
+├─ クラス G: 保護者グループ(台帳行 = グループ 1 + 分片 n)
+│   グループ KEK = 乱数 256-bit。ラップ = 上と同じ AES-GCM(kind = "guardian", wrap_ref = group_id, mode = any|all)
+│   分片: mode=any → 全員 s_i = KEK(誰か 1 人で足りる)/ mode=all → s_1..s_{n-1} 乱数, s_n = KEK ⊕ s_1 ⊕ … ⊕ s_{n-1}(全員が要る)
+│   各分片 = HPKE Seal(保護者 i の enc 公開鍵, s_i, info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode, share_index, guardian_user_id))
+│
+└─ クラス H: ハンドオフ(一時受信者。台帳に永続行を持たない — §9.1 リースラップと同じ「応答スコープ」)
+    要求者(新端末)が一時 X25519 鍵 E をメモリ内で生成。**ハンドオフコード = Base32(E.pub ‖ checksum)を人が運ぶ**(サーバーは E.pub を中継しない)
+    request_id = lower_hex(SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex)))
+    承認 = HPKE Seal(E.pub, 32 バイト値 v, info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index, approver_user_id))
+      保護者の承認: v = 自分の分片 s_i(台帳から取得 → 自鍵で Open → **その場で E.pub へ再封印**。source = group_id)
+      旧端末の承認: v = 新規乱数 KEK_h(source = "device", share_index = 0)+ AES-GCM(KEK_h, B, AAD = master-wrap 形〔kind="device", wrap_ref=request_id〕)を同送
+    要求者: v を集めて KEK を復元(any: 1 片 / all: 全片の XOR / device: そのまま)→ B を復号 → importMasterKeys の自己検証 → キーチェーン(または agent メモリ)へ
+```
+
+**受信者と流れの対応表**:
+
+| 受信者 | クラス | 登録するもの(誰が・いつ) | 復元の流れ | 本人以外に要る人 |
+|---|---|---|---|---|
+| リカバリーコード | S | 既存どおり(`key generate` / `key recovery`) | 既存どおり `key recover`(GitHub ログイン + コード入力) | なし |
+| パスキー PRF | S | `maruhi key seal passkey`: CLI が配る localhost ページで passkey を作成・PRF を取得 → KEK → ラップ登録(credential_id・prf_salt は公開パラメータとして台帳に併置) | `key recover --passkey`: 台帳のブロブ取得 → localhost ページで PRF 取得(生体認証 1 回)→ 復号 | なし |
+| 保護者(1-of-n / n-of-n) | G | `maruhi guardian add`(ward = 本人): 保護者候補は**共有プロジェクトのチェーン導出メンバー**で、鍵は §6.5 の充足形(儀式 / フラグ / 指紋帳ヒット + yes)で確認したもの | `key recover --handoff` → コードを保護者へ帯域外で渡す → 保護者が `key handoff approve <コード>`(声で本人確認 → 承認)→ 要求者が分片を集めて復号 | 保護者 1 人(any)/ 全員(all) + 本人の GitHub ログイン |
+| 自分の旧端末(端末移行) | H | 登録不要(旧端末が master 鍵を持っている) | 新端末で `key recover --handoff` → コードを旧端末へ(同一人物なのでコピー&ペースト)→ 旧端末で `key handoff approve <コード>` → 新端末が復号 | なし(自分の 2 台) |
+
+**要求者の手順は受信者に依らず 1 本**(`key recover --handoff` は「誰が承認するか」を知らない — 承認は旧端末でも保護者でもよく、届いた承認の source で組み立てる)。承認者側も 1 コマンド(`key handoff approve`: ward = 自分なら端末移行、他人なら保護者承認 — 所属グループが無ければ拒否)。
+
+**KL(キーチェーン不在)との接続**: Codespaces / devcontainer では `maruhi agent -- bash` の中で `key recover --handoff` を実行し、表示されたコードを手元のラップトップの端末へ貼って承認する。鍵は agent のメモリに着地し、コード入力もリカバリーコードも要らない。パスキー PRF は「手元に旧端末が無い」場合(自分 1 台 + 同期パスキー)の経路。
+
+**§8 との互換**: recovery-code 行は既存の `recovery_wraps` 表・既存の AAD / info・既存のテストベクター(`recovery-wrap.json`)のまま。台帳は「既存行 + 新しい表」の和集合であり、既存ブロブの再ラップ・マイグレーションは無い。
+
+#### 19-2. 裁定の反復記録
+
+各裁定点で「案の列挙 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数はその回数。
+
+| 裁定点 | 巡 | 検討した案と評価 | 結論 |
+|---|---|---|---|
+| A. 台帳の構造 | 3 | ① `recovery_wraps` に kind 列を足す(平ら): 保護者の「グループ + 分片」が 1 行に収まらず、既存行の意味が変わる。② **クラス S / G / H の 3 型**(採用): 対称 KEK 行・グループ + 分片・応答スコープの一時受信者。③ 全受信者を HPKE 受信者に統一(パスキーも「PRF から X25519 鍵を決定論導出」): device-key-sealing.md §4 の「PRF 直接導出」と同じ欠点(認証器に不可逆に縛られる)+ 仕様に無い鍵導出。④ 銀の弾丸候補 = **デバイス鍵分離(未決 #2)**: 各端末が固有鍵を持てば「鍵を運ぶ」問題自体が消えるが、§3 / §5 / §6.2 / AUTH の大改訂で、リカバリー(鍵喪失)と ephemeral 環境(その端末の鍵も消える)は解かない — 補完関係であり置換ではない。⑤ 銀の弾丸候補 = 委任 + 転送 agent(KL2 反復記録): 鍵を運ばず遠隔で使う。SSH 経路限定・Web Codespaces で不成立・リカバリーを解かない | ② を採用。④ は将来(未決 #2 のまま)、⑤ は KL4(19-3 (a)(b)) |
+| B. 対称 KEK の導出(パスキー) | 3 | ① HKDF(prf_out, salt=空, info) — §8 と同型(採用)。PRF 出力は 32 バイトの一様乱数で RFC 5869 §3.1 の前提を満たす。② PBKDF2 / Argon2id: 不要(高エントロピー)。パスフレーズ由来は前提どおり不採用。③ PRF の eval 入力(WebAuthn の `prf.eval.first`)を固定文字列にする vs **登録ごとの乱数 prf_salt**(採用): 固定だと KEK が credential の固定関数になり、一度漏れた KEK が再登録後のラップも開く。乱数なら再登録 = 新 KEK で「再発行 → 旧ラップ削除」の意味論が成立する。prf_salt は公開パラメータ(台帳に併置)。④ prf_out をそのまま AES 鍵にする: HKDF を挟むのは用途分離(info)のため。維持 | ① + ③ |
+| C. 保護者の閾値構成 | 4 | ① 1-of-n = 各保護者へ KEK を丸ごと HPKE(採用 = mode any)。② n-of-n = **乱数 XOR 分割**(採用 = mode all。s_n = KEK ⊕ 他)。情報理論的に安全な標準構成で新プリミティブ無し。③ k-of-n Shamir: 制約により不採用。④ HPKE の入れ子(A の鍵で包んだものを B の鍵で包む — 補足 17 の 2-of-2 二重ラップ): n-of-n と同じ効果だが**逐次依存**(B が開いてから A)になり、承認が並列にできず承認者間で中間値を運ぶ経路が要る。XOR は各保護者が独立に自分の分片を要求者へ再封印できる(上位互換 = XOR)。⑤ 1 人の保護者が複数グループに入る・any と all を併用する: 台帳がグループ単位なので自然に可能(グループ ≤ 5、n ≤ 5 の受理ポリシー)。⑥ 銀の弾丸 = 保護者を要らなくする(パスキー同期に頼る): 認証器・エコシステム喪失で詰む。保護者は「人間側の冗長性」で代替不能 | ① + ② + ⑤ |
+| D. ハンドオフ鍵(要求者の一時公開鍵)の運搬 | 4 | ① サーバーが E.pub を中継し、両画面に確認コードを出して照合(補足 17 の当初案)。**短い確認コードは不可**: 一方の鍵を攻撃者(サーバー)が選べるため第二原像探索が 2^N で、§3 の「短縮コードへの切り詰めは行わない」と同じ理由で **12 語**が要る。② ①の 12 語版: 成立するが、儀式(通話で 12 語読み上げ)を新設する。③ ZRTP 型 commit-then-reveal で短縮: 新プロトコル = 禁止。④ QR: 所有者裁定でやらない(リモートで効かない)。⑤ **E.pub 自体を人が運ぶ**(採用): コード = Base32(E.pub 32 B ‖ SHA-256 チェックサム 4 B)≈ 58 文字。サーバーは E.pub を**一度も見ない**ので鍵すり替えの余地が構造的に無く(IV1 の「bind はサーバーに渡らない」と同じ型)、照合儀式が不要になる。運ぶ経路(Slack / 電話 / 自分のクリップボード)が能動的に改竄される脅威は招待リンクと同じ「信頼できる経路で渡す」規律に帰着。保護者は依然「誰から来たコードか」を声で確かめる(なりすまし対策の本体) | ⑤。②は採らない(⑤の下位互換) |
+| E. 承認の payload の形 | 3 | ① B を直接 E.pub へ HPKE(端末移行向け): 保護者経路は分片しか持たないので形が 2 つになる。② **常に「32 バイト値 v を E.pub へ HPKE」+ ブロブは AES-GCM 側**(採用): 端末移行は新規乱数 KEK_h で B をラップして同送、保護者は台帳のグループブロブを要求者が取得。要求者側の組み立て(v を集める → KEK → AES-GCM open)が 1 本になる。③ 承認者が要求者向けの**永続**ラップ行を台帳に登録する: 一時鍵宛の長寿命ラップが残り、E は要求者のプロセスとともに消えるので開けなくなるだけの死骸になる。応答スコープ(TTL 15 分・要求者以外は開けない)が正しい | ② |
+| F. 保護者の公開鍵の出所 | 3 | ① グローバル公開鍵ディレクトリ: §6.5 で禁止(同意なき参照の構造)。② **共有プロジェクトのチェーン導出メンバー + §6.5 の明示確認の充足形**(採用): add_member payload の鍵は招待者が確認したもの。指紋帳(KF)のヒットなら読み上げ免除 + yes、無ければ 12 語儀式 / フラグ。新しい信頼オブジェクトを作らない。③ 招待リンク型の握手(保護者が「保護者受諾」を署名): 保護者の同意を暗号で取れるが、儀式が 1 つ増える。承認は保護者の能動操作なので、同意なし指名でも保護者が困る面は「自分の CLI に ward が表示される」だけ。v1 では省く。④ IV2 の GitHub 署名鍵ディレクトリ: 将来の裏付け元として合成可能(KL3 を変えずに足せる)。⑤ 保護者の鍵更新(`key generate` で別鍵)の追随: 台帳に保護者の FP を併置し、`guardian list` がチェーン導出の現鍵と突合して「stale — 再登録」を警告する(all モードでは 1 人の stale でグループが死ぬため必須の UX) | ② + ⑤。③④は後続 |
+| G. 端末移行の機構 | 2 | ① 「旧端末 = 自分自身が保護者」として事前登録(台帳に device 行): 旧端末は B を持っているので事前登録は無意味で、端末を失ったときに残る行は誰も開けない。② **一時承認バンドル**(採用 — E の ②): 承認時に KEK_h とラップを生成し応答スコープで運ぶ。台帳に行を持たない | ② |
+| H. 保存の形(D1) | 2 | ① 既存 `recovery_wraps` を汎用台帳表へマイグレーション: 既存行の移送とレート制限計数の付け替えが要り、得るものは表の数だけ。② **既存表は据え置き + 新表 4 つ**(採用): `master_key_wraps`(S: passkey-prf)/ `guardian_groups` / `guardian_shares` / `key_handoff_requests` + `key_handoff_approvals`。ブロブ取得のレート制限は**種別合算の user 単位 1 窓**(専用カウンタ行 — `recovery_wraps` の計数列は合算窓へ読み替える) | ② |
+| I. PRF の取得経路 | 3 | ① 運営配信 Web: ADR-0018 と衝突(補足 12 L4-b (i))。② **CLI が配る localhost ページ**(採用 — 補足 12 (ii)): 127.0.0.1 の乱数ポート、URL にワンタイムトークン、Origin 検査、応答は PRF hex の 1 POST のみ、値・鍵素材を DOM に出さない。**CLI 初の TCP リスナー**(ADR-0018 改訂 1・4 項が指摘する localhost の面)。rpId = `localhost`(ポート非依存 → VS Code のポート転送・WSL で成立。**ブラウザ版 Codespaces は転送 URL が github.dev になり rpId 不一致 → `gh codespace ports forward` で手元へ引く案内が要る**)。③ CTAP2 hmac-secret をネイティブ(libfido2 / FFI): プラットフォーム認証器(Touch ID / Windows Hello)に届かず、依存が最大級(device-key-sealing.md §5-2 / -3)。④ 銀の弾丸 = PRF を使わずパスキー**同期**そのものに… 不可(パスキーは秘密を吐かない。PRF が唯一の口)。残余: localhost の任意ページが同じ rpId で儀式を起動できる(ユーザーの同意プロンプトが境界。ブロブは認証済み取得が要るので PRF 単体では無価値)。パスキーマネージャ上の表示名が "localhost" になる(user.displayName に `maruhi · <server host>` を入れて識別) | ②。スパイク K0 を前置(19-4) |
+| J. レート制限・ゲート | 2 | 既存の線を据え置き・拡張: ブロブ取得 = **種別合算 1 時間 5 回 / user**、ハンドオフ要求 5 回 / 時 / user、承認 20 回 / 時 / 承認者、要求 TTL 15 分、承認は要求者以外開けない(E はメモリ)。儀式(承認・PRF・復元)は TTY 3 チャネル + 非エージェント(ADR-0016 決定 7 の既存ゲートをそのまま)。セッション主体は全て拒否(§13-2 と同水準)。銀の弾丸候補 = 「レート制限を要らなくする」: 取得はブロブ持ち出しの試行なので二重防御の線として残す | 据え置き + 拡張 |
+| K. 監査事件 | 2 | 既存 2 事件(recovery_*)は名前を変えない。新規 9 事件(ドラフト参照)。保護者の分片取得・承認は**要監視**(ward の側にも target として現れる)。ハンドオフの「承認を集めた」事件を ward 側に残す(復元が起きた事実) | 採用 |
+| L. IV1 / IV2 との整合 | 1 | KL3 が触るのは §8 / §13(AUTH)/ §3.1(AUDIT)のみで、IV1(§6.5 + AUTH §15)と節が交わらない。保護者の鍵出所は §6.5 の充足形を**参照**するだけなので IV1 で儀式が既定廃止になっても「確認済みの鍵」の定義に追随する。IV2 は F ④ として合成可能。版番号は CRYPTO_SPEC 0.9-draft(KL3)→ 0.10-draft(IV1)の順を仮置き | 妨げなし |
+
+**設計の上限確認(反復の打ち止め)**: 各裁定点で最後の巡に新案が出なかった。全体として「§8 の構造(HKDF + AEAD、AAD 束縛)+ §5 / §9.1 の HPKE 単発 Seal + XOR」だけで構成でき、**新しいプリミティブ・新しいプロトコルは無い**(XOR 分割は情報理論的秘密分散の標準形で、§5.2 の SHA-256 コミットメントと同じ「既存部品の適用」の位置づけ)。仕様に無い暗号操作が必要になる箇所は見つからなかった。
+
+**脅威と残余(脅威モデル文書へ写す候補)**: (1) 保護者(any なら 1 人)+ 本人アカウントの奪取者の共謀で復元できる — 保護者は「その相手」として信頼する(all で緩和)。(2) 本人アカウントの奪取者が保護者へなりすまして承認を得る — 声の本人確認が境界(サーバーは証明できない)。(3) ハンドオフコードの経路が能動改竄されると別鍵へ承認が向く — 招待リンクと同じ「信頼できる経路」規律。改竄された E.pub の承認は攻撃者が開けるが、攻撃者は要求者として ward のアカウント認証も要る(ブロブ取得・承認取得は ward 認証必須)。(4) パスキー: localhost の任意ページによる儀式起動(同意プロンプトが境界)。(5) 保護者・旧端末の機械は分片 / B を承認の瞬間だけメモリに持つ(保存しない)。
+
+#### 19-3. KL2 反復記録の保留項目 (a)〜(d) の裁定
+
+| 項目 | 巡 | 検討と評価 | 裁定 |
+|---|---|---|---|
+| (a) 委任モデル(agent が署名 / HPKE open を代行し鍵素材をソケットに出さない) | 2 | KL3 で agent が新たに担うべき master 鍵操作は 3 つ(保護者分片の open・ハンドオフ用 seal・端末移行の B ラップ)。今ここで委任化すると約 30 + 3 箇所の改修が KL3 の CLI 段に載り、ベータゲートが 1 週伸びる。一方で、台帳の設計は委任と衝突しない(3 操作はいずれも「鍵で 1 回演算する」狭い操作で、ADR-0018 改訂 1 の操作別契約に載る形)。上位互換 = 「KL3 の新規操作を `MasterKeyOps` 相当の狭い関数群経由で書いておく」(費用ほぼゼロ) | **KL3 では採らない。KL4(招待制ベータ後)として ROADMAP に置く**。KL3 の CLI 実装は 3 操作を `apps/cli/src/master-ops.ts`(仮)の関数経由で書き、`MasterKeys` を直に触らない(KL4 でサービス化する下地) |
+| (b) 転送 agent(手元の agent を `ssh -R` で遠隔へ) | 2 | KL3 のハンドオフで「Codespace へ鍵を移す」経路ができ、転送の主目的(遠隔で鍵を使う)は代替される。残る価値は「鍵が手元から出ない」= (a) と不可分。未検証・Web Codespaces で不成立の制約は不変 | **採らない(KL4 で (a) と同時に再評価)**。公開 docs に書かない規律を維持 |
+| (c) agent の TTL / idle timeout | 2 | 前提「再取得が安くなってから」は KL3 で満たされる(パスキー = 生体認証 1 回、ハンドオフ = 旧端末で承認 1 回。いずれもリカバリーコード入力より安い)。ただし再取得はブロブ取得の合算窓(5 回 / 時)を消費するので、TTL は時間単位が実用域。上位互換 = 「master 鍵エントリだけ忘れ、トークンは残す」(再ログイン不要) | **採る(KL3 の CLI 段、K5)**: `maruhi agent --key-ttl <duration>`(既定なし = 従来どおり子の寿命)。期限で master 鍵エントリのみ破棄し、次の鍵操作は「`maruhi key recover --passkey` / `--handoff` で取り直す」案内の型付きエラーになる |
+| (d) gpg-agent 型の自動起動 UX | 1 | KL2 反復記録の評価(無期限常駐・古いソケット・XDG_RUNTIME_DIR 不在)は KL3 で変わらない。KL3 で再取得が安くなるぶん「入れ子シェルを毎回開く」摩擦は相対的に小さくなる | **採らない(据え置き)**。KL4 で (a) と一緒に再評価 |
+
+#### 19-4. 実装分割と人間レビュー箇所
+
+| 段 | 内容 | 概算 | 人間レビュー |
+|---|---|---|---|
+| K0 スパイク(使い捨て) | WebAuthn PRF の対応表(Chrome / Safari / Firefox × platform / roaming、Windows Hello)、rpId=localhost の成立、VS Code desktop / Web Codespaces / WSL のポート転送下での挙動、Bun での 127.0.0.1 リスナー + ワンタイムトークン。結果を docs/notes/spike-prf.md に | 1 日 | 結果の読み合わせ |
+| K1 仕様 | kl3-spec-drafts.md を正本(CRYPTO_SPEC §8 / §11 / §14.3、AUTH_SPEC §13、AUDIT_SPEC §3.1)へ反映。**この PR のマージ = 所有者承認** | 1 日 | 承認そのもの |
+| K2 crypto + ベクター | `test-vectors/master-key-wrap.json`(19-5)を**先に**コミット → `packages/crypto/src/internal.package/master-wrap.ts`(passkey KEK・master-wrap AAD・XOR 分割 / 結合・guardian-wrap・handoff-wrap・handoff-id・ハンドオフコードの符号化)。`recovery-wrap.json` は不変 | 2〜3 日 | **必須**(packages/crypto) |
+| K3 サーバー | D1 4 表 + マイグレーション、AUTH §13-6〜13-9 のエンドポイント、合算レート制限、監査 9 事件、`@cloudflare/vitest-plugin` テスト | 3〜4 日 | 認可(承認者 ∈ ward のグループ / ward = 自分)、要求 TTL と消費、セッション主体拒否の列挙 |
+| K4 CLI ①(ハンドオフ + 保護者) | `key recover --handoff`、`key handoff approve <code>`、`guardian add / list / remove`、`master-ops.ts`、agent 着地の確認、儀式のゲート | 3 日 | 承認前の本人確認 UX 文言、鍵素材の Redacted 規律 |
+| K5 CLI ②(パスキー + agent TTL) | localhost ページ(CLI 同梱の静的 HTML + 1 スクリプト、CSP `script-src 'self'`)、`key seal passkey`、`key recover --passkey`、`agent --key-ttl` | 2〜3 日 | **ローカル API の認証(ワンタイムトークン + Origin)**— CLI 初の TCP リスナー |
+| K6 docs + 実装録 | `/docs/linux-keychain`(Codespaces = ハンドオフの手順を最上位に)、getting-started の導線、新ページ「Recover your key」(3 経路)、ROADMAP KL 行、本補足に実装録 | 1 日 | — |
+
+順序: K0 → K1 → K2 → K3 → K4 → K5 → K6。**価値順は K4(ハンドオフ)> 保護者 > K5(パスキー)**: ハンドオフだけで Codespaces / 端末移行の摩擦が消え(コード 1 本のコピー)、リカバリーコード入力もサーバー登録も要らない。K5 は K0 の結果次第で並走に外せる(19-6 の承認項目 12)。
+
+#### 19-5. テストベクター(K2 で先行コミット)`master-key-wrap.json` の構成案
+
+- 正例: `passkey-prf-basic`(prf_out → KEK → AES-GCM。AAD の LP バイト列を併記)/ `guardian-any-2`(KEK・分片 = KEK × 2・固定 HPKE 一時鍵で Seal した分片・info バイト列)/ `guardian-all-3`(乱数 s_1, s_2 と s_3 = KEK ⊕ s_1 ⊕ s_2、3 分片)/ `handoff-guardian-share`(分片を E.pub へ再封印。info に request_id・group_id・share_index・approver)/ `handoff-device`(KEK_h + device 形 AAD の B ラップ + KEK_h の再封印)/ `handoff-id`(E.pub → request_id)/ `handoff-code`(E.pub → Base32 表示形 → 復号)
+- 負例: AAD の kind / wrap_ref / mode 差し替え(`any` ↔ `all` の付け替えを含む)・user_id 移植・guardian-wrap の share_index / guardian_user_id / group_id 移植・handoff-wrap の request_id / approver / source 移植・分片欠落(n−1 片の XOR は復号失敗)・チェックサム不一致のハンドオフコード・suite 不一致・prf_salt 差し替え(別 KEK)
+- README 規約 25 として「recovery-wrap.json は不変(バイト互換)」を明記。生成は既存 tools(`generate-dek-wrap.mjs` の固定一時鍵の作法)を流用
+
+#### 19-6. 所有者に承認を求める項目
+
+1. 台帳の構造 = クラス S / G / H の 3 型(19-1)。recovery-code は既存のバイト列・表・ベクターのまま(再ラップなし)
+2. ドメイン文字列と LP フィールド列 5 種: `master-wrap`(AAD)/ `passkey-prf`(HKDF info)/ `guardian-wrap`(HPKE info)/ `handoff-wrap`(HPKE info)/ `handoff-id`(SHA-256)— ドラフト §8 の本文
+3. n-of-n の乱数 XOR 分割を仕様に規定すること(mode any / all、n ≤ 5、グループ ≤ 5 / user)
+4. ハンドオフ鍵の運搬 = **人が運ぶコード**(サーバー中継 + 12 語照合を採らない — 裁定 D)
+5. 端末移行 = 一時承認バンドル(台帳に永続行を持たない — 裁定 E / G)
+6. 保護者の鍵の出所 = チェーン導出メンバー + §6.5 充足形。保護者の同意手続きは v1 で持たない(裁定 F)
+7. パスキー PRF の経路 = CLI 配布の localhost ページ(**CLI 初の TCP リスナー**・rpId = `localhost`・登録ごとの乱数 prf_salt)。K0 スパイクを前置(裁定 I)
+8. レート制限とゲート: ブロブ取得は種別合算 1 時間 5 回、ハンドオフ要求 5 回 / 時、承認 20 回 / 時、要求 TTL 15 分、儀式は既存の TTY + 非エージェントゲート、セッション主体は全拒否(裁定 J)
+9. 監査事件 9 種の追加と可視性(ドラフト AUDIT §3.1)
+10. KL2 保留項目の裁定: (a) 委任 = KL4 へ(ベータ後)、(b) 転送 = 採らない、(c) TTL = 採る(K5)、(d) 自動起動 = 採らない(19-3)
+11. 実装分割 K0〜K6 と順序、人間レビュー箇所(19-4)
+12. **ベータゲートの範囲**: 推奨 = ハンドオフ(端末移行)+ 保護者をゲート、パスキー(K5)は K0 の結果次第で並走に外してよい
+13. hosted Web(`apps/web`)は KL3 で触らない(台帳の状態表示は W 系列の後続。ADR-0018 の境界どおり登録・承認は端末限定)
+
+承認までフェーズ 2(実装)には入らない。
+
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
 競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
