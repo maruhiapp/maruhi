@@ -27,6 +27,11 @@ import { makeFileFloorStore } from "./floor-log.ts";
 import { floorDirOf, FloorStore } from "./floor.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
+import {
+  FingerprintBook,
+  fingerprintBookPathOf,
+  makeFileFingerprintBook,
+} from "./known-fingerprints.ts";
 import { shouldUseColor } from "./notice.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import {
@@ -495,6 +500,8 @@ export function liveLayer(): Layer.Layer<CliServices> {
     Layer.succeed(FloorStore, makeFileFloorStore(floorDirOf(configPath))),
     // 招待のアンカー・発行ピン(§6.3 (a))も同系(<config dir>/invites)
     Layer.succeed(PinStore, makeFilePinStore(pinsDirOf(configPath))),
+    // 検証済み指紋帳(KF)も同系(<config dir>/known-fingerprints.json)
+    Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

@@ -41,6 +41,11 @@ import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "./invite-link.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { Keychain, masterKeyEntryName } from "./keychain.ts";
+import {
+  confirmKnownFingerprint,
+  consultFingerprintBook,
+  type FingerprintBook,
+} from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
@@ -309,25 +314,47 @@ export type AcceptTarget =
  * - `--inviter-fingerprint <hex>`: 帯域外で控えた招待者 FP をリンクの `if=` と
  *   機械照合する(非対話の明示確認 + リンク改竄の第二経路検出)
  * - 対話: 12 語を表示し、最終語の再入力を要求する(server-grant と同じ儀式)
- * - エージェント環境ではフラグなしの儀式代行を拒否する
+ * - エージェント環境ではフラグなしの儀式代行を拒否する(帳のヒットでも)
+ * - 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの招待者
+ *   (origin × user_id)と指紋が一致すれば、12 語の帯域外読み上げの再実施を
+ *   免除する。**受諾そのものの明示確認(yes 入力)はヒット時も要求する** —
+ *   リンクの iu= / if= はチェーン未照合の自己申告であり、帳の一致は「以前この
+ *   鍵を帯域外確認した」ことしか意味しない(この受諾の意図を代替しない)。
+ *   フラグは帳より優先し、不一致は警告して儀式へ戻す。儀式 / フラグ照合の
+ *   成功は帳へ記録する(userId ↔ FP の機械照合は初回同期のアンカー検査 —
+ *   context.ts — が行う)
  */
 function confirmInviterFingerprint(input: {
+  readonly origin: string;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo> {
+}): Effect.Effect<void, CliError, CliIo | FingerprintBook> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
       input.link.inviterKeyFingerprintHex,
       "The link's inviter fingerprint (if=) is malformed",
     );
+    const book = yield* consultFingerprintBook({
+      origin: input.origin,
+      userId: input.link.inviterUserId,
+      fingerprintHex: input.link.inviterKeyFingerprintHex,
+    });
+    // 帳のヒットを使えるのは対話 + フラグなしの経路だけ。そのときは読み上げ
+    // 照合の指示 2 行を落とす(通話を指示した直後に「要らない」と言わない)
+    const useHit =
+      book.hit !== null && input.expectInviterFingerprintHex === null && !io.agentProfile().isAgent;
     const lines = [
       "Inviter's key fingerprint (if= in the link — mutual confirmation, CRYPTO_SPEC §6.5):",
       `  inviter: ${displayText(input.link.inviterUserId)}`,
       `  hex:  ${input.link.inviterKeyFingerprintHex}`,
       "  word: " + formatWordList(words),
-      "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
-      "If they do not match, the link has been swapped (luring you into an attacker's project = reverse phishing) — abort the acceptance.",
+      ...(useHit
+        ? []
+        : [
+            "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
+            "If they do not match, the link has been swapped (luring you into an attacker's project = reverse phishing) — abort the acceptance.",
+          ]),
     ];
     for (const line of lines) {
       yield* io.log(line);
@@ -343,9 +370,12 @@ function confirmInviterFingerprint(input: {
       yield* io.log(
         "--inviter-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
+      yield* book.record;
       return;
     }
-    // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢)
+    yield* book.warnIfChanged;
+    // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢。
+    // 帳のヒットも代行の根拠にしない — フラグの明示指定だけが非対話経路)
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
@@ -353,7 +383,15 @@ function confirmInviterFingerprint(input: {
         ),
       );
     }
-    return yield* confirmByLastWord({
+    if (book.hit !== null) {
+      return yield* confirmKnownFingerprint({
+        entry: book.hit,
+        filePath: book.filePath,
+        prompt: `Type yes to accept this invite attributed to ${displayText(input.link.inviterUserId)} for project ${displayText(input.link.projectId)}`,
+        cancelText: "The acceptance was cancelled.",
+      });
+    }
+    yield* confirmByLastWord({
       words,
       promptText:
         "Once you have checked against the inviter's out-of-band read-out (e.g. a call), type the last of the 12 words shown above",
@@ -361,6 +399,7 @@ function confirmInviterFingerprint(input: {
       exhaustedText:
         "Inviter fingerprint confirmation failed (the re-typed word does not match). The acceptance was not performed — re-run once you can check with the inviter",
     });
+    yield* book.record;
   });
 }
 
@@ -440,14 +479,18 @@ export function inviteAcceptOp(input: {
 }): Effect.Effect<
   InviteAcceptSummary,
   CliError,
-  CliIo | Keychain | PinStore | Stdio.Stdio | HttpClient.HttpClient
+  CliIo | Keychain | PinStore | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     // §15-3 の順序: 相互確認 → 鍵生成〔未生成時〕→ 受諾署名 → 受諾 →
     // アンカーのピン留め(受諾成立後のみ — 同節の追補)
     const { projectId, token } =
       input.target.kind === "link"
-        ? yield* prepareLinkAccept(input.target.link, input.expectInviterFingerprintHex)
+        ? yield* prepareLinkAccept(
+            input.session.origin,
+            input.target.link,
+            input.expectInviterFingerprintHex,
+          )
         : yield* prepareTokenAccept(input.target, input.expectInviterFingerprintHex);
 
     const masterKeys = yield* ensureMasterKeysForAccept({
@@ -531,15 +574,16 @@ export function inviteAcceptOp(input: {
  * なる。初回同期(add_member 後)より前に書ければアンカーの目的は満たされる。
  */
 function prepareLinkAccept(
+  origin: string,
   link: InviteLinkData,
   expectInviterFingerprintHex: string | null,
 ): Effect.Effect<
   { readonly projectId: string; readonly token: Redacted.Redacted<string> },
   CliError,
-  CliIo
+  CliIo | FingerprintBook
 > {
   return Effect.gen(function* () {
-    yield* confirmInviterFingerprint({ link, expectInviterFingerprintHex });
+    yield* confirmInviterFingerprint({ origin, link, expectInviterFingerprintHex });
     return { projectId: link.projectId, token: link.token };
   });
 }

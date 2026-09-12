@@ -25,6 +25,11 @@ import {
   type StoredToken,
   tokenEntryName,
 } from "../../src/keychain.ts";
+import {
+  FingerprintBook,
+  fingerprintBookPathOf,
+  makeFileFingerprintBook,
+} from "../../src/known-fingerprints.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "../../src/pins.ts";
 import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
@@ -57,6 +62,8 @@ export interface TestEnv {
   readonly floorDir: string;
   /** 招待ピン(§6.3 (a) アンカー + 発行ピン)のディレクトリ(<configDir>/invites)。 */
   readonly pinsDir: string;
+  /** 検証済み指紋帳(KF)のファイルパス(<configDir>/known-fingerprints.json)。 */
+  readonly fingerprintBookPath: string;
   /** promptLine に表示されたプロンプト文字列(検査用)。 */
   readonly prompts: string[];
   /** openBrowser に渡された URL(login のブラウザ自動起動分岐の検査用)。 */
@@ -152,6 +159,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const floorStore = makeFileFloorStore(floorDir);
   const pinsDir = pinsDirOf(configPath);
   const pinStore = makeFilePinStore(pinsDir);
+  const fingerprintBookPath = fingerprintBookPathOf(configPath);
+  const fingerprintBook = makeFileFingerprintBook(fingerprintBookPath);
   const layer = Layer.mergeAll(
     // argv は runCli が実行ごとに渡す(effect-cli.ts が Stdio へ載せ替える)。
     // ここで固定するのは端末判定 — 値の表示可否の一次境界(agent-gate.ts)
@@ -162,6 +171,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     // 二次層(既知エージェントの検出結果)。本番は live.ts が std-env から供給する
     Layer.sync(AgentProfileRef, () => agent),
     Layer.succeed(PinStore, pinStore),
+    Layer.succeed(FingerprintBook, fingerprintBook),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),
       commitHead: (projectId, head) => floorStore.commitHead(projectId, head),
@@ -297,6 +307,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     configPath,
     floorDir,
     pinsDir,
+    fingerprintBookPath,
     prompts,
     browserOpens,
     setStdin(bytes) {

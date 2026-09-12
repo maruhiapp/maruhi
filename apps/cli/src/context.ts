@@ -31,6 +31,7 @@ import {
 } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
+import type { FingerprintBook } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
@@ -57,6 +58,7 @@ export type CliServices =
   | ConfigStore
   | FloorStore
   | PinStore
+  | FingerprintBook
   | CliIo
   | ProcessRunner
   | Stdio.Stdio
