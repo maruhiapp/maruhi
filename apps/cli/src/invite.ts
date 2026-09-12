@@ -45,6 +45,7 @@ import {
   confirmKnownFingerprint,
   consultFingerprintBook,
   type FingerprintBook,
+  usableBookHit,
 } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
@@ -320,15 +321,18 @@ export type AcceptTarget =
  *   免除する。**受諾そのものの明示確認(yes 入力)はヒット時も要求する** —
  *   リンクの iu= / if= はチェーン未照合の自己申告であり、帳の一致は「以前この
  *   鍵を帯域外確認した」ことしか意味しない(この受諾の意図を代替しない)。
- *   フラグは帳より優先し、不一致は警告して儀式へ戻す。儀式 / フラグ照合の
- *   成功は帳へ記録する(userId ↔ FP の機械照合は初回同期のアンカー検査 —
- *   context.ts — が行う)
+ *   **帳を使えるのは stdin / stdout が対話端末のときだけ**(ADR-0016 決定 7 の
+ *   一次境界と同じ allow-list — yes 確認は 12 語儀式と違い盲目的なパイプで
+ *   通るため、パイプ・CI・未検出エージェントでは帳を無効化して完全な儀式へ
+ *   戻す)。フラグは帳より優先し、不一致は警告して儀式へ戻す。儀式 / フラグ
+ *   照合の成功は帳へ記録する(userId ↔ FP の機械照合は初回同期のアンカー
+ *   検査 — context.ts — が行う)
  */
 function confirmInviterFingerprint(input: {
   readonly origin: string;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo | FingerprintBook> {
+}): Effect.Effect<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
@@ -340,16 +344,20 @@ function confirmInviterFingerprint(input: {
       userId: input.link.inviterUserId,
       fingerprintHex: input.link.inviterKeyFingerprintHex,
     });
-    // 帳のヒットを使えるのは対話 + フラグなしの経路だけ。そのときは読み上げ
-    // 照合の指示 2 行を落とす(通話を指示した直後に「要らない」と言わない)
-    const useHit =
-      book.hit !== null && input.expectInviterFingerprintHex === null && !io.agentProfile().isAgent;
+    // 帳のヒットを使えるのは対話端末 + フラグなし + 非エージェントの経路だけ
+    // (判定は usableBookHit)。そのときは読み上げ照合の指示 2 行を落とす
+    // (通話を指示した直後に「要らない」と言わない)
+    const hit = yield* usableBookHit({
+      book,
+      flagProvided: input.expectInviterFingerprintHex !== null,
+      isAgent: io.agentProfile().isAgent,
+    });
     const lines = [
       "Inviter's key fingerprint (if= in the link — mutual confirmation, CRYPTO_SPEC §6.5):",
       `  inviter: ${displayText(input.link.inviterUserId)}`,
       `  hex:  ${input.link.inviterKeyFingerprintHex}`,
       "  word: " + formatWordList(words),
-      ...(useHit
+      ...(hit !== null
         ? []
         : [
             "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
@@ -383,9 +391,9 @@ function confirmInviterFingerprint(input: {
         ),
       );
     }
-    if (book.hit !== null) {
+    if (hit !== null) {
       return yield* confirmKnownFingerprint({
-        entry: book.hit,
+        entry: hit,
         filePath: book.filePath,
         prompt: `Type yes to accept this invite attributed to ${displayText(input.link.inviterUserId)} for project ${displayText(input.link.projectId)}`,
         cancelText: "The acceptance was cancelled.",
@@ -580,7 +588,7 @@ function prepareLinkAccept(
 ): Effect.Effect<
   { readonly projectId: string; readonly token: Redacted.Redacted<string> },
   CliError,
-  CliIo | FingerprintBook
+  CliIo | FingerprintBook | Stdio.Stdio
 > {
   return Effect.gen(function* () {
     yield* confirmInviterFingerprint({ origin, link, expectInviterFingerprintHex });
