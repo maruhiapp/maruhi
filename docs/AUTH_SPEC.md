@@ -1,7 +1,7 @@
 # maruhi 認証・アイデンティティ仕様書 (AUTH_SPEC)
 
-Version: 0.20-draft
-Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — PR #38 マージで承認。§3 のセットアップウィザードの形と §4 の公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装)は 2026-08-10 セッション 19 起草 — 実装 PR のマージをもって所有者承認とする。§3-2 の client_id 登録方法の Workers Secret への統一(Deploy to Cloudflare ボタン対応の前提工事)は 2026-08-11 起草 — 実装 PR のマージをもって所有者承認とする。0.9-draft = Phase 2 機能裁定の起草 — 2026-08-12 セッション 22: §4 サーバー鍵 FP の公開 / §12-4・§12-6 のサーバー鍵宛ラップ〔旧 v1 線引きの解消〕/ §14 ワークロードリース API / §15 招待 API — **本改訂 PR のマージをもって所有者承認とする**。§4 の `serverEncPubHex` は A1〔PR #63〕の実装挙動に追いつかせた記述改訂、§14-1 の `crit` 拒否と JWKS の猶予窓、§14-3 のレート制限の位置と 503 の 2 理由〔`oidc-jwks-unavailable` / `server-key-unconfigured`〕は 2026-08-15 の Wave 2 A2 起草 — **本改訂 PR のマージをもって所有者承認とする**。§14-1 の先着束縛と §14-3 の判定順への追加〔401 `token-replayed`〕は 2026-08-15 の所有者裁定 — 設計比較は docs/notes/session-24.md — の反映。§15-2 受諾行のトークン条件の明文化〔B1a 実装済み挙動の追認 — PR #68 申し送り ①〕と §15-3 の `r` パラメータ追加〔§15-1 の受諾前 role 表示の運搬経路 — 同申し送り ②〕は 2026-08-15 の B1b 所有者裁定 — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.10-draft = 2026-08-15 の Wave 2 B2 所有者裁定〔PR #69 申し送りの解消 + AUDIT_SPEC §4.1 実装の受理面〕: §12-5 の再暗号化マーカー / §12-6 の 409 応答への占有ラップ受信者 enc 公開鍵の同梱と再追加受理時の旧鍵宛ラップ掃除 — **本改訂を含む実装 PR のマージをもって所有者承認とする**(PR #70 マージ済み = 承認済み)。0.11-draft = Wave 3 D の起草(2026-08-18 セッション 27 — 設計探索は docs/notes/session-27.md): §12-2 / §12-4 / §12-5 / §12-7 / §12-8 の環境マニフェスト(CRYPTO_SPEC §4.3)の受理・配布面 / §14-2 のリース応答への同梱 / §16 ヘッド申告・チェックポイント支援 API — **本改訂 PR のマージをもって所有者承認とする**(PR #80 マージ済み = 承認済み)。§12-5 (6) の manifestVersion CAS 初期値の明確化(保存済みマニフェストなし = 最新 0 → manifestVersion 1 受理 — 移行経路)は 2026-08-18 の PR-M1 実装起草 — 本改訂を含む実装 PR のマージをもって所有者承認とする(PR #81 マージ済み = 承認済み)。0.12-draft = PR-M1 マージ後監査(docs/notes/session-31.md)の裁定 1〜3 の起草(2026-08-19 セッション 32 — 設計比較・棄却案は session-31 §7 と docs/notes/session-32.md §2・§4〜§5。裁定 2 = 案 2-G′・裁定 3 = 3-D + 3-E + 3-E′ + 3-F の選択は 2026-08-19 所有者裁定済みで、本 PR は仕様文言の承認): 裁定 1 = §12-10 security-critical 受理スキーマの厳格性(未知フィールド拒否)・wire 非互換変更の設計規範・mutation 成功の定義(CRYPTO_SPEC §1 原則 6 と対)。裁定 2 = §12-4 の環境作成・ローテーション複合への境界 `checkpoint` エントリの必須同梱(チェーン 2 エントリ + データ登録の単一トランザクション受理)と複合内整合検査の拡張(checkpoint タプル ↔ 同梱マニフェストの束縛一致)— **本改訂 PR のマージをもって所有者承認とする**)。0.13-draft = W0(Web ダッシュボード画面設計 — ADR-0018 改訂 2)の裁定の起草(2026-08-28 セッション 39 — 画面設計は docs/notes/web-dashboard-design.md、裁定の経緯は docs/notes/session-39.md): §5 のセッション主体の能力制限(肯定列挙 — 裁定 AT。PR #103 pullfrog レビュー指摘の反映)とその §13-2 / §15-2 への追随 / §6 のトークン管理の線引き更新(追加発行 API は作らない・一覧 / 指定失効 API の設計〔対象 = 本人のみ・非該当 404〕・既定 TTL = SECURITY_REVIEW 2026-08-14 L-2 の解消)/ §15-3 の招待リンク着地点の静的案内ページ化(フラグメント非解釈)— **本改訂 PR のマージをもって所有者承認とする**。0.14-draft = W2a(プロジェクト一覧 API — 設計文書 S4 の不足 API)の起草(2026-08-29 — 設計裁定・棄却案は docs/notes/session-42.md 裁定 BI〜BL): §11-5 プロジェクト一覧 `GET /projects`(role なし D1 membership 投影 = 候補索引 + 読取時の DO 確認。本人の membership のみ・§11-2 と両立)と §5 許可列挙の同参照への更新 — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.15-draft = W3a(トークン管理 API + 既定 TTL — SECURITY_REVIEW 2026-08-14 L-2 の解消実装)の申し送り裁定の起草(2026-08-30 — 設計比較・棄却案は docs/notes/session-44.md 裁定 CE〜CH): §6 の既存無期限トークンの移行規則(適用時点 + 90 日への再アンカー + 検証側の NULL fail-closed)/ 発行時の明示 TTL 指定(`expiresInDays` 1..365 — リース非対応実行環境の無人 PAT の逃し弁。無期限の既定へは戻さない)/ 一覧・指定失効のトークン主体条件(`*` × admin)と判定順(401 → 403 → 一様 404)/ 提示トークンの期限の `GET /auth/me` 自己開示(裁定 CI — 第 2 次探索)— **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.16-draft = S0(値なしスキーマ〔フル〕— CRYPTO_SPEC 0.8-draft §4.2 レイアウト v2)の受理・配布面の起草(2026-08-30 セッション 46 — 裁定・棄却案は docs/notes/session-46.md 裁定 CR〜CX、CLI・付帯面と実装分割は docs/notes/value-free-schema-design.md): §12-2 の VariableMetaStatement 拡張(layoutVersion・スキーマ欄)/ §12-5 の declared 作成・activation 複合・レイアウト受理規則・schema-locked 検査 / §12-7 の declared 変数の配布 / §12-8 の description 上限 / §12-11 スキーマポリシー(有効化ゲート + schema-locked — プロジェクト設定)— **本改訂 PR のマージをもって所有者承認とする**。0.17-draft = gap 9(CLI ログインのスケール経路 — docs/notes/hosted-design.md §8)の解消の起草(2026-08-31 セッション 48 — 裁定・棄却案は docs/notes/session-48.md 裁定 DF・DG): §4 の全面改訂(GitHub Device Flow の廃止 → サーバー仲介 web-flow ハンドオフ〔ポーリング配送〕・CLI のプロバイダ非依存化)と §3 / §6 / §13-2 / §15-2 の追随。同 PR 内の追補裁定 DH(2026-08-31 所有者採用 — session-48.md): start の無記録化(署名付きフロー資格 — フロー行は OAuth 完走時にのみ生まれる)と CLI ログインの既存アカウント限定(サインアップ入口の §3 への一本化) — **本改訂 PR のマージをもって所有者承認とする**。0.18-draft = H1(サインアップ制御 — docs/notes/hosted-design.md §2-2 / §8 gap 1。裁定は session-47 CY・§10 追補と session-48 追補裁定 DH)の起草(2026-09-01): §3 の `signupPolicy` ゲート(open / invite / closed — 既定 open)・サインアップ招待コードの受理・開始時事前検証・アカウント作成との同一トランザクション消費 / `GET /auth/config` への advisory 配布(§4 追随)/ §15-3 への合成注記(サインアップコードは別チャネル)。監査語彙 `auth.signup_denied` は AUDIT_SPEC 1.4-draft — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.19-draft = H2(テナント quota — docs/notes/hosted-design.md §3-3 / §8 gap 2・gap 3。裁定は session-47 CZ・DC-3)の起草(2026-09-02): §11-3 のプロジェクト数 / org 受理上限(アクティブ 100・429 `ProjectLimit`・「アクティブ」定義・修復経路の非遮断)/ §12-8 の表への 2 項追記と「Phase 2 予告(DO ストレージ総量ガード)」の本規定への書き換え(`databaseSize` 実測・警告 8 GB / 拒否 9 GB・対象面と拒否下でも受理し続ける面の列挙・422 `DataLimitExceeded` resource `project-storage-bytes`)。AUDIT_SPEC は無変更(quota 到達を監査イベントにしない — 裁定 DC-3) — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.20-draft = 監査ログの成長密度対策 ②(AUDIT_SPEC 1.5-draft — `var.read` の集約形。2026-09-02 オーナー決定で未決 4 を前倒し解消): §12-7 の監査記録を「変数ごとに 1 行」から「値付き一括 pull ごとに環境単位 1 行」へ / §12-8 の余裕の会計 (i) を集約後の値へ追随 — **本改訂を含む実装 PR のマージをもって所有者承認とする**
+Version: 0.21-draft
+Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — PR #38 マージで承認。§3 のセットアップウィザードの形と §4 の公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装)は 2026-08-10 セッション 19 起草 — 実装 PR のマージをもって所有者承認とする。§3-2 の client_id 登録方法の Workers Secret への統一(Deploy to Cloudflare ボタン対応の前提工事)は 2026-08-11 起草 — 実装 PR のマージをもって所有者承認とする。0.9-draft = Phase 2 機能裁定の起草 — 2026-08-12 セッション 22: §4 サーバー鍵 FP の公開 / §12-4・§12-6 のサーバー鍵宛ラップ〔旧 v1 線引きの解消〕/ §14 ワークロードリース API / §15 招待 API — **本改訂 PR のマージをもって所有者承認とする**。§4 の `serverEncPubHex` は A1〔PR #63〕の実装挙動に追いつかせた記述改訂、§14-1 の `crit` 拒否と JWKS の猶予窓、§14-3 のレート制限の位置と 503 の 2 理由〔`oidc-jwks-unavailable` / `server-key-unconfigured`〕は 2026-08-15 の Wave 2 A2 起草 — **本改訂 PR のマージをもって所有者承認とする**。§14-1 の先着束縛と §14-3 の判定順への追加〔401 `token-replayed`〕は 2026-08-15 の所有者裁定 — 設計比較は docs/notes/session-24.md — の反映。§15-2 受諾行のトークン条件の明文化〔B1a 実装済み挙動の追認 — PR #68 申し送り ①〕と §15-3 の `r` パラメータ追加〔§15-1 の受諾前 role 表示の運搬経路 — 同申し送り ②〕は 2026-08-15 の B1b 所有者裁定 — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.10-draft = 2026-08-15 の Wave 2 B2 所有者裁定〔PR #69 申し送りの解消 + AUDIT_SPEC §4.1 実装の受理面〕: §12-5 の再暗号化マーカー / §12-6 の 409 応答への占有ラップ受信者 enc 公開鍵の同梱と再追加受理時の旧鍵宛ラップ掃除 — **本改訂を含む実装 PR のマージをもって所有者承認とする**(PR #70 マージ済み = 承認済み)。0.11-draft = Wave 3 D の起草(2026-08-18 セッション 27 — 設計探索は docs/notes/session-27.md): §12-2 / §12-4 / §12-5 / §12-7 / §12-8 の環境マニフェスト(CRYPTO_SPEC §4.3)の受理・配布面 / §14-2 のリース応答への同梱 / §16 ヘッド申告・チェックポイント支援 API — **本改訂 PR のマージをもって所有者承認とする**(PR #80 マージ済み = 承認済み)。§12-5 (6) の manifestVersion CAS 初期値の明確化(保存済みマニフェストなし = 最新 0 → manifestVersion 1 受理 — 移行経路)は 2026-08-18 の PR-M1 実装起草 — 本改訂を含む実装 PR のマージをもって所有者承認とする(PR #81 マージ済み = 承認済み)。0.12-draft = PR-M1 マージ後監査(docs/notes/session-31.md)の裁定 1〜3 の起草(2026-08-19 セッション 32 — 設計比較・棄却案は session-31 §7 と docs/notes/session-32.md §2・§4〜§5。裁定 2 = 案 2-G′・裁定 3 = 3-D + 3-E + 3-E′ + 3-F の選択は 2026-08-19 所有者裁定済みで、本 PR は仕様文言の承認): 裁定 1 = §12-10 security-critical 受理スキーマの厳格性(未知フィールド拒否)・wire 非互換変更の設計規範・mutation 成功の定義(CRYPTO_SPEC §1 原則 6 と対)。裁定 2 = §12-4 の環境作成・ローテーション複合への境界 `checkpoint` エントリの必須同梱(チェーン 2 エントリ + データ登録の単一トランザクション受理)と複合内整合検査の拡張(checkpoint タプル ↔ 同梱マニフェストの束縛一致)— **本改訂 PR のマージをもって所有者承認とする**)。0.13-draft = W0(Web ダッシュボード画面設計 — ADR-0018 改訂 2)の裁定の起草(2026-08-28 セッション 39 — 画面設計は docs/notes/web-dashboard-design.md、裁定の経緯は docs/notes/session-39.md): §5 のセッション主体の能力制限(肯定列挙 — 裁定 AT。PR #103 pullfrog レビュー指摘の反映)とその §13-2 / §15-2 への追随 / §6 のトークン管理の線引き更新(追加発行 API は作らない・一覧 / 指定失効 API の設計〔対象 = 本人のみ・非該当 404〕・既定 TTL = SECURITY_REVIEW 2026-08-14 L-2 の解消)/ §15-3 の招待リンク着地点の静的案内ページ化(フラグメント非解釈)— **本改訂 PR のマージをもって所有者承認とする**。0.14-draft = W2a(プロジェクト一覧 API — 設計文書 S4 の不足 API)の起草(2026-08-29 — 設計裁定・棄却案は docs/notes/session-42.md 裁定 BI〜BL): §11-5 プロジェクト一覧 `GET /projects`(role なし D1 membership 投影 = 候補索引 + 読取時の DO 確認。本人の membership のみ・§11-2 と両立)と §5 許可列挙の同参照への更新 — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.15-draft = W3a(トークン管理 API + 既定 TTL — SECURITY_REVIEW 2026-08-14 L-2 の解消実装)の申し送り裁定の起草(2026-08-30 — 設計比較・棄却案は docs/notes/session-44.md 裁定 CE〜CH): §6 の既存無期限トークンの移行規則(適用時点 + 90 日への再アンカー + 検証側の NULL fail-closed)/ 発行時の明示 TTL 指定(`expiresInDays` 1..365 — リース非対応実行環境の無人 PAT の逃し弁。無期限の既定へは戻さない)/ 一覧・指定失効のトークン主体条件(`*` × admin)と判定順(401 → 403 → 一様 404)/ 提示トークンの期限の `GET /auth/me` 自己開示(裁定 CI — 第 2 次探索)— **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.16-draft = S0(値なしスキーマ〔フル〕— CRYPTO_SPEC 0.8-draft §4.2 レイアウト v2)の受理・配布面の起草(2026-08-30 セッション 46 — 裁定・棄却案は docs/notes/session-46.md 裁定 CR〜CX、CLI・付帯面と実装分割は docs/notes/value-free-schema-design.md): §12-2 の VariableMetaStatement 拡張(layoutVersion・スキーマ欄)/ §12-5 の declared 作成・activation 複合・レイアウト受理規則・schema-locked 検査 / §12-7 の declared 変数の配布 / §12-8 の description 上限 / §12-11 スキーマポリシー(有効化ゲート + schema-locked — プロジェクト設定)— **本改訂 PR のマージをもって所有者承認とする**。0.17-draft = gap 9(CLI ログインのスケール経路 — docs/notes/hosted-design.md §8)の解消の起草(2026-08-31 セッション 48 — 裁定・棄却案は docs/notes/session-48.md 裁定 DF・DG): §4 の全面改訂(GitHub Device Flow の廃止 → サーバー仲介 web-flow ハンドオフ〔ポーリング配送〕・CLI のプロバイダ非依存化)と §3 / §6 / §13-2 / §15-2 の追随。同 PR 内の追補裁定 DH(2026-08-31 所有者採用 — session-48.md): start の無記録化(署名付きフロー資格 — フロー行は OAuth 完走時にのみ生まれる)と CLI ログインの既存アカウント限定(サインアップ入口の §3 への一本化) — **本改訂 PR のマージをもって所有者承認とする**。0.18-draft = H1(サインアップ制御 — docs/notes/hosted-design.md §2-2 / §8 gap 1。裁定は session-47 CY・§10 追補と session-48 追補裁定 DH)の起草(2026-09-01): §3 の `signupPolicy` ゲート(open / invite / closed — 既定 open)・サインアップ招待コードの受理・開始時事前検証・アカウント作成との同一トランザクション消費 / `GET /auth/config` への advisory 配布(§4 追随)/ §15-3 への合成注記(サインアップコードは別チャネル)。監査語彙 `auth.signup_denied` は AUDIT_SPEC 1.4-draft — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.19-draft = H2(テナント quota — docs/notes/hosted-design.md §3-3 / §8 gap 2・gap 3。裁定は session-47 CZ・DC-3)の起草(2026-09-02): §11-3 のプロジェクト数 / org 受理上限(アクティブ 100・429 `ProjectLimit`・「アクティブ」定義・修復経路の非遮断)/ §12-8 の表への 2 項追記と「Phase 2 予告(DO ストレージ総量ガード)」の本規定への書き換え(`databaseSize` 実測・警告 8 GB / 拒否 9 GB・対象面と拒否下でも受理し続ける面の列挙・422 `DataLimitExceeded` resource `project-storage-bytes`)。AUDIT_SPEC は無変更(quota 到達を監査イベントにしない — 裁定 DC-3) — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.20-draft = 監査ログの成長密度対策 ②(AUDIT_SPEC 1.5-draft — `var.read` の集約形。2026-09-02 オーナー決定で未決 4 を前倒し解消): §12-7 の監査記録を「変数ごとに 1 行」から「値付き一括 pull ごとに環境単位 1 行」へ / §12-8 の余裕の会計 (i) を集約後の値へ追随 — **本改訂を含む実装 PR のマージをもって所有者承認とする**。0.21-draft = KL3(master 鍵ラップ台帳 API — CRYPTO_SPEC 0.9-draft §8。2026-09-12 設計セッション、設計録は docs/notes/integration-options.md 補足 19): §13 の前文改訂と §13-6〜13-10 の追加(台帳のリソースモデル / エンドポイントと認可 / レート制限・有効期間・受理ポリシー / ワイヤ表現 / 監査)、§5 のセッション許可列挙への `GET /auth/key-wraps` の追加。設計の 13 項目は 2026-09-12 に所有者承認済み — **本改訂を含む実装 PR のマージをもって仕様文言の承認とする**
 
 認証は GitHub OAuth の直接実装で行う(認証フレームワーク・外部 IdP サービスは使用しない)。
 ただしデータモデルは将来のエンタープライズ IdP(WorkOS 等)追加を無停止で行える形に固定する。
@@ -149,7 +149,7 @@ api_tokens (
 - クッキー: `__Host-maruhi_session` / `HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/`
 - 有効期限: 30 日(スライディング更新)。サーバー側削除で即時失効可能
 - CSRF: SameSite=Lax + 書き込み系は custom header 要求(HttpApi ミドルウェアで一括)。状態を持つ GET はミドルウェア外でハンドラが追加要求する(§11-4 の明示規定一覧)
-- **セッション主体の能力制限(2026-08-28 W0 裁定 — ADR-0018 改訂 2・1 項。実装は Wave 3 W2b — セッションを持つ Web 画面の初出〔W2〕より前)**: セッションクッキーは XSS に最も晒される資格情報であり(同一オリジンの XSS は CSRF ヘッダーも自分で付けられる)、Web の境界原則(読み取り + 失効系のみ)は UI・バンドルの省略では強制にならない。セッション主体が呼べる API を**肯定列挙**で制限する — 許可: **認証・自己情報系**(§3 のフロー・ログアウト・`GET /auth/me`・`GET /auth/recovery/status`)、**読み取り**(チェーン取得〔§11〕・環境一覧・メタデータのみ pull〔§12-7〕・監査読み取り〔AUDIT_SPEC §7〕・要ローテーションフラグビュー・招待一覧〔§15-2〕・トークン一覧〔§6〕・**プロジェクト一覧〔§11-5 — 返すのは本人の membership のみ。設計文書 S4〕**)、**失効系**(招待の失効〔§15-2〕・トークンの指定失効〔§6〕)。**列挙外はセッション主体に対して拒否する**(fail-closed — 新設エンドポイントの既定は「セッション不可」であり、セッションに開く場合は本列挙への追加を同じ改訂で行う。拒否の位置は §11-2 の存在秘匿・§12-3 の判定順と整合させ、実装 PR は受理経路の固定テストで実効性を保証する。実装形は §12-10 (1) と同じ型を推奨: エンドポイント契約への宣言焼き込み = 単一実装点とし、ハンドラごとの手動検査を持たない)。とくに次はセッションからの正当な導線が存在せず明示的に拒否する: 値付き一括 pull(§12-7 — セッション経由の監査証跡汚染 = SECURITY_REVIEW L-1 の発生面自体を消す)、DEK の取得・登録・削除(§12-6 — 削除は署名を伴わない唯一の破壊系)、チェーン追記・init(§11)、環境・変数の全 mutation(§12-4 / §12-5)、招待の発行・受諾(§15-2)、rotation dismiss(AUDIT_SPEC §7)、リカバリーブロブの登録・取得(§13-2)。署名を要する操作は鍵を持たない XSS には元々成立しないが、明示拒否に含めて防御を署名検証の実装詳細に依存させない。CLI・`maruhi ui` はトークン主体であり影響を受けない
+- **セッション主体の能力制限(2026-08-28 W0 裁定 — ADR-0018 改訂 2・1 項。実装は Wave 3 W2b — セッションを持つ Web 画面の初出〔W2〕より前)**: セッションクッキーは XSS に最も晒される資格情報であり(同一オリジンの XSS は CSRF ヘッダーも自分で付けられる)、Web の境界原則(読み取り + 失効系のみ)は UI・バンドルの省略では強制にならない。セッション主体が呼べる API を**肯定列挙**で制限する — 許可: **認証・自己情報系**(§3 のフロー・ログアウト・`GET /auth/me`・`GET /auth/recovery/status`・`GET /auth/key-wraps`〔§13-7 — 2026-09-12 KL3。ラップ・分片を運ばない状態表示のみ〕)、**読み取り**(チェーン取得〔§11〕・環境一覧・メタデータのみ pull〔§12-7〕・監査読み取り〔AUDIT_SPEC §7〕・要ローテーションフラグビュー・招待一覧〔§15-2〕・トークン一覧〔§6〕・**プロジェクト一覧〔§11-5 — 返すのは本人の membership のみ。設計文書 S4〕**)、**失効系**(招待の失効〔§15-2〕・トークンの指定失効〔§6〕)。**列挙外はセッション主体に対して拒否する**(fail-closed — 新設エンドポイントの既定は「セッション不可」であり、セッションに開く場合は本列挙への追加を同じ改訂で行う。拒否の位置は §11-2 の存在秘匿・§12-3 の判定順と整合させ、実装 PR は受理経路の固定テストで実効性を保証する。実装形は §12-10 (1) と同じ型を推奨: エンドポイント契約への宣言焼き込み = 単一実装点とし、ハンドラごとの手動検査を持たない)。とくに次はセッションからの正当な導線が存在せず明示的に拒否する: 値付き一括 pull(§12-7 — セッション経由の監査証跡汚染 = SECURITY_REVIEW L-1 の発生面自体を消す)、DEK の取得・登録・削除(§12-6 — 削除は署名を伴わない唯一の破壊系)、チェーン追記・init(§11)、環境・変数の全 mutation(§12-4 / §12-5)、招待の発行・受諾(§15-2)、rotation dismiss(AUDIT_SPEC §7)、リカバリーブロブの登録・取得(§13-2)、master 鍵ラップ台帳の登録・取得・削除・保護者の分片取得・ハンドオフの要求・照会・承認・取得・取消(§13-7 — セッションに開くのは状態表示の `GET /auth/key-wraps` のみ)。署名を要する操作は鍵を持たない XSS には元々成立しないが、明示拒否に含めて防御を署名検証の実装詳細に依存させない。CLI・`maruhi ui` はトークン主体であり影響を受けない
 
 ## 6. API トークン
 
@@ -470,9 +470,9 @@ CRYPTO_SPEC §4.2 レイアウト v2 の書き込みゲート(発見 F — 旧�
 - **可逆性**: `enabled` → `disabled` の降格は v2 の**新規採用**を止めるだけで、既存 v2 ステートメントの保存・配布・検証と、既に v2 の変数のライフサイクル(削除・activation・rename・スキーマ再発行 — 継続受理の線引きは §12-5)は不変(検証はポリシーを参照しない。降格が declared 変数を凍結しない — 2026-08-30 PR #112 レビュー対応で精密化)。`locked` → `enabled` も同様(撤去可能性 — 検討メモ第 8 次)
 - **監査**: 変更は `project.schema_policy_changed`(AUDIT_SPEC §3.3 — actor と新旧値)を記録する
 
-## 13. リカバリーブロブ API との接続(2026-08-09 セッション 18 起草)
+## 13. master 鍵ラップ台帳 API との接続(2026-08-09 セッション 18 起草。2026-09-12 KL3 改訂 — §13-6 以降を追加)
 
-CRYPTO_SPEC §8(リカバリーコード)のサーバー保存・配布面の規定。ラップ済み master 秘密鍵ブロブは**サーバーから見て不透明な暗号文**であり、リカバリーコード(KEK の素材)はいかなる API ペイロードにも含まれない — サーバーはブロブを復号・解釈できない(ゼロ知識の維持)。他ユーザーのブロブへの移植は AAD の user_id 束縛により復号失敗となる(CRYPTO_SPEC §8。サーバー側の追加検査を要しない)。
+CRYPTO_SPEC §8(master 鍵ラップ台帳)のサーバー保存・配布面の規定。台帳のすべてのラップ・分片は**サーバーから見て不透明な暗号文**であり、KEK の素材(リカバリーコード・PRF 出力・分片の平文・一時秘密鍵)はいかなる API ペイロードにも含まれない — サーバーはブロブを復号・解釈できない(ゼロ知識の維持)。他ユーザー・他文脈への移植は AAD / info の束縛により復号失敗となる(CRYPTO_SPEC §8。サーバー側の追加検査を要しない)。**§13-1〜13-5 はリカバリーコード経路(不変)、§13-6 以降が KL3 で追加された経路**。
 
 ### 13-1. リソースモデル
 
@@ -497,6 +497,7 @@ CRYPTO_SPEC §8(リカバリーコード)のサーバー保存・配布面の規
 - 対象は `GET /auth/recovery`(ブロブ本体)のみ。**固定窓: user あたり 1 時間 5 回**。超過は 429 で、窓の残り秒数(retryAfterSeconds)を返す
 - 位置づけは二重防御の補助線(認証 + 高エントロピーコードが本線): セッション・トークン奪取時のオンライン列挙とブロブ持ち出しの試行を遅くし、要監視イベントとしての検出時間を稼ぐ。並行リクエストで計数が僅かに超過しうるベストエフォートの抑制であり、暗号境界ではない
 - 計数はブロブ行に併置し(fetch_window_start / fetch_count)、未登録(404)は計数しない
+- **2026-09-12(KL3)**: 本窓は §13-8 の「ブロブ取得の合算窓」へ読み替える(passkey / 保護者グループのラップ取得と user 単位で合算。上限値 1 時間 5 回は不変。計数は専用カウンタ行)
 
 ### 13-4. ワイヤ表現と受理ポリシー
 
@@ -514,6 +515,112 @@ RecoveryWrap = {
 ### 13-5. 監査イベント
 
 ブロブ取得は `auth.recovery_blob_fetched`、登録・再発行は `auth.recovery_code_reissued`(AUDIT_SPEC §3.1。D1 側)。D1 側監査ログ基盤(同 §5.2 案 A)の導入をもって実装済み(2026-08-10 セッション 21): 取得はブロブを実際に配布した応答(200)のみ計数更新と同一 batch で記録し、レート制限拒否・未登録 404 は記録しない(配布していないものを配布したと記録しない — §13-3 の計数対象と同じ線引き)。登録・再発行は置換 upsert と同一 batch で記録する(初回登録も同じ置換受理のため同一イベント)。
+
+### 13-6. 台帳のリソースモデル(2026-09-12)
+
+```sql
+master_key_wraps (                      -- クラス S(passkey-prf)。recovery-code は recovery_wraps のまま
+  id              TEXT PRIMARY KEY,     -- wrap_id(ULID)
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  kind            TEXT NOT NULL,        -- 'passkey-prf'
+  suite           TEXT NOT NULL,
+  params          TEXT NOT NULL,        -- JSON(公開パラメータ: credentialIdHex, prfSaltHex, rpId, label?)。サーバーは解釈しない
+  nonce_hex, ciphertext_hex,            -- AES-256-GCM(AAD = master-wrap 形)
+  created_at, updated_at
+)
+guardian_groups (
+  id              TEXT PRIMARY KEY,     -- group_id(ULID)
+  user_id         TEXT NOT NULL,        -- ward
+  mode            TEXT NOT NULL,        -- 'any' | 'all'
+  suite, nonce_hex, ciphertext_hex,     -- グループ KEK による B のラップ
+  created_at
+)
+guardian_shares (
+  group_id        TEXT NOT NULL REFERENCES guardian_groups(id) ON DELETE CASCADE,
+  share_index     INTEGER NOT NULL,     -- 1..n
+  guardian_user_id TEXT NOT NULL REFERENCES users(id),
+  guardian_enc_pub_hex TEXT NOT NULL,   -- 封印先(ward クライアントが確認済みの鍵)
+  guardian_key_fingerprint_hex TEXT NOT NULL,
+  enc_hex, ciphertext_hex,              -- HPKE(guardian-wrap 形)。ciphertext は 48 バイト
+  PRIMARY KEY (group_id, share_index),
+  UNIQUE (group_id, guardian_user_id)
+)
+key_handoff_requests (
+  id              TEXT PRIMARY KEY,     -- request_id(CRYPTO_SPEC §8.4 — E.pub からの導出値。E.pub 自体は保存しない)
+  user_id         TEXT NOT NULL,        -- ward(要求者)
+  created_at, expires_at                -- 発行 + 15 分
+)
+key_handoff_approvals (
+  request_id      TEXT NOT NULL REFERENCES key_handoff_requests(id) ON DELETE CASCADE,
+  source          TEXT NOT NULL,        -- 'device' | group_id
+  share_index     INTEGER NOT NULL,     -- device = 0
+  approver_user_id TEXT NOT NULL,
+  approver_key_fingerprint_hex TEXT NOT NULL,
+  enc_hex, ciphertext_hex,              -- HPKE(handoff-wrap 形)
+  blob_suite, blob_nonce_hex, blob_ciphertext_hex,  -- source = 'device' のみ(KEK_h による B のラップ)
+  created_at,
+  PRIMARY KEY (request_id, source, share_index)
+)
+key_blob_fetch_counters (               -- 13-8 の合算窓(監査行ではない可変状態 — AUDIT_SPEC §3.1 のカウンタ行と同じ性格)
+  user_id TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL
+)
+```
+
+- すべて D1(user 単位。プロジェクト・org・チェーンと無関係)。認可にトークンスコープ表・チェーン role は関与しない(§13-1 と同じ)
+- `recovery_wraps` の `fetch_window_start / fetch_count` は合算窓のカウンタ行へ読み替える(移行はサーバー実装〔K3〕の裁量。上限値は不変)
+- 承認は要求の失効・削除とともに消える(応答スコープ。永続台帳に入らない — CRYPTO_SPEC §8.4)。失効行の掃除は日和見削除(§4 のフロー行と同じ)
+
+### 13-7. エンドポイントと認可(2026-09-12)
+
+| op | エンドポイント | 認可 |
+|---|---|---|
+| 台帳の状態 | `GET /auth/key-wraps`(200) | 認証済み主体すべて(**セッション主体も可** — §5 の許可列挙へ追加。`recovery/status` と同じ性格)。ラップ・分片・パラメータの秘密を運ばない: 種別ごとの登録有無・wrap_id / group_id・mode・保護者の user_id と鍵 FP・更新時刻のみ |
+| passkey 登録 | `POST /auth/key-wraps/passkey`(201 → `{ wrapId }`) | `*` × admin スコープのトークンのみ(§13-2 の鍵素材条件と同じ。**セッション主体は拒否**) |
+| passkey ブロブ取得 | `GET /auth/key-wraps/passkey/:wrapId`(200 / 404) | 同上 + 合算レート制限(13-8) |
+| passkey 削除 | `DELETE /auth/key-wraps/passkey/:wrapId`(204) | 同上 |
+| 保護者グループ作成 | `POST /auth/key-wraps/guardians`(201 → `{ groupId }`) | 同上。payload = mode + ラップ + 分片 n 個(13-9)。分片の `guardian_user_id` は実在ユーザーであること。**鍵の正しさ(チェーン導出鍵との一致)はサーバーが検証しない** — 真実源は ward クライアントの確認(CRYPTO_SPEC §8.3)であり、二重の真実源を作らない |
+| 保護者グループ削除 | `DELETE /auth/key-wraps/guardians/:groupId`(204) | 同上(ward のみ) |
+| グループのブロブ取得 | `GET /auth/key-wraps/guardians/:groupId`(200 / 404) | 同上(ward のみ)+ 合算レート制限 |
+| 自分が保護者である ward の一覧 | `GET /auth/guardian/wards`(200) | `*` × admin トークン。応答 = `[{ wardUserId, wardLogin, groupId, mode, shareIndex, createdAtMs }]`。`wardLogin` は `linked_identities.provider_login` の表示用スナップショット(識別子として使わない — §2) |
+| 自分宛の分片取得 | `GET /auth/guardian/shares/:groupId`(200 / 404) | 同上(当該グループの分片保持者のみ)+ 承認窓で計数(13-8)。要監視イベント |
+| ハンドオフ要求 | `POST /auth/handoff`(201 → `{ expiresAtMs }`。body: `{ requestId }`) | `*` × admin トークン(ward)。要求は 5 回 / 時 / user。既存 id との衝突は 409 |
+| 要求の照会(承認者) | `GET /auth/handoff/:requestId`(200) | `*` × admin トークン。呼び出し主体が ward 本人、または ward のいずれかのグループの分片保持者であること。**それ以外・不明・失効は一律 404**(§11-2 と同じ存在秘匿)。応答 = `{ wardUserId, wardLogin, expiresAtMs, roles: [ "device" \| { groupId, mode, shareIndex } ] }`(呼び出し主体が取れる承認の形) |
+| 承認 | `POST /auth/handoff/:requestId/approvals`(201) | `*` × admin トークン。`source = "device"` は ward 本人のみ、`source = group_id` は当該グループで `share_index` の分片保持者のみ(照合は保存行から — ワイヤ申告値で認可しない)。同一 (request, source, share_index) の二重承認は 409。承認は 20 回 / 時 / 承認者 |
+| 承認の取得(要求者) | `GET /auth/handoff/:requestId/approvals`(200) | `*` × admin トークン(ward のみ)。応答 = 承認の列挙(13-9)。1 件以上を返した応答は `auth.key_handoff_collected` を記録する |
+| 要求の取消 | `DELETE /auth/handoff/:requestId`(204) | ward のみ |
+
+- 未認証は常に 401。404 が返るのは認証済みかつ権限のある主体に対してのみ
+- **セッション主体の能力制限(§5)への追加**: 許可列挙に `GET /auth/key-wraps` のみを追加する。登録・削除・取得・承認はすべて端末限定(ADR-0018 改訂 2: 資格の生成と鍵素材は端末)
+- hosted Web(`apps/web`)は KL3 では台帳に触れない(状態表示は後続の W 系列。削除も v1 では端末限定 — 鍵素材の可用性に関わる操作をセッション XSS の射程に置かない)
+
+### 13-8. レート制限・有効期間・受理ポリシー(2026-09-12)
+
+- **ブロブ取得の合算窓**: `GET /auth/recovery`・`GET /auth/key-wraps/passkey/:id`・`GET /auth/key-wraps/guardians/:id`(いずれも B のラップ本体を返す)は **user 単位の 1 つの固定窓で合算して 1 時間 5 回**(§13-3 の上限値を種別合算に読み替える)。超過は 429 + retryAfterSeconds。計数は専用カウンタ行の 1 文条件付き UPSERT(AUDIT_SPEC §3.1 のカウンタ行と同形)。未登録 404 は計数しない
+- **承認窓**: `GET /auth/guardian/shares/:groupId` と `POST /auth/handoff/:id/approvals` は承認者 user 単位の固定窓で合算して **1 時間 20 回**
+- **要求窓**: `POST /auth/handoff` は ward user 単位 **1 時間 5 回**
+- **要求の有効期間**: 15 分。失効した要求への照会・承認・取得は 404。承認は要求とともに消える
+- 受理ポリシー(合意規則ではない — セルフホストでの引き上げ可): passkey-prf ラップ ≤ 5 / user、保護者グループ ≤ 5 / user、分片 1..5 / グループ(`all` は ≥ 2)、`params` ≤ 4 KiB、ラップ暗号文はタグ込み 16 バイト以上 16 KiB 以下(§13-4 と同じ)、分片暗号文 = 48 バイト・enc = 32 バイト(固定長)、承認 ≤ (グループ数 + 1) × 5 / 要求
+- 各 mutation は strict 受理(§12-10 (1))
+
+### 13-9. ワイヤ表現(2026-09-12)
+
+```
+MasterKeyWrap = { suite: "maruhi/v1", nonceHex, ciphertextHex }          // RecoveryWrap(§13-4)と同形
+PasskeyWrapRegistration = { wrap: MasterKeyWrap, credentialIdHex, prfSaltHex /* 64 */, rpId: "localhost", label? }
+PasskeyWrapResult       = PasskeyWrapRegistration + { wrapId, updatedAtMs }
+GuardianShare = { shareIndex, guardianUserId, guardianEncPubHex, guardianKeyFingerprintHex, encHex, ciphertextHex }
+GuardianGroupRegistration = { mode: "any" | "all", wrap: MasterKeyWrap, shares: GuardianShare[] }
+GuardianGroupResult       = { groupId, mode, wrap: MasterKeyWrap, createdAtMs }
+HandoffApproval = { source: "device" | groupId, shareIndex, encHex, ciphertextHex, blob?: MasterKeyWrap /* device のみ必須 */ }
+HandoffApprovalResult = HandoffApproval + { approverUserId, approverKeyFingerprintHex, createdAtMs }
+```
+
+- 配布は保存値をそのまま返す(サーバーは解釈しない)。B の直列化形式・ハンドオフコードの表示形はクライアント(CLI)の契約
+- `label` は passkey の識別用の短い表示文字列(制御文字・bidi 禁止 — §6 のトークン名と同じ受理規律)
+
+### 13-10. 監査イベント(2026-09-12)
+
+AUDIT_SPEC §3.1 の追加事件(D1 側。レコード操作と同一 batch)。既存の `auth.recovery_blob_fetched` / `auth.recovery_code_reissued` は recovery-code 経路のまま名前を変えない。429 / 404 の拒否は記録しない(配布・受理していないものを記録しない — §13-5 と同じ線引き)。
 
 ## 14. ワークロードリース API(2026-08-12 セッション 22 起草)
 
