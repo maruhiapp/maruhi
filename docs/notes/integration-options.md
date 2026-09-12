@@ -754,6 +754,80 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 **K6(docs — 実装済み経路ぶん)**: 新ページ `/docs/recover-your-key`(3 経路: リカバリーコード / 端末ハンドオフ / 保護者。上限とゲートの明記。passkey は書かない — 未実装)、`/docs/linux-keychain` は Codespaces / dev container の手順をハンドオフ最上位へ書き換え(`maruhi agent -- bash` → `login` → `key recover --handoff` → 手元で `key approve`)+ `--key-ttl` の節、getting-started の step 4 から導線。ROADMAP KL 行を更新。`bun run check` 通過(121 ファイル / 2982 件)。
 - 残: K5 の passkey 部分 → `/docs/recover-your-key` へ passkey 経路を追記。**K0 の順序は 2026-09-12 所有者裁定で組み替え**: 実機でしか確かめられない部分(ブラウザ × 認証器の PRF 対応表、Codespaces / WSL のポート転送)は K5 の後ろへ回し、まとめて実施する。K5 は環境内で可能な範囲の K0(Bun の 127.0.0.1 リスナー + ワンタイムトークン + Origin 検査、Chromium の仮想認証器での rpId=localhost + PRF の往復)を先行させ、結果を `docs/notes/spike-prf.md` に「仮想認証器で検証済み / 実機は未検証」と区別して残す。公開 docs の passkey 節は実機検証まで保留(「検証していないことを書かない」)。ワイヤ形(rpId=localhost / prf_salt / AAD)は承認済み仕様で固定されており、実機の結果で変わるのは対応表の文面と Codespaces の案内だけ。K5 は別セッションで着手する
 
+### 補足 20: K5 パスキー PRF 実装録 — `key seal passkey` / `key recover --passkey`(2026-09-12)
+
+KL3 の残件 = K5 のパスキー PRF 部分。対象は (1) CLI が `127.0.0.1` で配る localhost ページ(WebAuthn PRF 拡張を呼び、PRF 出力をループバックの 1 POST で CLI へ渡す — CRYPTO_SPEC §8.2、補足 19-2 裁定 I)、(2) `maruhi key seal passkey`(PRF → KEK → B のラップ → `POST /auth/key-wraps/passkey`)、(3) `maruhi key recover --passkey`(台帳のラップ取得 → 同じパスキーの PRF → 復号 → キーチェーン / agent)。**CLI 初の TCP リスナー**であり、ローカル API の認証(裁定 A)が人間レビュー箇所。
+
+前置の K0 は環境内で可能な範囲(Bun のリスナー / Chromium 仮想認証器)を先行し、結果は docs/notes/spike-prf.md(検証済み / 未検証を区別)。実機依存の K0 は所有者が後でまとめて実施し、**公開 docs の passkey 節はそれまで書かない**(20-4 に下書きだけ置く)。
+
+#### 20-1. 全体像 — 構造とフロー
+
+```
+maruhi key seal passkey [--label <text>]                 maruhi key recover --passkey
+  ゲート(3 チャネル TTY + 非エージェント)                   ゲート(同左)
+  loadMasterKeys(鍵がある端末だけ)                         ensureNoStoredMasterKey(鍵の無い端末だけ)
+  status: passkeys < 5、excludeCredentials 用の id 列       status: passkeys ≥ 1、allowCredentials 用の id 列 + wrapId 対応表
+  wrap_id = ULID、prf_salt = 32 バイト乱数(公開パラメータ)
+  ┌ リスナー 127.0.0.1:0(node:http)── URL http://localhost:<port>/<token>/ を表示 + 自動起動 ┐
+  │   GET  /<token>/            静的 HTML(CSP script-src 'self'、inline なし)              │
+  │   GET  /<token>/app.js      1 スクリプト(WebAuthn 呼び出しと 1 回の fetch だけ)          │
+  │   GET  /<token>/style.css   最小のスタイル                                               │
+  │   GET  /<token>/config.json { mode, rpId, userName, prfSaltHex, credentialIds… }(公開値) │
+  │   POST /<token>/prf         { prfHex, credentialIdHex } | { error: <code> } — 1 回で閉じる │
+  └ Host / Origin 完全一致・トークン不一致・2 回目・本文不正はすべて同一の 404 ───────────────┘
+  KEK = derivePasskeyKek(prf_out)                          credentialId → wrapId、GET /auth/key-wraps/passkey/:wrapId
+  wrapMasterBlob(B, AAD = master-wrap, passkey-prf, wrap_id) KEK = derivePasskeyKek(prf_out) → unwrapMasterBlob
+  POST /auth/key-wraps/passkey(登録は最後 — 半端な行を残さない) importMasterKeys(自己検証)→ storeMasterKeyAndReport
+                                                           (Keychain サービス経由 = agent の中なら agent のメモリへ)
+併せて: maruhi key seal list(台帳の passkey 行)/ maruhi key seal remove <wrap-id>(DELETE)
+```
+
+ページは CLI バイナリに**文字列定数として同梱**(裁定 C)。値・鍵素材は DOM に出さず、ページから CLI へ渡るのは PRF 出力(hex)と credential id だけ。PRF 出力は CLI 側で関数ローカルにだけ存在し、KEK 導出後に参照を捨てる(JS の文字列はゼロ化できないので「参照を持たない」が上限 — agent.ts と同じ注記)。
+
+#### 20-2. 裁定の反復記録
+
+各裁定点で「3 案以上 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数は新案が出た回数(+ 最終確認 1 巡)。
+
+| 裁定点 | 巡数 | 検討した案と評価 | 結論 |
+|---|---|---|---|
+| **A. ローカル API の認証**(トークンの運び方・検査・消費・失敗応答) | 3 | ① **URL パス** `/<token>/…`(採用): CLI → ブラウザへ秘密を渡せる唯一の経路が URL であり、パスに置くと**ページ資産の GET も POST も同じトークンで閉じる**(他の localhost ページはこちらの画面を列挙すらできない)。② クエリ `?t=`: ① と同じ性質だがログ・履歴で目立つ形。③ フラグメント `#t=`: 履歴・Referer に残らない利点はあるが**サーバーに届かない**ので GET を閉じられず、ページ JS がヘッダで運ぶ = ページ自体は無認証で配ることになる(認証の面が 1 つ減る)。④ ヘッダのみ: ③ と同じ(フラグメント経由でしか渡せない)。上位互換の探索: ① + `Referrer-Policy: no-referrer`(Referer 漏れを閉じる。ページに外部リンクは無い)+ 履歴に残る URL は**儀式の終わりにリスナーごと消える 1 回限りの値**なので無害 — ③ の利点を ① で回収できる。銀の弾丸(トークン不要にする案): Origin 検査だけで足りるか → 足りない(別ポートの localhost ページは Origin が違うので弾けるが、**トークンが無いとページの存在を誰でも開ける** = 儀式の誘発面が残る)。加えて **`Host` 完全一致**(DNS リバインディング — 攻撃者ドメインを 127.0.0.1 へ解決させても Host が違う)、**`Origin` 完全一致**(`http://localhost:<port>` — ポート込み。JSON の POST は preflight になるので OPTIONS も 404 で落ちる)、**1 回限りの消費**(最初の正しい POST でリスナーを閉じる。2 回目は 404 か接続拒否 — スパイク検証)、**有効期間 = リスナーの寿命 5 分**(ブラウザ起動と生体認証に十分・放置端末で聞き続けない。Ctrl+C で即終了)、**失敗は理由を出さない一様 404**(トークンの存在・形式・Origin の何が違うかを外へ返さない)、本文 ≤ 4 KiB・`application/json` のみ。`Sec-Fetch-Site: same-origin` の追加検査は**採らない**(ブラウザ依存の二重検査で、Origin 完全一致に対して足すものが無い)。トークン = 32 バイト乱数の base64url(43 文字) | ① + Host / Origin 完全一致 + 1 回消費 + 5 分 + 一様 404。**人間レビュー箇所** |
+| **B. リスナーの実装** | 2 | ① **`node:http`**(採用): `agent.ts` の unix ソケットが `node:net` で書かれ「vitest(Node)で実ソケットを検査できる」ことを先例にしている。テストの `MockServer` も `node:http`。② `Bun.serve`: Bun 固有 API は `live.ts` にだけ置く規律(ADR-0016 追記)に反し、vitest(Node)から実リスナーを検査できない。③ `node:net` + 自前 HTTP 解析: パーサの発明(不採用)。④ Effect の `HttpServer`(`@effect/platform-bun` の `BunHttpServer`): Effect 的には最も整うが live は Bun 限定で、テストには `@effect/platform-node` の追加依存が要る(新規依存を足さない方針に反する)。上位互換: ① を `Effect.acquireUseRelease` で資源化(`agent.ts` と同型 — 停止時に開いている接続を `destroy` してから `close`)。bind は `127.0.0.1` のみ(rpId=localhost のため URL は `localhost`。::1 のみに解決する環境は未検証 — spike-prf.md §3。**退避案**: 実機 K0 で繋がらなければ `::1` にも同ポートで best-effort bind する) | ① + acquireUseRelease |
+| **C. ページの配布形**(同梱・CSP・スクリプト分離) | 3 | ① **TS の文字列定数**(`apps/cli/src/passkey-page.ts` がテンプレートリテラルで HTML / JS / CSS を export。採用): `bun build --target=bun` / `--compile` / vitest / tsc のどれにも追加設定が要らない。② Bun の `import … with { type: "text" }`: 3 経路(run / bundle / compile)で同梱されることをスパイクで確認したが、**vitest(Vite)が `.html` の import を変換できず、`bun-types` が `*.html` を `HTMLBundle` 型に取る**ため、Vite プラグインと型の上書きの 2 つのインフラが要る(不採用)。③ バイナリの隣にファイルを置く: 単一バイナリ配布(ADR-0015)を壊す。④ ビルド時にアセットから TS を生成(codegen + 漂流検知): ② の欠点を消せるがインフラが増える(① で足りる)。銀の弾丸: ページを持たない → 不可(PRF はブラウザでしか取れない — 補足 19-2 裁定 I)。**CSP**: `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` を HTML 応答のヘッダで付け、`Referrer-Policy: no-referrer` / `X-Content-Type-Options: nosniff` / `Cache-Control: no-store` を全応答に付ける。**inline script・inline style・eval・第三者スクリプト / CDN・アナリティクスは無い**(テストが HTML を機械検査: `<script` は `src="./app.js"` の 1 つだけ、`on*=` 属性・`javascript:`・`<style` 無し)。① の欠点(HTML / JS が TS 文字列の中で oxlint に掛からない)は、ページ JS が「WebAuthn 2 呼び出し + fetch 1 回」の 60 行程度に留まることと、上記の機械検査で受ける | ① |
+| **D. ブラウザ起動と案内** | 2 | ① **自動起動 + URL 表示 + 失敗時の案内**(採用。login のブラウザ脚と同じ 1 本の縮退経路: 表示は常に行い、`io.openBrowser` の成否で「開いた / 開けなかった」の 1 行を stderr に足す)。② 表示のみ: 手作業が増える。③ 自動起動のみ: 開けない環境(SSH / headless)で行き止まり。上位互換: ① + **リモート端末向けの汎用 1 行**(「この端末がリモート〔SSH / Codespaces / dev container〕なら、ポート <port> を手元へ転送してから URL を開く」)。Codespaces 固有の手順(`gh codespace ports forward` 等)は**実機未検証なので書かない**(実機 K0 後に文面を確定 — 公開 docs と同じ線) | ① + 汎用 1 行 |
+| **E. コマンド面** | 3 | ① `key seal passkey` + `key recover --passkey` のみ。② ① + `--label`(台帳の `label` — 最大 5 件を見分ける表示名。省略可)。③ ② + **`key seal list` / `key seal remove <wrap-id>`**(採用): 受理ポリシー passkey ≤ 5 / user と「再登録 = 新 KEK → 旧ラップの削除」の意味論(CRYPTO_SPEC §8.2)を CLI から完結させるには削除が要る(無いと 5 件で詰まり、失った認証器の行も消せない)。一覧は `status.passkeys`(wrapId / label / credentialId 先頭 / 更新時刻)をそのまま表示し、削除は `DELETE /auth/key-wraps/passkey/:wrapId`(K3 実装済み。サーバー変更なし)。`key show` への統合(④)は「鍵の表示」と「台帳の管理」を混ぜるので不採用。`--label` の既定は**無し**(hostname は同期パスキーの識別に向かない)。`label` の受理規律は api-schema の `PasskeyLabelSchema`(1..64 文字・制御 / bidi 禁止)を宣言側(`Flag.withSchema`)で使い、サーバー往復前に usage エラーにする。ヘルプの `key` 群は generate / show / recover / recovery / approve / seal | ③ |
+| **F. 復元時の credential 選択** | 2 | ① **`status.passkeys` の全 credentialId を `allowCredentials` に渡し、応答の `rawId` で wrapId を選ぶ**(採用): 利用者は選ばなくてよく(認証器 / パスキーマネージャが持つものだけが候補になる)、台帳の行と 1:1 に対応づく。② `--wrap-id` で先に選ぶ: 利用者が ULID を知っている前提が不自然(将来 ① の上に足せる — 今回は付けない)。③ `allowCredentials` 空(発見可能資格情報だけ): resident key を要求することになり roaming 認証器で成立しない場合がある。該当なし: `status.passkeys` が空なら**ブラウザを開く前に**拒否(「登録が無い — 鍵のある端末で `maruhi key seal passkey`」)。応答の `rawId` が台帳のどの行にも無ければ中止(allowCredentials を渡す以上起きないが fail-closed)。認証器側の該当なし・取消は `NotAllowedError` として `error: "not-allowed"` が POST され、CLI が英語の案内に写す | ① |
+| **G. WebAuthn の作成 / 取得パラメータ** | 3 | rp = `{ id: "localhost", name: "maruhi" }`。**`user.id` = 登録ごとの 16 バイト乱数**(決定的な値〔user_id 由来〕にすると、同期パスキーマネージャが同じ rp + user.id の既存パスキーを**置換**し、CLI の知らないところで旧ラップが復元不能になる。乱数なら既存を壊さない)。**`excludeCredentials` = 台帳の全 credentialId**(同じ認証器で 2 つ目を作らせない → `InvalidStateError` を `error: "already-registered"` として「先に `key seal remove`」を案内)。`user.name` = `user.displayName` = `maruhi · <server host>`(裁定 I)。`pubKeyCredParams` = ES256(-7)/ RS256(-257)/ Ed25519(-8)(署名は使わないが必須項目)、`attestation: "none"`、`challenge` = 32 バイト乱数(ページ内で生成 — 検証しない)。`residentKey: "preferred"`(required は容量の無い roaming 認証器で失敗し、discouraged は同期マネージャで意味を持たない)。**`userVerification: "required"`**(スパイクで確定: UV 無し認証器は `preferred` だと PRF が黙って欠け、`required` なら登録時点で明示失敗する。「生体認証 1 回」の設計意図とも一致)。**PRF は `get` から取る**: 登録 = `create`(`prf.eval` を渡し `enabled` を見る)→ `get`(同 salt で `results.first`)の 2 回。`create` 時の `results.first` は Chromium では返るが対応の広さが未検証で、**登録時に復元と同じ経路(`get`)で値を得る**ことで「登録できたが復元で違う値」を構造的に排除する(登録の生体認証が 1 回増える代償)。PRF は `eval.first = prf_salt` のみ(`second` 不使用)。`enabled` が false / `results.first` 無し → `error: "prf-unsupported"` | 上記 |
+| **H. ゲート** | 2 | ① **`ensureSensitiveTerminalAllowed`**(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7。handoff / recovery-code と同じ)を登録・復元・削除に適用(採用。一覧は台帳の公開情報のみなので掛けない)。② 値表示ゲート(`ensureValueDisplayAllowed` = 2 チャネル): 儀式系は 3 チャネルが先例。③ ゲート無し(URL しか出ない): リスナーは儀式そのものであり、エージェント環境で開くと復元鍵がエージェントのセッションに着地する(handoff の要求側と同じ理由で拒否)。**リスナーはゲートの後でしか立たない**。復元は `ensureNoStoredMasterKey`(既存鍵の上書き事故を拒否 — handoff と同文言)。`maruhi agent` の中では `Keychain` サービスが agent を指すので、復元の着地先は自動的に agent のメモリ(handoff と同じ・特別扱い無し) | ① |
+| **I. タイムアウト・後始末・順序** | 2 | 順序(登録): ゲート → 鍵の読込 → status(上限 5 と excludeCredentials)→ wrap_id / prf_salt 生成 → **リスナー起動 → 待機(≤ 5 分)→ 停止** → KEK → ラップ → **最後に POST 登録**。台帳への書き込みは全材料が揃った後の 1 回だけなので、途中失敗で半端な行は残らない(POST 自体の失敗はサーバーが strict 受理で丸ごと拒む)。順序(復元): ゲート → 鍵なし確認 → status → リスナー → 待機 → 停止 → credential → wrapId → **ブロブ取得は PRF の後**(取り消した儀式が合算窓 5 回 / 時を消費しない)→ KEK → 復号 → 自己検証 → 保存。リスナーは `acquireUseRelease` で必ず閉じ、トークンはリスナーと同寿命(閉じたら破棄)。タイムアウトは `Effect.timeout`(5 分)で待機側に掛け、リスナーの release が接続を切る。代替 ②「先にブロブを取ってから儀式」: 窓を無駄に消費する。③「登録を先に POST してから PRF」: PRF 失敗で復元不能な行が残る(不採用) | 上記 |
+| **J. テスト戦略** | 2 | ① **ブラウザ往復はスパイクに留め、CLI テストは「テストがブラウザの代わりに POST する」**(採用): `TestEnv` に `setBrowserOpenHandler(url => Promise<boolean>)` を足し、`openBrowser` が呼ばれた URL へテストが `fetch` で POST する(`setSessionHandler` と同型)。往復は実 crypto + `MockServer`。② vitest に Playwright + 仮想認証器を組み込む: CLI に Playwright(と Chromium)の依存が増え、CI のコストも増える(不採用 — スパイクで往復は確認済み)。③ リスナーだけ単体で検査 + 往復は手動: 往復の退行を検出できない。検査項目: リスナーの認証(トークン不一致 / Host 不一致 / Origin 不一致 / 2 回目の POST / 本文不正 / 上限超過 / タイムアウト)、ゲート(非端末・エージェント)、登録と復元の roundtrip(登録で POST された wrap を復元で返し、テストベクターと同じ `derivePasskeyKek` 経路で復号できる)、既存鍵ありの復元拒否、登録が無いときの拒否、5 件上限、`already-registered` / `not-allowed` / `prf-unsupported` の写像、`seal list` / `seal remove`、HTML の機械検査(裁定 C)、ヘルプ golden、文言規約 | ① |
+
+**仕様・ADR との整合**: 暗号操作は `derivePasskeyKek` / `wrapMasterBlob` / `unwrapMasterBlob`(K2 実装済み)のみで、`packages/crypto` は変更しない。ワイヤ形は AUTH_SPEC §13-9 の `PasskeyWrapRegistration` そのまま(rpId は `"localhost"` 固定)。サーバーは変更なし。ADR-0018 決定 2 の「ワンタイムトークン + Origin 検査」は裁定 A が満たす。ADR-0016 決定 7 のゲートは裁定 H。**仕様改訂を要する裁定は無い**。
+
+#### 20-3. 承認依頼項目(フェーズ A の終わり — 所有者裁定待ち)
+
+1. 裁定 A: ローカル API の認証 = URL パスのワンタイムトークン + `Host` / `Origin` 完全一致 + 1 回消費 + 5 分 + 一様 404(人間レビュー箇所)
+2. 裁定 B: `node:http` を Effect の資源として使う(bind は `127.0.0.1` のみ。::1 は実機 K0 後の退避案)
+3. 裁定 C: ページは TS の文字列定数で同梱(HTML / JS / CSS の 3 応答 + `config.json`)、CSP `script-src 'self'` 基調、inline なし。機械検査で固定
+4. 裁定 E: コマンド面 = `key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`
+5. 裁定 G: `userVerification: "required"`、`user.id` は登録ごとの乱数、`excludeCredentials` = 台帳の全 credentialId、**PRF は登録時も `get` から取る**(登録の生体認証は 2 回)
+6. 裁定 F / I: 復元は `allowCredentials` 全件 → 応答の credential で wrapId を選ぶ。ブロブ取得は PRF の後(窓を無駄にしない)、登録の POST は最後(半端な行を残さない)
+7. 裁定 J: ブラウザ往復は CLI テストに組み込まず、テストがブラウザの代わりに POST する(Playwright を CLI の依存に足さない)
+8. 公開 docs の passkey 節は書かず、20-4 の下書きに留める(実機 K0 後に `/docs/recover-your-key` へ)
+
+#### 20-4. 実機検証後に `/docs/recover-your-key` へ追記する内容の下書き(公開しない — 検証していないことを書かない)
+
+英語の下書き。対応表と Codespaces の手順は実機 K0 の結果で埋める。
+
+> **Passkey** — Seal your master key to a passkey (Touch ID, Windows Hello, a security key, or a synced passkey manager) so a single biometric prompt restores it on any device where that passkey is available.
+>
+> Register (on a device that has the key): `maruhi key seal passkey --label "MacBook Touch ID"`. maruhi opens `http://localhost:<port>/…` in your browser, creates a passkey for `localhost` named `maruhi · <server>`, and asks you to verify twice (once to create, once to derive the wrapping key). Nothing about the key leaves your machine in plaintext: the page sends only the passkey's PRF output to the maruhi CLI over loopback, and the CLI uploads an encrypted wrap.
+>
+> Restore (on a device without the key): `maruhi key recover --passkey`. Same page, one verification, then the key lands in your OS keychain (or in the current `maruhi agent` session).
+>
+> Manage: `maruhi key seal list` shows registered passkeys (up to 5); `maruhi key seal remove <wrap-id>` deletes one. Removing a passkey's wrap does not delete the passkey from your authenticator — do that in the authenticator's own settings.
+>
+> Requirements: a browser and authenticator that support the WebAuthn PRF extension with user verification (**table: filled in after hardware verification**). Remote terminals (SSH, dev containers, Codespaces): forward the port shown to your local machine and open the URL there (**exact steps: filled in after verification**). Passkey ceremonies are refused on non-interactive terminals and in AI agent environments, like the other key ceremonies.
+
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
 競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
