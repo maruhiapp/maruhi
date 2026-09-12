@@ -481,27 +481,46 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(created),
           ),
         );
-        const audits = [
-          userAuditInsert(db, nowMs, {
+        // 監査行も同じ batch に同梱する(passkeyInsert と同じ形): グループ行が
+        // 入った(changes() の連鎖が 1 のまま)ときだけ INSERT…SELECT で入る。
+        // 上限 / 衝突で 0 行なら監査も 0 行。2 段目の batch に分けると「行はあるが
+        // 監査がない」窓ができ、失敗時の再試行が別 id で 2 つ目のグループを作る
+        const audited = and(
+          eq(guardianGroups.id, groupId),
+          eq(guardianGroups.userId, userId),
+          created,
+        );
+        const auditEvents: D1AuditEventInput[] = [
+          {
             event: "auth.key_wrap_registered",
             actor,
             payload: { kind: "guardian", groupId, mode, recipientCount: shares.length },
-          }),
-          ...shares.map((share) =>
-            userAuditInsert(db, nowMs, {
-              event: "auth.guardian_designated",
-              actor,
-              targetUserId: share.guardianUserId,
-              payload: { groupId, mode, shareIndex: share.shareIndex },
-            }),
-          ),
+          },
+          ...shares.map((share): D1AuditEventInput => ({
+            event: "auth.guardian_designated",
+            actor,
+            targetUserId: share.guardianUserId,
+            payload: { groupId, mode, shareIndex: share.shareIndex },
+          })),
         ];
-        // 監査行は上限で拒否されたときに入ってはならない。userAuditInsert は
-        // 無条件 INSERT なので、グループ挿入の結果を先に確定してから 2 段目の
-        // batch で入れる(D1 は batch 間の原子性を持たないが、グループ行 → 監査の
-        // 順なら「行があるのに監査がない」窓が極小の障害時にしか生じない)
-        const first = await db.batch([groupInsert, ...shareInserts]);
-        if (first[0].length !== 1) {
+        const auditInserts = auditEvents.map((event) =>
+          db.insert(userAuditEvents).select(
+            db
+              .select(
+                guardedAuditSelectColumns({
+                  event: event.event,
+                  actor: event.actor,
+                  nowMs,
+                  targetUserId: event.targetUserId ?? null,
+                  ...(event.payload === undefined ? {} : { payload: event.payload }),
+                }),
+              )
+              .from(guardianGroups)
+              .where(audited),
+          ),
+        );
+        const results = await db.batch([groupInsert, ...shareInserts, ...auditInserts]);
+        if (results[0].length !== 1) {
           const taken = await db
             .select({ id: guardianGroups.id })
             .from(guardianGroups)
@@ -509,7 +528,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             .get();
           return taken === undefined ? "limit" : "conflict";
         }
-        await db.batch([audits[0]!, ...audits.slice(1)]);
         return "created";
       }),
     guardianFind: (userId, groupId) => run(() => findGroup(userId, groupId)),

@@ -26,13 +26,14 @@ import {
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
+import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, type CommonFlags, openMetadataProject, openSession } from "./context.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import { serializeStoredMasterKey } from "./keychain.ts";
 import {
   confirmKnownFingerprint,
@@ -48,10 +49,25 @@ import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 const MAX_GUARDIANS = 5;
 
 /**
+ * 指名の儀式はハンドオフの要求 / 承認と同じゲート(ADR-0016 決定 7): 人間の
+ * 対話端末でのみ行い、エージェント環境は拒否する。保護者の指名にはフラグ経路を
+ * 設けない(鍵素材の封印先を非対話で決めさせない)ので、パイプした stdin で
+ * 儀式のプロンプトを埋める形もここで落とす。
+ */
+function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return ensureSensitiveTerminalAllowed({
+    agent: io.agentProfile(),
+    stderrIsTerminal: io.stderrIsTerminal(),
+    agentError:
+      "Refused to run the guardian key confirmation ceremony: an AI agent environment was detected. Run `maruhi guardian add` yourself in a terminal",
+    terminalError:
+      "Designating guardians is only allowed on an interactive terminal (stdin, stdout, and stderr must all be terminals; pipes, redirects, CI, and AI agents are refused)",
+  });
+}
+
+/**
  * 保護者鍵の明示確認(CRYPTO_SPEC §6.5 の充足形を保護者の指名に適用): 帳のヒットは
- * 読み上げの再実施を免除するが、指名単位の yes 確認は残す。エージェント環境では
- * 儀式を行わない(保護者の指名にはフラグ経路を設けない — 鍵素材の封印先を
- * 非対話で決めさせない)。
+ * 読み上げの再実施を免除するが、指名単位の yes 確認は残す。
  */
 function confirmGuardianFingerprint(input: {
   readonly origin: string;
@@ -60,13 +76,6 @@ function confirmGuardianFingerprint(input: {
 }): Effect.Effect<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    if (io.agentProfile().isAgent) {
-      return yield* Effect.fail(
-        cliError(
-          "Refused to run the guardian key confirmation ceremony: an AI agent environment was detected. Run `maruhi guardian add` yourself in a terminal",
-        ),
-      );
-    }
     const words = yield* fingerprintWords(
       input.fingerprintHex,
       "The guardian's key fingerprint is malformed",
@@ -280,6 +289,7 @@ export function guardianAddOp(input: {
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    yield* ensureGuardianCeremonyAllowed(io);
     const context = yield* openMetadataProject(input.flags);
     const rejection = guardianInputRejection({
       selfUserId: context.session.userId,

@@ -241,7 +241,7 @@ describe("maruhi guardian add", () => {
     expect(createCount(server)).toBe(0);
   });
 
-  it("AI エージェント環境では儀式を拒否する", async () => {
+  it("AI エージェント環境・非端末では儀式を拒否する(ハンドオフと同じゲート)", async () => {
     let createSeen = false;
     const { env } = await startEnv(
       [
@@ -254,8 +254,14 @@ describe("maruhi guardian add", () => {
     );
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
-    expect(createSeen).toBe(false);
     expect(env.errors.join("\n")).toContain("an AI agent environment was detected");
+    // パイプした stdin で儀式のプロンプトを埋める形(非端末)も拒否する
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdin: false });
+    env.setPromptResponses([await lastWordOf(alice)]);
+    expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("only allowed on an interactive terminal");
+    expect(createSeen).toBe(false);
   });
 });
 

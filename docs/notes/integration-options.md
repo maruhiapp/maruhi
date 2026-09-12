@@ -735,7 +735,7 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 - **固定窓は 1 表に一般化**(起草時の `key_blob_fetch_counters` は合算窓専用だった): `consumeWindow` は単一の条件付き UPSERT(`INSERT … ON CONFLICT DO UPDATE … WHERE`)+ `changes() = 1` ガードの監査同梱。`RecoveryRepo.recordFetch` もこれに委譲し(§13-8 の合算)、`recovery_wraps` の行内計数列は書かなくなった(列は据え置き)
 - **監査の 1:1**: 各事件は行の挿入 / 削除と同一 batch(要求・承認・分片取得・ラップ取得)。窓の消費と行の挿入が別文になる要求 / 承認では、監査は**挿入側**にだけ付ける(409 を「要求した」「承認した」として記録しない)。`auth.key_handoff_collected` は要求ごとに初回 1 回(`collected_at` の CAS)
 - **存在秘匿**: ハンドオフの照会・承認・取得は「ward 本人 / ward の保護者」以外・不明・失効を一様 404。役割(device / 自分の分片)は保存行から導出し、payload の申告値で認可しない(`source-mismatch` は 422)
-- **保護者グループの作成は 2 段 batch**(グループ + 分片の条件付き挿入 → 監査 9 事件)。D1 の batch は原子的だが、`userAuditInsert` が無条件 INSERT のため上限拒否時に監査だけ入る形を避けた(グループ行 → 監査の順で、極小の障害窓だけが「行あり・監査なし」になる)
+- **保護者グループの作成は 1 batch**(グループの上限付き INSERT…SELECT → 分片 → 監査 9 事件。監査は `guardedAuditSelectColumns` の INSERT…SELECT で `changes() = 1` 連鎖 + グループ行の存在に条件付け)。当初は監査を 2 段目の batch に分けていたが、PR レビュー(Cursor Bugbot)の指摘どおり 2 段目の失敗で「行あり・監査なし」+ 再試行で別 id の 2 群目ができるため、passkey 登録と同じ同梱形に改めた
 - 成功応答は HttpApi の既定(200 / 204)— 起草の 201 は仕様側を合わせた
 - テスト: `apps/server/test/key-wraps.test.ts`(13 件 — 認可・受理ポリシー・合算窓・存在秘匿・監査の 1:1)。セッション能力マトリクス(`session-capability.test.ts`)と strict 固定テストは新面を機械導出で覆う(パスパラメータ `wrapId` / `groupId` / `requestId` の具現化を追加)
 
@@ -744,7 +744,7 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 - **要求者は誰が承認するかを知らない**: `handoffCreate` → `status` で保護者グループの一覧を取り、3 秒間隔で `handoffApprovals` をポーリングして「device 1 件 > any 1 片 > all 全片」の順で組み立てる。承認の HPKE open が失敗したら**中止**(再送要求はしない — 文脈の不一致は改竄か実装バグ)。復元後は要求を DELETE する
 - **承認者の本人確認は yes 1 語**(端末移行: 「自分がいま他端末で出したコードか」/ 保護者: 「帯域外で本人が頼んだと確認したか」— 乗っ取られたアカウントもコードを見せられる旨を明示)。ハンドオフコードは公開鍵なので stderr に出すが、鍵素材(分片・KEK_h・B)は関数ローカルにだけ存在し出力しない
 - **保護者の指名は §6.5 の充足形をそのまま適用**(指紋帳のヒット → yes、無ければ 12 語の最終語再入力)。エージェント環境では儀式そのものを拒否し、フラグ経路(`--expect-fingerprint` 相当)を**設けない**(鍵素材の封印先を非対話で決めさせない)。`--mode` は必須(any / all)
-- **ゲート**: 要求・承認とも既存の `ensureSensitiveTerminalAllowed`(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7)。要求側は「鍵が既にある端末」も拒否(上書き事故)
+- **ゲート**: 要求・承認・保護者の指名とも既存の `ensureSensitiveTerminalAllowed`(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7)。要求側は「鍵が既にある端末」も拒否(上書き事故)。指名の端末ゲートは PR レビュー(Cursor Bugbot)の指摘で追加 — 当初はエージェント検出だけで、パイプした stdin で儀式を埋められた
 - **`guardian list --project`** は台帳の保護者 FP をチェーン導出の現鍵と突合し、離脱 / 鍵更新の保護者を STALE + 警告(all では「このグループでは復元できない」と明示)
 - **台帳 id の採番は `@maruhi/core` の `ulid`** へ共有化(サーバーの `ids.ts` は再エクスポート。fallow の重複検出で判明)
 - テスト: `apps/cli/test/handoff.test.ts`(9 件 — 端末移行 / 保護者 any の roundtrip、文脈不一致の中止、既存鍵 / エージェント / 非端末の拒否、承認者の device / 保護者経路、yes 以外・不明要求・不正コード)、`guardian.test.ts`(9 件 — any / all の roundtrip、儀式失敗、前提検査、エージェント拒否、STALE 表示、remove / wards)。`bun run check` 通過(121 ファイル / 2980 件)

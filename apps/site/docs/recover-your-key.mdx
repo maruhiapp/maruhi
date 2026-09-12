@@ -62,7 +62,7 @@ Guardians must be members of a project you share, because their public keys come
 maruhi guardian add --project <project-id> --mode any <user-id> [<user-id> …]
 ```
 
-For each guardian, the command shows their key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag, and it is refused in AI agent environments.
+For each guardian, the command shows their key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag; like the handoff commands, it runs only on a human interactive terminal and is refused in AI agent environments.
 
 `maruhi guardian list` shows your groups; with `--project <id>` it also checks every guardian's key against the project's current membership and marks a guardian who left, or who rebuilt their key with `maruhi key generate`, as `STALE`. A stale guardian cannot open their share, so remove that group and add it again. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
 
