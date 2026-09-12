@@ -353,6 +353,10 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const duplicate = await post("/auth/key-wraps/guardians", a, first);
     expect(duplicate.status).toBe(422);
     expect((await json(duplicate))["reason"]).toBe("duplicate-id");
+    // DB まで到達する拒否(衝突)も監査を書かない: 監査行は batch の末尾で
+    // `changes() = 1` の連鎖に条件付けられている(受理 1 件ぶんだけが残る)
+    expect(await auditCount("auth.key_wrap_registered")).toBe(1);
+    expect(await auditCount("auth.guardian_designated")).toBe(1);
     for (let i = 1; i < 5; i += 1) {
       const ok = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
       expect(ok.status).toBe(200);
@@ -360,6 +364,9 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const sixth = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
     expect(sixth.status).toBe(422);
     expect((await json(sixth))["reason"]).toBe("too-many-groups");
+    // 上限拒否も同じ: 受理した 5 群ぶん(1 + 分片数 = 各 1 行)だけが残る
+    expect(await auditCount("auth.key_wrap_registered")).toBe(5);
+    expect(await auditCount("auth.guardian_designated")).toBe(5);
   });
 
   it("counts share fetches against the approval window (§13-8: 20)", async () => {
