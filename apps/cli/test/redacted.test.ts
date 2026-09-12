@@ -42,6 +42,7 @@ import {
   parseStoredToken,
   redactedPlaceholderMasterKeyMessage,
   redactedPlaceholderTokenMessage,
+  tokenRecordNoun,
   serializeStoredMasterKey,
   serializeStoredToken,
   tokenEntryName,
@@ -323,6 +324,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // agent セッションでは実在しないキーチェーンを指さない(直し方は同じ)
     expect(redactedPlaceholderTokenMessage("agent")).toContain("held by this agent session");
     expect(redactedPlaceholderTokenMessage("agent")).not.toContain("keychain record");
+    // 壊れた記録の呼び名も同じ対(agent 側がキーチェーンへ退行したら落ちる)
+    expect(tokenRecordNoun("os-keychain")).toContain("keychain token record");
+    expect(tokenRecordNoun("agent")).toContain("held by this agent session");
+    expect(tokenRecordNoun("agent")).not.toContain("keychain");
     // 「必ず直る」と言い切らない(現行版に不具合が残っていれば再発する)
     expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("If it recurs after re-login");
     const masterMessage = redactedPlaceholderMasterKeyMessage(
