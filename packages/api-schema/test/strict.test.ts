@@ -114,6 +114,10 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["variables", "remove"],
       ["deks", "register"],
       ["auth", "recoveryPut"],
+      // master 鍵ラップ台帳(§13-7 — KL3): ラップ・分片・再封印値 = 鍵素材の暗号文
+      ["keyWraps", "passkeyRegister"],
+      ["keyWraps", "guardianCreate"],
+      ["keyWraps", "handoffApprove"],
       ["lease", "issue"],
       ["invites", "issue"],
       ["invites", "accept"],
@@ -131,6 +135,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["rotation", "dismiss"],
       // schemaPolicy の PUT(§12-11 — 署名済み構造を運ばない 3 値の Literal)
       ["schemaPolicy", "set"],
+      // ハンドオフ要求(§13-7 — KL3): request_id のみ
+      ["keyWraps", "handoffCreate"],
     ]);
   });
 

@@ -720,6 +720,25 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 
 承認までフェーズ 2(実装)には入らない。
 
+#### 19-7. 実装録(フェーズ 2 — 2026-09-12)
+
+**K1(仕様反映)**: 承認と同日に 3 正本へ反映(CRYPTO_SPEC 0.9-draft / AUTH_SPEC 0.21-draft / AUDIT_SPEC 1.6-draft)。
+
+**K2(crypto + ベクター)**: `test-vectors/master-key-wrap.json` を先行コミット(生成 = hpke-js + WebCrypto の `tools/generate-master-key-wrap.mjs`、独立検証 = panva + WebCrypto の `verify_reference.mjs`)。実装は `packages/crypto/src/internal.package/master-wrap.ts`。裁定:
+- **KEK は生 32 バイトで扱う**(`derivePasskeyKek` は deriveBits、`wrapMasterBlob` は毎回 importKey 非抽出): 保護者の XOR 分割が生バイトを要するため、S / G / H で KEK の型を 1 つに揃えた。recovery-code 経路(`recovery.ts` の deriveKey)は不変
+- **ハンドオフコードの表示形** = 58 シンボルを 4 文字ずつハイフン区切り(末尾グループは 2 文字)。復号は小文字・空白・ハイフンを吸収し、アルファベット外・長さ違い・ゼロ詰め非ゼロ・チェックサム不一致は `InvalidInput("handoff code")` で拒否(推測置換しない — recovery-code.ts と同じ規律)
+- **エラー種**: HPKE の失敗は既存の `DekWrapFailed` / `DekUnwrapFailed` を流用(新 kind を足さない)。AES-GCM の `operation` union に `"master-wrap"` を追加(`AeadOperation` として公開。core の Effect ラッパーも追随)
+- **ベクターの負例 `aad-kind-mismatch`** は kind を `device` へ付け替える形にした(`guardian` へ付け替えると mode 空が実装の InvalidInput で先に落ち、AAD 不一致の復号失敗を固定できない)
+- テスト: `test/checks/master-key-wrap.ts`(正例 / 負例 / InvalidInput / ラウンドトリップ)。crypto 1070 チェック・`bun run check` 通過
+
+**K3(サーバー)**: D1 5 表(`master_key_wraps` / `guardian_groups` / `guardian_shares` / `key_handoff_requests` / `key_handoff_approvals`)+ 固定窓 1 表(`key_wrap_windows` — user × kind)。api-schema は独立グループ `keyWraps`(14 エンドポイント)、ハンドラは `apps/server/src/handlers-key-wraps.ts`、リポジトリは `db.package/key-wraps.ts`。裁定:
+- **固定窓は 1 表に一般化**(起草時の `key_blob_fetch_counters` は合算窓専用だった): `consumeWindow` は単一の条件付き UPSERT(`INSERT … ON CONFLICT DO UPDATE … WHERE`)+ `changes() = 1` ガードの監査同梱。`RecoveryRepo.recordFetch` もこれに委譲し(§13-8 の合算)、`recovery_wraps` の行内計数列は書かなくなった(列は据え置き)
+- **監査の 1:1**: 各事件は行の挿入 / 削除と同一 batch(要求・承認・分片取得・ラップ取得)。窓の消費と行の挿入が別文になる要求 / 承認では、監査は**挿入側**にだけ付ける(409 を「要求した」「承認した」として記録しない)。`auth.key_handoff_collected` は要求ごとに初回 1 回(`collected_at` の CAS)
+- **存在秘匿**: ハンドオフの照会・承認・取得は「ward 本人 / ward の保護者」以外・不明・失効を一様 404。役割(device / 自分の分片)は保存行から導出し、payload の申告値で認可しない(`source-mismatch` は 422)
+- **保護者グループの作成は 2 段 batch**(グループ + 分片の条件付き挿入 → 監査 9 事件)。D1 の batch は原子的だが、`userAuditInsert` が無条件 INSERT のため上限拒否時に監査だけ入る形を避けた(グループ行 → 監査の順で、極小の障害窓だけが「行あり・監査なし」になる)
+- 成功応答は HttpApi の既定(200 / 204)— 起草の 201 は仕様側を合わせた
+- テスト: `apps/server/test/key-wraps.test.ts`(13 件 — 認可・受理ポリシー・合算窓・存在秘匿・監査の 1:1)。セッション能力マトリクス(`session-capability.test.ts`)と strict 固定テストは新面を機械導出で覆う(パスパラメータ `wrapId` / `groupId` / `requestId` の具現化を追加)
+
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
 競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。

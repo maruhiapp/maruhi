@@ -27,6 +27,13 @@ const AUTH_TABLES = [
   // CLI ログインハンドオフのフロー行(AUTH_SPEC §4)。users への FK を持つ
   "cli_login_flows",
   "recovery_wraps",
+  // master 鍵ラップ台帳(AUTH_SPEC §13-6 — KL3)。子 → 親の順
+  "key_handoff_approvals",
+  "key_handoff_requests",
+  "guardian_shares",
+  "guardian_groups",
+  "master_key_wraps",
+  "key_wrap_windows",
   "memberships",
   // membership 投影(AUTH_SPEC §11-5)。FK なしの導出キャッシュ
   "project_members",

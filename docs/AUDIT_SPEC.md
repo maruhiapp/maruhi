@@ -58,7 +58,7 @@ actor: {
 | `auth.guardian_share_fetched` | groupId、shareIndex | 保護者が自分宛の分片を取得した(**要監視**)。actor = 保護者(user_id + 鍵 FP)、target = ward |
 | `auth.key_handoff_requested` | requestId | ハンドオフ要求の作成。actor = ward |
 | `auth.key_handoff_approved` | requestId、source(`device` / groupId)、shareIndex | 承認の受理(**要監視**)。actor = 承認者(user_id + 鍵 FP)、target = ward |
-| `auth.key_handoff_collected` | requestId、approvalCount | 要求者が 1 件以上の承認を取得した = 復元が起きた事実。actor = ward |
+| `auth.key_handoff_collected` | requestId、approvalCount | 要求者が 1 件以上の承認を**初めて**取得した = 復元が起きた事実(要求ごとに 1 回。ポーリングの各応答では記録しない — AUTH_SPEC §13-6 `collected_at`)。actor = ward |
 | `auth.user_created` | — | getOrCreateUser の新規作成分。サインアップ招待コードの消費を伴う作成(AUTH_SPEC §3 の `invite` — 2026-09-01 H1)は payload に `signupInviteId`(消費した招待行の内部 ULID — 外部識別子ではない)を写し、招待行の `used_by_user_id` と突合できる |
 
 - **KL3 の 9 事件(2026-09-12 — `auth.key_wrap_*` / `auth.guardian_*` / `auth.key_handoff_*`)の記録細則**: 可視性はユーザー系(§6)どおり本人軸 — actor または target が本人の行を本人が読める(保護者は自分が指名・承認した事実を、ward は誰に指名し誰が承認したかを、それぞれ自分の監査で追える)。アイデンティティ規則(§1-2)は不変 — 保護者・ward・承認者はすべて内部 user_id + 鍵 FP で、`wardLogin` 等の表示用スナップショットは API 応答のみで監査行には書かない。要ローテーション検出(§4)には関与しない(プロジェクトの外の事象)。429 / 404 の拒否は記録しない(AUTH_SPEC §13-10)

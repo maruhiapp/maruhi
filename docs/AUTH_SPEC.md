@@ -548,7 +548,8 @@ guardian_shares (
 key_handoff_requests (
   id              TEXT PRIMARY KEY,     -- request_id(CRYPTO_SPEC §8.4 — E.pub からの導出値。E.pub 自体は保存しない)
   user_id         TEXT NOT NULL,        -- ward(要求者)
-  created_at, expires_at                -- 発行 + 15 分
+  created_at, expires_at,               -- 発行 + 15 分
+  collected_at    INTEGER               -- 要求者が 1 件以上の承認を初めて取得した時刻(auth.key_handoff_collected の 1 回記録の根拠 — K3 実装)
 )
 key_handoff_approvals (
   request_id      TEXT NOT NULL REFERENCES key_handoff_requests(id) ON DELETE CASCADE,
@@ -561,10 +562,15 @@ key_handoff_approvals (
   created_at,
   PRIMARY KEY (request_id, source, share_index)
 )
-key_blob_fetch_counters (               -- 13-8 の合算窓(監査行ではない可変状態 — AUDIT_SPEC §3.1 のカウンタ行と同じ性格)
-  user_id TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL
+key_wrap_windows (                      -- 13-8 の固定窓(監査行ではない可変状態 — AUDIT_SPEC §3.1 のカウンタ行と同じ性格)
+  user_id TEXT NOT NULL,
+  kind    TEXT NOT NULL,                -- 'blob-fetch'(合算窓 — recovery-code を含む)| 'handoff-request' | 'approval'
+  window_start INTEGER NOT NULL, count INTEGER NOT NULL,
+  PRIMARY KEY (user_id, kind)
 )
 ```
+
+- **K3 実装(2026-09-12)**: 起草時の `key_blob_fetch_counters`(合算窓専用)は、要求窓・承認窓と同じ形の 1 表 `key_wrap_windows`(user × kind)へ一般化した。`recovery_wraps` の `fetch_window_start / fetch_count` は書かなくなった(列は据え置き — 削除は後続マイグレーション)。承認の取得(`GET /auth/handoff/:id/approvals`)は要求ごとに**初回**(1 件以上を返した最初の応答)だけ `auth.key_handoff_collected` を記録する(`collected_at` を立てる CAS と同一 batch — ポーリングのたびに「復元が起きた」を重ねて書かない)
 
 - すべて D1(user 単位。プロジェクト・org・チェーンと無関係)。認可にトークンスコープ表・チェーン role は関与しない(§13-1 と同じ)
 - `recovery_wraps` の `fetch_window_start / fetch_count` は合算窓のカウンタ行へ読み替える(移行はサーバー実装〔K3〕の裁量。上限値は不変)
@@ -575,18 +581,18 @@ key_blob_fetch_counters (               -- 13-8 の合算窓(監査行ではな�
 | op | エンドポイント | 認可 |
 |---|---|---|
 | 台帳の状態 | `GET /auth/key-wraps`(200) | 認証済み主体すべて(**セッション主体も可** — §5 の許可列挙へ追加。`recovery/status` と同じ性格)。ラップ・分片・パラメータの秘密を運ばない: 種別ごとの登録有無・wrap_id / group_id・mode・保護者の user_id と鍵 FP・更新時刻のみ |
-| passkey 登録 | `POST /auth/key-wraps/passkey`(201 → `{ wrapId }`) | `*` × admin スコープのトークンのみ(§13-2 の鍵素材条件と同じ。**セッション主体は拒否**) |
+| passkey 登録 | `POST /auth/key-wraps/passkey`(200 → `{ wrapId }`。作成系の成功は HttpApi の既定 200 — K3 実装) | `*` × admin スコープのトークンのみ(§13-2 の鍵素材条件と同じ。**セッション主体は拒否**) |
 | passkey ブロブ取得 | `GET /auth/key-wraps/passkey/:wrapId`(200 / 404) | 同上 + 合算レート制限(13-8) |
 | passkey 削除 | `DELETE /auth/key-wraps/passkey/:wrapId`(204) | 同上 |
-| 保護者グループ作成 | `POST /auth/key-wraps/guardians`(201 → `{ groupId }`) | 同上。payload = mode + ラップ + 分片 n 個(13-9)。分片の `guardian_user_id` は実在ユーザーであること。**鍵の正しさ(チェーン導出鍵との一致)はサーバーが検証しない** — 真実源は ward クライアントの確認(CRYPTO_SPEC §8.3)であり、二重の真実源を作らない |
+| 保護者グループ作成 | `POST /auth/key-wraps/guardians`(200 → `{ groupId }`) | 同上。payload = mode + ラップ + 分片 n 個(13-9)。分片の `guardian_user_id` は実在ユーザーであること。**鍵の正しさ(チェーン導出鍵との一致)はサーバーが検証しない** — 真実源は ward クライアントの確認(CRYPTO_SPEC §8.3)であり、二重の真実源を作らない |
 | 保護者グループ削除 | `DELETE /auth/key-wraps/guardians/:groupId`(204) | 同上(ward のみ) |
 | グループのブロブ取得 | `GET /auth/key-wraps/guardians/:groupId`(200 / 404) | 同上(ward のみ)+ 合算レート制限 |
 | 自分が保護者である ward の一覧 | `GET /auth/guardian/wards`(200) | `*` × admin トークン。応答 = `[{ wardUserId, wardLogin, groupId, mode, shareIndex, createdAtMs }]`。`wardLogin` は `linked_identities.provider_login` の表示用スナップショット(識別子として使わない — §2) |
 | 自分宛の分片取得 | `GET /auth/guardian/shares/:groupId`(200 / 404) | 同上(当該グループの分片保持者のみ)+ 承認窓で計数(13-8)。要監視イベント |
-| ハンドオフ要求 | `POST /auth/handoff`(201 → `{ expiresAtMs }`。body: `{ requestId }`) | `*` × admin トークン(ward)。要求は 5 回 / 時 / user。既存 id との衝突は 409 |
+| ハンドオフ要求 | `POST /auth/handoff`(200 → `{ expiresAtMs }`。body: `{ requestId }`) | `*` × admin トークン(ward)。要求は 5 回 / 時 / user。既存 id との衝突は 409 |
 | 要求の照会(承認者) | `GET /auth/handoff/:requestId`(200) | `*` × admin トークン。呼び出し主体が ward 本人、または ward のいずれかのグループの分片保持者であること。**それ以外・不明・失効は一律 404**(§11-2 と同じ存在秘匿)。応答 = `{ wardUserId, wardLogin, expiresAtMs, roles: [ "device" \| { groupId, mode, shareIndex } ] }`(呼び出し主体が取れる承認の形) |
-| 承認 | `POST /auth/handoff/:requestId/approvals`(201) | `*` × admin トークン。`source = "device"` は ward 本人のみ、`source = group_id` は当該グループで `share_index` の分片保持者のみ(照合は保存行から — ワイヤ申告値で認可しない)。同一 (request, source, share_index) の二重承認は 409。承認は 20 回 / 時 / 承認者 |
-| 承認の取得(要求者) | `GET /auth/handoff/:requestId/approvals`(200) | `*` × admin トークン(ward のみ)。応答 = 承認の列挙(13-9)。1 件以上を返した応答は `auth.key_handoff_collected` を記録する |
+| 承認 | `POST /auth/handoff/:requestId/approvals`(204) | `*` × admin トークン。`source = "device"` は ward 本人のみ、`source = group_id` は当該グループで `share_index` の分片保持者のみ(照合は保存行から — ワイヤ申告値で認可しない)。同一 (request, source, share_index) の二重承認は 409。承認は 20 回 / 時 / 承認者 |
+| 承認の取得(要求者) | `GET /auth/handoff/:requestId/approvals`(200) | `*` × admin トークン(ward のみ)。応答 = 承認の列挙(13-9)。1 件以上を返した**最初の**応答が `auth.key_handoff_collected` を記録する(要求ごとに 1 回 — 13-6 の `collected_at`) |
 | 要求の取消 | `DELETE /auth/handoff/:requestId`(204) | ward のみ |
 
 - 未認証は常に 401。404 が返るのは認証済みかつ権限のある主体に対してのみ

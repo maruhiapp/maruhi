@@ -127,6 +127,10 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["variables", "remove"],
   ["deks", "register"],
   ["auth", "recoveryPut"],
+  // master 鍵ラップ台帳(§13-7 — KL3): ラップ・分片・再封印値 = 鍵素材の暗号文
+  ["keyWraps", "passkeyRegister"],
+  ["keyWraps", "guardianCreate"],
+  ["keyWraps", "handoffApprove"],
   ["lease", "issue"],
   ["invites", "issue"],
   ["invites", "accept"],
@@ -157,6 +161,9 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   // schemaPolicy の設定(AUTH_SPEC §12-11 — 署名済み構造を運ばない。3 値の
   // Literal で Schema 検証が閉じる)
   ["schemaPolicy", "set"],
+  // ハンドオフ要求(§13-7 — KL3): request_id(一時公開鍵の SHA-256)のみ。
+  // 署名済み構造・暗号文・鍵素材を運ばない
+  ["keyWraps", "handoffCreate"],
 ];
 
 /**

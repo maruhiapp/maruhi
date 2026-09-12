@@ -26,6 +26,16 @@ export {
   UnauthorizedError,
 } from "./auth.ts";
 export {
+  HandoffConflictError,
+  HandoffConflictReasonSchema,
+  HandoffNotFoundError,
+  KeyWrapNotFoundError,
+  KeyWrapPolicyError,
+  KeyWrapPolicyReasonSchema,
+  KeyWrapRateLimitedError,
+  KeyWrapWindowSchema,
+} from "./key-wraps.ts";
+export {
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,

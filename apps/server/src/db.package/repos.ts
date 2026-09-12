@@ -11,21 +11,7 @@
 import type { SignupPolicy } from "@maruhi/api-schema";
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
-import {
-  and,
-  count,
-  eq,
-  gt,
-  gte,
-  inArray,
-  isNull,
-  lt,
-  lte,
-  min,
-  or,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNull, lte, min, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -57,6 +43,12 @@ import {
   orgAuditInsert,
   userAuditInsert,
 } from "./audit.ts";
+import {
+  KEY_BLOB_FETCH_LIMIT,
+  KeyWrapRepo,
+  type KeyWrapRepoShape,
+  makeKeyWrapRepo,
+} from "./key-wraps.ts";
 import { makeOpsRepo, OpsRepo } from "./ops.ts";
 import {
   apiTokens,
@@ -64,6 +56,7 @@ import {
   deploymentSettings,
   flowSigningKeys,
   invitations,
+  keyWrapWindows,
   linkedIdentities,
   memberships,
   organizations,
@@ -897,9 +890,13 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
 // RecoveryRepo(AUTH_SPEC §13。ブロブは user 単位で高々 1 つ)
 // ---------------------------------------------------------------------------
 
-/** ブロブ取得レート制限の固定窓(AUTH_SPEC §13-3: user あたり 1 時間 5 回)。 */
-const RECOVERY_FETCH_WINDOW_MS = 60 * 60 * 1000;
-export const RECOVERY_FETCH_LIMIT = 5;
+/**
+ * ブロブ取得レート制限(AUTH_SPEC §13-3: user あたり 1 時間 5 回)。KL3(§13-8)
+ * 以降は passkey / 保護者グループのラップ取得と**種別合算**の 1 窓
+ * (`key_wrap_windows` の kind = blob-fetch — KeyWrapRepo.consumeWindow)で数える。
+ * 上限値は不変。
+ */
+export const RECOVERY_FETCH_LIMIT = KEY_BLOB_FETCH_LIMIT;
 
 interface RecoveryRepoShape {
   /**
@@ -932,11 +929,16 @@ export class RecoveryRepo extends Context.Service<RecoveryRepo, RecoveryRepoShap
   "RecoveryRepo",
 ) {}
 
-function makeRecoveryRepo(db: Db): RecoveryRepoShape {
+function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape {
   return {
     upsert: (userId, wrap, nowMs, actor) =>
       run(async () => {
         await db.batch([
+          // 再発行は新しいブロブなので取得窓(合算窓 — §13-8)もリセットする
+          // (旧ブロブへの試行履歴を新ブロブに引き継がない)
+          db
+            .delete(keyWrapWindows)
+            .where(and(eq(keyWrapWindows.userId, userId), eq(keyWrapWindows.kind, "blob-fetch"))),
           db
             .insert(recoveryWraps)
             .values({
@@ -956,8 +958,7 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
                 nonceHex: wrap.nonceHex,
                 ciphertextHex: wrap.ciphertextHex,
                 updatedAt: nowMs,
-                // 再発行は新しいブロブなので取得窓もリセットする(旧ブロブへの
-                // 試行履歴を新ブロブに引き継がない)
+                // 旧計数列(§13-3 の行内窓)は KL3 以降書かない — 常に初期値
                 fetchWindowStart: null,
                 fetchCount: 0,
               },
@@ -986,76 +987,17 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
               updatedAtMs: row.updatedAt,
             };
       }),
+    // 取得計数は KL3(§13-8)以降、passkey / 保護者グループのラップ取得と合算の
+    // 固定窓(KeyWrapRepo.consumeWindow — 単一の条件付き UPSERT + changes() = 1
+    // ガードの監査同梱)で数える。呼び出し側が find で 404 を先に判定するため、
+    // 未登録は窓を消費しない(§13-3 の線引きは不変)
     recordFetch: (userId, nowMs, actor) =>
-      run(async () => {
-        // 取得計数は**単一の条件付き相対 UPDATE**で行う: 読み → 書き 2 段だと
-        // 並行リクエストが同じ count を読み、複数成功しても計数が 1 しか進まない。
-        // 窓のリセット / 加算 / 上限判定を 1 文の CASE / WHERE に畳み、
-        // 更新できた(= RETURNING が 1 行)ことを許可の
-        // 定義にする。auth.recovery_blob_fetched は invites の CAS と同じ
-        // changes() = 1 ガードの INSERT…SELECT を同一 batch に同梱し、許可された
-        // 取得と 1:1 のまま原子的に記録する(AUDIT_SPEC §5.2)
-        const windowExpired = sql`${recoveryWraps.fetchWindowStart} is null or ${nowMs} - ${recoveryWraps.fetchWindowStart} >= ${RECOVERY_FETCH_WINDOW_MS}`;
-        const results = await db.batch([
-          db
-            .update(recoveryWraps)
-            .set({
-              fetchWindowStart: sql`case when ${windowExpired} then ${nowMs} else ${recoveryWraps.fetchWindowStart} end`,
-              fetchCount: sql`case when ${windowExpired} then 1 else ${recoveryWraps.fetchCount} + 1 end`,
-            })
-            .where(
-              and(
-                eq(recoveryWraps.userId, userId),
-                or(sql`(${windowExpired})`, lt(recoveryWraps.fetchCount, RECOVERY_FETCH_LIMIT)),
-              ),
-            )
-            .returning({ fetchCount: recoveryWraps.fetchCount }),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.recovery_blob_fetched",
-                  actor,
-                  nowMs,
-                }),
-              )
-              .from(recoveryWraps)
-              .where(and(eq(recoveryWraps.userId, userId), sql`changes() = 1`)),
-          ),
-        ]);
-        if (results[0].length === 1) {
-          return { allowed: true } as const;
-        }
-        // 0 行 = 対象行が無い(未登録 — 上位が 404 を導出する)か、窓内で上限到達
-        const row = await db
-          .select({
-            fetchWindowStart: recoveryWraps.fetchWindowStart,
-            fetchCount: recoveryWraps.fetchCount,
-          })
-          .from(recoveryWraps)
-          .where(eq(recoveryWraps.userId, userId))
-          .get();
-        if (row === undefined) {
-          return { allowed: true } as const;
-        }
-        const windowStart = row.fetchWindowStart;
-        if (
-          windowStart !== null &&
-          nowMs - windowStart < RECOVERY_FETCH_WINDOW_MS &&
-          row.fetchCount >= RECOVERY_FETCH_LIMIT
-        ) {
-          const remainingMs = RECOVERY_FETCH_WINDOW_MS - (nowMs - windowStart);
-          return {
-            allowed: false,
-            retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
-          } as const;
-        }
-        // UPDATE と再読の間に別リクエストが窓をリセットした等の極小レース。
-        // 安全側(拒否)に倒し、残り時間は窓の全長で案内する
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.ceil(RECOVERY_FETCH_WINDOW_MS / 1000),
-        } as const;
+      keyWraps.consumeWindow({
+        userId,
+        kind: "blob-fetch",
+        limit: RECOVERY_FETCH_LIMIT,
+        nowMs,
+        audit: { event: "auth.recovery_blob_fetched", actor },
       }),
   };
 }
@@ -1925,17 +1867,22 @@ export type DbServices =
   | FlowSigningKeyRepo
   | CliFlowRepo
   | D1AuditRepo
-  | OpsRepo;
+  | OpsRepo
+  | KeyWrapRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
   const db = drizzle(d1);
+  // master 鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。recovery-code の取得窓も
+  // この合算窓を使う(§13-8)
+  const keyWraps = makeKeyWrapRepo(db);
   return Context.make(IdentityRepo, makeIdentityRepo(db)).pipe(
     Context.add(SessionRepo, makeSessionRepo(db)),
     Context.add(TokenRepo, makeTokenRepo(db)),
     Context.add(OrgRepo, makeOrgRepo(db)),
     Context.add(ProjectRepo, makeProjectRepo(db)),
-    Context.add(RecoveryRepo, makeRecoveryRepo(db)),
+    Context.add(RecoveryRepo, makeRecoveryRepo(db, keyWraps)),
+    Context.add(KeyWrapRepo, keyWraps),
     Context.add(InviteRepo, makeInviteRepo(db)),
     Context.add(FlowSigningKeyRepo, makeFlowSigningKeyRepo(db)),
     Context.add(CliFlowRepo, makeCliFlowRepo(db)),
