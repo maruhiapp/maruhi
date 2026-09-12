@@ -348,7 +348,7 @@ export function resolveSession(
       // 汎用の「壊れています」では伝わらない
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
-          ? cliError(redactedPlaceholderTokenMessage)
+          ? cliError(redactedPlaceholderTokenMessage(keychain.kind))
           : cliError("The keychain token record is corrupt. Log in again with `maruhi login`"),
       );
     }

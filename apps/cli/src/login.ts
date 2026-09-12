@@ -480,7 +480,7 @@ export function logoutOp(input: {
       return yield* Effect.fail(
         cliError(
           redacted
-            ? `${redactedPlaceholderTokenMessage} (the unusable record has been deleted; the server-side revocation could not be performed)`
+            ? `${redactedPlaceholderTokenMessage(keychain.kind)} (the unusable record has been deleted; the server-side revocation could not be performed)`
             : "The keychain token record was corrupt, so it has been deleted (the server-side revocation could not be performed)",
         ),
       );

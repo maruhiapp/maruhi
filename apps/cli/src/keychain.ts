@@ -151,7 +151,12 @@ export function placeholderCause(artifact: string): string {
   return `${artifact} contains the redaction placeholder (<redacted>). This is a maruhi bug (the record was written without unwrapping the secret)`;
 }
 
-const keychainPlaceholderCause = placeholderCause("The keychain record");
+/** 伏字が保存されていた記録の呼び名(保存先で変わる — 実在しない場所を指さない)。 */
+function storedRecordPlaceholderCause(kind: KeychainKind): string {
+  return placeholderCause(
+    kind === "agent" ? "The record held by this agent session" : "The keychain record",
+  );
+}
 
 /**
  * トークンレコードに伏字が保存されていたときの文言。
@@ -162,8 +167,9 @@ const keychainPlaceholderCause = placeholderCause("The keychain record");
  * ただし現行版に不具合が残っていれば同じ伏字を書き直すだけなので、再発したら
  * それが判断材料になることまで書く。
  */
-export const redactedPlaceholderTokenMessage =
-  `${keychainPlaceholderCause}. If an older maruhi wrote the record, \`maruhi login\` overwrites it correctly. If it recurs after re-login, the bug is in the current version — report it` as const;
+export function redactedPlaceholderTokenMessage(kind: KeychainKind): string {
+  return `${storedRecordPlaceholderCause(kind)}. If an older maruhi wrote the record, \`maruhi login\` overwrites it correctly. If it recurs after re-login, the bug is in the current version — report it`;
+}
 
 /**
  * MARUHI_TOKEN に伏字そのものが入っていたときの文言。
@@ -366,7 +372,7 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string, kind: Key
   // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `${placeholderCause(kind === "agent" ? "The record held by this agent session" : "The keychain record")}. ${manualDeletionGuidance(entryName, kind)}Also report this as a maruhi bug`;
+  return `${storedRecordPlaceholderCause(kind)}. ${manualDeletionGuidance(entryName, kind)}Also report this as a maruhi bug`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

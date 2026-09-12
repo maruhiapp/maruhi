@@ -316,9 +316,15 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(hasRedactedPlaceholder("not json")).toBe(false);
     // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
     // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
-    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` overwrites it correctly");
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain(
+      "`maruhi login` overwrites it correctly",
+    );
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("The keychain record");
+    // agent セッションでは実在しないキーチェーンを指さない(直し方は同じ)
+    expect(redactedPlaceholderTokenMessage("agent")).toContain("held by this agent session");
+    expect(redactedPlaceholderTokenMessage("agent")).not.toContain("keychain record");
     // 「必ず直る」と言い切らない(現行版に不具合が残っていれば再発する)
-    expect(redactedPlaceholderTokenMessage).toContain("If it recurs after re-login");
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("If it recurs after re-login");
     const masterMessage = redactedPlaceholderMasterKeyMessage(
       "master::https://x::u1",
       "os-keychain",
