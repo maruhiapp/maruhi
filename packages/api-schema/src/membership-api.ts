@@ -33,6 +33,7 @@ import {
 } from "./errors/index.ts";
 import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
+import { keyWrapsGroup } from "./key-wraps-api.ts";
 import { leaseGroup } from "./lease-api.ts";
 import { rotationGroup } from "./rotation-api.ts";
 import { assertSessionCapabilityClassified } from "./session-capability.ts";
@@ -235,6 +236,8 @@ export const maruhiApi = HttpApi.make("maruhi")
   // admin × admin。セッション主体はどちらも拒否 = §5 の許可列挙外)
   .add(schemaPolicyGroup)
   .add(invitesGroup)
+  // master 鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。status のみセッション可
+  .add(keyWrapsGroup)
   .add(rotationGroup)
   .add(auditGroup)
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)

@@ -10,6 +10,7 @@
 // それ以外を追加しない。
 
 import type {
+  AeadOperation,
   AttestationInvalidReason,
   ChainInvalidReason,
   CryptoError,
@@ -37,12 +38,12 @@ export class CryptoKeyExportError extends Data.TaggedError("CryptoKeyExport")<{
 
 /** AES-256-GCM encryption failed unexpectedly. */
 export class CryptoEncryptError extends Data.TaggedError("CryptoEncrypt")<{
-  readonly operation: "variable" | "recovery";
+  readonly operation: AeadOperation;
 }> {}
 
 /** AES-256-GCM decryption failed (tampered ciphertext, wrong AAD / nonce / key). */
 export class CryptoDecryptError extends Data.TaggedError("CryptoDecrypt")<{
-  readonly operation: "variable" | "recovery";
+  readonly operation: AeadOperation;
 }> {}
 
 /** HPKE Seal failed. */

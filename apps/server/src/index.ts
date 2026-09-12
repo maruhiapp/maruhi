@@ -31,6 +31,7 @@ import { authLive } from "./handlers-auth.ts";
 import { deksLive } from "./handlers-deks.ts";
 import { environmentsLive } from "./handlers-environments.ts";
 import { invitesLive } from "./handlers-invites.ts";
+import { keyWrapsLive } from "./handlers-key-wraps.ts";
 import { leaseLive } from "./handlers-lease.ts";
 import { membershipLive } from "./handlers-membership.ts";
 import { rotationLive } from "./handlers-rotation.ts";
@@ -112,6 +113,7 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(deksLive),
     Layer.provide(schemaPolicyLive),
     Layer.provide(invitesLive),
+    Layer.provide(keyWrapsLive),
     Layer.provide(rotationLive),
     Layer.provide(auditLive),
     Layer.provide(leaseLive),

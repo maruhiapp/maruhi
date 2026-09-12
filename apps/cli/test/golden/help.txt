@@ -21,7 +21,8 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery)
+  key         Manage your master key (generate / show / recover / recovery / approve)
+  guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
@@ -53,7 +54,8 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery)
+  key         Manage your master key (generate / show / recover / recovery / approve)
+  guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
@@ -434,7 +436,7 @@ GLOBAL FLAGS
 
 $ maruhi key --help
 DESCRIPTION
-  Manage your master key (generate / show / recover / recovery)
+  Manage your master key (generate / show / recover / recovery / approve)
 
 USAGE
   maruhi key <subcommand> [flags]
@@ -446,8 +448,9 @@ GLOBAL FLAGS
 SUBCOMMANDS
   generate    Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
   show        Print the public keys and fingerprint (never the private keys)
-  recover     Restore the master key from a recovery code
+  recover     Restore the master key from a recovery code, or with --handoff from another device or your guardians
   recovery    Issue (or reissue) the recovery code
+  approve     Approve a master-key handoff request (as your other device, or as a guardian)
 
 $ maruhi key generate --help
 DESCRIPTION
@@ -479,13 +482,14 @@ GLOBAL FLAGS
 
 $ maruhi key recover --help
 DESCRIPTION
-  Restore the master key from a recovery code
+  Restore the master key from a recovery code, or with --handoff from another device or your guardians
 
 USAGE
   maruhi key recover [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
+  --handoff          Restore by approval from another device of yours or from your guardians instead of a recovery code
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -497,6 +501,105 @@ DESCRIPTION
 
 USAGE
   maruhi key recovery [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key approve --help
+DESCRIPTION
+  Approve a master-key handoff request (as your other device, or as a guardian)
+
+USAGE
+  maruhi key approve [flags] <code>
+
+ARGUMENTS
+  code string    Handoff code shown by `maruhi key recover --handoff` on the requesting device
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi guardian --help
+DESCRIPTION
+  Manage guardians for master-key recovery (add / list / remove / wards)
+
+USAGE
+  maruhi guardian <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  add       Designate project members as guardians who can approve restoring your master key
+  list      List your guardian groups (with --project, flag guardians whose key changed)
+  remove    Remove a guardian group
+  wards     List the people who made you one of their guardians
+
+$ maruhi guardian add --help
+DESCRIPTION
+  Designate project members as guardians who can approve restoring your master key
+
+USAGE
+  maruhi guardian add [flags] <user-id...>
+
+ARGUMENTS
+  user-id... string    User ID of a guardian (a member of the project; repeatable)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --mode string       Approval mode: any (one guardian is enough) or all (every guardian must approve)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi guardian list --help
+DESCRIPTION
+  List your guardian groups (with --project, flag guardians whose key changed)
+
+USAGE
+  maruhi guardian list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi guardian remove --help
+DESCRIPTION
+  Remove a guardian group
+
+USAGE
+  maruhi guardian remove [flags] <group-id>
+
+ARGUMENTS
+  group-id string    Guardian group ID (see `maruhi guardian list`)
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi guardian wards --help
+DESCRIPTION
+  List the people who made you one of their guardians
+
+USAGE
+  maruhi guardian wards [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
@@ -664,6 +767,9 @@ USAGE
 
 ARGUMENTS
   command... string    The command to run inside the agent session, written after `--` (usually a shell)
+
+FLAGS
+  --key-ttl string    Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits
 
 GLOBAL FLAGS
   --help, -h       Show help information

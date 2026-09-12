@@ -78,10 +78,11 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     expect(get.status).toBe(403);
     const body = (await get.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("session-not-allowed");
-    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
-      fetch_count: number;
-    }>();
-    expect(row?.fetch_count).toBe(0);
+    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    const row = await env.DB.prepare(
+      "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
+    ).first<{ fetch_count: number }>();
+    expect(row?.fetch_count ?? 0).toBe(0);
   });
 
   it("re-registration replaces the previous blob (再発行 = 置換。§13-1)", async () => {
@@ -176,9 +177,10 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     const limited = responses.filter((response) => response.status === 429).length;
     expect(succeeded).toBe(RECOVERY_FETCH_LIMIT);
     expect(limited).toBe(3);
-    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
-      fetch_count: number;
-    }>();
+    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    const row = await env.DB.prepare(
+      "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
+    ).first<{ fetch_count: number }>();
     expect(row?.fetch_count).toBe(RECOVERY_FETCH_LIMIT);
     // 監査行(auth.recovery_blob_fetched)は許可された取得と 1:1(§5.2 の同一
     // トランザクション原則を保ったまま)
@@ -196,10 +198,11 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     await env.DB.prepare("UPDATE recovery_wraps SET suite = 'maruhi/v2'").run();
     const broken = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(broken.status).toBe(500);
-    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
-      fetch_count: number;
-    }>();
-    expect(row?.fetch_count).toBe(0);
+    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    const row = await env.DB.prepare(
+      "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
+    ).first<{ fetch_count: number }>();
+    expect(row?.fetch_count ?? 0).toBe(0);
   });
 
   it("does not count 404s toward the fetch window (未登録は計数外)", async () => {

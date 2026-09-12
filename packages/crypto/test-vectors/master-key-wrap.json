@@ -1,0 +1,360 @@
+{
+  "description": "CRYPTO_SPEC §8(0.9-draft / KL3): master 鍵ラップ台帳。B(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変",
+  "provenance_note": "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B に対する受信者ごとのラップの集合であることを実データで表す",
+  "master_wrap_aad_fields_order": ["domain", "user_id", "kind", "wrap_ref", "mode"],
+  "guardian_wrap_info_fields_order": [
+    "domain",
+    "user_id",
+    "group_id",
+    "mode",
+    "share_index",
+    "guardian_user_id"
+  ],
+  "handoff_wrap_info_fields_order": [
+    "domain",
+    "user_id",
+    "request_id",
+    "source",
+    "share_index",
+    "approver_user_id"
+  ],
+  "handoff_id_fields_order": ["domain", "ephemeral_pub_hex"],
+  "user_id": "user-owner-0001",
+  "master_secret_blob_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+  "guardian_keypairs": {
+    "user-member-0002": {
+      "ikm_hex": "7172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90",
+      "sk_hex": "8b036d44aabfdedcb48f2ed1ea40cb607a6565ab43f77f06042fcaded767a5d1",
+      "pk_hex": "21a4be66051fae7524e65ec4916c06aff4e9245299e821c22362d0112bc11033",
+      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+    },
+    "user-admin-0003": {
+      "ikm_hex": "72737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091",
+      "sk_hex": "b01e72e11c0658dd251b9d72ca61a156bd042be1dcfb1b6766dee507fd50ef48",
+      "pk_hex": "881909d2a6dfd01e18366fa062e3f901500f389d34bdc60b129d219825d9df01",
+      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+    },
+    "user-guardian-0004": {
+      "ikm_hex": "737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192",
+      "sk_hex": "7b5103289fd808a954bea63858cbce8179cd8db7ab373e1ca3796c5d33fe1e5c",
+      "pk_hex": "2f27d5d7e054733776ac3dc5f0eee3370c58c0a4cd73f6199f61974bd22a7a15",
+      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+    }
+  },
+  "ephemeral_keypair": {
+    "ikm_hex": "d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0",
+    "sk_hex": "a35b7f24526af62ebf2110b0a59fafc6f19052efc142375d8dfb2bf93a6599a6",
+    "pk_hex": "c821a250bf4c1338abc1c5330e3f7c90703a6cb4180b499f32f977795c4c8335",
+    "note": "要求者(新端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)"
+  },
+  "passkey": {
+    "hkdf": {
+      "salt": "",
+      "info_utf8": "maruhi/v1/passkey-prf",
+      "length": 32
+    },
+    "note": "prf_out = WebAuthn PRF(credential, eval.first = prf_salt)。prf_salt は登録ごとの乱数で公開パラメータ。KEK = HKDF-SHA256(prf_out, salt 空, info)"
+  },
+  "handoff": {
+    "request_id_domain": "maruhi/v1/handoff-id",
+    "ephemeral_pub_hex": "c821a250bf4c1338abc1c5330e3f7c90703a6cb4180b499f32f977795c4c8335",
+    "request_id_lp_hex": "000000146d61727568692f76312f68616e646f66662d69640000004063383231613235306266346331333338616263316335333330653366376339303730336136636234313830623439396633326639373737393563346338333335",
+    "request_id_hex": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
+    "code": {
+      "payload_hex": "c821a250bf4c1338abc1c5330e3f7c90703a6cb4180b499f32f977795c4c83353f6b0ceb",
+      "checksum_hex": "3f6b0ceb",
+      "symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5M",
+      "display": "ZAQ2-EUF7-JQJT-RK6B-YUZQ-4P34-SBYD-U3FU-DAFU-THZS-7F3X-SXCM-QM2T-62YM-5M",
+      "note": "ハンドオフコード = Base32(RFC 4648 アルファベット・パディング無し)(E_pub 32 B ‖ SHA-256(E_pub)[:4]) = 58 シンボル(末尾 2 bit はゼロ詰め)。表示は 4 文字ずつハイフン区切り。入力は小文字・ハイフン・空白を吸収し、アルファベット外・長さ違い・チェックサム不一致・ゼロ詰め非ゼロは拒否"
+    },
+    "other_ephemeral": {
+      "ikm_hex": "d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1",
+      "pk_hex": "09d664b5889b77671ad66dcbfe55b1051313a7dc456f063ae2e04acc7e2c6c00",
+      "request_id_hex": "2a65464caa3eb2311f16214cdcf9f85bae041d6b3d5fc3e6b67ba6bd1dc0805e",
+      "note": "別要求(別の一時鍵)。transplant-request-id の材料"
+    }
+  },
+  "vectors": [
+    {
+      "name": "passkey-prf-basic",
+      "class": "S",
+      "kind": "passkey-prf",
+      "wrap_id": "01JMKWRAP0000000000000PASSK",
+      "credential_id_hex": "1112131415161718191a1b1c1d1e1f20",
+      "prf_salt_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "prf_out_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "kek_hex": "30c6a07bd160ddd6d34515162c624cf5715ff050834a91c9d8ea12b6d32c9fcc",
+      "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
+      "nonce_hex": "e0e1e2e3e4e5e6e7e8e9eaeb",
+      "ciphertext_hex": "4a799174176c51aedaf6d9ba7758164e7c328500e0b119f9b3bd896e229ec304f62ef454a3bfeb1ac43d636bd0ad242182e5794e0780a1480c6203cf56fcb3920c2284298deaaa9fd9d7419321124f67",
+      "note": "パスキー PRF 由来 KEK による B のラップ。AAD = LP(master-wrap, user_id, 'passkey-prf', wrap_id, '')"
+    },
+    {
+      "name": "guardian-any-2",
+      "class": "G",
+      "kind": "guardian",
+      "group_id": "01JMKGRP00000000000000ANY02",
+      "mode": "any",
+      "kek_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616e79",
+      "nonce_hex": "e1e2e3e4e5e6e7e8e9eaebec",
+      "ciphertext_hex": "176846133d082fd0e045510b2897a050585367b7158250e533e279496d4431d0dcdfc8b5b0d3c3f72dad527b35be44993fec0fa92dc4ebd3e58866011c9221b0fd02d8cdedc0b3eabd45370c1009923b",
+      "shares": [
+        {
+          "share_index": 1,
+          "guardian_user_id": "user-member-0002",
+          "guardian_enc_pub_hex": "21a4be66051fae7524e65ec4916c06aff4e9245299e821c22362d0112bc11033",
+          "share_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+          "info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616e79000000013100000010757365722d6d656d6265722d30303032",
+          "ikmE_hex": "9192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0",
+          "aad_hex": "",
+          "enc_hex": "dc37036d33a6f2bf9db4d80c93928a493b9cbb8bfca7f6f12bf04105b15c2325",
+          "ciphertext_hex": "13b0c8e1cb99015ebe12574afe9fab9b494cb7a49d8d9447bca2dd4f515e7a23819565605df3a62c77ab81215f1aa291"
+        },
+        {
+          "share_index": 2,
+          "guardian_user_id": "user-admin-0003",
+          "guardian_enc_pub_hex": "881909d2a6dfd01e18366fa062e3f901500f389d34bdc60b129d219825d9df01",
+          "share_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+          "info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616e7900000001320000000f757365722d61646d696e2d30303033",
+          "ikmE_hex": "92939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1",
+          "aad_hex": "",
+          "enc_hex": "730b949ca32264550b3cd15d94ec9ea9fa1666b124ab731c6185ef128733dc61",
+          "ciphertext_hex": "893bce0951e227033ed1eaf7bbe9f96bf63bf8c22ced7a5340f43482c3d39a05dee817915e198c6b728d7ecf03d37eac"
+        }
+      ],
+      "note": "1-of-n(mode any): 全分片 = KEK。どの 1 片でも B を開ける"
+    },
+    {
+      "name": "guardian-all-3",
+      "class": "G",
+      "kind": "guardian",
+      "group_id": "01JMKGRP00000000000000ALL03",
+      "mode": "all",
+      "kek_hex": "a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
+      "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c",
+      "nonce_hex": "e2e3e4e5e6e7e8e9eaebeced",
+      "ciphertext_hex": "e8c6539fdb973d5eea5318fd6ac1f70b368938afcdb95368e708bb4127d8d527da655b7e81cffc075afad9bc120fa06e145bfa0f2de87cace59ea355ae5bb4dfd9628bc00f53bf7ba7d2ba41c5541e18",
+      "shares": [
+        {
+          "share_index": 1,
+          "guardian_user_id": "user-member-0002",
+          "guardian_enc_pub_hex": "21a4be66051fae7524e65ec4916c06aff4e9245299e821c22362d0112bc11033",
+          "share_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+          "info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c000000013100000010757365722d6d656d6265722d30303032",
+          "ikmE_hex": "939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2",
+          "aad_hex": "",
+          "enc_hex": "9f0526369ad6126ec320f2366fd7c65918cfd327978620d9b0425f0e9b33016a",
+          "ciphertext_hex": "5e712ccd630e1411c70c6738f4addc791c25523756a3318d6296248db6744ca3b387b91e2a94f6b28668ceb740e99f4d"
+        },
+        {
+          "share_index": 2,
+          "guardian_user_id": "user-admin-0003",
+          "guardian_enc_pub_hex": "881909d2a6dfd01e18366fa062e3f901500f389d34bdc60b129d219825d9df01",
+          "share_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+          "info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c00000001320000000f757365722d61646d696e2d30303033",
+          "ikmE_hex": "9495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3",
+          "aad_hex": "",
+          "enc_hex": "e5c1ebb189abe863c8eb1e88e7b9eb6ae7d55400e200b9cfc483a44f2ef45c60",
+          "ciphertext_hex": "b0b1526718d54b639a3c2db0851a78c71091901b7f88760fc8ad7bb7469c9dace0eeb1859253bbf6672db883f3c38b2e"
+        },
+        {
+          "share_index": 3,
+          "guardian_user_id": "user-guardian-0004",
+          "guardian_enc_pub_hex": "2f27d5d7e054733776ac3dc5f0eee3370c58c0a4cd73f6199f61974bd22a7a15",
+          "share_hex": "c8c9cacbcccdcecfd0d1d2d3d4d5d6d798999a9b9c9d9e9fe0e1e2e3e4e5e6e7",
+          "info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c000000013300000012757365722d677561726469616e2d30303034",
+          "ikmE_hex": "95969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4",
+          "aad_hex": "",
+          "enc_hex": "bdf5ec31688d7c6b0c652fa0eab1390dc69dc6bbe81697cd708524ee7727d649",
+          "ciphertext_hex": "3a5e28533e821af73c79897dde0b465b8438085d2c239986820b1eb5adde29af0b476d88f0f4475ab6f667139a89a708"
+        }
+      ],
+      "note": "n-of-n(mode all): s_1, s_2 は乱数、s_3 = KEK ⊕ s_1 ⊕ s_2。KEK = 全片の XOR"
+    },
+    {
+      "name": "handoff-guardian-share",
+      "class": "H",
+      "source": "01JMKGRP00000000000000ALL03",
+      "share_index": 1,
+      "approver_user_id": "user-member-0002",
+      "request_id_hex": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
+      "value_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414c4c3033000000013100000010757365722d6d656d6265722d30303032",
+      "ikmE_hex": "969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+      "aad_hex": "",
+      "enc_hex": "d0bd2dc09360d0b2d737ccd1e5194f9018c751c4abcc42a64e24314b0952c46d",
+      "ciphertext_hex": "7b01ad3752dafa6b853c01f7989bb47122221879ee571b8dac61d275d439f7318103cef0bf0bb5cd863f69ad7934df64",
+      "note": "保護者 user-member-0002 が guardian-all-3 の分片 1 を開き、その場で要求者の E.pub へ再封印した承認"
+    },
+    {
+      "name": "handoff-device",
+      "class": "H",
+      "source": "device",
+      "share_index": 0,
+      "approver_user_id": "user-owner-0001",
+      "request_id_hex": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
+      "value_hex": "b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+      "info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000000664657669636500000001300000000f757365722d6f776e65722d30303031",
+      "ikmE_hex": "9798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6",
+      "aad_hex": "",
+      "enc_hex": "d286656760feab2bcd37966133b8a0855ac54e5cb8b99f4b573734afd6d79345",
+      "ciphertext_hex": "4cd02019f49fc7513820be05b5d33395d7566a6ab65de847283b910f92b34bf5363019b131b5dee287d941d59a16532d",
+      "blob_wrap": {
+        "kind": "device",
+        "wrap_ref": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
+        "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000006646576696365000000403330346463623736343038626539643462303338663430393130653434363031646664663633336165353430646330666131323038313139653232336534666300000000",
+        "nonce_hex": "e3e4e5e6e7e8e9eaebecedee",
+        "ciphertext_hex": "3982e7f5644f02cbeadf760997dbc99e5544362121c8cdbd5ebe5fab3940ea928ef765b7b472dc7b0e53aafb480501c16db89a3e28d83a60af267fa09dcb4f3c2426928f4d1e7305421cd56a51a332a6"
+      },
+      "note": "旧端末(ward 本人)の承認: 乱数 KEK_h で B をラップ(AAD kind='device', wrap_ref=request_id)し、KEK_h を E.pub へ封印して同送"
+    }
+  ],
+  "negative": [
+    {
+      "name": "aad-kind-mismatch",
+      "base": "passkey-prf-basic",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d30303031000000066465766963650000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
+      "must_fail": true,
+      "note": "kind の付け替え(passkey-prf → device。同じ wrap_ref・空 mode のまま)は復号失敗"
+    },
+    {
+      "name": "aad-wrap-ref-mismatch",
+      "base": "passkey-prf-basic",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b57524150303030303030303030303030304f5448455200000000",
+      "must_fail": true,
+      "note": "別の wrap_id(別行)への移植は復号失敗"
+    },
+    {
+      "name": "aad-user-mismatch",
+      "base": "passkey-prf-basic",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d7772617000000010757365722d6d656d6265722d303030320000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
+      "must_fail": true,
+      "note": "他ユーザーの台帳への移植は復号失敗"
+    },
+    {
+      "name": "aad-mode-all-as-any",
+      "base": "guardian-all-3",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616e79",
+      "must_fail": true,
+      "note": "サーバーが all グループを any と偽っても(要求者が 1 片で足りると誤らされても)AAD の mode 束縛で復号失敗"
+    },
+    {
+      "name": "aad-mode-any-as-all",
+      "base": "guardian-any-2",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616c6c",
+      "must_fail": true,
+      "note": "any グループを all と偽る方向も復号失敗"
+    },
+    {
+      "name": "share-missing",
+      "base": "guardian-all-3",
+      "decrypt_kek_hex": "6060606060606060606060606060606020202020202020202020202020202020",
+      "must_fail": true,
+      "note": "n−1 片(s_1 ⊕ s_2)では KEK にならず復号失敗(n-of-n の固定)"
+    },
+    {
+      "name": "prf-salt-mismatch",
+      "base": "passkey-prf-basic",
+      "other_prf_out_hex": "18191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637",
+      "decrypt_kek_hex": "b39e9f5729737c2c77f08c0092d85f4961a8b8198a51e08cb6a40e680c9fab3f",
+      "must_fail": true,
+      "note": "別 prf_salt で評価した PRF 出力から導いた KEK では復号失敗(登録ごとの乱数 salt = 登録ごとの独立 KEK)"
+    },
+    {
+      "name": "suite-mismatch",
+      "base": "passkey-prf-basic",
+      "decrypt_aad_hex": "000000156d61727568692f76322f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
+      "must_fail": true,
+      "note": "ドメイン文字列のスイート部を変えた AAD では復号失敗(スイート束縛はドメイン文字列が担う)"
+    },
+    {
+      "name": "guardian-transplant-share-index",
+      "base": "guardian-all-3",
+      "share_index": 1,
+      "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c000000013200000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "分片番号の付け替えは Open 失敗"
+    },
+    {
+      "name": "guardian-transplant-guardian",
+      "base": "guardian-all-3",
+      "share_index": 1,
+      "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c00000001310000000f757365722d61646d696e2d30303033",
+      "must_fail": true,
+      "note": "別の保護者への帰属付け替えは Open 失敗(鍵も違うが info だけでも落ちる形を固定)"
+    },
+    {
+      "name": "guardian-transplant-group",
+      "base": "guardian-all-3",
+      "share_index": 1,
+      "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616c6c000000013100000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "別グループへの移植は Open 失敗"
+    },
+    {
+      "name": "guardian-mode-relabel",
+      "base": "guardian-all-3",
+      "share_index": 1,
+      "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616e79000000013100000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "分片側でも mode の付け替えは Open 失敗(AAD と info の二重束縛)"
+    },
+    {
+      "name": "handoff-transplant-request-id",
+      "base": "handoff-guardian-share",
+      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040326136353436346361613365623233313166313632313463646366396638356261653034316436623364356663336536623637626136626431646330383035650000001b30314a4d4b4752503030303030303030303030303030414c4c3033000000013100000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "別要求への移植は Open 失敗(承認は要求 1 件に束縛)"
+    },
+    {
+      "name": "handoff-transplant-approver",
+      "base": "handoff-guardian-share",
+      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414c4c303300000001310000000f757365722d61646d696e2d30303033",
+      "must_fail": true,
+      "note": "承認者の帰属付け替えは Open 失敗"
+    },
+    {
+      "name": "handoff-transplant-source",
+      "base": "handoff-guardian-share",
+      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d30303031000000403330346463623736343038626539643462303338663430393130653434363031646664663633336165353430646330666131323038313139653232336534666300000006646576696365000000013100000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "source の付け替え(保護者分片 → device)は Open 失敗(要求者の組み立て経路を偽れない)"
+    },
+    {
+      "name": "handoff-share-index-mismatch",
+      "base": "handoff-guardian-share",
+      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414c4c3033000000013200000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "分片番号の付け替えは Open 失敗"
+    },
+    {
+      "name": "handoff-code-checksum-mismatch",
+      "base": "handoff-guardian-share",
+      "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YA5M",
+      "must_fail": true,
+      "note": "1 シンボル違いのコードはチェックサム不一致で拒否(別の公開鍵として黙って解釈しない)"
+    },
+    {
+      "name": "handoff-code-bad-padding",
+      "base": "handoff-guardian-share",
+      "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5N",
+      "must_fail": true,
+      "note": "末尾 2 bit のゼロ詰めが非ゼロのコードは拒否"
+    },
+    {
+      "name": "handoff-code-wrong-length",
+      "base": "handoff-guardian-share",
+      "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5",
+      "must_fail": true,
+      "note": "58 シンボル以外は拒否"
+    },
+    {
+      "name": "handoff-request-id-other-key",
+      "base": "handoff-guardian-share",
+      "open_enc_hex": "d1bd2dc09360d0b2d737ccd1e5194f9018c751c4abcc42a64e24314b0952c46d",
+      "must_fail": true,
+      "note": "encapsulated key の改竄は Open 失敗"
+    }
+  ]
+}

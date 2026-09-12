@@ -22,6 +22,7 @@ import headAttestation from "../../test-vectors/head-attestation.json" with { ty
 import rfc9180Vectors from "../../test-vectors/hpke/rfc9180-base-x25519-hkdfsha256-aes256gcm.json" with { type: "json" };
 import inviteAccept from "../../test-vectors/invite-accept-signature.json" with { type: "json" };
 import leaseWrap from "../../test-vectors/lease-wrap.json" with { type: "json" };
+import masterKeyWrap from "../../test-vectors/master-key-wrap.json" with { type: "json" };
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
 import recoveryWrap from "../../test-vectors/recovery-wrap.json" with { type: "json" };
 import valueSignature from "../../test-vectors/value-signature.json" with { type: "json" };
@@ -334,6 +335,43 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
     ],
   },
   {
+    label: "master-key-wrap.vectors",
+    actual: masterKeyWrap.vectors,
+    expected: [
+      "passkey-prf-basic",
+      "guardian-any-2",
+      "guardian-all-3",
+      "handoff-guardian-share",
+      "handoff-device",
+    ],
+  },
+  {
+    label: "master-key-wrap.negative",
+    actual: masterKeyWrap.negative,
+    expected: [
+      "aad-kind-mismatch",
+      "aad-wrap-ref-mismatch",
+      "aad-user-mismatch",
+      "aad-mode-all-as-any",
+      "aad-mode-any-as-all",
+      "share-missing",
+      "prf-salt-mismatch",
+      "suite-mismatch",
+      "guardian-transplant-share-index",
+      "guardian-transplant-guardian",
+      "guardian-transplant-group",
+      "guardian-mode-relabel",
+      "handoff-transplant-request-id",
+      "handoff-transplant-approver",
+      "handoff-transplant-source",
+      "handoff-share-index-mismatch",
+      "handoff-code-checksum-mismatch",
+      "handoff-code-bad-padding",
+      "handoff-code-wrong-length",
+      "handoff-request-id-other-key",
+    ],
+  },
+  {
     label: "metadata-signature.vectors",
     actual: metaVectors.vectors,
     expected: [
@@ -520,6 +558,11 @@ const KEYED_COLLECTIONS: readonly {
     label: "chain-entries.keys",
     actual: Object.keys(chainEntries.keys),
     expected: ["user-owner-0001", "user-member-0002", "user-admin-0003"],
+  },
+  {
+    label: "master-key-wrap.guardian_keypairs",
+    actual: Object.keys(masterKeyWrap.guardian_keypairs),
+    expected: ["user-member-0002", "user-admin-0003", "user-guardian-0004"],
   },
   {
     label: "env-manifest.statements",

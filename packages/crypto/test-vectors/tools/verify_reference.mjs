@@ -11,6 +11,7 @@ import * as HPKE from "hpke";
 const read = (name) => JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"));
 const fromHex = (h) => Uint8Array.from(h.match(/.{2}/g) ?? [], (b) => Number.parseInt(b, 16));
 const toHex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+const sha256Bytes = async (u8) => new Uint8Array(await crypto.subtle.digest("SHA-256", u8));
 
 function lpEncode(fields) {
   const parts = [];
@@ -1589,6 +1590,250 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       "checkpoint-digest all-declared-empty: equals the empty-set digest",
       emptySet !== undefined && allDeclared.values_digest_hex === emptySet.values_digest_hex,
     );
+  }
+}
+
+// --- master-key-wrap.json(§8 台帳 — WebCrypto で KEK / AES-GCM、panva hpke で Open)-----
+// 生成 = hpke-js + WebCrypto、検証 = panva + WebCrypto の突き合わせに加えて、
+// (1) B と user_id が recovery-wrap.json を引き継ぐこと、(2) AAD / info / request_id が
+// 仕様のフィールド順で組まれること、(3) all モードの分片 XOR が KEK に戻ること、
+// (4) ハンドオフコードの符号化・復号を独立に再計算する
+{
+  const doc = read("master-key-wrap.json");
+  const recovery = read("recovery-wrap.json");
+  const sha256 = sha256Bytes;
+  const MASTER_WRAP_DOMAIN = "maruhi/v1/master-wrap";
+  const masterAad = (kind, ref, mode) =>
+    lpEncode([MASTER_WRAP_DOMAIN, doc.user_id, kind, ref, mode]);
+  const guardianInfo = (groupId, mode, index, guardian) =>
+    lpEncode(["maruhi/v1/guardian-wrap", doc.user_id, groupId, mode, index, guardian]);
+  const handoffInfo = (requestId, source, index, approver) =>
+    lpEncode(["maruhi/v1/handoff-wrap", doc.user_id, requestId, source, index, approver]);
+  const xorHex = (...hexes) => {
+    const arrays = hexes.map(fromHex);
+    const out = new Uint8Array(arrays[0].length);
+    for (const a of arrays) for (let i = 0; i < out.length; i++) out[i] ^= a[i];
+    return toHex(out);
+  };
+  check(
+    "master-wrap: B and user_id inherit recovery-wrap.json",
+    doc.user_id === recovery.vectors[0].user_id &&
+      doc.master_secret_blob_hex === recovery.vectors[0].master_secret_blob_hex,
+  );
+  const vectorByName = (name) => doc.vectors.find((v) => v.name === name);
+  const passkey = vectorByName("passkey-prf-basic");
+  {
+    const ikm = await crypto.subtle.importKey("raw", fromHex(passkey.prf_out_hex), "HKDF", false, [
+      "deriveBits",
+    ]);
+    const kek = new Uint8Array(
+      await crypto.subtle.deriveBits(
+        {
+          name: "HKDF",
+          hash: "SHA-256",
+          salt: new Uint8Array(0),
+          info: new TextEncoder().encode(doc.passkey.hkdf.info_utf8),
+        },
+        ikm,
+        256,
+      ),
+    );
+    check("master-wrap: passkey KEK derivation (salt empty)", toHex(kek) === passkey.kek_hex);
+    check(
+      "master-wrap: passkey aad reconstruction",
+      toHex(masterAad("passkey-prf", passkey.wrap_id, "")) === passkey.aad_hex,
+    );
+    const pt = await aesGcmDecrypt(
+      passkey.kek_hex,
+      passkey.nonce_hex,
+      passkey.aad_hex,
+      passkey.ciphertext_hex,
+    );
+    check("master-wrap: passkey decrypt == B", toHex(pt) === doc.master_secret_blob_hex);
+  }
+  const suite = new HPKE.CipherSuite(
+    HPKE.KEM_DHKEM_X25519_HKDF_SHA256,
+    HPKE.KDF_HKDF_SHA256,
+    HPKE.AEAD_AES_256_GCM,
+  );
+  const keyPairOf = async (k) => ({
+    privateKey: await suite.DeserializePrivateKey(fromHex(k.sk_hex), false),
+    publicKey: await suite.DeserializePublicKey(fromHex(k.pk_hex)),
+  });
+  const guardianPairs = {};
+  for (const [id, k] of Object.entries(doc.guardian_keypairs)) {
+    guardianPairs[id] = await keyPairOf(k);
+  }
+  const ephemeralPair = await keyPairOf(doc.ephemeral_keypair);
+  const open = (pair, infoHex, encHex, ctHex) =>
+    suite.Open(pair, fromHex(encHex), fromHex(ctHex), {
+      info: fromHex(infoHex),
+      aad: new Uint8Array(0),
+    });
+  for (const g of [vectorByName("guardian-any-2"), vectorByName("guardian-all-3")]) {
+    check(
+      `master-wrap: ${g.name} aad reconstruction`,
+      toHex(masterAad("guardian", g.group_id, g.mode)) === g.aad_hex,
+    );
+    const pt = await aesGcmDecrypt(g.kek_hex, g.nonce_hex, g.aad_hex, g.ciphertext_hex);
+    check(`master-wrap: ${g.name} decrypt == B`, toHex(pt) === doc.master_secret_blob_hex);
+    const opened = [];
+    for (const s of g.shares) {
+      check(
+        `master-wrap: ${g.name} share ${s.share_index} info reconstruction`,
+        toHex(guardianInfo(g.group_id, g.mode, s.share_index, s.guardian_user_id)) === s.info_hex,
+      );
+      const v = await open(
+        guardianPairs[s.guardian_user_id],
+        s.info_hex,
+        s.enc_hex,
+        s.ciphertext_hex,
+      );
+      check(
+        `master-wrap: ${g.name} share ${s.share_index} panva open == share`,
+        toHex(new Uint8Array(v)) === s.share_hex,
+      );
+      opened.push(s.share_hex);
+    }
+    if (g.mode === "any") {
+      check(
+        `master-wrap: ${g.name} every share equals KEK`,
+        opened.every((h) => h === g.kek_hex),
+      );
+    } else {
+      check(`master-wrap: ${g.name} XOR of all shares == KEK`, xorHex(...opened) === g.kek_hex);
+      check(
+        `master-wrap: ${g.name} shares are ${g.shares.length} distinct values`,
+        new Set(opened).size === g.shares.length,
+      );
+    }
+  }
+  // ハンドオフ: request_id / コード
+  {
+    const pk = fromHex(doc.handoff.ephemeral_pub_hex);
+    const lp = lpEncode([doc.handoff.request_id_domain, doc.handoff.ephemeral_pub_hex]);
+    check("master-wrap: handoff request_id LP", toHex(lp) === doc.handoff.request_id_lp_hex);
+    check(
+      "master-wrap: handoff request_id",
+      toHex(await sha256(lp)) === doc.handoff.request_id_hex,
+    );
+    const checksum = (await sha256(pk)).slice(0, 4);
+    check("master-wrap: handoff code checksum", toHex(checksum) === doc.handoff.code.checksum_hex);
+    const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const payload = fromHex(doc.handoff.code.payload_hex);
+    let bits = 0;
+    let acc = 0;
+    let symbols = "";
+    for (const byte of payload) {
+      acc = (acc << 8) | byte;
+      bits += 8;
+      while (bits >= 5) {
+        bits -= 5;
+        symbols += B32[(acc >> bits) & 31];
+        acc &= (1 << bits) - 1;
+      }
+    }
+    if (bits > 0) symbols += B32[(acc << (5 - bits)) & 31];
+    check(
+      "master-wrap: handoff code symbols",
+      symbols.length === 58 && symbols === doc.handoff.code.symbols,
+    );
+    check(
+      "master-wrap: handoff code display grouping",
+      (symbols.match(/.{1,4}/g) ?? []).join("-") === doc.handoff.code.display,
+    );
+    check(
+      "master-wrap: other ephemeral has a different request_id",
+      doc.handoff.other_ephemeral.request_id_hex !== doc.handoff.request_id_hex,
+    );
+  }
+  for (const h of [vectorByName("handoff-guardian-share"), vectorByName("handoff-device")]) {
+    check(
+      `master-wrap: ${h.name} info reconstruction`,
+      toHex(handoffInfo(h.request_id_hex, h.source, h.share_index, h.approver_user_id)) ===
+        h.info_hex,
+    );
+    const v = await open(ephemeralPair, h.info_hex, h.enc_hex, h.ciphertext_hex);
+    check(`master-wrap: ${h.name} panva open == value`, toHex(new Uint8Array(v)) === h.value_hex);
+  }
+  {
+    const h = vectorByName("handoff-guardian-share");
+    const all3 = vectorByName("guardian-all-3");
+    check(
+      "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
+      h.source === all3.group_id && h.value_hex === all3.shares[0].share_hex,
+    );
+    const d = vectorByName("handoff-device");
+    check(
+      "master-wrap: handoff-device blob aad reconstruction",
+      toHex(masterAad("device", d.request_id_hex, "")) === d.blob_wrap.aad_hex,
+    );
+    const pt = await aesGcmDecrypt(
+      d.value_hex,
+      d.blob_wrap.nonce_hex,
+      d.blob_wrap.aad_hex,
+      d.blob_wrap.ciphertext_hex,
+    );
+    check(
+      "master-wrap: handoff-device blob decrypt == B",
+      toHex(pt) === doc.master_secret_blob_hex,
+    );
+  }
+  for (const n of doc.negative) {
+    const base = vectorByName(n.base);
+    let failed = false;
+    try {
+      if (n.code_symbols !== undefined) {
+        // コードの復号: 長さ・アルファベット・ゼロ詰め・チェックサムをすべて検査
+        const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        if (n.code_symbols.length !== 58) throw new Error("length");
+        const out = new Uint8Array(36);
+        let bits = 0;
+        let acc = 0;
+        let off = 0;
+        for (const s of n.code_symbols) {
+          const v = B32.indexOf(s);
+          if (v < 0) throw new Error("alphabet");
+          acc = (acc << 5) | v;
+          bits += 5;
+          if (bits >= 8) {
+            bits -= 8;
+            out[off++] = (acc >> bits) & 0xff;
+            acc &= (1 << bits) - 1;
+          }
+        }
+        if (acc !== 0) throw new Error("padding");
+        const sum = (await sha256(out.slice(0, 32))).slice(0, 4);
+        if (toHex(sum) !== toHex(out.slice(32))) throw new Error("checksum");
+      } else if (n.open_info_hex !== undefined || n.open_enc_hex !== undefined) {
+        if (base.class === "H") {
+          await open(
+            ephemeralPair,
+            n.open_info_hex ?? base.info_hex,
+            n.open_enc_hex ?? base.enc_hex,
+            base.ciphertext_hex,
+          );
+        } else {
+          const share = base.shares.find((s) => s.share_index === n.share_index);
+          await open(
+            guardianPairs[share.guardian_user_id],
+            n.open_info_hex,
+            share.enc_hex,
+            share.ciphertext_hex,
+          );
+        }
+      } else {
+        await aesGcmDecrypt(
+          n.decrypt_kek_hex ?? base.kek_hex,
+          base.nonce_hex,
+          n.decrypt_aad_hex ?? base.aad_hex,
+          base.ciphertext_hex,
+        );
+      }
+    } catch {
+      failed = true;
+    }
+    check(`master-wrap negative: ${n.name}`, failed === n.must_fail);
   }
 }
 

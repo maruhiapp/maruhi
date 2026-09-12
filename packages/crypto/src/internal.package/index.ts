@@ -88,6 +88,29 @@ export {
   type WrappedMasterSecret,
   wrapMasterSecret,
 } from "./recovery.ts";
+export {
+  buildGuardianWrapInfo,
+  buildHandoffWrapInfo,
+  buildMasterWrapAad,
+  computeHandoffRequestId,
+  decodeHandoffCode,
+  derivePasskeyKek,
+  encodeHandoffCode,
+  generateMasterWrapKek,
+  type GuardianMode,
+  type GuardianWrapContext,
+  type HandoffWrapContext,
+  joinGuardianShares,
+  type MasterWrapContext,
+  type MasterWrapKind,
+  openGuardianShare,
+  openHandoffValue,
+  sealGuardianShare,
+  sealHandoffValue,
+  splitGuardianKek,
+  unwrapMasterBlob,
+  wrapMasterBlob,
+} from "./master-wrap.ts";
 export { SUITE_ID } from "./suite.ts";
 export {
   buildVariableAad,
@@ -98,6 +121,7 @@ export {
 } from "./variable.ts";
 export { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 export {
+  type AeadOperation,
   type AttestationInvalidReason,
   type ChainInvalidReason,
   type CryptoError,

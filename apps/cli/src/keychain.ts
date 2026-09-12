@@ -59,6 +59,11 @@ export function masterKeyEntryName(origin: string, userId: string): string {
   return `master::${origin}::${userId}`;
 }
 
+/** Whether an entry name is a master-key entry (the agent's `--key-ttl` applies to these only). */
+export function isMasterKeyEntryName(name: string): boolean {
+  return name.startsWith("master::");
+}
+
 /** The maruhi API token record stored in the keychain (AUTH_SPEC §4-5). */
 export interface StoredToken {
   readonly token: Redacted.Redacted<string>;

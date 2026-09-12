@@ -231,10 +231,146 @@ export const recoveryWraps = sqliteTable("recovery_wraps", {
   ciphertextHex: text("ciphertext_hex").notNull(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
-  /** ブロブ取得の固定窓レート制限(AUTH_SPEC §13-3)。未取得は 0 / null */
+  /**
+   * 旧: ブロブ取得の固定窓レート制限(AUTH_SPEC §13-3)。KL3(§13-8)以降は
+   * 種別合算の窓 `key_wrap_windows` へ移行し、この 2 列は書かない(列は据え置き —
+   * 既存行の互換のため。削除は後続のマイグレーションで)
+   */
   fetchWindowStart: integer("fetch_window_start"),
   fetchCount: integer("fetch_count").notNull().default(0),
 });
+
+// ---------------------------------------------------------------------------
+// master 鍵ラップ台帳(AUTH_SPEC §13-6 — KL3。CRYPTO_SPEC §8 のクラス S / G / H)。
+// すべて user 単位で、ラップ・分片はサーバーから見て不透明な暗号文。
+// ---------------------------------------------------------------------------
+
+/** クラス S の新経路(passkey-prf)。recovery-code は recovery_wraps のまま。 */
+export const masterKeyWraps = sqliteTable(
+  "master_key_wraps",
+  {
+    /** wrap_id(ULID) */
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    /** 'passkey-prf' */
+    kind: text("kind").notNull(),
+    suite: text("suite").notNull(),
+    /** JSON(公開パラメータ: credentialIdHex / prfSaltHex / rpId / label)。サーバーは解釈しない */
+    params: text("params").notNull(),
+    nonceHex: text("nonce_hex").notNull(),
+    ciphertextHex: text("ciphertext_hex").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("mkw_user").on(t.userId)],
+);
+
+/** クラス G: 保護者グループ(グループ KEK による B のラップ)。 */
+export const guardianGroups = sqliteTable(
+  "guardian_groups",
+  {
+    /** group_id(ULID) */
+    id: text("id").primaryKey(),
+    /** ward */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    /** 'any' | 'all' */
+    mode: text("mode").notNull(),
+    suite: text("suite").notNull(),
+    nonceHex: text("nonce_hex").notNull(),
+    ciphertextHex: text("ciphertext_hex").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [index("gg_user").on(t.userId)],
+);
+
+/** クラス G: 分片(保護者の enc 公開鍵への HPKE Seal)。 */
+export const guardianShares = sqliteTable(
+  "guardian_shares",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => guardianGroups.id, { onDelete: "cascade" }),
+    /** 1..n */
+    shareIndex: integer("share_index").notNull(),
+    guardianUserId: text("guardian_user_id")
+      .notNull()
+      .references(() => users.id),
+    /** 封印先(ward クライアントが確認済みの鍵) */
+    guardianEncPubHex: text("guardian_enc_pub_hex").notNull(),
+    guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex").notNull(),
+    encHex: text("enc_hex").notNull(),
+    /** 32 バイト分片 + 16 バイトタグ = 48 バイト */
+    ciphertextHex: text("ciphertext_hex").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.groupId, t.shareIndex] }),
+    uniqueIndex("gs_group_guardian").on(t.groupId, t.guardianUserId),
+    index("gs_guardian").on(t.guardianUserId),
+  ],
+);
+
+/** クラス H: ハンドオフ要求(E.pub は保存しない — request_id はその導出値)。 */
+export const keyHandoffRequests = sqliteTable(
+  "key_handoff_requests",
+  {
+    /** request_id(CRYPTO_SPEC §8.4 — SHA-256 hex) */
+    id: text("id").primaryKey(),
+    /** ward(要求者) */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+    /** 発行 + 15 分 */
+    expiresAt: integer("expires_at").notNull(),
+    /** 要求者が 1 件以上の承認を初めて取得した時刻(auth.key_handoff_collected を 1 回だけ記録する) */
+    collectedAt: integer("collected_at"),
+  },
+  (t) => [index("khr_user").on(t.userId), index("khr_expires").on(t.expiresAt)],
+);
+
+/** クラス H: 承認(要求とともに消える応答スコープ)。 */
+export const keyHandoffApprovals = sqliteTable(
+  "key_handoff_approvals",
+  {
+    requestId: text("request_id")
+      .notNull()
+      .references(() => keyHandoffRequests.id, { onDelete: "cascade" }),
+    /** 'device' | group_id */
+    source: text("source").notNull(),
+    /** device = 0 */
+    shareIndex: integer("share_index").notNull(),
+    approverUserId: text("approver_user_id").notNull(),
+    approverKeyFingerprintHex: text("approver_key_fingerprint_hex").notNull(),
+    encHex: text("enc_hex").notNull(),
+    ciphertextHex: text("ciphertext_hex").notNull(),
+    /** source = 'device' のみ(KEK_h による B のラップ) */
+    blobSuite: text("blob_suite"),
+    blobNonceHex: text("blob_nonce_hex"),
+    blobCiphertextHex: text("blob_ciphertext_hex"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.requestId, t.source, t.shareIndex] })],
+);
+
+/**
+ * §13-8 の固定窓(監査行ではない可変状態 — login_failed_windows と同じ性格)。
+ * kind = 'blob-fetch'(ブロブ取得の種別合算 — recovery-code を含む)/
+ * 'handoff-request' / 'approval'。
+ */
+export const keyWrapWindows = sqliteTable(
+  "key_wrap_windows",
+  {
+    userId: text("user_id").notNull(),
+    kind: text("kind").notNull(),
+    windowStart: integer("window_start").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.kind] })],
+);
 
 export const projects = sqliteTable(
   "projects",

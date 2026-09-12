@@ -5,27 +5,8 @@
 
 import { encodeHex } from "@maruhi/crypto";
 
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/**
- * ULID(48-bit 時刻 + 80-bit 乱数、Crockford Base32、26 文字)。
- * AUTH_SPEC §2: 内部 user_id 等の主体識別子に使う。
- */
-export function ulid(nowMs: number = Date.now()): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let time = "";
-  let t = nowMs;
-  for (let i = 0; i < 10; i += 1) {
-    time = CROCKFORD[t % 32] + time;
-    t = Math.floor(t / 32);
-  }
-  let rand = "";
-  for (let i = 0; i < 16; i += 1) {
-    // 256 は 32 で割り切れるため mod にバイアスはない
-    rand += CROCKFORD[(bytes[i] ?? 0) % 32];
-  }
-  return time + rand;
-}
+// ULID は @maruhi/core の共有実装(CLI の台帳 id 採番と同じもの)
+export { ulid } from "@maruhi/core";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 

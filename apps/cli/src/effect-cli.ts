@@ -37,7 +37,7 @@ import {
   MAX_TOKEN_TTL_DAYS,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import type { MetaVarType, Role } from "@maruhi/crypto";
+import type { GuardianMode, MetaVarType, Role } from "@maruhi/crypto";
 import {
   Cause,
   Console,
@@ -65,7 +65,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
-import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp } from "./agent.ts";
+import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
@@ -115,6 +115,8 @@ import { CliError, cliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import type { FloorHandle } from "./floor-check.ts";
+import { guardianAddOp, guardianListOp, guardianRemoveOp, guardianWardsOp } from "./guardian.ts";
+import { approveHandoffOp, requestHandoffOp } from "./handoff.ts";
 import {
   type InviteInputRejection,
   type InviteRole,
@@ -355,6 +357,10 @@ const runConfig = {
  * 保持先を用意するだけ)。
  */
 const agentConfig = {
+  "key-ttl": singleValued(
+    "key-ttl",
+    "Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits",
+  ),
   command: Argument.string("command").pipe(
     Argument.withDescription(
       "The command to run inside the agent session, written after `--` (usually a shell)",
@@ -557,8 +563,52 @@ const logoutConfig = serverOnlyFlags();
 
 const keyGenerateConfig = serverOnlyFlags();
 const keyShowConfig = serverOnlyFlags();
-const keyRecoverConfig = serverOnlyFlags();
+const keyRecoverConfig = {
+  ...serverOnlyFlags(),
+  handoff: singleFlag(
+    "handoff",
+    "Restore by approval from another device of yours or from your guardians instead of a recovery code",
+  ),
+};
 const keyRecoveryConfig = serverOnlyFlags();
+const keyApproveConfig = {
+  ...serverOnlyFlags(),
+  code: Argument.string("code").pipe(
+    Argument.withDescription(
+      "Handoff code shown by `maruhi key recover --handoff` on the requesting device",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+/** 保護者グループの承認方式(CRYPTO_SPEC §8.3)。 */
+const GUARDIAN_MODES = ["any", "all"] as const;
+
+function isGuardianMode(value: string | undefined): value is GuardianMode {
+  return GUARDIAN_MODES.some((known) => known === value);
+}
+
+const guardianAddConfig = {
+  ...projectFlags(),
+  mode: singleValued(
+    "mode",
+    "Approval mode: any (one guardian is enough) or all (every guardian must approve)",
+  ),
+  "user-id": Argument.string("user-id").pipe(
+    Argument.withDescription("User ID of a guardian (a member of the project; repeatable)"),
+    Argument.withSchema(NonBlank),
+    Argument.atLeast(1),
+  ),
+};
+const guardianListConfig = { ...projectFlags() };
+const guardianRemoveConfig = {
+  ...serverOnlyFlags(),
+  "group-id": Argument.string("group-id").pipe(
+    Argument.withDescription("Guardian group ID (see `maruhi guardian list`)"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+const guardianWardsConfig = serverOnlyFlags();
 
 const projectInitConfig = {
   ...serverOnlyFlags(),
@@ -955,6 +1005,13 @@ const GROUP_CONFIGS: Readonly<
     show: keyShowConfig,
     recover: keyRecoverConfig,
     recovery: keyRecoveryConfig,
+    approve: keyApproveConfig,
+  },
+  guardian: {
+    add: guardianAddConfig,
+    list: guardianListConfig,
+    remove: guardianRemoveConfig,
+    wards: guardianWardsConfig,
   },
   project: {
     init: projectInitConfig,
@@ -2214,7 +2271,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
       const command = yield* commandAfterTerminator(values.command);
-      onExitCode(yield* agentOp({ command }));
+      const keyTtl =
+        values["key-ttl"] === undefined
+          ? undefined
+          : { ms: yield* parseKeyTtl(values["key-ttl"]), text: values["key-ttl"] };
+      onExitCode(yield* agentOp({ command, keyTtl }));
     }),
   ).pipe(
     Command.withDescription(
@@ -2511,9 +2572,32 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
+      if (values.handoff) {
+        yield* requestHandoffOp({ session: context.session, client: context.client });
+        return;
+      }
       yield* recoverMasterKeyOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Restore the master key from a recovery code"));
+  ).pipe(
+    Command.withDescription(
+      "Restore the master key from a recovery code, or with --handoff from another device or your guardians",
+    ),
+  );
+
+  const keyApprove = Command.make("approve", keyApproveConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* approveHandoffOp({
+        session: context.session,
+        client: context.client,
+        code: values.code,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Approve a master-key handoff request (as your other device, or as a guardian)",
+    ),
+  );
 
   const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
     Effect.gen(function* () {
@@ -2528,8 +2612,56 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   ).pipe(Command.withDescription("Issue (or reissue) the recovery code"));
 
   const key = Command.make("key").pipe(
-    Command.withDescription("Manage your master key (generate / show / recover / recovery)"),
-    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery]),
+    Command.withDescription(
+      "Manage your master key (generate / show / recover / recovery / approve)",
+    ),
+    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery, keyApprove]),
+  );
+
+  const guardianAdd = Command.make("add", guardianAddConfig, (values) =>
+    Effect.gen(function* () {
+      if (!isGuardianMode(values.mode)) {
+        return yield* Effect.fail(usageError(`Specify --mode (${GUARDIAN_MODES.join(" | ")})`));
+      }
+      yield* guardianAddOp({ flags: values, mode: values.mode, userIds: values["user-id"] });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Designate project members as guardians who can approve restoring your master key",
+    ),
+  );
+
+  const guardianList = Command.make("list", guardianListConfig, (values) =>
+    guardianListOp({ flags: values }),
+  ).pipe(
+    Command.withDescription(
+      "List your guardian groups (with --project, flag guardians whose key changed)",
+    ),
+  );
+
+  const guardianRemove = Command.make("remove", guardianRemoveConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* guardianRemoveOp({
+        session: context.session,
+        client: context.client,
+        groupId: values["group-id"],
+      });
+    }),
+  ).pipe(Command.withDescription("Remove a guardian group"));
+
+  const guardianWards = Command.make("wards", guardianWardsConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* guardianWardsOp({ session: context.session, client: context.client });
+    }),
+  ).pipe(Command.withDescription("List the people who made you one of their guardians"));
+
+  const guardian = Command.make("guardian").pipe(
+    Command.withDescription(
+      "Manage guardians for master-key recovery (add / list / remove / wards)",
+    ),
+    Command.withSubcommands([guardianAdd, guardianList, guardianRemove, guardianWards]),
   );
 
   const projectInit = Command.make("init", projectInitConfig, (values) =>
@@ -3198,6 +3330,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       invite,
       member,
       key,
+      guardian,
       project,
       rotation,
       audit,

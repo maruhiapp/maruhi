@@ -12,6 +12,13 @@ export {
   LOGIN_FAILED_WINDOW_MS,
 } from "./audit.ts";
 export {
+  APPROVAL_LIMIT,
+  HANDOFF_REQUEST_LIMIT,
+  KEY_BLOB_FETCH_LIMIT,
+  KeyWrapRepo,
+  type KeyWrapRepoShape,
+} from "./key-wraps.ts";
+export {
   type OpsBackupAttempt,
   type OpsCounterMetric,
   OpsRepo,

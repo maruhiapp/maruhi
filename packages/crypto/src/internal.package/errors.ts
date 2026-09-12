@@ -197,6 +197,13 @@ export type ManifestInvalidReason =
   | "prev-hash-mismatch"
   | "epoch-regressed";
 
+/**
+ * Which AES-256-GCM context an encrypt / decrypt failure belongs to:
+ * `variable` (§4), `recovery` (§8 recovery-code wrap — unchanged) or
+ * `master-wrap` (§8 ledger wraps under a passkey / guardian / handoff KEK).
+ */
+export type AeadOperation = "variable" | "recovery" | "master-wrap";
+
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =
   /** Input failed structural validation (wrong length, malformed hex, etc.). */
@@ -216,9 +223,9 @@ export type CryptoError =
       readonly key: "encryption-private" | "signing-private";
     }
   /** AES-256-GCM encryption failed unexpectedly (e.g. oversized plaintext). */
-  | { readonly kind: "EncryptFailed"; readonly operation: "variable" | "recovery" }
+  | { readonly kind: "EncryptFailed"; readonly operation: AeadOperation }
   /** AES-256-GCM decryption failed (tampered ciphertext, wrong AAD/nonce/key). */
-  | { readonly kind: "DecryptFailed"; readonly operation: "variable" | "recovery" }
+  | { readonly kind: "DecryptFailed"; readonly operation: AeadOperation }
   /** HPKE Seal failed. */
   | { readonly kind: "DekWrapFailed" }
   /** HPKE Open failed (tampered enc/ciphertext or mismatched info context). */

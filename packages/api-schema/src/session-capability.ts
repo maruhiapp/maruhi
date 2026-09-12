@@ -39,6 +39,9 @@ export const SESSION_ALLOWED_ENDPOINTS: ReadonlyArray<readonly [group: string, e
     ["auth", "me"],
     ["auth", "logout"],
     ["auth", "recoveryStatus"],
+    // 台帳の状態表示(§13-7 — KL3。ラップ・分片を運ばない。登録・取得・削除・
+    // 承認はすべて端末限定 = 列挙外)
+    ["keyWraps", "status"],
     ["auth", "listTokens"],
     ["auth", "revokeTokenById"],
     ["membership", "get"],

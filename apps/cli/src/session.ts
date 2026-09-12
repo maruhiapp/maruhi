@@ -585,7 +585,11 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     const entryName = masterKeyEntryName(session.origin, session.userId);
     const stored = yield* keychain.get(entryName);
     if (stored === null) {
-      return yield* Effect.fail(cliError("No master key. Generate one with `maruhi key generate`"));
+      return yield* Effect.fail(
+        cliError(
+          "No master key on this device. Restore it with `maruhi key recover` (recovery code) or `maruhi key recover --handoff` (approval from another device or a guardian), or generate one with `maruhi key generate` if this is your first key",
+        ),
+      );
     }
     const record = parseStoredMasterKey(stored);
     if (record === null) {
