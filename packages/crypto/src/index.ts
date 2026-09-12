@@ -9,6 +9,7 @@
 
 // §1-§2: 共通 — スイート識別子・エンコーディング規約(§2.1)・結果型
 export {
+  type AeadOperation,
   type CryptoError,
   type CryptoResult,
   decodeHex,
@@ -205,12 +206,39 @@ export {
 
 // §7: エポックとメンバーシップ変更 — export 面なし(ワークフロー規定のみ)
 
-// §8: リカバリーコード
+// §8: master 鍵ラップ台帳 — recovery-code 経路(不変)
 export {
   generateRecoverySecret,
   unwrapMasterSecret,
   type WrappedMasterSecret,
   wrapMasterSecret,
+} from "./internal.package/index.ts";
+
+// §8.1〜8.4(0.9-draft / KL3): 台帳の新しい受信者クラス — passkey-prf の KEK 導出、
+// master-wrap AAD による B のラップ、保護者グループ(XOR 分割 + 分片の HPKE Seal)、
+// ハンドオフ(一時鍵への Seal・request_id・ハンドオフコード)
+export {
+  buildGuardianWrapInfo,
+  buildHandoffWrapInfo,
+  buildMasterWrapAad,
+  computeHandoffRequestId,
+  decodeHandoffCode,
+  derivePasskeyKek,
+  encodeHandoffCode,
+  generateMasterWrapKek,
+  type GuardianMode,
+  type GuardianWrapContext,
+  type HandoffWrapContext,
+  joinGuardianShares,
+  type MasterWrapContext,
+  type MasterWrapKind,
+  openGuardianShare,
+  openHandoffValue,
+  sealGuardianShare,
+  sealHandoffValue,
+  splitGuardianKek,
+  unwrapMasterBlob,
+  wrapMasterBlob,
 } from "./internal.package/index.ts";
 
 // §9: 選択的開示(サーバー鍵)

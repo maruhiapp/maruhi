@@ -17,6 +17,7 @@ import { headAttestationChecks } from "./checks/head-attestation.ts";
 import { inviteAcceptSignatureChecks } from "./checks/invite-accept-signature.ts";
 import { keysChecks } from "./checks/keys.ts";
 import { leaseWrapChecks } from "./checks/lease-wrap.ts";
+import { masterKeyWrapChecks } from "./checks/master-key-wrap.ts";
 import { metadataSignatureChecks } from "./checks/metadata-signature.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
@@ -57,6 +58,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await headAttestationChecks());
   groups.push(await auditHeadChecks());
   groups.push(await recoveryChecks());
+  groups.push(await masterKeyWrapChecks());
   const results = groups.flat();
   results.push({
     name: `meta: total check count is at least ${MIN_TOTAL_CHECKS}`,
