@@ -237,6 +237,27 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
     expect(message).toContain("maruhi agent -- <shell>");
   });
 
+  it("要求を送らずに繋いだままの相手がいても close は待たされない(後始末が走る)", async () => {
+    const dir = await privateDir();
+    const server = await startAgentServer(dir);
+    const { createConnection } = await import("node:net");
+    // 1 行を送らずに黙る相手(壊れた・敵対的なクライアント)
+    const idle = createConnection(server.socketPath);
+    await new Promise<void>((resolve) => idle.once("connect", () => resolve()));
+    const clientClosed = new Promise<void>((resolve) => idle.once("close", () => resolve()));
+    const started = Date.now();
+    // server.close は全接続の自然終了を待つだけなので、切らないと戻らない
+    // (5 秒の idle timeout より前に、close 自身が切ることを確かめる)
+    await server.close();
+    await Promise.race([
+      clientClosed,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("the idle client was not disconnected")), 2_000),
+      ),
+    ]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   it("ソケットの無いパスは同じ終了メッセージ(古い MARUHI_AGENT_SOCK)", async () => {
     const dir = await privateDir();
     const keychain = makeAgentKeychain(join(dir, "gone.sock"));
@@ -341,6 +362,43 @@ describeSocket("maruhi agent status", () => {
     expect(output).toContain("token:       https://maruhi.test");
     expect(output).toContain("master key:  https://maruhi.test (user user-0001)");
     expect(output).not.toContain("secret");
+  });
+
+  it("壊れた master 鍵の記録に当たったら、キーチェーンではなくセッションの作り直しを案内する", async () => {
+    const dir = await privateDir();
+    const server = await startAgentServer(dir);
+    cleanups.push(() => server.close());
+    const agent = makeAgentKeychain(server.socketPath);
+    await Effect.runPromise(
+      agent.set(
+        tokenEntryName("https://maruhi.test"),
+        JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      ),
+    );
+    // 現行の形は揃っているが hex が壊れている = 破損側の案内
+    await Effect.runPromise(
+      agent.set(
+        masterKeyEntryName("https://maruhi.test", "user-0001"),
+        JSON.stringify({
+          suite: "maruhi/v1",
+          encPubHex: "zz",
+          encSkHex: "zz",
+          sigPubHex: "zz",
+          sigSkSeedHex: "zz",
+        }),
+      ),
+    );
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: "https://maruhi.test" });
+    const layer = Layer.merge(env.layer, Layer.succeed(Keychain, agent));
+    expect(await runCli(["key", "show"], layer)).toBe(1);
+    const message = env.errors.join("\n");
+    expect(message).toContain("held by this agent session");
+    expect(message).toContain("exit the session");
+    expect(message).toContain("maruhi agent -- <shell>");
+    // OS キーチェーンの手順(実行できない)を案内しない
+    expect(message).not.toContain("by hand");
+    expect(message).not.toContain("OS keychain");
   });
 
   it("何も無ければその旨と次の一手を出す", async () => {

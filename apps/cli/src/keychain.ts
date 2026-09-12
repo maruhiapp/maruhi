@@ -202,7 +202,13 @@ function quotedEntryName(entryName: string): string {
  * 自分宛ラップの再配布が要る)。`key recover` だけを案内すると、コードを持たない
  * 利用者は実行できない案内へ送られる。
  */
-function manualDeletionGuidance(entryName: string): string {
+function manualDeletionGuidance(entryName: string, kind: KeychainKind): string {
+  // agent セッションの記録はこのプロセスのメモリにしかない。「OS キーチェーン
+  // から手で消す」は実行できない案内になる(消す物が無く、セッションを抜ける
+  // まで generate / recover が塞がれたまま)。出口はセッションの作り直し
+  if (kind === "agent") {
+    return `Because of overwrite protection, the master key cannot be repaired by \`maruhi key generate\` / \`maruhi key recover\` while this record exists. It lives only in this agent session's memory, so there is nothing to delete: exit the session (the record is discarded with it) and start a new one with \`maruhi agent -- <shell>\`. Then, if you have your recovery code, \`maruhi key recover\` restores the original key (you keep the ability to decrypt existing values). Without it, \`maruhi key generate\` creates a new key, but existing project values become undecryptable — ask an administrator to re-distribute wraps for you (re-run \`maruhi member add\`). `;
+  }
   // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
   // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
   // 案内する操作対象そのものであり、置換文字に潰すと実在しない名前を案内して
@@ -284,9 +290,26 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
  * `key recover` も同じ理由で失敗する(消した後に気づくと恒久喪失)。条件では
  * なく**可逆性**で安全にする — 消す前に値を控えれば、戻せる。
  */
-export function foreignMasterKeyMessage(suite: string | null, entryName: string): string {
+export function foreignMasterKeyMessage(
+  suite: string | null,
+  entryName: string,
+  kind: KeychainKind,
+): string {
   const named = suite === null ? "" : ` (${escapeText(suite)})`;
+  // agent セッションの記録は手で消せない(メモリにしかない)。逃げ道は
+  // セッションの作り直しで、控えは要らない — 記録は同じセッションでサーバーの
+  // ブロブから復元したか生成したもので、抜けても元の物はサーバー側に残る
+  if (kind === "agent") {
+    return `The master-key record held by this agent session cannot be read by this version${named}. It may have been written by a newer maruhi — update maruhi to the latest version and re-run. Only if updating does not fix it: exit the session (the record is discarded with it) and start a new one with \`maruhi agent -- <shell>\`, then try \`maruhi key recover\` / \`maruhi key generate\` again. Also report this as a maruhi bug`;
+  }
   return `The keychain master-key record cannot be read by this version${named}. It may have been written by a newer maruhi — keep this record (deleting it makes the key unrecoverable). Update maruhi to the latest version and re-run. Only if updating does not fix it: **Copy down the value first**, then delete the entry ${quotedEntryName(entryName)} of service "${KEYCHAIN_SERVICE}" from the OS keychain so you can try \`maruhi key generate\` / \`maruhi key recover\` (with the copy you can put it back; the copy is the master private key itself, so destroy it once it is no longer needed — the key is usable again — and avoid forms that linger in terminal scrollback. Never delete without the copy — even with a recovery code, the registered blob may be in the same new format and unrestorable). Also report this as a maruhi bug`;
+}
+
+/** レコードの呼び名(保存先で変わる — 実在しない場所を指さない)。 */
+function masterRecordNoun(kind: KeychainKind): string {
+  return kind === "agent"
+    ? "the master-key record held by this agent session"
+    : "the keychain master-key record";
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */
@@ -308,8 +331,8 @@ export function declaredSuiteOf(json: string): string | null {
  * 何もできなくなる。原因は違っても出口(手で消す)は同じなので、消すべき
  * エントリ名と、その後に取れる手を示す。
  */
-export function corruptMasterKeyMessage(entryName: string): string {
-  return `Cannot read the keychain master-key record (the record is corrupt). ${manualDeletionGuidance(entryName)}`;
+export function corruptMasterKeyMessage(entryName: string, kind: KeychainKind): string {
+  return `Cannot read ${masterRecordNoun(kind)} (the record is corrupt). ${manualDeletionGuidance(entryName, kind)}`;
 }
 
 /**
@@ -326,7 +349,7 @@ export function corruptMasterKeyMessage(entryName: string): string {
  * 自分宛ラップの再配布が要る)。`key recover` だけを案内すると、コードを持たない
  * 利用者は「別デバイスで再登録してください」という実行できない案内へ送られる。
  */
-export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
+export function redactedPlaceholderMasterKeyMessage(entryName: string, kind: KeychainKind): string {
   // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
   // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
   // 案内する操作対象そのものであり、置換文字に潰すと実在しない名前を案内して
@@ -335,7 +358,7 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `${keychainPlaceholderCause}. ${manualDeletionGuidance(entryName)}Also report this as a maruhi bug`;
+  return `${placeholderCause(kind === "agent" ? "The record held by this agent session" : "The keychain record")}. ${manualDeletionGuidance(entryName, kind)}Also report this as a maruhi bug`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

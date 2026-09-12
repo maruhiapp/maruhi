@@ -190,7 +190,13 @@ export interface AgentServer {
   readonly close: () => Promise<void>;
 }
 
-/** 1 接続を 1 要求として処理し、応答して閉じる。 */
+/**
+ * 1 接続を 1 要求として処理し、応答して閉じる。
+ *
+ * 要求の 1 行が揃わないまま黙る相手は {@link IO_TIMEOUT_MS} で切る: 切らないと
+ * `server.close()`(全接続の終了を待つ)が戻らず、子が終わっても agent が
+ * 残る(後始末が走らず、子の終了コードも返せない)。
+ */
 function serveConnection(store: Map<string, string>, socket: Socket): void {
   let buffered = "";
   let answered = false;
@@ -199,6 +205,9 @@ function serveConnection(store: Map<string, string>, socket: Socket): void {
     socket.end(encodeAgentResponse(response));
   };
   socket.setEncoding("utf8");
+  socket.setTimeout(IO_TIMEOUT_MS, () => {
+    socket.destroy();
+  });
   socket.on("data", (chunk: string) => {
     if (answered) {
       return;
@@ -236,9 +245,16 @@ function serveConnection(store: Map<string, string>, socket: Socket): void {
 export function startAgentServer(dir: string): Promise<AgentServer> {
   const socketPath = join(dir, SOCKET_FILE_NAME);
   const store = new Map<string, string>();
-  const server: Server = createServer({ allowHalfOpen: false }, (socket) =>
-    serveConnection(store, socket),
-  );
+  // 開いている接続の台帳。close はこれを切ってから server.close を待つ
+  // (server.close は自然に閉じるのを待つだけで、切ってはくれない)
+  const connections = new Set<Socket>();
+  const server: Server = createServer({ allowHalfOpen: false }, (socket) => {
+    connections.add(socket);
+    socket.once("close", () => {
+      connections.delete(socket);
+    });
+    serveConnection(store, socket);
+  });
   return new Promise<AgentServer>((resolve, reject) => {
     server.once("error", reject);
     server.listen(socketPath, () => {
@@ -257,6 +273,11 @@ export function startAgentServer(dir: string): Promise<AgentServer> {
                 server.close(() => {
                   done();
                 });
+                // 待たずに切る: 終了は子の退出で決まっており、途中の要求を
+                // 完了させる義務は無い(相手は自分の側の失敗を自分で報告する)
+                for (const socket of connections) {
+                  socket.destroy();
+                }
               }),
           }),
         (error: unknown) => {

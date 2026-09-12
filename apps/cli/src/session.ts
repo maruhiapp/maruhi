@@ -429,9 +429,9 @@ export const unsupportedCryptoMessage =
  * 別形式(未知スイート)は破損ではないので、この関数には来ない — 分岐は
  * 呼び出し側の {@link Effect.catchTag} が型で見分ける。
  */
-function corruptOrEnvironmentMessage(entryName: string): Effect.Effect<string> {
+function corruptOrEnvironmentMessage(entryName: string, kind: KeychainKind): Effect.Effect<string> {
   return Effect.map(cryptoBackendUsable(), (usable) =>
-    usable ? corruptMasterKeyMessage(entryName) : unsupportedCryptoMessage,
+    usable ? corruptMasterKeyMessage(entryName, kind) : unsupportedCryptoMessage,
   );
 }
 
@@ -447,13 +447,14 @@ function refusalFor(
   existing: string,
   entryName: string,
   refusal: string,
+  kind: KeychainKind,
 ): Effect.Effect<string, never> {
   if (hasRedactedPlaceholder(existing)) {
-    return Effect.succeed(redactedPlaceholderMasterKeyMessage(entryName));
+    return Effect.succeed(redactedPlaceholderMasterKeyMessage(entryName, kind));
   }
   const record = parseStoredMasterKey(existing);
   if (record === null) {
-    return Effect.succeed(unreadableMasterKeyMessage(existing, entryName));
+    return Effect.succeed(unreadableMasterKeyMessage(existing, entryName, kind));
   }
   return importMasterKeys(record).pipe(
     // インポートできた = 本当に使える鍵。ここだけが本来の上書き拒否
@@ -461,9 +462,9 @@ function refusalFor(
     // 読めない理由(破損 / 別形式 / 環境)で出口が違う。タグで分けるので、
     // 失敗の種類が増えれば型検査がここを指す
     Effect.catchTag("MasterKeyUnknownSuite", (error) =>
-      Effect.succeed(foreignMasterKeyMessage(error.suite, entryName)),
+      Effect.succeed(foreignMasterKeyMessage(error.suite, entryName, kind)),
     ),
-    Effect.catchTag("MasterKeyCorrupt", () => corruptOrEnvironmentMessage(entryName)),
+    Effect.catchTag("MasterKeyCorrupt", () => corruptOrEnvironmentMessage(entryName, kind)),
   );
 }
 
@@ -471,10 +472,10 @@ function refusalFor(
  * 読めないレコードの文言。**削除を勧めるのは破損と判定できたときだけ**
  * (将来版が書いたレコードを消させない — keychain.ts の分類を参照)。
  */
-function unreadableMasterKeyMessage(stored: string, entryName: string): string {
+function unreadableMasterKeyMessage(stored: string, entryName: string, kind: KeychainKind): string {
   return classifyUnreadableMasterKey(stored) === "foreign"
-    ? foreignMasterKeyMessage(declaredSuiteOf(stored), entryName)
-    : corruptMasterKeyMessage(entryName);
+    ? foreignMasterKeyMessage(declaredSuiteOf(stored), entryName, kind)
+    : corruptMasterKeyMessage(entryName, kind);
 }
 
 /**
@@ -499,7 +500,9 @@ export function ensureNoStoredMasterKey(
       // 「既にある」と言ってよいのは**読めるレコードが実在するとき**だけ。
       // 読めない記録に対して拒否文言(使える鍵がある)を返すと、事実に反する
       // うえ出口も示さないまま generate / recover / show の全部が塞がる
-      return yield* Effect.fail(cliError(yield* refusalFor(existing, entryName, refusal)));
+      return yield* Effect.fail(
+        cliError(yield* refusalFor(existing, entryName, refusal, keychain.kind)),
+      );
     }
     return entryName;
   });
@@ -585,8 +588,8 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     if (record === null) {
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
-          ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
-          : cliError(unreadableMasterKeyMessage(stored, entryName)),
+          ? cliError(redactedPlaceholderMasterKeyMessage(entryName, keychain.kind))
+          : cliError(unreadableMasterKeyMessage(stored, entryName, keychain.kind)),
       );
     }
     // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり
@@ -598,10 +601,10 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     // エントリが無く削除の案内が的外れになるため、写像はここで行う
     return yield* importMasterKeys(record).pipe(
       Effect.catchTag("MasterKeyUnknownSuite", (error) =>
-        Effect.fail(cliError(foreignMasterKeyMessage(error.suite, entryName))),
+        Effect.fail(cliError(foreignMasterKeyMessage(error.suite, entryName, keychain.kind))),
       ),
       Effect.catchTag("MasterKeyCorrupt", () =>
-        Effect.flatMap(corruptOrEnvironmentMessage(entryName), (message) =>
+        Effect.flatMap(corruptOrEnvironmentMessage(entryName, keychain.kind), (message) =>
           Effect.fail(cliError(message)),
         ),
       ),
