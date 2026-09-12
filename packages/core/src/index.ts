@@ -24,6 +24,7 @@ export {
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "./crypto-errors.ts";
+export { ulid } from "./ids.ts";
 export {
   type AuditActor,
   auditActorOf,

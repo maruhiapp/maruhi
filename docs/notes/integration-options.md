@@ -641,10 +641,10 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 |---|---|---|---|---|
 | リカバリーコード | S | 既存どおり(`key generate` / `key recovery`) | 既存どおり `key recover`(GitHub ログイン + コード入力) | なし |
 | パスキー PRF | S | `maruhi key seal passkey`: CLI が配る localhost ページで passkey を作成・PRF を取得 → KEK → ラップ登録(credential_id・prf_salt は公開パラメータとして台帳に併置) | `key recover --passkey`: 台帳のブロブ取得 → localhost ページで PRF 取得(生体認証 1 回)→ 復号 | なし |
-| 保護者(1-of-n / n-of-n) | G | `maruhi guardian add`(ward = 本人): 保護者候補は**共有プロジェクトのチェーン導出メンバー**で、鍵は §6.5 の充足形(儀式 / フラグ / 指紋帳ヒット + yes)で確認したもの | `key recover --handoff` → コードを保護者へ帯域外で渡す → 保護者が `key handoff approve <コード>`(声で本人確認 → 承認)→ 要求者が分片を集めて復号 | 保護者 1 人(any)/ 全員(all) + 本人の GitHub ログイン |
-| 自分の旧端末(端末移行) | H | 登録不要(旧端末が master 鍵を持っている) | 新端末で `key recover --handoff` → コードを旧端末へ(同一人物なのでコピー&ペースト)→ 旧端末で `key handoff approve <コード>` → 新端末が復号 | なし(自分の 2 台) |
+| 保護者(1-of-n / n-of-n) | G | `maruhi guardian add`(ward = 本人): 保護者候補は**共有プロジェクトのチェーン導出メンバー**で、鍵は §6.5 の充足形(儀式 / フラグ / 指紋帳ヒット + yes)で確認したもの | `key recover --handoff` → コードを保護者へ帯域外で渡す → 保護者が `key approve <コード>`(声で本人確認 → 承認)→ 要求者が分片を集めて復号 | 保護者 1 人(any)/ 全員(all) + 本人の GitHub ログイン |
+| 自分の旧端末(端末移行) | H | 登録不要(旧端末が master 鍵を持っている) | 新端末で `key recover --handoff` → コードを旧端末へ(同一人物なのでコピー&ペースト)→ 旧端末で `key approve <コード>` → 新端末が復号 | なし(自分の 2 台) |
 
-**要求者の手順は受信者に依らず 1 本**(`key recover --handoff` は「誰が承認するか」を知らない — 承認は旧端末でも保護者でもよく、届いた承認の source で組み立てる)。承認者側も 1 コマンド(`key handoff approve`: ward = 自分なら端末移行、他人なら保護者承認 — 所属グループが無ければ拒否)。
+**要求者の手順は受信者に依らず 1 本**(`key recover --handoff` は「誰が承認するか」を知らない — 承認は旧端末でも保護者でもよく、届いた承認の source で組み立てる)。承認者側も 1 コマンド(`key approve`: ward = 自分なら端末移行、他人なら保護者承認 — 所属グループが無ければ拒否)。
 
 **KL(キーチェーン不在)との接続**: Codespaces / devcontainer では `maruhi agent -- bash` の中で `key recover --handoff` を実行し、表示されたコードを手元のラップトップの端末へ貼って承認する。鍵は agent のメモリに着地し、コード入力もリカバリーコードも要らない。パスキー PRF は「手元に旧端末が無い」場合(自分 1 台 + 同期パスキー)の経路。
 
@@ -690,7 +690,7 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 | K1 仕様 | kl3-spec-drafts.md を正本(CRYPTO_SPEC §8 / §11 / §14.3、AUTH_SPEC §13、AUDIT_SPEC §3.1)へ反映。**この PR のマージ = 所有者承認** | 1 日 | 承認そのもの |
 | K2 crypto + ベクター | `test-vectors/master-key-wrap.json`(19-5)を**先に**コミット → `packages/crypto/src/internal.package/master-wrap.ts`(passkey KEK・master-wrap AAD・XOR 分割 / 結合・guardian-wrap・handoff-wrap・handoff-id・ハンドオフコードの符号化)。`recovery-wrap.json` は不変 | 2〜3 日 | **必須**(packages/crypto) |
 | K3 サーバー | D1 4 表 + マイグレーション、AUTH §13-6〜13-9 のエンドポイント、合算レート制限、監査 9 事件、`@cloudflare/vitest-plugin` テスト | 3〜4 日 | 認可(承認者 ∈ ward のグループ / ward = 自分)、要求 TTL と消費、セッション主体拒否の列挙 |
-| K4 CLI ①(ハンドオフ + 保護者) | `key recover --handoff`、`key handoff approve <code>`、`guardian add / list / remove`、`master-ops.ts`、agent 着地の確認、儀式のゲート | 3 日 | 承認前の本人確認 UX 文言、鍵素材の Redacted 規律 |
+| K4 CLI ①(ハンドオフ + 保護者) | `key recover --handoff`、`key approve <code>`、`guardian add / list / remove / wards`、`master-ops.ts`、agent 着地の確認、儀式のゲート | 3 日 | 承認前の本人確認 UX 文言、鍵素材の Redacted 規律 |
 | K5 CLI ②(パスキー + agent TTL) | localhost ページ(CLI 同梱の静的 HTML + 1 スクリプト、CSP `script-src 'self'`)、`key seal passkey`、`key recover --passkey`、`agent --key-ttl` | 2〜3 日 | **ローカル API の認証(ワンタイムトークン + Origin)**— CLI 初の TCP リスナー |
 | K6 docs + 実装録 | `/docs/linux-keychain`(Codespaces = ハンドオフの手順を最上位に)、getting-started の導線、新ページ「Recover your key」(3 経路)、ROADMAP KL 行、本補足に実装録 | 1 日 | — |
 
@@ -738,6 +738,17 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 - **保護者グループの作成は 2 段 batch**(グループ + 分片の条件付き挿入 → 監査 9 事件)。D1 の batch は原子的だが、`userAuditInsert` が無条件 INSERT のため上限拒否時に監査だけ入る形を避けた(グループ行 → 監査の順で、極小の障害窓だけが「行あり・監査なし」になる)
 - 成功応答は HttpApi の既定(200 / 204)— 起草の 201 は仕様側を合わせた
 - テスト: `apps/server/test/key-wraps.test.ts`(13 件 — 認可・受理ポリシー・合算窓・存在秘匿・監査の 1:1)。セッション能力マトリクス(`session-capability.test.ts`)と strict 固定テストは新面を機械導出で覆う(パスパラメータ `wrapId` / `groupId` / `requestId` の具現化を追加)
+
+**K4(CLI — ハンドオフ + 保護者)**: `apps/cli/src/handoff.ts`(`key recover --handoff` の要求者側 / `key approve <code>` の承認者側)、`guardian.ts`(`guardian add / list / remove / wards`)、`master-ops.ts`(master 鍵で 1 回演算する 3 操作 — 分片の開封・B のラップ・要求者鍵への封印。KL4 の委任モデルでサービス化する下地として呼び出し側は `MasterKeys` を直に触らない)。裁定:
+- **コマンド名は `maruhi key approve <code>`**(起草の `key handoff approve` から変更): 承認者は「コードを渡された人」で、旧端末でも保護者でも同じ 1 コマンドにしたい。`key` の下の 3 段目を作らず、`key recover --handoff` と対に置く(ヘルプの `key` 群は generate / show / recover / recovery / approve)
+- **要求者は誰が承認するかを知らない**: `handoffCreate` → `status` で保護者グループの一覧を取り、3 秒間隔で `handoffApprovals` をポーリングして「device 1 件 > any 1 片 > all 全片」の順で組み立てる。承認の HPKE open が失敗したら**中止**(再送要求はしない — 文脈の不一致は改竄か実装バグ)。復元後は要求を DELETE する
+- **承認者の本人確認は yes 1 語**(端末移行: 「自分がいま他端末で出したコードか」/ 保護者: 「帯域外で本人が頼んだと確認したか」— 乗っ取られたアカウントもコードを見せられる旨を明示)。ハンドオフコードは公開鍵なので stderr に出すが、鍵素材(分片・KEK_h・B)は関数ローカルにだけ存在し出力しない
+- **保護者の指名は §6.5 の充足形をそのまま適用**(指紋帳のヒット → yes、無ければ 12 語の最終語再入力)。エージェント環境では儀式そのものを拒否し、フラグ経路(`--expect-fingerprint` 相当)を**設けない**(鍵素材の封印先を非対話で決めさせない)。`--mode` は必須(any / all)
+- **ゲート**: 要求・承認とも既存の `ensureSensitiveTerminalAllowed`(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7)。要求側は「鍵が既にある端末」も拒否(上書き事故)
+- **`guardian list --project`** は台帳の保護者 FP をチェーン導出の現鍵と突合し、離脱 / 鍵更新の保護者を STALE + 警告(all では「このグループでは復元できない」と明示)
+- **台帳 id の採番は `@maruhi/core` の `ulid`** へ共有化(サーバーの `ids.ts` は再エクスポート。fallow の重複検出で判明)
+- テスト: `apps/cli/test/handoff.test.ts`(9 件 — 端末移行 / 保護者 any の roundtrip、文脈不一致の中止、既存鍵 / エージェント / 非端末の拒否、承認者の device / 保護者経路、yes 以外・不明要求・不正コード)、`guardian.test.ts`(9 件 — any / all の roundtrip、儀式失敗、前提検査、エージェント拒否、STALE 表示、remove / wards)。`bun run check` 通過(121 ファイル / 2980 件)
+- 残: K5(passkey PRF の localhost ページ + `agent --key-ttl`。K0 スパイク前置 — PRF の実機確認に所有者のハードウェアが要る)→ K6(docs: `/docs/linux-keychain` の更新・getting-started・リカバリーの新ページ)
 
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 

@@ -934,7 +934,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
     const key = await makeTestEnv();
     expect(await runCli(["key", "bogus"], key.layer)).toBe(2);
     expect(key.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: generate | show | recover | recovery)",
+      "Unknown subcommand (expected one of: generate | show | recover | recovery | approve)",
     );
     expect(key.errors.join("\n")).not.toContain("Not logged in");
 
@@ -995,7 +995,7 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | ci | agent | rotation | audit | config | schema | var | sync)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | guardian | project | ci | agent | rotation | audit | config | schema | var | sync)",
     );
   });
 
