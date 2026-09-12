@@ -944,7 +944,16 @@ describe("maruhi member add", () => {
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(3);
     expect(env.prompts[2]).toContain("type the last of the 12 words");
-    expect(env.errors.join("\n")).toContain("applies only at an interactive terminal");
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
+
+    // 5 回目(stdout がリダイレクト): 境界は stdin と stdout の両方(&&)—
+    // 片側だけの実装ミスを固定する
+    env.setTerminal({ stdin: true, stdout: false });
+    env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(4);
+    expect(env.prompts[3]).toContain("type the last of the 12 words");
+    expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
   });
 
   it("検証済み指紋帳: 不一致は自動で通さず警告して儀式へ戻し、成功で上書きする(KF)", async () => {

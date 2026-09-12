@@ -29,6 +29,7 @@ import { dirname, join } from "node:path";
 
 import { Context, Effect, Stdio } from "effect";
 
+import { describeNonTerminal } from "./agent-gate.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
@@ -168,10 +169,12 @@ export function usableBookHit(input: {
       return null;
     }
     const stdio = yield* Stdio.Stdio;
-    const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
-    if (!interactive) {
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (!stdinIsTerminal || !stdoutIsTerminal) {
+      // 落ちた側を名指しする(DP5 追補 G の規律 — describeNonTerminal)
       yield* logNote(
-        "the verified-fingerprint book applies only at an interactive terminal (stdin and stdout) — the full 12-word read-out is required here",
+        `the verified-fingerprint book was not used: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} — the full 12-word read-out is required here`,
       );
       return null;
     }

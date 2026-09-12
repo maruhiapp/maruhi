@@ -541,7 +541,7 @@ describe("maruhi invite accept", () => {
     expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(3);
     expect(env.prompts[2]).toContain("type the last of the 12 words");
-    expect(env.errors.join("\n")).toContain("applies only at an interactive terminal");
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
     expect(bodies).toHaveLength(3);
   });
 
