@@ -318,13 +318,17 @@ async function assertTrustedSocket(socketPath: string): Promise<void> {
   try {
     stat = await lstat(socketPath);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    throw code === "ENOENT" ? new AgentGoneError(code) : new AgentProtocolError(code ?? "lstat");
+    const code = (error as NodeJS.ErrnoException).code ?? "lstat";
+    // 接続側と同じ分類: 無い・辿れない(EACCES 等)は「セッションが終わった」、
+    // それ以外は会話が成立しない側。同じ状態が経路で違う話にならないように
+    throw GONE_CODES.has(code) ? new AgentGoneError(code) : new AgentProtocolError(code);
   }
   if (!stat.isSocket()) {
     throw new AgentSocketRejectedError("it is not a socket");
   }
-  // Windows は uid を持たない(-1)が、agent 自体が win32 を拒むので到達しない
+  // uid を持たないプラットフォーム(Windows は -1)では所有者の検査を飛ばす。
+  // agent の起動は win32 を拒むが、環境変数だけ持ち込まれた場合は live.ts が
+  // どの OS でもこの実装を選ぶので、ここは到達しうる
   const uid = userInfo().uid;
   if (uid >= 0 && stat.uid !== uid) {
     throw new AgentSocketRejectedError("it is not owned by you");
@@ -496,6 +500,13 @@ export function agentOp(input: {
     if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
       return yield* Effect.fail(usageError(AGENT_COMMAND_REQUIRED));
     }
+    if (platform() === "win32") {
+      return yield* Effect.fail(
+        cliError(
+          "`maruhi agent` is not available on Windows (it needs a Unix domain socket). The Windows Credential Manager needs no setup — use it instead",
+        ),
+      );
+    }
     // 入れ子は拒む: 外側の agent が既に鍵を持っており、内側を作っても空の
     // 保持先が 1 つ増えて「どちらに入ったか」が分からなくなるだけ。ただし
     // **生きている agent だけ**を入れ子とみなす: 親が先に死んでシェルだけ残る
@@ -513,13 +524,6 @@ export function agentOp(input: {
       }
       yield* logWarning(
         `${AGENT_SOCKET_ENV} pointed to an agent session that has already ended; starting a new one (the new value replaces it for this command's children)`,
-      );
-    }
-    if (platform() === "win32") {
-      return yield* Effect.fail(
-        cliError(
-          "`maruhi agent` is not available on Windows (it needs a Unix domain socket). The Windows Credential Manager needs no setup — use it instead",
-        ),
       );
     }
     const dir = yield* Effect.tryPromise({
