@@ -2316,7 +2316,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Sign in by approving a request in your browser, and store the token in the OS keychain",
+      "Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)",
     ),
   );
 
@@ -2327,7 +2327,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });
     }),
-  ).pipe(Command.withDescription("Revoke this machine's token and remove it from the OS keychain"));
+  ).pipe(
+    Command.withDescription(
+      "Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)",
+    ),
+  );
 
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
@@ -2491,7 +2495,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* keyGenerateOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Generate your master key and store it in the OS keychain"));
+  ).pipe(
+    Command.withDescription(
+      "Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)",
+    ),
+  );
 
   const keyShow = Command.make("show", keyShowConfig, (values) =>
     Effect.gen(function* () {

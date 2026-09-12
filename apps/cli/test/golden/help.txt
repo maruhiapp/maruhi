@@ -10,8 +10,8 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  login       Sign in by approving a request in your browser, and store the token in the OS keychain
-  logout      Revoke this machine's token and remove it from the OS keychain
+  login       Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)
+  logout      Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
@@ -42,8 +42,8 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  login       Sign in by approving a request in your browser, and store the token in the OS keychain
-  logout      Revoke this machine's token and remove it from the OS keychain
+  login       Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)
+  logout      Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
@@ -64,7 +64,7 @@ SUBCOMMANDS
 
 $ maruhi login --help
 DESCRIPTION
-  Sign in by approving a request in your browser, and store the token in the OS keychain
+  Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)
 
 USAGE
   maruhi login [flags]
@@ -81,7 +81,7 @@ GLOBAL FLAGS
 
 $ maruhi logout --help
 DESCRIPTION
-  Revoke this machine's token and remove it from the OS keychain
+  Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)
 
 USAGE
   maruhi logout [flags]
@@ -444,14 +444,14 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  generate    Generate your master key and store it in the OS keychain
+  generate    Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
   show        Print the public keys and fingerprint (never the private keys)
   recover     Restore the master key from a recovery code
   recovery    Issue (or reissue) the recovery code
 
 $ maruhi key generate --help
 DESCRIPTION
-  Generate your master key and store it in the OS keychain
+  Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
 
 USAGE
   maruhi key generate [flags]

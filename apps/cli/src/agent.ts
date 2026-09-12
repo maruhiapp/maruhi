@@ -43,9 +43,9 @@
 // 動くことを実測)。vitest(Node)でサーバーとクライアントを実ソケットで
 // 検査できる。判定材料(環境変数)は CliIo 経由で受け取る。
 
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { platform, tmpdir } from "node:os";
+import { platform, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
@@ -54,6 +54,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import type { KeychainShape } from "./keychain.ts";
+import { logWarning } from "./notice.ts";
 import { ProcessRunner } from "./run.ts";
 
 /** Environment variable that carries the agent socket path to the session's commands. */
@@ -299,9 +300,42 @@ class AgentProtocolError extends Error {}
 /** ソケットが無い・誰も聞いていない(セッションが終わっている)。 */
 class AgentGoneError extends Error {}
 
+/** 環境変数が指す先が、自分の agent が作った形をしていない(使わない)。 */
+class AgentSocketRejectedError extends Error {}
+
 const GONE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
 
-function sendAgentRequest(socketPath: string, request: AgentRequest): Promise<AgentResponse> {
+/**
+ * 接続する前に、環境変数が指す先を疑う。`MARUHI_AGENT_SOCK` は誰でも
+ * (`devcontainer.json` の remoteEnv・`.envrc`・Makefile)差し込めるので、
+ * 素直に信じるとトークンと master 鍵の平文をその宛先へ書いてしまう。
+ * 自分の agent が作るソケットは「ソケット・自分の所有・0600」で必ず通り、
+ * 他ユーザーの物・誰でも触れる物・ただのファイルはここで止まる
+ * (同一ユーザーの攻撃者は止められない — OS キーチェーンと同じ境界)。
+ */
+async function assertTrustedSocket(socketPath: string): Promise<void> {
+  let stat: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stat = await lstat(socketPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw code === "ENOENT" ? new AgentGoneError(code) : new AgentProtocolError(code ?? "lstat");
+  }
+  if (!stat.isSocket()) {
+    throw new AgentSocketRejectedError("it is not a socket");
+  }
+  // Windows は uid を持たない(-1)が、agent 自体が win32 を拒むので到達しない
+  const uid = userInfo().uid;
+  if (uid >= 0 && stat.uid !== uid) {
+    throw new AgentSocketRejectedError("it is not owned by you");
+  }
+  if ((stat.mode & 0o077) !== 0) {
+    throw new AgentSocketRejectedError("other users can access it");
+  }
+}
+
+async function sendAgentRequest(socketPath: string, request: AgentRequest): Promise<AgentResponse> {
+  await assertTrustedSocket(socketPath);
   return new Promise((resolve, reject) => {
     let buffered = "";
     let settled = false;
@@ -361,7 +395,34 @@ const agentProtocolMessage =
   "The maruhi agent did not answer as expected (a different maruhi version may be running it). Exit the agent session and start a new one with `maruhi agent -- <shell>` using this version" as const;
 
 function agentRequestError(error: unknown): CliError {
-  return cliError(error instanceof AgentGoneError ? agentGoneMessage : agentProtocolMessage);
+  if (error instanceof AgentGoneError) {
+    return cliError(agentGoneMessage);
+  }
+  if (error instanceof AgentSocketRejectedError) {
+    return cliError(
+      `Refusing to use the agent socket named by ${AGENT_SOCKET_ENV}: ${error.message}. Unset ${AGENT_SOCKET_ENV}, or start a new session with \`maruhi agent -- <shell>\``,
+    );
+  }
+  return cliError(agentProtocolMessage);
+}
+
+/**
+ * 環境変数が指す agent が生きているか(入れ子判定用)。ソケットが無い・誰も
+ * 聞いていないは「終わったセッションの残骸」= 新しく作ってよい。それ以外の
+ * 失敗(信用できない宛先・版違い)は理由ごと利用者へ返す。
+ */
+function probeAgent(socketPath: string): Effect.Effect<"live" | "gone", CliError> {
+  return Effect.tryPromise({
+    try: () => sendAgentRequest(socketPath, { v: 1, op: "list" }),
+    catch: (error) => error,
+  }).pipe(
+    Effect.map((): "live" => "live"),
+    Effect.catch((error) =>
+      error instanceof AgentGoneError
+        ? Effect.succeed("gone" as const)
+        : Effect.fail(agentRequestError(error)),
+    ),
+  );
 }
 
 /** 1 要求を送り、`ok:false`(agent が拒んだ = 版違い)も型付きの失敗に写す。 */
@@ -436,13 +497,22 @@ export function agentOp(input: {
       return yield* Effect.fail(usageError(AGENT_COMMAND_REQUIRED));
     }
     // 入れ子は拒む: 外側の agent が既に鍵を持っており、内側を作っても空の
-    // 保持先が 1 つ増えて「どちらに入ったか」が分からなくなるだけ
+    // 保持先が 1 つ増えて「どちらに入ったか」が分からなくなるだけ。ただし
+    // **生きている agent だけ**を入れ子とみなす: 親が先に死んでシェルだけ残る
+    // (端末多重化・再親化)と環境変数は残骸になり、「新しく始めろ」と
+    // 「入れ子は拒む」で行き止まりになる。残骸なら新しく始めてよい
     const existing = io.envVar(AGENT_SOCKET_ENV);
     if (existing !== undefined && existing.length > 0) {
-      return yield* Effect.fail(
-        cliError(
-          `Already inside an agent session (${AGENT_SOCKET_ENV} is set). Nested agents are refused — use this session, or exit it first`,
-        ),
+      const state = yield* probeAgent(existing);
+      if (state === "live") {
+        return yield* Effect.fail(
+          cliError(
+            `Already inside an agent session (${AGENT_SOCKET_ENV} points to a running agent). Nested agents are refused — use this session, or exit it first`,
+          ),
+        );
+      }
+      yield* logWarning(
+        `${AGENT_SOCKET_ENV} pointed to an agent session that has already ended; starting a new one (the new value replaces it for this command's children)`,
       );
     }
     if (platform() === "win32") {
@@ -459,11 +529,13 @@ export function agentOp(input: {
           "Cannot create a private directory for the agent socket (under XDG_RUNTIME_DIR, or the temp directory when it is unset)",
         ),
     });
+    // 消せなくてもセッションの結果(子の終了コード)は捨てない: ディレクトリは
+    // 空か、ソケットの inode だけ(値は入っていない)。無言では飲まず警告する
     const removeDir = Effect.tryPromise({
       try: () => rm(dir, { recursive: true, force: true }),
       catch: () =>
-        cliError(`Could not remove the agent socket directory (${dir}) — remove it by hand`),
-    });
+        cliError(`could not remove the agent socket directory (${dir}) — remove it by hand`),
+    }).pipe(Effect.catch((error) => logWarning(error.message)));
     return yield* Effect.acquireUseRelease(
       Effect.tryPromise({
         try: () => startAgentServer(dir),
@@ -471,7 +543,7 @@ export function agentOp(input: {
           cliError(
             `Cannot listen on the agent socket${errnoSuffix(error)}. Nothing was stored; check that the directory is on a filesystem that supports Unix domain sockets`,
           ),
-      }).pipe(Effect.onError(() => Effect.ignore(removeDir))),
+      }).pipe(Effect.onError(() => removeDir)),
       (server) =>
         Effect.gen(function* () {
           // 案内は stderr(子の stdout を汚さない — `maruhi agent -- make` の
@@ -530,7 +602,9 @@ function describeEntryName(name: string): string {
   if (token !== null) {
     return `token:       ${displayText(token[1] ?? "")}`;
   }
-  const master = /^master::(.+?)::(.+)$/.exec(name);
+  // 区切りは**最後の** `::`(origin は `http://[::1]:8787` のように `::` を含みうる。
+  // userId はサーバー発行の識別子で `::` を含まない)
+  const master = /^master::(.+)::(.+)$/.exec(name);
   if (master !== null) {
     return `master key:  ${displayText(master[1] ?? "")} (user ${displayText(master[2] ?? "")})`;
   }

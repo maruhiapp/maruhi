@@ -313,12 +313,54 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(socketPath.startsWith(`${runtime}/maruhi-agent-`)).toBe(true);
   });
 
-  it("入れ子(既に MARUHI_AGENT_SOCK がある)は拒否し、子を起動しない", async () => {
+  it("入れ子(MARUHI_AGENT_SOCK が生きている agent を指す)は拒否し、子を起動しない", async () => {
+    const dir = await privateDir();
+    const outer = await startAgentServer(dir);
+    cleanups.push(() => outer.close());
     const env = await makeTestEnv();
-    env.setEnvVar(AGENT_SOCKET_ENV, "/run/user/1000/maruhi-agent-x/agent.sock");
+    env.setEnvVar(AGENT_SOCKET_ENV, outer.socketPath);
     expect(await runCli(["agent", "--", "sh"], env.layer)).toBe(1);
     expect(env.sessionCalls).toEqual([]);
     expect(env.errors.join("\n")).toContain("Already inside an agent session");
+  });
+
+  it("終わったセッションの残骸(MARUHI_AGENT_SOCK が指す先に誰もいない)なら新しく始める", async () => {
+    // 親の agent が先に死んでシェルだけ残った形。「新しく始めろ」と「入れ子は
+    // 拒む」で行き止まりにしない
+    const dir = await privateDir();
+    const env = await makeTestEnv();
+    env.setEnvVar(AGENT_SOCKET_ENV, join(dir, "agent.sock"));
+    let socketPath = "";
+    env.setSessionHandler((call) => {
+      socketPath = call.env[AGENT_SOCKET_ENV] ?? "";
+      return Promise.resolve(0);
+    });
+    expect(await runCli(["agent", "--", "sh"], env.layer)).toBe(0);
+    expect(socketPath).not.toBe(join(dir, "agent.sock"));
+    expect(socketPath.endsWith("/agent.sock")).toBe(true);
+    expect(env.errors.join("\n")).toContain("has already ended; starting a new one");
+  });
+
+  it("MARUHI_AGENT_SOCK の指す先を疑う: ソケットでない・他人も触れる物には平文を書かない", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { chmod } = await import("node:fs/promises");
+    const dir = await privateDir();
+    // ただのファイル(誰かが差し込んだ宛先)
+    const file = join(dir, "not-a-socket");
+    await writeFile(file, "");
+    const asFile = await Effect.runPromiseExit(makeAgentKeychain(file).set("token::x", "v"));
+    expect(JSON.stringify(asFile)).toContain("it is not a socket");
+    // 本物のソケットでも、他ユーザーが触れる権限なら使わない
+    const server = await startAgentServer(dir);
+    cleanups.push(() => server.close());
+    await chmod(server.socketPath, 0o666);
+    const loose = await Effect.runPromiseExit(makeAgentKeychain(server.socketPath).get("token::x"));
+    expect(JSON.stringify(loose)).toContain("other users can access it");
+    // 0600 に戻せば通る(自分の agent が作る形)
+    await chmod(server.socketPath, 0o600);
+    expect(
+      await Effect.runPromise(makeAgentKeychain(server.socketPath).get("token::x")),
+    ).toBeNull();
   });
 
   it("`--` の後ろに実行対象が無い形は書き方の誤り(2)", async () => {
@@ -356,11 +398,16 @@ describeSocket("maruhi agent status", () => {
     );
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
+    // origin が `::` を含む(IPv6 loopback)場合も区切りを取り違えない
+    await Effect.runPromise(
+      agent.set(masterKeyEntryName("http://[::1]:8787", "user-0002"), "master-secret-2"),
+    );
     expect(await runCli(["agent", "status"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
     expect(output).toContain(`socket:      ${server.socketPath}`);
     expect(output).toContain("token:       https://maruhi.test");
     expect(output).toContain("master key:  https://maruhi.test (user user-0001)");
+    expect(output).toContain("master key:  http://[::1]:8787 (user user-0002)");
     expect(output).not.toContain("secret");
   });
 
@@ -394,6 +441,9 @@ describeSocket("maruhi agent status", () => {
     expect(await runCli(["key", "show"], layer)).toBe(1);
     const message = env.errors.join("\n");
     expect(message).toContain("held by this agent session");
+    // 可逆にできないので、順序(抜けずに更新)と条件(コードがあるときだけ抜ける)
+    expect(message).toContain("re-run inside this session");
+    expect(message).toContain("only if you have your recovery code");
     expect(message).toContain("exit the session");
     expect(message).toContain("maruhi agent -- <shell>");
     // OS キーチェーンの手順(実行できない)を案内しない

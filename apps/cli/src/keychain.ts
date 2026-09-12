@@ -205,9 +205,14 @@ function quotedEntryName(entryName: string): string {
 function manualDeletionGuidance(entryName: string, kind: KeychainKind): string {
   // agent セッションの記録はこのプロセスのメモリにしかない。「OS キーチェーン
   // から手で消す」は実行できない案内になる(消す物が無く、セッションを抜ける
-  // まで generate / recover が塞がれたまま)。出口はセッションの作り直し
+  // まで generate / recover が塞がれたまま)。出口はセッションの作り直しだが、
+  // **可逆にはできない**(メモリの値を控える口が無い)ので、順序と条件で守る:
+  // (1) まず抜けずに更新して再実行(形の揃った将来形式の記録は旧版から破損に
+  // 見える — parseStoredMasterKey は hex の中身を見ない)、(2) 抜けるのは
+  // リカバリーコードがあるときだけ(`key generate` 直後に発行が完了していない
+  // 記録は、このメモリが唯一の写しでサーバーには無い)
   if (kind === "agent") {
-    return `Because of overwrite protection, the master key cannot be repaired by \`maruhi key generate\` / \`maruhi key recover\` while this record exists. It lives only in this agent session's memory, so there is nothing to delete: exit the session (the record is discarded with it) and start a new one with \`maruhi agent -- <shell>\`. Then, if you have your recovery code, \`maruhi key recover\` restores the original key (you keep the ability to decrypt existing values). Without it, \`maruhi key generate\` creates a new key, but existing project values become undecryptable — ask an administrator to re-distribute wraps for you (re-run \`maruhi member add\`). `;
+    return `Because of overwrite protection, the master key cannot be repaired by \`maruhi key generate\` / \`maruhi key recover\` while this record exists. It lives only in this agent session's memory and cannot be copied out, so first update maruhi to the latest version and re-run inside this session (a record written by a newer maruhi looks corrupt to an older one; leaving the session discards it). Only if that does not fix it: exit the session (the record is discarded with it) and start a new one with \`maruhi agent -- <shell>\` — do this only if you have your recovery code, because \`maruhi key recover\` is then the only way to restore the original key (you keep the ability to decrypt existing values). Without the code, this record may be the last copy of the key: \`maruhi key generate\` after exiting creates a new key, but existing project values become undecryptable — ask an administrator to re-distribute wraps for you (re-run \`maruhi member add\`). `;
   }
   // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
   // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
@@ -296,11 +301,14 @@ export function foreignMasterKeyMessage(
   kind: KeychainKind,
 ): string {
   const named = suite === null ? "" : ` (${escapeText(suite)})`;
-  // agent セッションの記録は手で消せない(メモリにしかない)。逃げ道は
-  // セッションの作り直しで、控えは要らない — 記録は同じセッションでサーバーの
-  // ブロブから復元したか生成したもので、抜けても元の物はサーバー側に残る
+  // agent セッションの記録は手で消せず、控えも取れない(メモリにしかない)。
+  // ここへ来るのは、新しい maruhi(`bunx maruhi@latest` や別ピンのバイナリ)が
+  // このセッションに書いた記録を古い方が読んだとき。抜けると**最後の読める
+  // 写し**を失いうる(`key generate` 直後で発行が完了していなければサーバーにも
+  // 無く、あってもブロブが同じ新形式で復元できないかもしれない)。可逆性が
+  // 無い以上、守れるのは順序(抜けずに更新)と条件(コードがあるときだけ抜ける)
   if (kind === "agent") {
-    return `The master-key record held by this agent session cannot be read by this version${named}. It may have been written by a newer maruhi — update maruhi to the latest version and re-run. Only if updating does not fix it: exit the session (the record is discarded with it) and start a new one with \`maruhi agent -- <shell>\`, then try \`maruhi key recover\` / \`maruhi key generate\` again. Also report this as a maruhi bug`;
+    return `The master-key record held by this agent session cannot be read by this version${named}. It may have been written by a newer maruhi — update maruhi to the latest version and re-run inside this session (leaving it discards the record, and nothing can copy it out of agent memory). Only if updating does not fix it, and only if you have your recovery code: exit the session (the record is discarded with it), start a new one with \`maruhi agent -- <shell>\`, and run \`maruhi key recover\`. Without the code, do not exit — the registered blob may be in the same new format, and this record may be the last readable copy of the key. Also report this as a maruhi bug`;
   }
   return `The keychain master-key record cannot be read by this version${named}. It may have been written by a newer maruhi — keep this record (deleting it makes the key unrecoverable). Update maruhi to the latest version and re-run. Only if updating does not fix it: **Copy down the value first**, then delete the entry ${quotedEntryName(entryName)} of service "${KEYCHAIN_SERVICE}" from the OS keychain so you can try \`maruhi key generate\` / \`maruhi key recover\` (with the copy you can put it back; the copy is the master private key itself, so destroy it once it is no longer needed — the key is usable again — and avoid forms that linger in terminal scrollback. Never delete without the copy — even with a recovery code, the registered blob may be in the same new format and unrestorable). Also report this as a maruhi bug`;
 }
