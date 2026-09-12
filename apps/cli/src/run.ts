@@ -58,6 +58,20 @@ export interface ProcessRunnerShape {
    * started (not installed / not on PATH) — never by fetching it.
    */
   readonly exec: (input: ExecInput) => Effect.Effect<ExecOutcome, CliError>;
+  /**
+   * Runs the command of a `maruhi agent` session (agent.ts): stdio inherited,
+   * the parent's environment passed through **unfiltered** plus `env`.
+   * Unlike `run`, the MARUHI_* namespace is not stripped — `env` carries the
+   * session handle (`MARUHI_AGENT_SOCK`), and the user's own settings
+   * (config dir, token) must stay visible in the shell they are about to
+   * work in. No value is injected here. While the child runs, SIGINT is
+   * ignored by the parent (the child's shell owns Ctrl+C) and SIGTERM /
+   * SIGHUP are forwarded to the child. Returns the exit code.
+   */
+  readonly runSession: (input: {
+    readonly command: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+  }) => Effect.Effect<number, CliError>;
 }
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(

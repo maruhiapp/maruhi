@@ -33,7 +33,7 @@ maruhi login
 
 `maruhi login` opens your browser for a GitHub sign-in and shows a confirmation code in both places — compare them before approving. During the private preview, creating an account requires an invite code; see [how to get access](https://maruhi.app/#access) on the landing page.
 
-The token is stored in the OS keychain. On a headless Linux box, in WSL, or in a dev container there may be no keychain yet and this command fails — [Keychain on Linux and in containers](/docs/linux-keychain) shows the five-line setup.
+The token is stored in the OS keychain. On a headless Linux box, in WSL, or in a dev container there may be no keychain yet and this command fails — [Keychain on Linux and in containers](/docs/linux-keychain) shows the five-line setup, and `maruhi agent -- bash` for a session that keeps the token and key in memory only.
 
 ## 4. Generate your master key (first time only)
 

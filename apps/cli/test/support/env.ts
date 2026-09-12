@@ -48,6 +48,12 @@ export interface ExecCall {
   readonly stdin: Uint8Array;
 }
 
+/** One recorded `maruhi agent` session child (agent.ts — env carries the socket path). */
+export interface SessionCall {
+  readonly command: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+}
+
 /** A fully in-memory test environment for driving `runCli`. */
 export interface TestEnv {
   readonly layer: Layer.Layer<CliServices>;
@@ -57,6 +63,8 @@ export interface TestEnv {
   readonly runnerCalls: RunnerCall[];
   /** ベンダー CLI の駆動記録(sync — argv / cwd / env / stdin)。 */
   readonly execCalls: ExecCall[];
+  /** `maruhi agent` の子の起動記録(argv と、渡された追加の環境変数)。 */
+  readonly sessionCalls: SessionCall[];
   readonly configPath: string;
   /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
   readonly floorDir: string;
@@ -97,6 +105,12 @@ export interface TestEnv {
   setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome | CliError): void;
   /** openBrowser の成否を偽装する(既定は成功)。 */
   setBrowserOpenSucceeds(succeeds: boolean): void;
+  /**
+   * `maruhi agent` の子を偽装する(既定は exit 0)。ハンドラは子が生きている
+   * 間に走る = agent のソケットが聞いている間なので、ここから接続して
+   * 保持先を検査できる。
+   */
+  setSessionHandler(handler: (call: SessionCall) => Promise<number>): void;
   /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
   failKeychainWrites(): void;
   /**
@@ -121,6 +135,11 @@ export interface TestEnv {
   setVendorOrigin(host: string, origin: string): void;
 }
 
+/** 既定の `maruhi agent` の子(何もせず exit 0)。 */
+function sessionExitsZero(): Promise<number> {
+  return Promise.resolve(0);
+}
+
 /** 既定のベンダー CLI の応答(成功・出力なし)。 */
 function execSucceeds(): ExecOutcome {
   return { exitCode: 0, output: "" };
@@ -140,6 +159,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const promptResponses: (string | (() => string))[] = [];
   const browserOpens: string[] = [];
   let browserOpenSucceeds = true;
+  const sessionCalls: SessionCall[] = [];
+  let sessionHandler: (call: SessionCall) => Promise<number> = sessionExitsZero;
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
   let colorEnabled = false;
@@ -203,6 +224,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
         floorStore.appendAttestationEvidence(projectId, evidence),
     }),
     Layer.succeed(Keychain, {
+      kind: "os-keychain",
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),
       set: (name, value) =>
         Effect.suspend(() => {
@@ -275,6 +297,15 @@ export async function makeTestEnv(): Promise<TestEnv> {
           // 起動失敗(未導入 — live.ts の execStartFailure)の偽装は型付きエラーで返す
           return outcome instanceof CliError ? Effect.fail(outcome) : Effect.succeed(outcome);
         }),
+      runSession: ({ command, env }) =>
+        Effect.tryPromise({
+          try: () => {
+            const call: SessionCall = { command, env };
+            sessionCalls.push(call);
+            return sessionHandler(call);
+          },
+          catch: () => cliError("agent セッションの子を起動できません(テスト注入)"),
+        }),
     }),
     // 実 fetch の HttpClient。ベンダー API の固定ホストだけを偽サーバーへ写す
     // (maruhi サーバー向けのリクエストは既に origin が偽サーバー)
@@ -304,6 +335,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     errors,
     runnerCalls,
     execCalls,
+    sessionCalls,
     configPath,
     floorDir,
     pinsDir,
@@ -343,6 +375,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setBrowserOpenSucceeds(succeeds) {
       browserOpenSucceeds = succeeds;
+    },
+    setSessionHandler(handler) {
+      sessionHandler = handler;
     },
     failKeychainWrites() {
       keychainWritable = false;

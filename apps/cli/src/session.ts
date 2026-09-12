@@ -32,9 +32,11 @@ import {
   classifyUnreadableMasterKey,
   corruptMasterKeyMessage,
   declaredSuiteOf,
+  describeStore,
   foreignMasterKeyMessage,
   hasRedactedPlaceholder,
   Keychain,
+  type KeychainKind,
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
@@ -144,9 +146,17 @@ export function resolveServerOrigin(
   );
 }
 
-const noSessionError = cliError(
-  "Not logged in. Run `maruhi login` (in environments without a keychain, pass a token via the MARUHI_TOKEN env var)",
-);
+/**
+ * 未ログインの案内。agent セッションの中では「agent の中で実行してください」は
+ * 的外れ(既に中にいる)なので、保持先が空であることだけを言う。
+ */
+function noSessionError(kind: KeychainKind): CliError {
+  return cliError(
+    kind === "agent"
+      ? "Not logged in. Run `maruhi login` (this agent session holds no token yet; it is discarded when the session ends)"
+      : "Not logged in. Run `maruhi login` (in environments without a keychain, run it inside `maruhi agent -- <shell>`, or pass a token via the MARUHI_TOKEN env var)",
+  );
+}
 
 /**
  * 期限接近の事前警告の窓(裁定 CL — 残り 14 日から警告する。起草値)。
@@ -329,7 +339,7 @@ export function resolveSession(
     const keychain = yield* Keychain;
     const stored = yield* keychain.get(tokenEntryName(origin));
     if (stored === null) {
-      return yield* Effect.fail(noSessionError);
+      return yield* Effect.fail(noSessionError(keychain.kind));
     }
     const record = parseStoredToken(stored);
     if (record === null) {
@@ -540,6 +550,27 @@ export function storeMasterKeyGuarded(
  */
 const concurrentMasterKeyWrite =
   "Another master key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
+
+/**
+ * {@link storeMasterKeyGuarded} + 成功の 2 行(保存先の名指しと FP)。
+ * `key generate` / `key recover` の共通の結び — 保存先の呼び名
+ * ({@link describeStore})を片方だけ直す形にしない。
+ */
+export function storeMasterKeyAndReport(input: {
+  readonly entryName: string;
+  readonly serialized: string;
+  /** 何をしたか(文頭)。例: "Generated your master key" */
+  readonly action: string;
+  readonly fingerprintHex: string;
+}): Effect.Effect<void, CliError, Keychain | CliIo> {
+  return Effect.gen(function* () {
+    yield* storeMasterKeyGuarded(input.entryName, input.serialized);
+    const keychain = yield* Keychain;
+    const io = yield* CliIo;
+    yield* io.log(`${input.action} and stored it in ${describeStore(keychain.kind)}`);
+    yield* io.log(`key fingerprint: ${input.fingerprintHex}`);
+  });
+}
 
 /** Loads and imports the master keypair for (origin, userId) from the keychain. */
 export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, CliError, Keychain> {

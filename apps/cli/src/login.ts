@@ -23,6 +23,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import {
+  describeStore,
   hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
@@ -356,7 +357,7 @@ export function loginOp(input: {
       ),
     );
     yield* io.log(
-      `Signed in as ${displayText(approved.userId)}. The token is stored in the OS keychain`,
+      `Signed in as ${displayText(approved.userId)}. The token is stored in ${describeStore(keychain.kind)}`,
     );
     if (input.showToken) {
       // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
@@ -496,7 +497,9 @@ export function logoutOp(input: {
       Effect.catchTag("Unauthorized", () => Effect.void),
       Effect.mapError(toCliError),
     );
-    yield* io.log("Signed out. The token was revoked and removed from the OS keychain");
+    yield* io.log(
+      `Signed out. The token was revoked and removed from ${describeStore(keychain.kind)}`,
+    );
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
     // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは

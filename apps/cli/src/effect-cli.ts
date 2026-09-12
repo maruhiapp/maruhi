@@ -65,6 +65,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import { AGENT_COMMAND_REQUIRED, agentOp } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
@@ -346,6 +347,24 @@ const runCommandArgument = () =>
 const runConfig = {
   ...commonFlags(),
   command: runCommandArgument(),
+};
+
+/**
+ * `maruhi agent -- <command>`(KL2 — agent.ts)。run と同じ「`--` の後ろだけが
+ * 実行対象」の宣言。フラグは持たない(サーバーにも鍵にも触らず、子を起動して
+ * 保持先を用意するだけ)。
+ */
+const agentConfig = {
+  command: Argument.string("command").pipe(
+    Argument.withDescription(
+      "The command to run inside the agent session, written after `--` (usually a shell)",
+    ),
+    Argument.atLeast(1),
+    Argument.filter(
+      (command) => (command[0] ?? "").trim() !== "",
+      () => AGENT_COMMAND_REQUIRED,
+    ),
+  ),
 };
 
 /**
@@ -991,6 +1010,7 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
   push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
+  agent: specOf(agentConfig),
   ...Object.fromEntries(
     Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
       [
@@ -2179,6 +2199,18 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const agent = Command.make("agent", agentConfig, (values) =>
+    Effect.gen(function* () {
+      // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
+      const command = yield* commandAfterTerminator(values.command);
+      onExitCode(yield* agentOp({ command }));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`",
+    ),
+  );
+
   const push = Command.make("push", pushConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
@@ -3139,6 +3171,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       pull,
       run,
       push,
+      agent,
       ci,
       env,
       server,

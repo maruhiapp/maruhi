@@ -21,8 +21,16 @@ import { Context, type Effect, Redacted } from "effect";
 import { escapeText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 
+/**
+ * Where the records live: the OS keychain, or the memory of a running
+ * `maruhi agent` (KL2 — agent.ts). 成功文言が保存先を名指しするための区別で、
+ * 意味論(get / set / remove)は同じ。
+ */
+export type KeychainKind = "os-keychain" | "agent";
+
 /** OS keychain boundary. Names are scoped by {@link tokenEntryName} / {@link masterKeyEntryName}. */
 export interface KeychainShape {
+  readonly kind: KeychainKind;
   readonly get: (name: string) => Effect.Effect<string | null, CliError>;
   readonly set: (name: string, value: string) => Effect.Effect<void, CliError>;
   readonly remove: (name: string) => Effect.Effect<void, CliError>;
@@ -32,6 +40,14 @@ export class Keychain extends Context.Service<Keychain, KeychainShape>()("cli/Ke
 
 /** Keychain service name shared by every maruhi entry. */
 export const KEYCHAIN_SERVICE = "maruhi";
+
+/**
+ * 保存先の呼び名(成功文言用)。「OS キーチェーンに保存しました」と agent
+ * セッションの中で言うと、キーチェーンの無い環境で実在しない場所を指す。
+ */
+export function describeStore(kind: KeychainKind): string {
+  return kind === "agent" ? "the maruhi agent's memory (this session only)" : "the OS keychain";
+}
 
 /** Keychain entry name for the maruhi API token of one server. */
 export function tokenEntryName(origin: string): string {

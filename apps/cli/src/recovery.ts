@@ -45,7 +45,7 @@ import {
   cryptoBackendUsable,
   importMasterKeys,
   retryOnSupportedRuntime,
-  storeMasterKeyGuarded,
+  storeMasterKeyAndReport,
   unsupportedCryptoCause,
   loadMasterKeys,
   type MasterKeys,
@@ -236,9 +236,12 @@ export function recoverMasterKeyOp(input: {
     // keygen と同じ上書き検出つき保存: ガードからブロブ取得と
     // コード入力を挟むため窓はさらに広く、素の set では並行実行の鍵を
     // 黙って消しうる
-    yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));
-    yield* io.log("Restored the master key and stored it in the OS keychain");
-    yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
+    yield* storeMasterKeyAndReport({
+      entryName,
+      serialized: serializeStoredMasterKey(record),
+      action: "Restored the master key",
+      fingerprintHex: validated.fingerprintHex,
+    });
   });
 }
 

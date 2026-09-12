@@ -35,7 +35,7 @@ import {
   cryptoBackendUsable,
   importMasterKeys,
   retryOnSupportedRuntime,
-  storeMasterKeyGuarded,
+  storeMasterKeyAndReport,
   unsupportedCryptoCause,
   loadMasterKeys,
 } from "./session.ts";
@@ -50,7 +50,6 @@ export function keyGenerateOp(input: {
   readonly client: MaruhiClient;
 }): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
       "A master key already exists. Overwriting it would destroy the ability to decrypt existing projects, so this is refused (check it with `maruhi key show`)",
@@ -119,9 +118,12 @@ export function keyGenerateOp(input: {
     // 保存は上書き検出つき: ガードから鍵生成を挟んだこの位置では
     // 並行実行が先に書いている可能性があり、素の set は後勝ちで一方の鍵を
     // 黙って消す。後段のリカバリーコード発行より前に失敗させる
-    yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));
-    yield* io.log("Generated your master key and stored it in the OS keychain");
-    yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
+    yield* storeMasterKeyAndReport({
+      entryName,
+      serialized: serializeStoredMasterKey(record),
+      action: "Generated your master key",
+      fingerprintHex: validated.fingerprintHex,
+    });
     yield* logNote(
       "losing this key means you can no longer decrypt values in the projects you joined. The recovery code is the only way to restore it",
     );

@@ -20,6 +20,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 import { agentInfo } from "std-env";
 
 import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
+import { AGENT_SOCKET_ENV, makeAgentKeychain } from "./agent.ts";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
 import { cliError } from "./errors.ts";
@@ -44,7 +45,7 @@ import {
 
 const keychainUnavailable = () =>
   cliError(
-    "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead",
+    "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — run `maruhi agent -- <shell>` to keep them in memory for that shell's lifetime, or pass a token via the MARUHI_TOKEN environment variable",
   );
 
 // keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
@@ -77,6 +78,7 @@ function keychainOp<T>(
 
 function makeBunKeychain(): KeychainShape {
   return {
+    kind: "os-keychain",
     get: (name) => keychainOp(() => Bun.secrets.get({ service: KEYCHAIN_SERVICE, name })),
     set: (name, value) =>
       keychainOp(
@@ -169,7 +171,57 @@ function makeBunProcessRunner(): ProcessRunnerShape {
         // CLI だけ — integration-options.md §3 補足 16)
         catch: (error) => cliError(execStartFailure(input, error)),
       }),
+    runSession: ({ command, env }) =>
+      Effect.tryPromise({
+        try: () => runAgentSession(command, env),
+        catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
+      }),
   };
+}
+
+/** 子が生きている間の SIGINT の扱い(何もしない = 子の対話シェルに任せる)。 */
+const ignoreInterrupt = (): void => {};
+
+/**
+ * `maruhi agent` の子(agent.ts)。run と違い親の環境を**濾さずに**渡す
+ * (`MARUHI_AGENT_SOCK` を運ぶのがこの経路の目的で、利用者の設定
+ * 〔MARUHI_CONFIG_DIR 等〕もこれから作業するシェルに見えていなければ
+ * ならない。値の注入は無い)。
+ *
+ * シグナル: 端末の Ctrl+C は前景プロセスグループ全体(agent と子)に届く。
+ * 子が対話シェルなら SIGINT を無視して生き続けるのに、agent が死ぬと
+ * シェルは鍵の保持先を失う。ssh-agent の `ssh-agent <command>` と同じく、
+ * 子が生きている間は agent 側で SIGINT を無視し、SIGTERM / SIGHUP は子へ
+ * 転送する(子が終われば agent も終わる — 後始末は agent.ts の release)。
+ * `process.*` を読むのはこの実装の中だけ(ADR-0016 決定 5)。
+ */
+async function runAgentSession(
+  command: readonly string[],
+  env: Readonly<Record<string, string>>,
+): Promise<number> {
+  const child = Bun.spawn({
+    cmd: [...command],
+    env: { ...process.env, ...env },
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const forwardTerm = (): void => {
+    child.kill("SIGTERM");
+  };
+  const forwardHup = (): void => {
+    child.kill("SIGHUP");
+  };
+  process.on("SIGINT", ignoreInterrupt);
+  process.on("SIGTERM", forwardTerm);
+  process.on("SIGHUP", forwardHup);
+  try {
+    return await child.exited;
+  } finally {
+    process.off("SIGINT", ignoreInterrupt);
+    process.off("SIGTERM", forwardTerm);
+    process.off("SIGHUP", forwardHup);
+  }
 }
 
 /** 対話入力の Ctrl+C / Ctrl+D による中断(EOF・読み取り不能と区別する)。 */
@@ -489,12 +541,21 @@ function makeLiveIo(): CliIoShape {
 /** Production service layer for the maruhi CLI (Bun runtime). */
 export function liveLayer(): Layer.Layer<CliServices> {
   const configPath = defaultConfigPath((name) => process.env[name]);
+  // `maruhi agent` セッションの中(MARUHI_AGENT_SOCK あり)では OS キーチェーン
+  // の代わりに agent のメモリを使う(KL2 — agent.ts)。明示の環境変数 = 利用者の
+  // 明示の選択なので、キーチェーンがあっても agent を優先する。MARUHI_TOKEN の
+  // 優先順位(session.ts: 環境変数 → Keychain)は従来どおり
+  const agentSocket = process.env[AGENT_SOCKET_ENV];
+  const keychain =
+    agentSocket !== undefined && agentSocket.length > 0
+      ? makeAgentKeychain(agentSocket)
+      : makeBunKeychain();
   return Layer.mergeAll(
     // argv と端末の有無(引数層と値の表示可否の判定材料)
     BunStdio.layer,
     // 値の表示可否の二次層(一次境界は上の Stdio による TTY 判定)
     Layer.succeed(AgentProfileRef, detectAgentProfile()),
-    Layer.succeed(Keychain, makeBunKeychain()),
+    Layer.succeed(Keychain, keychain),
     Layer.succeed(ConfigStore, makeFileConfigStore(configPath)),
     // ローカル床(§6.3)は設定と同系の非機密置き場(<config dir>/floor)
     Layer.succeed(FloorStore, makeFileFloorStore(floorDirOf(configPath))),
