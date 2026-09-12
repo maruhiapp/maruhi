@@ -752,7 +752,7 @@ master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
 **K5(部分 — agent TTL)**: `maruhi agent --key-ttl <n><s|m|h>`(19-3 (c))。`apps/cli/src/agent.ts` の保持先を `makeAgentStore` に切り出し、master 鍵エントリ(`master::` 接頭辞)だけを期限で忘れる(トークンは残す = 再ログイン不要。set のたびに期限が延びるので取り直した鍵は新しい期限を持つ。掃除は要求ごと)。ワイヤプロトコルは不変(期限切れは `get` の null / `list` の不在として現れる)。「次の鍵操作は取り直しの案内になる」は `loadMasterKeys` の「鍵なし」文言を全キーチェーン共通で改めて満たした(`maruhi key recover` / `--handoff` / 初回なら `generate` の順 — 旧文言「Generate one」は鍵を持つ人へ新規生成を勧める誤誘導だった)。テストは `agent.test.ts`(偽時計での期限・延長・トークン残存、書式違いの exit 2、案内の stderr)。**passkey PRF(localhost ページ・`key seal passkey` / `key recover --passkey`)は未着手** — K0 スパイクに所有者のハードウェア(認証器 × ブラウザの PRF 対応)が要るため、所有者の K0 実施を待つ。
 
 **K6(docs — 実装済み経路ぶん)**: 新ページ `/docs/recover-your-key`(3 経路: リカバリーコード / 端末ハンドオフ / 保護者。上限とゲートの明記。passkey は書かない — 未実装)、`/docs/linux-keychain` は Codespaces / dev container の手順をハンドオフ最上位へ書き換え(`maruhi agent -- bash` → `login` → `key recover --handoff` → 手元で `key approve`)+ `--key-ttl` の節、getting-started の step 4 から導線。ROADMAP KL 行を更新。`bun run check` 通過(121 ファイル / 2982 件)。
-- 残: K0 スパイク(所有者)→ K5 の passkey 部分 → `/docs/recover-your-key` へ passkey 経路を追記
+- 残: K5 の passkey 部分 → `/docs/recover-your-key` へ passkey 経路を追記。**K0 の順序は 2026-09-12 所有者裁定で組み替え**: 実機でしか確かめられない部分(ブラウザ × 認証器の PRF 対応表、Codespaces / WSL のポート転送)は K5 の後ろへ回し、まとめて実施する。K5 は環境内で可能な範囲の K0(Bun の 127.0.0.1 リスナー + ワンタイムトークン + Origin 検査、Chromium の仮想認証器での rpId=localhost + PRF の往復)を先行させ、結果を `docs/notes/spike-prf.md` に「仮想認証器で検証済み / 実機は未検証」と区別して残す。公開 docs の passkey 節は実機検証まで保留(「検証していないことを書かない」)。ワイヤ形(rpId=localhost / prf_salt / AAD)は承認済み仕様で固定されており、実機の結果で変わるのは対応表の文面と Codespaces の案内だけ。K5 は別セッションで着手する
 
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
