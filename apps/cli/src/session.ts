@@ -46,6 +46,7 @@ import {
   redactedPlaceholderTokenMessage,
   type StoredMasterKey,
   tokenEntryName,
+  tokenRecordNoun,
 } from "./keychain.ts";
 import { logWarning } from "./notice.ts";
 
@@ -349,7 +350,9 @@ export function resolveSession(
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderTokenMessage(keychain.kind))
-          : cliError("The keychain token record is corrupt. Log in again with `maruhi login`"),
+          : cliError(
+              `${tokenRecordNoun(keychain.kind)} is corrupt. Log in again with \`maruhi login\``,
+            ),
       );
     }
     // 期限接近の事前警告(裁定 CL): 期限はログイン時にレコードへ保存済み

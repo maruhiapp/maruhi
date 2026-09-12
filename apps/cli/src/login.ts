@@ -33,6 +33,7 @@ import {
   serializeStoredToken,
   type StoredToken,
   tokenEntryName,
+  tokenRecordNoun,
 } from "./keychain.ts";
 import { logNote } from "./notice.ts";
 import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
@@ -481,7 +482,7 @@ export function logoutOp(input: {
         cliError(
           redacted
             ? `${redactedPlaceholderTokenMessage(keychain.kind)} (the unusable record has been deleted; the server-side revocation could not be performed)`
-            : "The keychain token record was corrupt, so it has been deleted (the server-side revocation could not be performed)",
+            : `${tokenRecordNoun(keychain.kind)} was corrupt, so it has been deleted (the server-side revocation could not be performed)`,
         ),
       );
     }

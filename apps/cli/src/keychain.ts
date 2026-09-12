@@ -151,6 +151,16 @@ export function placeholderCause(artifact: string): string {
   return `${artifact} contains the redaction placeholder (<redacted>). This is a maruhi bug (the record was written without unwrapping the secret)`;
 }
 
+/**
+ * トークン記録の呼び名(文頭用。保存先で変わる — 実在しない場所を指さない)。
+ * 直し方(`maruhi login` が上書きする)は保存先に依らない。
+ */
+export function tokenRecordNoun(kind: KeychainKind): string {
+  return kind === "agent"
+    ? "The token record held by this agent session"
+    : "The keychain token record";
+}
+
 /** 伏字が保存されていた記録の呼び名(保存先で変わる — 実在しない場所を指さない)。 */
 function storedRecordPlaceholderCause(kind: KeychainKind): string {
   return placeholderCause(

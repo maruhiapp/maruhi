@@ -45,7 +45,7 @@
 
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { platform, tmpdir, userInfo } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
@@ -326,10 +326,15 @@ async function assertTrustedSocket(socketPath: string): Promise<void> {
   if (!stat.isSocket()) {
     throw new AgentSocketRejectedError("it is not a socket");
   }
-  // uid を持たないプラットフォーム(Windows は -1)では所有者の検査を飛ばす。
-  // agent の起動は win32 を拒むが、環境変数だけ持ち込まれた場合は live.ts が
-  // どの OS でもこの実装を選ぶので、ここは到達しうる
-  const uid = userInfo().uid;
+  // 自分の uid は `process.getuid`(システムコールのみ)で取る。`os.userInfo()` は
+  // passwd を引くので、数値 uid だけのコンテナ(まさにこの機能の対象環境)では
+  // 例外になり、本物のソケットまで拒んでしまう。uid を持たないプラットフォーム
+  // (Windows は getuid 自体が無い)では所有者の検査を飛ばす — agent の起動は
+  // win32 を拒むが、環境変数だけ持ち込まれた場合は live.ts がどの OS でも
+  // この実装を選ぶので、ここは到達しうる。`process.*` を読むのは判定材料
+  // (端末・エージェント — ADR-0016 決定 7)ではなく所有者の同一性なので、
+  // サービス経由にせずここで読む
+  const uid = process.getuid?.() ?? -1;
   if (uid >= 0 && stat.uid !== uid) {
     throw new AgentSocketRejectedError("it is not owned by you");
   }
