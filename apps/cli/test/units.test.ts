@@ -165,6 +165,7 @@ describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
     return {
       store,
       layer: Layer.succeed(Keychain, {
+        kind: "os-keychain",
         get: (name: string) => Effect.sync(() => store.get(name) ?? null),
         set: (name: string, value: string) =>
           Effect.sync(() => {
@@ -216,6 +217,7 @@ describe("runOp", () => {
   const spawnedNothing = Layer.succeed(ProcessRunner, {
     run: () => Effect.succeed(0),
     exec: () => Effect.succeed({ exitCode: 0, output: "" }),
+    runSession: () => Effect.succeed(0),
   });
 
   it("実行対象が空白だけでも子プロセスを起動しない(入口の検査と同じ判定)", async () => {

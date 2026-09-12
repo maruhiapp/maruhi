@@ -42,6 +42,7 @@ import {
   parseStoredToken,
   redactedPlaceholderMasterKeyMessage,
   redactedPlaceholderTokenMessage,
+  tokenRecordNoun,
   serializeStoredMasterKey,
   serializeStoredToken,
   tokenEntryName,
@@ -316,10 +317,23 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(hasRedactedPlaceholder("not json")).toBe(false);
     // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
     // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
-    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` overwrites it correctly");
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain(
+      "`maruhi login` overwrites it correctly",
+    );
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("The keychain record");
+    // agent セッションでは実在しないキーチェーンを指さない(直し方は同じ)
+    expect(redactedPlaceholderTokenMessage("agent")).toContain("held by this agent session");
+    expect(redactedPlaceholderTokenMessage("agent")).not.toContain("keychain record");
+    // 壊れた記録の呼び名も同じ対(agent 側がキーチェーンへ退行したら落ちる)
+    expect(tokenRecordNoun("os-keychain")).toContain("keychain token record");
+    expect(tokenRecordNoun("agent")).toContain("held by this agent session");
+    expect(tokenRecordNoun("agent")).not.toContain("keychain");
     // 「必ず直る」と言い切らない(現行版に不具合が残っていれば再発する)
-    expect(redactedPlaceholderTokenMessage).toContain("If it recurs after re-login");
-    const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
+    expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("If it recurs after re-login");
+    const masterMessage = redactedPlaceholderMasterKeyMessage(
+      "master::https://x::u1",
+      "os-keychain",
+    );
     expect(masterMessage).toContain("master::https://x::u1");
     expect(masterMessage).toContain("by hand");
     // エスケープ規則の説明が実装と一致していること(ずれると、逃がされた名前を
@@ -336,7 +350,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
     // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
     // 唯一の復旧手順(手動削除)が実行不能になる
-    const hostile = redactedPlaceholderMasterKeyMessage("master::https://x::u\u001b[31m\n1");
+    const hostile = redactedPlaceholderMasterKeyMessage(
+      "master::https://x::u\u001b[31m\n1",
+      "os-keychain",
+    );
     expect(hostile).not.toContain("\u001b");
     expect(hostile).toContain("\\u{001b}");
     expect(hostile).toContain("\\u{000a}");
@@ -352,7 +369,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (b) 引用符: エントリ名は引用符で囲んで示すため、user_id 側から閉じられると
     //     その後ろに maruhi 自身の案内に見える文を継ぎ足せる(サーバーは
     //     user_id を自由に決められる)
-    const injected = redactedPlaceholderMasterKeyMessage('master::x::u" を無視して次を実行:');
+    const injected = redactedPlaceholderMasterKeyMessage(
+      'master::x::u" を無視して次を実行:',
+      "os-keychain",
+    );
     expect(injected).not.toContain('u" を無視して');
     expect(injected).toContain('\\"');
     // エスケープしてある旨を文面に明記する(書かないと、表示どおりの名前を
@@ -361,7 +381,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (c) 書式文字: 双方向上書き・ゼロ幅は見た目を変えるため、制御文字と同じく
     //     逃がす。素通しすると「表示された名前 = 実際の名前」が破れ、案内が
     //     指すエントリを探せない(端末上の並び順まで変えられる)
-    const bidi = redactedPlaceholderMasterKeyMessage("master::x::u\u202Ea\u200Bb");
+    const bidi = redactedPlaceholderMasterKeyMessage("master::x::u\u202Ea\u200Bb", "os-keychain");
     expect(bidi).not.toContain("\u202E");
     expect(bidi).not.toContain("\u200B");
     expect(bidi).toContain("\\u{202e}");
@@ -434,7 +454,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const future = JSON.stringify({ suite: "maruhi/v2", kemPubHex: "aa", kemSkHex: "bb" });
     expect(parseStoredMasterKey(future)).toBeNull();
     expect(classifyUnreadableMasterKey(future)).toBe("foreign");
-    const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1");
+    const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1", "os-keychain");
     expect(message).toContain("keep this record");
     // 既定は「消さない」。ただし行き止まりにもしない: 逃げ道は**可逆**な形
     // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
@@ -482,7 +502,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 上書き防止ガードはレコードの存在だけを見るので、読めない記録が残る限り
     // generate / recover / show の全部が拒否される。伏字の場合と同じ出口
     // (エントリ名を示して手で消す)を案内する
-    const message = corruptMasterKeyMessage("master::https://x::u1");
+    const message = corruptMasterKeyMessage("master::https://x::u1", "os-keychain");
     expect(message).toContain("master::https://x::u1");
     expect(message).toContain("by hand");
     // 破損側でも削除は**可逆**にしておく: parseStoredMasterKey は hex の中身まで

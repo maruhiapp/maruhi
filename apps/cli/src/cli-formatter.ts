@@ -23,6 +23,7 @@
 import type { HelpDoc } from "effect/unstable/cli";
 import { CliError, CliOutput } from "effect/unstable/cli";
 
+import { AGENT_COMMAND_REQUIRED } from "./agent.ts";
 import { formatNotice } from "./notice.ts";
 import { RUN_COMMAND_REQUIRED } from "./run.ts";
 
@@ -143,13 +144,18 @@ function unexpectedArgumentMessage(
  * `Param.filter` は `onNone(a)` をそのまま `expected` にする)。判定できるのは
  * 上流が組み立てる定型(`at most` / `at least`)と、**こちらが書いた定数**だけ。
  */
-function invalidValueMessage(error: CliError.InvalidValue): string {
+function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): string {
   const name = bareName(error.option);
   if (error.expected.includes("at most")) {
     return `Flag --${name} was specified more than once. Which occurrence you meant cannot be determined, so the invocation is rejected — write it exactly once`;
   }
-  if (error.expected.includes("at least") || error.expected === RUN_COMMAND_REQUIRED) {
-    return RUN_COMMAND_REQUIRED;
+  // 「`--` の後ろに実行対象が無い」は run と agent で同じ形。例は段ごとに違う
+  if (
+    error.expected.includes("at least") ||
+    error.expected === RUN_COMMAND_REQUIRED ||
+    error.expected === AGENT_COMMAND_REQUIRED
+  ) {
+    return commandKey === "agent" ? AGENT_COMMAND_REQUIRED : RUN_COMMAND_REQUIRED;
   }
   const expectation = error.expected.replace("Schema validation failed: ", "");
   const detail = SAFE_EXPECTATIONS.has(expectation) ? ` (expected: ${expectation})` : "";
@@ -212,7 +218,7 @@ export function describeError(
     return unexpectedArgumentMessage(error, spec, commandKey);
   }
   if (error instanceof CliError.InvalidValue) {
-    return invalidValueMessage(error);
+    return invalidValueMessage(error, commandKey);
   }
   if (error instanceof CliError.MissingArgument) {
     return `Missing positional argument ${bareName(error.argument)}`;
@@ -253,14 +259,17 @@ function maruhiFormatter(
   const fallback = CliOutput.defaultFormatter({ colors });
   // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
   // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
-  // へ直す。判定は宣言駆動(フラグとサブコマンドの両方を持つ段 = ハンドラ付き
-  // 親だけが該当し、root や通常の親 — flags が空 — には触れない)
+  // へ直す。判定は宣言駆動(自身の宣言〔フラグか位置引数〕とサブコマンドの
+  // 両方を持つ段 = ハンドラ付き親〔audit / schema / agent〕だけが該当し、root や
+  // 通常の親 — 宣言が空 — には触れない)
   const spec = specs[commandKey];
-  const optionalSubcommand = (spec?.flags.length ?? 0) > 0 && (spec?.subcommands?.length ?? 0) > 0;
+  const ownParams = (spec?.flags.length ?? 0) + (spec?.positionals.length ?? 0);
+  const optionalSubcommand = ownParams > 0 && (spec?.subcommands?.length ?? 0) > 0;
   // `run` は `--` が必須(ADR-0016 決定 8)なのに、上流の usage は可変長の
   // 位置引数として `<command...>` としか描かない。書き方そのものを usage に
   // 出す(裁定 F)。置換は usage 行の語だけで、判定は宣言由来のキーで行う
-  const terminatorRequired = commandKey === "run" || commandKey === "ci run";
+  const terminatorRequired =
+    commandKey === "run" || commandKey === "ci run" || commandKey === "agent";
   const adjustUsage = (text: string): string => {
     const withSubcommand = optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
     return terminatorRequired

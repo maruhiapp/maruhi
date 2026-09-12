@@ -65,6 +65,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
@@ -347,6 +348,27 @@ const runConfig = {
   ...commonFlags(),
   command: runCommandArgument(),
 };
+
+/**
+ * `maruhi agent -- <command>`(KL2 — agent.ts)。run と同じ「`--` の後ろだけが
+ * 実行対象」の宣言。フラグは持たない(サーバーにも鍵にも触らず、子を起動して
+ * 保持先を用意するだけ)。
+ */
+const agentConfig = {
+  command: Argument.string("command").pipe(
+    Argument.withDescription(
+      "The command to run inside the agent session, written after `--` (usually a shell)",
+    ),
+    Argument.atLeast(1),
+    Argument.filter(
+      (command) => (command[0] ?? "").trim() !== "",
+      () => AGENT_COMMAND_REQUIRED,
+    ),
+  ),
+};
+
+/** `maruhi agent status`: フラグ無し(セッションの有無は環境変数で決まる)。 */
+const agentStatusConfig = {};
 
 /**
  * `maruhi ci run` の宣言: 通常の run と違い config
@@ -942,6 +964,7 @@ const GROUP_CONFIGS: Readonly<
     checkpoint: projectCheckpointConfig,
   },
   ci: { run: ciRunConfig, sync: ciSyncConfig },
+  agent: { status: agentStatusConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
   audit: {
     list: auditListConfig,
@@ -970,6 +993,8 @@ const GROUP_CONFIGS: Readonly<
 const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
   audit: auditListConfig,
   schema: schemaShowConfig,
+  // bare `maruhi agent -- <cmd>` がセッションの起動。`status` だけがサブコマンド
+  agent: agentConfig,
 };
 
 /**
@@ -2179,6 +2204,25 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const agentStatus = Command.make("status", agentStatusConfig, () => agentStatusOp()).pipe(
+    Command.withDescription(
+      "Show what the current agent session holds (entry names only, never values)",
+    ),
+  );
+
+  const agent = Command.make("agent", agentConfig, (values) =>
+    Effect.gen(function* () {
+      // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
+      const command = yield* commandAfterTerminator(values.command);
+      onExitCode(yield* agentOp({ command }));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds",
+    ),
+    Command.withSubcommands([agentStatus]),
+  );
+
   const push = Command.make("push", pushConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
@@ -2272,7 +2316,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Sign in by approving a request in your browser, and store the token in the OS keychain",
+      "Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)",
     ),
   );
 
@@ -2283,7 +2327,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });
     }),
-  ).pipe(Command.withDescription("Revoke this machine's token and remove it from the OS keychain"));
+  ).pipe(
+    Command.withDescription(
+      "Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)",
+    ),
+  );
 
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
@@ -2447,7 +2495,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* keyGenerateOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Generate your master key and store it in the OS keychain"));
+  ).pipe(
+    Command.withDescription(
+      "Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)",
+    ),
+  );
 
   const keyShow = Command.make("show", keyShowConfig, (values) =>
     Effect.gen(function* () {
@@ -3139,6 +3191,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       pull,
       run,
       push,
+      agent,
       ci,
       env,
       server,

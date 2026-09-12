@@ -9,17 +9,47 @@ maruhi persists exactly two secrets on a machine: the API token that `maruhi log
 
 On macOS this is the system Keychain and on Windows the Credential Manager (experimental), with nothing to set up. On Linux, maruhi uses the freedesktop **Secret Service**: a D-Bus API provided by GNOME Keyring or KWallet. Desktop distributions ship one out of the box, so this page is about the machines that do not — servers, WSL, dev containers, and GitHub Codespaces.
 
+You have two ways through. [`maruhi agent`](#keep-secrets-in-memory-for-one-shell-maruhi-agent) needs no packages and no setup: it keeps the token and key in the memory of one shell session and forgets them when the shell exits. [A Secret Service](#set-up-a-keyring-on-a-headless-machine) takes five lines to set up and persists them across sessions. Pick by how long the machine lives.
+
 ## How the failure looks
 
 You will see one of two messages. Both mean the same thing — no usable Secret Service in this environment — and both have the same fix (the next section). Which one appears depends on the operation, not on the exact cause, so do not diagnose from the wording:
 
-> Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead
+> Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — run `maruhi agent -- <shell>` to keep them in memory for that shell's lifetime, or pass a token via the MARUHI_TOKEN environment variable
 
 This is the general failure: the keychain answered with an error right away (a bus exists but nothing provides the Secret Service on it), or a keychain _read_ hung — without a session bus the operation never gets an answer, and maruhi cuts the wait after 30 seconds.
 
 > Writing to the OS keychain timed out. […] maruhi does not fall back to plaintext files
 
 This one appears when a keychain _write_ hangs — `maruhi login` or `maruhi key generate` storing a value. It carries extra instructions because a timed-out write cannot be cancelled and may still complete in the background.
+
+## Keep secrets in memory for one shell: `maruhi agent`
+
+`maruhi agent` is the ssh-agent idea applied to maruhi: a process that holds the token and the master key in its own memory, and hands them to the maruhi commands that run inside it over a Unix domain socket. Nothing touches the disk — the only file it creates is the socket itself (in a private `0700` directory under `$XDG_RUNTIME_DIR`, or the temp directory), and the socket carries nothing while idle.
+
+Start it with the shell you want to work in, written after `--`, exactly like `maruhi run`:
+
+```sh
+maruhi agent -- bash
+```
+
+Inside that shell, every maruhi command uses the agent instead of the OS keychain (they find it through the `MARUHI_AGENT_SOCK` variable the agent sets). Sign in and get your key the usual way:
+
+```sh
+maruhi login                        # the token now lives in the agent, not in a keychain
+maruhi key recover                  # restores your existing master key into the agent …
+maruhi key generate                 # … or, on a brand-new account, creates one there
+maruhi run -- npm run dev           # works as on any other machine
+exit                                # the agent forgets everything and exits with the shell
+```
+
+What to know before relying on it:
+
+- **Lifetime is the shell's lifetime.** When the command you started exits, the agent discards the token and key and removes its socket. There is nothing to clean up and nothing to leak into the next session — and nothing survives, so a new shell means `maruhi login` (and `maruhi key recover`) again. For machines you return to daily, set up the keyring below instead.
+- **Recovery limits still apply.** `maruhi key recover` needs a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery-blob fetches per user per hour. Do not script it.
+- **Same trust boundary as a keychain.** Any process running as your user can talk to the socket (the directory and the socket are `0700` / `0600`), just as it could read a Secret Service keyring you unlocked. Commands started by `maruhi run` do not inherit `MARUHI_AGENT_SOCK` — like every other `MARUHI_*` variable, it is not passed to the child — so the tool you run with injected values does not silently get a session of its own.
+- **One agent at a time.** Starting `maruhi agent` inside an agent session is refused; the outer one already holds your keys. `maruhi logout` inside the session removes the token from the agent and revokes it on the server, the same as it would with a keychain. `maruhi agent status` lists what the session holds (which server's token, whose master key) without showing any value.
+- **Linux and macOS.** Windows has the Credential Manager and needs none of this; `maruhi agent` is refused there.
 
 ## Set up a keyring on a headless machine
 
@@ -53,8 +83,10 @@ The setup above applies inside containers too: put the three packages in the ima
 - **Persist the keyring directory.** Mount a volume (or use your dotfiles mechanism) so `~/.local/share/keyrings` survives rebuilds. After the per-shell unlock, your token and master key are right where you left them.
 - **Treat every rebuild as a new machine.** Run `maruhi login`, then `maruhi key recover` with your recovery code: it restores the _same_ master key, so you keep your place in every project without being re-invited. Know the limits before relying on it: entering a recovery code requires a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI-agent environments are refused), and the server allows five recovery fetches per user per hour. Recovery codes are made for occasional loss, not for daily container churn — prefer the volume when rebuilds are frequent or driven by automation.
 
+If you would rather not install a keyring in the container at all, run the same two commands inside `maruhi agent -- bash` ([above](#keep-secrets-in-memory-for-one-shell-maruhi-agent)): no packages, no unlock step, and the same recovery limits.
+
 ## What works without a keychain
 
 - **GitHub Actions needs none of this.** `maruhi ci run` and `maruhi ci sync` authenticate with the job's OIDC token and hold key material in memory only — see [GitHub Actions](/docs/github-actions).
 - **Session-only commands accept `MARUHI_TOKEN`.** Commands that need a session but not your master key (metadata-only reads such as `maruhi schema`) authenticate with the `MARUHI_TOKEN` environment variable, bound to one server with `MARUHI_TOKEN_ORIGIN`. The provisioning procedure — issuing a named token on an interactive workstation with `maruhi login --token-name <name> --token-ttl-days <days> --show-token` — is described in the [self-hosting runbook](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md) under "Provisioning unattended runtimes".
-- **Value operations do not.** `maruhi run`, `push`, and `pull` decrypt with your master key, and the master key lives only in the keychain. There is no environment-variable substitute for it, by design.
+- **Value operations do not.** `maruhi run`, `push`, and `pull` decrypt with your master key, and the master key lives only in the keychain or in a running `maruhi agent`. There is no environment-variable substitute for it, by design.
