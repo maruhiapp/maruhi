@@ -934,6 +934,26 @@ describe("maruhi member add", () => {
     expect(env.errors.join("\n")).toContain(
       "Refused to run the acceptance-key confirmation ceremony",
     );
+
+    // 4 回目(非対話 — stdin がパイプ): 帳のヒットがあっても yes 確認へは
+    // 進めず、完全な儀式(最終語再入力)へ戻る(盲目的な `printf yes |` で
+    // 通らない — 一次境界は端末)
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdin: false });
+    env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(3);
+    expect(env.prompts[2]).toContain("type the last of the 12 words");
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
+
+    // 5 回目(stdout がリダイレクト): 境界は stdin と stdout の両方(&&)—
+    // 片側だけの実装ミスを固定する
+    env.setTerminal({ stdin: true, stdout: false });
+    env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+    expect(await runCli(["member", "add"], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(4);
+    expect(env.prompts[3]).toContain("type the last of the 12 words");
+    expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
   });
 
   it("検証済み指紋帳: 不一致は自動で通さず警告して儀式へ戻し、成功で上書きする(KF)", async () => {

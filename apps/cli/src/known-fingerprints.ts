@@ -7,9 +7,12 @@
 // 帯域外読み上げの**再実施**を免除できる。ただし帳の一致は「以前この鍵を
 // 確認した」ことしか意味せず、**この受諾・付与への人間の同意を代替しない**:
 // ヒット時も受諾単位の明示確認(yes 入力)を残し、エージェント環境では帳を
-// auto-pass に使わない(フラグ必須のまま)。招待リンクは無記名(bearer)で
-// 受諾者の同一性を運ばないため、帳の一致だけで付与まで自動化しない
-// (CRYPTO_SPEC §6.5 の相互確認 UX の範囲内に留める)。
+// auto-pass に使わない(フラグ必須のまま)。さらに帳を使えるのは stdin /
+// stdout が対話端末のときだけ(ADR-0016 決定 7 の一次境界と同じ allow-list —
+// yes 確認は 12 語儀式と違い盲目的なパイプで通るため、パイプ・CI・未検出
+// エージェントでは帳を無効化して完全な儀式へ戻す)。招待リンクは無記名
+// (bearer)で受諾者の同一性を運ばないため、帳の一致だけで付与まで自動化
+// しない(CRYPTO_SPEC §6.5 の相互確認 UX の範囲内に留める)。
 //
 // - 内容は公開情報(鍵フィンガープリント)のみ — ディスクレス不変条件と両立
 // - **不一致は絶対に自動で通さない**(警告 + 通常の儀式へフォールバック)。
@@ -24,8 +27,9 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { Context, Effect } from "effect";
+import { Context, Effect, Stdio } from "effect";
 
+import { describeNonTerminal } from "./agent-gate.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
@@ -142,6 +146,39 @@ export function consultFingerprintBook(input: {
         ? looked.entry
         : null;
     return { hit, filePath: book.filePath, warnIfChanged, record };
+  });
+}
+
+/**
+ * 帳のヒットを実際に使えるか(フラグなし + 非エージェント + stdin / stdout が
+ * 対話端末)を判定し、使えるヒットだけを返す。端末条件だけで使えない場合は
+ * その旨を note で説明する(完全な儀式へ戻る理由の提示)。
+ *
+ * 端末条件を課す理由(ADR-0016 決定 7 の一次境界と同じ allow-list): 12 語
+ * 儀式は実行ごとの最終語再入力が要るため盲目的なパイプでは通らないが、yes
+ * 確認はそうではない。パイプ・CI・未検出エージェントで帳が非対話の成立条件を
+ * フラグ専用から緩めない(fail-closed — 非端末は帳なしと同じ挙動に戻る)。
+ */
+export function usableBookHit(input: {
+  readonly book: FingerprintBookConsult;
+  readonly flagProvided: boolean;
+  readonly isAgent: boolean;
+}): Effect.Effect<KnownFingerprint | null, never, CliIo | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    if (input.book.hit === null || input.flagProvided || input.isAgent) {
+      return null;
+    }
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (!stdinIsTerminal || !stdoutIsTerminal) {
+      // 落ちた側を名指しする(DP5 追補 G の規律 — describeNonTerminal)
+      yield* logNote(
+        `the verified-fingerprint book was not used: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} — the full 12-word read-out is required here`,
+      );
+      return null;
+    }
+    return input.book.hit;
   });
 }
 

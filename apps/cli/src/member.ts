@@ -16,7 +16,7 @@
 
 import { ChainHeadConflictError, DekWrapNotFoundError } from "@maruhi/api-schema";
 import type { ChainEntry, ChainMember, Role, SigningKeyPair } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEnvironmentFor, registerWraps } from "./backfill.ts";
@@ -38,6 +38,7 @@ import {
   confirmKnownFingerprint,
   consultFingerprintBook,
   type FingerprintBook,
+  usableBookHit,
 } from "./known-fingerprints.ts";
 import { logNote } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
@@ -276,7 +277,11 @@ function selectInvitation(
  * (origin × user_id)の指紋と一致すれば、12 語の帯域外読み上げの再実施を
  * 免除する。**付与そのものの明示確認(yes 入力)はヒット時も要求し**、
  * エージェント環境では帳を auto-pass に使わない(フラグ必須のまま — 帳は
- * 過去の検証の記録であって、この付与への人間の同意を代替しない)。
+ * 過去の検証の記録であって、この付与への人間の同意を代替しない)。さらに
+ * **帳を使えるのは stdin / stdout が対話端末のときだけ**(ADR-0016 決定 7 の
+ * 一次境界と同じ allow-list): 12 語儀式は実行ごとの最終語再入力が要るため
+ * 盲目的なパイプでは通らないが、yes 確認はそうではないので、パイプ・CI・
+ * 未検出エージェントでは帳を無効化して完全な儀式へ戻す(fail-closed)。
  * フラグの明示指定は帳より優先し、不一致は警告して通常の儀式へ戻す(自動失敗に
  * しない — 正当な鍵更新があり得る)。儀式 / フラグ照合の成功は帳へ記録する。
  */
@@ -286,7 +291,7 @@ function confirmInviteeFingerprint(input: {
   readonly role: Role;
   readonly fingerprintHex: string;
   readonly expectFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo | FingerprintBook> {
+}): Effect.Effect<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
@@ -298,17 +303,21 @@ function confirmInviteeFingerprint(input: {
       userId: input.targetUserId,
       fingerprintHex: input.fingerprintHex,
     });
-    // 帳のヒットを使えるのは対話 + フラグなしの経路だけ。そのときは読み上げ
-    // 照合の指示 2 行を落とす(通話を指示した直後に「要らない」と言わない)
-    const useHit =
-      book.hit !== null && input.expectFingerprintHex === null && !io.agentProfile().isAgent;
+    // 帳のヒットを使えるのは対話端末 + フラグなし + 非エージェントの経路だけ
+    // (判定は usableBookHit)。そのときは読み上げ照合の指示 2 行を落とす
+    // (通話を指示した直後に「要らない」と言わない)
+    const hit = yield* usableBookHit({
+      book,
+      flagProvided: input.expectFingerprintHex !== null,
+      isAgent: io.agentProfile().isAgent,
+    });
     const lines = [
       "Acceptor's key fingerprint (mutual confirmation — CRYPTO_SPEC §6.5):",
       `  invitee: ${displayText(input.targetUserId)}`,
       `  role:    ${input.role} (will be granted to this member)`,
       `  hex:  ${input.fingerprintHex}`,
       "  word: " + formatWordList(words),
-      ...(useHit
+      ...(hit !== null
         ? []
         : [
             "Check that this word list matches the 12 words the acceptor reads to you out of band (e.g. over a call).",
@@ -340,9 +349,9 @@ function confirmInviteeFingerprint(input: {
         ),
       );
     }
-    if (book.hit !== null) {
+    if (hit !== null) {
       return yield* confirmKnownFingerprint({
-        entry: book.hit,
+        entry: hit,
         filePath: book.filePath,
         prompt: `Type yes to add ${displayText(input.targetUserId)} as ${input.role} with this previously verified key`,
         cancelText: "add_member was cancelled.",
@@ -550,7 +559,7 @@ function prepareMemberAdd(input: {
     readonly alreadyAdded: boolean;
   },
   CliError,
-  CliIo | FingerprintBook
+  CliIo | FingerprintBook | Stdio.Stdio
 > {
   return Effect.gen(function* () {
     const listed = yield* listInvitations(input.client, input.verified.projectId);
@@ -658,7 +667,7 @@ export function memberAddOp(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<MemberAddSummary, CliError, CliIo | FingerprintBook> {
+}): Effect.Effect<MemberAddSummary, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const { row, alreadyAdded } = yield* prepareMemberAdd(input);

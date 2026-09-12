@@ -531,6 +531,18 @@ describe("maruhi invite accept", () => {
       "Refused to run the inviter-fingerprint confirmation ceremony",
     );
     expect(bodies).toHaveLength(2);
+
+    // 4 回目(非対話 — stdin がパイプ): 帳のヒットがあっても yes 確認へは
+    // 進めず、完全な儀式(最終語再入力)へ戻る(盲目的な `printf yes |` で
+    // 通らない — 一次境界は端末)
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdin: false });
+    env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(3);
+    expect(env.prompts[2]).toContain("type the last of the 12 words");
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
+    expect(bodies).toHaveLength(3);
   });
 
   it("鍵未生成: 対話確認 → 生成 → リカバリー儀式 → 生成鍵で受諾(§15-3 の連結)", async () => {
