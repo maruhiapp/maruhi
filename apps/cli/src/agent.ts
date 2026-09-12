@@ -35,7 +35,8 @@
 //
 // プロトコル(1 接続 1 要求。改行区切り JSON):
 //   要求  {"v":1,"op":"get"|"remove","name":"…"} / {"v":1,"op":"set","name":"…","value":"…"}
-//   応答  {"ok":true,"value":"…"|null} / {"ok":false,"error":"…"}
+//         {"v":1,"op":"list"}(保持しているエントリ名 — `maruhi agent status` 用。値は運ばない)
+//   応答  {"ok":true,"value":"…"|null} / {"ok":true,"names":[…]} / {"ok":false,"error":"…"}
 // 版が合わない・壊れた要求は `ok:false` で返す(黙って解釈しない)。
 //
 // ソケットは node:net(Bun / Node の両方で unix ソケットの listen / connect が
@@ -49,6 +50,7 @@ import { join } from "node:path";
 
 import { Effect } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import type { KeychainShape } from "./keychain.ts";
@@ -72,14 +74,16 @@ const IO_TIMEOUT_MS = 5_000;
 
 const SOCKET_FILE_NAME = "agent.sock";
 
-/** One request to the agent (mirrors {@link KeychainShape}). */
+/** One request to the agent (mirrors {@link KeychainShape}, plus `list` for status). */
 export type AgentRequest =
   | { readonly v: 1; readonly op: "get" | "remove"; readonly name: string }
-  | { readonly v: 1; readonly op: "set"; readonly name: string; readonly value: string };
+  | { readonly v: 1; readonly op: "set"; readonly name: string; readonly value: string }
+  | { readonly v: 1; readonly op: "list" };
 
 /** One response from the agent. */
 export type AgentResponse =
   | { readonly ok: true; readonly value: string | null }
+  | { readonly ok: true; readonly names: readonly string[] }
   | { readonly ok: false; readonly error: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,6 +100,9 @@ export function parseAgentRequest(line: string): AgentRequest | null {
   }
   if (!isRecord(value) || value["v"] !== AGENT_PROTOCOL_VERSION) {
     return null;
+  }
+  if (value["op"] === "list") {
+    return { v: 1, op: "list" };
   }
   const name = value["name"];
   if (typeof name !== "string" || name.length === 0) {
@@ -124,6 +131,14 @@ export function parseAgentResponse(line: string): AgentResponse | null {
   }
   if (value["ok"] === true && (typeof value["value"] === "string" || value["value"] === null)) {
     return { ok: true, value: value["value"] };
+  }
+  const names = value["names"];
+  if (
+    value["ok"] === true &&
+    Array.isArray(names) &&
+    names.every((name) => typeof name === "string")
+  ) {
+    return { ok: true, names: names as string[] };
   }
   if (value["ok"] === false && typeof value["error"] === "string") {
     return { ok: false, error: value["error"] };
@@ -158,6 +173,9 @@ export function handleAgentRequest(
     case "remove":
       store.delete(request.name);
       return { ok: true, value: null };
+    case "list":
+      // 名前だけ(`token::<origin>` / `master::<origin>::<userId>`)。値は運ばない
+      return { ok: true, names: [...store.keys()] };
   }
 }
 
@@ -325,20 +343,33 @@ function agentRequestError(error: unknown): CliError {
   return cliError(error instanceof AgentGoneError ? agentGoneMessage : agentProtocolMessage);
 }
 
+/** 1 要求を送り、`ok:false`(agent が拒んだ = 版違い)も型付きの失敗に写す。 */
+function askAgent(
+  socketPath: string,
+  request: AgentRequest,
+): Effect.Effect<Exclude<AgentResponse, { readonly ok: false }>, CliError> {
+  return Effect.tryPromise({
+    try: () => sendAgentRequest(socketPath, request),
+    catch: agentRequestError,
+  }).pipe(
+    Effect.flatMap((response) =>
+      // agent が拒む要求はこの実装からは出ない(版違いの agent だけ)
+      response.ok ? Effect.succeed(response) : Effect.fail(cliError(agentProtocolMessage)),
+    ),
+  );
+}
+
 /**
  * Keychain implementation backed by a running `maruhi agent`. Selected by the
  * production layer when {@link AGENT_SOCKET_ENV} is set (live.ts).
  */
 export function makeAgentKeychain(socketPath: string): KeychainShape {
   const ask = (request: AgentRequest): Effect.Effect<string | null, CliError> =>
-    Effect.tryPromise({
-      try: () => sendAgentRequest(socketPath, request),
-      catch: agentRequestError,
-    }).pipe(
+    askAgent(socketPath, request).pipe(
       Effect.flatMap((response) =>
-        response.ok
+        "value" in response
           ? Effect.succeed(response.value)
-          : // agent が拒む要求はこの実装からは出ない(版違いの agent だけ)
+          : // 値の応答以外(names)はこの要求には来ない = 版違いの agent
             Effect.fail(cliError(agentProtocolMessage)),
       ),
     );
@@ -435,6 +466,54 @@ export function agentOp(input: {
       (server) => Effect.promise(() => server.close()).pipe(Effect.andThen(removeDir)),
     );
   });
+}
+
+/**
+ * `maruhi agent status`: この agent セッションが何を保持しているかを名前で示す
+ * (値は運ばない・出さない)。セッションの外では失敗し、古い
+ * `MARUHI_AGENT_SOCK` はクライアントの終了メッセージがそのまま出る。
+ */
+export function agentStatusOp(): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const socketPath = io.envVar(AGENT_SOCKET_ENV);
+    if (socketPath === undefined || socketPath.length === 0) {
+      return yield* Effect.fail(
+        cliError(
+          `Not inside an agent session (${AGENT_SOCKET_ENV} is not set). Start one with \`maruhi agent -- <shell>\``,
+        ),
+      );
+    }
+    const response = yield* askAgent(socketPath, { v: 1, op: "list" });
+    if (!("names" in response)) {
+      return yield* Effect.fail(cliError(agentProtocolMessage));
+    }
+    // パスは自分のプロセスが作った物だが、環境変数経由なので表示前に中和する
+    yield* io.log(`socket:      ${displayText(socketPath)}`);
+    if (response.names.length === 0) {
+      yield* io.log("holding:     nothing yet (run `maruhi login` in this session)");
+      return;
+    }
+    for (const name of response.names.toSorted()) {
+      yield* io.log(describeEntryName(name));
+    }
+  });
+}
+
+/**
+ * エントリ名(keychain.ts の tokenEntryName / masterKeyEntryName)を読める形に
+ * する。origin と userId はサーバー由来の自由文字列なので中和して出す。
+ */
+function describeEntryName(name: string): string {
+  const token = /^token::(.+)$/.exec(name);
+  if (token !== null) {
+    return `token:       ${displayText(token[1] ?? "")}`;
+  }
+  const master = /^master::(.+?)::(.+)$/.exec(name);
+  if (master !== null) {
+    return `master key:  ${displayText(master[1] ?? "")} (user ${displayText(master[2] ?? "")})`;
+  }
+  return `entry:       ${displayText(name)}`;
 }
 
 function errnoSuffix(error: unknown): string {

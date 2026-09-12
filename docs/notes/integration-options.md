@@ -368,6 +368,19 @@ docs に書いたのは検証事実と既存コードの実文言のみ(systemd 
 (6) **エージェント環境(ADR-0016 決定 7)**: `maruhi agent` 自体に `isAgent` ゲートは足さない — agent は保持機構であって値の表示経路ではなく、表示・儀式のゲートは各コマンド側に据え置く(deny-list ゲートの適用範囲を広げない)。`maruhi run` の子が `MARUHI_*` を受け取らない既存規則により `MARUHI_AGENT_SOCK` も子へ渡らない(決定 5 と同じ帰結 — 注入値で走るツールが勝手にセッションを持たない)。
 (7) **docs**: `/docs/linux-keychain` に「Keep secrets in memory for one shell」節を追加(agent = 即日・無設定・揮発、keyring = 5 行・永続の 2 択として提示)。テストは `apps/cli/test/agent.test.ts`(プロトコル・実ソケット往復・権限・後始末・`key recover` の agent 着地)。
 
+**KL2 反復記録(2026-09-12 — 各裁定を「新案が出なくなるまで」回した結果)**。初回の裁定は各 1 巡だったため、所有者の指示で銀の弾丸案・上位互換案の模索を裁定ごとに反復した。実測 2 点: Bun は `node:child_process` の `detached: true` でデーモン化できる(gpg-agent 型は実装可能)。委任モデルで agent 側へ移る master 鍵の使用箇所は約 30(署名 19・HPKE open 3・公開鍵参照 8)。
+
+| 裁定 | 巡 | 検討した案と評価 | 結論 |
+|---|---|---|---|
+| プロセスモデル | 4 | ① 入れ子形(採用)/ eval デタッチ / 前景 `-D`。② **gpg-agent 型**(固定パス `$XDG_RUNTIME_DIR/maruhi/agent.sock` + `login` で自動起動 + `agent stop`): UX 最良(入れ子不要・複数端末で共有)だが無期限常駐・古いソケット検出・停止の儀式が要り、Codespaces は XDG_RUNTIME_DIR 不在が多く logind の掃除が効かない。③ 既存 ssh-agent に預ける / systemd --user / SSH 署名からの KEK 導出: 前 2 つは環境依存、KEK 導出は仕様外の暗号操作(KL3 の材料)。④ **転送 agent**(手元の agent を `ssh -R` / `gh codespace ssh -- -R` で遠隔へ): ssh-agent 転送の同型で現行プロトコルのまま動く。Docker Desktop の devcontainer は unix ソケットの bind mount が効かず SSH 系限定 | 入れ子形を維持。gpg-agent 型はゲート後の UX 課題として保留。転送 agent は**未検証のため公開 docs には書かない**(KL1 と同じ「検証事実だけ」の規律。sshd / Codespaces の実機で検証してから) |
+| IPC / 権限 | 3 | ① unix ソケット 0700/0600(採用)/ `Bun.listen`: 同等。② 抽象ソケット名 / TCP loopback: **ファイル権限が効かず同一ホストの他ユーザーが接続できる** = 現行より弱い。③ `SO_PEERCRED` / fd 継承 / 環境変数クッキー: node:net に peer cred の口が無い・fd は孫プロセスへ届かない・クッキーは `/proc/*/environ` で同一ユーザーに読める | 現行が最良。上位互換なし |
+| プロトコル | 2 | 改行 JSON(採用)に対し長さ前置 / Effect RPC / `lock` / `list`。RPC は 3 操作に過剰、`lock` はロック中の鍵を包む暗号操作が要り仕様外。`list`(名前だけ・値を運ばない)は古いソケットの診断と保持内容の確認に使える小さな上位互換 | 現行 + **`list` を実装**(`maruhi agent status`) |
+| 鍵の受け渡し | 3 | ① Keychain 差し替え(採用): OS キーチェーンと**同等**の境界。② **委任モデル**(agent が署名と HPKE open を代行する `MasterKeyOps` サービス。Keychain 実装と agent 実装を持つ): 鍵素材がソケットを渡らず、agent 内でも import 後は非抽出 CryptoKey だけを持てる。侵害の被害が「セッション中の DEK と署名」に限定され、**永続的な master 鍵窃取が消える**(ssh-agent 本来の設計)。限界: 同一ユーザーのローカル攻撃者は agent に DEK を解かせて値を復号できるので、改善するのはセッション後のみ。費用は約 30 箇所の切り替えで 2〜4 日、`key recovery` は agent 内で封緘するかセッション内では拒否する設計が要る。③ 委任 + 転送: 鍵が手元の端末から一切出ない。KL3 の「旧端末が承認して再封印」と同じ形に収束する | **到達点として最良は ②+③**。ただし KL2 は「仕様変更ゼロの暫定経路」であり、規模を超え、KL3 の端末移行と機構が重なるため、**KL3 の設計セッションで一緒に裁定する**。現行は維持 |
+| 生存期間・失効 | 2 | idle timeout / TTL: `key recover` の取得制限(1 時間 5 回)と衝突。**KL3 で再取得が安くなる(パスキー PRF)まで採らない**。`mlock` / core dump 抑止は Bun から触れない(ssh-agent はやる)— docs で `ulimit -c 0` を案内できる程度 | 現行 |
+| エージェント環境(決定 7) | 2 | isAgent 拒否は `maruhi run` を許す決定 7 の意図と矛盾。master エントリの `get` 拒否は呼び出し元を識別できず、委任モデルでも AI エージェントは DEK を得て復号できるので閉じられない。決定 7 は「トランスクリプトへの流出を防ぐ UX 境界」でありローカル攻撃者への境界ではない(既存の整理どおり) | 現行 |
+
+**反復後の実装(同日)**: プロトコルに `{"v":1,"op":"list"}` → `{"ok":true,"names":[…]}` を追加し、`maruhi agent status` がセッションの保持内容(どのサーバーのトークン・誰の master 鍵)を**名前だけ**で表示する(値は運ばない・出さない)。`agent` は audit と同じ「親ハンドラ + サブコマンド」形(bare `maruhi agent -- <cmd>` が起動、`agent status` が確認)。`--` を跨いでサブコマンドを解決しないので `maruhi agent -- status` は子コマンド `status` の実行のまま。
+
 **改訂 2(2026-09-11 — PR #163 レビュー対応)**: pullfrog の精度指摘 3 点を反映。(a) メッセージと原因は 1 対 1 でない — `keychainOp` の `onTimeout` 既定は `keychainUnavailable` で、**read のタイムアウトも "Cannot access…" に落ちる**(専用文言を持つのは set / delete のみ)。ページは「文言から原因を診断しない。どちらも同じ修正」へ書き換え、timeout 文言は write(`login` / `key generate`)のハングで出ると明記。(b) devcontainer 節にパッケージ導入(イメージ / postCreateCommand)+ セッションごとの unlock が両経路の前提であることを先頭に明記(2 択はキーリング**データ**の永続化の選択のみ)。(c) `key recover` の硬い制限を数値で明記 — ブロブ取得は 1 時間 5 回 / ユーザー(`RECOVERY_FETCH_LIMIT` — AUTH_SPEC §13-3)+ コード入力は人間の対話端末必須(エージェント環境拒否)なので、エージェント駆動の devcontainer は volume 永続化一択。ニトピック 2 点も反映(`dbus-run-session` の出所は `dbus-bin`〔`dbus-user-session` が引き込む〕/ レシピは対話貼り付け用でスクリプト保存不可 / SELF_HOSTING 引用コマンドに `--token-ttl-days` を追加)。
 
 ### 補足 13: ベンダー CLI ドライバの欠点と第 5 ラウンド(2026-09-04)

@@ -94,9 +94,12 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     // set に value が無い / 名前が空 / 未知の op / JSON でない / 配列
     expect(parseAgentRequest('{"v":1,"op":"set","name":"a"}')).toBeNull();
     expect(parseAgentRequest('{"v":1,"op":"get","name":""}')).toBeNull();
-    expect(parseAgentRequest('{"v":1,"op":"list","name":"a"}')).toBeNull();
+    expect(parseAgentRequest('{"v":1,"op":"dump","name":"a"}')).toBeNull();
     expect(parseAgentRequest("not json")).toBeNull();
     expect(parseAgentRequest("[1]")).toBeNull();
+    // list は名前を取らない(status 用)
+    expect(parseAgentRequest('{"v":1,"op":"list"}')).toEqual({ v: 1, op: "list" });
+    expect(parseAgentRequest('{"v":2,"op":"list"}')).toBeNull();
   });
 
   it("応答の解釈: ok/value と ok:false/error だけを受け付ける", () => {
@@ -106,6 +109,11 @@ describe("agent プロトコル(改行区切り JSON)", () => {
       ok: false,
       error: "nope",
     });
+    expect(parseAgentResponse('{"ok":true,"names":["a","b"]}')).toEqual({
+      ok: true,
+      names: ["a", "b"],
+    });
+    expect(parseAgentResponse('{"ok":true,"names":[1]}')).toBeNull();
     expect(parseAgentResponse('{"ok":true}')).toBeNull();
     expect(parseAgentResponse('{"ok":false}')).toBeNull();
     expect(parseAgentResponse("{")).toBeNull();
@@ -139,6 +147,16 @@ describe("agent プロトコル(改行区切り JSON)", () => {
       ok: true,
       value: null,
     });
+  });
+
+  it("list は名前だけを返す(値は運ばない)", () => {
+    const store = new Map<string, string>([
+      ["token::https://a", "secret-1"],
+      ["master::https://a::u1", "secret-2"],
+    ]);
+    const listed = handleAgentRequest(store, { v: 1, op: "list" });
+    expect(listed).toEqual({ ok: true, names: ["token::https://a", "master::https://a::u1"] });
+    expect(JSON.stringify(listed)).not.toContain("secret");
   });
 });
 
@@ -292,10 +310,62 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.errors.join("\n")).toContain("after `--`");
   });
 
+  it("`agent -- status` は子コマンドの実行であってサブコマンドではない(`--` を跨がない)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["agent", "--", "status"], env.layer)).toBe(0);
+    expect(env.sessionCalls[0]?.command).toEqual(["status"]);
+  });
+
   it("`maruhi run` の子には MARUHI_AGENT_SOCK が渡らない(MARUHI_* を渡さない既存規則)", () => {
     expect(
       buildChildEnvironment({ PATH: "/usr/bin", [AGENT_SOCKET_ENV]: "/run/x/agent.sock" }, {}),
     ).toEqual({ PATH: "/usr/bin" });
+  });
+});
+
+describeSocket("maruhi agent status", () => {
+  it("セッションの中では保持しているエントリ名を出し、値は出さない", async () => {
+    const dir = await privateDir();
+    const server = await startAgentServer(dir);
+    cleanups.push(() => server.close());
+    const agent = makeAgentKeychain(server.socketPath);
+    await Effect.runPromise(agent.set(tokenEntryName("https://maruhi.test"), "maruhi_pat_secret"));
+    await Effect.runPromise(
+      agent.set(masterKeyEntryName("https://maruhi.test", "user-0001"), "master-secret"),
+    );
+    const env = await makeTestEnv();
+    env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
+    expect(await runCli(["agent", "status"], env.layer)).toBe(0);
+    const output = env.logs.join("\n");
+    expect(output).toContain(`socket:      ${server.socketPath}`);
+    expect(output).toContain("token:       https://maruhi.test");
+    expect(output).toContain("master key:  https://maruhi.test (user user-0001)");
+    expect(output).not.toContain("secret");
+  });
+
+  it("何も無ければその旨と次の一手を出す", async () => {
+    const dir = await privateDir();
+    const server = await startAgentServer(dir);
+    cleanups.push(() => server.close());
+    const env = await makeTestEnv();
+    env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
+    expect(await runCli(["agent", "status"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("nothing yet (run `maruhi login` in this session)");
+  });
+
+  it("セッションの外では失敗し、古いソケットはセッション終了として報告する", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["agent", "status"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("Not inside an agent session");
+    const dir = await privateDir();
+    env.setEnvVar(AGENT_SOCKET_ENV, join(dir, "gone.sock"));
+    expect(await runCli(["agent", "status"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("The agent session has ended");
+  });
+
+  it("status のフラグの誤りは書き方の誤り(2)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["agent", "status", "--bogus"], env.layer)).toBe(2);
   });
 });
 

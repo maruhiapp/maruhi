@@ -995,7 +995,7 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | agent | env | server | invite | member | key | project | ci | rotation | audit | config | schema | var | sync)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | ci | agent | rotation | audit | config | schema | var | sync)",
     );
   });
 

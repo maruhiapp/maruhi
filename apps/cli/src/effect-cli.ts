@@ -65,7 +65,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
-import { AGENT_COMMAND_REQUIRED, agentOp } from "./agent.ts";
+import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
@@ -366,6 +366,9 @@ const agentConfig = {
     ),
   ),
 };
+
+/** `maruhi agent status`: フラグ無し(セッションの有無は環境変数で決まる)。 */
+const agentStatusConfig = {};
 
 /**
  * `maruhi ci run` の宣言: 通常の run と違い config
@@ -961,6 +964,7 @@ const GROUP_CONFIGS: Readonly<
     checkpoint: projectCheckpointConfig,
   },
   ci: { run: ciRunConfig, sync: ciSyncConfig },
+  agent: { status: agentStatusConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
   audit: {
     list: auditListConfig,
@@ -989,6 +993,8 @@ const GROUP_CONFIGS: Readonly<
 const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
   audit: auditListConfig,
   schema: schemaShowConfig,
+  // bare `maruhi agent -- <cmd>` がセッションの起動。`status` だけがサブコマンド
+  agent: agentConfig,
 };
 
 /**
@@ -1010,7 +1016,6 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
   push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
-  agent: specOf(agentConfig),
   ...Object.fromEntries(
     Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
       [
@@ -2199,6 +2204,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const agentStatus = Command.make("status", agentStatusConfig, () => agentStatusOp()).pipe(
+    Command.withDescription(
+      "Show what the current agent session holds (entry names only, never values)",
+    ),
+  );
+
   const agent = Command.make("agent", agentConfig, (values) =>
     Effect.gen(function* () {
       // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
@@ -2207,8 +2218,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`",
+      "Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds",
     ),
+    Command.withSubcommands([agentStatus]),
   );
 
   const push = Command.make("push", pushConfig, (values) =>

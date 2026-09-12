@@ -15,7 +15,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
-  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`
+  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -47,7 +47,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
-  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`
+  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -145,20 +145,6 @@ FLAGS
   --env string        Environment ID (default: the `defaultEnvironment` setting)
   --config string     Path to the sync config whose "onPush" targets are synced after the push (default: maruhi.sync.json in the working directory, when it exists and names this project)
   --no-sync           Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)
-
-GLOBAL FLAGS
-  --help, -h       Show help information
-  --version, -v    Show version information
-
-$ maruhi agent --help
-DESCRIPTION
-  Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`
-
-USAGE
-  maruhi agent [flags] -- <command...>
-
-ARGUMENTS
-  command... string    The command to run inside the agent session, written after `--` (usually a shell)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -664,6 +650,34 @@ FLAGS
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
   --config string      Path to the sync config committed in the repository (default: maruhi.sync.json)
   --yes                Write to a production target (without it, a production target only shows the plan)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi agent --help
+DESCRIPTION
+  Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
+
+USAGE
+  maruhi agent [subcommand] [flags] -- <command...>
+
+ARGUMENTS
+  command... string    The command to run inside the agent session, written after `--` (usually a shell)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  status    Show what the current agent session holds (entry names only, never values)
+
+$ maruhi agent status --help
+DESCRIPTION
+  Show what the current agent session holds (entry names only, never values)
+
+USAGE
+  maruhi agent status [flags]
 
 GLOBAL FLAGS
   --help, -h       Show help information

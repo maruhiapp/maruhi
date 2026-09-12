@@ -259,10 +259,12 @@ function maruhiFormatter(
   const fallback = CliOutput.defaultFormatter({ colors });
   // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
   // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
-  // へ直す。判定は宣言駆動(フラグとサブコマンドの両方を持つ段 = ハンドラ付き
-  // 親だけが該当し、root や通常の親 — flags が空 — には触れない)
+  // へ直す。判定は宣言駆動(自身の宣言〔フラグか位置引数〕とサブコマンドの
+  // 両方を持つ段 = ハンドラ付き親〔audit / schema / agent〕だけが該当し、root や
+  // 通常の親 — 宣言が空 — には触れない)
   const spec = specs[commandKey];
-  const optionalSubcommand = (spec?.flags.length ?? 0) > 0 && (spec?.subcommands?.length ?? 0) > 0;
+  const ownParams = (spec?.flags.length ?? 0) + (spec?.positionals.length ?? 0);
+  const optionalSubcommand = ownParams > 0 && (spec?.subcommands?.length ?? 0) > 0;
   // `run` は `--` が必須(ADR-0016 決定 8)なのに、上流の usage は可変長の
   // 位置引数として `<command...>` としか描かない。書き方そのものを usage に
   // 出す(裁定 F)。置換は usage 行の語だけで、判定は宣言由来のキーで行う
