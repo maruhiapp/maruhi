@@ -4390,10 +4390,18 @@ def gen_invite_accept_signature():
             {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept-v2"},
             "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
         ),
+        # 旧形式の**有効な**受諾(v1 ドメイン文字列で組んだバイト列への正規の署名)を
+        # v2 の検証器に提示すると失敗する — 旧形式を構造的に拒否する固定
+        # (AUTH_SPEC §12-10 (2))。verify_signed_bytes_hex は v1 バイト列で、
+        # 署名はその上で有効(独立検証器は「有効な v1 署名であること」を確認し、
+        # 実装側ハーネスは「v2 で組んだバイト列では落ちること」を確認する)
         negative(
             "legacy-domain",
             {"domain": "maruhi/v1/invite-accept"},
-            "旧ドメイン文字列(v1 = token_hash 束縛)で組んだバイト列では v2 の署名は検証に失敗する(旧形式は構造的に拒否 — AUTH_SPEC §12-10 (2))",
+            "旧ドメイン文字列(v1 = token_hash 束縛の形)で作った有効な受諾署名は、v2 のドメイン文字列で組み直す検証器では検証に失敗する(旧形式は構造的に拒否 — AUTH_SPEC §12-10 (2))",
+            signature=invitee["sig_sk"].sign(
+                invite_accept_signed_bytes(dict(base_ctx, domain="maruhi/v1/invite-accept"))
+            ),
         ),
     ]
 

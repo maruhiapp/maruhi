@@ -71,8 +71,22 @@ export {
   buildInviteAcceptSignedBytes,
   type InviteAcceptSignatureContext,
   signInviteAccept,
+  signInviteLink,
   verifyInviteAcceptSignature,
+  verifyInviteLinkSignature,
 } from "./invite-accept-sign.ts";
+export {
+  buildInviteIssueSignedBytes,
+  deriveInviteLinkKeyPair,
+  encodeOpenSshEd25519PublicKey,
+  generateInviteLinkSeed,
+  INVITE_LINK_SEED_BYTES,
+  type InviteIssueContext,
+  type InviteLinkKeyPair,
+  parseOpenSshEd25519PublicKey,
+  signInviteIssue,
+  verifyInviteIssueSignature,
+} from "./invite-link.ts";
 export {
   buildLeaseClaimsBytes,
   buildLeaseWrapInfo,

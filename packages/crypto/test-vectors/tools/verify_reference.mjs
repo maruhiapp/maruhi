@@ -634,6 +634,25 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         fromHex(n.signature_hex),
         reconstructed,
       );
+      if (n.name === "legacy-domain") {
+        // 旧形式の有効な署名であること(v1 バイト列の上では通る)+ v2 ドメインで
+        // 組み直したバイト列では通らないこと、の両方を固定する
+        const v2Bytes = signedBytes({
+          ...n.context,
+          domain: `${n.context.suite}/invite-accept-v2`,
+        });
+        const v2Verified = await crypto.subtle.verify(
+          "Ed25519",
+          await importSigPub(n.verify_key_hex),
+          fromHex(n.signature_hex),
+          v2Bytes,
+        );
+        check(
+          `${label} negative: ${n.name}`,
+          bytesMatch && selfBound && verified === true && v2Verified === false,
+        );
+        continue;
+      }
       check(`${label} negative: ${n.name}`, bytesMatch && selfBound && verified === false);
     }
   };

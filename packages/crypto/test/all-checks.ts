@@ -15,6 +15,7 @@ import { envManifestChecks } from "./checks/env-manifest.ts";
 import { fingerprintWordsChecks } from "./checks/fingerprint-words.ts";
 import { headAttestationChecks } from "./checks/head-attestation.ts";
 import { inviteAcceptSignatureChecks } from "./checks/invite-accept-signature.ts";
+import { inviteLinkChecks } from "./checks/invite-link.ts";
 import { keysChecks } from "./checks/keys.ts";
 import { leaseWrapChecks } from "./checks/lease-wrap.ts";
 import { masterKeyWrapChecks } from "./checks/master-key-wrap.ts";
@@ -44,6 +45,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await dekWrapChecks());
   groups.push(await dekWrapSignatureChecks());
   groups.push(await inviteAcceptSignatureChecks());
+  groups.push(await inviteLinkChecks());
   groups.push(await dekCommitmentChecks());
   groups.push(await leaseWrapChecks());
   groups.push(await rfc9180Checks());

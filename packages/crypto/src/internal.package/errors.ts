@@ -236,6 +236,10 @@ export type CryptoError =
   | { readonly kind: "DekWrapSignatureInvalid" }
   /** Invite-acceptance signature verification failed (CRYPTO_SPEC §6.5). */
   | { readonly kind: "InviteAcceptSignatureInvalid" }
+  /** Invite link co-signature verification failed (CRYPTO_SPEC §6.5 — the link-key half). */
+  | { readonly kind: "InviteLinkSignatureInvalid" }
+  /** Invite issue signature verification failed (CRYPTO_SPEC §6.5 — the inviter's statement). */
+  | { readonly kind: "InviteIssueSignatureInvalid" }
   /**
    * An unwrapped DEK does not match the chain-published commitment for its
    * (environment, epoch) coordinates (CRYPTO_SPEC §5.2 — poison wrap).

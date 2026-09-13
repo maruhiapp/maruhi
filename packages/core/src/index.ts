@@ -14,6 +14,8 @@ export {
   CryptoHeadAttestationInvalidError,
   CryptoInvalidInputError,
   CryptoInviteAcceptSignatureError,
+  CryptoInviteIssueSignatureError,
+  CryptoInviteLinkSignatureError,
   CryptoKeyExportError,
   CryptoKeyImportError,
   CryptoMetaStatementInvalidError,
