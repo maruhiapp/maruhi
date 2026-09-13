@@ -163,6 +163,53 @@ function readBody(request: IncomingMessage): Promise<string | null> {
   });
 }
 
+/** 振り分けの結果(応答の書き込みは呼び出し側)。 */
+type Route =
+  | { readonly kind: "not-found" }
+  | { readonly kind: "redirect" }
+  | { readonly kind: "asset"; readonly name: string }
+  | { readonly kind: "post" };
+
+/** トークン配下のパスを解く(トークン不一致は null)。 */
+function tokenPath(
+  url: string,
+  token: string,
+): { readonly rest: string; readonly trailingSlash: boolean } | null {
+  const path = url.split("?")[0] ?? "/";
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  if (segments[0] !== token) {
+    return null;
+  }
+  return { rest: segments.slice(1).join("/"), trailingSlash: path.endsWith("/") };
+}
+
+/**
+ * Host 完全一致 → トークン → メソッド / パスの順に振り分ける。ページの資産は
+ * `./app.js` 等の相対参照なので、末尾スラッシュ無しの `/<token>` で開かれると
+ * `/app.js` を引きに行って動かない(手で URL を打つ・ポート転送で貼るときに
+ * 落ちやすい)。正しい形へ寄せる。
+ */
+function routeRequest(
+  request: IncomingMessage,
+  expected: { readonly token: string; readonly expectedHost: string },
+): Route {
+  if (request.headers.host !== expected.expectedHost) {
+    return { kind: "not-found" };
+  }
+  const resolved = tokenPath(request.url ?? "/", expected.token);
+  if (resolved === null) {
+    return { kind: "not-found" };
+  }
+  if (request.method === "GET") {
+    return resolved.rest === "" && !resolved.trailingSlash
+      ? { kind: "redirect" }
+      : { kind: "asset", name: resolved.rest };
+  }
+  return request.method === "POST" && resolved.rest === "prf"
+    ? { kind: "post" }
+    : { kind: "not-found" };
+}
+
 /**
  * Starts the PRF listener on 127.0.0.1 with a fresh one-time token and serves
  * the passkey page for `config`. The returned `outcome` resolves with the first
@@ -202,33 +249,20 @@ export function startPrfListener(config: PrfPageConfig): Promise<PrfListener> {
   };
 
   const server: Server = createServer({ keepAlive: false }, (request, response) => {
-    if (request.headers.host !== expectedHost) {
-      notFound(response);
-      return;
-    }
-    const path = (request.url ?? "/").split("?")[0] ?? "/";
-    const segments = path.split("/").filter((segment) => segment.length > 0);
-    if (segments[0] !== token) {
-      notFound(response);
-      return;
-    }
-    const rest = segments.slice(1).join("/");
-    if (request.method === "GET") {
-      // ページの資産は `./app.js` 等の相対参照なので、末尾スラッシュ無しの
-      // `/<token>` で開かれると `/app.js` を引きに行って動かない(手で URL を
-      // 打つ・ポート転送で貼るときに落ちやすい)。正しい形へ寄せる
-      if (rest === "" && !path.endsWith("/")) {
+    const route = routeRequest(request, { token, expectedHost });
+    switch (route.kind) {
+      case "redirect":
         reply(response, 302, "", { location: `/${token}/` });
         return;
-      }
-      serveAsset(rest, config, response);
-      return;
+      case "asset":
+        serveAsset(route.name, config, response);
+        return;
+      case "post":
+        void handlePost(request, response);
+        return;
+      case "not-found":
+        notFound(response);
     }
-    if (request.method === "POST" && rest === "prf") {
-      void handlePost(request, response);
-      return;
-    }
-    notFound(response);
   });
   server.on("connection", (socket) => {
     connections.add(socket);
