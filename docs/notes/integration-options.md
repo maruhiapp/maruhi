@@ -881,6 +881,131 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 >
 > Requirements: a browser and authenticator that support the WebAuthn PRF extension with user verification (**table: filled in after hardware verification**). Remote terminals (SSH, dev containers, Codespaces): forward the port shown to your local machine and open the URL there (**exact steps: filled in after verification**). Passkey ceremonies are refused on non-interactive terminals and in AI agent environments, like the other key ceremonies.
 
+### 補足 21: IV 設計録 — 招待儀式の軽量化(IV1 リンク束縛 + IV2 身元の裏付け。2026-09-13 — フェーズ 1 設計セッション。所有者承認待ち)
+
+IV = 補足 18 の I1 + I2 を KL3(補足 19 / 20)と同じ仕様改訂サイクルで進める回。仕様改訂の起草は docs/notes/iv-spec-drafts.md(CRYPTO_SPEC §6.3 (a) / §6.5 / §11 / §14.3、AUTH_SPEC §15、AUDIT_SPEC §3.2)。本補足は設計の全体像・裁定の反復記録・実装分割・承認依頼項目を持つ。**正本 3 文書はまだ触っていない**(承認後の IV-K1 で反映)。
+
+**設計の要点(補足 18 の原案からの変更)**: 原案は「リンクの秘密 S から HKDF で `redeem` / `bind` を導出し、受諾に `HMAC(bind, 鍵)` を添える」だった。裁定 A の反復で、**HMAC の代わりに招待ごとの Ed25519 鍵ペア(リンク鍵)を使う案が上位互換**と判明した — 検証鍵が公開値になるため、招待者側が保持するのは公開鍵だけで済み(HMAC 鍵 = 秘密の永続化問題が消える)、サーバーも受諾を検証でき、受諾は既存の受諾署名バイト列への**共同署名**として表せる。さらに裁定 E で、**発行署名**(招待者のチェーン署名鍵によるリンク内容の署名)を足すと、受諾者側の逆方向フィッシング対策も機械化できることが分かった(原案では受諾者側は 12 語のままだった)。暗号プリミティブは Ed25519 と SHA-256 のみで、HKDF / HMAC も新設しない。
+
+#### 21-1. 全体像 — 登場する値・誰が何を知るか・攻撃者ごとに何が不可能になるか
+
+```
+Alice(招待者)                         maruhi サーバー                    Bob(受諾者)
+─────────────────────────────────────  ───────────────────────────────  ─────────────────────────────────
+invite create --github bob
+  k  = 32 バイト乱数(リンク鍵の種)
+  (K_priv, K_pub) = Ed25519(k)
+  isig = Sign(alice_sig, invite_issue_signed_bytes)
+  POST /projects/:p/invites { role, linkPubHex: K_pub }  ──▶  行: link_pub = K_pub(公開値のみ。秘密は無い)
+  pin: { linkPubHex: K_pub, role, expiresAtMs,               応答: { id, role, expiresAtMs }(トークンは返らない)
+         expectedGithubLogin: "bob" }(非機密・手元だけ)
+  リンク(フラグメント。サーバーは見ない):
+    #v=2&k=<k>&p=<project>&h=<head>&s=<seq>&iu=<alice uid>&ie=<alice enc pub>&is=<alice sig pub>&r=<role>&il=alice&sig=<isig>
+        │ 人対人チャネル(Slack DM 等)
+        ▼
+                                                                          invite accept '<link>' [--from alice]
+                                                                            isig を is で検証(機械。失敗 = 拒否)
+                                                                            IV2: is ∈ GitHub(il).ssh_signing_keys ?(公開 API)
+                                                                            「github.com/alice からの招待」を --from か yes で確認
+                                                                            asig = Sign(bob_sig,  invite_accept_signed_bytes)
+                                                                            lsig = Sign(K_priv,   同じバイト列)   ← リンクを持つ者だけが作れる
+                                                          ◀──  POST /invites/accept { linkPubHex, encPubHex, sigPubHex, acceptSignatureHex: asig, linkSignatureHex: lsig }
+                                       行を link_pub で解決 → lsig を link_pub で検証 → asig を sigPub で検証 → CAS(pending → accepted)
+                                       (サーバーは K_priv を持たないので、攻撃者鍵に対する lsig を作れない)
+member add
+  一覧行の linkPubHex == pin の K_pub(不一致 = 行のすり替え → 拒否)
+  lsig を pin の K_pub で検証(失敗 = 拒否。儀式へ落とさない)
+  asig を受諾鍵で検証(既存)
+  IV2: 受諾 sig 鍵 ∈ GitHub("bob").ssh_signing_keys ?
+  両方通れば "Acceptance is bound to the invite link you issued, and the key is listed on github.com/bob. Adding bob as member" → add_member(確認なし)
+  どちらかが照合不能なら従来の充足形(12 語 / --expect-fingerprint / 指紋帳 + yes)へ
+```
+
+**登場する値と、誰が知るか**:
+
+| 値 | 生成者 | Alice | サーバー | Bob | 経路の攻撃者(リンクを読む) |
+|---|---|---|---|---|---|
+| `k`(リンク鍵の種。32 バイト乱数)→ `K_priv` | Alice の CLI | 発行時だけメモリに(**永続化しない**) | **一度も渡らない** | リンクから | 知る |
+| `K_pub`(リンク公開鍵) | 同上 | 発行ピン(非機密)に保存 | 行 `link_pub`(公開値) | 導出 | 知る |
+| `isig`(発行署名 — Alice のチェーン sig 鍵) | Alice の CLI | — | 渡らない(フラグメント) | リンクから検証 | 知る(偽造不能) |
+| `asig`(受諾署名 — Bob のチェーン sig 鍵。既存) | Bob の CLI | 一覧で検証 | 保存・検証 | 生成 | — |
+| `lsig`(リンク署名 — `K_priv`) | Bob の CLI | **ピンの K_pub で検証** | 保存・検証(偽造不能) | 生成 | 先に受諾すれば作れる(残余 — IV2 が閉じる) |
+| GitHub の SSH 署名鍵(Bob / Alice の maruhi sig 公開鍵) | 各人が `maruhi key publish` | 公開 API で照合 | 関与しない | 公開 API で照合 | 公開情報 |
+| `expectedGithubLogin`(宛先 login)/ `il=`(招待者 login) | Alice が指定 / Alice の CLI(`/auth/me` の表示用 login) | 発行ピン(手元) | **持たない**(行・監査に書かない) | リンクから(照合材料。永続化しない) | 知る |
+
+**攻撃者ごとに何が不可能になるか**:
+
+| 攻撃者 | 現行(儀式で防ぐ) | IV1 後 | IV1 + IV2 後 |
+|---|---|---|---|
+| **S: 悪意あるサーバー**(受諾ブロックの鍵すり替え) | 12 語の帯域外照合でのみ検出 | **暗号的に不可能**: `lsig` は `K_priv` が要り、サーバーは持たない。`K_pub` はピンで固定されるので行ごとのすり替えも検出 | 同左 |
+| **G: 公開鍵のゴースト追加**(攻撃者が自分のチェーンへ Alice の公開鍵を add_member し、Alice 名義のリンクを作る = 逆方向フィッシングの機械回避) | 電話でのみ検出(初回同期のアンカー検査は通ってしまう) | **不可能**: `isig` は Alice の秘密鍵が要る | 同左 |
+| **M: リンク経路の受動的な読み取り + 先着受諾** | 12 語で検出(攻撃者は Bob の 12 語を言えない) | 検出は同じ(儀式へ落ちる)。**受諾衝突(410)で Bob 側にも顕在化**(現行と同じ) | **事前に閉じる**: 攻撃者の鍵は github.com/bob に無い → Alice の CLI は自動追加せず儀式へ落ち、電話で「私の鍵ではない」→ 失効・再発行 |
+| **M′: リンク経路の能動的な差し替え**(攻撃者自身のプロジェクトへの有効なリンクに置換) | 電話で検出 | `isig` は攻撃者の鍵で有効(攻撃者は自プロジェクトの正当な owner)— 検出は Bob の識別次第 | Bob の CLI が「github.com/**mallory** からの招待」と表示し、`--from alice` の不一致で拒否(対話なら yes プロンプトで気づく) |
+| **D: Alice の端末のディスクを読む者** | 守備範囲外(キーチェーン・設定が同居) | 同左(ピンは公開鍵のみ。**秘密は増えない**) | 同左 |
+
+**残余(正直に — §14.3 非保証 9 の候補)**: (1) リンク経路が読まれ、かつ攻撃者が Bob より先に受諾し、かつ **Bob の GitHub アカウントに攻撃者の鍵を置ける**(= GitHub アカウントの奪取)か、Alice が宛先 login を誤って指定した — この複合だけが IV2 を通る。裏付け元 `none`(儀式)ではリンク盗難は現行どおり 12 語で防ぐ。(2) M′ で Bob が表示された login を読まずに yes を打つ(`--from` を使えば機械照合)。(3) GitHub の公開 API が虚偽の鍵一覧を返す(GitHub は既に認証の根 — ADR-0009 — であり新しい信頼先ではない。加えて照合は「無ければ儀式」の fail-closed なので、GitHub が鍵を**隠す**ことはできても**足す**ことは Bob のアカウント側の事実になる)。(4) IdP に依存しない IV1 だけでは残余 (1) が「受諾衝突で検出」に留まる(補足 18 の I1 / I2 の関係のとおり)。
+
+**儀式の位置づけの変化**: 12 語の読み上げ・指紋帳・フラグは**消えない**。IV1 / IV2 が照合不能なとき(ピンの無い端末・GitHub 未登録・オフライン・裏付け元 `none`)の fail-closed フォールバックになる。§6.5 の「明示確認の充足形」に第 4 形(**リンク束縛 + 裏付け元の照合 = 確認入力なし**)を足し、これを既定にする。
+
+#### 21-2. 裁定の反復記録
+
+各裁定点で「3 案以上 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数は新案が出た回数(+ 最終確認 1 巡)。**(a)〜(d) の例外(規範文の改訂・crypto 変更・ADR・github.com 問い合わせ)は選ばずに推奨を付けて 21-4 に載せた**(表中は「推奨」)。
+
+| 裁定点 | 巡 | 検討した案と評価 | 結論 |
+|---|---|---|---|
+| **A. 束縛の形**(リンクの秘密から何を導き、受諾に何を添えるか) | 4 | ① **原案(補足 18 I1)**: `S` → HKDF で `redeem` / `bind`、受諾に `HMAC(bind, enc‖sig)`。サーバーは `bind` を知らないので偽造不能。**欠点**: Alice の `member add` 時に `bind`(秘密)が要る → 発行から最大 7 日後・別端末もあり得るのに、CLI が永続化してよいのは「API トークン・master 秘密鍵(いずれもキーチェーン)・非機密設定」だけ(CLAUDE.md)。`bind` をピン(非機密ファイル)に書けば規律違反、キーチェーンに書けば許可品目の追加(招待ごとのエントリの掃除も要る)。② **二秘密案**: サーバー生成のトークン `T`(現行のまま)+ クライアント生成の `bind` をリンクに併載。サーバー側の変更は最小だが ① と同じ永続化問題 + リンクに秘密が 2 つ。③ **リンク鍵ペア案(採用 = 推奨)**: リンクの秘密 `k` を Ed25519 の種とし、`(K_priv, K_pub)` を導出。サーバーは `K_pub` を保存(秘密のハッシュを保持する現行と同じ「検証できるが作れない」性質)、Bob は `K_priv` で受諾に共同署名(`lsig`)。**Alice が保持するのは `K_pub` だけ**(発行ピンの `tokenHashHex` の置き換え = 非機密)で ① の永続化問題が消える。サーバーも `lsig` を検証できる(不正な受諾を手前で落とせる。真実源は依然 Alice のクライアント検証)。`redeem` トークン自体が不要になる(署名がリンク保持の証明)。プリミティブは既存の Ed25519 + SHA-256 のみ。④ **銀の弾丸候補: リンク鍵を Alice の master 鍵から決定論的に導出**(`k = HKDF(sig seed, info = LP("maruhi/v1/invite-key", project, nonce))`; nonce は公開値として行に併置)。ピン不要・別端末でも検証可能。**不採用**: master 鍵素材の用途間流用に見える(§12 禁止事項「鍵の使い回し(用途間)」との境界が仕様解釈になる)+ §3 鍵階層への追記が要る。ピン不在は現行でも「儀式へ劣化」で受けており、その延長で足りる。将来 KL4 の委任モデルで再評価。⑤ 決定論署名を PRF に使う(`k = SHA-256(Sign(alice_sig, nonce))`): 独自構成 = 禁止。⑥ 受諾に Bob の秘密を使わない形(tag を Alice が後から再入力したリンクで検証): UX が IV の目的と逆行。**署名対象**: `lsig` は既存 `invite_accept_signed_bytes`(v2 — token_hash の位置が `link_pub_hex` になる)と**同一バイト列**への共同署名(署名が tag を「覆う / 覆わない」の問いは、tag が署名になったことで「同じ文を 2 鍵で署名する」に収束 — 鍵 2 つ・受諾者 user_id・プロジェクト・link_pub が両署名に入るので、片方だけの差し替えはどちらかの検証で落ちる)。ドメイン文字列は `-v2` へ版上げ(§12-10 (2) の「旧実装が構造的に拒否する形」— `var-meta-sig-v2` の先例) | ③(21-4 項目 1) |
+| **B. サーバーの保存形・受諾 API** | 3 | ① **`link_pub` 列 + `link_signature` 列を追加型マイグレーションで足し、`token_hash`(NOT NULL)は新行では `lower_hex(SHA-256(link_pub bytes))` を書く legacy 列**(採用): D1 / SQLite は ADD COLUMN しかできず NOT NULL は外せない。参照は `link_pub`(UNIQUE)で行い、`token_hash` は将来の表再構築で落とす。② `token_hash` に `link_pub` の hex を**そのまま入れる**(64 文字で長さが同じ): 旧行のハッシュと新行の公開鍵が同じ列で見分けられない。不採用。③ 表の再構築(非追加型): 所有者指示に反する。④ 二秘密案(A ②)でトークン列を据え置く: A で不採用。**発行 body** = `{ role, linkPubHex }`(クライアント生成の公開鍵。サーバーは形式検査のみ)、**応答** = `{ id, role, expiresAtMs }`(**秘密を返す口が無くなる**)。**受諾 body** = `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`。サーバーの判定順: Schema 400 → 401 → 鍵素材条件 403 → 未知 link_pub 404 → 使用不能 410 → **`lsig` 422 → `asig` 422** → CAS。**サーバーが `lsig` を検証できる**のは A ③ の副産物で、「検証できないものをそのまま保存する」形(原案の tag)は無くなった — ただし真実源は Alice のクライアントの `K_pub` ピン照合であり、サーバー検証は二重の真実源ではなく手前の受理検査(§15-2 の受諾署名と同じ位置づけ)。旧行(`link_pub` NULL)は受諾不能(一覧で `unbound` と表示し失効を促す — 互換経路を作らない裁定 I) | ① |
+| **C. 招待リンクの形式** | 3 | ① `v=1` のまま `t` の意味だけ変える: 旧 CLI が旧リンクとして解釈しようとして意味不明なエラーになる。② **`v=2`**(採用): `#v=2&k=<種 hex 64>&p&h&s&iu&ie=<招待者 enc pub>&is=<招待者 sig pub>&r&il=<招待者 GitHub login>&sig=<発行署名 hex 128>`。`t` と `if` は廃止(FP は `ie`‖`is` から導出 — 冗長な 2 表現を持たない)。`v=1` は `unsupported-version` で拒否し「発行者に再発行を依頼」を案内(互換経路なし)。長さは約 530 文字(現行約 320)。③ フラグメントを base64 の 1 ブロブにする: 可読性・既存の解釈コードを捨てる割に利得なし。**生トークン受諾(`invite accept <token>`)は廃止**: v2 では種 `k` 単体でも `lsig` は作れるが、アンカー・発行署名・裏付けを全て失う経路を残す理由が無い(現行でも警告 + yes の劣化経路だった)。着地ページ `apps/web/public/invite.html` は不変(スクリプト無し・フラグメント非解釈 — 文言も「リンクをそのまま CLI へ」のままで正しい)。`r` は発行署名に含めるので改竄検出になる — 受諾応答の role と食い違えば**エラー**(現行の警告から格上げ)。`il` は発行署名に**含めない**(プロバイダ login を署名済み構造に載せない — 裁定 F。`il` の真正性は GitHub 照合で担保) | ② |
+| **D. `member add` の検証順序・失敗時の挙動・KF / フラグの位置づけ** | 3 | 順序: 一覧行の `linkPubHex` == ピンの `K_pub`(不一致 = 行のすり替え → **拒否**)→ `lsig` 検証(失敗 → **拒否**。「署名が壊れている受諾」を人間の 12 語で上書きさせない — 既存の `asig` 失敗と同じ扱い)→ `asig` 検証(既存)→ IV2 照合(不一致 → **儀式へ**: Bob が未登録なだけの可能性がある。照合不能〔オフライン・上限・login 不明〕→ 儀式へ + note)。**fail-closed の定義**: 「暗号検証の**失敗**は拒否、暗号検証の**不能**(材料が無い)は儀式へ劣化」。ピンが無い端末(別端末発行)は `K_pub` を固定できないので IV1 は不能 → 儀式(現行の「ピン無しは表示照合のみに劣化」の延長。cross-device の自動化は A ④ の将来項)。① フラグ `--expect-fingerprint` を退役: 非対話で GitHub 不使用の唯一の経路なので**残す**(充足形 2)。指定時は照合に加えて要求し、不一致は拒否。② KF を退役: 裏付け元 `none` / 照合不能時の yes-only 経路として**残す**(充足形 3)。IV の機械照合成功を帳に**記録しない**(帳は「人間が帯域外確認した」記録 — 意味を混ぜない。source 欄付き v2 は将来項)。③ 上位互換の探索 = 「第 4 形を既定にしつつ第 1〜3 形をフォールバックに温存」以上の案は出なかった | 上記 |
+| **E. 受諾者側の相互確認**(逆方向フィッシング) | 4 | ① 現状維持(12 語 / `--inviter-fingerprint` / 指紋帳): IV1 は受諾者側に何も与えないので、初回ペアでは電話が残り IV の利得が半減する。② IV2 を受諾者側にも適用: リンクの `il` の GitHub 署名鍵に `is` があるかを照合。**単独では不十分**と判明: 攻撃者が自分のチェーンへ Alice の**公開**鍵をゴースト add_member し、`iu`=Alice・`is`=Alice の公開鍵(GitHub で公開)・`il`=alice のリンクを作れば、GitHub 照合も初回同期のアンカー検査(チェーン上の `iu` の FP 一致)も通る。現行はこれを電話でしか防いでいない。③ **上位互換: 発行署名 `isig`**(採用 = 推奨): Alice のチェーン sig 鍵で `invite_issue_signed_bytes = LP("<suite>/invite-issue", project_id, link_pub_hex, head_hash_hex, head_seq, role, inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)` に署名し、リンクに載せる。Bob は `is` で検証(失敗 = 拒否)。ゴースト追加者は Alice の秘密鍵を持たないので Alice 名義のリンクを作れない。副産物: **アンカー全体(p/h/s/r)が改竄検出可能**になり、初回同期の検査に「チェーン上の `iu` の sig 公開鍵 == `is`」を足せる。④ Bob の識別: `isig` + IV2 で「github.com/`il` の鍵の保持者が発行した」まで機械化されるが、「Bob が**その人**からの招待を期待していたか」は Bob しか知らない → `--from <login>`(非対話・エージェント環境ではこれのみ)または対話の yes 1 回(「github.com/alice からの招待 — 期待どおりなら yes」)。**12 語は消える**。⑤ 銀の弾丸候補: yes も消す(受諾を完全自動)→ 不採用: 受諾は Bob の能動的な参加意思の表明であり、M′(差し替えられた有効リンク)の最後の防衛が「login を読む」ことだから。**残る手順は 1 回の yes(電話なし)** | ③ + ④(21-4 項目 2) |
+| **F. IV2 で相手の GitHub login をどう知るか** | 4 | ① **宛先指定 `invite create --github <login>`**(採用): Alice は Slack で bob に DM する直前に login を知っている。発行ピン(**手元・非機密**)に `expectedGithubLogin` として保存。サーバー行・監査・チェーンには**書かない**。`member add` は照合が自動で終わり、確認入力なし(意図の表明が add 時から create 時へ移る)。② `member add --github <login>` / 対話プロンプト: ① のピンが無いときのフォールバック(採用 — 併用)。③ 受諾ブロックの自己申告(Bob が自分の login を受諾に載せる): 攻撃者も自分の login を申告できるので照合は「内部整合」しか示さず、Alice が名前を読んで yes する確認が残る。加えてプロバイダ login をサーバー保存・署名済み構造に載せることになる(§15-1「サーバー申告の表示名を信頼させる面を作らない」の逆行)。不採用。④ 帯域外で控えて add 時に打つ: ② と同じ。⑤ 受諾者側(Bob が Alice の login を知る): リンクの `il=`(Alice の CLI が `/auth/me` の表示用 login から組む)— **フラグメントのみ**(サーバーは見ない・Bob のアンカーピンに永続化しない・GitHub 照合の材料としてだけ使う)。self-declared だが `isig` + GitHub 照合により「`il` の GitHub に `is` が無ければ照合不能 → 儀式」で嘘は通らない。⑥ 銀の弾丸候補: login を一切使わず鍵 → login の逆引きを GitHub に求める: そのような API は無い | ① + ② + ⑤(21-4 項目 7) |
+| **G. IV2 の問い合わせ・`key publish`・OpenSSH 符号化** | 4 | 問い合わせ: ① **HTTPS 直(Effect `HttpClient`、`GET https://api.github.com/users/{login}/ssh_signing_keys`、無認証)**(採用 = 推奨): 公開情報・maruhi CLI は GitHub のトークンを一切持たない(ログインはサーバー仲介 — AUTH §4)ので認証付きにはできない。上限は文書上 60 回 / 時 / IP(**未検証** — 本セッションの環境はプロキシが api.github.com のユーザー系パスを遮断し実測できなかった。K0 で確認)。`member add` は稀なので十分。ホストは `api.github.com` 固定(sync-http.ts と同じ「設定でホストを差し替える口は無い」)。② `gh api` 経由(利用者の gh 認証で 5,000 / 時): gh 未導入で成立しない・二経路の保守。不採用(読みは直、書きは gh)。③ サーバーが代理で照合: サーバーを経路に戻すので本末転倒。不採用。失敗時(オフライン・403 / 429・プロキシ): 儀式へ劣化 + note(裁定 D)。プロキシ環境(HTTPS_PROXY)での Bun fetch の挙動は**未検証**(K0)。送る情報は login だけ(プロジェクト・鍵・値は送らない)。**`key publish`**: ④ **印字 + `--gh` で `gh ssh-key add --type signing --title "maruhi <fingerprint>"` を呼ぶ**(採用): 既定は OpenSSH 1 行 + `https://github.com/settings/ssh/new`(Key type = Signing Key)の手順を印字し、`--gh` 指定時のみ gh を spawn(sync-exec.ts の `gh` 呼び出しと同じ `ProcessRunner`)。API 直は不可(トークンが無い)。鍵素材は公開鍵のみで儀式ではないのでゲート不要。⑤ **OpenSSH 符号化の置き場所**: `ssh-ed25519 <base64(uint32-BE 長さ ‖ "ssh-ed25519" ‖ uint32-BE 長さ ‖ 32 バイト鍵)>`(RFC 4253 §6.6 / RFC 8709)。「表示符号化であり新プリミティブではない」の枠(§3 の FP ワード・§8.4 ハンドオフコードと同じ)で **`packages/crypto` に置きテストベクターで固定**(採用 = 推奨。人間レビュー対象): GitHub 応答の**解析**(第 3 者データの復号)がバグの住処であり、`comment` の有無・改行・大文字 base64 等の受理境界をベクターで固定したい。CLI 側に置く案は「crypto 変更を避けたい」以外の利点が無い | ① + ④ + ⑤(21-4 項目 6 / 11) |
+| **H. 裏付け元の抽象と設定の置き場所** | 2 | ① **`config.json` の許可キー `identityBacking` ∈ `github-signing-keys`(既定)\| `none`**(採用。`org-directory` は予約語として仕様に名前だけ置く): 非機密設定(CLI が永続化してよい範囲)。`maruhi config set identityBacking none` で儀式に戻せる。② プロジェクト単位(サーバー設定): サーバーが「照合するな」と言える面を作る。不採用。③ 環境変数: 設定より優先すると CI で黙って `none` にできる。不採用(フラグ経路は既にある)。既定を `github-signing-keys` にする根拠: maruhi の身元の根は GitHub(ADR-0009)。セルフホストで GitHub 以外の IdP を使う将来は `none` か `org-directory` | ① |
+| **I. 互換・更新順序** | 2 | 前提(2026-09-13 所有者裁定): 互換経路は作らない。**順序 = サーバー → CLI**。逆順の失敗形(すべて明示的): 新 CLI × 旧サーバー = 発行 `linkPubHex` が strict 受理で 400 → `renderSchemaFailure` の版ずれ案内。旧 CLI × 新サーバー = 発行 body に `linkPubHex` 無し → 400 / 受諾 `token` フィールド → 400。旧リンク(`v=1`)× 新 CLI = `unsupported-version`(再発行の案内)。新リンク × 旧 CLI = `unsupported-version`(CLI の更新案内 — 現行コードが既にそう動く)。既存 pending 行(`link_pub` NULL)= 受諾不能・一覧で `unbound` 表示・失効を促す。ホステッドの利用者は所有者本人のみ(PR #170 と同じ理由) | 記録 |
+| **J. 監査事件** | 2 | ① **事件・payload とも不変**(採用): `invite.accepted` の payload は `inviteId` + `inviteeKeyFingerprintHex` のまま(受諾は常にリンク束縛なので旗は不要)。GitHub login・`link_pub`・署名は書かない(link_pub は公開値だが監査に足す用途が無い)。② `linkPubHex` を `invite.created` / `accepted` に足して相関手段にする: 招待 id で足りる。不採用。③ IV2 の照合結果をサーバーへ報告して監査に残す: クライアント → サーバーの新しい送信面 + 監査に GitHub の事実を混ぜる。不採用(照合はクライアント内で完結) | ① |
+| **K. テストベクター** | 2 | ① `invite-accept-signature.json` を**再生成**(v2: `invite_token_hash_hex` → `link_pub_hex`、ドメイン `-v2`、正例に `link_signature_hex` を併記〔同一 signed_bytes への共同署名〕、負例 = 改竄・別招待〔別 link_pub〕・別プロジェクト・invitee 差し替え・enc / sig 不一致・署名者不一致・**リンク鍵不一致**〔別のリンク鍵で作った lsig = サーバー偽造の形〕・suite)。**README 規約「既存ベクターは不変」の意図的な例外**(互換を捨てる所有者裁定の写し — 規約 26 として明記)。② 新規 `invite-link.json`: `k` → `K_pub`(種からの鍵導出)、発行署名(正例 + 負例: 改竄・head 差し替え・role 差し替え・link_pub 移植・inviter 鍵差し替え・署名者不一致・suite)、OpenSSH 符号化(正例 = 受諾者 sig 鍵の `ssh-ed25519 …` 行と GitHub 応答形の解析・負例 = 種別違い〔`ssh-rsa`〕・長さ違い・base64 破損・大文字種別)。③ 1 ファイルに統合: 既存ファイル名との対応が崩れる。不採用。生成 = `generate_reference.py`(pyca Ed25519 — 既存)、検証 = `verify_reference.mjs`(WebCrypto) | ① + ②(21-4 項目 5) |
+| **L. 「信頼できる経路で渡す」の記載先** | 1 | THREAT_MODEL.md / SECURITY.md は未作成(H5)。当面 **AUTH_SPEC §15-3 の規範注記 + CRYPTO_SPEC §14.3 非保証 9** に置き、H5 で脅威モデル文書へ移す旨を両方に書く | 記録 |
+| **M. 分割(IV1 先行か一体か)** | 2 | ① 仕様は**一体**(§6.5 の改訂は 1 回)、実装は **IV1(K2〜K4)→ IV2(K5)の順で別 PR**(採用): IV1 だけマージされた状態では「裏付け元 `github-signing-keys` が未実装 = 照合不能」として儀式へ落ちる(仕様の第 4 形の条件を満たさないだけで、矛盾しない)。② 一体の PR: crypto レビューとサーバー・CLI が 1 PR に載り大きすぎる。③ IV2 を先に: IV1 が本体(サーバー脅威)なので順序が逆 | ① |
+
+**設計の上限確認(反復の打ち止め)**: 各裁定点で最後の巡に新案が出なかった。全体として **Ed25519 署名 3 本(発行・受諾・リンク)+ 既存 §2.1 LP + SHA-256** だけで構成でき、HKDF / HMAC を含め新しいプリミティブ・新しいプロトコルは無い(原案の HKDF / HMAC も要らなくなった)。OpenSSH 符号化は表示 / 相互運用の符号化。仕様に無い暗号操作が必要になる箇所は見つからなかった。
+
+**正直な付記**: 裁定 H・I・L・M は判断であって探索の結果ではない(いずれも後から安価に変えられる)。裁定 G の GitHub API の挙動(エンドポイント・上限・プロキシ)は文書知識であり、本環境からは**未検証**(K0 で実測する)。
+
+#### 21-3. 実装分割と人間レビュー箇所(承認後 — KL3 の K1〜K6 に倣う)
+
+| 段 | 内容 | 概算 | 人間レビュー |
+|---|---|---|---|
+| IV-K0 スパイク(使い捨て・所有者の手元) | `GET /users/{login}/ssh_signing_keys` の応答形・無認証上限・`HTTPS_PROXY` 下の Bun fetch、`gh ssh-key add --type signing` の実物 | 0.5 日 | 結果の読み合わせ(docs/notes/spike-iv2.md) |
+| IV-K1 仕様 | iv-spec-drafts.md を正本へ(CRYPTO_SPEC 0.10-draft §6.3 (a) / §6.5 / §11 / §14.3、AUTH_SPEC 0.22-draft §15、AUDIT_SPEC 1.7-draft §3.2)。Status 行に KL3 と同じ書式で追記 | 0.5 日 | 承認そのもの |
+| IV-K2 crypto + ベクター | `invite-accept-signature.json` の再生成と `invite-link.json` を**先に**コミット → `invite-accept-sign.ts`(v2 + 共同署名)、新規 `invite-link.ts`(種 → 鍵ペア、発行署名、OpenSSH 符号化 / 解析)。公開 API は `index.ts` の §6.5 群 | 2 日 | **必須**(packages/crypto) |
+| IV-K3 サーバー | 追加型マイグレーション(`link_pub` UNIQUE / `link_signature`)、api-schema(発行 body / 応答・受諾 body・一覧行)、`handlers-invites.ts` の判定順、`@cloudflare/vitest-plugin` テスト(lsig 偽造・link_pub 移植・旧行の受諾不能・strict 拒否) | 2 日 | 判定順、旧行の扱い |
+| IV-K4 CLI ①(IV1) | `invite-link.ts` v2 の組み立て / 解釈、`invite create`(種生成・発行署名・ピン v2〔`linkPubHex` / `expectedGithubLogin`〕)、`invite accept`(発行署名検証・共同署名・生トークン経路の削除・`--from`)、`member add`(ピン照合 → lsig → asig → 充足形の分岐)、`context.ts` のアンカー検査拡張(`is` の一致)、`invite list` の表示 | 3 日 | 充足形の分岐(fail-closed の定義どおりか)、Redacted 規律(`k` は Redacted のまま表示直前だけ剥がす) |
+| IV-K5 CLI ②(IV2) | `github-signing-keys.ts`(HttpClient・解析・失敗の型付け)、`key publish [--gh]`、`identityBacking` 設定、`invite create --github` / `member add --github` / `invite accept --from`、儀式へのフォールバック文言 | 2 日 | **CLI 初の github.com への問い合わせ**(送る情報が login だけであること、失敗が fail-closed であること) |
+| IV-K6 docs + 実装録 | 新ページ `/docs/invite-a-teammate`(Alice / Bob の 2 段・`key publish`・フォールバック儀式・`identityBacking`)、getting-started の Next steps から導線、ROADMAP IV 行、本補足に実装録 | 1 日 | — |
+
+順序: K0 → K1 → K2 → K3 → K4 → K5 → K6。K1〜K4 で IV1 が完結し(儀式は残る)、K5 で儀式なしが既定になる。
+
+#### 21-4. 所有者に承認を求める項目
+
+1. **束縛の形 = リンク鍵ペア(Ed25519)+ 受諾の共同署名**(裁定 A ③)。補足 18 の HKDF / HMAC 原案を置き換える。`invite_accept_signed_bytes` を v2(`link_pub_hex`、ドメイン `-v2`)にし、同一バイト列へ受諾者鍵とリンク鍵の 2 署名を付ける — CRYPTO_SPEC §6.5 の規範改訂(ドラフト A-2)
+2. **発行署名 `invite_issue_signed_bytes`** を新設し、受諾者側の相互確認を「発行署名の検証 + 裏付け元の照合 + `--from` / yes 1 回」にする(裁定 E ③④)。12 語は受諾者側でもフォールバックへ — §6.5 / §6.3 (a) の規範改訂(ドラフト A-1 / A-2)
+3. **明示確認の充足形に第 4 形(リンク束縛 + 裏付け元照合 = 確認入力なし)を足し既定にする**。第 1〜3 形はフォールバックとして温存。「完全 auto-pass を認めない」の文は「帳のヒットのみによる」に限定したまま、第 4 形は暗号検証 + IdP 照合による**機械確認**として区別する — §6.5(ドラフト A-2)
+4. **AUTH_SPEC §15 の改訂**(ドラフト B): 発行 body にクライアント生成の `linkPubHex`、応答から `token` を撤去、受諾 body の 5 フィールド、リンク v2 の形式、`v=1` と生トークン受諾の廃止、`token_hash` の legacy 化(追加型マイグレーション)、旧 pending 行の受諾不能
+5. **`packages/crypto` の変更範囲と K2 のベクター方針**(裁定 K): `invite-accept-signature.json` の**再生成**(README 規約「既存ベクター不変」の意図的な例外 = 互換を捨てる裁定の写し)と `invite-link.json` 新設。OpenSSH 符号化を crypto に置く
+6. **IV2: CLI が `api.github.com` へ無認証の公開 GET を送ること**(裁定 G ①)。CLAUDE.md「テレメトリ・外部送信を一切実装しない」に対する解釈と追記案: 送るのは利用者が名指しした login だけ(値・鍵・プロジェクト・利用状況は送らない)、目的は利用者の照合、`identityBacking = none` で完全に止められる、ホストは固定。SY 系列で maruhi CLI が既にベンダー API へ利用者の指示で送信している(sync-http.ts)のと同じ「利用者が明示した相手への、利用者の目的のための通信」の枠。**推奨 = 承認**。CLAUDE.md の当該行に「(利用者が明示した相手への、利用者の目的のための通信 — 同期先・身元の裏付け元 — はテレメトリではない)」を足す
+7. **プロバイダ login の置き場所**(裁定 F): `invite create --github <login>` → 発行ピン(手元・非機密)、`invite accept --from <login>`、リンクの `il=`(フラグメントのみ)。**サーバー行・監査・チェーン・署名済み構造には書かない**
+8. **発行ピンの役割の格上げ**: IV1 の検証にはピンの `K_pub` が要る。ピンの無い端末での `member add` は儀式へ劣化(cross-device の自動化は裁定 A ④ の将来項)。**推奨 = 受容**
+9. **fail-closed の定義**(裁定 D): 暗号検証の失敗(`K_pub` 不一致・lsig / asig / isig)= 拒否、照合の不能(ピン無し・GitHub 未登録・オフライン・上限・login 不明・`none`)= 儀式へ
+10. **エージェント環境**: 第 4 形は儀式を含まないので `member add` はエージェント環境でも通す(意図は TTY 必須の `invite create --github` で捕捉済み。`--expect-fingerprint` 併用可)。`invite accept` は非対話で `--from <login>` を必須にする(`--inviter-fingerprint` と同じ位置)。**ADR-0016 決定 7 の表に「第 4 形は儀式ではない」を追記**(ADR 改訂として提示)
+11. **`maruhi key publish` の形**(裁定 G ④): 既定は OpenSSH 1 行 + 手順の印字、`--gh` で `gh ssh-key add --type signing`。読み取りは HTTPS 直で gh に依存しない
+12. **裏付け元の設定**(裁定 H): `config.json` の `identityBacking`(`github-signing-keys` 既定 / `none`。`org-directory` は予約)
+13. **監査は不変**(裁定 J): 事件・payload とも変更なし(AUDIT_SPEC は注記と版上げのみ — ドラフト C)
+14. **残余の記載先**(裁定 L): CRYPTO_SPEC §14.3 非保証 9 + AUTH_SPEC §15-3 の「信頼できる経路」注記。H5 で脅威モデル文書へ移す
+15. **実装分割 IV-K0〜K6 と順序**(21-3)、IV1 → IV2 を別 PR、版番号 CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft
+16. **hosted Web は触らない**: 着地ページ不変、招待の発行 / 受諾は引き続き CLI のみ(ADR-0018 の境界どおり)
+
+承認までフェーズ 2(実装)には入らない。
+
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
 競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
