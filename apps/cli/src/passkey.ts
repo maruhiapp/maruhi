@@ -32,7 +32,7 @@ import { CliIo, type CliIoShape } from "./io.ts";
 import { Keychain, parseStoredMasterKey, serializeStoredMasterKey } from "./keychain.ts";
 import { newLedgerId, wrapOwnBlob } from "./master-ops.ts";
 import { logNote } from "./notice.ts";
-import { type PrfListener, startPrfListener } from "./passkey-listener.ts";
+import { type PrfListener, type PrfListenerOutcome, startPrfListener } from "./passkey-listener.ts";
 import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";
 import {
   type CliSession,
@@ -46,6 +46,27 @@ import {
 const CEREMONY_TIMEOUT = Duration.minutes(5);
 const PRF_SALT_BYTES = 32;
 const USER_HANDLE_BYTES = 16;
+const CONFIRM_CODE_DIGITS = 6;
+
+/**
+ * 端末に表示し、利用者がページへ打ち込む確認コード(裁定 A 改訂 1)。一様乱数の
+ * 6 桁(剰余の偏りは棄却で消す)。鍵素材ではない(ページとの同席を示す値)。
+ */
+function newConfirmCode(): string {
+  const modulus = 10 ** CONFIRM_CODE_DIGITS;
+  const limit = Math.floor(0x1_0000_0000 / modulus) * modulus;
+  const draw = new Uint32Array(1);
+  let value = limit;
+  while (value >= limit) {
+    crypto.getRandomValues(draw);
+    value = draw[0] ?? limit;
+  }
+  return String(value % modulus).padStart(CONFIRM_CODE_DIGITS, "0");
+}
+
+function displayConfirmCode(code: string): string {
+  return `${code.slice(0, 3)} ${code.slice(3)}`;
+}
 
 type CeremonyAction = "register" | "recover" | "remove";
 
@@ -74,8 +95,15 @@ function ensurePasskeyCeremonyAllowed(
 }
 
 /** ページの理由コード → 利用者への案内(自由文はページから受け取らない)。 */
-function ceremonyFailure(code: PrfPageErrorCode, action: "register" | "recover"): CliError {
+function ceremonyFailure(
+  code: PrfPageErrorCode | "too-many-code-attempts",
+  action: "register" | "recover",
+): CliError {
   switch (code) {
+    case "too-many-code-attempts":
+      return cliError(
+        "The confirmation code was entered wrongly too many times, so the passkey step was cancelled. Nothing was changed — re-run and type the code shown in the terminal",
+      );
     case "not-allowed":
       return cliError(
         action === "register"
@@ -97,13 +125,21 @@ function ceremonyFailure(code: PrfPageErrorCode, action: "register" | "recover")
   }
 }
 
-/** URL の表示とブラウザの自動起動(login と同じ 1 本の縮退経路)。 */
-function announceListener(io: CliIoShape, listener: PrfListener): Effect.Effect<void> {
+/** URL と確認コードの表示、ブラウザの自動起動(login と同じ 1 本の縮退経路)。 */
+function announceListener(
+  io: CliIoShape,
+  listener: PrfListener,
+  confirmCode: string,
+): Effect.Effect<void> {
   return Effect.gen(function* () {
     yield* io.logError("");
     yield* io.logError("Open this page in your browser to continue with your passkey:");
     yield* io.logError("");
     yield* io.logError(`    ${listener.url}`);
+    yield* io.logError("");
+    yield* io.logError(
+      `Confirmation code (type it into the page): ${displayConfirmCode(confirmCode)}`,
+    );
     yield* io.logError("");
     yield* io.logError(
       `If this terminal runs on a remote machine (SSH, a dev container, Codespaces), forward port ${listener.port} to your local machine first and open the URL there`,
@@ -115,6 +151,26 @@ function announceListener(io: CliIoShape, listener: PrfListener): Effect.Effect<
         : "Could not open a browser automatically. Open the URL above manually (waiting up to 5 minutes; press Ctrl+C to cancel)",
     );
   });
+}
+
+/** ページの受理された POST を待つ(5 分で打ち切り。リスナー自体の失敗も儀式の失敗)。 */
+function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, CliError> {
+  return Effect.tryPromise({
+    try: () => listener.outcome,
+    catch: () =>
+      cliError(
+        "The local listener for the passkey page failed. Nothing was changed — re-run to try again",
+      ),
+  }).pipe(
+    Effect.timeout(CEREMONY_TIMEOUT),
+    Effect.catchTag("TimeoutError", () =>
+      Effect.fail(
+        cliError(
+          "Timed out waiting for the passkey page (5 minutes). Nothing was changed — re-run to try again",
+        ),
+      ),
+    ),
+  );
 }
 
 /** 儀式の結果(ページの 1 POST)。 */
@@ -133,9 +189,10 @@ function runPrfCeremony(
 ): Effect.Effect<PrfOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    const confirmCode = newConfirmCode();
     return yield* Effect.acquireUseRelease(
       Effect.tryPromise({
-        try: () => startPrfListener(config),
+        try: () => startPrfListener(config, confirmCode),
         catch: () =>
           cliError(
             "Cannot listen on 127.0.0.1 for the passkey page (no free local port, or loopback networking is unavailable)",
@@ -143,17 +200,8 @@ function runPrfCeremony(
       }),
       (listener) =>
         Effect.gen(function* () {
-          yield* announceListener(io, listener);
-          const post = yield* Effect.promise(() => listener.outcome).pipe(
-            Effect.timeout(CEREMONY_TIMEOUT),
-            Effect.catchTag("TimeoutError", () =>
-              Effect.fail(
-                cliError(
-                  "Timed out waiting for the passkey page (5 minutes). Nothing was changed — re-run to try again",
-                ),
-              ),
-            ),
-          );
+          yield* announceListener(io, listener, confirmCode);
+          const post = yield* awaitOutcome(listener);
           if ("error" in post) {
             return yield* Effect.fail(ceremonyFailure(post.error, action));
           }

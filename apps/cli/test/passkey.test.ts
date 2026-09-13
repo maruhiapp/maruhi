@@ -105,11 +105,24 @@ function wrapHandler(wrapId: string, registration: RegistrationBody): MockHandle
   }));
 }
 
-/** ブラウザ役: config.json を読み、検査してから 1 POST を返す。 */
+/** 端末(stderr)に表示された確認コード(利用者がページへ打ち込む値)。 */
+function displayedCode(env: TestEnv): string {
+  const line = env.errors.find((entry) =>
+    entry.startsWith("Confirmation code (type it into the page): "),
+  );
+  const match = line === undefined ? null : /(\d{3}) (\d{3})$/.exec(line);
+  if (match === null) {
+    throw new Error("confirmation code line not found in stderr output");
+  }
+  return `${match[1]}${match[2]}`;
+}
+
+/** ブラウザ役: config.json を読み、端末のコードを添えて 1 POST を返す。 */
 function browserPosting(
   env: TestEnv,
   respond: (config: unknown) => PrfPagePost,
   seen: { config?: unknown } = {},
+  code: (env: TestEnv) => string = displayedCode,
 ): void {
   env.setBrowserOpenHandler(async (url) => {
     const config = await (await fetch(`${url}config.json`)).json();
@@ -118,7 +131,7 @@ function browserPosting(
     const response = await fetch(`${url}prf`, {
       method: "POST",
       headers: { "content-type": "application/json", origin },
-      body: JSON.stringify(respond(config)),
+      body: JSON.stringify({ code: code(env), ...respond(config) }),
     });
     return response.status === 204;
   });
@@ -145,11 +158,12 @@ async function registerOnce(label?: string): Promise<{
   readonly registration: RegistrationBody;
   readonly env: TestEnv;
 }> {
-  let registration: RegistrationBody | null = null;
+  // クロージャで代入する値は TS が狭めるので、器に入れて受ける
+  const captured: { body: RegistrationBody | null } = { body: null };
   const { env, server } = await start([
     statusHandler([]),
     registerHandler((body) => {
-      registration = body;
+      captured.body = body;
     }),
   ]);
   seedSession(env, server.origin, owner);
@@ -164,7 +178,10 @@ async function registerOnce(label?: string): Promise<{
     userName: `maruhi · ${new URL(server.origin).host}`,
     excludeCredentialIdsHex: [],
   });
+  const registration = captured.body;
   if (registration === null) throw new Error("registration was not posted");
+  // ページが使った salt と台帳へ送った salt は同じ値(食い違うと復元不能)
+  expect(seen.config).toMatchObject({ prfSaltHex: registration.prfSaltHex });
   return { registration, env };
 }
 
@@ -245,6 +262,60 @@ describe("maruhi key seal passkey(登録)", () => {
       "You already have 5 passkeys registered (the limit)",
     );
     expect(full.env.browserOpens).toEqual([]);
+  });
+
+  it("確認コードが違う POST は受理されず(儀式も消費しない)、打ち直した正しいコードで通る", async () => {
+    const captured: { body: RegistrationBody | null } = { body: null };
+    const { env, server } = await start([
+      statusHandler([]),
+      registerHandler((body) => {
+        captured.body = body;
+      }),
+    ]);
+    seedSession(env, server.origin, owner);
+    const statuses: number[] = [];
+    env.setBrowserOpenHandler(async (url) => {
+      const origin = new URL(url).origin;
+      const send = async (code: string) => {
+        const response = await fetch(`${url}prf`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin },
+          body: JSON.stringify({ code, credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }),
+        });
+        statuses.push(response.status);
+      };
+      // 別 UID の利用者がトークンを拾って偽の PRF を送る形 = コードを知らない
+      await send("000000");
+      await send(displayedCode(env));
+      return true;
+    });
+    expect(await runCli(["key", "seal", "passkey"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(statuses).toEqual([404, 204]);
+    expect(captured.body).not.toBeNull();
+    expect(env.errors.join("\n")).toMatch(
+      /Confirmation code \(type it into the page\): \d{3} \d{3}/,
+    );
+  });
+
+  it("確認コードの総当たりは儀式ごと失敗し、台帳には何も書かれない", async () => {
+    const { env, server } = await start([statusHandler([]), registerHandler(() => {})]);
+    seedSession(env, server.origin, owner);
+    env.setBrowserOpenHandler(async (url) => {
+      const origin = new URL(url).origin;
+      for (const code of ["000001", "000002", "000003", "000004", "000005"]) {
+        await fetch(`${url}prf`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin },
+          body: JSON.stringify({ code, credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }),
+        });
+      }
+      return true;
+    });
+    expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "The confirmation code was entered wrongly too many times, so the passkey step was cancelled",
+    );
+    expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
   it("ページの理由コードは案内に写り、台帳には何も書かれない", async () => {

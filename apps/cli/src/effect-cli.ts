@@ -2616,10 +2616,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
     Effect.gen(function* () {
-      const context = yield* openSession(values.server);
+      // 書き方の誤りはセッション解決(ネットワーク)より前に落とす
       if (values.handoff && values.passkey) {
         return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
       }
+      const context = yield* openSession(values.server);
       if (values.handoff) {
         yield* requestHandoffOp({ session: context.session, client: context.client });
         return;
