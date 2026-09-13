@@ -63,7 +63,7 @@ interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
-  readonly prfSaltHex?: string;
+  readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
 
@@ -245,6 +245,7 @@ describe("maruhi key seal passkey(登録)", () => {
       wrapId: `01JMKWRAP0000000000000000${i}`,
       label: null,
       credentialIdHex: `0${i}`.repeat(8),
+      prfSaltHex: `1${i}`.repeat(32),
       updatedAtMs: 1754006400000,
     }));
     const { env, server } = await start([statusHandler(rows), registerHandler(() => {})]);
@@ -367,7 +368,7 @@ describe("maruhi key seal passkey(登録)", () => {
   });
 });
 
-/** status の passkey 行(新サーバー = 公開パラメータ prfSaltHex を運ぶ)。 */
+/** status の passkey 行(公開パラメータ prfSaltHex を運ぶ)。 */
 function rowOf(registration: RegistrationBody, label: string | null = null): PasskeyRow {
   return {
     wrapId: registration.wrapId,
@@ -378,18 +379,12 @@ function rowOf(registration: RegistrationBody, label: string | null = null): Pas
   };
 }
 
-/** 旧サーバーの行(prfSaltHex を運ばない)。 */
-function legacyRowOf(registration: RegistrationBody, label: string | null = null): PasskeyRow {
-  const { prfSaltHex: _omitted, ...row } = rowOf(registration, label);
-  return row;
-}
-
 const passkeyFetches = (server: MockServer) =>
   server.requests.filter(
     (r) => r.method === "GET" && r.path.startsWith("/auth/key-wraps/passkey/"),
   );
 
-describe("maruhi key recover --passkey(復元 — status が salt を運ぶ本線)", () => {
+describe("maruhi key recover --passkey(復元)", () => {
   it("全 credential で儀式し、応答の credential の行だけをラップ取得して復号・保存する(取得は儀式の後)", async () => {
     const { registration } = await registerOnce();
     // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
@@ -503,80 +498,6 @@ describe("maruhi key recover --passkey(復元 — status が salt を運ぶ本�
   });
 });
 
-describe("maruhi key recover --passkey(旧サーバー = status に salt が無いときのフォールバック)", () => {
-  it("行を 1 つ選んでラップを先に取り、その salt で儀式する(複数なら番号で選ぶ)", async () => {
-    const { registration } = await registerOnce();
-    // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
-    const other = {
-      ...registration,
-      wrapId: OTHER_WRAP_ID,
-      credentialIdHex: "ff".repeat(16),
-      prfSaltHex: "77".repeat(32),
-    };
-    const { env, server } = await start([
-      statusHandler([legacyRowOf(other, "YubiKey"), legacyRowOf(registration, "Touch ID")]),
-      wrapHandler(OTHER_WRAP_ID, other),
-      wrapHandler(registration.wrapId, registration),
-    ]);
-    seedTokenOnly(env, server.origin);
-    env.setPromptResponses(["2"]);
-    const seen: { config?: unknown } = {};
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }), seen);
-    expect(await runCli(["key", "recover", "--passkey"], env.layer), env.errors.join("\n")).toBe(0);
-    expect(env.prompts[0]).toBe("Which passkey will you use? [1-2]: ");
-    expect(env.errors.join("\n")).toContain(
-      `1. ${OTHER_WRAP_ID}  YubiKey  credential ffffffffffffffff…`,
-    );
-    expect(seen.config).toEqual({
-      mode: "recover",
-      rpId: "localhost",
-      credentials: [{ credentialIdHex: CREDENTIAL_HEX, prfSaltHex: registration.prfSaltHex }],
-    });
-    expect(passkeyFetches(server).map((r) => r.path)).toEqual([
-      `/auth/key-wraps/passkey/${registration.wrapId}`,
-    ]);
-    expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBe(
-      serializedRecord(),
-    );
-
-    // 1 件なら自動、番号が不正なら取り消し(ブラウザを開かない)
-    const single = await start([
-      statusHandler([legacyRowOf(registration)]),
-      wrapHandler(registration.wrapId, registration),
-    ]);
-    seedTokenOnly(single.env, single.server.origin);
-    browserPosting(single.env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
-    expect(await runCli(["key", "recover", "--passkey"], single.env.layer)).toBe(0);
-    expect(single.env.prompts).toEqual([]);
-
-    const cancelled = await start([statusHandler([legacyRowOf(other), legacyRowOf(registration)])]);
-    seedTokenOnly(cancelled.env, cancelled.server.origin);
-    cancelled.env.setPromptResponses(["9"]);
-    expect(await runCli(["key", "recover", "--passkey"], cancelled.env.layer)).toBe(1);
-    expect(cancelled.env.errors.join("\n")).toContain(
-      "The passkey recovery was cancelled (nothing was changed)",
-    );
-    expect(cancelled.env.browserOpens).toEqual([]);
-  });
-
-  it("ラップ取得のレート制限はブラウザを開く前に案内になる", async () => {
-    const { registration } = await registerOnce();
-    const { env, server } = await start([
-      statusHandler([legacyRowOf(registration)]),
-      onRequest("GET", `/auth/key-wraps/passkey/${registration.wrapId}`, () => ({
-        status: 429,
-        json: { _tag: "KeyWrapRateLimited", window: "blob-fetch", retryAfterSeconds: 1200 },
-      })),
-    ]);
-    seedTokenOnly(env, server.origin);
-    expect(await runCli(["key", "recover", "--passkey"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "The key-wrap fetch limit was reached. Retry after 1200 seconds",
-    );
-    expect(env.browserOpens).toEqual([]);
-  });
-});
-
 describe("maruhi key recover --passkey(前提の拒否)", () => {
   it("登録なし・既存鍵あり・エージェント環境・非端末はリスナーを立てる前に拒否する", async () => {
     const none = await start([statusHandler([])]);
@@ -642,7 +563,13 @@ describe("儀式の 3 チャネル TTY ゲート(ADR-0016 決定 7)", () => {
         const label = `${ceremony.argv.join(" ")} ${JSON.stringify(terminal)}`;
         const { env, server } = await start([
           statusHandler([
-            { wrapId: WRAP_ID, label: null, credentialIdHex: CREDENTIAL_HEX, updatedAtMs: 1 },
+            {
+              wrapId: WRAP_ID,
+              label: null,
+              credentialIdHex: CREDENTIAL_HEX,
+              prfSaltHex: "66".repeat(32),
+              updatedAtMs: 1,
+            },
           ]),
           onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
         ]);
@@ -674,12 +601,14 @@ describe("maruhi key seal list / remove", () => {
         wrapId: WRAP_ID,
         label: "Touch ID",
         credentialIdHex: CREDENTIAL_HEX,
+        prfSaltHex: "66".repeat(32),
         updatedAtMs: 1754006400000,
       },
       {
         wrapId: OTHER_WRAP_ID,
         label: null,
         credentialIdHex: "ff".repeat(16),
+        prfSaltHex: "77".repeat(32),
         updatedAtMs: 1754006460000,
       },
     ];

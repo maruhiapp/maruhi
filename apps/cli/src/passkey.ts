@@ -17,8 +17,7 @@
 // passkey 行の prf_salt(公開パラメータ — AUTH_SPEC §13-7)を運ぶので、全 credential を
 // allowCredentials に渡して認証器に選ばせ、応答の credential で行を決めてから、その行の
 // ラップ(`GET /auth/key-wraps/passkey/:wrapId` — 合算窓 5 回 / 時 + 要監視の監査事件)を
-// 1 件だけ取る。取り消した儀式は窓を消費しない。salt を運ばない旧サーバーへの
-// フォールバック: 行を 1 つ選んで(複数なら番号)ラップを先に取り、その salt で儀式を行う。
+// 1 件だけ取る。取り消した儀式は窓を消費しない。
 
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
@@ -240,8 +239,8 @@ interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
-  /** 公開パラメータ(旧サーバーは運ばない → フォールバック)。 */
-  readonly prfSaltHex?: string | undefined;
+  /** この登録の prf_salt(公開パラメータ — 儀式の前に要るので status が運ぶ)。 */
+  readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
 
@@ -338,34 +337,7 @@ export function sealPasskeyOp(input: {
 const NO_PASSKEY_REGISTERED =
   "No passkey is registered for your account. Run `maruhi key seal passkey` on a device that still has the master key, or restore with `maruhi key recover` (recovery code) or `maruhi key recover --handoff`";
 
-/** 旧サーバー向け: 復元に使う passkey 行を選ぶ(1 件なら自動、複数なら番号で選ばせる)。 */
-function choosePasskeyRow(
-  io: CliIoShape,
-  rows: readonly PasskeyRow[],
-): Effect.Effect<PasskeyRow, CliError> {
-  return Effect.gen(function* () {
-    const first = rows[0];
-    if (first === undefined || rows.length === 1) {
-      return first ?? (yield* Effect.fail(cliError(NO_PASSKEY_REGISTERED)));
-    }
-    yield* io.logError("Registered passkeys:");
-    for (const [index, row] of rows.entries()) {
-      yield* io.logError(`  ${index + 1}. ${describeRow(row)}`);
-    }
-    const answer = yield* io.promptLine({
-      prompt: `Which passkey will you use? [1-${rows.length}]: `,
-    });
-    const chosen = /^\d+$/.test(answer.trim()) ? rows[Number(answer.trim()) - 1] : undefined;
-    if (chosen === undefined) {
-      return yield* Effect.fail(
-        cliError("The passkey recovery was cancelled (nothing was changed)"),
-      );
-    }
-    return chosen;
-  });
-}
-
-/** 選んだ行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
+/** 儀式で選ばれた行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
 function fetchWrap(
   client: MaruhiClient,
   wrapId: string,
@@ -410,7 +382,7 @@ interface FetchedWrap {
   readonly ciphertext: Uint8Array;
 }
 
-/** 儀式と取得の結果(どちらの順序でも同じ形に揃える)。 */
+/** 儀式と取得の結果。 */
 interface RecoveryMaterial {
   readonly wrapId: string;
   readonly wrap: FetchedWrap;
@@ -418,12 +390,12 @@ interface RecoveryMaterial {
 }
 
 /**
- * 本線(status が salt を運ぶ): 全 credential で儀式 → 応答の credential の行 → その行の
- * ラップを取る。ブロブ取得は儀式の後なので、取り消しは窓を消費しない。
+ * 全 credential で儀式 → 応答の credential の行 → その行のラップを取る(裁定 F / I)。
+ * ブロブ取得は儀式の後なので、取り消しは窓を消費しない。
  */
 function recoverCeremonyFirst(
   client: MaruhiClient,
-  rows: readonly (PasskeyRow & { readonly prfSaltHex: string })[],
+  rows: readonly PasskeyRow[],
 ): Effect.Effect<RecoveryMaterial, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const outcome = yield* runPrfCeremony(
@@ -448,31 +420,6 @@ function recoverCeremonyFirst(
     const wrap = yield* fetchWrap(client, row.wrapId);
     return { wrapId: row.wrapId, wrap, outcome };
   });
-}
-
-/** 旧サーバー向け(status に salt が無い): 行を選んでラップを先に取り、その salt で儀式。 */
-function recoverFetchFirst(
-  io: CliIoShape,
-  client: MaruhiClient,
-  rows: readonly PasskeyRow[],
-): Effect.Effect<RecoveryMaterial, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const row = yield* choosePasskeyRow(io, rows);
-    const wrap = yield* fetchWrap(client, row.wrapId);
-    const outcome = yield* runPrfCeremony(
-      {
-        mode: "recover",
-        rpId: "localhost",
-        credentials: [{ credentialIdHex: wrap.credentialIdHex, prfSaltHex: wrap.prfSaltHex }],
-      },
-      "recover",
-    );
-    return { wrapId: row.wrapId, wrap, outcome };
-  });
-}
-
-function hasSalt(row: PasskeyRow): row is PasskeyRow & { readonly prfSaltHex: string } {
-  return row.prfSaltHex !== undefined;
 }
 
 /** 復号 → 自己検証 → 保存(PRF 出力・KEK・B はこの関数のローカルにだけ存在する)。 */
@@ -547,9 +494,7 @@ export function recoverWithPasskeyOp(input: {
     if (rows.length === 0) {
       return yield* Effect.fail(cliError(NO_PASSKEY_REGISTERED));
     }
-    const material = yield* rows.every(hasSalt)
-      ? recoverCeremonyFirst(input.client, rows)
-      : recoverFetchFirst(io, input.client, rows);
+    const material = yield* recoverCeremonyFirst(input.client, rows);
     yield* unwrapAndStore({ session: input.session, entryName, material });
   });
 }
