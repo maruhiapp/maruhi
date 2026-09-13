@@ -1,0 +1,539 @@
+// パスキー PRF 経路(CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5)の統合テスト:
+// `maruhi key seal passkey` / `maruhi key recover --passkey` / `maruhi key seal list|remove`。
+// ラップ・復号は実 crypto、サーバーはワイヤレベルモック、ブラウザは
+// `setBrowserOpenHandler` でテストが務める(ページの代わりに PRF を POST する —
+// integration-options.md 補足 20 裁定 J)。
+//
+// 固定する性質:
+//  1. 登録は「PRF → KEK → ラップ → 最後に POST」で、台帳の行はテストベクターと同じ
+//     `derivePasskeyKek` + master-wrap AAD(user_id / passkey-prf / wrap_id)で開ける
+//  2. 復元は台帳のラップを 1 件取り、同じ PRF で復号してキーチェーンへ保存する。
+//     ブロブ取得は儀式の前に 1 回だけ(複数登録は番号で選ぶ)
+//  3. ゲート: エージェント環境・非端末・既存鍵あり・登録なし・上限はリスナーを立てる前に拒否
+//  4. ページの理由コードは英語の案内に写り、台帳には何も書かれない
+
+import { decodeHex, derivePasskeyKek, unwrapMasterBlob } from "@maruhi/crypto";
+import { Redacted } from "effect";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { runCli } from "../src/cli.ts";
+import { masterKeyEntryName, serializeStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
+import type { PrfPagePost } from "../src/passkey-page.ts";
+import { makeTestUser, type TestUser } from "./support/crypto.ts";
+import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+
+let owner: TestUser;
+const servers: MockServer[] = [];
+
+const PRF_HEX = "53ed1bf3f3a19eb2fda745bfcc680cc45739f1840514c10609a6863483fd260c";
+const CREDENTIAL_HEX = "3cb8db37e0370e63a3849be601db91faf1306f83dcfb24c6428da106499921e2";
+const WRAP_ID = "01JMKWRAP000000000000PASSK";
+const OTHER_WRAP_ID = "01JMKWRAP000000000000THER0";
+
+beforeAll(async () => {
+  owner = await makeTestUser("user-owner-0001");
+});
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+});
+
+interface Started {
+  readonly env: TestEnv;
+  readonly server: MockServer;
+}
+
+async function start(handlers: readonly MockHandler[]): Promise<Started> {
+  const server = await MockServer.start(handlers);
+  servers.push(server);
+  const env = await makeTestEnv();
+  await seedConfig(env, { server: server.origin });
+  return { env, server };
+}
+
+function seedTokenOnly(env: TestEnv, origin: string): void {
+  env.keychain.set(
+    tokenEntryName(origin),
+    JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
+  );
+}
+
+interface PasskeyRow {
+  readonly wrapId: string;
+  readonly label: string | null;
+  readonly credentialIdHex: string;
+  readonly updatedAtMs: number;
+}
+
+function statusHandler(passkeys: readonly PasskeyRow[]): MockHandler {
+  return onRequest("GET", "/auth/key-wraps", () => ({
+    status: 200,
+    json: {
+      recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
+      passkeys,
+      guardianGroups: [],
+    },
+  }));
+}
+
+interface RegistrationBody {
+  readonly wrapId: string;
+  readonly wrap: {
+    readonly suite: string;
+    readonly nonceHex: string;
+    readonly ciphertextHex: string;
+  };
+  readonly credentialIdHex: string;
+  readonly prfSaltHex: string;
+  readonly rpId: string;
+  readonly label?: string;
+}
+
+function registerHandler(record: (body: RegistrationBody) => void): MockHandler {
+  return onRequest("POST", "/auth/key-wraps/passkey", (request) => {
+    const body = request.body as RegistrationBody;
+    record(body);
+    return { status: 200, json: { wrapId: body.wrapId } };
+  });
+}
+
+function wrapHandler(wrapId: string, registration: RegistrationBody): MockHandler {
+  return onRequest("GET", `/auth/key-wraps/passkey/${wrapId}`, () => ({
+    status: 200,
+    json: { ...registration, label: registration.label ?? null, updatedAtMs: 1754006400000 },
+  }));
+}
+
+/** ブラウザ役: config.json を読み、検査してから 1 POST を返す。 */
+function browserPosting(
+  env: TestEnv,
+  respond: (config: unknown) => PrfPagePost,
+  seen: { config?: unknown } = {},
+): void {
+  env.setBrowserOpenHandler(async (url) => {
+    const config = await (await fetch(`${url}config.json`)).json();
+    seen.config = config;
+    const origin = new URL(url).origin;
+    const response = await fetch(`${url}prf`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: JSON.stringify(respond(config)),
+    });
+    return response.status === 204;
+  });
+}
+
+const hex = (value: string): Uint8Array => {
+  const bytes = decodeHex(value);
+  if (bytes === null) throw new Error("hex");
+  return bytes;
+};
+
+/** 台帳 / キーチェーンが持つ master 鍵レコード(seedSession と同じ形)。 */
+function serializedRecord(): string {
+  return serializeStoredMasterKey({
+    suite: "maruhi/v1",
+    encPubHex: owner.encPubHex,
+    encSkHex: Redacted.make(owner.encSkHex),
+    sigPubHex: owner.sigPubHex,
+    sigSkSeedHex: Redacted.make(owner.sigSkSeedHex),
+  });
+}
+
+async function registerOnce(label?: string): Promise<{
+  readonly registration: RegistrationBody;
+  readonly env: TestEnv;
+}> {
+  let registration: RegistrationBody | null = null;
+  const { env, server } = await start([
+    statusHandler([]),
+    registerHandler((body) => {
+      registration = body;
+    }),
+  ]);
+  seedSession(env, server.origin, owner);
+  const seen: { config?: unknown } = {};
+  browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }), seen);
+  const argv = ["key", "seal", "passkey", ...(label === undefined ? [] : ["--label", label])];
+  const code = await runCli(argv, env.layer);
+  expect(code, env.errors.join("\n")).toBe(0);
+  expect(seen.config).toMatchObject({
+    mode: "register",
+    rpId: "localhost",
+    userName: `maruhi · ${new URL(server.origin).host}`,
+    excludeCredentialIdsHex: [],
+  });
+  if (registration === null) throw new Error("registration was not posted");
+  return { registration, env };
+}
+
+describe("maruhi key seal passkey(登録)", () => {
+  it("PRF から KEK を導いて B をラップし、公開パラメータと共に台帳へ登録する(POST は最後)", async () => {
+    const { registration, env } = await registerOnce("MacBook Touch ID");
+    expect(registration.rpId).toBe("localhost");
+    expect(registration.credentialIdHex).toBe(CREDENTIAL_HEX);
+    expect(registration.prfSaltHex).toMatch(/^[0-9a-f]{64}$/);
+    expect(registration.label).toBe("MacBook Touch ID");
+    expect(registration.wrap.suite).toBe("maruhi/v1");
+    // 台帳の行は、テストベクターと同じ経路(derivePasskeyKek + master-wrap AAD)で開ける
+    const kek = await derivePasskeyKek(hex(PRF_HEX));
+    if (!kek.ok) throw new Error("kek");
+    const opened = await unwrapMasterBlob({
+      kek: kek.value,
+      wrapped: {
+        nonce: hex(registration.wrap.nonceHex),
+        ciphertext: hex(registration.wrap.ciphertextHex),
+      },
+      context: { userId: owner.userId, kind: "passkey-prf", wrapRef: registration.wrapId },
+    });
+    if (!opened.ok) throw new Error("unwrap failed");
+    expect(new TextDecoder().decode(opened.value)).toBe(serializedRecord());
+    // 別の wrap_id へ移植すると開けない(AAD の束縛)
+    const moved = await unwrapMasterBlob({
+      kek: kek.value,
+      wrapped: {
+        nonce: hex(registration.wrap.nonceHex),
+        ciphertext: hex(registration.wrap.ciphertextHex),
+      },
+      context: { userId: owner.userId, kind: "passkey-prf", wrapRef: OTHER_WRAP_ID },
+    });
+    expect(moved.ok).toBe(false);
+    expect(env.logs[0]).toBe(`Sealed the master key to a passkey (wrap ${registration.wrapId})`);
+    expect(env.logs[1]).toBe(`key fingerprint: ${owner.fingerprintHex}`);
+    const stderr = env.errors.join("\n");
+    expect(stderr).toContain("Open this page in your browser");
+    expect(stderr).toContain(env.browserOpens[0]);
+    expect(stderr).not.toContain(PRF_HEX);
+    expect(stderr).not.toContain(registration.wrap.ciphertextHex);
+  });
+
+  it("ラベル無しでは label を送らず、--label の受理形違いは usage エラー(exit 2)", async () => {
+    const { registration } = await registerOnce();
+    expect(registration.label).toBeUndefined();
+
+    const { env, server } = await start([statusHandler([])]);
+    seedSession(env, server.origin, owner);
+    expect(await runCli(["key", "seal", "passkey", "--label", "bad‮label"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --label (expected: 1 to 64 characters without control or bidirectional-formatting characters)",
+    );
+    expect(env.browserOpens).toEqual([]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("既存の credential を excludeCredentials として渡し、上限(5 件)ではブラウザを開かずに拒否する", async () => {
+    const rows = Array.from({ length: 4 }, (_, i) => ({
+      wrapId: `01JMKWRAP0000000000000000${i}`,
+      label: null,
+      credentialIdHex: `0${i}`.repeat(8),
+      updatedAtMs: 1754006400000,
+    }));
+    const { env, server } = await start([statusHandler(rows), registerHandler(() => {})]);
+    seedSession(env, server.origin, owner);
+    const seen: { config?: unknown } = {};
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }), seen);
+    expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(0);
+    expect(seen.config).toMatchObject({
+      excludeCredentialIdsHex: rows.map((r) => r.credentialIdHex),
+    });
+
+    const full = await start([statusHandler([...rows, { ...rows[0]!, wrapId: WRAP_ID }])]);
+    seedSession(full.env, full.server.origin, owner);
+    expect(await runCli(["key", "seal", "passkey"], full.env.layer)).toBe(1);
+    expect(full.env.errors.join("\n")).toContain(
+      "You already have 5 passkeys registered (the limit)",
+    );
+    expect(full.env.browserOpens).toEqual([]);
+  });
+
+  it("ページの理由コードは案内に写り、台帳には何も書かれない", async () => {
+    const cases: readonly [PrfPagePost, string][] = [
+      [{ error: "not-allowed" }, "The passkey was not created"],
+      [{ error: "already-registered" }, "This authenticator already holds a passkey"],
+      [{ error: "prf-unsupported" }, "does not support the WebAuthn PRF extension"],
+      [{ error: "unexpected" }, "The passkey step failed in the browser"],
+    ];
+    for (const [post, expected] of cases) {
+      const { env, server } = await start([statusHandler([]), registerHandler(() => {})]);
+      seedSession(env, server.origin, owner);
+      browserPosting(env, () => post);
+      expect(await runCli(["key", "seal", "passkey"], env.layer), expected).toBe(1);
+      expect(env.errors.join("\n"), expected).toContain(expected);
+      expect(
+        server.requests.filter((r) => r.method === "POST"),
+        expected,
+      ).toHaveLength(0);
+    }
+  });
+
+  it("エージェント環境・非端末・鍵なしの端末ではリスナーを立てる前に拒否する", async () => {
+    const agent = await start([statusHandler([])]);
+    seedSession(agent.env, agent.server.origin, owner);
+    agent.env.setAgent({ isAgent: true, name: "Claude Code" });
+    expect(await runCli(["key", "seal", "passkey"], agent.env.layer)).toBe(1);
+    expect(agent.env.errors.join("\n")).toContain(
+      "Refused to seal the master key to a passkey because an AI agent environment was detected",
+    );
+    expect(agent.env.browserOpens).toEqual([]);
+    expect(agent.server.requests).toHaveLength(0);
+
+    const piped = await start([statusHandler([])]);
+    seedSession(piped.env, piped.server.origin, owner);
+    piped.env.setTerminal({ stdout: false });
+    expect(await runCli(["key", "seal", "passkey"], piped.env.layer)).toBe(1);
+    expect(piped.env.errors.join("\n")).toContain(
+      "Passkey sealing is only allowed on an interactive terminal",
+    );
+    expect(piped.env.browserOpens).toEqual([]);
+
+    const noKey = await start([statusHandler([])]);
+    seedTokenOnly(noKey.env, noKey.server.origin);
+    expect(await runCli(["key", "seal", "passkey"], noKey.env.layer)).toBe(1);
+    expect(noKey.env.errors.join("\n")).toContain("No master key on this device");
+    expect(noKey.env.browserOpens).toEqual([]);
+  });
+});
+
+describe("maruhi key recover --passkey(復元)", () => {
+  it("台帳のラップを 1 件取り、同じ PRF で復号してキーチェーンへ保存する(roundtrip)", async () => {
+    const { registration } = await registerOnce();
+    const { env, server } = await start([
+      statusHandler([
+        {
+          wrapId: registration.wrapId,
+          label: null,
+          credentialIdHex: CREDENTIAL_HEX,
+          updatedAtMs: 1,
+        },
+      ]),
+      wrapHandler(registration.wrapId, registration),
+    ]);
+    seedTokenOnly(env, server.origin);
+    const seen: { config?: unknown } = {};
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }), seen);
+    const code = await runCli(["key", "recover", "--passkey"], env.layer);
+    expect(code, env.errors.join("\n")).toBe(0);
+    expect(seen.config).toEqual({
+      mode: "recover",
+      rpId: "localhost",
+      credentials: [{ credentialIdHex: CREDENTIAL_HEX, prfSaltHex: registration.prfSaltHex }],
+    });
+    // ブロブ取得は儀式の前に 1 回だけ(合算窓の消費は 1)
+    expect(
+      server.requests.filter((r) => r.path.startsWith("/auth/key-wraps/passkey/")),
+    ).toHaveLength(1);
+    expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBe(
+      serializedRecord(),
+    );
+    expect(env.logs[0]).toBe(
+      "Restored the master key via passkey and stored it in the OS keychain",
+    );
+    expect(env.logs[1]).toBe(`key fingerprint: ${owner.fingerprintHex}`);
+    expect(env.errors.join("\n")).not.toContain(PRF_HEX);
+  });
+
+  it("複数の登録は番号で選ばせ、選んだ行だけを取る", async () => {
+    const { registration } = await registerOnce();
+    const other = { ...registration, wrapId: OTHER_WRAP_ID, credentialIdHex: "ff".repeat(16) };
+    const { env, server } = await start([
+      statusHandler([
+        {
+          wrapId: OTHER_WRAP_ID,
+          label: "YubiKey",
+          credentialIdHex: other.credentialIdHex,
+          updatedAtMs: 1,
+        },
+        {
+          wrapId: registration.wrapId,
+          label: "Touch ID",
+          credentialIdHex: CREDENTIAL_HEX,
+          updatedAtMs: 2,
+        },
+      ]),
+      wrapHandler(OTHER_WRAP_ID, other),
+      wrapHandler(registration.wrapId, registration),
+    ]);
+    seedTokenOnly(env, server.origin);
+    env.setPromptResponses(["2"]);
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
+    expect(await runCli(["key", "recover", "--passkey"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts[0]).toBe("Which passkey will you use? [1-2]: ");
+    expect(env.errors.join("\n")).toContain(
+      `1. ${OTHER_WRAP_ID}  YubiKey  credential ffffffffffffffff…`,
+    );
+    const fetched = server.requests.filter((r) => r.path.startsWith("/auth/key-wraps/passkey/"));
+    expect(fetched.map((r) => r.path)).toEqual([`/auth/key-wraps/passkey/${registration.wrapId}`]);
+
+    const cancelled = await start([
+      statusHandler([
+        {
+          wrapId: OTHER_WRAP_ID,
+          label: null,
+          credentialIdHex: other.credentialIdHex,
+          updatedAtMs: 1,
+        },
+        {
+          wrapId: registration.wrapId,
+          label: null,
+          credentialIdHex: CREDENTIAL_HEX,
+          updatedAtMs: 2,
+        },
+      ]),
+    ]);
+    seedTokenOnly(cancelled.env, cancelled.server.origin);
+    cancelled.env.setPromptResponses(["9"]);
+    expect(await runCli(["key", "recover", "--passkey"], cancelled.env.layer)).toBe(1);
+    expect(cancelled.env.errors.join("\n")).toContain(
+      "The passkey recovery was cancelled (nothing was changed)",
+    );
+    expect(cancelled.env.browserOpens).toEqual([]);
+  });
+
+  it("違う PRF・違う credential・理由コードでは復元せず、キーチェーンにも何も残らない", async () => {
+    const { registration } = await registerOnce();
+    const row = {
+      wrapId: registration.wrapId,
+      label: null,
+      credentialIdHex: CREDENTIAL_HEX,
+      updatedAtMs: 1,
+    };
+    const cases: readonly [PrfPagePost, string][] = [
+      [
+        { credentialIdHex: CREDENTIAL_HEX, prfHex: "99".repeat(32) },
+        "Cannot decrypt the wrapped master key with this passkey",
+      ],
+      [
+        { credentialIdHex: "ab".repeat(8), prfHex: PRF_HEX },
+        "The browser used a different passkey",
+      ],
+      [{ error: "not-allowed" }, "The passkey was not used"],
+    ];
+    for (const [post, expected] of cases) {
+      const { env, server } = await start([
+        statusHandler([row]),
+        wrapHandler(registration.wrapId, registration),
+      ]);
+      seedTokenOnly(env, server.origin);
+      browserPosting(env, () => post);
+      expect(await runCli(["key", "recover", "--passkey"], env.layer), expected).toBe(1);
+      expect(env.errors.join("\n"), expected).toContain(expected);
+      expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId)), expected).toBe(
+        false,
+      );
+    }
+  });
+
+  it("登録なし・既存鍵あり・エージェント環境・非端末・レート制限はリスナーを立てる前に拒否する", async () => {
+    const none = await start([statusHandler([])]);
+    seedTokenOnly(none.env, none.server.origin);
+    expect(await runCli(["key", "recover", "--passkey"], none.env.layer)).toBe(1);
+    expect(none.env.errors.join("\n")).toContain("No passkey is registered for your account");
+    expect(none.env.browserOpens).toEqual([]);
+
+    const row = { wrapId: WRAP_ID, label: null, credentialIdHex: CREDENTIAL_HEX, updatedAtMs: 1 };
+    const hasKey = await start([statusHandler([row])]);
+    seedSession(hasKey.env, hasKey.server.origin, owner);
+    expect(await runCli(["key", "recover", "--passkey"], hasKey.env.layer)).toBe(1);
+    expect(hasKey.env.errors.join("\n")).toContain("A master key already exists on this device");
+    expect(hasKey.env.browserOpens).toEqual([]);
+
+    const agent = await start([statusHandler([row])]);
+    seedTokenOnly(agent.env, agent.server.origin);
+    agent.env.setAgent({ isAgent: true });
+    expect(await runCli(["key", "recover", "--passkey"], agent.env.layer)).toBe(1);
+    expect(agent.env.errors.join("\n")).toContain(
+      "Refused to restore the master key with a passkey because an AI agent environment was detected",
+    );
+    expect(agent.server.requests).toHaveLength(0);
+
+    const piped = await start([statusHandler([row])]);
+    seedTokenOnly(piped.env, piped.server.origin);
+    piped.env.setTerminal({ stdin: false });
+    expect(await runCli(["key", "recover", "--passkey"], piped.env.layer)).toBe(1);
+    expect(piped.env.errors.join("\n")).toContain(
+      "Passkey recovery is only allowed on an interactive terminal",
+    );
+
+    const limited = await start([
+      statusHandler([row]),
+      onRequest("GET", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({
+        status: 429,
+        json: { _tag: "KeyWrapRateLimited", window: "blob-fetch", retryAfterSeconds: 1200 },
+      })),
+    ]);
+    seedTokenOnly(limited.env, limited.server.origin);
+    expect(await runCli(["key", "recover", "--passkey"], limited.env.layer)).toBe(1);
+    expect(limited.env.errors.join("\n")).toContain(
+      "The key-wrap fetch limit was reached. Retry after 1200 seconds",
+    );
+    expect(limited.env.browserOpens).toEqual([]);
+  });
+
+  it("--handoff と --passkey の同時指定は usage エラー", async () => {
+    const { env, server } = await start([]);
+    seedTokenOnly(env, server.origin);
+    expect(await runCli(["key", "recover", "--passkey", "--handoff"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Choose one of --handoff and --passkey");
+  });
+});
+
+describe("maruhi key seal list / remove", () => {
+  it("list は台帳の公開パラメータだけを出し、remove は行を消す(端末ゲートつき)", async () => {
+    const rows = [
+      {
+        wrapId: WRAP_ID,
+        label: "Touch ID",
+        credentialIdHex: CREDENTIAL_HEX,
+        updatedAtMs: 1754006400000,
+      },
+      {
+        wrapId: OTHER_WRAP_ID,
+        label: null,
+        credentialIdHex: "ff".repeat(16),
+        updatedAtMs: 1754006460000,
+      },
+    ];
+    const { env, server } = await start([
+      statusHandler(rows),
+      onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
+      onRequest("DELETE", `/auth/key-wraps/passkey/${OTHER_WRAP_ID}`, () => ({
+        status: 404,
+        json: { _tag: "KeyWrapNotFound" },
+      })),
+    ]);
+    seedTokenOnly(env, server.origin);
+    expect(await runCli(["key", "seal", "list"], env.layer)).toBe(0);
+    expect(env.logs).toEqual([
+      `${WRAP_ID}  Touch ID  credential ${CREDENTIAL_HEX.slice(0, 16)}…  2025-08-01 00:00 UTC`,
+      `${OTHER_WRAP_ID}  (no label)  credential ffffffffffffffff…  2025-08-01 00:01 UTC`,
+    ]);
+
+    env.logs.length = 0;
+    expect(await runCli(["key", "seal", "remove", WRAP_ID], env.layer)).toBe(0);
+    expect(env.logs).toEqual([`Removed passkey wrap ${WRAP_ID}`]);
+    expect(env.errors.join("\n")).toContain("the passkey itself stays in your authenticator");
+
+    expect(await runCli(["key", "seal", "remove", OTHER_WRAP_ID], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("No passkey wrap with that ID");
+
+    env.setAgent({ isAgent: true });
+    expect(await runCli(["key", "seal", "remove", WRAP_ID], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "Refused to remove a passkey wrap because an AI agent environment was detected",
+    );
+    // list はゲートを掛けない(公開情報のみ)
+    env.logs.length = 0;
+    expect(await runCli(["key", "seal", "list"], env.layer)).toBe(0);
+    expect(env.logs).toHaveLength(2);
+  });
+
+  it("登録が無ければ list はその旨を 1 行出す", async () => {
+    const { env, server } = await start([statusHandler([])]);
+    seedTokenOnly(env, server.origin);
+    expect(await runCli(["key", "seal", "list"], env.layer)).toBe(0);
+    expect(env.logs).toEqual([
+      "No passkeys are registered (seal your key with `maruhi key seal passkey`)",
+    ]);
+  });
+});

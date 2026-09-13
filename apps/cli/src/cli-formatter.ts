@@ -54,7 +54,11 @@ export const NON_BLANK_MESSAGE = "a non-empty value (whitespace-only values are 
  *
  * ここに無い文面は**こちらが書いたものではない**(= 値を含みうる)ので出さない。
  */
-const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE]);
+/** passkey ラベルの受理形の文面(api-schema の PASSKEY_LABEL_PATTERN と対)。 */
+export const PASSKEY_LABEL_MESSAGE =
+  "1 to 64 characters without control or bidirectional-formatting characters";
+
+const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE, PASSKEY_LABEL_MESSAGE]);
 
 /** 組み込みのグローバルフラグ(CliConfig の builtIns — 宣言の表には現れない)。 */
 const GLOBAL_FLAGS = ["--help", "--version"] as const;

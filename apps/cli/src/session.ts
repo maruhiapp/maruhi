@@ -587,7 +587,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     if (stored === null) {
       return yield* Effect.fail(
         cliError(
-          "No master key on this device. Restore it with `maruhi key recover` (recovery code) or `maruhi key recover --handoff` (approval from another device or a guardian), or generate one with `maruhi key generate` if this is your first key",
+          "No master key on this device. Restore it with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approval from another device or a guardian), or generate one with `maruhi key generate` if this is your first key",
         ),
       );
     }

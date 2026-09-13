@@ -814,6 +814,19 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 7. 裁定 J: ブラウザ往復は CLI テストに組み込まず、テストがブラウザの代わりに POST する(Playwright を CLI の依存に足さない)
 8. 公開 docs の passkey 節は書かず、20-4 の下書きに留める(実機 K0 後に `/docs/recover-your-key` へ)
 
+#### 20-5. 実装録(フェーズ B — 2026-09-13。所有者は 20-3 の 8 項目を承認)
+
+**実装**: `apps/cli/src/passkey-page.ts`(HTML / JS / CSS の文字列定数 + `PrfPageConfig` / `PrfPagePost` の形)、`passkey-listener.ts`(`node:http` の 127.0.0.1 リスナー — トークン / Host / Origin / 1 回消費 / 一様 404)、`passkey.ts`(`sealPasskeyOp` / `recoverWithPasskeyOp` / `listPasskeysOp` / `removePasskeyOp`)。宣言は `effect-cli.ts`(`key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`)。サーバー・crypto・仕様は無変更(api-schema は `PASSKEY_LABEL_PATTERN` の export を足しただけ — CLI の宣言側で同じ受理形を先に検査するため。ワイヤ形は不変)。
+
+裁定(実装中に判明した点):
+- **status は passkey 行の prf_salt を運ばない**(裁定 F / I の前提のずれ)。`GET /auth/key-wraps` の `passkeys[]` は wrapId / label / credentialIdHex / updatedAtMs で、prf_salt は `GET /auth/key-wraps/passkey/:wrapId`(ブロブ取得 — 合算窓 5 回 / 時、要監視の `auth.key_wrap_fetched`)でしか得られない。よって承認済みの「`allowCredentials` 全件 → 応答の credential で行を選ぶ → ブロブ取得は PRF の後」はそのままでは成立しない。検討: ① 全行のブロブを先に取る(n 件で窓を n 消費し、使わない行にも要監視の監査事件が立つ — 不採用)。② status に `prfSaltHex` を足す(prf_salt は CRYPTO_SPEC §8.2 で「公開パラメータ。credential_id・rpId と同じ扱い」と規定されており、K3 が status に credentialIdHex を載せているのと同じ性格。ただし AUTH_SPEC §13-7 の status 行は運ぶものを列挙で限定しており、**サーバー + api-schema + 仕様文言の変更**になる — 本セッションの範囲外〔「サーバーは原則変更なし・仕様のずれは報告」〕)。③ **採用: 復元では行を 1 つ選んでから、その行のブロブだけを儀式の前に取る**(1 件なら自動、複数なら番号で選ばせる。窓の消費は常に 1、監査事件は使う行の 1 件だけ)。取り消した儀式が窓を 1 消費する(1 時間に 5 回まで)のは ③ の代償。**②は所有者への改訂提案として残す**(status に `prfSaltHex` を足せば裁定 F / I の元の形〔選択不要・ブロブ取得は PRF の後・窓の消費ゼロで取り消し可〕に戻せる。CLI 側の差分は `choosePasskeyRow` を消して `evalByCredential` に全行を渡すだけ)
+- **`key seal` は `key` の下の 3 段目**: `runCli` の段の解決(`commandKeyOf`)を「既知の段が続く限り深く」へ一般化し、`GROUP_CONFIGS` に `"key seal"` を入れ子グループとして登録(親 `key` の取りうる操作に `seal` を数える)。ヘルプ golden・不明サブコマンド診断は機械導出のまま
+- **`--label` の受理形は宣言側で検査**(`Flag.withSchema` + `PASSKEY_LABEL_MESSAGE` を `SAFE_EXPECTATIONS` へ)。サーバー往復前に exit 2
+- **`wrapOwnBlobForHandoff` → `wrapOwnBlob`**(master-ops.ts): kind = device / passkey-prf の共通本体。文言から「for the handoff」を外した
+- **ページの理由コード**: `not-allowed`(取消 / タイムアウト / 該当なし)/ `already-registered`(`excludeCredentials` の `InvalidStateError`)/ `prf-unsupported`(`create` の `enabled` が false、または `get` に `results.first` が無い)/ `unexpected`。ページは自由文を送らず、CLI が英語の案内に写す
+- **復元の credential 照合**: ページが返した credential id が取得した行の credential id と違えば復元しない(`allowCredentials` 1 件なので起きないが fail-closed)
+- **テスト**: `passkey-listener.test.ts`(9 件 — トークン / Host / Origin / content-type / 本文不正 / 上限超過 / 2 回目 / close、`parsePrfPost`、ページ資産の機械検査〔inline script・style・イベント属性・javascript:・第三者 URL・eval・innerHTML の不在、`userVerification: "required"` × 3、CSP〕)、`passkey.test.ts`(12 件 — 登録の roundtrip〔台帳の行を `derivePasskeyKek` + master-wrap AAD で開け、別 wrap_id へは移植不能〕、`--label`、`excludeCredentials` と上限 5、理由コード 4 種、ゲート 3 種、復元の roundtrip〔ブロブ取得は 1 回〕、複数登録の番号選択と取消、違う PRF / 違う credential / 理由コード、登録なし / 既存鍵 / エージェント / 非端末 / 429、`--handoff` + `--passkey` の同時指定、`seal list` / `seal remove`)。ブラウザ役は `TestEnv.setBrowserOpenHandler`(裁定 J)。ヘルプ golden 更新、文言規約は機械検査を通過
+
 #### 20-4. 実機検証後に `/docs/recover-your-key` へ追記する内容の下書き(公開しない — 検証していないことを書かない)
 
 英語の下書き。対応表と Codespaces の手順は実機 K0 の結果で埋める。

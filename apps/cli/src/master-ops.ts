@@ -56,8 +56,11 @@ export function openOwnGuardianShare(input: {
   });
 }
 
-/** 旧端末として B を KEK_h でラップする(承認バンドルの同送分 — §8.4)。 */
-export function wrapOwnBlobForHandoff(input: {
+/**
+ * 自分の B を KEK でラップする(§8.1 の master-wrap 形)。旧端末の承認バンドル
+ * (kind = device — §8.4)と passkey 登録(kind = passkey-prf — §8.2)の共通本体。
+ */
+export function wrapOwnBlob(input: {
   readonly masterKeys: MasterKeys;
   readonly kek: Uint8Array;
   readonly context: MasterWrapContext;
@@ -67,10 +70,10 @@ export function wrapOwnBlobForHandoff(input: {
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.masterKeys.record));
     const wrapped = yield* Effect.tryPromise({
       try: () => wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
-      catch: () => cliError("Failed to wrap the master key for the handoff (crypto error)"),
+      catch: () => cliError("Failed to wrap the master key (crypto error)"),
     });
     if (!wrapped.ok) {
-      return yield* Effect.fail(cliError("Failed to wrap the master key for the handoff"));
+      return yield* Effect.fail(cliError("Failed to wrap the master key"));
     }
     return wrapped.value;
   });

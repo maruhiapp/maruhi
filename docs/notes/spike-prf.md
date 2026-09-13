@@ -16,6 +16,7 @@ Status: 2026-09-12 — KL3 K5(パスキー PRF)の前置スパイク。**環境�
 | `create` 時の `prf.eval` は `enabled: true` と `results.first` を返す(Chromium の挙動) | 返る | **検証済み**(仮想認証器)/ 実機・他ブラウザは未検証。**実装はこれに依存しない**(補足 20 裁定 G) |
 | UV(user verification)を持たない認証器: `userVerification: "preferred"` だと `get` の PRF 結果が**黙って欠ける**。`"required"` なら `create` で `NotAllowedError` として明示的に失敗する | 確認 | **検証済み**(仮想認証器) → 実装は `"required"` 固定(裁定 G) |
 | `allowCredentials` に未知の credential id だけを渡した `get` | `NotAllowedError` | **検証済み**(仮想認証器) |
+| `prf.evalByCredential`(credential ごとの salt。`allowCredentials` 複数)での `get` | 成立、値は `eval.first` と一致 | **検証済み**(仮想認証器) |
 | Bun の `import … with { type: "text" }` による HTML / JS の同梱 | `bun run` / `bun build --target=bun` / `--compile` の 3 経路でバンドルされる。ただし **vitest(Vite)が `.html` の import を変換できず、`bun-types` が `*.html` を `HTMLBundle` 型に取る** | **検証済み** → 採らない(裁定 C: TS の文字列定数) |
 
 ## 1. スパイク 1 — リスナー(Bun + `node:http`)
@@ -76,6 +77,7 @@ navigator.credentials.get({ publicKey: {
 - CTAP2 hmac-secret は UV の有無で別の出力を持ち、Chromium は UV 無しでは PRF 結果を返さない。**`"required"` に固定**すれば「登録できたのに復元で PRF が返らない」形を作らない(失敗が登録時点で見える)。
 - `allowCredentials` を渡す `get` が成立するので、復元では台帳の `credentialIdHex` 全件を渡し、応答の `rawId` で wrap 行を選べる(補足 20 裁定 F)。
 - 2 回目の POST は 404(1 回限りの消費が Chromium からの `fetch` でも成立)。
+- **`prf.evalByCredential`**(2026-09-13 追試): `allowCredentials` に 2 件(未知 id + 本物)を渡し、credential ごとに別 salt を `evalByCredential`(キー = credential id の base64url)で指定した `get` は、本物の credential で成立し、`results.first` は同 salt の `eval.first` と一致した。実装の復元経路(passkey-page.ts の `recover`)はこの形を使う(1 件でも同じ)。
 - ページの `fetch` は `credentials` 無し・同一オリジンで、`Origin` ヘッダは `http://localhost:<port>` が付く(リスナーの完全一致検査が通る)。
 
 ## 3. 未検証(所有者の後回し K0 の対象 — 実機が要る)

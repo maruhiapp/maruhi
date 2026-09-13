@@ -106,6 +106,12 @@ export interface TestEnv {
   /** openBrowser の成否を偽装する(既定は成功)。 */
   setBrowserOpenSucceeds(succeeds: boolean): void;
   /**
+   * openBrowser をブラウザの代わりに務める(passkey — 補足 20 裁定 J)。ハンドラは
+   * CLI がページの POST を待っている間に走るので、渡された URL へ fetch で応答
+   * できる。戻り値は「開けたか」。設定すると setBrowserOpenSucceeds より優先
+   */
+  setBrowserOpenHandler(handler: (url: string) => Promise<boolean>): void;
+  /**
    * `maruhi agent` の子を偽装する(既定は exit 0)。ハンドラは子が生きている
    * 間に走る = agent のソケットが聞いている間なので、ここから接続して
    * 保持先を検査できる。
@@ -159,6 +165,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const promptResponses: (string | (() => string))[] = [];
   const browserOpens: string[] = [];
   let browserOpenSucceeds = true;
+  let browserOpenHandler: ((url: string) => Promise<boolean>) | null = null;
   const sessionCalls: SessionCall[] = [];
   let sessionHandler: (call: SessionCall) => Promise<number> = sessionExitsZero;
   let stdin: Uint8Array = new Uint8Array(0);
@@ -271,8 +278,16 @@ export async function makeTestEnv(): Promise<TestEnv> {
       stderrIsTerminal: () => stderrIsTerminal,
       colorEnabled: () => colorEnabled,
       openBrowser: (url) =>
-        Effect.sync(() => {
+        Effect.promise(async () => {
           browserOpens.push(url);
+          if (browserOpenHandler !== null) {
+            // ブラウザ役はページの POST を CLI の待機中に行う必要があるので、
+            // 完了を待たずに「開いた」を返す。ハンドラの reject は握らない
+            // (vitest が unhandled rejection としてテストを落とす — 5 分の
+            // タイムアウト待ちにしない)。openBrowser 自体は本番でも起動の成否しか返さない
+            void browserOpenHandler(url);
+            return true;
+          }
           return browserOpenSucceeds;
         }),
     }),
@@ -375,6 +390,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setBrowserOpenSucceeds(succeeds) {
       browserOpenSucceeds = succeeds;
+    },
+    setBrowserOpenHandler(handler) {
+      browserOpenHandler = handler;
     },
     setSessionHandler(handler) {
       sessionHandler = handler;
