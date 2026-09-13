@@ -881,7 +881,7 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 >
 > Requirements: a browser and authenticator that support the WebAuthn PRF extension with user verification (**table: filled in after hardware verification**). Remote terminals (SSH, dev containers, Codespaces): forward the port shown to your local machine and open the URL there (**exact steps: filled in after verification**). Passkey ceremonies are refused on non-interactive terminals and in AI agent environments, like the other key ceremonies.
 
-### 補足 21: IV 設計録 — 招待儀式の軽量化(IV1 リンク束縛 + IV2 身元の裏付け。2026-09-13 — フェーズ 1 設計セッション。所有者承認待ち)
+### 補足 21: IV 設計録 — 招待儀式の軽量化(IV1 リンク束縛 + IV2 身元の裏付け。2026-09-13 — フェーズ 1 設計セッション → 同日承認・フェーズ 2 実装済み。実装録は 21-5)
 
 IV = 補足 18 の I1 + I2 を KL3(補足 19 / 20)と同じ仕様改訂サイクルで進める回。仕様改訂の起草は docs/notes/iv-spec-drafts.md(CRYPTO_SPEC §6.3 (a) / §6.5 / §11 / §14.3、AUTH_SPEC §15、AUDIT_SPEC §3.2)。本補足は設計の全体像・裁定の反復記録・実装分割・承認依頼項目を持つ。**正本 3 文書はまだ触っていない**(承認後の IV-K1 で反映)。
 
@@ -1032,7 +1032,36 @@ member add
 15. **実装分割 IV-K0〜K6 と順序**(21-3)、IV1 → IV2 を別 PR、版番号 CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft
 16. **hosted Web は触らない**: 着地ページ不変、招待の発行 / 受諾は引き続き CLI のみ(ADR-0018 の境界どおり)
 
-承認までフェーズ 2(実装)には入らない。
+承認までフェーズ 2(実装)には入らない(→ 2026-09-13 に承認済み。以下 21-5)。
+
+#### 21-5. 実装録(フェーズ 2 — 2026-09-13)
+
+**K1(仕様反映)**: 承認と同日に 3 正本へ反映(CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft)+ CLAUDE.md の外部送信の解釈 + ADR-0016 決定 7 の追記。K4 で **§15-3 のリンク形式に `i=<invite_id>` を追加**した(発行署名が invite_id を覆うため、受諾側の署名再構成に要る — 起草時の見落とし。iv-spec-drafts / 21-1 の図も同時に補正)。
+
+**K2(crypto + ベクター)**: `invite-accept-signature.json` の再生成(v2 — ドメイン `invite-accept-v2`、`link_pub_hex` 束縛、受諾署名 + リンク署名の併記、負例 9 + リンク署名の負例 8)と `invite-link.json` の新設(種 → 鍵ペア、発行署名の正例 + 負例 12、OpenSSH 符号化 / 解析の正例・負例)を**先行コミット**(README 規約 26 = 既存ベクター不変の意図的な例外)。実装は `internal.package/invite-accept-sign.ts`(v2 + `signInviteLink` / `verifyInviteLinkSignature`)と新規 `invite-link.ts`(`deriveInviteLinkKeyPair` = RFC 8410 PKCS#8 接頭辞 + 種の import、`signInviteIssue` / `verifyInviteIssueSignature`、`encodeOpenSshEd25519PublicKey` / `parseOpenSshEd25519PublicKey`)。裁定:
+- **ベクター `legacy-domain`** は「実装が v1 バイト列を組めない」ため、**v1 ドメインで作った有効な署名を v2 検証器に提示する**負例として定義した(旧受諾ブロックが新検証器を通らないことの固定)
+- **OpenSSH 解析は厳格**: `ssh-ed25519` のみ、base64 は標準アルファベット + 正しいパディング、3 つ目以降のフィールド(コメント)は無視、種別文字列の大文字・鍵長違い・`sk-ssh-ed25519@openssh.com` は拒否
+- エラー kind は `InviteLinkSignatureInvalid` / `InviteIssueSignatureInvalid` の 2 つを追加(core の Effect ラッパーも追随)。1143 チェック(node / workerd / Bun / browser)通過。**人間レビュー待ち**(packages/crypto)
+
+**K3(サーバー)**: 追加型マイグレーション(`invitations` に `link_pub` UNIQUE / `head_hash` / `head_seq` / `issue_signature` / `link_signature`。旧 `token_hash` は legacy = SHA-256(link_pub))。api-schema は発行 body `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }`(id はクライアント採番の ULID)/ 応答 `{ expiresAtMs }`(トークンは返らない)/ 受諾 body の 5 フィールド / 一覧行の `issuance`(旧行は null)+ `linkSignatureHex`。裁定:
+- **受諾の判定順** 400 → 401 → 403 → 404(未知の link_pub)→ 410(`accepted` / `revoked` / `expired` / **`unbound`** = IV 改訂前の行)→ 422(`which: "link"` → `"accept"` の順 — リンク署名を先に検証)→ CAS
+- **409 `InviteConflict { field: id | linkPub }`**: 事前 SELECT で衝突を判定し、UNIQUE 違反の握り潰しを避ける(D1 のエラーメッセージ依存のフォールバックも残す)
+- **発行署名はサーバーで検証しない**(検証者は招待者自身と受諾者 — 裁定 A ⑦)。テストは `invites-accept.test.ts` を書き直し(リンク署名の偽造・別リンク鍵・旧行の 410・strict 拒否)。671 件通過
+
+**K4(CLI — IV1)**: `invite-link.ts` v2(`#v=2&i&k&p&h&s&iu&ie&is&r[&il]&sig`。種は `Redacted` のまま組み立て、剥がすのは表示ゲート通過後の 1 箇所)。`invite create` は `openProject`(master 鍵必須 — 発行署名のため)へ移動し、手元の鍵がチェーン上の自分の鍵と違えば発行前に拒否。`invite accept` はリンクのみ(生トークン・`v=1` は usage エラー → 再発行を案内)、発行署名 → 相互確認 → 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカー(sig 公開鍵を併置)。`member add` / `invite list` は行の発行文をチェーン導出の招待者鍵で検証(ピンに依存しない)→ ピン突合 → リンク署名 → 受諾署名 → 儀式。裁定:
+- **署名済みの p / r と応答の不一致はエラー**(旧: role は警告)
+- **アンカー検査**(`context.ts`)は FP に加えて `is` の一致を検査し、旧ピン(`inviterSigPubHex` 無し)は FP のみで通す
+- 発行ピンの真実源移行に伴い、ピン無しは note(拒否しない)
+
+**K5(CLI — IV2)**: `github-signing-keys.ts`(`GET /users/{login}/ssh_signing_keys` 無認証・ホスト固定・login のみ送信・10 秒タイムアウト。結果は `match / not-registered / no-user / unavailable` の閉じた型で **CliError にしない** = 裏付け元は儀式を省く根拠にしかならない)、`key-publish.ts`(`key publish [--gh]` + 鍵生成直後の `offerGithubRegistration`)、`identityBacking`(`github-signing-keys` 既定 / `none`。誤記は既定へ倒す = 照合が消える方向へ倒さない)、`invite create --github` / `invite accept --from` / `member add --github`。サーバーは `/auth/me` に `providerLogin`(optionalKey — 自己情報のみ)を足し、リンクの `il` の材料にした。裁定:
+- **受諾者側の充足形 4**: 発行署名 OK + `is` ∈ GitHub(`il`).signing_keys → `--from` の一致で無対話、対話は login を名指しする yes。`--from` と `il` の**不一致は拒否**。エージェント環境は `--from` 必須(yes の代行はしない)。非端末は儀式へ戻る(note)
+- **招待者側の充足形 4**: 発行文・両署名 OK + 受諾鍵 ∈ GitHub(宛先).signing_keys → 確認入力なし(エージェント環境でも通す — 名指しは発行時の作為)。`--expect-fingerprint` 併用は照合に加えて要求。**未登録は二択**(対話端末 + フラグ無しのときだけ: 空応答 = 止まって「`key publish` を頼んで再実行」、yes = 儀式へ)。取得不能・`none` は note + 儀式
+- **仕様との差分(要判断)**: `member add` の宛先 login の「対話入力」(AUTH_SPEC §15-3・21-4 項目 8)は**設けなかった** — 儀式の再入力プロンプトと混ざり、打ち間違いが別人の GitHub への問い合わせになる。宛先は `invite create --github`(ピン)か `member add --github` の明示に限る。仕様文言を合わせるか、対話入力を後で足すかは所有者の判断
+- **機械照合の成功は指紋帳に記録しない**(裁定 D ②)。`key publish` の stdout は鍵行だけ(`| pbcopy` で使える)
+- **K0 は未実施**(本環境は api.github.com をプロキシが遮断)。前提と所有者のチェックリストは docs/notes/spike-iv2.md。GitHub の実応答で補正する箇所も同ノートに列挙
+- テスト: `identity-backing.test.ts`(問い合わせの 5 形・`key publish` / `--gh`・登録の導線・config)、invite / member-add の充足形 4 経路、ヘルプ golden。`bun run check` 通過(124 ファイル / 3105 件)
+
+**K6(docs)**: 新ページ `/docs/invite-a-teammate`(3 コマンドの表 → `key publish` → 発行 / 受諾 / 追加 → `identityBacking none` → 12 語のフォールバック)、getting-started の Next steps から導線、ROADMAP IV 行。**残**: K0 の実測(所有者)→ 文面補正、crypto の人間レビュー、PR 化(所有者の指示待ち)。
 
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
