@@ -1,15 +1,17 @@
-// 招待 API の HttpApi 定義(AUTH_SPEC §15)。
+// 招待 API の HttpApi 定義(AUTH_SPEC §15 — 2026-09-13 IV 改訂)。
 //
 // - 発行 / 一覧 / 失効はプロジェクト配下(認可 = トークンスコープ admin ×
 //   チェーン role admin 以上。非メンバーへは一律 404 — §11-2)
-// - 受諾はプロジェクト配下でない経路(§15-2): トークン保持が対象招待への
-//   capability であり、リンクのフラグメントからトークンだけがサーバーへ渡る。
-//   未知トークンは 404(InviteNotFound — プロジェクト座標を運ばない)、
-//   使用不能は 410(InviteGone)
+// - 発行はクライアントが招待 id を採番し、リンク公開鍵・検証済みヘッド・role に
+//   対する**発行署名**(CRYPTO_SPEC §6.5)を発行文として渡す。サーバーは形式検査と
+//   UNIQUE 違反(409)のみで発行署名を検証しない(検証者は招待者自身と受諾者)。
+//   応答は期限だけで、**サーバーは招待の秘密を一切返さない**(旧 token は廃止)
+// - 受諾はプロジェクト配下でない経路(§15-2): リンク鍵の保持(= リンク署名を
+//   作れること)が対象招待への capability であり、リンクのフラグメントからは
+//   公開鍵だけがサーバーへ渡る。未知の link_pub は 404(InviteNotFound —
+//   プロジェクト座標を運ばない)、使用不能は 410(InviteGone)、署名は 422
 // - 全エンドポイント認証必須(AuthMiddleware が 401 / CSRF 403 を担う。
 //   一覧 GET は監査を書かない = 状態を持たないため §11-4 の追加 CSRF 対象外)
-// - トークン生値がワイヤに現れるのは発行応答の `token` と受諾要求の `token`
-//   のみ(DB にはハッシュのみ — §15-1)
 
 import { ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -18,6 +20,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/ht
 import { AuthMiddleware } from "./auth-middleware.ts";
 import {
   ForbiddenError,
+  InviteConflictError,
   InviteGoneError,
   InviteNotFoundError,
   InvitePendingLimitError,
@@ -25,7 +28,15 @@ import {
   InviteSignatureInvalidError,
   ProjectNotFoundError,
 } from "./errors/index.ts";
-import { EncPubHex, InviteAcceptSignatureHex, PublicKeyHex, Sha256Hex } from "./hex.ts";
+import {
+  EncPubHex,
+  InviteAcceptSignatureHex,
+  InviteIssueSignatureHex,
+  InviteLinkSignatureHex,
+  PositiveInt,
+  PublicKeyHex,
+  Sha256Hex,
+} from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
@@ -34,32 +45,39 @@ export const InviteRoleSchema = Schema.Literals(["reader", "member", "admin"]);
 /** 保存上の招待状態(期限切れは expiresAtMs からの導出 — §15-1)。 */
 export const InviteStatusSchema = Schema.Literals(["pending", "accepted", "completed", "revoked"]);
 
-/**
- * 招待トークンのワイヤ形式: `maruhi_inv_` + Base62 乱数(256-bit 相当、43 文字)。
- * PAT(§6 の `maruhi_pat_`)と同じ規律 — プレフィックスで secret scanning・
- * 種別判別に対応し、ハッシュは提示文字列全体の SHA-256。形式不正は Schema 境界の
- * 400 で落とす(トークン形式は公開情報であり存在秘匿に関与しない)。
- */
-export const InviteTokenSchema = Schema.String.check(
-  Schema.isPattern(/^maruhi_inv_[0-9A-Za-z]{43}$/, {
-    description: "invite token (maruhi_inv_ + 43 Base62 chars)",
-  }),
+/** 招待 id(クライアント採番の ULID — Crockford Base32 26 文字。発行署名が覆う)。 */
+export const InviteIdSchema = Schema.String.check(
+  Schema.isPattern(/^[0-9A-HJKMNP-TV-Z]{26}$/, { description: "invite id (ULID)" }),
 );
+
+/**
+ * 発行文(CRYPTO_SPEC §6.5): リンク公開鍵・発行時点の招待者の検証済みヘッド・
+ * 発行署名。サーバーは保存・配布するだけで検証しない。招待者クライアントは
+ * `add_member` の前に自分の sig 公開鍵で再検証する(発行ピンに依存しない)。
+ */
+export const InviteIssuanceSchema = Schema.Struct({
+  linkPubHex: PublicKeyHex,
+  headHashHex: Sha256Hex,
+  headSeq: PositiveInt,
+  issueSignatureHex: InviteIssueSignatureHex,
+});
 
 /** 受諾ブロック(status が accepted 以降 — §15-1)。 */
 export const InviteAcceptanceSchema = Schema.Struct({
   inviteeUserId: Schema.String,
   inviteeEncPubHex: EncPubHex,
   inviteeSigPubHex: PublicKeyHex,
-  /** CRYPTO_SPEC §6.5 の受諾署名。招待者クライアントが独立検証する */
+  /** CRYPTO_SPEC §6.5 の受諾署名(受諾者のチェーン sig 鍵)。招待者クライアントが独立検証する */
   signatureHex: InviteAcceptSignatureHex,
+  /** CRYPTO_SPEC §6.5 のリンク署名(リンク鍵)。同じバイト列への共同署名 */
+  linkSignatureHex: InviteLinkSignatureHex,
   acceptedAtMs: Schema.Number,
 });
 
 /**
- * 一覧の 1 行。`tokenHashHex` と受諾ブロックは招待者クライアントの受諾署名
- * 再検証(CRYPTO_SPEC §6.5 — signed_bytes の再構成材料)と FP ワード表示に
- * 必要。トークン生値は含まれない(ハッシュから生値は導けない)。
+ * 一覧の 1 行。発行文と受諾ブロックは招待者クライアントの再検証(CRYPTO_SPEC
+ * §6.5 — signed_bytes の再構成材料)と FP ワード表示に必要。`issuance` が null の
+ * 行は IV 改訂前の発行(link_pub 無し)で受諾不能(失効を促す)。
  */
 export const InvitationSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -67,17 +85,24 @@ export const InvitationSummarySchema = Schema.Struct({
   role: InviteRoleSchema,
   status: InviteStatusSchema,
   inviterUserId: Schema.String,
-  tokenHashHex: Sha256Hex,
+  issuance: Schema.NullOr(InviteIssuanceSchema),
   createdAtMs: Schema.Number,
   expiresAtMs: Schema.Number,
   acceptance: Schema.NullOr(InviteAcceptanceSchema),
 });
 
-/** 発行応答。`token` はここで一度だけ返る(以後はハッシュのみ — §15-1)。 */
-export const InviteIssueResultSchema = Schema.Struct({
-  id: Schema.String,
-  token: InviteTokenSchema,
+/** 発行の要求(§15-2): クライアント採番の id + 発行文。 */
+export const InviteIssuePayloadSchema = Schema.Struct({
+  id: InviteIdSchema,
   role: InviteRoleSchema,
+  linkPubHex: PublicKeyHex,
+  headHashHex: Sha256Hex,
+  headSeq: PositiveInt,
+  issueSignatureHex: InviteIssueSignatureHex,
+});
+
+/** 発行応答。期限のみ(トークン相当の秘密は無い — §15-1)。 */
+export const InviteIssueResultSchema = Schema.Struct({
   expiresAtMs: Schema.Number,
 });
 
@@ -94,12 +119,13 @@ export const InviteAcceptResultSchema = Schema.Struct({
 /**
  * Invitation endpoints (AUTH_SPEC §15-2)。
  *
- * - `issue`: create one invitation; the raw token is returned exactly once.
- *   role = admin の招待の発行は owner のみ(CRYPTO_SPEC §6.2 の add_member
- *   権限表と同水準)。
- * - `accept`: single-use CAS(pending → accepted)。受諾署名(CRYPTO_SPEC §6.5)
- *   はサーバーが保存行 + 呼び出し主体から signed_bytes を再構成して検証する。
- *   鍵は形式検査のみ(メンバー鍵一意性の真実源は add_member のチェーン合意規則)。
+ * - `issue`: create one invitation from a client-generated id and issuance
+ *   statement; nothing secret is returned. role = admin の招待の発行は owner
+ *   のみ(CRYPTO_SPEC §6.2 の add_member 権限表と同水準)。
+ * - `accept`: single-use CAS(pending → accepted)。リンク署名と受諾署名
+ *   (CRYPTO_SPEC §6.5)はサーバーが保存行 + 呼び出し主体から signed_bytes を
+ *   再構成して検証する。鍵は形式検査のみ(メンバー鍵一意性の真実源は
+ *   add_member のチェーン合意規則)。
  * - `list` / `revoke`: 管理面。revoke は pending | accepted に効く(completed /
  *   revoked へは 410)。
  */
@@ -108,11 +134,12 @@ export const invitesGroup = HttpApiGroup.make("invites")
     HttpApiEndpoint.post("issue", "/projects/:projectId/invites", {
       params: { projectId: ProjectIdSchema },
       // strict 受理(§12-10 (1) — 招待の作成・受諾は §15-2 の鍵宣言クラス)
-      payload: strictPayload(Schema.Struct({ role: InviteRoleSchema })),
+      payload: strictPayload(InviteIssuePayloadSchema),
       success: InviteIssueResultSchema,
       error: [
         ProjectNotFoundError,
         ForbiddenError,
+        InviteConflictError,
         InvitePendingLimitError,
         InviteRateLimitedError,
       ],
@@ -122,10 +149,11 @@ export const invitesGroup = HttpApiGroup.make("invites")
     HttpApiEndpoint.post("accept", "/invites/accept", {
       payload: strictPayload(
         Schema.Struct({
-          token: InviteTokenSchema,
+          linkPubHex: PublicKeyHex,
           encPubHex: EncPubHex,
           sigPubHex: PublicKeyHex,
-          signatureHex: InviteAcceptSignatureHex,
+          acceptSignatureHex: InviteAcceptSignatureHex,
+          linkSignatureHex: InviteLinkSignatureHex,
         }),
       ),
       success: InviteAcceptResultSchema,

@@ -454,16 +454,24 @@ describe("リース請求(§14)", () => {
 describe("招待の作成・受諾(§15-2)", () => {
   it("invite issue rejects an unknown field with 400", async () => {
     const send = sendJson("POST", `${BASE}/projects/${projectId}/invites`, bearer(token(OWNER)));
-    await expectStrictReject(send, { role: "member" });
+    await expectStrictReject(send, {
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      role: "member",
+      linkPubHex: "ab".repeat(32),
+      headHashHex: "cd".repeat(32),
+      headSeq: 3,
+      issueSignatureHex: "00".repeat(64),
+    });
   });
 
   it("invite accept rejects an unknown field with 400", async () => {
     const send = sendJson("POST", `${BASE}/invites/accept`, bearer(token(OWNER)));
     await expectStrictReject(send, {
-      token: `maruhi_inv_${"a".repeat(43)}`,
+      linkPubHex: "ab".repeat(32),
       encPubHex: "ab".repeat(32),
       sigPubHex: "cd".repeat(32),
-      signatureHex: "00".repeat(64),
+      acceptSignatureHex: "00".repeat(64),
+      linkSignatureHex: "11".repeat(64),
     });
   });
 });

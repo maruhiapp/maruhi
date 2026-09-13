@@ -22,13 +22,16 @@ import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
+import type { IdentityBacking } from "./config.ts";
 import { displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
+import { offerGithubRegistration } from "./key-publish.ts";
 import { Keychain, serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { logNote } from "./notice.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
+import type { ProcessRunner } from "./run.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
@@ -48,7 +51,13 @@ const keygenFailed = () => cliError("Failed to generate the keypair (crypto erro
 export function keyGenerateOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  /** 裏付け元(CRYPTO_SPEC §6.5): `none` 以外なら生成直後に GitHub 登録の導線を出す。 */
+  readonly identityBacking: IdentityBacking;
+}): Effect.Effect<
+  void,
+  CliError,
+  Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
+> {
   return Effect.gen(function* () {
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
@@ -128,6 +137,10 @@ export function keyGenerateOp(input: {
       "losing this key means you can no longer decrypt values in the projects you joined. The recovery code is the only way to restore it",
     );
     yield* issueRecoveryAfterKeygen({ session: input.session, client: input.client });
+    // 登録の導線(補足 21 裁定 G ⑥ (b)): リカバリーコードの儀式が終わってから聞く
+    if (input.identityBacking !== "none") {
+      yield* offerGithubRegistration({ session: input.session });
+    }
   });
 }
 

@@ -1,96 +1,91 @@
-// 招待リンクの組み立て・解釈(AUTH_SPEC §15-3)。
+// 招待リンクの組み立て・解釈(AUTH_SPEC §15-3 — 2026-09-13 IV 改訂・v2)。
 //
 // リンク形式:
-//   https://<web-origin>/invite#v=1&t=<token>&p=<project_id>&h=<head_hash_hex>
-//     &s=<head_seq>&iu=<inviter_user_id>&if=<inviter_key_fp_hex>&r=<role>
+//   https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>
+//     &h=<head_hash_hex>&s=<head_seq>&iu=<inviter_user_id>&ie=<inviter_enc_pub_hex>
+//     &is=<inviter_sig_pub_hex>&r=<role>[&il=<inviter_github_login>]&sig=<issue_signature_hex>
 //
-// フラグメント(# 以降)はサーバーへ送信されない。`p/h/s` は招待リンクアンカー
-// (CRYPTO_SPEC §6.3 (a))、`iu/if` は相互確認(§6.5)の照合材料、`r` は付与予定
-// role の表示専用パラメータ(省略可。真実源は招待レコード)。
+// フラグメント(# 以降)はサーバーへ送信されない。`k` はリンク鍵の種(CRYPTO_SPEC
+// §6.5 — 受諾側が Ed25519 鍵ペアを導出してリンク署名を作る。サーバーは受け取らない)、
+// `i` / `p` / `h` / `s` / `r` / `iu` / `ie` / `is` は発行文(発行署名 `sig` が覆う —
+// 招待者のチェーン sig 鍵)、`il` は裏付け元(GitHub)の照合材料(自己申告・署名外・
+// 省略可)。旧 `if`(FP)は廃止し、FP は `ie` ‖ `is` から導出する。
 //
-// <web-origin> には CLI セッションの server origin を使う(B1b 裁定):
-// 招待は 7 日で失効するため(§15-1)、Web 受諾画面が別 origin に載る将来が
-// 来ても、その時点で旧リンクは全て失効済みであり移行問題は構造的に生じない。
-// 解釈側は origin に依存しない(フラグメントのみを読む)。
+// <web-origin> には CLI セッションの server origin を使う(B1b 裁定)。解釈側は
+// origin に依存しない(フラグメントのみを読む)。
 //
-// `t=` は招待トークンの生値なので `Redacted` で運ぶ。組み立て済みリンクも
-// トークンを内包する以上ただの表示可能文字列ではないため `Redacted<string>`
-// で返し、剥がすのは表示の直前(invite.ts — エージェントゲートの後ろ)だけに
-// 限る。
+// `k` は招待の秘密なので `Redacted` で運ぶ。組み立て済みリンクも種を内包する以上
+// ただの表示可能文字列ではないため `Redacted<string>` で返し、剥がすのは表示の
+// 直前(invite.ts — エージェントゲートの後ろ)だけに限る。`v=1` リンクと生トークン
+// は受け付けない(互換経路を作らない 2026-09-13 所有者裁定)。
 
 import { isProjectId } from "@maruhi/core";
 import { Redacted } from "effect";
 
-/** 招待トークンのワイヤ形式(api-schema の InviteTokenSchema と同一)。 */
-const INVITE_TOKEN = /^maruhi_inv_[0-9A-Za-z]{43}$/;
-
 const HEX_64 = /^[0-9a-f]{64}$/;
-const HEX_32 = /^[0-9a-f]{32}$/;
+const HEX_128 = /^[0-9a-f]{128}$/;
 const ROLES = ["reader", "member", "admin"] as const;
+/** 招待 id(ULID — Crockford Base32 26 文字。api-schema の InviteIdSchema と同一)。 */
+const INVITE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** GitHub login(1〜39 文字の英数字とハイフン。先頭・末尾はハイフン不可)。 */
+export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 /** 招待で付与できる role(owner は招待経由で付与しない — §15-1)。 */
 export type InviteRole = (typeof ROLES)[number];
 
-/** リンクが運ぶアンカー + 相互確認材料(§15-3 の p/h/s/iu/if)。 */
+/** リンクが運ぶ発行文 + 種 + 裏付け元の照合材料(§15-3 の v2 パラメータ)。 */
 export interface InviteLinkData {
-  readonly token: Redacted.Redacted<string>;
+  readonly inviteId: string;
+  /** リンク鍵の種(32 バイト hex — 招待の秘密)。 */
+  readonly linkSeedHex: Redacted.Redacted<string>;
   readonly projectId: string;
   readonly headHashHex: string;
   readonly headSeq: number;
   readonly inviterUserId: string;
-  readonly inviterKeyFingerprintHex: string;
-  /** 表示専用の付与予定 role(r — 省略可。省略時は null)。 */
-  readonly role: InviteRole | null;
+  readonly inviterEncPubHex: string;
+  readonly inviterSigPubHex: string;
+  readonly role: InviteRole;
+  /** 招待者の GitHub login(自己申告・署名外。省略時は null)。 */
+  readonly inviterLogin: string | null;
+  readonly issueSignatureHex: string;
 }
-
-/** `maruhi invite accept <link|token>` の入力の解釈結果。 */
-export type InviteAcceptInput =
-  | { readonly kind: "link"; readonly link: InviteLinkData }
-  | { readonly kind: "token"; readonly token: Redacted.Redacted<string> };
 
 /**
  * §15-3 のリンクを組み立てる(パラメータ順は仕様の記載順で固定)。
  *
- * 戻り値もトークンを内包するため `Redacted` のまま返す。剥がすのは表示側。
+ * 戻り値も種を内包するため `Redacted` のまま返す。剥がすのは表示側。
  */
 export function buildInviteLink(input: {
   readonly origin: string;
-  readonly token: Redacted.Redacted<string>;
-  readonly projectId: string;
-  readonly headHashHex: string;
-  readonly headSeq: number;
-  readonly inviterUserId: string;
-  readonly inviterKeyFingerprintHex: string;
-  readonly role: InviteRole;
+  readonly link: InviteLinkData;
 }): Redacted.Redacted<string> {
-  const params = [
-    ["v", "1"],
+  const { link } = input;
+  const params: (readonly [string, string])[] = [
+    ["v", "2"],
+    ["i", link.inviteId],
     // 剥がす理由: リンク文字列そのものの組み立て。結果は再び Redacted で包み、
     // 生の文字列がこの関数の外へ出ないようにする
-    ["t", Redacted.value(input.token)],
-    ["p", input.projectId],
-    ["h", input.headHashHex],
-    ["s", String(input.headSeq)],
-    ["iu", input.inviterUserId],
-    ["if", input.inviterKeyFingerprintHex],
-    ["r", input.role],
-  ] as const;
+    ["k", Redacted.value(link.linkSeedHex)],
+    ["p", link.projectId],
+    ["h", link.headHashHex],
+    ["s", String(link.headSeq)],
+    ["iu", link.inviterUserId],
+    ["ie", link.inviterEncPubHex],
+    ["is", link.inviterSigPubHex],
+    ["r", link.role],
+    ...(link.inviterLogin === null ? [] : [["il", link.inviterLogin] as const]),
+    ["sig", link.issueSignatureHex],
+  ];
   const fragment = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
   return Redacted.make(`${input.origin}/invite#${fragment}`, { label: "invite-link" });
 }
 
 /** 解釈失敗の理由(呼び出し側がエラーメッセージへ写す)。 */
 export type InviteInputRejection =
-  | "not-a-link-or-token"
+  | "not-a-link"
   | "unsupported-version"
   | "missing-or-invalid-fragment-params";
 
-/**
- * `<link|token>` 入力の解釈。リンクは必須パラメータの欠落・形式不正を
- * **黙って生トークン扱いへ降格させず**エラーにする(壊れたリンクをアンカー
- * なし受諾へ滑り込ませない)。`r` は省略可、ただし存在する場合は正しい role
- * であることを要求する(表示専用でも壊れた値は改竄・破損の兆候)。
- */
 /** パターン検証つきのフラグメントパラメータ取得(不一致 = null)。 */
 function fragmentParam(params: URLSearchParams, name: string, pattern: RegExp): string | null {
   const value = params.get(name);
@@ -107,68 +102,106 @@ function parseHeadSeq(params: URLSearchParams): number | null {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-/** `r=`(表示専用 role)の解釈: 省略 = null、存在するなら正しい role のみ。 */
-function parseLinkRole(params: URLSearchParams): InviteRole | null | "invalid" {
-  const text = params.get("r");
+/** `il=`(招待者の GitHub login)の解釈: 省略 = null、存在するなら login の形のみ。 */
+function parseInviterLogin(params: URLSearchParams): string | null | "invalid" {
+  const text = params.get("il");
   if (text === null) {
     return null;
   }
-  return ROLES.find((known) => known === text) ?? "invalid";
+  return GITHUB_LOGIN.test(text) ? text : "invalid";
 }
 
-/** フラグメント(v=1 検証済み)からのリンクデータの解釈(不正 = null)。 */
+/** 必須の文字列パラメータ(名前 → 形式)。 */
+const STRING_PARAMS = {
+  i: INVITE_ID,
+  k: HEX_64,
+  h: HEX_64,
+  iu: /^[\s\S]{1,1024}$/,
+  ie: HEX_64,
+  is: HEX_64,
+  sig: HEX_128,
+} as const;
+
+type StringParams = Readonly<Record<keyof typeof STRING_PARAMS, string>>;
+
+/** 必須文字列パラメータの一括取得(1 つでも欠落・不正なら null)。 */
+function stringParams(params: URLSearchParams): StringParams | null {
+  const out: Partial<Record<keyof typeof STRING_PARAMS, string>> = {};
+  for (const [name, pattern] of Object.entries(STRING_PARAMS) as [
+    keyof typeof STRING_PARAMS,
+    RegExp,
+  ][]) {
+    const value = fragmentParam(params, name, pattern);
+    if (value === null) {
+      return null;
+    }
+    out[name] = value;
+  }
+  return out as StringParams;
+}
+
+/** `p=`(プロジェクト ID)の解釈。 */
+function parseProjectId(params: URLSearchParams): string | null {
+  const value = params.get("p");
+  return value !== null && isProjectId(value) ? value : null;
+}
+
+/** フラグメント(v=2 検証済み)からのリンクデータの解釈(不正 = null)。 */
 function parseLinkData(params: URLSearchParams): InviteLinkData | null {
-  const token = fragmentParam(params, "t", INVITE_TOKEN);
-  const projectId = params.get("p");
-  const headHashHex = fragmentParam(params, "h", HEX_64);
+  const strings = stringParams(params);
+  const projectId = parseProjectId(params);
   const headSeq = parseHeadSeq(params);
-  const inviterUserId = fragmentParam(params, "iu", /^[\s\S]{1,1024}$/);
-  const inviterKeyFingerprintHex = fragmentParam(params, "if", HEX_32);
-  const role = parseLinkRole(params);
+  const role = ROLES.find((known) => known === params.get("r")) ?? null;
+  const inviterLogin = parseInviterLogin(params);
   if (
-    token === null ||
+    strings === null ||
     projectId === null ||
-    !isProjectId(projectId) ||
-    headHashHex === null ||
     headSeq === null ||
-    inviterUserId === null ||
-    inviterKeyFingerprintHex === null ||
-    role === "invalid"
+    role === null ||
+    inviterLogin === "invalid"
   ) {
     return null;
   }
   return {
-    token: Redacted.make(token, { label: "invite-token" }),
+    inviteId: strings.i,
+    linkSeedHex: Redacted.make(strings.k, { label: "invite-link-seed" }),
     projectId,
-    headHashHex,
+    headHashHex: strings.h,
     headSeq,
-    inviterUserId,
-    inviterKeyFingerprintHex,
+    inviterUserId: strings.iu,
+    inviterEncPubHex: strings.ie,
+    inviterSigPubHex: strings.is,
     role,
+    inviterLogin,
+    issueSignatureHex: strings.sig,
   };
 }
 
-export function parseInviteAcceptInput(
-  raw: Redacted.Redacted<string>,
-): InviteAcceptInput | { readonly kind: "rejected"; readonly reason: InviteInputRejection } {
-  // 剥がす理由: リンク / トークンの構文解釈にはバイト列そのものが要る。入力は
-  // 引数層(`Argument.redacted` — ADR-0016)から
-  // Redacted のまま届き、生値はこの関数の外へ出ない — トークンは再び Redacted で
-  // 包んで返し、リンクの他パラメータ(p/h/s/iu/if/r)は非機密メタデータである
+/**
+ * `<link>` 入力の解釈。必須パラメータの欠落・形式不正・旧版(`v=1`)・生トークンは
+ * すべてエラーにする(壊れたリンクをアンカーなし受諾へ滑り込ませない。旧版・
+ * 生トークンは互換経路なし — 再発行を案内する)。
+ */
+export function parseInviteAcceptInput(raw: Redacted.Redacted<string>):
+  | { readonly kind: "link"; readonly link: InviteLinkData }
+  | {
+      readonly kind: "rejected";
+      readonly reason: InviteInputRejection;
+    } {
+  // 剥がす理由: リンクの構文解釈にはバイト列そのものが要る。入力は引数層
+  // (`Argument.redacted` — ADR-0016)から Redacted のまま届き、生値はこの関数の
+  // 外へ出ない — 種は再び Redacted で包んで返し、他のパラメータは公開値である
   const trimmed = Redacted.value(raw).trim();
-  if (INVITE_TOKEN.test(trimmed)) {
-    return { kind: "token", token: Redacted.make(trimmed, { label: "invite-token" }) };
-  }
   const hashIndex = trimmed.indexOf("#");
   if (hashIndex < 0) {
-    return { kind: "rejected", reason: "not-a-link-or-token" };
+    return { kind: "rejected", reason: "not-a-link" };
   }
   const params = new URLSearchParams(trimmed.slice(hashIndex + 1));
   const version = params.get("v");
   if (version === null) {
     return { kind: "rejected", reason: "missing-or-invalid-fragment-params" };
   }
-  if (version !== "1") {
+  if (version !== "2") {
     return { kind: "rejected", reason: "unsupported-version" };
   }
   const link = parseLinkData(params);

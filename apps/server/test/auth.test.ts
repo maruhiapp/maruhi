@@ -392,7 +392,10 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
 
     const me = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(body.token) });
     expect(me.status).toBe(200);
-    expect(((await me.json()) as { userId: string }).userId).toBe("user-cli-0001");
+    const meBody = (await me.json()) as { userId: string; providerLogin?: string };
+    expect(meBody.userId).toBe("user-cli-0001");
+    // 招待リンクの `il` の材料(AUTH_SPEC §15-3 — IV): 本人の GitHub login
+    expect(meBody.providerLogin).toBe("user901");
 
     // 単回発行: 消費済みフローへの再 poll は一様拒否(§4-2)
     const again = await pollCliFlow(started.flowId, started.flowToken);

@@ -1,0 +1,90 @@
+---
+title: Invite a teammate
+description: Add someone to a project with an invite link — the link binds the acceptance to your issuance, and GitHub signing keys let you confirm the acceptor's key without a call.
+sidebar:
+  order: 7
+---
+
+Membership in a maruhi project is a signed entry in the project's membership chain, so adding someone is two steps by two people: the inviter issues a link, the invitee accepts it, and the inviter turns the acceptance into membership. The server relays the invite but cannot forge either side — the link carries a per-invite key that never reaches the server, and the acceptance is signed with it. What the ceremony below is for is the one thing cryptography alone cannot settle: that the key which accepted belongs to the person you meant. Registering your maruhi signing key on GitHub settles it automatically; otherwise a 12-word read-out over a call does.
+
+| Step             | Who     | Command                                                     |
+| ---------------- | ------- | ----------------------------------------------------------- |
+| Issue the invite | Inviter | `maruhi invite create --role member --github <their login>` |
+| Accept it        | Invitee | `maruhi invite accept '<link>' --from <inviter's login>`    |
+| Add the member   | Inviter | `maruhi member add`                                         |
+
+Inviters need the `admin` role or above; only an `owner` can invite an `admin`. All three commands run in the CLI (the web dashboard never issues or accepts invites).
+
+## Before you start: register your signing key on GitHub
+
+maruhi checks a person's key against the SSH **signing keys** published on their GitHub account. Each of you registers your own key once:
+
+```sh
+maruhi key publish           # prints an ssh-ed25519 line and where to paste it
+maruhi key publish --gh      # or: add it through the gh CLI (gh auth login first)
+```
+
+Paste the printed line at `https://github.com/settings/ssh/new` with **Key type = Signing Key**. This is your maruhi signing public key in OpenSSH form — it cannot be used to log in over SSH, and publishing it reveals nothing secret. `maruhi key generate` and a first `maruhi invite accept` offer to do this for you when the `gh` CLI is signed in.
+
+Once both sides are registered, inviting is three commands and no call. Nothing else changes if someone is not registered: the CLI falls back to the 12-word confirmation described at the end.
+
+## 1. Issue the invite (inviter)
+
+```sh
+maruhi invite create --role member --github bob
+```
+
+`--role` is `reader`, `member`, or `admin`. `--github` names the invitee's GitHub login; it is kept only on your machine (never sent to the server) and is what `maruhi member add` checks the acceptance against. The command prints the invite link **once** — the server keeps only the link's public key and cannot rebuild it — then records a small issuance pin locally.
+
+Hand the link to the invitee over a person-to-person channel you trust (a direct message, not a shared room). Anyone who can read the link can accept it first; the check in step 3 catches that, but the right person then has to be re-invited. Links expire, and `maruhi invite list` shows their state; `maruhi invite revoke <id>` withdraws one.
+
+The link is long (about 530 characters). Everything after `#` stays in the invitee's CLI: the per-invite key seed, the project, your verified chain head, your public keys, the role, your GitHub login, and your signature over all of it except the seed and the login.
+
+## 2. Accept the invite (invitee)
+
+```sh
+maruhi invite accept 'https://…/invite#v=2&…' --from alice
+```
+
+Quote the link so the shell does not interpret it. The CLI first verifies the inviter's signature inside the link, so a link altered in transit is rejected before anything else happens. Then it confirms who invited you:
+
+- With `--from <login>`: the login must match the one the link names, and the inviter's key in the link must be registered on that GitHub account. When both hold, the acceptance proceeds with no prompt — this is also the only way to accept non-interactively or from an AI agent environment.
+- Without `--from`, on a terminal: the CLI shows the inviter's login and asks you to type `yes`.
+- If the inviter's key cannot be verified through GitHub (not registered, offline, or `identityBacking` is `none`), the CLI shows the inviter's 12 fingerprint words and asks you to type the last one after checking them with the inviter over a call. `--inviter-fingerprint <hex>` replaces that read-out when you noted the fingerprint out of band.
+
+If this is your first maruhi project, the command generates your master key first (and issues a recovery code — keep it, see [Recover your key](/docs/recover-your-key)), then offers to register the new key on GitHub. Accept the offer, or run `maruhi key publish` afterwards, so the inviter can add you without a call.
+
+Acceptance is single-use. If the server reports that the invite was already accepted and it was not you, tell the inviter: the link was seen by someone else, and they should revoke and reissue.
+
+## 3. Add the member (inviter)
+
+```sh
+maruhi member add
+```
+
+The CLI fetches the acceptance, verifies that it is bound to the invite you issued (your issue signature, the link signature, and the acceptor's own signature all have to check out — a failure here is a rejection, not a prompt), and then confirms the acceptor's key:
+
+- If the acceptor's key is registered as a signing key on the GitHub account you named with `--github` (or pass `--github <login>` now, for invites issued elsewhere), the member is added with no further input.
+- If that account has not registered the key, the CLI stops and asks: wait for them to run `maruhi key publish` and re-run `maruhi member add`, or confirm the 12 words now. The acceptor's words are shown by `maruhi key show` on their side.
+- `--expect-fingerprint <hex>` accepts the fingerprint you noted out of band instead of the interactive read-out; combined with `--github` it is checked in addition, not instead.
+
+After the membership entry is appended, the CLI wraps every environment's keys for the new member. Ask them to run `maruhi pull` to confirm they can decrypt. To remove someone later, `maruhi member remove <user-id>` rotates every environment so their old keys stop working.
+
+## Turning the GitHub check off
+
+The GitHub lookup is a single unauthenticated `GET https://api.github.com/users/<login>/ssh_signing_keys`. It sends the login you named and nothing else — no project, key, value, or usage data — and it can only make a confirmation unnecessary, never bypass one. To stop the CLI from contacting GitHub at all:
+
+```sh
+maruhi config set identityBacking none
+```
+
+Every invite then uses the 12-word confirmation. The default, `github-signing-keys`, is the only backing source today; an organization key directory is reserved for SSO setups.
+
+## The 12-word confirmation
+
+Fingerprint words are a display of a key's fingerprint (the same 12 words `maruhi key show` prints). The read-out is what stands between a stolen link and a wrong member when GitHub cannot vouch for the key:
+
+1. The acceptor reads their 12 words to the inviter over a call or another channel where they recognize each other.
+2. The inviter compares them with the words `maruhi member add` shows and types the last word to confirm.
+
+The reverse check — the invitee confirming the inviter's words — guards against a swapped link luring you into an attacker's project. Once a person's fingerprint has been confirmed this way, the CLI remembers it and asks only for a `yes` the next time that person is involved, on an interactive terminal.

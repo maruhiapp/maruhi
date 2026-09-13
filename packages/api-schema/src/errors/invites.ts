@@ -28,6 +28,9 @@ export const InviteGoneReasonSchema = Schema.Literals([
   "completed",
   "revoked",
   "expired",
+  // IV 改訂(2026-09-13)より前に発行された行(link_pub を持たない)は受諾不能。
+  // 互換経路を作らない所有者裁定の写し — 一覧で可視のまま失効を促す
+  "unbound",
 ]);
 
 /** 410: the invitation is no longer usable (single-use CAS — AUTH_SPEC §15-1). */
@@ -38,15 +41,28 @@ export class InviteGoneError extends Schema.TaggedError<InviteGoneError>()(
 ) {}
 
 /**
- * 422: the acceptance signature failed verification (CRYPTO_SPEC §6.5)。
- * signed_bytes の project_id / token_hash は保存行から、invitee_user_id は
- * 呼び出し主体から再構成される(§15-2)ため、別人の署名・別招待からの移植・
- * 鍵すり替えはすべてこのエラーに畳まれる(専用の actor-mismatch を持たない)。
+ * 422: one of the acceptance co-signatures failed verification (CRYPTO_SPEC
+ * §6.5 v2)。`which` は落ちた署名(`link` = リンク鍵の共同署名 — 判定順で先、
+ * `accept` = 受諾者のチェーン鍵)。signed_bytes の project_id / link_pub は
+ * 保存行から、invitee_user_id は呼び出し主体から再構成される(§15-2)ため、
+ * 別人の署名・別招待からの移植・鍵すり替えはすべてこのエラーに畳まれる
+ * (専用の actor-mismatch を持たない)。
  */
 export class InviteSignatureInvalidError extends Schema.TaggedError<InviteSignatureInvalidError>()(
   "InviteSignatureInvalid",
-  {},
+  { which: Schema.Literals(["link", "accept"]) },
   { httpApiStatus: 422 },
+) {}
+
+/**
+ * 409: the client-chosen invite id or link public key already exists
+ * (AUTH_SPEC §15-2 — 招待 id はクライアント採番、link_pub は UNIQUE)。
+ * クライアントは採番・生成し直して再試行する。
+ */
+export class InviteConflictError extends Schema.TaggedError<InviteConflictError>()(
+  "InviteConflict",
+  { field: Schema.Literals(["id", "linkPub"]) },
+  { httpApiStatus: 409 },
 ) {}
 
 /** 429: the per-project pending-invitation cap is reached (AUTH_SPEC §15-2). */

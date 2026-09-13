@@ -30,7 +30,11 @@ import {
   formatPulledLine,
   showValues,
 } from "../src/display.ts";
-import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
+import {
+  buildInviteLink,
+  type InviteLinkData,
+  parseInviteAcceptInput,
+} from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
 import {
   classifyUnreadableMasterKey,
@@ -56,6 +60,26 @@ const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 /** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
+
+/** 招待リンク鍵の種(テスト専用のパターン値 — CRYPTO_SPEC §6.5)。 */
+const SEED_HEX = "d0".repeat(32);
+
+/** 形式だけ整えた招待リンクのデータ(署名の検証は invite.test.ts が担う)。 */
+function sampleLinkData(): InviteLinkData {
+  return {
+    inviteId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    linkSeedHex: Redacted.make(SEED_HEX, { label: "invite-link-seed" }),
+    projectId: "ab".repeat(32),
+    headHashHex: "cd".repeat(32),
+    headSeq: 1,
+    inviterUserId: "user-inviter-11",
+    inviterEncPubHex: "ef".repeat(32),
+    inviterSigPubHex: "01".repeat(32),
+    role: "member",
+    inviterLogin: null,
+    issueSignatureHex: "02".repeat(64),
+  };
+}
 
 let servers: MockServer[] = [];
 
@@ -100,23 +124,12 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
     });
   });
 
-  it("招待リンク(トークンを内包する)も包んだまま出力すると伏字になる", () => {
-    const link = buildInviteLink({
-      origin: "https://maruhi.example",
-      token: Redacted.make("maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01", {
-        label: "invite-token",
-      }),
-      projectId: "ab".repeat(32),
-      headHashHex: "cd".repeat(32),
-      headSeq: 1,
-      inviterUserId: "user-inviter-11",
-      inviterKeyFingerprintHex: "ef".repeat(16),
-      role: "member",
-    });
+  it("招待リンク(リンク鍵の種を内包する)も包んだまま出力すると伏字になる", () => {
+    const link = buildInviteLink({ origin: "https://maruhi.example", link: sampleLinkData() });
     expect(`${link}`).toBe("<redacted:invite-link>");
-    expect(JSON.stringify({ link })).not.toContain("maruhi_inv_");
+    expect(JSON.stringify({ link })).not.toContain(SEED_HEX);
     // 剥がせば本物のリンクが得られる(伏字が機能を壊していないこと)
-    expect(Redacted.value(link)).toContain("maruhi_inv_");
+    expect(Redacted.value(link)).toContain(`k=${SEED_HEX}`);
   });
 
   it("復号値(Uint8Array)も伏字になる — pull の結果をうっかり出力しても漏れない", () => {
@@ -133,22 +146,13 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
     expect(line).not.toContain("plaintext-value");
   });
 
-  it("解釈したリンク・生トークンの token も包まれている", () => {
+  it("解釈したリンクの種(k=)も包まれている", () => {
     // 引数層(Argument.redacted)から届く形をそのまま使う(剥がさない)
-    const raw = buildInviteLink({
-      origin: "https://maruhi.example",
-      token: Redacted.make("maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01"),
-      projectId: "ab".repeat(32),
-      headHashHex: "cd".repeat(32),
-      headSeq: 1,
-      inviterUserId: "user-inviter-11",
-      inviterKeyFingerprintHex: "ef".repeat(16),
-      role: "member",
-    });
+    const raw = buildInviteLink({ origin: "https://maruhi.example", link: sampleLinkData() });
     const parsed = parseInviteAcceptInput(raw);
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
-    expect(`${parsed.link.token}`).toBe("<redacted:invite-token>");
-    expect(JSON.stringify(parsed.link)).not.toContain("maruhi_inv_");
+    expect(`${parsed.link.linkSeedHex}`).toBe("<redacted:invite-link-seed>");
+    expect(JSON.stringify(parsed.link)).not.toContain(SEED_HEX);
   });
 });
 
@@ -807,10 +811,11 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // 真偽値のみ。値・値の断片は外へ出ない)
   "env-file.ts": 1,
   "env-rotate.ts": 1,
-  // ワイヤ境界: 招待受諾要求 / 受諾署名のハッシュ入力 / リンクの表示
-  "invite.ts": 3,
+  // リンク鍵の導出入力(種 → 非抽出 CryptoKey。暗号境界)1 + リンクの表示
+  // (エージェントゲート通過後)1
+  "invite.ts": 2,
   // リンク文字列の組み立て(結果は再び包む)1 +
-  // accept 入力(リンク | トークン)の構文解釈(トークンは再び包んで返す)1
+  // accept 入力(リンク)の構文解釈(種は再び包んで返す)1
   "invite-link.ts": 2,
   // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
   "keychain.ts": 3,

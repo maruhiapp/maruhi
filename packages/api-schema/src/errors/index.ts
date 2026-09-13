@@ -90,6 +90,7 @@ export {
   DekWrapRejectReasonSchema,
 } from "./deks.ts";
 export {
+  InviteConflictError,
   InviteGoneError,
   InviteGoneReasonSchema,
   InviteNotFoundError,

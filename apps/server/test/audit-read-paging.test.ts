@@ -11,6 +11,8 @@
 //     イベント・他プロジェクトの行は混入しない
 //  3. self(D1): 本人の行のみ。トークン条件は §13-2 と同水準(`*` × admin)
 
+import { ulid } from "@maruhi/core";
+import { encodeHex } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -134,9 +136,20 @@ describe("ページング境界(§7: seq 降順・limit ≤ 200・カーソル�
 });
 
 async function issueInvite(role: string): Promise<string> {
-  const response = await requestJson("POST", "/invites", token(OWNER), { role });
+  // 発行文はサーバーが検証しない(形式検査のみ — AUTH_SPEC §15-2)ため、
+  // 監査の読み取りテストでは id とリンク公開鍵だけ一意にして形式を揃える
+  const id = ulid();
+  const linkPubHex = encodeHex(crypto.getRandomValues(new Uint8Array(32)));
+  const response = await requestJson("POST", "/invites", token(OWNER), {
+    id,
+    role,
+    linkPubHex,
+    headHashHex: "ab".repeat(32),
+    headSeq: 1,
+    issueSignatureHex: "00".repeat(64),
+  });
   expect(response.status).toBe(200);
-  return ((await response.json()) as { id: string }).id;
+  return id;
 }
 
 async function fetchInvites(

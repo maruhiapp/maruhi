@@ -184,6 +184,13 @@ export const MeSchema = Schema.Struct({
    * 自分の期限だけを知る経路でもある。
    */
   tokenExpiresAtMs: Schema.optionalKey(Schema.Number),
+  /**
+   * GitHub の表示用 login スナップショット(2026-09-13 IV — AUTH_SPEC §15-3)。
+   * 招待者クライアントが招待リンクの `il`(裏付け元 `github-signing-keys` の
+   * 照合材料)を組むための材料。リンクなし・未保存は欠落。自己情報の開示のみ
+   * (他人の login はここからは取れない)。
+   */
+  providerLogin: Schema.optionalKey(Schema.String),
 });
 
 // リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。

@@ -1,8 +1,16 @@
-// 招待 API(AUTH_SPEC §15)の統合テスト。認可・存在秘匿・受諾の判定順(404 →
-// 410 → 422 → CAS)、受諾署名(CRYPTO_SPEC §6.5)の実データ検証、invite.* 監査
-// (AUDIT_SPEC §3.2)の同一 batch 書き込みと CAS 敗北時のガードを固定する。
+// 招待 API(AUTH_SPEC §15 — IV 改訂)の統合テスト。認可・存在秘匿・受諾の判定順
+// (404 → 410 → 422 link → 422 accept → CAS)、共同署名(CRYPTO_SPEC §6.5 v2)の
+// 実データ検証、invite.* 監査(AUDIT_SPEC §3.2)の同一 batch 書き込みと CAS 敗北時の
+// ガードを固定する。
 
-import { SUITE_ID, verifyInviteAcceptSignature } from "@maruhi/crypto";
+import {
+  deriveInviteLinkKeyPair,
+  generateInviteLinkSeed,
+  SUITE_ID,
+  verifyInviteAcceptSignature,
+  verifyInviteIssueSignature,
+  verifyInviteLinkSignature,
+} from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
 import { Context, Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -31,17 +39,18 @@ import {
   mustRow,
   payloadOf,
   registerInviteScenario,
+  seedInvitation,
   signAcceptance,
-  tokenHashOf,
+  signingKeyPairOf,
 } from "./support/invites-scenario.ts";
 
 registerInviteScenario();
 
 describe("invite accept", () => {
-  it("accepts with a valid signature and records invite.accepted in the same batch", async () => {
+  it("accepts with both signatures and records invite.accepted in the same batch", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    const response = await acceptAs(fixture, STRANGER, keys, issued.token);
+    const response = await acceptAs(fixture, STRANGER, keys, issued);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { id: string; projectId: string; role: string };
     expect(body).toEqual({ id: issued.id, projectId, role: "member" });
@@ -52,6 +61,7 @@ describe("invite accept", () => {
     expect(row.invitee_enc_pub).toBe(keys.encPubHex);
     expect(row.invitee_sig_pub).toBe(keys.sigPubHex);
     expect(row.accept_signature).not.toBeNull();
+    expect(row.link_signature).not.toBeNull();
 
     const accepted = (await inviteAuditRows()).filter((r) => r.event === "invite.accepted");
     expect(accepted).toHaveLength(1);
@@ -59,7 +69,9 @@ describe("invite accept", () => {
     expect(audit.actor_user_id).toBe(STRANGER);
     expect(audit.target_user_id).toBe(STRANGER);
     expect(audit.project_id).toBe(projectId);
-    expect(payloadOf(audit)).toMatchObject({
+    // payload は不変(AUDIT_SPEC §3.2 — IV 改訂): 招待 id + 受諾鍵 FP のみ。
+    // リンク公開鍵・署名・裏付け元の login は書かない
+    expect(payloadOf(audit)).toEqual({
       inviteId: issued.id,
       inviteeKeyFingerprintHex: keys.fingerprintHex,
     });
@@ -68,13 +80,13 @@ describe("invite accept", () => {
   it("is single-use: the losing accept gets 410 accepted and no extra audit row", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
     // 正規受諾者の再試行も、別人の後着も同じ 410 accepted(うるさい競合の顕在化)
-    const retry = await acceptAs(fixture, STRANGER, keys, issued.token);
+    const retry = await acceptAs(fixture, STRANGER, keys, issued);
     expect(retry.status).toBe(410);
     expect((await retry.json()) as object).toMatchObject({ reason: "accepted" });
     const memberKeys = await makeInviteeKeys();
-    const late = await acceptAs(fixture, MEMBER, memberKeys, issued.token);
+    const late = await acceptAs(fixture, MEMBER, memberKeys, issued);
     expect(late.status).toBe(410);
     // CAS 敗北で監査行は増えない(changes() ガード)
     const accepted = (await inviteAuditRows()).filter((r) => r.event === "invite.accepted");
@@ -84,7 +96,7 @@ describe("invite accept", () => {
   it("a lost CAS writes no audit row (changes() guard)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
     // 「pending を読んでから CAS までの間に他者の受諾が確定した」並行敗者は、
     // HTTP 経路では事前読みの 410 が先に立つため、リポジトリ直呼びで決定的に
     // 再現する(同一 batch 内の changes() ガードそのものの検証)
@@ -98,6 +110,7 @@ describe("invite accept", () => {
           inviteeEncPubHex: lateKeys.encPubHex,
           inviteeSigPubHex: lateKeys.sigPubHex,
           acceptSignatureHex: "ab".repeat(64),
+          linkSignatureHex: "cd".repeat(64),
           inviteeKeyFingerprintHex: lateKeys.fingerprintHex,
         },
         Date.now(),
@@ -123,20 +136,35 @@ describe("invite accept", () => {
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.revoked")).toHaveLength(0);
   });
 
-  it("unknown token is 404 InviteNotFound; malformed token is schema 400", async () => {
+  it("unknown link pub is 404 InviteNotFound; malformed fields are schema 400", async () => {
     const keys = await makeInviteeKeys();
-    const unknownToken = `maruhi_inv_${"A".repeat(43)}`;
-    const unknown = await acceptAs(fixture, STRANGER, keys, unknownToken);
+    const unknownLink = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
+    if (!unknownLink.ok) {
+      throw new Error("link key derivation failed");
+    }
+    const unknown = await acceptAs(fixture, STRANGER, keys, {
+      linkPubHex: Buffer.from(unknownLink.value.publicKeyRaw).toString("hex"),
+      linkKey: unknownLink.value,
+    });
     expect(unknown.status).toBe(404);
     expect(await errorTag(unknown)).toBe("InviteNotFound");
 
     const malformed = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
-      token: "not-a-token",
+      linkPubHex: "not-a-key",
+      encPubHex: keys.encPubHex,
+      sigPubHex: keys.sigPubHex,
+      acceptSignatureHex: "ab".repeat(64),
+      linkSignatureHex: "cd".repeat(64),
+    });
+    expect(malformed.status).toBe(400);
+    // 旧ワイヤ形(token フィールド)は strict 受理で 400(互換経路なし)
+    const legacy = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
+      token: `maruhi_inv_${"A".repeat(43)}`,
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
       signatureHex: "ab".repeat(64),
     });
-    expect(malformed.status).toBe(400);
+    expect(legacy.status).toBe(400);
   });
 
   it("unusable invites are 410 with a reason (status precedes expiry)", async () => {
@@ -146,7 +174,7 @@ describe("invite accept", () => {
     await env.DB.prepare("UPDATE invitations SET status = 'revoked', expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, revoked.id)
       .run();
-    const revokedResponse = await acceptAs(fixture, STRANGER, keys, revoked.token);
+    const revokedResponse = await acceptAs(fixture, STRANGER, keys, revoked);
     expect(revokedResponse.status).toBe(410);
     expect((await revokedResponse.json()) as object).toMatchObject({ reason: "revoked" });
 
@@ -155,7 +183,7 @@ describe("invite accept", () => {
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
       .run();
-    const completedResponse = await acceptAs(fixture, STRANGER, keys, completed.token);
+    const completedResponse = await acceptAs(fixture, STRANGER, keys, completed);
     expect(completedResponse.status).toBe(410);
     expect((await completedResponse.json()) as object).toMatchObject({ reason: "completed" });
 
@@ -164,57 +192,111 @@ describe("invite accept", () => {
     await env.DB.prepare("UPDATE invitations SET expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, expired.id)
       .run();
-    const expiredResponse = await acceptAs(fixture, STRANGER, keys, expired.token);
+    const expiredResponse = await acceptAs(fixture, STRANGER, keys, expired);
     expect(expiredResponse.status).toBe(410);
     expect((await expiredResponse.json()) as object).toMatchObject({ reason: "expired" });
   });
 
-  it("rejects invalid signatures with 422 (tamper / transplant / actor / key swap)", async () => {
+  it("a pre-IV row (no issuance) is 410 unbound even with a matching link pub", async () => {
+    // 発行文の無い行(IV 改訂前の形)へ link_pub だけを後付けしても受諾不能:
+    // 互換経路を作らない裁定の写し(一覧では issuance null で可視 → 失効を促す)
+    const keys = await makeInviteeKeys();
+    const link = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
+    if (!link.ok) {
+      throw new Error("link key derivation failed");
+    }
+    const linkPubHex = Buffer.from(link.value.publicKeyRaw).toString("hex");
+    await seedInvitation({
+      id: "seed-unbound-0001",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    });
+    await env.DB.prepare("UPDATE invitations SET link_pub = ? WHERE id = ?")
+      .bind(linkPubHex, "seed-unbound-0001")
+      .run();
+    const response = await acceptAs(fixture, STRANGER, keys, { linkPubHex, linkKey: link.value });
+    expect(response.status).toBe(410);
+    expect((await response.json()) as object).toMatchObject({ reason: "unbound" });
+    expect((await inviteRow("seed-unbound-0001"))?.status).toBe("pending");
+  });
+
+  it("rejects invalid signatures with 422 (link first, then accept)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const otherKeys = await makeInviteeKeys();
+    const auth = bearer(tokenOf(fixture.tokens, STRANGER));
+    const valid = await signAcceptance(keys, issued, STRANGER);
 
-    // (a) 署名バイトの改竄
-    const validSignature = await signAcceptance(keys, issued.token, STRANGER);
-    const tampered = `${validSignature.slice(0, -1)}${validSignature.endsWith("0") ? "1" : "0"}`;
-    const tamperedResponse = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
-      token: issued.token,
+    // (a) 受諾署名バイトの改竄 → which=accept
+    const tamperedAccept = await acceptRequest(auth, {
+      linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
-      signatureHex: tampered,
+      acceptSignatureHex: flip(valid.acceptSignatureHex),
+      linkSignatureHex: valid.linkSignatureHex,
     });
-    expect(tamperedResponse.status).toBe(422);
-    expect(await errorTag(tamperedResponse)).toBe("InviteSignatureInvalid");
+    expect(tamperedAccept.status).toBe(422);
+    expect((await tamperedAccept.json()) as object).toMatchObject({
+      _tag: "InviteSignatureInvalid",
+      which: "accept",
+    });
 
-    // (b) リンク改竄: 別プロジェクトの座標で署名(サーバーは保存行から再構成)
-    const wrongProject = await acceptAs(fixture, STRANGER, keys, issued.token, {
+    // (b) リンク署名バイトの改竄 → which=link(判定順で先)
+    const tamperedLink = await acceptRequest(auth, {
+      linkPubHex: issued.linkPubHex,
+      encPubHex: keys.encPubHex,
+      sigPubHex: keys.sigPubHex,
+      acceptSignatureHex: flip(valid.acceptSignatureHex),
+      linkSignatureHex: flip(valid.linkSignatureHex),
+    });
+    expect(tamperedLink.status).toBe(422);
+    expect((await tamperedLink.json()) as object).toMatchObject({ which: "link" });
+
+    // (c) 別のリンク鍵で作ったリンク署名(サーバー偽造の形 — 正規のリンク秘密鍵を
+    //     持たない者は有効なリンク署名を作れない)
+    const forgedLink = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
+    if (!forgedLink.ok) {
+      throw new Error("link key derivation failed");
+    }
+    const forged = await signAcceptance(
+      keys,
+      { linkPubHex: issued.linkPubHex, linkKey: forgedLink.value },
+      STRANGER,
+    );
+    const forgedResponse = await acceptRequest(auth, {
+      linkPubHex: issued.linkPubHex,
+      encPubHex: keys.encPubHex,
+      sigPubHex: keys.sigPubHex,
+      ...forged,
+    });
+    expect(forgedResponse.status).toBe(422);
+    expect((await forgedResponse.json()) as object).toMatchObject({ which: "link" });
+
+    // (d) リンク改竄: 別プロジェクトの座標で署名(サーバーは保存行から再構成)
+    const wrongProject = await acceptAs(fixture, STRANGER, keys, issued, {
       projectId: "0".repeat(64),
     });
     expect(wrongProject.status).toBe(422);
 
-    // (c) 別トークンハッシュへの署名(別招待への移植)
-    const wrongToken = await acceptAs(fixture, STRANGER, keys, issued.token, {
-      inviteTokenHashHex: await tokenHashOf(`maruhi_inv_${"B".repeat(43)}`),
-    });
-    expect(wrongToken.status).toBe(422);
-
-    // (d) 別人向けに署名した受諾の持ち込み(呼び出し主体 = 署名対象の invitee)
-    const wrongInvitee = await acceptAs(fixture, STRANGER, keys, issued.token, {
+    // (e) 別人向けに署名した受諾の持ち込み(呼び出し主体 = 署名対象の invitee)
+    const wrongInvitee = await acceptAs(fixture, STRANGER, keys, issued, {
       inviteeUserId: MEMBER,
     });
     expect(wrongInvitee.status).toBe(422);
 
-    // (e) 宣言 sig 鍵と署名鍵の不一致(鍵すり替え)
-    const swappedSignature = await signAcceptance(keys, issued.token, STRANGER, {
+    // (f) 宣言 sig 鍵と署名鍵の不一致(鍵すり替え): リンク署名は宣言鍵に対して
+    //     正しく作れてしまう(攻撃者はリンクを持つ)が、受諾署名が落ちる
+    const swapped = await signAcceptance(keys, issued, STRANGER, {
       inviteeSigPubHex: otherKeys.sigPubHex,
     });
-    const swappedResponse = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
-      token: issued.token,
+    const swappedResponse = await acceptRequest(auth, {
+      linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
       sigPubHex: otherKeys.sigPubHex,
-      signatureHex: swappedSignature,
+      ...swapped,
     });
     expect(swappedResponse.status).toBe(422);
+    expect((await swappedResponse.json()) as object).toMatchObject({ which: "accept" });
 
     // どの失敗経路でも行は pending のまま・監査は invite.created のみ
     const row = await inviteRow(issued.id);
@@ -226,12 +308,12 @@ describe("invite accept", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const narrow = await cliToken(9009, [{ project: projectId, permission: "admin" }]);
-    const signatureHex = await signAcceptance(keys, issued.token, STRANGER);
+    const signatures = await signAcceptance(keys, issued, STRANGER);
     const response = await acceptRequest(bearer(narrow), {
-      token: issued.token,
+      linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
-      signatureHex,
+      ...signatures,
     });
     expect(response.status).toBe(403);
     expect((await response.json()) as object).toMatchObject({
@@ -243,16 +325,16 @@ describe("invite accept", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const session = await loginSession(9009);
-    const signatureHex = await signAcceptance(keys, issued.token, STRANGER);
+    const signatures = await signAcceptance(keys, issued, STRANGER);
     const body = {
-      token: issued.token,
+      linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
-      signatureHex,
+      ...signatures,
     };
     // 受諾は CLI のみ(§15-3)でセッションの正当な導線がなく、セッション XSS +
-    // 漏洩招待リンクで攻撃者鍵を被害者 user_id に束縛する複合を FP 相互確認の
-    // 手前で塞ぐ(§15-2)。CSRF ヘッダーの有無によらず一様に拒否
+    // 漏洩招待リンクで攻撃者鍵を被害者 user_id に束縛する複合を手前で塞ぐ
+    // (§15-2)。CSRF ヘッダーの有無によらず一様に拒否
     const noCsrf = await acceptRequest({ cookie: `__Host-maruhi_session=${session}` }, body);
     expect(noCsrf.status).toBe(403);
     expect(((await noCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
@@ -264,6 +346,9 @@ describe("invite accept", () => {
   });
 });
 
+/** 署名 hex の末尾 1 文字を変える(改竄の模擬)。 */
+const flip = (hex: string) => `${hex.slice(0, -1)}${hex.endsWith("0") ? "1" : "0"}`;
+
 const revoke = (id: string) =>
   SELF.fetch(`${BASE}/projects/${projectId}/invites/${id}`, {
     method: "DELETE",
@@ -271,10 +356,10 @@ const revoke = (id: string) =>
   });
 
 describe("invite list / revoke", () => {
-  it("lists invitations with the acceptance block; inviter client re-verifies §6.5", async () => {
+  it("lists issuance + acceptance; the inviter client re-verifies all three signatures", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
 
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       headers: bearer(tokenOf(fixture.tokens, OWNER)),
@@ -284,38 +369,91 @@ describe("invite list / revoke", () => {
       invitations: readonly {
         id: string;
         projectId: string;
-        tokenHashHex: string;
+        role: string;
         status: string;
+        issuance: {
+          linkPubHex: string;
+          headHashHex: string;
+          headSeq: number;
+          issueSignatureHex: string;
+        } | null;
         acceptance: {
           inviteeUserId: string;
           inviteeEncPubHex: string;
           inviteeSigPubHex: string;
           signatureHex: string;
+          linkSignatureHex: string;
         } | null;
       }[];
     };
     const listed = body.invitations.find((entry) => entry.id === issued.id);
     expect(listed?.status).toBe("accepted");
-    expect(listed?.tokenHashHex).toBe(await tokenHashOf(issued.token));
+    expect(listed?.issuance).toEqual({
+      linkPubHex: issued.linkPubHex,
+      headHashHex: issued.headHashHex,
+      headSeq: issued.headSeq,
+      issueSignatureHex: issued.issueSignatureHex,
+    });
+    // 旧 token_hash は一覧に出ない(発行文に置き換わった)
+    expect(listed).not.toHaveProperty("tokenHashHex");
     const acceptance = listed?.acceptance;
-    expect(acceptance).not.toBeNull();
-    if (listed === undefined || acceptance === null || acceptance === undefined) {
+    const issuance = listed?.issuance;
+    if (listed === undefined || !acceptance || !issuance) {
       throw new Error("accepted invitation missing from list");
     }
-    // 招待者クライアントの独立検証(CRYPTO_SPEC §6.5): 一覧の材料だけで
-    // signed_bytes を再構成し、宣言鍵で検証が通る
-    const verified = await verifyInviteAcceptSignature({
+    // 招待者クライアントの再検証(CRYPTO_SPEC §6.5): (1) 発行文が自分の鍵で
+    // 検証できる(自分が発行した行 — 発行ピン不要)、(2) 受諾署名、(3) リンク署名
+    const owner = await signingKeyPairOf(OWNER);
+    const issueVerified = await verifyInviteIssueSignature({
       context: {
         suite: SUITE_ID,
+        inviteId: listed.id,
         projectId: listed.projectId,
-        inviteTokenHashHex: listed.tokenHashHex,
-        inviteeUserId: acceptance.inviteeUserId,
-        inviteeEncPubHex: acceptance.inviteeEncPubHex,
-        inviteeSigPubHex: acceptance.inviteeSigPubHex,
+        linkPubHex: issuance.linkPubHex,
+        headHashHex: issuance.headHashHex,
+        headSeq: issuance.headSeq,
+        role: listed.role,
+        inviterUserId: OWNER,
+        inviterEncPubHex: owner.encPubHex,
+        inviterSigPubHex: owner.sigPubHex,
       },
-      signatureHex: acceptance.signatureHex,
+      signatureHex: issuance.issueSignatureHex,
     });
-    expect(verified.ok).toBe(true);
+    expect(issueVerified.ok).toBe(true);
+    const context = {
+      suite: SUITE_ID,
+      projectId: listed.projectId,
+      linkPubHex: issuance.linkPubHex,
+      inviteeUserId: acceptance.inviteeUserId,
+      inviteeEncPubHex: acceptance.inviteeEncPubHex,
+      inviteeSigPubHex: acceptance.inviteeSigPubHex,
+    };
+    expect(
+      (await verifyInviteAcceptSignature({ context, signatureHex: acceptance.signatureHex })).ok,
+    ).toBe(true);
+    expect(
+      (await verifyInviteLinkSignature({ context, linkSignatureHex: acceptance.linkSignatureHex }))
+        .ok,
+    ).toBe(true);
+  });
+
+  it("a pre-IV row lists with issuance null and no acceptance block", async () => {
+    await seedInvitation({
+      id: "seed-legacy-0001",
+      status: "accepted",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    });
+    const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
+      headers: bearer(tokenOf(fixture.tokens, OWNER)),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      invitations: readonly { id: string; issuance: unknown; acceptance: unknown }[];
+    };
+    const legacy = body.invitations.find((entry) => entry.id === "seed-legacy-0001");
+    expect(legacy?.issuance).toBeNull();
+    expect(legacy?.acceptance).toBeNull();
   });
 
   it("list requires chain role admin: member 403, non-member 404", async () => {
@@ -343,7 +481,7 @@ describe("invite list / revoke", () => {
 
     // 受諾は 410 revoked
     const keys = await makeInviteeKeys();
-    const late = await acceptAs(fixture, STRANGER, keys, issued.token);
+    const late = await acceptAs(fixture, STRANGER, keys, issued);
     expect(late.status).toBe(410);
     expect((await late.json()) as object).toMatchObject({ reason: "revoked" });
 
@@ -352,10 +490,10 @@ describe("invite list / revoke", () => {
     expect(again.status).toBe(410);
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.revoked")).toHaveLength(1);
 
-    // accepted の失効は可(FP 不一致の発見時に殺す経路)
+    // accepted の失効は可(照合不一致の発見時に殺す経路)
     const accepted = await issueInvite(fixture, OWNER, "member");
     const acceptedKeys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, acceptedKeys, accepted.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, acceptedKeys, accepted)).status).toBe(200);
     expect((await revoke(accepted.id)).status).toBe(204);
 
     // completed は 410 completed
@@ -401,7 +539,7 @@ describe("invite list / revoke", () => {
     const matched = await issueInvite(fixture, OWNER, "member");
     const otherPending = await issueInvite(fixture, OWNER, "reader");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, matched.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, matched)).status).toBe(200);
 
     await appendOperation(fixture, OWNER, {
       op: "add_member",
@@ -425,7 +563,7 @@ describe("invite list / revoke", () => {
   it("add_member still succeeds when the reconciliation write fails (catchDefect guard)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
     // 突合の D1 書き込みを決定的に失敗させる(テーブルを一時退避)。ガードを
     // 外すと確定済み append が 500 になり appendOperation 内の 200 expect が落ちる
     await env.DB.prepare("ALTER TABLE invitations RENAME TO invitations_hidden").run();
@@ -448,7 +586,7 @@ describe("invite list / revoke", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const differentKeys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
 
     await appendOperation(fixture, OWNER, {
       op: "add_member",

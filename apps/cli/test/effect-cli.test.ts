@@ -815,15 +815,21 @@ describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(garbage.server.requests).toHaveLength(0);
   });
 
-  it("生トークンの受諾は --project 必須(既定プロジェクトへ黙って署名しない)", async () => {
-    const { env, server } = await startEnv();
+  it("旧形式(生トークン / v=1 リンク)の受諾は互換経路なしで落ち、中身を出さない", async () => {
+    const raw = await startEnv();
     const token = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
-    expect(await runCli(["invite", "accept", token], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("Accepting with a raw token requires --project");
+    expect(await runCli(["invite", "accept", token], raw.env.layer)).toBe(2);
+    expect(raw.env.errors.join("\n")).toContain("Specify an invite link (…/invite#v=2&…)");
     // トークン生値は診断に出さない
-    expectNoLeak(env, [token]);
-    expect(server.requests).toHaveLength(0);
+    expectNoLeak(raw.env, [token]);
+    expect(raw.server.requests).toHaveLength(0);
+
+    const old = await startEnv();
+    const link = `https://maruhi.example/invite#v=1&t=${token}&p=${"ab".repeat(32)}`;
+    expect(await runCli(["invite", "accept", link], old.env.layer)).toBe(2);
+    expect(old.env.errors.join("\n")).toContain("format version is not supported");
+    expectNoLeak(old.env, [token, link]);
+    expect(old.server.requests).toHaveLength(0);
   });
 
   it("revoke の招待 id は必須・空を受け付けない", async () => {
@@ -934,7 +940,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
     const key = await makeTestEnv();
     expect(await runCli(["key", "bogus"], key.layer)).toBe(2);
     expect(key.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: generate | show | recover | recovery | approve | seal)",
+      "Unknown subcommand (expected one of: generate | show | publish | recover | recovery | approve | seal)",
     );
     expect(key.errors.join("\n")).not.toContain("Not logged in");
 

@@ -30,6 +30,7 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
    | `recovery.ts` リカバリーコードの表示・入力(stdin / stdout / stderr 全て TTY) | `recovery.ts` 鍵生成後の既知エージェントでの発行スキップ |
 
    儀式系は「人間が指紋を目視で照合する」ことが要件そのものなので、TTY 必須は要件の言い換えになる。
+   **追記(2026-09-13 — IV 改訂。CRYPTO_SPEC §6.5 の明示確認の充足形 4)**: 招待の受諾がリンク鍵で束縛され、受諾鍵が裏付け元(GitHub の署名鍵一覧)で照合できる場合、`member add` は儀式を含まない(暗号検証 + 発行時の名指しによる機械確認)ため一次境界の対象外であり、AI エージェント環境でも通る(意図は 3 チャネル TTY 必須の `invite create --github` で捕捉済み)。充足形 4 が成立しないときは従来どおり上表の儀式ゲートへ戻る。`invite accept` の受諾者側は 1 回の yes(login の名指し)を残すため、非対話では `--from <login>` を必須にする(`--inviter-fingerprint` と同じ位置づけ)。設計録は docs/notes/integration-options.md 補足 21
    リカバリーコードは master 秘密鍵を開く鍵素材で、stderr も `2>` / CI capture で
    永続化できるため、2026-08-27 deepsec S2 対応で表示・入力を同じ一次境界へ移す。
    コードは stderr に表示するので、ここだけは stdin / stdout に加えて

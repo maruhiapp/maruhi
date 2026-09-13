@@ -11,7 +11,7 @@
 import type { SignupPolicy } from "@maruhi/api-schema";
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
-import { and, count, eq, gt, gte, inArray, isNull, lte, min, type SQL, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNull, lte, min, or, sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -31,6 +31,7 @@ import type {
   InvitationRecord,
   InviteAcceptInput,
   InviteCompletionTarget,
+  InviteIssuance,
   InviteIssueDecision,
   InviteRole,
   InviteStatus,
@@ -100,6 +101,11 @@ interface IdentityRepoShape {
   readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<string | null>;
   /** ユーザーが属する org 一覧(プロジェクト作成先の発見用。§11-3)。 */
   readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
+  /**
+   * GitHub の表示用 login スナップショット(`/auth/me` の providerLogin —
+   * AUTH_SPEC §15-3 の `il` の材料)。リンクなし・未保存は null。
+   */
+  readonly providerLoginOf: (userId: string) => Effect.Effect<string | null>;
   /**
    * 受理時点の signupPolicy(AUTH_SPEC §3)。行なし = 'open'(既定 = 従来挙動)、
    * 未知の保存値 = 'closed'(fail-closed — 運営の誤設定を黙って 'open' に
@@ -487,6 +493,7 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
       getOrCreateUser(identity, nowMs, signupInviteTokenHash),
     lookupUser: (identity) => lookupLinkedUser(db, identity),
     listUserOrgs: (userId) => listUserOrgs(db, userId),
+    providerLoginOf: (userId) => providerLoginOf(db, userId),
     signupPolicy: Effect.suspend(() => run(() => readSignupPolicy(db))),
     hasPendingSignupInvite: (tokenHashHex, nowMs) =>
       Effect.map(findPendingSignupInvite(db, tokenHashHex, nowMs), (row) => row !== null),
@@ -500,6 +507,17 @@ function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<Resolved
       ? Effect.die(new Error("linked identity insert failed without a conflicting row"))
       : Effect.succeed({ userId: found, created: false }),
   );
+}
+
+function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null> {
+  return run(async () => {
+    const row = await db
+      .select({ login: linkedIdentities.providerLogin })
+      .from(linkedIdentities)
+      .where(and(eq(linkedIdentities.userId, userId), eq(linkedIdentities.provider, "github")))
+      .get();
+    return row?.login ?? null;
+  });
 }
 
 function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[]> {
@@ -1220,9 +1238,12 @@ export const MAX_PENDING_INVITES_PER_PROJECT = 100;
 interface InviteCreateInput {
   readonly id: string;
   readonly projectId: string;
-  readonly tokenHashHex: string;
   readonly role: InviteRole;
   readonly inviterUserId: string;
+  /** 発行文(CRYPTO_SPEC §6.5 — サーバーは検証せず保存する)。 */
+  readonly issuance: InviteIssuance;
+  /** legacy 列 `token_hash` に書く値(= SHA-256(link_pub bytes) の hex — AUTH_SPEC §15-1)。 */
+  readonly legacyTokenHashHex: string;
 }
 
 interface InviteRepoShape {
@@ -1238,8 +1259,8 @@ interface InviteRepoShape {
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<InviteIssueDecision>;
-  /** トークンハッシュによる解決(受諾経路 — トークン保持が capability)。 */
-  readonly findByTokenHash: (tokenHashHex: string) => Effect.Effect<InvitationRecord | null>;
+  /** リンク公開鍵による解決(受諾経路 — リンク鍵の保持が capability)。 */
+  readonly findByLinkPub: (linkPubHex: string) => Effect.Effect<InvitationRecord | null>;
   /** プロジェクト配下の id 解決(失効経路)。 */
   readonly findById: (projectId: string, id: string) => Effect.Effect<InvitationRecord | null>;
   /** 一覧(§15-2)。受諾ブロック込み — 招待者クライアントの §6.5 独立検証の材料。 */
@@ -1283,8 +1304,8 @@ interface InviteRepoShape {
 
 export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("InviteRepo") {}
 
-/** 行 → ドメイン表現(受諾ブロックは 5 列すべて揃っているときのみ)。 */
-function toInvitationRecord(row: {
+/** 招待行(select 結果の形 — Drizzle 型はこの境界の外へ出さない)。 */
+interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
   readonly tokenHash: string;
@@ -1296,34 +1317,86 @@ function toInvitationRecord(row: {
   readonly inviteeEncPub: string | null;
   readonly inviteeSigPub: string | null;
   readonly acceptSignature: string | null;
+  readonly linkSignature: string | null;
   readonly acceptedAt: number | null;
   readonly createdAt: number;
-}): InvitationRecord {
-  const acceptance =
-    row.inviteeUserId !== null &&
+  readonly linkPub: string | null;
+  readonly headHash: string | null;
+  readonly headSeq: number | null;
+  readonly issueSignature: string | null;
+}
+
+/**
+ * 受諾ブロック(6 列すべて揃っているときのみ — IV 改訂前の accepted 行は
+ * link_signature を持たず、発行文も無いので受諾不能 = ブロックを出さない)。
+ */
+function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
+  return row.inviteeUserId !== null &&
     row.inviteeEncPub !== null &&
     row.inviteeSigPub !== null &&
     row.acceptSignature !== null &&
+    row.linkSignature !== null &&
     row.acceptedAt !== null
-      ? {
-          inviteeUserId: row.inviteeUserId,
-          inviteeEncPubHex: row.inviteeEncPub,
-          inviteeSigPubHex: row.inviteeSigPub,
-          acceptSignatureHex: row.acceptSignature,
-          acceptedAtMs: row.acceptedAt,
-        }
-      : null;
+    ? {
+        inviteeUserId: row.inviteeUserId,
+        inviteeEncPubHex: row.inviteeEncPub,
+        inviteeSigPubHex: row.inviteeSigPub,
+        acceptSignatureHex: row.acceptSignature,
+        linkSignatureHex: row.linkSignature,
+        acceptedAtMs: row.acceptedAt,
+      }
+    : null;
+}
+
+/** 発行文(4 列すべて揃っているときのみ — IV 改訂前の行は null)。 */
+function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
+  return row.linkPub !== null &&
+    row.headHash !== null &&
+    row.headSeq !== null &&
+    row.issueSignature !== null
+    ? {
+        linkPubHex: row.linkPub,
+        headHashHex: row.headHash,
+        headSeq: row.headSeq,
+        issueSignatureHex: row.issueSignature,
+      }
+    : null;
+}
+
+/** 行 → ドメイン表現。 */
+function toInvitationRecord(row: InvitationRow): InvitationRecord {
   return {
     id: row.id,
     projectId: row.projectId,
-    tokenHashHex: row.tokenHash,
+    issuance: issuanceOf(row),
     role: row.role as InviteRole,
     inviterUserId: row.inviterUserId,
     status: row.status as InviteStatus,
     expiresAtMs: row.expiresAt,
     createdAtMs: row.createdAt,
-    acceptance,
+    acceptance: acceptanceOf(row),
   };
+}
+
+/**
+ * D1 の UNIQUE 制約違反を発行の 409 へ写す(`invitations.id` / `inv_link_pub`)。
+ * それ以外のエラーは null(呼び出し側が再 throw — 握り潰さない)。
+ */
+function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
+  // D1 は制約エラーを message か cause のどちらかに載せる(実行環境差)
+  const cause = error instanceof Error ? error.cause : undefined;
+  const message = `${error instanceof Error ? error.message : String(error)} ${
+    cause instanceof Error ? cause.message : ""
+  }`;
+  if (!/UNIQUE constraint failed/.test(message)) {
+    return null;
+  }
+  // legacy の token_hash(= SHA-256(link_pub))の衝突は link_pub の衝突と同じ直し方
+  // (再採番)なので同じ理由コードへ写す — 素の再 throw(500)にしない
+  if (message.includes("invitations.link_pub") || message.includes("invitations.token_hash")) {
+    return "linkPub";
+  }
+  return message.includes("invitations.id") ? "id" : null;
 }
 
 /** pending / lookback の両上限を同一 INSERT 文で再評価する。 */
@@ -1346,7 +1419,11 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
         .select({
           id: sql<string>`${input.id}`.as("id"),
           projectId: sql<string>`${input.projectId}`.as("project_id"),
-          tokenHash: sql<string>`${input.tokenHashHex}`.as("token_hash"),
+          tokenHash: sql<string>`${input.legacyTokenHashHex}`.as("token_hash"),
+          linkPub: sql<string>`${input.issuance.linkPubHex}`.as("link_pub"),
+          headHash: sql<string>`${input.issuance.headHashHex}`.as("head_hash"),
+          headSeq: sql<number>`${input.issuance.headSeq}`.as("head_seq"),
+          issueSignature: sql<string>`${input.issuance.issueSignatureHex}`.as("issue_signature"),
           role: sql<string>`${input.role}`.as("role"),
           inviterUserId: sql<string>`${input.inviterUserId}`.as("inviter_user_id"),
           status: sql<string>`'pending'`.as("status"),
@@ -1441,17 +1518,43 @@ function makeInviteRepo(db: Db): InviteRepoShape {
         // では、並行した全員が同じ under-limit を観測して
         // 並行度ぶん上限を超えられる。audit は直前の INSERT が 1 行に効いた
         // ときだけ changes() ガードで書く
-        const results = await db.batch([
-          conditionalInviteInsert(db, input, nowMs),
-          guardedAuditInsert({
-            inviteId: input.id,
-            event: "invite.created",
-            actor,
-            targetUserId: null,
-            payload: { inviteId: input.id, role: input.role },
-            nowMs,
-          }),
-        ]);
+        // クライアント採番の id / link_pub の重複は 409(受理ポリシーより先 —
+        // §15-2 の判定順)。乱数由来の衝突は事実上起きないが、id の再利用を黙って
+        // 通さない。事前 SELECT で決定的に検出し、SELECT と INSERT の間に割り込む
+        // 並行発行は UNIQUE 制約エラーとして現れるので同じ 409 へ写す
+        const existing = await db
+          .select({ id: invitations.id, linkPub: invitations.linkPub })
+          .from(invitations)
+          .where(
+            or(eq(invitations.id, input.id), eq(invitations.linkPub, input.issuance.linkPubHex)),
+          )
+          .limit(1);
+        const found = existing[0];
+        if (found !== undefined) {
+          return { kind: "conflict", field: found.id === input.id ? "id" : "linkPub" } as const;
+        }
+        const insert = () =>
+          db.batch([
+            conditionalInviteInsert(db, input, nowMs),
+            guardedAuditInsert({
+              inviteId: input.id,
+              event: "invite.created",
+              actor,
+              targetUserId: null,
+              payload: { inviteId: input.id, role: input.role },
+              nowMs,
+            }),
+          ]);
+        let results: Awaited<ReturnType<typeof insert>>;
+        try {
+          results = await insert();
+        } catch (error) {
+          const conflict = inviteUniqueConflictOf(error);
+          if (conflict !== null) {
+            return { kind: "conflict", field: conflict } as const;
+          }
+          throw error;
+        }
         if (results[0].length === 1) {
           return { kind: "created" } as const;
         }
@@ -1467,8 +1570,7 @@ function makeInviteRepo(db: Db): InviteRepoShape {
           retryAfterSeconds: 1,
         } as const;
       }),
-    findByTokenHash: (tokenHashHex) =>
-      run(() => findWhere(eq(invitations.tokenHash, tokenHashHex))),
+    findByLinkPub: (linkPubHex) => run(() => findWhere(eq(invitations.linkPub, linkPubHex))),
     findById: (projectId, id) =>
       run(() => findWhere(and(eq(invitations.id, id), eq(invitations.projectId, projectId)))),
     listForProject: (projectId) =>
@@ -1491,6 +1593,7 @@ function makeInviteRepo(db: Db): InviteRepoShape {
               inviteeEncPub: input.inviteeEncPubHex,
               inviteeSigPub: input.inviteeSigPubHex,
               acceptSignature: input.acceptSignatureHex,
+              linkSignature: input.linkSignatureHex,
               acceptedAt: nowMs,
             })
             .where(

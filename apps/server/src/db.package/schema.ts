@@ -427,12 +427,22 @@ export const invitations = sqliteTable(
      */
     projectId: text("project_id").notNull(),
     /**
-     * 招待トークン(提示文字列全体 `maruhi_inv_…`)の SHA-256(hex)。生値は
-     * 発行応答で一度だけ返す(§5 / §6 の PAT と同じ規律。CRYPTO_SPEC §6.5 の
-     * 「256-bit 乱数」はエントロピーの規定であり、ハッシュ入力は PAT と同じく
-     * 提示文字列の UTF-8 バイト)
+     * legacy 列(IV 改訂前 = 招待トークンの SHA-256)。IV 改訂(2026-09-13)後の
+     * 行は `lower_hex(SHA-256(link_pub の 32 バイト))` を書く(追加型
+     * マイグレーションで NOT NULL を外せないため)。参照には使わない — 将来の
+     * 表再構築で削除(AUTH_SPEC §15-1)
      */
     tokenHash: text("token_hash").notNull(),
+    /**
+     * リンク公開鍵(Ed25519、hex 小文字 64 — CRYPTO_SPEC §6.5)。発行時に
+     * クライアントが生成して申告。IV 改訂前の行は NULL(受諾不能 = 410 unbound)
+     */
+    linkPub: text("link_pub"),
+    /** 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq。公開値 */
+    headHash: text("head_hash"),
+    headSeq: integer("head_seq"),
+    /** 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布する */
+    issueSignature: text("issue_signature"),
     /** 'reader' | 'member' | 'admin'(招待経由で owner は付与しない — §15-1) */
     role: text("role").notNull(),
     inviterUserId: text("inviter_user_id").notNull(),
@@ -446,11 +456,15 @@ export const invitations = sqliteTable(
     inviteeSigPub: text("invitee_sig_pub"),
     /** CRYPTO_SPEC §6.5 の受諾署名(hex)。招待者クライアントの独立検証の材料 */
     acceptSignature: text("accept_signature"),
+    /** CRYPTO_SPEC §6.5 のリンク署名(hex)。同じバイト列へのリンク鍵の共同署名 */
+    linkSignature: text("link_signature"),
     acceptedAt: integer("accepted_at"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
     uniqueIndex("inv_token_hash").on(t.tokenHash),
+    // 受諾の解決キー(§15-2)。NULL(IV 改訂前の行)同士は UNIQUE に衝突しない
+    uniqueIndex("inv_link_pub").on(t.linkPub),
     // pending 上限(status 条件)と一覧
     index("inv_project_status").on(t.projectId, t.status),
     // 発行の固定窓レート制限(created_at 範囲)

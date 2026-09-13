@@ -288,6 +288,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const principal = yield* (yield* RequestAuth).principal;
         const identities = yield* IdentityRepo;
         const orgs = yield* identities.listUserOrgs(principal.userId);
+        // 招待リンクの `il`(AUTH_SPEC §15-3 — IV)の材料: 本人の GitHub login
+        // の表示用スナップショット(自己情報のみ)
+        const providerLogin = yield* identities.providerLoginOf(principal.userId);
         // トークン主体には提示トークンのスコープと有効期限を返す(AUTH_SPEC
         // §16-2 / §6 — 裁定 CI。クライアントが実効権限 min(スコープ, チェーン
         // role) の事前判定・期限の自己観測を行う材料。どちらも自分が提示した
@@ -296,6 +299,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return {
           userId: principal.userId,
           orgs,
+          ...(providerLogin === null ? {} : { providerLogin }),
           ...(principal.kind === "token"
             ? { tokenScopes: principal.scopes, tokenExpiresAtMs: principal.expiresAtMs }
             : {}),

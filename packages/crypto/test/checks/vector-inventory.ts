@@ -21,6 +21,7 @@ import envManifest from "../../test-vectors/env-manifest.json" with { type: "jso
 import headAttestation from "../../test-vectors/head-attestation.json" with { type: "json" };
 import rfc9180Vectors from "../../test-vectors/hpke/rfc9180-base-x25519-hkdfsha256-aes256gcm.json" with { type: "json" };
 import inviteAccept from "../../test-vectors/invite-accept-signature.json" with { type: "json" };
+import inviteLink from "../../test-vectors/invite-link.json" with { type: "json" };
 import leaseWrap from "../../test-vectors/lease-wrap.json" with { type: "json" };
 import masterKeyWrap from "../../test-vectors/master-key-wrap.json" with { type: "json" };
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
@@ -309,13 +310,76 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
     actual: inviteAccept.negative,
     expected: [
       "tampered-signature",
-      "transplant-token",
+      "transplant-link-pub",
       "transplant-project",
       "transplant-invitee",
       "enc-key-mismatch",
       "sig-key-mismatch",
       "wrong-signer-key",
       "suite-mismatch",
+      "legacy-domain",
+    ],
+  },
+  {
+    label: "invite-accept-signature.link_negative",
+    actual: inviteAccept.link_negative,
+    expected: [
+      "link-tampered-signature",
+      "link-wrong-link-key",
+      "link-transplant-link-pub",
+      "link-enc-key-mismatch",
+      "link-sig-key-mismatch",
+      "link-transplant-invitee",
+      "link-transplant-project",
+      "link-suite-mismatch",
+    ],
+  },
+  {
+    label: "invite-link.issue.vectors",
+    actual: inviteLink.issue.vectors,
+    expected: ["basic"],
+  },
+  {
+    label: "invite-link.issue.negative",
+    actual: inviteLink.issue.negative,
+    expected: [
+      "tampered-signature",
+      "transplant-invite-id",
+      "transplant-project",
+      "transplant-link-pub",
+      "head-hash-swap",
+      "head-seq-mismatch",
+      "role-relabel",
+      "inviter-enc-key-mismatch",
+      "inviter-sig-key-mismatch",
+      "transplant-inviter",
+      "wrong-signer-key",
+      "suite-mismatch",
+    ],
+  },
+  {
+    label: "invite-link.openssh.encode",
+    actual: inviteLink.openssh.encode,
+    expected: ["invitee-sig-key", "inviter-sig-key"],
+  },
+  {
+    label: "invite-link.openssh.parse",
+    actual: inviteLink.openssh.parse,
+    expected: ["bare-line", "with-comment", "with-multiword-comment", "trailing-newline"],
+  },
+  {
+    label: "invite-link.openssh.parse_negative",
+    actual: inviteLink.openssh.parse_negative,
+    expected: [
+      "rsa-key",
+      "security-key-ed25519",
+      "uppercase-type",
+      "short-key",
+      "blob-type-mismatch",
+      "trailing-bytes",
+      "corrupt-base64",
+      "missing-blob",
+      "empty-line",
     ],
   },
   {

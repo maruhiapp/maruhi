@@ -57,6 +57,12 @@ export const ManifestSignatureHex = hexString(64);
 /** 招待受諾署名(Ed25519 — CRYPTO_SPEC §6.5)。 */
 export const InviteAcceptSignatureHex = hexString(64);
 
+/** 招待のリンク署名(Ed25519 — CRYPTO_SPEC §6.5。リンク鍵による共同署名)。 */
+export const InviteLinkSignatureHex = hexString(64);
+
+/** 招待の発行署名(Ed25519 — CRYPTO_SPEC §6.5。招待者のチェーン sig 鍵)。 */
+export const InviteIssueSignatureHex = hexString(64);
+
 /** ヘッド申告署名(Ed25519 — CRYPTO_SPEC §6.6)。 */
 export const HeadAttestationSignatureHex = hexString(64);
 

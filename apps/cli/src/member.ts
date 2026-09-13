@@ -17,21 +17,29 @@
 import { ChainHeadConflictError, DekWrapNotFoundError } from "@maruhi/api-schema";
 import type { ChainEntry, ChainMember, Role, SigningKeyPair } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
+import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import type { IdentityBacking } from "./config.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
+import { checkSigningKeyBacking, describeBackingFallback } from "./github-signing-keys.ts";
 import {
+  acceptanceFailureText,
   type InvitationRow,
   type InviteAcceptance,
+  type InviteIssuance,
+  issuanceFailureText,
   listInvitations,
+  pinMismatchOf,
   verifyAcceptanceBlock,
+  verifyIssuance,
 } from "./invite.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -210,6 +218,12 @@ export interface MemberAddSummary {
   readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
 }
 
+/** 受諾済みかつ発行文のある行(IV 改訂前の行は発行文が無く add できない)。 */
+type AddableRow = InvitationRow & {
+  readonly acceptance: InviteAcceptance;
+  readonly issuance: InviteIssuance;
+};
+
 const withAcceptance = (
   row: InvitationRow,
 ): row is InvitationRow & { readonly acceptance: InviteAcceptance } => row.acceptance !== null;
@@ -221,7 +235,7 @@ const withAcceptance = (
 function selectInvitation(
   rows: readonly InvitationRow[],
   inviteId: string | null,
-): Effect.Effect<InvitationRow & { readonly acceptance: InviteAcceptance }, CliError> {
+): Effect.Effect<AddableRow, CliError> {
   if (inviteId !== null) {
     const row = rows.find((candidate) => candidate.id === inviteId);
     if (row === undefined) {
@@ -243,7 +257,7 @@ function selectInvitation(
         ),
       );
     }
-    return Effect.succeed(row);
+    return requireIssuance(row);
   }
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
@@ -264,7 +278,16 @@ function selectInvitation(
       ),
     );
   }
-  return Effect.succeed(first);
+  return requireIssuance(first);
+}
+
+/** 発行文の無い行(IV 改訂前)は add_member に使えない(互換経路なし)。 */
+function requireIssuance(
+  row: InvitationRow & { readonly acceptance: InviteAcceptance },
+): Effect.Effect<AddableRow, CliError> {
+  return row.issuance === null
+    ? Effect.fail(cliError(`This invite ${issuanceFailureText("unbound")}`))
+    : Effect.succeed({ ...row, issuance: row.issuance });
 }
 
 /**
@@ -366,6 +389,135 @@ function confirmInviteeFingerprint(input: {
         "Acceptance key fingerprint confirmation failed (the re-typed word does not match). add_member was not performed — re-run once you can check with the acceptor",
     });
     yield* book.record;
+  });
+}
+
+/**
+ * 宛先 login の解決(充足形 4 の (iii)): `--github` → 発行ピンの宛先。無しは
+ * null = 儀式へ。対話入力は設けない(儀式の再入力プロンプトと混ざり、また
+ * 打ち間違いが「別人の GitHub」への問い合わせになる — 名指しは発行時か
+ * フラグの明示的作為に限る)。
+ */
+function resolveAddresseeLogin(input: {
+  readonly flagLogin: string | null;
+  readonly pinLogin: string | null;
+}): Effect.Effect<string | null, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (input.flagLogin !== null) {
+      return input.flagLogin;
+    }
+    if (input.pinLogin !== null) {
+      yield* io.log(
+        `The invite was issued for github.com/${input.pinLogin} (recorded at issuance on this machine)`,
+      );
+      return input.pinLogin;
+    }
+    return null;
+  });
+}
+
+/**
+ * 未登録時の二択(補足 21 裁定 D ④): 相手の GitHub に鍵が無いとき、儀式へ入る前に
+ * 「頼んで再実行」か「今すぐ儀式」かを聞く。対話端末 + 非エージェント + フラグ
+ * なしのときだけ(非対話ではフラグ経路のみ — 従来どおり)。yes = 儀式へ進む。
+ */
+function askCeremonyOrWait(input: {
+  readonly login: string;
+  readonly flagProvided: boolean;
+}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const stdio = yield* Stdio.Stdio;
+    const interactive =
+      !io.agentProfile().isAgent &&
+      (yield* stdio.stdinIsTerminal) &&
+      (yield* stdio.stdoutIsTerminal);
+    if (!interactive || input.flagProvided) {
+      return;
+    }
+    yield* io.log(
+      `github.com/${input.login} has not registered this key as a signing key. Ask them to run \`maruhi key publish\` and re-run \`maruhi member add\` to add them without a call, or confirm the 12 words with them now`,
+    );
+    const answer = yield* io.promptLine({
+      prompt:
+        "Type yes to confirm the 12 words now; anything else to stop and wait for their registration: ",
+    });
+    if (answer.trim().toLowerCase() !== "yes") {
+      return yield* Effect.fail(
+        cliError(
+          `add_member was not performed. Ask github.com/${input.login} to register their key with \`maruhi key publish\`, then re-run \`maruhi member add\``,
+        ),
+      );
+    }
+  });
+}
+
+/**
+ * 招待者側の充足形 4(CRYPTO_SPEC §6.5 — IV2): 発行文・両署名の検証(呼び出し側
+ * で済み)に加えて、裏付け元が「受諾の sig 鍵は名指しした相手の鍵である」と照合
+ * できたとき、**確認入力なしに** add_member へ進んでよい(名指しは発行時の明示的
+ * 作為)。`--expect-fingerprint` が同時に指定されていれば照合に加えて要求し、
+ * 不一致は拒否する。照合の不能(裏付け元 `none`・宛先なし・未登録・取得不能)は
+ * false = 充足形 1〜3(confirmInviteeFingerprint)へ戻る。
+ */
+function confirmInviteeViaBacking(input: {
+  readonly identityBacking: IdentityBacking;
+  readonly flagLogin: string | null;
+  readonly pinLogin: string | null;
+  readonly sigPubHex: string;
+  readonly fingerprintHex: string;
+  readonly expectFingerprintHex: string | null;
+}): Effect.Effect<boolean, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (input.identityBacking === "none") {
+      if (input.flagLogin !== null) {
+        yield* logNote(
+          "identityBacking is none, so --github cannot be checked against github.com — falling back to the fingerprint confirmation",
+        );
+      }
+      return false;
+    }
+    const login = yield* resolveAddresseeLogin({
+      flagLogin: input.flagLogin,
+      pinLogin: input.pinLogin,
+    });
+    if (login === null) {
+      yield* logNote(
+        "no GitHub login to check the acceptance key against (pass --github <login>, or name the invitee with `maruhi invite create --github`) — falling back to the fingerprint confirmation",
+      );
+      return false;
+    }
+    const verdict = yield* checkSigningKeyBacking({ login, sigPubHex: input.sigPubHex });
+    if (verdict.kind === "not-registered") {
+      yield* askCeremonyOrWait({ login, flagProvided: input.expectFingerprintHex !== null });
+      yield* logNote(
+        `${describeBackingFallback(login, verdict)} — falling back to the fingerprint confirmation`,
+      );
+      return false;
+    }
+    if (verdict.kind !== "match") {
+      yield* logNote(
+        `${describeBackingFallback(login, verdict)} — falling back to the fingerprint confirmation`,
+      );
+      return false;
+    }
+    if (
+      input.expectFingerprintHex !== null &&
+      input.expectFingerprintHex !== input.fingerprintHex
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          "--expect-fingerprint does not match the acceptance key's fingerprint. The acceptance may have been hijacked — add_member was aborted (revoke the invite and reissue)",
+        ),
+      );
+    }
+    yield* io.log(
+      `Acceptance key verified: it is registered as a signing key on github.com/${login}, and the acceptance is bound to the link you issued (CRYPTO_SPEC §6.5) — no 12-word call is needed`,
+    );
+    yield* io.log(`  fp:   ${input.fingerprintHex}`);
+    return true;
   });
 }
 
@@ -550,48 +702,61 @@ function prepareMemberAdd(input: {
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
   readonly expectFingerprintHex: string | null;
+  /** `--github <login>`(裏付け元の照合先。発行ピンの宛先より優先)。 */
+  readonly githubLogin: string | null;
+  readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
   readonly signerUserId: string;
   readonly origin: string;
 }): Effect.Effect<
   {
-    readonly row: InvitationRow & { readonly acceptance: InviteAcceptance };
+    readonly row: AddableRow;
     readonly alreadyAdded: boolean;
   },
   CliError,
-  CliIo | FingerprintBook | Stdio.Stdio
+  CliIo | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     const listed = yield* listInvitations(input.client, input.verified.projectId);
     const row = yield* selectInvitation(listed, input.inviteId);
 
-    // 発行ピン突合(発行時の token_hash / role とサーバー申告の一致 — 行の
-    // すり替え・role の虚偽申告の機械検出)。ピンがない場合(別デバイスでの
-    // 発行・保持窓超過)は儀式の role 表示照合のみに劣化する
-    const pin = issuedPinOf(input.pins, row.id);
-    if (pin !== undefined && (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role)) {
+    // 発行文の検証(CRYPTO_SPEC §6.5 — IV): 行の発行署名をチェーン導出の招待者鍵で
+    // 検証する。自分が発行した行なら自分の鍵で「自分の発行か」が固定される
+    // (発行ピンに依存しない)。失敗 = 行のすり替え / 改竄 → 拒否
+    const issuance = yield* verifyIssuance({ verified: input.verified, row });
+    if (!issuance.ok) {
       return yield* Effect.fail(
-        cliError(
-          "The server's claim for the invite row (token_hash / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
-        ),
-      );
-    }
-    if (pin === undefined) {
-      yield* logNote(
-        "this machine has no issuance pin for this invite (it may have been issued on another device). Confirm that the displayed role matches what was intended at issuance",
+        cliError(`This invite ${issuanceFailureText(issuance.reason)}. add_member was aborted`),
       );
     }
 
-    // §6.5 の独立検証(サーバー申告の検証結果を信用しない)
+    // 発行ピン突合(SHOULD — 発行時の link_pub / role とサーバー申告の一致)。
+    // ピンがない場合(別デバイスでの発行・保持窓超過)は発行署名の検証だけが
+    // 行を固定する(IV 改訂で真実源は発行署名へ移った)
+    const pin = pinMismatchOf(input.pins, row);
+    if (pin === "mismatch") {
+      return yield* Effect.fail(
+        cliError(
+          "The server's claim for the invite row (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
+        ),
+      );
+    }
+    if (pin === "missing") {
+      yield* logNote(
+        "this machine has no issuance pin for this invite (it may have been issued on another device). The issue signature still fixes the row; only the addressee login recorded at issuance is unavailable here",
+      );
+    }
+
+    // §6.5 の独立検証(サーバー申告の検証結果を信用しない): リンク署名 → 受諾署名
     const acceptanceVerified = yield* verifyAcceptanceBlock({
       projectId: input.verified.projectId,
-      tokenHashHex: row.tokenHashHex,
+      issuance: row.issuance,
       acceptance: row.acceptance,
     });
     if (!acceptanceVerified.ok) {
       return yield* Effect.fail(
         cliError(
-          "The acceptance signature failed verification (CRYPTO_SPEC §6.5). This acceptance block cannot be trusted — add_member was aborted (revoke the invite)",
+          `For this invite, ${acceptanceFailureText(acceptanceVerified.which)}. This acceptance block cannot be trusted — add_member was aborted (revoke the invite)`,
         ),
       );
     }
@@ -603,13 +768,24 @@ function prepareMemberAdd(input: {
       role: row.role,
     });
 
-    yield* confirmInviteeFingerprint({
-      origin: input.origin,
-      targetUserId: row.acceptance.inviteeUserId,
-      role: row.role,
+    // 充足形 4(裏付け元)→ 不成立なら充足形 1〜3(儀式 / フラグ / 帳)
+    const backed = yield* confirmInviteeViaBacking({
+      identityBacking: input.identityBacking,
+      flagLogin: input.githubLogin,
+      pinLogin: issuedPinOf(input.pins, row.id)?.expectedGithubLogin ?? null,
+      sigPubHex: row.acceptance.inviteeSigPubHex,
       fingerprintHex: acceptanceVerified.fingerprintHex,
       expectFingerprintHex: input.expectFingerprintHex,
     });
+    if (!backed) {
+      yield* confirmInviteeFingerprint({
+        origin: input.origin,
+        targetUserId: row.acceptance.inviteeUserId,
+        role: row.role,
+        fingerprintHex: acceptanceVerified.fingerprintHex,
+        expectFingerprintHex: input.expectFingerprintHex,
+      });
+    }
     return { row, alreadyAdded: first.alreadyAdded };
   });
 }
@@ -661,13 +837,19 @@ export function memberAddOp(input: {
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
   readonly expectFingerprintHex: string | null;
+  readonly githubLogin: string | null;
+  readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
   readonly signerUserId: string;
   readonly origin: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<MemberAddSummary, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
+}): Effect.Effect<
+  MemberAddSummary,
+  CliError,
+  CliIo | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
+> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const { row, alreadyAdded } = yield* prepareMemberAdd(input);

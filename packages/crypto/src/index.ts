@@ -182,13 +182,26 @@ export {
   computeAuditRowDigest,
 } from "./internal.package/index.ts";
 
-// §6.5: 招待の暗号面 — 受諾署名(チェーン外の追加証跡。相互確認の表示は §3 の
+// §6.5: 招待の暗号面(2026-09-13 IV) — リンク鍵・発行署名・受諾の共同署名・OpenSSH
+// 公開鍵行(裏付け元との相互運用。チェーン外の追加証跡。相互確認の表示は §3 の
 // fingerprintToWords、リンクアンカーは §6.3 — いずれも既存 export)
 export {
   buildInviteAcceptSignedBytes,
+  buildInviteIssueSignedBytes,
+  deriveInviteLinkKeyPair,
+  encodeOpenSshEd25519PublicKey,
+  generateInviteLinkSeed,
+  INVITE_LINK_SEED_BYTES,
   type InviteAcceptSignatureContext,
+  type InviteIssueContext,
+  type InviteLinkKeyPair,
+  parseOpenSshEd25519PublicKey,
   signInviteAccept,
+  signInviteIssue,
+  signInviteLink,
   verifyInviteAcceptSignature,
+  verifyInviteIssueSignature,
+  verifyInviteLinkSignature,
 } from "./internal.package/index.ts";
 
 // §6.6: ヘッド申告(§6.3 ヘッドゴシップの申告形式 — チェーン外の署名付き宣言。
