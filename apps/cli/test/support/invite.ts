@@ -8,6 +8,7 @@ import {
   decodeHex,
   deriveInviteLinkKeyPair,
   encodeHex,
+  encodeOpenSshEd25519PublicKey,
   signInviteAccept,
   signInviteIssue,
   signInviteLink,
@@ -17,6 +18,7 @@ import { Redacted } from "effect";
 
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "../../src/invite-link.ts";
 import type { TestUser } from "./crypto.ts";
+import { type MockHandler, onRequest } from "./server.ts";
 
 /** 固定の招待 id(ULID 形式 — api-schema の InviteIdSchema を満たす)。 */
 export const INVITE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -159,4 +161,28 @@ export async function acceptanceFixture(input: {
 export function flipHex(hex: string): string {
   const first = Number.parseInt(hex.slice(0, 2), 16) ^ 0x01;
   return first.toString(16).padStart(2, "0") + hex.slice(2);
+}
+
+/** ユーザーの sig 公開鍵の OpenSSH 行(GitHub 応答の `key` 欄の形 — 裏付け元 IV2)。 */
+export function sshLineOf(user: TestUser): string {
+  const raw = decodeHex(user.sigPubHex);
+  if (raw === null) throw new Error("sig pub hex");
+  const encoded = encodeOpenSshEd25519PublicKey(raw);
+  if (!encoded.ok) throw new Error("openssh encode");
+  return encoded.value;
+}
+
+/**
+ * GitHub の `GET /users/{login}/ssh_signing_keys` の偽装(裏付け元 IV2)。テストは
+ * `env.setVendorOrigin("api.github.com", server.origin)` で固定ホストをここへ写す。
+ */
+export function githubSigningKeysHandler(
+  login: string,
+  keys: readonly string[],
+  status = 200,
+): MockHandler {
+  return onRequest("GET", `/users/${login}/ssh_signing_keys`, () => ({
+    status,
+    json: status === 200 ? keys.map((key, index) => ({ id: index + 1, key })) : { message: "x" },
+  }));
 }

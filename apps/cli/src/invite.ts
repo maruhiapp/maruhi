@@ -47,13 +47,16 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
+import type { IdentityBacking } from "./config.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
+import { checkSigningKeyBacking, describeBackingFallback } from "./github-signing-keys.ts";
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "./invite-link.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
+import { offerGithubRegistration } from "./key-publish.ts";
 import { Keychain, masterKeyEntryName } from "./keychain.ts";
 import {
   confirmKnownFingerprint,
@@ -63,6 +66,7 @@ import {
 } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
+import type { ProcessRunner } from "./run.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
 
@@ -704,9 +708,13 @@ function ensureMasterKeysForAccept(input: {
   readonly keyGenerate: Effect.Effect<
     void,
     CliError,
-    Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient
+    Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
   >;
-}): Effect.Effect<MasterKeys, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.Effect<
+  { readonly keys: MasterKeys; readonly generated: boolean },
+  CliError,
+  Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
+> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
@@ -714,7 +722,7 @@ function ensureMasterKeysForAccept(input: {
       masterKeyEntryName(input.session.origin, input.session.userId),
     );
     if (stored !== null) {
-      return yield* loadMasterKeys(input.session);
+      return { keys: yield* loadMasterKeys(input.session), generated: false };
     }
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
@@ -748,7 +756,111 @@ function ensureMasterKeysForAccept(input: {
       );
     }
     yield* input.keyGenerate;
-    return yield* loadMasterKeys(input.session);
+    return { keys: yield* loadMasterKeys(input.session), generated: true };
+  });
+}
+
+/**
+ * 受諾者側の充足形 4(CRYPTO_SPEC §6.5 — IV2): 裏付け元が「招待者の sig 鍵
+ * (`is`)はリンクが名指す login(`il`)の署名鍵である」と照合できたとき、
+ * 12 語の読み上げは不要で、**受諾者が「その login からの招待を期待していた」
+ * ことの表明**(非対話: `--from` の一致 / 対話: login を名指しする yes)で充足
+ * する。照合の**不能**(裏付け元 `none`・`il` なし・未登録・取得不能)は
+ * false = 充足形 1〜3(confirmInviterFingerprint)へ戻る。`--from` と `il` の
+ * 不一致だけは**拒否**(経路で差し替えられた有効な別人のリンクの形)。
+ */
+function confirmInviterViaBacking(input: {
+  readonly link: InviteLinkData;
+  readonly identityBacking: IdentityBacking;
+  readonly expectedFromLogin: string | null;
+}): Effect.Effect<boolean, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { link } = input;
+    if (input.identityBacking === "none") {
+      if (input.expectedFromLogin !== null) {
+        yield* logNote(
+          "identityBacking is none, so --from cannot be checked against github.com — falling back to the inviter fingerprint confirmation",
+        );
+      }
+      return false;
+    }
+    if (link.inviterLogin === null) {
+      if (input.expectedFromLogin !== null) {
+        yield* logNote(
+          "the link does not name the inviter's GitHub login (il=), so --from cannot be checked — falling back to the inviter fingerprint confirmation",
+        );
+      }
+      return false;
+    }
+    if (
+      input.expectedFromLogin !== null &&
+      input.expectedFromLogin.toLowerCase() !== link.inviterLogin.toLowerCase()
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          `The link names github.com/${link.inviterLogin} as the inviter, but --from expects ${input.expectedFromLogin}. The link may have been swapped for another project's valid link — the acceptance was aborted (check with the person who sent it)`,
+        ),
+      );
+    }
+    const verdict = yield* checkSigningKeyBacking({
+      login: link.inviterLogin,
+      sigPubHex: link.inviterSigPubHex,
+    });
+    if (verdict.kind !== "match") {
+      yield* logNote(
+        `${describeBackingFallback(link.inviterLogin, verdict)} — falling back to the inviter fingerprint confirmation`,
+      );
+      return false;
+    }
+    yield* io.log(
+      `Inviter key verified: the link's inviter signing key (is=) is registered as a signing key on github.com/${link.inviterLogin} (CRYPTO_SPEC §6.5)`,
+    );
+    if (input.expectedFromLogin !== null) {
+      yield* io.log(
+        "--from matches the link's inviter login (continuing without the 12-word call)",
+      );
+      return true;
+    }
+    return yield* confirmExpectedInviter(link, link.inviterLogin);
+  });
+}
+
+/**
+ * 充足形 4 の「期待していた」表明(対話形): login を名指しする yes。非対話では
+ * フラグ(`--from`)だけが経路 — エージェント環境は拒否、非端末は儀式へ戻る。
+ */
+function confirmExpectedInviter(
+  link: InviteLinkData,
+  inviterLogin: string,
+): Effect.Effect<boolean, CliError, CliIo | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (io.agentProfile().isAgent) {
+      return yield* Effect.fail(
+        cliError(
+          `Refused to confirm the invite on your behalf: an AI agent environment was detected. Re-run with --from ${inviterLogin} if you expect this invite from that GitHub account, or accept on a human terminal`,
+        ),
+      );
+    }
+    const stdio = yield* Stdio.Stdio;
+    if (!(yield* stdio.stdinIsTerminal) || !(yield* stdio.stdoutIsTerminal)) {
+      yield* logNote(
+        `stdin or stdout is not an interactive terminal — pass --from ${inviterLogin} to accept non-interactively; falling back to the inviter fingerprint confirmation`,
+      );
+      return false;
+    }
+    const answer = yield* io.promptLine({
+      prompt: `Type yes to accept this invite from github.com/${inviterLogin} (project ${displayText(link.projectId)}, role ${link.role}): `,
+    });
+    if (answer.trim().toLowerCase() !== "yes") {
+      return yield* Effect.fail(
+        cliError(
+          "The acceptance was cancelled. If you did not expect an invite from that GitHub account, tell the person who sent you the link",
+        ),
+      );
+    }
+    return true;
   });
 }
 
@@ -757,32 +869,48 @@ export function inviteAcceptOp(input: {
   readonly session: CliSession;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
+  /** `--from <login>`(裏付け元による充足形 4 の非対話の表明)。 */
+  readonly expectedFromLogin: string | null;
+  readonly identityBacking: IdentityBacking;
   /** keyGenerateOp(生成 → リカバリー儀式)そのもの(cli.ts が結線する)。 */
   readonly keyGenerate: Effect.Effect<
     void,
     CliError,
-    Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient
+    Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
   >;
 }): Effect.Effect<
   InviteAcceptSummary,
   CliError,
-  CliIo | Keychain | PinStore | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
+  | CliIo
+  | Keychain
+  | PinStore
+  | FingerprintBook
+  | ProcessRunner
+  | Stdio.Stdio
+  | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     const { link } = input;
-    // §15-3 の順序: 発行署名の検証(機械)→ 相互確認 → 鍵生成〔未生成時〕→
-    // 共同署名 → 受諾 → アンカーのピン留め(受諾成立後のみ — 同節の追補)
+    // §15-3 の順序: 発行署名の検証(機械)→ 相互確認(充足形 4 → 1〜3)→
+    // 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカーのピン留め(受諾成立後のみ)
     const linkKey = yield* resolveLinkKey(link);
     yield* verifyLinkIssuanceWith(link, linkKey.linkPubHex);
     const inviterFingerprintHex = yield* inviterFingerprintOf(link);
-    yield* confirmInviterFingerprint({
-      origin: input.session.origin,
+    const backed = yield* confirmInviterViaBacking({
       link,
-      inviterFingerprintHex,
-      expectInviterFingerprintHex: input.expectInviterFingerprintHex,
+      identityBacking: input.identityBacking,
+      expectedFromLogin: input.expectedFromLogin,
     });
+    if (!backed) {
+      yield* confirmInviterFingerprint({
+        origin: input.session.origin,
+        link,
+        inviterFingerprintHex,
+        expectInviterFingerprintHex: input.expectInviterFingerprintHex,
+      });
+    }
 
-    const masterKeys = yield* ensureMasterKeysForAccept({
+    const { keys: masterKeys, generated } = yield* ensureMasterKeysForAccept({
       session: input.session,
       client: input.client,
       keyGenerate: input.keyGenerate,
@@ -844,7 +972,13 @@ export function inviteAcceptOp(input: {
       accepted,
       fingerprintHex: masterKeys.fingerprintHex,
       anchored,
+      identityBacking: input.identityBacking,
     });
+    // 登録の導線(補足 21 裁定 G ⑥ (b)): この受諾の中で鍵が生まれたなら、
+    // 招待者が儀式なしで追加できるよう、ここで GitHub 登録を持ちかける
+    if (generated && input.identityBacking !== "none") {
+      yield* offerGithubRegistration({ session: input.session });
+    }
     return { projectId: accepted.projectId, role: accepted.role };
   });
 }
@@ -922,6 +1056,7 @@ function reportAcceptOutcome(input: {
   readonly accepted: InviteAcceptSummary;
   readonly fingerprintHex: string;
   readonly anchored: boolean;
+  readonly identityBacking: IdentityBacking;
 }): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -935,8 +1070,12 @@ function reportAcceptOutcome(input: {
     yield* io.log("Your key fingerprint (the inviter checks this at member add):");
     yield* io.log(`  hex:  ${input.fingerprintHex}`);
     yield* io.log("  word: " + formatWordList(ownWords));
+    // 完了表示(補足 21 裁定 G ⑥ (a)): 裏付け元があるときは「登録」が第一の
+    // 導線で、12 語の読み上げはその代替
     yield* io.log(
-      "Your acceptance is bound to the invite link. If the inviter cannot verify your key through GitHub, read these 12 words to them out of band (e.g. over a call) (§6.5 mutual confirmation. To show them again later, run `maruhi key show`)",
+      input.identityBacking === "none"
+        ? "Your acceptance is bound to the invite link. Read these 12 words to the inviter out of band (e.g. over a call) (§6.5 mutual confirmation. To show them again later, run `maruhi key show`)"
+        : "Your acceptance is bound to the invite link. Register this key on GitHub as a signing key with `maruhi key publish` so the inviter can add you without a call; otherwise read these 12 words to them out of band (e.g. over a call) (§6.5 mutual confirmation. To show them again later, run `maruhi key show`)",
     );
     yield* io.log(
       input.anchored

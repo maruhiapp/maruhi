@@ -93,10 +93,14 @@ import {
 import { maruhiTeardown } from "./cli-teardown.ts";
 import {
   asConfigKey,
+  asIdentityBacking,
   CONFIG_KEYS,
   ConfigFileCorruptError,
   type ConfigKey,
   ConfigStore,
+  IDENTITY_BACKINGS,
+  type IdentityBacking,
+  identityBackingOf,
 } from "./config.ts";
 import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
 import {
@@ -124,6 +128,7 @@ import type { FloorHandle } from "./floor-check.ts";
 import { guardianAddOp, guardianListOp, guardianRemoveOp, guardianWardsOp } from "./guardian.ts";
 import { approveHandoffOp, requestHandoffOp } from "./handoff.ts";
 import {
+  GITHUB_LOGIN,
   type InviteInputRejection,
   type InviteLinkData,
   type InviteRole,
@@ -131,6 +136,7 @@ import {
 } from "./invite-link.ts";
 import { inviteAcceptOp, inviteCreateOp, inviteListOp, inviteRevokeOp } from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
+import { keyPublishOp } from "./key-publish.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import { loginOp, logoutOp } from "./login.ts";
@@ -565,6 +571,13 @@ const logoutConfig = serverOnlyFlags();
 
 const keyGenerateConfig = serverOnlyFlags();
 const keyShowConfig = serverOnlyFlags();
+const keyPublishConfig = {
+  ...serverOnlyFlags(),
+  gh: singleFlag(
+    "gh",
+    "Add the key to your GitHub account through the gh CLI (`gh ssh-key add --type signing`) instead of printing it",
+  ),
+};
 const keyRecoverConfig = {
   ...serverOnlyFlags(),
   handoff: singleFlag(
@@ -745,10 +758,18 @@ function isInviteRole(value: string | undefined): value is InviteRole {
 const inviteCreateConfig = {
   ...projectFlags(),
   role: singleValued("role", `Role to grant (required — ${INVITE_ROLES.join(" | ")})`),
+  github: singleValued(
+    "github",
+    "GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)",
+  ),
 };
 
 const inviteAcceptConfig = {
   server: singleValued("server", "Server URL (defaults to config server)"),
+  from: singleValued(
+    "from",
+    "GitHub login you expect the invite from (checked against the link and that account's signing keys; replaces the interactive confirmation)",
+  ),
   "inviter-fingerprint": singleValued(
     "inviter-fingerprint",
     "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
@@ -781,6 +802,10 @@ function isMemberRole(value: string | undefined): value is Role {
 
 const memberAddConfig = {
   ...projectFlags(),
+  github: singleValued(
+    "github",
+    "GitHub login of the acceptor (their acceptance key is checked against that account's signing keys; overrides the login recorded at `maruhi invite create --github`)",
+  ),
   "expect-fingerprint": singleValued(
     "expect-fingerprint",
     "Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
@@ -1027,6 +1052,7 @@ const GROUP_CONFIGS: Readonly<
   key: {
     generate: keyGenerateConfig,
     show: keyShowConfig,
+    publish: keyPublishConfig,
     recover: keyRecoverConfig,
     recovery: keyRecoveryConfig,
     approve: keyApproveConfig,
@@ -1422,6 +1448,31 @@ function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
     ? Effect.fail(usageError(`Unknown config key (${CONFIG_KEYS.join(" | ")})`))
     : Effect.succeed(key);
 }
+
+/** GitHub login を取るフラグ(`--github` / `--from`)の形式検査(未指定 = null)。 */
+function parseGithubLoginFlag(
+  flagName: string,
+  value: string | undefined,
+): Effect.Effect<string | null, CliError> {
+  if (value === undefined) {
+    return Effect.succeed(null);
+  }
+  return GITHUB_LOGIN.test(value)
+    ? Effect.succeed(value)
+    : Effect.fail(
+        usageError(
+          `${flagName} must be a GitHub login (1 to 39 letters, digits, or hyphens; no leading, trailing, or doubled hyphen)`,
+        ),
+      );
+}
+
+/** 裏付け元の設定(CRYPTO_SPEC §6.5 — 未設定 = github-signing-keys)。 */
+const loadIdentityBacking: Effect.Effect<IdentityBacking, CliError, ConfigStore> = Effect.gen(
+  function* () {
+    const store = yield* ConfigStore;
+    return identityBackingOf(yield* store.load);
+  },
+);
 
 /** `maruhi project verify`: チェーン検証 + 床・アンカー検査 + 状態表示。 */
 function projectVerify(
@@ -1862,9 +1913,9 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
   );
 }
 
-/** `maruhi invite create --role <r>`(§15-2 発行 + §15-3 リンク組み立て)。 */
+/** `maruhi invite create --role <r> [--github <login>]`(§15-2 発行 + §15-3 リンク組み立て)。 */
 function inviteCreateCommand(
-  flags: CommonFlags & { readonly role?: string | undefined },
+  flags: CommonFlags & { readonly role?: string | undefined; readonly github?: string | undefined },
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     if (!isInviteRole(flags.role)) {
@@ -1874,8 +1925,19 @@ function inviteCreateCommand(
         ),
       );
     }
+    const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
+    const identityBacking = yield* loadIdentityBacking;
     // 発行署名(CRYPTO_SPEC §6.5)は招待者のチェーン sig 鍵で作る = master 鍵が要る
     const context = yield* openProject(flags);
+    // リンクの `il`(§15-3): 自分の GitHub login の表示用スナップショット(/auth/me)。
+    // 取れなくても発行は成立する(受諾者側が儀式へ戻るだけ)
+    const inviterLogin =
+      identityBacking === "none"
+        ? null
+        : yield* context.client.auth.me({}).pipe(
+            Effect.map((me) => me.providerLogin ?? null),
+            Effect.catch(() => Effect.succeed(null)),
+          );
     yield* inviteCreateOp({
       client: context.client,
       verified: context.verified,
@@ -1883,9 +1945,8 @@ function inviteCreateCommand(
       role: flags.role,
       sessionUserId: context.session.userId,
       masterKeys: context.masterKeys,
-      // IV2(K5)で `--github` / `/auth/me` の login に結線する
-      expectedGithubLogin: null,
-      inviterLogin: null,
+      expectedGithubLogin,
+      inviterLogin,
     });
   });
 }
@@ -1921,21 +1982,30 @@ function resolveAcceptLink(
 function inviteAcceptCommand(flags: {
   readonly server?: string | undefined;
   readonly target: Redacted.Redacted<string>;
+  readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const link = yield* resolveAcceptLink(flags.target);
+    const expectedFromLogin = yield* parseGithubLoginFlag("--from", flags.from);
     const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
       "--inviter-fingerprint",
       flags.inviterFingerprint,
     );
     const context = yield* openSession(flags.server);
+    const identityBacking = identityBackingOf(context.config);
     yield* inviteAcceptOp({
       client: context.client,
       session: context.session,
       link,
       expectInviterFingerprintHex,
-      keyGenerate: keyGenerateOp({ session: context.session, client: context.client }),
+      expectedFromLogin,
+      identityBacking,
+      keyGenerate: keyGenerateOp({
+        session: context.session,
+        client: context.client,
+        identityBacking,
+      }),
     });
   });
 }
@@ -2014,6 +2084,7 @@ function reportSweepOutcome(
 function memberAddCommand(
   flags: CommonFlags & {
     readonly invite?: string | undefined;
+    readonly github?: string | undefined;
     readonly expectFingerprint?: string | undefined;
   },
 ): Effect.Effect<number, CliError, CliServices> {
@@ -2023,6 +2094,8 @@ function memberAddCommand(
       "--expect-fingerprint",
       flags.expectFingerprint,
     );
+    const githubLogin = yield* parseGithubLoginFlag("--github", flags.github);
+    const identityBacking = yield* loadIdentityBacking;
     const context = yield* openProject(flags);
     const store = yield* PinStore;
     const loaded = yield* store.load(context.projectId);
@@ -2031,6 +2104,8 @@ function memberAddCommand(
       verified: context.verified,
       inviteId: flags.invite ?? null,
       expectFingerprintHex,
+      githubLogin,
+      identityBacking,
       pins: loaded.pins,
       signerUserId: context.session.userId,
       origin: context.session.origin,
@@ -2567,7 +2642,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const keyGenerate = Command.make("generate", keyGenerateConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      yield* keyGenerateOp({ session: context.session, client: context.client });
+      yield* keyGenerateOp({
+        session: context.session,
+        client: context.client,
+        identityBacking: identityBackingOf(context.config),
+      });
     }),
   ).pipe(
     Command.withDescription(
@@ -2581,6 +2660,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* keyShowOp({ session: context.session, client: context.client });
     }),
   ).pipe(Command.withDescription("Print the public keys and fingerprint (never the private keys)"));
+
+  const keyPublish = Command.make("publish", keyPublishConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* keyPublishOp({ session: context.session, viaGh: values.gh });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Print your signing public key as an OpenSSH line to register on GitHub as a signing key (--gh adds it through the gh CLI)",
+    ),
+  );
 
   const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
     Effect.gen(function* () {
@@ -2668,9 +2758,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const key = Command.make("key").pipe(
     Command.withDescription(
-      "Manage your master key (generate / show / recover / recovery / approve / seal)",
+      "Manage your master key (generate / show / publish / recover / recovery / approve / seal)",
     ),
-    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery, keyApprove, keySeal]),
+    Command.withSubcommands([
+      keyGenerate,
+      keyShow,
+      keyPublish,
+      keyRecover,
+      keyRecovery,
+      keyApprove,
+      keySeal,
+    ]),
   );
 
   const guardianAdd = Command.make("add", guardianAddConfig, (values) =>
@@ -2865,6 +2963,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const io = yield* CliIo;
       const store = yield* ConfigStore;
       const configKey = yield* requireConfigKey(values.key);
+      // 閉集合の値を持つキーは宣言時に検査する(誤記を黙って保存しない)
+      if (configKey === "identityBacking" && asIdentityBacking(values.value) === null) {
+        return yield* Effect.fail(
+          usageError(`identityBacking must be one of: ${IDENTITY_BACKINGS.join(" | ")}`),
+        );
+      }
       // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
       // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
       // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す。
@@ -3204,6 +3308,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     inviteAcceptCommand({
       server: values.server,
       target: values.target,
+      from: values.from,
       inviterFingerprint: values["inviter-fingerprint"],
     }),
   ).pipe(Command.withDescription("Accept an invite link"));
@@ -3241,6 +3346,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           server: values.server,
           project: values.project,
           invite: values["invite-id"],
+          github: values.github,
           expectFingerprint: values["expect-fingerprint"],
         }),
       );

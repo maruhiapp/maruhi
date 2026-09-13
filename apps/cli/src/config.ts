@@ -18,15 +18,42 @@ import { Context, Effect } from "effect";
 
 import { CliError, cliError } from "./errors.ts";
 
+/**
+ * 裏付け元(CRYPTO_SPEC §6.5 — IV2): 招待の相互確認で相手の sig 鍵を IdP の公開
+ * 鍵一覧と機械照合する出所。`github-signing-keys`(既定)/ `none`(照合しない =
+ * 常に儀式)。`org-directory` は予約(未実装)。
+ */
+export const IDENTITY_BACKINGS = ["github-signing-keys", "none"] as const;
+
+export type IdentityBacking = (typeof IDENTITY_BACKINGS)[number];
+
 /** Non-secret CLI configuration. */
 export interface CliConfig {
   readonly server?: string;
   readonly defaultProject?: string;
   readonly defaultEnvironment?: string;
+  readonly identityBacking?: IdentityBacking;
 }
 
 /** Keys accepted by `maruhi config set` (all non-secret). */
-export const CONFIG_KEYS = ["server", "defaultProject", "defaultEnvironment"] as const;
+export const CONFIG_KEYS = [
+  "server",
+  "defaultProject",
+  "defaultEnvironment",
+  "identityBacking",
+] as const;
+
+/** 裏付け元の実効値(未設定 = `github-signing-keys` — 補足 21 裁定 B)。 */
+export function identityBackingOf(config: CliConfig): IdentityBacking {
+  return config.identityBacking ?? "github-signing-keys";
+}
+
+/** `config set identityBacking <value>` の受理検査(不正 = null)。 */
+export function asIdentityBacking(value: string): IdentityBacking | null {
+  return (IDENTITY_BACKINGS as readonly string[]).includes(value)
+    ? (value as IdentityBacking)
+    : null;
+}
 
 /** A key accepted by `maruhi config set`. */
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
@@ -72,9 +99,19 @@ function decodeConfig(json: string): CliConfig | null {
     const config: { -readonly [K in keyof CliConfig]: CliConfig[K] } = {};
     for (const key of CONFIG_KEYS) {
       const picked = pickString(record, key);
-      if (picked !== undefined) {
-        config[key] = picked;
+      if (picked === undefined) {
+        continue;
       }
+      if (key === "identityBacking") {
+        // 未知の値は既定(照合あり)へ倒す: 誤記で照合が**消える**方向へは
+        // 倒さない(`none` は明示した綴りだけが効く)
+        const backing = asIdentityBacking(picked);
+        if (backing !== null) {
+          config.identityBacking = backing;
+        }
+        continue;
+      }
+      config[key] = picked;
     }
     return config;
   } catch {

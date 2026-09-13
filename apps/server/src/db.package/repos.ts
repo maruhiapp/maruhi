@@ -102,6 +102,11 @@ interface IdentityRepoShape {
   /** ユーザーが属する org 一覧(プロジェクト作成先の発見用。§11-3)。 */
   readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
   /**
+   * GitHub の表示用 login スナップショット(`/auth/me` の providerLogin —
+   * AUTH_SPEC §15-3 の `il` の材料)。リンクなし・未保存は null。
+   */
+  readonly providerLoginOf: (userId: string) => Effect.Effect<string | null>;
+  /**
    * 受理時点の signupPolicy(AUTH_SPEC §3)。行なし = 'open'(既定 = 従来挙動)、
    * 未知の保存値 = 'closed'(fail-closed — 運営の誤設定を黙って 'open' に
    * 化けさせない)。`/auth/config` の advisory と CLI サインアップ案内ページの
@@ -488,6 +493,7 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
       getOrCreateUser(identity, nowMs, signupInviteTokenHash),
     lookupUser: (identity) => lookupLinkedUser(db, identity),
     listUserOrgs: (userId) => listUserOrgs(db, userId),
+    providerLoginOf: (userId) => providerLoginOf(db, userId),
     signupPolicy: Effect.suspend(() => run(() => readSignupPolicy(db))),
     hasPendingSignupInvite: (tokenHashHex, nowMs) =>
       Effect.map(findPendingSignupInvite(db, tokenHashHex, nowMs), (row) => row !== null),
@@ -501,6 +507,17 @@ function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<Resolved
       ? Effect.die(new Error("linked identity insert failed without a conflicting row"))
       : Effect.succeed({ userId: found, created: false }),
   );
+}
+
+function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null> {
+  return run(async () => {
+    const row = await db
+      .select({ login: linkedIdentities.providerLogin })
+      .from(linkedIdentities)
+      .where(and(eq(linkedIdentities.userId, userId), eq(linkedIdentities.provider, "github")))
+      .get();
+    return row?.login ?? null;
+  });
 }
 
 function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[]> {
@@ -1287,8 +1304,8 @@ interface InviteRepoShape {
 
 export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("InviteRepo") {}
 
-/** 行 → ドメイン表現(受諾ブロックは 5 列すべて揃っているときのみ)。 */
-function toInvitationRecord(row: {
+/** 招待行(select 結果の形 — Drizzle 型はこの境界の外へ出さない)。 */
+interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
   readonly tokenHash: string;
@@ -1307,47 +1324,57 @@ function toInvitationRecord(row: {
   readonly headHash: string | null;
   readonly headSeq: number | null;
   readonly issueSignature: string | null;
-}): InvitationRecord {
-  // 受諾ブロックは 6 列すべて揃っているときのみ(IV 改訂前の accepted 行は
-  // link_signature を持たず、発行文も無いので受諾不能 — ブロックを出さない)
-  const acceptance =
-    row.inviteeUserId !== null &&
+}
+
+/**
+ * 受諾ブロック(6 列すべて揃っているときのみ — IV 改訂前の accepted 行は
+ * link_signature を持たず、発行文も無いので受諾不能 = ブロックを出さない)。
+ */
+function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
+  return row.inviteeUserId !== null &&
     row.inviteeEncPub !== null &&
     row.inviteeSigPub !== null &&
     row.acceptSignature !== null &&
     row.linkSignature !== null &&
     row.acceptedAt !== null
-      ? {
-          inviteeUserId: row.inviteeUserId,
-          inviteeEncPubHex: row.inviteeEncPub,
-          inviteeSigPubHex: row.inviteeSigPub,
-          acceptSignatureHex: row.acceptSignature,
-          linkSignatureHex: row.linkSignature,
-          acceptedAtMs: row.acceptedAt,
-        }
-      : null;
-  const issuance =
-    row.linkPub !== null &&
+    ? {
+        inviteeUserId: row.inviteeUserId,
+        inviteeEncPubHex: row.inviteeEncPub,
+        inviteeSigPubHex: row.inviteeSigPub,
+        acceptSignatureHex: row.acceptSignature,
+        linkSignatureHex: row.linkSignature,
+        acceptedAtMs: row.acceptedAt,
+      }
+    : null;
+}
+
+/** 発行文(4 列すべて揃っているときのみ — IV 改訂前の行は null)。 */
+function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
+  return row.linkPub !== null &&
     row.headHash !== null &&
     row.headSeq !== null &&
     row.issueSignature !== null
-      ? {
-          linkPubHex: row.linkPub,
-          headHashHex: row.headHash,
-          headSeq: row.headSeq,
-          issueSignatureHex: row.issueSignature,
-        }
-      : null;
+    ? {
+        linkPubHex: row.linkPub,
+        headHashHex: row.headHash,
+        headSeq: row.headSeq,
+        issueSignatureHex: row.issueSignature,
+      }
+    : null;
+}
+
+/** 行 → ドメイン表現。 */
+function toInvitationRecord(row: InvitationRow): InvitationRecord {
   return {
     id: row.id,
     projectId: row.projectId,
-    issuance,
+    issuance: issuanceOf(row),
     role: row.role as InviteRole,
     inviterUserId: row.inviterUserId,
     status: row.status as InviteStatus,
     expiresAtMs: row.expiresAt,
     createdAtMs: row.createdAt,
-    acceptance,
+    acceptance: acceptanceOf(row),
   };
 }
 

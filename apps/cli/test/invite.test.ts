@@ -34,11 +34,13 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import {
   acceptanceFixture,
   flipHex,
+  githubSigningKeysHandler,
   INVITE_ID,
   inviteLinkText,
   issueInviteFixture,
   type IssuedInviteFixture,
   LINK_SEED_HEX,
+  sshLineOf,
 } from "./support/invite.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -288,6 +290,52 @@ describe("maruhi invite create", () => {
       },
     });
     expect(env.errors.join("\n")).toContain("This link is shown only once");
+  });
+
+  it("--github は宛先 login を発行ピンに保持し、il= は /auth/me の自 login から組む(IV2)", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const server = await start([
+      chainHandler(built),
+      issueHandler(built.projectId, () => undefined),
+      onRequest("GET", "/auth/me", () => ({
+        status: 200,
+        json: { userId: inviter.userId, orgs: [], providerLogin: "alice" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(
+      await runCli(["invite", "create", "--role", "member", "--github", "bob"], env.layer),
+    ).toBe(0);
+    const shown = env.logs.find((line) => line.startsWith(`${server.origin}/invite#v=2&`));
+    const parsed = parseInviteAcceptInput(Redacted.make(shown ?? ""));
+    if (parsed.kind !== "link") throw new Error("link did not parse");
+    expect(parsed.link.inviterLogin).toBe("alice");
+    const pins = await readPins(env, built.projectId);
+    const issued = pins["issued"] as Record<string, { expectedGithubLogin: string | null }>;
+    expect(issued[parsed.link.inviteId]?.expectedGithubLogin).toBe("bob");
+    // 宛先 login はサーバーへ送らない(発行ピンにのみ)— 案内文は GitHub 照合を言う
+    expect(env.errors.join("\n")).toContain("github.com/bob's signing keys");
+
+    // login の形が不正なら発行前に落ちる(usage)
+    expect(
+      await runCli(["invite", "create", "--role", "member", "--github", "bad--login"], env.layer),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--github must be a GitHub login");
+
+    // identityBacking = none では il を組まない(裏付け元を使わない環境)
+    const env2 = await makeTestEnv();
+    seedSession(env2, server.origin, inviter);
+    await seedConfig(env2, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      identityBacking: "none",
+    });
+    expect(await runCli(["invite", "create", "--role", "member"], env2.layer)).toBe(0);
+    const shown2 = env2.logs.find((line) => line.startsWith(`${server.origin}/invite#v=2&`));
+    expect(shown2).not.toContain("&il=");
   });
 
   it("role=admin の発行は owner のみ(admin の実行は通信前に拒否する)", async () => {
@@ -782,6 +830,131 @@ describe("maruhi invite accept", () => {
     expect(env.errors.join("\n")).toContain("Ask the inviter to issue a new link");
     expect(bodies).toHaveLength(0);
     expect(env.prompts).toHaveLength(0);
+  });
+
+  describe("裏付け元(IV2 — 充足形 4)", () => {
+    async function backedLink(origin: string): Promise<string> {
+      const issued = await issueInviteFixture({
+        inviter,
+        projectId: PROJECT_ID,
+        headHashHex: HEAD_HASH,
+        headSeq: 3,
+        inviterLogin: "alice",
+      });
+      return inviteLinkText(origin, issued);
+    }
+
+    async function backedEnv(
+      registeredKeys: readonly string[],
+      status = 200,
+    ): Promise<{ env: TestEnv; bodies: AcceptBody[]; origin: string }> {
+      const bodies: AcceptBody[] = [];
+      const server = await start([
+        acceptHandler((body) => bodies.push(body)),
+        githubSigningKeysHandler("alice", registeredKeys, status),
+      ]);
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, acceptor);
+      await seedConfig(env, { server: server.origin });
+      env.setVendorOrigin("api.github.com", server.origin);
+      return { env, bodies, origin: server.origin };
+    }
+
+    it("is= が il= の署名鍵に登録済みなら --from の一致で対話なしに受諾し、完了表示は登録を案内する", async () => {
+      const { env, bodies, origin } = await backedEnv([sshLineOf(inviter)]);
+      expect(
+        await runCli(["invite", "accept", await backedLink(origin), "--from", "alice"], env.layer),
+      ).toBe(0);
+      expect(env.prompts).toHaveLength(0);
+      expect(bodies).toHaveLength(1);
+      const logs = env.logs.join("\n");
+      expect(logs).toContain("Inviter key verified");
+      expect(logs).toContain("--from matches the link's inviter login");
+      expect(logs).not.toContain("reads to you out of band");
+      expect(logs).toContain(
+        "Register this key on GitHub as a signing key with `maruhi key publish`",
+      );
+    });
+
+    it("対話では login を名指しする yes だけで受諾する(12 語の読み上げは不要)", async () => {
+      const { env, bodies, origin } = await backedEnv([sshLineOf(inviter)]);
+      env.setPromptResponses(["yes"]);
+      expect(await runCli(["invite", "accept", await backedLink(origin)], env.layer)).toBe(0);
+      expect(env.prompts).toHaveLength(1);
+      expect(env.prompts[0]).toContain("Type yes to accept this invite from github.com/alice");
+      expect(bodies).toHaveLength(1);
+
+      // yes 以外は受諾しない
+      const second = await backedEnv([sshLineOf(inviter)]);
+      second.env.setPromptResponses(["no"]);
+      expect(
+        await runCli(["invite", "accept", await backedLink(second.origin)], second.env.layer),
+      ).toBe(1);
+      expect(second.env.errors.join("\n")).toContain("The acceptance was cancelled");
+      expect(second.bodies).toHaveLength(0);
+    });
+
+    it("--from と il= の不一致は拒否する(差し替えられた有効な別人のリンク)", async () => {
+      const { env, bodies, origin } = await backedEnv([sshLineOf(inviter)]);
+      expect(
+        await runCli(
+          ["invite", "accept", await backedLink(origin), "--from", "mallory"],
+          env.layer,
+        ),
+      ).toBe(1);
+      expect(env.errors.join("\n")).toContain("The link may have been swapped");
+      expect(bodies).toHaveLength(0);
+    });
+
+    it("未登録・取得不能は儀式へ戻る(note つき)。エージェント環境は --from なしを拒否し、あれば通す", async () => {
+      // 未登録(別の鍵だけが載っている)
+      const { env, bodies, origin } = await backedEnv([sshLineOf(acceptor)]);
+      env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+      expect(await runCli(["invite", "accept", await backedLink(origin)], env.layer)).toBe(0);
+      expect(env.errors.join("\n")).toContain(
+        "not registered as a signing key on github.com/alice — falling back to the inviter fingerprint confirmation",
+      );
+      expect(env.prompts[0]).toContain("type the last of the 12 words");
+      expect(bodies).toHaveLength(1);
+
+      // 取得不能(上限)
+      const limited = await backedEnv([], 403);
+      limited.env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+      expect(
+        await runCli(["invite", "accept", await backedLink(limited.origin)], limited.env.layer),
+      ).toBe(0);
+      expect(limited.env.errors.join("\n")).toContain("could not be fetched");
+      expect(limited.bodies).toHaveLength(1);
+
+      // エージェント環境: 登録済みでも yes の代行はしない — --from の明示だけが経路
+      const agent = await backedEnv([sshLineOf(inviter)]);
+      agent.env.setAgent({ isAgent: true, name: "test-agent" });
+      expect(
+        await runCli(["invite", "accept", await backedLink(agent.origin)], agent.env.layer),
+      ).toBe(1);
+      expect(agent.env.errors.join("\n")).toContain("Re-run with --from alice");
+      expect(agent.bodies).toHaveLength(0);
+      expect(
+        await runCli(
+          ["invite", "accept", await backedLink(agent.origin), "--from", "alice"],
+          agent.env.layer,
+        ),
+      ).toBe(0);
+      expect(agent.bodies).toHaveLength(1);
+    });
+
+    it("identityBacking = none では --from を照合せず、儀式へ戻る", async () => {
+      const { env, bodies, origin } = await backedEnv([sshLineOf(inviter)]);
+      await seedConfig(env, { server: origin, identityBacking: "none" });
+      env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+      expect(
+        await runCli(["invite", "accept", await backedLink(origin), "--from", "alice"], env.layer),
+      ).toBe(0);
+      expect(env.errors.join("\n")).toContain(
+        "identityBacking is none, so --from cannot be checked",
+      );
+      expect(bodies).toHaveLength(1);
+    });
   });
 
   it("404 / 410 / 422 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化、旧行 = 再発行)", async () => {

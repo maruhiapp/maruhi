@@ -40,9 +40,11 @@ import {
   type AcceptanceFixture,
   acceptanceFixture,
   flipHex,
+  githubSigningKeysHandler,
   INVITE_ID,
   issueInviteFixture,
   type IssuedInviteFixture,
+  sshLineOf,
 } from "./support/invite.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
@@ -884,6 +886,159 @@ describe("maruhi member add", () => {
     );
     expect(env.errors.join("\n")).toContain("The acceptance may have been hijacked");
     expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  describe("裏付け元(IV2 — 充足形 4)", () => {
+    /** 受諾済み招待 + 環境 1 つのサーバー状態に GitHub の署名鍵一覧の偽装を足す。 */
+    async function backedState(
+      built: BuiltChain,
+      registeredKeys: readonly string[],
+      status = 200,
+    ): Promise<AddServerState> {
+      const state = await makeAddServer({
+        built,
+        invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+        ownDeks: [
+          await wrapDekFor({
+            projectId: built.projectId,
+            environmentId: ENV_ID,
+            epoch: 1,
+            dek: dek1,
+            recipient: inviter,
+            signer: inviter,
+          }),
+        ],
+      });
+      return {
+        ...state,
+        handlers: [...state.handlers, githubSigningKeysHandler("bob", registeredKeys, status)],
+      };
+    }
+
+    async function backedEnv(
+      state: AddServerState,
+      projectId: string,
+    ): Promise<TestEnv & { readonly serverOrigin: string }> {
+      const env = await startAddEnv(state, projectId);
+      env.setVendorOrigin("api.github.com", env.serverOrigin);
+      return env;
+    }
+
+    async function chain(): Promise<BuiltChain> {
+      return buildChain([
+        { actor: inviter, operation: genesisOp(inviter) },
+        { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      ]);
+    }
+
+    it("--github の相手に受諾鍵が登録済みなら、確認入力なしに add_member へ進む(エージェント環境でも)", async () => {
+      const built = await chain();
+      const state = await backedState(built, [sshLineOf(acceptor)]);
+      const env = await backedEnv(state, built.projectId);
+      expect(await runCli(["member", "add", "--github", "bob"], env.layer)).toBe(0);
+      expect(env.prompts).toHaveLength(0);
+      expect(state.appendedEntries).toHaveLength(1);
+      expect(env.logs.join("\n")).toContain(
+        "Acceptance key verified: it is registered as a signing key on github.com/bob",
+      );
+      // 機械照合の成功は帳へ記録しない(帳は人間の帯域外確認の記録 — 裁定 D ②)
+      await expect(readBook(env)).rejects.toThrow();
+
+      const state2 = await backedState(built, [sshLineOf(acceptor)]);
+      const env2 = await backedEnv(state2, built.projectId);
+      env2.setAgent({ isAgent: true, name: "test-agent" });
+      expect(await runCli(["member", "add", "--github", "bob"], env2.layer)).toBe(0);
+      expect(env2.prompts).toHaveLength(0);
+      expect(state2.appendedEntries).toHaveLength(1);
+    });
+
+    it("発行ピンの宛先 login を既定に使い、--expect-fingerprint は照合に加えて要求する", async () => {
+      const built = await chain();
+      const state = await backedState(built, [sshLineOf(acceptor)]);
+      const env = await backedEnv(state, built.projectId);
+      const issued = await issuedFor(built.projectId);
+      await mkdir(env.pinsDir, { recursive: true });
+      await writeFile(
+        join(env.pinsDir, `${built.projectId}.json`),
+        JSON.stringify({
+          v: 1,
+          anchor: null,
+          issued: {
+            [INVITE_ID]: {
+              linkPubHex: issued.linkPubHex,
+              role: "member",
+              expiresAtMs: 1755993600000,
+              expectedGithubLogin: "bob",
+            },
+          },
+        }),
+      );
+      expect(await runCli(["member", "add"], env.layer)).toBe(0);
+      expect(env.prompts).toHaveLength(0);
+      expect(env.logs.join("\n")).toContain("The invite was issued for github.com/bob");
+      expect(state.appendedEntries).toHaveLength(1);
+
+      const state2 = await backedState(built, [sshLineOf(acceptor)]);
+      const env2 = await backedEnv(state2, built.projectId);
+      expect(
+        await runCli(
+          ["member", "add", "--github", "bob", "--expect-fingerprint", "0".repeat(32)],
+          env2.layer,
+        ),
+      ).toBe(1);
+      expect(env2.errors.join("\n")).toContain("The acceptance may have been hijacked");
+      expect(state2.appendedEntries).toHaveLength(0);
+    });
+
+    it("未登録は二択で止まる(既定 = 頼んで再実行、yes = 今すぐ儀式)。取得不能は儀式へ", async () => {
+      const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
+      if (acceptorFpBytes === null) throw new Error("fp");
+      const words = await fingerprintToWords(acceptorFpBytes);
+      if (!words.ok) throw new Error("words");
+      const built = await chain();
+
+      // 未登録 + 空応答 → 追記せずに止まる
+      const state = await backedState(built, [sshLineOf(inviter)]);
+      const env = await backedEnv(state, built.projectId);
+      env.setPromptResponses([""]);
+      expect(await runCli(["member", "add", "--github", "bob"], env.layer)).toBe(1);
+      expect(env.prompts[0]).toContain("Type yes to confirm the 12 words now");
+      expect(env.errors.join("\n")).toContain(
+        "Ask github.com/bob to register their key with `maruhi key publish`",
+      );
+      expect(state.appendedEntries).toHaveLength(0);
+
+      // 未登録 + yes → 儀式(最終語)へ
+      const state2 = await backedState(built, [sshLineOf(inviter)]);
+      const env2 = await backedEnv(state2, built.projectId);
+      env2.setPromptResponses(["yes", words.value[words.value.length - 1] ?? ""]);
+      expect(await runCli(["member", "add", "--github", "bob"], env2.layer)).toBe(0);
+      expect(env2.prompts).toHaveLength(2);
+      expect(env2.prompts[1]).toContain("type the last of the 12 words");
+      expect(state2.appendedEntries).toHaveLength(1);
+
+      // 取得不能(上限)→ note + 儀式(二択は出さない)
+      const state3 = await backedState(built, [], 403);
+      const env3 = await backedEnv(state3, built.projectId);
+      env3.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+      expect(await runCli(["member", "add", "--github", "bob"], env3.layer)).toBe(0);
+      expect(env3.prompts).toHaveLength(1);
+      expect(env3.errors.join("\n")).toContain("could not be fetched");
+      expect(state3.appendedEntries).toHaveLength(1);
+
+      // identityBacking = none → 照合しない(note + 儀式)
+      const state4 = await backedState(built, [sshLineOf(acceptor)]);
+      const env4 = await backedEnv(state4, built.projectId);
+      await seedConfig(env4, {
+        server: env4.serverOrigin,
+        defaultProject: built.projectId,
+        identityBacking: "none",
+      });
+      env4.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
+      expect(await runCli(["member", "add", "--github", "bob"], env4.layer)).toBe(0);
+      expect(env4.errors.join("\n")).toContain("identityBacking is none");
+      expect(env4.prompts).toHaveLength(1);
+    });
   });
 
   it("検証済み指紋帳: 儀式の成功が記録され、再実行は yes 確認のみで通る(エージェント環境は据え置き拒否)(KF)", async () => {

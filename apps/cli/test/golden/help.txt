@@ -21,7 +21,7 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery / approve / seal)
+  key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
@@ -54,7 +54,7 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery / approve / seal)
+  key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
@@ -305,6 +305,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --role string       Role to grant (required — reader | member | admin)
+  --github string     GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -322,6 +323,7 @@ ARGUMENTS
 
 FLAGS
   --server string                 Server URL (defaults to config server)
+  --from string                   GitHub login you expect the invite from (checked against the link and that account's signing keys; replaces the interactive confirmation)
   --inviter-fingerprint string    Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)
 
 GLOBAL FLAGS
@@ -390,6 +392,7 @@ ARGUMENTS
 FLAGS
   --server string                Server URL (defaults to config server)
   --project string               Project ID (default: the `defaultProject` setting)
+  --github string                GitHub login of the acceptor (their acceptance key is checked against that account's signing keys; overrides the login recorded at `maruhi invite create --github`)
   --expect-fingerprint string    Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)
 
 GLOBAL FLAGS
@@ -435,7 +438,7 @@ GLOBAL FLAGS
 
 $ maruhi key --help
 DESCRIPTION
-  Manage your master key (generate / show / recover / recovery / approve / seal)
+  Manage your master key (generate / show / publish / recover / recovery / approve / seal)
 
 USAGE
   maruhi key <subcommand> [flags]
@@ -447,6 +450,7 @@ GLOBAL FLAGS
 SUBCOMMANDS
   generate    Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
   show        Print the public keys and fingerprint (never the private keys)
+  publish     Print your signing public key as an OpenSSH line to register on GitHub as a signing key (--gh adds it through the gh CLI)
   recover     Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians
   recovery    Issue (or reissue) the recovery code
   approve     Approve a master-key handoff request (as your other device, or as a guardian)
@@ -475,6 +479,21 @@ USAGE
 
 FLAGS
   --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key publish --help
+DESCRIPTION
+  Print your signing public key as an OpenSSH line to register on GitHub as a signing key (--gh adds it through the gh CLI)
+
+USAGE
+  maruhi key publish [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --gh               Add the key to your GitHub account through the gh CLI (`gh ssh-key add --type signing`) instead of printing it
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1041,7 +1060,7 @@ USAGE
   maruhi config get [flags] <key>
 
 ARGUMENTS
-  key string    Config key (server | defaultProject | defaultEnvironment)
+  key string    Config key (server | defaultProject | defaultEnvironment | identityBacking)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1055,7 +1074,7 @@ USAGE
   maruhi config set [flags] <key> <value>
 
 ARGUMENTS
-  key string      Config key (server | defaultProject | defaultEnvironment)
+  key string      Config key (server | defaultProject | defaultEnvironment | identityBacking)
   value string    Value to set
 
 GLOBAL FLAGS
