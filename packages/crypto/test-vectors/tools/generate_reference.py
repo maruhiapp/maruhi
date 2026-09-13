@@ -4283,9 +4283,10 @@ INVITE_ACCEPT_FIELDS_ORDER = [
     "invitee_user_id", "invitee_enc_pub_hex", "invitee_sig_pub_hex",
 ]
 
-# リンク鍵の種(決定論的ダミー。他ベクターの seed と非重複)
+# リンク鍵の種(決定論的ダミー。他ベクターの seed・DEK のパターン値と非重複 —
+# 0xD4 / 0xD8 / 0xDC は chain-entries.json の環境 DEK が使うので避ける)
 INVITE_LINK_SEED = pat(0xD0, 32)
-OTHER_LINK_SEED = pat(0xD8, 32)
+OTHER_LINK_SEED = pat(0xE0, 32)
 
 
 def make_link_key(seed: bytes):

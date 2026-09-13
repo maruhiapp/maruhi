@@ -29,6 +29,7 @@ import { importSigningPublicKey } from "./keys.ts";
 import {
   invalidInput,
   isLowercaseHexOfLength,
+  ROLE_RANK,
   signEd25519Over,
   verifyEd25519Over,
 } from "./validate.ts";
@@ -38,10 +39,31 @@ const PUB_KEY_HEX_LENGTH = ED25519_KEY_BYTES * 2;
 const SHA256_HEX_LENGTH = 32 * 2;
 /** Link seed = RFC 8032 Ed25519 private key seed (32 bytes). */
 export const INVITE_LINK_SEED_BYTES = 32;
-/** RFC 8410 OneAsymmetricKey (PKCS#8 v1) prefix for an Ed25519 private key; the 32-byte seed follows. */
-const PKCS8_ED25519_PREFIX = decodeHex("302e020100300506032b657004220420") ?? new Uint8Array();
+/**
+ * RFC 8410 OneAsymmetricKey (PKCS#8 v1) prefix for an Ed25519 private key; the
+ * 32-byte seed follows. Spelled out as bytes so a typo cannot degrade to an
+ * empty prefix: SEQUENCE(46) { INTEGER 0, SEQUENCE { OID 1.3.101.112 },
+ * OCTET STRING(34) { OCTET STRING(32) ... } }.
+ */
+const PKCS8_ED25519_PREFIX = Uint8Array.of(
+  0x30,
+  0x2e,
+  0x02,
+  0x01,
+  0x00,
+  0x30,
+  0x05,
+  0x06,
+  0x03,
+  0x2b,
+  0x65,
+  0x70,
+  0x04,
+  0x22,
+  0x04,
+  0x20,
+);
 const OPENSSH_ED25519_TYPE = "ssh-ed25519";
-const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /** Generates a fresh 32-byte link seed (CRYPTO_SPEC §6.5). Lives only in the link. */
 export function generateInviteLinkSeed(): Uint8Array {
@@ -79,7 +101,10 @@ export async function deriveInviteLinkKeyPair(
   der.set(PKCS8_ED25519_PREFIX, 0);
   der.set(seed, PKCS8_ED25519_PREFIX.length);
   try {
-    // 公開鍵の取り出しにだけ抽出可能な一時 import を使い、署名鍵は非抽出で別途 import
+    // 公開鍵の取り出しにだけ抽出可能な一時 import を使い、署名鍵は非抽出で別途 import。
+    // WebCrypto には「種 → 公開鍵」の直接経路が無いため、この JWK は `d`(= 種。
+    // 呼び出し側が既に持つ値)も運ぶ — `x` だけ読んで捨てる。返す privateKey は
+    // 非抽出
     const probe = await crypto.subtle.importKey("pkcs8", der as BufferSource, "Ed25519", true, [
       "sign",
     ]);
@@ -130,35 +155,45 @@ export interface InviteIssueContext {
   readonly inviterSigPubHex: string;
 }
 
-function issueContextInvalidField(context: InviteIssueContext): string | null {
+/** 文字列フィールドの検査(非空・閉集合)。 */
+function issueContextTextInvalidField(context: InviteIssueContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
   }
   if (context.inviteId.length === 0) {
     return "context inviteId";
   }
-  if (context.role.length === 0) {
+  // role は §6.2 の閉集合(綴り違いが別の有効な署名にならないよう正規形だけを署名する)
+  if (!Object.hasOwn(ROLE_RANK, context.role)) {
     return "context role";
   }
   if (context.inviterUserId.length === 0) {
     return "context inviterUserId";
   }
-  if (!isLowercaseHexOfLength(context.linkPubHex, PUB_KEY_HEX_LENGTH)) {
-    return "context linkPubHex";
-  }
-  if (!isLowercaseHexOfLength(context.headHashHex, SHA256_HEX_LENGTH)) {
-    return "context headHashHex";
+  return null;
+}
+
+/** 公開値(hex)と head_seq の形式検査。 */
+function issueContextBinaryInvalidField(context: InviteIssueContext): string | null {
+  const hexFields: readonly (readonly [string, string, number])[] = [
+    ["context linkPubHex", context.linkPubHex, PUB_KEY_HEX_LENGTH],
+    ["context headHashHex", context.headHashHex, SHA256_HEX_LENGTH],
+    ["context inviterEncPubHex", context.inviterEncPubHex, PUB_KEY_HEX_LENGTH],
+    ["context inviterSigPubHex", context.inviterSigPubHex, PUB_KEY_HEX_LENGTH],
+  ];
+  for (const [name, value, length] of hexFields) {
+    if (!isLowercaseHexOfLength(value, length)) {
+      return name;
+    }
   }
   if (!Number.isSafeInteger(context.headSeq) || context.headSeq < 1) {
     return "context headSeq";
   }
-  if (!isLowercaseHexOfLength(context.inviterEncPubHex, PUB_KEY_HEX_LENGTH)) {
-    return "context inviterEncPubHex";
-  }
-  if (!isLowercaseHexOfLength(context.inviterSigPubHex, PUB_KEY_HEX_LENGTH)) {
-    return "context inviterSigPubHex";
-  }
   return null;
+}
+
+function issueContextInvalidField(context: InviteIssueContext): string | null {
+  return issueContextTextInvalidField(context) ?? issueContextBinaryInvalidField(context);
 }
 
 /**
@@ -200,10 +235,13 @@ export async function signInviteIssue(input: {
 
 /**
  * Verifies an invite issue signature (CRYPTO_SPEC §6.5) under the declared
- * `context.inviterSigPubHex`. The acceptor verifies the statement carried by
- * the link before anything else; the inviter verifies the stored statement
- * with its own key before `add_member` (this is what proves the row is its
- * own issuance without a local pin).
+ * `context.inviterSigPubHex`. This proves only that the statement is
+ * self-consistent with the key named in `context`, so what the caller puts in
+ * `context` decides what is proven. The acceptor fills the inviter fields
+ * from the link (`ie` / `is`) and verifies before anything else. The inviter
+ * MUST fill `inviterUserId` / `inviterEncPubHex` / `inviterSigPubHex` from its
+ * own key or the verified membership chain — never from the server row — so
+ * that a passing check proves the row is its own issuance without a local pin.
  */
 export async function verifyInviteIssueSignature(input: {
   readonly context: InviteIssueContext;
@@ -232,47 +270,30 @@ export async function verifyInviteIssueSignature(input: {
 // ---------------------------------------------------------------------------
 // OpenSSH 公開鍵行(RFC 4253 §6.6 / RFC 8709)
 
+/** Standard base64 (RFC 4648 §4) via the Web platform `btoa` (keys.ts と同じ経路)。 */
 function base64Encode(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i] ?? 0;
-    const b1 = bytes[i + 1];
-    const b2 = bytes[i + 2];
-    const triple = (b0 << 16) | ((b1 ?? 0) << 8) | (b2 ?? 0);
-    out += BASE64_ALPHABET[(triple >> 18) & 0x3f] ?? "";
-    out += BASE64_ALPHABET[(triple >> 12) & 0x3f] ?? "";
-    out += b1 === undefined ? "=" : (BASE64_ALPHABET[(triple >> 6) & 0x3f] ?? "");
-    out += b2 === undefined ? "=" : (BASE64_ALPHABET[triple & 0x3f] ?? "");
+  let binary = "";
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
   }
-  return out;
+  return btoa(binary);
 }
 
-/** Strict standard base64 (RFC 4648 §4): alphabet only, `=` padding, length % 4 == 0. */
+/**
+ * Strict standard base64 (RFC 4648 §4): alphabet only, `=` padding only at the
+ * end, length % 4 == 0. `atob` is lenient (whitespace, missing padding), so the
+ * shape is checked first and `atob` only performs the decoding.
+ */
 function base64Decode(text: string): Uint8Array | null {
   if (text.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(text)) {
     return null;
   }
-  const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
-  const out = new Uint8Array((text.length / 4) * 3 - padding);
-  let offset = 0;
-  for (let i = 0; i < text.length; i += 4) {
-    const values = [0, 1, 2, 3].map((k) => {
-      const ch = text[i + k] ?? "=";
-      return ch === "=" ? 0 : BASE64_ALPHABET.indexOf(ch);
-    });
-    const triple =
-      ((values[0] ?? 0) << 18) |
-      ((values[1] ?? 0) << 12) |
-      ((values[2] ?? 0) << 6) |
-      (values[3] ?? 0);
-    for (const shift of [16, 8, 0]) {
-      if (offset < out.length) {
-        out[offset] = (triple >> shift) & 0xff;
-        offset += 1;
-      }
-    }
+  try {
+    const binary = atob(text);
+    return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+  } catch {
+    return null;
   }
-  return out;
 }
 
 /**
@@ -296,15 +317,26 @@ export function encodeOpenSshEd25519PublicKey(publicKey: Uint8Array): CryptoResu
  * `InvalidInput` — third-party data (a GitHub response) is never guessed at.
  */
 export function parseOpenSshEd25519PublicKey(line: string): CryptoResult<Uint8Array> {
+  // 第三者データ(JSON)の実行時の型ずれは例外にせず InvalidInput(bytes.ts の decodeHex と同じ規律)
+  if (typeof line !== "string") {
+    return invalidInput("openssh public key line");
+  }
   const parts = line.trimEnd().split(" ");
   const type = parts[0];
   const encoded = parts[1];
-  if (type !== OPENSSH_ED25519_TYPE || encoded === undefined || encoded.length === 0) {
+  const expectedType = utf8Encode(OPENSSH_ED25519_TYPE);
+  const expectedLength = 4 + expectedType.length + 4 + ED25519_KEY_BYTES;
+  // 正しい blob は 51 バイト = base64 で 68 文字(パディングなし)。長さが違う入力は
+  // 復号せずに拒否する(巨大な文字列を丸ごと復号しない)
+  const expectedEncodedLength = Math.ceil(expectedLength / 3) * 4;
+  if (
+    type !== OPENSSH_ED25519_TYPE ||
+    encoded === undefined ||
+    encoded.length !== expectedEncodedLength
+  ) {
     return invalidInput("openssh public key line");
   }
   const blob = base64Decode(encoded);
-  const expectedType = utf8Encode(OPENSSH_ED25519_TYPE);
-  const expectedLength = 4 + expectedType.length + 4 + ED25519_KEY_BYTES;
   if (blob === null || blob.length !== expectedLength) {
     return invalidInput("openssh public key line");
   }

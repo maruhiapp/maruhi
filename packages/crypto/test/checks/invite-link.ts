@@ -102,9 +102,14 @@ async function issueVectorChecks(c: Checks): Promise<void> {
       base.head_hash_hex === head.entry_hash_hex &&
       base.head_seq === head.seq,
   );
+  await issuePositiveChecks(c, inviter.value.privateKey);
+  await issueNegativeChecks(c);
+}
+
+async function issuePositiveChecks(c: Checks, signingKey: CryptoKey): Promise<void> {
   for (const vector of vectors.issue.vectors) {
     const context = contextOf(vector);
-    const signed = await signInviteIssue({ context, signingKey: inviter.value.privateKey });
+    const signed = await signInviteIssue({ context, signingKey });
     const verified = await verifyInviteIssueSignature({
       context,
       signatureHex: vector.signature_hex,
@@ -119,6 +124,9 @@ async function issueVectorChecks(c: Checks): Promise<void> {
     );
     c.push(`invite-issue-sig: ${vector.name} verify`, verified.ok);
   }
+}
+
+async function issueNegativeChecks(c: Checks): Promise<void> {
   for (const negative of vectors.issue.negative) {
     const context = contextOf(negative.context);
     const result = await verifyInviteIssueSignature({
@@ -207,6 +215,19 @@ async function issueRoundtripChecks(c: Checks): Promise<void> {
 }
 
 function opensshChecks(c: Checks): void {
+  opensshVectorChecks(c);
+  opensshRoundtripChecks(c);
+  // 解析の拒否(規約 21: 実装ハーネスで固定 — ベクターの負例に無い形)
+  for (const [name, input] of rejectedOpenSshInputs()) {
+    const rejectedParse = parseOpenSshEd25519PublicKey(input as string);
+    c.push(
+      `openssh: parse rejects ${name}`,
+      !rejectedParse.ok && rejectedParse.error.kind === "InvalidInput",
+    );
+  }
+}
+
+function opensshVectorChecks(c: Checks): void {
   for (const vector of vectors.openssh.encode) {
     const encoded = encodeOpenSshEd25519PublicKey(fromHex(vector.public_key_hex));
     c.push(`openssh: encode ${vector.name}`, encoded.ok && encoded.value === vector.expected_line);
@@ -225,6 +246,9 @@ function opensshChecks(c: Checks): void {
       !parsed.ok && parsed.error.kind === "InvalidInput",
     );
   }
+}
+
+function opensshRoundtripChecks(c: Checks): void {
   // 符号化 → 解析の往復(生成鍵)と、鍵長違いの符号化拒否
   const raw = new Uint8Array(32);
   crypto.getRandomValues(raw);
@@ -233,6 +257,46 @@ function opensshChecks(c: Checks): void {
   c.push("openssh: roundtrip", parsed.ok && toHex(parsed.value) === toHex(raw));
   const shortKey = encodeOpenSshEd25519PublicKey(new Uint8Array(31));
   c.push("openssh: encode short key rejected", !shortKey.ok);
+}
+
+/** ベクターの正例を素材にした拒否入力(型ずれ・長さ・アルファベット・空白)。 */
+function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
+  const good = vectors.openssh.parse[0];
+  if (good === undefined) {
+    throw new Error("openssh parse vector missing");
+  }
+  const [type = "", text = ""] = good.line.split(" ");
+  const line = `${type} ${text}`;
+  const blob = base64ToBytes(text);
+  const withBlob = (bytes: Uint8Array) => `${type} ${bytesToBase64(bytes)}`;
+  // 33 バイトの鍵(内側の長さ接頭辞も 33 に合わせる)
+  const longKey = new Uint8Array(blob.length + 1);
+  longKey.set(blob);
+  longKey[4 + 11 + 3] = 33;
+  // 内側の種別長さ接頭辞だけ 10 にし、全長は保つ
+  const badInnerLength = new Uint8Array(blob);
+  badInnerLength[3] = 10;
+  return [
+    ["non-string input (null)", null],
+    ["non-string input (number)", 42],
+    ["33-byte key", withBlob(longKey)],
+    ["inner type length mismatch with same total length", withBlob(badInnerLength)],
+    // base64url だけの文字(- _)は標準アルファベット外(長さは保つ)
+    ["base64url alphabet", `${type} -_${text.slice(2)}`],
+    ["whitespace inside the base64", `${type} ${text.slice(0, 10)} ${text.slice(10)}`],
+    ["leading space", ` ${line}`],
+    ["tab separator", line.replace(" ", "\t")],
+    ["newline inside the line", `${type}\n${text}`],
+    ["oversize base64 (rejected before decoding)", `${type} ${"A".repeat(4 * 1024 * 1024)}`],
+  ];
+}
+
+function base64ToBytes(text: string): Uint8Array {
+  return Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
 }
 
 export async function inviteLinkChecks(): Promise<CheckResult[]> {
