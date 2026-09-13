@@ -478,6 +478,49 @@ describe("maruhi key recover --passkey(復元)", () => {
   });
 });
 
+describe("儀式の 3 チャネル TTY ゲート(ADR-0016 決定 7)", () => {
+  const CHANNELS = [
+    { stdin: false, stdout: true, stderr: true },
+    { stdin: true, stdout: false, stderr: true },
+    { stdin: true, stdout: true, stderr: false },
+  ] as const;
+  const CEREMONIES = [
+    { argv: ["key", "seal", "passkey"], noun: "Passkey sealing", seed: "key" },
+    { argv: ["key", "recover", "--passkey"], noun: "Passkey recovery", seed: "token" },
+    { argv: ["key", "seal", "remove", WRAP_ID], noun: "Passkey wrap removal", seed: "token" },
+  ] as const;
+
+  it("stdin / stdout / stderr のどれか 1 つでも端末でなければ、サーバーにもブラウザにも触れずに拒否する", async () => {
+    for (const ceremony of CEREMONIES) {
+      for (const terminal of CHANNELS) {
+        const label = `${ceremony.argv.join(" ")} ${JSON.stringify(terminal)}`;
+        const { env, server } = await start([
+          statusHandler([
+            { wrapId: WRAP_ID, label: null, credentialIdHex: CREDENTIAL_HEX, updatedAtMs: 1 },
+          ]),
+          onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
+        ]);
+        if (ceremony.seed === "key") {
+          seedSession(env, server.origin, owner);
+        } else {
+          seedTokenOnly(env, server.origin);
+        }
+        env.setTerminal(terminal);
+        browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
+        expect(await runCli([...ceremony.argv], env.layer), label).toBe(1);
+        expect(env.errors.join("\n"), label).toContain(
+          `${ceremony.noun} is only allowed on an interactive terminal (stdin, stdout, and stderr must all be terminals; pipes, redirects, CI, and AI agents are refused)`,
+        );
+        expect(env.browserOpens, label).toEqual([]);
+        expect(server.requests, label).toHaveLength(0);
+        expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId)), label).toBe(
+          ceremony.seed === "key",
+        );
+      }
+    }
+  });
+});
+
 describe("maruhi key seal list / remove", () => {
   it("list は台帳の公開パラメータだけを出し、remove は行を消す(端末ゲートつき)", async () => {
     const rows = [

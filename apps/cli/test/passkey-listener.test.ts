@@ -77,6 +77,20 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     });
   });
 
+  it("末尾スラッシュ無しの /<token> は /<token>/ へ寄せる(相対参照の資産が引けるように)", async () => {
+    const listener = await start();
+    const bare = await fetch(listener.url.slice(0, -1), { redirect: "manual" });
+    expect(bare.status).toBe(302);
+    expect(bare.headers.get("location")).toBe(new URL(listener.url).pathname);
+    const followed = await fetch(listener.url.slice(0, -1));
+    expect(followed.status).toBe(200);
+    expect(await followed.text()).toBe(PRF_PAGE_HTML);
+    // 寄せるのは正しいトークンだけ(別トークンは 404 のまま)
+    expect(
+      (await fetch(`${originOf(listener)}/${"x".repeat(43)}`, { redirect: "manual" })).status,
+    ).toBe(404);
+  });
+
   it("トークン不一致・Host 不一致(127.0.0.1)・未知の資産は一様 404", async () => {
     const listener = await start();
     const wrongToken = await fetch(`${originOf(listener)}/${"x".repeat(43)}/`);

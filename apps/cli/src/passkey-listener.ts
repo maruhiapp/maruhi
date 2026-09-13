@@ -214,6 +214,13 @@ export function startPrfListener(config: PrfPageConfig): Promise<PrfListener> {
     }
     const rest = segments.slice(1).join("/");
     if (request.method === "GET") {
+      // ページの資産は `./app.js` 等の相対参照なので、末尾スラッシュ無しの
+      // `/<token>` で開かれると `/app.js` を引きに行って動かない(手で URL を
+      // 打つ・ポート転送で貼るときに落ちやすい)。正しい形へ寄せる
+      if (rest === "" && !path.endsWith("/")) {
+        reply(response, 302, "", { location: `/${token}/` });
+        return;
+      }
       serveAsset(rest, config, response);
       return;
     }
