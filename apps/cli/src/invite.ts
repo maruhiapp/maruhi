@@ -134,7 +134,10 @@ export function verifyIssuance(input: {
   readonly row: InvitationRow;
 }): Effect.Effect<IssuanceVerdict, CliError> {
   return Effect.gen(function* () {
-    if (input.row.issuance === null) {
+    // 発行文をローカルへ束縛する(closure 内で型の絞り込みが失われ、空文字列の
+    // フォールバックを書く羽目にならないように)
+    const { issuance } = input.row;
+    if (issuance === null) {
       return { ok: false, reason: "unbound" } as const;
     }
     const inviter = input.verified.state.members.get(input.row.inviterUserId);
@@ -148,15 +151,15 @@ export function verifyIssuance(input: {
             suite: SUITE_ID,
             inviteId: input.row.id,
             projectId: input.verified.projectId,
-            linkPubHex: input.row.issuance?.linkPubHex ?? "",
-            headHashHex: input.row.issuance?.headHashHex ?? "",
-            headSeq: input.row.issuance?.headSeq ?? 0,
+            linkPubHex: issuance.linkPubHex,
+            headHashHex: issuance.headHashHex,
+            headSeq: issuance.headSeq,
             role: input.row.role,
             inviterUserId: inviter.userId,
             inviterEncPubHex: inviter.encPubHex,
             inviterSigPubHex: inviter.sigPubHex,
           },
-          signatureHex: input.row.issuance?.issueSignatureHex ?? "",
+          signatureHex: issuance.issueSignatureHex,
         }),
       catch: () => cliError("Failed to verify the issue signature (crypto error)"),
     });

@@ -1391,7 +1391,9 @@ function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
   if (!/UNIQUE constraint failed/.test(message)) {
     return null;
   }
-  if (message.includes("invitations.link_pub")) {
+  // legacy の token_hash(= SHA-256(link_pub))の衝突は link_pub の衝突と同じ直し方
+  // (再採番)なので同じ理由コードへ写す — 素の再 throw(500)にしない
+  if (message.includes("invitations.link_pub") || message.includes("invitations.token_hash")) {
     return "linkPub";
   }
   return message.includes("invitations.id") ? "id" : null;

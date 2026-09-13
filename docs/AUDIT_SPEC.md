@@ -83,7 +83,7 @@ actor: {
 | `org.member_role_changed` | target_user_id, 旧/新 role |
 | `org.project_created` / `org.project_deleted` | project_id |
 | `invite.created` / `invite.revoked` | project_id, 招待 id, role(2026-08-12 — AUTH_SPEC §15) |
-| `invite.accepted` | project_id, 招待 id, target_user_id(受諾者), payload に受諾鍵 FP | **2026-09-13 IV 改訂: 受諾はリンク鍵の共同署名を伴う(AUTH_SPEC §15-2)が payload は不変。裏付け元(GitHub)の login・照合結果・リンク公開鍵・署名は書かない(§1-2 のアイデンティティ規則。照合はクライアント内で完結し、サーバーへ報告されない)** |
+| `invite.accepted` | project_id, 招待 id, target_user_id(受諾者), payload に受諾鍵 FP。**2026-09-13 IV 改訂: 受諾はリンク鍵の共同署名を伴う(AUTH_SPEC §15-2)が payload は不変。裏付け元(GitHub)の login・照合結果・リンク公開鍵・署名は書かない(§1-2 のアイデンティティ規則。照合はクライアント内で完結し、サーバーへ報告されない)** |
 
 org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2)ため、org 系イベントは要ローテーション検出に関与しない。
 
