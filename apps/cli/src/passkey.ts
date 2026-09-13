@@ -13,10 +13,11 @@
 // (ADR-0016 決定 7 の既存ゲート)。リスナーはゲートの後でしか立たない。PRF 出力・KEK・B の
 // 平文は関数ローカルにのみ存在し、ログ・エラー・DOM に出ない。
 //
-// 台帳の状態(`GET /auth/key-wraps`)は passkey 行の prf_salt を運ばないため、復元では
-// 儀式の前に当該行のラップ(`GET /auth/key-wraps/passkey/:wrapId` — 合算窓 5 回 / 時)を
-// 1 件だけ取る。複数登録があるときは利用者に番号で選ばせる(全件を取ると窓と要監視の
-// 監査事件を無駄に消費する — 補足 20 実装録)。
+// 復元の順序(補足 20 裁定 F / I、20-6 ②′): 台帳の状態(`GET /auth/key-wraps`)が
+// passkey 行の prf_salt(公開パラメータ — AUTH_SPEC §13-7)を運ぶので、全 credential を
+// allowCredentials に渡して認証器に選ばせ、応答の credential で行を決めてから、その行の
+// ラップ(`GET /auth/key-wraps/passkey/:wrapId` — 合算窓 5 回 / 時 + 要監視の監査事件)を
+// 1 件だけ取る。取り消した儀式は窓を消費しない。
 
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
@@ -238,6 +239,8 @@ interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
+  /** この登録の prf_salt(公開パラメータ — 儀式の前に要るので status が運ぶ)。 */
+  readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
 
@@ -331,54 +334,14 @@ export function sealPasskeyOp(input: {
   });
 }
 
-/** 復元に使う passkey 行を選ぶ(1 件なら自動、複数なら番号で選ばせる)。 */
-function choosePasskeyRow(
-  io: CliIoShape,
-  rows: readonly PasskeyRow[],
-): Effect.Effect<PasskeyRow, CliError> {
-  return Effect.gen(function* () {
-    const first = rows[0];
-    if (first === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          "No passkey is registered for your account. Run `maruhi key seal passkey` on a device that still has the master key, or restore with `maruhi key recover` (recovery code) or `maruhi key recover --handoff`",
-        ),
-      );
-    }
-    if (rows.length === 1) {
-      return first;
-    }
-    yield* io.logError("Registered passkeys:");
-    for (const [index, row] of rows.entries()) {
-      yield* io.logError(`  ${index + 1}. ${describeRow(row)}`);
-    }
-    const answer = yield* io.promptLine({
-      prompt: `Which passkey will you use? [1-${rows.length}]: `,
-    });
-    const chosen = /^\d+$/.test(answer.trim()) ? rows[Number(answer.trim()) - 1] : undefined;
-    if (chosen === undefined) {
-      return yield* Effect.fail(
-        cliError("The passkey recovery was cancelled (nothing was changed)"),
-      );
-    }
-    return chosen;
-  });
-}
+const NO_PASSKEY_REGISTERED =
+  "No passkey is registered for your account. Run `maruhi key seal passkey` on a device that still has the master key, or restore with `maruhi key recover` (recovery code) or `maruhi key recover --handoff`";
 
-/** 選んだ行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
+/** 儀式で選ばれた行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
 function fetchWrap(
   client: MaruhiClient,
   wrapId: string,
-): Effect.Effect<
-  {
-    readonly prfSaltHex: string;
-    readonly credentialIdHex: string;
-    readonly nonce: Uint8Array;
-    readonly ciphertext: Uint8Array;
-  },
-  CliError,
-  HttpClient.HttpClient
-> {
+): Effect.Effect<FetchedWrap, CliError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const wrap = yield* client.keyWraps.passkeyGet({ params: { wrapId } }).pipe(
       Effect.catchTag("KeyWrapNotFound", () =>
@@ -411,32 +374,66 @@ function fetchWrap(
   });
 }
 
-/** `maruhi key recover --passkey`: restore the master key with a registered passkey. */
-export function recoverWithPasskeyOp(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+/** 取得したラップ(salt + credential + 暗号文)。 */
+interface FetchedWrap {
+  readonly prfSaltHex: string;
+  readonly credentialIdHex: string;
+  readonly nonce: Uint8Array;
+  readonly ciphertext: Uint8Array;
+}
+
+/** 儀式と取得の結果。 */
+interface RecoveryMaterial {
+  readonly wrapId: string;
+  readonly wrap: FetchedWrap;
+  readonly outcome: PrfOutcome;
+}
+
+/**
+ * 全 credential で儀式 → 応答の credential の行 → その行のラップを取る(裁定 F / I)。
+ * ブロブ取得は儀式の後なので、取り消しは窓を消費しない。
+ */
+function recoverCeremonyFirst(
+  client: MaruhiClient,
+  rows: readonly PasskeyRow[],
+): Effect.Effect<RecoveryMaterial, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensurePasskeyCeremonyAllowed(io, "recover");
-    const entryName = yield* ensureNoStoredMasterKey(
-      input.session,
-      "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
-    );
-    const row = yield* choosePasskeyRow(io, yield* fetchPasskeyRows(input.client));
-    const wrap = yield* fetchWrap(input.client, row.wrapId);
     const outcome = yield* runPrfCeremony(
       {
         mode: "recover",
         rpId: "localhost",
-        credentials: [{ credentialIdHex: wrap.credentialIdHex, prfSaltHex: wrap.prfSaltHex }],
+        credentials: rows.map((row) => ({
+          credentialIdHex: row.credentialIdHex,
+          prfSaltHex: row.prfSaltHex,
+        })),
       },
       "recover",
     );
+    const row = rows.find((candidate) => candidate.credentialIdHex === outcome.credentialIdHex);
+    if (row === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "The browser used a passkey that is not registered for your account, so the key cannot be restored. Re-run and choose one of the registered passkeys",
+        ),
+      );
+    }
+    const wrap = yield* fetchWrap(client, row.wrapId);
+    return { wrapId: row.wrapId, wrap, outcome };
+  });
+}
+
+/** 復号 → 自己検証 → 保存(PRF 出力・KEK・B はこの関数のローカルにだけ存在する)。 */
+function unwrapAndStore(input: {
+  readonly session: CliSession;
+  readonly entryName: string;
+  readonly material: RecoveryMaterial;
+}): Effect.Effect<void, CliError, Keychain | CliIo> {
+  return Effect.gen(function* () {
+    const { wrap, outcome, wrapId } = input.material;
     if (outcome.credentialIdHex !== wrap.credentialIdHex) {
       return yield* Effect.fail(
         cliError(
-          "The browser used a different passkey than the one whose wrap was fetched, so the key cannot be restored. Re-run and choose the matching passkey",
+          "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the key cannot be restored. Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey on a device that still has the key",
         ),
       );
     }
@@ -446,7 +443,7 @@ export function recoverWithPasskeyOp(input: {
         unwrapMasterBlob({
           kek,
           wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
-          context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: row.wrapId },
+          context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
         }),
       catch: () => cliError("Failed to decrypt the wrapped master key (crypto error)"),
     });
@@ -473,11 +470,32 @@ export function recoverWithPasskeyOp(input: {
       ),
     );
     yield* storeMasterKeyAndReport({
-      entryName,
+      entryName: input.entryName,
       serialized: serializeStoredMasterKey(record),
       action: "Restored the master key via passkey",
       fingerprintHex: validated.fingerprintHex,
     });
+  });
+}
+
+/** `maruhi key recover --passkey`: restore the master key with a registered passkey. */
+export function recoverWithPasskeyOp(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* ensurePasskeyCeremonyAllowed(io, "recover");
+    const entryName = yield* ensureNoStoredMasterKey(
+      input.session,
+      "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
+    );
+    const rows = yield* fetchPasskeyRows(input.client);
+    if (rows.length === 0) {
+      return yield* Effect.fail(cliError(NO_PASSKEY_REGISTERED));
+    }
+    const material = yield* recoverCeremonyFirst(input.client, rows);
+    yield* unwrapAndStore({ session: input.session, entryName, material });
   });
 }
 

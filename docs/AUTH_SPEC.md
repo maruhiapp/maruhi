@@ -580,7 +580,7 @@ key_wrap_windows (                      -- 13-8 の固定窓(監査行ではな�
 
 | op | エンドポイント | 認可 |
 |---|---|---|
-| 台帳の状態 | `GET /auth/key-wraps`(200) | 認証済み主体すべて(**セッション主体も可** — §5 の許可列挙へ追加。`recovery/status` と同じ性格)。ラップ・分片・パラメータの秘密を運ばない: 種別ごとの登録有無・wrap_id / group_id・mode・保護者の user_id と鍵 FP・更新時刻のみ |
+| 台帳の状態 | `GET /auth/key-wraps`(200) | 認証済み主体すべて(**セッション主体も可** — §5 の許可列挙へ追加。`recovery/status` と同じ性格)。ラップ・分片・パラメータの秘密を運ばない: 種別ごとの登録有無・wrap_id / group_id・mode・保護者の user_id と鍵 FP・更新時刻、および passkey 行の**公開パラメータ** `credentialIdHex` / `prfSaltHex`(CRYPTO_SPEC §8.2 — credential_id・prf_salt は秘密ではない。復元クライアントは PRF 儀式の**前**に salt を要するため、ブロブ取得〔合算窓 + 要監視事件〕を挟まずに済むよう status で運ぶ — 2026-09-13 K5 改訂、設計録は integration-options.md 補足 20-6 / 20-7) |
 | passkey 登録 | `POST /auth/key-wraps/passkey`(200 → `{ wrapId }`。作成系の成功は HttpApi の既定 200 — K3 実装) | `*` × admin スコープのトークンのみ(§13-2 の鍵素材条件と同じ。**セッション主体は拒否**) |
 | passkey ブロブ取得 | `GET /auth/key-wraps/passkey/:wrapId`(200 / 404) | 同上 + 合算レート制限(13-8) |
 | passkey 削除 | `DELETE /auth/key-wraps/passkey/:wrapId`(204) | 同上 |

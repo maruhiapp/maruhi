@@ -63,6 +63,7 @@ interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
+  readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
 
@@ -244,6 +245,7 @@ describe("maruhi key seal passkey(登録)", () => {
       wrapId: `01JMKWRAP0000000000000000${i}`,
       label: null,
       credentialIdHex: `0${i}`.repeat(8),
+      prfSaltHex: `1${i}`.repeat(32),
       updatedAtMs: 1754006400000,
     }));
     const { env, server } = await start([statusHandler(rows), registerHandler(() => {})]);
@@ -366,34 +368,63 @@ describe("maruhi key seal passkey(登録)", () => {
   });
 });
 
+/** status の passkey 行(公開パラメータ prfSaltHex を運ぶ)。 */
+function rowOf(registration: RegistrationBody, label: string | null = null): PasskeyRow {
+  return {
+    wrapId: registration.wrapId,
+    label,
+    credentialIdHex: registration.credentialIdHex,
+    prfSaltHex: registration.prfSaltHex,
+    updatedAtMs: 1,
+  };
+}
+
+const passkeyFetches = (server: MockServer) =>
+  server.requests.filter(
+    (r) => r.method === "GET" && r.path.startsWith("/auth/key-wraps/passkey/"),
+  );
+
 describe("maruhi key recover --passkey(復元)", () => {
-  it("台帳のラップを 1 件取り、同じ PRF で復号してキーチェーンへ保存する(roundtrip)", async () => {
+  it("全 credential で儀式し、応答の credential の行だけをラップ取得して復号・保存する(取得は儀式の後)", async () => {
     const { registration } = await registerOnce();
+    // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
+    const other = {
+      ...registration,
+      wrapId: OTHER_WRAP_ID,
+      credentialIdHex: "ff".repeat(16),
+      prfSaltHex: "77".repeat(32),
+    };
     const { env, server } = await start([
-      statusHandler([
-        {
-          wrapId: registration.wrapId,
-          label: null,
-          credentialIdHex: CREDENTIAL_HEX,
-          updatedAtMs: 1,
-        },
-      ]),
+      statusHandler([rowOf(other, "YubiKey"), rowOf(registration, "Touch ID")]),
+      wrapHandler(OTHER_WRAP_ID, other),
       wrapHandler(registration.wrapId, registration),
     ]);
     seedTokenOnly(env, server.origin);
-    const seen: { config?: unknown } = {};
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }), seen);
+    const seen: { config?: unknown; fetchesAtCeremony?: number } = {};
+    browserPosting(
+      env,
+      () => {
+        // 儀式の時点ではブロブをまだ取っていない(取り消しが窓を消費しない根拠)
+        seen.fetchesAtCeremony = passkeyFetches(server).length;
+        return { credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX };
+      },
+      seen,
+    );
     const code = await runCli(["key", "recover", "--passkey"], env.layer);
     expect(code, env.errors.join("\n")).toBe(0);
     expect(seen.config).toEqual({
       mode: "recover",
       rpId: "localhost",
-      credentials: [{ credentialIdHex: CREDENTIAL_HEX, prfSaltHex: registration.prfSaltHex }],
+      credentials: [
+        { credentialIdHex: other.credentialIdHex, prfSaltHex: other.prfSaltHex },
+        { credentialIdHex: CREDENTIAL_HEX, prfSaltHex: registration.prfSaltHex },
+      ],
     });
-    // ブロブ取得は儀式の前に 1 回だけ(合算窓の消費は 1)
-    expect(
-      server.requests.filter((r) => r.path.startsWith("/auth/key-wraps/passkey/")),
-    ).toHaveLength(1);
+    expect(seen.fetchesAtCeremony).toBe(0);
+    expect(env.prompts).toEqual([]);
+    expect(passkeyFetches(server).map((r) => r.path)).toEqual([
+      `/auth/key-wraps/passkey/${registration.wrapId}`,
+    ]);
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBe(
       serializedRecord(),
     );
@@ -404,105 +435,84 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(env.errors.join("\n")).not.toContain(PRF_HEX);
   });
 
-  it("複数の登録は番号で選ばせ、選んだ行だけを取る", async () => {
+  it("取り消し・未登録の credential・違う PRF・行と食い違うラップでは復元せず、取り消しはブロブを取らない", async () => {
     const { registration } = await registerOnce();
-    const other = { ...registration, wrapId: OTHER_WRAP_ID, credentialIdHex: "ff".repeat(16) };
-    const { env, server } = await start([
-      statusHandler([
-        {
-          wrapId: OTHER_WRAP_ID,
-          label: "YubiKey",
-          credentialIdHex: other.credentialIdHex,
-          updatedAtMs: 1,
-        },
-        {
-          wrapId: registration.wrapId,
-          label: "Touch ID",
-          credentialIdHex: CREDENTIAL_HEX,
-          updatedAtMs: 2,
-        },
-      ]),
-      wrapHandler(OTHER_WRAP_ID, other),
-      wrapHandler(registration.wrapId, registration),
-    ]);
-    seedTokenOnly(env, server.origin);
-    env.setPromptResponses(["2"]);
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
-    expect(await runCli(["key", "recover", "--passkey"], env.layer), env.errors.join("\n")).toBe(0);
-    expect(env.prompts[0]).toBe("Which passkey will you use? [1-2]: ");
-    expect(env.errors.join("\n")).toContain(
-      `1. ${OTHER_WRAP_ID}  YubiKey  credential ffffffffffffffff…`,
-    );
-    const fetched = server.requests.filter((r) => r.path.startsWith("/auth/key-wraps/passkey/"));
-    expect(fetched.map((r) => r.path)).toEqual([`/auth/key-wraps/passkey/${registration.wrapId}`]);
-
-    const cancelled = await start([
-      statusHandler([
-        {
-          wrapId: OTHER_WRAP_ID,
-          label: null,
-          credentialIdHex: other.credentialIdHex,
-          updatedAtMs: 1,
-        },
-        {
-          wrapId: registration.wrapId,
-          label: null,
-          credentialIdHex: CREDENTIAL_HEX,
-          updatedAtMs: 2,
-        },
-      ]),
-    ]);
-    seedTokenOnly(cancelled.env, cancelled.server.origin);
-    cancelled.env.setPromptResponses(["9"]);
-    expect(await runCli(["key", "recover", "--passkey"], cancelled.env.layer)).toBe(1);
-    expect(cancelled.env.errors.join("\n")).toContain(
-      "The passkey recovery was cancelled (nothing was changed)",
-    );
-    expect(cancelled.env.browserOpens).toEqual([]);
-  });
-
-  it("違う PRF・違う credential・理由コードでは復元せず、キーチェーンにも何も残らない", async () => {
-    const { registration } = await registerOnce();
-    const row = {
-      wrapId: registration.wrapId,
-      label: null,
-      credentialIdHex: CREDENTIAL_HEX,
-      updatedAtMs: 1,
-    };
-    const cases: readonly [PrfPagePost, string][] = [
+    const cases: readonly [PrfPagePost, string, number][] = [
+      [{ error: "not-allowed" }, "The passkey was not used", 0],
+      [
+        { credentialIdHex: "ab".repeat(8), prfHex: PRF_HEX },
+        "is not registered for your account",
+        0,
+      ],
       [
         { credentialIdHex: CREDENTIAL_HEX, prfHex: "99".repeat(32) },
         "Cannot decrypt the wrapped master key with this passkey",
+        1,
       ],
-      [
-        { credentialIdHex: "ab".repeat(8), prfHex: PRF_HEX },
-        "The browser used a different passkey",
-      ],
-      [{ error: "not-allowed" }, "The passkey was not used"],
     ];
-    for (const [post, expected] of cases) {
+    for (const [post, expected, fetches] of cases) {
       const { env, server } = await start([
-        statusHandler([row]),
+        statusHandler([rowOf(registration)]),
         wrapHandler(registration.wrapId, registration),
       ]);
       seedTokenOnly(env, server.origin);
       browserPosting(env, () => post);
       expect(await runCli(["key", "recover", "--passkey"], env.layer), expected).toBe(1);
       expect(env.errors.join("\n"), expected).toContain(expected);
+      expect(passkeyFetches(server), expected).toHaveLength(fetches);
       expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId)), expected).toBe(
         false,
       );
     }
+    // サーバーが行と食い違うラップ(別 credential の登録)を返したら fail-closed
+    const swapped = { ...registration, credentialIdHex: "ab".repeat(8) };
+    const { env, server } = await start([
+      statusHandler([rowOf(registration)]),
+      wrapHandler(registration.wrapId, swapped),
+    ]);
+    seedTokenOnly(env, server.origin);
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
+    expect(await runCli(["key", "recover", "--passkey"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "The wrap fetched from the server belongs to a different passkey",
+    );
+    expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
   });
 
-  it("登録なし・既存鍵あり・エージェント環境・非端末・レート制限はリスナーを立てる前に拒否する", async () => {
+  it("儀式の後のレート制限は案内になり、キーチェーンには何も残らない", async () => {
+    const { registration } = await registerOnce();
+    const { env, server } = await start([
+      statusHandler([rowOf(registration)]),
+      onRequest("GET", `/auth/key-wraps/passkey/${registration.wrapId}`, () => ({
+        status: 429,
+        json: { _tag: "KeyWrapRateLimited", window: "blob-fetch", retryAfterSeconds: 1200 },
+      })),
+    ]);
+    seedTokenOnly(env, server.origin);
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
+    expect(await runCli(["key", "recover", "--passkey"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "The key-wrap fetch limit was reached. Retry after 1200 seconds",
+    );
+    expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
+  });
+});
+
+describe("maruhi key recover --passkey(前提の拒否)", () => {
+  it("登録なし・既存鍵あり・エージェント環境・非端末はリスナーを立てる前に拒否する", async () => {
     const none = await start([statusHandler([])]);
     seedTokenOnly(none.env, none.server.origin);
     expect(await runCli(["key", "recover", "--passkey"], none.env.layer)).toBe(1);
     expect(none.env.errors.join("\n")).toContain("No passkey is registered for your account");
     expect(none.env.browserOpens).toEqual([]);
 
-    const row = { wrapId: WRAP_ID, label: null, credentialIdHex: CREDENTIAL_HEX, updatedAtMs: 1 };
+    const row: PasskeyRow = {
+      wrapId: WRAP_ID,
+      label: null,
+      credentialIdHex: CREDENTIAL_HEX,
+      prfSaltHex: "22".repeat(32),
+      updatedAtMs: 1,
+    };
     const hasKey = await start([statusHandler([row])]);
     seedSession(hasKey.env, hasKey.server.origin, owner);
     expect(await runCli(["key", "recover", "--passkey"], hasKey.env.layer)).toBe(1);
@@ -525,20 +535,6 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(piped.env.errors.join("\n")).toContain(
       "Passkey recovery is only allowed on an interactive terminal",
     );
-
-    const limited = await start([
-      statusHandler([row]),
-      onRequest("GET", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({
-        status: 429,
-        json: { _tag: "KeyWrapRateLimited", window: "blob-fetch", retryAfterSeconds: 1200 },
-      })),
-    ]);
-    seedTokenOnly(limited.env, limited.server.origin);
-    expect(await runCli(["key", "recover", "--passkey"], limited.env.layer)).toBe(1);
-    expect(limited.env.errors.join("\n")).toContain(
-      "The key-wrap fetch limit was reached. Retry after 1200 seconds",
-    );
-    expect(limited.env.browserOpens).toEqual([]);
   });
 
   it("--handoff と --passkey の同時指定は usage エラー", async () => {
@@ -567,7 +563,13 @@ describe("儀式の 3 チャネル TTY ゲート(ADR-0016 決定 7)", () => {
         const label = `${ceremony.argv.join(" ")} ${JSON.stringify(terminal)}`;
         const { env, server } = await start([
           statusHandler([
-            { wrapId: WRAP_ID, label: null, credentialIdHex: CREDENTIAL_HEX, updatedAtMs: 1 },
+            {
+              wrapId: WRAP_ID,
+              label: null,
+              credentialIdHex: CREDENTIAL_HEX,
+              prfSaltHex: "66".repeat(32),
+              updatedAtMs: 1,
+            },
           ]),
           onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
         ]);
@@ -599,12 +601,14 @@ describe("maruhi key seal list / remove", () => {
         wrapId: WRAP_ID,
         label: "Touch ID",
         credentialIdHex: CREDENTIAL_HEX,
+        prfSaltHex: "66".repeat(32),
         updatedAtMs: 1754006400000,
       },
       {
         wrapId: OTHER_WRAP_ID,
         label: null,
         credentialIdHex: "ff".repeat(16),
+        prfSaltHex: "77".repeat(32),
         updatedAtMs: 1754006460000,
       },
     ];
