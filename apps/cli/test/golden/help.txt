@@ -21,7 +21,7 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery / approve)
+  key         Manage your master key (generate / show / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
@@ -54,7 +54,7 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role)
-  key         Manage your master key (generate / show / recover / recovery / approve)
+  key         Manage your master key (generate / show / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
   rotation    Manage rotation flags (list / dismiss)
@@ -436,7 +436,7 @@ GLOBAL FLAGS
 
 $ maruhi key --help
 DESCRIPTION
-  Manage your master key (generate / show / recover / recovery / approve)
+  Manage your master key (generate / show / recover / recovery / approve / seal)
 
 USAGE
   maruhi key <subcommand> [flags]
@@ -448,9 +448,10 @@ GLOBAL FLAGS
 SUBCOMMANDS
   generate    Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
   show        Print the public keys and fingerprint (never the private keys)
-  recover     Restore the master key from a recovery code, or with --handoff from another device or your guardians
+  recover     Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians
   recovery    Issue (or reissue) the recovery code
   approve     Approve a master-key handoff request (as your other device, or as a guardian)
+  seal        Seal the master key to a passkey (passkey / list / remove)
 
 $ maruhi key generate --help
 DESCRIPTION
@@ -482,7 +483,7 @@ GLOBAL FLAGS
 
 $ maruhi key recover --help
 DESCRIPTION
-  Restore the master key from a recovery code, or with --handoff from another device or your guardians
+  Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians
 
 USAGE
   maruhi key recover [flags]
@@ -490,6 +491,7 @@ USAGE
 FLAGS
   --server string    Server URL (defaults to config server)
   --handoff          Restore by approval from another device of yours or from your guardians instead of a recovery code
+  --passkey          Restore with a passkey registered by `maruhi key seal passkey` instead of a recovery code
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -518,6 +520,68 @@ USAGE
 
 ARGUMENTS
   code string    Handoff code shown by `maruhi key recover --handoff` on the requesting device
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key seal --help
+DESCRIPTION
+  Seal the master key to a passkey (passkey / list / remove)
+
+USAGE
+  maruhi key seal <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  passkey    Seal the master key to a new passkey via a page served on localhost (register it for recovery)
+  list       List the passkeys your master key is sealed to
+  remove     Remove a passkey wrap from the recovery ledger
+
+$ maruhi key seal passkey --help
+DESCRIPTION
+  Seal the master key to a new passkey via a page served on localhost (register it for recovery)
+
+USAGE
+  maruhi key seal passkey [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --label string     Display name for this passkey in `maruhi key seal list` (1 to 64 characters)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key seal list --help
+DESCRIPTION
+  List the passkeys your master key is sealed to
+
+USAGE
+  maruhi key seal list [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key seal remove --help
+DESCRIPTION
+  Remove a passkey wrap from the recovery ledger
+
+USAGE
+  maruhi key seal remove [flags] <wrap-id>
+
+ARGUMENTS
+  wrap-id string    Passkey wrap ID (see `maruhi key seal list`)
 
 FLAGS
   --server string    Server URL (defaults to config server)

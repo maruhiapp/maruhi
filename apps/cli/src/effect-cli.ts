@@ -35,6 +35,7 @@ import {
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_TOKEN_NAME_LENGTH,
   MAX_TOKEN_TTL_DAYS,
+  PASSKEY_LABEL_PATTERN,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { GuardianMode, MetaVarType, Role } from "@maruhi/crypto";
@@ -83,7 +84,12 @@ import {
   issueCheckpoint,
 } from "./checkpoint.ts";
 import { ciRunOp } from "./ci-run.ts";
-import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
+import {
+  type CommandSpec,
+  formatterLayer,
+  NON_BLANK_MESSAGE,
+  PASSKEY_LABEL_MESSAGE,
+} from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
 import {
   asConfigKey,
@@ -142,6 +148,7 @@ import {
   ROLE_DEMOTED_ROTATION_REASON,
 } from "./member.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
+import { listPasskeysOp, recoverWithPasskeyOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
@@ -568,6 +575,33 @@ const keyRecoverConfig = {
   handoff: singleFlag(
     "handoff",
     "Restore by approval from another device of yours or from your guardians instead of a recovery code",
+  ),
+  passkey: singleFlag(
+    "passkey",
+    "Restore with a passkey registered by `maruhi key seal passkey` instead of a recovery code",
+  ),
+};
+/** passkey のラベル(台帳の表示名 — api-schema の受理形を宣言側で先に検査する)。 */
+const PasskeyLabel = Schema.String.check(
+  Schema.isPattern(PASSKEY_LABEL_PATTERN, { message: PASSKEY_LABEL_MESSAGE }),
+);
+const keySealPasskeyConfig = {
+  ...serverOnlyFlags(),
+  label: Flag.string("label").pipe(
+    Flag.withDescription(
+      "Display name for this passkey in `maruhi key seal list` (1 to 64 characters)",
+    ),
+    Flag.withSchema(PasskeyLabel),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+};
+const keySealListConfig = serverOnlyFlags();
+const keySealRemoveConfig = {
+  ...serverOnlyFlags(),
+  "wrap-id": Argument.string("wrap-id").pipe(
+    Argument.withDescription("Passkey wrap ID (see `maruhi key seal list`)"),
+    Argument.withSchema(NonBlank),
   ),
 };
 const keyRecoveryConfig = serverOnlyFlags();
@@ -1007,6 +1041,11 @@ const GROUP_CONFIGS: Readonly<
     recovery: keyRecoveryConfig,
     approve: keyApproveConfig,
   },
+  "key seal": {
+    passkey: keySealPasskeyConfig,
+    list: keySealListConfig,
+    remove: keySealRemoveConfig,
+  },
   guardian: {
     add: guardianAddConfig,
     list: guardianListConfig,
@@ -1082,7 +1121,13 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
           ...(GROUP_PARENT_CONFIGS[group] === undefined
             ? { flags: [], positionals: [] }
             : specOf(GROUP_PARENT_CONFIGS[group])),
-          subcommands: Object.keys(subcommands),
+          subcommands: [
+            ...Object.keys(subcommands),
+            // 入れ子のグループ(`key seal`)は親(`key`)の取りうる操作に数える
+            ...Object.keys(GROUP_CONFIGS)
+              .filter((other) => other.startsWith(`${group} `))
+              .map((other) => other.slice(group.length + 1)),
+          ],
         },
       ],
       ...Object.entries(subcommands).map(([name, config]) => [`${group} ${name}`, specOf(config)]),
@@ -2571,17 +2616,59 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
     Effect.gen(function* () {
+      // 書き方の誤りはセッション解決(ネットワーク)より前に落とす
+      if (values.handoff && values.passkey) {
+        return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
+      }
       const context = yield* openSession(values.server);
       if (values.handoff) {
         yield* requestHandoffOp({ session: context.session, client: context.client });
+        return;
+      }
+      if (values.passkey) {
+        yield* recoverWithPasskeyOp({ session: context.session, client: context.client });
         return;
       }
       yield* recoverMasterKeyOp({ session: context.session, client: context.client });
     }),
   ).pipe(
     Command.withDescription(
-      "Restore the master key from a recovery code, or with --handoff from another device or your guardians",
+      "Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians",
     ),
+  );
+
+  const keySealPasskey = Command.make("passkey", keySealPasskeyConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* sealPasskeyOp({
+        session: context.session,
+        client: context.client,
+        ...(values.label === undefined ? {} : { label: values.label }),
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Seal the master key to a new passkey via a page served on localhost (register it for recovery)",
+    ),
+  );
+
+  const keySealList = Command.make("list", keySealListConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* listPasskeysOp({ client: context.client });
+    }),
+  ).pipe(Command.withDescription("List the passkeys your master key is sealed to"));
+
+  const keySealRemove = Command.make("remove", keySealRemoveConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* removePasskeyOp({ client: context.client, wrapId: values["wrap-id"] });
+    }),
+  ).pipe(Command.withDescription("Remove a passkey wrap from the recovery ledger"));
+
+  const keySeal = Command.make("seal").pipe(
+    Command.withDescription("Seal the master key to a passkey (passkey / list / remove)"),
+    Command.withSubcommands([keySealPasskey, keySealList, keySealRemove]),
   );
 
   const keyApprove = Command.make("approve", keyApproveConfig, (values) =>
@@ -2613,9 +2700,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const key = Command.make("key").pipe(
     Command.withDescription(
-      "Manage your master key (generate / show / recover / recovery / approve)",
+      "Manage your master key (generate / show / recover / recovery / approve / seal)",
     ),
-    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery, keyApprove]),
+    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery, keyApprove, keySeal]),
   );
 
   const guardianAdd = Command.make("add", guardianAddConfig, (values) =>

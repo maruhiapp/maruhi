@@ -44,7 +44,7 @@ import {
   decodeWrapped,
   openOwnGuardianShare,
   sealForRequester,
-  wrapOwnBlobForHandoff,
+  wrapOwnBlob,
 } from "./master-ops.ts";
 import { logNote } from "./notice.ts";
 import {
@@ -567,7 +567,7 @@ function approveAsDevice(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const kek = generateMasterWrapKek();
-    const blob = yield* wrapOwnBlobForHandoff({
+    const blob = yield* wrapOwnBlob({
       masterKeys: input.masterKeys,
       kek,
       context: { userId: input.target.wardUserId, kind: "device", wrapRef: input.target.requestId },

@@ -133,6 +133,7 @@ export {
   MAX_PASSKEY_WRAPS_PER_USER,
   PasskeyLabelSchema,
   PasskeyWrapRegistrationSchema,
+  PASSKEY_LABEL_PATTERN,
   PasskeyWrapResultSchema,
   WardSummarySchema,
 } from "./key-wraps-api.ts";

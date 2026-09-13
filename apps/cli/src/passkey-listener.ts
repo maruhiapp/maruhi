@@ -1,0 +1,368 @@
+// パスキー PRF 取得のローカルリスナー(CRYPTO_SPEC §8.2 / ADR-0018 決定 2 /
+// integration-options.md 補足 20 裁定 A・B)。**CLI 初の TCP リスナー**。
+//
+// 127.0.0.1 の乱数ポートで `node:http` を聞き(`agent.ts` の `node:net` と同じく
+// vitest〔Node〕で実リスナーを検査できる)、CLI 同梱のページ(passkey-page.ts)を配って
+// PRF 出力を 1 POST で受け取る。URL は `http://localhost:<port>/<token>/`(rpId =
+// `localhost` のため、bind は 127.0.0.1 でもホスト名は localhost)。
+//
+// 認証(裁定 A — 人間レビュー箇所):
+//   - URL パスのワンタイムトークン(32 バイト乱数の base64url)。ページ資産の GET も
+//     POST も同じトークンで閉じる(他の localhost ページはこちらの画面を列挙できない)
+//   - `Host` 完全一致(`localhost:<port>` — DNS リバインディングは Host が違う)
+//   - POST は `Origin` 完全一致(`http://localhost:<port>` — 別ポートの localhost
+//     ページは Origin が違う。JSON の POST は preflight になり OPTIONS も 404 で落ちる)
+//   - 1 回限りの消費: 最初の正しい POST で結果を確定し、以後は 404
+//   - 失敗は理由を出さない一様 404(トークン・Origin・本文の何が違うかを外へ返さない)
+//   - 本文は `application/json` かつ 4 KiB まで。形は passkey-page.ts の PrfPagePost + `code`
+//   - **確認コード**(裁定 A 改訂 1): トークンはブラウザ起動の argv に載り、同じマシンの
+//     別 UID の利用者が読める。POST は端末に表示した 6 桁コードの同梱を要し、不一致は
+//     404 で**消費しない**(正しいページの POST は後から通る)。総当たりは
+//     MAX_CODE_ATTEMPTS で打ち切り、儀式ごと失敗にする(fail-closed)
+// 有効期間はリスナーの寿命(呼び出し側の `Effect.timeout`)。close は開いている接続を
+// 切ってから `server.close`(keep-alive が close を遅らせる — agent.ts と同じ先例)。
+//
+// 値・鍵素材の扱い: PRF 出力は受け取った Promise の値としてだけ存在し、ログ・エラー・
+// ページの DOM に出ない。トークンはリスナーと同寿命。
+
+import { timingSafeEqual } from "node:crypto";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
+
+import {
+  CONFIRM_CODE_PATTERN,
+  PRF_PAGE_CSS,
+  PRF_PAGE_ERROR_CODES,
+  PRF_PAGE_HTML,
+  PRF_PAGE_JS,
+  type PrfPageConfig,
+  type PrfPagePost,
+} from "./passkey-page.ts";
+
+/** ページ資産の CSP(script-src 'self' 基調。inline・eval・第三者を許さない)。 */
+export const PRF_PAGE_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/** POST 本文の上限(PRF hex 64 + credential id hex ≤ 2048 + JSON の器で十分)。 */
+const MAX_BODY_BYTES = 4 * 1024;
+const TOKEN_BYTES = 32;
+const PRF_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const CREDENTIAL_ID_HEX_PATTERN = /^(?:[0-9a-f]{2}){1,1024}$/;
+/** 確認コードの不一致をこの回数まで許す(打ち間違いの余地 + 総当たりの打ち切り)。 */
+const MAX_CODE_ATTEMPTS = 5;
+
+/** リスナー側で確定する結果(ページの POST、または総当たりの打ち切り)。 */
+export type PrfListenerOutcome = PrfPagePost | { readonly error: "too-many-code-attempts" };
+
+/** A running PRF listener (one ceremony; closes itself after the first accepted POST). */
+export interface PrfListener {
+  /** The URL to open in a browser (`http://localhost:<port>/<token>/`). */
+  readonly url: string;
+  readonly port: number;
+  /**
+   * Resolves with the page's accepted POST (or the attempt cap). Rejects only when the
+   * server itself fails after it started listening. close() before it settles leaves it pending.
+   */
+  readonly outcome: Promise<PrfListenerOutcome>;
+  /** Stops listening and destroys open connections (idempotent). */
+  readonly close: () => Promise<void>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The page's POST body: the confirmation code plus the ceremony result. */
+export interface ParsedPrfPost {
+  readonly code: string;
+  readonly post: PrfPagePost;
+}
+
+/** Parses the page's POST body; null when malformed (the request is then answered 404). */
+export function parsePrfPost(text: string): ParsedPrfPost | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  const code = value["code"];
+  if (typeof code !== "string" || !CONFIRM_CODE_PATTERN.test(code)) {
+    return null;
+  }
+  const error = value["error"];
+  if (typeof error === "string") {
+    const known = PRF_PAGE_ERROR_CODES.find((candidate) => candidate === error);
+    return known === undefined || Object.keys(value).length !== 2
+      ? null
+      : { code, post: { error: known } };
+  }
+  const credentialIdHex = value["credentialIdHex"];
+  const prfHex = value["prfHex"];
+  if (
+    typeof credentialIdHex !== "string" ||
+    typeof prfHex !== "string" ||
+    !CREDENTIAL_ID_HEX_PATTERN.test(credentialIdHex) ||
+    !PRF_HEX_PATTERN.test(prfHex) ||
+    Object.keys(value).length !== 3
+  ) {
+    return null;
+  }
+  return { code, post: { credentialIdHex, prfHex } };
+}
+
+/** 定数時間の比較(長さが違えば不一致)。 */
+function codeMatches(expected: string, given: string): boolean {
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(given, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function newToken(): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(TOKEN_BYTES))).toString("base64url");
+}
+
+/** 全応答に共通のヘッダ(キャッシュ・スニッフ・Referer を閉じる)。 */
+const COMMON_HEADERS: Readonly<Record<string, string>> = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  connection: "close",
+};
+
+function reply(
+  response: ServerResponse,
+  status: number,
+  body: string,
+  headers: Readonly<Record<string, string>> = {},
+): void {
+  response.writeHead(status, { ...COMMON_HEADERS, "content-type": "text/plain", ...headers });
+  response.end(body);
+}
+
+/** 理由を出さない一様 404。 */
+function notFound(response: ServerResponse): void {
+  reply(response, 404, "not found");
+}
+
+/** 静的資産(トークン配下の GET)。 */
+function serveAsset(name: string, config: PrfPageConfig, response: ServerResponse): void {
+  switch (name) {
+    case "":
+      reply(response, 200, PRF_PAGE_HTML, {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": PRF_PAGE_CSP,
+      });
+      return;
+    case "app.js":
+      reply(response, 200, PRF_PAGE_JS, { "content-type": "text/javascript; charset=utf-8" });
+      return;
+    case "style.css":
+      reply(response, 200, PRF_PAGE_CSS, { "content-type": "text/css; charset=utf-8" });
+      return;
+    case "config.json":
+      reply(response, 200, JSON.stringify(config), {
+        "content-type": "application/json; charset=utf-8",
+      });
+      return;
+    default:
+      notFound(response);
+  }
+}
+
+/** 本文を上限つきで読む(超過は接続を切る)。 */
+function readBody(request: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        request.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    request.on("error", () => {
+      resolve(null);
+    });
+  });
+}
+
+/** 振り分けの結果(応答の書き込みは呼び出し側)。 */
+type Route =
+  | { readonly kind: "not-found" }
+  | { readonly kind: "redirect" }
+  | { readonly kind: "asset"; readonly name: string }
+  | { readonly kind: "post" };
+
+/** トークン配下のパスを解く(トークン不一致は null)。 */
+function tokenPath(
+  url: string,
+  token: string,
+): { readonly rest: string; readonly trailingSlash: boolean } | null {
+  const path = url.split("?")[0] ?? "/";
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  if (segments[0] !== token) {
+    return null;
+  }
+  return { rest: segments.slice(1).join("/"), trailingSlash: path.endsWith("/") };
+}
+
+/**
+ * Host 完全一致 → トークン → メソッド / パスの順に振り分ける。ページの資産は
+ * `./app.js` 等の相対参照なので、末尾スラッシュ無しの `/<token>` で開かれると
+ * `/app.js` を引きに行って動かない(手で URL を打つ・ポート転送で貼るときに
+ * 落ちやすい)。正しい形へ寄せる。
+ */
+function routeRequest(
+  request: IncomingMessage,
+  expected: { readonly token: string; readonly expectedHost: string },
+): Route {
+  if (request.headers.host !== expected.expectedHost) {
+    return { kind: "not-found" };
+  }
+  const resolved = tokenPath(request.url ?? "/", expected.token);
+  if (resolved === null) {
+    return { kind: "not-found" };
+  }
+  if (request.method === "GET") {
+    return resolved.rest === "" && !resolved.trailingSlash
+      ? { kind: "redirect" }
+      : { kind: "asset", name: resolved.rest };
+  }
+  return request.method === "POST" && resolved.rest === "prf"
+    ? { kind: "post" }
+    : { kind: "not-found" };
+}
+
+/**
+ * Starts the PRF listener on 127.0.0.1 with a fresh one-time token and serves
+ * the passkey page for `config`. A POST is accepted only when it carries
+ * `confirmCode` (shown in the terminal, typed into the page); the returned
+ * `outcome` resolves with the first accepted POST, after which every further
+ * request is answered 404. Mismatching codes are answered 404 without consuming
+ * the ceremony, up to a small cap that then fails the ceremony.
+ */
+export function startPrfListener(config: PrfPageConfig, confirmCode: string): Promise<PrfListener> {
+  const token = newToken();
+  const connections = new Set<Socket>();
+  let settled = false;
+  let codeAttempts = 0;
+  // Promise の外から確定させる(executor は同期に走るので代入は必ず済む)
+  let resolveOutcome!: (post: PrfListenerOutcome) => void;
+  let rejectOutcome!: (error: Error) => void;
+  const outcome = new Promise<PrfListenerOutcome>((resolve, reject) => {
+    resolveOutcome = resolve;
+    rejectOutcome = reject;
+  });
+  let expectedHost = "";
+
+  /** Origin 完全一致 + JSON の POST だけを読む(確定後はすべて 404)。 */
+  const postIsAcceptable = (request: IncomingMessage): boolean =>
+    !settled &&
+    request.headers.origin === `http://${expectedHost}` &&
+    (request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json");
+
+  /** コード不一致を数え、上限で儀式ごと打ち切る(fail-closed)。 */
+  const recordCodeMismatch = (): void => {
+    codeAttempts += 1;
+    if (codeAttempts >= MAX_CODE_ATTEMPTS) {
+      settled = true;
+      resolveOutcome({ error: "too-many-code-attempts" });
+    }
+  };
+
+  const handlePost = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    if (!postIsAcceptable(request)) {
+      notFound(response);
+      return;
+    }
+    const text = await readBody(request);
+    const parsed = text === null ? null : parsePrfPost(text);
+    // 読み終わるまでに別の POST が確定していたら、こちらは捨てる(1 回限り)
+    if (parsed === null || settled) {
+      notFound(response);
+      return;
+    }
+    if (!codeMatches(confirmCode, parsed.code)) {
+      recordCodeMismatch();
+      notFound(response);
+      return;
+    }
+    settled = true;
+    reply(response, 204, "");
+    resolveOutcome(parsed.post);
+  };
+
+  const server: Server = createServer({ keepAlive: false }, (request, response) => {
+    const route = routeRequest(request, { token, expectedHost });
+    switch (route.kind) {
+      case "redirect":
+        reply(response, 302, "", { location: `/${token}/` });
+        return;
+      case "asset":
+        serveAsset(route.name, config, response);
+        return;
+      case "post":
+        void handlePost(request, response);
+        return;
+      case "not-found":
+        notFound(response);
+    }
+  });
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => {
+      connections.delete(socket);
+    });
+  });
+
+  let closing: Promise<void> | null = null;
+  const close = (): Promise<void> => {
+    closing ??= new Promise<void>((done) => {
+      server.close(() => {
+        done();
+      });
+      for (const socket of connections) {
+        socket.destroy();
+      }
+    });
+    return closing;
+  };
+
+  return new Promise<PrfListener>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      // listen 後のサーバー自体の失敗は儀式の失敗として呼び出し側へ渡す(unhandled
+      // "error" にしない)。接続単位の失敗は node:http が接続を閉じるだけ
+      server.on("error", (error) => {
+        if (!settled) {
+          settled = true;
+          rejectOutcome(error);
+        }
+      });
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        reject(new Error("listener has no TCP address"));
+        return;
+      }
+      expectedHost = `localhost:${address.port}`;
+      resolve({
+        url: `http://${expectedHost}/${token}/`,
+        port: address.port,
+        outcome,
+        close,
+      });
+    });
+  });
+}

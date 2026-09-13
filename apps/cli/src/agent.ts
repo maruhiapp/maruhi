@@ -648,7 +648,7 @@ export function agentOp(input: {
           );
           if (input.keyTtl !== undefined) {
             yield* io.logError(
-              `The master key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. Recover the key again with \`maruhi key recover\` when a command reports it is missing`,
+              `The master key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. Recover the key again with \`maruhi key recover\` (or \`--passkey\` / \`--handoff\`) when a command reports it is missing`,
             );
           }
           return yield* runner.runSession({

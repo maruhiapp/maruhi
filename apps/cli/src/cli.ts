@@ -74,8 +74,16 @@ function commandKeyOf(tokens: readonly string[]): string {
   if (head === undefined || !Object.hasOwn(COMMAND_SPECS, head)) {
     return ROOT_SPEC_KEY;
   }
-  const nested = named[1] === undefined ? null : `${head} ${named[1]}`;
-  return nested !== null && Object.hasOwn(COMMAND_SPECS, nested) ? nested : head;
+  // 既知の段が続く限り深く解決する(`key seal remove` の 3 段まで — KL3 K5)
+  let key = head;
+  for (const token of named.slice(1)) {
+    const nested = `${key} ${token}`;
+    if (!Object.hasOwn(COMMAND_SPECS, nested)) {
+      break;
+    }
+    key = nested;
+  }
+  return key;
 }
 
 /**
