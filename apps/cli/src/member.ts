@@ -28,10 +28,15 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
 import {
+  acceptanceFailureText,
   type InvitationRow,
   type InviteAcceptance,
+  type InviteIssuance,
+  issuanceFailureText,
   listInvitations,
+  pinMismatchOf,
   verifyAcceptanceBlock,
+  verifyIssuance,
 } from "./invite.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -41,7 +46,7 @@ import {
   usableBookHit,
 } from "./known-fingerprints.ts";
 import { logNote } from "./notice.ts";
-import { type InvitePins, issuedPinOf } from "./pins.ts";
+import type { InvitePins } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
   rotationMandates,
@@ -210,6 +215,12 @@ export interface MemberAddSummary {
   readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
 }
 
+/** 受諾済みかつ発行文のある行(IV 改訂前の行は発行文が無く add できない)。 */
+type AddableRow = InvitationRow & {
+  readonly acceptance: InviteAcceptance;
+  readonly issuance: InviteIssuance;
+};
+
 const withAcceptance = (
   row: InvitationRow,
 ): row is InvitationRow & { readonly acceptance: InviteAcceptance } => row.acceptance !== null;
@@ -221,7 +232,7 @@ const withAcceptance = (
 function selectInvitation(
   rows: readonly InvitationRow[],
   inviteId: string | null,
-): Effect.Effect<InvitationRow & { readonly acceptance: InviteAcceptance }, CliError> {
+): Effect.Effect<AddableRow, CliError> {
   if (inviteId !== null) {
     const row = rows.find((candidate) => candidate.id === inviteId);
     if (row === undefined) {
@@ -243,7 +254,7 @@ function selectInvitation(
         ),
       );
     }
-    return Effect.succeed(row);
+    return requireIssuance(row);
   }
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
@@ -264,7 +275,16 @@ function selectInvitation(
       ),
     );
   }
-  return Effect.succeed(first);
+  return requireIssuance(first);
+}
+
+/** 発行文の無い行(IV 改訂前)は add_member に使えない(互換経路なし)。 */
+function requireIssuance(
+  row: InvitationRow & { readonly acceptance: InviteAcceptance },
+): Effect.Effect<AddableRow, CliError> {
+  return row.issuance === null
+    ? Effect.fail(cliError(`This invite ${issuanceFailureText("unbound")}`))
+    : Effect.succeed({ ...row, issuance: row.issuance });
 }
 
 /**
@@ -555,7 +575,7 @@ function prepareMemberAdd(input: {
   readonly origin: string;
 }): Effect.Effect<
   {
-    readonly row: InvitationRow & { readonly acceptance: InviteAcceptance };
+    readonly row: AddableRow;
     readonly alreadyAdded: boolean;
   },
   CliError,
@@ -565,33 +585,43 @@ function prepareMemberAdd(input: {
     const listed = yield* listInvitations(input.client, input.verified.projectId);
     const row = yield* selectInvitation(listed, input.inviteId);
 
-    // 発行ピン突合(発行時の token_hash / role とサーバー申告の一致 — 行の
-    // すり替え・role の虚偽申告の機械検出)。ピンがない場合(別デバイスでの
-    // 発行・保持窓超過)は儀式の role 表示照合のみに劣化する
-    const pin = issuedPinOf(input.pins, row.id);
-    if (pin !== undefined && (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role)) {
+    // 発行文の検証(CRYPTO_SPEC §6.5 — IV): 行の発行署名をチェーン導出の招待者鍵で
+    // 検証する。自分が発行した行なら自分の鍵で「自分の発行か」が固定される
+    // (発行ピンに依存しない)。失敗 = 行のすり替え / 改竄 → 拒否
+    const issuance = yield* verifyIssuance({ verified: input.verified, row });
+    if (!issuance.ok) {
       return yield* Effect.fail(
-        cliError(
-          "The server's claim for the invite row (token_hash / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
-        ),
-      );
-    }
-    if (pin === undefined) {
-      yield* logNote(
-        "this machine has no issuance pin for this invite (it may have been issued on another device). Confirm that the displayed role matches what was intended at issuance",
+        cliError(`This invite ${issuanceFailureText(issuance.reason)}. add_member was aborted`),
       );
     }
 
-    // §6.5 の独立検証(サーバー申告の検証結果を信用しない)
+    // 発行ピン突合(SHOULD — 発行時の link_pub / role とサーバー申告の一致)。
+    // ピンがない場合(別デバイスでの発行・保持窓超過)は発行署名の検証だけが
+    // 行を固定する(IV 改訂で真実源は発行署名へ移った)
+    const pin = pinMismatchOf(input.pins, row);
+    if (pin === "mismatch") {
+      return yield* Effect.fail(
+        cliError(
+          "The server's claim for the invite row (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
+        ),
+      );
+    }
+    if (pin === "missing") {
+      yield* logNote(
+        "this machine has no issuance pin for this invite (it may have been issued on another device). The issue signature still fixes the row; only the addressee login recorded at issuance is unavailable here",
+      );
+    }
+
+    // §6.5 の独立検証(サーバー申告の検証結果を信用しない): リンク署名 → 受諾署名
     const acceptanceVerified = yield* verifyAcceptanceBlock({
       projectId: input.verified.projectId,
-      tokenHashHex: row.tokenHashHex,
+      issuance: row.issuance,
       acceptance: row.acceptance,
     });
     if (!acceptanceVerified.ok) {
       return yield* Effect.fail(
         cliError(
-          "The acceptance signature failed verification (CRYPTO_SPEC §6.5). This acceptance block cannot be trusted — add_member was aborted (revoke the invite)",
+          `For this invite, ${acceptanceFailureText(acceptanceVerified.which)}. This acceptance block cannot be trusted — add_member was aborted (revoke the invite)`,
         ),
       );
     }

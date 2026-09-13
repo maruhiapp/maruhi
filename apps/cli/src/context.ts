@@ -363,6 +363,34 @@ function reconcileCompositeIntents(input: {
 }
 
 /**
+ * アンカー照合の 3 検査(ヘッド包含 → 招待者 FP → 招待者 sig 鍵)。失敗 = 拒否
+ * 文言(硬い証拠)、成功 = null。拒否文言には検証材料の所在(ピンファイル)まで
+ * 含める: 恒久停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける
+ * 導線を残す。
+ */
+function anchorFailureOf(
+  projectId: string,
+  anchor: InviteAnchor,
+  verified: VerifiedProject,
+): string | null {
+  const evidenceHint = `The verification material is invites/${projectId}.json (the pinned anchor) in the config directory, plus the distributed chain`;
+  if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
+    return `Invite-link anchor check failed: the distributed chain does not contain the verified head pinned in the invite link (seq=${anchor.headSeq}) (CRYPTO_SPEC §6.3 out-of-band anchor (a)). This suggests a server-side rollback or fork distribution — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
+  }
+  const inviter = verified.history.memberStateAt(anchor.inviterUserId, anchor.headSeq);
+  if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
+    return `Invite-link anchor check failed: the link's inviter (user_id + key FP) does not match the chain member at the pinned head (the CRYPTO_SPEC §6.5 mechanical check). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
+  }
+  // IV 改訂: リンクの `is=`(招待者 sig 公開鍵)もピン留めされていれば、FP に
+  // 加えて鍵そのものの一致を検査する(発行署名の検証鍵がチェーン上の鍵で
+  // あることの固定)
+  if (anchor.inviterSigPubHex !== null && inviter.sigPubHex !== anchor.inviterSigPubHex) {
+    return `Invite-link anchor check failed: the link's inviter signing key (is=) does not match the chain member's key at the pinned head (CRYPTO_SPEC §6.3 (a) / §6.5). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
+  }
+  return null;
+}
+
+/**
  * 招待リンクアンカーの機械照合(CRYPTO_SPEC §6.3 帯域外アンカー (a) / §6.5)。
  * 受諾時にピン留めした「genesis(= projectId、syncProject の genesis 一致検査が
  * 担う)・招待者の検証済みヘッド・招待者 user_id + 鍵 FP」を、検証済みチェーン
@@ -391,28 +419,13 @@ export function checkInviteAnchor(
     if (anchor === null) {
       return;
     }
-    // 拒否文言には検証材料の所在(ピンファイル)まで含める: 硬い証拠での恒久
-    // 停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける導線を
-    // 残す
-    const evidenceHint = `The verification material is invites/${projectId}.json (the pinned anchor) in the config directory, plus the distributed chain`;
-    if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
-      return yield* Effect.fail(
-        cliError(
-          `Invite-link anchor check failed: the distributed chain does not contain the verified head pinned in the invite link (seq=${anchor.headSeq}) (CRYPTO_SPEC §6.3 out-of-band anchor (a)). This suggests a server-side rollback or fork distribution — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`,
-        ),
-      );
-    }
-    const inviter = verified.history.memberStateAt(anchor.inviterUserId, anchor.headSeq);
-    if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
-      return yield* Effect.fail(
-        cliError(
-          `Invite-link anchor check failed: the link's inviter (user_id + key FP) does not match the chain member at the pinned head (the CRYPTO_SPEC §6.5 mechanical check). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`,
-        ),
-      );
+    const failure = anchorFailureOf(projectId, anchor, verified);
+    if (failure !== null) {
+      return yield* Effect.fail(cliError(failure));
     }
     if (anchor.verifiedAtSeq === null) {
       yield* io.log(
-        "Invite-link anchor check passed (genesis match, head inclusion, inviter FP — CRYPTO_SPEC §6.3 / §6.5)",
+        "Invite-link anchor check passed (genesis match, head inclusion, inviter key — CRYPTO_SPEC §6.3 / §6.5)",
       );
       yield* store.saveAnchor(projectId, { ...anchor, verifiedAtSeq: verified.state.headSeq });
     }
@@ -586,9 +599,10 @@ export function openProject(
 
 /**
  * 平文メタデータ・チェーンしか読まないコマンドの前段(master 鍵を要求しない)。
- * invite create / list / revoke が使う: リンク材料(ヘッド・自分の FP)は
- * すべてチェーン導出であり、鍵素材なしの端末(MARUHI_TOKEN 実行)でも
- * 招待の発行・管理を行える(env diff / project verify と同じ鍵なしクラス)。
+ * invite list / revoke が使う: 突合材料(ヘッド・鍵)はすべてチェーン導出であり、
+ * 鍵素材なしの端末(MARUHI_TOKEN 実行)でも招待の管理を行える(env diff /
+ * project verify と同じ鍵なしクラス)。invite create は発行署名(CRYPTO_SPEC
+ * §6.5)に sig 鍵が要るため openProject 側(2026-09-13 IV 改訂)。
  */
 export function openMetadataProject(
   flags: CommonFlags,

@@ -125,16 +125,11 @@ import { guardianAddOp, guardianListOp, guardianRemoveOp, guardianWardsOp } from
 import { approveHandoffOp, requestHandoffOp } from "./handoff.ts";
 import {
   type InviteInputRejection,
+  type InviteLinkData,
   type InviteRole,
   parseInviteAcceptInput,
 } from "./invite-link.ts";
-import {
-  type AcceptTarget,
-  inviteAcceptOp,
-  inviteCreateOp,
-  inviteListOp,
-  inviteRevokeOp,
-} from "./invite.ts";
+import { inviteAcceptOp, inviteCreateOp, inviteListOp, inviteRevokeOp } from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
@@ -754,21 +749,16 @@ const inviteCreateConfig = {
 
 const inviteAcceptConfig = {
   server: singleValued("server", "Server URL (defaults to config server)"),
-  project: singleValued(
-    "project",
-    "Project ID (required only when accepting with a raw token; a link carries it)",
-  ),
   "inviter-fingerprint": singleValued(
     "inviter-fingerprint",
     "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
   ),
-  // 招待リンクはトークン生値を内包する = ただの表示可能文字列ではない。
+  // 招待リンクはリンク鍵の種を内包する = ただの表示可能文字列ではない。
   // `Argument.redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
-  // 渡す(剥がすのは既存の境界だけ)
+  // 渡す(剥がすのは既存の境界だけ)。プロジェクト ID はリンクが運ぶ(v2 —
+  // 生トークン経路は廃止)ので --project は持たない
   target: Argument.redacted("target").pipe(
-    Argument.withDescription(
-      "Invite link or token (quote the link so the shell does not interpret it)",
-    ),
+    Argument.withDescription("Invite link (quote the link so the shell does not interpret it)"),
   ),
 };
 
@@ -1884,14 +1874,18 @@ function inviteCreateCommand(
         ),
       );
     }
-    // リンク材料(ヘッド・自分の FP)はチェーン導出 — master 鍵は不要
-    const context = yield* openMetadataProject(flags);
+    // 発行署名(CRYPTO_SPEC §6.5)は招待者のチェーン sig 鍵で作る = master 鍵が要る
+    const context = yield* openProject(flags);
     yield* inviteCreateOp({
       client: context.client,
       verified: context.verified,
       origin: context.origin,
       role: flags.role,
       sessionUserId: context.session.userId,
+      masterKeys: context.masterKeys,
+      // IV2(K5)で `--github` / `/auth/me` の login に結線する
+      expectedGithubLogin: null,
+      inviterLogin: null,
     });
   });
 }
@@ -1899,64 +1893,38 @@ function inviteCreateCommand(
 /** `invite accept` の入力拒否理由 → usage 文言。 */
 function acceptInputRejectionMessage(reason: InviteInputRejection): string {
   if (reason === "unsupported-version") {
-    return "This invite link's format version is not supported (update the maruhi CLI)";
+    return "This invite link's format version is not supported. Ask the inviter to issue a new link with the current maruhi CLI (`maruhi invite create`), or update your CLI if it is older than theirs";
   }
   if (reason === "missing-or-invalid-fragment-params") {
-    return "The invite link's fragment (after #) is incomplete or invalid. Check that the link was copied without truncation (a broken link cannot be accepted without its anchor)";
+    return "The invite link's fragment (after #) is incomplete or invalid. Check that the link was copied without truncation (a broken link cannot be accepted without its issuance statement)";
   }
-  return "Specify an invite link (…/invite#v=1&…) or an invite token (maruhi_inv_…). Quote the link so the shell does not interpret it";
+  return "Specify an invite link (…/invite#v=2&…). Quote the link so the shell does not interpret it";
 }
 
 /**
- * `invite accept` の入力(リンク | トークン + --project)の解決。
+ * `invite accept` の入力(リンク)の解決。
  *
- * 入力は引数層から `Redacted` のまま届く(リンクはトークン生値を内包する)。
+ * 入力は引数層から `Redacted` のまま届く(リンクはリンク鍵の種を内包する)。
  * 構文解釈は invite-link.ts の境界に任せ、ここでは剥がさない。
  */
-function resolveAcceptTarget(
+function resolveAcceptLink(
   rawTarget: Redacted.Redacted<string>,
-  projectFlag: string | undefined,
-): Effect.Effect<AcceptTarget, CliError> {
+): Effect.Effect<InviteLinkData, CliError> {
   const parsed = parseInviteAcceptInput(rawTarget);
   if (parsed.kind === "rejected") {
     return Effect.fail(usageError(acceptInputRejectionMessage(parsed.reason)));
   }
-  if (parsed.kind === "token") {
-    // 受諾署名(CRYPTO_SPEC §6.5)は project_id を署名対象に含むため、リンク
-    // なしの受諾にはプロジェクト ID の帯域外供給が必須(config の
-    // defaultProject へはフォールバックしない — 別プロジェクトへの署名を
-    // 黙って作らない)
-    if (projectFlag === undefined) {
-      return Effect.fail(
-        usageError(
-          "Accepting with a raw token requires --project <project ID> (the acceptance signature binds the project ID — CRYPTO_SPEC §6.5). Not needed when accepting with an invite link",
-        ),
-      );
-    }
-    if (!isProjectId(projectFlag)) {
-      return Effect.fail(usageError("Invalid project ID (64 hex digits)"));
-    }
-    return Effect.succeed({ kind: "token", token: parsed.token, projectId: projectFlag });
-  }
-  if (projectFlag !== undefined && projectFlag !== parsed.link.projectId) {
-    return Effect.fail(
-      usageError(
-        "--project does not match the link's p (project ID). --project is not needed when accepting with a link",
-      ),
-    );
-  }
-  return Effect.succeed({ kind: "link", link: parsed.link });
+  return Effect.succeed(parsed.link);
 }
 
-/** `maruhi invite accept <link|token>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
+/** `maruhi invite accept <link>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
 function inviteAcceptCommand(flags: {
   readonly server?: string | undefined;
-  readonly project?: string | undefined;
   readonly target: Redacted.Redacted<string>;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
-    const target = yield* resolveAcceptTarget(flags.target, flags.project);
+    const link = yield* resolveAcceptLink(flags.target);
     const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
       "--inviter-fingerprint",
       flags.inviterFingerprint,
@@ -1965,7 +1933,7 @@ function inviteAcceptCommand(flags: {
     yield* inviteAcceptOp({
       client: context.client,
       session: context.session,
-      target,
+      link,
       expectInviterFingerprintHex,
       keyGenerate: keyGenerateOp({ session: context.session, client: context.client }),
     });
@@ -3235,11 +3203,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const inviteAccept = Command.make("accept", inviteAcceptConfig, (values) =>
     inviteAcceptCommand({
       server: values.server,
-      project: values.project,
       target: values.target,
       inviterFingerprint: values["inviter-fingerprint"],
     }),
-  ).pipe(Command.withDescription("Accept an invite link or token"));
+  ).pipe(Command.withDescription("Accept an invite link"));
 
   const inviteList = Command.make("list", inviteListConfig, (values) =>
     Effect.gen(function* () {

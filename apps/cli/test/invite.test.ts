@@ -1,14 +1,15 @@
-// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5)の
-// 統合テスト。
+// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 —
+// 2026-09-13 IV 改訂・v2 リンク)の統合テスト。
 //
 // 固定する性質:
-//  1. リンクの組み立て・解釈(§15-3): パラメータ順・r 省略可・壊れたリンクの
-//     生トークン降格禁止
-//  2. create: 発行 + 発行ピン(token_hash / role)の保存 + role=admin は owner のみ
-//  3. accept: アンカーのピン留め(§6.3 (a))→ 儀式(最終語再入力 /
-//     --inviter-fingerprint / エージェント拒否)→ 鍵ガード(生成 3 ガード)→
-//     受諾署名(検証可能)→ 応答突合(p 一致・r 警告)
-//  4. list: 受諾ブロックの §6.5 独立検証・発行ピン突合(不一致 = exit 1)
+//  1. リンクの組み立て・解釈(§15-3): パラメータ順・il 省略可・壊れたリンク /
+//     旧版(v=1)/ 生トークンはすべて拒否(互換経路なし)
+//  2. create: クライアント採番 id + 発行署名(自分のチェーン sig 鍵)+ 発行ピン
+//     (link_pub / role)の保存 + role=admin は owner のみ + 鍵不一致の拒否
+//  3. accept: 発行署名の検証(機械)→ 儀式(最終語再入力 / --inviter-fingerprint /
+//     エージェント拒否)→ 鍵ガード → 共同署名(検証可能)→ 応答突合(p / r は
+//     署名済みなので不一致 = 拒否)→ アンカーのピン留め(受諾成立後のみ)
+//  4. list: 発行署名・受諾ブロックの §6.5 独立検証・発行ピン突合(不一致 = exit 1)
 //  5. revoke: 失効と 410 の文言
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -17,30 +18,33 @@ import { join } from "node:path";
 import {
   decodeHex,
   fingerprintToWords,
-  signInviteAccept,
   SUITE_ID,
   verifyInviteAcceptSignature,
+  verifyInviteIssueSignature,
+  verifyInviteLinkSignature,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
-import { tokenHashHexOf } from "../src/invite.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
 import { buildChain, genesisOp, makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import {
+  acceptanceFixture,
+  flipHex,
+  INVITE_ID,
+  inviteLinkText,
+  issueInviteFixture,
+  type IssuedInviteFixture,
+  LINK_SEED_HEX,
+} from "./support/invite.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
-
-const TOKEN = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
-/** Redacted 版(リンク組み立て・ハッシュ計算など包んだ API へ渡す用)。 */
-const TOKEN_REDACTED = Redacted.make(TOKEN);
-const INVITE_ID = "inv-0001";
 
 let inviter: TestUser;
 let acceptor: TestUser;
 let inviterWords: readonly string[];
-let tokenHashHex: string;
 
 const servers: MockServer[] = [];
 
@@ -52,7 +56,6 @@ beforeAll(async () => {
   const words = await fingerprintToWords(bytes);
   if (!words.ok) throw new Error("inviter fp words");
   inviterWords = words.value;
-  tokenHashHex = await Effect.runPromise(tokenHashHexOf(TOKEN_REDACTED));
 });
 
 afterEach(async () => {
@@ -97,118 +100,194 @@ async function readPins(env: TestEnv, projectId: string): Promise<Record<string,
   return JSON.parse(json) as Record<string, unknown>;
 }
 
-describe("invite link(§15-3)", () => {
+/** 発行 POST の本文(ワイヤ形)。 */
+interface IssueBody {
+  readonly id: string;
+  readonly role: string;
+  readonly linkPubHex: string;
+  readonly headHashHex: string;
+  readonly headSeq: number;
+  readonly issueSignatureHex: string;
+}
+
+/** 受諾 POST の本文(ワイヤ形)。 */
+interface AcceptBody {
+  readonly linkPubHex: string;
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  readonly acceptSignatureHex: string;
+  readonly linkSignatureHex: string;
+}
+
+describe("invite link(§15-3 v2)", () => {
   const PROJECT_ID = "ab".repeat(32);
+  let issued: IssuedInviteFixture;
 
-  function sampleLink(): string {
-    return Redacted.value(
-      buildInviteLink({
-        origin: "https://maruhi.example",
-        token: TOKEN_REDACTED,
-        projectId: PROJECT_ID,
-        headHashHex: "cd".repeat(32),
-        headSeq: 7,
-        inviterUserId: "user-inviter-11",
-        inviterKeyFingerprintHex: "ef".repeat(16),
-        role: "member",
-      }),
-    );
-  }
-
-  it("組み立て → 解釈がラウンドトリップする(パラメータ順は仕様の記載順)", () => {
-    const link = sampleLink();
-    expect(link).toBe(
-      `https://maruhi.example/invite#v=1&t=${TOKEN}&p=${PROJECT_ID}&h=${"cd".repeat(32)}&s=7&iu=user-inviter-11&if=${"ef".repeat(16)}&r=member`,
-    );
-    const parsed = parseInviteAcceptInput(Redacted.make(link));
-    if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
-    // トークンは剥がして突合する: toEqual は Redacted の中身を見ないため
-    // (own プロパティが無く、値の違う 2 つが等価判定される)、包んだまま
-    // 比較すると「どんなトークンでも通る」空の表明になる
-    expect(Redacted.value(parsed.link.token)).toBe(TOKEN);
-    expect({ ...parsed.link, token: undefined }).toEqual({
-      token: undefined,
+  beforeAll(async () => {
+    issued = await issueInviteFixture({
+      inviter,
       projectId: PROJECT_ID,
       headHashHex: "cd".repeat(32),
       headSeq: 7,
-      inviterUserId: "user-inviter-11",
-      inviterKeyFingerprintHex: "ef".repeat(16),
-      role: "member",
+      inviterLogin: "octocat",
     });
   });
 
-  it("r なしのリンクも有効として解釈する(role = null)", () => {
-    const link = sampleLink().replace("&r=member", "");
+  it("組み立て → 解釈がラウンドトリップする(パラメータ順は仕様の記載順)", () => {
+    const link = inviteLinkText("https://maruhi.example", issued);
+    expect(link).toBe(
+      `https://maruhi.example/invite#v=2&i=${INVITE_ID}&k=${LINK_SEED_HEX}&p=${PROJECT_ID}&h=${"cd".repeat(32)}&s=7&iu=${inviter.userId}&ie=${inviter.encPubHex}&is=${inviter.sigPubHex}&r=member&il=octocat&sig=${issued.link.issueSignatureHex}`,
+    );
+    const parsed = parseInviteAcceptInput(Redacted.make(link));
+    if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
+    // 種は剥がして突合する: toEqual は Redacted の中身を見ないため(own
+    // プロパティが無く、値の違う 2 つが等価判定される)、包んだまま比較すると
+    // 「どんな種でも通る」空の表明になる
+    expect(Redacted.value(parsed.link.linkSeedHex)).toBe(LINK_SEED_HEX);
+    expect({ ...parsed.link, linkSeedHex: undefined }).toEqual({
+      ...issued.link,
+      linkSeedHex: undefined,
+    });
+  });
+
+  it("il なしのリンクも有効として解釈する(inviterLogin = null)", () => {
+    const link = inviteLinkText("https://maruhi.example", issued).replace("&il=octocat", "");
     const parsed = parseInviteAcceptInput(Redacted.make(link));
     if (parsed.kind !== "link") throw new Error("expected link");
-    expect(parsed.link.role).toBeNull();
+    expect(parsed.link.inviterLogin).toBeNull();
+    expect(
+      Redacted.value(buildInviteLink({ origin: "https://maruhi.example", link: parsed.link })),
+    ).toBe(link);
   });
 
-  it("生トークンはトークンとして解釈し、それ以外の文字列は拒否する", () => {
-    const asToken = parseInviteAcceptInput(TOKEN_REDACTED);
-    if (asToken.kind !== "token") throw new Error(`expected token, got ${asToken.kind}`);
-    expect(Redacted.value(asToken.token)).toBe(TOKEN);
-    expect(parseInviteAcceptInput(Redacted.make("maruhi_inv_short"))).toEqual({
-      kind: "rejected",
-      reason: "not-a-link-or-token",
-    });
+  it("生トークン・旧版(v=1)・v なしはすべて拒否する(互換経路なし)", () => {
+    expect(
+      parseInviteAcceptInput(
+        Redacted.make("maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01"),
+      ),
+    ).toEqual({ kind: "rejected", reason: "not-a-link" });
+    expect(
+      parseInviteAcceptInput(
+        Redacted.make(
+          `https://maruhi.example/invite#v=1&t=maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01&p=${PROJECT_ID}`,
+        ),
+      ),
+    ).toEqual({ kind: "rejected", reason: "unsupported-version" });
+    expect(
+      parseInviteAcceptInput(Redacted.make(`https://maruhi.example/invite#p=${PROJECT_ID}`)),
+    ).toEqual({ kind: "rejected", reason: "missing-or-invalid-fragment-params" });
   });
 
-  it("必須パラメータの欠落・不正な r は生トークン扱いへ降格せずエラーにする", () => {
+  it("必須パラメータの欠落・形式不正はエラーにする(壊れたリンクを受諾へ滑り込ませない)", () => {
+    const link = inviteLinkText("https://maruhi.example", issued);
     for (const broken of [
-      sampleLink().replace(`&h=${"cd".repeat(32)}`, ""),
-      sampleLink().replace("&s=7", "&s=0"),
-      sampleLink().replace("&r=member", "&r=superuser"),
-      sampleLink().replace(`&if=${"ef".repeat(16)}`, "&if=zz"),
+      link.replace(`&i=${INVITE_ID}`, ""),
+      link.replace(`&k=${LINK_SEED_HEX}`, `&k=${"zz".repeat(32)}`),
+      link.replace(`&h=${"cd".repeat(32)}`, ""),
+      link.replace("&s=7", "&s=0"),
+      link.replace("&r=member", "&r=superuser"),
+      link.replace(`&is=${inviter.sigPubHex}`, "&is=zz"),
+      link.replace("&il=octocat", "&il=-bad-"),
+      link.replace(`&sig=${issued.link.issueSignatureHex}`, "&sig=00"),
     ]) {
       expect(parseInviteAcceptInput(Redacted.make(broken))).toEqual({
         kind: "rejected",
         reason: "missing-or-invalid-fragment-params",
       });
     }
-    expect(parseInviteAcceptInput(Redacted.make(sampleLink().replace("#v=1", "#v=2")))).toEqual({
-      kind: "rejected",
-      reason: "unsupported-version",
-    });
   });
 });
 
 describe("maruhi invite create", () => {
-  it("発行してリンク(検証済みヘッドのアンカー + 自 FP + r)を表示し、発行ピンを保存する", async () => {
+  function issueHandler(
+    projectId: string,
+    record: (body: IssueBody) => void,
+    status = 200,
+  ): MockHandler {
+    return onRequest("POST", `/projects/${projectId}/invites`, (request) => {
+      record(request.body as IssueBody);
+      return status === 200
+        ? { status, json: { expiresAtMs: 1755993600000 } }
+        : { status, json: {} };
+    });
+  }
+
+  it("id を採番し、発行署名つきの発行文を送り、リンク(種 + 発行文)を表示して発行ピンを保存する", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const issued: unknown[] = [];
+    const issued: IssueBody[] = [];
     const server = await start([
       chainHandler(built),
-      onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
-        issued.push(request.body);
-        return {
-          status: 200,
-          json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
-        };
-      }),
+      issueHandler(built.projectId, (b) => issued.push(b)),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
 
     expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
-    expect(issued).toEqual([{ role: "member" }]);
-    const expectedLink = buildInviteLink({
-      origin: server.origin,
-      token: TOKEN_REDACTED,
-      projectId: built.projectId,
-      headHashHex: built.hashes[0] ?? "",
-      headSeq: 1,
-      inviterUserId: inviter.userId,
-      inviterKeyFingerprintHex: inviter.fingerprintHex,
-      role: "member",
+    expect(issued).toHaveLength(1);
+    const body = issued[0];
+    if (body === undefined) throw new Error("no issue body");
+    expect(body.role).toBe("member");
+    expect(body.headSeq).toBe(1);
+    expect(body.headHashHex).toBe(built.hashes[0]);
+    // 発行署名は招待者のチェーン鍵で検証できる(CRYPTO_SPEC §6.5)
+    const verified = await verifyInviteIssueSignature({
+      context: {
+        suite: SUITE_ID,
+        inviteId: body.id,
+        projectId: built.projectId,
+        linkPubHex: body.linkPubHex,
+        headHashHex: body.headHashHex,
+        headSeq: body.headSeq,
+        role: "member",
+        inviterUserId: inviter.userId,
+        inviterEncPubHex: inviter.encPubHex,
+        inviterSigPubHex: inviter.sigPubHex,
+      },
+      signatureHex: body.issueSignatureHex,
     });
-    expect(env.logs).toContain(Redacted.value(expectedLink));
-    // 発行ピン(§6.5 の招待者側対応物): token_hash と role を非機密ローカルへ
+    expect(verified.ok).toBe(true);
+    // サーバーへは種を送らない(公開鍵と発行文だけ)
+    expect(JSON.stringify(body)).not.toContain("k=");
+    expect(Object.keys(body).toSorted()).toEqual([
+      "headHashHex",
+      "headSeq",
+      "id",
+      "issueSignatureHex",
+      "linkPubHex",
+      "role",
+    ]);
+
+    // 表示したリンクは解釈でき、発行文と一致する(種から導出した公開鍵 = 送った link_pub)
+    const shown = env.logs.find((line) => line.startsWith(`${server.origin}/invite#v=2&`));
+    if (shown === undefined) throw new Error("link not shown");
+    const parsed = parseInviteAcceptInput(Redacted.make(shown));
+    if (parsed.kind !== "link") throw new Error("link did not parse");
+    expect(parsed.link.inviteId).toBe(body.id);
+    expect(parsed.link.issueSignatureHex).toBe(body.issueSignatureHex);
+    expect(parsed.link.inviterSigPubHex).toBe(inviter.sigPubHex);
+    expect(parsed.link.inviterLogin).toBeNull();
+    const reissued = await issueInviteFixture({
+      inviter,
+      projectId: built.projectId,
+      headHashHex: body.headHashHex,
+      headSeq: body.headSeq,
+      inviteId: body.id,
+      seedHex: Redacted.value(parsed.link.linkSeedHex),
+    });
+    expect(reissued.linkPubHex).toBe(body.linkPubHex);
+
+    // 発行ピン(§6.5 の招待者側対応物 — SHOULD): link_pub と role を非機密ローカルへ
     const pins = await readPins(env, built.projectId);
     expect(pins["issued"]).toEqual({
-      [INVITE_ID]: { tokenHashHex, role: "member", expiresAtMs: 1755993600000 },
+      [body.id]: {
+        linkPubHex: body.linkPubHex,
+        role: "member",
+        expiresAtMs: 1755993600000,
+        expectedGithubLogin: null,
+      },
     });
+    expect(env.errors.join("\n")).toContain("This link is shown only once");
   });
 
   it("role=admin の発行は owner のみ(admin の実行は通信前に拒否する)", async () => {
@@ -228,13 +307,10 @@ describe("maruhi invite create", () => {
         },
       },
     ]);
-    const issueCalls: unknown[] = [];
+    const issueCalls: IssueBody[] = [];
     const server = await start([
       chainHandler(built),
-      onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
-        issueCalls.push(request.body);
-        return { status: 500, json: {} };
-      }),
+      issueHandler(built.projectId, (b) => issueCalls.push(b), 500),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, admin2);
@@ -245,18 +321,32 @@ describe("maruhi invite create", () => {
     expect(issueCalls).toHaveLength(0);
   });
 
-  it("エージェント環境では発行そのものを拒否する(トークン生値がトランスクリプトへ残る)", async () => {
+  it("手元の master 鍵がチェーン上の自分の鍵と違えば発行しない(検証不能な発行文を作らない)", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const issueCalls: unknown[] = [];
+    // 同じ user_id で別の鍵(別デバイスで生成し直した形)
+    const otherKeys = await makeTestUser(inviter.userId);
+    const issueCalls: IssueBody[] = [];
     const server = await start([
       chainHandler(built),
-      onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
-        issueCalls.push(request.body);
-        return {
-          status: 200,
-          json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
-        };
-      }),
+      issueHandler(built.projectId, (b) => issueCalls.push(b)),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, otherKeys);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "Your master key on this machine does not match your key on the project chain",
+    );
+    expect(issueCalls).toHaveLength(0);
+  });
+
+  it("エージェント環境では発行そのものを拒否する(種がトランスクリプトへ残る)", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const issueCalls: IssueBody[] = [];
+    const server = await start([
+      chainHandler(built),
+      issueHandler(built.projectId, (b) => issueCalls.push(b)),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
@@ -276,16 +366,10 @@ describe("maruhi invite create", () => {
       { stdin: true, stdout: false, stderr: true },
       { stdin: true, stdout: true, stderr: false },
     ]) {
-      const issueCalls: unknown[] = [];
+      const issueCalls: IssueBody[] = [];
       const server = await start([
         chainHandler(built),
-        onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
-          issueCalls.push(request.body);
-          return {
-            status: 200,
-            json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
-          };
-        }),
+        issueHandler(built.projectId, (b) => issueCalls.push(b)),
       ]);
       const env = await makeTestEnv();
       seedSession(env, server.origin, inviter);
@@ -295,7 +379,7 @@ describe("maruhi invite create", () => {
       expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain("stdin, stdout, and stderr must all be terminals");
       expect(issueCalls).toHaveLength(0);
-      expect(env.logs.some((line) => line.includes("maruhi_inv_"))).toBe(false);
+      expect(env.logs.some((line) => line.includes("#v=2&"))).toBe(false);
     }
   });
 
@@ -303,10 +387,7 @@ describe("maruhi invite create", () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
     const server = await start([
       chainHandler(built),
-      onRequest("POST", `/projects/${built.projectId}/invites`, () => ({
-        status: 200,
-        json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
-      })),
+      issueHandler(built.projectId, () => undefined),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
@@ -317,21 +398,26 @@ describe("maruhi invite create", () => {
 
     // リンクは一度しか表示されない: ピン保存の失敗で成立済みの発行を落とさない
     expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain(`#v=1&t=${TOKEN}&`);
+    expect(env.logs.join("\n")).toContain("/invite#v=2&i=");
     expect(env.errors.join("\n")).toContain("could not save the issuance pin");
     // 破損ファイルは上書きされない(検出可能性を保存)
     expect(await readFile(join(env.pinsDir, `${built.projectId}.json`), "utf8")).toBe("{ broken");
   });
 
-  it("429 の 2 種(pending 上限 / レート制限)を区別して表示する", async () => {
+  it("409(id / link_pub 衝突)と 429 の 2 種(pending 上限 / レート制限)を区別して表示する", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    for (const [json, fragment] of [
-      [{ _tag: "InvitePendingLimit", limit: 100 }, "reached the limit (100)"],
-      [{ _tag: "InviteRateLimited", retryAfterSeconds: 1800 }, "about 1800 seconds"],
+    for (const [status, json, fragment] of [
+      [
+        409,
+        { _tag: "InviteConflict", field: "linkPub" },
+        "already has an invite with the same id or link key",
+      ],
+      [429, { _tag: "InvitePendingLimit", limit: 100 }, "reached the limit (100)"],
+      [429, { _tag: "InviteRateLimited", retryAfterSeconds: 1800 }, "about 1800 seconds"],
     ] as const) {
       const server = await start([
         chainHandler(built),
-        onRequest("POST", `/projects/${built.projectId}/invites`, () => ({ status: 429, json })),
+        onRequest("POST", `/projects/${built.projectId}/invites`, () => ({ status, json })),
       ]);
       const env = await makeTestEnv();
       seedSession(env, server.origin, inviter);
@@ -344,97 +430,143 @@ describe("maruhi invite create", () => {
 
 describe("maruhi invite accept", () => {
   const PROJECT_ID = "ab".repeat(32);
+  const HEAD_HASH = "cd".repeat(32);
 
-  function linkFor(role: "reader" | "member" | "admin" | null = "member"): string {
-    const link = Redacted.value(
-      buildInviteLink({
-        origin: "https://maruhi.example",
-        token: TOKEN_REDACTED,
-        projectId: PROJECT_ID,
-        headHashHex: "cd".repeat(32),
-        headSeq: 3,
-        inviterUserId: inviter.userId,
-        inviterKeyFingerprintHex: inviter.fingerprintHex,
-        role: role ?? "member",
-      }),
-    );
-    return role === null ? link.replace("&r=member", "") : link;
+  async function issuedFor(
+    role: "reader" | "member" | "admin" = "member",
+  ): Promise<IssuedInviteFixture> {
+    return issueInviteFixture({
+      inviter,
+      projectId: PROJECT_ID,
+      headHashHex: HEAD_HASH,
+      headSeq: 3,
+      role,
+    });
   }
 
-  function acceptHandler(record: (body: unknown) => void, role = "member"): MockHandler {
+  async function linkFor(role: "reader" | "member" | "admin" = "member"): Promise<string> {
+    return inviteLinkText("https://maruhi.example", await issuedFor(role));
+  }
+
+  function acceptHandler(record: (body: AcceptBody) => void, role = "member"): MockHandler {
     return onRequest("POST", "/invites/accept", (request) => {
-      record(request.body);
+      record(request.body as AcceptBody);
       return { status: 200, json: { id: INVITE_ID, projectId: PROJECT_ID, role } };
     });
   }
 
-  it("儀式(最終語再入力)→ 受諾署名 → 受諾。アンカーをピン留めし、自 FP ワードを表示する", async () => {
-    const bodies: unknown[] = [];
+  /** 受諾 POST 本文の両署名を §6.5 のとおり独立検証する。 */
+  async function verifyBody(body: AcceptBody, linkPubHex: string): Promise<void> {
+    const context = {
+      suite: SUITE_ID,
+      projectId: PROJECT_ID,
+      linkPubHex,
+      inviteeUserId: acceptor.userId,
+      inviteeEncPubHex: body.encPubHex,
+      inviteeSigPubHex: body.sigPubHex,
+    };
+    expect(body.linkPubHex).toBe(linkPubHex);
+    const accept = await verifyInviteAcceptSignature({
+      context,
+      signatureHex: body.acceptSignatureHex,
+    });
+    const link = await verifyInviteLinkSignature({
+      context,
+      linkSignatureHex: body.linkSignatureHex,
+    });
+    expect(accept.ok).toBe(true);
+    expect(link.ok).toBe(true);
+  }
+
+  it("発行署名の検証 → 儀式(最終語再入力)→ 共同署名 → 受諾。アンカーをピン留めし、自 FP ワードを表示する", async () => {
+    const issued = await issuedFor();
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(
+      await runCli(["invite", "accept", inviteLinkText(server.origin, issued)], env.layer),
+    ).toBe(0);
 
-    // 受諾署名は §6.5 のとおり検証可能(project / token hash / 主体 / 宣言鍵に束縛)
+    // 受諾署名・リンク署名は §6.5 のとおり検証可能(project / link_pub / 主体 / 宣言鍵に束縛)。
+    // 種はサーバーへ送らない
     expect(bodies).toHaveLength(1);
-    const body = bodies[0] as {
-      token: string;
-      encPubHex: string;
-      sigPubHex: string;
-      signatureHex: string;
-    };
-    expect(body.token).toBe(TOKEN);
+    const body = bodies[0];
+    if (body === undefined) throw new Error("no accept body");
     expect(body.encPubHex).toBe(acceptor.encPubHex);
     expect(body.sigPubHex).toBe(acceptor.sigPubHex);
-    const verified = await verifyInviteAcceptSignature({
-      context: {
-        suite: SUITE_ID,
-        projectId: PROJECT_ID,
-        inviteTokenHashHex: tokenHashHex,
-        inviteeUserId: acceptor.userId,
-        inviteeEncPubHex: acceptor.encPubHex,
-        inviteeSigPubHex: acceptor.sigPubHex,
-      },
-      signatureHex: body.signatureHex,
-    });
-    expect(verified.ok).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(LINK_SEED_HEX);
+    await verifyBody(body, issued.linkPubHex);
 
-    // アンカー(§6.3 (a))のピン留め(未照合 = verifiedAtSeq null)
+    // アンカー(§6.3 (a))のピン留め(未照合 = verifiedAtSeq null。招待者の sig 鍵も保持)
     const pins = await readPins(env, PROJECT_ID);
     expect(pins["anchor"]).toEqual({
       headSeq: 3,
-      headHashHex: "cd".repeat(32),
+      headHashHex: HEAD_HASH,
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
+      inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
     });
 
     const logs = env.logs.join("\n");
     expect(logs).toContain("Accepted the invite");
-    expect(logs).toContain("Read these 12 words to the inviter out of band");
+    expect(logs).toContain(`  hex:  ${inviter.fingerprintHex}`);
+    expect(logs).toContain("read these 12 words to them out of band");
     expect(logs).toContain(
-      "the link anchor (genesis, head, inviter FP) is machine-checked automatically",
+      "the link anchor (genesis, head, inviter key) is machine-checked automatically",
     );
   });
 
+  it("発行署名が検証できないリンクは儀式の前に拒否する(改竄・ゴースト招待者)", async () => {
+    const issued = await issuedFor();
+    const bodies: AcceptBody[] = [];
+    const server = await start([acceptHandler((body) => bodies.push(body))]);
+    for (const tampered of [
+      // 署名そのものの改竄
+      inviteLinkText(server.origin, {
+        ...issued,
+        link: { ...issued.link, issueSignatureHex: flipHex(issued.link.issueSignatureHex) },
+      }),
+      // 署名対象(role)の改竄
+      inviteLinkText(server.origin, { ...issued, link: { ...issued.link, role: "admin" } }),
+      // 種のすり替え(link_pub が発行文と一致しない)
+      inviteLinkText(server.origin, {
+        ...issued,
+        link: { ...issued.link, linkSeedHex: Redacted.make("d8".repeat(32)) },
+      }),
+    ]) {
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, acceptor);
+      await seedConfig(env, { server: server.origin });
+      env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+      expect(await runCli(["invite", "accept", tampered], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        "issue signature does not verify under the inviter key it names",
+      );
+      expect(env.prompts).toHaveLength(0);
+    }
+    expect(bodies).toHaveLength(0);
+  });
+
   it("儀式の再入力が 3 回一致しなければ受諾しない", async () => {
-    const bodies: unknown[] = [];
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
     env.setPromptResponses(["wrong1", "wrong2", "wrong3"]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Inviter fingerprint confirmation failed");
     expect(bodies).toHaveLength(0);
   });
 
-  it("--inviter-fingerprint はリンク if= と照合し、一致すれば対話なし・不一致なら受諾前に拒否する", async () => {
-    const bodies: unknown[] = [];
+  it("--inviter-fingerprint はリンクの ie/is から導出した FP と照合し、一致すれば対話なし・不一致なら受諾前に拒否する", async () => {
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
@@ -442,7 +574,7 @@ describe("maruhi invite accept", () => {
 
     expect(
       await runCli(
-        ["invite", "accept", linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
+        ["invite", "accept", await linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
         env.layer,
       ),
     ).toBe(0);
@@ -454,25 +586,25 @@ describe("maruhi invite accept", () => {
     await seedConfig(env2, { server: server.origin });
     expect(
       await runCli(
-        ["invite", "accept", linkFor(), "--inviter-fingerprint", "0".repeat(32)],
+        ["invite", "accept", await linkFor(), "--inviter-fingerprint", "0".repeat(32)],
         env2.layer,
       ),
     ).toBe(1);
     expect(env2.errors.join("\n")).toContain(
-      "--inviter-fingerprint does not match the link's inviter fingerprint (if=)",
+      "--inviter-fingerprint does not match the inviter fingerprint derived from the link (ie= / is=)",
     );
     expect(bodies).toHaveLength(1);
   });
 
   it("エージェント環境では --inviter-fingerprint なしの儀式代行を拒否する", async () => {
-    const bodies: unknown[] = [];
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
     env.setAgent({ isAgent: true, name: "test-agent" });
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
       "Refused to run the inviter-fingerprint confirmation ceremony",
     );
@@ -482,7 +614,7 @@ describe("maruhi invite accept", () => {
     env.errors.length = 0;
     expect(
       await runCli(
-        ["invite", "accept", linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
+        ["invite", "accept", await linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
         env.layer,
       ),
     ).toBe(0);
@@ -490,7 +622,7 @@ describe("maruhi invite accept", () => {
   });
 
   it("検証済み指紋帳: 儀式の成功が招待者の指紋を記録し、同じ招待者の次の受諾は yes 確認のみで通る(KF)", async () => {
-    const bodies: unknown[] = [];
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
@@ -498,7 +630,7 @@ describe("maruhi invite accept", () => {
 
     // 1 回目: 儀式(最終語再入力)→ 成功が帳へ記録される
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
     const json = await readFile(env.fingerprintBookPath, "utf8");
     const stored = JSON.parse(json) as {
@@ -514,7 +646,7 @@ describe("maruhi invite accept", () => {
     // 照合の指示 2 行はヒット時は出さない(指示直後に免除を言わない)
     const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(2);
     expect(env.prompts[1]).toContain("Type yes to accept this invite attributed to");
     const secondRunLogs = env.logs.slice(logsBeforeSecondRun).join("\n");
@@ -525,7 +657,7 @@ describe("maruhi invite accept", () => {
     // 3 回目(エージェント環境): 帳のヒットがあっても代行は拒否(フラグ必須 —
     // member add 側と対称の固定)
     env.setAgent({ isAgent: true, name: "test-agent" });
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.prompts).toHaveLength(2);
     expect(env.errors.join("\n")).toContain(
       "Refused to run the inviter-fingerprint confirmation ceremony",
@@ -538,7 +670,7 @@ describe("maruhi invite accept", () => {
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdin: false });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(3);
     expect(env.prompts[2]).toContain("type the last of the 12 words");
     expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
@@ -546,7 +678,8 @@ describe("maruhi invite accept", () => {
   });
 
   it("鍵未生成: 対話確認 → 生成 → リカバリー儀式 → 生成鍵で受諾(§15-3 の連結)", async () => {
-    const bodies: unknown[] = [];
+    const issued = await issuedFor();
+    const bodies: AcceptBody[] = [];
     const server = await start([
       acceptHandler((body) => bodies.push(body)),
       onRequest("GET", "/auth/recovery/status", () => ({
@@ -569,27 +702,19 @@ describe("maruhi invite accept", () => {
       },
     ]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(
+      await runCli(["invite", "accept", inviteLinkText(server.origin, issued)], env.layer),
+    ).toBe(0);
     expect(bodies).toHaveLength(1);
-    const body = bodies[0] as { encPubHex: string; sigPubHex: string; signatureHex: string };
+    const body = bodies[0];
+    if (body === undefined) throw new Error("no accept body");
     // 生成された鍵での自己束縛署名が検証に通る(宣言鍵 = 検証鍵)
-    const verified = await verifyInviteAcceptSignature({
-      context: {
-        suite: SUITE_ID,
-        projectId: PROJECT_ID,
-        inviteTokenHashHex: tokenHashHex,
-        inviteeUserId: acceptor.userId,
-        inviteeEncPubHex: body.encPubHex,
-        inviteeSigPubHex: body.sigPubHex,
-      },
-      signatureHex: body.signatureHex,
-    });
-    expect(verified.ok).toBe(true);
+    await verifyBody(body, issued.linkPubHex);
     expect(env.logs.join("\n")).toContain("Generated your master key");
   });
 
   it("鍵未生成ガード: リカバリー登録済みなら生成せず key recover へ誘導する", async () => {
-    const bodies: unknown[] = [];
+    const bodies: AcceptBody[] = [];
     const server = await start([
       acceptHandler((body) => bodies.push(body)),
       onRequest("GET", "/auth/recovery/status", () => ({
@@ -602,7 +727,7 @@ describe("maruhi invite accept", () => {
     await seedConfig(env, { server: server.origin });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
       "restore it onto this machine with `maruhi key recover` and re-run",
     );
@@ -612,7 +737,7 @@ describe("maruhi invite accept", () => {
   });
 
   it("鍵未生成ガード: エージェント環境では生成しない(受諾自体を拒否して案内)", async () => {
-    const bodies: unknown[] = [];
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedTokenOnly(env, server.origin, acceptor);
@@ -621,7 +746,7 @@ describe("maruhi invite accept", () => {
 
     expect(
       await runCli(
-        ["invite", "accept", linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
+        ["invite", "accept", await linkFor(), "--inviter-fingerprint", inviter.fingerprintHex],
         env.layer,
       ),
     ).toBe(1);
@@ -632,56 +757,62 @@ describe("maruhi invite accept", () => {
     expect(env.keychain.size).toBe(1);
   });
 
-  it("生トークン受諾は --project 必須・対話の了解つき。エージェント環境では拒否する", async () => {
-    const bodies: unknown[] = [];
+  it("生トークン・旧版(v=1)リンクは usage エラー(2)で再発行を案内する(互換経路なし)", async () => {
+    const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
 
-    // --project なし = usage エラー(§6.5 の署名対象に project_id が要る)
-    expect(await runCli(["invite", "accept", TOKEN], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain(
-      "Accepting with a raw token requires --project <project ID>",
-    );
+    expect(
+      await runCli(
+        ["invite", "accept", "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01"],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("Specify an invite link (…/invite#v=2&…)");
 
-    // --project あり + 了解 yes → 受諾(警告つき)
-    env.setPromptResponses(["yes"]);
-    expect(await runCli(["invite", "accept", TOKEN, "--project", PROJECT_ID], env.layer)).toBe(0);
-    expect(bodies).toHaveLength(1);
-    expect(env.errors.join("\n")).toContain("Warning: accepting with a raw token loses");
-
-    // エージェント環境では照合材料がないため拒否
-    const env2 = await makeTestEnv();
-    seedSession(env2, server.origin, acceptor);
-    await seedConfig(env2, { server: server.origin });
-    env2.setAgent({ isAgent: true });
-    expect(await runCli(["invite", "accept", TOKEN, "--project", PROJECT_ID], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("Refused to accept with a raw token");
+    env.errors.length = 0;
+    expect(
+      await runCli(
+        ["invite", "accept", `${server.origin}/invite#v=1&t=maruhi_inv_x&p=${PROJECT_ID}`],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("Ask the inviter to issue a new link");
+    expect(bodies).toHaveLength(0);
+    expect(env.prompts).toHaveLength(0);
   });
 
-  it("410 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化)", async () => {
-    for (const [reason, fragment] of [
-      ["accepted", "the link may have been intercepted"],
-      ["expired", "This invite has expired"],
+  it("404 / 410 / 422 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化、旧行 = 再発行)", async () => {
+    for (const [status, json, fragment] of [
+      [404, { _tag: "InviteNotFound" }, "does not know this invite link's key"],
+      [410, { _tag: "InviteGone", reason: "accepted" }, "the link may have been intercepted"],
+      [410, { _tag: "InviteGone", reason: "expired" }, "This invite has expired"],
+      [
+        410,
+        { _tag: "InviteGone", reason: "unbound" },
+        "issued before the link-bound invite format",
+      ],
+      [422, { _tag: "InviteSignatureInvalid", which: "link" }, "The link signature was rejected"],
+      [
+        422,
+        { _tag: "InviteSignatureInvalid", which: "accept" },
+        "The acceptance signature was rejected",
+      ],
     ] as const) {
-      const server = await start([
-        onRequest("POST", "/invites/accept", () => ({
-          status: 410,
-          json: { _tag: "InviteGone", reason },
-        })),
-      ]);
+      const server = await start([onRequest("POST", "/invites/accept", () => ({ status, json }))]);
       const env = await makeTestEnv();
       seedSession(env, server.origin, acceptor);
       await seedConfig(env, { server: server.origin });
       env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
-      expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+      expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain(fragment);
     }
   });
 
   it("受諾が成立しなければアンカーをピン留めしない(410 でピンファイルを作らない)", async () => {
-    // 受諾前にピン留めすると、失敗する受諾(失効・偽トークン)を含む細工リンクの
+    // 受諾前にピン留めすると、失敗する受諾(失効・偽リンク)を含む細工リンクの
     // 投入だけで既存アンカーを差し替えられる(自己 DoS / 置換)
     const server = await start([
       onRequest("POST", "/invites/accept", () => ({
@@ -694,7 +825,7 @@ describe("maruhi invite accept", () => {
     await seedConfig(env, { server: server.origin });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     await expect(readPins(env, PROJECT_ID)).rejects.toThrow(); // ピンファイル不在
   });
 
@@ -717,7 +848,7 @@ describe("maruhi invite accept", () => {
     );
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect((await readPins(env, PROJECT_ID))["anchor"]).toEqual(verifiedAnchor);
     expect(env.logs.join("\n")).toContain("keeping the existing anchor");
 
@@ -732,12 +863,13 @@ describe("maruhi invite accept", () => {
     );
     env2.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env2.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env2.layer)).toBe(0);
     expect((await readPins(env2, PROJECT_ID))["anchor"]).toEqual({
       headSeq: 3,
-      headHashHex: "cd".repeat(32),
+      headHashHex: HEAD_HASH,
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
+      inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
     });
     // 置換は痕跡を残す(偽リンクによる差し替え = DoS 経路の監査可能性)
@@ -747,7 +879,7 @@ describe("maruhi invite accept", () => {
   });
 
   it("ピンファイル破損時は受諾を成立させたまま警告し、破損ファイルを上書きしない", async () => {
-    // 受諾はサーバー側で成立済み(トークン消費済み)— ピン留め失敗で失敗扱いに
+    // 受諾はサーバー側で成立済み(リンク消費済み)— ピン留め失敗で失敗扱いに
     // すると「再実行」の導線が 410(accepted)へ誘導する誤案内になる
     const server = await start([acceptHandler(() => undefined)]);
     const env = await makeTestEnv();
@@ -757,27 +889,27 @@ describe("maruhi invite accept", () => {
     await writeFile(join(env.pinsDir, `${PROJECT_ID}.json`), "{ broken");
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
-    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("could not pin the invite link anchor");
     expect(await readFile(join(env.pinsDir, `${PROJECT_ID}.json`), "utf8")).toBe("{ broken");
     // 完了報告が警告と矛盾しない: 機械照合の約束を出さず、劣化を案内する
     const logs = env.logs.join("\n");
     expect(logs).not.toContain(
-      "the link anchor (genesis, head, inviter FP) is machine-checked automatically",
+      "the link anchor (genesis, head, inviter key) is machine-checked automatically",
     );
     expect(logs).toContain("the first-sync machine check will not run");
   });
 
-  it("リンク申告 r と応答 role の不一致は警告し、応答 projectId の不一致は拒否する", async () => {
-    // r=admin と申告するリンク、実際の role は member → 警告(受諾は成立)
+  it("署名済みリンクの r / p と応答の不一致は拒否する(サーバーの自己矛盾・行のすり替え)", async () => {
+    // r=admin と署名されたリンク、応答の role は member → 拒否(発行署名と矛盾)
     const server = await start([acceptHandler(() => undefined, "member")]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
-    expect(await runCli(["invite", "accept", linkFor("admin")], env.layer)).toBe(0);
+    expect(await runCli(["invite", "accept", await linkFor("admin")], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "the role declared in the link (admin) does not match the actual role (member)",
+      "The role declared in the signed link (admin) does not match the role the server reports (member)",
     );
 
     // 応答の projectId が署名対象と異なる = サーバー自己矛盾 → 拒否
@@ -791,62 +923,57 @@ describe("maruhi invite accept", () => {
     seedSession(env2, server2.origin, acceptor);
     await seedConfig(env2, { server: server2.origin });
     env2.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
-    expect(await runCli(["invite", "accept", linkFor()], env2.layer)).toBe(1);
+    expect(await runCli(["invite", "accept", await linkFor()], env2.layer)).toBe(1);
     expect(env2.errors.join("\n")).toContain("the server's response contradicts itself");
   });
 });
 
 describe("maruhi invite list / revoke", () => {
-  async function acceptanceBlockFor(projectId: string): Promise<{
-    inviteeUserId: string;
-    inviteeEncPubHex: string;
-    inviteeSigPubHex: string;
-    signatureHex: string;
-    acceptedAtMs: number;
-  }> {
-    const signature = await signInviteAccept({
-      context: {
-        suite: SUITE_ID,
-        projectId,
-        inviteTokenHashHex: tokenHashHex,
-        inviteeUserId: acceptor.userId,
-        inviteeEncPubHex: acceptor.encPubHex,
-        inviteeSigPubHex: acceptor.sigPubHex,
-      },
-      signingKey: acceptor.sigKeyPair.privateKey,
+  async function issuedFor(
+    built: { readonly projectId: string; readonly hashes: readonly string[] },
+    role: "reader" | "member" | "admin" = "member",
+  ): Promise<IssuedInviteFixture> {
+    return issueInviteFixture({
+      inviter,
+      projectId: built.projectId,
+      headHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      headSeq: built.hashes.length,
+      role,
     });
-    if (!signature.ok) throw new Error("acceptance signature failed");
-    return {
-      inviteeUserId: acceptor.userId,
-      inviteeEncPubHex: acceptor.encPubHex,
-      inviteeSigPubHex: acceptor.sigPubHex,
-      signatureHex: signature.value,
-      acceptedAtMs: 1755300000000,
-    };
   }
 
-  function listRow(projectId: string, acceptance: unknown, role = "member"): unknown {
+  function listRow(
+    projectId: string,
+    issued: IssuedInviteFixture | null,
+    acceptance: unknown,
+    role = "member",
+  ): unknown {
     return {
       id: INVITE_ID,
       projectId,
       role,
       status: acceptance === null ? "pending" : "accepted",
       inviterUserId: inviter.userId,
-      tokenHashHex,
+      issuance: issued === null ? null : issued.issuance,
       createdAtMs: 1755200000000,
       expiresAtMs: 1755993600000,
       acceptance,
     };
   }
 
-  it("受諾ブロックを §6.5 独立検証し、受諾鍵の FP ワードを表示する", async () => {
+  it("発行文と受諾ブロックを §6.5 独立検証し、受諾鍵の FP ワードを表示する", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const acceptance = await acceptanceBlockFor(built.projectId);
+    const issued = await issuedFor(built);
+    const acceptance = await acceptanceFixture({
+      projectId: built.projectId,
+      issued,
+      invitee: acceptor,
+    });
     const server = await start([
       chainHandler(built),
       onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
         status: 200,
-        json: { invitations: [listRow(built.projectId, acceptance)] },
+        json: { invitations: [listRow(built.projectId, issued, acceptance)] },
       })),
     ]);
     const env = await makeTestEnv();
@@ -855,56 +982,102 @@ describe("maruhi invite list / revoke", () => {
 
     expect(await runCli(["invite", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain(`accepted: ${acceptor.userId} (signature verified)`);
+    expect(logs).toContain("issuance: signature verified against the inviter's chain key");
+    expect(logs).toContain(
+      `accepted: ${acceptor.userId} (acceptance and link signatures verified)`,
+    );
     expect(logs).toContain(`fp:   ${acceptor.fingerprintHex}`);
-    expect(env.errors.join("\n")).toContain("The token_hash / role cross-check was not performed");
   });
 
-  it("改竄された受諾署名は検証失敗として警告し、exit 1 にする", async () => {
+  it("IV 改訂前の行(発行文なし)は受諾不能として案内し、失敗には数えない", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const acceptance = await acceptanceBlockFor(built.projectId);
-    const tampered = {
-      ...acceptance,
-      // 別 user_id へ付け替え(署名対象の invitee_user_id 束縛が破れる)
-      inviteeUserId: "user-attacker-99",
-    };
     const server = await start([
       chainHandler(built),
       onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
         status: 200,
-        json: { invitations: [listRow(built.projectId, tampered)] },
+        json: { invitations: [listRow(built.projectId, null, null)] },
       })),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
 
-    expect(await runCli(["invite", "list"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("failed verification (CRYPTO_SPEC §6.5)");
+    expect(await runCli(["invite", "list"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("issued before the link-bound invite format");
   });
 
-  it("発行ピンとサーバー申告(role)の不一致を警告し、exit 1 にする", async () => {
+  it("改竄された発行署名・受諾署名・リンク署名は検証失敗として警告し、exit 1 にする", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const acceptance = await acceptanceBlockFor(built.projectId);
+    const issued = await issuedFor(built);
+    const acceptance = await acceptanceFixture({
+      projectId: built.projectId,
+      issued,
+      invitee: acceptor,
+    });
+    for (const [row, fragment] of [
+      // 発行文の role 改竄(発行署名が覆う)
+      [
+        listRow(built.projectId, issued, acceptance, "admin"),
+        "issue signature that does not verify",
+      ],
+      // 別 user_id へ付け替え(両署名の invitee_user_id 束縛が破れる — リンク署名を先に報告)
+      [
+        listRow(built.projectId, issued, { ...acceptance, inviteeUserId: "user-attacker-99" }),
+        "the link signature failed verification",
+      ],
+      // 受諾署名だけの改竄
+      [
+        listRow(built.projectId, issued, {
+          ...acceptance,
+          signatureHex: flipHex(acceptance.signatureHex),
+        }),
+        "the acceptance signature failed verification",
+      ],
+    ] as const) {
+      const server = await start([
+        chainHandler(built),
+        onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+          status: 200,
+          json: { invitations: [row] },
+        })),
+      ]);
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, inviter);
+      await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+      expect(await runCli(["invite", "list"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(fragment);
+    }
+  });
+
+  it("発行ピンとサーバー申告(link_pub)の不一致を警告し、exit 1 にする", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const issued = await issuedFor(built);
     const server = await start([
       chainHandler(built),
       onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
         status: 200,
-        // サーバーが role を admin と偽って申告する
-        json: { invitations: [listRow(built.projectId, acceptance, "admin")] },
+        json: { invitations: [listRow(built.projectId, issued, null)] },
       })),
     ]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // 発行時ピン(role=member)をローカルへ用意
+    // 発行時ピン(別のリンク鍵)をローカルへ用意 — サーバーの行がすり替えられた形
     await mkdir(env.pinsDir, { recursive: true });
     await writeFile(
       join(env.pinsDir, `${built.projectId}.json`),
       JSON.stringify({
         v: 1,
         anchor: null,
-        issued: { [INVITE_ID]: { tokenHashHex, role: "member", expiresAtMs: 1755993600000 } },
+        issued: {
+          [INVITE_ID]: {
+            linkPubHex: "ee".repeat(32),
+            role: "member",
+            expiresAtMs: 1755993600000,
+            expectedGithubLogin: null,
+          },
+        },
       }),
     );
 

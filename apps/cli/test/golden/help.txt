@@ -290,7 +290,7 @@ GLOBAL FLAGS
 
 SUBCOMMANDS
   create    Issue an invite and build the invite link
-  accept    Accept an invite link or token
+  accept    Accept an invite link
   list      List invites, independently verifying acceptance blocks and issuance pins
   revoke    Revoke an invite
 
@@ -312,17 +312,16 @@ GLOBAL FLAGS
 
 $ maruhi invite accept --help
 DESCRIPTION
-  Accept an invite link or token
+  Accept an invite link
 
 USAGE
   maruhi invite accept [flags] <target>
 
 ARGUMENTS
-  target string    Invite link or token (quote the link so the shell does not interpret it)
+  target string    Invite link (quote the link so the shell does not interpret it)
 
 FLAGS
   --server string                 Server URL (defaults to config server)
-  --project string                Project ID (required only when accepting with a raw token; a link carries it)
   --inviter-fingerprint string    Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)
 
 GLOBAL FLAGS

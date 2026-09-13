@@ -4,8 +4,8 @@
 // 固定する性質:
 //  1. add_member 後の初回同期で、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
 //     機械照合し、成功時は verifiedAtSeq を永続化する(以後も検査は継続)
-//  2. ヘッド不包含(巻き戻し・fork 配布)・招待者 FP 不一致(偽造リンク /
-//     偽造チェーン)は硬い証拠として拒否する
+//  2. ヘッド不包含(巻き戻し・fork 配布)・招待者 FP 不一致・招待者 sig 鍵不一致
+//     (偽造リンク / 偽造チェーン)は硬い証拠として拒否する
 //  3. ピンファイルの破損は fail-open(警告 + 検査なしで続行 — 床と同じ線引き)
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -85,6 +85,7 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
       headHashHex: built.hashes[0],
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
+      inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
     });
 
@@ -140,6 +141,46 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not match the chain member at the pinned head");
+  });
+
+  it("IV 改訂前のアンカー(inviterSigPubHex なし)も FP 照合だけで通る", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: addMemberOp(acceptor, "member") },
+    ]);
+    const env = await memberEnv(built);
+    await seedAnchor(env, built.projectId, {
+      headSeq: 1,
+      headHashHex: built.hashes[0],
+      inviterUserId: inviter.userId,
+      inviterKeyFingerprintHex: inviter.fingerprintHex,
+      verifiedAtSeq: null,
+    });
+
+    expect(await runCli(["project", "verify"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("Invite-link anchor check passed");
+  });
+
+  it("招待者 sig 鍵(is=)がピン留めヘッド時点の在籍鍵と一致しないチェーンを拒否する", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: addMemberOp(acceptor, "member") },
+    ]);
+    const env = await memberEnv(built);
+    await seedAnchor(env, built.projectId, {
+      headSeq: 1,
+      headHashHex: built.hashes[0],
+      inviterUserId: inviter.userId,
+      inviterKeyFingerprintHex: inviter.fingerprintHex,
+      // FP は一致するが sig 鍵が別(FP と鍵の両方を照合する — 片方だけの偽装を通さない)
+      inviterSigPubHex: "7b".repeat(32),
+      verifiedAtSeq: null,
+    });
+
+    expect(await runCli(["project", "verify"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "the link's inviter signing key (is=) does not match the chain member's key at the pinned head",
+    );
   });
 
   it("ピンファイルの破損は fail-open(警告 + アンカー検査なしで続行)", async () => {

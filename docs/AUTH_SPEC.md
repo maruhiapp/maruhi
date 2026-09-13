@@ -721,12 +721,12 @@ invitations (
 ### 15-3. 招待リンクの形式(クライアント仕様)
 
 ```
-https://<web-origin>/invite#v=2&k=<link_seed_hex>&p=<project_id>&h=<head_hash_hex>&s=<head_seq>
+https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>&h=<head_hash_hex>&s=<head_seq>
   &iu=<inviter_user_id>&ie=<inviter_enc_pub_hex>&is=<inviter_sig_pub_hex>&r=<role>&il=<inviter_github_login>&sig=<issue_signature_hex>
 ```
 
 - **`v=2`**(2026-09-13 IV 改訂)。`v=1`(`t=` トークン・`if=` FP)は受け付けず、受諾クライアントは「発行者に再発行を依頼」を案内する。**生トークン(リンク以外の入力)による受諾は廃止**(アンカー・発行署名・裏付けを全て失う経路を残さない)
-- **フラグメント(`#` 以降)はサーバーへ送信されない**(不変): `k` はリンク鍵の種(CRYPTO_SPEC §6.5 — 受諾クライアントは `K_priv` を導出してリンク署名を作る。永続化しない)、`p` / `h` / `s` は招待リンクアンカー(CRYPTO_SPEC §6.3 (a))、`iu` / `ie` / `is` は招待者の同一性(FP は `ie` ‖ `is` から導出 — 旧 `if` は廃止)、`r` は付与予定 role、`sig` は **発行署名**(`invite_issue_signed_bytes` — `p / K_pub / h / s / r / iu / ie / is` を覆う。`k` と `il` は覆わない)。受諾クライアントは `sig` を `is` で検証してから他の何にも進まない(失敗 = 受諾しない)
+- **フラグメント(`#` 以降)はサーバーへ送信されない**(不変): `i` は招待 id(クライアント採番の ULID — 発行署名が覆う)、`k` はリンク鍵の種(CRYPTO_SPEC §6.5 — 受諾クライアントは `K_priv` を導出してリンク署名を作る。永続化しない)、`p` / `h` / `s` は招待リンクアンカー(CRYPTO_SPEC §6.3 (a))、`iu` / `ie` / `is` は招待者の同一性(FP は `ie` ‖ `is` から導出 — 旧 `if` は廃止)、`r` は付与予定 role、`sig` は **発行署名**(`invite_issue_signed_bytes` — `i / p / K_pub / h / s / r / iu / ie / is` を覆う。`k` と `il` は覆わない)。受諾クライアントは `sig` を `is` で検証してから他の何にも進まない(失敗 = 受諾しない)
 - **`r` は発行署名に含まれる**ため改竄検出の対象になる(2026-08-15 追補の「表示専用・警告」から格上げ)。付与される role の真実源は招待レコードであり、受諾応答の role と食い違えば受諾クライアントは**エラー**として扱う(行のすり替えかリンクの改竄)
 - **`il` は招待者の GitHub login**(招待者クライアントが `GET /auth/me` の表示用 login から組む。裏付け元 `github-signing-keys` の照合材料 — CRYPTO_SPEC §6.5)。自己申告だが、`is` が `il` の署名鍵一覧に無ければ照合不能として儀式へ戻るだけで、嘘は利得にならない。**受諾クライアントは `il` を永続化しない**(アンカーピンに書かない)。裏付け元が `none` の環境では無視される
 - CLI: `maruhi invite create [--github <login>]`(招待 id の採番 → リンク鍵の生成 → 発行署名 → 発行〔発行文 + 署名を送る〕→ リンクの組み立てと表示 → 発行ピン〔`linkPubHex` / role / 期限 / 宛先 login〕の保存)/ `maruhi invite accept '<link>' [--from <login>] [--inviter-fingerprint <fp>]`(発行署名の検証 → 相互確認〔CRYPTO_SPEC §6.5 充足形〕→ 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカーのピン留め)/ `maruhi member add [<invite-id>] [--github <login>] [--expect-fingerprint <fp>]`(発行ピン照合 → 両署名の再検証 → 充足形の判定 → add_member)/ `maruhi key publish [--gh]`(自分の sig 公開鍵を OpenSSH 行で表示し、`--gh` で `gh ssh-key add --type signing` を呼ぶ)。裏付け元は CLI の非機密設定 `identityBacking`(`github-signing-keys` 既定 / `none`)

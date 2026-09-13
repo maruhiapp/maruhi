@@ -15,18 +15,10 @@ import { join } from "node:path";
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
-import {
-  computeChainEntryHash,
-  decodeHex,
-  fingerprintToWords,
-  signInviteAccept,
-  SUITE_ID,
-} from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { computeChainEntryHash, decodeHex, fingerprintToWords } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { tokenHashHexOf } from "../src/invite.ts";
 import {
   addMemberOp,
   buildChain,
@@ -44,17 +36,22 @@ import {
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import {
+  type AcceptanceFixture,
+  acceptanceFixture,
+  flipHex,
+  INVITE_ID,
+  issueInviteFixture,
+  type IssuedInviteFixture,
+} from "./support/invite.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
-const TOKEN = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
-const INVITE_ID = "inv-0001";
 
 let inviter: TestUser;
 let acceptor: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-let tokenHashHex: string;
 
 const servers: MockServer[] = [];
 
@@ -63,42 +60,38 @@ beforeAll(async () => {
   acceptor = await makeTestUser("user-acceptor-22");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
-  tokenHashHex = await Effect.runPromise(tokenHashHexOf(Redacted.make(TOKEN)));
 });
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-interface Acceptance {
-  readonly inviteeUserId: string;
-  readonly inviteeEncPubHex: string;
-  readonly inviteeSigPubHex: string;
-  readonly signatureHex: string;
-  readonly acceptedAtMs: number;
+type Acceptance = AcceptanceFixture;
+
+/**
+ * プロジェクトごとの発行済み招待(招待者の発行署名つき)。invitationRow が同期的に
+ * 発行文を載せられるよう、acceptanceFor / issuedFor の呼び出しで用意しておく。
+ */
+const issuedByProject = new Map<string, IssuedInviteFixture>();
+
+async function issuedFor(projectId: string): Promise<IssuedInviteFixture> {
+  const cached = issuedByProject.get(projectId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const issued = await issueInviteFixture({
+    inviter,
+    projectId,
+    headHashHex: "cd".repeat(32),
+    headSeq: 1,
+  });
+  issuedByProject.set(projectId, issued);
+  return issued;
 }
 
-/** 受諾者本人の正規の受諾ブロック(§6.5 の自己束縛署名つき)。 */
+/** 受諾者本人の正規の受諾ブロック(§6.5 の受諾署名 + リンク署名つき)。 */
 async function acceptanceFor(projectId: string, invitee: TestUser): Promise<Acceptance> {
-  const signature = await signInviteAccept({
-    context: {
-      suite: SUITE_ID,
-      projectId,
-      inviteTokenHashHex: tokenHashHex,
-      inviteeUserId: invitee.userId,
-      inviteeEncPubHex: invitee.encPubHex,
-      inviteeSigPubHex: invitee.sigPubHex,
-    },
-    signingKey: invitee.sigKeyPair.privateKey,
-  });
-  if (!signature.ok) throw new Error("acceptance signature failed");
-  return {
-    inviteeUserId: invitee.userId,
-    inviteeEncPubHex: invitee.encPubHex,
-    inviteeSigPubHex: invitee.sigPubHex,
-    signatureHex: signature.value,
-    acceptedAtMs: 1755300000000,
-  };
+  return acceptanceFixture({ projectId, issued: await issuedFor(projectId), invitee });
 }
 
 interface AddServerState {
@@ -292,7 +285,7 @@ function invitationRow(
     role: "member",
     status: acceptance === null ? "pending" : "accepted",
     inviterUserId: inviter.userId,
-    tokenHashHex,
+    issuance: issuedByProject.get(projectId)?.issuance ?? null,
     createdAtMs: 1755200000000,
     expiresAtMs: 1755993600000,
     acceptance,
@@ -776,33 +769,52 @@ describe("maruhi member add", () => {
     expect(env2.logs.join("\n")).toContain("already a member with the same key");
   });
 
-  it("受諾署名の検証失敗・発行ピン不一致は追記前に中止する", async () => {
+  it("発行署名・リンク署名・受諾署名の検証失敗、発行ピン不一致、発行文なしは追記前に中止する", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
     const acceptance = await acceptanceFor(built.projectId, acceptor);
 
-    // 改竄された受諾ブロック(鍵すり替え — 署名は宣言鍵で検証されるため落ちる)
-    const state1 = await makeAddServer({
-      built,
-      invitation: invitationRow(built.projectId, {
-        ...acceptance,
-        inviteeEncPubHex: "aa".repeat(32),
-      }),
-      ownDeks: [],
-    });
-    const env1 = await startAddEnv(state1, built.projectId);
-    expect(
-      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env1.layer),
-    ).toBe(1);
-    expect(env1.errors.join("\n")).toContain("The acceptance signature failed verification");
-    expect(state1.appendedEntries).toHaveLength(0);
+    for (const [invitation, fragment] of [
+      // role の改竄(発行署名が覆う — 発行文の検証で落ちる)
+      [
+        invitationRow(built.projectId, acceptance, { role: "admin" }),
+        "issue signature that does not verify",
+      ],
+      // 鍵すり替え(両署名の宣言鍵束縛が破れる — リンク署名を先に報告)
+      [
+        invitationRow(built.projectId, { ...acceptance, inviteeEncPubHex: "aa".repeat(32) }),
+        "the link signature failed verification",
+      ],
+      // 受諾署名だけの改竄
+      [
+        invitationRow(built.projectId, {
+          ...acceptance,
+          signatureHex: flipHex(acceptance.signatureHex),
+        }),
+        "the acceptance signature failed verification",
+      ],
+      // IV 改訂前の行(発行文なし — 互換経路なし)
+      [
+        invitationRow(built.projectId, acceptance, { issuance: null }),
+        "issued before the link-bound invite format",
+      ],
+    ] as const) {
+      const state = await makeAddServer({ built, invitation, ownDeks: [] });
+      const env = await startAddEnv(state, built.projectId);
+      expect(
+        await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+        fragment,
+      ).toBe(1);
+      expect(env.errors.join("\n"), fragment).toContain(fragment);
+      expect(state.appendedEntries, fragment).toHaveLength(0);
+    }
 
-    // 発行ピンと role が食い違うサーバー申告(role 改竄)
+    // 発行ピンと link_pub が食い違うサーバー申告(行のすり替え)
     const state2 = await makeAddServer({
       built,
-      invitation: invitationRow(built.projectId, acceptance, { role: "admin" }),
+      invitation: invitationRow(built.projectId, acceptance),
       ownDeks: [],
     });
     const env2 = await startAddEnv(state2, built.projectId);
@@ -812,7 +824,14 @@ describe("maruhi member add", () => {
       JSON.stringify({
         v: 1,
         anchor: null,
-        issued: { [INVITE_ID]: { tokenHashHex, role: "member", expiresAtMs: 1755993600000 } },
+        issued: {
+          [INVITE_ID]: {
+            linkPubHex: "ee".repeat(32),
+            role: "member",
+            expiresAtMs: 1755993600000,
+            expectedGithubLogin: null,
+          },
+        },
       }),
     );
     expect(
@@ -830,27 +849,15 @@ describe("maruhi member add", () => {
     // 攻撃者が招待者の公開鍵をそのまま宣言して受諾した形(署名は自己束縛なので
     // 招待者の秘密鍵がなければ作れない — ここでは合意規則の早期検査だけを見る
     // ため、招待者自身の鍵で署名した「鍵流用」受諾を作る)
-    const signature = await signInviteAccept({
-      context: {
-        suite: SUITE_ID,
-        projectId: built.projectId,
-        inviteTokenHashHex: tokenHashHex,
-        inviteeUserId: "user-sock-99999",
-        inviteeEncPubHex: inviter.encPubHex,
-        inviteeSigPubHex: inviter.sigPubHex,
-      },
-      signingKey: inviter.sigKeyPair.privateKey,
+    const sock = await acceptanceFixture({
+      projectId: built.projectId,
+      issued: await issuedFor(built.projectId),
+      invitee: inviter,
+      inviteeUserId: "user-sock-99999",
     });
-    if (!signature.ok) throw new Error("signature failed");
     const state = await makeAddServer({
       built,
-      invitation: invitationRow(built.projectId, {
-        inviteeUserId: "user-sock-99999",
-        inviteeEncPubHex: inviter.encPubHex,
-        inviteeSigPubHex: inviter.sigPubHex,
-        signatureHex: signature.value,
-        acceptedAtMs: 1755300000000,
-      }),
+      invitation: invitationRow(built.projectId, sock),
       ownDeks: [],
     });
     const env = await startAddEnv(state, built.projectId);

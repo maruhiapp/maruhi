@@ -5,13 +5,13 @@
 //   ファイル名が兼ねる)・招待者の検証済みヘッド(hash + seq)・招待者の
 //   user_id + 鍵 FP。受諾時にピン留めし、同期時の機械照合(context.ts)が
 //   「ヘッド包含 + 招待者 FP の在籍一致」を検査する(§6.3 (a) / §6.5)。
-// - **発行側ピン**: `invite create` が控える 招待 id → (token_hash, role, 期限)。
+// - **発行側ピン**: `invite create` が控える 招待 id → (link_pub, role, 期限, 宛先 login)。
 //   member add 時に一覧応答(サーバー申告)と突合し、行のすり替え・role の
 //   虚偽申告を機械検出する(受諾側アンカーと対称の防衛)。別デバイスで
 //   member add する場合はピンが無く、儀式の表示照合のみに劣化する(SHOULD)。
 //
-// 内容はハッシュ・連番・user_id・FP・role のみで、平文値・鍵素材・トークン
-// 生値を含まない(ディスクレス不変条件と両立)。置き場は床と同系
+// 内容は公開鍵・ハッシュ・連番・user_id・FP・role・login のみで、平文値・鍵素材・
+// リンク鍵の種を含まない(ディスクレス不変条件と両立)。置き場は床と同系
 // (<config dir>/invites/<projectId>.json)。書き込みは temp + rename の
 // read-merge-write(床と同じ規律)。
 //
@@ -26,6 +26,7 @@ import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
+import { GITHUB_LOGIN } from "./invite-link.ts";
 
 /** 受諾側の招待リンクアンカー(§6.3 (a))。 */
 export interface InviteAnchor {
@@ -34,15 +35,26 @@ export interface InviteAnchor {
   readonly inviterUserId: string;
   /** ユーザー鍵 FP(16 バイト hex 32 文字 — §3)。 */
   readonly inviterKeyFingerprintHex: string;
+  /**
+   * 招待者の sig 公開鍵(リンクの `is=` — IV 改訂。初回同期で FP に加えて
+   * チェーン上の鍵と突合する)。IV 改訂前のピンには無い(null)。
+   */
+  readonly inviterSigPubHex: string | null;
   /** 初回機械照合が成功したときの自ビューの head seq(未照合 = null)。 */
   readonly verifiedAtSeq: number | null;
 }
 
-/** 発行側のピン(招待 id → 発行時に確定した内容)。 */
+/** 発行側のピン(招待 id → 発行時に確定した内容。IV 改訂 — リンク公開鍵 + 宛先 login)。 */
 export interface IssuedInvitePin {
-  readonly tokenHashHex: string;
+  /** リンク公開鍵(hex 64)。サーバー申告の行の link_pub と突合する(SHOULD)。 */
+  readonly linkPubHex: string;
   readonly role: "reader" | "member" | "admin";
   readonly expiresAtMs: number;
+  /**
+   * 宛先の GitHub login(`invite create --github` — 裏付け元の照合先。手元だけに
+   * 置く: サーバー・監査・チェーンには書かない)。未指定 = null。
+   */
+  readonly expectedGithubLogin: string | null;
 }
 
 /** プロジェクト 1 つ分のピンファイル(invites/<projectId>.json)。 */
@@ -119,6 +131,34 @@ function positiveIntField(record: Record<string, unknown>, key: string): number 
   return isPositiveInteger(value) ? value : null;
 }
 
+/**
+ * 省略可能な文字列フィールド: 欠落 / null = null、パターン一致 = 値、それ以外 =
+ * "invalid"(欠落と不正を区別する — 旧形式のピンは欠落、改竄・破損は不正)。
+ */
+function optionalPatternField(
+  record: Record<string, unknown>,
+  key: string,
+  pattern: RegExp,
+): string | null | "invalid" {
+  const raw = record[key];
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  return patternField(record, key, pattern) ?? "invalid";
+}
+
+/** 省略可能な正整数フィールド(欠落 / null = null、不正 = "invalid")。 */
+function optionalPositiveIntField(
+  record: Record<string, unknown>,
+  key: string,
+): number | null | "invalid" {
+  const raw = record[key];
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  return positiveIntField(record, key) ?? "invalid";
+}
+
 function decodeAnchor(value: unknown): InviteAnchor | null {
   if (!isRecord(value)) {
     return null;
@@ -127,31 +167,46 @@ function decodeAnchor(value: unknown): InviteAnchor | null {
   const headHashHex = patternField(value, "headHashHex", HEX_64);
   const inviterUserId = patternField(value, "inviterUserId", /^.{1,1024}$/s);
   const inviterKeyFingerprintHex = patternField(value, "inviterKeyFingerprintHex", HEX_32);
-  const verifiedAtSeq =
-    value["verifiedAtSeq"] === null ? null : positiveIntField(value, "verifiedAtSeq");
+  const verifiedAtSeq = optionalPositiveIntField(value, "verifiedAtSeq");
+  // IV 改訂前のアンカーは inviterSigPubHex を持たない(欠落 / null = null)
+  const inviterSigPubHex = optionalPatternField(value, "inviterSigPubHex", HEX_64);
   if (
     headSeq === null ||
     headHashHex === null ||
     inviterUserId === null ||
     inviterKeyFingerprintHex === null ||
-    (verifiedAtSeq === null && value["verifiedAtSeq"] !== null)
+    verifiedAtSeq === "invalid" ||
+    inviterSigPubHex === "invalid"
   ) {
     return null;
   }
-  return { headSeq, headHashHex, inviterUserId, inviterKeyFingerprintHex, verifiedAtSeq };
+  return {
+    headSeq,
+    headHashHex,
+    inviterUserId,
+    inviterKeyFingerprintHex,
+    inviterSigPubHex,
+    verifiedAtSeq,
+  };
 }
 
 function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   if (!isRecord(value)) {
     return null;
   }
-  const tokenHashHex = patternField(value, "tokenHashHex", HEX_64);
+  const linkPubHex = patternField(value, "linkPubHex", HEX_64);
   const role = ROLES.find((known) => known === value["role"]) ?? null;
   const expiresAtMs = positiveIntField(value, "expiresAtMs");
-  if (tokenHashHex === null || role === null || expiresAtMs === null) {
+  const expectedGithubLogin = optionalPatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
+  if (
+    linkPubHex === null ||
+    role === null ||
+    expiresAtMs === null ||
+    expectedGithubLogin === "invalid"
+  ) {
     return null;
   }
-  return { tokenHashHex, role, expiresAtMs };
+  return { linkPubHex, role, expiresAtMs, expectedGithubLogin };
 }
 
 /** 厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない — 床と同じ)。 */
