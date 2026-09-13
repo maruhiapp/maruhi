@@ -1053,6 +1053,7 @@ member add
 - **署名済みの p / r と応答の不一致はエラー**(旧: role は警告)
 - **アンカー検査**(`context.ts`)は FP に加えて `is` の一致を検査し、旧ピン(`inviterSigPubHex` 無し)は FP のみで通す
 - 発行ピンの真実源移行に伴い、ピン無しは note(拒否しない)
+- **旧形式の発行ピン(`tokenHashHex`)は読み飛ばす**(PR #171 Cursor Bugbot 指摘): 旧発行は受諾不能で突合材料として無価値だが、同じファイルの受諾側アンカーまで破損扱いにすると初回同期の機械照合が fail-open になり以後の書き込みも止まるため。形式不正の全体拒否は据え置き
 
 **K5(CLI — IV2)**: `github-signing-keys.ts`(`GET /users/{login}/ssh_signing_keys` 無認証・ホスト固定・login のみ送信・10 秒タイムアウト。結果は `match / not-registered / no-user / unavailable` の閉じた型で **CliError にしない** = 裏付け元は儀式を省く根拠にしかならない)、`key-publish.ts`(`key publish [--gh]` + 鍵生成直後の `offerGithubRegistration`)、`identityBacking`(`github-signing-keys` 既定 / `none`。誤記は既定へ倒す = 照合が消える方向へ倒さない)、`invite create --github` / `invite accept --from` / `member add --github`。サーバーは `/auth/me` に `providerLogin`(optionalKey — 自己情報のみ)を足し、リンクの `il` の材料にした。裁定:
 - **受諾者側の充足形 4**: 発行署名 OK + `is` ∈ GitHub(`il`).signing_keys → `--from` の一致で無対話、対話は login を名指しする yes。`--from` と `il` の**不一致は拒否**。エージェント環境は `--from` 必須(yes の代行はしない)。非端末は儀式へ戻る(note)

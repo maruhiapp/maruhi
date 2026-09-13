@@ -183,6 +183,40 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     );
   });
 
+  it("IV 改訂前の発行ピン(tokenHashHex)が同居していてもアンカー検査は走り、旧ピンは次の保存で消える", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: addMemberOp(acceptor, "member") },
+    ]);
+    const env = await memberEnv(built);
+    await mkdir(env.pinsDir, { recursive: true });
+    await writeFile(
+      join(env.pinsDir, `${built.projectId}.json`),
+      JSON.stringify({
+        v: 1,
+        anchor: {
+          headSeq: 1,
+          headHashHex: built.hashes[0],
+          inviterUserId: inviter.userId,
+          inviterKeyFingerprintHex: inviter.fingerprintHex,
+          verifiedAtSeq: null,
+        },
+        issued: {
+          "inv-legacy-1": { tokenHashHex: "ab".repeat(32), role: "member", expiresAtMs: 1 },
+        },
+      }),
+    );
+
+    expect(await runCli(["project", "verify"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("Invite-link anchor check passed");
+    expect(env.errors.join("\n")).not.toContain("corrupt");
+    const pins = JSON.parse(
+      await readFile(join(env.pinsDir, `${built.projectId}.json`), "utf8"),
+    ) as { anchor: { verifiedAtSeq: number | null }; issued: Record<string, unknown> };
+    expect(pins.anchor.verifiedAtSeq).toBe(2);
+    expect(pins.issued).toEqual({});
+  });
+
   it("ピンファイルの破損は fail-open(警告 + アンカー検査なしで続行)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },

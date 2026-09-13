@@ -209,16 +209,37 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   return { linkPubHex, role, expiresAtMs, expectedGithubLogin };
 }
 
+/**
+ * IV 改訂前(2026-09-13 より前)の発行ピンか: `tokenHashHex` を持ち `linkPubHex` を
+ * 持たない。旧発行は受諾不能(サーバーが 410 `unbound`)なので突合材料として
+ * 無価値だが、同じファイルの**アンカー**(受諾側の §6.3 (a))まで道連れに破損扱いに
+ * すると、初回同期の機械照合が fail-open になり以後の書き込みも止まる。旧ピンは
+ * 読み飛ばし(次の保存で消える)、形式不正はこれまでどおり全体拒否のままにする。
+ */
+function isLegacyIssuedPin(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value["tokenHashHex"] === "string" &&
+    value["linkPubHex"] === undefined
+  );
+}
+
 /** 厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない — 床と同じ)。 */
-/** issued レコード全体のデコード(1 件でも不正なら全体拒否)。 */
+/** issued レコード全体のデコード(旧形式は読み飛ばし、1 件でも不正なら全体拒否)。 */
 function decodeIssuedRecord(value: unknown): Record<string, IssuedInvitePin> | null {
   if (!isRecord(value)) {
     return null;
   }
   const issued: Record<string, IssuedInvitePin> = {};
   for (const [inviteId, raw] of Object.entries(value)) {
+    if (!INVITE_ID.test(inviteId)) {
+      return null;
+    }
+    if (isLegacyIssuedPin(raw)) {
+      continue;
+    }
     const pin = decodeIssuedPin(raw);
-    if (pin === null || !INVITE_ID.test(inviteId)) {
+    if (pin === null) {
       return null;
     }
     issued[inviteId] = pin;
