@@ -94,6 +94,11 @@ async function vectorChecks(c: Checks): Promise<void> {
 }
 
 async function negativeChecks(c: Checks): Promise<void> {
+  await acceptNegativeChecks(c);
+  await linkNegativeChecks(c);
+}
+
+async function acceptNegativeChecks(c: Checks): Promise<void> {
   for (const negative of vectors.negative) {
     const context = contextOf(negative.context);
     const result = await verifyInviteAcceptSignature({
@@ -114,10 +119,12 @@ async function negativeChecks(c: Checks): Promise<void> {
       `invite-accept-sig negative: ${negative.name}`,
       bytesExpectation &&
         negative.verify_key_hex === negative.context.invitee_sig_pub_hex &&
-        !result.ok &&
-        result.error.kind === "InviteAcceptSignatureInvalid",
+        isKind(result, "InviteAcceptSignatureInvalid"),
     );
   }
+}
+
+async function linkNegativeChecks(c: Checks): Promise<void> {
   for (const negative of vectors.link_negative) {
     const context = contextOf(negative.context);
     const result = await verifyInviteLinkSignature({
@@ -128,16 +135,19 @@ async function negativeChecks(c: Checks): Promise<void> {
       `invite-link-sig negative: ${negative.name}`,
       toHex(buildInviteAcceptSignedBytes(context)) === negative.verify_signed_bytes_hex &&
         negative.verify_key_hex === negative.context.link_pub_hex &&
-        !result.ok &&
-        result.error.kind === "InviteLinkSignatureInvalid",
+        isKind(result, "InviteLinkSignatureInvalid"),
     );
   }
 }
 
-async function invalidInputChecks(c: Checks): Promise<void> {
-  const pair = await generateSigningKeyPair();
-  // hex が大文字・長さ不正 / suite・invitee_user_id が空なら InvalidInput
-  const badContexts: readonly { name: string; context: InviteAcceptSignatureContext }[] = [
+/** 失敗結果の kind の照合(成功は false)。 */
+function isKind(result: { ok: boolean; error?: { kind: string } }, kind: string): boolean {
+  return !result.ok && result.error?.kind === kind;
+}
+
+/** 形式不正の文脈(hex の大文字・長さ不正 / suite・invitee_user_id が空)。 */
+function badAcceptContexts(): readonly { name: string; context: InviteAcceptSignatureContext }[] {
+  return [
     {
       name: "uppercase link pub",
       context: { ...contextOf(base), linkPubHex: base.link_pub_hex.toUpperCase() },
@@ -148,30 +158,28 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
     { name: "empty invitee", context: { ...contextOf(base), inviteeUserId: "" } },
   ];
-  for (const bad of badContexts) {
-    const signed = await signInviteAccept({ context: bad.context, signingKey: pair.privateKey });
-    const linkSigned = await signInviteLink({
-      context: bad.context,
-      linkPrivateKey: pair.privateKey,
-    });
-    const verified = await verifyInviteAcceptSignature({
-      context: bad.context,
-      signatureHex: base.signature_hex,
-    });
-    const linkVerified = await verifyInviteLinkSignature({
-      context: bad.context,
-      linkSignatureHex: base.link_signature_hex,
-    });
+}
+
+/** 4 操作(受諾署名 / リンク署名の sign と verify)がすべて InvalidInput で落ちるか。 */
+async function allInvalidInput(
+  context: InviteAcceptSignatureContext,
+  signingKey: CryptoKey,
+): Promise<boolean> {
+  const results = await Promise.all([
+    signInviteAccept({ context, signingKey }),
+    signInviteLink({ context, linkPrivateKey: signingKey }),
+    verifyInviteAcceptSignature({ context, signatureHex: base.signature_hex }),
+    verifyInviteLinkSignature({ context, linkSignatureHex: base.link_signature_hex }),
+  ]);
+  return results.every((result) => isKind(result, "InvalidInput"));
+}
+
+async function invalidInputChecks(c: Checks): Promise<void> {
+  const pair = await generateSigningKeyPair();
+  for (const bad of badAcceptContexts()) {
     c.push(
       `invite-accept-sig invalid input: ${bad.name}`,
-      !signed.ok &&
-        signed.error.kind === "InvalidInput" &&
-        !linkSigned.ok &&
-        linkSigned.error.kind === "InvalidInput" &&
-        !verified.ok &&
-        verified.error.kind === "InvalidInput" &&
-        !linkVerified.ok &&
-        linkVerified.error.kind === "InvalidInput",
+      await allInvalidInput(bad.context, pair.privateKey),
     );
   }
   // 署名 hex の長さ不正も InvalidInput(64 バイト固定)
@@ -185,10 +193,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
   });
   c.push(
     "invite-accept-sig invalid input: short signature",
-    !shortSignature.ok &&
-      shortSignature.error.kind === "InvalidInput" &&
-      !shortLinkSignature.ok &&
-      shortLinkSignature.error.kind === "InvalidInput",
+    isKind(shortSignature, "InvalidInput") && isKind(shortLinkSignature, "InvalidInput"),
   );
 }
 
