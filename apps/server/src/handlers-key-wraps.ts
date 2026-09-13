@@ -225,6 +225,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
               wrapId: p.wrapId,
               label: params.label ?? null,
               credentialIdHex: params.credentialIdHex,
+              // 公開パラメータ(§13-7 2026-09-13 改訂): 復元は儀式の前に salt を要する
+              prfSaltHex: params.prfSaltHex,
               updatedAtMs: p.updatedAtMs,
             };
           }),

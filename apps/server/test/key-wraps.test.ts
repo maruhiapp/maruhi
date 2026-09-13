@@ -168,6 +168,8 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
         wrapId,
         label: "MacBook Touch ID",
         credentialIdHex: "55".repeat(16),
+        // 公開パラメータ(§13-7 2026-09-13 改訂): 復元クライアントが儀式の前に読む
+        prfSaltHex: "66".repeat(32),
       }),
     ]);
 

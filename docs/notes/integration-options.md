@@ -848,6 +848,14 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 
 **推奨 = ②′**。理由: 規範の変更が最小(AUTH_SPEC §13-7 の列挙に「公開パラメータ credentialIdHex / prfSaltHex」を足すだけ。CRYPTO_SPEC は不変)、承認済みの裁定 F / I の形(選択不要・ブロブ取得は PRF の後・取り消し無料)に戻る、旧サーバーとも共存する。所有者が「今は触らない」なら ③ のまま(動作は正しい)。所有者が「サーバーは触りたくないが (a)(b) は欲しい」なら ④ を CRYPTO_SPEC 改訂案として起草する。
 
+#### 20-7. ②′ の実装録(2026-09-13 — 所有者裁定「②′ で進める。#169 のマージ後に別 PR」)
+
+- **仕様**: AUTH_SPEC §13-7 の status 行に「passkey 行の公開パラメータ `credentialIdHex` / `prfSaltHex` を運ぶ」を追記(CRYPTO_SPEC は不変 — salt は乱数のまま)。`prfSaltHex` はワイヤ上省略可(旧サーバーとの共存)
+- **api-schema**: `KeyWrapStatusSchema.passkeys[].prfSaltHex` を `optionalKey(hexString(32))` で追加(サーバーは常に載せる。optional なのは新 CLI が旧サーバーの応答を読めるようにするため)
+- **サーバー**: status ハンドラで `params.prfSaltHex` を写すだけ(1 行)。テスト `key-wraps.test.ts` の status 断言に `prfSaltHex` を追加
+- **CLI**(`passkey.ts`): 復元を 2 経路に分けた。本線 `recoverCeremonyFirst`(全行に salt がある): 全 credential を `allowCredentials` + `evalByCredential` で渡して儀式 → 応答の credential の行 → その行のラップだけ取得 → 復号。**ブロブ取得は儀式の後**なので取り消しは窓を消費せず、番号入力も無い(承認済みの裁定 F / I の形)。フォールバック `recoverFetchFirst`(salt の無い行がある = 旧サーバー): 20-5 の形(行を選ぶ → 取得 → 儀式)。復号・自己検証・保存は `unwrapAndStore` に共通化。応答の credential が台帳に無い / 取得したラップの credential が行と食い違う場合は fail-closed
+- **テスト**(`passkey.test.ts`): 本線(儀式時点でブロブ未取得・取得は 1 件・番号入力なし・取り消し / 未登録 credential / 違う PRF / 食い違うラップの拒否・儀式後の 429)、フォールバック(番号選択・1 件自動・取り消し・儀式前の 429)、前提の拒否を分けて固定
+- 20-6 の ④(salt の導出)は採らない(暗号仕様の改訂と 2 形の共存を背負わない — 所有者の運用負担で ②′ が軽い)
 #### 20-8. 裁定 A 改訂 1 — 別 UID のローカル利用者と確認コード(2026-09-13、PR #169 の pullfrog レビュー対応)
 
 **指摘**(pullfrog): 裁定 A の脅威モデルは「他の localhost ページ」だけを敵に置いており、`Host` / `Origin` の完全一致はブラウザ発の要求にしか効かない。生ソケットの相手には URL トークンだけが門で、そのトークンはブラウザ起動(`xdg-open` / `open` / `rundll32`)の **argv** に載る = Linux の既定では `/proc/<pid>/cmdline` が全ユーザーに読める。同じマシンの別 UID の利用者が 5 分の窓の間にトークンを拾い、偽の PRF を POST すれば、**登録の経路では被害者の CLI が攻撃者の知る KEK で master 鍵を封印して台帳へ上げる**(耐久性のある裏口。ブロブ取得には本人の認証が要るので即時の漏洩ではないが、後日トークンが盗まれれば passkey 無しで開く)。復元の経路は credential の照合 + AEAD で偽 POST が失敗(DoS 止まり)。`agent.ts` が 0700 ディレクトリで同じ敵を除外している以上、この敵は maruhi の脅威モデルの内側である。
