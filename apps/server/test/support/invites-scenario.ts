@@ -1,32 +1,75 @@
-// 招待 API(AUTH_SPEC §15)統合テストの共有ヘルパ。
+// 招待 API(AUTH_SPEC §15 — IV 改訂)統合テストの共有ヘルパ。
 //
-// 受諾署名(CRYPTO_SPEC §6.5)は @maruhi/crypto の実装で実署名を作る。fixture
-// は data-fixture の setupDataProject(ベースチェーン再生込み)を register 形
+// 発行文(発行署名)・受諾の共同署名(受諾署名 + リンク署名 — CRYPTO_SPEC §6.5)は
+// @maruhi/crypto の実装で実署名を作る。招待者の署名鍵はベクター固定鍵
+// (data-crypto.ts の vectorKeyOf)、リンク鍵は種から導出する。fixture は
+// data-fixture の setupDataProject(ベースチェーン再生込み)を register 形
 // (data-scenario.ts と同じ live binding パターン)で提供する。
 
-import type { InviteAcceptSignatureContext } from "@maruhi/crypto";
+import { ulid } from "@maruhi/core";
+import type {
+  InviteAcceptSignatureContext,
+  InviteIssueContext,
+  InviteLinkKeyPair,
+} from "@maruhi/crypto";
 import {
   computeUserKeyFingerprint,
+  deriveInviteLinkKeyPair,
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
   generateEncryptionKeyPair,
+  generateInviteLinkSeed,
   generateSigningKeyPair,
+  importSigningKeyPair,
   signInviteAccept,
+  signInviteIssue,
+  signInviteLink,
   SUITE_ID,
 } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, expect } from "vitest";
 
 import { BASE, bearer, JSON_HEADERS } from "./auth.ts";
+import { hexBytes, vectorKeyOf } from "./data-crypto.ts";
 import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 
-export const INVITE_TOKEN_PATTERN = /^maruhi_inv_[0-9A-Za-z]{43}$/;
-/** 提示トークン文字列全体の SHA-256(サーバー・CLI と同じハッシュ入力定義)。 */
-export async function tokenHashOf(rawToken: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawToken));
+/** legacy 列 token_hash の値 = SHA-256(link_pub の 32 バイト)の hex(AUTH_SPEC §15-1)。 */
+export async function legacyTokenHashOf(linkPubHex: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", hexBytes(linkPubHex) as BufferSource);
   return encodeHex(new Uint8Array(digest));
+}
+
+/**
+ * ユーザーの署名鍵ペア(発行署名の署名者)。ベクター固定鍵を持つユーザーは
+ * その鍵、持たないユーザー(STRANGER 等 — 認可で落ちる経路の主体)は使い捨ての
+ * 生成鍵(サーバーは発行署名を検証しないので形式が揃えば足りる)。
+ */
+export async function signingKeyPairOf(userId: string) {
+  let vector: ReturnType<typeof vectorKeyOf> | null;
+  try {
+    vector = vectorKeyOf(userId);
+  } catch {
+    vector = null;
+  }
+  if (vector === null) {
+    const enc = await generateEncryptionKeyPair();
+    const sig = await generateSigningKeyPair();
+    return {
+      pair: sig,
+      encPubHex: encodeHex(await exportEncryptionPublicKey(enc.publicKey)),
+      sigPubHex: encodeHex(await exportSigningPublicKey(sig.publicKey)),
+    };
+  }
+  const pair = await importSigningKeyPair({
+    publicKey: hexBytes(vector.sig_pub_hex),
+    privateSeed: hexBytes(vector.sig_sk_seed_hex),
+  });
+  if (!pair.ok) {
+    throw new Error("signing key import failed");
+  }
+  return { pair: pair.value, encPubHex: vector.enc_pub_hex, sigPubHex: vector.sig_pub_hex };
 }
 
 /** 受諾者のテスト鍵ペア(未登録ユーザーの新規生成を模す)。 */
@@ -49,48 +92,96 @@ export async function makeInviteeKeys() {
 
 export type InviteeKeys = Awaited<ReturnType<typeof makeInviteeKeys>>;
 
-/** 受諾署名(CRYPTO_SPEC §6.5)を作る。context の上書きでリンク改竄等を模す。 */
-export async function signAcceptance(
-  keys: InviteeKeys,
-  rawToken: string,
-  inviteeUserId: string,
-  overrides?: Partial<InviteAcceptSignatureContext>,
-): Promise<string> {
-  const context: InviteAcceptSignatureContext = {
+/** 発行の要求 body(§15-2)+ クライアント側の材料(リンク鍵ペア)。 */
+export interface IssuePayload {
+  readonly id: string;
+  readonly role: "reader" | "member" | "admin";
+  readonly linkPubHex: string;
+  readonly headHashHex: string;
+  readonly headSeq: number;
+  readonly issueSignatureHex: string;
+}
+
+export interface IssuedInvite extends IssuePayload {
+  readonly linkKey: InviteLinkKeyPair;
+  readonly expiresAtMs: number;
+}
+
+/** 招待 id の採番 + リンク鍵の生成 + 発行署名(招待者 = actor のベクター鍵)。 */
+export async function makeIssuePayload(
+  fixture: DataFixture,
+  actorUserId: string,
+  role: "reader" | "member" | "admin",
+  overrides?: Partial<InviteIssueContext> & { readonly id?: string },
+): Promise<IssuePayload & { readonly linkKey: InviteLinkKeyPair }> {
+  const linkKey = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
+  if (!linkKey.ok) {
+    throw new Error("link key derivation failed");
+  }
+  const inviter = await signingKeyPairOf(actorUserId);
+  const context: InviteIssueContext = {
     suite: SUITE_ID,
+    inviteId: overrides?.id ?? ulid(),
     projectId,
-    inviteTokenHashHex: await tokenHashOf(rawToken),
-    inviteeUserId,
-    inviteeEncPubHex: keys.encPubHex,
-    inviteeSigPubHex: keys.sigPubHex,
+    linkPubHex: encodeHex(linkKey.value.publicKeyRaw),
+    headHashHex: fixture.head.hashHex,
+    headSeq: fixture.head.seq,
+    role,
+    inviterUserId: actorUserId,
+    inviterEncPubHex: inviter.encPubHex,
+    inviterSigPubHex: inviter.sigPubHex,
     ...overrides,
   };
-  const signed = await signInviteAccept({ context, signingKey: keys.signingKey });
+  const signed = await signInviteIssue({ context, signingKey: inviter.pair.privateKey });
   if (!signed.ok) {
-    throw new Error("acceptance signing failed");
+    throw new Error("issue signing failed");
   }
-  return signed.value;
+  return {
+    id: context.inviteId,
+    role,
+    linkPubHex: context.linkPubHex,
+    headHashHex: context.headHashHex,
+    headSeq: context.headSeq,
+    issueSignatureHex: signed.value,
+    linkKey: linkKey.value,
+  };
+}
+
+/** 発行 body のワイヤ部分だけ(リンク鍵ペアを落とす)。 */
+export function wirePayloadOf(payload: IssuePayload): Record<string, unknown> {
+  return {
+    id: payload.id,
+    role: payload.role,
+    linkPubHex: payload.linkPubHex,
+    headHashHex: payload.headHashHex,
+    headSeq: payload.headSeq,
+    issueSignatureHex: payload.issueSignatureHex,
+  };
 }
 
 export async function issueInvite(
   fixture: DataFixture,
   actorUserId: string,
   role: "reader" | "member" | "admin",
-): Promise<{ id: string; token: string; expiresAtMs: number }> {
-  const response = await issueInviteRequest(fixture, actorUserId, role);
+): Promise<IssuedInvite> {
+  const payload = await makeIssuePayload(fixture, actorUserId, role);
+  const response = await issueInviteRequest(fixture, actorUserId, role, payload);
   expect(response.status).toBe(200);
-  return (await response.json()) as { id: string; token: string; expiresAtMs: number };
+  const body = (await response.json()) as { expiresAtMs: number };
+  return { ...payload, expiresAtMs: body.expiresAtMs };
 }
 
-export function issueInviteRequest(
+export async function issueInviteRequest(
   fixture: DataFixture,
   actorUserId: string,
   role: "reader" | "member" | "admin",
+  payload?: IssuePayload,
 ): Promise<Response> {
+  const body = payload ?? (await makeIssuePayload(fixture, actorUserId, role));
   return SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
     method: "POST",
     headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, actorUserId)) },
-    body: JSON.stringify({ role }),
+    body: JSON.stringify(wirePayloadOf(body)),
   });
 }
 
@@ -105,19 +196,43 @@ export function acceptRequest(
   });
 }
 
+/** 受諾の共同署名(CRYPTO_SPEC §6.5)を作る。context の上書きでリンク改竄等を模す。 */
+export async function signAcceptance(
+  keys: InviteeKeys,
+  issued: { readonly linkPubHex: string; readonly linkKey: InviteLinkKeyPair },
+  inviteeUserId: string,
+  overrides?: Partial<InviteAcceptSignatureContext>,
+): Promise<{ readonly acceptSignatureHex: string; readonly linkSignatureHex: string }> {
+  const context: InviteAcceptSignatureContext = {
+    suite: SUITE_ID,
+    projectId,
+    linkPubHex: issued.linkPubHex,
+    inviteeUserId,
+    inviteeEncPubHex: keys.encPubHex,
+    inviteeSigPubHex: keys.sigPubHex,
+    ...overrides,
+  };
+  const signed = await signInviteAccept({ context, signingKey: keys.signingKey });
+  const linkSigned = await signInviteLink({ context, linkPrivateKey: issued.linkKey.privateKey });
+  if (!signed.ok || !linkSigned.ok) {
+    throw new Error("acceptance signing failed");
+  }
+  return { acceptSignatureHex: signed.value, linkSignatureHex: linkSigned.value };
+}
+
 export async function acceptAs(
   fixture: DataFixture,
   userId: string,
   keys: InviteeKeys,
-  rawToken: string,
+  issued: { readonly linkPubHex: string; readonly linkKey: InviteLinkKeyPair },
   overrides?: Partial<InviteAcceptSignatureContext>,
 ): Promise<Response> {
-  const signatureHex = await signAcceptance(keys, rawToken, userId, overrides);
+  const signatures = await signAcceptance(keys, issued, userId, overrides);
   return acceptRequest(bearer(tokenOf(fixture.tokens, userId)), {
-    token: rawToken,
+    linkPubHex: issued.linkPubHex,
     encPubHex: keys.encPubHex,
     sigPubHex: keys.sigPubHex,
-    signatureHex,
+    ...signatures,
   });
 }
 
@@ -125,12 +240,17 @@ export interface InviteRow {
   readonly id: string;
   readonly project_id: string;
   readonly token_hash: string;
+  readonly link_pub: string | null;
+  readonly head_hash: string | null;
+  readonly head_seq: number | null;
+  readonly issue_signature: string | null;
   readonly role: string;
   readonly status: string;
   readonly invitee_user_id: string | null;
   readonly invitee_enc_pub: string | null;
   readonly invitee_sig_pub: string | null;
   readonly accept_signature: string | null;
+  readonly link_signature: string | null;
   readonly expires_at: number;
   readonly created_at: number;
 }
@@ -163,7 +283,10 @@ export function payloadOf(row: AuditRow): Record<string, unknown> {
   return row.payload === null ? {} : (JSON.parse(row.payload) as Record<string, unknown>);
 }
 
-/** テスト用の招待行の直接シード(受理ポリシー・状態遷移の前提状態を作る)。 */
+/**
+ * テスト用の招待行の直接シード(受理ポリシー・状態遷移の前提状態を作る)。
+ * 発行文(link_pub 等)を持たない = IV 改訂前の行の形(受諾不能 = unbound)。
+ */
 export async function seedInvitation(input: {
   readonly id: string;
   readonly status?: string;

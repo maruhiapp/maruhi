@@ -172,7 +172,16 @@ const acceptanceFixture = {
   inviteeEncPubHex: HEX64,
   inviteeSigPubHex: HEX64,
   signatureHex: SIG,
+  linkSignatureHex: SIG,
   acceptedAtMs: 1_756_000_100_000,
+} as const;
+
+// 発行文(AUTH_SPEC §15-1 — IV): リンク公開鍵・発行時点のヘッド・発行署名(公開値)
+const issuanceFixture = {
+  linkPubHex: HEX64,
+  headHashHex: HEX64,
+  headSeq: 3,
+  issueSignatureHex: SIG,
 } as const;
 
 const pendingInvite = {
@@ -181,7 +190,7 @@ const pendingInvite = {
   role: "member",
   status: "pending",
   inviterUserId: "user_e2e",
-  tokenHashHex: HEX64,
+  issuance: issuanceFixture,
   createdAtMs: 1_756_000_000_000,
   expiresAtMs: FUTURE_MS,
   acceptance: null,
@@ -196,7 +205,7 @@ export const invitationsFixture: InvitationList = {
       role: "reader",
       status: "accepted",
       inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
+      issuance: issuanceFixture,
       createdAtMs: 1_756_000_000_000,
       expiresAtMs: FUTURE_MS,
       acceptance: acceptanceFixture,
@@ -207,7 +216,7 @@ export const invitationsFixture: InvitationList = {
       role: "member",
       status: "completed",
       inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
+      issuance: issuanceFixture,
       createdAtMs: 1_756_000_000_000,
       expiresAtMs: PAST_MS,
       acceptance: acceptanceFixture,

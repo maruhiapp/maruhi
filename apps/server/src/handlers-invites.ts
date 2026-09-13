@@ -1,21 +1,27 @@
-// 招待 API のハンドラ(AUTH_SPEC §15)。
+// 招待 API のハンドラ(AUTH_SPEC §15 — 2026-09-13 IV 改訂)。
 //
 // 認可の流れ:
 //   - 発行 / 一覧 / 失効(プロジェクト配下): トークンスコープ admin(スコープ外
 //     404 — §11-2)→ DO memberRoleFor(非メンバー 404 / チェーン role の取得)→
 //     admin 水準判定(未満 403)。role=admin の招待の発行は owner のみ(§15-2)
-//   - 受諾: 認証済み主体 + 鍵素材条件(§13-2 と同水準 — B1a 裁定)。トークン
-//     保持が対象招待への capability(§15-1)
+//   - 受諾: 認証済み主体 + 鍵素材条件(§13-2 と同水準 — B1a 裁定)。リンク鍵の
+//     保持(= リンク署名を作れること)が対象招待への capability(§15-1)
+//
+// 発行: クライアント採番の id と発行文(リンク公開鍵・検証済みヘッド・発行署名)を
+// 保存する。サーバーは発行署名を検証しない(検証者は招待者自身と受諾者 —
+// 二重の真実源を作らない)。応答は期限のみ — サーバーは招待の秘密を一切
+// 持たず返さない。
 //
 // 受諾の判定順(裁定 — 理由コードごとにテストで固定): Schema 400 → 認証 401 →
-// CSRF / 鍵素材条件 403 → 未知トークン 404 → 使用不能 410 → 署名 422 → CAS
+// CSRF / 鍵素材条件 403 → 未知 link_pub 404 → 使用不能 410(発行文の無い旧行は
+// unbound)→ リンク署名 422(which=link)→ 受諾署名 422(which=accept)→ CAS
 // (敗北は再読みで 410)。
 //
-// トークン生値はこのファイルのローカル変数にのみ存在し、ログ・監査・エラーへ
-// 出ない(§15-1: DB にはハッシュのみ)。
+// リンク鍵の種はサーバーを一度も通らない(ワイヤにあるのは公開鍵と署名だけ)。
 
 import {
   ForbiddenError,
+  InviteConflictError,
   InviteGoneError,
   InviteNotFoundError,
   InvitePendingLimitError,
@@ -28,8 +34,10 @@ import {
   computeUserKeyFingerprint,
   decodeHex,
   encodeHex,
+  type InviteAcceptSignatureContext,
   SUITE_ID,
   verifyInviteAcceptSignature,
+  verifyInviteLinkSignature,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
@@ -38,23 +46,23 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { ensureKeyMaterialAccess } from "./authz.ts";
 import { requireProjectChainAdmin } from "./data-http.ts";
 import { INVITE_TTL_MS, InviteRepo } from "./db.package/index.ts";
-import { randomBase62, sha256Hex, ulid } from "./ids.ts";
-import type { InvitationRecord } from "./invite-domain.ts";
-
-/** 招待トークンのワイヤ形式(api-schema の InviteTokenSchema と対)。 */
-const INVITE_TOKEN_PREFIX = "maruhi_inv_";
+import type { InvitationRecord, InviteIssuance } from "./invite-domain.ts";
 
 /**
  * 使用不能理由の導出(§15-1: 期限切れは expires_at からの導出)。判定順は
- * 状態 → 期限に固定(revoked かつ期限切れは revoked — テストで固定)。
- * pending かつ期限内なら null(使用可能)。
+ * 状態 → 発行文の有無 → 期限に固定(revoked かつ期限切れは revoked — テストで
+ * 固定)。pending かつ期限内で発行文があれば null(使用可能)。
  */
 function goneReasonOf(
   record: InvitationRecord,
   nowMs: number,
-): "accepted" | "completed" | "revoked" | "expired" | null {
+): "accepted" | "completed" | "revoked" | "expired" | "unbound" | null {
   if (record.status !== "pending") {
     return record.status;
+  }
+  if (record.issuance === null) {
+    // IV 改訂前の行(link_pub 無し): 互換経路を作らない裁定により受諾不能
+    return "unbound";
   }
   return record.expiresAtMs <= nowMs ? "expired" : null;
 }
@@ -67,7 +75,7 @@ function toSummary(record: InvitationRecord) {
     role: record.role,
     status: record.status,
     inviterUserId: record.inviterUserId,
-    tokenHashHex: record.tokenHashHex,
+    issuance: record.issuance,
     createdAtMs: record.createdAtMs,
     expiresAtMs: record.expiresAtMs,
     acceptance:
@@ -78,6 +86,7 @@ function toSummary(record: InvitationRecord) {
             inviteeEncPubHex: record.acceptance.inviteeEncPubHex,
             inviteeSigPubHex: record.acceptance.inviteeSigPubHex,
             signatureHex: record.acceptance.acceptSignatureHex,
+            linkSignatureHex: record.acceptance.linkSignatureHex,
             acceptedAtMs: record.acceptance.acceptedAtMs,
           },
   };
@@ -102,6 +111,59 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<stri
     return encodeHex(fingerprint.value);
   });
 
+/**
+ * legacy 列 `token_hash` の値 = lower_hex(SHA-256(link_pub の 32 バイト))
+ * (AUTH_SPEC §15-1 — NOT NULL を追加型マイグレーションで外せないため。参照には
+ * 使わない)。鍵は Schema が形式検査済み。
+ */
+const legacyTokenHashOf = (linkPubHex: string): Effect.Effect<string> =>
+  Effect.promise(async () => {
+    const linkPub = decodeHex(linkPubHex);
+    if (linkPub === null) {
+      throw new Error("schema-validated link pub hex failed to decode");
+    }
+    const digest = await crypto.subtle.digest("SHA-256", linkPub as BufferSource);
+    return encodeHex(new Uint8Array(digest));
+  });
+
+/**
+ * 受諾の両署名の検証(CRYPTO_SPEC §6.5 v2)。signed_bytes の project_id /
+ * link_pub は保存行から、invitee_user_id は呼び出し主体から再構成する(ワイヤ
+ * 申告値から組まない — §15-2)。リンク署名 → 受諾署名の順(判定順の固定)。
+ */
+function verifyAcceptanceSignatures(input: {
+  readonly record: InvitationRecord;
+  readonly issuance: InviteIssuance;
+  readonly inviteeUserId: string;
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  readonly acceptSignatureHex: string;
+  readonly linkSignatureHex: string;
+}): Effect.Effect<void, InviteSignatureInvalidError> {
+  return Effect.gen(function* () {
+    const context: InviteAcceptSignatureContext = {
+      suite: SUITE_ID,
+      projectId: input.record.projectId,
+      linkPubHex: input.issuance.linkPubHex,
+      inviteeUserId: input.inviteeUserId,
+      inviteeEncPubHex: input.encPubHex,
+      inviteeSigPubHex: input.sigPubHex,
+    };
+    const linkVerified = yield* Effect.promise(() =>
+      verifyInviteLinkSignature({ context, linkSignatureHex: input.linkSignatureHex }),
+    );
+    if (!linkVerified.ok) {
+      return yield* Effect.fail(new InviteSignatureInvalidError({ which: "link" }));
+    }
+    const acceptVerified = yield* Effect.promise(() =>
+      verifyInviteAcceptSignature({ context, signatureHex: input.acceptSignatureHex }),
+    );
+    if (!acceptVerified.ok) {
+      return yield* Effect.fail(new InviteSignatureInvalidError({ which: "accept" }));
+    }
+  });
+}
+
 export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers) =>
   handlers
     .handle("issue", ({ params, payload, endpoint }) =>
@@ -111,31 +173,32 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         if (payload.role === "admin" && role !== "owner") {
           return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
         }
-        const rawToken = INVITE_TOKEN_PREFIX + randomBase62();
-        const tokenHashHex = yield* Effect.promise(() => sha256Hex(rawToken));
-        const inviteId = ulid();
         const nowMs = Date.now();
         const invites = yield* InviteRepo;
+        const legacyTokenHashHex = yield* legacyTokenHashOf(payload.linkPubHex);
         const decision = yield* invites.create(
           {
-            id: inviteId,
+            id: payload.id,
             projectId: params.projectId,
-            tokenHashHex,
             role: payload.role,
             inviterUserId: principal.userId,
+            issuance: {
+              linkPubHex: payload.linkPubHex,
+              headHashHex: payload.headHashHex,
+              headSeq: payload.headSeq,
+              issueSignatureHex: payload.issueSignatureHex,
+            },
+            legacyTokenHashHex,
           },
           nowMs,
           auditActorOf(principal),
         );
         switch (decision.kind) {
           case "created":
-            // トークン生値はこの応答で一度だけ返る(§15-1)
-            return {
-              id: inviteId,
-              token: rawToken,
-              role: payload.role,
-              expiresAtMs: nowMs + INVITE_TTL_MS,
-            };
+            // 応答に秘密は無い(§15-1)。id はクライアントが採番済み
+            return { expiresAtMs: nowMs + INVITE_TTL_MS };
+          case "conflict":
+            return yield* Effect.fail(new InviteConflictError({ field: decision.field }));
           case "pending-limit":
             return yield* Effect.fail(new InvitePendingLimitError({ limit: decision.limit }));
           case "rate-limited":
@@ -151,37 +214,25 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         // B1a 裁定: 受諾は鍵宣言クラスの操作(§13-2 と同水準のトークン条件)
         yield* ensureKeyMaterialAccess(principal);
         const invites = yield* InviteRepo;
-        // トークン保持が capability(§15-1)。ハッシュで解決し、生値は保存しない
-        const tokenHashHex = yield* Effect.promise(() => sha256Hex(payload.token));
-        const record = yield* invites.findByTokenHash(tokenHashHex);
+        // リンク鍵の保持が capability(§15-1)。公開鍵で解決する
+        const record = yield* invites.findByLinkPub(payload.linkPubHex);
         if (record === null) {
           return yield* Effect.fail(new InviteNotFoundError());
         }
         const nowMs = Date.now();
         const gone = goneReasonOf(record, nowMs);
-        if (gone !== null) {
-          return yield* Effect.fail(new InviteGoneError({ reason: gone }));
+        if (gone !== null || record.issuance === null) {
+          return yield* Effect.fail(new InviteGoneError({ reason: gone ?? "unbound" }));
         }
-        // §15-2: signed_bytes の project_id / token_hash は保存行から、
-        // invitee_user_id は呼び出し主体から再構成する(ワイヤ申告値から組まない
-        // — 呼び出し主体 = 署名者の要求は署名検証そのものが強制する)。鍵は
-        // Schema の形式検査のみ(真実源は add_member のチェーン合意規則)
-        const verified = yield* Effect.promise(() =>
-          verifyInviteAcceptSignature({
-            context: {
-              suite: SUITE_ID,
-              projectId: record.projectId,
-              inviteTokenHashHex: record.tokenHashHex,
-              inviteeUserId: principal.userId,
-              inviteeEncPubHex: payload.encPubHex,
-              inviteeSigPubHex: payload.sigPubHex,
-            },
-            signatureHex: payload.signatureHex,
-          }),
-        );
-        if (!verified.ok) {
-          return yield* Effect.fail(new InviteSignatureInvalidError());
-        }
+        yield* verifyAcceptanceSignatures({
+          record,
+          issuance: record.issuance,
+          inviteeUserId: principal.userId,
+          encPubHex: payload.encPubHex,
+          sigPubHex: payload.sigPubHex,
+          acceptSignatureHex: payload.acceptSignatureHex,
+          linkSignatureHex: payload.linkSignatureHex,
+        });
         const inviteeKeyFingerprintHex = yield* fingerprintOf(payload.encPubHex, payload.sigPubHex);
         // 単回使用の CAS(pending → accepted — §15-1)。invite.accepted は
         // リポジトリが同一 batch で記録する(AUDIT_SPEC §3.2 / §5.2)
@@ -191,7 +242,8 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
             inviteeUserId: principal.userId,
             inviteeEncPubHex: payload.encPubHex,
             inviteeSigPubHex: payload.sigPubHex,
-            acceptSignatureHex: payload.signatureHex,
+            acceptSignatureHex: payload.acceptSignatureHex,
+            linkSignatureHex: payload.linkSignatureHex,
             inviteeKeyFingerprintHex,
           },
           nowMs,

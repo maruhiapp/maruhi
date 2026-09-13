@@ -107,11 +107,13 @@ export {
   InvitationSummarySchema,
   InviteAcceptanceSchema,
   InviteAcceptResultSchema,
+  InviteIdSchema,
+  InviteIssuanceSchema,
+  InviteIssuePayloadSchema,
   InviteIssueResultSchema,
   InviteRoleSchema,
   invitesGroup,
   InviteStatusSchema,
-  InviteTokenSchema,
 } from "./invites-api.ts";
 export {
   GuardianGroupRegistrationSchema,
@@ -179,6 +181,7 @@ export {
   HandoffConflictError,
   HandoffConflictReasonSchema,
   HandoffNotFoundError,
+  InviteConflictError,
   InviteGoneError,
   InviteGoneReasonSchema,
   InviteNotFoundError,

@@ -32,33 +32,37 @@ import {
   errorTag,
   firstAudit,
   fixture,
-  INVITE_TOKEN_PATTERN,
   inviteAuditRows,
   inviteRow,
   issueInvite,
   issueInviteRequest,
+  legacyTokenHashOf,
+  makeIssuePayload,
   mustRow,
   payloadOf,
   registerInviteScenario,
   seedInvitation,
-  tokenHashOf,
+  wirePayloadOf,
 } from "./support/invites-scenario.ts";
 
 registerInviteScenario();
 
 describe("invite issue", () => {
-  it("owner issues an invite: raw token once, hashed row, audit in same batch", async () => {
+  it("owner issues an invite: issuance statement stored, nothing secret returned, audit in same batch", async () => {
     const before = Date.now();
     const issued = await issueInvite(fixture, OWNER, "member");
-    expect(issued.token).toMatch(INVITE_TOKEN_PATTERN);
     expect(issued.expiresAtMs).toBeGreaterThanOrEqual(before + INVITE_TTL_MS);
 
     const row = mustRow(await inviteRow(issued.id));
     expect(row.status).toBe("pending");
     expect(row.role).toBe("member");
-    // 生値は保存されない: 行にあるのは提示文字列全体の SHA-256 のみ
-    expect(row.token_hash).toBe(await tokenHashOf(issued.token));
-    expect(JSON.stringify(row)).not.toContain(issued.token);
+    // 発行文(公開値)がそのまま保存される。サーバーは検証しない
+    expect(row.link_pub).toBe(issued.linkPubHex);
+    expect(row.head_hash).toBe(issued.headHashHex);
+    expect(row.head_seq).toBe(issued.headSeq);
+    expect(row.issue_signature).toBe(issued.issueSignatureHex);
+    // legacy 列 token_hash は SHA-256(link_pub bytes)(参照には使わない — §15-1)
+    expect(row.token_hash).toBe(await legacyTokenHashOf(issued.linkPubHex));
 
     const audits = await inviteAuditRows();
     expect(audits).toHaveLength(1);
@@ -72,8 +76,38 @@ describe("invite issue", () => {
       inviteId: issued.id,
       role: "member",
     });
-    // トークン生値を監査に写さない
-    expect(String(created.payload)).not.toContain(issued.token);
+    // 発行文・リンク公開鍵を監査に写さない(AUDIT_SPEC §3.2 — payload 不変)
+    expect(String(created.payload)).not.toContain(issued.linkPubHex);
+  });
+
+  it("rejects a reused invite id or link pub with 409 (client-chosen id, UNIQUE link_pub)", async () => {
+    const first = await issueInvite(fixture, OWNER, "member");
+    const sameId = await makeIssuePayload(fixture, OWNER, "member", { id: first.id });
+    const idConflict = await issueInviteRequest(fixture, OWNER, "member", sameId);
+    expect(idConflict.status).toBe(409);
+    expect((await idConflict.json()) as object).toMatchObject({
+      _tag: "InviteConflict",
+      field: "id",
+    });
+    const sameLink = await makeIssuePayload(fixture, OWNER, "member", {
+      linkPubHex: first.linkPubHex,
+    });
+    const linkConflict = await issueInviteRequest(fixture, OWNER, "member", sameLink);
+    expect(linkConflict.status).toBe(409);
+    expect((await linkConflict.json()) as object).toMatchObject({ field: "linkPub" });
+    // 衝突は監査を書かない(受理していない)
+    expect((await inviteAuditRows()).filter((row) => row.event === "invite.created")).toHaveLength(
+      1,
+    );
+  });
+
+  it("rejects the pre-IV issue payload (role only) with 400 — no compatibility path", async () => {
+    const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, OWNER)) },
+      body: JSON.stringify({ role: "member" }),
+    });
+    expect(response.status).toBe(400);
   });
 
   it("requires chain role admin: member/reader 403, non-member 404", async () => {
@@ -82,11 +116,7 @@ describe("invite issue", () => {
       [READER, 403],
       [STRANGER, 404],
     ] as const) {
-      const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-        method: "POST",
-        headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, userId)) },
-        body: JSON.stringify({ role: "member" }),
-      });
+      const response = await issueInviteRequest(fixture, userId, "member");
       expect(response.status).toBe(expected);
     }
   });
@@ -101,21 +131,18 @@ describe("invite issue", () => {
     });
     // admin は member 招待は発行できるが admin 招待は 403
     await issueInvite(fixture, MEMBER, "member");
-    const denied = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      method: "POST",
-      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, MEMBER)) },
-      body: JSON.stringify({ role: "admin" }),
-    });
+    const denied = await issueInviteRequest(fixture, MEMBER, "admin");
     expect(denied.status).toBe(403);
     expect(await errorTag(denied)).toBe("Forbidden");
   });
 
   it("token scope gates issuance: out-of-scope 404, low permission 403", async () => {
+    const payload = wirePayloadOf(await makeIssuePayload(fixture, OWNER, "member"));
     const outOfScope = await cliToken(9001, [{ project: "f".repeat(64), permission: "admin" }]);
     const outResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(outOfScope) },
-      body: JSON.stringify({ role: "member" }),
+      body: JSON.stringify(payload),
     });
     expect(outResponse.status).toBe(404);
 
@@ -123,7 +150,7 @@ describe("invite issue", () => {
     const lowResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(lowPermission) },
-      body: JSON.stringify({ role: "member" }),
+      body: JSON.stringify(payload),
     });
     expect(lowResponse.status).toBe(403);
   });
@@ -132,11 +159,7 @@ describe("invite issue", () => {
     for (let index = 0; index < INVITE_ISSUE_WINDOW_LIMIT; index += 1) {
       await issueInvite(fixture, OWNER, "member");
     }
-    const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      method: "POST",
-      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, OWNER)) },
-      body: JSON.stringify({ role: "member" }),
-    });
+    const response = await issueInviteRequest(fixture, OWNER, "member");
     expect(response.status).toBe(429);
     const body = (await response.json()) as { _tag: string; retryAfterSeconds: number };
     expect(body["_tag"]).toBe("InviteRateLimited");
@@ -163,11 +186,7 @@ describe("invite issue", () => {
         expiresAt: now + INVITE_TTL_MS,
       });
     }
-    const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      method: "POST",
-      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, OWNER)) },
-      body: JSON.stringify({ role: "member" }),
-    });
+    const response = await issueInviteRequest(fixture, OWNER, "member");
     expect(response.status).toBe(429);
     const body = (await response.json()) as { _tag: string; limit: number };
     expect(body["_tag"]).toBe("InvitePendingLimit");
