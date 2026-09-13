@@ -4265,28 +4265,37 @@ def gen_checkpoint_boundary_chains():
 
 
 # ---------------------------------------------------------------------------
-# 3.9 invite-accept-signature.json — §6.5 招待受諾署名(Ed25519 + §2.1 LP)
+# 3.9 invite-accept-signature.json — §6.5 受諾の共同署名(Ed25519 + §2.1 LP。
+#     2026-09-13 IV 改訂で v2 として**再生成** — 旧 token_hash 束縛の形は残さない)
 #
-# signed_bytes = LP(domain, project_id, invite_token_hash_hex,
+# signed_bytes = LP(domain, project_id, link_pub_hex,
 #                   invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)
-#   domain = "<suite>/invite-accept"(suite の束縛はドメイン文字列 — §5.1 と同型)
-#   invite_token_hash_hex = lower_hex(SHA-256(招待トークン 256-bit 乱数))。
-#   トークン生値は署名対象にもサーバー保存にも載せない(AUTH_SPEC §15)
-#   検証鍵は署名対象自身が運ぶ invitee_sig_pub_hex(受諾署名は「この鍵ペアの
-#   保持者がこの招待にこの鍵で参加する意思」の帰属・文脈束縛 — §6.5。検証鍵を
-#   署名対象外から与える形は「宣言鍵と検証鍵の不一致」を許すため作らない)
+#   domain = "<suite>/invite-accept-v2"(suite の束縛はドメイン文字列 — §5.1 と同型。
+#   旧 "<suite>/invite-accept" は invite_token_hash_hex を束縛した — 版上げで構造的に拒否)
+#   link_pub_hex = リンク鍵(招待ごとの Ed25519 鍵ペア — 招待者クライアントが種 k から
+#   導出。種はリンクのフラグメントにのみ載り、サーバーは受け取らない)の公開鍵
+#   同一バイト列に 2 つの署名: accept_signature(受諾者のチェーン sig 鍵 — 検証鍵は
+#   署名対象内の invitee_sig_pub_hex)と link_signature(リンク鍵 — 検証鍵は署名対象内の
+#   link_pub_hex)。どちらも自己束縛(検証鍵を署名対象外から与える形は作らない)
 
 INVITE_ACCEPT_FIELDS_ORDER = [
-    "domain", "project_id", "invite_token_hash_hex",
+    "domain", "project_id", "link_pub_hex",
     "invitee_user_id", "invitee_enc_pub_hex", "invitee_sig_pub_hex",
 ]
 
+# リンク鍵の種(決定論的ダミー。他ベクターの seed と非重複)
+INVITE_LINK_SEED = pat(0xD0, 32)
+OTHER_LINK_SEED = pat(0xD8, 32)
+
+
+def make_link_key(seed: bytes):
+    sk = Ed25519PrivateKey.from_private_bytes(seed)
+    pub = sk.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return {"sk": sk, "seed_hex": seed.hex(), "pub_hex": pub.hex()}
+
 
 def invite_accept_signed_bytes(ctx: dict) -> bytes:
-    return lp_encode([
-        ctx["domain"], ctx["project_id"], ctx["invite_token_hash_hex"],
-        ctx["invitee_user_id"], ctx["invitee_enc_pub_hex"], ctx["invitee_sig_pub_hex"],
-    ])
+    return lp_encode([ctx[key] for key in INVITE_ACCEPT_FIELDS_ORDER])
 
 
 def gen_invite_accept_signature():
@@ -4294,29 +4303,31 @@ def gen_invite_accept_signature():
     # 鍵すり替え・署名者不一致役は chain-entries.json の user-member-0002 と同一鍵
     invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))
     other = make_user(pat(0x30, 32), pat(0x40, 32))  # = chain-entries user-member-0002
-
-    invite_token = pat(0xE0, 32)  # ダミー 256-bit 招待トークン生値(ハッシュ導出の検査用)
-    other_token = pat(0xF4, 32)   # 別招待のトークン(transplant-token 用)
+    link = make_link_key(INVITE_LINK_SEED)
+    other_link = make_link_key(OTHER_LINK_SEED)  # 別招待のリンク鍵(移植・偽造の negative 用)
 
     base_ctx = {
         "suite": "maruhi/v1",
-        "domain": "maruhi/v1/invite-accept",
+        "domain": "maruhi/v1/invite-accept-v2",
         "project_id": "proj-0001",
-        "invite_token_hash_hex": sha256(invite_token).hex(),
+        "link_pub_hex": link["pub_hex"],
         "invitee_user_id": "user-invitee-0004",
         "invitee_enc_pub_hex": invitee["enc_pub_hex"],
         "invitee_sig_pub_hex": invitee["sig_pub_hex"],
     }
     base_signed = invite_accept_signed_bytes(base_ctx)
     base_sig = invitee["sig_sk"].sign(base_signed)
+    base_link_sig = link["sk"].sign(base_signed)
 
-    tampered_sig = bytearray(base_sig)
-    tampered_sig[-1] ^= 0x01
+    def flip_last_bit(sig: bytes) -> bytes:
+        out = bytearray(sig)
+        out[-1] ^= 0x01
+        return bytes(out)
 
-    def negative(name, overrides, note, signature=None):
+    def negative(name, overrides, note, signature=None, key_field="invitee_sig_pub_hex"):
         # overrides を適用した文脈で signed_bytes を再構築し、「元の署名」
         # (signature 指定時はその署名)を検証 → 失敗すべき。検証鍵は常に
-        # 文脈内の invitee_sig_pub_hex(§6.5 の自己束縛)
+        # 文脈内の宣言鍵(受諾署名 = invitee_sig_pub_hex / リンク署名 = link_pub_hex)
         ctx = dict(base_ctx, **overrides)
         return {
             "name": name,
@@ -4324,22 +4335,29 @@ def gen_invite_accept_signature():
             "context": ctx,
             "verify_signed_bytes_hex": invite_accept_signed_bytes(ctx).hex(),
             "signature_hex": (signature if signature is not None else base_sig).hex(),
-            "verify_key_hex": ctx["invitee_sig_pub_hex"],
+            "verify_key_hex": ctx[key_field],
             "must_fail": True,
             "note": note,
         }
+
+    def link_negative(name, overrides, note, signature=None):
+        return negative(
+            name, overrides, note,
+            signature=(signature if signature is not None else base_link_sig),
+            key_field="link_pub_hex",
+        )
 
     negatives = [
         negative(
             "tampered-signature",
             {},
             "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
-            signature=bytes(tampered_sig),
+            signature=flip_last_bit(base_sig),
         ),
         negative(
-            "transplant-token",
-            {"invite_token_hash_hex": sha256(other_token).hex()},
-            "別招待(別トークンハッシュ)への受諾署名の移植は検証に失敗する(単回使用の同一招待上の衝突顕在化 — §6.5 — を署名面で支える)",
+            "transplant-link-pub",
+            {"link_pub_hex": other_link["pub_hex"]},
+            "別招待(別リンク公開鍵)への受諾署名の移植は検証に失敗する(単回使用の同一招待上の衝突顕在化 — §6.5 — を署名面で支える)",
         ),
         negative(
             "transplant-project",
@@ -4354,7 +4372,7 @@ def gen_invite_accept_signature():
         negative(
             "enc-key-mismatch",
             {"invitee_enc_pub_hex": other["enc_pub_hex"]},
-            "enc 公開鍵のすり替えは検証に失敗する(リンク横取りの「静かな鍵すり替え」の署名面の遮断)",
+            "enc 公開鍵のすり替えは検証に失敗する(鍵すり替えの署名面の遮断)",
         ),
         negative(
             "sig-key-mismatch",
@@ -4369,17 +4387,67 @@ def gen_invite_accept_signature():
         ),
         negative(
             "suite-mismatch",
-            {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept"},
+            {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept-v2"},
             "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+        negative(
+            "legacy-domain",
+            {"domain": "maruhi/v1/invite-accept"},
+            "旧ドメイン文字列(v1 = token_hash 束縛)で組んだバイト列では v2 の署名は検証に失敗する(旧形式は構造的に拒否 — AUTH_SPEC §12-10 (2))",
+        ),
+    ]
+
+    link_negatives = [
+        link_negative(
+            "link-tampered-signature",
+            {},
+            "リンク署名の末尾 1 bit 反転は検証に失敗する",
+            signature=flip_last_bit(base_link_sig),
+        ),
+        link_negative(
+            "link-wrong-link-key",
+            {},
+            "別のリンク鍵で作ったリンク署名は検証に失敗する(サーバーが自分のリンク鍵で受諾を偽造する形 — サーバーは正規のリンク秘密鍵を持たない)",
+            signature=other_link["sk"].sign(base_signed),
+        ),
+        link_negative(
+            "link-transplant-link-pub",
+            {"link_pub_hex": other_link["pub_hex"]},
+            "別招待への移植は、検証鍵が署名対象内の link_pub_hex なので検証に失敗する",
+        ),
+        link_negative(
+            "link-enc-key-mismatch",
+            {"invitee_enc_pub_hex": other["enc_pub_hex"]},
+            "受諾者 enc 鍵のすり替えはリンク署名でも落ちる(鍵すり替えを暗号的に不可能にする本体)",
+        ),
+        link_negative(
+            "link-sig-key-mismatch",
+            {"invitee_sig_pub_hex": other["sig_pub_hex"]},
+            "受諾者 sig 鍵のすり替えはリンク署名でも落ちる",
+        ),
+        link_negative(
+            "link-transplant-invitee",
+            {"invitee_user_id": "user-member-0002"},
+            "受諾者 user_id の差し替えはリンク署名でも落ちる",
+        ),
+        link_negative(
+            "link-transplant-project",
+            {"project_id": "proj-0002"},
+            "別プロジェクトへの移植はリンク署名でも落ちる",
+        ),
+        link_negative(
+            "link-suite-mismatch",
+            {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept-v2"},
+            "suite が異なればドメイン文字列が異なり、リンク署名も移植できない",
         ),
     ]
 
     write(
         "invite-accept-signature.json",
         {
-            "description": "CRYPTO_SPEC §6.5: 招待受諾署名(Ed25519)。signed_bytes = LP(\"<suite>/invite-accept\", project_id, invite_token_hash_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)。invite_token_hash_hex = lower_hex(SHA-256(invite_token))。検証鍵は署名対象内の invitee_sig_pub_hex",
+            "description": "CRYPTO_SPEC §6.5(2026-09-13 IV 改訂 — v2): 受諾の共同署名(Ed25519)。signed_bytes = LP(\"<suite>/invite-accept-v2\", project_id, link_pub_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)。同一バイト列に受諾署名(検証鍵 = 署名対象内の invitee_sig_pub_hex)とリンク署名(検証鍵 = 署名対象内の link_pub_hex)の 2 つを付ける。旧 v1(invite_token_hash_hex 束縛)のベクターは残さない",
             "signed_fields_order": INVITE_ACCEPT_FIELDS_ORDER,
-            "binary_encoding": "トークンハッシュ・invitee の enc/sig 公開鍵は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "binary_encoding": "リンク公開鍵・invitee の enc/sig 公開鍵は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
             "invitee": {
                 "user_id": "user-invitee-0004",
                 "enc_seed_hex": pat(0xA4, 32).hex(),
@@ -4395,17 +4463,182 @@ def gen_invite_accept_signature():
                 "sig_pub_hex": other["sig_pub_hex"],
                 "note": "鍵すり替え・署名者不一致の negative 用(chain-entries.json の user-member-0002 と同一のダミー鍵)",
             },
-            "invite_token_hex": invite_token.hex(),
-            "invite_token_note": "ダミー 256-bit 招待トークン生値。invite_token_hash_hex = lower_hex(SHA-256(invite_token)) の導出検査用。実システムでは生値はサーバー保存・署名対象に載らない(AUTH_SPEC §15)",
+            "link_key": {
+                "seed_hex": link["seed_hex"],
+                "pub_hex": link["pub_hex"],
+                "note": "リンク鍵(招待ごとの Ed25519 鍵ペア)。種はリンクのフラグメントにのみ載る(invite-link.json の link_key と同一)。リンク署名の署名者",
+            },
+            "other_link_key": {
+                "seed_hex": other_link["seed_hex"],
+                "pub_hex": other_link["pub_hex"],
+                "note": "別招待のリンク鍵(移植・サーバー偽造の negative 用)",
+            },
             "vectors": [
                 dict(
                     base_ctx,
                     name="basic",
                     signed_bytes_hex=base_signed.hex(),
                     signature_hex=base_sig.hex(),
+                    link_signature_hex=base_link_sig.hex(),
                 ),
             ],
             "negative": negatives,
+            "link_negative": link_negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3.9a invite-link.json — §6.5 リンク鍵の導出・発行署名・OpenSSH 符号化(IV)
+#
+# invite_issue_signed_bytes = LP("<suite>/invite-issue",
+#                                invite_id, project_id, link_pub_hex,
+#                                head_hash_hex, head_seq, role,
+#                                inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)
+#   検証鍵は署名対象内の inviter_sig_pub_hex(自己束縛)。招待者・ヘッドは
+#   chain-entries.json の正規チェーン(owner = user-owner-0001、seq 12)を参照する
+#   (value-signature 等と同じ cross-file の先例)
+# OpenSSH 公開鍵行(裏付け元 = GitHub の SSH 署名鍵一覧との相互運用):
+#   "ssh-ed25519 " + base64(uint32-BE len ‖ "ssh-ed25519" ‖ uint32-BE len ‖ 32 バイト鍵)
+#   (RFC 4253 §6.6 / RFC 8709)。SSH ワイヤ形式の長さプレフィックスは §2.1 の LP と
+#   同じ uint32-BE(バイト列をそのまま載せる)
+
+INVITE_ISSUE_FIELDS_ORDER = [
+    "domain", "invite_id", "project_id", "link_pub_hex", "head_hash_hex", "head_seq", "role",
+    "inviter_user_id", "inviter_enc_pub_hex", "inviter_sig_pub_hex",
+]
+
+
+def invite_issue_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([ctx[key] for key in INVITE_ISSUE_FIELDS_ORDER])
+
+
+def openssh_ed25519_line(pub: bytes, comment: str | None = None) -> str:
+    import base64 as _b64
+    blob = lp_encode([b"ssh-ed25519", pub])
+    line = "ssh-ed25519 " + _b64.b64encode(blob).decode("ascii")
+    return line if comment is None else f"{line} {comment}"
+
+
+def gen_invite_link():
+    with open(os.path.join(OUT_DIR, "chain-entries.json"), encoding="utf-8") as fh:
+        chain = json.load(fh)
+    owner_keys = chain["keys"]["user-owner-0001"]
+    inviter = make_user(bytes.fromhex(owner_keys["enc_sk_seed_hex"]), bytes.fromhex(owner_keys["sig_sk_seed_hex"]))
+    assert inviter["sig_pub_hex"] == owner_keys["sig_pub_hex"]
+    member = make_user(pat(0x30, 32), pat(0x40, 32))  # user-member-0002(鍵差し替え・署名者不一致役)
+    head = chain["entries"][-1]
+    link = make_link_key(INVITE_LINK_SEED)
+    other_link = make_link_key(OTHER_LINK_SEED)
+    invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))  # invite-accept-signature.json の受諾者
+
+    base_ctx = {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/invite-issue",
+        "invite_id": "invite-0001",
+        "project_id": "proj-0001",
+        "link_pub_hex": link["pub_hex"],
+        "head_hash_hex": head["entry_hash_hex"],
+        "head_seq": head["seq"],
+        "role": "member",
+        "inviter_user_id": "user-owner-0001",
+        "inviter_enc_pub_hex": inviter["enc_pub_hex"],
+        "inviter_sig_pub_hex": inviter["sig_pub_hex"],
+    }
+    base_signed = invite_issue_signed_bytes(base_ctx)
+    base_sig = inviter["sig_sk"].sign(base_signed)
+    tampered = bytearray(base_sig)
+    tampered[-1] ^= 0x01
+
+    def negative(name, overrides, note, signature=None):
+        ctx = dict(base_ctx, **overrides)
+        return {
+            "name": name,
+            "base": "basic",
+            "context": ctx,
+            "verify_signed_bytes_hex": invite_issue_signed_bytes(ctx).hex(),
+            "signature_hex": (signature if signature is not None else base_sig).hex(),
+            "verify_key_hex": ctx["inviter_sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        negative("tampered-signature", {}, "署名バイトの末尾 1 bit 反転は検証に失敗する", signature=bytes(tampered)),
+        negative("transplant-invite-id", {"invite_id": "invite-0002"}, "別の招待 id への移植は検証に失敗する(サーバーが発行文を別行へ移植できない)"),
+        negative("transplant-project", {"project_id": "proj-0002"}, "別プロジェクトへの移植は検証に失敗する"),
+        negative("transplant-link-pub", {"link_pub_hex": other_link["pub_hex"]}, "別のリンク公開鍵への付け替えは検証に失敗する(行の link_pub のすり替え検出)"),
+        negative("head-hash-swap", {"head_hash_hex": chain["entries"][-2]["entry_hash_hex"]}, "アンカーのヘッドハッシュ差し替えは検証に失敗する(リンク経路上の改竄検出 — §6.3 (a))"),
+        negative("head-seq-mismatch", {"head_seq": head["seq"] - 1}, "ヘッド seq の差し替えは検証に失敗する(hash と seq の両方が署名対象)"),
+        negative("role-relabel", {"role": "admin"}, "付与予定 role の差し替えは検証に失敗する(r は表示専用から署名対象へ格上げ)"),
+        negative("inviter-enc-key-mismatch", {"inviter_enc_pub_hex": member["enc_pub_hex"]}, "招待者 enc 鍵の差し替えは検証に失敗する(FP は ie‖is から導出される)"),
+        negative("inviter-sig-key-mismatch", {"inviter_sig_pub_hex": member["sig_pub_hex"]}, "招待者 sig 鍵の差し替えは検証に失敗する(検証鍵は署名対象内の宣言鍵 — ゴースト追加者は招待者名義の署名を作れない)"),
+        negative("transplant-inviter", {"inviter_user_id": "user-member-0002"}, "招待者 user_id の付け替えは同一鍵でも検証に失敗する"),
+        negative("wrong-signer-key", {}, "inviter_sig_pub 以外の鍵で作った署名は検証に失敗する(署名者不一致)", signature=member["sig_sk"].sign(base_signed)),
+        negative("suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-issue"}, "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"),
+    ]
+
+    invitee_pub = bytes.fromhex(invitee["sig_pub_hex"])
+    inviter_pub = bytes.fromhex(inviter["sig_pub_hex"])
+    import base64 as _b64
+    good_blob_b64 = _b64.b64encode(lp_encode([b"ssh-ed25519", invitee_pub])).decode("ascii")
+    rsa_like_blob = _b64.b64encode(lp_encode([b"ssh-rsa", pat(0x00, 3), pat(0x01, 64)])).decode("ascii")
+    sk_blob = _b64.b64encode(lp_encode([b"sk-ssh-ed25519@openssh.com", invitee_pub, b"ssh:"])).decode("ascii")
+    short_blob = _b64.b64encode(lp_encode([b"ssh-ed25519", invitee_pub[:31]])).decode("ascii")
+    type_mismatch_blob = _b64.b64encode(lp_encode([b"ssh-rsa", invitee_pub])).decode("ascii")
+    trailing_blob = _b64.b64encode(lp_encode([b"ssh-ed25519", invitee_pub]) + b"\x00").decode("ascii")
+
+    openssh = {
+        "note": "OpenSSH 公開鍵行の符号化と解析(GitHub の ssh_signing_keys 応答の key フィールドと同形)。解析は ssh-ed25519 のみ受理し、32 バイト鍵をバイト一致で返す",
+        "encode": [
+            {"name": "invitee-sig-key", "public_key_hex": invitee["sig_pub_hex"], "expected_line": openssh_ed25519_line(invitee_pub)},
+            {"name": "inviter-sig-key", "public_key_hex": inviter["sig_pub_hex"], "expected_line": openssh_ed25519_line(inviter_pub)},
+        ],
+        "parse": [
+            {"name": "bare-line", "line": openssh_ed25519_line(invitee_pub), "expected_public_key_hex": invitee["sig_pub_hex"]},
+            {"name": "with-comment", "line": openssh_ed25519_line(invitee_pub, "maruhi 27b7f9a4"), "expected_public_key_hex": invitee["sig_pub_hex"]},
+            {"name": "with-multiword-comment", "line": openssh_ed25519_line(invitee_pub, "bob laptop key"), "expected_public_key_hex": invitee["sig_pub_hex"]},
+            {"name": "trailing-newline", "line": openssh_ed25519_line(invitee_pub) + "\n", "expected_public_key_hex": invitee["sig_pub_hex"]},
+        ],
+        "parse_negative": [
+            {"name": "rsa-key", "line": "ssh-rsa " + rsa_like_blob, "note": "種別が ssh-ed25519 でない行は受理しない"},
+            {"name": "security-key-ed25519", "line": "sk-ssh-ed25519@openssh.com " + sk_blob, "note": "FIDO の sk-ssh-ed25519 は別種別(鍵の後に application が続く)— 受理しない"},
+            {"name": "uppercase-type", "line": "SSH-ED25519 " + good_blob_b64, "note": "種別文字列は大文字小文字を区別する"},
+            {"name": "short-key", "line": "ssh-ed25519 " + short_blob, "note": "鍵長 31 バイトは拒否"},
+            {"name": "blob-type-mismatch", "line": "ssh-ed25519 " + type_mismatch_blob, "note": "外側の種別と blob 内の種別文字列が食い違う行は拒否"},
+            {"name": "trailing-bytes", "line": "ssh-ed25519 " + trailing_blob, "note": "blob の末尾に余分なバイトがある行は拒否"},
+            {"name": "corrupt-base64", "line": "ssh-ed25519 " + good_blob_b64[:-2] + "!!", "note": "base64 として不正な行は拒否"},
+            {"name": "missing-blob", "line": "ssh-ed25519", "note": "blob の無い行は拒否"},
+            {"name": "empty-line", "line": "", "note": "空行は拒否"},
+        ],
+    }
+
+    write(
+        "invite-link.json",
+        {
+            "description": "CRYPTO_SPEC §6.5(2026-09-13 IV): リンク鍵の種からの導出、発行文と発行署名(Ed25519 + §2.1 LP)、OpenSSH 公開鍵行の符号化・解析。招待者・ヘッドは chain-entries.json の正規チェーン(user-owner-0001・seq 12)を参照する",
+            "signed_fields_order": INVITE_ISSUE_FIELDS_ORDER,
+            "binary_encoding": "リンク公開鍵・ヘッドハッシュ・招待者の enc/sig 公開鍵は hex 小文字文字列、head_seq は 10 進文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "link_key": {
+                "seed_hex": link["seed_hex"],
+                "pub_hex": link["pub_hex"],
+                "note": "種 k(32 バイト乱数)→ Ed25519 鍵ペア(RFC 8032 の seed としてそのまま用いる)。pub_hex は導出の期待値",
+            },
+            "other_link_key": {"seed_hex": other_link["seed_hex"], "pub_hex": other_link["pub_hex"]},
+            "inviter": {
+                "user_id": "user-owner-0001",
+                "enc_pub_hex": inviter["enc_pub_hex"],
+                "sig_pub_hex": inviter["sig_pub_hex"],
+                "key_fingerprint_hex": inviter["fp_hex"],
+                "note": "chain-entries.json の owner と同一鍵(seed は同ファイル参照)",
+            },
+            "issue": {
+                "vectors": [
+                    dict(base_ctx, name="basic", signed_bytes_hex=base_signed.hex(), signature_hex=base_sig.hex()),
+                ],
+                "negative": negatives,
+            },
+            "openssh": openssh,
         },
     )
 
@@ -4908,5 +5141,6 @@ if __name__ == "__main__":
     gen_head_attestation()  # 同上(chain-entries.json を参照。§6.6)
     gen_audit_head()  # AUDIT_SPEC §5.1(単独 — 他ファイルを参照しない)
     gen_invite_accept_signature()
+    gen_invite_link()  # chain-entries.json を参照(§6.5 発行署名)
     gen_recovery_wrap()
     gen_checkpoint_digest()  # §6.2 values_digest の対象選別(単独 — 他ファイルを参照しない)

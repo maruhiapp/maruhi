@@ -552,7 +552,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- invite-accept-signature.json ---------------------------------------------
+// --- invite-accept-signature.json(v2 — 受諾の共同署名) ---------------------
 {
   const doc = read("invite-accept-signature.json");
   const importSigPub = (hex) =>
@@ -562,24 +562,40 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     lpEncode([
       ctx.domain,
       ctx.project_id,
-      ctx.invite_token_hash_hex,
+      ctx.link_pub_hex,
       ctx.invitee_user_id,
       ctx.invitee_enc_pub_hex,
       ctx.invitee_sig_pub_hex,
     ]);
-  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const base = doc.vectors[0];
-  // invite_token_hash_hex がダミートークン生値の SHA-256 であること(導出の固定)
-  check(
-    "invite-accept-sig: token hash derivation",
-    (await sha256hex(fromHex(doc.invite_token_hex))) === base.invite_token_hash_hex,
-  );
   // 受諾者の宣言鍵が invitee ブロックと一致(署名者 = invitee の自己束縛)
   check(
     "invite-accept-sig: invitee keys bound",
     base.invitee_enc_pub_hex === doc.invitee.enc_pub_hex &&
       base.invitee_sig_pub_hex === doc.invitee.sig_pub_hex &&
       base.invitee_user_id === doc.invitee.user_id,
+  );
+  // リンク公開鍵が link_key ブロックと一致し、種から導出できる(PKCS8 経由 —
+  // WebCrypto は Ed25519 の seed 単独 import を持たないため、RFC 8410 の
+  // OneAsymmetricKey 固定プレフィックス + seed を pkcs8 として import し jwk の x を読む)
+  const pkcs8Prefix = fromHex("302e020100300506032b657004220420");
+  const derivePub = async (seedHex) => {
+    const der = new Uint8Array(48);
+    der.set(pkcs8Prefix, 0);
+    der.set(fromHex(seedHex), 16);
+    const key = await crypto.subtle.importKey("pkcs8", der, "Ed25519", true, ["sign"]);
+    const jwk = await crypto.subtle.exportKey("jwk", key);
+    const b64 = jwk.x.replaceAll("-", "+").replaceAll("_", "/");
+    return toHex(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+  };
+  check(
+    "invite-accept-sig: link key derived from seed",
+    (await derivePub(doc.link_key.seed_hex)) === doc.link_key.pub_hex &&
+      base.link_pub_hex === doc.link_key.pub_hex,
+  );
+  check(
+    "invite-accept-sig: other link key derived from seed",
+    (await derivePub(doc.other_link_key.seed_hex)) === doc.other_link_key.pub_hex,
   );
   for (const v of doc.vectors) {
     const bytes = signedBytes(v);
@@ -588,8 +604,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       toHex(bytes) === v.signed_bytes_hex,
     );
     check(
-      `invite-accept-sig: ${v.name} domain embeds suite`,
-      v.domain === `${v.suite}/invite-accept`,
+      `invite-accept-sig: ${v.name} domain embeds suite (v2)`,
+      v.domain === `${v.suite}/invite-accept-v2`,
     );
     const ok = await crypto.subtle.verify(
       "Ed25519",
@@ -597,20 +613,130 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       fromHex(v.signature_hex),
       bytes,
     );
-    check(`invite-accept-sig: ${v.name} Ed25519 signature`, ok);
+    check(`invite-accept-sig: ${v.name} Ed25519 accept signature`, ok);
+    const linkOk = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(v.link_pub_hex),
+      fromHex(v.link_signature_hex),
+      bytes,
+    );
+    check(`invite-accept-sig: ${v.name} Ed25519 link signature`, linkOk);
   }
-  for (const n of doc.negative) {
+  const runNegatives = async (list, keyField, label) => {
+    for (const n of list) {
+      const reconstructed = signedBytes(n.context);
+      const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+      // 検証鍵は常に署名対象内の宣言鍵(§6.5 の自己束縛)であることを固定する
+      const selfBound = n.verify_key_hex === n.context[keyField];
+      const verified = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(n.signature_hex),
+        reconstructed,
+      );
+      check(`${label} negative: ${n.name}`, bytesMatch && selfBound && verified === false);
+    }
+  };
+  await runNegatives(doc.negative, "invitee_sig_pub_hex", "invite-accept-sig");
+  await runNegatives(doc.link_negative, "link_pub_hex", "invite-link-sig");
+}
+
+// --- invite-link.json(発行署名 + OpenSSH 符号化) -----------------------------
+{
+  const doc = read("invite-link.json");
+  const chain = read("chain-entries.json");
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  const signedBytes = (ctx) =>
+    lpEncode([
+      ctx.domain,
+      ctx.invite_id,
+      ctx.project_id,
+      ctx.link_pub_hex,
+      ctx.head_hash_hex,
+      ctx.head_seq,
+      ctx.role,
+      ctx.inviter_user_id,
+      ctx.inviter_enc_pub_hex,
+      ctx.inviter_sig_pub_hex,
+    ]);
+  const base = doc.issue.vectors[0];
+  const head = chain.entries[chain.entries.length - 1];
+  check(
+    "invite-issue-sig: inviter is the chain owner and head is seq 12",
+    base.inviter_sig_pub_hex === chain.keys["user-owner-0001"].sig_pub_hex &&
+      base.inviter_enc_pub_hex === chain.keys["user-owner-0001"].enc_pub_hex &&
+      base.head_hash_hex === head.entry_hash_hex &&
+      base.head_seq === head.seq &&
+      base.link_pub_hex === doc.link_key.pub_hex,
+  );
+  const accept = read("invite-accept-signature.json");
+  check(
+    "invite-issue-sig: link key shared with invite-accept-signature.json",
+    doc.link_key.seed_hex === accept.link_key.seed_hex &&
+      doc.link_key.pub_hex === accept.link_key.pub_hex,
+  );
+  for (const v of doc.issue.vectors) {
+    const bytes = signedBytes(v);
+    check(
+      `invite-issue-sig: ${v.name} signed bytes reconstruction`,
+      toHex(bytes) === v.signed_bytes_hex,
+    );
+    check(
+      `invite-issue-sig: ${v.name} domain embeds suite`,
+      v.domain === `${v.suite}/invite-issue`,
+    );
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(v.inviter_sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`invite-issue-sig: ${v.name} Ed25519 signature`, ok);
+  }
+  for (const n of doc.issue.negative) {
     const reconstructed = signedBytes(n.context);
     const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
-    // 検証鍵は常に署名対象内の宣言鍵(§6.5 の自己束縛)であることを固定する
-    const selfBound = n.verify_key_hex === n.context.invitee_sig_pub_hex;
+    const selfBound = n.verify_key_hex === n.context.inviter_sig_pub_hex;
     const verified = await crypto.subtle.verify(
       "Ed25519",
       await importSigPub(n.verify_key_hex),
       fromHex(n.signature_hex),
       reconstructed,
     );
-    check(`invite-accept-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
+    check(`invite-issue-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
+  }
+  // OpenSSH 公開鍵行(RFC 4253 §6.6 / RFC 8709): "ssh-ed25519 " + base64(LP("ssh-ed25519") ‖ LP(key))
+  const encodeLine = (pubHex) => {
+    const blob = lpEncode([new TextEncoder().encode("ssh-ed25519"), fromHex(pubHex)]);
+    return `ssh-ed25519 ${btoa(String.fromCharCode(...blob))}`;
+  };
+  const parseLine = (line) => {
+    const parts = line.trimEnd().split(" ");
+    if (parts.length < 2 || parts[0] !== "ssh-ed25519") return null;
+    let blob;
+    try {
+      blob = Uint8Array.from(atob(parts[1]), (c) => c.charCodeAt(0));
+    } catch {
+      return null;
+    }
+    const view = new DataView(blob.buffer);
+    if (blob.length < 4) return null;
+    const typeLen = view.getUint32(0, false);
+    const type = new TextDecoder().decode(blob.slice(4, 4 + typeLen));
+    if (type !== "ssh-ed25519" || blob.length < 8 + typeLen) return null;
+    const keyLen = view.getUint32(4 + typeLen, false);
+    if (keyLen !== 32 || blob.length !== 8 + typeLen + keyLen) return null;
+    return toHex(blob.slice(8 + typeLen));
+  };
+  for (const e of doc.openssh.encode) {
+    check(`openssh: encode ${e.name}`, encodeLine(e.public_key_hex) === e.expected_line);
+  }
+  for (const c of doc.openssh.parse) {
+    check(`openssh: parse ${c.name}`, parseLine(c.line) === c.expected_public_key_hex);
+  }
+  for (const n of doc.openssh.parse_negative) {
+    check(`openssh: parse negative ${n.name}`, parseLine(n.line) === null);
   }
 }
 
