@@ -486,7 +486,7 @@ function unwrapAndStore(input: {
     if (outcome.credentialIdHex !== wrap.credentialIdHex) {
       return yield* Effect.fail(
         cliError(
-          "The browser used a different passkey than the one whose wrap was fetched, so the key cannot be restored. Re-run and choose the matching passkey",
+          "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the key cannot be restored (the server's ledger status and wrap disagree). Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey on a device that still has the key",
         ),
       );
     }

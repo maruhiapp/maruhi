@@ -392,7 +392,13 @@ const passkeyFetches = (server: MockServer) =>
 describe("maruhi key recover --passkey(復元 — status が salt を運ぶ本線)", () => {
   it("全 credential で儀式し、応答の credential の行だけをラップ取得して復号・保存する(取得は儀式の後)", async () => {
     const { registration } = await registerOnce();
-    const other = { ...registration, wrapId: OTHER_WRAP_ID, credentialIdHex: "ff".repeat(16) };
+    // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
+    const other = {
+      ...registration,
+      wrapId: OTHER_WRAP_ID,
+      credentialIdHex: "ff".repeat(16),
+      prfSaltHex: "77".repeat(32),
+    };
     const { env, server } = await start([
       statusHandler([rowOf(other, "YubiKey"), rowOf(registration, "Touch ID")]),
       wrapHandler(OTHER_WRAP_ID, other),
@@ -472,7 +478,9 @@ describe("maruhi key recover --passkey(復元 — status が salt を運ぶ本�
     seedTokenOnly(env, server.origin);
     browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
     expect(await runCli(["key", "recover", "--passkey"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("The browser used a different passkey");
+    expect(env.errors.join("\n")).toContain(
+      "The wrap fetched from the server belongs to a different passkey",
+    );
     expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
   });
 
@@ -498,7 +506,13 @@ describe("maruhi key recover --passkey(復元 — status が salt を運ぶ本�
 describe("maruhi key recover --passkey(旧サーバー = status に salt が無いときのフォールバック)", () => {
   it("行を 1 つ選んでラップを先に取り、その salt で儀式する(複数なら番号で選ぶ)", async () => {
     const { registration } = await registerOnce();
-    const other = { ...registration, wrapId: OTHER_WRAP_ID, credentialIdHex: "ff".repeat(16) };
+    // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
+    const other = {
+      ...registration,
+      wrapId: OTHER_WRAP_ID,
+      credentialIdHex: "ff".repeat(16),
+      prfSaltHex: "77".repeat(32),
+    };
     const { env, server } = await start([
       statusHandler([legacyRowOf(other, "YubiKey"), legacyRowOf(registration, "Touch ID")]),
       wrapHandler(OTHER_WRAP_ID, other),
