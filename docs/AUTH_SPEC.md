@@ -733,7 +733,7 @@ https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>&h
 - **リンクの着地点(`<web-origin>/invite`)は完全に静的な案内ページ**(不変 — 2026-08-28 W0 裁定・ADR-0018 改訂 2・5 項。スクリプトを持たず、フラグメントを解釈しない。per-path CSP `script-src 'none'`)。招待の発行も受諾も Web には置かない
 - **招待リンクは信頼できる人対人チャネルで渡す(規範)**: リンクを読める者は正規の相手より先に受諾でき(裏付け元がこれを閉じる — CRYPTO_SPEC §14.3-9)、リンクを差し替えられる者は自分のプロジェクトへ誘える(受諾者が `il` を読むことが防衛)。H5 の脅威モデル文書へ移す
 - **サインアップ制御(§3)との合成**(不変): サインアップ招待コードは別チャネルで渡す
-- **発行ピン(招待者側の非機密ローカル状態 — SHOULD)**: `invites/<projectId>.json` の `issued[<invite id>] = { linkPubHex, role, expiresAtMs, expectedGithubLogin? }`。IV1 の検証の真実源はサーバー行の発行文に対する招待者自身の発行署名(CRYPTO_SPEC §6.5)であり、ピンは `linkPubHex` / role の追加突合と宛先 login の保持を担う。ピンの無い端末(別端末発行)でも第 4 形は成立し、宛先 login だけ `--github <login>` / 対話入力で補う。**リンク鍵の種・秘密鍵はピンに書かない**
+- **発行ピン(招待者側の非機密ローカル状態 — SHOULD)**: `invites/<projectId>.json` の `issued[<invite id>] = { linkPubHex, role, expiresAtMs, expectedGithubLogin? }`。IV1 の検証の真実源はサーバー行の発行文に対する招待者自身の発行署名(CRYPTO_SPEC §6.5)であり、ピンは `linkPubHex` / role の追加突合と宛先 login の保持を担う。ピンの無い端末(別端末発行)でも第 4 形は成立し、宛先 login だけ `--github <login>` で補う(対話入力は設けない — 儀式の再入力プロンプトと同じ経路に混ざり、打ち間違いが別人の login への問い合わせになるため。名指しは発行時かフラグの明示的作為に限る — 2026-09-13 K5 実装裁定・所有者承認)。**リンク鍵の種・秘密鍵はピンに書かない**
 - **アンカーのピン留めは受諾成功後に行う**(不変)。アンカーに招待者の sig 公開鍵(`is`)を併置し、初回同期の機械照合(CRYPTO_SPEC §6.3 (a))は FP に加えて sig 公開鍵の一致も検査する。機械照合済み(verified)のアンカーは後続の受諾でも上書きしない
 
 ### 15-4. 監査イベント
