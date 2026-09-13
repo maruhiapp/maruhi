@@ -102,7 +102,7 @@ function ceremonyFailure(
   switch (code) {
     case "too-many-code-attempts":
       return cliError(
-        "The confirmation code was entered wrongly too many times, so the passkey step was cancelled. Nothing was changed — re-run and type the code shown in the terminal",
+        "The confirmation code was rejected too many times, so the passkey step was cancelled. Either the code was mistyped, or another process on this machine is sending requests to the passkey page. Nothing was changed — re-run and type the code shown in the terminal",
       );
     case "not-allowed":
       return cliError(

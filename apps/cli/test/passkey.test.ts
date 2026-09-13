@@ -313,7 +313,7 @@ describe("maruhi key seal passkey(登録)", () => {
     });
     expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "The confirmation code was entered wrongly too many times, so the passkey step was cancelled",
+      "The confirmation code was rejected too many times, so the passkey step was cancelled. Either the code was mistyped, or another process on this machine is sending requests to the passkey page",
     );
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
