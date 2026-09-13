@@ -827,6 +827,27 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 - **復元の credential 照合**: ページが返した credential id が取得した行の credential id と違えば復元しない(`allowCredentials` 1 件なので起きないが fail-closed)
 - **テスト**: `passkey-listener.test.ts`(9 件 — トークン / Host / Origin / content-type / 本文不正 / 上限超過 / 2 回目 / close、`parsePrfPost`、ページ資産の機械検査〔inline script・style・イベント属性・javascript:・第三者 URL・eval・innerHTML の不在、`userVerification: "required"` × 3、CSP〕)、`passkey.test.ts`(12 件 — 登録の roundtrip〔台帳の行を `derivePasskeyKek` + master-wrap AAD で開け、別 wrap_id へは移植不能〕、`--label`、`excludeCredentials` と上限 5、理由コード 4 種、ゲート 3 種、復元の roundtrip〔ブロブ取得は 1 回〕、複数登録の番号選択と取消、違う PRF / 違う credential / 理由コード、登録なし / 既存鍵 / エージェント / 非端末 / 429、`--handoff` + `--passkey` の同時指定、`seal list` / `seal remove`)。ブラウザ役は `TestEnv.setBrowserOpenHandler`(裁定 J)。ヘルプ golden 更新、文言規約は機械検査を通過
 
+#### 20-6. 改訂提案の再探索 — 復元時の prf_salt の入手経路(2026-09-13 所有者依頼: 銀の弾丸 / 上位互換を出し切る)
+
+**問題の定義**: 復元の儀式(WebAuthn `get` + PRF)には、その credential の `prf_salt` が**儀式の前に**要る。台帳の状態 `GET /auth/key-wraps` は passkey 行の `wrapId / label / credentialIdHex / updatedAtMs` だけを返し、`prf_salt` はブロブ取得 `GET /auth/key-wraps/passkey/:wrapId`(合算窓 5 回 / 時 + 要監視の監査事件 `auth.key_wrap_fetched`)にしか無い。欲しい性質: (a) 複数登録でも利用者が選ばない、(b) 取り消した儀式が窓と監査事件を消費しない、(c) 仕様・サーバーの変更が最小、(d) crypto 無変更、(e) 安全性は同等。
+
+| # | 案 | 変更箇所 | (a) 選択不要 | (b) 取消の窓消費 | 評価 |
+|---|---|---|---|---|---|
+| ③ | **現状**: 行を 1 つ選ぶ(1 件なら自動)→ その行のブロブを取る → 儀式 | なし(実装済み) | 複数なら番号入力 | 1 | 動く。復元は稀なので実害は小さいが、失敗 5 回で 1 時間待ち |
+| ① | 全行のブロブを先に取る | CLI | ○ | n | 窓 n 消費 + 使わない行に要監視事件。不採用 |
+| ② | **status に `prfSaltHex` を足す** | AUTH_SPEC §13-7 の status 行の文言 + サーバー 1 フィールド(`params` から写すだけ)+ api-schema + CLI 小 | ○ | 0 | prf_salt は CRYPTO_SPEC §8.2 で「公開パラメータ。credential_id・rpId と同じ扱い」— status が既に credentialIdHex を運ぶのと同格。セッション主体(Web)にも見えるが、salt 単体では認証器 + UV が無いと何もできない |
+| ②′ | ② の上位互換: **`prfSaltHex` を optional にし、CLI は「status にあれば使う、無ければ ③」** | ② と同じ + CLI の分岐 1 つ | ○(新サーバー) | 0(新サーバー) | セルフホストの版ずれ(旧サーバー × 新 CLI)でも壊れない。**推奨** |
+| ④ | salt を乱数でなく **`wrap_id` からの導出**にする(例: `SHA-256(LP("maruhi/v1/passkey-salt", wrap_id))`)。wrap_id は status にあるので CLI が再計算できる | CRYPTO_SPEC §8.2 の「登録ごとの乱数」を「登録ごとの一意な公開値(wrap_id 由来)」へ改訂 + 新しい導出式の仕様化 + CLI 小(ページは無変更) | ○ | 0 | **銀の弾丸候補**(輸送の問題自体が消え、サーバー変更ゼロ)。安全性: wrap_id は登録ごとの乱数 ULID なので「再登録 = 新 KEK」の意味論は保たれる(登録は常に `create` = 新 credential + 新 wrap_id)。欠点: 暗号仕様の規範文と新しいハッシュ導出を足す(仕様にない暗号操作の禁止 → 改訂 → 承認が要る)。既存の乱数 salt の行とは ②′ と同じフォールバック(status に無ければ fetch)で共存 |
+| ④′ | ④ の変種: salt = `SHA-256(credential_id)` をページで計算 | ④ と同じ + ページで digest | ○ | 0 | ④ より劣る(ページに計算が増え、登録時は create 後にしか決まらない) |
+| ⑤ | **二段の儀式**: PRF 無しの `get`(全 credential)で使う credential を知る → その行のブロブを取る → PRF ありの `get` | CLI + ページ | ○ | 0(1 回目の前)/ 1(間) | 仕様変更ゼロだが復元の生体認証が 2 回に増える。UX の劣化と引き換えに ② の効果の一部だけ |
+| ⑥ | パラメータ専用の新エンドポイント(`…/passkey/:wrapId/params`) | 仕様 + サーバー(新 API) | ○ | 0 | ② より変更が大きい。不採用 |
+| ⑦ | salt を認証器側に置く(WebAuthn `largeBlob`) | ページ | ○ | 0 | 対応が狭く実機未検証。不採用 |
+| ⑧ | 登録端末の設定ファイルに salt を控える | CLI | — | — | 復元は別端末なので成立しない。不採用 |
+
+**銀の弾丸の探索**: 「salt を運ばなくてよくする」= ④(導出)が唯一。ただし暗号仕様の改訂が要り、②′ が API 文言の改訂で同じ効果を得られるので、④ は「サーバーを触れない事情があるとき」の代替に留まる。**上位互換の探索**: ② に optional + フォールバックを足した ②′ が ② の上位互換(版ずれ耐性)。⑤ は仕様無変更の上位互換に見えるが UX を落とす(生体認証 2 回)ので ③ の上位互換とは言えない。新案が 1 巡出なくなったので終了。
+
+**推奨 = ②′**。理由: 規範の変更が最小(AUTH_SPEC §13-7 の列挙に「公開パラメータ credentialIdHex / prfSaltHex」を足すだけ。CRYPTO_SPEC は不変)、承認済みの裁定 F / I の形(選択不要・ブロブ取得は PRF の後・取り消し無料)に戻る、旧サーバーとも共存する。所有者が「今は触らない」なら ③ のまま(動作は正しい)。所有者が「サーバーは触りたくないが (a)(b) は欲しい」なら ④ を CRYPTO_SPEC 改訂案として起草する。
+
 #### 20-4. 実機検証後に `/docs/recover-your-key` へ追記する内容の下書き(公開しない — 検証していないことを書かない)
 
 英語の下書き。対応表と Codespaces の手順は実機 K0 の結果で埋める。
