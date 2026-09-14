@@ -440,3 +440,67 @@ K1 は反映作業であり、承認済み項目 1〜24 は変えていない。
 - **`docs/SELF_HOSTING.md` "Updates" の参照**: K1 の対象外(所有者指示 — K7)。正本には「K7 で追記・再作成が必要になるのは K2 のデプロイ時点」と明記して行き止まりを避けた。**所有者裁定(2026-09-14): K2 の PR に同梱**(K1 では実装未確定で手順を正確に書けず、K7 では K2〜K6 の間に手順書のない破壊的変更がデプロイ済みになる。破壊的変更と手順書を同じ PR で着地させる — 境界チェックポイント移行の先例と同型)。§4 の K2 / K7 行を更新済み
 - **K3 への申し送り**: AUDIT_SPEC §3.4 の四眼の適用行は同一 `chain_seq` に 2 行を置く。`chain_seq` の一意性を前提とする実装(`maruhi audit verify` の全単射検査・索引)は K3 / K5 で「1 エントリ ↔ 1 行 + 完成 approve の適用行」に改める(§3.4 に規定済み。UNIQUE 制約は現状なし — pullfrog 確認)
 
+## 8. K2 追記(2026-09-14 — テストベクター先行 + 合意規則の実装時の裁定)
+
+K2(ベクター → `packages/crypto` → ワイヤの機械的追随)で、正本が沈黙している点を §5 の手順(案の列挙 → 上位互換・銀の弾丸の探索 → 2 巡空振りで打ち止め → 原則の抽出 → 旧規則の導出確認)で裁定した。承認済み項目 1〜24・§7 の K1 裁定は変更していない。正本(CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC)の改訂は本 PR に含めない — 正本の変更を要する点は末尾「正本への申し送り」に分けて所有者へ提示する。
+
+### K2-1. 検証状態のベクター表現(方針・pending・投票者)— 候補 (a)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| a-1 **メンバー = `{ role, scope }`、方針 = `{ ops, required_approvals }` / `null`、pending = 提案 hash → `{ proposal_seq, proposer_user_id, proposer_key_fingerprint_hex, proposer_role_at_proposal, inner_op, inner_payload, expires_at_ms, approvals[] }`** | §6.2 の「検証状態は方針(ops・required)と pending 提案の集合(提案 hash → 提案者・内側 op・期限・投票者集合)を導出する」をそのまま JSON にする。`approvals` は受理済み approve の actor の順序付き列 | **採用** |
+| a-2 pending に票数(`votes`)も載せる | 票は「各 approve 時点の現 owner」で再集計する(原則 2)ため、状態に固定値を持つと再集計規則と二重管理になる | 棄却 |
+| a-3 メンバーの scope を `environments: string[] | "all"` の 1 フィールドに畳む | payload の 2 フィールド(`scope_kind` / `scope_environments`)と 1:1 でなくなり、`listed` の空リストと `all` の区別を文字列とリストの型で表すことになる | 棄却 |
+
+第 2 巡(上位互換の探索): 「ベクターは検証状態を持たず negative / valid_appends の受理結果だけを固定する」は、導出状態の間違い(票の数え方・pending の残り方)を検出できないため上位互換でない。打ち止め。**原則**: ベクターの検証状態は正本の「導出する」と書かれた状態を、payload と同じ語彙(snake_case・数値は 10 進文字列)で 1:1 に写す — 既存の `expected_head_states`(members / server_grants / environments)がこの原則の先例。`proposer_role_at_proposal` は情報値であり合意規則の入力ではない(K2-6 参照)。
+
+### K2-2. 派生チェーン(extended_chains)での提案 hash の参照 — 候補 (b)
+
+approve / withdraw の `proposal_hash_hex` は提案エントリの entry_hash(§6.2)なので、生成器が派生チェーンの propose エントリを組んだ後にそのハッシュを計算して次のエントリに埋める(a-1 と同じ「生成器が正規化を持つ」前提)。`verify_reference.mjs` は派生チェーン内の approve / withdraw が同じチェーン内の propose の entry_hash を指すことを独立に検査する。代替(ベクターに `proposal_ref: <seq>` を書き検証側で解決)は、正本に無い間接参照をベクター形式に持ち込むので棄却。
+
+### K2-3. 履歴索引の (role, scope) と提案経由の適用 seq — 候補 (c)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| c-1 **在籍区間ごとに `(role, scope)` の変化点(seq)の列を持つ。提案経由の適用は、定足数に達した approve エントリの seq を変化点にし、記録は「適用された内側 op + 帰属 actor(提案者)」を verifyChain のループが履歴索引へ渡す** | §6.2「履歴索引はメンバーの在籍区間ごとに (role, scope) の変化点(seq)を保持する」と「この approve エントリの seq で内側 op を適用する(inclusive)」の直訳 | **採用** |
+| c-2 role と scope を別々の変化点列にする | change_role は (role, scope) の全置換なので変化点は常に同時 — 分けると照会が 2 回になるだけ | 棄却 |
+| c-3 approve エントリ自体を履歴索引に載せる(内側 op を展開しない) | `memberStateAt` の照会側が内側 op の展開規則を持つことになり、検証ループと履歴索引で適用規則が二重になる | 棄却 |
+
+実装形: `HISTORY_RECORDERS` の鍵を「エントリの op」から「適用された op(propose / approve / withdraw を除く 10 op)」へ変え、verifyChain の評価結果(`AppliedOperation = { operation, actorUserId }`)を渡す。propose / withdraw / 定足数未達の approve は状態遷移を伴わないので何も記録しない。
+
+### K2-4. 型と集合代数(`all` = U の fail-closed)— 候補 (d)
+
+payload 上は `scopeKind` / `scopeEnvironmentIds` の 2 フィールドを平坦に持つ(正規化フィールドと 1:1)。導出状態は `MemberScope = { kind: "all" } | { kind: "listed"; environmentIds }`。原則 1 の包含判定は `EnvironmentSet = { kind: "all" } | { kind: "listed"; ids: Set }` の代数で行い、`all` は U **または U の補有限部分集合**(`all △ listed{X} = U \ X`)を表す — どちらも `listed` の actor には包含されえないため、型の上で同じ「`all` 側」に倒す(fail-closed)。`all △ all = ∅`(listed の空集合)。第 2 巡で「集合を常に有限集合 + 補集合フラグで表す」案を検討したが、包含判定の結論が同じで表現だけが重いので採らない。**原則**: 「listed の actor が包含できる集合は有限集合だけ」— これから `all ∪ X = all`・`all △ X → all 側`・`listed ⊉ all` がすべて導出される(正本の集合代数の各行と一致することを確認済み)。
+
+### K2-5. `expires_at_ms` / `timestamp_ms` の型 — 候補 (e)
+
+どちらも非負の安全整数(§2.1 の数値 = 10 進文字列の符号化と、既存の `timestamp_ms` の形状検査と同じ)。`proposal-expired` は `timestamp_ms > expires_at_ms` の比較のみ(等号は受理 — `proposal-one-vote` の派生チェーンが境界を固定)。
+
+### K2-6. 原則 2 の署名者集合 S と `duplicate-approval` / 票数
+
+正本の個別規則「提案者が owner なら提案が 1 票」「owner として提案した提案者」と、原則 2 の「S = {提案者} ∪ {approve の actor 全員}、票数 = |S ∩ 適用時点の owners|」を、**原則の側で実装**する: S は提案者を常に含む(提案時の role に依らない)ので、(i) `duplicate-approval` = 「actor が既に S の要素」(提案者の自己承認・同じ owner の 2 票目)、(ii) 票数 = S ∪ {この actor} のうち**今の**owner の distinct 数。提案時に admin だった提案者が後に owner へ昇格した場合、原則ではその提案者は S の要素として票に数えられ、自己承認は `duplicate-approval` になる(個別規則の字面「owner として提案した」だけを読むと票に数えないが、原則 2 が「以下の個別規則はこの原則からの導出」と宣言しているため原則を優先した)。この形はベクターには現れない(派生チェーンに「提案者の昇格」の形は無い)ため、**正本への申し送り**(下記)に挙げる。`proposer_role_at_proposal` は状態に残すが合意規則の入力ではない。
+
+### K2-7. `propose` の内側 op の運搬と構造検査
+
+ワイヤ・型は内側 op を構造化して運ぶ(`inner: { op, payload }`)。正規化は `inner_payload_lp_hex` = 内側 op の `payload_bytes` の hex(§6.2)で、実装は `canonicalChainPayloadBytes` を再帰的に呼ぶ。構造検査は内側 op を既知 op の形状表で検査し、内側 op が `propose` / `approve` / `withdraw` なら構造段で `invalid-payload`(提案の入れ子は方針の対象になりえず、再帰的な形状検査を持たない — negative `propose-inner-op-nested`)。`genesis` / `create_environment` / `rotate_epoch` / `checkpoint` を内側 op に置く形は構造的には通り、認可段の `approval-not-required`(方針の対象外)で落ちる(negative `authz-propose-rotate-not-required`)。`set_approval_policy` の `ops` の重複は `grant_server` の scope と同じ集合意味論で構造段では拒否せず、導出状態では去重して保持する。
+
+### K2-8. 検査順序のうちベクターで固定できない対
+
+理由コードは合意規則の一部だが、次の対は同一エントリで同時に成立させられないため順序をベクターで固定できない(実装の順序を記録する): `add_member` の `duplicate-member` × `duplicate-member-key`(既存 — user_id → 鍵の順)、`change_role` の `last-owner-protected` × `approval-quorum-unreachable`(方針有効時は owner ≥ 2 が前提なので最後の owner は存在しえない — 実装は last-owner を先に判定)、`approve` の `insufficient-role` × `unknown-proposal`(非 owner の未知提案は role が先 — negative `authz-approve-role-precedes-unknown` で固定済み)。
+
+### K2-9. head-attestation.json の再生成(§11 の不変リストとの食い違い)
+
+CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変」に分類していたが、ヘッド申告は正規チェーンの entry_hash(`chain_head_hash_hex`)を署名対象に含むため、`chain-entries.json` の全再生成に伴って**再生成が必要**だった(意味は不変 — 申告者・seq の意味論は変えず、参照するハッシュだけが新しい正規チェーンのものになる)。README 規約 27 に記録した。**正本への申し送り**: §11 の不変リストから `head-attestation.json` を外し「チェーン依存」へ移す(1 行の訂正 — 本 PR には含めない)。
+
+### 正本への申し送り(所有者へ — 本 PR に含めない)
+
+1. CRYPTO_SPEC §11: `head-attestation.json` は不変でなくチェーン依存(K2-9)。
+2. CRYPTO_SPEC §6.2 の `approve` の個別規則の字面(「owner として提案した提案者」)を原則 2 の S の定義に揃える(K2-6 — 実装は原則側)。
+3. AUDIT_SPEC §3.4 の四眼 4 op のミラー行(`proposalChainSeq` / `completed` / 適用行)は検証状態を要するため K2 のミラーは「エントリ単独から写せる値」(提案 hash)に留めた。K5 の受理面で正本どおりに揃える(§4 の K5 行)。
+
+### K2 の実装メモ(K3〜K7 への申し送り)
+
+- CLI(K2 時点): `invite create` は scope = all のみ発行し、`member add` は招待行の scope で `add_member` を署名する。`change-role` は対象の**現 scope を据え置き**(owner への昇格時のみ all)、`--env` の指定は K4。
+- サーバー: 四眼の 4 op は汎用 append の verifyChain で受理される(構造・合意規則のみ)。scope の執行(R(E)・`InsufficientScope`・422 の scope 軸)は K3、pending 上限 `ProposalLimit`・四眼のミラー行・提案 API は K5。
+- Web: `chain-view` の畳み込みは 4 op を無視する(scope の表示と方針・pending の表示は K6)。
+
