@@ -292,6 +292,37 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 
 ---
 
+## 3-bis. 追加巡の記録(2026-09-14 所有者指示 — 打ち止め条件の厳密適用)
+
+**訂正**: §2 / §3 の「2 巡・打ち止め」は、実際には「案を列挙した巡 → 新案なしの巡」の 1 往復で止めており、打ち止め条件(**上位互換も銀の弾丸も出ない巡が連続 2 巡**)を満たしていなかった。単巡と記した J / L / M / N / P7 は探索をしていない。レビュー 8 巡(pullfrog 5・Cursor Bugbot 3)で P3 / P5 / P6 に新しい穴が見つかったことがその証拠である。以下、各裁定について「従前の空巡数(最後の新案の後に新案が出なかった連続巡数)」と、追加巡で出た案・評価を記す。追加巡は新案が出た場合はさらに 1 巡を足し、空巡が連続 2 に達するまで回した。
+
+| 裁定 | 従前の空巡 | 追加巡で出た案(評価) | 追加後の空巡 | 結論 |
+|---|---|---|---|---|
+| A 置き場 | 1 | **A-5** scope をチェーン外の署名付きステートメント(§4.2 型)で運ぶ — ラップ先一致(§6.3)・包含規則が「チェーン時点の actor scope」を要するのに真実源が 2 つになる。省略 = 不明が fail-open に化ける。棄却 / **A-6** 環境ごとの中間鍵(env KEK)を導入し DEK は KEK へ、KEK をメンバーへラップ — 「誰が受け取るか」の判定は変わらず、鍵層が 1 段増える(新プリミティブではないが層の追加)。棄却 / **A-7** `grant_member_env`(メンバー × 環境ごと 1 エントリ)— A-2 の粒度悪化。棄却 / **A-8(本命候補)** `add_member` は不変で **既定 scope = `listed{}`(何も受け取らない = fail-closed)**、新 op `set_member_scope [target, kind, list]` で拡大。A-2 の漏洩窓(既定 all の非原子ペアで並行 rotate が新メンバー宛に全環境をラップする)を既定 none で消し、原子ペアも不要。既存チェーンは再作成でなく `set_member_scope` の追記で移行できる。**ただし**「既存ベクターは純追記」の利点は成立しない: `value-signature.json` / `metadata-signature.json` / `env-manifest.json` は正規チェーンの member が値を書く正例を持ち、既定 none では宣言ヘッド時点の scope 検査で負例に転じる → 正規チェーンに `set_member_scope` を挿入 = seq が変わる = 全再生成。ベクターのコストは A-1 と同じで、残る利点は「デプロイ済みプロジェクトの追記移行」だけ。対価は「追加は常に 2 エントリ」「owner の add は構造的に all の特例」 | 2(第 4 巡で新案なし) | **A-1 を維持**。A-8 は既存プロジェクトが多い場合の代替として承認項目 1 に併記(所有者選択) |
+| B 符号化 | 1 | B-5 単一フィールドで all を特別 LP に符号化(B-3 と同じ問題)/ B-6 `create_environment` の seq 順ビットマップ(コンパクトだが順序依存で脆い)/ B-7 id でなく `create_environment` の seq で環境を参照(座標系が既存の environment_id と割れる)。いずれも棄却 | 2 | B-1 維持 |
+| C role との関係 | 1 | C-4 owner にも scope を許し「管理は all・DEK 受領は scope」に分離 — prod DEK を持たない owner は remove 義務の rotate を履行できず包含規則と矛盾。棄却 / C-5 C-1(admin = all)の再検討 — C-2 の部分集合であることを再確認 | 2 | C-2 維持 |
+| D 包含規則 | 1 | **D-5** remove だけ包含を免除する(緊急削除を優先し rotate 義務は他の owner へ委ねる)— 削除自体は新規配布を止めるので緊急性の価値はあるが、義務の履行者が不在の dangling 義務が常態化する。owner は all なので緊急経路は常に存在する(dev 専任 admin が prod メンバーを消せないのは owner へのエスカレーションで足りる)。棄却 / D-6 add / change は包含、remove は「対象 scope ∩ actor scope ≠ ∅」— 中途半端。棄却 | 2 | D-1 維持 |
+| E 環境対象 op | 1 | E-3 listed の actor が create するとき自分の scope を原子的に拡大する複合 — 署名対象の外の暗黙変化は避けられるが(拡大も同じエントリ列に載る)、create 複合が 3 エントリになる。用途(dev 専任メンバーの環境作成)が薄い。棄却 — 需要が出たら追記で足せる形 / E-4 create の payload に初期受信者集合を持たせる — R(E) の定義と二重化。棄却 | 2 | E 維持 |
+| F 縮小の意味論 | 1 | F-3 縮小後に当該環境の値 pull を rotate 完了まで止める — 対象は既に scope 外で拒否されており、義務は既保持 DEK の失効なので無意味。棄却 / F-4 縮小 + 縮小分の rotate を 1 複合にする — §12-4 が複合化を退けた理由(環境数 × ラップ完全集合が上限を超える)がそのまま当たる。棄却 | 2 | F-1 維持 |
+| G 可視範囲 | 1 | G-4 scope 外環境の表示名・変数名を当該 DEK で暗号化して隠す — 未決 #3(変数名の秘匿)そのもので、鍵なし Web(ADR-0018)が名前を出せなくなる対価を伴う。ES の対象外として据え置き(未決 #3 の改訂で扱う)/ G-5 scope 外環境の checkpoint タプルを配布しない — チェーン上にあるため不可能 | 2 | G-2 維持 |
+| H 実効権限 | 1 | H-3 トークンの環境スコープをチェーン scope から自動導出 — H-1 の実効アクセス定義が既にそれ。新案ではない | 2 | H-1 維持 |
+| I 監査 | 1 | I-3 scope 変更の `chain.*` をクラス 2 に — チェーン自体が全員配布・検証なので見せかけ。棄却 | 2 | I-1 維持 |
+| J 既存プロジェクト | 0(単巡) | J-2 旧形式 add_member の受理を「移行期間だけ」許す — 互換経路を持たない裁定に反する。棄却 / J-3 A-8 採用時は `set_member_scope` の追記で移行(再作成不要)— A の併記に含める | 2 | A-1 なら再作成、A-8 なら追記移行 |
+| K 招待 | 1 | **K-3** 招待の scope を上限とし `member add` で部分集合へ縮められる(`--env` は ⊆ 招待 scope)— 受諾者の同意は上限として保たれ、招待のやり直しなしに絞れる。K-1 の上位互換だが、クライアント側の検査のみで署名バイト列に触れないため**後から加法的に足せる**。今回は K-1(招待行の scope を厳密に使う)を維持し、K-3 は K4 の CLI 裁量に残す | 2 | K-1 維持(K-3 は後続の加法) |
+| L grant_server | 0(単巡) | L-2 サーバー鍵を「scope を持つメンバー」に統合する — 受信者クラス・FP 定義・リースポリシーが別で、統合は §9 の再設計。棄却 | 2 | L 維持 |
+| M 表示 | 0(単巡) | M-2 `member list` を新設せず `project verify` に scope 列を足すだけ — 検証出力に埋もれ、日常の確認コマンドがない。`member list` は値ゼロで安価。維持 | 2 | M 維持 |
+| N DEK 受信規則 | 0(単巡) | N-2 scope 外ラップを受け取ったら pull 全体を拒否(fail hard)— サーバー非適合の証拠だが、拒否は可用性を落とすだけで機密性を足さない(scope 外 DEK で書いても全検証者が拒否する)。警告 + 不使用を維持 | 2 | N 維持 |
+| P1 形 | 1 | P1-4 `approve` に内側 payload を再掲(自己記述)— ハッシュ参照で足り、二重化は分岐の芽。棄却 / P1-5 複数提案の一括 approve — 便宜のみ。後続の加法に残す | 2 | P1-1 維持 |
+| P2 方針 | 1 | P2-4 genesis に初期方針 + 変更可 — P2-2 と同値 / P2-5 必要承認数を owner 数の過半数など比率で — owner 数に結合し到達可能性が動的になる。棄却 | 2 | P2-2 維持 |
+| P3 対象 op | 0(レビュー第 4 巡直後) | P3-5 `rotate_epoch` / `create_environment` を任意対象に含める — 安全側・データ面の操作を止めない原則に反する。棄却 / P3-6 既定推奨集合に `revoke_server` を含める — 開示停止の方向でも CI 停止の誤操作がありうるため含めない判断を再確認 | 2 | P3 維持 |
+| P4 承認者 | 1 | P4-3 提案者の票を数えない(提案者以外の owner 2 名を要求)— 四眼 = 2 名の目であり提案者も目。より厳しい運用は `required_approvals` を上げれば得られる。棄却 | 2 | P4 維持 |
+| P5 適用点 | 0(レビュー第 2 巡直後) | P5-2 適用失敗の approve を「提案を閉じる」効果にする — 承認署名の二義性(既に棄却済みの再確認)/ P5-3 票の owner 資格を投票時のみで判定 — Bugbot 指摘で棄却済み | 2 | P5 維持 |
+| P6 期限 | 0(レビュー直後) | P6-4 承認者 timestamp に下界(提案 timestamp 以上)— 窓内の詐称を止めない(棄却済みの再確認)/ P6-5 期限をサーバー受理時刻(監査行)で判定 — 合意規則の入力がチェーン外(原則 6 違反)。棄却 | 2 | P6-3 維持 |
+| P7 義務の起点 | 0(単巡) | P7-2 提案時点から rotate 義務を始める(先回りローテーション)— 適用前に失効する DEK はなく、提案が撤回されれば無駄な rotate になる。棄却 | 2 | P7 維持 |
+| P8 受理・監査・CLI | 0(レビュー直後) | P8-2 承認者以外の owner が sync 時に未履行義務を検出して代行する — 承認者の履行が主、代行は `project verify` の未収束警告からの手動実行として既に成立。新案ではない | 2 | P8 維持 |
+
+**追加巡の帰結**: 採用案の変更はない。承認項目 1 に A-8(既定 none + `set_member_scope`)を所有者選択の代替として併記し、K-3 を後続の加法として記録した。以後の裁定では「新案なしの連続 2 巡」を満たしてから打ち止めと書く。
+
 ## 4. 実装分割(K1〜K7)と独立停止可能性
 
 系列はテストベクター → crypto → api-schema → server → CLI(CLAUDE.md の順序)。**ES → 四眼の順**。各段はマージ後にそこで止めても安全であることを要件とする。
@@ -317,7 +348,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 
 | # | 項目 | 採用 | 棄却 | 理由(要約) |
 |---|---|---|---|---|
-| 1 | スコープの置き場(裁定 A) | `add_member` / `change_role` の payload 拡張 = **チェーン形式変更・`chain-entries.json` 全再生成・既存チェーン無効(検証デプロイのプロジェクト再作成)** | 追加 op `set_member_scope`(純追記・ペア複合が必要)/ データプレーン方針 | 1 エントリ = 1 事実。公開前に形式を確定する §11 の先例(grant_server 拡張)。**再作成の帰結を承認いただきたい** |
+| 1 | スコープの置き場(裁定 A) | `add_member` / `change_role` の payload 拡張 = **チェーン形式変更・`chain-entries.json` 全再生成・既存チェーン無効(検証デプロイのプロジェクト再作成)** | 追加 op `set_member_scope`(A-2: 既定 all + 原子ペア — 漏洩窓)/ データプレーン方針 / **A-8: 既定 `listed{}` + `set_member_scope`(追加巡 — 3-bis)**: 漏洩窓なし・既存プロジェクトは追記で移行できるが、ベクターの全再生成は同じく必要(依存ベクターの正例が scope 検査で負例に転じる)で、追加が常に 2 エントリになる | 1 エントリ = 1 事実。公開前に形式を確定する §11 の先例(grant_server 拡張)。**再作成の帰結を承認いただきたい。既存プロジェクトの再作成を避けたい場合は A-8 を選択可** |
 | 2 | 符号化(裁定 B) | `scope_kind` ∈ {all, listed} + `scope_environments_lp_hex`(grant_server と同じ入れ子 LP・≤ 256・順序は署名対象・生成昇順 SHOULD) | 空 = all(fail-open)/ 番兵 `*` / all を表現しない | grant_server の先例の再利用。all の明示 |
 | 3 | 構造規則(裁定 B) | all ⇒ 空リスト必須(`invalid-payload`)、listed の id は `create_environment` 先行必須(`unknown-environment`)、重複 = `invalid-payload`、listed の空リストは有効 | 存在検査なし / 空 listed の禁止 | fail-closed(typo)。`listed{}` = 管理のみ・後で入れる の表現 |
 | 4 | role との関係(裁定 C) | owner = all 固定(`scope-role-mismatch`)。admin / member / reader は listed 可 | admin も all 固定 / owner も listed | C-2 は C-1 の上位互換(admin を all にすれば同じ)。dev 専任 admin が書ける |
@@ -330,7 +361,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 11 | 実効権限の環境軸(裁定 H) | 実効アクセス(E) = min(トークン, role) ∧ E ∈ チェーン scope。トークンの環境スコープは今回導入しない(AUTH §6 の将来項のまま)。CI リースポリシーとの合成は変更なし | トークン環境スコープ同時導入 | チェーン外 ACL は後から加法的に足せる |
 | 12 | 監査の可視性(裁定 I) | クラス不変。ミラー payload に scope(`chain.member_added` / `chain.role_changed`)。`rotation.recommended` 縮小変種(trigger = change_role)。要ローテーション検出の候補 = 環境別アクセス窓 | データ系イベントを scope で絞る | メタは全員可視(G-2)。`audit verify` を scope 非依存に保つ |
 | 13 | 既存プロジェクト(裁定 J) | 「スコープ無しのメンバー」は存在しない(全エントリが scope を持つ)。明示初期化なし。既存プロジェクトは再作成 | 移行操作 | 1 の帰結 |
-| 14 | 招待(裁定 K) | 発行文の末尾に `scope_kind, scope_environments_lp_hex`(`invite-link.json` 再生成)、D1 行に scope、リンク `sk=` / `se=`、`invite create --env`(反復・省略 = all)。`member add` は招待行の scope | `member add --env` | 受諾者が入る環境を事前に読める。同意の範囲を固定 |
+| 14 | 招待(裁定 K) | 発行文の末尾に `scope_kind, scope_environments_lp_hex`(`invite-link.json` 再生成)、D1 行に scope、リンク `sk=` / `se=`、`invite create --env`(反復・省略 = all)。`member add` は招待行の scope | `member add --env`(任意指定)/ K-3 招待 scope を上限として `member add` で縮める(追加巡 — クライアント検査のみで後から加法的に足せるため今回は見送り) | 受諾者が入る環境を事前に読める。同意の範囲を固定 |
 | 15 | grant_server(裁定 L) | 対象外。受信者集合 R(E) = { member: E ∈ scope } ∪ { grant: E ∈ scope_environments } の 1 定義 | — | 既存構造への追随 |
 | 16 | 四眼の形(P1) | 2 エントリ `propose` / `approve`(+ `withdraw`) | 共同署名 1 エントリ / チェーン外承認 | §6.1 不変・追記で拡張・原則 6 |
 | 17 | 方針の置き場と既定(P2 / P3) | 新 op `set_approval_policy` = `[ops_lp_hex, required_approvals]`。既定オフ。有効化は owner ≥ required。**方針 op 自身と owner role を確立する add_member / change_role は `ops` の列挙に依らず常に対象**(owner 身元の自作で定足数を満たす経路を閉じる)。pending 提案は各 approve 時点の現方針で判定。**可用性の対価**: 署名できる owner(鍵を保持し協力する owner)が required 未満になると管理面が復帰不能(チェーン上の owner 数は到達可能性の不変条件で減らない — §14.2-10 に明記)。緩和は運用前提(CLI が有効化時に owner ≥ required + 1 と全 owner のリカバリー登録を案内)— **有効化条件を合意規則で `>` に強めるかは所有者裁定**。owner 数を required 未満にする op は無効(`approval-quorum-unreachable`)。対象可能 op = grant_server / revoke_server / remove_member / change_role / add_member / set_approval_policy。既定推奨集合 = {grant_server, remove_member, change_role, set_approval_policy} | genesis 固定 / チェーン外設定 / 2 固定 | 単独 owner を壊さない。オフにするのに四眼が要る |
