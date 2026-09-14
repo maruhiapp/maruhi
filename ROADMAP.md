@@ -84,7 +84,7 @@
 - エージェント向け credential brokering(`maruhi proxy run`: プレースホルダのみ渡し、通信境界で実値に差し替え。「サーバーもエージェントも平文を持たない」)。**短命化コネクタ(2026-09-04 追加 — docs/notes/integration-options.md §6 D3)**: 差し替える値を長期キーでなく、その場で発行した短命トークン(GitHub App のインストールトークン・OAuth の access トークン・AWS STS)にする。発行者は各人の機械のプロキシで、サーバーは関与しない — Infisical Agent Proxy(サーバーが平文を持つ)に対する上位互換。コネクタ枠はローテーション(需要駆動節)と共用
 - DO ベースのリース(「このエージェントセッションに、この変数だけ、30 分」)
 - no-reveal 方針化(人間向けの値表示を例外操作に格上げ。エージェント検出時の表示拒否は既定のまま)
-- リーク検知・ログ redact(付帯機能。本線を汚さない範囲で)
+- リーク検知・ログ redact(付帯機能。本線を汚さない範囲で)。**具体形 = `maruhi run` の子プロセス出力の完全一致 redact(2026-09-14 追加 — Unbound〔AASB〕の AI ゲートウェイ DLP を比較して得た形)**: `run -- printenv` は agent-gate の既知の迂回路(値の「使用」経路を「表示」経路に転用できる — agent-gate.ts の注記)。stdout が端末でないとき(エージェント・CI・パイプ — 値表示の拒否と同じ境界)だけ子の stdout / stderr を pipe で受け、注入した平文(と JSON エスケープ形)を長い断片から `[redacted]` に置換して流す。機構は `maruhi sync` の出力 redact(sync-exec.ts の scrubVendorOutput)の流用で、変更は live.ts の ProcessRunner のみ(crypto / server / 仕様は無変更)。人間の TTY は従来どおり継承。Unbound 等の正規表現・エントロピー検知(推測 = fail-open)と違い、注入側が値を知っているので完全一致で伏せられる。**限界を明記**: 変形出力(base64 等)は捕まらないので二次防衛線であり、根本は `proxy run`。ただし proxy が差し替えられない値(HTTP 以外のプロトコルで使う接続文字列・ローカルで平文を要する署名鍵 / 暗号鍵・`ci run` のログ)には proxy 着地後も本物が子に入るため、本項は proxy 後も残る — proxy 設計時に「差し替えられない値の守り」として組み込む。着手時期は proxy と一括でも可(設計上の後戻りなし)
 
 ## 需要駆動(ベータでの観測後に着手 — 2026-09-04 追加)
 
