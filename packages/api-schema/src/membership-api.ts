@@ -17,6 +17,7 @@ import { deksGroup, environmentsGroup, schemaPolicyGroup, variablesGroup } from 
 import {
   AttestationRateLimitedError,
   AttestationRegressionError,
+  ApprovalNotAcceptedError,
   AttestationRejectedError,
   AuditHeadNotReadyError,
   ChainCapacityExceededError,
@@ -193,6 +194,9 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // audit-head-unknown / stale を判定しない(fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
+        // 四眼の 4 op(PF1)は受理副作用(ミラー行・要ローテーション検出・
+        // ラップ掃除・pending 上限)が揃う K5 まで受理しない(fail-closed)
+        ApprovalNotAcceptedError,
         ForbiddenError,
         // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
         // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422

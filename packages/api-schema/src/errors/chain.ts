@@ -135,3 +135,18 @@ export class CompositeRequiredError extends Schema.TaggedError<CompositeRequired
   { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
   { httpApiStatus: 422 },
 ) {}
+
+/**
+ * 422: the four-eyes operations (`set_approval_policy` / `propose` / `approve`
+ * / `withdraw` — CRYPTO_SPEC §6.2 PF1) are part of the chain format but this
+ * server version does not accept them yet. Acceptance lands together with
+ * its side effects (audit mirror rows for the applied inner op, rotation
+ * detection, wrap cleanup, pending-proposal limit — AUDIT_SPEC §3.4 / AUTH_SPEC
+ * §12-8; ES + PF1 K5). 受理副作用を伴わない受理は監査ミラーの恒久的な欠落を作る
+ * ため、それまでは fail-closed に拒否する(設計録 es-design.md §8 K2-10)。
+ */
+export class ApprovalNotAcceptedError extends Schema.TaggedError<ApprovalNotAcceptedError>()(
+  "ApprovalNotAccepted",
+  { op: Schema.Literals(["set_approval_policy", "propose", "approve", "withdraw"]) },
+  { httpApiStatus: 422 },
+) {}

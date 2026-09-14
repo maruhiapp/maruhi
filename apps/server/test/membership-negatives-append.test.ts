@@ -9,6 +9,8 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  FOUR_EYES_OPS,
+  prefixReplayable,
   toWireEntry,
   vectorAuthzNegatives,
   vectorEntries,
@@ -80,6 +82,88 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "approve-hash-bad-length",
 ]);
 
+/**
+ * 四眼(PF1)の 4 op の negative(前提チェーンが再生できるもの): サーバーは K5 まで
+ * 4 op を受理しない(ApprovalNotAccepted 422 — 設計録 §8 K2-10)ので、合意規則の
+ * 理由コードではなく受理ガードでの拒否を固定する(wire schema が先に拒む形は 400)。
+ * K5 で受理ガードを外すときに本関数ごと外し、通常の 422 (expected_reason) 経路へ戻す
+ */
+function registerFourEyesGuardTest(negative: AuthzNegative): void {
+  const schemaRejected = WIRE_SCHEMA_REJECTED.has(negative.name);
+  const label = schemaRejected ? "at the wire schema (400)" : "with 422 (ApprovalNotAccepted — K5)";
+  it(`rejects ${negative.name} ${label}`, async () => {
+    const response = await appendUnsignedAtHead(negative);
+    if (schemaRejected) {
+      expect(response.status).toBe(400);
+      return;
+    }
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { _tag: string; op: string };
+    expect(body["_tag"]).toBe("ApprovalNotAccepted");
+    expect(body.op).toBe(negative.entry.op);
+  });
+}
+
+type AuthzNegative = (typeof vectorAuthzNegatives)[number];
+
+/** 前提チェーンを再生し、seq / prev だけ実ヘッドへ付け替えた原本(再署名なし)を送る。 */
+async function appendUnsignedAtHead(negative: AuthzNegative): Promise<Response> {
+  const { head } = await replayNegativePrefix(negative);
+  return appendEntry(vectorProjectId, head.hashHex, {
+    ...toWireEntry(negative.entry),
+    seq: head.seq + 1,
+    prevHashHex: head.hashHex,
+  });
+}
+
+/**
+ * 署名 API が拒む形(負の expires_at_ms)は再署名できない。構造検査は署名検証に
+ * 先行する(§6.3 の検証段順)ので、原本を送れば理由コードは構造段のもので確定する
+ */
+function registerStructureBeforeSignatureTest(negative: AuthzNegative): void {
+  it(`rejects ${negative.name} with 422 (${negative.expected_reason}) before the signature`, async () => {
+    const response = await appendUnsignedAtHead(negative);
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe(negative.expected_reason);
+  });
+}
+
+function registerWireSchemaRejectTest(negative: AuthzNegative): void {
+  it(`rejects ${negative.name} at the wire schema (400)`, async () => {
+    const response = await appendUnsignedAtHead(negative);
+    expect(response.status).toBe(400);
+  });
+}
+
+/** 合意規則(verifyChain)での拒否 — 実ヘッドで再署名して送り、理由コードと seq を固定する。 */
+function registerConsensusRejectTest(negative: AuthzNegative): void {
+  // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
+  const expectsConcealment = negative.expected_reason === "actor-not-member";
+  const label = expectsConcealment
+    ? `rejects ${negative.name} with 404 (§11-2 concealment)`
+    : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
+  it(label, async () => {
+    const { head } = await replayNegativePrefix(negative);
+    // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 複合側と同じ)。
+    // approve / withdraw の参照先は再生時の実 hash へ付け替える
+    const { entry } = await resignEntryAt(
+      remapProposalRef(toWireEntry(negative.entry)),
+      head.seq + 1,
+      head.hashHex,
+    );
+    const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
+    if (expectsConcealment) {
+      expect(response.status).toBe(404);
+      return;
+    }
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { seq: number; reason: string };
+    expect(body.reason).toBe(negative.expected_reason);
+    expect(body.seq).toBe(entry.seq);
+  });
+}
+
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
@@ -90,59 +174,27 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
     if (op === "create_environment" || op === "rotate_epoch") {
       continue;
     }
+    // 四眼(PF1)の 4 op は K5 までサーバーが受理しない(ApprovalNotAccepted 422 —
+    // 設計録 §8 K2-10)。合意規則の理由コードは crypto 層の 4 実行環境テストが固定し、
+    // ここでは (a) 前提チェーンが再生できる四眼 op の negative は受理ガードでの拒否を、
+    // (b) 前提チェーン自体が四眼 op の受理を要する negative は再生できないため
+    // 登録しない(K5 で受理ガードを外すときに本分岐ごと外す)
+    if (!prefixReplayable(negative)) {
+      continue;
+    }
+    if (FOUR_EYES_OPS.has(op)) {
+      registerFourEyesGuardTest(negative);
+      continue;
+    }
     if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
-      it(`rejects ${negative.name} with 422 (${negative.expected_reason}) before the signature`, async () => {
-        const { head } = await replayNegativePrefix(negative);
-        // 署名 API が拒む形(負の expires_at_ms)は再署名できない。構造検査は署名検証に
-        // 先行する(§6.3 の検証段順)ので、seq / prev だけ実ヘッドへ付け替えた原本を
-        // 送れば理由コードは構造段のもので確定する
-        const response = await appendEntry(vectorProjectId, head.hashHex, {
-          ...toWireEntry(negative.entry),
-          seq: head.seq + 1,
-          prevHashHex: head.hashHex,
-        });
-        expect(response.status).toBe(422);
-        const body = (await response.json()) as { reason: string };
-        expect(body.reason).toBe(negative.expected_reason);
-      });
+      registerStructureBeforeSignatureTest(negative);
       continue;
     }
     if (WIRE_SCHEMA_REJECTED.has(negative.name)) {
-      it(`rejects ${negative.name} at the wire schema (400)`, async () => {
-        const { head } = await replayNegativePrefix(negative);
-        const response = await appendEntry(vectorProjectId, head.hashHex, {
-          ...toWireEntry(negative.entry),
-          seq: head.seq + 1,
-          prevHashHex: head.hashHex,
-        });
-        expect(response.status).toBe(400);
-      });
+      registerWireSchemaRejectTest(negative);
       continue;
     }
-    // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
-    const expectsConcealment = negative.expected_reason === "actor-not-member";
-    const label = expectsConcealment
-      ? `rejects ${negative.name} with 404 (§11-2 concealment)`
-      : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
-    it(label, async () => {
-      const { head } = await replayNegativePrefix(negative);
-      // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 複合側と同じ)。
-      // approve / withdraw の参照先は再生時の実 hash へ付け替える
-      const { entry } = await resignEntryAt(
-        remapProposalRef(toWireEntry(negative.entry)),
-        head.seq + 1,
-        head.hashHex,
-      );
-      const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
-      if (expectsConcealment) {
-        expect(response.status).toBe(404);
-        return;
-      }
-      expect(response.status).toBe(422);
-      const body = (await response.json()) as { seq: number; reason: string };
-      expect(body.reason).toBe(negative.expected_reason);
-      expect(body.seq).toBe(entry.seq);
-    });
+    registerConsensusRejectTest(negative);
   }
 
   it("rejects a tampered payload with 422 (bad-signature)", async () => {

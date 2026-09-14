@@ -7,6 +7,7 @@
 
 import {
   AuditHeadNotReadyError,
+  ApprovalNotAcceptedError,
   AuthFlowError,
   AuthRateLimitedError,
   ChainCapacityExceededError,
@@ -178,6 +179,11 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(CompositeRequiredError),
     (e) =>
       `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
+  ),
+  when(
+    isInstanceOf(ApprovalNotAcceptedError),
+    (e) =>
+      `This server does not accept four-eyes approval entries (${e.op}) yet — they land with a later server release`,
   ),
   // 専用の有界再試行(checkpoint.ts / audit-reconcile.ts)を通らない残りの
   // 経路の受け皿。retryable なので再実行を案内する

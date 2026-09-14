@@ -148,6 +148,7 @@ export {
 } from "./rotation-api.ts";
 export {
   ActivationRequiredError,
+  ApprovalNotAcceptedError,
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,

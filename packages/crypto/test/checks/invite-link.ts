@@ -237,6 +237,15 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
       name: "unknown scope kind",
       context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: [] },
     },
+    // id の上限(§6.1 の 1024 バイト — チェーン側の add_member と対称)
+    {
+      name: "oversized scope environment id",
+      context: {
+        ...contextOf(base),
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["e".repeat(1025)],
+      },
+    },
   ];
   for (const bad of badContexts) {
     const signed = await signInviteIssue({ context: bad.context, signingKey: pair.privateKey });

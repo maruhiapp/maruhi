@@ -42,6 +42,7 @@ export {
   AttestationRejectReasonSchema,
 } from "./attestation.ts";
 export {
+  ApprovalNotAcceptedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,

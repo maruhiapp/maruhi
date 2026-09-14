@@ -358,7 +358,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | **K2** | **テストベクターを先に書く**: `chain-entries.json` 全再生成(add_member / change_role の scope・新 op 4 種・`expected_head_states` に scope / 方針 / pending・正例・負例)、`invite-link.json` 再生成(発行文に scope)、チェーンを読み込む `value-signature.json` / `metadata-signature.json` / `env-manifest.json` の再生成 → `packages/crypto`(scope の型・正規化・合意規則 ES + PF1・履歴索引・宣言ヘッド時点の scope 検査・発行文)→ **api-schema のワイヤ + server / CLI の機械的追随**(scope は `all` 固定で発行、PF1 の op は生成しない)。**人間レビュー必須箇所を PR 本文に列挙**。**`docs/SELF_HOSTING.md` "Updates" に移行順序(サーバー → 全メンバー CLI → 既存プロジェクトの再作成)を同梱**(2026-09-14 所有者裁定 — K7 から前倒し。破壊的変更とその手順書を同じ PR で着地させる) | 挙動変更なし(全メンバー = all のまま)。crypto が新規則を理解し、旧形式を拒否する。この段のデプロイで既存プロジェクトのチェーンは無効になるため、K2 のマージ = 検証デプロイの再作成のタイミング |
 | **K3** | server(ES): 受信者集合 = scope(`expectedWrapRecipientCount` / `checkWrapRecipient`)、環境対象 op の scope 認可(`InsufficientScope`)、値・メタ・マニフェストの宣言ヘッド時点 scope 検査、招待行の scope、ミラー payload、要ローテーション検出の環境別窓・縮小変種。テストは `@cloudflare/vitest-plugin` | CLI はまだ all しか発行しないので配布は従来どおり。制限は眠ったまま |
 | **K4** | CLI(ES): `invite create --env`、`member add`(招待行の scope)、`member change-role --env` / `member scope`(拡大 backfill・縮小 sweep)、**`member list`**、`wrapRecipientsFor` / backfill / sweep の scope 対応、`env create` の前提検査、pull / push / rotate の scope 外エラー、scope 外ラップの警告、`project verify` の scope 列 + Web `ProjectScreen` の scope 列。テストは Vitest | ES 完了。四眼は方針なし = オフのまま |
-| **K5** | server(PF1): 受理ポリシー(pending 上限。8-bis K2-5 e-3: 作成時点で失効済みの提案〔`expires_at_ms` < 受理時サーバー時計〕の拒否も受理ポリシー候補)、適用完了時の副作用、ミラー 4 種 + 適用行、`audit verify` の全単射規則 | CLI が提案を出さないので眠ったまま |
+| **K5** | server(PF1): **K2-10 の受理ガード(`ApprovalNotAccepted`)の解除と同じ PR で**: 受理ポリシー(pending 上限。8-bis K2-5 e-3: 作成時点で失効済みの提案〔`expires_at_ms` < 受理時サーバー時計〕の拒否も受理ポリシー候補)、適用完了時の副作用(要ローテーション検出・旧鍵ラップ掃除・申告行削除・成長ガード)、ミラー 4 種 + 適用行、`audit verify` の全単射規則 | K2 のサーバーは 4 op を 422 で拒否する(受理ガード = 執行) |
 | **K6** | CLI(PF1): `approval` グループ、`project policy approvals`、既存コマンドの提案化、承認者側の sweep、Web の pending 表示 | 既定オフ。有効化は owner ≥ 2 の明示操作 |
 | **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、~~`docs/SELF_HOSTING.md` "Updates" に移行順序~~(K2 へ前倒し — 2026-09-14 所有者裁定)、ROADMAP の完了記録 | docs のみ |
 
@@ -492,6 +492,16 @@ payload 上は `scopeKind` / `scopeEnvironmentIds` の 2 フィールドを平�
 
 CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変」に分類していたが、ヘッド申告は正規チェーンの entry_hash(`chain_head_hash_hex`)を署名対象に含むため、`chain-entries.json` の全再生成に伴って**再生成が必要**だった(意味は不変 — 申告者・seq の意味論は変えず、参照するハッシュだけが新しい正規チェーンのものになる)。README 規約 27 に記録した。**正本への申し送り**: §11 の不変リストから `head-attestation.json` を外し「チェーン依存」へ移す(1 行の訂正 — 本 PR には含めない)。
 
+### K2-10. サーバーの四眼 4 op の受理(独立レビュー F1 — 2026-09-14 所有者指示の Opus レビュー)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| j-1(当初) | 汎用 append の verifyChain で 4 op を受理する(構造・合意規則のみ)。副作用は K5 | **撤回**。完成した approve は verifyChain の中で内側 op を適用するが、サーバーの受理副作用(AUDIT_SPEC §3.4 の適用行・§7 の要ローテーション検出 `detectMemberRemoval`・再追加メンバーの旧鍵ラップ掃除 `deleteStaleMemberWraps`・申告行削除・§12-8 の成長ガード)はすべて `entry.op` で分岐するため拾えない。ミラー行は v1 でバックフィルしない(chain-commit.ts)ので**欠落が恒久化**し、`audit verify` の全単射も 1:1 のまま検知しない。「CLI が提案を出さないので眠ったまま」はクライアントの協力に依存する論拠で、受理面の執行ではない(§4 の要件「各段はマージ後にそこで止めても安全」に反する) |
+| j-2 **採用** | worker ハンドラと DO `appendProgram` の両方で 4 op を `ApprovalNotAccepted`(422)として K5 まで拒否する(`composite-required` と同じ多層防御・同じ型付きエラーの形) | fail-closed で数行。api-schema の `ChainEntrySchema` から 4 op を外さない(K5 での再追加が重く、CLI の読み取り側は 4 op を含むチェーンを検証できる必要がある) |
+| j-3 | 受理副作用を K2 で実装する | K5 の本体(検証状態を要するミラー行・`viaProposalSeq`・pending 上限)であり、K2 の範囲を越える。棄却 |
+
+**原則**: 「サーバーが受理する op の集合 = 受理副作用が実装済みの op の集合」— 検証器が受理できることと受理面が受理してよいことは別であり、副作用が op 判定で分岐している限り、新 op の受理は副作用の実装と同じ PR で入れる。K5 の受理ガード解除はこの原則の適用(ミラー行・検出・掃除・上限を同時に入れる)。サーバーテスト: 正規チェーンの再生は seq 19(方針オフのヘッド)まで、seq 20〜24 と前提再生可能な四眼 op の negative は受理ガードでの 422 を固定、前提チェーンが四眼 op の受理を要する negative(12 + 派生チェーン 14 本)は crypto 層の 4 実行環境テストのみで固定(K5 でガードを外すときに復帰)。
+
 ### 正本への申し送り(所有者へ — 本 PR に含めない)
 
 1. CRYPTO_SPEC §11: `head-attestation.json` は不変でなくチェーン依存(K2-9)。
@@ -539,6 +549,6 @@ CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変�
 ### K2 の実装メモ(K3〜K7 への申し送り)
 
 - CLI(K2 時点): `invite create` は scope = all のみ発行し、`member add` は招待行の scope で `add_member` を署名する。`change-role` は対象の**現 scope を据え置き**(owner への昇格時のみ all)、`--env` の指定は K4。
-- サーバー: 四眼の 4 op は汎用 append の verifyChain で受理される(構造・合意規則のみ)。scope の執行(R(E)・`InsufficientScope`・422 の scope 軸)は K3、pending 上限 `ProposalLimit`・四眼のミラー行・提案 API は K5。
+- サーバー: 四眼の 4 op は **K5 まで受理しない**(`ApprovalNotAccepted` 422 — worker + DO の多層ガード。K2-10)。scope の執行(R(E)・`InsufficientScope`・422 の scope 軸)は K3、受理ガードの解除 + pending 上限 `ProposalLimit`・四眼のミラー行 / 適用行・要ローテーション検出・ラップ掃除・提案 API は K5(同じ PR で)。
 - Web: `chain-view` の畳み込みは 4 op を無視する(scope の表示と方針・pending の表示は K6)。
 

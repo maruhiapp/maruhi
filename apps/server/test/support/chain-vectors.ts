@@ -40,6 +40,46 @@ export const vectorAuthzNegatives: readonly VectorAuthzNegative[] = vectorNegati
       : [],
 );
 
+/** 四眼の 4 op(CRYPTO_SPEC §6.2 PF1) — サーバーは K5 まで受理しない。 */
+export const FOUR_EYES_OPS: ReadonlySet<string> = new Set([
+  "set_approval_policy",
+  "propose",
+  "approve",
+  "withdraw",
+]);
+
+/** 正規チェーンで最初の四眼 op の seq(以降はサーバーで再生できない)。 */
+export const firstFourEyesSeq: number = (() => {
+  const first = vectorEntries.find((v) => FOUR_EYES_OPS.has(v.op));
+  if (first === undefined) {
+    throw new Error("chain vectors: no four-eyes entry in the canonical chain");
+  }
+  return first.seq;
+})();
+
+const fourEyesChains: ReadonlySet<string> = new Set(
+  Object.entries(vectorExtendedChains).flatMap(([name, chain]) =>
+    chain.base_seq >= firstFourEyesSeq || chain.entries.some((e) => FOUR_EYES_OPS.has(e.op))
+      ? [name]
+      : [],
+  ),
+);
+
+/**
+ * negative の**前提チェーン**がサーバーで再生できるか(四眼 op の受理を要しないか)。
+ * negative 自身の op が四眼 op である場合は含めない(その場合は受理ガードで拒否される
+ * ことを固定する)
+ */
+export function prefixReplayable(negative: {
+  readonly entry: VectorEntry;
+  readonly chain?: string;
+}): boolean {
+  if (negative.chain !== undefined) {
+    return !fourEyesChains.has(negative.chain);
+  }
+  return negative.entry.seq - 1 < firstFourEyesSeq;
+}
+
 /** ベクターエントリを API ワイヤ形式(= crypto の ChainEntry)へ変換する */
 export const toWireEntry = (vector: VectorEntry): ChainEntry => toTypedEntry(vector);
 

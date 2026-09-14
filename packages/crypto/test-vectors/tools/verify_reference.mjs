@@ -310,6 +310,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ...doc.valid_appends.map((a) => a.entry),
       ...doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
     ];
+    // kind の閉集合 {all, listed} は正例(正規チェーン / 派生チェーン / valid_appends)
+    // にだけ主張する — negative(scope-kind-unknown が "some" を運ぶ)は対象外
+    const negativeEntries = new Set(
+      doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
+    );
     let scoped = 0;
     let policies = 0;
     let proposals = 0;
@@ -321,7 +326,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         check(
           `${label}: scope nested LP`,
           toHex(stringListLp(p.scope_environments)) === p.scope_environments_lp_hex &&
-            (p.scope_kind === "all" || p.scope_kind === "listed" || p.scope_kind === "some"),
+            (negativeEntries.has(e) || p.scope_kind === "all" || p.scope_kind === "listed"),
         );
       } else if (e.op === "set_approval_policy") {
         policies += 1;

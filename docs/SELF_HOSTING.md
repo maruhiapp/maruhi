@@ -856,6 +856,11 @@ membership-chain consensus rules (CRYPTO_SPEC §6.2). `add_member` and
 (`scopeKind` / `scopeEnvironmentIds`) inside the signed payload, invitations
 carry the scope in the issue statement and link, and four new chain
 operations exist (`set_approval_policy` / `propose` / `approve` / `withdraw`).
+**This server release does not accept the four four-eyes operations yet**: a
+generic chain append carrying one of them is rejected with HTTP 422
+`ApprovalNotAccepted` (fail-closed) until the release that also ships their
+acceptance side effects (audit mirror rows, rotation detection, pending limit).
+Nothing in the CLI issues them in this release.
 There is **no compatibility path**: a chain entry in the old format is invalid
 under the new rules, and an entry in the new format is invalid under the old
 ones. Concretely, the version-skew behaviors are:

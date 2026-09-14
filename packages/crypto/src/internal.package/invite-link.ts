@@ -177,15 +177,24 @@ function issueContextTextInvalidField(context: InviteIssueContext): string | nul
   if (context.inviterUserId.length === 0) {
     return "context inviterUserId";
   }
-  // scope は §6.2 の構造規則(閉集合の kind・all ⇒ 空リスト・256 以下・重複なし)
-  if (!scopeShapeOk(context.scopeKind, context.scopeEnvironmentIds, isNonEmptyString)) {
+  // scope は §6.2 の構造規則(閉集合の kind・all ⇒ 空リスト・256 以下・重複なし・
+  // id は §6.1 の自由文字列フィールドと同じ上限 — チェーン側の add_member と対称)
+  if (!scopeShapeOk(context.scopeKind, context.scopeEnvironmentIds, isBoundedEnvironmentId)) {
     return "context scope";
   }
   return null;
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
+/** §6.1 の自由文字列フィールド上限(1024 バイト)— chain-verify.ts の isBoundedId と同じ規則。 */
+const MAX_ENVIRONMENT_ID_BYTES = 1024;
+
+function isBoundedEnvironmentId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_ENVIRONMENT_ID_BYTES &&
+    utf8Encode(value).length <= MAX_ENVIRONMENT_ID_BYTES
+  );
 }
 
 /** 公開値(hex)と head_seq の形式検査。 */

@@ -11,8 +11,13 @@ import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { bearer } from "./support/auth.ts";
-import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
-import { signEntryAt } from "./support/data-crypto.ts";
+import {
+  firstFourEyesSeq,
+  toWireEntry,
+  vectorEntries,
+  vectorProjectId,
+} from "./support/chain-vectors.ts";
+import { resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
 import {
   appendEntry,
   getChain,
@@ -108,12 +113,16 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
   });
 });
 
-describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate は複合経由)", () => {
-  it("accepts the full vector chain with interleaved boundary checkpoints, append-only", async () => {
+describe("チェーン再生(正常系ベクター。create/rotate は複合経由)", () => {
+  // 四眼の 4 op(seq 20〜24)は K5 までサーバーが受理しない(下の describe)ので、
+  // 正規チェーンの再生は最初の四眼 op の直前(seq 19 = 方針オフのヘッド)まで
+  const replayableEntries = vectorEntries.filter((v) => v.seq < firstFourEyesSeq);
+
+  it("accepts the vector chain up to the first four-eyes entry with interleaved boundary checkpoints, append-only", async () => {
     // 複合(vector seq 3 / 4 / 8 / 10 / 11)ごとに境界 checkpoint(H+2)が
-    // 挿入される(§12-4)。ベクターの 24 op(2026-09-14 ES + PF1 — seq 13〜24 は
-    // scope 付き add_member / change_role と四眼の 4 op)はこの順序で全受理される
-    const { head } = await replayVectorChain(vectorEntries.length);
+    // 挿入される(§12-4)。ベクターの seq 1〜19(2026-09-14 ES — seq 13〜19 は
+    // scope 付き add_member / change_role)はこの順序で全受理される
+    const { head } = await replayVectorChain(firstFourEyesSeq - 1);
 
     const response = await getChain(vectorProjectId);
     expect(response.status).toBe(200);
@@ -124,7 +133,7 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
       headHashHex: string;
     };
     // 期待 op 列 = ベクター本編の op 列に、create / rotate の直後の境界 checkpoint を挿入したもの
-    const expectedOps = vectorEntries.flatMap((v) =>
+    const expectedOps = replayableEntries.flatMap((v) =>
       v.op === "create_environment" || v.op === "rotate_epoch" ? [v.op, "checkpoint"] : [v.op],
     );
     expect(body.projectId).toBe(vectorProjectId);
@@ -135,7 +144,7 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
     // checkpoint を除いた op 列はベクター本編と一致する(同じ操作列の受理)
     expect(
       body.entries.filter((entry) => entry.op !== "checkpoint").map((entry) => entry.op),
-    ).toEqual(vectorEntries.map((v) => v.op));
+    ).toEqual(replayableEntries.map((v) => v.op));
 
     // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)。最初の
     // 複合の checkpoint 挿入まで(seq 1〜3)はベクターの固定バイトのまま受理される
@@ -150,6 +159,28 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
       );
     });
   });
+});
+
+describe("四眼の 4 op の受理ガード(PF1 — K5 まで ApprovalNotAccepted 422。設計録 §8 K2-10)", () => {
+  // 正規チェーンの seq 20〜24(set_approval_policy / propose / approve / propose /
+  // withdraw)を方針オフのヘッド(seq 19)へ再署名して送る。受理ガードは verifyChain
+  // より先(worker ハンドラ)なので、合意規則上の正否に依らず op だけで拒否される
+  // (approve / withdraw の参照先が未知でも unknown-proposal には到達しない)
+  for (const vector of vectorEntries.filter((v) => v.seq >= firstFourEyesSeq)) {
+    it(`rejects ${vector.op} (vector seq ${vector.seq}) with 422 ApprovalNotAccepted`, async () => {
+      const { head } = await replayVectorChain(firstFourEyesSeq - 1);
+      const { entry } = await resignEntryAt(toWireEntry(vector), head.seq + 1, head.hashHex);
+      const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
+      expect(response.status).toBe(422);
+      const body = (await response.json()) as { _tag: string; op: string };
+      expect(body["_tag"]).toBe("ApprovalNotAccepted");
+      expect(body.op).toBe(vector.op);
+      // ヘッドは動かない(拒否は受理前)
+      const chain = await readChain();
+      expect(chain.headSeq).toBe(head.seq);
+      expect(chain.headHashHex).toBe(head.hashHex);
+    });
+  }
 });
 
 const readChain = async () => {
