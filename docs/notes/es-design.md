@@ -1,6 +1,6 @@
 # ES 設計録 — 環境スコープの role + PF1 四眼(2026-09-14 フェーズ 1 設計セッション・所有者承認待ち)
 
-**位置づけ**: ROADMAP H 系列「仕様改訂群」の 1 つ目 = **ES: 環境スコープの role**(CRYPTO_SPEC 未決 #11)と、同じ改訂サイクルで設計する **PF1: 四眼(チェーン上の複数署名承認)** のフェーズ 1 成果物。設計の全体像・裁定の反復記録(巡数と棄却案を含む)・実装分割・承認依頼項目を持つ。仕様改訂の起草は docs/notes/es-spec-drafts.md(CRYPTO_SPEC §3 / §6.2 / §6.3 / §6.4 / §6.5 / §7 / §11 / §13 / §14、AUTH_SPEC §6 / §9-2 / §11-1 / §12-3 / §12-4 / §12-6 / §12-7 / §14-1 / §15、AUDIT_SPEC §3.3 / §3.4 / §4.1 / §6)。**正本 3 文書・crypto・server・CLI はまだ触っていない**(承認後の K1 以降で反映)。様式は integration-options.md 補足 19(KL3)/ 補足 21(IV)に合わせ、独立ファイルに置く(value-free-schema-design.md の先例)。
+**位置づけ**: ROADMAP H 系列「仕様改訂群」の 1 つ目 = **ES: 環境スコープの role**(CRYPTO_SPEC 未決 #11)と、同じ改訂サイクルで設計する **PF1: 四眼(チェーン上の複数署名承認)** のフェーズ 1 成果物。設計の全体像・裁定の反復記録(巡数と棄却案を含む)・実装分割・承認依頼項目を持つ。仕様改訂の起草は docs/notes/es-spec-drafts.md(CRYPTO_SPEC §3 / §6.2 / §6.3 / §6.4 / §6.5 / §7 / §11 / §13 / §14、AUTH_SPEC §6 / §9-2 / §11-1 / §12-3 / §12-4 / §12-6 / §12-7 / §12-8 / §14-1 / §15、AUDIT_SPEC §3.3 / §3.4 / §4.1 / §6)。**正本 3 文書・crypto・server・CLI はまだ触っていない**(承認後の K1 以降で反映)。様式は integration-options.md 補足 19(KL3)/ 補足 21(IV)に合わせ、独立ファイルに置く(value-free-schema-design.md の先例)。
 
 **前提(2026-09-14 所有者裁定 — ROADMAP)**: ES / PF1 は H4 法務の前に着地する招待制ベータのゲート。両方とも CRYPTO_SPEC §6.2 の合意規則を変えるため 1 回の改訂・1 回のテストベクター再生成に束ねる。**利用者がいないうちは古い実装をすべて削除してよい** — 互換経路(旧形式の受理・フォールバック)は持たず、旧クライアントは新しい op / payload に対して fail-closed になればよい。DK(デバイス鍵分離)は本設計の結果を前提にするため後続。
 
@@ -268,9 +268,9 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 |---|---|---|
 | P6-1 期限なし + withdraw | pending は明示で閉じる | 古い提案が忘れられ、文脈を失った owner が後日承認する危険 |
 | P6-2 seq 距離 | 提案から N エントリで失効 | seq は活動量であり時間ではない(静かなプロジェクトでは永遠に有効)。棄却 |
-| P6-3 **`expires_at_ms` + 承認者の timestamp** | 提案 payload に `expires_at_ms`。合意規則: `approve` エントリの `timestamp_ms ≤ expires_at_ms`(`proposal-expired`) | チェーン検証で初めて timestamp を使う。ただし効果は**拒否方向のみ**(嘘の時計は自分の承認を無効にするだけで、何かを許す方向には働かない — fail-closed)。共謀する 2 owner は四眼の前提の外 |
+| P6-3 **`expires_at_ms` + 承認者の timestamp** | 提案 payload に `expires_at_ms`。合意規則: `approve` エントリの `timestamp_ms ≤ expires_at_ms`(`proposal-expired`) | チェーン検証で初めて timestamp を使う。`timestamp_ms` は承認者の自己申告なので、**期限は正直な承認者を文脈を失った承認から守る UX 安全装置であり、悪意の承認者に対する保証ではない**(過去方向に詐称すれば期限切れを承認できる — その承認者は正当な 1 票の主体)。§14.2-10 の保証は期限に依存しない |
 
-第 3 巡: P6-3 の timestamp 利用が chain-history.ts の「timestamp は認可判定に使わない」規律と矛盾しないか — 規律の意図は「時刻で在籍・role を判定しない」(seq が正)であり、P6-3 は seq ベースの適用点を変えず、期限という追加の拒否条件に承認者自身の署名済み時刻を使うだけ。仕様には「timestamp を合意規則に用いる唯一の箇所」と明記する。既定期限 = 7 日(招待の期限と同じ起草値)。新案なし → 打ち止め。
+第 3 巡: P6-3 の timestamp 利用が chain-history.ts の「timestamp は認可判定に使わない」規律と矛盾しないか — 規律の意図は「時刻で在籍・role を判定しない」(seq が正)であり、P6-3 は seq ベースの適用点を変えず、期限という追加の拒否条件に承認者自身の署名済み時刻を使うだけ。仕様には「timestamp を合意規則に用いる唯一の箇所」と明記する。既定期限 = 7 日(招待の期限と同じ起草値)。新案なし → 打ち止め。**追補(2026-09-14 pullfrog レビュー)**: 起草時の「効果は拒否方向のみ = fail-closed」は片側しか成り立たない(承認者は `timestamp_ms` を過去方向に詐称でき、チェーンに単調性も上界もない)ため撤回し、上表のとおり「悪意の承認者に対する保証ではない」と明記した。下界(提案エントリの timestamp 以上)を課す案は窓内の詐称を止められず保証を足さないため採らない。
 
 **採用: P6-3 + `withdraw` op**。
 
@@ -283,6 +283,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 - 受理: `propose` / `approve` / `withdraw` / `set_approval_policy` は**汎用 append**(§11 — 付随データなし)。トークン水準は内側 op と同じ(admin)。受理ポリシー: pending 提案はプロジェクトあたり **32** 件まで(型付き 422 `ProposalLimit` — 合意規則ではない)
 - 適用完了時の副作用(`chain-accept.ts` の `applyAcceptanceSideEffectsSync`): 完成した approve エントリに対し、内側 op の副作用(remove → 要ローテーション検出・申告行の削除、add → 旧鍵ラップ掃除・招待 completed 化)を走らせる
 - ミラー: `chain.proposed` / `chain.approved` / `chain.proposal_withdrawn` / `chain.approval_policy_changed`(1 エントリ 1 行 — 全単射不変)。**完成した approve エントリは、加えて内側 op のミラー行**(`chain.member_removed` 等)を**同じ chain_seq** で書き、payload に `{ viaProposalSeq }` を付す(要ローテーション検出の在籍区間 Q1 が `chain.member_removed` を読む構造を変えない)。`audit verify` の全単射検査は「1 エントリ ↔ 1 行 + 完成 approve の適用行」に改める
+- **四眼経由の `add_member` / scope 拡大のバックフィル履行者(2026-09-14 pullfrog レビュー対応)**: 適用は承認者の approve エントリの seq で起き、提案者のクライアントは通常動いていない。remove の sweep と対称に、**適用を完成させた承認者のクライアントがバックフィル(対象の scope の全環境 × 全エポック)も走らせる**。承認者 = owner = all なので DEK を持ち、包含規則から履行可能。AUTH_SPEC §12-6 の独立登録経路に 5 番目として明記(spec-drafts B-6 / A-6)。既定推奨集合に `add_member` は入っていないが `change_role` は入っており拡大は `change_role` で起きるため、既定構成でも到達する経路
 - CLI: 新グループ **`maruhi approval`**(`list` / `show <id>` / `approve <id>` / `withdraw <id>` — `maruhi key approve <code>`〔KL3 ハンドオフ〕とは別グループで衝突しない。id = 提案エントリのハッシュ〔hex 64。先頭 8 文字の一意接頭辞を受け付ける〕)、**`maruhi project policy approvals --required N [--ops …]`**(オン / 変更 / `--off`)。既存の `member remove` / `member change-role` / `server grant` / `server revoke` / `member add` は方針が対象にしていれば `propose` を出して「needs N−1 more owner approval(s)」を表示して終了(rotate 義務は適用後に `member remove` の再実行または `approval approve` 側の sweep で収束 — 承認者が rotate を実行する)。**承認者の CLI が承認後に sweep を走らせる**(remove の完成者 = 承認者が §7 の履行者。包含規則により owner は all なので履行可能)
 - Web: pending 提案の一覧表示のみ(署名は Web に置かない — ADR-0018)
 
@@ -334,9 +335,9 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 17 | 方針の置き場と既定(P2 / P3) | 新 op `set_approval_policy` = `[ops_lp_hex, required_approvals]`。既定オフ。有効化は owner ≥ required。**方針 op 自身は常に現方針に服す**。owner 数を required 未満にする op は無効(`approval-quorum-unreachable`)。対象可能 op = grant_server / revoke_server / remove_member / change_role / add_member / set_approval_policy。既定推奨集合 = {grant_server, remove_member, change_role, set_approval_policy} | genesis 固定 / チェーン外設定 / 2 固定 | 単独 owner を壊さない。オフにするのに四眼が要る |
 | 18 | 承認者と提案者(P4) | 承認者 = owner のみ(distinct)。提案者 = 内側 op を実行できる role。owner の提案は 1 票 | admin 承認者 | owner の管理権限の迂回を作らない |
 | 19 | 適用点と再検査(P5) | 定足数到達の approve の seq で適用(inclusive)。提案時 + 適用時に内側 op の合意規則を検査、適用時は提案者の現在性(`proposal-void`)も | 適用失敗で提案が自動的に閉じる | 承認署名に「閉じる」効果を持たせない |
-| 20 | 期限(P6) | `expires_at_ms`(既定 7 日)+ 合意規則 `approve.timestamp_ms ≤ expires_at_ms`(`proposal-expired`)。**timestamp を合意規則に用いる唯一の箇所・拒否方向のみ** | 期限なし / seq 距離 | 文脈を失った承認の抑止。嘘の時計は自傷にしかならない |
+| 20 | 期限(P6) | `expires_at_ms`(既定 7 日)+ 合意規則 `approve.timestamp_ms ≤ expires_at_ms`(`proposal-expired`)。**timestamp を合意規則に用いる唯一の箇所。正直な承認者向けの UX 安全装置であり、悪意の承認者(過去方向の詐称)に対する保証ではない** | 期限なし / seq 距離 / 下界の追加(窓内詐称を止められない) | 文脈を失った承認の抑止。§14.2-10 の保証は期限に依存しない |
 | 21 | remove の義務の起点(P7) | 適用時点 | 提案時点 | 適用前に失効する DEK はない |
-| 22 | 受理・監査(P8) | 汎用 append。pending ≤ 32(受理ポリシー)。ミラー 4 種 + 完成 approve の適用行(同 chain_seq・`viaProposalSeq`)。`audit verify` の全単射規則の改訂 | — | 検出(Q1)の入力構造を変えない |
+| 22 | 受理・監査・履行者(P8) | 汎用 append。pending ≤ 32(受理ポリシー)。ミラー 4 種 + 完成 approve の適用行(同 chain_seq・`viaProposalSeq`)。`audit verify` の全単射規則の改訂。**四眼経由の add_member / scope 拡大のバックフィルと remove / 降格 / 縮小の rotate は、適用を完成させた承認者が履行**(§12-6 の 5 番目の経路) | 提案者による履行(適用時に不在) | 検出(Q1)の入力構造を変えない。承認者 = owner = all で履行可能 |
 | 23 | CLI 名(P8) | `maruhi approval list / show / approve / withdraw`、`maruhi project policy approvals`。既存コマンドの自動提案化。承認者側で sweep | `maruhi key approve` との同居 | KL3 のハンドオフ承認と衝突させない |
 | 24 | テストベクター(§11) | K2 で `chain-entries.json` 全再生成 + `invite-link.json` + チェーン依存 3 ファイルの再生成。他は不変(README 規約 27 として明記) | 純追記 | 1 の帰結 |
 
