@@ -22,7 +22,7 @@
 > |---|---|
 > | `reader` | scope 内の環境の値の取得・復号のみ(DEK ラップは scope 内の環境について受け取る)。チェーン追記不可 |
 > | `member` | + scope 内の環境の値の更新(新バージョンの push)、`rotate_epoch`、`checkpoint`。scope = all なら `create_environment` |
-> | `admin` | + 自分の scope に包含される scope を持つ reader / member を対象とする `add_member` / `remove_member` / `change_role` |
+> | `admin` | + reader / member を対象とする `add_member` / `remove_member` / `change_role` — ただし**その操作が生む義務の環境集合**(add = 新 scope、change_role = 旧 scope と新 scope の対称差 ∪ 降格分、remove = 現 scope — 原則 1)が自分の scope に包含される範囲に限る |
 > | `owner` | + admin の管理、`grant_server` / `revoke_server`、`set_approval_policy`、プロジェクト削除。**scope は常に all**。最後の owner は削除・降格不可 |
 >
 > - **環境スコープ(2026-09-14 ES 改訂 — 旧未決事項 #11)**: `genesis` / `add_member` / `change_role` はメンバーの **scope** を確立する。scope の正規化は payload の 2 フィールド `scope_kind`(`"all"` | `"listed"`)と `scope_environments_lp_hex`(environment_id リストを §2.1 で LP 化した hex 小文字文字列 — `grant_server` の `scope_environments` と同じ入れ子 LP。リストの順序は署名対象バイト列の一部。生成時はコードポイント昇順・重複なしで並べることを推奨〔SHOULD〕し、検証は集合として扱う)。`genesis` は payload に scope を持たず、作成者の scope は構造的に `all` である。合意規則:
