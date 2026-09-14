@@ -131,7 +131,9 @@ export async function resignEntryAt(
     ...rest,
     seq,
     prevHashHex,
-    timestampMs: BASE_TIME_MS + seq * 1000,
+    // approve の timestamp_ms は合意規則の入力(§6.2 `proposal-expired` — 本仕様で
+    // timestamp を用いる唯一の箇所)なので原本を保つ。他の op は seq 由来の決定値
+    timestampMs: base.op === "approve" ? base.timestampMs : BASE_TIME_MS + seq * 1000,
   };
   const entry = await signAs(base.actor.userId, unsigned);
   return { entry, hash: await computeChainEntryHash(entry) };
@@ -173,6 +175,8 @@ export function addMemberOperation(
       encPubHex: keys.enc_pub_hex,
       sigPubHex: keys.sig_pub_hex,
       role,
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
     },
   };
 }

@@ -9,6 +9,8 @@
 // grant_server の scope_environments は環境 ID リストの LP の hex 文字列(入れ子 LP)。
 // grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2)。
 // checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2)。
+// add_member / change_role の scope、set_approval_policy の ops は環境 ID / op 名リストの
+// 入れ子 LP の hex、propose の内側 payload は内側 op の payload_bytes の hex(2026-09-14)。
 
 import { encodeHex } from "./bytes.ts";
 import type {
@@ -20,6 +22,7 @@ import type {
 } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import { sha256 } from "./hash.ts";
+import { canonicalScopeEnvironmentsHex } from "./member-scope.ts";
 
 /**
  * Canonical bytes of a grant_server lease policy (CRYPTO_SPEC §6.2): a
@@ -80,15 +83,29 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
       return encodeLengthPrefixed([p.encPubHex, p.sigPubHex]);
     }
     case "add_member": {
+      // 2026-09-14 ES: scope_kind / scope_environments_lp_hex を末尾に追加(§6.2)。
+      // scope の環境リストは grant_server の scope と同じ入れ子 LP の hex
       const p = operation.payload;
-      return encodeLengthPrefixed([p.targetUserId, p.encPubHex, p.sigPubHex, p.role]);
+      return encodeLengthPrefixed([
+        p.targetUserId,
+        p.encPubHex,
+        p.sigPubHex,
+        p.role,
+        p.scopeKind,
+        canonicalScopeEnvironmentsHex(p.scopeEnvironmentIds),
+      ]);
     }
     case "remove_member": {
       return encodeLengthPrefixed([operation.payload.targetUserId]);
     }
     case "change_role": {
       const p = operation.payload;
-      return encodeLengthPrefixed([p.targetUserId, p.newRole]);
+      return encodeLengthPrefixed([
+        p.targetUserId,
+        p.newRole,
+        p.scopeKind,
+        canonicalScopeEnvironmentsHex(p.scopeEnvironmentIds),
+      ]);
     }
     case "create_environment": {
       const p = operation.payload;
@@ -116,6 +133,24 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
       const p = operation.payload;
       const environmentsLpHex = encodeHex(canonicalCheckpointEnvironmentsBytes(p.environments));
       return encodeLengthPrefixed([environmentsLpHex, p.auditHeadHashHex]);
+    }
+    // 四眼(2026-09-14 PF1 — §6.2)。ops は scope と同じ入れ子 LP の hex、内側 payload は
+    // 内側 op 自身の payload_bytes の hex(§6.1 の入れ子と同型 — 2 段以上の入れ子になりうる)
+    case "set_approval_policy": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([encodeHex(encodeLengthPrefixed(p.ops)), p.requiredApprovals]);
+    }
+    case "propose": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([
+        p.inner.op,
+        encodeHex(canonicalChainPayloadBytes(p.inner)),
+        p.expiresAtMs,
+      ]);
+    }
+    case "approve":
+    case "withdraw": {
+      return encodeLengthPrefixed([operation.payload.proposalHashHex]);
     }
   }
 }

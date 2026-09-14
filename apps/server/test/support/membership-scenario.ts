@@ -40,6 +40,7 @@ import {
   vectorEntries,
   vectorExtendedChains,
   vectorProjectId,
+  type VectorEntry,
 } from "./chain-vectors.ts";
 import type { WireEnvironmentManifest } from "./data-crypto.ts";
 import {
@@ -65,6 +66,13 @@ const GITHUB_IDS: Record<string, number> = {
   "user-owner-0001": 9001,
   "user-member-0002": 9002,
   "user-admin-0003": 9003,
+  // 2026-09-14 ES + PF1: 正規チェーン seq 13〜19 で加わる listed / all のメンバーと owner
+  "user-devmember-0010": 9010,
+  "user-devadmin-0011": 9011,
+  "user-prodreader-0012": 9012,
+  "user-allmember-0013": 9013,
+  "user-owner-0014": 9014,
+  "user-owner-0015": 9015,
 };
 
 let tokens: Record<string, string> = {};
@@ -344,12 +352,47 @@ export interface ReplayResult {
  * バイト固定は crypto 層の 4 実行環境テストが担い、ここでは「同じ op 列を API が
  * 受理する」ことを固定する)。
  */
+/**
+ * 提案 hash の写像(ベクターの propose エントリの entry_hash → 実ヘッドで再署名した
+ * 同エントリの entry_hash)。境界 checkpoint の挿入で seq / prev がずれると propose の
+ * hash も変わるため、approve / withdraw が参照する `proposal_hash_hex`(§6.2 — 提案
+ * エントリの entry_hash)を再生時の実 hash へ付け替える。未知の hash(negative の
+ * 存在しない提案)は写像に無いのでそのまま(意味論を保つ)
+ */
+const replayProposalHashes = new Map<string, string>();
+
+/** approve / withdraw の参照先を再生時の実 hash へ付け替える(propose 以外はそのまま)。 */
+export function remapProposalRef(entry: ChainEntry): ChainEntry {
+  if (entry.op !== "approve" && entry.op !== "withdraw") {
+    return entry;
+  }
+  const actual = replayProposalHashes.get(entry.payload.proposalHashHex);
+  return actual === undefined ? entry : { ...entry, payload: { proposalHashHex: actual } };
+}
+
+/** ベクターと実ヘッドの整合を保った再署名(参照先の付け替え → 再署名 → propose の hash 記録)。 */
+async function resignForReplay(
+  vector: VectorEntry,
+  head: ReplayHead,
+): Promise<{ readonly entry: ChainEntry; readonly hash: string }> {
+  const wire = remapProposalRef(toWireEntry(vector));
+  const signed =
+    head.seq === vector.seq - 1 && head.hashHex === vector.prev_hash_hex
+      ? { entry: wire, hash: vector.entry_hash_hex }
+      : await resignEntryAt(wire, head.seq + 1, head.hashHex);
+  if (signed.entry.op === "propose") {
+    replayProposalHashes.set(vector.entry_hash_hex, signed.hash);
+  }
+  return signed;
+}
+
 export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
   const members: string[] = [];
   const serverGrants = new Map<string, TrackedServerGrant>();
   let head: ReplayHead = { seq: 0, hashHex: "" };
-  // マニフェスト追跡は再生ごとにやり直す(beforeEach が DO を消すため)
+  // マニフェスト・提案 hash の追跡は再生ごとにやり直す(beforeEach が DO を消すため)
   replayManifests.clear();
+  replayProposalHashes.clear();
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
       break;
@@ -363,10 +406,7 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
       continue;
     }
     // ヘッドがベクターどおりならエントリは原本バイトのまま(再署名は決定的に同一)
-    const { entry, hash } =
-      head.seq === vector.seq - 1 && head.hashHex === vector.prev_hash_hex
-        ? { entry: wire, hash: vector.entry_hash_hex }
-        : await resignEntryAt(wire, head.seq + 1, head.hashHex);
+    const { entry, hash } = await resignForReplay(vector, head);
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       const environmentId = entry.payload.environmentId;
       const serverRecipients = [...serverGrants.entries()]
@@ -406,7 +446,7 @@ export async function replayNegativePrefix(negative: {
   const base = await replayVectorChain(extended.base_seq);
   let head = base.head;
   for (const vector of extended.entries) {
-    const { entry, hash } = await resignEntryAt(toWireEntry(vector), head.seq + 1, head.hashHex);
+    const { entry, hash } = await resignForReplay(vector, head);
     const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
     expect(response.status).toBe(200);
     head = { seq: entry.seq, hashHex: hash };

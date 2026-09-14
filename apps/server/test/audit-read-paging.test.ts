@@ -143,6 +143,8 @@ async function issueInvite(role: string): Promise<string> {
   const response = await requestJson("POST", "/invites", token(OWNER), {
     id,
     role,
+    scopeKind: "all",
+    scopeEnvironmentIds: [],
     linkPubHex,
     headHashHex: "ab".repeat(32),
     headSeq: 1,

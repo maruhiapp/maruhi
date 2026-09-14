@@ -7,6 +7,12 @@
 /** 招待で付与できるチェーン role(owner は招待経由で付与しない — §15-1)。 */
 export type InviteRole = "reader" | "member" | "admin";
 
+/** 付与予定 scope(AUTH_SPEC §15-2 — 2026-09-14 ES。CRYPTO_SPEC §6.2 と同じ形)。 */
+export interface InviteScope {
+  readonly scopeKind: "all" | "listed";
+  readonly scopeEnvironmentIds: readonly string[];
+}
+
 /** 保存上の招待状態(期限切れは expires_at からの導出で、保存状態ではない)。 */
 export type InviteStatus = "pending" | "accepted" | "completed" | "revoked";
 
@@ -38,6 +44,8 @@ export interface InvitationRecord {
   readonly id: string;
   readonly projectId: string;
   readonly role: InviteRole;
+  /** 付与予定 scope(発行文の一部 — 発行署名が覆う。§15-2) */
+  readonly scope: InviteScope;
   readonly inviterUserId: string;
   readonly status: InviteStatus;
   readonly expiresAtMs: number;

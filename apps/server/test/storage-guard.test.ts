@@ -241,6 +241,8 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
         encPubHex: "ab".repeat(32),
         sigPubHex: "cd".repeat(32),
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
     const grantServer = await signedEntry({
@@ -403,7 +405,12 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
     });
     const changeRole = await signedEntry({
       op: "change_role",
-      payload: { targetUserId: READER, newRole: "member" },
+      payload: {
+        targetUserId: READER,
+        newRole: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     });
     const revokeServer = await signedEntry({
       op: "revoke_server",

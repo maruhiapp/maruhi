@@ -69,6 +69,8 @@ function toSummary(record: InvitationRecord) {
     id: record.id,
     projectId: record.projectId,
     role: record.role,
+    scopeKind: record.scope.scopeKind,
+    scopeEnvironmentIds: record.scope.scopeEnvironmentIds,
     status: record.status,
     inviterUserId: record.inviterUserId,
     issuance: record.issuance,
@@ -161,6 +163,11 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
             id: payload.id,
             projectId: params.projectId,
             role: payload.role,
+            // scope は形式検査のみ(Schema)— 存在・包含は add_member 受理時の合意規則
+            scope: {
+              scopeKind: payload.scopeKind,
+              scopeEnvironmentIds: payload.scopeEnvironmentIds,
+            },
             inviterUserId: principal.userId,
             issuance: {
               linkPubHex: payload.linkPubHex,
@@ -241,7 +248,13 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         }
         // 最小応答(§15-1: サーバー申告を信頼させる面を作らない — 招待者情報・
         // アンカーはリンクのフラグメントが運ぶ)
-        return { id: record.id, projectId: record.projectId, role: record.role };
+        return {
+          id: record.id,
+          projectId: record.projectId,
+          role: record.role,
+          scopeKind: record.scope.scopeKind,
+          scopeEnvironmentIds: record.scope.scopeEnvironmentIds,
+        };
       }),
     )
     .handle("list", ({ params, endpoint }) =>

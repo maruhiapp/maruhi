@@ -3,13 +3,16 @@
 // リンク形式:
 //   https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>
 //     &h=<head_hash_hex>&s=<head_seq>&iu=<inviter_user_id>&ie=<inviter_enc_pub_hex>
-//     &is=<inviter_sig_pub_hex>&r=<role>[&il=<inviter_github_login>]&sig=<issue_signature_hex>
+//     &is=<inviter_sig_pub_hex>&r=<role>&sk=<scope_kind>&se=<environment_id の comma 区切り>
+//     [&il=<inviter_github_login>]&sig=<issue_signature_hex>
 //
 // フラグメント(# 以降)はサーバーへ送信されない。`k` はリンク鍵の種(CRYPTO_SPEC
 // §6.5 — 受諾側が Ed25519 鍵ペアを導出してリンク署名を作る。サーバーは受け取らない)、
-// `i` / `p` / `h` / `s` / `r` / `iu` / `ie` / `is` は発行文(発行署名 `sig` が覆う —
-// 招待者のチェーン sig 鍵)、`il` は裏付け元(GitHub)の照合材料(自己申告・署名外・
-// 省略可)。旧 `if`(FP)は廃止し、FP は `ie` ‖ `is` から導出する。
+// `i` / `p` / `h` / `s` / `r` / `sk` / `se` / `iu` / `ie` / `is` は発行文(発行署名 `sig`
+// が覆う — 招待者のチェーン sig 鍵)、`il` は裏付け元(GitHub)の照合材料(自己申告・
+// 署名外・省略可)。旧 `if`(FP)は廃止し、FP は `ie` ‖ `is` から導出する。
+// `sk` / `se` は付与予定 scope(2026-09-14 ES — `sk=all` なら `se` は空。K2 の CLI は
+// `all` のみ発行し、`--env` は K4)。
 //
 // <web-origin> には CLI セッションの server origin を使う(B1b 裁定)。解釈側は
 // origin に依存しない(フラグメントのみを読む)。
@@ -19,12 +22,16 @@
 // 直前(invite.ts — エージェントゲートの後ろ)だけに限る。`v=1` リンクと生トークン
 // は受け付けない(互換経路を作らない 2026-09-13 所有者裁定)。
 
-import { isProjectId } from "@maruhi/core";
+import { isEnvironmentId, isProjectId } from "@maruhi/core";
+import type { ScopeKind } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_128 = /^[0-9a-f]{128}$/;
 const ROLES = ["reader", "member", "admin"] as const;
+const SCOPE_KINDS: readonly ScopeKind[] = ["all", "listed"];
+/** scope の環境リスト上限(CRYPTO_SPEC §6.2 — grant_server の scope と同じ 256)。 */
+const MAX_SCOPE_ENVIRONMENTS = 256;
 /** 招待 id(ULID — Crockford Base32 26 文字。api-schema の InviteIdSchema と同一)。 */
 const INVITE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 /** GitHub login(1〜39 文字の英数字とハイフン。先頭・末尾はハイフン不可)。 */
@@ -45,6 +52,9 @@ export interface InviteLinkData {
   readonly inviterEncPubHex: string;
   readonly inviterSigPubHex: string;
   readonly role: InviteRole;
+  /** 付与予定 scope(2026-09-14 ES — 発行署名が覆う。`all` なら環境リストは空)。 */
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly string[];
   /** 招待者の GitHub login(自己申告・署名外。省略時は null)。 */
   readonly inviterLogin: string | null;
   readonly issueSignatureHex: string;
@@ -73,6 +83,8 @@ export function buildInviteLink(input: {
     ["ie", link.inviterEncPubHex],
     ["is", link.inviterSigPubHex],
     ["r", link.role],
+    ["sk", link.scopeKind],
+    ["se", link.scopeEnvironmentIds.join(",")],
     ...(link.inviterLogin === null ? [] : [["il", link.inviterLogin] as const]),
     ["sig", link.issueSignatureHex],
   ];
@@ -140,6 +152,33 @@ function stringParams(params: URLSearchParams): StringParams | null {
   return out as StringParams;
 }
 
+/**
+ * `sk=` / `se=`(付与予定 scope)の解釈: kind は閉集合、`all` なら `se` は空、`listed` は
+ * comma 区切りの environment_id(§12-1 形式・重複なし・256 以下。空 = どの環境も
+ * 付与しない listed)。構造規則は CRYPTO_SPEC §6.2 の scope と同じ(不正 = null)
+ */
+function parseScope(
+  params: URLSearchParams,
+): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | null {
+  const kind = SCOPE_KINDS.find((known) => known === params.get("sk"));
+  const text = params.get("se");
+  if (kind === undefined || text === null) {
+    return null;
+  }
+  if (kind === "all") {
+    return text === "" ? { scopeKind: "all", scopeEnvironmentIds: [] } : null;
+  }
+  const ids = text === "" ? [] : text.split(",");
+  if (
+    ids.length > MAX_SCOPE_ENVIRONMENTS ||
+    !ids.every((id) => isEnvironmentId(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    return null;
+  }
+  return { scopeKind: "listed", scopeEnvironmentIds: ids };
+}
+
 /** `p=`(プロジェクト ID)の解釈。 */
 function parseProjectId(params: URLSearchParams): string | null {
   const value = params.get("p");
@@ -152,12 +191,14 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
   const projectId = parseProjectId(params);
   const headSeq = parseHeadSeq(params);
   const role = ROLES.find((known) => known === params.get("r")) ?? null;
+  const scope = parseScope(params);
   const inviterLogin = parseInviterLogin(params);
   if (
     strings === null ||
     projectId === null ||
     headSeq === null ||
     role === null ||
+    scope === null ||
     inviterLogin === "invalid"
   ) {
     return null;
@@ -172,6 +213,8 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
     inviterEncPubHex: strings.ie,
     inviterSigPubHex: strings.is,
     role,
+    scopeKind: scope.scopeKind,
+    scopeEnvironmentIds: scope.scopeEnvironmentIds,
     inviterLogin,
     issueSignatureHex: strings.sig,
   };

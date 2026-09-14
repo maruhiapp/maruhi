@@ -453,6 +453,8 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
           encPubHex: encodeHex(await exportEncryptionPublicKey(newEncPair.publicKey)),
           sigPubHex: encodeHex(await exportSigningPublicKey(newSigPair.publicKey)),
           role: "member",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
         },
       },
     });

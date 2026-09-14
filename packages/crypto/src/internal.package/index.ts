@@ -17,6 +17,10 @@ export {
 export { signChainEntry } from "./chain-sign.ts";
 export {
   type AddMemberPayload,
+  APPROVAL_TARGET_OPS,
+  type ApprovalPolicy,
+  type ApprovalTargetOp,
+  type ApprovePayload,
   type ChainActor,
   type ChainEntry,
   type ChainMember,
@@ -33,13 +37,28 @@ export {
   type GrantServerPayload,
   type LeaseClaimConstraint,
   type LeasePolicyIssuer,
+  type PendingProposal,
+  type ProposableOperation,
+  type ProposePayload,
   type RemoveMemberPayload,
   type RevokeServerPayload,
   type Role,
   type RotateEpochPayload,
   type ServerGrant,
+  type SetApprovalPolicyPayload,
   type UnsignedChainEntry,
+  type WithdrawPayload,
 } from "./chain-types.ts";
+export {
+  ALL_SCOPE,
+  MAX_SCOPE_ENVIRONMENTS,
+  type MemberScope,
+  memberScopeOf,
+  type ScopeKind,
+  type ScopePayloadFields,
+  scopeIncludesEnvironment,
+  scopePayloadFieldsOf,
+} from "./member-scope.ts";
 export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
 export {
   computeEnvValuesDigest,

@@ -457,6 +457,8 @@ describe("招待の作成・受諾(§15-2)", () => {
     await expectStrictReject(send, {
       id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       role: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
       linkPubHex: "ab".repeat(32),
       headHashHex: "cd".repeat(32),
       headSeq: 3,

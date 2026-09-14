@@ -7,6 +7,7 @@
 //   4. op ごとのチェーン role 認可は verifyChain(§6.2)が真実源
 
 import {
+  ApprovalNotAcceptedError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   CompositeRequiredError,
@@ -324,6 +325,17 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // 原子保存を行う)
         if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
+        }
+        // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は受理副作用(AUDIT_SPEC §3.4 のミラー行 /
+        // 適用行・要ローテーション検出・ラップ掃除・pending 上限)が揃う K5 まで
+        // 受理しない(fail-closed。DO 側にも同じガード — 設計録 es-design.md §8 K2-10)
+        if (
+          payload.entry.op === "set_approval_policy" ||
+          payload.entry.op === "propose" ||
+          payload.entry.op === "approve" ||
+          payload.entry.op === "withdraw"
+        ) {
+          return yield* Effect.fail(new ApprovalNotAcceptedError({ op: payload.entry.op }));
         }
         // §11-1: 追記エントリの actor = 認証主体(受理ポリシー)
         yield* ensureActorMatches(principal, payload.entry);

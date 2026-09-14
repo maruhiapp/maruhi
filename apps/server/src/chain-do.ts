@@ -364,6 +364,9 @@ const initProgram = (
     }
     // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
+    // init は Schema 上は全 op を受理するが、seq 1 の非 genesis は verifyChain の
+    // フレーミング規則(bad-genesis)で必ず 422 になる — 四眼 4 op の受理ガード
+    // (appendProgram)を init に置かないのはこの不変条件に依る(独立レビュー D3)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
     // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
     // エントリの束縛が崩れていたら受理しない(worker 側バグへの防衛)
@@ -399,6 +402,14 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
     };
   });
 
+const APPROVAL_OPS = ["set_approval_policy", "propose", "approve", "withdraw"] as const;
+type ApprovalOp = (typeof APPROVAL_OPS)[number];
+
+/** 四眼の 4 op(PF1)か — K5 までの受理拒否の判定(worker ハンドラと同じ集合)。 */
+function isApprovalOp(op: ChainEntry["op"]): op is ApprovalOp {
+  return (APPROVAL_OPS as readonly string[]).includes(op);
+}
+
 /**
  * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
  * add_member / grant_server の拒否と remove_member / checkpoint の非遮断を、
@@ -421,6 +432,16 @@ export const appendProgram = (
     // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
+    }
+    // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は K5 まで受理しない(fail-closed — 設計録
+    // es-design.md §8 K2-10)。verifyChain は受理できるが、完成した approve が内側 op
+    // を適用する副作用(AUDIT_SPEC §3.4 の適用行・§7 の要ローテーション検出・
+    // 再追加メンバーの旧鍵ラップ掃除・申告行の削除・§12-8 の成長ガード)は op 判定で
+    // 分岐する既存経路が拾えず、ミラー行は v1 でバックフィルしないため欠落が
+    // 恒久化する。worker ハンドラが先行拒否するが、受理判定の権威である DO 側にも
+    // 同じガードを置く(composite-required と同じ多層防御)
+    if (isApprovalOp(entry.op)) {
+      return yield* rejectData({ kind: "approval-not-accepted", op: entry.op });
     }
     // standalone(周期)checkpoint(AUTH_SPEC §16-2):
     // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と

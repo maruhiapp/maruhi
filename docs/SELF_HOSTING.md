@@ -849,6 +849,60 @@ is undone (interactive deploys ask for confirmation, but non-interactive deploys
 **continue after a warning only** — they do not error unless `--strict` is set,
 so do not miss the warning).
 
+**Breaking chain-format migration — environment scopes and four-eyes
+approval (2026-09-14 release, "ES + PF1 K2")**: this release changes the
+membership-chain consensus rules (CRYPTO_SPEC §6.2). `add_member` and
+`change_role` entries now carry the member's environment scope
+(`scopeKind` / `scopeEnvironmentIds`) inside the signed payload, invitations
+carry the scope in the issue statement and link, and four new chain
+operations exist (`set_approval_policy` / `propose` / `approve` / `withdraw`).
+**This server release does not accept the four four-eyes operations yet**: a
+generic chain append carrying one of them is rejected with HTTP 422
+`ApprovalNotAccepted` (fail-closed) until the release that also ships their
+acceptance side effects (audit mirror rows, rotation detection, pending limit).
+Nothing in the CLI issues them in this release.
+There is **no compatibility path**: a chain entry in the old format is invalid
+under the new rules, and an entry in the new format is invalid under the old
+ones. Concretely, the version-skew behaviors are:
+
+- **Updated server × not-yet-updated CLI**: the old CLI's `add_member` /
+  `change_role` appends and invite issuance are rejected with HTTP 400 (schema
+  — the scope fields are missing). Even an entry that carries the fields but
+  was signed by an old client is rejected with HTTP 422 `ChainEntryInvalid`
+  (`bad-signature`), because the old client signs without the scope fields.
+  An old CLI that *reads* a project whose chain contains post-release members
+  fails closed at verification time (the same signature mismatch, or an
+  unknown operation once a four-eyes entry exists). Nothing is silently
+  accepted or dropped.
+- **Updated CLI × old server**: the new CLI's appends and invite issuance
+  carry fields the old server does not know and are rejected with HTTP 400
+  (the strict-acceptance rule above). Reads of an old-format chain by a new CLI
+  fail at decoding. So the server must be updated first, as always.
+- **Existing projects**: the server re-verifies the whole chain on every
+  append, so a project whose chain contains an old-format `add_member` or
+  `change_role` entry cannot accept further appends (HTTP 422
+  `ChainEntryInvalid`, `invalid-payload` at that entry) and updated CLIs
+  cannot verify it. Such projects must be **recreated**. A project whose chain
+  has only the owner (no `add_member` / `change_role` entry — genesis,
+  environments, rotations, grants and checkpoints keep their format) stays
+  valid and needs nothing.
+
+Do the migration in this order:
+
+1. **Before updating anything**, with the not-yet-updated CLI, get the values
+   of every project that has members out of maruhi where you need them
+   (`maruhi sync` to your deploy targets, or `maruhi run` for one-off use) —
+   after the update those projects can no longer be read.
+2. **Update the server** (`git pull` + `bun run deploy` as above). The
+   migration also drops all pending invitations (their issue statements do not
+   cover a scope and cannot be accepted anymore).
+3. **Update every CLI and CI workflow** (`maruhi ci …` included).
+4. **Recreate each affected project**: `maruhi project init`, create the
+   environments, push the values, and re-invite the members (`maruhi invite
+   create` — the CLI issues scope `all` at this release; per-environment
+   scopes arrive with a later release). Then delete the old project. Workload
+   leases and `maruhi server grant` need to be redone on the new project.
+
 ## Troubleshooting
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503

@@ -90,6 +90,9 @@ export type InviteeKeys = Awaited<ReturnType<typeof makeInviteeKeys>>;
 export interface IssuePayload {
   readonly id: string;
   readonly role: "reader" | "member" | "admin";
+  /** 付与予定 scope(AUTH_SPEC §15-2 — 2026-09-14 ES)。 */
+  readonly scopeKind: "all" | "listed";
+  readonly scopeEnvironmentIds: readonly string[];
   readonly linkPubHex: string;
   readonly headHashHex: string;
   readonly headSeq: number;
@@ -124,6 +127,8 @@ export async function makeIssuePayload(
     inviterUserId: actorUserId,
     inviterEncPubHex: inviter.encPubHex,
     inviterSigPubHex: inviter.sigPubHex,
+    scopeKind: "all",
+    scopeEnvironmentIds: [],
     ...overrides,
   };
   const signed = await signInviteIssue({ context, signingKey: inviter.pair.privateKey });
@@ -133,6 +138,8 @@ export async function makeIssuePayload(
   return {
     id: context.inviteId,
     role,
+    scopeKind: context.scopeKind,
+    scopeEnvironmentIds: context.scopeEnvironmentIds,
     linkPubHex: context.linkPubHex,
     headHashHex: context.headHashHex,
     headSeq: context.headSeq,
@@ -146,6 +153,8 @@ export function wirePayloadOf(payload: IssuePayload): Record<string, unknown> {
   return {
     id: payload.id,
     role: payload.role,
+    scopeKind: payload.scopeKind,
+    scopeEnvironmentIds: payload.scopeEnvironmentIds,
     linkPubHex: payload.linkPubHex,
     headHashHex: payload.headHashHex,
     headSeq: payload.headSeq,
@@ -289,7 +298,7 @@ export async function seedInvitation(input: {
 }): Promise<void> {
   const linkPub = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.id));
   await env.DB.prepare(
-    "INSERT INTO invitations (id, project_id, link_pub, head_hash, head_seq, issue_signature, role, inviter_user_id, status, expires_at, created_at) VALUES (?, ?, ?, ?, 1, ?, 'member', ?, ?, ?, ?)",
+    "INSERT INTO invitations (id, project_id, link_pub, head_hash, head_seq, issue_signature, role, scope_kind, scope_environments, inviter_user_id, status, expires_at, created_at) VALUES (?, ?, ?, ?, 1, ?, 'member', 'all', '[]', ?, ?, ?, ?)",
   )
     .bind(
       input.id,

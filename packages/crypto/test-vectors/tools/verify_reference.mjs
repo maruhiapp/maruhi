@@ -43,9 +43,18 @@ const check = (name, ok, detail = "") => {
 // チェーン payload の正規化フィールド順(CRYPTO_SPEC §6.1 / §6.2)
 const PAYLOAD_FIELD_ORDER = {
   genesis: ["enc_pub_hex", "sig_pub_hex"],
-  add_member: ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role"],
+  // 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — ES): scope_kind / scope_environments_lp_hex を
+  // 末尾に追加した形が正規形(旧 4 / 2 フィールド形式は互換経路なし)
+  add_member: [
+    "target_user_id",
+    "enc_pub_hex",
+    "sig_pub_hex",
+    "role",
+    "scope_kind",
+    "scope_environments_lp_hex",
+  ],
   remove_member: ["target_user_id"],
-  change_role: ["target_user_id", "new_role"],
+  change_role: ["target_user_id", "new_role", "scope_kind", "scope_environments_lp_hex"],
   create_environment: ["environment_id", "dek_commitment_hex"],
   rotate_epoch: ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
   // 2026-08-12(CRYPTO_SPEC 0.5-draft §6.2): lease_policy_lp_hex を末尾に追加した
@@ -60,7 +69,18 @@ const PAYLOAD_FIELD_ORDER = {
   // 2026-08-27(CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): 環境エントリの
   // リストは scope_environments と同じ入れ子 LP の hex 文字列 1 フィールド
   checkpoint: ["environments_lp_hex", "audit_head_hash_hex"],
+  // 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — PF1 四眼): 4 op
+  set_approval_policy: ["ops_lp_hex", "required_approvals"],
+  propose: ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
+  approve: ["proposal_hash_hex"],
+  withdraw: ["proposal_hash_hex"],
 };
+
+// メンバー scope / 方針 ops の入れ子 LP(§6.2 — grant_server の scope_environments と同型):
+// 文字列リストの LP の hex 小文字。内側 payload(propose)は内側 op の payload_bytes の hex
+const stringListLp = (items) => lpEncode(items);
+const innerPayloadLp = (innerOp, innerPayload) =>
+  lpEncode(PAYLOAD_FIELD_ORDER[innerOp].map((k) => innerPayload[k]));
 
 // checkpoint の環境エントリの入れ子 LP(§6.2 — generate_reference.py と同一定義):
 //   entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
@@ -281,6 +301,73 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     // 空ポリシーは空バイト列の hex = 空文字列(regrant-lease-policy-revised が使う形)
     check("chain: empty lease_policy encodes to empty hex", toHex(leasePolicyLp([])) === "");
   }
+  // ES / PF1(2026-09-14 §6.2): 構造化表現からの入れ子 LP 再構築が *_lp_hex と一致する。
+  // 対象は正規チェーン + extended_chains / valid_appends / negative の全エントリ
+  {
+    const allEntries = [
+      ...doc.entries,
+      ...Object.values(doc.extended_chains ?? {}).flatMap((ext) => ext.entries),
+      ...doc.valid_appends.map((a) => a.entry),
+      ...doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
+    ];
+    // kind の閉集合 {all, listed} は正例(正規チェーン / 派生チェーン / valid_appends)
+    // にだけ主張する — negative(scope-kind-unknown が "some" を運ぶ)は対象外
+    const negativeEntries = new Set(
+      doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
+    );
+    let scoped = 0;
+    let policies = 0;
+    let proposals = 0;
+    for (const e of allEntries) {
+      const label = `chain ${e.op} seq ${e.seq} (${e.actor.user_id})`;
+      if (e.op === "add_member" || e.op === "change_role") {
+        scoped += 1;
+        const p = e.payload;
+        check(
+          `${label}: scope nested LP`,
+          toHex(stringListLp(p.scope_environments)) === p.scope_environments_lp_hex &&
+            (negativeEntries.has(e) || p.scope_kind === "all" || p.scope_kind === "listed"),
+        );
+      } else if (e.op === "set_approval_policy") {
+        policies += 1;
+        check(
+          `${label}: ops nested LP`,
+          toHex(stringListLp(e.payload.ops)) === e.payload.ops_lp_hex,
+        );
+      } else if (e.op === "propose") {
+        proposals += 1;
+        const p = e.payload;
+        // 未知の内側 op・内側 payload の形状違反(構造 negative)は空 LP(hex 空文字列)で運ぶ
+        const decodable =
+          Object.hasOwn(PAYLOAD_FIELD_ORDER, p.inner_op) &&
+          PAYLOAD_FIELD_ORDER[p.inner_op].every((k) => Object.hasOwn(p.inner_payload, k));
+        check(
+          `${label}: inner payload nested LP`,
+          decodable
+            ? toHex(innerPayloadLp(p.inner_op, p.inner_payload)) === p.inner_payload_lp_hex
+            : p.inner_payload_lp_hex === "",
+        );
+      }
+    }
+    check("chain: scoped member vectors exist", scoped > 0 && policies > 0 && proposals > 0);
+    // scope_kind = all は空リスト(hex 空文字列)— 正規チェーンの add_member / change_role
+    check(
+      "chain: canonical all-scope entries carry the empty list",
+      doc.entries
+        .filter((e) => e.op === "add_member" || e.op === "change_role")
+        .every((e) => e.payload.scope_kind !== "all" || e.payload.scope_environments_lp_hex === ""),
+    );
+    // approve / withdraw は提案エントリ(同一チェーン上の propose)の entry_hash を参照する。
+    // 正規チェーンの seq 22 / 24 が seq 21 / 23 を指すことを固定する
+    const propose21 = doc.entries[20];
+    check(
+      "chain: approve 22 references propose 21 / withdraw 24 references propose 23",
+      doc.entries[21].op === "approve" &&
+        doc.entries[21].payload.proposal_hash_hex === propose21.entry_hash_hex &&
+        doc.entries[23].op === "withdraw" &&
+        doc.entries[23].payload.proposal_hash_hex === doc.entries[22].entry_hash_hex,
+    );
+  }
   // checkpoint(§6.2 — PR-F3a): 構造化表現(environments)からの入れ子 LP 再構築が
   // environments_lp_hex と一致する。対象は checkpoint op を含む全エントリ
   // (extended_chains / valid_appends / negative の entry)
@@ -378,14 +465,19 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       e.timestamp_ms,
       e.signature_hex,
     ]);
+    // 追記の接続点は seq が指す正規エントリの直後(seq 13 = head 12、seq 10 = seq 9
+    // ヘッドへの再 grant 追記 …)。chain 指定つきは派生チェーン(extended_chains)の
+    // 末尾へ接続する(2026-09-14 ES / PF1 — negative の chain 指定と同じ運び方)
+    const expectedPrev =
+      a.chain === undefined
+        ? doc.entries[e.seq - 2].entry_hash_hex
+        : doc.extended_chains[a.chain].entries.at(-1).entry_hash_hex;
     check(
       `chain valid append: ${a.name} (signature must be VALID)`,
       sigOk &&
         toHex(payloadBytes) === e.payload_bytes_hex &&
         toHex(signed) === e.signed_bytes_hex &&
-        // 追記の接続点は seq が指す正規エントリの直後(seq 13 = 末尾ヘッド、
-        // seq 10 = seq 9 ヘッドへの再 grant 追記 — regrant-lease-policy-revised)
-        e.prev_hash_hex === doc.entries[e.seq - 2].entry_hash_hex &&
+        e.prev_hash_hex === expectedPrev &&
         toHex(entryBytes) === e.entry_bytes_hex &&
         (await sha256(entryBytes)) === e.entry_hash_hex,
     );
@@ -425,9 +517,18 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         e.timestamp_ms,
         e.signature_hex,
       ]);
+      // approve / withdraw の参照先は同一派生チェーン(または正規プレフィックス)上の
+      // propose エントリでなければならない(bogus な参照は negative にのみ現れる)
+      const referenced =
+        e.op === "approve" || e.op === "withdraw"
+          ? [...doc.entries.slice(0, ext.base_seq), ...ext.entries].find(
+              (x) => x.op === "propose" && x.entry_hash_hex === e.payload.proposal_hash_hex,
+            )
+          : true;
       check(
         `chain extended ${chainName} seq ${e.seq} (signature must be VALID)`,
-        sigOk &&
+        referenced !== undefined &&
+          sigOk &&
           e.seq === seq &&
           e.prev_hash_hex === prev &&
           toHex(payloadBytes) === e.payload_bytes_hex &&
@@ -678,11 +779,21 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.inviter_user_id,
       ctx.inviter_enc_pub_hex,
       ctx.inviter_sig_pub_hex,
+      // 2026-09-14 ES: 付与予定の scope(§6.2 と同じ符号化)を末尾に追加
+      ctx.scope_kind,
+      ctx.scope_environments_lp_hex,
     ]);
   const base = doc.issue.vectors[0];
   const head = chain.entries[chain.entries.length - 1];
+  for (const v of doc.issue.vectors) {
+    check(
+      `invite-issue-sig: ${v.name} scope nested LP`,
+      toHex(lpEncode(v.scope_environments)) === v.scope_environments_lp_hex &&
+        (v.scope_kind !== "all" || v.scope_environments_lp_hex === ""),
+    );
+  }
   check(
-    "invite-issue-sig: inviter is the chain owner and head is seq 12",
+    "invite-issue-sig: inviter is the chain owner and head is the canonical head",
     base.inviter_sig_pub_hex === chain.keys["user-owner-0001"].sig_pub_hex &&
       base.inviter_enc_pub_hex === chain.keys["user-owner-0001"].enc_pub_hex &&
       base.head_hash_hex === head.entry_hash_hex &&
@@ -714,9 +825,22 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     check(`invite-issue-sig: ${v.name} Ed25519 signature`, ok);
   }
   for (const n of doc.issue.negative) {
+    const selfBound = n.verify_key_hex === n.context.inviter_sig_pub_hex;
+    if (n.kind === "encoding") {
+      // 符号化系(旧 10 フィールド形式・平坦連結): 正規化はこのバイト列を生まず、
+      // かつそのバイト列では正規署名が検証に失敗する(chain-entries の flat-concat と同型)
+      const differs = toHex(signedBytes(n.context)) !== n.verify_signed_bytes_hex;
+      const verified = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(n.signature_hex),
+        fromHex(n.verify_signed_bytes_hex),
+      );
+      check(`invite-issue-sig negative: ${n.name}`, differs && selfBound && verified === false);
+      continue;
+    }
     const reconstructed = signedBytes(n.context);
     const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
-    const selfBound = n.verify_key_hex === n.context.inviter_sig_pub_hex;
     const verified = await crypto.subtle.verify(
       "Ed25519",
       await importSigPub(n.verify_key_hex),

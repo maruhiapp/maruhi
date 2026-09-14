@@ -5,6 +5,7 @@
 //   1. 署名(鍵の選択 = 履歴で writer_user_id に束縛された鍵のうち FP 一致)
 //   2. ヘッド束縛(seq → hash の一致。不一致 2 種 — mismatch / future — を区別)
 //   3. 認可時点(宣言ヘッド時点の在籍・鍵束縛・role — tenure 跨ぎの拒否を含む)
+//   3′. スコープ(宣言ヘッド時点の writer の scope が当該環境を含む — 2026-09-14 ES)
 //   4. エポック整合(宣言ヘッド時点の現エポック = 署名対象の epoch。環境作成前
 //      ヘッドの拒否を含む)
 //   6. 連鎖整合(predecessor を渡された場合のみ: prev 一致 + エポック非減少)
@@ -79,7 +80,7 @@ const HEAD_AUTHORIZATION_REASONS = {
 
 function headStateReason(input: DistributedValueInput): ValueInvalidReason | null {
   const { history, context } = input;
-  const authorization = headAuthorizationReason({
+  const authorization = headAuthorizationReason<ValueInvalidReason>({
     history,
     chainHeadSeq: context.chainHeadSeq,
     chainHeadHashHex: context.chainHeadHashHex,
@@ -87,6 +88,11 @@ function headStateReason(input: DistributedValueInput): ValueInvalidReason | nul
     actorKeyFingerprintHex: input.writerKeyFingerprintHex,
     requiredRoleRank: ROLE_RANK.member,
     reasons: HEAD_AUTHORIZATION_REASONS,
+    // 3′. スコープ(§6.3 — role の直後、エポック整合の前)
+    scope: {
+      environmentId: context.environmentId,
+      outOfScopeAtHead: "writer-environment-out-of-scope-at-head",
+    },
   });
   if (authorization !== null) {
     return authorization;

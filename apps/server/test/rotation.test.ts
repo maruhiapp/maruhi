@@ -107,6 +107,8 @@ async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"
       encPubHex: keys.enc_pub_hex,
       sigPubHex: keys.sig_pub_hex,
       role,
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
     },
   });
 }
@@ -679,6 +681,8 @@ describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
         encPubHex: "11".repeat(32),
         sigPubHex: "22".repeat(32),
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
     const readdSeq = fixture.head.seq;

@@ -35,7 +35,20 @@ export type ChainInvalidReason =
   // payload 構造検査(invalid-payload)に属し、専用理由コードを持たない
   | "checkpoint-audit-role-insufficient"
   | "checkpoint-epoch-mismatch"
-  | "checkpoint-regression";
+  | "checkpoint-regression"
+  // 環境スコープ(§6.2 — 2026-09-14 ES)。scope の構造規則(all + 非空・重複・上限)は
+  // invalid-payload、scope の各 id の存在は unknown-environment を再利用する
+  | "scope-role-mismatch"
+  | "scope-not-contained"
+  | "environment-out-of-scope"
+  // 四眼(§6.2 — 2026-09-14 PF1)。approve の owner 検査は insufficient-role を再利用する
+  | "approval-required"
+  | "approval-not-required"
+  | "approval-quorum-unreachable"
+  | "unknown-proposal"
+  | "duplicate-approval"
+  | "proposal-expired"
+  | "proposal-void";
 
 /**
  * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /
@@ -51,6 +64,8 @@ export type ChainInvalidReason =
  * - `writer-not-member-at-head` / `writer-key-mismatch-at-head` /
  *   `writer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
  *   key-mismatch は remove → 別鍵 re-add の tenure 跨ぎを含む)
+ * - `writer-environment-out-of-scope-at-head` — 宣言ヘッド時点の writer の scope が
+ *   当該環境を含まない(§6.3 の 3′ — role 検査の直後・エポック整合の前。2026-09-14 ES)
  * - `environment-not-created-at-head` / `epoch-not-current-at-head` —
  *   宣言ヘッド時点のエポック整合(§6.3-4)
  * - `prev-shape-mismatch` — version 1 は空 / version > 1 は 64 hex という
@@ -66,6 +81,7 @@ export type ValueInvalidReason =
   | "writer-not-member-at-head"
   | "writer-key-mismatch-at-head"
   | "writer-role-insufficient-at-head"
+  | "writer-environment-out-of-scope-at-head"
   | "environment-not-created-at-head"
   | "epoch-not-current-at-head"
   | "prev-shape-mismatch"
@@ -85,6 +101,8 @@ export type ValueInvalidReason =
  * - `author-not-member-at-head` / `author-key-mismatch-at-head` /
  *   `author-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
  *   role 水準は環境の削除のみ admin、それ以外は member — §4.2 / AUTH_SPEC §12-3)
+ * - `author-environment-out-of-scope-at-head` — 宣言ヘッド時点の author の scope が
+ *   当該環境を含まない(§6.3 の 3′ — 変数メタ・環境メタとも環境対象。2026-09-14 ES)
  * - `prev-shape-mismatch` — metaVersion 1 は空 / > 1 は 64 hex という prev の
  *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
  * - `prev-hash-mismatch` — predecessor を渡された場合のみの連鎖検査(§6.3-6)
@@ -110,6 +128,7 @@ export type MetaInvalidReason =
   | "author-not-member-at-head"
   | "author-key-mismatch-at-head"
   | "author-role-insufficient-at-head"
+  | "author-environment-out-of-scope-at-head"
   | "prev-shape-mismatch"
   | "prev-hash-mismatch"
   | "revived-after-delete"
@@ -129,6 +148,8 @@ export type MetaInvalidReason =
  * - `issuer-not-member-at-head` / `issuer-key-mismatch-at-head` /
  *   `issuer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
  *   発行契機はすべて member 以上のメタ操作 — §4.3)
+ * - `issuer-environment-out-of-scope-at-head` — 宣言ヘッド時点の issuer の scope が
+ *   当該環境を含まない(§6.3 の 3′ — role 検査の直後・prev / エポック検査の前。2026-09-14 ES)
  * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
  *   `environment-not-created-at-head` / `epoch-not-current-at-head` —
  *   エポック整合(§4.3 (2)):
@@ -186,6 +207,7 @@ export type ManifestInvalidReason =
   | "issuer-not-member-at-head"
   | "issuer-key-mismatch-at-head"
   | "issuer-role-insufficient-at-head"
+  | "issuer-environment-out-of-scope-at-head"
   | "environment-not-created-at-head"
   | "epoch-not-current-at-head"
   | "checkpoint-binding-mismatch"

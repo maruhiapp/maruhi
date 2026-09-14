@@ -124,7 +124,12 @@ describe("invite issue", () => {
     // member を admin へ昇格(change_role は owner 操作)
     await appendOperation(fixture, OWNER, {
       op: "change_role",
-      payload: { targetUserId: MEMBER, newRole: "admin" },
+      payload: {
+        targetUserId: MEMBER,
+        newRole: "admin",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     });
     // admin は member 招待は発行できるが admin 招待は 403
     await issueInvite(fixture, MEMBER, "member");

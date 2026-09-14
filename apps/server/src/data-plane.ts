@@ -490,6 +490,13 @@ export type DataRejection =
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch";
     }
+  // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は受理副作用(AUDIT_SPEC §3.4 のミラー行 /
+  // 適用行・要ローテーション検出・旧鍵ラップ掃除・§12-8 の成長ガード・pending
+  // 上限)が揃う K5 まで受理しない — 副作用なしの受理はミラーの恒久欠落を作る
+  | {
+      readonly kind: "approval-not-accepted";
+      readonly op: "set_approval_policy" | "propose" | "approve" | "withdraw";
+    }
   // checkpoint の内容突合(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 — 境界同梱分
   // 〔複合の適用後基準 — §12-4〕と standalone 分〔受理時点 = 適用前基準〕の
   // 両経路で共通。語彙は api-schema の CheckpointMismatchReasonSchema と一致)

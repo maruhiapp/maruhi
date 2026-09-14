@@ -104,6 +104,11 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   grant_server: "chain.server_granted",
   revoke_server: "chain.server_revoked",
   checkpoint: "chain.checkpointed",
+  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)
+  set_approval_policy: "chain.approval_policy_changed",
+  propose: "chain.proposed",
+  approve: "chain.approved",
+  withdraw: "chain.proposal_withdrawn",
 };
 
 /**
@@ -130,10 +135,15 @@ const mirrorTails: {
     event: MIRROR_EVENT_NAME.genesis,
     targetUserId: entry.actor.userId,
   }),
+  // scope も写す(AUDIT_SPEC §3.4 — 2026-09-14 ES: §4.1 の環境別アクセス窓の復元材料)
   add_member: (entry) => ({
     event: MIRROR_EVENT_NAME.add_member,
     targetUserId: entry.payload.targetUserId,
-    payload: { role: entry.payload.role },
+    payload: {
+      role: entry.payload.role,
+      scopeKind: entry.payload.scopeKind,
+      scopeEnvironmentIds: entry.payload.scopeEnvironmentIds,
+    },
   }),
   remove_member: (entry) => ({
     event: MIRROR_EVENT_NAME.remove_member,
@@ -142,7 +152,11 @@ const mirrorTails: {
   change_role: (entry) => ({
     event: MIRROR_EVENT_NAME.change_role,
     targetUserId: entry.payload.targetUserId,
-    payload: { newRole: entry.payload.newRole },
+    payload: {
+      newRole: entry.payload.newRole,
+      scopeKind: entry.payload.scopeKind,
+      scopeEnvironmentIds: entry.payload.scopeEnvironmentIds,
+    },
   }),
   // dek_commitment は payload に写す(AUDIT_SPEC §3.4 — 監査行と
   // チェーン掲載コミットメントの突合用)
@@ -187,6 +201,27 @@ const mirrorTails: {
       })),
       auditHeadHashHex: entry.payload.auditHeadHashHex,
     },
+  }),
+  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)。K2 ではエントリ単独から写せる値のみ:
+  // 内側 payload は写さない(正はチェーン)。approve / withdraw の参照先は提案
+  // エントリの hash で運び、§3.4 の `proposalChainSeq` / `completed` と完成 approve の
+  // 内側 op の適用行(同一 chain_seq の 2 行目)は検証状態を要するため K5 の
+  // 受理面(設計録 es-design.md §4)で追加する
+  set_approval_policy: (entry) => ({
+    event: MIRROR_EVENT_NAME.set_approval_policy,
+    payload: { ops: entry.payload.ops, requiredApprovals: entry.payload.requiredApprovals },
+  }),
+  propose: (entry) => ({
+    event: MIRROR_EVENT_NAME.propose,
+    payload: { innerOp: entry.payload.inner.op, expiresAtMs: entry.payload.expiresAtMs },
+  }),
+  approve: (entry) => ({
+    event: MIRROR_EVENT_NAME.approve,
+    payload: { proposalHashHex: entry.payload.proposalHashHex },
+  }),
+  withdraw: (entry) => ({
+    event: MIRROR_EVENT_NAME.withdraw,
+    payload: { proposalHashHex: entry.payload.proposalHashHex },
   }),
 };
 

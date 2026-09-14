@@ -273,7 +273,7 @@ export async function verifyDistributedEnvManifest(
   }
 
   // 2〜3. ヘッド束縛・認可時点(発行契機はすべて member 以上 — §4.3)
-  const headReason = headAuthorizationReason({
+  const headReason = headAuthorizationReason<ManifestInvalidReason>({
     history: input.history,
     chainHeadSeq: input.context.chainHeadSeq,
     chainHeadHashHex: input.context.chainHeadHashHex,
@@ -281,6 +281,11 @@ export async function verifyDistributedEnvManifest(
     actorKeyFingerprintHex: input.issuerKeyFingerprintHex,
     requiredRoleRank: ROLE_RANK.member,
     reasons: HEAD_AUTHORIZATION_REASONS,
+    // 3′. スコープ(§6.3 — 2026-09-14 ES): マニフェストは環境対象
+    scope: {
+      environmentId: input.context.environmentId,
+      outOfScopeAtHead: "issuer-environment-out-of-scope-at-head",
+    },
   });
   if (headReason !== null) {
     return manifestInvalid(headReason);

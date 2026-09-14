@@ -15,10 +15,14 @@ import {
   verifyChain,
 } from "../../src/index.ts";
 import {
+  membersMatchVector,
+  pendingMatchesVector,
+  policyMatchesVector,
   toTypedEntry,
   typedEntries,
   serverGrantsMatchVector,
   type VectorCheckpointState,
+  type VectorMemberState,
   vectorEntries,
   vectorEnvironmentDeks,
   vectorExtendedChains,
@@ -94,6 +98,113 @@ function payloadTamperVariants(): readonly TamperVariant[] {
   flipped[0] = (flipped[0] ?? 0) ^ 0x01;
   const freshCommitment = vectorCommitmentOf("env-fresh-0004", 1);
   const prodCommitment = vectorCommitmentOf("env-prod-0001", 2);
+  return [
+    ...legacyPayloadTamperVariants(
+      e2,
+      eChange,
+      eGrant,
+      eRotate,
+      eCreate,
+      eRevoke,
+      flipped,
+      freshCommitment,
+      prodCommitment,
+    ),
+    ...scopeAndApprovalTamperVariants(),
+  ];
+}
+
+/** ES(scope)/ PF1(四眼)の payload 改竄変種(2026-09-14 — 正規 seq 13〜22 が base)。 */
+function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
+  const eDevMember = entryOfOp(13, "add_member");
+  const eDevAdmin = entryOfOp(14, "add_member");
+  const eWiden = entryOfOp(17, "change_role");
+  const ePolicy = entryOfOp(20, "set_approval_policy");
+  const ePropose = entryOfOp(21, "propose");
+  const eApprove = entryOfOp(22, "approve");
+  const inner = ePropose.payload.inner;
+  if (inner.op !== "change_role") {
+    throw new Error("chain vector seq 21: inner op must be change_role");
+  }
+  const flippedHash = fromHex(eApprove.payload.proposalHashHex);
+  flippedHash[0] = (flippedHash[0] ?? 0) ^ 0x01;
+  return [
+    // scope_environments の順序も署名対象(入れ子 LP — grant_server の scope と同型)
+    {
+      name: "add-member-scope-reorder",
+      entry: {
+        ...eDevAdmin,
+        payload: {
+          ...eDevAdmin.payload,
+          scopeEnvironmentIds: eDevAdmin.payload.scopeEnvironmentIds.toReversed(),
+        },
+      },
+      expect: "bad-signature",
+    },
+    // scope_kind の付け替え(listed{dev} → all)は付与範囲の付け替え = 署名失敗
+    {
+      name: "add-member-scope-relabel-all",
+      entry: {
+        ...eDevMember,
+        payload: { ...eDevMember.payload, scopeKind: "all", scopeEnvironmentIds: [] },
+      },
+      expect: "bad-signature",
+    },
+    {
+      name: "change-role-tampered-scope",
+      entry: { ...eWiden, payload: { ...eWiden.payload, scopeEnvironmentIds: ["env-dev-0002"] } },
+      expect: "bad-signature",
+    },
+    // ops の順序も署名対象(生成は昇順 SHOULD・検証は集合)
+    {
+      name: "policy-ops-reorder",
+      entry: { ...ePolicy, payload: { ...ePolicy.payload, ops: ePolicy.payload.ops.toReversed() } },
+      expect: "bad-signature",
+    },
+    {
+      name: "policy-tampered-required",
+      entry: { ...ePolicy, payload: { ...ePolicy.payload, requiredApprovals: 3 } },
+      expect: "bad-signature",
+    },
+    // 内側 payload(inner_payload_lp_hex)と期限は署名対象
+    {
+      name: "propose-tampered-inner-payload",
+      entry: {
+        ...ePropose,
+        payload: {
+          ...ePropose.payload,
+          inner: { op: "change_role", payload: { ...inner.payload, newRole: "member" } },
+        },
+      },
+      expect: "bad-signature",
+    },
+    {
+      name: "propose-tampered-expires",
+      entry: {
+        ...ePropose,
+        payload: { ...ePropose.payload, expiresAtMs: ePropose.payload.expiresAtMs + 1 },
+      },
+      expect: "bad-signature",
+    },
+    {
+      name: "approve-tampered-hash",
+      entry: { ...eApprove, payload: { proposalHashHex: toHex(flippedHash) } },
+      expect: "bad-signature",
+    },
+  ];
+}
+
+function legacyPayloadTamperVariants(
+  e2: ChainEntry & { op: "add_member" },
+  eChange: ChainEntry & { op: "change_role" },
+  eGrant: ChainEntry & { op: "grant_server" },
+  eRotate: ChainEntry & { op: "rotate_epoch" },
+  eCreate: ChainEntry & { op: "create_environment" },
+  eRevoke: ChainEntry & { op: "revoke_server" },
+  flipped: Uint8Array,
+  freshCommitment: string,
+  prodCommitment: string,
+): readonly TamperVariant[] {
   return [
     {
       name: "tampered-payload-role",
@@ -215,12 +326,8 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // bytesLevelChecks が担う 5 件(この実装からは生成されないバイト列)
-      "field-order-swap",
-      "grant-server-scope-flat-concat",
-      "grant-server-lease-policy-flat-concat",
-      "grant-server-lease-policy-dropped",
-      "checkpoint-environments-flat-concat",
+      // bytesLevelChecks が担う 10 件(この実装からは生成されないバイト列)
+      ...BYTES_LEVEL_NEGATIVES,
       // checkpointTamperChecks が担う 1 件(派生チェーンのエントリが base)
       "checkpoint-tampered-environments",
     ]),
@@ -258,19 +365,29 @@ function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): Ch
   return toTypedEntry(raw);
 }
 
+// 正規化の順序・入れ子 LP を崩したバイト列(この実装からは生成されない):
+// lease-policy-flat-concat は 3 段入れ子の平坦化、lease-policy-dropped は
+// 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)、
+// checkpoint-environments-flat-concat は環境タプルの入れ子 LP の平坦化(§6.2)。
+// 2026-09-14 ES / PF1: *-scope-dropped は scope 2 フィールドを欠く旧形式(新形式が
+// 正規形であることの固定 — 互換受理なし)、*-flat-concat は scope / ops の入れ子 LP の
+// 平坦化、propose-inner-payload-flat は内側 payload を外側 LP に展開した形
+const BYTES_LEVEL_NEGATIVES: readonly string[] = [
+  "field-order-swap",
+  "grant-server-scope-flat-concat",
+  "grant-server-lease-policy-flat-concat",
+  "grant-server-lease-policy-dropped",
+  "checkpoint-environments-flat-concat",
+  "add-member-scope-dropped",
+  "change-role-scope-dropped",
+  "add-member-scope-flat-concat",
+  "policy-ops-flat-concat",
+  "propose-inner-payload-flat",
+];
+
 async function bytesLevelChecks(c: Checks): Promise<void> {
-  // 正規化の順序・入れ子 LP を崩したバイト列は、この実装からは生成されず
-  // (canonical bytes と不一致)、元の署名も通らないことを確認する。
-  // lease-policy-flat-concat は 3 段入れ子の平坦化、lease-policy-dropped は
-  // 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)、
-  // checkpoint-environments-flat-concat は環境タプルの入れ子 LP の平坦化(§6.2)
-  for (const name of [
-    "field-order-swap",
-    "grant-server-scope-flat-concat",
-    "grant-server-lease-policy-flat-concat",
-    "grant-server-lease-policy-dropped",
-    "checkpoint-environments-flat-concat",
-  ]) {
+  // 崩したバイト列は canonical bytes と不一致で、元の署名も通らないことを確認する
+  for (const name of BYTES_LEVEL_NEGATIVES) {
     const vector = negativeByName(name);
     if (
       vector?.signed_bytes_hex === undefined ||
@@ -363,7 +480,9 @@ async function extendedChainChecks(c: Checks): Promise<void> {
   // server-key-member-sock は「add_member の鍵一意性の索引は現メンバーの鍵のみで、
   // 有効 grant のサーバー鍵は対象外」という §6.2 の線引きを固定する。
   // checkpoint-baseline は同一 manifest_version の正当な再公証(非後退の等号側)と
-  // 「環境ごとの最新チェックポイント」導出(expected_checkpoints)を固定する
+  // 「環境ごとの最新チェックポイント」導出(expected_checkpoints)を固定する。
+  // 四眼系(proposal-* / stale-* / proposer-* / policy-*)は方針・pending 提案・
+  // 票の再集計(離脱済み投票者の票は数えない — 原則 2)の導出状態を固定する
   for (const [name, extended] of Object.entries(vectorExtendedChains)) {
     const chain = [
       ...typedEntries.slice(0, extended.base_seq),
@@ -374,7 +493,9 @@ async function extendedChainChecks(c: Checks): Promise<void> {
       `chain extended: ${name} verifies`,
       result.ok &&
         membersMatch(result.value, extended.expected_members) &&
-        checkpointsMatch(result.value, extended.expected_checkpoints),
+        checkpointsMatch(result.value, extended.expected_checkpoints) &&
+        policyMatchesVector(result.value.approvalPolicy, extended.expected_policy) &&
+        pendingMatchesVector(result.value.pendingProposals, extended.expected_pending),
     );
   }
 }
@@ -414,7 +535,7 @@ async function signAs(userId: string, entry: UnsignedChainEntry): Promise<ChainE
   return signed.ok ? signed.value : undefined;
 }
 
-/** 正規チェーン末尾(seq 12)に続く追記エントリの seq。 */
+/** 正規チェーン末尾(seq 24)に続く追記エントリの seq。 */
 const NEXT_SEQ = typedEntries.length + 1;
 
 function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
@@ -468,6 +589,8 @@ function semanticCases(
           encPubHex: memberKeys.enc_pub_hex,
           sigPubHex: memberKeys.sig_pub_hex,
           role: "reader",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
         },
       },
       expect: "duplicate-member",
@@ -486,6 +609,8 @@ function semanticCases(
           encPubHex: ownerKeys.enc_pub_hex,
           sigPubHex: ownerKeys.sig_pub_hex,
           role: "reader",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
         },
       },
       expect: "duplicate-member",
@@ -533,12 +658,12 @@ async function appendRotation(
   return result.ok ? result.value : undefined;
 }
 
-/** 導出状態のメンバー集合が期待(user_id → role)と一致するか。 */
-function membersMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
-  return (
-    state.members.size === Object.keys(expected).length &&
-    Object.entries(expected).every(([userId, role]) => state.members.get(userId)?.role === role)
-  );
+/** 導出状態のメンバー集合が期待(user_id → role + scope)と一致するか。 */
+function membersMatch(
+  state: ChainState,
+  expected: Readonly<Record<string, VectorMemberState>>,
+): boolean {
+  return membersMatchVector(state.members, expected);
 }
 
 /**
@@ -587,56 +712,80 @@ function serverGrantsMatch(
   return serverGrantsMatchVector(state.serverGrants, expected);
 }
 
+/** valid_appends の 1 件: 接続先ヘッドへ追記して受理と導出状態(全軸)を固定する。 */
+async function validAppendVectorCheck(
+  c: Checks,
+  append: (typeof vectorValidAppends)[number],
+): Promise<void> {
+  const entry = toTypedEntry(append.entry);
+  // 接続点は entry の seq が指す正規エントリ(または派生チェーンのヘッド)の直後
+  // (seq 25 = 末尾ヘッド、seq 10 = seq 9 ヘッドへの再 grant 追記 —
+  // regrant-lease-policy-revised、seq 20 = 方針確立前のヘッド 19 への追記)
+  const result = await verifyChain([...authzPrefix(append.chain, entry.seq), entry]);
+  c.push(
+    `chain valid append: ${append.name}`,
+    result.ok &&
+      membersMatch(result.value, append.expected_members) &&
+      environmentsMatch(result.value, append.expected_environments) &&
+      serverGrantsMatch(result.value, append.expected_server_grants) &&
+      checkpointsMatch(result.value, append.expected_checkpoints) &&
+      policyMatchesVector(result.value.approvalPolicy, append.expected_policy) &&
+      pendingMatchesVector(result.value.pendingProposals, append.expected_pending),
+  );
+}
+
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
   // 合意規則の許容側の境界をベクター(valid_appends)で固定する:
   // (1) メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)—
   //     「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
   // (2) 環境ライフサイクル(§6.2)— 未使用 ID の create_environment と
   //     create 済み環境(エポック 1)への初回 rotate(new_epoch 2)は受理される
+  // (3) ES / PF1(2026-09-14)— listed の admin / member による scope 内の add /
+  //     remove / change / rotate / checkpoint、方針下の非対象 op の直接追記、
+  //     propose / withdraw の受理と、方針縮小・オフ後の直接追記(chain 指定 =
+  //     extended_chains の派生ヘッドへの追記)
   for (const append of vectorValidAppends) {
-    const entry = toTypedEntry(append.entry);
-    // 接続点は entry の seq が指す正規エントリの直後(seq 13 = 末尾ヘッド、
-    // seq 10 = seq 9 ヘッドへの再 grant 追記 — regrant-lease-policy-revised)
-    const result = await verifyChain([...typedEntries.slice(0, entry.seq - 1), entry]);
-    c.push(
-      `chain valid append: ${append.name}`,
-      result.ok &&
-        membersMatch(result.value, append.expected_members) &&
-        environmentsMatch(result.value, append.expected_environments) &&
-        serverGrantsMatch(result.value, append.expected_server_grants) &&
-        checkpointsMatch(result.value, append.expected_checkpoints),
-    );
+    await validAppendVectorCheck(c, append);
   }
+  await duplicateKeyAfterReaddCheck(c, base);
+}
 
-  // 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
-  // 別 user_id の追加が再び duplicate-member-key になる(remove での索引削除と
-  // add での再登録の両方向を閉じる)
+/**
+ * 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
+ * 別 user_id の追加が再び duplicate-member-key になる(remove での索引削除と
+ * add での再登録の両方向を閉じる)。
+ */
+async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promise<void> {
   const readd = vectorValidAppends.find((a) => a.name === "readd-removed-member-same-key");
   if (readd === undefined) {
     c.push("chain semantic: duplicate key rejected again after re-add", false, "vector missing");
     return;
   }
+  // re-add ベクターは正規 seq 12 ヘッドへの追記(seq 13)なので、その直後に続ける
   const readdEntry = toTypedEntry(readd.entry);
   const memberKeys = keysOf("user-member-0002");
   const duplicated = await signAs("user-owner-0001", {
     ...base,
-    seq: NEXT_SEQ + 1,
+    seq: readdEntry.seq + 1,
     prevHashHex: await computeChainEntryHash(readdEntry),
+    timestampMs: readdEntry.timestampMs + 1000,
     op: "add_member",
     payload: {
       targetUserId: "user-clone-0004",
       encPubHex: memberKeys.enc_pub_hex,
       sigPubHex: memberKeys.sig_pub_hex,
       role: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
     },
   });
   const result =
     duplicated === undefined
       ? undefined
-      : await verifyChain([...typedEntries, readdEntry, duplicated]);
+      : await verifyChain([...typedEntries.slice(0, readdEntry.seq - 1), readdEntry, duplicated]);
   c.push(
     "chain semantic: duplicate key rejected again after re-add",
-    result !== undefined && failsWith(result, NEXT_SEQ + 1, "duplicate-member-key"),
+    result !== undefined && failsWith(result, readdEntry.seq + 1, "duplicate-member-key"),
   );
 }
 
@@ -900,6 +1049,91 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         },
       },
     },
+    // scope(§6.2 — 2026-09-14 ES)/ 四眼(PF1)の payload 構造: 実行時型の乖離も
+    // invalid-payload に落とす(入れ子 payload の再帰も throw しない)
+    {
+      name: "add_member scope kind is not a string",
+      entry: {
+        ...base,
+        op: "add_member",
+        payload: { ...entryAt(2).payload, scopeKind: 1 },
+      },
+    },
+    {
+      name: "add_member scope environments is not an array",
+      entry: {
+        ...base,
+        op: "add_member",
+        payload: {
+          ...entryAt(2).payload,
+          scopeKind: "listed",
+          scopeEnvironmentIds: "env-dev-0002",
+        },
+      },
+    },
+    {
+      name: "change_role scope missing",
+      entry: {
+        ...base,
+        op: "change_role",
+        payload: { targetUserId: "user-admin-0003", newRole: "member" },
+      },
+    },
+    {
+      name: "set_approval_policy ops is not an array",
+      entry: {
+        ...base,
+        op: "set_approval_policy",
+        payload: { ops: "grant_server", requiredApprovals: 2 },
+      },
+    },
+    {
+      name: "set_approval_policy required is a string",
+      entry: {
+        ...base,
+        op: "set_approval_policy",
+        payload: { ops: ["grant_server"], requiredApprovals: "2" },
+      },
+    },
+    {
+      name: "propose inner is null",
+      entry: { ...base, op: "propose", payload: { inner: null, expiresAtMs: 0 } },
+    },
+    {
+      name: "propose inner op is a prototype property name",
+      entry: {
+        ...base,
+        op: "propose",
+        payload: { inner: { op: "__proto__", payload: {} }, expiresAtMs: 0 },
+      },
+    },
+    {
+      name: "propose inner payload missing",
+      entry: {
+        ...base,
+        op: "propose",
+        payload: { inner: { op: "remove_member" }, expiresAtMs: 0 },
+      },
+    },
+    {
+      name: "propose expires is a string",
+      entry: {
+        ...base,
+        op: "propose",
+        payload: {
+          inner: { op: "remove_member", payload: { targetUserId: "user-admin-0003" } },
+          expiresAtMs: "0",
+        },
+      },
+    },
+    {
+      name: "approve hash is a number",
+      entry: { ...base, op: "approve", payload: { proposalHashHex: 42 } },
+    },
+    {
+      name: "withdraw payload missing",
+      entry: { ...base, op: "withdraw", payload: undefined },
+    },
     // 未知の op: PAYLOAD_SHAPES の表引きが membership を確認せずに
     // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し
     // throw しない」という公開 verifier の契約(defense-in-depth)をここで固定する
@@ -1022,6 +1256,9 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   );
 }
 
+/** 方針確立(seq 20)前の正規ヘッド — 四眼の対象 op を直接追記できる最後の時点。 */
+const PRE_POLICY_HEAD_SEQ = 19;
+
 /** 署名は正しいが意味的に不正なエントリ(vector 外の失敗系)を owner 鍵で作って検査 */
 async function semanticChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
@@ -1030,14 +1267,25 @@ async function semanticChecks(c: Checks): Promise<void> {
     return;
   }
   const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
-  for (const item of semanticCases(base)) {
+  // grant_server / remove_member は seq 20 以降は方針の対象(approval-required が
+  // role の直後に先行する — ベクター固定)なので、op 固有の理由は方針確立前の
+  // ヘッド 19 への追記で検査する
+  const prePolicy = typedEntries.slice(0, PRE_POLICY_HEAD_SEQ);
+  const prePolicyHead = prePolicy[prePolicy.length - 1];
+  const prePolicyBase = {
+    ...base,
+    seq: PRE_POLICY_HEAD_SEQ + 1,
+    prevHashHex: await computeChainEntryHash(prePolicyHead as ChainEntry),
+    timestampMs: (prePolicyHead?.timestampMs ?? 0) + 1000,
+  };
+  for (const item of semanticCases(prePolicyBase)) {
     const signed = await signAs("user-owner-0001", item.entry);
     if (signed === undefined) {
       c.push(`chain semantic: ${item.name}`, false, "signing failed");
       continue;
     }
-    const result = await verifyChain([...typedEntries, signed]);
-    c.push(`chain semantic: ${item.name}`, failsWith(result, NEXT_SEQ, item.expect));
+    const result = await verifyChain([...prePolicy, signed]);
+    c.push(`chain semantic: ${item.name}`, failsWith(result, PRE_POLICY_HEAD_SEQ + 1, item.expect));
   }
   await validAppendCheck(c, base);
   await validAppendVectorChecks(c, base);

@@ -395,7 +395,12 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
         actor: owner,
         operation: {
           op: "change_role",
-          payload: { targetUserId: target.userId, newRole: "reader" },
+          payload: {
+            targetUserId: target.userId,
+            newRole: "reader",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
+          },
         },
       },
       { actor: owner, operation: removeMemberOp(target) },

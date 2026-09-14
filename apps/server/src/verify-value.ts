@@ -60,6 +60,9 @@ const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRe
   "writer-not-member-at-head": "chain-head-state-mismatch",
   "writer-key-mismatch-at-head": "chain-head-state-mismatch",
   "writer-role-insufficient-at-head": "chain-head-state-mismatch",
+  // §6.3 の 3′(2026-09-14 ES): 宣言ヘッド時点の writer の scope 外 — role 不足と同じ
+  // 「ヘッド時点の状態との不一致」クラス(呼び出し主体の scope 軸の 403 は K3)
+  "writer-environment-out-of-scope-at-head": "chain-head-state-mismatch",
   "environment-not-created-at-head": "chain-head-state-mismatch",
   "epoch-not-current-at-head": "chain-head-state-mismatch",
   "prev-shape-mismatch": "chain-head-state-mismatch",

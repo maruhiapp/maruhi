@@ -8,7 +8,9 @@
 //
 // inclusive 規約(§6.3。ベクター value-signature.json が固定):
 // - genesis / add_member エントリ自身の seq で対象メンバーは有効
-// - change_role エントリ自身の seq で新 role が有効
+// - change_role エントリ自身の seq で新 (role, scope) が有効(2026-09-14 ES —
+//   履歴索引は在籍区間ごとに (role, scope) の変化点を保持する。§6.2 の検証状態)。
+//   提案経由の適用(PF1)は定足数に達した approve エントリの seq が変化点
 // - remove_member エントリ自身の seq で対象は無効
 // - create_environment エントリ自身の seq でエポック 1 が有効
 // - rotate_epoch エントリ自身の seq で新エポックが有効
@@ -21,10 +23,13 @@ import type {
   EnvironmentCheckpointState,
   Role,
 } from "./chain-types.ts";
+import type { MemberScope } from "./member-scope.ts";
 
 /** A member's chain-derived state at one inclusive seq (§6.3 の宣言ヘッド時点). */
 export interface MemberStateAtSeq {
   readonly role: Role;
+  /** Environment scope at that seq (§6.3 の 3′ — 宣言ヘッド時点の scope 検査の入力). */
+  readonly scope: MemberScope;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly keyFingerprintHex: string;
@@ -116,9 +121,11 @@ export interface ChainHistoryIndex {
   readonly latestCheckpointFor: (environmentId: string) => EnvironmentCheckpointState | undefined;
 }
 
-interface RoleSpan {
+/** One (role, scope) span of a tenure — starts at `fromSeq` (inclusive). */
+interface MemberSpan {
   readonly fromSeq: number;
   readonly role: Role;
+  readonly scope: MemberScope;
 }
 
 interface TenureRecord {
@@ -128,7 +135,7 @@ interface TenureRecord {
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly keyFingerprintHex: string;
-  readonly roles: RoleSpan[];
+  readonly spans: MemberSpan[];
 }
 
 interface EnvironmentRecord {
@@ -146,17 +153,17 @@ type CheckpointTupleRecord =
     }
   | "conflict";
 
-/** change_role はエントリ自身の seq で新 role が有効(inclusive)。 */
-function roleAt(tenure: TenureRecord, seq: number): Role | undefined {
-  let role: Role | undefined;
-  for (const span of tenure.roles) {
+/** change_role はエントリ自身の seq で新 (role, scope) が有効(inclusive)。 */
+function spanAt(tenure: TenureRecord, seq: number): MemberSpan | undefined {
+  let current: MemberSpan | undefined;
+  for (const span of tenure.spans) {
     if (span.fromSeq <= seq) {
-      role = span.role;
+      current = span;
     } else {
       break;
     }
   }
-  return role;
+  return current;
 }
 
 class ChainHistory implements ChainHistoryIndex {
@@ -204,12 +211,13 @@ class ChainHistory implements ChainHistoryIndex {
     if (tenure === undefined) {
       return undefined;
     }
-    const role = roleAt(tenure, seq);
-    if (role === undefined) {
+    const span = spanAt(tenure, seq);
+    if (span === undefined) {
       return undefined;
     }
     return {
-      role,
+      role: span.role,
+      scope: span.scope,
       encPubHex: tenure.encPubHex,
       sigPubHex: tenure.sigPubHex,
       keyFingerprintHex: tenure.keyFingerprintHex,
@@ -302,6 +310,7 @@ export class ChainHistoryBuilder {
     keys: { readonly encPubHex: string; readonly sigPubHex: string },
     keyFingerprintHex: string,
     role: Role,
+    scope: MemberScope,
   ): void {
     const record: TenureRecord = {
       startSeq,
@@ -309,7 +318,7 @@ export class ChainHistoryBuilder {
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
       keyFingerprintHex,
-      roles: [{ fromSeq: startSeq, role }],
+      spans: [{ fromSeq: startSeq, role, scope }],
     };
     const tenures = this.#tenures.get(userId);
     if (tenures === undefined) {
@@ -319,8 +328,9 @@ export class ChainHistoryBuilder {
     }
   }
 
-  recordRoleChange(userId: string, seq: number, role: Role): void {
-    this.#openTenure(userId)?.roles.push({ fromSeq: seq, role });
+  /** change_role: the new (role, scope) pair is current from `seq` (inclusive — §6.2 の全置換). */
+  recordRoleChange(userId: string, seq: number, role: Role, scope: MemberScope): void {
+    this.#openTenure(userId)?.spans.push({ fromSeq: seq, role, scope });
   }
 
   recordTenureEnd(userId: string, seq: number): void {

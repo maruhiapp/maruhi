@@ -547,6 +547,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       reason: "duplicate-name",
     },
     "composite-required": { kind: "composite-required", op: "create_environment" },
+    "approval-not-accepted": { kind: "approval-not-accepted", op: "propose" },
     "checkpoint-state-mismatch": {
       kind: "checkpoint-state-mismatch",
       reason: "values-digest-mismatch",
@@ -615,6 +616,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "environment-not-found": "EnvironmentNotFound",
     "environment-conflict": "EnvironmentConflict",
     "composite-required": "CompositeRequired",
+    "approval-not-accepted": "ApprovalNotAccepted",
     "checkpoint-state-mismatch": "CheckpointStateMismatch",
     "chain-head-conflict": "ChainHeadConflict",
     "chain-entry-invalid": "ChainEntryInvalid",

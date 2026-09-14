@@ -36,6 +36,8 @@ const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejec
   "author-not-member-at-head": "chain-head-state-mismatch",
   "author-key-mismatch-at-head": "chain-head-state-mismatch",
   "author-role-insufficient-at-head": "chain-head-state-mismatch",
+  // §6.3 の 3′(2026-09-14 ES): 宣言ヘッド時点の author の scope 外(role 不足と同クラス)
+  "author-environment-out-of-scope-at-head": "chain-head-state-mismatch",
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
   "revived-after-delete": "chain-head-state-mismatch",

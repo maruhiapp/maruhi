@@ -27,6 +27,7 @@ import {
 } from "@maruhi/api-schema";
 import { ulid } from "@maruhi/core";
 import {
+  ALL_SCOPE,
   type ChainMember,
   computeUserKeyFingerprint,
   decodeHex,
@@ -34,6 +35,9 @@ import {
   encodeHex,
   generateInviteLinkSeed,
   type InviteAcceptSignatureContext,
+  type ScopeKind,
+  type ScopePayloadFields,
+  scopePayloadFieldsOf,
   signInviteAccept,
   signInviteIssue,
   signInviteLink,
@@ -99,6 +103,9 @@ export interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
   readonly role: InviteRole;
+  /** 付与予定 scope(2026-09-14 ES — 発行文の一部。add_member はこの scope で署名する)。 */
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly string[];
   readonly status: "pending" | "accepted" | "completed" | "revoked";
   readonly inviterUserId: string;
   readonly issuance: InviteIssuance;
@@ -153,6 +160,8 @@ export function verifyIssuance(input: {
             inviterUserId: inviter.userId,
             inviterEncPubHex: inviter.encPubHex,
             inviterSigPubHex: inviter.sigPubHex,
+            scopeKind: input.row.scopeKind,
+            scopeEnvironmentIds: input.row.scopeEnvironmentIds,
           },
           signatureHex: issuance.issueSignatureHex,
         }),
@@ -344,6 +353,7 @@ function signIssuance(input: {
   readonly verified: VerifiedProject;
   readonly inviter: ChainMember;
   readonly role: InviteRole;
+  readonly scope: ScopePayloadFields;
   readonly signingKey: MasterKeys["sigKeyPair"]["privateKey"];
 }): Effect.Effect<SignedIssuance, CliError> {
   return Effect.gen(function* () {
@@ -371,6 +381,8 @@ function signIssuance(input: {
             inviterUserId: input.inviter.userId,
             inviterEncPubHex: input.inviter.encPubHex,
             inviterSigPubHex: input.inviter.sigPubHex,
+            scopeKind: input.scope.scopeKind,
+            scopeEnvironmentIds: input.scope.scopeEnvironmentIds,
           },
           signingKey: input.signingKey,
         }),
@@ -435,10 +447,14 @@ export function inviteCreateOp(input: {
     // ため「発行して表示しない」形は取れない — 発行そのものを拒否する
     yield* ensureInviteLinkDisplayAllowed(io);
     const inviter = yield* ensureCanIssue(input);
+    // K2 の CLI は scope = all のみ発行する(`--env` による listed の発行は K4 —
+    // 設計録 es-design.md §4)。発行文・発行 body・リンクの 3 か所に同じ scope を載せる
+    const scope: ScopePayloadFields = scopePayloadFieldsOf(ALL_SCOPE);
     const signed = yield* signIssuance({
       verified: input.verified,
       inviter,
       role: input.role,
+      scope,
       signingKey: input.masterKeys.sigKeyPair.privateKey,
     });
     const headHashHex = input.verified.state.headHashHex;
@@ -449,6 +465,8 @@ export function inviteCreateOp(input: {
         payload: {
           id: signed.inviteId,
           role: input.role,
+          scopeKind: scope.scopeKind,
+          scopeEnvironmentIds: scope.scopeEnvironmentIds,
           linkPubHex: signed.linkPubHex,
           headHashHex,
           headSeq,
@@ -468,6 +486,8 @@ export function inviteCreateOp(input: {
         inviterEncPubHex: inviter.encPubHex,
         inviterSigPubHex: inviter.sigPubHex,
         role: input.role,
+        scopeKind: scope.scopeKind,
+        scopeEnvironmentIds: scope.scopeEnvironmentIds,
         inviterLogin: input.inviterLogin,
         issueSignatureHex: signed.issueSignatureHex,
       },
@@ -577,6 +597,8 @@ function verifyLinkIssuanceWith(
             inviterUserId: link.inviterUserId,
             inviterEncPubHex: link.inviterEncPubHex,
             inviterSigPubHex: link.inviterSigPubHex,
+            scopeKind: link.scopeKind,
+            scopeEnvironmentIds: link.scopeEnvironmentIds,
           },
           signatureHex: link.issueSignatureHex,
         }),
@@ -847,7 +869,7 @@ function confirmExpectedInviter(
       return false;
     }
     const answer = yield* io.promptLine({
-      prompt: `Type yes to accept this invite from github.com/${inviterLogin} (project ${displayText(link.projectId)}, role ${link.role}): `,
+      prompt: `Type yes to accept this invite from github.com/${inviterLogin} (project ${displayText(link.projectId)}, role ${link.role}, scope ${describeScope(link)}): `,
     });
     if (answer.trim().toLowerCase() !== "yes") {
       return yield* Effect.fail(
@@ -957,6 +979,15 @@ export function inviteAcceptOp(input: {
       return yield* Effect.fail(
         cliError(
           `The role declared in the signed link (${link.role}) does not match the role the server reports (${accepted.role}). The server's row contradicts the inviter's issue signature — do not trust this acceptance; ask the inviter to check \`maruhi invite list\``,
+        ),
+      );
+    }
+    // scope(2026-09-14 ES)も発行署名が覆う: 応答の scope が署名済みリンクと食い違えば
+    // 同じくサーバーの自己矛盾 → 拒否(AUTH_SPEC §15-3)
+    if (!sameScope(accepted, link)) {
+      return yield* Effect.fail(
+        cliError(
+          `The scope declared in the signed link (${describeScope(link)}) does not match the scope the server reports (${describeScope(accepted)}). The server's row contradicts the inviter's issue signature — do not trust this acceptance; ask the inviter to check \`maruhi invite list\``,
         ),
       );
     }
@@ -1140,6 +1171,27 @@ function displayStatus(row: InvitationRow, nowMs: number): string {
   return row.status === "pending" && row.expiresAtMs <= nowMs ? "expired" : row.status;
 }
 
+/** scope の表示(`all` または環境 id の列挙 — ユーザー向け文言)。 */
+function describeScope(scope: ScopePayloadFields): string {
+  return scope.scopeKind === "all"
+    ? "all environments"
+    : scope.scopeEnvironmentIds.length === 0
+      ? "no environments"
+      : scope.scopeEnvironmentIds.map((id) => displayText(id)).join(", ");
+}
+
+/** scope の一致(集合として比較 — 生成は昇順 SHOULD・検証は集合。CRYPTO_SPEC §6.2)。 */
+function sameScope(a: ScopePayloadFields, b: ScopePayloadFields): boolean {
+  if (a.scopeKind !== b.scopeKind) {
+    return false;
+  }
+  const ids = new Set(a.scopeEnvironmentIds);
+  return (
+    ids.size === new Set(b.scopeEnvironmentIds).size &&
+    b.scopeEnvironmentIds.every((id) => ids.has(id))
+  );
+}
+
 /**
  * 発行ピン突合(§6.5 の招待者側の追加材料 — SHOULD): サーバー申告の行が発行時の
  * link_pub・role と食い違えば、行のすり替え・role の虚偽申告の兆候。ピンが無い
@@ -1170,7 +1222,7 @@ function listRowChecks(input: {
     const { row } = input;
     let failures = 0;
     yield* io.log(
-      `${displayText(row.id)}\t${displayStatus(row, input.nowMs)}\trole=${row.role}\tissued=${formatDateTimeUtc(row.createdAtMs)}\texpires=${formatDateTimeUtc(row.expiresAtMs)}`,
+      `${displayText(row.id)}\t${displayStatus(row, input.nowMs)}\trole=${row.role}\tscope=${describeScope(row)}\tissued=${formatDateTimeUtc(row.createdAtMs)}\texpires=${formatDateTimeUtc(row.expiresAtMs)}`,
     );
     const issuance = yield* verifyIssuance({ verified: input.verified, row });
     if (!issuance.ok) {

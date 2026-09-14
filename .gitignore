@@ -22,3 +22,6 @@ packaging/homebrew/maruhi.rb
 
 # ダッシュボードのスクリーンショット(apps/web/test/screenshots.ts の出力 — PR に添付する一時物)
 apps/web/screenshots/
+# vitest browser mode の失敗時キャプチャ(ローカル実行の副産物 — スイートは消費しない)
+.vitest-attachments/
+**/__screenshots__/

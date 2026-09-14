@@ -114,13 +114,20 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
         encPubHex: keys.enc_pub_hex,
         sigPubHex: keys.sig_pub_hex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
     expect((await listOk(bearer(token(READER)))).projects).toEqual([{ projectId, role: "member" }]);
     // change_role → role が追随(投影は role を持たず、DO の現在値が応答になる)
     await appendOperation(fixture, OWNER, {
       op: "change_role",
-      payload: { targetUserId: READER, newRole: "admin" },
+      payload: {
+        targetUserId: READER,
+        newRole: "admin",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     });
     expect((await listOk(bearer(token(READER)))).projects).toEqual([{ projectId, role: "admin" }]);
     // 他メンバーの一覧は不変
