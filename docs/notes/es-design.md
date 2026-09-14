@@ -127,7 +127,7 @@
 
 | 案 | 内容 | 評価 |
 |---|---|---|
-| D-1 **包含規則** | `add_member`(対象 scope)/ `change_role`(**旧 scope ∪ 新 scope** — 2026-09-14 最終確認で訂正。当初の「新 scope」だけでは縮小分が actor の scope 外でも通り、actor が履行できない rotate 義務が生じる)/ `remove_member`(対象の現 scope)は、**actor の scope ⊇ 対象 scope** でなければ無効(`scope-not-contained`)。owner は all なので常に通る | 「入れられる = DEK を渡せる」「消せる = 義務の rotate を履行できる(再暗号化に旧 DEK が要る)」が構造的に一致。dangling(メンバーはいるがラップを作れる人がいない)状態を作らない |
+| D-1 **包含規則** | 原則「義務の履行可能性」(3-ter)からの導出: `add_member` = 新 scope / `change_role` = (新 \ 旧) ∪ (旧 \ 新) ∪(降格なら新 scope)/ `remove_member` = 現 scope について **actor の scope ⊇ 義務の環境集合** でなければ無効(`scope-not-contained`)。owner は all なので常に通る。(経緯: 当初は「新 scope」だけで縮小分の rotate 義務が抜け、一時的に「旧 ∪ 新」へ訂正したが、3-ter で義務からの導出に置き換えた) | 「入れられる = DEK を渡せる」「消せる = 義務の rotate を履行できる(再暗号化に旧 DEK が要る)」が構造的に一致。dangling(メンバーはいるがラップを作れる人がいない)状態を作らない |
 | D-2 包含なし + バックフィル委任 | admin は任意 scope を付与でき、DEK は scope 内の別メンバー(member 以上)がバックフィルする | 「メンバーはいるがラップがない」状態が常態化(§12-4 の非対称が恒久化)。remove の rotate 義務も他人任せ。棄却 |
 | D-3 C-1(admin = all)で不要化 | — | 裁定 C の上位互換で C-2 を採ったため、包含規則は必要 |
 
@@ -323,7 +323,27 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 
 **最終確認(2026-09-14 — 所有者の「本当にこれ以上の案はないか」への回答前の敵対的読み直し)**: 裁定 D の `change_role` の包含が「新 scope」のみで、縮小分(旧 \ 新)が actor の scope 外でも通る欠陥を発見し、「旧 ∪ 新」に訂正した(A-2・承認項目 5)。採用案の構造は変わらないが、探索の網羅性は保証できない — レビュー 8 巡とこの読み直しで計 4 件の穴が後から見つかっており、正本反映(K1)前の所有者レビューと K2 のベクター設計(負例の列挙)が最後の網である。
 
-**追加巡の帰結**: 採用案の変更はない。承認項目 1 に A-8(既定 none + `set_member_scope`)を所有者選択の代替として併記し、K-3 を後続の加法として記録した。以後の裁定では「新案なしの連続 2 巡」を満たしてから打ち止めと書く。
+**追加巡の帰結**: 採用案の変更はない。
+
+## 3-ter. そもそもの見直し — 列挙から原則への置き換え(2026-09-14 所有者の問い「そもそもを見直すことで回避できるか」への回答)
+
+**原因分析**: 後から見つかった 4 件の穴はすべて同じ型で、規則を「op ごとの特例の列挙」として書いたために、列挙し忘れた組み合わせが穴になった。
+
+| 穴 | 列挙し忘れたもの |
+|---|---|
+| `change_role` の包含が「新 scope」だけ | 縮小分の rotate 義務 |
+| `approval-required` が提案の内側 op にも掛かる閉路 | 「提案経由」という文脈 |
+| 離脱済み投票者の票が残る | 票を数える時点 |
+| owner 身元の自作で定足数を満たせる | 「owner を増やす op」が方針の一部であること |
+
+列挙を増やしても次の組み合わせで再発するため、**規則を 2 つの原則に置き換え、op ごとの規則はその帰結として書く**(spec-drafts A-2 を改訂済み)。
+
+- **原則 1 — 義務の履行可能性**: エントリが §7 / §12-6 の義務(rotate・バックフィル)を生むなら、actor の scope はその義務の環境集合を包含する。op ごとの環境集合は義務定義から導出する(add = 新 scope、change_role = 対称差 ∪ 降格分、remove = 現 scope)。義務が増えれば規則は自動的に伸びる。一時的に採った「旧 ∪ 新」は、変化のない環境に義務がないため粗い近似だった(dev 専任 admin が {dev, prod} のメンバーの role を prod に触れずに変えられなくなる)
+- **原則 2 — 署名者集合 S による認可**: 直接追記は S = {actor}、提案経由は S = 提案者 ∪ 承認者。適用時点で owner である S の distinct 数 ≥ required(op)。**不変条件「方針の単調性」**: 方針が有効な間、owner 集合または方針を変えうる op は常に対象で、owner 数を required 未満にする op は無効。`approval-required` の除外規定・票の再計算・常時対象は、いずれもこの原則と不変条件の帰結になり、例外として列挙する必要がなくなる
+
+**効果と限界**: 失敗の型が「列挙し忘れ」から「原則の適用ミス」に変わる。後者は原則と照らして検証できる(K2 の負例は原則ごとに列挙する: 原則 1 = 義務の環境集合の各要素が actor scope 外、原則 2 = S の各要素が非 owner / 重複 / 時点違い)。ゼロ保証にはならないが、レビューの網が効く形になる。理由コードと検査順序は不変(ベクターの固定に必要)。
+
+**所有者が案を出せないときの手順(一般)**: (1) 穴を「何を列挙し忘れたか」に言い換える、(2) その列挙を生んでいる上位の目的(ここでは「義務は履行できる者だけが生める」「定足数未満で方針を弱められない」)を 1 文で書く、(3) その 1 文を規則にし、個別規則を帰結へ格下げする。設計の見直しは案の再探索ではなく、**規則を生成している原則の抽出**として行う。承認項目 1 に A-8(既定 none + `set_member_scope`)を所有者選択の代替として併記し、K-3 を後続の加法として記録した。以後の裁定では「新案なしの連続 2 巡」を満たしてから打ち止めと書く。
 
 ## 4. 実装分割(K1〜K7)と独立停止可能性
 
@@ -354,7 +374,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 2 | 符号化(裁定 B) | `scope_kind` ∈ {all, listed} + `scope_environments_lp_hex`(grant_server と同じ入れ子 LP・≤ 256・順序は署名対象・生成昇順 SHOULD) | 空 = all(fail-open)/ 番兵 `*` / all を表現しない | grant_server の先例の再利用。all の明示 |
 | 3 | 構造規則(裁定 B) | all ⇒ 空リスト必須(`invalid-payload`)、listed の id は `create_environment` 先行必須(`unknown-environment`)、重複 = `invalid-payload`、listed の空リストは有効 | 存在検査なし / 空 listed の禁止 | fail-closed(typo)。`listed{}` = 管理のみ・後で入れる の表現 |
 | 4 | role との関係(裁定 C) | owner = all 固定(`scope-role-mismatch`)。admin / member / reader は listed 可 | admin も all 固定 / owner も listed | C-2 は C-1 の上位互換(admin を all にすれば同じ)。dev 専任 admin が書ける |
-| 5 | 包含規則(裁定 D) | add(対象 scope)/ change_role(**旧 ∪ 新 scope** — 縮小分の rotate と拡大分のバックフィルの両方を actor が履行できるため)/ remove(現 scope)で **actor scope ⊇ 対象 scope**(`scope-not-contained`)。検査順序: 既存の検査列(role → duplicate-* / unknown-target → last-owner)の**後ろ**に unknown-environment → scope-role-mismatch → scope-not-contained(既存負例の期待理由を温存) | 包含なし + 他メンバーによるバックフィル委任 | ラップ実行者 = DEK 保持者(§7)。消せる = rotate を履行できる |
+| 5 | 包含規則(裁定 D) | **原則 1「義務の履行可能性」からの導出**(3-ter): add = 新 scope / change_role = (新 \ 旧) ∪ (旧 \ 新) ∪(降格なら新 scope)/ remove = 現 scope について **actor scope ⊇ 義務の環境集合**(`scope-not-contained`)。検査順序: 既存の検査列(role → duplicate-* / unknown-target → last-owner)の**後ろ**に unknown-environment → scope-role-mismatch → scope-not-contained(既存負例の期待理由を温存) | 包含なし + 他メンバーによるバックフィル委任 | ラップ実行者 = DEK 保持者(§7)。消せる = rotate を履行できる |
 | 6 | 環境対象 op(裁定 E) | rotate / checkpoint(全タプル)は env ∈ actor scope、create は all の actor のみ(すべて `environment-out-of-scope`) | 作成者の暗黙スコープ追加 | 原則 6(暗黙の scope 変化を作らない)。1 述語で 3 op を覆う |
 | 7 | 縮小の意味論(裁定 F) | 縮小を受理し、縮小分の環境に §7 の rotate 義務(sweep 第 4 種 `scope-narrowed`)。降格 = 対象 scope の環境、remove = 対象の現 scope の環境 | 縮小を合意規則で拒否(grant_server 型) | remove + re-add の招待やり直し・tenure 分断を避ける。義務で同じ目的を達する |
 | 8 | 拡大の義務(裁定 F) | change_role の拡大分は actor が全エポックをバックフィル(§12-6 の追記経路。複合化しない) | 複合化 | §12-4 の非対称(上限超過)の再確認 |
@@ -365,7 +385,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 13 | 既存プロジェクト(裁定 J) | **項目 1 の選択に従う**: A-1 = 「スコープ無しのメンバー」は存在せず、明示初期化なし、既存プロジェクトは再作成 / A-8 = owner が人数分 `set_member_scope` を追記(完了までの検証不能な窓を伴う — 3-bis 裁定 A 行) | 移行期間の旧形式受理(互換経路) | 1 の帰結(1 と 13 を別々に裁定して矛盾する組み合わせにならないよう分岐を明示) |
 | 14 | 招待(裁定 K) | 発行文の末尾に `scope_kind, scope_environments_lp_hex`(`invite-link.json` 再生成)、D1 行に scope、リンク `sk=` / `se=`、`invite create --env`(反復・省略 = all)。`member add` は招待行の scope | `member add --env`(任意指定)/ K-3 招待 scope を上限として `member add` で縮める(追加巡 — クライアント検査のみで後から加法的に足せるため今回は見送り) | 受諾者が入る環境を事前に読める。同意の範囲を固定 |
 | 15 | grant_server(裁定 L) | 対象外。受信者集合 R(E) = { member: E ∈ scope } ∪ { grant: E ∈ scope_environments } の 1 定義 | — | 既存構造への追随 |
-| 16 | 四眼の形(P1) | 2 エントリ `propose` / `approve`(+ `withdraw`) | 共同署名 1 エントリ / チェーン外承認 | §6.1 不変・追記で拡張・原則 6 |
+| 16 | 四眼の形(P1) | 2 エントリ `propose` / `approve`(+ `withdraw`)。**規則は原則 2「署名者集合 S による認可」+ 不変条件「方針の単調性」からの導出**として書く(3-ter — `approval-required` の例外規定・票の再計算・常時対象はいずれも導出) | 共同署名 1 エントリ / チェーン外承認 | §6.1 不変・追記で拡張・原則 6 |
 | 17 | 方針の置き場と既定(P2 / P3) | 新 op `set_approval_policy` = `[ops_lp_hex, required_approvals]`。既定オフ。有効化は owner ≥ required。**方針 op 自身と owner role を確立する add_member / change_role は `ops` の列挙に依らず常に対象**(owner 身元の自作で定足数を満たす経路を閉じる)。pending 提案は各 approve 時点の現方針で判定。**可用性の対価**: 署名できる owner(鍵を保持し協力する owner)が required 未満になると管理面が復帰不能(チェーン上の owner 数は到達可能性の不変条件で減らない — §14.2-10 に明記)。緩和は運用前提(CLI が有効化時に owner ≥ required + 1 と全 owner のリカバリー登録を案内)— **有効化条件を合意規則で `>` に強めるかは所有者裁定**。owner 数を required 未満にする op は無効(`approval-quorum-unreachable`)。対象可能 op = grant_server / revoke_server / remove_member / change_role / add_member / set_approval_policy。既定推奨集合 = {grant_server, remove_member, change_role, set_approval_policy} | genesis 固定 / チェーン外設定 / 2 固定 | 単独 owner を壊さない。オフにするのに四眼が要る |
 | 18 | 承認者と提案者(P4) | 承認者 = owner のみ(distinct)。提案者 = 内側 op を実行できる role。owner の提案は 1 票 | admin 承認者 | owner の管理権限の迂回を作らない |
 | 19 | 適用点と再検査(P5) | 定足数到達の approve の seq で適用(inclusive)。提案時 + 適用時に内側 op の合意規則を検査、適用時は提案者の現在性(`proposal-void`)も。**票は現時点でも owner の投票者のみを数える**(離脱済み投票者の票は失効) | 適用失敗で提案が自動的に閉じる | 承認署名に「閉じる」効果を持たせない |
