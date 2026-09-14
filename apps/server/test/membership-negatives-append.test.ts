@@ -18,6 +18,7 @@ import { resignEntryAt } from "./support/data-crypto.ts";
 import {
   appendEntry,
   registerMembershipScenario,
+  remapProposalRef,
   replayNegativePrefix,
   replayVectorChain,
 } from "./support/membership-scenario.ts";
@@ -54,6 +55,31 @@ function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegative
   });
 }
 
+/**
+ * ES / PF1(2026-09-14)の構造 negative のうち、api-schema の閉集合リテラル
+ * (scope_kind / ops / 内側 op)・固定長 hex(proposal_hash_hex)・内側 payload の
+ * 必須フィールドが verifyChain より先に 400 で拒否するもの(create-env-commitment-* /
+ * checkpoint-* の hex Schema と同じ分担)。合意規則としての `invalid-payload` は
+ * crypto 層の 4 実行環境テストが理由コードごと固定する
+ */
+/**
+ * 構造 negative のうち、テスト時の署名 API(signChainEntry)が受け付けない形
+ * (負の expires_at_ms は §2.1 の符号化対象外)。構造検査は署名検証に先行するため、
+ * 再署名せずに送っても理由コードは構造段のもの(invalid-payload)で確定する
+ */
+const UNSIGNABLE_STRUCTURE_NEGATIVES: ReadonlySet<string> = new Set(["propose-expires-negative"]);
+
+const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
+  "scope-kind-unknown",
+  "policy-ops-rotate",
+  "policy-ops-unknown-op",
+  "propose-inner-op-unknown",
+  "propose-inner-op-nested",
+  "propose-inner-shape-precedes-role",
+  "approve-hash-uppercase",
+  "approve-hash-bad-length",
+]);
+
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
@@ -64,6 +90,35 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
     if (op === "create_environment" || op === "rotate_epoch") {
       continue;
     }
+    if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
+      it(`rejects ${negative.name} with 422 (${negative.expected_reason}) before the signature`, async () => {
+        const { head } = await replayNegativePrefix(negative);
+        // 署名 API が拒む形(負の expires_at_ms)は再署名できない。構造検査は署名検証に
+        // 先行する(§6.3 の検証段順)ので、seq / prev だけ実ヘッドへ付け替えた原本を
+        // 送れば理由コードは構造段のもので確定する
+        const response = await appendEntry(vectorProjectId, head.hashHex, {
+          ...toWireEntry(negative.entry),
+          seq: head.seq + 1,
+          prevHashHex: head.hashHex,
+        });
+        expect(response.status).toBe(422);
+        const body = (await response.json()) as { reason: string };
+        expect(body.reason).toBe(negative.expected_reason);
+      });
+      continue;
+    }
+    if (WIRE_SCHEMA_REJECTED.has(negative.name)) {
+      it(`rejects ${negative.name} at the wire schema (400)`, async () => {
+        const { head } = await replayNegativePrefix(negative);
+        const response = await appendEntry(vectorProjectId, head.hashHex, {
+          ...toWireEntry(negative.entry),
+          seq: head.seq + 1,
+          prevHashHex: head.hashHex,
+        });
+        expect(response.status).toBe(400);
+      });
+      continue;
+    }
     // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
     const expectsConcealment = negative.expected_reason === "actor-not-member";
     const label = expectsConcealment
@@ -71,9 +126,10 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
       : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
     it(label, async () => {
       const { head } = await replayNegativePrefix(negative);
-      // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 複合側と同じ)
+      // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 複合側と同じ)。
+      // approve / withdraw の参照先は再生時の実 hash へ付け替える
       const { entry } = await resignEntryAt(
-        toWireEntry(negative.entry),
+        remapProposalRef(toWireEntry(negative.entry)),
         head.seq + 1,
         head.hashHex,
       );

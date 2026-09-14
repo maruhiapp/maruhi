@@ -285,6 +285,8 @@ function invitationRow(
     id: INVITE_ID,
     projectId,
     role: "member",
+    scopeKind: "all",
+    scopeEnvironmentIds: [],
     status: acceptance === null ? "pending" : "accepted",
     inviterUserId: inviter.userId,
     issuance: issuedByProject.get(projectId)?.issuance ?? null,
@@ -364,6 +366,9 @@ describe("maruhi member add", () => {
       encPubHex: acceptor.encPubHex,
       sigPubHex: acceptor.sigPubHex,
       role: "member",
+      // 招待行の scope(K2 の CLI は all のみ発行)で署名する — AUTH_SPEC §15-2
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
     });
 
     // バックフィル: エポック 1〜2 を新メンバー宛にラップ(1 バッチで受理)

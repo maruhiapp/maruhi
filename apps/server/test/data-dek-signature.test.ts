@@ -192,6 +192,8 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
         encPubHex: encodeHex(await exportEncryptionPublicKey(encPair.publicKey)),
         sigPubHex: encodeHex(await exportSigningPublicKey(sigPair.publicKey)),
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
     const removedAgain = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
@@ -230,6 +232,8 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
           encPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
           sigPubHex: vectorKeyOf(MEMBER).sig_pub_hex,
           role: "member",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
         },
       },
     });

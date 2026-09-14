@@ -438,6 +438,13 @@ export const invitations = sqliteTable(
     issueSignature: text("issue_signature").notNull(),
     /** 'reader' | 'member' | 'admin'(招待経由で owner は付与しない — §15-1) */
     role: text("role").notNull(),
+    /** 付与予定 scope の kind('all' | 'listed' — AUTH_SPEC §15-2、2026-09-14 ES) */
+    scopeKind: text("scope_kind").notNull(),
+    /**
+     * 付与予定 scope の environment_id リスト(JSON 配列の文字列。`all` なら `[]`)。
+     * 発行文の一部(発行署名が覆う)であり、サーバーは検証せず保存・配布する
+     */
+    scopeEnvironments: text("scope_environments").notNull(),
     inviterUserId: text("inviter_user_id").notNull(),
     /** 'pending' | 'accepted' | 'completed' | 'revoked'(期限切れは expires_at からの導出) */
     status: text("status").notNull(),

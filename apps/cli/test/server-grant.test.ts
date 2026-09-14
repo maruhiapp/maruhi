@@ -424,6 +424,8 @@ describe("maruhi server grant", () => {
             encPubHex: member.encPubHex,
             sigPubHex: member.sigPubHex,
             role: "member",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
           },
         },
       },

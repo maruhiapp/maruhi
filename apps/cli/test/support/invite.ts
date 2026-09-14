@@ -13,6 +13,7 @@ import {
   signInviteIssue,
   signInviteLink,
   SUITE_ID,
+  type ScopePayloadFields,
 } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
@@ -46,11 +47,14 @@ export async function issueInviteFixture(input: {
   readonly headHashHex: string;
   readonly headSeq: number;
   readonly role?: InviteRole;
+  /** 付与予定 scope(2026-09-14 ES)。省略 = all(K2 の CLI が発行する唯一の形)。 */
+  readonly scope?: ScopePayloadFields;
   readonly inviteId?: string;
   readonly seedHex?: string;
   readonly inviterLogin?: string | null;
 }): Promise<IssuedInviteFixture> {
   const role = input.role ?? "member";
+  const scope: ScopePayloadFields = input.scope ?? { scopeKind: "all", scopeEnvironmentIds: [] };
   const inviteId = input.inviteId ?? INVITE_ID;
   const seedHex = input.seedHex ?? LINK_SEED_HEX;
   const seed = decodeHex(seedHex);
@@ -70,6 +74,7 @@ export async function issueInviteFixture(input: {
       inviterUserId: input.inviter.userId,
       inviterEncPubHex: input.inviter.encPubHex,
       inviterSigPubHex: input.inviter.sigPubHex,
+      ...scope,
     },
     signingKey: input.inviter.sigKeyPair.privateKey,
   });
@@ -85,6 +90,7 @@ export async function issueInviteFixture(input: {
       inviterEncPubHex: input.inviter.encPubHex,
       inviterSigPubHex: input.inviter.sigPubHex,
       role,
+      ...scope,
       inviterLogin: input.inviterLogin ?? null,
       issueSignatureHex: signed.value,
     },

@@ -40,7 +40,14 @@ function addMember(userId: string, role: "owner" | "admin" | "member" | "reader"
   return {
     ...base(),
     op: "add_member",
-    payload: { targetUserId: userId, encPubHex: HEX64, sigPubHex: HEX64, role },
+    payload: {
+      targetUserId: userId,
+      encPubHex: HEX64,
+      sigPubHex: HEX64,
+      role,
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    },
   };
 }
 
@@ -59,7 +66,12 @@ describe("deriveReportedView", () => {
     const change: ChainEntry = {
       ...base(),
       op: "change_role",
-      payload: { targetUserId: "user_a", newRole: "admin" },
+      payload: {
+        targetUserId: "user_a",
+        newRole: "admin",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     };
     const addB = addMember("user_b", "member");
     const removeB: ChainEntry = {
@@ -80,7 +92,12 @@ describe("deriveReportedView", () => {
     const change: ChainEntry = {
       ...base(),
       op: "change_role",
-      payload: { targetUserId: "user_ghost", newRole: "admin" },
+      payload: {
+        targetUserId: "user_ghost",
+        newRole: "admin",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     };
     expect(deriveReportedView([genesis, change]).members).toHaveLength(1);
   });

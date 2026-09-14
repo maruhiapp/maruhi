@@ -93,7 +93,14 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
     const sigPubHex = encodeHex(await exportSigningPublicKey(sigPair.publicKey));
     await appendOperation(fixture, OWNER, {
       op: "add_member",
-      payload: { targetUserId: STRANGER, encPubHex, sigPubHex, role: "member" },
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex,
+        sigPubHex,
+        role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     });
 
     // 招待者(owner)が既存エポックの DEK を新メンバー宛にラップして登録(§7)

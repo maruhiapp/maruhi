@@ -13,11 +13,12 @@
 // - 全エンドポイント認証必須(AuthMiddleware が 401 / CSRF 403 を担う。
 //   一覧 GET は監査を書かない = 状態を持たないため §11-4 の追加 CSRF 対象外)
 
-import { ProjectIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
+import { ScopeKindSchema } from "./chain.ts";
 import {
   ForbiddenError,
   InviteConflictError,
@@ -41,6 +42,40 @@ import { strictPayload } from "./strict.ts";
 
 /** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
 export const InviteRoleSchema = Schema.Literals(["reader", "member", "admin"]);
+
+/** scope の環境リスト上限(CRYPTO_SPEC §6.1 / §6.2 — grant_server の scope と同じ 256)。 */
+const MAX_INVITE_SCOPE_ENVIRONMENTS = 256;
+
+/**
+ * 招待の付与予定 scope(AUTH_SPEC §15-2 — 2026-09-14 ES)。形式検査のみ: kind の
+ * 閉集合・`all` なら空配列・256 要素以下・重複なし・各 id は §12-1 形式。
+ * **存在検査はしない**(合意規則は add_member 受理時に verifyChain が検査する)。
+ * 発行 body・一覧行・受諾応答が同じ 2 フィールドを運ぶ。
+ */
+const inviteScopeFields = {
+  scopeKind: ScopeKindSchema,
+  scopeEnvironmentIds: Schema.Array(EnvironmentIdSchema),
+};
+
+/** scope の構造規則(§6.2 と同じ — all ⇒ 空・上限・重複なし)を Struct 全体へ掛ける。 */
+function withInviteScopeShape<
+  S extends Schema.Struct<typeof inviteScopeFields & Schema.Struct.Fields>,
+>(schema: S): S {
+  return schema.check(
+    Schema.makeFilter((o: { scopeKind: string; scopeEnvironmentIds: readonly string[] }) => {
+      if (o.scopeKind === "all" && o.scopeEnvironmentIds.length > 0) {
+        return { path: ["scopeEnvironmentIds"], issue: "must be empty when scopeKind is all" };
+      }
+      if (o.scopeEnvironmentIds.length > MAX_INVITE_SCOPE_ENVIRONMENTS) {
+        return { path: ["scopeEnvironmentIds"], issue: "at most 256 environments" };
+      }
+      if (new Set(o.scopeEnvironmentIds).size !== o.scopeEnvironmentIds.length) {
+        return { path: ["scopeEnvironmentIds"], issue: "duplicate environment id" };
+      }
+      return undefined;
+    }),
+  ) as S;
+}
 
 /** 保存上の招待状態(期限切れは expiresAtMs からの導出 — §15-1)。 */
 export const InviteStatusSchema = Schema.Literals(["pending", "accepted", "completed", "revoked"]);
@@ -82,6 +117,7 @@ export const InvitationSummarySchema = Schema.Struct({
   id: Schema.String,
   projectId: ProjectIdSchema,
   role: InviteRoleSchema,
+  ...inviteScopeFields,
   status: InviteStatusSchema,
   inviterUserId: Schema.String,
   issuance: InviteIssuanceSchema,
@@ -90,15 +126,18 @@ export const InvitationSummarySchema = Schema.Struct({
   acceptance: Schema.NullOr(InviteAcceptanceSchema),
 });
 
-/** 発行の要求(§15-2): クライアント採番の id + 発行文。 */
-export const InviteIssuePayloadSchema = Schema.Struct({
-  id: InviteIdSchema,
-  role: InviteRoleSchema,
-  linkPubHex: PublicKeyHex,
-  headHashHex: Sha256Hex,
-  headSeq: PositiveInt,
-  issueSignatureHex: InviteIssueSignatureHex,
-});
+/** 発行の要求(§15-2): クライアント採番の id + 発行文(role・scope を含む)。 */
+export const InviteIssuePayloadSchema = withInviteScopeShape(
+  Schema.Struct({
+    id: InviteIdSchema,
+    role: InviteRoleSchema,
+    ...inviteScopeFields,
+    linkPubHex: PublicKeyHex,
+    headHashHex: Sha256Hex,
+    headSeq: PositiveInt,
+    issueSignatureHex: InviteIssueSignatureHex,
+  }),
+);
 
 /** 発行応答。期限のみ(トークン相当の秘密は無い — §15-1)。 */
 export const InviteIssueResultSchema = Schema.Struct({
@@ -113,6 +152,7 @@ export const InviteAcceptResultSchema = Schema.Struct({
   id: Schema.String,
   projectId: ProjectIdSchema,
   role: InviteRoleSchema,
+  ...inviteScopeFields,
 });
 
 /**

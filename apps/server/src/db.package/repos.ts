@@ -29,6 +29,7 @@ import type {
 import { ulid } from "../ids.ts";
 import type {
   InvitationRecord,
+  InviteScope,
   InviteAcceptInput,
   InviteCompletionTarget,
   InviteIssuance,
@@ -1239,6 +1240,8 @@ interface InviteCreateInput {
   readonly id: string;
   readonly projectId: string;
   readonly role: InviteRole;
+  /** 付与予定 scope(発行文の一部 — §15-2、2026-09-14 ES)。 */
+  readonly scope: InviteScope;
   readonly inviterUserId: string;
   /** 発行文(CRYPTO_SPEC §6.5 — サーバーは検証せず保存する)。 */
   readonly issuance: InviteIssuance;
@@ -1307,6 +1310,8 @@ interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
   readonly role: string;
+  readonly scopeKind: string;
+  readonly scopeEnvironments: string;
   readonly inviterUserId: string;
   readonly status: string;
   readonly expiresAt: number;
@@ -1352,6 +1357,26 @@ function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
   };
 }
 
+/**
+ * scope 列(JSON 配列の文字列)→ ドメイン表現。列は発行時に Schema 検査済みの値を
+ * JSON.stringify したものだが、壊れた行を throw で受諾不能にせず fail-closed に
+ * `listed` の空(= どの環境も付与しない)へ倒す
+ */
+function scopeOf(row: InvitationRow): InviteScope {
+  let ids: readonly string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row.scopeEnvironments);
+    if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) {
+      ids = parsed;
+    }
+  } catch {
+    ids = [];
+  }
+  return row.scopeKind === "all" && ids.length === 0
+    ? { scopeKind: "all", scopeEnvironmentIds: [] }
+    : { scopeKind: "listed", scopeEnvironmentIds: ids };
+}
+
 /** 行 → ドメイン表現。 */
 function toInvitationRecord(row: InvitationRow): InvitationRecord {
   return {
@@ -1359,6 +1384,7 @@ function toInvitationRecord(row: InvitationRow): InvitationRecord {
     projectId: row.projectId,
     issuance: issuanceOf(row),
     role: row.role as InviteRole,
+    scope: scopeOf(row),
     inviterUserId: row.inviterUserId,
     status: row.status as InviteStatus,
     expiresAtMs: row.expiresAt,
@@ -1411,6 +1437,10 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
           headSeq: sql<number>`${input.issuance.headSeq}`.as("head_seq"),
           issueSignature: sql<string>`${input.issuance.issueSignatureHex}`.as("issue_signature"),
           role: sql<string>`${input.role}`.as("role"),
+          scopeKind: sql<string>`${input.scope.scopeKind}`.as("scope_kind"),
+          scopeEnvironments: sql<string>`${JSON.stringify(input.scope.scopeEnvironmentIds)}`.as(
+            "scope_environments",
+          ),
           inviterUserId: sql<string>`${input.inviterUserId}`.as("inviter_user_id"),
           status: sql<string>`'pending'`.as("status"),
           expiresAt: sql<number>`${nowMs + INVITE_TTL_MS}`.as("expires_at"),

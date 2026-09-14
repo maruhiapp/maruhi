@@ -10,7 +10,7 @@
 // 一貫して報告されるべきで、Schema での 400 と二重の拒否経路を作らないため。
 
 import { EnvironmentIdSchema } from "@maruhi/core";
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
 import { Schema } from "effect";
 
 import { KeyFingerprintHex, PublicKeyHex, Sha256Hex, SignatureHex } from "./hex.ts";
@@ -34,33 +34,60 @@ const entryBaseFields = {
   signatureHex: SignatureHex,
 };
 
+/** Member scope kind (CRYPTO_SPEC §6.2 — 2026-09-14 ES). */
+export const ScopeKindSchema = Schema.Literals(["all", "listed"]);
+
+/**
+ * The two trailing scope fields of `add_member` / `change_role` (CRYPTO_SPEC
+ * §6.2). ワイヤは environment_id の構造化リストを as-signed 順で運ぶ(正規化 =
+ * 入れ子 LP は crypto 側)。`all` ⇒ 空リスト・256 以下・重複なしは合意規則であり
+ * verifyChain が `invalid-payload` で検査する(冒頭の方針どおり Schema へ重複させない)
+ */
+const scopePayloadFields = {
+  scopeKind: ScopeKindSchema,
+  scopeEnvironmentIds: Schema.Array(Schema.String),
+};
+
+const GenesisPayloadSchema = Schema.Struct({ encPubHex: PublicKeyHex, sigPubHex: PublicKeyHex });
+
+const AddMemberPayloadSchema = Schema.Struct({
+  targetUserId: Schema.String,
+  encPubHex: PublicKeyHex,
+  sigPubHex: PublicKeyHex,
+  role: RoleSchema,
+  ...scopePayloadFields,
+});
+
+const RemoveMemberPayloadSchema = Schema.Struct({ targetUserId: Schema.String });
+
+const ChangeRolePayloadSchema = Schema.Struct({
+  targetUserId: Schema.String,
+  newRole: RoleSchema,
+  ...scopePayloadFields,
+});
+
 const GenesisEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("genesis"),
-  payload: Schema.Struct({ encPubHex: PublicKeyHex, sigPubHex: PublicKeyHex }),
+  payload: GenesisPayloadSchema,
 });
 
 const AddMemberEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("add_member"),
-  payload: Schema.Struct({
-    targetUserId: Schema.String,
-    encPubHex: PublicKeyHex,
-    sigPubHex: PublicKeyHex,
-    role: RoleSchema,
-  }),
+  payload: AddMemberPayloadSchema,
 });
 
 const RemoveMemberEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("remove_member"),
-  payload: Schema.Struct({ targetUserId: Schema.String }),
+  payload: RemoveMemberPayloadSchema,
 });
 
 const ChangeRoleEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("change_role"),
-  payload: Schema.Struct({ targetUserId: Schema.String, newRole: RoleSchema }),
+  payload: ChangeRolePayloadSchema,
 });
 
 /**
@@ -76,13 +103,15 @@ const ChangeRoleEntrySchema = Schema.Struct({
  * 受理すると URL param を持つ後続エンドポイント — rotate / rename / delete /
  * pull — から到達不能な環境が生まれ、§7 の全環境ローテーション義務も破れる)。
  */
+const CreateEnvironmentPayloadSchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+  dekCommitmentHex: Sha256Hex,
+});
+
 export const CreateEnvironmentEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("create_environment"),
-  payload: Schema.Struct({
-    environmentId: EnvironmentIdSchema,
-    dekCommitmentHex: Sha256Hex,
-  }),
+  payload: CreateEnvironmentPayloadSchema,
 });
 
 /**
@@ -90,17 +119,19 @@ export const CreateEnvironmentEntrySchema = Schema.Struct({
  * Submitted only through the composite rotation endpoint
  * (AUTH_SPEC §12-4). Exported for that endpoint's payload schema.
  */
+const RotateEpochPayloadSchema = Schema.Struct({
+  // create_environment と同じ受理ポリシー形式(URL 座標との一致検査 —
+  // §12-4 — の対象だが、ワイヤ側でも同じ形式に固定して非対称を作らない)
+  environmentId: EnvironmentIdSchema,
+  newEpoch: Schema.Number,
+  reason: Schema.String,
+  dekCommitmentHex: Sha256Hex,
+});
+
 export const RotateEpochEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("rotate_epoch"),
-  payload: Schema.Struct({
-    // create_environment と同じ受理ポリシー形式(URL 座標との一致検査 —
-    // §12-4 — の対象だが、ワイヤ側でも同じ形式に固定して非対称を作らない)
-    environmentId: EnvironmentIdSchema,
-    newEpoch: Schema.Number,
-    reason: Schema.String,
-    dekCommitmentHex: Sha256Hex,
-  }),
+  payload: RotateEpochPayloadSchema,
 });
 
 /**
@@ -120,23 +151,27 @@ const LeasePolicyIssuerSchema = Schema.Struct({
   claimConstraints: Schema.Array(LeaseClaimConstraintSchema),
 });
 
+const GrantServerPayloadSchema = Schema.Struct({
+  serverEncPubHex: PublicKeyHex,
+  serverKeyFingerprintHex: KeyFingerprintHex,
+  scopeEnvironmentIds: Schema.Array(Schema.String),
+  // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 3 段入れ子 LP は
+  // crypto 側 — 順序は署名対象の一部なのでオブジェクトでなく配列で保つ)
+  leasePolicy: Schema.Array(LeasePolicyIssuerSchema),
+});
+
 const GrantServerEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("grant_server"),
-  payload: Schema.Struct({
-    serverEncPubHex: PublicKeyHex,
-    serverKeyFingerprintHex: KeyFingerprintHex,
-    scopeEnvironmentIds: Schema.Array(Schema.String),
-    // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 3 段入れ子 LP は
-    // crypto 側 — 順序は署名対象の一部なのでオブジェクトでなく配列で保つ)
-    leasePolicy: Schema.Array(LeasePolicyIssuerSchema),
-  }),
+  payload: GrantServerPayloadSchema,
 });
+
+const RevokeServerPayloadSchema = Schema.Struct({ serverKeyFingerprintHex: KeyFingerprintHex });
 
 const RevokeServerEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("revoke_server"),
-  payload: Schema.Struct({ serverKeyFingerprintHex: KeyFingerprintHex }),
+  payload: RevokeServerPayloadSchema,
 });
 
 /**
@@ -162,17 +197,99 @@ const CheckpointEnvironmentEntrySchema = Schema.Struct({
  * acceptance-time content matching (AUTH_SPEC §16-2). Exported for
  * the composite payload schemas (data-api.ts).
  */
+const CheckpointPayloadSchema = Schema.Struct({
+  // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 入れ子 LP は
+  // crypto 側 — 順序は署名対象の一部なので配列で保つ。grant_server と同型)
+  environments: Schema.Array(CheckpointEnvironmentEntrySchema),
+  // 空文字列 = 監査ヘッドの公証なし(§6.2)。「空または 64 hex」の判定は
+  // 合意規則(verifyChain)に一本化する
+  auditHeadHashHex: Schema.String,
+});
+
 export const CheckpointEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("checkpoint"),
-  payload: Schema.Struct({
-    // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 入れ子 LP は
-    // crypto 側 — 順序は署名対象の一部なので配列で保つ。grant_server と同型)
-    environments: Schema.Array(CheckpointEnvironmentEntrySchema),
-    // 空文字列 = 監査ヘッドの公証なし(§6.2)。「空または 64 hex」の判定は
-    // 合意規則(verifyChain)に一本化する
-    auditHeadHashHex: Schema.String,
+  payload: CheckpointPayloadSchema,
+});
+
+// ---------------------------------------------------------------------------
+// 四眼(CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
+
+/** Operations a four-eyes policy may name (CRYPTO_SPEC §6.2 — the closed target set). */
+const ApprovalTargetOpSchema = Schema.Literals([
+  "grant_server",
+  "revoke_server",
+  "remove_member",
+  "change_role",
+  "add_member",
+  "set_approval_policy",
+]);
+
+/**
+ * `set_approval_policy` payload: ops は as-signed 順の配列(正規化 = 入れ子 LP は
+ * crypto 側)。required_approvals の「0 または 2 以上」・ops の閉集合検査は合意規則
+ * (verifyChain)— ここでは閉集合のリテラルだけを型として持つ(ワイヤ型と crypto 型の
+ * 一致のため)
+ */
+const SetApprovalPolicyPayloadSchema = Schema.Struct({
+  ops: Schema.Array(ApprovalTargetOpSchema),
+  requiredApprovals: Schema.Number,
+});
+
+const SetApprovalPolicyEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("set_approval_policy"),
+  payload: SetApprovalPolicyPayloadSchema,
+});
+
+/**
+ * An operation carried inside a `propose` entry (CRYPTO_SPEC §6.2): any
+ * non-approval operation as `{ op, payload }` — structured on the wire, the
+ * `inner_payload_lp_hex` canonical form is computed by the crypto layer.
+ * `propose` / `approve` / `withdraw` are not members (提案の入れ子は構造段で無効).
+ */
+const ProposableOperationSchema = Schema.Union([
+  Schema.Struct({ op: Schema.Literal("genesis"), payload: GenesisPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("add_member"), payload: AddMemberPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("remove_member"), payload: RemoveMemberPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("change_role"), payload: ChangeRolePayloadSchema }),
+  Schema.Struct({
+    op: Schema.Literal("create_environment"),
+    payload: CreateEnvironmentPayloadSchema,
   }),
+  Schema.Struct({ op: Schema.Literal("rotate_epoch"), payload: RotateEpochPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("grant_server"), payload: GrantServerPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("revoke_server"), payload: RevokeServerPayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("checkpoint"), payload: CheckpointPayloadSchema }),
+  Schema.Struct({
+    op: Schema.Literal("set_approval_policy"),
+    payload: SetApprovalPolicyPayloadSchema,
+  }),
+]);
+
+const ProposeEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("propose"),
+  payload: Schema.Struct({
+    inner: ProposableOperationSchema,
+    // 非負の安全整数は合意規則(verifyChain の invalid-payload)
+    expiresAtMs: Schema.Number,
+  }),
+});
+
+/** `approve` / `withdraw` payload: the `propose` entry hash (CRYPTO_SPEC §6.2). */
+const ProposalRefPayloadSchema = Schema.Struct({ proposalHashHex: Sha256Hex });
+
+const ApproveEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("approve"),
+  payload: ProposalRefPayloadSchema,
+});
+
+const WithdrawEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("withdraw"),
+  payload: ProposalRefPayloadSchema,
 });
 
 /** Wire schema for one signed chain entry, discriminated by `op` (CRYPTO_SPEC §6.1). */
@@ -186,6 +303,10 @@ export const ChainEntrySchema = Schema.Union([
   GrantServerEntrySchema,
   RevokeServerEntrySchema,
   CheckpointEntrySchema,
+  SetApprovalPolicyEntrySchema,
+  ProposeEntrySchema,
+  ApproveEntrySchema,
+  WithdrawEntrySchema,
 ]);
 
 // デコード結果が @maruhi/crypto の ChainEntry へそのまま渡せることの静的検査。
@@ -194,3 +315,7 @@ type WireChainEntry = typeof ChainEntrySchema.Type;
 type WireIsChainEntry = WireChainEntry extends ChainEntry ? true : never;
 const wireIsChainEntry: WireIsChainEntry = true;
 void wireIsChainEntry;
+type WireProposable = typeof ProposableOperationSchema.Type;
+type WireIsProposable = WireProposable extends ProposableOperation ? true : never;
+const wireIsProposable: WireIsProposable = true;
+void wireIsProposable;

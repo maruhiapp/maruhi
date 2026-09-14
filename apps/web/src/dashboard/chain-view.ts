@@ -55,7 +55,11 @@ function applyGrantServer(state: FoldState, entry: EntryOf<"grant_server">): voi
 }
 
 // op ごとの畳み込み(表示変換のみ)。create_environment / rotate_epoch /
-// checkpoint はメンバー・サーバー集合に影響しないため写像に載せない
+// checkpoint はメンバー・サーバー集合に影響しないため写像に載せない。
+// 四眼の 4 op(set_approval_policy / propose / approve / withdraw — 2026-09-14 PF1)も
+// 載せない: 提案経由で適用された内側 op の表示は方針・pending の畳み込みを要し、
+// Web 面は K6(設計録 es-design.md §4)で扱う。scope(add_member / change_role の
+// 末尾 2 フィールド)の表示も同じく K6
 const ENTRY_FOLDERS: { [Op in ChainEntry["op"]]?: (state: FoldState, entry: EntryOf<Op>) => void } =
   {
     genesis: (state, entry) => setMember(state, entry.actor.userId, "owner", entry.seq),

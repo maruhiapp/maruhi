@@ -476,7 +476,13 @@ describe("maruhi member change-role", () => {
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "change_role") throw new Error("change_role entry missing");
-    expect(entry.payload).toEqual({ targetUserId: target.userId, newRole: "reader" });
+    expect(entry.payload).toEqual({
+      targetUserId: target.userId,
+      newRole: "reader",
+      // K2 の CLI は対象の現 scope(all)を据え置く(--env は K4)
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
     // 降格者は reader として新エポックのラップを受け取り続ける(§7 — 機密性では
@@ -542,7 +548,12 @@ describe("maruhi member change-role", () => {
         actor: owner,
         operation: {
           op: "change_role",
-          payload: { targetUserId: target.userId, newRole: "reader" },
+          payload: {
+            targetUserId: target.userId,
+            newRole: "reader",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
+          },
         },
       },
     ]);

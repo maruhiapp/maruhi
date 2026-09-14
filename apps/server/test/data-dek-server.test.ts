@@ -251,6 +251,8 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
         encPubHex: sockEncPubHex,
         sigPubHex: sockSigPubHex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
 
@@ -426,6 +428,7 @@ const memberOf = (userId: string) =>
     {
       userId,
       role: "member",
+      scope: { kind: "all" },
       encPubHex: "11".repeat(32),
       sigPubHex: "22".repeat(32),
       keyFingerprintHex: "33".repeat(16),
@@ -459,6 +462,8 @@ describe("expectedWrapRecipientCount", () => {
       ]),
       environments: new Map(),
       checkpoints: new Map(),
+      approvalPolicy: null,
+      pendingProposals: new Map(),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };

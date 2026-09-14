@@ -191,7 +191,12 @@ describe("チェーンミラー(§3.4)", () => {
     const addMember = events[1];
     if (addMember === undefined) throw new Error("missing add_member mirror");
     expect(addMember["target_user_id"]).toBe(MEMBER);
-    expect(JSON.parse(String(addMember["payload"]))).toEqual({ role: "member" });
+    // scope も写す(AUDIT_SPEC §3.4 — 2026-09-14 ES)
+    expect(JSON.parse(String(addMember["payload"]))).toEqual({
+      role: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
   });
 
   it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4)", async () => {
@@ -244,7 +249,12 @@ describe("チェーンミラー(§3.4)", () => {
   it("mirrors change_role / remove_member with the target user id (§4.1 Q1 の入力)", async () => {
     await appendOperation(fixture, OWNER, {
       op: "change_role",
-      payload: { targetUserId: READER, newRole: "admin" },
+      payload: {
+        targetUserId: READER,
+        newRole: "admin",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
     });
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
@@ -256,7 +266,11 @@ describe("チェーンミラー(§3.4)", () => {
     if (roleChanged === undefined || removed === undefined) throw new Error("missing mirrors");
     expect(roleChanged["event"]).toBe("chain.role_changed");
     expect(roleChanged["target_user_id"]).toBe(READER);
-    expect(JSON.parse(String(roleChanged["payload"]))).toEqual({ newRole: "admin" });
+    expect(JSON.parse(String(roleChanged["payload"]))).toEqual({
+      newRole: "admin",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
     expect(removed["event"]).toBe("chain.member_removed");
     expect(removed["target_user_id"]).toBe(MEMBER);
     expect(removed["actor_user_id"]).toBe(OWNER);

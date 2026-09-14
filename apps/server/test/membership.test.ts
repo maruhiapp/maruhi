@@ -111,8 +111,9 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
 describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate は複合経由)", () => {
   it("accepts the full vector chain with interleaved boundary checkpoints, append-only", async () => {
     // 複合(vector seq 3 / 4 / 8 / 10 / 11)ごとに境界 checkpoint(H+2)が
-    // 挿入される(§12-4)。ベクターの 12 op はこの順序で全受理される
-    const { head } = await replayVectorChain(12);
+    // 挿入される(§12-4)。ベクターの 24 op(2026-09-14 ES + PF1 — seq 13〜24 は
+    // scope 付き add_member / change_role と四眼の 4 op)はこの順序で全受理される
+    const { head } = await replayVectorChain(vectorEntries.length);
 
     const response = await getChain(vectorProjectId);
     expect(response.status).toBe(200);
@@ -122,25 +123,10 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
       headSeq: number;
       headHashHex: string;
     };
-    const expectedOps = [
-      "genesis",
-      "add_member",
-      "create_environment",
-      "checkpoint",
-      "rotate_epoch",
-      "checkpoint",
-      "remove_member",
-      "add_member",
-      "change_role",
-      "create_environment",
-      "checkpoint",
-      "grant_server",
-      "rotate_epoch",
-      "checkpoint",
-      "create_environment",
-      "checkpoint",
-      "revoke_server",
-    ];
+    // 期待 op 列 = ベクター本編の op 列に、create / rotate の直後の境界 checkpoint を挿入したもの
+    const expectedOps = vectorEntries.flatMap((v) =>
+      v.op === "create_environment" || v.op === "rotate_epoch" ? [v.op, "checkpoint"] : [v.op],
+    );
     expect(body.projectId).toBe(vectorProjectId);
     expect(body.headSeq).toBe(expectedOps.length);
     expect(body.headHashHex).toBe(head.hashHex);

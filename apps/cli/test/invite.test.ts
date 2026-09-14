@@ -106,6 +106,8 @@ async function readPins(env: TestEnv, projectId: string): Promise<Record<string,
 interface IssueBody {
   readonly id: string;
   readonly role: string;
+  readonly scopeKind: "all" | "listed";
+  readonly scopeEnvironmentIds: readonly string[];
   readonly linkPubHex: string;
   readonly headHashHex: string;
   readonly headSeq: number;
@@ -138,7 +140,7 @@ describe("invite link(§15-3 v2)", () => {
   it("組み立て → 解釈がラウンドトリップする(パラメータ順は仕様の記載順)", () => {
     const link = inviteLinkText("https://maruhi.example", issued);
     expect(link).toBe(
-      `https://maruhi.example/invite#v=2&i=${INVITE_ID}&k=${LINK_SEED_HEX}&p=${PROJECT_ID}&h=${"cd".repeat(32)}&s=7&iu=${inviter.userId}&ie=${inviter.encPubHex}&is=${inviter.sigPubHex}&r=member&il=octocat&sig=${issued.link.issueSignatureHex}`,
+      `https://maruhi.example/invite#v=2&i=${INVITE_ID}&k=${LINK_SEED_HEX}&p=${PROJECT_ID}&h=${"cd".repeat(32)}&s=7&iu=${inviter.userId}&ie=${inviter.encPubHex}&is=${inviter.sigPubHex}&r=member&sk=all&se=&il=octocat&sig=${issued.link.issueSignatureHex}`,
     );
     const parsed = parseInviteAcceptInput(Redacted.make(link));
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
@@ -230,6 +232,8 @@ describe("maruhi invite create", () => {
     const body = issued[0];
     if (body === undefined) throw new Error("no issue body");
     expect(body.role).toBe("member");
+    expect(body.scopeKind).toBe("all");
+    expect(body.scopeEnvironmentIds).toEqual([]);
     expect(body.headSeq).toBe(1);
     expect(body.headHashHex).toBe(built.hashes[0]);
     // 発行署名は招待者のチェーン鍵で検証できる(CRYPTO_SPEC §6.5)
@@ -245,6 +249,9 @@ describe("maruhi invite create", () => {
         inviterUserId: inviter.userId,
         inviterEncPubHex: inviter.encPubHex,
         inviterSigPubHex: inviter.sigPubHex,
+        // K2 の CLI は scope = all のみ発行する(発行 body・発行署名の両方に載る)
+        scopeKind: body.scopeKind,
+        scopeEnvironmentIds: body.scopeEnvironmentIds,
       },
       signatureHex: body.issueSignatureHex,
     });
@@ -258,6 +265,8 @@ describe("maruhi invite create", () => {
       "issueSignatureHex",
       "linkPubHex",
       "role",
+      "scopeEnvironmentIds",
+      "scopeKind",
     ]);
 
     // 表示したリンクは解釈でき、発行文と一致する(種から導出した公開鍵 = 送った link_pub)
@@ -351,6 +360,8 @@ describe("maruhi invite create", () => {
             encPubHex: admin2.encPubHex,
             sigPubHex: admin2.sigPubHex,
             role: "admin",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
           },
         },
       },
@@ -499,7 +510,16 @@ describe("maruhi invite accept", () => {
   function acceptHandler(record: (body: AcceptBody) => void, role = "member"): MockHandler {
     return onRequest("POST", "/invites/accept", (request) => {
       record(request.body as AcceptBody);
-      return { status: 200, json: { id: INVITE_ID, projectId: PROJECT_ID, role } };
+      return {
+        status: 200,
+        json: {
+          id: INVITE_ID,
+          projectId: PROJECT_ID,
+          role,
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
+        },
+      };
     });
   }
 
@@ -1085,7 +1105,13 @@ describe("maruhi invite accept", () => {
     const server2 = await start([
       onRequest("POST", "/invites/accept", () => ({
         status: 200,
-        json: { id: INVITE_ID, projectId: "ff".repeat(32), role: "member" },
+        json: {
+          id: INVITE_ID,
+          projectId: "ff".repeat(32),
+          role: "member",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
+        },
       })),
     ]);
     const env2 = await makeTestEnv();
@@ -1121,6 +1147,8 @@ describe("maruhi invite list / revoke", () => {
       id: INVITE_ID,
       projectId,
       role,
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
       status: acceptance === null ? "pending" : "accepted",
       inviterUserId: inviter.userId,
       issuance: issued.issuance,

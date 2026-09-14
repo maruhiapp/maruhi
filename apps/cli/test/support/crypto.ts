@@ -114,6 +114,8 @@ export function addMemberOp(
       encPubHex: target.encPubHex,
       sigPubHex: target.sigPubHex,
       role,
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
     },
   };
 }

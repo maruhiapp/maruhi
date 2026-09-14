@@ -52,7 +52,13 @@ describe("invite accept", () => {
     const response = await acceptAs(fixture, STRANGER, keys, issued);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { id: string; projectId: string; role: string };
-    expect(body).toEqual({ id: issued.id, projectId, role: "member" });
+    expect(body).toEqual({
+      id: issued.id,
+      projectId,
+      role: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
 
     const row = mustRow(await inviteRow(issued.id));
     expect(row.status).toBe("accepted");
@@ -346,6 +352,8 @@ describe("invite list / revoke", () => {
         id: string;
         projectId: string;
         role: string;
+        scopeKind: "all" | "listed";
+        scopeEnvironmentIds: readonly string[];
         status: string;
         issuance: {
           linkPubHex: string;
@@ -392,6 +400,8 @@ describe("invite list / revoke", () => {
         inviterUserId: OWNER,
         inviterEncPubHex: owner.encPubHex,
         inviterSigPubHex: owner.sigPubHex,
+        scopeKind: listed.scopeKind,
+        scopeEnvironmentIds: listed.scopeEnvironmentIds,
       },
       signatureHex: issuance.issueSignatureHex,
     });
@@ -505,6 +515,8 @@ describe("invite list / revoke", () => {
         encPubHex: keys.encPubHex,
         sigPubHex: keys.sigPubHex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
 
@@ -531,6 +543,8 @@ describe("invite list / revoke", () => {
         encPubHex: keys.encPubHex,
         sigPubHex: keys.sigPubHex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
     await env.DB.prepare("ALTER TABLE invitations_hidden RENAME TO invitations").run();
@@ -552,6 +566,8 @@ describe("invite list / revoke", () => {
         encPubHex: differentKeys.encPubHex,
         sigPubHex: differentKeys.sigPubHex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
       },
     });
 

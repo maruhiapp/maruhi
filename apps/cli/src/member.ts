@@ -15,7 +15,15 @@
 // 禁止していないが、義務が構造的に宙に浮く形を CLI が作らない)。
 
 import { ChainHeadConflictError, DekWrapNotFoundError } from "@maruhi/api-schema";
-import type { ChainEntry, ChainMember, Role, SigningKeyPair } from "@maruhi/crypto";
+import {
+  ALL_SCOPE,
+  type ChainEntry,
+  type ChainMember,
+  type Role,
+  type ScopePayloadFields,
+  scopePayloadFieldsOf,
+  type SigningKeyPair,
+} from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
@@ -571,12 +579,17 @@ function ensureAddable(input: {
   });
 }
 
-/** add_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
+/**
+ * add_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。
+ * scope は招待行の付与予定 scope(AUTH_SPEC §15-2 — 招待者が受諾後に別の scope を
+ * 付けることはできない: 同意の範囲は発行時の発行署名が固定する)
+ */
 function signAddMemberEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
+  readonly scope: ScopePayloadFields;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
   return signEntryAtHead({
@@ -589,6 +602,8 @@ function signAddMemberEntry(input: {
         encPubHex: input.acceptance.inviteeEncPubHex,
         sigPubHex: input.acceptance.inviteeSigPubHex,
         role: input.role,
+        scopeKind: input.scope.scopeKind,
+        scopeEnvironmentIds: input.scope.scopeEnvironmentIds,
       },
     },
     signingKeyPair: input.signingKeyPair,
@@ -859,6 +874,7 @@ export function memberAddOp(input: {
             signerUserId: input.signerUserId,
             acceptance: row.acceptance,
             role: row.role,
+            scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
             signingKeyPair: input.signingKeyPair,
           }),
         recheck: (view) =>
@@ -1162,6 +1178,12 @@ function ensureRoleChangeable(input: {
 }
 
 /** change_role エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
+/**
+ * change_role エントリを現ヘッドの直後に署名する。payload は新 (role, scope) の全置換
+ * (CRYPTO_SPEC §6.2)なので、K2 の CLI(scope の指定 `--env` は K4)は対象の**現 scope を
+ * 据え置く**(role だけを変える)。owner へ昇格するときは owner の scope = all が合意規則
+ * (`scope-role-mismatch`)なので all を載せる
+ */
 function signChangeRoleEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -1169,12 +1191,22 @@ function signChangeRoleEntry(input: {
   readonly newRole: Role;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
+  const target = input.verified.state.members.get(input.targetUserId);
+  if (target === undefined) {
+    return Effect.fail(cliError("The target is not a member (check the user ID)"));
+  }
+  const scope = scopePayloadFieldsOf(input.newRole === "owner" ? ALL_SCOPE : target.scope);
   return signEntryAtHead({
     verified: input.verified,
     signerUserId: input.signerUserId,
     operation: {
       op: "change_role",
-      payload: { targetUserId: input.targetUserId, newRole: input.newRole },
+      payload: {
+        targetUserId: input.targetUserId,
+        newRole: input.newRole,
+        scopeKind: scope.scopeKind,
+        scopeEnvironmentIds: scope.scopeEnvironmentIds,
+      },
     },
     signingKeyPair: input.signingKeyPair,
     failureText: "Failed to sign the change_role entry",

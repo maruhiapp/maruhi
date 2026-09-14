@@ -32,6 +32,18 @@ const CHAIN_INVALID_REASONS = [
   "checkpoint-audit-role-insufficient",
   "checkpoint-epoch-mismatch",
   "checkpoint-regression",
+  // 環境スコープ(CRYPTO_SPEC §6.2 — 2026-09-14 ES)
+  "scope-role-mismatch",
+  "scope-not-contained",
+  "environment-out-of-scope",
+  // 四眼(CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
+  "approval-required",
+  "approval-not-required",
+  "approval-quorum-unreachable",
+  "unknown-proposal",
+  "duplicate-approval",
+  "proposal-expired",
+  "proposal-void",
 ] as const satisfies readonly ChainInvalidReason[];
 
 // 逆方向の静的検査: crypto 側に理由コードが追加されたらここがコンパイルエラーになる

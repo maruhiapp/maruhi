@@ -76,6 +76,8 @@ function sampleLinkData(): InviteLinkData {
     inviterEncPubHex: "ef".repeat(32),
     inviterSigPubHex: "01".repeat(32),
     role: "member",
+    scopeKind: "all",
+    scopeEnvironmentIds: [],
     inviterLogin: null,
     issueSignatureHex: "02".repeat(64),
   };

@@ -45,6 +45,8 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
   "issuer-not-member-at-head": "chain-head-state-mismatch",
   "issuer-key-mismatch-at-head": "chain-head-state-mismatch",
   "issuer-role-insufficient-at-head": "chain-head-state-mismatch",
+  // §6.3 の 3′(2026-09-14 ES): 宣言ヘッド時点の issuer の scope 外(role 不足と同クラス)
+  "issuer-environment-out-of-scope-at-head": "chain-head-state-mismatch",
   "environment-not-created-at-head": "manifest-epoch-mismatch",
   "epoch-not-current-at-head": "manifest-epoch-mismatch",
   // 旧エポックを焼き込んだ前進 manifestVersion(predecessor とのエポック後退)も
