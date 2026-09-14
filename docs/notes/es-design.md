@@ -259,6 +259,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 
 - 内側 op は、票数が `required` に達した **`approve` エントリの seq で適用**(inclusive 規約 — remove の tenure 終了・change_role の新 role はその seq で有効)
 - 適用時に内側 op の合意規則を**適用時点の状態**で再検査する(対象の存在・role 規則・包含規則・最後の owner・鍵重複・到達可能性 …)。加えて**提案者が現メンバーで、提案時と同じ鍵 FP・内側 op に必要な role を持つ**こと(`proposal-void` — 提案後に提案者が削除・降格・鍵変更された提案は完成できない)
+- **票は「今の `approve` エントリの時点でも owner である投票者」だけを数える**(2026-09-14 Cursor Bugbot 指摘対応): 投票時の owner 資格だけを見ると、投票後に降格・削除された投票者の票が残り、残る owner 1 名が完成できてしまう(四眼の破れ)。票数は承認のたびに適用前状態で再計算する
 - 提案時にも同じ検査を行う(提案段で無効な op を pending に積まない — `propose` 自体が無効エントリ)。二重検査のコストはエントリ数分で無視できる
 - 適用に失敗する承認エントリは**無効エントリ**(チェーンに載らない)。pending 提案はそのまま残る(withdraw で閉じる)。「適用失敗で提案が自動的に閉じる」形は、承認者の署名が「閉じる」効果を持つ二義性になるため棄却
 
@@ -334,7 +335,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 16 | 四眼の形(P1) | 2 エントリ `propose` / `approve`(+ `withdraw`) | 共同署名 1 エントリ / チェーン外承認 | §6.1 不変・追記で拡張・原則 6 |
 | 17 | 方針の置き場と既定(P2 / P3) | 新 op `set_approval_policy` = `[ops_lp_hex, required_approvals]`。既定オフ。有効化は owner ≥ required。**方針 op 自身は常に現方針に服す**。owner 数を required 未満にする op は無効(`approval-quorum-unreachable`)。対象可能 op = grant_server / revoke_server / remove_member / change_role / add_member / set_approval_policy。既定推奨集合 = {grant_server, remove_member, change_role, set_approval_policy} | genesis 固定 / チェーン外設定 / 2 固定 | 単独 owner を壊さない。オフにするのに四眼が要る |
 | 18 | 承認者と提案者(P4) | 承認者 = owner のみ(distinct)。提案者 = 内側 op を実行できる role。owner の提案は 1 票 | admin 承認者 | owner の管理権限の迂回を作らない |
-| 19 | 適用点と再検査(P5) | 定足数到達の approve の seq で適用(inclusive)。提案時 + 適用時に内側 op の合意規則を検査、適用時は提案者の現在性(`proposal-void`)も | 適用失敗で提案が自動的に閉じる | 承認署名に「閉じる」効果を持たせない |
+| 19 | 適用点と再検査(P5) | 定足数到達の approve の seq で適用(inclusive)。提案時 + 適用時に内側 op の合意規則を検査、適用時は提案者の現在性(`proposal-void`)も。**票は現時点でも owner の投票者のみを数える**(離脱済み投票者の票は失効) | 適用失敗で提案が自動的に閉じる | 承認署名に「閉じる」効果を持たせない |
 | 20 | 期限(P6) | `expires_at_ms`(既定 7 日)+ 合意規則 `approve.timestamp_ms ≤ expires_at_ms`(`proposal-expired`)。**timestamp を合意規則に用いる唯一の箇所。正直な承認者向けの UX 安全装置であり、悪意の承認者(過去方向の詐称)に対する保証ではない** | 期限なし / seq 距離 / 下界の追加(窓内詐称を止められない) | 文脈を失った承認の抑止。§14.2-10 の保証は期限に依存しない |
 | 21 | remove の義務の起点(P7) | 適用時点 | 提案時点 | 適用前に失効する DEK はない |
 | 22 | 受理・監査・履行者(P8) | 汎用 append。pending ≤ 32(受理ポリシー)。ミラー 4 種 + 完成 approve の適用行(同 chain_seq・`viaProposalSeq`)。`audit verify` の全単射規則の改訂。**四眼経由の add_member / scope 拡大のバックフィルと remove / 降格 / 縮小の rotate は、適用を完成させた承認者が履行**(§12-6 の 5 番目の経路) | 提案者による履行(適用時に不在) | 検出(Q1)の入力構造を変えない。承認者 = owner = all で履行可能 |
