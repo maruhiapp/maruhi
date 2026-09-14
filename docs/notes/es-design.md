@@ -127,7 +127,7 @@
 
 | 案 | 内容 | 評価 |
 |---|---|---|
-| D-1 **包含規則** | `add_member`(対象 scope)/ `change_role`(新 scope)/ `remove_member`(対象の現 scope)は、**actor の scope ⊇ 対象 scope** でなければ無効(`scope-not-contained`)。owner は all なので常に通る | 「入れられる = DEK を渡せる」「消せる = 義務の rotate を履行できる(再暗号化に旧 DEK が要る)」が構造的に一致。dangling(メンバーはいるがラップを作れる人がいない)状態を作らない |
+| D-1 **包含規則** | `add_member`(対象 scope)/ `change_role`(**旧 scope ∪ 新 scope** — 2026-09-14 最終確認で訂正。当初の「新 scope」だけでは縮小分が actor の scope 外でも通り、actor が履行できない rotate 義務が生じる)/ `remove_member`(対象の現 scope)は、**actor の scope ⊇ 対象 scope** でなければ無効(`scope-not-contained`)。owner は all なので常に通る | 「入れられる = DEK を渡せる」「消せる = 義務の rotate を履行できる(再暗号化に旧 DEK が要る)」が構造的に一致。dangling(メンバーはいるがラップを作れる人がいない)状態を作らない |
 | D-2 包含なし + バックフィル委任 | admin は任意 scope を付与でき、DEK は scope 内の別メンバー(member 以上)がバックフィルする | 「メンバーはいるがラップがない」状態が常態化(§12-4 の非対称が恒久化)。remove の rotate 義務も他人任せ。棄却 |
 | D-3 C-1(admin = all)で不要化 | — | 裁定 C の上位互換で C-2 を採ったため、包含規則は必要 |
 
@@ -321,6 +321,8 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | P7 義務の起点 | 0(単巡) | P7-2 提案時点から rotate 義務を始める(先回りローテーション)— 適用前に失効する DEK はなく、提案が撤回されれば無駄な rotate になる。棄却 | 2(第 2・3 巡で上位互換なし) | P7 維持 |
 | P8 受理・監査・CLI | 0(レビュー直後) | P8-2 承認者以外の owner が sync 時に未履行義務を検出して代行する — 承認者の履行が主、代行は `project verify` の未収束警告からの手動実行として既に成立。新案ではない | 2(第 2・3 巡で上位互換なし) | P8 維持 |
 
+**最終確認(2026-09-14 — 所有者の「本当にこれ以上の案はないか」への回答前の敵対的読み直し)**: 裁定 D の `change_role` の包含が「新 scope」のみで、縮小分(旧 \ 新)が actor の scope 外でも通る欠陥を発見し、「旧 ∪ 新」に訂正した(A-2・承認項目 5)。採用案の構造は変わらないが、探索の網羅性は保証できない — レビュー 8 巡とこの読み直しで計 4 件の穴が後から見つかっており、正本反映(K1)前の所有者レビューと K2 のベクター設計(負例の列挙)が最後の網である。
+
 **追加巡の帰結**: 採用案の変更はない。承認項目 1 に A-8(既定 none + `set_member_scope`)を所有者選択の代替として併記し、K-3 を後続の加法として記録した。以後の裁定では「新案なしの連続 2 巡」を満たしてから打ち止めと書く。
 
 ## 4. 実装分割(K1〜K7)と独立停止可能性
@@ -352,7 +354,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 2 | 符号化(裁定 B) | `scope_kind` ∈ {all, listed} + `scope_environments_lp_hex`(grant_server と同じ入れ子 LP・≤ 256・順序は署名対象・生成昇順 SHOULD) | 空 = all(fail-open)/ 番兵 `*` / all を表現しない | grant_server の先例の再利用。all の明示 |
 | 3 | 構造規則(裁定 B) | all ⇒ 空リスト必須(`invalid-payload`)、listed の id は `create_environment` 先行必須(`unknown-environment`)、重複 = `invalid-payload`、listed の空リストは有効 | 存在検査なし / 空 listed の禁止 | fail-closed(typo)。`listed{}` = 管理のみ・後で入れる の表現 |
 | 4 | role との関係(裁定 C) | owner = all 固定(`scope-role-mismatch`)。admin / member / reader は listed 可 | admin も all 固定 / owner も listed | C-2 は C-1 の上位互換(admin を all にすれば同じ)。dev 専任 admin が書ける |
-| 5 | 包含規則(裁定 D) | add / change_role / remove で **actor scope ⊇ 対象 scope**(`scope-not-contained`)。検査順序: 既存の検査列(role → duplicate-* / unknown-target → last-owner)の**後ろ**に unknown-environment → scope-role-mismatch → scope-not-contained(既存負例の期待理由を温存) | 包含なし + 他メンバーによるバックフィル委任 | ラップ実行者 = DEK 保持者(§7)。消せる = rotate を履行できる |
+| 5 | 包含規則(裁定 D) | add(対象 scope)/ change_role(**旧 ∪ 新 scope** — 縮小分の rotate と拡大分のバックフィルの両方を actor が履行できるため)/ remove(現 scope)で **actor scope ⊇ 対象 scope**(`scope-not-contained`)。検査順序: 既存の検査列(role → duplicate-* / unknown-target → last-owner)の**後ろ**に unknown-environment → scope-role-mismatch → scope-not-contained(既存負例の期待理由を温存) | 包含なし + 他メンバーによるバックフィル委任 | ラップ実行者 = DEK 保持者(§7)。消せる = rotate を履行できる |
 | 6 | 環境対象 op(裁定 E) | rotate / checkpoint(全タプル)は env ∈ actor scope、create は all の actor のみ(すべて `environment-out-of-scope`) | 作成者の暗黙スコープ追加 | 原則 6(暗黙の scope 変化を作らない)。1 述語で 3 op を覆う |
 | 7 | 縮小の意味論(裁定 F) | 縮小を受理し、縮小分の環境に §7 の rotate 義務(sweep 第 4 種 `scope-narrowed`)。降格 = 対象 scope の環境、remove = 対象の現 scope の環境 | 縮小を合意規則で拒否(grant_server 型) | remove + re-add の招待やり直し・tenure 分断を避ける。義務で同じ目的を達する |
 | 8 | 拡大の義務(裁定 F) | change_role の拡大分は actor が全エポックをバックフィル(§12-6 の追記経路。複合化しない) | 複合化 | §12-4 の非対称(上限超過)の再確認 |
