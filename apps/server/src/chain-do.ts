@@ -364,6 +364,9 @@ const initProgram = (
     }
     // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
+    // init は Schema 上は全 op を受理するが、seq 1 の非 genesis は verifyChain の
+    // フレーミング規則(bad-genesis)で必ず 422 になる — 四眼 4 op の受理ガード
+    // (appendProgram)を init に置かないのはこの不変条件に依る(独立レビュー D3)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
     // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
     // エントリの束縛が崩れていたら受理しない(worker 側バグへの防衛)
@@ -399,11 +402,6 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
     };
   });
 
-/**
- * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
- * add_member / grant_server の拒否と remove_member / checkpoint の非遮断を、
- * 実測量を差し替えた StorageMeter の下で直接固定する)。
- */
 const APPROVAL_OPS = ["set_approval_policy", "propose", "approve", "withdraw"] as const;
 type ApprovalOp = (typeof APPROVAL_OPS)[number];
 
@@ -412,6 +410,11 @@ function isApprovalOp(op: ChainEntry["op"]): op is ApprovalOp {
   return (APPROVAL_OPS as readonly string[]).includes(op);
 }
 
+/**
+ * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
+ * add_member / grant_server の拒否と remove_member / checkpoint の非遮断を、
+ * 実測量を差し替えた StorageMeter の下で直接固定する)。
+ */
 export const appendProgram = (
   parentHeadHashHex: string,
   entry: ChainEntry,
