@@ -42,7 +42,7 @@
 > | `genesis` | プロジェクト作成者の公開鍵一式 | 作成者自身(owner・scope = all となる) |
 > | `add_member` | 対象 user_id、対象の enc/sig 公開鍵、role、**scope_kind、scope_environments_lp_hex** | admin 以上(admin / owner の付与は owner のみ)。対象 scope ⊆ actor scope |
 > | `remove_member` | 対象 user_id | admin 以上(admin / owner の削除は owner のみ)。対象の現 scope ⊆ actor scope。**対象の現 scope の全環境**の `rotate_epoch` を伴う(§7) |
-> | `change_role` | 対象 user_id、新 role、**scope_kind、scope_environments_lp_hex**(新 (role, scope) の全置換) | admin 以上(admin / owner が関わる変更は owner のみ)。旧 scope ∪ 新 scope ⊆ actor scope。member 未満への降格は対象 scope の全環境の、scope の縮小は縮小分の環境の `rotate_epoch` を伴う(§7) |
+> | `change_role` | 対象 user_id、新 role、**scope_kind、scope_environments_lp_hex**(新 (role, scope) の全置換) | admin 以上(admin / owner が関わる変更は owner のみ)。義務の環境集合(新 \ 旧 ∪ 旧 \ 新 ∪ 降格分 — 原則 1)⊆ actor scope。member 未満への降格は対象 scope の全環境の、scope の縮小は縮小分の環境の `rotate_epoch` を伴う(§7) |
 > | `create_environment` | 対象 environment_id、エポック 1 の dek_commitment_hex(§5.2) | member 以上・scope = all |
 > | `rotate_epoch` | 対象 environment_id、新エポック番号、理由、新エポックの dek_commitment_hex(§5.2) | member 以上・対象環境 ∈ scope |
 > | `grant_server` | サーバー鍵の公開鍵・フィンガープリント、許可スコープ(対象環境の部分集合を含む)、リースポリシー | owner のみ(明示操作) |
