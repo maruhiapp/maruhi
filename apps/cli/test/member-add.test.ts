@@ -797,11 +797,6 @@ describe("maruhi member add", () => {
         }),
         "the acceptance signature failed verification",
       ],
-      // IV 改訂前の行(発行文なし — 互換経路なし)
-      [
-        invitationRow(built.projectId, acceptance, { issuance: null }),
-        "issued before the link-bound invite format",
-      ],
     ] as const) {
       const state = await makeAddServer({ built, invitation, ownDeks: [] });
       const env = await startAddEnv(state, built.projectId);

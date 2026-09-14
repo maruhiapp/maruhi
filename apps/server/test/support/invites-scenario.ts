@@ -35,12 +35,6 @@ import { hexBytes, vectorKeyOf } from "./data-crypto.ts";
 import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 
-/** legacy 列 token_hash の値 = SHA-256(link_pub の 32 バイト)の hex(AUTH_SPEC §15-1)。 */
-export async function legacyTokenHashOf(linkPubHex: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", hexBytes(linkPubHex) as BufferSource);
-  return encodeHex(new Uint8Array(digest));
-}
-
 /**
  * ユーザーの署名鍵ペア(発行署名の署名者)。ベクター固定鍵を持つユーザーは
  * その鍵、持たないユーザー(STRANGER 等 — 認可で落ちる経路の主体)は使い捨ての
@@ -239,11 +233,10 @@ export async function acceptAs(
 export interface InviteRow {
   readonly id: string;
   readonly project_id: string;
-  readonly token_hash: string;
-  readonly link_pub: string | null;
-  readonly head_hash: string | null;
-  readonly head_seq: number | null;
-  readonly issue_signature: string | null;
+  readonly link_pub: string;
+  readonly head_hash: string;
+  readonly head_seq: number;
+  readonly issue_signature: string;
   readonly role: string;
   readonly status: string;
   readonly invitee_user_id: string | null;
@@ -285,7 +278,8 @@ export function payloadOf(row: AuditRow): Record<string, unknown> {
 
 /**
  * テスト用の招待行の直接シード(受理ポリシー・状態遷移の前提状態を作る)。
- * 発行文(link_pub 等)を持たない = IV 改訂前の行の形(受諾不能 = unbound)。
+ * 発行文は形だけ整えたダミー(link_pub は id から決定的に導く = UNIQUE を満たす。
+ * 発行署名はサーバーが検証しないので固定値)。
  */
 export async function seedInvitation(input: {
   readonly id: string;
@@ -293,13 +287,16 @@ export async function seedInvitation(input: {
   readonly createdAt: number;
   readonly expiresAt: number;
 }): Promise<void> {
+  const linkPub = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.id));
   await env.DB.prepare(
-    "INSERT INTO invitations (id, project_id, token_hash, role, inviter_user_id, status, expires_at, created_at) VALUES (?, ?, ?, 'member', ?, ?, ?, ?)",
+    "INSERT INTO invitations (id, project_id, link_pub, head_hash, head_seq, issue_signature, role, inviter_user_id, status, expires_at, created_at) VALUES (?, ?, ?, ?, 1, ?, 'member', ?, ?, ?, ?)",
   )
     .bind(
       input.id,
       projectId,
-      `seed-hash-${input.id}`,
+      encodeHex(new Uint8Array(linkPub)),
+      "ab".repeat(32),
+      "00".repeat(64),
       OWNER,
       input.status ?? "pending",
       input.expiresAt,

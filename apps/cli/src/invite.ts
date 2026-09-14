@@ -101,7 +101,7 @@ export interface InvitationRow {
   readonly role: InviteRole;
   readonly status: "pending" | "accepted" | "completed" | "revoked";
   readonly inviterUserId: string;
-  readonly issuance: InviteIssuance | null;
+  readonly issuance: InviteIssuance;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
   readonly acceptance: InviteAcceptance | null;
@@ -121,7 +121,7 @@ export function listInvitations(
 /** 発行文の検証結果(理由は文言へ写す)。 */
 export type IssuanceVerdict =
   | { readonly ok: true }
-  | { readonly ok: false; readonly reason: "unbound" | "inviter-not-member" | "signature" };
+  | { readonly ok: false; readonly reason: "inviter-not-member" | "signature" };
 
 /**
  * 発行文の検証(CRYPTO_SPEC §6.5): 一覧行の発行文 + 発行署名を、**チェーン導出の
@@ -134,12 +134,7 @@ export function verifyIssuance(input: {
   readonly row: InvitationRow;
 }): Effect.Effect<IssuanceVerdict, CliError> {
   return Effect.gen(function* () {
-    // 発行文をローカルへ束縛する(closure 内で型の絞り込みが失われ、空文字列の
-    // フォールバックを書く羽目にならないように)
     const { issuance } = input.row;
-    if (issuance === null) {
-      return { ok: false, reason: "unbound" } as const;
-    }
     const inviter = input.verified.state.members.get(input.row.inviterUserId);
     if (inviter === undefined) {
       return { ok: false, reason: "inviter-not-member" } as const;
@@ -172,8 +167,6 @@ export function issuanceFailureText(
   reason: Exclude<IssuanceVerdict, { ok: true }>["reason"],
 ): string {
   switch (reason) {
-    case "unbound":
-      return "was issued before the link-bound invite format and cannot be accepted or added — revoke it with `maruhi invite revoke` and issue a new one";
     case "inviter-not-member":
       return "names an inviter who is not a current member of this project, so its issue signature cannot be checked — revoke it and issue a new one";
     case "signature":
@@ -1100,10 +1093,6 @@ function goneErrorToCliError(error: InviteGoneError): CliError {
       return cliError("This invite has been revoked. Ask the inviter to reissue");
     case "expired":
       return cliError("This invite has expired. Ask the inviter to reissue");
-    case "unbound":
-      return cliError(
-        "This invite was issued before the link-bound invite format and cannot be accepted. Ask the inviter to revoke it and issue a new link",
-      );
     default:
       return cliError("This invite is not usable. Ask the inviter to reissue");
   }
@@ -1185,12 +1174,8 @@ function listRowChecks(input: {
     );
     const issuance = yield* verifyIssuance({ verified: input.verified, row });
     if (!issuance.ok) {
-      if (issuance.reason === "unbound") {
-        yield* logNote(`invite ${displayText(row.id)} ${issuanceFailureText("unbound")}`);
-      } else {
-        failures += 1;
-        yield* logWarning(`invite ${displayText(row.id)} ${issuanceFailureText(issuance.reason)}`);
-      }
+      failures += 1;
+      yield* logWarning(`invite ${displayText(row.id)} ${issuanceFailureText(issuance.reason)}`);
       return failures;
     }
     yield* io.log("  issuance: signature verified against the inviter's chain key");
@@ -1201,7 +1186,7 @@ function listRowChecks(input: {
         `the server's claim for invite ${displayText(row.id)} (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,
       );
     }
-    if (row.acceptance !== null && row.issuance !== null) {
+    if (row.acceptance !== null) {
       const verified = yield* verifyAcceptanceBlock({
         projectId: input.verified.projectId,
         issuance: row.issuance,

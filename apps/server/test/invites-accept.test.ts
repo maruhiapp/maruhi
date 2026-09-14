@@ -39,7 +39,6 @@ import {
   mustRow,
   payloadOf,
   registerInviteScenario,
-  seedInvitation,
   signAcceptance,
   signingKeyPairOf,
 } from "./support/invites-scenario.ts";
@@ -195,29 +194,6 @@ describe("invite accept", () => {
     const expiredResponse = await acceptAs(fixture, STRANGER, keys, expired);
     expect(expiredResponse.status).toBe(410);
     expect((await expiredResponse.json()) as object).toMatchObject({ reason: "expired" });
-  });
-
-  it("a pre-IV row (no issuance) is 410 unbound even with a matching link pub", async () => {
-    // 発行文の無い行(IV 改訂前の形)へ link_pub だけを後付けしても受諾不能:
-    // 互換経路を作らない裁定の写し(一覧では issuance null で可視 → 失効を促す)
-    const keys = await makeInviteeKeys();
-    const link = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
-    if (!link.ok) {
-      throw new Error("link key derivation failed");
-    }
-    const linkPubHex = Buffer.from(link.value.publicKeyRaw).toString("hex");
-    await seedInvitation({
-      id: "seed-unbound-0001",
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-    });
-    await env.DB.prepare("UPDATE invitations SET link_pub = ? WHERE id = ?")
-      .bind(linkPubHex, "seed-unbound-0001")
-      .run();
-    const response = await acceptAs(fixture, STRANGER, keys, { linkPubHex, linkKey: link.value });
-    expect(response.status).toBe(410);
-    expect((await response.json()) as object).toMatchObject({ reason: "unbound" });
-    expect((await inviteRow("seed-unbound-0001"))?.status).toBe("pending");
   });
 
   it("rejects invalid signatures with 422 (link first, then accept)", async () => {
@@ -435,25 +411,6 @@ describe("invite list / revoke", () => {
       (await verifyInviteLinkSignature({ context, linkSignatureHex: acceptance.linkSignatureHex }))
         .ok,
     ).toBe(true);
-  });
-
-  it("a pre-IV row lists with issuance null and no acceptance block", async () => {
-    await seedInvitation({
-      id: "seed-legacy-0001",
-      status: "accepted",
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-    });
-    const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      headers: bearer(tokenOf(fixture.tokens, OWNER)),
-    });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
-      invitations: readonly { id: string; issuance: unknown; acceptance: unknown }[];
-    };
-    const legacy = body.invitations.find((entry) => entry.id === "seed-legacy-0001");
-    expect(legacy?.issuance).toBeNull();
-    expect(legacy?.acceptance).toBeNull();
   });
 
   it("list requires chain role admin: member 403, non-member 404", async () => {

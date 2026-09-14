@@ -76,8 +76,7 @@ export const InviteAcceptanceSchema = Schema.Struct({
 
 /**
  * 一覧の 1 行。発行文と受諾ブロックは招待者クライアントの再検証(CRYPTO_SPEC
- * §6.5 — signed_bytes の再構成材料)と FP ワード表示に必要。`issuance` が null の
- * 行は IV 改訂前の発行(link_pub 無し)で受諾不能(失効を促す)。
+ * §6.5 — signed_bytes の再構成材料)と FP ワード表示に必要。
  */
 export const InvitationSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -85,7 +84,7 @@ export const InvitationSummarySchema = Schema.Struct({
   role: InviteRoleSchema,
   status: InviteStatusSchema,
   inviterUserId: Schema.String,
-  issuance: Schema.NullOr(InviteIssuanceSchema),
+  issuance: InviteIssuanceSchema,
   createdAtMs: Schema.Number,
   expiresAtMs: Schema.Number,
   acceptance: Schema.NullOr(InviteAcceptanceSchema),

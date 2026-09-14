@@ -28,9 +28,6 @@ export const InviteGoneReasonSchema = Schema.Literals([
   "completed",
   "revoked",
   "expired",
-  // IV 改訂(2026-09-13)より前に発行された行(link_pub を持たない)は受諾不能。
-  // 互換経路を作らない所有者裁定の写し — 一覧で可視のまま失効を促す
-  "unbound",
 ]);
 
 /** 410: the invitation is no longer usable (single-use CAS — AUTH_SPEC §15-1). */

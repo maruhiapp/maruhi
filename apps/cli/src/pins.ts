@@ -35,11 +35,8 @@ export interface InviteAnchor {
   readonly inviterUserId: string;
   /** ユーザー鍵 FP(16 バイト hex 32 文字 — §3)。 */
   readonly inviterKeyFingerprintHex: string;
-  /**
-   * 招待者の sig 公開鍵(リンクの `is=` — IV 改訂。初回同期で FP に加えて
-   * チェーン上の鍵と突合する)。IV 改訂前のピンには無い(null)。
-   */
-  readonly inviterSigPubHex: string | null;
+  /** 招待者の sig 公開鍵(リンクの `is=`)。初回同期で FP に加えてチェーン上の鍵と突合する。 */
+  readonly inviterSigPubHex: string;
   /** 初回機械照合が成功したときの自ビューの head seq(未照合 = null)。 */
   readonly verifiedAtSeq: number | null;
 }
@@ -168,15 +165,14 @@ function decodeAnchor(value: unknown): InviteAnchor | null {
   const inviterUserId = patternField(value, "inviterUserId", /^.{1,1024}$/s);
   const inviterKeyFingerprintHex = patternField(value, "inviterKeyFingerprintHex", HEX_32);
   const verifiedAtSeq = optionalPositiveIntField(value, "verifiedAtSeq");
-  // IV 改訂前のアンカーは inviterSigPubHex を持たない(欠落 / null = null)
-  const inviterSigPubHex = optionalPatternField(value, "inviterSigPubHex", HEX_64);
+  const inviterSigPubHex = patternField(value, "inviterSigPubHex", HEX_64);
   if (
     headSeq === null ||
     headHashHex === null ||
     inviterUserId === null ||
     inviterKeyFingerprintHex === null ||
     verifiedAtSeq === "invalid" ||
-    inviterSigPubHex === "invalid"
+    inviterSigPubHex === null
   ) {
     return null;
   }
@@ -209,23 +205,8 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   return { linkPubHex, role, expiresAtMs, expectedGithubLogin };
 }
 
-/**
- * IV 改訂前(2026-09-13 より前)の発行ピンか: `tokenHashHex` を持ち `linkPubHex` を
- * 持たない。旧発行は受諾不能(サーバーが 410 `unbound`)なので突合材料として
- * 無価値だが、同じファイルの**アンカー**(受諾側の §6.3 (a))まで道連れに破損扱いに
- * すると、初回同期の機械照合が fail-open になり以後の書き込みも止まる。旧ピンは
- * 読み飛ばし(次の保存で消える)、形式不正はこれまでどおり全体拒否のままにする。
- */
-function isLegacyIssuedPin(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value["tokenHashHex"] === "string" &&
-    value["linkPubHex"] === undefined
-  );
-}
-
 /** 厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない — 床と同じ)。 */
-/** issued レコード全体のデコード(旧形式は読み飛ばし、1 件でも不正なら全体拒否)。 */
+/** issued レコード全体のデコード(1 件でも不正なら全体拒否)。 */
 function decodeIssuedRecord(value: unknown): Record<string, IssuedInvitePin> | null {
   if (!isRecord(value)) {
     return null;
@@ -234,9 +215,6 @@ function decodeIssuedRecord(value: unknown): Record<string, IssuedInvitePin> | n
   for (const [inviteId, raw] of Object.entries(value)) {
     if (!INVITE_ID.test(inviteId)) {
       return null;
-    }
-    if (isLegacyIssuedPin(raw)) {
-      continue;
     }
     const pin = decodeIssuedPin(raw);
     if (pin === null) {
