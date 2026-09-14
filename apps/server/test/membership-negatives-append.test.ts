@@ -168,7 +168,8 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
  * 認可 negative の分割(pullfrog 第 3 巡): `prefixReplayable` / `firstFourEyesSeq` /
  * `fourEyesChains` の判定が広がっても(例: 正規チェーンの再生成で四眼 op が前に動く)
  * suite が静かに空にならないよう、各分岐の件数を厳密に固定する。K5 で受理ガードを
- * 外すときは `skipped` を 0 にし、`fourEyesGuard` の分を `consensus` / `wireSchema` へ戻す
+ * 外すときは `skipped` を 0 にし、`fourEyesGuard` の分を `consensus` / `wireSchema` /
+ * `structureBeforeSignature`(`propose-expires-negative`)へ戻す
  */
 const EXPECTED_PARTITION = {
   checkpoint: 20,
