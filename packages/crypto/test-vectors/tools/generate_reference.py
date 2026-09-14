@@ -1374,8 +1374,9 @@ def gen_chain_entries():
     # 四眼の検証状態(§6.2 / §6.3): approval_policy = {ops, required_approvals} | null
     # (null = 方針なし = オフ)、pending_proposals = 提案エントリの entry_hash →
     # {proposal_seq, 提案者(user_id・鍵 FP・提案時 role)、内側 op と payload、期限、
-    # approvals(受理済み approve エントリの actor の列 — 提案者の票は
-    # proposer_role_at_proposal = owner から導出する)}
+    # approvals(受理済み approve エントリの actor の列)}。票は S = {提案者} ∪ approvals
+    # のうち各 approve 時点で owner である distinct な数で数え直す(原則 2)。提案時 role は
+    # 情報値であり票の入力ではない(設計録 §8 K2-6 / 正本への申し送り ②)
     def policy_state(ops: list, required: int) -> dict:
         return {"ops": list(ops), "required_approvals": str(required)}
 
