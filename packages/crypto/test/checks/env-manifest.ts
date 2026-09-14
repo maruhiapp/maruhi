@@ -398,6 +398,7 @@ const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "issuer-not-member-at-head": true,
   "issuer-key-mismatch-at-head": true,
   "issuer-role-insufficient-at-head": true,
+  "issuer-environment-out-of-scope-at-head": true,
   "environment-not-created-at-head": true,
   "epoch-not-current-at-head": true,
   "checkpoint-binding-mismatch": true,

@@ -31,7 +31,7 @@ import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
 // からの取り外し・早期 return 化など)を「黙って母数が減る」形でなく明示的な
 // 失敗として検出する。チェックを追加しても失敗しない(下限のみ)。意図して
 // チェックを削減する変更では、この値も同じ変更で引き下げる
-const MIN_TOTAL_CHECKS = 998;
+const MIN_TOTAL_CHECKS = 1699;
 
 export async function runAllChecks(): Promise<CheckResult[]> {
   // 各層のチェックは共有の固定ベクターを読むだけで相互に独立だが、

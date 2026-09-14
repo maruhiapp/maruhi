@@ -12,6 +12,7 @@ import { decodeHex, encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
+import { scopeIncludesEnvironment } from "./member-scope.ts";
 
 const SIGNATURE_BYTES = 64;
 const FINGERPRINT_HEX_LENGTH = 16 * 2;
@@ -150,12 +151,24 @@ export interface HeadAuthorizationReasons<R> {
 }
 
 /**
+ * §6.3 の 3′(2026-09-14 ES): 環境対象の署名は、宣言ヘッド時点のアクターの scope が
+ * 当該 environment_id を含むこと。理由コードは呼び出し側の語彙(writer- / author- /
+ * issuer-environment-out-of-scope-at-head)。環境を持たない署名(ヘッド申告)は渡さない
+ */
+export interface HeadScopeCheck<R> {
+  readonly environmentId: string;
+  readonly outOfScopeAtHead: R;
+}
+
+/**
  * ヘッド束縛(§6.3-2)と認可時点(§6.3-1 / -3)の共有検査
  * (meta-verify / value-verify の headStateReason 前段):
  * - 不一致 2 種の区別: seq > 自ヘッド = future(再同期の入口)、seq ≤ 自ヘッドの
  *   ハッシュ不一致 = 分岐または偽造の硬い証拠
  * - 宣言ヘッド時点(inclusive)の在籍・鍵束縛・role。鍵不一致は remove → 別鍵
  *   re-add の tenure 跨ぎ(旧区間の鍵 × 新区間のヘッド)の拒否を含む
+ * - 3′ スコープ(`scope` が渡された場合): role の直後に、宣言ヘッド時点の scope が
+ *   当該環境を含むこと(§6.3 — 2026-09-14 ES)
  * エポック整合(§6.3-4)は値署名のみの検査なので呼び出し側に残す。
  */
 export function headAuthorizationReason<R>(input: {
@@ -166,6 +179,7 @@ export function headAuthorizationReason<R>(input: {
   readonly actorKeyFingerprintHex: string;
   readonly requiredRoleRank: number;
   readonly reasons: HeadAuthorizationReasons<R>;
+  readonly scope?: HeadScopeCheck<R> | undefined;
 }): R | null {
   if (input.chainHeadSeq > input.history.headSeq) {
     return input.reasons.chainHeadFuture;
@@ -182,6 +196,12 @@ export function headAuthorizationReason<R>(input: {
   }
   if (ROLE_RANK[member.role] < input.requiredRoleRank) {
     return input.reasons.roleInsufficientAtHead;
+  }
+  if (
+    input.scope !== undefined &&
+    !scopeIncludesEnvironment(member.scope, input.scope.environmentId)
+  ) {
+    return input.scope.outOfScopeAtHead;
   }
   return null;
 }

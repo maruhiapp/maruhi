@@ -293,6 +293,7 @@ const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "author-not-member-at-head": true,
   "author-key-mismatch-at-head": true,
   "author-role-insufficient-at-head": true,
+  "author-environment-out-of-scope-at-head": true,
   "prev-shape-mismatch": true,
   "prev-hash-mismatch": true,
   "revived-after-delete": true,

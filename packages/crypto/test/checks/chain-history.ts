@@ -3,7 +3,7 @@
 // (value-signature.json の tenure_extension)に対して、seq → entry hash、
 // 宣言ヘッド時点(inclusive)のメンバー状態・環境状態、tenure の分離を固定する。
 
-import type { ChainEntry, ChainHistoryIndex } from "../../src/index.ts";
+import type { ChainEntry, ChainHistoryIndex, MemberStateAtSeq } from "../../src/index.ts";
 import { verifyChainWithHistory } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
 import {
@@ -18,8 +18,13 @@ import { type CheckResult, Checks } from "./support.ts";
 const OWNER = "user-owner-0001";
 const MEMBER = "user-member-0002";
 const ADMIN = "user-admin-0003";
+const DEV_MEMBER = "user-devmember-0010";
+/** 正規チェーンのヘッド seq(chain-entries.json — 2026-09-14 ES + PF1 で 24)。 */
+const HEAD_SEQ = 24;
+/** tenure_extension(value-signature.json)の re-add エントリの seq(= ヘッドの次)。 */
+const EXTENSION_SEQ = HEAD_SEQ + 1;
 
-/** tenure_extension のエントリ(seq 13 の新鍵 re-add)を型付きで得る。 */
+/** tenure_extension のエントリ(seq 25 の新鍵 re-add)を型付きで得る。 */
 function tenureExtensionEntry(): ChainEntry {
   const raw = valueVectors.tenure_extension.entry;
   return toTypedEntry({
@@ -38,7 +43,7 @@ function tenureExtensionEntry(): ChainEntry {
   });
 }
 
-/** 正規 12 エントリチェーンの検証済み履歴索引。 */
+/** 正規 24 エントリチェーンの検証済み履歴索引。 */
 export async function canonicalHistory(): Promise<ChainHistoryIndex> {
   const result = await verifyChainWithHistory(typedEntries);
   if (!result.ok) {
@@ -67,7 +72,7 @@ export async function extendedVectorChainHistory(name: string): Promise<ChainHis
   return result.value.history;
 }
 
-/** 正規 12 エントリ + seq 13 re-add の派生チェーンの検証済み履歴索引。 */
+/** 正規 24 エントリ + seq 25 re-add の派生チェーンの検証済み履歴索引。 */
 export async function extendedHistory(): Promise<ChainHistoryIndex> {
   const result = await verifyChainWithHistory([...typedEntries, tenureExtensionEntry()]);
   if (!result.ok) {
@@ -77,7 +82,7 @@ export async function extendedHistory(): Promise<ChainHistoryIndex> {
 }
 
 function entryHashChecks(c: Checks, history: ChainHistoryIndex): void {
-  c.push("history: head seq", history.headSeq === 12);
+  c.push("history: head seq", history.headSeq === HEAD_SEQ);
   c.push(
     "history: head hash",
     history.headHashHex === vectorEntries[vectorEntries.length - 1]?.entry_hash_hex,
@@ -89,7 +94,10 @@ function entryHashChecks(c: Checks, history: ChainHistoryIndex): void {
     );
   }
   c.push("history: entry hash at seq 0 is undefined", history.entryHashAt(0) === undefined);
-  c.push("history: entry hash beyond head is undefined", history.entryHashAt(13) === undefined);
+  c.push(
+    "history: entry hash beyond head is undefined",
+    history.entryHashAt(HEAD_SEQ + 1) === undefined,
+  );
   c.push(
     "history: entry hash at non-integer seq is undefined",
     history.entryHashAt(3.5) === undefined,
@@ -120,7 +128,10 @@ function memberBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
     "history: member invalid at its removal seq",
     history.memberStateAt(MEMBER, 5) === undefined,
   );
-  c.push("history: member invalid after removal", history.memberStateAt(MEMBER, 12) === undefined);
+  c.push(
+    "history: member invalid after removal",
+    history.memberStateAt(MEMBER, HEAD_SEQ) === undefined,
+  );
 }
 
 function roleChangeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
@@ -134,7 +145,62 @@ function roleChangeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
     "history: admin has new role at its change_role seq",
     history.memberStateAt(ADMIN, 7)?.role === "admin",
   );
-  c.push("history: admin keeps role at head", history.memberStateAt(ADMIN, 12)?.role === "admin");
+  c.push(
+    "history: admin keeps role at head",
+    history.memberStateAt(ADMIN, HEAD_SEQ)?.role === "admin",
+  );
+}
+
+/** (role, scope) の変化点(§6.2 — 2026-09-14 ES / PF1 の提案経由適用)。 */
+/** listed scope の環境 id 列(all / 不在は undefined)。 */
+function listed(state: MemberStateAtSeq | undefined): readonly string[] | undefined {
+  return state?.scope.kind === "listed" ? state.scope.environmentIds : undefined;
+}
+
+function scopeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
+  // genesis 由来の owner / 旧形式相当の add_member は scope = all
+  c.push("history: owner scope is all", history.memberStateAt(OWNER, 1)?.scope.kind === "all");
+  c.push("history: admin scope is all", history.memberStateAt(ADMIN, 6)?.scope.kind === "all");
+  // seq 13: listed{dev} の member として加入(inclusive)
+  c.push(
+    "history: dev member absent before add",
+    history.memberStateAt(DEV_MEMBER, 12) === undefined,
+  );
+  const at13 = history.memberStateAt(DEV_MEMBER, 13);
+  c.push(
+    "history: dev member listed{dev} at its add seq",
+    at13?.role === "member" && listed(at13)?.join(",") === "env-dev-0002",
+  );
+  // seq 17: change_role(scope だけ拡大 — {dev} → {dev, stage})は自身の seq で有効
+  c.push(
+    "history: dev member scope unchanged just before change_role",
+    listed(history.memberStateAt(DEV_MEMBER, 16))?.join(",") === "env-dev-0002",
+  );
+  const at17 = history.memberStateAt(DEV_MEMBER, 17);
+  c.push(
+    "history: dev member widened scope at its change_role seq",
+    at17?.role === "member" && listed(at17)?.join(",") === "env-dev-0002,env-stage-0003",
+  );
+}
+
+/** 提案経由の適用(PF1): 変化点は定足数に達した approve エントリの seq(inclusive)。 */
+function proposalApplyBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
+  // seq 21 の propose は状態を変えず、seq 22 の approve(定足数到達)で内側 change_role
+  // (reader / listed{dev})が適用される
+  const at21 = history.memberStateAt(DEV_MEMBER, 21);
+  c.push(
+    "history: propose does not change the target",
+    at21?.role === "member" && listed(at21)?.join(",") === "env-dev-0002,env-stage-0003",
+  );
+  const at22 = history.memberStateAt(DEV_MEMBER, 22);
+  c.push(
+    "history: quorum approve applies the inner change_role at its own seq",
+    at22?.role === "reader" && listed(at22)?.join(",") === "env-dev-0002",
+  );
+  c.push(
+    "history: applied change persists at head",
+    history.memberStateAt(DEV_MEMBER, HEAD_SEQ)?.role === "reader",
+  );
 }
 
 function environmentCreateRotateChecks(c: Checks, history: ChainHistoryIndex): void {
@@ -155,7 +221,7 @@ function environmentCreateRotateChecks(c: Checks, history: ChainHistoryIndex): v
   );
   c.push(
     "history: epoch stays current at head",
-    history.environmentStateAt("env-prod-0001", 12)?.currentEpoch === 2,
+    history.environmentStateAt("env-prod-0001", HEAD_SEQ)?.currentEpoch === 2,
   );
 }
 
@@ -172,11 +238,11 @@ function environmentCoverageChecks(c: Checks, history: ChainHistoryIndex): void 
   );
   c.push(
     "history: stage stays epoch 1",
-    history.environmentStateAt("env-stage-0003", 12)?.currentEpoch === 1,
+    history.environmentStateAt("env-stage-0003", HEAD_SEQ)?.currentEpoch === 1,
   );
   c.push(
     "history: unknown environment is undefined",
-    history.environmentStateAt("env-ghost-9999", 12) === undefined,
+    history.environmentStateAt("env-ghost-9999", HEAD_SEQ) === undefined,
   );
 }
 
@@ -205,20 +271,21 @@ function keyLookupChecks(c: Checks, history: ChainHistoryIndex): void {
 function tenureBoundaryChecks(c: Checks, extended: ChainHistoryIndex): void {
   const rejoined = valueVectors.tenure_extension.rejoined_member;
   const oldKeys = vectorKeys[MEMBER];
-  // remove → re-add は別 tenure: 旧区間(seq 2〜4)は旧鍵、新区間(seq 13〜)は新鍵
+  // remove → re-add は別 tenure: 旧区間(seq 2〜4)は旧鍵、新区間(seq 25〜)は新鍵
   const tenure1 = extended.memberStateAt(MEMBER, 4);
-  const tenure2 = extended.memberStateAt(MEMBER, 13);
+  const tenure2 = extended.memberStateAt(MEMBER, EXTENSION_SEQ);
   c.push(
     "history: tenure 1 keeps the original key",
     tenure1?.keyFingerprintHex === oldKeys?.key_fingerprint_hex && tenure1?.tenureStartSeq === 2,
   );
   c.push(
     "history: tenure 2 binds the re-add key",
-    tenure2?.keyFingerprintHex === rejoined.key_fingerprint_hex && tenure2?.tenureStartSeq === 13,
+    tenure2?.keyFingerprintHex === rejoined.key_fingerprint_hex &&
+      tenure2?.tenureStartSeq === EXTENSION_SEQ,
   );
   c.push(
     "history: removal gap stays invalid between tenures",
-    extended.memberStateAt(MEMBER, 12) === undefined,
+    extended.memberStateAt(MEMBER, HEAD_SEQ) === undefined,
   );
 }
 
@@ -240,14 +307,16 @@ export async function chainHistoryChecks(): Promise<CheckResult[]> {
   entryHashChecks(c, history);
   memberBoundaryChecks(c, history);
   roleChangeBoundaryChecks(c, history);
+  scopeBoundaryChecks(c, history);
+  proposalApplyBoundaryChecks(c, history);
   environmentCreateRotateChecks(c, history);
   environmentCoverageChecks(c, history);
   keyLookupChecks(c, history);
   const extended = await extendedHistory();
-  c.push("history: extension head seq", extended.headSeq === 13);
+  c.push("history: extension head seq", extended.headSeq === EXTENSION_SEQ);
   c.push(
-    "history: extension entry hash at seq 13",
-    extended.entryHashAt(13) === valueVectors.tenure_extension.entry.entry_hash_hex,
+    "history: extension entry hash at the re-add seq",
+    extended.entryHashAt(EXTENSION_SEQ) === valueVectors.tenure_extension.entry.entry_hash_hex,
   );
   tenureBoundaryChecks(c, extended);
   tenureKeyLookupChecks(c, extended);

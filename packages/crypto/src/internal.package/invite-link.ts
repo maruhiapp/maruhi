@@ -10,7 +10,9 @@
 // - 発行署名: 招待者のチェーン sig 鍵による発行文の署名。
 //   invite_issue_signed_bytes = LP("<suite>/invite-issue", invite_id, project_id,
 //     link_pub_hex, head_hash_hex, head_seq, role, inviter_user_id,
-//     inviter_enc_pub_hex, inviter_sig_pub_hex)
+//     inviter_enc_pub_hex, inviter_sig_pub_hex, scope_kind, scope_environments_lp_hex)
+//   (scope の 2 フィールドは 2026-09-14 ES で末尾に追加 — §6.2 と同じ符号化。
+//   受諾者は「どの環境に入るか」を受諾前に読み、招待者は発行時に同意の範囲を固定する)
 //   検証鍵は署名対象内の inviter_sig_pub_hex(自己束縛)。受諾者はリンクで受け取った
 //   発行文を検証し(ゴースト追加者は招待者名義の署名を作れない)、招待者は
 //   サーバー行の発行文を**自分の鍵で**検証して「自分が発行した行か」を確かめる
@@ -26,6 +28,11 @@ import { decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
+import {
+  canonicalScopeEnvironmentsHex,
+  type ScopePayloadFields,
+  scopeShapeOk,
+} from "./member-scope.ts";
 import {
   invalidInput,
   isLowercaseHexOfLength,
@@ -136,13 +143,13 @@ export async function deriveInviteLinkKeyPair(
 /**
  * Fields bound by the inviter's issue signature (CRYPTO_SPEC §6.5): the
  * invite id, the invite coordinates (project, link public key), the
- * inviter's verified chain head (the §6.3 (a) anchor), the role to be
- * granted, and the inviter's identity and full public key set. Binary values
- * are lowercase hex; `headSeq` is a positive safe integer. The signature
- * must verify under `inviterSigPubHex` — the declared key is the
- * verification key.
+ * inviter's verified chain head (the §6.3 (a) anchor), the (role, scope) to be
+ * granted (scope as the two trailing §6.2 fields — 2026-09-14 ES), and the
+ * inviter's identity and full public key set. Binary values are lowercase
+ * hex; `headSeq` is a positive safe integer. The signature must verify under
+ * `inviterSigPubHex` — the declared key is the verification key.
  */
-export interface InviteIssueContext {
+export interface InviteIssueContext extends ScopePayloadFields {
   readonly suite: string;
   readonly inviteId: string;
   readonly projectId: string;
@@ -170,7 +177,15 @@ function issueContextTextInvalidField(context: InviteIssueContext): string | nul
   if (context.inviterUserId.length === 0) {
     return "context inviterUserId";
   }
+  // scope は §6.2 の構造規則(閉集合の kind・all ⇒ 空リスト・256 以下・重複なし)
+  if (!scopeShapeOk(context.scopeKind, context.scopeEnvironmentIds, isNonEmptyString)) {
+    return "context scope";
+  }
   return null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 /** 公開値(hex)と head_seq の形式検査。 */
@@ -213,6 +228,8 @@ export function buildInviteIssueSignedBytes(context: InviteIssueContext): Uint8A
     context.inviterUserId,
     context.inviterEncPubHex,
     context.inviterSigPubHex,
+    context.scopeKind,
+    canonicalScopeEnvironmentsHex(context.scopeEnvironmentIds),
   ]);
 }
 

@@ -130,9 +130,15 @@ export {
 } from "./internal.package/index.ts";
 
 // §6: メンバーシップログ(署名付きハッシュチェーン)— エントリ形式(§6.1)、
-// role と操作種別(§6.2)、検証(§6.3 / §6.4)、導出状態
+// role と操作種別(§6.2 — 2026-09-14 ES の環境スコープ / PF1 の四眼を含む)、
+// 検証(§6.3 / §6.4)、導出状態
 export {
   type AddMemberPayload,
+  ALL_SCOPE,
+  APPROVAL_TARGET_OPS,
+  type ApprovalPolicy,
+  type ApprovalTargetOp,
+  type ApprovePayload,
   canonicalChainEntryBytes,
   canonicalChainPayloadBytes,
   canonicalChainSignedBytes,
@@ -160,17 +166,29 @@ export {
   type GrantServerPayload,
   type LeaseClaimConstraint,
   type LeasePolicyIssuer,
+  MAX_SCOPE_ENVIRONMENTS,
+  type MemberScope,
+  memberScopeOf,
   type MemberStateAtSeq,
+  type PendingProposal,
+  type ProposableOperation,
+  type ProposePayload,
   type RemoveMemberPayload,
   type RevokeServerPayload,
   type Role,
   type RotateEpochPayload,
+  type ScopeKind,
+  type ScopePayloadFields,
+  scopeIncludesEnvironment,
+  scopePayloadFieldsOf,
   selectEnvValuesDigestEntries,
   type ServerGrant,
+  type SetApprovalPolicyPayload,
   signChainEntry,
   type UnsignedChainEntry,
   verifyChain,
   verifyChainWithHistory,
+  type WithdrawPayload,
 } from "./internal.package/index.ts";
 
 // AUDIT_SPEC §5.1: 監査ヘッド累積ハッシュ(checkpoint の audit_head_hash — §6.2 —

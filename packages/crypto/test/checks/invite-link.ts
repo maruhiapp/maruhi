@@ -12,9 +12,11 @@ import {
   generateInviteLinkSeed,
   generateSigningKeyPair,
   importSigningKeyPair,
+  importSigningPublicKey,
   INVITE_LINK_SEED_BYTES,
   type InviteIssueContext,
   parseOpenSshEd25519PublicKey,
+  type ScopeKind,
   signInviteIssue,
   verifyInviteIssueSignature,
 } from "../../src/index.ts";
@@ -39,6 +41,8 @@ interface VectorContext {
   readonly inviter_user_id: string;
   readonly inviter_enc_pub_hex: string;
   readonly inviter_sig_pub_hex: string;
+  readonly scope_kind: string;
+  readonly scope_environments: readonly string[];
 }
 
 function contextOf(v: VectorContext): InviteIssueContext {
@@ -53,6 +57,9 @@ function contextOf(v: VectorContext): InviteIssueContext {
     inviterUserId: v.inviter_user_id,
     inviterEncPubHex: v.inviter_enc_pub_hex,
     inviterSigPubHex: v.inviter_sig_pub_hex,
+    // scope(2026-09-14 ES — §6.5 の発行文末尾 2 フィールド)
+    scopeKind: v.scope_kind as ScopeKind,
+    scopeEnvironmentIds: v.scope_environments,
   };
 }
 
@@ -126,8 +133,24 @@ async function issuePositiveChecks(c: Checks, signingKey: CryptoKey): Promise<vo
   }
 }
 
+interface IssueNegative {
+  readonly name: string;
+  /** "encoding" = この実装からは生成されないバイト列(旧形式・平坦化)。無指定 = 改竄・移植。 */
+  readonly kind?: string;
+  readonly context: VectorContext;
+  readonly signature_hex: string;
+  readonly verify_key_hex: string;
+  readonly verify_signed_bytes_hex: string;
+}
+
 async function issueNegativeChecks(c: Checks): Promise<void> {
-  for (const negative of vectors.issue.negative) {
+  const seenKinds = new Set<string>();
+  for (const negative of vectors.issue.negative as readonly IssueNegative[]) {
+    seenKinds.add(negative.kind ?? "signature");
+    if (negative.kind === "encoding") {
+      await issueEncodingNegativeCheck(c, negative);
+      continue;
+    }
     const context = contextOf(negative.context);
     const result = await verifyInviteIssueSignature({
       context,
@@ -141,6 +164,36 @@ async function issueNegativeChecks(c: Checks): Promise<void> {
         result.error.kind === "InviteIssueSignatureInvalid",
     );
   }
+  c.push(
+    "invite-issue-sig negative: kind vocabulary is exhaustive",
+    [...seenKinds].every((kind) => kind === "signature" || kind === "encoding"),
+  );
+}
+
+/**
+ * 符号化系 negative(scope を欠く旧 10 フィールド形式・scope の平坦連結): 正規化は
+ * ベクターのバイト列を**生まず**、かつそのバイト列上では正規の発行署名が検証に失敗する
+ * ことを固定する(README 規約 27 — 互換受理の経路を持たない。chain-entries の
+ * flat-concat と同型)
+ */
+async function issueEncodingNegativeCheck(c: Checks, negative: IssueNegative): Promise<void> {
+  const context = contextOf(negative.context);
+  const differs = toHex(buildInviteIssueSignedBytes(context)) !== negative.verify_signed_bytes_hex;
+  const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
+  if (!key.ok) {
+    c.push(`invite-issue-sig negative: ${negative.name}`, false, "verify key import failed");
+    return;
+  }
+  const verified = await crypto.subtle.verify(
+    "Ed25519",
+    key.value,
+    fromHex(negative.signature_hex) as BufferSource,
+    fromHex(negative.verify_signed_bytes_hex) as BufferSource,
+  );
+  c.push(
+    `invite-issue-sig negative: ${negative.name}`,
+    differs && negative.verify_key_hex === negative.context.inviter_sig_pub_hex && !verified,
+  );
 }
 
 async function issueInvalidInputChecks(c: Checks): Promise<void> {
@@ -163,6 +216,27 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     },
     { name: "short inviter enc pub", context: { ...contextOf(base), inviterEncPubHex: "ab" } },
     { name: "short inviter sig pub", context: { ...contextOf(base), inviterSigPubHex: "ab" } },
+    // scope の構造規則(§6.2 と同じ — all ⇒ 空リスト、重複なし、閉集合の kind、非空 id)
+    {
+      name: "all scope with environments",
+      context: { ...contextOf(base), scopeKind: "all", scopeEnvironmentIds: ["env-dev-0002"] },
+    },
+    {
+      name: "duplicate scope environment",
+      context: {
+        ...contextOf(base),
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["env-dev-0002", "env-dev-0002"],
+      },
+    },
+    {
+      name: "empty scope environment id",
+      context: { ...contextOf(base), scopeKind: "listed", scopeEnvironmentIds: [""] },
+    },
+    {
+      name: "unknown scope kind",
+      context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: [] },
+    },
   ];
   for (const bad of badContexts) {
     const signed = await signInviteIssue({ context: bad.context, signingKey: pair.privateKey });

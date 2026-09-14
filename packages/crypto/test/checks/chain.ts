@@ -12,6 +12,9 @@ import {
   verifyChain,
 } from "../../src/index.ts";
 import {
+  membersMatchVector,
+  pendingMatchesVector,
+  policyMatchesVector,
   serverGrantsMatchVector,
   toTypedEntry,
   typedEntries,
@@ -24,7 +27,7 @@ import {
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 async function canonicalizationChecks(c: Checks): Promise<void> {
-  // 正規 12 エントリに加えて valid_appends / extended_chains の追記エントリも
+  // 正規 24 エントリに加えて valid_appends / extended_chains の追記エントリも
   // 同水準で正規化を固定する(checkpoint op は正規チェーンに現れないため、
   // 追記エントリのバイト一致が checkpoint 正規化の唯一の直接固定点になる)
   const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
@@ -114,11 +117,8 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
   if (expected === undefined) {
     return false;
   }
-  const membersMatch =
-    state.members.size === Object.keys(expected.members).length &&
-    Object.entries(expected.members).every(
-      ([userId, role]) => state.members.get(userId)?.role === role,
-    );
+  // メンバー集合は role + scope(§6.2 — 2026-09-14 ES)
+  const membersMatch = membersMatchVector(state.members, expected.members);
   // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
   const grantsMatch = serverGrantsMatchVector(state.serverGrants, expected.server_grants);
   // 環境集合はチェーン導出(§6.2): 期待に無い環境が導出されてもならない
@@ -128,11 +128,15 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
     Object.entries(expected.environments).every(([environmentId, environment]) =>
       environmentMatches(state, environmentId, environment),
     );
-  return membersMatch && grantsMatch && environmentsMatch;
+  // 四眼(§6.2 — PF1): 方針(null = オフ)と pending 提案も導出状態の一部
+  const approvalMatch =
+    policyMatchesVector(state.approvalPolicy, expected.approval_policy) &&
+    pendingMatchesVector(state.pendingProposals, expected.pending_proposals);
+  return membersMatch && grantsMatch && environmentsMatch && approvalMatch;
 }
 
 async function verificationChecks(c: Checks): Promise<void> {
-  // 正規チェーン全エントリ(12)の検証 + ヘッド情報
+  // 正規チェーン全エントリ(24)の検証 + ヘッド情報
   const full = await verifyChain(typedEntries);
   const lastVector = vectorEntries[vectorEntries.length - 1];
   c.push(

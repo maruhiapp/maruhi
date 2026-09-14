@@ -113,7 +113,7 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
   const { history, context } = input;
   // エポック整合(§6.3-4)はメタに存在しない(モジュール冒頭コメント参照)ため、
   // 共有検査(値署名は続けて §6.3-4 を検査する)がそのまま全体
-  return headAuthorizationReason({
+  return headAuthorizationReason<MetaInvalidReason>({
     history,
     chainHeadSeq: context.chainHeadSeq,
     chainHeadHashHex: context.chainHeadHashHex,
@@ -121,6 +121,12 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
     actorKeyFingerprintHex: input.authorKeyFingerprintHex,
     requiredRoleRank: requiredRoleRank(context),
     reasons: HEAD_AUTHORIZATION_REASONS,
+    // 3′. スコープ(§6.3 — 2026-09-14 ES): 環境メタ(rename / delete)・変数メタは
+    // いずれも環境対象。作成複合の同梱ステートメントは作成者が all のため空虚に成立
+    scope: {
+      environmentId: context.environmentId,
+      outOfScopeAtHead: "author-environment-out-of-scope-at-head",
+    },
   });
 }
 

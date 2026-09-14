@@ -1,7 +1,20 @@
 // chain-entries.json のベクターを @maruhi/crypto の型付きエントリへ変換するヘルパ。
 
-import type { ChainEntry, ChainOperation, Role, ServerGrant } from "../../src/index.ts";
+import {
+  type ApprovalPolicy,
+  type ApprovalTargetOp,
+  canonicalChainPayloadBytes,
+  type ChainEntry,
+  type ChainMember,
+  type ChainOperation,
+  type PendingProposal,
+  type ProposableOperation,
+  type Role,
+  type ScopeKind,
+  type ServerGrant,
+} from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
+import { toHex } from "./support.ts";
 
 export interface VectorEntry {
   readonly seq: number;
@@ -63,10 +76,38 @@ export interface VectorCheckpointState {
   readonly values_digest_hex: string;
 }
 
+/** メンバー状態の期待値(role + scope — §6.2 の検証状態。2026-09-14 ES)。 */
+export interface VectorMemberState {
+  readonly role: string;
+  readonly scope: { readonly kind: string; readonly environments?: readonly string[] };
+}
+
+/** 四眼の方針の期待値(null = オフ)。 */
+export interface VectorApprovalPolicy {
+  readonly ops: readonly string[];
+  readonly required_approvals: string;
+}
+
+/** pending 提案の期待値(提案エントリ hash → 提案)。 */
+export interface VectorPendingProposal {
+  readonly proposal_seq: number;
+  readonly proposer_user_id: string;
+  readonly proposer_key_fingerprint_hex: string;
+  readonly proposer_role_at_proposal: string;
+  readonly inner_op: string;
+  readonly inner_payload: Readonly<Record<string, unknown>>;
+  readonly expires_at_ms: string;
+  readonly approvals: readonly string[];
+}
+
 interface VectorValidAppend {
   readonly name: string;
   readonly entry: VectorEntry;
-  readonly expected_members: Readonly<Record<string, string>>;
+  /** 接続先(extended_chains のキー。無指定 = 正規チェーンの entry.seq - 1 まで)。 */
+  readonly chain?: string;
+  readonly expected_members: Readonly<Record<string, VectorMemberState>>;
+  readonly expected_policy?: VectorApprovalPolicy | null;
+  readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
   /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル)。 */
   readonly expected_environments: Readonly<Record<string, string>>;
   /** 受理後の有効 grant 集合(§6.2 再 grant 二層)。 */
@@ -81,9 +122,11 @@ interface VectorExtendedChain {
   readonly description: string;
   readonly base_seq: number;
   readonly entries: readonly VectorEntry[];
-  readonly expected_members: Readonly<Record<string, string>>;
+  readonly expected_members: Readonly<Record<string, VectorMemberState>>;
   /** 派生チェーン検証後の環境ごとの最新チェックポイント(checkpoint-baseline)。 */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
+  readonly expected_policy?: VectorApprovalPolicy | null;
+  readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
 }
 
 interface VectorEnvironmentState {
@@ -95,9 +138,105 @@ interface VectorEnvironmentState {
 
 interface VectorHeadState {
   readonly after_seq: number;
-  readonly members: Readonly<Record<string, string>>;
+  readonly members: Readonly<Record<string, VectorMemberState>>;
   readonly server_grants: readonly VectorServerGrant[];
   readonly environments: Readonly<Record<string, VectorEnvironmentState>>;
+  readonly approval_policy: VectorApprovalPolicy | null;
+  readonly pending_proposals: Readonly<Record<string, VectorPendingProposal>>;
+}
+
+/** 導出状態のメンバー集合がベクター期待(role + scope)と一致するか(集合として比較)。 */
+export function membersMatchVector(
+  members: ReadonlyMap<string, ChainMember>,
+  expected: Readonly<Record<string, VectorMemberState>>,
+): boolean {
+  return (
+    members.size === Object.keys(expected).length &&
+    Object.entries(expected).every(([userId, state]) => {
+      const actual = members.get(userId);
+      if (actual === undefined || actual.role !== state.role) {
+        return false;
+      }
+      if (state.scope.kind === "all") {
+        return actual.scope.kind === "all";
+      }
+      const expectedIds = new Set(state.scope.environments ?? []);
+      return (
+        actual.scope.kind === "listed" &&
+        actual.scope.environmentIds.length === expectedIds.size &&
+        actual.scope.environmentIds.every((id) => expectedIds.has(id))
+      );
+    })
+  );
+}
+
+/** 導出状態の方針がベクター期待と一致するか(ops は集合として比較。無指定は検査しない)。 */
+export function policyMatchesVector(
+  policy: ApprovalPolicy | null,
+  expected: VectorApprovalPolicy | null | undefined,
+): boolean {
+  if (expected === undefined) {
+    return true;
+  }
+  if (expected === null || policy === null) {
+    return expected === policy;
+  }
+  const expectedOps = new Set(expected.ops);
+  return (
+    policy.requiredApprovals === Number(expected.required_approvals) &&
+    policy.ops.length === expectedOps.size &&
+    policy.ops.every((op) => expectedOps.has(op))
+  );
+}
+
+/** pending 提案 1 件の比較用の正規形(順序・型を揃えた JSON — 内側 payload は正規化バイト列)。 */
+function pendingProposalKey(input: {
+  readonly hash: string;
+  readonly proposalSeq: number;
+  readonly proposerUserId: string;
+  readonly proposerKeyFingerprintHex: string;
+  readonly proposerRoleAtProposal: string;
+  readonly inner: ProposableOperation;
+  readonly expiresAtMs: number;
+  readonly approvals: readonly string[];
+}): string {
+  return JSON.stringify([
+    input.hash,
+    input.proposalSeq,
+    input.proposerUserId,
+    input.proposerKeyFingerprintHex,
+    input.proposerRoleAtProposal,
+    input.inner.op,
+    toHex(canonicalChainPayloadBytes(input.inner)),
+    input.expiresAtMs,
+    input.approvals,
+  ]);
+}
+
+/** 導出状態の pending 提案集合がベクター期待と一致するか(無指定は検査しない)。 */
+export function pendingMatchesVector(
+  pending: ReadonlyMap<string, PendingProposal>,
+  expected: Readonly<Record<string, VectorPendingProposal>> | undefined,
+): boolean {
+  if (expected === undefined) {
+    return true;
+  }
+  const expectedKeys = Object.entries(expected).map(([hash, proposal]) =>
+    pendingProposalKey({
+      hash,
+      proposalSeq: proposal.proposal_seq,
+      proposerUserId: proposal.proposer_user_id,
+      proposerKeyFingerprintHex: proposal.proposer_key_fingerprint_hex,
+      proposerRoleAtProposal: proposal.proposer_role_at_proposal,
+      inner: decodeInner(proposal.inner_op, proposal.inner_payload),
+      expiresAtMs: Number(proposal.expires_at_ms),
+      approvals: proposal.approvals,
+    }),
+  );
+  const actualKeys = [...pending.entries()].map(([hash, actual]) =>
+    pendingProposalKey({ ...actual, hash: actual.proposalHashHex === hash ? hash : `${hash}!` }),
+  );
+  return expectedKeys.toSorted().join("\n") === actualKeys.toSorted().join("\n");
 }
 
 /**
@@ -135,9 +274,11 @@ export function serverGrantsMatchVector(
 
 export const vectorEntries = chainVectors.entries as readonly VectorEntry[];
 export const vectorNegatives = chainVectors.negative as readonly VectorNegative[];
-export const vectorHeadStates = chainVectors.expected_head_states as readonly VectorHeadState[];
-export const vectorValidAppends = chainVectors.valid_appends as readonly VectorValidAppend[];
-export const vectorExtendedChains = chainVectors.extended_chains as Readonly<
+export const vectorHeadStates =
+  chainVectors.expected_head_states as unknown as readonly VectorHeadState[];
+export const vectorValidAppends =
+  chainVectors.valid_appends as unknown as readonly VectorValidAppend[];
+export const vectorExtendedChains = chainVectors.extended_chains as unknown as Readonly<
   Record<string, VectorExtendedChain>
 >;
 export const vectorKeys = chainVectors.keys as Readonly<
@@ -178,6 +319,17 @@ function str(payload: Readonly<Record<string, unknown>>, key: string): string {
   return value;
 }
 
+/** scope の 2 フィールド(§6.2 — add_member / change_role の末尾 2 フィールド)。 */
+function scopeFields(payload: Readonly<Record<string, unknown>>): {
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly string[];
+} {
+  return {
+    scopeKind: str(payload, "scope_kind") as ScopeKind,
+    scopeEnvironmentIds: payload["scope_environments"] as readonly string[],
+  };
+}
+
 // op ごとの snake_case → typed payload 変換表(cyclomatic の高い switch を
 // 表引きへ — 実装側の PAYLOAD_SHAPES / OPERATION_APPLIERS と同じ形)
 const OPERATION_DECODERS: Readonly<
@@ -194,6 +346,7 @@ const OPERATION_DECODERS: Readonly<
       encPubHex: str(payload, "enc_pub_hex"),
       sigPubHex: str(payload, "sig_pub_hex"),
       role: str(payload, "role") as Role,
+      ...scopeFields(payload),
     },
   }),
   remove_member: (payload) => ({
@@ -205,6 +358,7 @@ const OPERATION_DECODERS: Readonly<
     payload: {
       targetUserId: str(payload, "target_user_id"),
       newRole: str(payload, "new_role") as Role,
+      ...scopeFields(payload),
     },
   }),
   create_environment: (payload) => ({
@@ -262,7 +416,46 @@ const OPERATION_DECODERS: Readonly<
       },
     };
   },
+  // 四眼(§6.2 — PF1)。propose の内側 op は同じ変換表で再帰的に復号する
+  set_approval_policy: (payload) => ({
+    op: "set_approval_policy",
+    payload: {
+      ops: payload["ops"] as readonly ApprovalTargetOp[],
+      requiredApprovals: Number(str(payload, "required_approvals")),
+    },
+  }),
+  propose: (payload) => ({
+    op: "propose",
+    payload: {
+      inner: decodeInner(
+        str(payload, "inner_op"),
+        payload["inner_payload"] as Readonly<Record<string, unknown>>,
+      ),
+      expiresAtMs: Number(str(payload, "expires_at_ms")),
+    },
+  }),
+  approve: (payload) => ({
+    op: "approve",
+    payload: { proposalHashHex: str(payload, "proposal_hash_hex") },
+  }),
+  withdraw: (payload) => ({
+    op: "withdraw",
+    payload: { proposalHashHex: str(payload, "proposal_hash_hex") },
+  }),
 };
+
+/**
+ * propose の内側 op の復号。構造 negative(未知 op・入れ子・フィールド欠落)は変換表で
+ * 復号できないため、その場合は生の payload をそのまま載せ、実装の構造検査が
+ * invalid-payload に落とすことを検査対象にする(throw で検査を止めない)
+ */
+function decodeInner(op: string, payload: Readonly<Record<string, unknown>>): ProposableOperation {
+  try {
+    return toOperation(op, payload) as ProposableOperation;
+  } catch {
+    return { op, payload } as unknown as ProposableOperation;
+  }
+}
 
 function toOperation(op: string, payload: Readonly<Record<string, unknown>>): ChainOperation {
   const decode = OPERATION_DECODERS[op];

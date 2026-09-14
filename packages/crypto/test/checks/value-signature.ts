@@ -196,6 +196,7 @@ const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "writer-not-member-at-head": true,
   "writer-key-mismatch-at-head": true,
   "writer-role-insufficient-at-head": true,
+  "writer-environment-out-of-scope-at-head": true,
   "environment-not-created-at-head": true,
   "epoch-not-current-at-head": true,
   "prev-shape-mismatch": true,

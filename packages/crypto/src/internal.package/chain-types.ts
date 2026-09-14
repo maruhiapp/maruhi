@@ -3,10 +3,12 @@
 // アイデンティティ規則(絶対): 主体識別は内部 user_id と鍵フィンガープリントのみ。
 // GitHub ID 等のプロバイダ情報・メールアドレスをこの構造に入れてはならない。
 
+import type { MemberScope, ScopePayloadFields } from "./member-scope.ts";
+
 /** Project role on the membership chain (CRYPTO_SPEC §6.2). */
 export type Role = "owner" | "admin" | "member" | "reader";
 
-/** Chain operation kind (CRYPTO_SPEC §6.2). */
+/** Chain operation kind (CRYPTO_SPEC §6.2 — 2026-09-14 PF1 で四眼の 4 op を追加). */
 export type ChainOp =
   | "genesis"
   | "add_member"
@@ -16,7 +18,34 @@ export type ChainOp =
   | "rotate_epoch"
   | "grant_server"
   | "revoke_server"
-  | "checkpoint";
+  | "checkpoint"
+  | "set_approval_policy"
+  | "propose"
+  | "approve"
+  | "withdraw";
+
+/**
+ * Operations a four-eyes policy may name in `ops` (CRYPTO_SPEC §6.2). Data /
+ * safety-side operations (`create_environment` / `rotate_epoch` / `checkpoint`),
+ * `genesis` and the approval operations themselves can never be targets.
+ */
+export type ApprovalTargetOp =
+  | "grant_server"
+  | "revoke_server"
+  | "remove_member"
+  | "change_role"
+  | "add_member"
+  | "set_approval_policy";
+
+/** The closed set of `ApprovalTargetOp` (payload 構造検査と CLI の入力検査が共有する). */
+export const APPROVAL_TARGET_OPS: readonly ApprovalTargetOp[] = [
+  "grant_server",
+  "revoke_server",
+  "remove_member",
+  "change_role",
+  "add_member",
+  "set_approval_policy",
+];
 
 /** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
@@ -29,7 +58,13 @@ export interface GenesisPayload {
   readonly sigPubHex: string;
 }
 
-export interface AddMemberPayload {
+/**
+ * `add_member` payload (CRYPTO_SPEC §6.2): the target's identity, key set, role
+ * and — since the 2026-09-14 ES revision — its environment scope as the two
+ * trailing canonical fields (`scope_kind`, `scope_environments_lp_hex`). An
+ * `owner` must carry `scopeKind = "all"` (`scope-role-mismatch`).
+ */
+export interface AddMemberPayload extends ScopePayloadFields {
   readonly targetUserId: string;
   readonly encPubHex: string;
   readonly sigPubHex: string;
@@ -40,7 +75,11 @@ export interface RemoveMemberPayload {
   readonly targetUserId: string;
 }
 
-export interface ChangeRolePayload {
+/**
+ * `change_role` payload (CRYPTO_SPEC §6.2): the new (role, scope) pair replaces
+ * the target's current pair in full (縮小分は §7 の rotate 義務、拡大分はバックフィル).
+ */
+export interface ChangeRolePayload extends ScopePayloadFields {
   readonly targetUserId: string;
   readonly newRole: Role;
 }
@@ -157,6 +196,55 @@ export interface CheckpointPayload {
   readonly auditHeadHashHex: string;
 }
 
+/**
+ * `set_approval_policy` payload (CRYPTO_SPEC §6.2 — PF1 四眼): the target op set
+ * (canonicalized as a nested length-prefixed list whose lowercase-hex form is
+ * the first field — list order is part of the signed bytes) and the required
+ * number of distinct owner signatures. `requiredApprovals` is 0 (policy off)
+ * or at least 2; enabling requires the current owner count to reach it
+ * (`approval-quorum-unreachable`). While a policy is active, this op itself
+ * and every owner-establishing `add_member` / `change_role` are targets
+ * regardless of `ops` (方針の単調性).
+ */
+export interface SetApprovalPolicyPayload {
+  readonly ops: readonly ApprovalTargetOp[];
+  readonly requiredApprovals: number;
+}
+
+/**
+ * An operation that can be carried inside a `propose` entry: every operation
+ * except the approval operations themselves (nesting is rejected at the
+ * structure stage — proposals can never be policy targets).
+ */
+export type ProposableOperation = Exclude<
+  ChainOperation,
+  { readonly op: "propose" | "approve" | "withdraw" }
+>;
+
+/**
+ * `propose` payload (CRYPTO_SPEC §6.2): the inner operation (canonicalized as
+ * `inner_op` + the inner operation's own `payload_bytes` as one nested
+ * lowercase-hex field) and the proposal's expiry. A proposal is pending until
+ * an `approve` entry reaches the policy's quorum (applied at that entry's seq)
+ * or a `withdraw` closes it. `expiresAtMs` is the only place the chain's
+ * consensus rules read a timestamp (§6.2 `proposal-expired` — a safeguard for
+ * honest approvers, not a guarantee against a lying one).
+ */
+export interface ProposePayload {
+  readonly inner: ProposableOperation;
+  readonly expiresAtMs: number;
+}
+
+/** `approve` payload: the entry hash (lowercase hex) of the pending `propose` entry. */
+export interface ApprovePayload {
+  readonly proposalHashHex: string;
+}
+
+/** `withdraw` payload: the entry hash of the pending `propose` entry to close. */
+export interface WithdrawPayload {
+  readonly proposalHashHex: string;
+}
+
 /** Operation + payload, discriminated by `op`. */
 export type ChainOperation =
   | { readonly op: "genesis"; readonly payload: GenesisPayload }
@@ -167,7 +255,11 @@ export type ChainOperation =
   | { readonly op: "rotate_epoch"; readonly payload: RotateEpochPayload }
   | { readonly op: "grant_server"; readonly payload: GrantServerPayload }
   | { readonly op: "revoke_server"; readonly payload: RevokeServerPayload }
-  | { readonly op: "checkpoint"; readonly payload: CheckpointPayload };
+  | { readonly op: "checkpoint"; readonly payload: CheckpointPayload }
+  | { readonly op: "set_approval_policy"; readonly payload: SetApprovalPolicyPayload }
+  | { readonly op: "propose"; readonly payload: ProposePayload }
+  | { readonly op: "approve"; readonly payload: ApprovePayload }
+  | { readonly op: "withdraw"; readonly payload: WithdrawPayload };
 
 /** A chain entry before signing (CRYPTO_SPEC §6.1). */
 export type UnsignedChainEntry = ChainOperation & {
@@ -181,13 +273,42 @@ export type UnsignedChainEntry = ChainOperation & {
 /** A complete signed chain entry (CRYPTO_SPEC §6.1). */
 export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
 
-/** A current member derived from a verified chain. */
+/** A current member derived from a verified chain (role + environment scope — §6.2). */
 export interface ChainMember {
   readonly userId: string;
   readonly role: Role;
+  /** Environment scope (CRYPTO_SPEC §6.2 — R(E) / 環境対象 op / §6.3 の 3′ の入力). */
+  readonly scope: MemberScope;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly keyFingerprintHex: string;
+}
+
+/** The active four-eyes policy derived from a verified chain (`null` = off — §6.2). */
+export interface ApprovalPolicy {
+  readonly ops: readonly ApprovalTargetOp[];
+  /** At least 2 while a policy is active. */
+  readonly requiredApprovals: number;
+}
+
+/**
+ * One pending proposal derived from a verified chain (CRYPTO_SPEC §6.2 の
+ * 検証状態 — 提案 hash → 提案者・内側 op・期限・投票者). `approvals` records the
+ * actors of the accepted `approve` entries in order; the vote count is never
+ * read from this record alone but recomputed at every `approve` against the
+ * owners current at that entry (原則 2 — 離脱済み投票者の票は数えない).
+ */
+export interface PendingProposal {
+  readonly proposalSeq: number;
+  readonly proposalHashHex: string;
+  readonly proposerUserId: string;
+  /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
+  readonly proposerKeyFingerprintHex: string;
+  /** The proposer's role at proposal time — an `owner` proposal counts as one vote. */
+  readonly proposerRoleAtProposal: Role;
+  readonly inner: ProposableOperation;
+  readonly expiresAtMs: number;
+  readonly approvals: readonly string[];
 }
 
 /** An active server grant derived from a verified chain (CRYPTO_SPEC §9). */
@@ -254,6 +375,10 @@ export interface ChainState {
    * baseline). Environments never covered by a checkpoint are absent.
    */
   readonly checkpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
+  /** Active four-eyes policy (CRYPTO_SPEC §6.2), or `null` when off. */
+  readonly approvalPolicy: ApprovalPolicy | null;
+  /** Pending proposals keyed by the `propose` entry hash (§6.2 の検証状態). */
+  readonly pendingProposals: ReadonlyMap<string, PendingProposal>;
   readonly headSeq: number;
   readonly headHashHex: string;
 }
