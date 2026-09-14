@@ -355,12 +355,12 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 段 | 内容 | 停止しても安全な理由 |
 |---|---|---|
 | **K1** | 仕様の正本へ反映(CRYPTO_SPEC 0.10 → **0.11-draft**、AUTH_SPEC 0.22 → **0.23-draft**、AUDIT_SPEC 1.7 → **1.8-draft**。Status 欄に改訂履歴) | docs のみ |
-| **K2** | **テストベクターを先に書く**: `chain-entries.json` 全再生成(add_member / change_role の scope・新 op 4 種・`expected_head_states` に scope / 方針 / pending・正例・負例)、`invite-link.json` 再生成(発行文に scope)、チェーンを読み込む `value-signature.json` / `metadata-signature.json` / `env-manifest.json` の再生成 → `packages/crypto`(scope の型・正規化・合意規則 ES + PF1・履歴索引・宣言ヘッド時点の scope 検査・発行文)→ **api-schema のワイヤ + server / CLI の機械的追随**(scope は `all` 固定で発行、PF1 の op は生成しない)。**人間レビュー必須箇所を PR 本文に列挙** | 挙動変更なし(全メンバー = all のまま)。crypto が新規則を理解し、旧形式を拒否する。この段のデプロイで既存プロジェクトのチェーンは無効になるため、K2 のマージ = 検証デプロイの再作成のタイミング |
+| **K2** | **テストベクターを先に書く**: `chain-entries.json` 全再生成(add_member / change_role の scope・新 op 4 種・`expected_head_states` に scope / 方針 / pending・正例・負例)、`invite-link.json` 再生成(発行文に scope)、チェーンを読み込む `value-signature.json` / `metadata-signature.json` / `env-manifest.json` の再生成 → `packages/crypto`(scope の型・正規化・合意規則 ES + PF1・履歴索引・宣言ヘッド時点の scope 検査・発行文)→ **api-schema のワイヤ + server / CLI の機械的追随**(scope は `all` 固定で発行、PF1 の op は生成しない)。**人間レビュー必須箇所を PR 本文に列挙**。**`docs/SELF_HOSTING.md` "Updates" に移行順序(サーバー → 全メンバー CLI → 既存プロジェクトの再作成)を同梱**(2026-09-14 所有者裁定 — K7 から前倒し。破壊的変更とその手順書を同じ PR で着地させる) | 挙動変更なし(全メンバー = all のまま)。crypto が新規則を理解し、旧形式を拒否する。この段のデプロイで既存プロジェクトのチェーンは無効になるため、K2 のマージ = 検証デプロイの再作成のタイミング |
 | **K3** | server(ES): 受信者集合 = scope(`expectedWrapRecipientCount` / `checkWrapRecipient`)、環境対象 op の scope 認可(`InsufficientScope`)、値・メタ・マニフェストの宣言ヘッド時点 scope 検査、招待行の scope、ミラー payload、要ローテーション検出の環境別窓・縮小変種。テストは `@cloudflare/vitest-plugin` | CLI はまだ all しか発行しないので配布は従来どおり。制限は眠ったまま |
 | **K4** | CLI(ES): `invite create --env`、`member add`(招待行の scope)、`member change-role --env` / `member scope`(拡大 backfill・縮小 sweep)、**`member list`**、`wrapRecipientsFor` / backfill / sweep の scope 対応、`env create` の前提検査、pull / push / rotate の scope 外エラー、scope 外ラップの警告、`project verify` の scope 列 + Web `ProjectScreen` の scope 列。テストは Vitest | ES 完了。四眼は方針なし = オフのまま |
 | **K5** | server(PF1): 受理ポリシー(pending 上限)、適用完了時の副作用、ミラー 4 種 + 適用行、`audit verify` の全単射規則 | CLI が提案を出さないので眠ったまま |
 | **K6** | CLI(PF1): `approval` グループ、`project policy approvals`、既存コマンドの提案化、承認者側の sweep、Web の pending 表示 | 既定オフ。有効化は owner ≥ 2 の明示操作 |
-| **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、`docs/SELF_HOSTING.md` "Updates" に移行順序(サーバー → 全メンバー CLI → 既存プロジェクトの再作成)、ROADMAP の完了記録 | docs のみ |
+| **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、~~`docs/SELF_HOSTING.md` "Updates" に移行順序~~(K2 へ前倒し — 2026-09-14 所有者裁定)、ROADMAP の完了記録 | docs のみ |
 
 - 移行の順序要件: サーバー(K2 デプロイ)→ 全メンバーの CLI(K2 以降)。旧 CLI は新チェーンを `bad-signature` / 未知 op で拒否し(fail-closed — **A-1 固有**。A-8 では `set_member_scope` を含まないチェーンを旧 CLI が旧解釈で受理しうる — 3-bis 裁定 A 行)、新 CLI は旧サーバーへの add_member を新形式で送るため旧サーバーが拒否する(どちらの向きも黙って旧解釈しない)
 - 見積もり: ROADMAP の概算(ES 2〜3 週・PF1 3〜4 週)は人手前提。実測(KL3 / IV)から、律速は所有者承認と crypto 人間レビュー
@@ -437,6 +437,6 @@ K1 は反映作業であり、承認済み項目 1〜24 は変えていない。
 ### K1-3. PR #175 レビュー(pullfrog 第 1 巡)からの明確化・申し送り
 
 - **DEK ラップ登録の署名者軸の理由コード**(nit): AUTH_SPEC §12-6 の「登録者(署名者)も対象環境を scope に含む」は、署名者 = 呼び出し主体(§12-6 (1))であるため §12-3 の呼び出し主体の scope 判定と同一 = 403 `InsufficientScope`。受信者軸は 422 `scope-out-of-range`。正本に明記した(新しい理由コードは増やさない — K2 のベクターはチェーン検証のみで、この判定はサーバー受理面〔K3〕)
-- **`docs/SELF_HOSTING.md` "Updates" の参照**: K1 の対象外(所有者指示 — K7)。正本には「K7 で追記・再作成が必要になるのは K2 のデプロイ時点」と明記して行き止まりを避けた。正本マージと同時に告知を着地させるべきかは所有者判断(K2 のマージまでに K7 の当該節だけ前倒しする案あり)
+- **`docs/SELF_HOSTING.md` "Updates" の参照**: K1 の対象外(所有者指示 — K7)。正本には「K7 で追記・再作成が必要になるのは K2 のデプロイ時点」と明記して行き止まりを避けた。**所有者裁定(2026-09-14): K2 の PR に同梱**(K1 では実装未確定で手順を正確に書けず、K7 では K2〜K6 の間に手順書のない破壊的変更がデプロイ済みになる。破壊的変更と手順書を同じ PR で着地させる — 境界チェックポイント移行の先例と同型)。§4 の K2 / K7 行を更新済み
 - **K3 への申し送り**: AUDIT_SPEC §3.4 の四眼の適用行は同一 `chain_seq` に 2 行を置く。`chain_seq` の一意性を前提とする実装(`maruhi audit verify` の全単射検査・索引)は K3 / K5 で「1 エントリ ↔ 1 行 + 完成 approve の適用行」に改める(§3.4 に規定済み。UNIQUE 制約は現状なし — pullfrog 確認)
 

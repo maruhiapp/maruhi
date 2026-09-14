@@ -274,7 +274,7 @@ var_meta_signed_bytes_v2 = LP("maruhi/v1/var-meta-sig-v2",
   - **検証状態**は現メンバーごとの scope を導出する(§6.3 のラップ先一致検査・宣言ヘッド時点の scope 検査・AUTH_SPEC §12-3 の認可の入力)。履歴索引はメンバーの在籍区間ごとに (role, scope) の変化点(seq)を保持する
   - **受信者集合 R(E)**(§6.3 / §7 / AUTH_SPEC §12-4 / §12-6 の 1 定義): 環境 E の DEK ラップの宛先の完全集合 = { 現メンバー m | E ∈ scope(m) } ∪ { 有効 `grant_server` g | E ∈ scope_environments(g) }。`grant_server` のサーバー鍵は自前の `scope_environments` を持つため ES の対象外であり、判定は受信者クラスを跨いで同一に適用する
   - **縮小は remove 相当(§7)**: `change_role` で旧 scope \ 新 scope が非空のとき、縮小分の各環境について `remove_member` と同じ `rotate_epoch` 義務を負う(合意規則ではなく §7 の義務 — `grant_server` の再 grant がスコープ縮小を合意規則で拒否するのと対照的に、メンバーの縮小は受理して義務を課す。招待のやり直し・在籍区間の分断を避けるため — 設計録 裁定 F)。拡大分は actor が全エポックの DEK をバックフィルする(AUTH_SPEC §12-6)
-  - 本規則の導入(2026-09-14)は `add_member` / `change_role` の payload 形式変更であり、**導入前に受理された既存チェーンは新規則で無効になる**(互換条項を持たない — 2026-09-14 所有者裁定「利用者がいないうちは古い実装をすべて削除してよい」。既存プロジェクトは再作成する — 移行手順は docs/SELF_HOSTING.md "Updates" に K7〔設計録 §4〕で追記する。再作成が必要になるのは K2 のデプロイ時点)。`chain-entries.json` は全再生成する(§11)
+  - 本規則の導入(2026-09-14)は `add_member` / `change_role` の payload 形式変更であり、**導入前に受理された既存チェーンは新規則で無効になる**(互換条項を持たない — 2026-09-14 所有者裁定「利用者がいないうちは古い実装をすべて削除してよい」。既存プロジェクトは再作成する — 移行手順は docs/SELF_HOSTING.md "Updates" に K2〔設計録 §4 — 再作成が必要になる K2 のデプロイと同じ PR〕で追記する)。`chain-entries.json` は全再生成する(§11)
 
 | op | payload | 権限 |
 |---|---|---|
