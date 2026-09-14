@@ -34,7 +34,6 @@ import {
   acceptanceFailureText,
   type InvitationRow,
   type InviteAcceptance,
-  type InviteIssuance,
   issuanceFailureText,
   listInvitations,
   pinMismatchOf,
@@ -218,11 +217,8 @@ export interface MemberAddSummary {
   readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
 }
 
-/** 受諾済みかつ発行文のある行(IV 改訂前の行は発行文が無く add できない)。 */
-type AddableRow = InvitationRow & {
-  readonly acceptance: InviteAcceptance;
-  readonly issuance: InviteIssuance;
-};
+/** 受諾済みの行(発行文は全行が持つ)。 */
+type AddableRow = InvitationRow & { readonly acceptance: InviteAcceptance };
 
 const withAcceptance = (
   row: InvitationRow,
@@ -257,7 +253,7 @@ function selectInvitation(
         ),
       );
     }
-    return requireIssuance(row);
+    return Effect.succeed(row);
   }
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
@@ -278,16 +274,7 @@ function selectInvitation(
       ),
     );
   }
-  return requireIssuance(first);
-}
-
-/** 発行文の無い行(IV 改訂前)は add_member に使えない(互換経路なし)。 */
-function requireIssuance(
-  row: InvitationRow & { readonly acceptance: InviteAcceptance },
-): Effect.Effect<AddableRow, CliError> {
-  return row.issuance === null
-    ? Effect.fail(cliError(`This invite ${issuanceFailureText("unbound")}`))
-    : Effect.succeed({ ...row, issuance: row.issuance });
+  return Effect.succeed(first);
 }
 
 /**

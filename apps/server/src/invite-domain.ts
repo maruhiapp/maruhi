@@ -33,7 +33,7 @@ export interface InviteAcceptance {
   readonly acceptedAtMs: number;
 }
 
-/** 招待行のドメイン表現(`issuance` が null の行は IV 改訂前の発行 = 受諾不能)。 */
+/** 招待行のドメイン表現。 */
 export interface InvitationRecord {
   readonly id: string;
   readonly projectId: string;
@@ -42,7 +42,7 @@ export interface InvitationRecord {
   readonly status: InviteStatus;
   readonly expiresAtMs: number;
   readonly createdAtMs: number;
-  readonly issuance: InviteIssuance | null;
+  readonly issuance: InviteIssuance;
   readonly acceptance: InviteAcceptance | null;
 }
 

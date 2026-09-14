@@ -680,13 +680,10 @@ CRYPTO_SPEC §6.5(リンク鍵・発行署名・受諾の共同署名・相互�
 invitations (
   id              TEXT PRIMARY KEY,   -- ULID(IV 改訂後は**クライアント採番** — 発行署名が覆う。衝突は 409)
   project_id      TEXT NOT NULL,      -- genesis ハッシュ。リンク鍵の保持を capability として扱う(§11-2 との整合)
-  link_pub        TEXT,               -- リンク公開鍵(Ed25519、hex 小文字 64)。発行時にクライアントが生成して申告(CRYPTO_SPEC §6.5)。UNIQUE。
-                                      -- IV 改訂前の行は NULL(受諾不能)
-  head_hash       TEXT,               -- 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq(CRYPTO_SPEC §6.5)。公開値
-  head_seq        INTEGER,
-  issue_signature TEXT,               -- 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布するだけ
-  token_hash      TEXT NOT NULL,      -- legacy 列(IV 改訂前は招待トークンの SHA-256)。新行は lower_hex(SHA-256(link_pub の 32 バイト))を書く
-                                      -- (NOT NULL を追加型マイグレーションで外せないため)。参照には使わない。将来の表再構築で削除
+  link_pub        TEXT NOT NULL,      -- リンク公開鍵(Ed25519、hex 小文字 64)。発行時にクライアントが生成して申告(CRYPTO_SPEC §6.5)。UNIQUE
+  head_hash       TEXT NOT NULL,      -- 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq(CRYPTO_SPEC §6.5)。公開値
+  head_seq        INTEGER NOT NULL,
+  issue_signature TEXT NOT NULL,      -- 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布するだけ
   role            TEXT NOT NULL,      -- 'reader' | 'member' | 'admin'(招待経由で owner は付与しない)
   inviter_user_id TEXT NOT NULL,
   status          TEXT NOT NULL,      -- 'pending' | 'accepted' | 'completed' | 'revoked'(期限切れは expires_at からの導出)
@@ -713,10 +710,10 @@ invitations (
 | 受諾 | `POST /invites/accept`(body: `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`) | **全プロジェクトスコープ(`*`)× admin のトークンのみ**(§13-2 の鍵素材条件と同水準 — 鍵宣言クラスの操作。**セッション主体は拒否**。理由は従前どおり)。リンク鍵の保持(= リンク署名を作れること)が対象招待への capability |
 | 一覧・失効 | `GET / DELETE /projects/:projectId/invites(/:id)` | トークンスコープ admin × チェーン role admin 以上。**セッション主体も可**(読み取り + 失効系) |
 
-- **受諾のサーバー検証(判定順)**: Schema 400 → 認証 401 → CSRF / 鍵素材条件 403 → 未知の `linkPubHex` 404 → 使用不能 410(`link_pub` が NULL の旧行も 410 `unbound` — 受諾不能)→ **リンク署名の検証**(`link_pub` は保存行、`project_id` は保存行、`invitee_user_id` は呼び出し主体から再構成 — ワイヤ申告値から組まない)422 → **受諾署名の検証**(提示された sig 鍵)422 → CAS(敗北は再読みで 410)。**呼び出し主体の内部 user_id = 署名対象の invitee_user_id** を両署名が強制する。鍵は形式検査(32 バイト hex)のみ行い、**メンバー鍵一意性(CRYPTO_SPEC §6.2)の事前判定はしない**(不変)。サーバーの署名検証は手前の受理検査であり真実源ではない — 真実源は招待者クライアントの発行ピン照合 + 両署名の再検証(CRYPTO_SPEC §6.5)
+- **受諾のサーバー検証(判定順)**: Schema 400 → 認証 401 → CSRF / 鍵素材条件 403 → 未知の `linkPubHex` 404 → 使用不能 410 → **リンク署名の検証**(`link_pub` は保存行、`project_id` は保存行、`invitee_user_id` は呼び出し主体から再構成 — ワイヤ申告値から組まない)422 → **受諾署名の検証**(提示された sig 鍵)422 → CAS(敗北は再読みで 410)。**呼び出し主体の内部 user_id = 署名対象の invitee_user_id** を両署名が強制する。鍵は形式検査(32 バイト hex)のみ行い、**メンバー鍵一意性(CRYPTO_SPEC §6.2)の事前判定はしない**(不変)。サーバーの署名検証は手前の受理検査であり真実源ではない — 真実源は招待者クライアントの発行ピン照合 + 両署名の再検証(CRYPTO_SPEC §6.5)
 - **受諾はチェーンに影響しない**(不変)。サーバーは add_member 受理時に target = invitee の accepted 招待を completed へ更新する
 - 受理ポリシー(起草値・不変): pending 招待はプロジェクトあたり 100 まで、発行は固定窓 1 時間 30 回 / プロジェクト。超過は 429。発行・受諾は strict 受理(§12-10 (1) — 列挙済み)
-- **一覧行**(`InvitationSummary`)は `tokenHashHex` を発行文(`linkPubHex` / `headHashHex` / `headSeq` / `issueSignatureHex` — 旧行は null)に置き換え、受諾ブロックに `linkSignatureHex` を足す。招待者クライアントは発行文 + 発行署名を自分の sig 公開鍵で検証し(失敗 = 自分の発行ではない / 行のすり替え → add_member しない)、発行ピンがあれば `linkPubHex` / role を突合し、両署名を再検証する
+- **一覧行**(`InvitationSummary`)は `tokenHashHex` を発行文(`linkPubHex` / `headHashHex` / `headSeq` / `issueSignatureHex`)に置き換え、受諾ブロックに `linkSignatureHex` を足す。招待者クライアントは発行文 + 発行署名を自分の sig 公開鍵で検証し(失敗 = 自分の発行ではない / 行のすり替え → add_member しない)、発行ピンがあれば `linkPubHex` / role を突合し、両署名を再検証する
 
 ### 15-3. 招待リンクの形式(クライアント仕様)
 

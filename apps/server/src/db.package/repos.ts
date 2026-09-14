@@ -1242,8 +1242,6 @@ interface InviteCreateInput {
   readonly inviterUserId: string;
   /** 発行文(CRYPTO_SPEC §6.5 — サーバーは検証せず保存する)。 */
   readonly issuance: InviteIssuance;
-  /** legacy 列 `token_hash` に書く値(= SHA-256(link_pub bytes) の hex — AUTH_SPEC §15-1)。 */
-  readonly legacyTokenHashHex: string;
 }
 
 interface InviteRepoShape {
@@ -1308,7 +1306,6 @@ export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("
 interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
-  readonly tokenHash: string;
   readonly role: string;
   readonly inviterUserId: string;
   readonly status: string;
@@ -1320,16 +1317,13 @@ interface InvitationRow {
   readonly linkSignature: string | null;
   readonly acceptedAt: number | null;
   readonly createdAt: number;
-  readonly linkPub: string | null;
-  readonly headHash: string | null;
-  readonly headSeq: number | null;
-  readonly issueSignature: string | null;
+  readonly linkPub: string;
+  readonly headHash: string;
+  readonly headSeq: number;
+  readonly issueSignature: string;
 }
 
-/**
- * 受諾ブロック(6 列すべて揃っているときのみ — IV 改訂前の accepted 行は
- * link_signature を持たず、発行文も無いので受諾不能 = ブロックを出さない)。
- */
+/** 受諾ブロック(6 列すべて揃っているときのみ — status が accepted 以降)。 */
 function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
   return row.inviteeUserId !== null &&
     row.inviteeEncPub !== null &&
@@ -1348,19 +1342,14 @@ function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
     : null;
 }
 
-/** 発行文(4 列すべて揃っているときのみ — IV 改訂前の行は null)。 */
+/** 発行文(CRYPTO_SPEC §6.5 — 4 列とも NOT NULL)。 */
 function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
-  return row.linkPub !== null &&
-    row.headHash !== null &&
-    row.headSeq !== null &&
-    row.issueSignature !== null
-    ? {
-        linkPubHex: row.linkPub,
-        headHashHex: row.headHash,
-        headSeq: row.headSeq,
-        issueSignatureHex: row.issueSignature,
-      }
-    : null;
+  return {
+    linkPubHex: row.linkPub,
+    headHashHex: row.headHash,
+    headSeq: row.headSeq,
+    issueSignatureHex: row.issueSignature,
+  };
 }
 
 /** 行 → ドメイン表現。 */
@@ -1391,9 +1380,7 @@ function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
   if (!/UNIQUE constraint failed/.test(message)) {
     return null;
   }
-  // legacy の token_hash(= SHA-256(link_pub))の衝突は link_pub の衝突と同じ直し方
-  // (再採番)なので同じ理由コードへ写す — 素の再 throw(500)にしない
-  if (message.includes("invitations.link_pub") || message.includes("invitations.token_hash")) {
+  if (message.includes("invitations.link_pub")) {
     return "linkPub";
   }
   return message.includes("invitations.id") ? "id" : null;
@@ -1419,7 +1406,6 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
         .select({
           id: sql<string>`${input.id}`.as("id"),
           projectId: sql<string>`${input.projectId}`.as("project_id"),
-          tokenHash: sql<string>`${input.legacyTokenHashHex}`.as("token_hash"),
           linkPub: sql<string>`${input.issuance.linkPubHex}`.as("link_pub"),
           headHash: sql<string>`${input.issuance.headHashHex}`.as("head_hash"),
           headSeq: sql<number>`${input.issuance.headSeq}`.as("head_seq"),

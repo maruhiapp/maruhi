@@ -427,22 +427,15 @@ export const invitations = sqliteTable(
      */
     projectId: text("project_id").notNull(),
     /**
-     * legacy 列(IV 改訂前 = 招待トークンの SHA-256)。IV 改訂(2026-09-13)後の
-     * 行は `lower_hex(SHA-256(link_pub の 32 バイト))` を書く(追加型
-     * マイグレーションで NOT NULL を外せないため)。参照には使わない — 将来の
-     * 表再構築で削除(AUTH_SPEC §15-1)
-     */
-    tokenHash: text("token_hash").notNull(),
-    /**
      * リンク公開鍵(Ed25519、hex 小文字 64 — CRYPTO_SPEC §6.5)。発行時に
-     * クライアントが生成して申告。IV 改訂前の行は NULL(受諾不能 = 410 unbound)
+     * クライアントが生成して申告する。受諾の解決キー(UNIQUE)
      */
-    linkPub: text("link_pub"),
+    linkPub: text("link_pub").notNull(),
     /** 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq。公開値 */
-    headHash: text("head_hash"),
-    headSeq: integer("head_seq"),
+    headHash: text("head_hash").notNull(),
+    headSeq: integer("head_seq").notNull(),
     /** 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布する */
-    issueSignature: text("issue_signature"),
+    issueSignature: text("issue_signature").notNull(),
     /** 'reader' | 'member' | 'admin'(招待経由で owner は付与しない — §15-1) */
     role: text("role").notNull(),
     inviterUserId: text("inviter_user_id").notNull(),
@@ -462,8 +455,7 @@ export const invitations = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
-    uniqueIndex("inv_token_hash").on(t.tokenHash),
-    // 受諾の解決キー(§15-2)。NULL(IV 改訂前の行)同士は UNIQUE に衝突しない
+    // 受諾の解決キー(§15-2)
     uniqueIndex("inv_link_pub").on(t.linkPub),
     // pending 上限(status 条件)と一覧
     index("inv_project_status").on(t.projectId, t.status),

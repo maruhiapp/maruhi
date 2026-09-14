@@ -36,7 +36,6 @@ import {
   inviteRow,
   issueInvite,
   issueInviteRequest,
-  legacyTokenHashOf,
   makeIssuePayload,
   mustRow,
   payloadOf,
@@ -61,8 +60,6 @@ describe("invite issue", () => {
     expect(row.head_hash).toBe(issued.headHashHex);
     expect(row.head_seq).toBe(issued.headSeq);
     expect(row.issue_signature).toBe(issued.issueSignatureHex);
-    // legacy 列 token_hash は SHA-256(link_pub bytes)(参照には使わない — §15-1)
-    expect(row.token_hash).toBe(await legacyTokenHashOf(issued.linkPubHex));
 
     const audits = await inviteAuditRows();
     expect(audits).toHaveLength(1);

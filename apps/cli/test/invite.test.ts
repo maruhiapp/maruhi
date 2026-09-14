@@ -957,16 +957,11 @@ describe("maruhi invite accept", () => {
     });
   });
 
-  it("404 / 410 / 422 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化、旧行 = 再発行)", async () => {
+  it("404 / 410 / 422 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化)", async () => {
     for (const [status, json, fragment] of [
       [404, { _tag: "InviteNotFound" }, "does not know this invite link's key"],
       [410, { _tag: "InviteGone", reason: "accepted" }, "the link may have been intercepted"],
       [410, { _tag: "InviteGone", reason: "expired" }, "This invite has expired"],
-      [
-        410,
-        { _tag: "InviteGone", reason: "unbound" },
-        "issued before the link-bound invite format",
-      ],
       [422, { _tag: "InviteSignatureInvalid", which: "link" }, "The link signature was rejected"],
       [
         422,
@@ -1008,6 +1003,7 @@ describe("maruhi invite accept", () => {
       headHashHex: "12".repeat(32),
       inviterUserId: "user-original-77",
       inviterKeyFingerprintHex: "34".repeat(16),
+      inviterSigPubHex: "56".repeat(32),
       verifiedAtSeq: 9,
     };
     const server = await start([acceptHandler(() => undefined)]);
@@ -1117,7 +1113,7 @@ describe("maruhi invite list / revoke", () => {
 
   function listRow(
     projectId: string,
-    issued: IssuedInviteFixture | null,
+    issued: IssuedInviteFixture,
     acceptance: unknown,
     role = "member",
   ): unknown {
@@ -1127,7 +1123,7 @@ describe("maruhi invite list / revoke", () => {
       role,
       status: acceptance === null ? "pending" : "accepted",
       inviterUserId: inviter.userId,
-      issuance: issued === null ? null : issued.issuance,
+      issuance: issued.issuance,
       createdAtMs: 1755200000000,
       expiresAtMs: 1755993600000,
       acceptance,
@@ -1160,23 +1156,6 @@ describe("maruhi invite list / revoke", () => {
       `accepted: ${acceptor.userId} (acceptance and link signatures verified)`,
     );
     expect(logs).toContain(`fp:   ${acceptor.fingerprintHex}`);
-  });
-
-  it("IV 改訂前の行(発行文なし)は受諾不能として案内し、失敗には数えない", async () => {
-    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const server = await start([
-      chainHandler(built),
-      onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
-        status: 200,
-        json: { invitations: [listRow(built.projectId, null, null)] },
-      })),
-    ]);
-    const env = await makeTestEnv();
-    seedSession(env, server.origin, inviter);
-    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-
-    expect(await runCli(["invite", "list"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("issued before the link-bound invite format");
   });
 
   it("改竄された発行署名・受諾署名・リンク署名は検証失敗として警告し、exit 1 にする", async () => {

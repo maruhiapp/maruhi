@@ -14,7 +14,7 @@
 //
 // 受諾の判定順(裁定 — 理由コードごとにテストで固定): Schema 400 → 認証 401 →
 // CSRF / 鍵素材条件 403 → 未知 link_pub 404 → 使用不能 410(発行文の無い旧行は
-// unbound)→ リンク署名 422(which=link)→ 受諾署名 422(which=accept)→ CAS
+// → リンク署名 422(which=link)→ 受諾署名 422(which=accept)→ CAS
 // (敗北は再読みで 410)。
 //
 // リンク鍵の種はサーバーを一度も通らない(ワイヤにあるのは公開鍵と署名だけ)。
@@ -56,13 +56,9 @@ import type { InvitationRecord, InviteIssuance } from "./invite-domain.ts";
 function goneReasonOf(
   record: InvitationRecord,
   nowMs: number,
-): "accepted" | "completed" | "revoked" | "expired" | "unbound" | null {
+): "accepted" | "completed" | "revoked" | "expired" | null {
   if (record.status !== "pending") {
     return record.status;
-  }
-  if (record.issuance === null) {
-    // IV 改訂前の行(link_pub 無し): 互換経路を作らない裁定により受諾不能
-    return "unbound";
   }
   return record.expiresAtMs <= nowMs ? "expired" : null;
 }
@@ -109,21 +105,6 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<stri
       throw new Error("schema-validated keys failed fingerprint computation");
     }
     return encodeHex(fingerprint.value);
-  });
-
-/**
- * legacy 列 `token_hash` の値 = lower_hex(SHA-256(link_pub の 32 バイト))
- * (AUTH_SPEC §15-1 — NOT NULL を追加型マイグレーションで外せないため。参照には
- * 使わない)。鍵は Schema が形式検査済み。
- */
-const legacyTokenHashOf = (linkPubHex: string): Effect.Effect<string> =>
-  Effect.promise(async () => {
-    const linkPub = decodeHex(linkPubHex);
-    if (linkPub === null) {
-      throw new Error("schema-validated link pub hex failed to decode");
-    }
-    const digest = await crypto.subtle.digest("SHA-256", linkPub as BufferSource);
-    return encodeHex(new Uint8Array(digest));
   });
 
 /**
@@ -175,7 +156,6 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         }
         const nowMs = Date.now();
         const invites = yield* InviteRepo;
-        const legacyTokenHashHex = yield* legacyTokenHashOf(payload.linkPubHex);
         const decision = yield* invites.create(
           {
             id: payload.id,
@@ -188,7 +168,6 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
               headSeq: payload.headSeq,
               issueSignatureHex: payload.issueSignatureHex,
             },
-            legacyTokenHashHex,
           },
           nowMs,
           auditActorOf(principal),
@@ -221,8 +200,8 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         }
         const nowMs = Date.now();
         const gone = goneReasonOf(record, nowMs);
-        if (gone !== null || record.issuance === null) {
-          return yield* Effect.fail(new InviteGoneError({ reason: gone ?? "unbound" }));
+        if (gone !== null) {
+          return yield* Effect.fail(new InviteGoneError({ reason: gone }));
         }
         yield* verifyAcceptanceSignatures({
           record,
