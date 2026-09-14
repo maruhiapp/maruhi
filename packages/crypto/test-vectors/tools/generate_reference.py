@@ -198,9 +198,15 @@ def gen_variable_encryption():
 
 PAYLOAD_FIELD_ORDER = {
     "genesis": ["enc_pub_hex", "sig_pub_hex"],
-    "add_member": ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role"],
+    # 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — ES): add_member / change_role の
+    # payload 末尾に scope_kind("all" | "listed")と scope_environments_lp_hex
+    # (grant_server の scope_environments と同じ入れ子 LP)を追加した形が正規形。
+    # 旧 4 / 2 フィールド形式は互換経路を持たない(negative add-member-scope-dropped /
+    # change-role-scope-dropped が「旧形式のバイト列では正規署名が検証に失敗する」を固定)
+    "add_member": ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role",
+                   "scope_kind", "scope_environments_lp_hex"],
     "remove_member": ["target_user_id"],
-    "change_role": ["target_user_id", "new_role"],
+    "change_role": ["target_user_id", "new_role", "scope_kind", "scope_environments_lp_hex"],
     # 2026-08-03(セッション 12 / CRYPTO_SPEC 0.4-draft): 環境作成のチェーン op 化
     # (§6.2 create_environment)と rotate_epoch payload 末尾への dek_commitment_hex 追加
     "create_environment": ["environment_id", "dek_commitment_hex"],
@@ -217,6 +223,14 @@ PAYLOAD_FIELD_ORDER = {
     # PR-F3a で実装 — M2 の前倒し)。環境エントリのリストは scope_environments と
     # 同じ入れ子 LP の hex 文字列として 1 フィールドに載せる
     "checkpoint": ["environments_lp_hex", "audit_head_hash_hex"],
+    # 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — PF1 四眼): 4 op を追加。
+    # ops_lp_hex = op 名リストの入れ子 LP の hex(scope_environments と同型)、
+    # inner_payload_lp_hex = 内側 op の payload_bytes(§6.1 の入れ子 LP)の hex、
+    # proposal_hash_hex = 提案エントリの entry_hash(hex 小文字 64)
+    "set_approval_policy": ["ops_lp_hex", "required_approvals"],
+    "propose": ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
+    "approve": ["proposal_hash_hex"],
+    "withdraw": ["proposal_hash_hex"],
 }
 
 # CRYPTO_SPEC §6.2: checkpoint の values_digest。
@@ -373,6 +387,64 @@ def lease_policy_lp_hex(policy: list) -> str:
     return lp_encode(elements).hex()
 
 
+# --- ES / PF1 の payload ヘルパ(CRYPTO_SPEC 0.11-draft §6.2)-----------------------
+
+def scope_fields(kind: str, environment_ids: list) -> dict:
+    """メンバー scope の payload フィールド(add_member / change_role の末尾 2 つ)。
+
+    scope_kind ∈ {"all", "listed"}。"all" のリストは空でなければならない(非空は
+    invalid-payload — 構造規則)。リストは grant_server の scope_environments と同じ
+    入れ子 LP(順序は署名対象。生成はコードポイント昇順 SHOULD・検証は集合)。
+    scope_environments は可読性のための平文表現(正規化対象は *_lp_hex)。
+    """
+    return {
+        "scope_kind": kind,
+        "scope_environments": list(environment_ids),
+        "scope_environments_lp_hex": scope_environments_lp_hex(list(environment_ids)),
+    }
+
+
+def approval_ops_lp_hex(ops: list) -> str:
+    # set_approval_policy の ops: op 名のリストを LP エンコード(入れ子 LP)し、その
+    # hex 小文字文字列を payload の 1 フィールドに載せる(scope_environments と同型)。
+    # リスト順は署名対象の一部(生成はコードポイント昇順 SHOULD・検証は集合)
+    return lp_encode(list(ops)).hex()
+
+
+def policy_payload(ops: list, required_approvals: int) -> dict:
+    return {
+        "ops": list(ops),  # 可読性のための平文表現(正規化対象は ops_lp_hex)
+        "ops_lp_hex": approval_ops_lp_hex(ops),
+        "required_approvals": str(required_approvals),
+    }
+
+
+def propose_payload(inner_op: str, inner_payload: dict, expires_at_ms: int) -> dict:
+    # inner_payload_lp_hex = 内側 op の payload_bytes(PAYLOAD_FIELD_ORDER[inner_op] の
+    # 順の LP)の hex 小文字。内側 op が scope / ops の入れ子 LP を持つ場合は 2 段の
+    # 入れ子になる(payload_bytes → signed_bytes の入れ子と同型)
+    return {
+        "inner_op": inner_op,
+        "inner_payload": inner_payload,  # 可読性のための平文表現(正規化対象は *_lp_hex)
+        "inner_payload_lp_hex": chain_payload_bytes(inner_op, inner_payload).hex(),
+        "expires_at_ms": str(expires_at_ms),
+    }
+
+
+def proposal_ref_payload(proposal_entry: dict) -> dict:
+    return {"proposal_hash_hex": proposal_entry["entry_hash_hex"]}
+
+
+def member_state(role: str, kind: str, environment_ids: list | None = None) -> dict:
+    """expected_* のメンバー状態表現(§6.2 の検証状態 = role + scope)。"""
+    scope = {"kind": kind}
+    if kind == "listed":
+        scope["environments"] = list(environment_ids or [])
+    else:
+        assert not environment_ids
+    return {"role": role, "scope": scope}
+
+
 def gen_chain_entries():
     owner_id = "user-owner-0001"
     member_id = "user-member-0002"
@@ -382,6 +454,47 @@ def gen_chain_entries():
     admin = make_user(pat(0x50, 32), pat(0x60, 32))
     server = make_server(pat(0x90, 32))
     suite = "maruhi/v1"
+
+    # ES / PF1(2026-09-14)で正規チェーンへ加わるメンバー(seed は他ベクターと非重複)
+    devmember_id = "user-devmember-0010"    # member listed{dev} → seq 17 で {dev, stage} → seq 22 で reader{dev}
+    devadmin_id = "user-devadmin-0011"      # admin listed{dev, stage}(dev 専任 admin — 裁定 C-2)
+    prodreader_id = "user-prodreader-0012"  # reader listed{prod}
+    allmember_id = "user-allmember-0013"    # member all
+    owner2_id = "user-owner-0014"           # owner all(四眼の承認者)
+    owner3_id = "user-owner-0015"           # owner all(3 人目 — 降格しても定足数 2 を保てる)
+    devmember = make_user(pat(0x3A, 32), pat(0x4A, 32))
+    devadmin = make_user(pat(0x3B, 32), pat(0x4B, 32))
+    prodreader = make_user(pat(0x3C, 32), pat(0x4C, 32))
+    allmember = make_user(pat(0x3D, 32), pat(0x4D, 32))
+    owner2 = make_user(pat(0x3E, 32), pat(0x4E, 32))
+    owner3 = make_user(pat(0x3F, 32), pat(0x4F, 32))
+    users = {
+        owner_id: owner, member_id: member, admin_id: admin,
+        devmember_id: devmember, devadmin_id: devadmin, prodreader_id: prodreader,
+        allmember_id: allmember, owner2_id: owner2, owner3_id: owner3,
+    }
+    ALL = scope_fields("all", [])
+    DEV = "env-dev-0002"
+    PROD = "env-prod-0001"
+    STAGE = "env-stage-0003"
+
+    def add_payload(target_id: str, target: dict, role: str, kind: str = "all",
+                    environment_ids: list | None = None) -> dict:
+        return {
+            "target_user_id": target_id,
+            "enc_pub_hex": target["enc_pub_hex"],
+            "sig_pub_hex": target["sig_pub_hex"],
+            "role": role,
+            **scope_fields(kind, environment_ids or []),
+        }
+
+    def change_payload(target_id: str, new_role: str, kind: str = "all",
+                       environment_ids: list | None = None) -> dict:
+        return {
+            "target_user_id": target_id,
+            "new_role": new_role,
+            **scope_fields(kind, environment_ids or []),
+        }
 
     # モジュールレベルの共有ヘルパ(build_chain_entry — 2026-08-27 に
     # gen_checkpoint_boundary_chains と共用化)への別名。出力は不変
@@ -447,7 +560,7 @@ def gen_chain_entries():
     # 実際に計算したコミットメントを payload に載せる
     environment_deks = {
         "env-prod-0001": {1: pat(0xC0, 32), 2: pat(0xC4, 32), 3: pat(0xF0, 32)},
-        "env-dev-0002": {1: pat(0xC8, 32), 2: pat(0xCC, 32)},
+        "env-dev-0002": {1: pat(0xC8, 32), 2: pat(0xCC, 32), 3: pat(0xD0 + 0x60, 32)},
         "env-stage-0003": {1: pat(0xD4, 32), 2: pat(0xD8, 32)},
         "env-fresh-0004": {1: pat(0xDC, 32)},
         # negative 用(チェーンに載らない座標のプレースホルダ DEK)
@@ -475,8 +588,7 @@ def gen_chain_entries():
     # 「create 直後の初回 rotate は 2 のみ」の境界(authz-epoch-first-jump)と
     # エポック 1 環境の head state を固定する
     add_entry(2, "add_member", owner_id, owner,
-              {"target_user_id": member_id, "enc_pub_hex": member["enc_pub_hex"],
-               "sig_pub_hex": member["sig_pub_hex"], "role": "member"}, t0 + 1000)
+              add_payload(member_id, member, "member"), t0 + 1000)
     add_entry(3, "create_environment", member_id, member,
               create_env_payload("env-prod-0001"), t0 + 2000)
     add_entry(4, "rotate_epoch", member_id, member,
@@ -484,10 +596,9 @@ def gen_chain_entries():
     add_entry(5, "remove_member", owner_id, owner,
               {"target_user_id": member_id}, t0 + 4000)
     add_entry(6, "add_member", owner_id, owner,
-              {"target_user_id": admin_id, "enc_pub_hex": admin["enc_pub_hex"],
-               "sig_pub_hex": admin["sig_pub_hex"], "role": "reader"}, t0 + 5000)
+              add_payload(admin_id, admin, "reader"), t0 + 5000)
     add_entry(7, "change_role", owner_id, owner,
-              {"target_user_id": admin_id, "new_role": "admin"}, t0 + 6000)
+              change_payload(admin_id, "admin"), t0 + 6000)
     add_entry(8, "create_environment", admin_id, admin,
               create_env_payload("env-dev-0002"), t0 + 7000)
     add_entry(9, "grant_server", owner_id, owner, grant_payload, t0 + 8000)
@@ -497,6 +608,47 @@ def gen_chain_entries():
               create_env_payload("env-stage-0003"), t0 + 10000)
     add_entry(12, "revoke_server", owner_id, owner,
               {"server_key_fingerprint_hex": server["fp_hex"]}, t0 + 11000)
+
+    # --- ES + PF1 の追記(2026-09-14 — CRYPTO_SPEC 0.11-draft §6.2 / §11)-------------
+    # seq 1〜12 の構造は据え置き(seq 2 / 6 / 7 に scope = all を足しただけ)。value /
+    # meta / manifest / head-attestation の正例が参照する seq の意味は不変。
+    # seq 13〜19: listed / all の各 scope のメンバー(方針オフ)。seq 17 は dev 専任
+    # admin による scope のみの変更(原則 1 の許容側: 対称差 {stage} ⊆ actor scope)。
+    # seq 20〜24: set_approval_policy → propose → approve(適用)→ propose → withdraw。
+    # 提案の期限は t0 + 7 日(CLI 既定値 — AUTH_SPEC §12-8 の上界 30 日以内)
+    EXPIRES = t0 + 7 * 24 * 60 * 60 * 1000
+    POLICY_OPS = ["change_role", "grant_server", "remove_member", "set_approval_policy"]
+    add_entry(13, "add_member", owner_id, owner,
+              add_payload(devmember_id, devmember, "member", "listed", [DEV]), t0 + 12000)
+    add_entry(14, "add_member", owner_id, owner,
+              add_payload(devadmin_id, devadmin, "admin", "listed", [DEV, STAGE]), t0 + 13000)
+    add_entry(15, "add_member", owner_id, owner,
+              add_payload(prodreader_id, prodreader, "reader", "listed", [PROD]), t0 + 14000)
+    add_entry(16, "add_member", owner_id, owner,
+              add_payload(allmember_id, allmember, "member"), t0 + 15000)
+    add_entry(17, "change_role", devadmin_id, devadmin,
+              change_payload(devmember_id, "member", "listed", [DEV, STAGE]), t0 + 16000)
+    add_entry(18, "add_member", owner_id, owner,
+              add_payload(owner2_id, owner2, "owner"), t0 + 17000)
+    add_entry(19, "add_member", owner_id, owner,
+              add_payload(owner3_id, owner3, "owner"), t0 + 18000)
+    add_entry(20, "set_approval_policy", owner_id, owner,
+              policy_payload(POLICY_OPS, 2), t0 + 19000)
+    demote_devmember = change_payload(devmember_id, "reader", "listed", [DEV])
+    add_entry(21, "propose", owner_id, owner,
+              propose_payload("change_role", demote_devmember, EXPIRES), t0 + 20000)
+    p21 = entries[20]
+    add_entry(22, "approve", owner2_id, owner2, proposal_ref_payload(p21), t0 + 21000)
+    remove_devmember = {"target_user_id": devmember_id}
+    add_entry(23, "propose", devadmin_id, devadmin,
+              propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 22000)
+    p23 = entries[22]
+    add_entry(24, "withdraw", owner3_id, owner3, proposal_ref_payload(p23), t0 + 23000)
+    head19 = entries[18]["entry_hash_hex"]
+    head21 = entries[20]["entry_hash_hex"]
+    head23 = entries[22]["entry_hash_hex"]
+    head24 = entries[23]["entry_hash_hex"]
+    HEAD_SEQ = len(entries)
 
     # negative 1: payload 改竄(role を admin に)。署名はそのまま → 検証失敗すべき
     e2 = entries[1]
@@ -651,7 +803,7 @@ def gen_chain_entries():
         },
         resign_variant(
             "change-role-tampered-new-role", e_change,
-            {"target_user_id": admin_id, "new_role": "owner"},
+            change_payload(admin_id, "owner"),
             "new_role の書き換え(admin → owner)は署名検証に失敗する",
         ),
         resign_variant(
@@ -693,11 +845,13 @@ def gen_chain_entries():
 
     authz_cases = []
 
-    def add_authz(name, seq, prev_hex, op, actor_id, actor, payload, ts, expected_reason, note):
+    def add_authz(name, seq, prev_hex, op, actor_id, actor, payload, ts, expected_reason, note,
+                  chain=None):
         entry = build_entry(seq, op, actor_id, actor, payload, ts, prev_hex)
         case = authz(name, entry, expected_reason, note)
-        case["verify_key_hex"] = {"user-owner-0001": owner, "user-member-0002": member,
-                                  "user-admin-0003": admin}[actor_id]["sig_pub_hex"]
+        case["verify_key_hex"] = users[actor_id]["sig_pub_hex"]
+        if chain is not None:
+            case["chain"] = chain
         authz_cases.append(case)
 
     add_authz(
@@ -724,13 +878,12 @@ def gen_chain_entries():
     )
     add_authz(
         "authz-demote-last-owner", 13, head12, "change_role", owner_id, owner,
-        {"target_user_id": owner_id, "new_role": "member"}, t0 + 12000, "last-owner-protected",
+        change_payload(owner_id, "member"), t0 + 12000, "last-owner-protected",
         "最後の owner は降格不可(§6.2)",
     )
     add_authz(
         "authz-admin-adds-admin", 13, head12, "add_member", admin_id, admin,
-        {"target_user_id": member_id, "enc_pub_hex": member["enc_pub_hex"],
-         "sig_pub_hex": member["sig_pub_hex"], "role": "admin"},
+        add_payload(member_id, member, "admin"),
         t0 + 12000, "insufficient-role",
         "admin / owner ロールの付与は owner のみ(admin は reader / member のみ追加可)",
     )
@@ -868,7 +1021,7 @@ def gen_chain_entries():
     sock_add_entry = build_entry(
         10, "add_member", owner_id, owner,
         {"target_user_id": sock_id, "enc_pub_hex": sock["enc_pub_hex"],
-         "sig_pub_hex": sock["sig_pub_hex"], "role": "reader"},
+         "sig_pub_hex": sock["sig_pub_hex"], "role": "reader", **ALL},
         t0 + 9000, head9,
     )
     extended_chains = {
@@ -891,7 +1044,9 @@ def gen_chain_entries():
                     "key_fingerprint_hex": sock["fp_hex"],
                 },
             },
-            "expected_members": {owner_id: "owner", admin_id: "admin", sock_id: "reader"},
+            "expected_members": {owner_id: member_state("owner", "all"),
+                                 admin_id: member_state("admin", "all"),
+                                 sock_id: member_state("reader", "all")},
         },
     }
     sock_head = sock_add_entry["entry_hash_hex"]
@@ -1065,7 +1220,7 @@ def gen_chain_entries():
         add_authz(
             name, 13, head12, "add_member", owner_id, owner,
             {"target_user_id": "user-clone-0004", "enc_pub_hex": enc_hex,
-             "sig_pub_hex": sig_hex, "role": "member"},
+             "sig_pub_hex": sig_hex, "role": "member", **ALL},
             t0 + 12000, "duplicate-member-key", note,
         )
     # 検査順序の固定(role 規則 → 鍵重複): actor = admin が現メンバー鍵を流用した
@@ -1075,7 +1230,7 @@ def gen_chain_entries():
         "authz-add-member-role-precedes-duplicate-key", 13, head12, "add_member",
         admin_id, admin,
         {"target_user_id": "user-clone-0004", "enc_pub_hex": owner["enc_pub_hex"],
-         "sig_pub_hex": owner["sig_pub_hex"], "role": "admin"},
+         "sig_pub_hex": owner["sig_pub_hex"], "role": "admin", **ALL},
         t0 + 12000, "insufficient-role",
         "role 規則(admin/owner 付与は owner のみ)は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
     )
@@ -1085,7 +1240,7 @@ def gen_chain_entries():
         "authz-add-member-duplicate-user-precedes-key", 13, head12, "add_member",
         owner_id, owner,
         {"target_user_id": admin_id, "enc_pub_hex": owner["enc_pub_hex"],
-         "sig_pub_hex": owner["sig_pub_hex"], "role": "member"},
+         "sig_pub_hex": owner["sig_pub_hex"], "role": "member", **ALL},
         t0 + 12000, "duplicate-member",
         "対象 user_id の重複は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
     )
@@ -1121,6 +1276,9 @@ def gen_chain_entries():
         "env-dev-0002": "2",
         "env-stage-0003": "1",
     }
+    # head 12 時点の現メンバー(role + scope — §6.2 の検証状態)。ES 改訂で
+    # メンバー状態は role 文字列から {role, scope} へ拡張した
+    OWNER_ADMIN = {owner_id: member_state("owner", "all"), admin_id: member_state("admin", "all")}
 
     # grant_seq(2026-08-15 / Wave 2 A2): 当該サーバー鍵の**有効 grant を確立した
     # エントリの seq**。再 grant では最新の grant_server エントリの seq に置き換わる。
@@ -1140,12 +1298,11 @@ def gen_chain_entries():
         {
             "name": "readd-removed-member-same-key",
             "entry": build_entry(13, "add_member", owner_id, owner,
-                                 {"target_user_id": member_id,
-                                  "enc_pub_hex": member["enc_pub_hex"],
-                                  "sig_pub_hex": member["sig_pub_hex"],
-                                  "role": "member"},
+                                 add_payload(member_id, member, "member"),
                                  t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin", member_id: "member"},
+            "expected_members": {owner_id: member_state("owner", "all"),
+                                 admin_id: member_state("admin", "all"),
+                                 member_id: member_state("member", "all")},
             "expected_environments": base_environments,
             "expected_server_grants": [],
             "note": "削除済みメンバーを同一 user_id・同一鍵で再追加する(同一人物の復帰)は受理される(§6.2 の禁止範囲は現メンバー集合のみ)",
@@ -1156,10 +1313,11 @@ def gen_chain_entries():
                                  {"target_user_id": "user-newcomer-0005",
                                   "enc_pub_hex": member["enc_pub_hex"],
                                   "sig_pub_hex": member["sig_pub_hex"],
-                                  "role": "member"},
+                                  "role": "member", **ALL},
                                  t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin",
-                                 "user-newcomer-0005": "member"},
+            "expected_members": {owner_id: member_state("owner", "all"),
+                                 admin_id: member_state("admin", "all"),
+                                 "user-newcomer-0005": member_state("member", "all")},
             "expected_environments": base_environments,
             "expected_server_grants": [],
             "note": "削除済みメンバーの鍵を別 user_id で再登録することも拒否されない(admin/owner の add_member 権限内の行為と等価 — §6.2)",
@@ -1168,7 +1326,7 @@ def gen_chain_entries():
             "name": "create-environment-fresh-id",
             "entry": build_entry(13, "create_environment", owner_id, owner,
                                  create_env_payload("env-fresh-0004"), t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_members": OWNER_ADMIN,
             "expected_environments": dict(base_environments, **{"env-fresh-0004": "1"}),
             "expected_server_grants": [],
             "note": "未使用 ID の create_environment は受理され、環境はエポック 1 で環境集合に加わる(§6.2)",
@@ -1177,7 +1335,7 @@ def gen_chain_entries():
             "name": "rotate-freshly-created-environment",
             "entry": build_entry(13, "rotate_epoch", admin_id, admin,
                                  rotate_payload("env-stage-0003", 2), t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_members": OWNER_ADMIN,
             "expected_environments": dict(base_environments, **{"env-stage-0003": "2"}),
             "expected_server_grants": [],
             "note": "create_environment 済み(エポック 1)の環境への初回 rotate(new_epoch 2)は受理される(create → rotate の境界)",
@@ -1190,7 +1348,7 @@ def gen_chain_entries():
             "name": "regrant-lease-policy-revised",
             "entry": build_entry(10, "grant_server", owner_id, owner,
                                  grant_payload_for(grant_scope, []), t0 + 9000, head9),
-            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_members": OWNER_ADMIN,
             "expected_environments": {"env-prod-0001": "2", "env-dev-0002": "1"},
             # grant_seq は再 grant エントリ自身の seq(10)へ前進する — 有効 grant を
             # 確立したエントリが置き換わるため(seq 9 のままにする実装はここで落ちる)
@@ -1213,33 +1371,119 @@ def gen_chain_entries():
             },
         }
 
+    # 四眼の検証状態(§6.2 / §6.3): approval_policy = {ops, required_approvals} | null
+    # (null = 方針なし = オフ)、pending_proposals = 提案エントリの entry_hash →
+    # {proposal_seq, 提案者(user_id・鍵 FP・提案時 role)、内側 op と payload、期限、
+    # approvals(受理済み approve エントリの actor の列 — 提案者の票は
+    # proposer_role_at_proposal = owner から導出する)}
+    def policy_state(ops: list, required: int) -> dict:
+        return {"ops": list(ops), "required_approvals": str(required)}
+
+    def pending_state(proposal_entry: dict, proposer_role: str, approvals: list) -> dict:
+        payload = proposal_entry["payload"]
+        return {
+            "proposal_seq": proposal_entry["seq"],
+            "proposer_user_id": proposal_entry["actor"]["user_id"],
+            "proposer_key_fingerprint_hex": proposal_entry["actor"]["key_fingerprint_hex"],
+            "proposer_role_at_proposal": proposer_role,
+            "inner_op": payload["inner_op"],
+            "inner_payload": payload["inner_payload"],
+            "expires_at_ms": payload["expires_at_ms"],
+            "approvals": list(approvals),
+        }
+
+    def pending_map(*items) -> dict:
+        return {entry["entry_hash_hex"]: pending_state(entry, role, approvals)
+                for entry, role, approvals in items}
+
+    full_environments = {
+        "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
+        "env-dev-0002": env_state("env-dev-0002", 2, 8, {1: 8, 2: 10}),
+        "env-stage-0003": env_state("env-stage-0003", 1, 11, {1: 11}),
+    }
+    canonical_policy = policy_state(POLICY_OPS, 2)
+    # head 19(方針オフ・全メンバー在籍)のメンバー状態
+    members_19 = {
+        owner_id: member_state("owner", "all"),
+        admin_id: member_state("admin", "all"),
+        devmember_id: member_state("member", "listed", [DEV, STAGE]),
+        devadmin_id: member_state("admin", "listed", [DEV, STAGE]),
+        prodreader_id: member_state("reader", "listed", [PROD]),
+        allmember_id: member_state("member", "all"),
+        owner2_id: member_state("owner", "all"),
+        owner3_id: member_state("owner", "all"),
+    }
+    # head 22 以降(提案 21 の適用 = devmember は reader{dev})
+    members_24 = dict(members_19, **{devmember_id: member_state("reader", "listed", [DEV])})
+    members_24_without_devmember = {k: v for k, v in members_24.items() if k != devmember_id}
+
     expected_head_states = [
         {
             "after_seq": 5,
-            "members": {owner_id: "owner"},
+            "members": {owner_id: member_state("owner", "all")},
             "server_grants": [],
             "environments": {
                 "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
             },
+            "approval_policy": None,
+            "pending_proposals": {},
         },
         {
             "after_seq": 9,
-            "members": {owner_id: "owner", admin_id: "admin"},
+            "members": OWNER_ADMIN,
             "server_grants": [grant_state(grant_scope, grant_lease_policy, 9)],
             "environments": {
                 "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
                 "env-dev-0002": env_state("env-dev-0002", 1, 8, {1: 8}),
             },
+            "approval_policy": None,
+            "pending_proposals": {},
         },
         {
             "after_seq": 12,
-            "members": {owner_id: "owner", admin_id: "admin"},
+            "members": OWNER_ADMIN,
             "server_grants": [],
-            "environments": {
-                "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
-                "env-dev-0002": env_state("env-dev-0002", 2, 8, {1: 8, 2: 10}),
-                "env-stage-0003": env_state("env-stage-0003", 1, 11, {1: 11}),
-            },
+            "environments": full_environments,
+            "approval_policy": None,
+            "pending_proposals": {},
+        },
+        {
+            # ES: listed / all の各 scope のメンバー + dev 専任 admin による scope のみの
+            # 変更(seq 17)を適用した状態。方針はまだ無い
+            "after_seq": 19,
+            "members": members_19,
+            "server_grants": [],
+            "environments": full_environments,
+            "approval_policy": None,
+            "pending_proposals": {},
+        },
+        {
+            # PF1: 方針有効 + owner の提案が pending(提案者 owner の票 = 1)
+            "after_seq": 21,
+            "members": members_19,
+            "server_grants": [],
+            "environments": full_environments,
+            "approval_policy": canonical_policy,
+            "pending_proposals": pending_map((p21, "owner", [])),
+        },
+        {
+            # PF1: 別 owner の approve で定足数 2 に到達 → seq 22 で内側 change_role を
+            # 適用(inclusive — devmember は seq 22 から reader{dev})。pending は空
+            "after_seq": 22,
+            "members": members_24,
+            "server_grants": [],
+            "environments": full_environments,
+            "approval_policy": canonical_policy,
+            "pending_proposals": {},
+        },
+        {
+            # PF1: 非 owner(dev 専任 admin)の提案(票 0)を owner が withdraw した後
+            "after_seq": 24,
+            "members": members_24,
+            "server_grants": [],
+            "environments": full_environments,
+            "approval_policy": canonical_policy,
+            "pending_proposals": {},
         },
     ]
 
@@ -1321,7 +1565,7 @@ def gen_chain_entries():
         ),
         "base_seq": 12,
         "entries": [cp13, cp14],
-        "expected_members": {owner_id: "owner", admin_id: "admin"},
+        "expected_members": OWNER_ADMIN,
         "expected_checkpoints": {
             "env-dev-0002": expected_checkpoint(13, cp_dev_entry),
             "env-prod-0001": expected_checkpoint(14, cp_prod_reattested),
@@ -1520,7 +1764,7 @@ def gen_chain_entries():
                                                           values_digest_hex=cp_prod_values),
                                      checkpoint_env_entry("env-stage-0003", 1, 1),
                                  ]), t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_members": OWNER_ADMIN,
             "expected_environments": base_environments,
             "expected_server_grants": [],
             "expected_checkpoints": {
@@ -1537,7 +1781,7 @@ def gen_chain_entries():
             "name": "checkpoint-empty-environments",
             "entry": build_entry(13, "checkpoint", owner_id, owner,
                                  checkpoint_payload([], dummy_audit_head), t0 + 12000, head12),
-            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_members": OWNER_ADMIN,
             "expected_environments": base_environments,
             "expected_server_grants": [],
             "expected_checkpoints": {},
@@ -1620,10 +1864,1124 @@ def gen_chain_entries():
         },
     ]
 
+    # =========================================================================
+    # ES + PF1(2026-09-14 — CRYPTO_SPEC 0.11-draft §6.2 / §11。設計録 §3-ter の
+    # 2 原則ごとに負例を列挙する): 署名系 negative・構造 / 認可系 negative・
+    # 派生チェーン(四眼の状態を要する前提)・許容側(valid_appends)
+    # =========================================================================
+    es_start = len(authz_cases)
+    e2 = entries[1]     # add_member member all
+    e7 = entries[6]     # change_role admin all
+    e13 = entries[12]   # add_member devmember listed{dev}
+    e14 = entries[13]   # add_member devadmin listed{dev, stage}
+    e17 = entries[16]   # change_role by devadmin(scope のみ)
+    e20 = entries[19]   # set_approval_policy
+    e21 = entries[20]   # propose(owner)
+    e22 = entries[21]   # approve(owner2)
+    GHOST = "env-ghost-9999"
+    FRESH = "env-fresh-0004"
+    newcomer_id = "user-newcomer-0005"  # seq 5 で削除済み member の鍵を持つ新規 user_id
+    newcomer = member
+    BOGUS_HASH = sha256(b"maruhi-vector-bogus-proposal").hex()
+
+    def resign_actor(name, base_entry, payload, note):
+        return resign_variant(name, base_entry, payload, note,
+                              verify_key_hex=users[base_entry["actor"]["user_id"]]["sig_pub_hex"])
+
+    def dropped_form(name, base_entry, old_fields, note):
+        # 旧形式(フィールド欠落)のバイト列に対して正規エントリの署名を検証 → 失敗すべき。
+        # 旧実装が新チェーンを検証できない(= 互換経路が無い)ことの明示的な固定
+        # (grant-server-lease-policy-dropped と同型)
+        signed = lp_encode([
+            suite, base_entry["seq"], base_entry["prev_hash_hex"], base_entry["op"],
+            base_entry["actor"]["user_id"], base_entry["actor"]["key_fingerprint_hex"],
+            lp_encode([base_entry["payload"][k] for k in old_fields]),
+            base_entry["timestamp_ms"],
+        ])
+        return {
+            "name": name,
+            "base_seq": base_entry["seq"],
+            "signed_bytes_hex": signed.hex(),
+            "signature_hex": base_entry["signature_hex"],
+            "verify_key_hex": users[base_entry["actor"]["user_id"]]["sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    def raw_signed(name, base_entry, payload_bytes_value: bytes, note):
+        signed = lp_encode([
+            suite, base_entry["seq"], base_entry["prev_hash_hex"], base_entry["op"],
+            base_entry["actor"]["user_id"], base_entry["actor"]["key_fingerprint_hex"],
+            payload_bytes_value, base_entry["timestamp_ms"],
+        ])
+        return {
+            "name": name,
+            "base_seq": base_entry["seq"],
+            "signed_bytes_hex": signed.hex(),
+            "signature_hex": base_entry["signature_hex"],
+            "verify_key_hex": users[base_entry["actor"]["user_id"]]["sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    tampered_hash = bytearray(bytes.fromhex(e22["payload"]["proposal_hash_hex"]))
+    tampered_hash[0] ^= 0x01
+    flat_propose = lp_encode([
+        e21["payload"]["inner_op"],
+        *[e21["payload"]["inner_payload"][k] for k in PAYLOAD_FIELD_ORDER["change_role"]],
+        e21["payload"]["expires_at_ms"],
+    ])
+    negatives += [
+        dropped_form(
+            "add-member-scope-dropped", e2, ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role"],
+            "scope_kind / scope_environments_lp_hex を落とした旧 4 フィールド形式のバイト列では正規署名(seq 2)が検証に失敗する — ES 改訂前の実装は新チェーンを seq 2 で bad-signature として拒否する(互換経路なし — 2026-09-14 所有者裁定)",
+        ),
+        dropped_form(
+            "change-role-scope-dropped", e7, ["target_user_id", "new_role"],
+            "scope を落とした旧 2 フィールド形式の change_role のバイト列では正規署名(seq 7)が検証に失敗する(payload は 4 フィールドが正規形)",
+        ),
+        resign_actor(
+            "add-member-scope-reorder", e14,
+            dict(e14["payload"], **scope_fields("listed", [STAGE, DEV])),
+            "scope_environments の順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象 — grant_server の scope と同型)",
+        ),
+        resign_actor(
+            "add-member-scope-flat-concat", e14,
+            dict(e14["payload"], scope_environments_lp_hex="".join([DEV, STAGE]).encode("utf-8").hex()),
+            "scope を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する(§2.1 の曖昧性排除)",
+        ),
+        resign_actor(
+            "add-member-scope-relabel-all", e13,
+            dict(e13["payload"], **scope_fields("all", [])),
+            "scope_kind の書き換え(listed{dev} → all)は署名検証に失敗する(scope は署名対象 — 付与範囲の付け替え対策)",
+        ),
+        resign_actor(
+            "change-role-tampered-scope", e17,
+            dict(e17["payload"], **scope_fields("listed", [DEV])),
+            "change_role の scope_environments の書き換え({dev, stage} → {dev})は署名検証に失敗する",
+        ),
+        resign_actor(
+            "policy-ops-reorder", e20,
+            policy_payload(list(reversed(POLICY_OPS)), 2),
+            "set_approval_policy の ops の順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象。生成は昇順 SHOULD・検証は集合 — §6.2)",
+        ),
+        resign_actor(
+            "policy-ops-flat-concat", e20,
+            dict(e20["payload"], ops_lp_hex="".join(POLICY_OPS).encode("utf-8").hex()),
+            "ops を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する",
+        ),
+        resign_actor(
+            "policy-tampered-required", e20,
+            policy_payload(POLICY_OPS, 3),
+            "required_approvals の書き換え(2 → 3)は署名検証に失敗する",
+        ),
+        resign_actor(
+            "propose-tampered-inner-payload", e21,
+            propose_payload("change_role", change_payload(devmember_id, "member", "listed", [DEV]), EXPIRES),
+            "内側 payload(new_role reader → member)の書き換えは署名検証に失敗する(inner_payload_lp_hex は署名対象)",
+        ),
+        resign_actor(
+            "propose-tampered-expires", e21,
+            propose_payload("change_role", demote_devmember, EXPIRES + 1),
+            "expires_at_ms の書き換えは署名検証に失敗する(期限は署名対象 — 提案者が決める)",
+        ),
+        raw_signed(
+            "propose-inner-payload-flat", e21, flat_propose,
+            "内側 payload を入れ子 LP(inner_payload_lp_hex)でなく外側 LP に平坦に展開したバイト列では署名検証に失敗する(内側 op の境界の曖昧性排除 — §6.2 の payload 正規化)",
+        ),
+        resign_actor(
+            "approve-tampered-hash", e22,
+            {"proposal_hash_hex": bytes(tampered_hash).hex()},
+            "参照する提案ハッシュの改竄は署名検証に失敗する",
+        ),
+    ]
+
+    # --- 構造(invalid-payload — 検証段順「構造 → actor → 署名 → 認可」の構造段)-----
+    es_cases = []
+
+    def add_es(name, seq, prev_hex, op, actor_id, payload, ts, expected_reason, note, chain=None):
+        add_authz(name, seq, prev_hex, op, actor_id, users[actor_id], payload, ts,
+                  expected_reason, note, chain=chain)
+        es_cases.append(name)
+
+    T19 = t0 + 19000
+    T21 = t0 + 21000
+    T23 = t0 + 23000
+    T24 = t0 + 24000
+    add_es(
+        "scope-all-nonempty-list", 20, head19, "add_member", owner_id,
+        dict(add_payload(newcomer_id, newcomer, "member"), **scope_fields("all", [DEV])),
+        T19, "invalid-payload",
+        "scope_kind = all のとき scope_environments は空リストでなければならない(§6.2 構造規則 — 非空は invalid-payload)",
+    )
+    add_es(
+        "scope-duplicate-id", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [DEV, DEV]),
+        T19, "invalid-payload",
+        "重複 environment_id を含む scope は無効(§6.2 構造規則 — checkpoint と同じ「非決定性の芽を構造段で摘む」線)",
+    )
+    add_es(
+        "add-member-scope-too-many", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "member", "listed",
+                    [f"env-bulk-{i:04d}" for i in range(257)]),
+        T19, "invalid-payload",
+        "scope が 257 要素(上限 256 超過)の add_member は署名が有効でも拒否する(grant_server の scope_environments と同じ上限 — §6.1 / §6.2。構造検査は unknown-environment に先行)",
+    )
+    add_es(
+        "scope-kind-unknown", 20, head19, "add_member", owner_id,
+        dict(add_payload(newcomer_id, newcomer, "member"), scope_kind="some"),
+        T19, "invalid-payload",
+        "scope_kind は閉集合 {all, listed}。それ以外は構造段で拒否する",
+    )
+    add_es(
+        "scope-format-precedes-role", 20, head19, "add_member", prodreader_id,
+        dict(add_payload(newcomer_id, newcomer, "member"), **scope_fields("all", [PROD])),
+        T19, "invalid-payload",
+        "scope の構造違反 × role 不足(reader)の複合違反は構造検査が先に判定される(検証段順: 構造 → 認可)",
+    )
+    add_es(
+        "policy-required-one", 20, head19, "set_approval_policy", owner_id,
+        policy_payload(POLICY_OPS, 1), T19, "invalid-payload",
+        "required_approvals は 0(オフ)または 2 以上(§6.2)。1 は構造段で拒否する",
+    )
+    add_es(
+        "policy-ops-rotate", 20, head19, "set_approval_policy", owner_id,
+        policy_payload(["rotate_epoch"], 2), T19, "invalid-payload",
+        "ops は {grant_server, revoke_server, remove_member, change_role, add_member, set_approval_policy} の部分集合でなければならない(§6.2 — rotate / create / checkpoint はデータ・安全側の操作なので対象にできない)。構造段で拒否する",
+    )
+    add_es(
+        "policy-ops-unknown-op", 20, head19, "set_approval_policy", owner_id,
+        policy_payload(["self_destruct"], 2), T19, "invalid-payload",
+        "未知の op 名を含む ops は構造段で拒否する",
+    )
+    add_es(
+        "policy-format-precedes-role", 20, head19, "set_approval_policy", admin_id,
+        policy_payload(POLICY_OPS, 1), T19, "invalid-payload",
+        "構造違反(required_approvals = 1)× role 不足(admin)の複合違反は構造検査が先に判定される",
+    )
+    add_es(
+        "propose-inner-op-unknown", 25, head24, "propose", owner_id,
+        {"inner_op": "self_destruct", "inner_payload": {}, "inner_payload_lp_hex": "",
+         "expires_at_ms": str(EXPIRES)},
+        T24, "invalid-payload",
+        "未知の内側 op を持つ propose は構造段で拒否する(内側 payload の形状は内側 op の形状表で検査する)",
+    )
+    add_es(
+        "propose-inner-op-nested", 25, head24, "propose", owner_id,
+        propose_payload("propose", propose_payload("remove_member", remove_devmember, EXPIRES), EXPIRES),
+        T24, "invalid-payload",
+        "内側 op に propose / approve / withdraw を置く形(提案の入れ子)は構造段で拒否する — これらは方針の対象になりえず(§6.2)、再帰的な内側 payload の検査を持たない(設計録 §8 K2 追記)",
+    )
+    add_es(
+        "propose-expires-negative", 25, head24, "propose", owner_id,
+        propose_payload("remove_member", remove_devmember, -1),
+        T24, "invalid-payload",
+        "expires_at_ms は非負の安全整数(§2.1 / §6.2)。負数は構造段で拒否する",
+    )
+    add_es(
+        "propose-inner-shape-precedes-role", 25, head24, "propose", prodreader_id,
+        {"inner_op": "remove_member", "inner_payload": {}, "inner_payload_lp_hex": "",
+         "expires_at_ms": str(EXPIRES)},
+        T24, "invalid-payload",
+        "内側 payload の構造違反(target_user_id 欠落)× role 不足(reader)の複合違反は構造検査が先に判定される",
+    )
+    add_es(
+        "approve-hash-uppercase", 22, head21, "approve", owner2_id,
+        {"proposal_hash_hex": p21["entry_hash_hex"].upper()}, T21, "invalid-payload",
+        "proposal_hash_hex の大文字 hex は構造段で拒否する(hex 小文字 64 文字が正規形)",
+    )
+    add_es(
+        "approve-hash-bad-length", 22, head21, "approve", owner2_id,
+        {"proposal_hash_hex": p21["entry_hash_hex"][:62]}, T21, "invalid-payload",
+        "proposal_hash_hex の長さ不正(62 文字)は構造段で拒否する",
+    )
+
+    # --- 原則 1(権限の変更可能性 — §6.2): 権限変化の環境集合の各要素が actor の scope
+    # 外にある形を、op ごと・集合代数の各形ごとに列挙する。actor = dev 専任 admin
+    # (devadmin: listed{dev, stage})。head 19 = 方針オフ(approval-required が scope 検査に
+    # 先行しない状態)-------------------------------------------------------------
+    add_es(
+        "authz-add-member-unknown-scope-environment", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [GHOST]), T19, "unknown-environment",
+        "listed の各 environment_id はそのエントリ時点でチェーン上に create_environment が先行していなければならない(typo の fail-closed — rotate / checkpoint と同じ理由コード)",
+    )
+    add_es(
+        "authz-add-member-owner-listed", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "owner", "listed", [DEV]), T19, "scope-role-mismatch",
+        "owner は常に all(§6.2 — 最後の owner 保護・grant_server・全環境 rotate 義務の履行者)。owner に listed を付ける add_member は無効",
+    )
+    add_es(
+        "authz-change-role-owner-listed", 20, head19, "change_role", owner_id,
+        change_payload(allmember_id, "owner", "listed", [DEV]), T19, "scope-role-mismatch",
+        "owner へ昇格する change_role も scope = all でなければ無効",
+    )
+    add_es(
+        "authz-add-member-scope-not-contained", 20, head19, "add_member", devadmin_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [PROD]), T19, "scope-not-contained",
+        "原則 1(add_member = 新 scope): dev 専任 admin は prod を含む scope を付与できない(prod の DEK を持たず、ラップを作れない — §7 の暗号的必然)",
+    )
+    add_es(
+        "authz-add-member-all-scope-not-contained", 20, head19, "add_member", devadmin_id,
+        add_payload(newcomer_id, newcomer, "member"), T19, "scope-not-contained",
+        "原則 1(all の付与): listed の actor は all を包含しない(all = 将来の環境を含む U — §6.2 の集合代数)",
+    )
+    add_es(
+        "authz-change-role-promotion-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(prodreader_id, "member", "listed", [PROD]), T19, "scope-not-contained",
+        "原則 1(scope 不変の昇格 — pullfrog 第 9 巡の穴): role が変わるなら権限変化の環境集合は 旧 ∪ 新 = {prod}。dev 専任 admin は prod の reader を member に上げられない(義務は生じないが権限は変わる)",
+    )
+    add_es(
+        "authz-change-role-widen-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(devmember_id, "member", "listed", [DEV, PROD, STAGE]), T19, "scope-not-contained",
+        "原則 1(scope の拡大): role 不変なら権限変化の環境集合は対称差 = {prod} で actor scope 外",
+    )
+    add_es(
+        "authz-change-role-narrow-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(prodreader_id, "reader", "listed", []), T19, "scope-not-contained",
+        "原則 1(scope の縮小): 縮小分 {prod} も権限変化(= remove 相当 — §7 の rotate 義務)であり actor scope 外なら無効(A-2 の訂正「旧 ∪ 新」の対称差側)",
+    )
+    add_es(
+        "authz-change-role-to-all-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(devmember_id, "member"), T19, "scope-not-contained",
+        "原則 1(all への出): listed{dev, stage} △ all = U \\ {dev, stage} は listed の actor に包含されない(Cursor Bugbot 指摘対応 — all を現存環境へ展開してはならない)",
+    )
+    add_es(
+        "authz-change-role-from-all-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(allmember_id, "member", "listed", [DEV, STAGE]), T19, "scope-not-contained",
+        "原則 1(all からの入): all △ listed{dev, stage} = U \\ {dev, stage} — listed の actor は all の対象を listed にできない(将来環境の DEK を回収する義務を負えない)",
+    )
+    add_es(
+        "authz-change-role-union-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(prodreader_id, "member", "listed", [DEV]), T19, "scope-not-contained",
+        "原則 1(role と scope が同時に変わる形): 旧 ∪ 新 = {prod, dev} で prod が actor scope 外(新 scope だけを見る誤実装はここで落ちる)",
+    )
+    add_es(
+        "authz-remove-member-scope-not-contained", 20, head19, "remove_member", devadmin_id,
+        {"target_user_id": prodreader_id}, T19, "scope-not-contained",
+        "原則 1(remove_member = 現 scope): dev 専任 admin は prod メンバーを消せない(消せる = 縮小分の rotate 義務を履行できる)",
+    )
+    add_es(
+        "authz-remove-member-all-scope-not-contained", 20, head19, "remove_member", devadmin_id,
+        {"target_user_id": allmember_id}, T19, "scope-not-contained",
+        "原則 1(all の対象の remove): 現 scope = all は listed の actor に包含されない",
+    )
+    # --- 環境対象 op(§6.2 裁定 E): 対象環境 ∈ actor scope。create は all の actor のみ
+    add_es(
+        "authz-create-env-listed-admin", 20, head19, "create_environment", devadmin_id,
+        create_env_payload(FRESH), T19, "environment-out-of-scope",
+        "create_environment の新 environment_id は actor の scope に含まれていなければならない — listed の scope に未存在の環境は含まれえないので、環境の作成は all の actor のみ(admin でも listed なら不可)",
+    )
+    add_es(
+        "authz-create-env-listed-member", 20, head19, "create_environment", devmember_id,
+        create_env_payload(FRESH), T19, "environment-out-of-scope",
+        "listed の member による環境作成も同じ述語で拒否する(作成者が受け取れない環境を作らない)",
+    )
+    add_es(
+        "authz-rotate-out-of-scope", 20, head19, "rotate_epoch", devmember_id,
+        rotate_payload(PROD, 3), T19, "environment-out-of-scope",
+        "scope 外の環境への rotate_epoch は拒否する(再暗号化に旧 DEK が要る — 履行不能)",
+    )
+    add_es(
+        "authz-checkpoint-out-of-scope", 20, head19, "checkpoint", devmember_id,
+        checkpoint_payload([checkpoint_env_entry(PROD, 2, 1)]), T19, "environment-out-of-scope",
+        "scope 外の環境のタプルを含む checkpoint は拒否する(values_digest の原像は値付き pull でしか得られない)",
+    )
+    # --- 検査順序の固定形(§6.2 の各列。scope 系は既存の検査列の後ろ)------------------
+    add_es(
+        "authz-add-member-duplicate-key-precedes-unknown-environment", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, admin, "member", "listed", [GHOST]), T19, "duplicate-member-key",
+        "鍵重複 × 未知環境の複合違反は鍵重複が先に判定される(add_member: … → duplicate-member-key → unknown-environment)",
+    )
+    add_es(
+        "authz-add-member-unknown-environment-precedes-scope-role-mismatch", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "owner", "listed", [GHOST]), T19, "unknown-environment",
+        "未知環境 × owner に listed の複合違反は unknown-environment が先に判定される(add_member: unknown-environment → scope-role-mismatch)",
+    )
+    add_es(
+        "authz-add-member-unknown-environment-precedes-scope-not-contained", 20, head19, "add_member", devadmin_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [GHOST]), T19, "unknown-environment",
+        "未知環境 × scope 外の複合違反は unknown-environment が先に判定される(add_member: unknown-environment → scope-not-contained)",
+    )
+    add_es(
+        "authz-add-member-role-precedes-scope", 20, head19, "add_member", devmember_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [PROD]), T19, "insufficient-role",
+        "role 不足(member)× scope 外の複合違反は role 規則が先に判定される",
+    )
+    add_es(
+        "authz-change-role-unknown-target-precedes-scope", 20, head19, "change_role", devadmin_id,
+        change_payload("user-ghost-9999", "member", "listed", [PROD]), T19, "unknown-target",
+        "未知の対象 × scope 外の複合違反は unknown-target が先に判定される(change_role: unknown-target → … → scope-not-contained)",
+    )
+    add_es(
+        "authz-change-role-last-owner-precedes-unknown-environment", 13, head12, "change_role", owner_id,
+        change_payload(owner_id, "member", "listed", [GHOST]), t0 + 12000, "last-owner-protected",
+        "最後の owner の降格 × 未知環境の複合違反は last-owner-protected が先に判定される(change_role: last-owner-protected → unknown-environment)",
+    )
+    add_es(
+        "authz-change-role-unknown-environment-precedes-scope-not-contained", 20, head19, "change_role", devadmin_id,
+        change_payload(devmember_id, "member", "listed", [DEV, GHOST]), T19, "unknown-environment",
+        "未知環境 × scope 外(ghost は actor scope 外)の複合違反は unknown-environment が先に判定される(change_role: unknown-environment → scope-not-contained)",
+    )
+    add_es(
+        "authz-change-role-unknown-environment-precedes-scope-role-mismatch", 20, head19, "change_role", owner_id,
+        change_payload(allmember_id, "owner", "listed", [GHOST]), T19, "unknown-environment",
+        "未知環境 × owner に listed の複合違反は unknown-environment が先に判定される(change_role: unknown-environment → scope-role-mismatch)",
+    )
+    add_es(
+        "authz-remove-unknown-target-precedes-scope", 20, head19, "remove_member", devadmin_id,
+        {"target_user_id": "user-ghost-9999"}, T19, "unknown-target",
+        "未知の対象 × scope 外の複合違反は unknown-target が先に判定される(remove_member: unknown-target → … → scope-not-contained)",
+    )
+    add_es(
+        "authz-rotate-unknown-precedes-out-of-scope", 20, head19, "rotate_epoch", devmember_id,
+        rotate_payload(GHOST, 2), T19, "unknown-environment",
+        "未知環境 × scope 外の複合違反は unknown-environment が先に判定される(rotate_epoch: unknown-environment → environment-out-of-scope)",
+    )
+    add_es(
+        "authz-rotate-out-of-scope-precedes-epoch", 20, head19, "rotate_epoch", devmember_id,
+        {"environment_id": PROD, "new_epoch": "7", "reason": "scheduled",
+         "dek_commitment_hex": dek_commitment_hex(project_id, PROD, 7, environment_deks[PROD][2])},
+        T19, "environment-out-of-scope",
+        "scope 外 × 不正エポックの複合違反は environment-out-of-scope が先に判定される(rotate_epoch: environment-out-of-scope → エポック順序)",
+    )
+    add_es(
+        "authz-create-env-duplicate-precedes-out-of-scope", 20, head19, "create_environment", devadmin_id,
+        create_env_payload(PROD), T19, "duplicate-environment",
+        "ID 重複 × listed actor の複合違反は duplicate-environment が先に判定される(create_environment: duplicate-environment → environment-out-of-scope)",
+    )
+    add_es(
+        "authz-checkpoint-audit-role-precedes-out-of-scope", 20, head19, "checkpoint", devmember_id,
+        checkpoint_payload([checkpoint_env_entry(PROD, 2, 1)], dummy_audit_head), T19,
+        "checkpoint-audit-role-insufficient",
+        "監査 admin 不足 × scope 外タプルの複合違反は監査 role 規則が先に判定される(checkpoint: 監査 admin → … → environment-out-of-scope)",
+    )
+    add_es(
+        "authz-checkpoint-unknown-precedes-out-of-scope", 20, head19, "checkpoint", devmember_id,
+        checkpoint_payload([checkpoint_env_entry(PROD, 2, 1), checkpoint_env_entry(GHOST, 2, 1)]), T19,
+        "unknown-environment",
+        "scope 外タプル(先頭)× 未知環境(後方)の複合違反は unknown-environment が先に判定される(stage-wise: 段ごとに全タプルを走査)",
+    )
+    add_es(
+        "authz-checkpoint-out-of-scope-precedes-epoch", 20, head19, "checkpoint", devmember_id,
+        checkpoint_payload([checkpoint_env_entry(DEV, 1, 1), checkpoint_env_entry(PROD, 2, 1)]), T19,
+        "environment-out-of-scope",
+        "epoch 不一致(先頭 = scope 内の dev)× scope 外(後方 = prod)の複合違反は environment-out-of-scope が先に判定される(stage-wise — checkpoint: environment-out-of-scope → checkpoint-epoch-mismatch)",
+    )
+
+    # --- 原則 2(署名者集合 S による認可 — §6.2)と方針の単調性 -------------------------
+    # 直接追記の拒否(方針有効 × 対象 op): head 24(方針 = POLICY_OPS / required 2)
+    add_es(
+        "authz-approval-required-change-role", 25, head24, "change_role", owner_id,
+        change_payload(allmember_id, "reader"), T24, "approval-required",
+        "方針が有効で ops に含まれる change_role の直接追記は S = {actor} で |S ∩ owners| ≤ 1 < 2 のため無効(原則 2 の導出 — 検査は role 規則の直後)",
+    )
+    add_es(
+        "authz-approval-required-remove-member", 25, head24, "remove_member", owner_id,
+        remove_devmember, T24, "approval-required",
+        "remove_member の直接追記も同様に無効",
+    )
+    add_es(
+        "authz-approval-required-grant-server", 25, head24, "grant_server", owner_id,
+        grant_payload, T24, "approval-required",
+        "grant_server の直接追記も同様に無効(サーバーへの鍵開示は四眼の本命の対象)",
+    )
+    add_es(
+        "authz-approval-required-set-approval-policy", 25, head24, "set_approval_policy", owner_id,
+        policy_payload(POLICY_OPS, 2), T24, "approval-required",
+        "方針が有効な間、set_approval_policy 自身は ops の列挙に依らず常に対象(オフにするにも四眼が要る — 方針の単調性 (a))",
+    )
+    add_es(
+        "authz-approval-required-add-member-owner", 25, head24, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "owner"), T24, "approval-required",
+        "owner role を確立する add_member は add_member が ops に無くても常に対象(owner 身元の自作で定足数を満たす経路を閉じる — 方針の単調性 (a))",
+    )
+    add_es(
+        "authz-approval-required-change-role-to-owner", 25, head24, "change_role", owner_id,
+        change_payload(allmember_id, "owner"), T24, "approval-required",
+        "owner へ昇格する change_role も常に対象",
+    )
+    add_es(
+        "authz-role-precedes-approval-required", 25, head24, "change_role", devmember_id,
+        change_payload(prodreader_id, "member", "listed", [PROD]), T24, "insufficient-role",
+        "role 不足(reader)× 方針下の直接追記の複合違反は role 規則が先に判定される(change_role: role → approval-required)",
+    )
+    add_es(
+        "authz-approval-required-precedes-unknown-target", 25, head24, "change_role", owner_id,
+        change_payload("user-ghost-9999", "member"), T24, "approval-required",
+        "方針下の直接追記 × 未知の対象の複合違反は approval-required が先に判定される(change_role: approval-required → unknown-target)",
+    )
+    add_es(
+        "authz-approval-required-precedes-scope", 25, head24, "change_role", devadmin_id,
+        change_payload(prodreader_id, "member", "listed", [PROD]), T24, "approval-required",
+        "方針下の直接追記 × scope 外の複合違反は approval-required が先に判定される(change_role: approval-required → … → scope-not-contained)",
+    )
+    add_es(
+        "authz-approval-required-precedes-quorum", 25, head24, "set_approval_policy", owner_id,
+        policy_payload(POLICY_OPS, 4), T24, "approval-required",
+        "方針下の直接変更 × 到達不能な定足数の複合違反は approval-required が先に判定される(set_approval_policy: approval-required → approval-quorum-unreachable)",
+    )
+    add_es(
+        "authz-policy-role-precedes-approval-required", 25, head24, "set_approval_policy", admin_id,
+        policy_payload(POLICY_OPS, 2), T24, "insufficient-role",
+        "set_approval_policy は owner のみ。admin による方針変更は role 規則で拒否される(role → approval-required)",
+    )
+    # approval-not-required / 方針の到達可能性
+    add_es(
+        "authz-propose-policy-off", 20, head19, "propose", owner_id,
+        propose_payload("remove_member", remove_devmember, EXPIRES), T19, "approval-not-required",
+        "方針がオフのときの propose は無効(§6.2 — 直接追記できる op を提案する意味を持たない)",
+    )
+    add_es(
+        "authz-propose-untargeted-op", 25, head24, "propose", owner_id,
+        propose_payload("add_member", add_payload(newcomer_id, newcomer, "member"), EXPIRES), T24,
+        "approval-not-required",
+        "方針の対象でない op(add_member は ops に無く、member role は常時対象でもない)の propose は無効",
+    )
+    add_es(
+        "authz-propose-rotate-not-required", 25, head24, "propose", devadmin_id,
+        propose_payload("rotate_epoch", rotate_payload(DEV, 3), EXPIRES), T24, "approval-not-required",
+        "rotate_epoch は方針の対象になりえない(データ・安全側の操作)ため、その propose は approval-not-required",
+    )
+    add_es(
+        "authz-propose-role-precedes-not-required", 25, head24, "propose", devmember_id,
+        propose_payload("add_member", add_payload(newcomer_id, newcomer, "member"), EXPIRES), T24,
+        "insufficient-role",
+        "propose の role 規則は内側 op の規則(add_member = admin 以上)で判定し、approval-not-required に先行する(propose: role → approval-not-required)",
+    )
+    add_es(
+        "authz-propose-not-required-precedes-inner", 25, head24, "propose", owner_id,
+        propose_payload("add_member", add_payload(newcomer_id, newcomer, "member", "listed", [GHOST]), EXPIRES),
+        T24, "approval-not-required",
+        "対象外 op × 内側 op の違反(未知環境)の複合違反は approval-not-required が先に判定される(propose: approval-not-required → 内側 op の合意規則)",
+    )
+    add_es(
+        "authz-propose-inner-unknown-environment", 25, head24, "propose", owner_id,
+        propose_payload("change_role", change_payload(devmember_id, "member", "listed", [GHOST]), EXPIRES),
+        T24, "unknown-environment",
+        "内側 op が合意規則(未知環境)を満たさない提案は無効(pending に積まない)— 理由コードは内側 op の理由をそのまま用いる",
+    )
+    add_es(
+        "authz-propose-inner-scope-not-contained", 25, head24, "propose", devadmin_id,
+        propose_payload("remove_member", {"target_user_id": prodreader_id}, EXPIRES), T24,
+        "scope-not-contained",
+        "提案者の scope で原則 1 を検査する(直接追記できる op であることの確認 — dev 専任 admin は prod メンバーの remove を提案できない)",
+    )
+    add_es(
+        "authz-propose-inner-unknown-target", 25, head24, "propose", owner_id,
+        propose_payload("remove_member", {"target_user_id": "user-ghost-9999"}, EXPIRES), T24,
+        "unknown-target",
+        "内側 op の対象が存在しない提案は無効",
+    )
+    add_es(
+        "authz-propose-inner-role", 25, head24, "propose", devadmin_id,
+        propose_payload("remove_member", {"target_user_id": admin_id}, EXPIRES), T24,
+        "insufficient-role",
+        "admin を対象とする remove_member は owner のみ — 提案者の role 規則は内側 op の規則で判定する",
+    )
+    add_es(
+        "authz-propose-inner-quorum-unreachable", 25, head24, "propose", owner_id,
+        propose_payload("set_approval_policy", policy_payload(POLICY_OPS, 4), EXPIRES), T24,
+        "approval-quorum-unreachable",
+        "内側 op(方針変更)が到達可能性を満たさない(owner 3 < 4)提案は提案段で無効",
+    )
+    add_es(
+        "authz-policy-single-owner", 13, head12, "set_approval_policy", owner_id,
+        policy_payload(POLICY_OPS, 2), t0 + 12000, "approval-quorum-unreachable",
+        "有効化は現 owner 数 ≥ required_approvals でなければ無効(owner 1 名では有効化できない)",
+    )
+    add_es(
+        "authz-policy-quorum-unreachable", 20, head19, "set_approval_policy", owner_id,
+        policy_payload(POLICY_OPS, 4), T19, "approval-quorum-unreachable",
+        "owner 3 名で required 4 の有効化は無効(有効化条件は ≥ — 承認項目 17)",
+    )
+    # approve / withdraw の各理由(head 21 = 提案 21 が pending・提案者 owner の票 1)
+    add_es(
+        "authz-approve-non-owner", 22, head21, "approve", admin_id,
+        proposal_ref_payload(p21), T21, "insufficient-role",
+        "承認者は owner のみ(原則 2: S ∩ owners を数える — admin の署名は票にならない)",
+    )
+    add_es(
+        "authz-approve-reader", 22, head21, "approve", prodreader_id,
+        proposal_ref_payload(p21), T21, "insufficient-role",
+        "reader の approve も無効",
+    )
+    add_es(
+        "authz-approve-self", 22, head21, "approve", owner_id,
+        proposal_ref_payload(p21), T21, "duplicate-approval",
+        "原則 2(重複): owner として提案した提案者の提案は 1 票であり、自己承認は duplicate-approval(distinct な身元で数える)",
+    )
+    add_es(
+        "authz-approve-expired", 22, head21, "approve", owner2_id,
+        proposal_ref_payload(p21), EXPIRES + 1, "proposal-expired",
+        "approve エントリの timestamp_ms が提案の expires_at_ms を超えると無効(本仕様で timestamp を合意規則に用いる唯一の箇所 — 正直な承認者向けの UX 安全装置)",
+    )
+    add_es(
+        "authz-approve-unknown-hash", 25, head24, "approve", owner_id,
+        {"proposal_hash_hex": BOGUS_HASH}, T24, "unknown-proposal",
+        "存在しない提案ハッシュへの approve は無効",
+    )
+    add_es(
+        "authz-approve-applied-proposal", 25, head24, "approve", owner3_id,
+        proposal_ref_payload(p21), T24, "unknown-proposal",
+        "適用済み(seq 22 で完成)の提案への approve は unknown-proposal(pending でない提案は存在しないのと同じ扱い)",
+    )
+    add_es(
+        "authz-approve-withdrawn-proposal", 25, head24, "approve", owner2_id,
+        proposal_ref_payload(p23), T24, "unknown-proposal",
+        "撤回済み(seq 24)の提案への approve は unknown-proposal",
+    )
+    add_es(
+        "authz-withdraw-unknown-proposal", 25, head24, "withdraw", owner_id,
+        {"proposal_hash_hex": BOGUS_HASH}, T24, "unknown-proposal",
+        "存在しない提案の withdraw は無効",
+    )
+    add_es(
+        "authz-withdraw-closed-proposal", 25, head24, "withdraw", owner_id,
+        proposal_ref_payload(p23), T24, "unknown-proposal",
+        "撤回済みの提案の再 withdraw は unknown-proposal",
+    )
+    add_es(
+        "authz-withdraw-non-proposer", 24, head23, "withdraw", admin_id,
+        proposal_ref_payload(p23), T23, "insufficient-role",
+        "withdraw は提案者または owner のみ(admin-0003 は提案者でも owner でもない)",
+    )
+    add_es(
+        "authz-withdraw-role-precedes-unknown", 25, head24, "withdraw", admin_id,
+        {"proposal_hash_hex": BOGUS_HASH}, T24, "insufficient-role",
+        "role 不足 × 未知の提案の複合違反は role 規則が先に判定される(withdraw: role → unknown-proposal)",
+    )
+    add_es(
+        "authz-approve-role-precedes-unknown", 25, head24, "approve", admin_id,
+        {"proposal_hash_hex": BOGUS_HASH}, T24, "insufficient-role",
+        "role 不足 × 未知の提案の複合違反は role 規則が先に判定される(approve: role → unknown-proposal)",
+    )
+    add_es(
+        "authz-approve-unknown-precedes-duplicate", 25, head24, "approve", owner2_id,
+        proposal_ref_payload(p21), T24, "unknown-proposal",
+        "適用済み提案 × 投票済み owner の複合違反は unknown-proposal が先に判定される(approve: unknown-proposal → duplicate-approval)",
+    )
+
+    # --- 派生チェーン(四眼の状態を要する前提 — 規約 16 / 19 の先例)-----------------------
+    def extend(base_seq, base_hash, steps):
+        """steps = [(op, actor_id, payload, ts)] を base の直後へ連鎖して署名する。"""
+        out = []
+        prev = base_hash
+        seq = base_seq
+        for op, actor_id, payload, ts in steps:
+            seq += 1
+            entry = build_entry(seq, op, actor_id, users[actor_id], payload, ts, prev)
+            out.append(entry)
+            prev = entry["entry_hash_hex"]
+        return out
+
+    def chain_doc(description, base_seq, ext_entries, members, policy, pending, **extra):
+        return {
+            "description": description,
+            "base_seq": base_seq,
+            "entries": ext_entries,
+            "expected_members": members,
+            "expected_policy": policy,
+            "expected_pending": pending,
+            **extra,
+        }
+
+    def at(ext_entries, seq):
+        return next(e for e in ext_entries if e["seq"] == seq)
+
+    def approve_of(entry):
+        return proposal_ref_payload(entry)
+
+    # (1) 非 owner の提案(23)への 1 票目は pending のまま。timestamp = expires_at_ms
+    #     ちょうどは有効(境界は ≤)
+    one_vote = extend(23, head23, [
+        ("approve", owner2_id, approve_of(p23), EXPIRES),
+    ])
+    extended_chains["proposal-one-vote"] = chain_doc(
+        "提案 23(dev 専任 admin による remove_member — 提案者の票 0)へ owner-0014 が 1 票"
+        "(timestamp = expires_at_ms ちょうど — 期限の ≤ 境界)。定足数 2 に届かないため"
+        "適用されず pending のまま(approvals = [owner-0014])。duplicate-approval の前提チェーン",
+        23, one_vote, members_24, canonical_policy, pending_map((p23, "admin", [owner2_id])),
+    )
+    add_es(
+        "authz-approve-duplicate-owner", 25, one_vote[-1]["entry_hash_hex"], "approve", owner2_id,
+        approve_of(p23), T24, "duplicate-approval",
+        "原則 2(重複): 同じ owner の 2 票目は duplicate-approval(票は distinct な owner で数える)",
+        chain="proposal-one-vote",
+    )
+    # (2) 非 owner の提案 + owner 2 票で完成 → seq 25 で適用(devmember の在籍終了)
+    completed = extend(23, head23, [
+        ("approve", owner2_id, approve_of(p23), T23),
+        ("approve", owner3_id, approve_of(p23), t0 + 24000),
+    ])
+    extended_chains["proposal-completed"] = chain_doc(
+        "提案 23 へ owner-0014・owner-0015 が順に投票し、2 票目(seq 25)で定足数に達して内側"
+        " remove_member を適用する(devmember は seq 25 で在籍終了 — inclusive)。適用した"
+        "内側 op の actor は提案者(devadmin)として扱う",
+        23, completed, members_24_without_devmember, canonical_policy, {},
+    )
+    # (3) 原則 2「時点違い」— 提案者(owner)の票が降格で失効する。提案者は admin(all)
+    #     として remove_member の role を保つため proposal-void にはならず、他の owner 2 票で
+    #     完成する
+    p25s = build_entry(25, "propose", owner_id, owner,
+                       propose_payload("remove_member", remove_devmember, EXPIRES), T24, head24)
+    demote_owner1 = propose_payload("change_role", change_payload(owner_id, "admin"), EXPIRES)
+    stale_proposer_steps = [
+        ("propose", owner2_id, demote_owner1, t0 + 25000),                       # 26: 票 [0014]
+    ]
+    stale_proposer = [p25s] + extend(25, p25s["entry_hash_hex"], stale_proposer_steps)
+    p26s = stale_proposer[1]
+    stale_proposer += extend(26, p26s["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p26s), t0 + 26000),                    # 27: 適用 — owner-0001 は admin
+        ("approve", owner2_id, approve_of(p25s), t0 + 27000),                    # 28: 票 {0014} ∪ ({0001} ∩ owners = ∅) = 1 → pending
+    ])
+    members_stale_proposer = dict(members_24, **{owner_id: member_state("admin", "all")})
+    extended_chains["stale-proposer-vote"] = chain_doc(
+        "原則 2 の「時点違い」(提案者側): owner-0001 が remove_member を提案(seq 25、票 1)"
+        "した後、提案経由で admin に降格される(seq 26 提案 → seq 27 適用)。seq 28 の"
+        " owner-0014 の approve は、提案者の票を「今の approve 時点でも owner か」で数え直す"
+        "ため 1 票にしかならず、有効だが適用されない(pending・approvals = [owner-0014])。"
+        "投票時の owner 資格だけで数える誤実装はここで完成させてしまう(Cursor Bugbot 指摘対応)",
+        24, stale_proposer, members_stale_proposer, canonical_policy,
+        pending_map((p25s, "owner", [owner2_id])),
+    )
+    stale_proposer_completed = stale_proposer + extend(28, stale_proposer[-1]["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p25s), t0 + 28000),                    # 29: {0015, 0014} = 2 → 適用
+    ])
+    extended_chains["stale-proposer-vote-completed"] = chain_doc(
+        "stale-proposer-vote の先で owner-0015 が投票(seq 29)し、現 owner の票 {0014, 0015} = 2"
+        " で完成する。適用時の提案者は admin(all)で remove_member(対象 reader)の role を持つ"
+        "ため proposal-void ではなく、devmember は seq 29 で在籍終了",
+        24, stale_proposer_completed,
+        {k: v for k, v in members_stale_proposer.items() if k != devmember_id},
+        canonical_policy, {},
+    )
+    # (4) 原則 2「時点違い」— 投票者(owner)の票が降格で失効する
+    p25a = build_entry(25, "propose", devadmin_id, devadmin,
+                       propose_payload("remove_member", remove_devmember, EXPIRES), T24, head24)
+    stale_approver = [p25a] + extend(25, p25a["entry_hash_hex"], [
+        ("approve", owner_id, approve_of(p25a), t0 + 25000),                     # 26: 票 [0001]
+        ("propose", owner2_id, demote_owner1, t0 + 26000),                       # 27: 票 [0014]
+    ])
+    p27a = stale_approver[2]
+    stale_approver += extend(27, p27a["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p27a), t0 + 27000),                    # 28: 適用 — owner-0001 は admin
+        ("approve", owner2_id, approve_of(p25a), t0 + 28000),                    # 29: {0014} ∪ ({0001} ∩ owners = ∅) = 1 → pending
+    ])
+    extended_chains["stale-approver-vote"] = chain_doc(
+        "原則 2 の「時点違い」(投票者側): dev 専任 admin の提案(seq 25、票 0)に owner-0001 が"
+        "投票(seq 26)した後、owner-0001 が提案経由で admin に降格される(seq 27 → 28)。"
+        "seq 29 の owner-0014 の approve は過去の投票者を「今の approve 時点でも owner か」で"
+        "数え直すため 1 票にしかならず、有効だが適用されない(approvals = [owner-0001, owner-0014] —"
+        " 受理済み approve の actor は記録に残るが票には数えない)",
+        24, stale_approver, members_stale_proposer, canonical_policy,
+        pending_map((p25a, "admin", [owner_id, owner2_id])),
+    )
+    stale_approver_completed = stale_approver + extend(29, stale_approver[-1]["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p25a), t0 + 29000),                    # 30: {0015, 0014} = 2 → 適用
+    ])
+    extended_chains["stale-approver-vote-completed"] = chain_doc(
+        "stale-approver-vote の先で owner-0015 が投票(seq 30)し、現 owner の票 {0014, 0015} = 2"
+        " で完成する(提案者 devadmin は在籍・同鍵・admin{dev, stage} ⊇ {dev} で有効)",
+        24, stale_approver_completed,
+        {k: v for k, v in members_stale_proposer.items() if k != devmember_id},
+        canonical_policy, {},
+    )
+    # (5) proposal-void の 3 形 — 提案者(devadmin)が提案 23 の後に削除 / 別鍵で再追加 /
+    #     reader へ降格され、定足数到達時の適用検査で無効になる
+    remove_devadmin = propose_payload("remove_member", {"target_user_id": devadmin_id}, EXPIRES)
+    proposer_removed = extend(23, head23, [
+        ("propose", owner_id, remove_devadmin, T23),                             # 24: 票 [0001]
+    ])
+    p24r = proposer_removed[0]
+    proposer_removed += extend(24, p24r["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p24r), t0 + 24000),                    # 25: 適用 — devadmin 削除
+        ("approve", owner2_id, approve_of(p23), t0 + 25000),                     # 26: 提案 23 へ 1 票(pending)
+    ])
+    members_without_devadmin = {k: v for k, v in members_24.items() if k != devadmin_id}
+    extended_chains["proposer-removed"] = chain_doc(
+        "提案 23 の提案者(devadmin)を提案経由で削除(seq 24 → 25)した後、owner-0014 が提案 23 へ"
+        " 1 票(seq 26 — 定足数未達なので有効・pending)。次の approve は定足数に達するが提案者が"
+        "現メンバーでないため proposal-void になる(negative の前提)",
+        23, proposer_removed, members_without_devadmin, canonical_policy,
+        pending_map((p23, "admin", [owner2_id])),
+    )
+    void_head = proposer_removed[-1]["entry_hash_hex"]
+    add_es(
+        "authz-approve-proposer-removed", 27, void_head, "approve", owner3_id,
+        approve_of(p23), t0 + 26000, "proposal-void",
+        "定足数到達時の適用検査: 提案者が現メンバーでない提案は完成できない(proposal-void)。承認エントリは無効で提案は pending のまま(withdraw で閉じる)",
+        chain="proposer-removed",
+    )
+    add_es(
+        "authz-approve-expired-precedes-void", 27, void_head, "approve", owner3_id,
+        approve_of(p23), EXPIRES + 1, "proposal-expired",
+        "期限超過 × 提案者不在の複合違反は proposal-expired が先に判定される(approve: proposal-expired → proposal-void)",
+        chain="proposer-removed",
+    )
+    rekeyed_devadmin = make_user(pat(0x3B + 0x10, 32), pat(0x4B + 0x10, 32))
+    users["user-devadmin-0011(rekeyed)"] = rekeyed_devadmin
+    proposer_rekeyed = proposer_removed[:2] + extend(25, proposer_removed[1]["entry_hash_hex"], [
+        ("add_member", owner_id,
+         {"target_user_id": devadmin_id, "enc_pub_hex": rekeyed_devadmin["enc_pub_hex"],
+          "sig_pub_hex": rekeyed_devadmin["sig_pub_hex"], "role": "admin",
+          **scope_fields("listed", [DEV, STAGE])}, t0 + 25000),                  # 26: 別鍵で再追加(admin の add は直接追記可)
+        ("approve", owner2_id, approve_of(p23), t0 + 26000),                     # 27: 提案 23 へ 1 票
+    ])
+    members_rekeyed = dict(members_24)  # devadmin は同 user_id・同 role / scope で在籍(鍵だけ違う)
+    extended_chains["proposer-rekeyed"] = chain_doc(
+        "提案者(devadmin)を削除(seq 24 → 25)し、同じ user_id を**別の鍵**で再追加(seq 26 —"
+        " add_member の admin 付与は ops に無く直接追記できる)した後、owner-0014 が提案 23 へ 1 票"
+        "(seq 27)。提案者は在籍し role も足りるが鍵 FP が提案時と異なるため、完成は proposal-void",
+        23, proposer_rekeyed, members_rekeyed, canonical_policy,
+        pending_map((p23, "admin", [owner2_id])),
+        keys={
+            "user-devadmin-0011": {
+                "note": "seq 26 で再追加された devadmin の新鍵(提案 23 の提案時の鍵とは別)",
+                "enc_sk_seed_hex": pat(0x3B + 0x10, 32).hex(),
+                "sig_sk_seed_hex": pat(0x4B + 0x10, 32).hex(),
+                "enc_pub_hex": rekeyed_devadmin["enc_pub_hex"],
+                "sig_pub_hex": rekeyed_devadmin["sig_pub_hex"],
+                "key_fingerprint_hex": rekeyed_devadmin["fp_hex"],
+            },
+        },
+    )
+    add_es(
+        "authz-approve-proposer-rekeyed", 28, proposer_rekeyed[-1]["entry_hash_hex"], "approve", owner3_id,
+        approve_of(p23), t0 + 27000, "proposal-void",
+        "適用検査: 提案者が提案時と同じ鍵 FP を持たない提案は完成できない(削除 → 別鍵で再追加された同一 user_id)",
+        chain="proposer-rekeyed",
+    )
+    demote_devadmin = propose_payload("change_role", change_payload(devadmin_id, "reader", "listed", [DEV, STAGE]), EXPIRES)
+    proposer_demoted = extend(23, head23, [
+        ("propose", owner_id, demote_devadmin, T23),                             # 24
+    ])
+    p24d = proposer_demoted[0]
+    proposer_demoted += extend(24, p24d["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p24d), t0 + 24000),                    # 25: 適用 — devadmin は reader
+        ("approve", owner2_id, approve_of(p23), t0 + 25000),                     # 26: 提案 23 へ 1 票
+    ])
+    members_demoted = dict(members_24, **{devadmin_id: member_state("reader", "listed", [DEV, STAGE])})
+    extended_chains["proposer-demoted"] = chain_doc(
+        "提案者(devadmin)を提案経由で reader に降格(seq 24 → 25)した後、owner-0014 が提案 23 へ"
+        " 1 票(seq 26)。提案者は在籍・同鍵だが remove_member に必要な role(admin)を失って"
+        "いるため、完成は proposal-void",
+        23, proposer_demoted, members_demoted, canonical_policy,
+        pending_map((p23, "admin", [owner2_id])),
+    )
+    add_es(
+        "authz-approve-proposer-demoted", 27, proposer_demoted[-1]["entry_hash_hex"], "approve", owner3_id,
+        approve_of(p23), t0 + 26000, "proposal-void",
+        "適用検査: 提案者が内側 op に必要な role を失った提案は完成できない(insufficient-role ではなく proposal-void)",
+        chain="proposer-demoted",
+    )
+    # (6) proposal-void → 内側 op の合意規則 の順序: 提案者も対象も居ない
+    void_then_inner = proposer_removed[:2] + extend(25, proposer_removed[1]["entry_hash_hex"], [
+        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),  # 26
+    ])
+    p26v = void_then_inner[-1]
+    void_then_inner += extend(26, p26v["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p26v), t0 + 26000),                    # 27: 適用 — devmember 削除
+        ("approve", owner2_id, approve_of(p23), t0 + 27000),                     # 28: 提案 23 へ 1 票
+    ])
+    extended_chains["proposer-removed-target-gone"] = chain_doc(
+        "proposer-removed の先で、提案 23 の対象(devmember)も別の提案(seq 26 → 27)で削除し、"
+        "owner-0014 が提案 23 へ 1 票(seq 28)。完成時の検査は proposal-void が内側 op の"
+        "合意規則(unknown-target)に先行する(negative の前提)",
+        23, void_then_inner,
+        {k: v for k, v in members_24.items() if k not in (devadmin_id, devmember_id)},
+        canonical_policy, pending_map((p23, "admin", [owner2_id])),
+    )
+    add_es(
+        "authz-approve-void-precedes-inner", 29, void_then_inner[-1]["entry_hash_hex"], "approve", owner3_id,
+        approve_of(p23), t0 + 28000, "proposal-void",
+        "提案者不在 × 対象不在の複合違反は proposal-void が先に判定される(approve: proposal-void → 内側 op の合意規則)",
+        chain="proposer-removed-target-gone",
+    )
+    # (7) 競合する 2 提案: 後の適用が内側 op の規則で失敗し pending に残る
+    competing = extend(24, head24, [
+        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),      # 25: 票 [0001]
+        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),  # 26: 票 []
+    ])
+    p25c, p26c = competing
+    competing += extend(26, p26c["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p26c), t0 + 26000),                    # 27: 票 [0014]
+        ("approve", owner3_id, approve_of(p26c), t0 + 27000),                    # 28: 適用 — devmember 削除
+    ])
+    extended_chains["competing-proposals"] = chain_doc(
+        "同一対象(devmember)の remove_member を owner-0001(seq 25、票 1)と devadmin(seq 26、"
+        "票 0)が並行して提案し、後者が owner 2 票(seq 27 → 28)で先に完成する。前者は pending"
+        " に残り、その完成は内側 op の適用時検査(unknown-target)で失敗する(negative の前提)",
+        24, competing, members_24_without_devmember, canonical_policy,
+        pending_map((p25c, "owner", [])),
+    )
+    add_es(
+        "authz-approve-inner-apply-fails", 29, competing[-1]["entry_hash_hex"], "approve", owner2_id,
+        approve_of(p25c), t0 + 28000, "unknown-target",
+        "定足数到達時に内側 op を適用時点の状態で再検査する: 対象が既に削除済みなら unknown-target で承認エントリは無効、提案は pending のまま(withdraw で閉じる)",
+        chain="competing-proposals",
+    )
+    # (8) 方針の縮小(ops から remove_member を外す)と pending 提案の関係
+    NARROW_OPS = ["grant_server", "set_approval_policy"]
+    narrowed = extend(23, head23, [
+        ("approve", owner2_id, approve_of(p23), T23),                            # 24: 提案 23 へ 1 票
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(NARROW_OPS, 2), EXPIRES), t0 + 24000),  # 25
+    ])
+    p25n = narrowed[1]
+    narrowed += extend(25, p25n["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p25n), t0 + 25000),                    # 26: 適用 — 方針縮小
+    ])
+    narrowed_policy = policy_state(NARROW_OPS, 2)
+    extended_chains["policy-narrowed"] = chain_doc(
+        "提案 23 へ owner-0014 が 1 票(seq 24)した後、方針を提案経由で縮小(ops から remove_member"
+        " / change_role を外す — seq 25 → 26)。pending 提案は各 approve 時点の現方針で判定するため、"
+        "以後の提案 23 への approve は approval-not-required(対象外になった op は直接追記できる)",
+        23, narrowed, members_24, narrowed_policy, pending_map((p23, "admin", [owner2_id])),
+    )
+    narrowed_head = narrowed[-1]["entry_hash_hex"]
+    add_es(
+        "authz-approve-not-required-after-policy-change", 27, narrowed_head, "approve", owner3_id,
+        approve_of(p23), t0 + 26000, "approval-not-required",
+        "方針変更後に対象外となった提案への approve は無効(approval-not-required)。提案は pending のまま",
+        chain="policy-narrowed",
+    )
+    add_es(
+        "authz-approve-duplicate-precedes-not-required", 27, narrowed_head, "approve", owner2_id,
+        approve_of(p23), t0 + 26000, "duplicate-approval",
+        "投票済み × 対象外の複合違反は duplicate-approval が先に判定される(approve: duplicate-approval → approval-not-required)",
+        chain="policy-narrowed",
+    )
+    add_es(
+        "authz-approve-not-required-precedes-expired", 27, narrowed_head, "approve", owner3_id,
+        approve_of(p23), EXPIRES + 1, "approval-not-required",
+        "対象外 × 期限超過の複合違反は approval-not-required が先に判定される(approve: approval-not-required → proposal-expired)",
+        chain="policy-narrowed",
+    )
+    add_es(
+        "authz-propose-narrowed-op", 27, narrowed_head, "propose", owner_id,
+        propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 26000, "approval-not-required",
+        "縮小後の方針で対象外の op の propose は無効(直接追記の経路が開いている)",
+        chain="policy-narrowed",
+    )
+    # (9) required 3 の方針(head 19 = owner 3 名): 到達可能性の不変条件
+    required3 = extend(19, head19, [
+        ("set_approval_policy", owner_id, policy_payload(["grant_server"], 3), T19),  # 20
+    ])
+    extended_chains["policy-required-3"] = chain_doc(
+        "head 19(owner 3 名)で ops = {grant_server} / required 3 の方針を有効化した派生チェーン"
+        "(有効化条件 ≥ の等号側)。remove_member / change_role は ops に無いので直接追記できるが、"
+        "owner 数を 3 未満にする op は到達可能性の不変条件で無効(negative の前提)",
+        19, required3, members_19, policy_state(["grant_server"], 3), {},
+    )
+    req3_head = required3[-1]["entry_hash_hex"]
+    add_es(
+        "authz-remove-owner-quorum-unreachable", 21, req3_head, "remove_member", owner_id,
+        {"target_user_id": owner3_id}, t0 + 20000, "approval-quorum-unreachable",
+        "方針が有効な間、現 owner 数を required_approvals 未満にする remove_member は無効(last-owner-protected の一般化 — 検査は remove_member の列の末尾)",
+        chain="policy-required-3",
+    )
+    add_es(
+        "authz-demote-owner-quorum-unreachable", 21, req3_head, "change_role", owner_id,
+        change_payload(owner3_id, "admin"), t0 + 20000, "approval-quorum-unreachable",
+        "owner から他 role への change_role で owner 数が required 未満になる形も無効(検査は change_role の列の末尾)",
+        chain="policy-required-3",
+    )
+    # (10) 方針のオフ化(required 0)にも四眼が要る。オフ後は propose が無効
+    off = extend(24, head24, [
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload([], 0), EXPIRES), T24),  # 25
+    ])
+    p25o = off[0]
+    off += extend(25, p25o["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p25o), t0 + 25000),                    # 26: 適用 — オフ
+    ])
+    extended_chains["policy-off"] = chain_doc(
+        "方針を提案経由でオフ(required 0 / ops 空 — seq 25 → 26)にした派生チェーン。オフにする"
+        "にも四眼が要る(方針の単調性 (a))。オフ後は対象 op を直接追記でき、propose は無効",
+        24, off, members_24, None, {},
+    )
+    off_head = off[-1]["entry_hash_hex"]
+    add_es(
+        "authz-propose-after-policy-off", 27, off_head, "propose", owner_id,
+        propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 26000, "approval-not-required",
+        "方針オフ後の propose は無効(approval-not-required)",
+        chain="policy-off",
+    )
+
+    # --- 許容側(valid_appends)。chain 指定つきは派生チェーンの末尾へ接続する -----------
+    def append_case(name, seq, prev_hex, op, actor_id, payload, ts, members, note,
+                    policy="canonical", pending=None, chain=None, environments=None,
+                    checkpoints=None):
+        case = {
+            "name": name,
+            "entry": build_entry(seq, op, actor_id, users[actor_id], payload, ts, prev_hex),
+            "expected_members": members,
+            "expected_environments": environments if environments is not None else base_environments,
+            "expected_server_grants": [],
+            "expected_policy": canonical_policy if policy == "canonical" else policy,
+            "expected_pending": pending if pending is not None else {},
+            "note": note,
+        }
+        if chain is not None:
+            case["chain"] = chain
+        if checkpoints is not None:
+            case["expected_checkpoints"] = checkpoints
+        return case
+
+    def members_with(base, **changes):
+        out = dict(base)
+        for k, v in changes.items():
+            if v is None:
+                out.pop(k, None)
+            else:
+                out[k] = v
+        return out
+
+    dev_scoped_checkpoint = checkpoint_env_entry(DEV, 2, 1)
+    valid_appends += [
+        append_case(
+            "listed-admin-adds-in-scope", 20, head19, "add_member", devadmin_id,
+            add_payload(newcomer_id, newcomer, "member", "listed", [DEV]), T19,
+            members_with(members_19, **{newcomer_id: member_state("member", "listed", [DEV])}),
+            "原則 1 の許容側: dev 専任 admin は自分の scope の部分集合を付与できる(削除済み member の鍵の別 user_id での再利用も §6.2 の禁止範囲外)",
+            policy=None,
+        ),
+        append_case(
+            "listed-admin-adds-empty-listed", 20, head19, "add_member", devadmin_id,
+            add_payload(newcomer_id, newcomer, "reader", "listed", []), T19,
+            members_with(members_19, **{newcomer_id: member_state("reader", "listed", [])}),
+            "listed の空リストは有効(= どの環境の DEK も受け取らないメンバー — 管理のみ・後で入れる予定の表現。§6.2 裁定 B (3))。空集合はどの scope にも包含される",
+            policy=None,
+        ),
+        append_case(
+            "owner-adds-empty-listed-member", 20, head19, "add_member", owner_id,
+            add_payload(newcomer_id, newcomer, "member", "listed", []), T19,
+            members_with(members_19, **{newcomer_id: member_state("member", "listed", [])}),
+            "owner による listed{} の member 追加も有効(all と listed{} は別の状態)",
+            policy=None,
+        ),
+        append_case(
+            "listed-admin-removes-in-scope", 20, head19, "remove_member", devadmin_id,
+            remove_devmember, T19, members_with(members_19, **{devmember_id: None}),
+            "原則 1 の許容側(remove): 対象の現 scope {dev, stage} ⊆ actor scope なら dev 専任 admin が消せる(縮小分の rotate 義務を履行できる)",
+            policy=None,
+        ),
+        append_case(
+            "listed-admin-demotes-and-narrows", 20, head19, "change_role", devadmin_id,
+            change_payload(devmember_id, "reader", "listed", [DEV]), T19,
+            members_with(members_19, **{devmember_id: member_state("reader", "listed", [DEV])}),
+            "原則 1 の許容側(role と scope が同時に変わる): 旧 ∪ 新 = {dev, stage} ⊆ actor scope",
+            policy=None,
+        ),
+        append_case(
+            "listed-admin-demotes-in-scope", 20, head19, "change_role", devadmin_id,
+            change_payload(devmember_id, "reader", "listed", [DEV, STAGE]), T19,
+            members_with(members_19, **{devmember_id: member_state("reader", "listed", [DEV, STAGE])}),
+            "原則 1 の許容側(scope 不変の降格): 旧 ∪ 新 = {dev, stage} ⊆ actor scope",
+            policy=None,
+        ),
+        append_case(
+            "owner-narrows-all-member", 20, head19, "change_role", owner_id,
+            change_payload(allmember_id, "member", "listed", [PROD]), T19,
+            members_with(members_19, **{allmember_id: member_state("member", "listed", [PROD])}),
+            "all の actor は all △ listed{prod} = U \\ {prod} を包含する(all の対象を listed にできるのは all の actor だけ — §6.2 の集合代数)。縮小分の rotate 義務は §7",
+            policy=None,
+        ),
+        append_case(
+            "listed-member-rotates-in-scope", 20, head19, "rotate_epoch", devmember_id,
+            rotate_payload(DEV, 3), T19, members_19,
+            "listed の member は scope 内の環境を rotate できる(§6.2 環境対象 op の許容側)",
+            policy=None, environments=dict(base_environments, **{DEV: "3"}),
+        ),
+        append_case(
+            "listed-member-checkpoints-in-scope", 20, head19, "checkpoint", devmember_id,
+            checkpoint_payload([dev_scoped_checkpoint]), T19, members_19,
+            "listed の member は scope 内の環境のタプルだけを公証できる(環境集合は部分集合でよい — §6.2)",
+            policy=None,
+            checkpoints={DEV: expected_checkpoint(20, dev_scoped_checkpoint)},
+        ),
+        append_case(
+            "owner-withdraws-others-proposal", 22, head21, "withdraw", owner2_id,
+            approve_of(p21), T21, members_19,
+            "withdraw は提案者でない owner もできる(seq 21 の owner-0001 の提案を owner-0014 が閉じる)",
+        ),
+        append_case(
+            "proposer-withdraws-own-proposal", 24, head23, "withdraw", devadmin_id,
+            approve_of(p23), T23, members_24,
+            "提案者(非 owner)は自分の提案を withdraw できる",
+        ),
+        append_case(
+            "add-member-under-policy", 25, head24, "add_member", owner_id,
+            add_payload(newcomer_id, newcomer, "member"), T24,
+            members_with(members_24, **{newcomer_id: member_state("member", "all")}),
+            "方針が有効でも、ops に無く owner を確立しない add_member は直接追記できる(原則 2: required = 1 の op は通常の role 規則のみ)",
+        ),
+        append_case(
+            "rotate-under-policy", 25, head24, "rotate_epoch", devadmin_id,
+            rotate_payload(DEV, 3), T24, members_24,
+            "rotate_epoch は方針の対象になりえない(インシデント対応を遅らせない)ため、方針下でも直接追記できる",
+            environments=dict(base_environments, **{DEV: "3"}),
+        ),
+    ]
+    propose_grant = build_entry(25, "propose", owner_id, owner,
+                                propose_payload("grant_server", grant_payload, EXPIRES), T24, head24)
+    propose_by_admin = build_entry(25, "propose", devadmin_id, devadmin,
+                                   propose_payload("change_role", change_payload(devmember_id, "member", "listed", [DEV]), EXPIRES),
+                                   T24, head24)
+    valid_appends += [
+        {
+            "name": "propose-grant-server-by-owner",
+            "entry": propose_grant,
+            "expected_members": members_24,
+            "expected_environments": base_environments,
+            "expected_server_grants": [],
+            "expected_policy": canonical_policy,
+            "expected_pending": pending_map((propose_grant, "owner", [])),
+            "note": "owner による grant_server の提案は受理され pending に載る(提案者の票 1)。内側 payload は grant_server の正規化 payload_bytes(3 段入れ子 LP の lease_policy を含む)の入れ子",
+        },
+        {
+            "name": "propose-by-listed-admin-in-scope",
+            "entry": propose_by_admin,
+            "expected_members": members_24,
+            "expected_environments": base_environments,
+            "expected_server_grants": [],
+            "expected_policy": canonical_policy,
+            "expected_pending": pending_map((propose_by_admin, "admin", [])),
+            "note": "提案者は内側 op を通常の規則で実行できる role でよい(dev 専任 admin が scope 内の change_role を提案 — 票は 0)",
+        },
+        append_case(
+            "direct-remove-after-policy-narrowed", 27, narrowed_head, "remove_member", devadmin_id,
+            remove_devmember, t0 + 26000, members_24_without_devmember,
+            "方針縮小後、ops から外れた remove_member は直接追記できる(提案 23 は pending のまま残る — 完成は unknown-target で失敗する)",
+            policy=narrowed_policy, pending=pending_map((p23, "admin", [owner2_id])), chain="policy-narrowed",
+        ),
+        append_case(
+            "direct-remove-after-policy-off", 27, off_head, "remove_member", devadmin_id,
+            remove_devmember, t0 + 26000, members_24_without_devmember,
+            "方針オフ後は対象だった op を直接追記できる",
+            policy=None, chain="policy-off",
+        ),
+        append_case(
+            "re-enable-policy-after-off", 27, off_head, "set_approval_policy", owner_id,
+            policy_payload(POLICY_OPS, 2), t0 + 26000, members_24,
+            "オフの方針は owner 1 名の直接追記で再び有効化できる(オフ = 方針なしと同じ扱い)",
+            policy=canonical_policy, chain="policy-off",
+        ),
+    ]
+
+    negatives += authz_cases[es_start:]
+
+    def key_record(user: dict, enc_prefix: int, sig_prefix: int) -> dict:
+        return {
+            "enc_sk_seed_hex": pat(enc_prefix, 32).hex(),
+            "sig_sk_seed_hex": pat(sig_prefix, 32).hex(),
+            "enc_pub_hex": user["enc_pub_hex"],
+            "sig_pub_hex": user["sig_pub_hex"],
+            "key_fingerprint_hex": user["fp_hex"],
+        }
+
     write(
         "chain-entries.json",
         {
-            "description": "CRYPTO_SPEC §6: チェーンエントリの正規化バイト列と Ed25519 署名・ハッシュ連鎖のベクター",
+            "description": "CRYPTO_SPEC §6: チェーンエントリの正規化バイト列と Ed25519 署名・ハッシュ連鎖のベクター(2026-09-14 ES + PF1 で全再生成 — 正規チェーンは 24 エントリ)",
             "canonicalization": {
                 "signed_bytes": "LP(suite, seq, prev_hash_hex, op, actor_user_id, actor_key_fingerprint_hex, payload_bytes, timestamp_ms)",
                 "payload_bytes": "LP(payload_field_order[op] の順のフィールド列)を 1 フィールドとして埋め込む",
@@ -1631,6 +2989,9 @@ def gen_chain_entries():
                 "entry_hash": "SHA-256(entry_bytes)。次エントリの prev_hash になる",
                 "binary_encoding": "prev_hash / 公開鍵 / FP / 署名は hex 小文字文字列として LP に載せる",
                 "payload_field_order": PAYLOAD_FIELD_ORDER,
+                "member_scope": "add_member / change_role の末尾 2 フィールド: scope_kind(\"all\" | \"listed\")と scope_environments_lp_hex(environment_id リストの LP の hex 小文字 — grant_server の scope_environments と同じ入れ子 LP。順序は署名対象。生成は昇順 SHOULD・検証は集合)。構造規則: all ⇒ 空リスト必須・256 要素以下・重複 id は無効・listed の空リストは有効(§6.2 — 2026-09-14 ES)。genesis は scope を持たず作成者は構造的に all → 要レビュー",
+                "approval_policy": "set_approval_policy = LP(ops_lp_hex, required_approvals)。ops_lp_hex = op 名リストの LP の hex(入れ子 LP。順序は署名対象。生成は昇順 SHOULD・検証は集合)。ops ⊆ {grant_server, revoke_server, remove_member, change_role, add_member, set_approval_policy}、required_approvals は 0(オフ)または 2 以上(§6.2 — 2026-09-14 PF1)→ 要レビュー",
+                "proposal": "propose = LP(inner_op, inner_payload_lp_hex, expires_at_ms)。inner_payload_lp_hex = 内側 op の payload_bytes(PAYLOAD_FIELD_ORDER[inner_op] の順の LP — §6.1 の入れ子 LP)の hex 小文字(内側 op が scope / ops / lease_policy を持てば 2 段以上の入れ子)。内側 op は propose / approve / withdraw 以外(再帰なし — 構造段で拒否)。approve / withdraw = LP(proposal_hash_hex) — 提案エントリの entry_hash(hex 小文字 64)→ 要レビュー",
                 "key_fingerprint": "SHA-256(enc_pub(32B) || sig_pub(32B)) の先頭 16 バイト(固定長のため素の連結)",
                 "server_key_fingerprint": "SHA-256(server_enc_pub(32B)) の先頭 16 バイト(サーバーは enc 鍵のみ。§9)→ 要レビュー",
                 "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
@@ -1640,27 +3001,16 @@ def gen_chain_entries():
                 "env_values_digest": "values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m)))、v_j = LP(variable_id, version, value_sig_hash_hex)(variable_id の UTF-8 バイト昇順。active 変数のみ — tombstone はマニフェスト側 §4.3 が捕捉)。空集合も有効。単体ベクターは values_digests セクション → 要レビュー",
             },
             "keys": {
-                "user-owner-0001": {
-                    "enc_sk_seed_hex": pat(0x10, 32).hex(),
-                    "sig_sk_seed_hex": pat(0x20, 32).hex(),
-                    "enc_pub_hex": owner["enc_pub_hex"],
-                    "sig_pub_hex": owner["sig_pub_hex"],
-                    "key_fingerprint_hex": owner["fp_hex"],
-                },
-                "user-member-0002": {
-                    "enc_sk_seed_hex": pat(0x30, 32).hex(),
-                    "sig_sk_seed_hex": pat(0x40, 32).hex(),
-                    "enc_pub_hex": member["enc_pub_hex"],
-                    "sig_pub_hex": member["sig_pub_hex"],
-                    "key_fingerprint_hex": member["fp_hex"],
-                },
-                "user-admin-0003": {
-                    "enc_sk_seed_hex": pat(0x50, 32).hex(),
-                    "sig_sk_seed_hex": pat(0x60, 32).hex(),
-                    "enc_pub_hex": admin["enc_pub_hex"],
-                    "sig_pub_hex": admin["sig_pub_hex"],
-                    "key_fingerprint_hex": admin["fp_hex"],
-                },
+                owner_id: key_record(owner, 0x10, 0x20),
+                member_id: key_record(member, 0x30, 0x40),
+                admin_id: key_record(admin, 0x50, 0x60),
+                # 2026-09-14 ES / PF1 で加わったメンバー(seq 13〜19)
+                devmember_id: key_record(devmember, 0x3A, 0x4A),
+                devadmin_id: key_record(devadmin, 0x3B, 0x4B),
+                prodreader_id: key_record(prodreader, 0x3C, 0x4C),
+                allmember_id: key_record(allmember, 0x3D, 0x4D),
+                owner2_id: key_record(owner2, 0x3E, 0x4E),
+                owner3_id: key_record(owner3, 0x3F, 0x4F),
             },
             "server_key": {
                 "enc_sk_seed_hex": pat(0x90, 32).hex(),
@@ -2235,22 +3585,25 @@ def gen_value_signature():
         "enc_pub_hex": rejoined["enc_pub_hex"],
         "sig_pub_hex": rejoined["sig_pub_hex"],
         "role": "member",
+        **scope_fields("all", []),
     }
+    head_seq = len(entries)  # 正規チェーンのヘッド(2026-09-14 ES + PF1 で 24)
+    readd_seq = head_seq + 1
     owner_keys = chain["keys"][owner_id]
     owner_fp = owner_keys["key_fingerprint_hex"]
     readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
-    readd_ts = 1754006400000 + 12000
+    readd_ts = 1754006400000 + 1000 * head_seq
     readd_signed = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
     )
     readd_sig = signer_of(owner_id).sign(readd_signed)
     readd_entry_bytes = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
          readd_sig.hex()]
     )
     tenure_extension = {
-        "note": "key-from-other-tenure 用の派生チェーン: 正規 12 エントリの後に seq 13 で "
-                "user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。"
+        "note": "key-from-other-tenure 用の派生チェーン: 正規チェーン(24 エントリ)の後に "
+                "seq 25 で user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。"
                 "chain-entries.json 本体は変更しない",
         "rejoined_member": {
             "user_id": member_id,
@@ -2261,9 +3614,9 @@ def gen_value_signature():
             "key_fingerprint_hex": rejoined["fp_hex"],
         },
         "entry": {
-            "seq": 13,
+            "seq": readd_seq,
             "suite": suite,
-            "prev_hash_hex": head_hash(12),
+            "prev_hash_hex": head_hash(head_seq),
             "op": "add_member",
             "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
             "payload": readd_payload,
@@ -2426,9 +3779,9 @@ def gen_value_signature():
         ),
         rule_negative(
             "head-beyond-local-seq", admin_id, "env-prod-0001", 2, "var-rule-0004", 1,
-            pat(0xB1, 12), "rule-dummy", "", sha256(b"future-head").hex(), 13,
+            pat(0xB1, 12), "rule-dummy", "", sha256(b"future-head").hex(), len(entries) + 1,
             "chain-head-future",
-            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
             "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。この理由コードは"
             "「即時拒否せず再同期を試みる」分岐の入口を固定する",
         ),
@@ -2463,10 +3816,10 @@ def gen_value_signature():
         rule_negative(
             "key-from-other-tenure", member_id, "env-prod-0001", 2, "var-rule-0004", 1,
             pat(0xB6, 12), "rule-dummy", "",
-            tenure_extension["entry"]["entry_hash_hex"], 13,
+            tenure_extension["entry"]["entry_hash_hex"], readd_seq,
             "writer-key-mismatch-at-head",
-            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
-            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛 — 同じ鍵の dedupe で"
+            "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛 — 同じ鍵の dedupe で"
             "tenure を消した実装はここで落ちる)",
             chain_ref="tenure-extension",
         ),
@@ -2524,13 +3877,50 @@ def gen_value_signature():
         ),
     ]
 
+    # --- 3′ スコープの認可時点検査(2026-09-14 ES — CRYPTO_SPEC §6.3): 宣言ヘッド時点の
+    # writer の scope が当該 environment_id を含むこと。role 検査(3)の直後・エポック整合(4)
+    # の前。listed の writer = user-devmember-0010(head 19 時点 member listed{dev, stage}、
+    # head 22 以降 reader listed{dev})
+    devmember_id = "user-devmember-0010"
+    vectors.append(
+        make_value(
+            "listed-writer-in-scope", devmember_id, "env-dev-0002", 2, "var-dev-scoped-0006", 1,
+            pat(0xAC, 12), "dev-scoped-dummy-v1", "", 19,
+            "listed の writer(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002)"
+            "への push は通る(3′ の許容側)",
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "writer-environment-out-of-scope", devmember_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xBC, 12), "rule-dummy", "", head_hash(19), 19,
+            "writer-environment-out-of-scope-at-head",
+            "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 への"
+            "署名は、role(member 以上)を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する",
+        ),
+        rule_negative(
+            "writer-role-precedes-scope", devmember_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xBD, 12), "rule-dummy", "", head_hash(24), 24,
+            "writer-role-insufficient-at-head",
+            "head 24 時点の user-devmember-0010 は reader listed{dev}(seq 22 の適用)。role 不足 × scope 外の"
+            "複合違反は role 検査(3)が scope 検査(3′)に先行する",
+        ),
+        rule_negative(
+            "writer-scope-precedes-epoch", devmember_id, "env-prod-0001", 1, "var-rule-0004", 1,
+            pat(0xBE, 12), "rule-dummy", "", head_hash(19), 19,
+            "writer-environment-out-of-scope-at-head",
+            "scope 外 × 旧エポック(1 — head 19 の現エポックは 2)の複合違反は scope 検査(3′)が"
+            "エポック整合(4)に先行する",
+        ),
+    ]
+
     write(
         "value-signature.json",
         {
             "description": "CRYPTO_SPEC §4.1: 値の書き込み署名(Ed25519)。value_signed_bytes = LP(\"<suite>/value-sig\", project_id, environment_id, epoch, variable_id, version, nonce_hex, ciphertext_hex, prev_value_sig_hash_hex, writer_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵・DEK は chain-entries.json の正規 12 エントリチェーンを参照",
             "signed_fields_order": VALUE_SIG_FIELDS_ORDER,
             "binary_encoding": "nonce / ciphertext / ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / version / chain_head_seq)は 10 進文字列化",
-            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、writer 鍵 = keys、DEK = environment_deks(ciphertext は実 AES-GCM 暗号文で、AAD は §4 の LP)",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、writer 鍵 = keys、DEK = environment_deks(ciphertext は実 AES-GCM 暗号文で、AAD は §4 の LP)。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に writer-environment-out-of-scope-at-head を追加)",
             "extra_keys": {
                 "ghost": {
                     "note": "writer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
@@ -2899,21 +4289,24 @@ def gen_metadata_signature():
         "enc_pub_hex": rejoined["enc_pub_hex"],
         "sig_pub_hex": rejoined["sig_pub_hex"],
         "role": "member",
+        **scope_fields("all", []),
     }
+    head_seq = len(entries)  # 正規チェーンのヘッド(2026-09-14 ES + PF1 で 24)
+    readd_seq = head_seq + 1
     owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
     readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
-    readd_ts = 1754006400000 + 12000
+    readd_ts = 1754006400000 + 1000 * head_seq
     readd_signed = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
     )
     readd_sig = signer_of(owner_id).sign(readd_signed)
     readd_entry_bytes = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
          readd_sig.hex()]
     )
     tenure_extension = {
         "note": "key-from-other-tenure 用の派生チェーン(value-signature.json と同一内容): "
-                "正規 12 エントリの後に seq 13 で user-member-0002 を新鍵で re-add する"
+                "正規チェーン(24 エントリ)の後に seq 25 で user-member-0002 を新鍵で re-add する"
                 "(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
         "rejoined_member": {
             "user_id": member_id,
@@ -2924,9 +4317,9 @@ def gen_metadata_signature():
             "key_fingerprint_hex": rejoined["fp_hex"],
         },
         "entry": {
-            "seq": 13,
+            "seq": readd_seq,
             "suite": suite,
-            "prev_hash_hex": head_hash(12),
+            "prev_hash_hex": head_hash(head_seq),
             "op": "add_member",
             "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
             "payload": readd_payload,
@@ -3086,9 +4479,9 @@ def gen_metadata_signature():
         ),
         rule_negative(
             "head-beyond-local-seq", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
-            "active", 1, "", admin_id, sha256(b"future-head").hex(), 13,
+            "active", 1, "", admin_id, sha256(b"future-head").hex(), len(entries) + 1,
             "chain-head-future",
-            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
             "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。値署名と同じ有界再同期の"
             "入口が流用されることを固定する",
         ),
@@ -3116,10 +4509,10 @@ def gen_metadata_signature():
         rule_negative(
             "key-from-other-tenure", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
             "active", 1, "", member_id,
-            tenure_extension["entry"]["entry_hash_hex"], 13,
+            tenure_extension["entry"]["entry_hash_hex"], readd_seq,
             "author-key-mismatch-at-head",
-            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
-            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
+            "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
             chain_ref="tenure-extension",
         ),
         rule_negative(
@@ -3351,6 +4744,40 @@ def gen_metadata_signature():
         ),
     ]
 
+    # --- 3′ スコープの認可時点検査(2026-09-14 ES — §6.3): author の scope が当該環境を含む
+    # こと。変数メタ・環境メタの両方が環境対象。role 検査(3)の直後
+    devmember_id = "user-devmember-0010"
+    vectors.append(
+        make_statement(
+            "listed-author-in-scope", "variable", "env-dev-0002", "var-dev-scoped-0006", "DEV_SCOPED",
+            "active", 1, "", devmember_id, 19,
+            "listed の author(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002)"
+            "の変数ステートメントは通る(3′ の許容側)",
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "author-environment-out-of-scope", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", devmember_id, head_hash(19), 19,
+            "author-environment-out-of-scope-at-head",
+            "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 の"
+            "変数ステートメントは role を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する",
+        ),
+        rule_negative(
+            "env-author-environment-out-of-scope", "environment", "env-prod-0001", None, "Production Renamed",
+            "active", 1, "", devmember_id, head_hash(19), 19,
+            "author-environment-out-of-scope-at-head",
+            "環境メタステートメント(rename)も環境対象: scope 外の環境への署名は 3′ で拒否する",
+        ),
+        rule_negative(
+            "author-role-precedes-scope", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", devmember_id, head_hash(24), 24,
+            "author-role-insufficient-at-head",
+            "head 24 時点の user-devmember-0010 は reader listed{dev}。role 不足 × scope 外の複合違反は"
+            " role 検査(3)が scope 検査(3′)に先行する",
+        ),
+    ]
+
     write(
         "metadata-signature.json",
         {
@@ -3359,7 +4786,7 @@ def gen_metadata_signature():
             "env_signed_fields_order": ENV_META_SIG_FIELDS_ORDER,
             "var_v2_signed_fields_order": VAR_META_SIG_V2_FIELDS_ORDER,
             "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(meta_version / chain_head_seq)は 10 進文字列化。name は UTF-8 バイト列を byte-exact に束縛(NFC 正規化は署名前のクライアントの責務 — §4.2)",
-            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、author 鍵 = keys",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、author 鍵 = keys。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に author-environment-out-of-scope-at-head を追加)",
             "no_epoch_anchor": "メタステートメントはエポックアンカーを持たない(§4.2)。値署名の epoch-not-current-at-head / environment-not-created-at-head に相当する検証規則は存在せず、前進 meta_version への注入は v1 未検出の既知残余(§14.3-5)。var-meta-head-before-env-create が positive であることがこの非対称の固定",
             "layout_v2": "CRYPTO_SPEC §4.2 レイアウト v2(0.8-draft — セッション 46 裁定 CR / CS): 変数メタステートメントの第 2 レイアウト。var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。context の layout_version(省略 = 1)がワイヤの layoutVersion に対応し、どのレイアウトで signed_bytes を再計算するかを選択する。検証者は署名検証より前にサポート範囲を検査し、超過は型付きエラー(未対応レイアウト)で拒否する(署名不正に潰さない誠実な破壊様式 — 本件は拒否ケースに参照期待値が存在しないため規約 21 の分担どおりハーネス側で固定)。status は 3 値(active | deleted | declared — declared は v2 限定)、var_type は閉集合(\"\" | string | number | boolean | url)、required は明示必須(\"true\" | \"false\")。環境メタステートメントは v1 のまま(本改訂の対象外)。既存 v1 ベクターは 1 バイトも不変(追記で拡張 — §11)",
             "extra_keys": {
@@ -3506,6 +4933,10 @@ def gen_env_manifest():
         api_v2_hash, admin_id, 12)
     legacy_ctx, legacy_hash = meta_hash(
         "variable", env_id, "var-legacy-0002", "LEGACY_TOKEN", "active", 1, "", member_id, 4)
+    # env-dev-0002 の環境メタ(作成複合の同梱 — 宣言ヘッドは追記前の現ヘッド seq 7。
+    # listed の issuer の scope 内マニフェスト(3′ の許容側)の env_meta 束縛先)
+    dev_env_meta_ctx, dev_env_meta_v1_hash = meta_hash(
+        "environment", "env-dev-0002", None, "Development", "active", 1, "", admin_id, 7)
 
     def digest_entry(variable_id, status, meta_version, meta_sig_hash_hex):
         return {
@@ -3742,21 +5173,24 @@ def gen_env_manifest():
         "enc_pub_hex": rejoined["enc_pub_hex"],
         "sig_pub_hex": rejoined["sig_pub_hex"],
         "role": "member",
+        **scope_fields("all", []),
     }
+    head_seq = len(entries)  # 正規チェーンのヘッド(2026-09-14 ES + PF1 で 24)
+    readd_seq = head_seq + 1
     owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
     readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
-    readd_ts = 1754006400000 + 12000
+    readd_ts = 1754006400000 + 1000 * head_seq
     readd_signed = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
     )
     readd_sig = signer_of(owner_id).sign(readd_signed)
     readd_entry_bytes = lp_encode(
-        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+        [suite, readd_seq, head_hash(head_seq), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
          readd_sig.hex()]
     )
     tenure_extension = {
         "note": "key-from-other-tenure 用の派生チェーン(value-signature.json / "
-                "metadata-signature.json と同一内容): 正規 12 エントリの後に seq 13 で "
+                "metadata-signature.json と同一内容): 正規チェーン(24 エントリ)の後に seq 25 で "
                 "user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。"
                 "chain-entries.json 本体は変更しない",
         "rejoined_member": {
@@ -3768,9 +5202,9 @@ def gen_env_manifest():
             "key_fingerprint_hex": rejoined["fp_hex"],
         },
         "entry": {
-            "seq": 13,
+            "seq": readd_seq,
             "suite": suite,
-            "prev_hash_hex": head_hash(12),
+            "prev_hash_hex": head_hash(head_seq),
             "op": "add_member",
             "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
             "payload": readd_payload,
@@ -3912,9 +5346,9 @@ def gen_env_manifest():
         ),
         rule_negative(
             "head-beyond-local-seq", env_id, 2, 4, [], 1, env_meta_v1_hash,
-            mv3["signed_bytes_sha256_hex"], admin_id, sha256(b"future-head").hex(), 13,
+            mv3["signed_bytes_sha256_hex"], admin_id, sha256(b"future-head").hex(), len(entries) + 1,
             "chain-head-future",
-            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
             "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)",
         ),
         rule_negative(
@@ -3934,10 +5368,10 @@ def gen_env_manifest():
         rule_negative(
             "key-from-other-tenure", env_id, 2, 4, [], 1, env_meta_v1_hash,
             mv3["signed_bytes_sha256_hex"], member_id,
-            tenure_extension["entry"]["entry_hash_hex"], 13,
+            tenure_extension["entry"]["entry_hash_hex"], readd_seq,
             "issuer-key-mismatch-at-head",
-            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
-            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
+            "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
             chain_ref="tenure-extension",
         ),
         rule_negative(
@@ -4094,6 +5528,42 @@ def gen_env_manifest():
         ),
     ]
 
+    # --- 3′ スコープの認可時点検査(2026-09-14 ES — §6.3): issuer の scope が当該環境を含む
+    # こと。role 検査(3)の直後・prev / エポック整合の前
+    devmember_id = "user-devmember-0010"
+    vectors.append(
+        make_manifest(
+            "manifest-listed-issuer-in-scope", "env-dev-0002", 2, 1, [], 1, dev_env_meta_v1_hash, "",
+            devmember_id, 19,
+            "listed の issuer(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002 —"
+            "エポック 2・manifestVersion 1・変数空集合)のマニフェストは通る(3′ の許容側。env-dev の"
+            " checkpoint タプルは正規チェーンに無いため strict 経路)",
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "issuer-environment-out-of-scope", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], devmember_id, head_hash(19), 19,
+            "issuer-environment-out-of-scope-at-head",
+            "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 の"
+            "マニフェストは role を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する",
+        ),
+        rule_negative(
+            "issuer-role-precedes-scope", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], devmember_id, head_hash(24), 24,
+            "issuer-role-insufficient-at-head",
+            "head 24 時点の user-devmember-0010 は reader listed{dev}。role 不足 × scope 外の複合違反は"
+            " role 検査(3)が scope 検査(3′)に先行する",
+        ),
+        rule_negative(
+            "issuer-scope-precedes-prev", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            "", devmember_id, head_hash(19), 19,
+            "issuer-environment-out-of-scope-at-head",
+            "scope 外 × prev の形違反(manifestVersion 4 で prev 空)の複合違反は scope 検査(3′)が"
+            " prev 連鎖(§4.3 (1))に先行する",
+        ),
+    ]
+
     write(
         "env-manifest.json",
         {
@@ -4103,7 +5573,7 @@ def gen_env_manifest():
                 "variable_id", "status", "meta_version", "meta_sig_hash_hex",
             ],
             "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
-            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に issuer-environment-out-of-scope-at-head を追加)",
             "composite_epoch_rule": "エポック整合(§4.3 (2) — 2026-08-27 セッション 33 = PR-F3b でチェックポイント束縛へ改訂。旧 H+1 例外は廃止): 検証済みチェーン上に当該 (environment_id, manifest_version) の checkpoint タプルが存在する場合、その (epoch, manifest_sig_hash) と完全一致しなければならない(strict は代替経路にならない — checkpoint-binding-mismatch が negative)。同座標に (epoch, manifest_sig_hash) の異なるタプルが併存すれば equivocation の硬い証拠として拒否(checkpoint-equivocation)。タプルが存在しない場合のみ宣言ヘッド時点の現エポックとの strict 一致(epoch-not-current-at-head / environment-not-created-at-head が negative。複合発行形の manifest-v1-create / manifest-rotate は chain-entries.json の checkpoint-boundary-* 派生チェーンに対する positive で、checkpoint を欠くチェーンに対しては composite-head-without-checkpoint-* の negative)。さらにチェックポイント整合の規則 1(§6.3): manifestVersion・epoch は当該環境の最新 checkpoint 以上(checkpoint-regressed が negative)",
             "statements": {
                 "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
@@ -4112,6 +5582,7 @@ def gen_env_manifest():
                 "api_key_v2_rename": {"context": api_v2_ctx, "signed_bytes_sha256_hex": api_v2_hash},
                 "api_key_v3_delete": {"context": api_v3_ctx, "signed_bytes_sha256_hex": api_v3_hash},
                 "legacy_v1": {"context": legacy_ctx, "signed_bytes_sha256_hex": legacy_hash},
+                "dev_env_meta_v1": {"context": dev_env_meta_ctx, "signed_bytes_sha256_hex": dev_env_meta_v1_hash},
             },
             "extra_keys": {
                 "ghost": {
@@ -4222,7 +5693,7 @@ def gen_checkpoint_boundary_chains():
             "values_digest_hex": tuple_["values_digest_hex"],
         }
 
-    members = {owner_id: "owner", member_id: "member"}
+    members = {owner_id: member_state("owner", "all"), member_id: member_state("member", "all")}
     chain["extended_chains"]["checkpoint-boundary-create"] = {
         "description": (
             "環境作成複合の境界 checkpoint(AUTH_SPEC §12-4: create = H+1、checkpoint = "
@@ -4512,9 +5983,13 @@ def gen_invite_accept_signature():
 #   (RFC 4253 §6.6 / RFC 8709)。SSH ワイヤ形式の長さプレフィックスは §2.1 の LP と
 #   同じ uint32-BE(バイト列をそのまま載せる)
 
+# 2026-09-14(CRYPTO_SPEC 0.11-draft §6.5 — ES): 発行文の末尾に付与予定の scope
+# (scope_kind, scope_environments_lp_hex — §6.2 と同じ符号化)を追加。旧 10 フィールド
+# 形式は互換経路を持たない(negative scope-dropped)
 INVITE_ISSUE_FIELDS_ORDER = [
     "domain", "invite_id", "project_id", "link_pub_hex", "head_hash_hex", "head_seq", "role",
     "inviter_user_id", "inviter_enc_pub_hex", "inviter_sig_pub_hex",
+    "scope_kind", "scope_environments_lp_hex",
 ]
 
 
@@ -4553,11 +6028,22 @@ def gen_invite_link():
         "inviter_user_id": "user-owner-0001",
         "inviter_enc_pub_hex": inviter["enc_pub_hex"],
         "inviter_sig_pub_hex": inviter["sig_pub_hex"],
+        **scope_fields("all", []),
     }
     base_signed = invite_issue_signed_bytes(base_ctx)
     base_sig = inviter["sig_sk"].sign(base_signed)
     tampered = bytearray(base_sig)
     tampered[-1] ^= 0x01
+    listed_envs = ["env-dev-0002", "env-stage-0003"]
+    listed_ctx = dict(base_ctx, invite_id="invite-0003", **scope_fields("listed", listed_envs))
+    listed_signed = invite_issue_signed_bytes(listed_ctx)
+    listed_sig = inviter["sig_sk"].sign(listed_signed)
+    # 旧 10 フィールド形式(scope 無し)のバイト列に対する正規署名の検証 → 失敗
+    dropped_signed = lp_encode([base_ctx[k] for k in INVITE_ISSUE_FIELDS_ORDER[:-2]])
+    flat_signed = lp_encode(
+        [listed_ctx[k] for k in INVITE_ISSUE_FIELDS_ORDER[:-1]]
+        + ["".join(listed_envs).encode("utf-8").hex()]
+    )
 
     def negative(name, overrides, note, signature=None):
         ctx = dict(base_ctx, **overrides)
@@ -4585,6 +6071,40 @@ def gen_invite_link():
         negative("transplant-inviter", {"inviter_user_id": "user-member-0002"}, "招待者 user_id の付け替えは同一鍵でも検証に失敗する"),
         negative("wrong-signer-key", {}, "inviter_sig_pub 以外の鍵で作った署名は検証に失敗する(署名者不一致)", signature=member["sig_sk"].sign(base_signed)),
         negative("suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-issue"}, "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"),
+        # 2026-09-14 ES: scope も発行署名が覆う(r と同じ地位 — 同意の範囲を発行時に固定する)
+        negative("scope-kind-relabel", scope_fields("listed", ["env-dev-0002"]), "付与予定 scope の差し替え(all → listed{dev})は検証に失敗する(受諾者が読む「どの環境に入るか」の改竄検出)"),
+        {
+            "name": "scope-environments-relabel",
+            "base": "listed-scope",
+            "context": dict(listed_ctx, **scope_fields("listed", ["env-dev-0002", "env-prod-0001"])),
+            "verify_signed_bytes_hex": invite_issue_signed_bytes(dict(listed_ctx, **scope_fields("listed", ["env-dev-0002", "env-prod-0001"]))).hex(),
+            "signature_hex": listed_sig.hex(),
+            "verify_key_hex": listed_ctx["inviter_sig_pub_hex"],
+            "must_fail": True,
+            "note": "listed の環境集合の差し替え({dev, stage} → {dev, prod})は検証に失敗する",
+        },
+        {
+            "name": "scope-dropped",
+            "kind": "encoding",
+            "base": "basic",
+            "context": base_ctx,
+            "verify_signed_bytes_hex": dropped_signed.hex(),
+            "signature_hex": base_sig.hex(),
+            "verify_key_hex": base_ctx["inviter_sig_pub_hex"],
+            "must_fail": True,
+            "note": "scope を落とした旧 10 フィールド形式のバイト列では正規署名が検証に失敗する(ES 改訂前の実装は新リンクを受諾せず、新実装は旧リンクを受諾しない — 互換経路なし)",
+        },
+        {
+            "name": "scope-flat-concat",
+            "kind": "encoding",
+            "base": "listed-scope",
+            "context": listed_ctx,
+            "verify_signed_bytes_hex": flat_signed.hex(),
+            "signature_hex": listed_sig.hex(),
+            "verify_key_hex": listed_ctx["inviter_sig_pub_hex"],
+            "must_fail": True,
+            "note": "scope の環境集合を入れ子 LP でなく素の連結で符号化したバイト列では検証に失敗する(§2.1 の曖昧性排除)",
+        },
     ]
 
     invitee_pub = bytes.fromhex(invitee["sig_pub_hex"])
@@ -4625,9 +6145,9 @@ def gen_invite_link():
     write(
         "invite-link.json",
         {
-            "description": "CRYPTO_SPEC §6.5(2026-09-13 IV): リンク鍵の種からの導出、発行文と発行署名(Ed25519 + §2.1 LP)、OpenSSH 公開鍵行の符号化・解析。招待者・ヘッドは chain-entries.json の正規チェーン(user-owner-0001・seq 12)を参照する",
+            "description": "CRYPTO_SPEC §6.5(2026-09-13 IV。2026-09-14 ES で発行文の末尾に scope を追加して再生成): リンク鍵の種からの導出、発行文と発行署名(Ed25519 + §2.1 LP)、OpenSSH 公開鍵行の符号化・解析。招待者・ヘッドは chain-entries.json の正規チェーン(user-owner-0001・seq 24)を参照する",
             "signed_fields_order": INVITE_ISSUE_FIELDS_ORDER,
-            "binary_encoding": "リンク公開鍵・ヘッドハッシュ・招待者の enc/sig 公開鍵は hex 小文字文字列、head_seq は 10 進文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "binary_encoding": "リンク公開鍵・ヘッドハッシュ・招待者の enc/sig 公開鍵は hex 小文字文字列、head_seq は 10 進文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。scope_environments_lp_hex は environment_id リストの LP の hex 小文字(§6.2 の member_scope と同じ入れ子 LP — scope_kind = all なら空文字列)",
             "link_key": {
                 "seed_hex": link["seed_hex"],
                 "pub_hex": link["pub_hex"],
@@ -4644,6 +6164,8 @@ def gen_invite_link():
             "issue": {
                 "vectors": [
                     dict(base_ctx, name="basic", signed_bytes_hex=base_signed.hex(), signature_hex=base_sig.hex()),
+                    dict(listed_ctx, name="listed-scope", signed_bytes_hex=listed_signed.hex(), signature_hex=listed_sig.hex(),
+                         note="listed{dev, stage} を付与予定の発行文(2026-09-14 ES)。scope_environments_lp_hex は §6.2 と同じ入れ子 LP"),
                 ],
                 "negative": negatives,
             },
@@ -4728,8 +6250,8 @@ def gen_head_attestation():
         }
 
     basic = make_attestation(
-        "basic", owner_id, 12,
-        "基本形: owner が現ヘッド(seq 12)を申告する。§6.6 の全検証(署名・ヘッド束縛・"
+        "basic", owner_id, len(entries),
+        "基本形: owner が現ヘッド(seq 24)を申告する。§6.6 の全検証(署名・ヘッド束縛・"
         "申告ヘッド時点の在籍)を通る",
     )
     vectors = [
@@ -4792,7 +6314,7 @@ def gen_head_attestation():
             verify_key_hex=sig_pub_of(admin_id),
         ),
         make_negative(
-            "head-seq-mismatch", {"chain_head_seq": 11},
+            "head-seq-mismatch", {"chain_head_seq": len(entries) - 1},
             "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の"
             "両方が署名対象 — §6.6)",
         ),
@@ -4825,23 +6347,23 @@ def gen_head_attestation():
 
     rule_negatives = [
         rule_negative(
-            "head-not-in-chain", owner_id, sha256(b"not-in-chain-attestation").hex(), 12,
+            "head-not-in-chain", owner_id, sha256(b"not-in-chain-attestation").hex(), len(entries),
             "chain-head-mismatch",
-            "seq 12 は自ビューに実在するがハッシュが一致しない = 分岐(equivocation)または"
+            "seq 24 は自ビューに実在するがハッシュが一致しない = 分岐(equivocation)または"
             "偽造の硬い証拠(§6.3-2a / §6.6 の照合 (a) — 当該同期の成果物の使用を中断し、"
             "証拠を保存する)",
         ),
         rule_negative(
-            "head-beyond-local-seq", owner_id, sha256(b"future-attestation-head").hex(), 13,
+            "head-beyond-local-seq", owner_id, sha256(b"future-attestation-head").hex(), len(entries) + 1,
             "chain-head-future",
-            "seq 13 は自ビューのヘッド(12)より先 = 自分のチェーンが古いだけの可能性"
+            "seq 25 は自ビューのヘッド(24)より先 = 自分のチェーンが古いだけの可能性"
             "(§6.3-2b / §6.6 の照合 (b))。まず有界再同期し、延長として一致すれば正常・"
             "解決しなければ (a) と同じ扱い。この理由での即時証拠化は誤り",
         ),
         rule_negative(
-            "attester-removed-at-head", member_id, head_hash(12), 12,
+            "attester-removed-at-head", member_id, head_hash(len(entries)), len(entries),
             "attester-not-member-at-head",
-            "seq 5 で削除済みの attester が削除後のヘッド(12)を申告する形は拒否する"
+            "seq 5 で削除済みの attester が削除後のヘッド(24)を申告する形は拒否する"
             "(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で"
             "在籍区間の境界を固定する)",
         ),
@@ -4850,7 +6372,7 @@ def gen_head_attestation():
     write(
         "head-attestation.json",
         {
-            "description": "CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+            "description": "CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規チェーン(24 エントリ — 2026-09-14 ES + PF1 の全再生成に追随してハッシュのみ変化。正例・負例の意味は不変)を参照",
             "signed_fields_order": HEAD_ATTESTATION_FIELDS_ORDER,
             "binary_encoding": "チェーンヘッドハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(chain_head_seq)は 10 進文字列化。タイムスタンプ・ノンスは署名対象に含めない(§6.6 — 意味論は帰属であり鮮度証明ではない)",
             "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、attester 鍵 = keys",
