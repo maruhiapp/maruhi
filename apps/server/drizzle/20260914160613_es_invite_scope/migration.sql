@@ -1,11 +1,11 @@
 -- ES(2026-09-14 — AUTH_SPEC §15-2 / CRYPTO_SPEC §6.5): 招待行に付与予定 scope の 2 列を加える。
 -- 発行署名が scope を覆う新形式の発行文だけが受諾・add_member に使えるため、旧行
--- (scope を含まない発行文)は互換経路を持たず、すべて消してから表を再構築する
--- (ES 導入前に受理されたチェーンも新規則で無効になる — CRYPTO_SPEC §6.2。
+-- (scope を含まない発行文)は互換経路を持たない。表を空の新表で置き換え、旧行は
+-- 旧表の DROP で消える(INSERT … SELECT による移し替えは意図的に行わない —
+-- ES 導入前に受理されたチェーンも新規則で無効になる: CRYPTO_SPEC §6.2。
 -- 既存プロジェクトは再作成する: docs/SELF_HOSTING.md "Updates")。
 -- SQLite は NOT NULL 列の ADD COLUMN に非 NULL 既定値を要求するため、既定値を
 -- 持たない 2 列は 20260914005050_damp_redwing と同じ表再構築で加える。
-DELETE FROM `invitations`;--> statement-breakpoint
 CREATE TABLE `__new_invitations` (
 	`id` text PRIMARY KEY,
 	`project_id` text NOT NULL,

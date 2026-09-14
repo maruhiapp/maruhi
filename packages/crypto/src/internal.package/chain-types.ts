@@ -304,7 +304,11 @@ export interface PendingProposal {
   readonly proposerUserId: string;
   /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
   readonly proposerKeyFingerprintHex: string;
-  /** The proposer's role at proposal time — an `owner` proposal counts as one vote. */
+  /**
+   * Informational — the proposer's role at proposal time. Not an input to the
+   * vote count: votes are recomputed at every `approve` from the proposer's
+   * and approvers' *current* roles (原則 2 above).
+   */
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;

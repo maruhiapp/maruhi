@@ -1177,9 +1177,9 @@ function ensureRoleChangeable(input: {
   });
 }
 
-/** change_role エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
 /**
- * change_role エントリを現ヘッドの直後に署名する。payload は新 (role, scope) の全置換
+ * change_role エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。payload は
+ * 新 (role, scope) の全置換
  * (CRYPTO_SPEC §6.2)なので、K2 の CLI(scope の指定 `--env` は K4)は対象の**現 scope を
  * 据え置く**(role だけを変える)。owner へ昇格するときは owner の scope = all が合意規則
  * (`scope-role-mismatch`)なので all を載せる
