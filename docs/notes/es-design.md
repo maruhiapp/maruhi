@@ -4,7 +4,7 @@
 
 **前提(2026-09-14 所有者裁定 — ROADMAP)**: ES / PF1 は H4 法務の前に着地する招待制ベータのゲート。両方とも CRYPTO_SPEC §6.2 の合意規則を変えるため 1 回の改訂・1 回のテストベクター再生成に束ねる。**利用者がいないうちは古い実装をすべて削除してよい** — 互換経路(旧形式の受理・フォールバック)は持たず、旧クライアントは新しい op / payload に対して fail-closed になればよい。DK(デバイス鍵分離)は本設計の結果を前提にするため後続。
 
-**承認(2026-09-14)**: 所有者は §5 の承認依頼項目 1〜24 を「裁定事項について承認します」として一括承認した(所有者選択として併記した項目は採用案側で確定: 項目 1 = A-1〔既存プロジェクトは再作成〕、項目 13 = 再作成、項目 17 = 有効化条件は合意規則で `≥` のまま・運用前提〔CLI が owner ≥ required + 1 と全 owner のリカバリー登録を案内〕)。反復の実態は §2 / §3 の見出しの巡数ではなく §3-bis / §3-ter が正で、探索の網羅性は保証できない(3-ter 末尾)。レビュー(pullfrog 9 巡・Cursor Bugbot 3 巡)の指摘はすべて反映済み。**承認後の訂正(2026-09-14 pullfrog 第 9 巡)**: 項目 5 の包含規則は、承認時の「義務の環境集合」(原則 1 = 義務の履行可能性)では scope 不変の昇格が actor の scope 外で通る欠陥があり、原則 1 を「権限の変更可能性」(change_role で role が変わるなら 旧 ∪ 新)に改訂した — 承認済み文面より厳しい側への変更であり、所有者へ報告のうえ本 PR に含める(異議があれば K1 前に差し戻す)。項目 17 の常時対象の集合(方針変更 + owner 身元の追加)は変えていない。以降はフェーズ 2(K1 正本反映から — 新しいセッションで開始)。
+**承認(2026-09-14)**: 所有者は §5 の承認依頼項目 1〜24 を「裁定事項について承認します」として一括承認した(所有者選択として併記した項目は採用案側で確定: 項目 1 = A-1〔既存プロジェクトは再作成〕、項目 13 = 再作成、項目 17 = 有効化条件は合意規則で `≥` のまま・運用前提〔CLI が owner ≥ required + 1 と全 owner のリカバリー登録を案内〕)。反復の実態は §2 / §3 の見出しの巡数ではなく §3-bis / §3-ter が正で、探索の網羅性は保証できない(3-ter 末尾)。レビュー(pullfrog 9 巡・Cursor Bugbot 3 巡)の指摘はすべて反映済み。**承認後の訂正(2026-09-14 pullfrog 第 9 巡)**: 項目 5 の包含規則は、承認時の「義務の環境集合」(原則 1 = 義務の履行可能性)では scope 不変の昇格が actor の scope 外で通る欠陥があり、原則 1 を「権限の変更可能性」(change_role で role が変わるなら 旧 ∪ 新)に改訂した — 承認済み文面より厳しい側への変更であり、所有者へ報告のうえ本 PR に含める(異議があれば K1 前に差し戻す)。項目 17 の常時対象の集合(方針変更 + owner 身元の追加)は変えていない。同じく承認後の追記として、項目 20 / 22 に受理ポリシーの `expires_at_ms` 上界(受理時サーバー時計 + 30 日)と pending 上限の期限切れ除外を加えた(制約が増える側・合意規則ではない)。以降はフェーズ 2(K1 正本反映から — 新しいセッションで開始)。
 
 ---
 
@@ -281,7 +281,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 
 ### 裁定 P8: サーバー受理(§6.4)・監査ミラー(§3.4)・CLI(2 巡・打ち止め)
 
-- 受理: `propose` / `approve` / `withdraw` / `set_approval_policy` は**汎用 append**(§11 — 付随データなし)。トークン水準は内側 op と同じ(admin)。受理ポリシー: pending 提案はプロジェクトあたり **32** 件まで(型付き 422 `ProposalLimit` — 合意規則ではない)
+- 受理: `propose` / `approve` / `withdraw` / `set_approval_policy` は**汎用 append**(§11 — 付随データなし)。トークン水準は内側 op と同じ(admin)。受理ポリシー: pending 提案はプロジェクトあたり **32** 件まで(型付き 422 `ProposalLimit` — 合意規則ではない。期限切れの提案は数えない。`expires_at_ms` は受理時サーバー時計 + 30 日を上界とする — 2026-09-14 pullfrog 第 9 巡)
 - 適用完了時の副作用(`chain-accept.ts` の `applyAcceptanceSideEffectsSync`): 完成した approve エントリに対し、内側 op の副作用(remove → 要ローテーション検出・申告行の削除、add → 旧鍵ラップ掃除・招待 completed 化)を走らせる
 - ミラー: `chain.proposed` / `chain.approved` / `chain.proposal_withdrawn` / `chain.approval_policy_changed`(1 エントリ 1 行 — 全単射不変)。**完成した approve エントリは、加えて内側 op のミラー行**(`chain.member_removed` 等)を**同じ chain_seq** で書き、payload に `{ viaProposalSeq }` を付す(要ローテーション検出の在籍区間 Q1 が `chain.member_removed` を読む構造を変えない)。`audit verify` の全単射検査は「1 エントリ ↔ 1 行 + 完成 approve の適用行」に改める
 - **四眼経由の義務の履行者は内側 op の種類を問わず承認者(2026-09-14 pullfrog / Cursor Bugbot レビュー対応)**: 適用は承認者の approve エントリの seq で起き、提案者のクライアントは通常動いていない。remove の sweep と対称に、**適用を完成させた承認者のクライアントがバックフィル(add_member / scope 拡大 = 対象の scope の全環境 × 全エポックのメンバー宛、grant_server = 開示スコープ内全環境 × 全エポックのサーバー宛)と rotate(remove / 降格 / 縮小 / revoke_server)を走らせる**。承認者 = owner = all なので DEK を持ち、包含規則から履行可能。AUTH_SPEC §12-6 の独立登録経路に 5 番目として明記(spec-drafts B-6 / A-6)。既定推奨集合に `add_member` は入っていないが `change_role` は入っており拡大は `change_role` で起きるため、既定構成でも到達する経路
@@ -394,7 +394,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | 19 | 適用点と再検査(P5) | 定足数到達の approve の seq で適用(inclusive)。提案時 + 適用時に内側 op の合意規則を検査、適用時は提案者の現在性(`proposal-void`)も。**票は現時点でも owner の投票者のみを数える**(離脱済み投票者の票は失効) | 適用失敗で提案が自動的に閉じる | 承認署名に「閉じる」効果を持たせない |
 | 20 | 期限(P6) | `expires_at_ms`(CLI 既定 7 日。受理ポリシーの上界 = 受理時サーバー時計 + 30 日 — 合意規則ではない。pullfrog 第 9 巡)+ 合意規則 `approve.timestamp_ms ≤ expires_at_ms`(`proposal-expired`)。**timestamp を合意規則に用いる唯一の箇所。正直な承認者向けの UX 安全装置であり、悪意の承認者(過去方向の詐称)に対する保証ではない** | 期限なし / seq 距離 / 下界の追加(窓内詐称を止められない) | 文脈を失った承認の抑止。§14.2-10 の保証は期限に依存しない |
 | 21 | remove の義務の起点(P7) | 適用時点 | 提案時点 | 適用前に失効する DEK はない |
-| 22 | 受理・監査・履行者(P8) | 汎用 append。pending ≤ 32(受理ポリシー)。ミラー 4 種 + 完成 approve の適用行(同 chain_seq・`viaProposalSeq`)。`audit verify` の全単射規則の改訂。**四眼経由の義務は内側 op の種類を問わず適用を完成させた承認者が履行**(add_member / scope 拡大 / grant_server のバックフィル = §12-6 の 5 番目の経路、remove / 降格 / 縮小 / revoke_server の rotate) | 提案者による履行(適用時に不在) | 検出(Q1)の入力構造を変えない。承認者 = owner = all で履行可能 |
+| 22 | 受理・監査・履行者(P8) | 汎用 append。pending ≤ 32(受理ポリシー — 期限切れは数えない・`expires_at_ms` の上界 = 受理時サーバー時計 + 30 日。承認後の追記、pullfrog 第 9 巡)。ミラー 4 種 + 完成 approve の適用行(同 chain_seq・`viaProposalSeq`)。`audit verify` の全単射規則の改訂。**四眼経由の義務は内側 op の種類を問わず適用を完成させた承認者が履行**(add_member / scope 拡大 / grant_server のバックフィル = §12-6 の 5 番目の経路、remove / 降格 / 縮小 / revoke_server の rotate) | 提案者による履行(適用時に不在) | 検出(Q1)の入力構造を変えない。承認者 = owner = all で履行可能 |
 | 23 | CLI 名(P8) | `maruhi approval list / show / approve / withdraw`、`maruhi project policy approvals`。既存コマンドの自動提案化。承認者側で sweep | `maruhi key approve` との同居 | KL3 のハンドオフ承認と衝突させない |
 | 24 | テストベクター(§11) | K2 で `chain-entries.json` 全再生成 + `invite-link.json` + チェーン依存 3 ファイルの再生成。他は不変(README 規約 27 として明記) | 純追記 | 1 の帰結 |
 
