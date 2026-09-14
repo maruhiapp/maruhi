@@ -164,14 +164,41 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
   });
 }
 
+/**
+ * 認可 negative の分割(pullfrog 第 3 巡): `prefixReplayable` / `firstFourEyesSeq` /
+ * `fourEyesChains` の判定が広がっても(例: 正規チェーンの再生成で四眼 op が前に動く)
+ * suite が静かに空にならないよう、各分岐の件数を厳密に固定する。K5 で受理ガードを
+ * 外すときは `skipped` を 0 にし、`fourEyesGuard` の分を `consensus` / `wireSchema` へ戻す
+ */
+const EXPECTED_PARTITION = {
+  checkpoint: 20,
+  composite: 24,
+  skipped: 57,
+  fourEyesGuard: 7,
+  structureBeforeSignature: 0,
+  wireSchema: 1,
+  consensus: 47,
+} as const;
+
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
+  const partition: Record<keyof typeof EXPECTED_PARTITION, number> = {
+    checkpoint: 0,
+    composite: 0,
+    skipped: 0,
+    fourEyesGuard: 0,
+    structureBeforeSignature: 0,
+    wireSchema: 0,
+    consensus: 0,
+  };
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
     if (op === "checkpoint") {
+      partition.checkpoint += 1;
       registerCheckpointAppendGuardTest(negative);
       continue;
     }
     if (op === "create_environment" || op === "rotate_epoch") {
+      partition.composite += 1;
       continue;
     }
     // 四眼(PF1)の 4 op は K5 までサーバーが受理しない(ApprovalNotAccepted 422 —
@@ -180,22 +207,32 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
     // (b) 前提チェーン自体が四眼 op の受理を要する negative は再生できないため
     // 登録しない(K5 で受理ガードを外すときに本分岐ごと外す)
     if (!prefixReplayable(negative)) {
+      partition.skipped += 1;
       continue;
     }
     if (FOUR_EYES_OPS.has(op)) {
+      partition.fourEyesGuard += 1;
       registerFourEyesGuardTest(negative);
       continue;
     }
     if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
+      partition.structureBeforeSignature += 1;
       registerStructureBeforeSignatureTest(negative);
       continue;
     }
     if (WIRE_SCHEMA_REJECTED.has(negative.name)) {
+      partition.wireSchema += 1;
       registerWireSchemaRejectTest(negative);
       continue;
     }
+    partition.consensus += 1;
     registerConsensusRejectTest(negative);
   }
+
+  it("partitions the authz negatives as expected (K2-10 — 受理ガードで再生しない分を含めて固定)", () => {
+    expect(partition).toEqual(EXPECTED_PARTITION);
+    expect(Object.values(partition).reduce((a, b) => a + b, 0)).toBe(vectorAuthzNegatives.length);
+  });
 
   it("rejects a tampered payload with 422 (bad-signature)", async () => {
     // ベクター negative "tampered-payload-role" の再構成: entry 2 の payload の
