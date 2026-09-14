@@ -498,6 +498,7 @@ CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変�
 2. CRYPTO_SPEC §6.2 の `approve` の個別規則の字面(「owner として提案した提案者」)を原則 2 の S の定義に揃える(K2-6 — 実装は原則側)。**判断材料(8-bis K2-6 の追加巡)**: 字面の読みには「数えられる票はすべて owner として作られた署名である」という不変条件があり、原則の読み(適用時点の role で数える — 承認者の失効票と対称)にはそれがない。どちらも他方を支配しない(8-bis K2-6 行)ので所有者裁定。裁定後に「提案後に昇格した提案者」の派生チェーンをベクターへ追加する(現ベクターはこの形を固定していない)。
 3. AUDIT_SPEC §3.4 の四眼 4 op のミラー行(`proposalChainSeq` / `completed` / 適用行)は検証状態を要するため K2 のミラーは「エントリ単独から写せる値」(提案 hash)に留めた。K5 の受理面で正本どおりに揃える(§4 の K5 行)。
 4. (任意・整合の確認)CRYPTO_SPEC §6.2 で `set_approval_policy.ops` の重複は `grant_server` の scope_environments と同じ集合意味論(構造段で拒否しない)だが、scope の `scope_environments` は重複を `invalid-payload` にする。意図的な非対称(ops は閉集合の 6 要素で非決定性の芽が小さい)なら現状維持、揃えるなら正本の改訂(8-bis K2-7 g-3)。
+5. **CRYPTO_SPEC §6.2 `approve` の票数(8-ter K2-6)**: S の要素が user_id にしか束縛されないため、削除 → 新鍵で再追加された投票者の票が復活する(提案者は `proposal-void` で鍵 FP に束縛される非対称)。推奨: S の要素を在籍区間(user_id + 鍵 FP)に束縛し在籍終了で失効させる。合意規則の変更 = ベクター(派生チェーン `readded-approver-vote`)の追加を伴う。required = 2 では悪用不能、required ≥ 3 で侵害鍵の票が鍵更新後も残る。
 
 ## 8-bis. K2 裁定の追加巡の記録(2026-09-14 所有者の問い「各裁定で銀の弾丸・上位互換の探索を何巡回したか」への回答)
 
@@ -516,6 +517,24 @@ CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変�
 | K2-9 head-attestation.json の再生成 | 0 | **i-2** 旧チェーンの写しをファイル内に埋め込んで不変を保つ — 申告の検証は宣言ヘッド時点の role をチェーン状態から引くため、旧形式(`add_member` が `invalid-payload`)のチェーンでは正例が検証不能。棄却 / **i-3** 申告の署名対象から head hash を外し seq のみにする — §6.6 の意味(分岐の硬い証拠)を壊す正本変更。棄却 / 第 3 巡: 新案なし | 2 | **維持(① は所有者裁定)** |
 
 **追加巡の副産物の処置**: (1) README 規約 27 と `generate_reference.py` の該当コメントを「提案者・投票者の票はいずれも S ∩ 現 owner から導出する(提案時 role は情報値 — K2-6・申し送り ②)」に訂正(本 PR)。(2) 申し送り ② に f-2 の判断材料を追記、④ を新設。(3) e-3 は K5 の受理ポリシー候補(§4 の K5 行に足す)。
+
+## 8-ter. K2 裁定の原則の抽出と旧規則の導出確認(2026-09-14 所有者の問い「原則の抽出もしたか」への回答)
+
+**訂正**: 8-bis は §5 手順の前半(案の探索 → 空巡 2 で打ち止め)で止まり、後半(**規則を生み出している原則の抽出 → 置き換え前の各規則が原則から導出できることの 1 件ずつの確認**)を K2-1・K2-4 以外で行っていなかった。以下、9 件すべてについて原則を 1 文で書き、導出確認と、原則から機械的に検査できるものは実際に検査した結果を記す。**原則から新しい発見が 3 件出た**(K2-6 の投票者の在籍束縛の非対称 = 正本への申し送り ⑤、K2-8 の未固定の隣接対 = 負例 4 件を本 PR で追加、K2-1 の `proposer_role_at_proposal` がどの正本の「導出する」列にもない = ② の裁定に連動)。
+
+| 裁定 | 抽出した原則(1 文) | 旧規則の導出確認 | 原則から出た発見・検査 |
+|---|---|---|---|
+| K2-1 | ベクターの検証状態は、**3 正本のいずれかが「導出する」と書いた状態**を payload と同じ語彙で 1:1 に写す | members (role, scope) ← CRYPTO §6.2「検証状態は現メンバーごとの scope を導出する」✓ / policy・pending(提案者・内側 op・期限・投票者集合)← §6.2 末尾 ✓ / `proposal_seq` ← AUDIT §3.4 `proposalChainSeq` ✓ / `proposer_key_fingerprint_hex` ← `proposal-void`(同じ鍵 FP)✓ / **`proposer_role_at_proposal` ← どの正本にもない** | 原則に照らすと `proposer_role_at_proposal` は過剰固定(a-6)。申し送り ② で原則の読みが採られれば状態・ベクターから外し、字面の読みなら規則の入力として残す — ② に連動させる |
+| K2-2 | ベクターの参照体系はチェーン形式の識別子(entry_hash)のみで、生成器は正規化の第 2 実装、`verify_reference.mjs` は第 3 実装として参照を独立に再計算する | approve / withdraw の参照 ✓(`verify_reference.mjs` が同一チェーン内の propose の探索 + hash 再計算)。harness の `chain` 名参照は payload 外(接続先の指定)で原則の対象外 ✓ | 新発見なし |
+| K2-3 | 履歴索引は §6.3 の時点照会に必要な状態遷移だけを、検証ループが確定した (適用 op, actor, seq) から記録し、**照会側は適用規則を持たない** | (role, scope) の span ← 3 / 3′ ✓、在籍 ← 1 ✓、エポック ← 4 ✓、checkpoint タプル ← §4.3 (2) ✓。方針・pending は時点照会の入力でないため索引に載せない ✓。提案経由の add_member は approve の seq で在籍開始(inclusive)— 同 seq を宣言ヘッドとする値署名が有効になる形は直接追記と同じ ✓ | 新発見なし |
+| K2-4 | listed の actor が包含できる集合は有限集合だけ(`all` = U は将来の環境を含む) | §8 で確認済み。追加: `all △ all = ∅`(listed の admin が all の admin に同 (role, scope) の change_role = no-op を追記できる)は権限変化なしで原則 1 に整合 ✓ | 新発見なし |
+| K2-5 | 時刻は自己申告であり、合意規則が時刻に触れるのは `approve.timestamp_ms ≤ expires_at_ms` の 1 比較だけで、型は既存 `timestamp_ms` と同一 | 非負の安全整数 ✓、等号受理 ✓、作成時点で失効済みの提案の拒否(e-3)は合意規則から導出できない → 受理ポリシー(K5)✓ | 新発見なし |
+| K2-6 | 原則 2(S ∩ 適用時点の owners)+ **帰属原則**「提案経由の適用は、適用 seq における提案者の直接追記と同じ検査(現在性・鍵 FP・role・scope)を受ける」 | `duplicate-approval` = actor ∈ S ✓ / 票数 ✓(字面「owner として提案した」だけが非導出 = ②)/ `proposal-void`(現メンバー・同じ鍵 FP・role)← 帰属原則 ✓ / 適用時の scope-not-contained ← 帰属原則 ✓ | **発見(申し送り ⑤)**: 帰属原則は提案者を鍵 FP(= 在籍区間)に束縛するが、原則 2 の S は投票者を **user_id にしか束縛しない**。投票後に削除され、新しい鍵で再追加された owner(再追加は owner 確立 = 四眼の対象)の票は、`stale-approver-vote` の「削除された投票者の票は失効」を再追加が**復活**させる。シナリオ: required = 3・owner A / B / C。B の鍵が侵害され、侵害鍵が A の提案 P を approve(A + B = 2)。侵害検知で B を remove → 新鍵で re-add(A・C の定足数)。C が P を approve → S = {A, B, C} ∩ 現 owner = 3 で完成 — 侵害鍵の票が鍵更新(remove / re-add)の後も生き残り、本人 B の新鍵での approve を代替する。正本の字面(「distinct はチェーン上の身元」= user_id、「この approve の時点でも owner である過去の投票者」)は B を数えるので**実装は正本どおり**であり、欠陥は正本側の非対称。推奨修正: S の要素を在籍区間(user_id + その時点の鍵 FP)に束縛し、在籍終了で失効させる(再追加後は新鍵で改めて approve できる — 提案者の `proposal-void` と対称)。現ベクターは降格(`stale-approver-vote`)のみ固定し、再追加は固定していない。required = 2 では S 外の owner の approve が常に要るため悪用できず、影響は required ≥ 3 |
+| K2-7 | 内側 op はワイヤでは構造化して運び、正規化は §6.1 と同型の入れ子 LP、構造検査は内側 op の形状表を **1 段だけ**再利用する(再帰を持たない) | 入れ子 propose の構造段拒否 ✓ / genesis 内側 = `ROLE_RULES.genesis` → `approval-not-required` ✓ / ops の集合意味論 ← grant_server の先例 ✓ | 機械検査: フィールド上限(1024 B)は自由文字列(id・reason・claim 値)にのみ掛かり、内側 payload の hex には掛からない → **直接追記できる op は必ず提案できる**(256 環境の grant_server を含む)。非対称なし ✓ |
+| K2-8 | §6.2 の各検査列で**隣接する対は、ベクターで固定されているか、状態不変条件で共起不能かのどちらか**でなければならない | 機械照合(`*-precedes-*` 負例 47 件 × §6.2 の検査列)。共起不能の 3 対は §8 のとおり | **発見**: 未固定の隣接対 = add_member `approval-required → duplicate-member` / `→ duplicate-member-key`、grant_server `approval-required → duplicate-server-key`(いずれも共起可能 — owner が既存 user / 既存鍵を owner として直接追記、既存メンバー鍵の直接 grant)、および K2 以前からの add_member `role → duplicate-member`(`role → duplicate-member-key` と `duplicate-member → duplicate-member-key` の推移からは決まらない)。**負例 4 件を追加して固定**(`authz-approval-required-precedes-duplicate-member` / `-duplicate-member-key` / `-duplicate-server-key`、`authz-add-member-role-precedes-duplicate-member` — 正規チェーン・既存負例は不変)。構築できず未固定のまま記録する対: grant_server `approval-required → grant-scope-narrowed`(head 24 に有効な grant が無い — 方針有効 + 有効 grant の派生チェーンが要る)、revoke_server `approval-required → unknown-server-key`(正規方針の ops に revoke_server が無い)。実装はいずれも role の直後で approval-required を判定する(`evaluateDirect`)ので順序は正本どおり |
+| K2-9 | ベクターの不変性は仕様の分類ではなく**バイト列の依存関係**で決まる(正規チェーンの entry_hash を含むファイルはチェーン依存) | 機械照合: 旧チェーン 19 hash・新チェーン 64 hash(共通 = genesis 1 件)で全 JSON を走査 — 不変 11 ファイルは旧・新 hash を 1 つも含まず、チェーン依存 4 ファイル(value / metadata / env-manifest / head-attestation)と invite-link は新 hash(+ genesis)のみ ✓ | 分類どおり。新発見なし |
+
+**処置**: (1) 申し送り ⑤ を新設(所有者裁定 — 正本の変更)。(2) K2-8 の負例 4 件を生成器に追加して再生成(生成器は oxfmt 後にバイト同一であることを再実行で確認済み。正規チェーン・既存の負例・派生チェーンは不変)。(3) K2-1 の `proposer_role_at_proposal` は ② に連動(本 PR では据え置き)。
 
 ### K2 の実装メモ(K3〜K7 への申し送り)
 

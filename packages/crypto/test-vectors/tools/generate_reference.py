@@ -2326,6 +2326,29 @@ def gen_chain_entries():
         policy_payload(POLICY_OPS, 2), T24, "insufficient-role",
         "set_approval_policy は owner のみ。admin による方針変更は role 規則で拒否される(role → approval-required)",
     )
+    # 設計録 §8-ter(K2-8 の原則「隣接する検査対はベクターで固定されているか共起不能か」の
+    # 機械照合で未固定と判明した対): approval-required は role 規則の直後 = op 固有の
+    # 検査(duplicate-member / duplicate-member-key / duplicate-server-key)より前
+    add_es(
+        "authz-approval-required-precedes-duplicate-member", 25, head24, "add_member", owner_id,
+        add_payload(allmember_id, allmember, "owner"), T24, "approval-required",
+        "方針下の owner 確立 add_member × 既存 user_id(user-allmember-0013)の複合違反は approval-required が先に判定される(add_member: role → approval-required → duplicate-member)",
+    )
+    add_es(
+        "authz-approval-required-precedes-duplicate-member-key", 25, head24, "add_member", owner_id,
+        add_payload(newcomer_id, allmember, "owner"), T24, "approval-required",
+        "方針下の owner 確立 add_member × 現メンバー(user-allmember-0013)の鍵重複の複合違反は approval-required が先に判定される(add_member: role → approval-required → duplicate-member-key)",
+    )
+    add_es(
+        "authz-approval-required-precedes-duplicate-server-key", 25, head24, "grant_server", owner_id,
+        duplicate_key_payload(grant_scope, []), T24, "approval-required",
+        "方針下(ops に grant_server)の直接 grant × サーバー鍵重複(user-admin-0003 の enc 鍵)の複合違反は approval-required が先に判定される(grant_server: role → approval-required → 鍵重複)",
+    )
+    add_es(
+        "authz-add-member-role-precedes-duplicate-member", 25, head24, "add_member", devmember_id,
+        add_payload(allmember_id, allmember, "member"), T24, "insufficient-role",
+        "role 不足(reader)× 既存 user_id の複合違反は role 規則が先に判定される(add_member: role → duplicate-member。role → duplicate-member-key と duplicate-member → duplicate-member-key の推移からは決まらないため独立に固定)",
+    )
     # approval-not-required / 方針の到達可能性
     add_es(
         "authz-propose-policy-off", 20, head19, "propose", owner_id,
