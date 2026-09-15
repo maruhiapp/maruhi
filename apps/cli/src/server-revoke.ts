@@ -33,6 +33,7 @@ import {
   sweepRotations,
   verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
+import { compareCodePoints } from "./scope.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -221,7 +222,7 @@ export function serverRevokeOp<R>(input: {
     const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, verified);
     const skippedDeleted = [...verified.state.environments.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
-      .toSorted();
+      .toSorted(compareCodePoints);
 
     // 義務の環境集合 = revoke 時点の全環境(§7 — revoke_server は不変。後に作成された
     // 環境の DEK をサーバー鍵は持ちえない)。導出は rotationMandates と共有

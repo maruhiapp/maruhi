@@ -148,7 +148,7 @@ function sweepAfterMandate<R>(input: {
     );
     const skippedDeleted = [...baselines.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
-      .toSorted();
+      .toSorted(compareCodePoints);
     // 環境ごとの reason = その環境の基準になった義務(最大 seq)の種別(独立レビュー N3)
     const reasons = reasonsByEnvironment(input.mandates);
     const sweep = yield* sweepRotations({
@@ -911,7 +911,7 @@ function backfillAllEnvironments(input: {
           !deletedVerified.has(environmentId) &&
           scopeIncludesEnvironment(input.target.scope, environmentId),
       )
-      .toSorted();
+      .toSorted(compareCodePoints);
     let registered = 0;
     let alreadyRegistered = 0;
     let repaired = 0;
