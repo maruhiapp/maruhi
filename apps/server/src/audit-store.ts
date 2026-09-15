@@ -876,12 +876,6 @@ function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly st
 }
 
 /**
- * Q1 の 1 行を (role, scope) 付きで読む(AUDIT_SPEC §3.4 の member_added /
- * role_changed の payload)。genesis は構造的に owner / all(CRYPTO_SPEC §6.2)、
- * removed は両方 null。scopeKind が読めない行は scope = null(壊れた行で検出を
- * defect にしない — 窓導出側が all として扱う)。
- */
-/**
  * ミラー payload の scope を読む。listed で id 列が配列でない壊れた行は listed{}
  * (窓ゼロ = 見逃し)ではなく null(= 窓導出が all として扱う fail-safe)に倒す
  * (設計録 §9 K3-F)。
@@ -897,6 +891,12 @@ function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): Sco
   return null;
 }
 
+/**
+ * Q1 の 1 行を (role, scope) 付きで読む(AUDIT_SPEC §3.4 の member_added /
+ * role_changed の payload)。genesis は構造的に owner / all(CRYPTO_SPEC §6.2)、
+ * removed は両方 null。scopeKind が読めない行は scope = null(壊れた行で検出を
+ * defect にしない — 窓導出側が all として扱う)。
+ */
 function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventRow {
   const seq = Number(row["seq"]);
   const event = String(row["event"]);
