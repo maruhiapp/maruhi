@@ -3,6 +3,7 @@
 import {
   type ApprovalPolicy,
   type ApprovalTargetOp,
+  type ApprovalVote,
   canonicalChainPayloadBytes,
   type ChainEntry,
   type ChainMember,
@@ -97,7 +98,8 @@ export interface VectorPendingProposal {
   readonly inner_op: string;
   readonly inner_payload: Readonly<Record<string, unknown>>;
   readonly expires_at_ms: string;
-  readonly approvals: readonly string[];
+  /** 受理済み approve の署名 (user_id, 鍵 FP) — 2026-09-15 裁定 ⑤(票の鍵束縛)。 */
+  readonly approvals: readonly { readonly user_id: string; readonly key_fingerprint_hex: string }[];
 }
 
 interface VectorValidAppend {
@@ -198,7 +200,7 @@ function pendingProposalKey(input: {
   readonly proposerRoleAtProposal: string;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
-  readonly approvals: readonly string[];
+  readonly approvals: readonly ApprovalVote[];
 }): string {
   return JSON.stringify([
     input.hash,
@@ -209,7 +211,7 @@ function pendingProposalKey(input: {
     input.inner.op,
     toHex(canonicalChainPayloadBytes(input.inner)),
     input.expiresAtMs,
-    input.approvals,
+    input.approvals.map((vote) => [vote.userId, vote.keyFingerprintHex]),
   ]);
 }
 
@@ -230,7 +232,10 @@ export function pendingMatchesVector(
       proposerRoleAtProposal: proposal.proposer_role_at_proposal,
       inner: decodeInner(proposal.inner_op, proposal.inner_payload),
       expiresAtMs: Number(proposal.expires_at_ms),
-      approvals: proposal.approvals,
+      approvals: proposal.approvals.map((vote) => ({
+        userId: vote.user_id,
+        keyFingerprintHex: vote.key_fingerprint_hex,
+      })),
     }),
   );
   const actualKeys = [...pending.entries()].map(([hash, actual]) =>

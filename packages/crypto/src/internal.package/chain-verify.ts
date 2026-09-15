@@ -24,6 +24,7 @@ import { ChainHistoryBuilder, type ChainHistoryIndex } from "./chain-history.ts"
 import {
   APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
+  type ApprovalVote,
   type ApprovalTargetOp,
   type ChainEntry,
   type ChainMember,
@@ -76,7 +77,7 @@ interface MutableEnvironmentState {
   readonly dekCommitments: Map<number, string>;
 }
 
-/** pending 提案(§6.2 の検証状態)。approvals は受理済み approve の actor(順序付き)。 */
+/** pending 提案(§6.2 の検証状態)。approvals は受理済み approve の署名 (user_id, 鍵 FP)(順序付き)。 */
 interface MutablePendingProposal {
   readonly proposalSeq: number;
   readonly proposalHashHex: string;
@@ -85,7 +86,7 @@ interface MutablePendingProposal {
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
-  readonly approvals: string[];
+  readonly approvals: ApprovalVote[];
 }
 
 interface MutableChainState {
@@ -556,18 +557,37 @@ function establishesOwner(operation: ProposableOperation): boolean {
 }
 
 /**
- * 原則 2(§6.2): 署名者集合 S のうち**現時点で owner である** distinct な要素数。
- * 提案後に降格・削除された投票者の票は数えない(判定状態は「今のエントリの
- * 適用前状態」)
+ * 原則 2(§6.2): 提案の署名者集合 S = {owner として提案した提案者} ∪ {受理済み approve の
+ * actor}。要素は (user_id, 署名時の鍵 FP) — 票は owner role で作られた署名であり、
+ * admin として提案した提案者の提案署名は S に入らない(後に owner へ昇格しても同じ。
+ * 昇格後は approve を追記できる — 2026-09-15 裁定 ②)
  */
-function countOwnerVotes(state: MutableChainState, signers: ReadonlySet<string>): number {
-  let votes = 0;
-  for (const userId of signers) {
-    if (state.members.get(userId)?.role === "owner") {
-      votes += 1;
+function signersOf(pending: MutablePendingProposal): readonly ApprovalVote[] {
+  const proposer: readonly ApprovalVote[] =
+    pending.proposerRoleAtProposal === "owner"
+      ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
+      : [];
+  return [...proposer, ...pending.approvals];
+}
+
+function sameSigner(a: ApprovalVote, b: ApprovalVote): boolean {
+  return a.userId === b.userId && a.keyFingerprintHex === b.keyFingerprintHex;
+}
+
+/**
+ * 原則 2(§6.2): 署名者集合 S のうち、**現時点で署名時と同じ鍵 FP を持つ現メンバーとして
+ * owner である** distinct な user_id 数。提案後に降格・削除された投票者の票は数えず、
+ * 別鍵で再追加されても復活しない(判定状態は「今のエントリの適用前状態」— 2026-09-15 裁定 ⑤)
+ */
+function countOwnerVotes(state: MutableChainState, signers: readonly ApprovalVote[]): number {
+  const voters = new Set<string>();
+  for (const signer of signers) {
+    const member = state.members.get(signer.userId);
+    if (member?.role === "owner" && member.keyFingerprintHex === signer.keyFingerprintHex) {
+      voters.add(signer.userId);
     }
   }
-  return votes;
+  return voters.size;
 }
 
 /**
@@ -1213,26 +1233,30 @@ async function evaluateApprove(
   if (pending === undefined) {
     return "unknown-proposal";
   }
-  const vote = approveVoteReason(entry, actor, pending, state);
-  if (vote !== null) {
-    return vote;
+  const reason = approveVoteReason(entry, actor, pending, state);
+  if (reason !== null) {
+    return reason;
   }
-  // S = {提案者} ∪ {approve の actor 全員} ∪ {この actor}(原則 2)。方針は
-  // approveVoteReason が有効(非 null)を確認済み — 万一 null なら定足数に届かない側へ倒す
-  const signers = new Set([pending.proposerUserId, ...pending.approvals, actor.userId]);
+  // S ∪ {この actor の (user_id, 現在の鍵 FP)}(原則 2)。方針は approveVoteReason が
+  // 有効(非 null)を確認済み — 万一 null なら定足数に届かない側へ倒す
+  const signature: ApprovalVote = {
+    userId: actor.userId,
+    keyFingerprintHex: actor.keyFingerprintHex,
+  };
   const required = state.approvalPolicy?.requiredApprovals ?? Number.POSITIVE_INFINITY;
-  if (countOwnerVotes(state, signers) < required) {
-    pending.approvals.push(actor.userId);
+  if (countOwnerVotes(state, [...signersOf(pending), signature]) < required) {
+    pending.approvals.push(signature);
     return null;
   }
   return completeProposal(pending, state, entry.seq);
 }
 
 /**
- * approve の投票前検査(§6.2 の順序): duplicate-approval(actor が既に S の要素 —
- * owner の提案は 1 票 = 自己承認は重複)→ approval-not-required(現方針で対象外 —
- * 方針オフを含む)→ proposal-expired(timestamp_ms > expires_at_ms — 本仕様で timestamp を
- * 合意規則に用いる唯一の箇所)
+ * approve の投票前検査(§6.2 の順序): duplicate-approval(actor の (user_id, 現在の鍵 FP) が
+ * 既に S の要素 — owner の提案は 1 票 = 自己承認は重複。別鍵で再追加された投票者は改めて
+ * 投票できる)→ approval-not-required(現方針で対象外 — 方針オフを含む)→
+ * proposal-expired(timestamp_ms > expires_at_ms — 本仕様で timestamp を合意規則に用いる
+ * 唯一の箇所)
  */
 function approveVoteReason(
   entry: ChainEntry & { readonly op: "approve" },
@@ -1240,7 +1264,8 @@ function approveVoteReason(
   pending: MutablePendingProposal,
   state: MutableChainState,
 ): ChainInvalidReason | null {
-  if (pending.proposerUserId === actor.userId || pending.approvals.includes(actor.userId)) {
+  const vote: ApprovalVote = { userId: actor.userId, keyFingerprintHex: actor.keyFingerprintHex };
+  if (signersOf(pending).some((signer) => sameSigner(signer, vote))) {
     return "duplicate-approval";
   }
   if (!isApprovalTarget(pending.inner, state.approvalPolicy)) {
@@ -1438,7 +1463,7 @@ function freezePendingProposals(
 ): ReadonlyMap<string, PendingProposal> {
   const frozen = new Map<string, PendingProposal>();
   for (const [hash, proposal] of pending) {
-    frozen.set(hash, { ...proposal, approvals: [...proposal.approvals] });
+    frozen.set(hash, { ...proposal, approvals: proposal.approvals.map((vote) => ({ ...vote })) });
   }
   return frozen;
 }
