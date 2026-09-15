@@ -1608,10 +1608,13 @@ export function memberChangeRoleOp<R>(input: {
     }
 
     const change = scopeChangesOf(verified, target);
+    // 検証済み削除の環境は scope に残っていても拡大分から外す(scope 外の注記を「誰も
+    // 埋められない環境」で出し続けない — pullfrog 指摘。backfillAllEnvironments と同じ集合)
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, verified);
     const { widened, widenedOutOfScope } = splitWidenedByActorScope(
       verified,
       input.signerUserId,
-      change.widened,
+      change.widened.filter((environmentId) => !deletedVerified.has(environmentId)),
     );
 
     // (1) 拡大分のバックフィル — actor は包含規則により DEK を持つ(§12-6)。409 で冪等
