@@ -50,18 +50,20 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "create-env-commitment-format-precedes-role": { status: 400 },
   "authz-field-too-long": { status: 422, reason: "invalid-payload" },
   "authz-actor-key-mismatch": { status: 422, reason: "actor-key-mismatch" },
-  // 環境スコープ(2026-09-14 ES — CRYPTO_SPEC §6.2 の環境対象 op): scope の執行面
-  // (§12-3 の R(E) / 403 InsufficientScope)は K3 で、K2 は合意規則(verifyChain)の
-  // 422 として現れる。unknown-environment はデータ行の不在(404)が先(既存と同じ)
-  "authz-create-env-listed-admin": { status: 422, reason: "environment-out-of-scope" },
-  "authz-create-env-listed-member": { status: 422, reason: "environment-out-of-scope" },
-  "authz-rotate-out-of-scope": { status: 422, reason: "environment-out-of-scope" },
-  "authz-rotate-unknown-precedes-out-of-scope": { status: 404 },
-  "authz-rotate-out-of-scope-precedes-epoch": { status: 422, reason: "environment-out-of-scope" },
-  "authz-create-env-duplicate-precedes-out-of-scope": {
-    status: 422,
-    reason: "duplicate-environment",
-  },
+  // 環境スコープ(2026-09-14 ES — CRYPTO_SPEC §6.2 の環境対象 op): K3(2026-09-15)
+  // から受理面が 403 insufficient-scope を先に返す(AUTH_SPEC §12-3 の判定順 —
+  // role 403 → scope 403 → 存在 404 → 意味論 422。設計録 es-design.md §9 K3-C /
+  // K3-G)。合意規則 environment-out-of-scope(422)は多層防御として crypto 層の
+  // 4 実行環境テストが固定する。listed の主体には「未作成の環境」も scope 外なので
+  // 404 より 403 が先(all の主体は従来どおり 404 — data-environment-rotation.test.ts)
+  "authz-create-env-listed-admin": { status: 403, reason: "insufficient-scope" },
+  "authz-create-env-listed-member": { status: 403, reason: "insufficient-scope" },
+  "authz-rotate-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-rotate-unknown-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-rotate-out-of-scope-precedes-epoch": { status: 403, reason: "insufficient-scope" },
+  // create の scope 判定(403)は verifyChain(duplicate-environment 422)より先:
+  // negative の actor は listed admin なので scope で落ちる
+  "authz-create-env-duplicate-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
 };
 
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合経由)", () => {

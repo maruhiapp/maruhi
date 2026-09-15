@@ -31,10 +31,25 @@ export type AuditEventInput = AuditEventRecord;
 // ミラー追記と同一トランザクションで rotation.recommended を書く(§4.1)。
 // ---------------------------------------------------------------------------
 
-/** Q1: 対象 user_id の在籍区間イベント(chain.genesis / member_added / removed)。 */
+/**
+ * ミラー payload から読んだ scope(AUDIT_SPEC §3.4 の scopeKind /
+ * scopeEnvironmentIds — §4.1 手順 2 の環境別アクセス窓の材料)。
+ */
+export type ScopeSnapshot =
+  | { readonly kind: "all" }
+  | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
+
+/**
+ * Q1: 対象 user_id の在籍区間イベント(chain.genesis / member_added /
+ * role_changed / member_removed — 2026-09-15 ES K3 で role_changed を追加)。
+ * scope / role はミラー payload から(genesis = owner / all、removed = null、
+ * payload から読めない行は null = 窓導出が fail-safe に all として扱う)。
+ */
 export interface MembershipEventRow {
   readonly seq: number;
   readonly event: string;
+  readonly role: string | null;
+  readonly scope: ScopeSnapshot | null;
 }
 
 /** Q6: サーバー鍵 FP の grant 区間イベント(chain.server_granted / revoked)。 */
@@ -860,19 +875,47 @@ function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly st
   return Array.isArray(scope) ? scope.filter((id): id is string => typeof id === "string") : [];
 }
 
+/**
+ * Q1 の 1 行を (role, scope) 付きで読む(AUDIT_SPEC §3.4 の member_added /
+ * role_changed の payload)。genesis は構造的に owner / all(CRYPTO_SPEC §6.2)、
+ * removed は両方 null。scopeKind が読めない行は scope = null(壊れた行で検出を
+ * defect にしない — 窓導出側が all として扱う)。
+ */
+function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventRow {
+  const seq = Number(row["seq"]);
+  const event = String(row["event"]);
+  if (event === "chain.genesis") {
+    return { seq, event, role: "owner", scope: { kind: "all" } };
+  }
+  if (event === "chain.member_removed") {
+    return { seq, event, role: null, scope: null };
+  }
+  const payload = parsePayload(row["payload"]);
+  const role = payload?.[event === "chain.role_changed" ? "newRole" : "role"];
+  const kind = payload?.["scopeKind"];
+  const scope: ScopeSnapshot | null =
+    kind === "all"
+      ? { kind: "all" }
+      : kind === "listed"
+        ? { kind: "listed", environmentIds: scopeOf(payload) }
+        : null;
+  return { seq, event, role: typeof role === "string" ? role : null, scope };
+}
+
 const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
-  // Q1: (target_user_id, seq) 索引(ae_target)
+  // Q1: (target_user_id, seq) 索引(ae_target)。role_changed の payload の scope が
+  // 環境別アクセス窓の開閉点(§4.1 手順 2 — 2026-09-15 ES K3)
   membershipEventsFor: (targetUserId) =>
     sql
       .exec(
-        `SELECT seq, event FROM audit_events
+        `SELECT seq, event, payload FROM audit_events
          WHERE target_user_id = ?
-           AND event IN ('chain.genesis', 'chain.member_added', 'chain.member_removed')
+           AND event IN ('chain.genesis', 'chain.member_added', 'chain.role_changed', 'chain.member_removed')
          ORDER BY seq`,
         targetUserId,
       )
       .toArray()
-      .map((row) => ({ seq: Number(row["seq"]), event: String(row["event"]) })),
+      .map(membershipRowOf),
   // Q6: (target_key_fingerprint, seq) 索引(ae_target_fp)
   serverGrantEventsFor: (fpHex) =>
     sql

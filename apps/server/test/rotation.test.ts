@@ -80,6 +80,8 @@ interface WireRotationFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
+  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES — 3 変種すべて)。 */
+  readonly trigger?: "remove_member" | "change_role" | "revoke_server";
 }
 
 async function readFlags(asUserId: string = READER): Promise<readonly WireRotationFlag[]> {
@@ -207,12 +209,14 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       basis: "read",
       targetUserId: MEMBER,
       triggerChainSeq: removalSeq,
+      trigger: "remove_member",
     });
     expect(byVariable.get("var-api-key")).toMatchObject({
       environmentId: ENV,
       basis: "readable",
       targetUserId: MEMBER,
       triggerChainSeq: removalSeq,
+      trigger: "remove_member",
     });
 
     // 記録細則(§3.3): actor = system、chain_seq 列は使わない(payload に運ぶ)
@@ -508,6 +512,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       basis: "read",
       targetServerKeyFingerprintHex: key.fingerprintHex,
       triggerChainSeq: revokeSeq,
+      trigger: "revoke_server",
     });
     expect(byVariable.get("var-after-lease")).toMatchObject({
       environmentId: ENV,

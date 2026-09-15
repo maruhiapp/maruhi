@@ -247,6 +247,9 @@ export interface InviteRow {
   readonly head_seq: number;
   readonly issue_signature: string;
   readonly role: string;
+  /** 付与予定 scope(AUTH_SPEC §15-1 — 2026-09-14 ES)。scope_environments は JSON 配列。 */
+  readonly scope_kind: string;
+  readonly scope_environments: string;
   readonly status: string;
   readonly invitee_user_id: string | null;
   readonly invitee_enc_pub: string | null;

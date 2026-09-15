@@ -35,6 +35,8 @@ interface RotationFlagView {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
+  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES)。旧サーバーの応答には無い。 */
+  readonly trigger?: "remove_member" | "change_role" | "revoke_server";
 }
 
 /** フラグビューの取得(表示・件数報告・dismiss 対象解決の共有入口)。 */
@@ -101,7 +103,10 @@ export function resolveNames(
 
 function describeTarget(flag: RotationFlagView): string {
   if (flag.targetUserId !== undefined) {
-    return `member:${displayText(flag.targetUserId)}`;
+    // change_role 変種(降格 / scope 縮小 — AUDIT_SPEC §4.1)は削除ではないので
+    // trigger で言い分ける。trigger の無い応答(旧サーバー)は従来の表示
+    const prefix = flag.trigger === "change_role" ? "member (role/scope changed)" : "member";
+    return `${prefix}:${displayText(flag.targetUserId)}`;
   }
   if (flag.targetServerKeyFingerprintHex !== undefined) {
     return `server:${flag.targetServerKeyFingerprintHex}`;

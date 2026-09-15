@@ -1,7 +1,8 @@
 // 変数とバージョニングの Effect プログラム(AUTH_SPEC §12-5)。
 //
 // 判定順(§12-3)と permit 直列化の前提は旧 data-programs.ts のとおり:
-// requireMemberState → 環境・変数の存在 → CAS → 署名検証 → 数量ポリシー →
+// requireEnvironmentAccess(role → scope — §12-3。2026-09-15 ES K3)→ 環境・変数の
+// 存在 → CAS → 署名検証 → 数量ポリシー →
 // 原子書き込み + 監査(AUDIT_SPEC §3.3)。
 
 import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
@@ -19,7 +20,7 @@ import type {
   ValueInput,
   VariableVersionValue,
 } from "./data-plane.ts";
-import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
+import { currentEpochOf, dataEvent, rejectData, requireEnvironmentAccess } from "./data-plane.ts";
 import type { DataWriteOps, VariableRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
@@ -189,6 +190,24 @@ const acceptCreationValue = (context: {
   });
 
 /**
+ * 既存変数への書き込み(push / activation / rename・スキーマ再発行 / 削除)に
+ * 共通する前段(§12-3): requireEnvironmentAccess(role → scope)→ 環境の存在 →
+ * 変数の存在。4 経路で同じ 3 段を繰り返さないための束ね。
+ */
+const requireVariableWriteContext = (
+  actor: DataActor,
+  environmentId: string,
+  variableId: string,
+  cache: StateCache,
+) =>
+  Effect.gen(function* () {
+    const context = yield* requireEnvironmentAccess(actor.userId, "member", environmentId, cache);
+    yield* requireActiveEnvironment(environmentId);
+    const variable = yield* requireActiveVariable(environmentId, variableId);
+    return { ...context, variable };
+  });
+
+/**
  * 変数作成(§12-5): active(version 1 の値同梱)または declared(値なし —
  * 「値のない変数は存在しない」の唯一の例外。レイアウト v2 限定)。ワイヤ
  * Schema が status と値の有無の結合を固定する(deleted の創出は構造的に不可)。
@@ -206,9 +225,10 @@ export const createVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, history, member, projectId } = yield* requireMemberState(
+    const { state, history, member, projectId } = yield* requireEnvironmentAccess(
       actor.userId,
       "member",
+      environmentId,
       cache,
     );
     yield* requireActiveEnvironment(environmentId);
@@ -334,13 +354,12 @@ export const pushVersionProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, history, member, projectId } = yield* requireMemberState(
-      actor.userId,
-      "member",
+    const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
+      actor,
+      environmentId,
+      variableId,
       cache,
     );
-    yield* requireActiveEnvironment(environmentId);
-    const variable = yield* requireActiveVariable(environmentId, variableId);
     // declared 変数への通常 push は受理しない(§12-5): 最初の値は activation
     // 複合(値 version 1 + status active のステートメント + マニフェスト)のみ
     if (variable.latestStatus === "declared") {
@@ -414,13 +433,12 @@ export const activateVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, history, member, projectId } = yield* requireMemberState(
-      actor.userId,
-      "member",
+    const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
+      actor,
+      environmentId,
+      variableId,
       cache,
     );
-    yield* requireActiveEnvironment(environmentId);
-    const variable = yield* requireActiveVariable(environmentId, variableId);
     // サポート範囲検査は statement 依存の全検査より前(rename / 削除と同じ
     // 規律 — v3 クライアントには下の status / name ガードや値 CAS の誤誘導
     // エラーでなく、常に正直な update-required を返す)
@@ -531,9 +549,12 @@ export const renameVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
-    yield* requireActiveEnvironment(environmentId);
-    const variable = yield* requireActiveVariable(environmentId, variableId);
+    const { history, member, projectId, variable } = yield* requireVariableWriteContext(
+      actor,
+      environmentId,
+      variableId,
+      cache,
+    );
     // サポート範囲検査は statement 依存の全検査より前(裁定 CR — サポート外
     // レイアウトには以降の検査の誤誘導エラーを返さない)
     yield* ensureSupportedLayout(statement);
@@ -619,9 +640,12 @@ export const deleteVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
-    yield* requireActiveEnvironment(environmentId);
-    const variable = yield* requireActiveVariable(environmentId, variableId);
+    const { history, member, projectId, variable } = yield* requireVariableWriteContext(
+      actor,
+      environmentId,
+      variableId,
+      cache,
+    );
     // サポート範囲検査は statement 依存の全検査より前(rename と同じ規律)
     yield* ensureSupportedLayout(statement);
     // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)

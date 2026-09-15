@@ -22,7 +22,11 @@ import {
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
   MAX_ENTRY_CANONICAL_BYTES,
 } from "./policy.ts";
-import { detectMemberRemoval, detectServerRevocation } from "./rotation-detect.ts";
+import {
+  detectMemberRemoval,
+  detectRoleChange,
+  detectServerRevocation,
+} from "./rotation-detect.ts";
 
 /** ChainInvalid(検証・エンコーダ失敗)→ chain-entry-invalid 拒否。 */
 const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
@@ -233,9 +237,11 @@ export function insertAcceptedEntryPairSync(
  * - `add_member`: 再追加の旧鍵宛ラップ掃除(AUTH_SPEC §12-6 — §6.3 の
  *   「ラップ先 = 現メンバー鍵と厳密一致」不変条件へのストレージ収束)。
  *   削除は dek.deleted(actor = system + 原因 payload — AUDIT_SPEC §3.3)
- * - `remove_member` / `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。
- *   検出はミラー追記の**後**に読む — 対象の在籍 / grant 区間は直前に書いた
- *   ミラー行で閉じている
+ * - `remove_member` / `change_role`(降格・scope 縮小 — 2026-09-14 ES)/
+ *   `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。検出はミラー追記の
+ *   **後**に読む — 対象の在籍 / grant 区間・アクセス窓は直前に書いたミラー行で
+ *   閉じている。四眼経由(完成した approve を契機とする検出 — CRYPTO_SPEC §7)は
+ *   K5(受理ガードにより四眼エントリはまだサーバーに存在しない)
  * - `remove_member` はさらに対象のヘッド申告行を削除する(CRYPTO_SPEC §6.4 /
  *   AUTH_SPEC §16-1 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵
  *   ラップ掃除と同型)
@@ -270,6 +276,18 @@ function applyAcceptanceSideEffectsSync(
     appendDetected(
       stores,
       detectMemberRemoval({
+        read: stores.audit.readRotationSync,
+        targetUserId: entry.payload.targetUserId,
+        triggerChainSeq: entry.seq,
+        nowMs,
+      }),
+    );
+    return;
+  }
+  if (entry.op === "change_role") {
+    appendDetected(
+      stores,
+      detectRoleChange({
         read: stores.audit.readRotationSync,
         targetUserId: entry.payload.targetUserId,
         triggerChainSeq: entry.seq,

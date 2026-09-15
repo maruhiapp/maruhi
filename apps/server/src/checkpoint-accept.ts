@@ -16,6 +16,9 @@
 //   ここで requireRole(admin) — 不足 403。合意規則の
 //   checkpoint-audit-role-insufficient(422)より API の 403 が先に立つ
 //   (session-27 §13-5 の権限マトリクス (c))
+// - 全タプルの環境 ∈ 呼び出し主体の scope(AUTH_SPEC §12-3 — 2026-09-15 ES K3):
+//   role 軸の直後に 403 insufficient-scope。合意規則 environment-out-of-scope
+//   (422)より先に立つ(同じ状態の多層防御)
 
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -26,7 +29,7 @@ import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
 import { commitAcceptedEntry } from "./chain-commit.ts";
 import type { StateCache } from "./chain-store.ts";
 import { deriveStoredState, updateStateCache } from "./chain-store.ts";
-import { loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
+import { loadInitializedChain, rejectData, requireRole, requireRoleInScope } from "./data-plane.ts";
 import type { CheckpointValueEntryRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
@@ -155,6 +158,12 @@ export function standaloneCheckpointProgram(
     // スコープ半分〔admin スコープ〕は worker が先行検査済み)
     if (entry.payload.auditHeadHashHex !== "") {
       yield* requireRole(state, callerUserId, "admin");
+    }
+    // §12-3: 全タプルの環境 ∈ 呼び出し主体の scope(403 insufficient-scope —
+    // role 軸の直後・CAS / verifyChain の前。合意規則 `environment-out-of-scope`
+    // の 422 は多層防御として残る — 設計録 es-design.md §9 K3-G)
+    for (const tuple of entry.payload.environments) {
+      yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
     }
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain = §6.2 の合意規則)は他経路と共有

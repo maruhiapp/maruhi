@@ -134,6 +134,20 @@ export async function setupDataProject(): Promise<DataFixture> {
   };
 }
 
+/**
+ * ベースチェーン外のユーザーを D1 にシードして PAT を取る(scope 系テストの
+ * listed メンバー — user-devmember-0010 等のベクター鍵ユーザー)。同じ user_id の
+ * 再シードは D1 の主キーで失敗するため、1 テスト内で 1 回だけ呼ぶ。
+ */
+export async function seedMemberToken(
+  fixture: DataFixture,
+  userId: string,
+  githubId: number,
+): Promise<void> {
+  await seedUser(userId, githubId);
+  fixture.tokens[userId] = await cliToken(githubId);
+}
+
 export function tokenOf(tokens: Record<string, string>, userId: string): string {
   const token = tokens[userId];
   if (token === undefined) {

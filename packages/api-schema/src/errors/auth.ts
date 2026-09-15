@@ -19,6 +19,11 @@ export class UnauthorizedError extends Schema.TaggedError<UnauthorizedError>()(
  * エンドポイント同一性と主体種別のみから決まる一様応答であり、プロジェクトの
  * 存在・状態情報を運ばない(§11-2 の存在秘匿と両立する — §12-3 の認可先行例外と
  * 同じ「リクエスト内容のみから計算できる」論法)。
+ *
+ * `insufficient-scope` = 対象環境が呼び出し主体のチェーン導出 scope の外
+ * (§9-2 / §12-3 の 403 `InsufficientScope` — 2026-09-15 ES K3。role 不足と同じ
+ * 層・同じ型で、拒否の軸を reason で区別する — 設計録 es-design.md §9 K3-A)。
+ * 環境の存在はチェーン導出で全メンバーに既知のため 404 に畳まない。
  */
 export const ForbiddenReasonSchema = Schema.Literals([
   "csrf-header-required",
@@ -27,6 +32,7 @@ export const ForbiddenReasonSchema = Schema.Literals([
   "actor-mismatch",
   "org-membership-required",
   "insufficient-role",
+  "insufficient-scope",
 ]);
 
 /** 403: the authenticated principal may not perform this operation. */

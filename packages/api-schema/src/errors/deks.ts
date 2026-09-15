@@ -11,7 +11,9 @@ import { EncPubHex } from "../hex.ts";
  * 受信者クラス server: FP に一致する有効 grant がない =
  * `recipient-not-granted`、grant はあるが対象環境が開示スコープ外 =
  * `scope-out-of-range`(いずれも 422)。enc 公開鍵の不一致はクラス共通の
- * `recipient-key-mismatch`。
+ * `recipient-key-mismatch`。受信者クラス member でも、対象環境が受信者の
+ * チェーン導出 scope の外なら同じ `scope-out-of-range`(受信者集合 R(E) —
+ * CRYPTO_SPEC §6.2。2026-09-15 ES K3)。
  */
 export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-not-member",
