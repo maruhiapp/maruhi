@@ -2358,7 +2358,7 @@ function reportScopeBackfill(
       return 0;
     }
     yield* io.log(
-      `Scope widened by ${countNoun(summary.widenedEnvironmentIds.length, "environment")} (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
+      `${countNoun(summary.widenedEnvironmentIds.length, "environment")} added to the member's scope (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
     );
     if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
       yield* logWarning(

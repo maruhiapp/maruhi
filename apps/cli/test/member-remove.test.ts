@@ -759,7 +759,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
       [[1, target.userId]],
     );
     const logs = env.logs.join("\n");
-    expect(logs).toContain("Scope widened by 1 environment");
+    expect(logs).toContain("1 environment added to the member's scope");
     expect(logs).toContain("Done: the role / scope was changed (no rotation mandate)");
   });
 
