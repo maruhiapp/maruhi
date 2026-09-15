@@ -806,7 +806,7 @@ agent-gate: 出力は user_id・role・scope・鍵 FP のみで値ゼロ(裁定 
 
 - `apps/site/docs/invite-a-teammate.mdx`: `--env` の 1 段落(K4 で利用者に見える挙動が変わる)を K4 に含める。`environment-scopes.mdx` の新規作成は K7。
 - `docs/SELF_HOSTING.md` "Updates": サーバーの挙動は K3 で確定済みで K4 は CLI のみ。K2 の段落の末尾に「CLI が listed の scope を発行できるようになった(2026-09-15 K4)」の 1 文を足す(利用者が「いつから使えるか」を読める)。
-- 探索: 第 2 巡・第 3 巡とも新案なし(空巡)。**採用: 上記**。
+- 探索: 第 2 巡・第 3 巡とも新案なし(空巡)。**原則**: 「利用者に見える挙動が変わる段で、その挙動の docs を同じ PR に載せる」(K2 の SELF_HOSTING 前倒しと同じ)。**UX**: `invite create --help` と docs の `--env` の説明が同じ既定(省略 = all)を言う。**採用: 上記**。
 
 ### K4-I. 包含述語の置き場(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -815,7 +815,7 @@ agent-gate: 出力は user_id・role・scope・鍵 FP のみで値ゼロ(裁定 
 | I-a crypto の `index.ts` に `scopeContainsEnvironmentSet` 等を再エクスポート | 1 実装 | `packages/crypto` への変更 = 人間レビュー必須・K4 の範囲外 |
 | I-b **CLI に `scope.ts` を新設し、公開 API `scopeIncludesEnvironment` から導出する**: `scopeContains(actor, target)` = target が `all` なら actor が `all`、target が `listed{X}` なら ∀x ∈ X: `scopeIncludesEnvironment(actor, x)`。差集合は具体的な環境 id 列で表す(K4-J) | crypto 不変。CRYPTO_SPEC §6.2 の集合代数と同値(`all ⊇ 任意`、`listed ⊇ all` は偽、`listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X)。テストで crypto の合意規則と同じ真理値表を固定 | 2 実装(CLI は通信前の案内、crypto は合意規則)。ズレは合意規則の 422 が最終判定として拾う |
 
-**探索**: 第 2 巡・第 3 巡: なし(空巡)。**原則**: 「通信前の判定は公開 API から導出し、内部実装をコピーしない(CLAUDE.md の ImportLint 規律)」。**採用: I-b**(K5 以降でベクター再生成と同時に crypto 側の公開を検討してよい — 申し送り)。
+**探索**: 第 2 巡・第 3 巡: なし(空巡)。**原則**: 「通信前の判定は公開 API から導出し、内部実装をコピーしない(CLAUDE.md の ImportLint 規律)」。**採用: I-b**(K5 以降でベクター再生成と同時に crypto 側の公開を検討してよい — 申し送り)。 **UX**: 通信前の文言(K4-C)は CLI 側の述語から出るので、crypto の理由コードと文面が二重になることはない(合意規則の 422 は `failure.ts` の既存写像)。
 
 ### K4-J. 義務ごとの環境集合と `sweepRotations` の一般化(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -859,3 +859,4 @@ DEK ラップの配布は本人宛のみ(AUTH_SPEC §12-6「配布は本人宛�
 - **正本の字面との差**(所有者へ報告): §6.3 受信側の「使用せず警告する」を K4-F のとおり「取得口で型付きエラー(使用しない)」で実装した。字面より厳しい側で、緩める場合は F-a に戻すだけ
 - **crypto の公開 API**: 包含述語は CLI に 2 実装目がある(K4-I)。次にベクターを再生成する段で `scopeContainsEnvironmentSet` / 集合演算の公開を検討し、CLI 側を差し替えてよい
 - **バックフィル未了の第三者検出**は据え置き(K4-K)。docs(K7)で本人側検出を説明する
+- **PR #179 レビューでの追補(pullfrog / Cursor Bugbot / 独立 Opus レビュー)**: (1) `change-role` の CAS リトライは据え置き側を**署名するビュー**の対象の現状から解決する(スナップショットを再署名しない)。(2) 拡大分のバックフィルは対象の **全 `change_role` 履歴**の拡大分の和集合 ∩ 現 scope から導く(最後の 1 件だけだと、中断中に第三者の change_role が挟まると再開されない)。sweep 側の「対象の全義務を畳む」と同じ形。(3) sweep の対象は**実行者の scope 内**に限り(§7「実行者も scope 外なら rotate できない」)、scope 外に残る他人の義務環境は失敗ではなく注記にする(常時警告が引き続き表示)。rotate エントリの `reason` は環境ごとの基準義務(最大 seq)の種別。(4) `member add` / `member remove` にも原則 1 の手前判定(add = 招待行の scope、remove = 対象の現 scope)。add は儀式の前に落とす(発行時検査 K4-G は発行者のもので、add の実行者は別人・別時点でありうる)。(5) `listed{}`(§6.2 の空 listed — 承認項目 3)を CLI から作れる `--no-envs` を `invite create` / `change-role` に置く(`--env` / `--all-envs` と排他)。K4-A の候補表には空 scope の扱いが無かった — 「省略 = 変えない」の原則から `--no-envs` は明示の作為で、原則と整合する。(6) `--role owner` は `--all-envs` なしで scope を all に全置換する(§6.2 owner = all)。これは K4-A の原則「拡大は明示の作為でのみ起きる」の唯一の例外で、owner 昇格という作為が全環境の付与を含意する(§6.2)ため原則の適用範囲外と整理する。ヘルプ文もそう書く。(7) `change_role` の義務導出で直前状態が導出できない場合は remove と同じく fail-closed(書き手だった・全環境を持っていた側)。(8) CLI の検査順を §6.2 の合意規則の順(role → last-owner → unknown-environment → scope-not-contained)に揃えた

@@ -306,6 +306,7 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --role string       Role to grant (required — reader | member | admin)
   --env string        Environment the invitee may access (repeatable; omitted = all environments, including ones created later)
+  --no-envs           Grant no environment at all (an empty listed scope: the member sees names only; widen later with `maruhi member change-role --env`)
   --github string     GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)
 
 GLOBAL FLAGS
@@ -434,7 +435,8 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --role string       New role (reader | member | admin | owner; omitted = keep the current role)
   --env string        Environment in the new scope (repeatable; replaces the whole scope; omitted = keep the current scope)
-  --all-envs          Set the scope to all environments (including ones created later); required for --role owner unless the target already has it
+  --all-envs          Set the scope to all environments (including ones created later); `--role owner` always implies it
+  --no-envs           Set the scope to no environment at all (an empty listed scope — the member keeps only metadata access)
 
 GLOBAL FLAGS
   --help, -h       Show help information

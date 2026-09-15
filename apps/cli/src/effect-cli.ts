@@ -117,7 +117,6 @@ import {
   reconcileGossip,
   resolveProjectId,
 } from "./context.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
 import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
@@ -144,7 +143,6 @@ import { loginOp, logoutOp } from "./login.ts";
 import {
   type ChangeRoleRequest,
   formatMemberListRow,
-  MEMBER_REMOVED_ROTATION_REASON,
   type MemberAddSummary,
   memberAddOp,
   type MemberChangeRoleSummary,
@@ -777,6 +775,10 @@ const inviteCreateConfig = {
   env: scopeEnvFlag(
     "Environment the invitee may access (repeatable; omitted = all environments, including ones created later)",
   ),
+  "no-envs": singleFlag(
+    "no-envs",
+    "Grant no environment at all (an empty listed scope: the member sees names only; widen later with `maruhi member change-role --env`)",
+  ),
   github: singleValued(
     "github",
     "GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)",
@@ -863,7 +865,11 @@ const memberChangeRoleConfig = {
   ),
   "all-envs": singleFlag(
     "all-envs",
-    "Set the scope to all environments (including ones created later); required for --role owner unless the target already has it",
+    "Set the scope to all environments (including ones created later); `--role owner` always implies it",
+  ),
+  "no-envs": singleFlag(
+    "no-envs",
+    "Set the scope to no environment at all (an empty listed scope — the member keeps only metadata access)",
   ),
   "user-id": memberTargetArgument(),
 };
@@ -1569,6 +1575,20 @@ function projectVerify(
 }
 
 /**
+ * §7: 実行者の scope 外の義務環境は rotate できない — 失敗ではなく注記(常時警告が引き続き
+ * 表示し、その環境を scope に持つメンバーの env rotate で収束する)。
+ */
+function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<void, never, CliIo> {
+  if (outOfScope.length === 0) {
+    return Effect.void;
+  }
+  const one = outOfScope.length === 1;
+  return logWarning(
+    `${countNoun(outOfScope.length, "environment")} with a pending rotation mandate ${one ? "is" : "are"} outside your scope and cannot be rotated by you (${outOfScope.map(displayText).join(", ")}) — a member whose scope includes ${one ? "it" : "them"} converges ${one ? "it" : "them"} with \`maruhi env rotate <environment> --new-epoch --reason <text>\``,
+  );
+}
+
+/**
  * 発行契機 (iii) の提案(CRYPTO_SPEC §6.3): pull / push の成功後に基準
  * チェックポイントの鮮度(7 日超・未発行 = genesis から 7 日超)を検出したら
  * 提案を **Note 1 行**で出す。提案の判定失敗でコマンド本体の成功を覆さない
@@ -1952,6 +1972,7 @@ function inviteCreateCommand(
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
     readonly env: readonly string[];
+    readonly noEnvs: boolean;
     readonly github?: string | undefined;
   },
 ): Effect.Effect<void, CliError, CliServices> {
@@ -1963,8 +1984,11 @@ function inviteCreateCommand(
         ),
       );
     }
-    // scope: `--env` 反復 = listed(昇順・重複拒否)、省略 = all(裁定 K — `--all-envs` は置かない)
-    const scope = (yield* scopeFromFlags({ env: flags.env, allEnvs: false })) ?? ALL_SCOPE;
+    // scope: `--env` 反復 = listed(昇順・重複拒否)、`--no-envs` = listed{}、省略 = all
+    // (裁定 K — `--all-envs` は置かない)
+    const scope =
+      (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ??
+      ALL_SCOPE;
     const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
     const identityBacking = yield* loadIdentityBacking;
     // 発行署名(CRYPTO_SPEC §6.5)は招待者のチェーン sig 鍵で作る = master 鍵が要る
@@ -2079,11 +2103,15 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
  * 片方だけ直る。
  */
 function reportSweepOutcome(
-  sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] },
+  sweep: SweepOutcome & {
+    readonly skippedDeleted: readonly string[];
+    readonly outOfScope?: readonly string[];
+  },
   options: { readonly rerunCommand: string; readonly alreadyRotatedBasis: string },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    yield* warnOutOfScopeMandates(sweep.outOfScope ?? []);
     if (sweep.skippedDeleted.length > 0) {
       yield* io.log(
         `Skipped deleted environments (signed deletion statements verified): ${sweep.skippedDeleted.join(", ")}`,
@@ -2199,7 +2227,7 @@ function memberRemoveCommand(
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
-      rotate: sweepRotateFor(context, MEMBER_REMOVED_ROTATION_REASON),
+      rotateWith: (reason) => sweepRotateFor(context, reason),
     });
     if (summary.appended) {
       yield* io.log(
@@ -2241,6 +2269,7 @@ function memberChangeRoleCommand(
     readonly role?: string | undefined;
     readonly env: readonly string[];
     readonly allEnvs: boolean;
+    readonly noEnvs: boolean;
   },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
@@ -2297,16 +2326,21 @@ function parseChangeRoleRequest(flags: {
   readonly role?: string | undefined;
   readonly env: readonly string[];
   readonly allEnvs: boolean;
+  readonly noEnvs: boolean;
 }): Effect.Effect<ChangeRoleRequest, CliError> {
   return Effect.gen(function* () {
     if (flags.role !== undefined && !isMemberRole(flags.role)) {
       return yield* Effect.fail(usageError(`--role must be one of ${MEMBER_ROLES.join(" | ")}`));
     }
-    const newScope = yield* scopeFromFlags({ env: flags.env, allEnvs: flags.allEnvs });
+    const newScope = yield* scopeFromFlags({
+      env: flags.env,
+      allEnvs: flags.allEnvs,
+      noEnvs: flags.noEnvs,
+    });
     if (flags.role === undefined && newScope === null) {
       return yield* Effect.fail(
         usageError(
-          `Specify what to change: --role (${MEMBER_ROLES.join(" | ")}) and/or the scope (--env <id>… or --all-envs)`,
+          `Specify what to change: --role (${MEMBER_ROLES.join(" | ")}) and/or the scope (--env <id>…, --all-envs or --no-envs)`,
         ),
       );
     }
@@ -2341,7 +2375,7 @@ function reportChangeRoleMandates(
   summary: MemberChangeRoleSummary,
 ): Effect.Effect<void, never> {
   return Effect.gen(function* () {
-    if (ROLE_RANK[summary.newRole] < ROLE_RANK.member) {
+    if (summary.demoted) {
       yield* io.log(
         "Demotion below member forces a rotation of every environment in the target's scope (CRYPTO_SPEC §7 — epoch-anchor soundness)",
       );
@@ -3453,6 +3487,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       project: values.project,
       role: values.role,
       env: values.env,
+      noEnvs: values["no-envs"],
       github: values.github,
     }),
   ).pipe(Command.withDescription("Issue an invite and build the invite link"));
@@ -3532,6 +3567,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           role: values.role,
           env: values.env,
           allEnvs: values["all-envs"],
+          noEnvs: values["no-envs"],
         }),
       );
     }),

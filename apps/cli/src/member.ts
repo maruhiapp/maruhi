@@ -20,6 +20,7 @@ import {
   type ChainEntry,
   type ChainMember,
   type MemberScope,
+  memberScopeOf,
   type Role,
   type ScopePayloadFields,
   scopeIncludesEnvironment,
@@ -70,7 +71,9 @@ import {
   verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import {
+  compareCodePoints,
   describeScope,
+  environmentsOfScopeAt,
   requireScopeEnvironmentsExist,
   sameScope,
   scopeChangeAt,
@@ -81,7 +84,7 @@ import { resyncExtended, type VerifiedProject } from "./sync.ts";
 const MAX_ATTEMPTS = 5;
 
 /** remove / 降格 / 縮小後のローテーションの理由(§6.2 payload の固定文字列)。 */
-export const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
+const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
 const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
 const SCOPE_NARROWED_ROTATION_REASON = "scope-narrowed";
 
@@ -116,22 +119,76 @@ function sweepAfterMandate<R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly mandates: readonly RotationMandate[];
-  readonly rotate: SweepRotate<R>;
-}): Effect.Effect<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
+  /** 実行者(actor)。scope 外の義務環境は rotate できない(§7)ので対象から外して注記する。 */
+  readonly actorUserId: string;
+  /** 義務の種別ごとのローテーション注入(rotate エントリの reason を義務に合わせる)。 */
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
+}): Effect.Effect<MemberSweepOutcome, CliError, R> {
   return Effect.gen(function* () {
-    const baselines = baselinesOf(input.mandates);
+    const actor = input.verified.state.members.get(input.actorUserId);
+    const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
+    // 自分の scope 外の義務環境(他人が過去に作った縮小 / remove の義務が対象の履歴に
+    // 残っている場合)は rotate の対象に含めない(CRYPTO_SPEC §7 — 実行者も scope 外なら
+    // rotate できない。独立レビュー S2)。常時警告が引き続き表示する
+    const all = baselinesOf(input.mandates);
+    const outOfScope = [...all.keys()]
+      .filter((environmentId) => !scopeIncludesEnvironment(actorScope, environmentId))
+      .toSorted(compareCodePoints);
+    const baselines = new Map(
+      [...all].filter(([environmentId]) => scopeIncludesEnvironment(actorScope, environmentId)),
+    );
     const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
     const skippedDeleted = [...baselines.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
       .toSorted();
+    // 環境ごとの reason = その環境の基準になった義務(最大 seq)の種別(独立レビュー N3)
+    const reasons = reasonsByEnvironment(input.mandates);
     const sweep = yield* sweepRotations({
-      rotate: input.rotate,
+      rotate: (environmentId, mode) =>
+        input.rotateWith(reasons.get(environmentId) ?? MEMBER_REMOVED_ROTATION_REASON)(
+          environmentId,
+          mode,
+        ),
       verified: input.verified,
       baselines,
       deletedVerified,
     });
-    return { ...sweep, skippedDeleted };
+    return { ...sweep, skippedDeleted, outOfScope };
   });
+}
+
+/** member 系の sweep の結果(削除済み環境と、実行者の scope 外で回せなかった環境を含む)。 */
+export type MemberSweepOutcome = SweepOutcome & {
+  readonly skippedDeleted: readonly string[];
+  /** 実行者の scope 外で rotate できない義務環境(§7 — 他メンバーの履行に委ねる)。 */
+  readonly outOfScope: readonly string[];
+};
+
+const MANDATE_REASONS = {
+  "member-removed": MEMBER_REMOVED_ROTATION_REASON,
+  "role-demoted": ROLE_DEMOTED_ROTATION_REASON,
+  "scope-narrowed": SCOPE_NARROWED_ROTATION_REASON,
+  "server-revoked": "server-revoked",
+} satisfies Record<RotationMandate["kind"], string>;
+
+/** 環境 → 基準(最大 seq)の義務の reason(同 seq なら降格を優先)。 */
+function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap<string, string> {
+  const chosen = new Map<string, RotationMandate>();
+  for (const mandate of mandates) {
+    for (const environmentId of mandate.environmentIds) {
+      const current = chosen.get(environmentId);
+      if (
+        current === undefined ||
+        current.seq < mandate.seq ||
+        (current.seq === mandate.seq && mandate.kind === "role-demoted")
+      ) {
+        chosen.set(environmentId, mandate);
+      }
+    }
+  }
+  return new Map(
+    [...chosen].map(([environmentId, mandate]) => [environmentId, MANDATE_REASONS[mandate.kind]]),
+  );
 }
 
 /**
@@ -563,12 +620,24 @@ function ensureAddable(input: {
   readonly signerUserId: string;
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
+  readonly scope: ScopePayloadFields;
 }): Effect.Effect<{ readonly alreadyAdded: boolean }, CliError> {
   return Effect.gen(function* () {
     const actor = input.verified.state.members.get(input.signerUserId);
     const actorRejection = addActorRejection(actor, input.role);
-    if (actorRejection !== null) {
-      return yield* Effect.fail(cliError(actorRejection));
+    if (actorRejection !== null || actor === undefined) {
+      return yield* Effect.fail(cliError(actorRejection ?? "You are not a member"));
+    }
+    // 原則 1(§6.2 scope-not-contained): add の権限変化の環境集合 = 新 scope(招待行)。
+    // 発行時の検査(K4-G)は発行者のもので、add の実行者は別人・別時点でありうる
+    // (独立レビュー S1)。儀式の前に落とす
+    const invited = memberScopeOf(input.scope);
+    if (!scopeContains(actor.scope, invited)) {
+      return yield* Effect.fail(
+        cliError(
+          `Your environment scope (${describeScope(actor.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
+        ),
+      );
     }
     const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
     if (existing !== undefined) {
@@ -782,6 +851,7 @@ function prepareMemberAdd(input: {
       signerUserId: input.signerUserId,
       acceptance: row.acceptance,
       role: row.role,
+      scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
     });
 
     // 充足形 4(裏付け元)→ 不成立なら充足形 1〜3(儀式 / フラグ / 帳)
@@ -905,6 +975,7 @@ export function memberAddOp(input: {
             signerUserId: input.signerUserId,
             acceptance: row.acceptance,
             role: row.role,
+            scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
           }).pipe(Effect.map((rechecked) => ({ already: rechecked.alreadyAdded }))),
       });
       appended = outcome.appended;
@@ -965,11 +1036,10 @@ export function memberAddOp(input: {
 // member remove
 // ---------------------------------------------------------------------------
 
-export interface MemberRemoveSummary extends SweepOutcome {
+export interface MemberRemoveSummary extends MemberSweepOutcome {
   /** チェーンへ追記したか(false = 既に削除済み — ローテーションの続きから再開)。 */
   readonly appended: boolean;
   readonly targetUserId: string;
-  readonly skippedDeleted: readonly string[];
 }
 
 /** remove の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。 */
@@ -1016,6 +1086,15 @@ function ensureRemovable(input: {
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));
     }
+    // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
+    // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
+    if (!scopeContains(actor.scope, target.scope)) {
+      return yield* Effect.fail(
+        cliError(
+          `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`,
+        ),
+      );
+    }
     if (target.role === "owner" && ownersCount(input.verified) === 1) {
       return yield* Effect.fail(
         cliError("The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"),
@@ -1048,7 +1127,7 @@ export function memberRemoveOp<R>(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly rotate: SweepRotate<R>;
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.Effect<MemberRemoveSummary, CliError, R> {
   return Effect.gen(function* () {
     const first = yield* ensureRemovable({
@@ -1108,7 +1187,8 @@ export function memberRemoveOp<R>(input: {
       client: input.client,
       verified,
       mandates,
-      rotate: input.rotate,
+      actorUserId: input.signerUserId,
+      rotateWith: input.rotateWith,
     });
     return { appended, targetUserId: input.targetUserId, ...sweep };
   });
@@ -1133,8 +1213,10 @@ export interface MemberChangeRoleSummary {
     MemberAddSummary,
     "registered" | "alreadyRegistered" | "repaired" | "failed"
   > | null;
+  /** 対象に降格の義務(role-demoted)があるか(報告文言の材料 — 新 role からは再導出しない)。 */
+  readonly demoted: boolean;
   /** 降格 / 縮小に伴う義務環境のローテーションの結果(義務なし = null)。 */
-  readonly sweep: (SweepOutcome & { readonly skippedDeleted: readonly string[] }) | null;
+  readonly sweep: MemberSweepOutcome | null;
 }
 
 /** change_role の入力(役割と scope はどちらも省略 = 据え置き — 設計録 K4-A)。 */
@@ -1169,7 +1251,6 @@ function changeRoleRuleRejection(input: {
   readonly actor: ChainMember;
   readonly target: ChainMember;
   readonly newRole: Role;
-  readonly newScope: MemberScope;
 }): string | null {
   const base = targetedOpRejection({
     actor: input.actor,
@@ -1189,7 +1270,7 @@ function changeRoleRuleRejection(input: {
   ) {
     return "The last owner cannot be demoted (CRYPTO_SPEC §6.2 last-owner-protected)";
   }
-  return scopeContainmentRejection(input);
+  return null;
 }
 
 /**
@@ -1294,17 +1375,26 @@ function ensureRoleChangeable(input: {
       // (エントリは載ったが義務が未了)をここから再開できる形にする
       return { alreadyChanged: true, ...next };
     }
-    // `listed` の各 id はチェーン上に存在すること(§6.2 unknown-environment の手前判定)
-    yield* requireScopeEnvironmentsExist(input.verified, next.scope);
+    // 検査順は §6.2 の合意規則と同じ: role 規則 → last-owner → unknown-environment →
+    // scope-not-contained(独立レビュー N2)
     const rejection = changeRoleRuleRejection({
       verified: input.verified,
       actor,
       target,
       newRole: next.role,
-      newScope: next.scope,
     });
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));
+    }
+    yield* requireScopeEnvironmentsExist(input.verified, next.scope);
+    const containment = scopeContainmentRejection({
+      actor,
+      target,
+      newRole: next.role,
+      newScope: next.scope,
+    });
+    if (containment !== null) {
+      return yield* Effect.fail(cliError(containment));
     }
     return { alreadyChanged: false, ...next };
   });
@@ -1371,34 +1461,36 @@ function signChangeRoleAtView(input: {
 }
 
 /**
- * 対象の最後の change_role エントリの seq(拡大分・縮小分の具体化の基準 — 追記した
- * 実行では今回の追記そのもの、中断復旧ではチェーン履歴から取る)。
+ * 拡大分 = 対象の **全** `change_role` 履歴の拡大分(各エントリの直前状態との差)の
+ * 和集合のうち、現 scope に残る環境(pullfrog 指摘対応: 最後のエントリだけを見ると、
+ * 拡大バックフィルの中断中に第三者が別の change_role を積んだ場合に拡大分が空になり
+ * 再開されない。sweep 側が対象の全義務を畳むのと同じく、履歴全体から導く。409 で
+ * 冪等なので過剰分は「登録済み」に収束する)。縮小分は報告用で、最後のエントリの差。
  */
-function lastChangeRoleSeqFor(verified: VerifiedProject, targetUserId: string): number | null {
-  let last: number | null = null;
-  for (const entry of verified.entries) {
-    if (entry.op === "change_role" && entry.payload.targetUserId === targetUserId) {
-      last = entry.seq;
-    }
-  }
-  return last;
-}
-
-/**
- * 拡大分・縮小分 = 「対象の最後の change_role」の直前状態との差(追記した実行では
- * 今回の追記。中断復旧では履歴上の同じエントリ)。change_role が無ければ変化なし。
- */
-function lastScopeChangeOf(
+function scopeChangesOf(
   verified: VerifiedProject,
   target: ChainMember,
 ): { readonly widened: readonly string[]; readonly narrowed: readonly string[] } {
-  const changeSeq = lastChangeRoleSeqFor(verified, target.userId);
-  const before =
-    changeSeq === null ? undefined : verified.history.memberStateAt(target.userId, changeSeq - 1);
-  if (changeSeq === null || before === undefined) {
-    return { widened: [], narrowed: [] };
+  const current = new Set(environmentsOfScopeAt(verified, target.scope, verified.state.headSeq));
+  const widened = new Set<string>();
+  let narrowed: readonly string[] = [];
+  for (const entry of verified.entries) {
+    if (entry.op !== "change_role" || entry.payload.targetUserId !== target.userId) {
+      continue;
+    }
+    const before = verified.history.memberStateAt(target.userId, entry.seq - 1);
+    if (before === undefined) {
+      continue;
+    }
+    const change = scopeChangeAt(verified, before.scope, memberScopeOf(entry.payload), entry.seq);
+    for (const environmentId of change.widened) {
+      if (current.has(environmentId)) {
+        widened.add(environmentId);
+      }
+    }
+    narrowed = change.narrowed;
   }
-  return scopeChangeAt(verified, before.scope, target.scope, changeSeq);
+  return { widened: [...widened].toSorted(compareCodePoints), narrowed };
 }
 
 /**
@@ -1476,7 +1568,7 @@ export function memberChangeRoleOp<R>(input: {
       );
     }
 
-    const change = lastScopeChangeOf(verified, target);
+    const change = scopeChangesOf(verified, target);
 
     // (1) 拡大分のバックフィル — actor は包含規則により DEK を持つ(§12-6)。409 で冪等
     const backfill =
@@ -1495,12 +1587,18 @@ export function memberChangeRoleOp<R>(input: {
 
     // (2) 降格 / 縮小の義務環境の rotate(§7)。対象の義務エントリが無ければ義務自体が
     // 発生していない(昇格・拡大・最初から reader の no-op)— 他人の未収束義務は拾わない
-    const sweep = yield* sweepChangeRoleMandates({
-      client: input.client,
-      verified,
-      targetUserId: input.targetUserId,
-      rotateWith: input.rotateWith,
-    });
+    const mandates = memberMandatesFor(verified, input.targetUserId);
+    const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
+    const sweep =
+      mandates.length === 0
+        ? null
+        : yield* sweepAfterMandate({
+            client: input.client,
+            verified,
+            mandates,
+            actorUserId: input.signerUserId,
+            rotateWith: input.rotateWith,
+          });
     return {
       appended,
       targetUserId: input.targetUserId,
@@ -1509,30 +1607,9 @@ export function memberChangeRoleOp<R>(input: {
       widenedEnvironmentIds: change.widened,
       narrowedEnvironmentIds: change.narrowed,
       backfill,
+      demoted,
       sweep,
     };
-  });
-}
-
-/** 対象の義務(降格 / 縮小)があれば sweep(理由は降格優先)、無ければ null。 */
-function sweepChangeRoleMandates<R>(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly targetUserId: string;
-  readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<MemberChangeRoleSummary["sweep"], CliError, R> {
-  const mandates = memberMandatesFor(input.verified, input.targetUserId);
-  if (mandates.length === 0) {
-    return Effect.succeed(null);
-  }
-  const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
-  return sweepAfterMandate({
-    client: input.client,
-    verified: input.verified,
-    mandates,
-    rotate: input.rotateWith(
-      demoted ? ROLE_DEMOTED_ROTATION_REASON : SCOPE_NARROWED_ROTATION_REASON,
-    ),
   });
 }
 

@@ -39,11 +39,8 @@ export function sameScope(
 ): boolean {
   const left = toMemberScope(a);
   const right = toMemberScope(b);
-  if (left.kind !== right.kind) {
-    return false;
-  }
   if (left.kind === "all" || right.kind === "all") {
-    return true;
+    return left.kind === right.kind;
   }
   const ids = new Set(left.environmentIds);
   return (
@@ -74,7 +71,7 @@ export function scopeContains(actor: MemberScope, target: MemberScope): boolean 
 }
 
 /**
- * `--env <id>`(反復)/ `--all-envs` からの scope の組み立て(`invite create` /
+ * `--env <id>`(反復)/ `--all-envs` / `--no-envs` からの scope の組み立て(`invite create` /
  * `member change-role` 共通)。形式検査(§12-1)・重複拒否(§6.2 の構造規則)・
  * 上限 256・コードポイント昇順(生成は昇順 SHOULD)。両方省略なら null(= 呼び出し
  * 側の既定 — 招待は all、change-role は据え置き)。
@@ -82,12 +79,18 @@ export function scopeContains(actor: MemberScope, target: MemberScope): boolean 
 export function scopeFromFlags(input: {
   readonly env: readonly string[];
   readonly allEnvs: boolean;
+  /** `--no-envs` = `listed{}`(§6.2 の空 listed — 管理だけする admin・後で入れる予定)。 */
+  readonly noEnvs?: boolean;
 }): Effect.Effect<MemberScope | null, CliError> {
-  if (input.allEnvs && input.env.length > 0) {
-    return Effect.fail(usageError("--env and --all-envs cannot be combined"));
+  const modes = [input.allEnvs, input.noEnvs === true, input.env.length > 0].filter(Boolean);
+  if (modes.length > 1) {
+    return Effect.fail(usageError("--env, --all-envs and --no-envs cannot be combined"));
   }
   if (input.allEnvs) {
     return Effect.succeed(ALL_SCOPE);
+  }
+  if (input.noEnvs === true) {
+    return Effect.succeed({ kind: "listed", environmentIds: [] });
   }
   if (input.env.length === 0) {
     return Effect.succeed(null);

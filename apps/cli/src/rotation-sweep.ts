@@ -164,15 +164,13 @@ function changeRoleMandates(
   entry: ChainEntry & { readonly op: "change_role" },
 ): readonly RotationMandate[] {
   const before = verified.history.memberStateAt(entry.payload.targetUserId, entry.seq - 1);
-  if (before === undefined) {
-    return [];
-  }
+  // 直前の状態が導出できなければ fail-closed(remove の分岐と同じ規律 — pullfrog 指摘):
+  // 「書き手だった・全環境を持っていた」側に倒して義務を落とさない
+  const beforeScope: MemberScope = before?.scope ?? ALL_SCOPE;
+  const wasWriter = before === undefined || ROLE_RANK[before.role] >= ROLE_RANK.member;
   const after = memberScopeOf(entry.payload);
   const mandates: RotationMandate[] = [];
-  if (
-    ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member &&
-    ROLE_RANK[before.role] >= ROLE_RANK.member
-  ) {
+  if (ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member && wasWriter) {
     mandates.push({
       kind: "role-demoted",
       target: entry.payload.targetUserId,
@@ -180,7 +178,7 @@ function changeRoleMandates(
       environmentIds: environmentsOfScopeAt(verified, after, entry.seq),
     });
   }
-  const { narrowed } = scopeChangeAt(verified, before.scope, after, entry.seq);
+  const { narrowed } = scopeChangeAt(verified, beforeScope, after, entry.seq);
   if (narrowed.length > 0) {
     mandates.push({
       kind: "scope-narrowed",
