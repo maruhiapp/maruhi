@@ -2852,6 +2852,43 @@ def gen_chain_entries():
         24, readded + [revote], members_24_without_devmember, canonical_policy, {},
         keys=rekeyed_owner_keys,
     )
+    # (7d) ⑤ の裏側 — 同一鍵での再追加(§6.2 が「同一人物の復帰」として許容)では鍵の支配者が
+    #      変わらないため旧票は生きている(在籍区間〔tenure〕束縛を採らなかった側の固定。
+    #      pullfrog 第 1 巡 — 採らなかった案は設計録 §8 K2-11 ⑤ 行)
+    readd_owner1_same_key = propose_payload("add_member", {
+        "target_user_id": owner_id, "enc_pub_hex": owner["enc_pub_hex"],
+        "sig_pub_hex": owner["sig_pub_hex"], "role": "owner", **scope_fields("all", []),
+    }, EXPIRES)
+    same_key = readded[:4] + extend(28, readded[3]["entry_hash_hex"], [
+        ("propose", owner2_id, readd_owner1_same_key, t0 + 28000),               # 29: 同一鍵で owner として再追加の提案
+    ])
+    p29s = same_key[-1]
+    same_key += extend(29, p29s["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p29s), t0 + 29000),                    # 30: 適用 — owner-0001 は同一鍵で owner
+    ])
+    extended_chains["readded-approver-same-key"] = chain_doc(
+        "readded-approver-vote と同じ経路で owner-0001 を削除(seq 27 → 28)した後、**同一の鍵**で"
+        " owner として再追加(seq 29 → 30)。(0001, 鍵) の票は S に残り、0001 は同じ鍵を持つ現 owner"
+        "なので票は生きている(pending・approvals = [(0001, 鍵)] — 在籍区間で束縛する実装との"
+        "分岐点。同一鍵の再追加は §6.2 が許容し鍵の支配者が変わらないため、票の失効理由がない)",
+        24, same_key, members_24, canonical_policy,
+        pending_map((p25k, "admin", [owner_id])),
+    )
+    same_key_completed = same_key + extend(30, same_key[-1]["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p25k), t0 + 30000),                    # 31: {0001(同一鍵・現 owner), 0014} = 2 → 適用
+    ])
+    extended_chains["readded-approver-same-key-completed"] = chain_doc(
+        "readded-approver-same-key の先で owner-0014 が投票(seq 31)し、旧票 (0001, 鍵) が生きている"
+        "ため {0001, 0014} = 2 で完成する(在籍区間束縛の実装は 1 票にしかならず pending に残す —"
+        " ここで分かれる)",
+        24, same_key_completed, members_24_without_devmember, canonical_policy, {},
+    )
+    add_es(
+        "authz-approve-readded-same-key-duplicate", 31, same_key[-1]["entry_hash_hex"], "approve", owner_id,
+        approve_of(p25k), t0 + 30000, "duplicate-approval",
+        "同一鍵で再追加された投票者の 2 票目: (0001, 鍵) は S の要素のままなので duplicate-approval(別鍵で再追加された readded-approver-revote との対比)",
+        chain="readded-approver-same-key",
+    )
     # (8) 方針の縮小(ops から remove_member を外す)と pending 提案の関係
     NARROW_OPS = ["grant_server", "set_approval_policy"]
     narrowed = extend(23, head23, [
