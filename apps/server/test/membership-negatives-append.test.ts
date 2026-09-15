@@ -174,7 +174,7 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
 const EXPECTED_PARTITION = {
   checkpoint: 20,
   composite: 24,
-  skipped: 57,
+  skipped: 58,
   fourEyesGuard: 7,
   structureBeforeSignature: 0,
   wireSchema: 1,
