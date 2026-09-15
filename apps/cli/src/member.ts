@@ -1610,7 +1610,11 @@ export function memberChangeRoleOp<R>(input: {
     const change = scopeChangesOf(verified, target);
     // 検証済み削除の環境は scope に残っていても拡大分から外す(scope 外の注記を「誰も
     // 埋められない環境」で出し続けない — pullfrog 指摘。backfillAllEnvironments と同じ集合)
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, verified);
+    // 拡大分が無ければ問い合わせない(追記後の余計な要求で exit を汚さない — resolveUnconvergedMandates と同じ前置き)
+    const deletedVerified =
+      change.widened.length === 0
+        ? new Set<string>()
+        : yield* verifiedDeletedEnvironmentSet(input.client, verified);
     const { widened, widenedOutOfScope } = splitWidenedByActorScope(
       verified,
       input.signerUserId,
