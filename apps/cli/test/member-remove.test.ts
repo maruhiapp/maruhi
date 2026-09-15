@@ -104,6 +104,8 @@ async function makeRemoveServer(input: {
   readonly chainAfterConflict?: BuiltChain;
   /** rotate 複合を送る実行者(既定 = owner)。受理したマニフェストの issuer と保存する自分宛ラップの受信者。 */
   readonly rotator?: TestUser;
+  /** 一覧に status = "deleted" のメタステートメントで載せる環境(検証済み削除)。 */
+  readonly deletedEnvironments?: readonly string[];
 }): Promise<RemoveServerState> {
   const rotator = input.rotator ?? owner;
   const projectId = input.built.projectId;
@@ -118,14 +120,19 @@ async function makeRemoveServer(input: {
   const manifests = new Map<string, WireDistributedManifest>();
   /** 環境ごとの保存済みチェックポイントスナップショット(§16-2 — 変数なし = 空列挙)。 */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
+  const deletedEnvironments = input.deletedEnvironments ?? [];
   const listedStatements = await Promise.all(
-    Object.keys(environments).map((environmentId) =>
+    [...new Set([...Object.keys(environments), ...deletedEnvironments])].map((environmentId) =>
       environmentStatementFor({
         projectId,
         environmentId,
         name: environmentId,
         author: owner,
         head: headOf(input.built, 1),
+        // 削除は tombstone(status deleted・metaVersion + 1 — §12-5)
+        ...(deletedEnvironments.includes(environmentId)
+          ? { status: "deleted" as const, metaVersion: 2 }
+          : {}),
       }),
     ),
   );
@@ -1063,6 +1070,35 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(env.errors.join("\n")).toContain(
       `1 environment widened earlier for this member (${ENV_PROD}) is outside your scope, so you cannot backfill it`,
     );
+  });
+
+  it("検証済み削除の環境は拡大分から外れ、scope 外の注記にも出ない(pullfrog 指摘)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    // 上のケースと同じ「他人の拡大が未収束」だが、prod は後から削除されている。
+    // 誰も埋められない環境なので注記自体を出さない(§12-6 の義務は削除で消える)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: {},
+      deletedEnvironments: [ENV_PROD],
+    });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(
+        ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
   });
 
   it("listed の admin は自分の scope 外の対象を remove できない(原則 1 の手前判定 — pullfrog)", async () => {
