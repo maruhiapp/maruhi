@@ -24,8 +24,8 @@ import { ChainHistoryBuilder, type ChainHistoryIndex } from "./chain-history.ts"
 import {
   APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
-  type ApprovalVote,
   type ApprovalTargetOp,
+  type ApprovalVote,
   type ChainEntry,
   type ChainMember,
   type ChainState,
