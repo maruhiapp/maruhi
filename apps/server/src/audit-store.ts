@@ -56,8 +56,11 @@ export interface MembershipEventRow {
 export interface GrantEventRow {
   readonly seq: number;
   readonly event: string;
-  /** chain.server_granted の payload から。revoked 行は空配列。 */
-  readonly scopeEnvironmentIds: readonly string[];
+  /**
+   * chain.server_granted の payload から。revoked 行は空配列。null = payload から
+   * 読めない壊れた行(窓導出が全環境として扱う fail-safe — 設計録 §9 K3-F)。
+   */
+  readonly scopeEnvironmentIds: readonly string[] | null;
 }
 
 /** Q2: 変数の存在区間イベント(var.created / var.deleted)。 */
@@ -869,10 +872,15 @@ function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null 
   }
 }
 
-/** chain.server_granted の payload から開示スコープを取り出す(それ以外は空)。 */
-function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] {
+/**
+ * payload の scopeEnvironmentIds を読む。配列でない・非 string 要素を含む壊れた行は
+ * null(黙って縮めた列挙 = 窓の見逃しを作らない — 設計録 §9 K3-F)。
+ */
+function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
-  return Array.isArray(scope) ? scope.filter((id): id is string => typeof id === "string") : [];
+  return Array.isArray(scope) && scope.every((id) => typeof id === "string")
+    ? (scope as readonly string[])
+    : null;
 }
 
 /**
@@ -885,10 +893,8 @@ function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): Sco
   if (kind === "all") {
     return { kind: "all" };
   }
-  if (kind === "listed" && Array.isArray(payload?.["scopeEnvironmentIds"])) {
-    return { kind: "listed", environmentIds: scopeOf(payload) };
-  }
-  return null;
+  const ids = kind === "listed" ? scopeOf(payload) : null;
+  return ids === null ? null : { kind: "listed", environmentIds: ids };
 }
 
 /**
@@ -944,7 +950,10 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .map((row) => ({
         seq: Number(row["seq"]),
         event: String(row["event"]),
-        scopeEnvironmentIds: scopeOf(parsePayload(row["payload"])),
+        scopeEnvironmentIds:
+          String(row["event"]) === "chain.server_revoked"
+            ? []
+            : scopeOf(parsePayload(row["payload"])),
       })),
   // Q2: (event, seq) 索引(ae_event)
   variableLifecycles: () =>

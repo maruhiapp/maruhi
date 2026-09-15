@@ -174,11 +174,13 @@ function grantTransitions(
   events: readonly {
     readonly seq: number;
     readonly event: string;
-    readonly scopeEnvironmentIds: readonly string[];
+    readonly scopeEnvironmentIds: readonly string[] | null;
   }[],
 ): readonly ScopeTransition[] {
   const transitions: ScopeTransition[] = [];
-  let disclosed: Set<string> | null = null;
+  // 区間内の開示集合。null = 区間外。"all" = scope を読めない grant 行を含む
+  // 区間(fail-safe に全環境 — member 軸の scope 不明と同じ倒し方。K3-F)
+  let disclosed: Set<string> | "all" | null = null;
   for (const event of events) {
     if (event.event === "chain.server_revoked") {
       transitions.push({ seq: event.seq, kind: "close", scope: ALL_SCOPE });
@@ -186,11 +188,14 @@ function grantTransitions(
       continue;
     }
     const kind = disclosed === null ? "open" : "update";
-    disclosed = new Set([...(disclosed ?? []), ...event.scopeEnvironmentIds]);
+    disclosed =
+      disclosed === "all" || event.scopeEnvironmentIds === null
+        ? "all"
+        : new Set([...(disclosed ?? []), ...event.scopeEnvironmentIds]);
     transitions.push({
       seq: event.seq,
       kind,
-      scope: { kind: "listed", environmentIds: [...disclosed] },
+      scope: disclosed === "all" ? ALL_SCOPE : { kind: "listed", environmentIds: [...disclosed] },
     });
   }
   return transitions;
@@ -378,6 +383,9 @@ export function detectRoleChange(input: {
   const demoted =
     (previousRole === null || WRITER_ROLES.has(previousRole)) &&
     (trigger.role === null || !WRITER_ROLES.has(trigger.role));
+  // 契機行の scope が読めない場合、窓導出は all に倒して「縮小分」を検出できない
+  // (窓が閉じない)ため、降格と同じく契機直前の全窓を候補にする(見逃さない側)
+  const closeAll = demoted || trigger.scope === null;
   return detectForMember({
     ...input,
     trigger: "change_role",
@@ -390,7 +398,7 @@ export function detectRoleChange(input: {
         }
         // 降格: 契機時点で開いたままの窓(新 scope に残る環境)を契機 seq で切る
         // (遷移列は契機行で終わるので、契機より後まで続く窓 = 未閉包の窓)
-        if (demoted && window.start < trigger.seq && window.end > trigger.seq) {
+        if (closeAll && window.start < trigger.seq && window.end > trigger.seq) {
           return [{ start: window.start, end: trigger.seq }];
         }
         return [];

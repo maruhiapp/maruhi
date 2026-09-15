@@ -306,7 +306,11 @@ function fakeRead(input: {
 
 /** revoke_server 変種の純関数テスト用: grant 区間とリース発行行だけを持つ読み取り面。 */
 const grantRead = (
-  events: readonly { seq: number; event: string; scopeEnvironmentIds: readonly string[] }[],
+  events: readonly {
+    seq: number;
+    event: string;
+    scopeEnvironmentIds: readonly string[] | null;
+  }[],
   access: readonly { seq: number; environmentId: string }[],
 ): AuditRotationRead => ({
   membershipEventsFor: () => [],
@@ -492,6 +496,43 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
       ["v", "readable"],
       ["w", "read"],
     ]);
+  });
+
+  it("scope を読めない grant 行を含む区間は全環境として窓を開く(grant 軸も見逃さない側)", () => {
+    const events = detectServerRevocation({
+      read: grantRead(
+        [
+          { seq: 2, event: "chain.server_granted", scopeEnvironmentIds: null },
+          { seq: 8, event: "chain.server_revoked", scopeEnvironmentIds: [] },
+        ],
+        [],
+      ),
+      serverKeyFingerprintHex: "ab".repeat(16),
+      triggerChainSeq: 7,
+      nowMs: 1,
+    });
+    expect(events.map((event) => event.variableId).toSorted()).toEqual(["v", "w"]);
+  });
+
+  it("契機行の scope が読めない change_role は縮小分を特定できないため契機直前の全窓を候補にする", () => {
+    const events = detectRoleChange({
+      read: fakeRead({
+        membership: [
+          {
+            seq: 2,
+            event: "chain.member_added",
+            role: "member",
+            scope: { kind: "listed", environmentIds: ["env-a"] },
+          },
+          { seq: 6, event: "chain.role_changed", role: "member", scope: null },
+        ],
+        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+      }),
+      targetUserId: "u",
+      triggerChainSeq: 5,
+      nowMs: 1,
+    });
+    expect(events.map((event) => event.variableId)).toEqual(["v"]);
   });
 
   it("K3 前の rotation.recommended 行(trigger なし)は target 列から補完する", () => {

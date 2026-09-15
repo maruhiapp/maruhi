@@ -658,7 +658,7 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 | `all` の意味 | `all` = 全環境(将来分を含む) | 窓は seq 区間なので、`all` の期間中に作成された変数も存在区間との重なりで自然に候補になる |
 | `change_role` の検出契機 | (i) **降格(旧 role ≥ member かつ新 role = reader)= 契機直前の scope の全環境、縮小 = 旧 \ 新の環境。同時に起きた場合は和集合で 1 (variable × environment) 1 行(§3.3 の粒度 — 候補 I)**。(ii) 降格を「窓を閉じる」と扱い在籍区間も閉じる | (i)。降格者は reader として DEK を受け取り続ける(§7)ので窓自体は閉じず、検出だけを「契機 seq で切った窓」で行う。後の remove で再び候補になるのは正しい(reader も DEK を持つ)。§4.1 change_role 変種の「閉じた窓の環境に限る」は検出範囲の限定であり、在籍区間の終了ではない |
 | remove 時の候補 | (i) **在籍区間内の全窓(過去に縮小で閉じた窓を含む)** (ii) 現 scope のみ | (i) = §4.1 手順 2 の字面。縮小時に出した行と重複する行が remove 時に再度出うるが、同対の複数有効 recommended は既存規律(再削除等 — UI で束ねる)と同じで、検出は多く出す側が安全。CRYPTO_SPEC §7 の義務が「現 scope」なのは履行者側の話で、検出の候補とは別 |
-| `trigger` | (i) **payload に `trigger`(3 変種すべて)。ワイヤ `RotationFlagSchema.trigger` は optionalKey で、サーバーは常に載せる(K3 前の保存行は target の有無から補完: targetUserId → `remove_member`、targetKeyFingerprint → `revoke_server`)** (ii) ワイヤを必須にする | (i)。`storedRecipientEncPubHex`(§12-6)の先例と同じ「後方互換の追加のみ」(新 CLI × 旧サーバーで decode が壊れない)。K3 前の行は §2 K3-F のとおり存在しない前提だが、補完は無害 |
+| `trigger` | (i) **payload に `trigger`(3 変種すべて)。ワイヤ `RotationFlagSchema.trigger` は optionalKey で、サーバーは常に載せる(K3 前の保存行は target の有無から補完: targetUserId → `remove_member`、targetKeyFingerprint → `revoke_server`)** (ii) ワイヤを必須にする | (i)。`storedRecipientEncPubHex`(§12-6)の先例と同じ「後方互換の追加のみ」(新 CLI × 旧サーバーで decode が壊れない)。K3 前の行は K3-F のとおり存在しない前提だが、補完は無害 |
 | 表示側 | (i) **Web `flagTrigger` と CLI `describeTarget` は `trigger` があればそれを使い、無ければ従来の推定** (ii) K4 / K6 へ送る | (i)。無いと `trigger = change_role` の行が「member removed」と誤表示する。読み取り専用の 1 行変更で、K3 が足したワイヤ欄の消費側 |
 
 **探索(論点ごと — 独立レビュー B-7 で論点別に書き直した)**: 第 2 巡(上位互換 / 銀の弾丸): Q1 の入力 — 「ミラー行でなくチェーン本体から窓を復元する」案は AUDIT_SPEC §4.1 の「チェーンミラーが scope を写すためクエリの変更だけで成立」に反し、監査 seq 座標系(読み取り行との重なり判定)を失うため棄却。窓の復元 — 「窓導出を member / grant で共有する」は (i) に含めた(上位互換として採用済み)。`all` の意味 — 「`all` を現存環境の列挙に展開する」案は CRYPTO_SPEC §6.2 の集合代数(`all` = U、将来分を含む)に反し、`all` の期間中に作成された変数を見逃すため棄却(代替案なし)。`change_role` の検出契機 — 「降格で在籍区間を閉じる」(ii) は棄却済み(reader は DEK を受け取り続ける)、他に案なし。remove 時の候補 — 「現 scope のみ」(ii) は縮小時の検出が取り下げ済みだった場合に見逃しを生むため棄却(§4.1 手順 2 の字面に従う)。`trigger` — 「必須にする」は互換の欠点を持つため上位互換でない。表示側 — 「K4 / K6 へ送る」(ii) は誤表示を残すため棄却。銀の弾丸(窓を持たず「現 scope」だけで検出する)は §4.1 手順 2 の字面と、縮小前に読めた環境の見逃し(fail open)で棄却。以上、第 2 巡は棄却案のみ = 空巡。第 3 巡: 全論点で新案なし(空巡)。打ち止め(列挙 1 巡 + 空巡 2)。
@@ -670,7 +670,7 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 ### K3-F. 既存データとの互換(単巡 — 事実確認)
 
 - `apps/server/test/es-migration.test.ts` が旧形式の add_member / 招待発行の fail-closed(400 / 422 `bad-signature`)を固定し、`docs/SELF_HOSTING.md` "Updates"(2026-09-14 ES + PF1 K2 の段落)が既存プロジェクトの再作成を規定している。K2 以降に受理されたチェーンは全エントリが scope 付きで、`ChainMember.scope` は crypto の型で必須。したがって **互換経路は不要**。
-- 監査ミラーの `chain.member_added` 行に scope が無い DO は「再作成対象」で存在しない前提だが、Q1 の payload 読み出しは防御的に parse し、scope が読めない行は **`all`(旧 v1 の意味論 = 全環境)として窓を開く**。検出は「見逃さない側」が fail-safe(拒否側ではない)。**同じ規律を全軸に適用する(独立レビュー B-3 / B-4 / B-5 で揃えた)**: `listed` で id 列が配列でない行も `all`(listed{} = 窓ゼロにしない)、role が読めない行は「降格だった」側(旧 role 不明 = 書き手だった、新 role 不明 = 書き手でなくなった)、在籍区間の外に現れた `update`(`chain.role_changed`)は open と同じに扱い、grant の再 grant は scope を単調に和集合で積む(縮小する再 grant が仮に通っても失効前に窓を閉じない)。到達不能な経路だが、原則(見逃さない側)と実装を一致させる。`scope-rotation.test.ts` の純関数テストで固定。
+- 監査ミラーの `chain.member_added` 行に scope が無い DO は「再作成対象」で存在しない前提だが、Q1 の payload 読み出しは防御的に parse し、scope が読めない行は **`all`(旧 v1 の意味論 = 全環境)として窓を開く**。検出は「見逃さない側」が fail-safe(拒否側ではない)。**同じ規律を全軸に適用する(独立レビュー B-3 / B-4 / B-5 で揃えた)**: `listed` で id 列が配列でない行も `all`(listed{} = 窓ゼロにしない)、role が読めない行は「降格だった」側(旧 role 不明 = 書き手だった、新 role 不明 = 書き手でなくなった)、在籍区間の外に現れた `update`(`chain.role_changed`)は open と同じに扱い、grant の再 grant は scope を単調に和集合で積む(縮小する再 grant が仮に通っても失効前に窓を閉じない)。**第 2 巡で揃えた残り 3 軸**(独立レビュー B′-1 / C′-1 / C′-2): grant 行の scope が読めない(配列でない・非 string 要素を含む)区間は全環境として窓を開く(grant の scope は `all` を持たないが、検出の倒し方は member 軸と同じ)、member 行の id 列に非 string 要素があれば黙って縮めず `all`、`change_role` の契機行の scope が読めない場合は縮小分を特定できないため降格と同じく契機直前の全窓を候補にする。到達不能な経路だが、原則(見逃さない側)と実装を全軸で一致させる。`scope-rotation.test.ts` の純関数テストで固定。
 
 ### K3-G. チェーン op を伴う経路の 403 と合意規則 422 の前後(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -695,12 +695,6 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 
 四眼の適用行(同一 `chain_seq` に 2 行 — AUDIT_SPEC §3.4)がサーバーに現れるのは受理ガード(K2-10)を外す K5 であり、K3 の時点でサーバーには 1 エントリ 1 ミラー行しか存在しない。K3 の変更が `chain_seq` の一意性を新たに前提にしないことの確認: (1) 要ローテーション検出は監査 seq 順の畳み込みで、`chain_seq` は `triggerChainSeq` として payload に写すだけ、(2) Q1 の `chain.role_changed` 読み取りは seq 順の scope 遷移の畳み込みで、同一 `chain_seq` に適用行が加わっても(K5)遷移は監査 seq の順に 1 回ずつ適用されるだけで壊れない、(3) 3 変種の `trigger` は行の識別に `chain_seq` を使わない。したがって K1-3 の「K3 / K5」は **K5 に据え置く**(`audit verify` の全単射規則の改訂は K5 の PF1 ミラー行と同じ PR)。
 
-### K3-J. 申し送り(K4 以降へ — PR #178 のレビューから)
-
-- **scope 縮小後の旧ラップ**: K3 の 403 は受理面のガードであり、縮小で scope 外になったメンバーの手元の既存ラップ(保存済み DEK ラップ行を含む)を暗号的に無効化するのは K4 の sweep(縮小分の rotate 義務 — CRYPTO_SPEC §7)以降。K3 時点で `insufficient-scope` を「アクセス遮断」と説明しない(CLI 文言は現状そうなっていない — pullfrog 第 1 巡)
-- **バックフィルの liveness**: DEK ラップ登録者は対象環境を scope に含む必要がある(§12-6 末尾)ため、「誰も scope に含まない環境」が生じるとバックフィルが詰まる。owner は常に `all`(§6.2 `scope-role-mismatch`)なので現状は生じないが、owner の scope を将来 listed にする改訂があれば、この不変条件を先に確認する(pullfrog 第 1 巡)
-- **ベクター名と受理面の順**: `authz-rotate-unknown-precedes-out-of-scope` / `authz-create-env-duplicate-precedes-out-of-scope` は合意規則層の検査順を指す名前で、受理面では scope 403 が先(K3-G)。K3 はベクターを触らないため名前はそのまま(テストのコメントで明記)。次にベクターを再生成する段(K5 等)で改名してよい
-
 ### K3-I. 実装録(裁定の反映先)
 
 - api-schema: `errors/auth.ts` の `ForbiddenReasonSchema` に `insufficient-scope`、`rotation-api.ts` の `RotationFlagSchema` に `trigger`(optionalKey)。`errors/deks.ts` は不変(`scope-out-of-range` の JSDoc に member 側の適用を追記)
@@ -708,3 +702,9 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 - core / CLI / Web: `packages/core/src/audit.ts` は不変。CLI `failure.ts` の reason 別文言と `rotation.ts` の trigger 表示、Web `ProjectScreen.tsx` の `flagTrigger`
 - 正本: AUDIT_SPEC §4.2 Q1 の列挙訂正(索引要件の記述 — 合意規則ではない)+ Status 行
 - テスト(`apps/server/test/`): 新規 `scope-authz.test.ts`(§12-3 の各行を 1 つずつ・判定順・チェーン op 経路の 403・3′)、`scope-dek.test.ts`(R(E))、`scope-rotation.test.ts`(環境別窓・change_role 変種・trigger・ミラー payload からの復元・窓導出の fail-safe)、`scope-invariants.test.ts`(リース不変・可視性不変)、`scope-invites.test.ts`(招待行の scope)、既存の composite negatives の期待更新(422 → 403)と `rotation.test.ts` の trigger 期待
+
+### K3-J. 申し送り(K4 以降へ — PR #178 のレビューから)
+
+- **scope 縮小後の旧ラップ**: K3 の 403 は受理面のガードであり、縮小で scope 外になったメンバーの手元の既存ラップ(保存済み DEK ラップ行を含む)を暗号的に無効化するのは K4 の sweep(縮小分の rotate 義務 — CRYPTO_SPEC §7)以降。K3 時点で `insufficient-scope` を「アクセス遮断」と説明しない(CLI 文言は現状そうなっていない — pullfrog 第 1 巡)
+- **バックフィルの liveness**: DEK ラップ登録者は対象環境を scope に含む必要がある(§12-6 末尾)ため、「誰も scope に含まない環境」が生じるとバックフィルが詰まる。owner は常に `all`(§6.2 `scope-role-mismatch`)なので現状は生じないが、owner の scope を将来 listed にする改訂があれば、この不変条件を先に確認する(pullfrog 第 1 巡)
+- **ベクター名と受理面の順**: `authz-rotate-unknown-precedes-out-of-scope` / `authz-create-env-duplicate-precedes-out-of-scope` は合意規則層の検査順を指す名前で、受理面では scope 403 が先(K3-G)。K3 はベクターを触らないため名前はそのまま(テストのコメントで明記)。次にベクターを再生成する段(K5 等)で改名してよい
