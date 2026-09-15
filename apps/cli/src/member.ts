@@ -1517,19 +1517,33 @@ export function scopeChangesOf(
  * 義務の環境集合 ⊆ 権限変化の環境集合 ⊆ actor scope。独立レビュー S6)。sweep と同じく
  * 注記に回し、その環境を scope に持つメンバーの再実行に委ねる。
  */
-function splitWidenedByActorScope(
-  verified: VerifiedProject,
-  actorUserId: string,
-  widened: readonly string[],
-): { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] } {
-  const actor = verified.state.members.get(actorUserId);
-  const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
-  return {
-    widened: widened.filter((environmentId) => scopeIncludesEnvironment(actorScope, environmentId)),
-    widenedOutOfScope: widened.filter(
-      (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
-    ),
-  };
+function splitWidenedByActorScope(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly actorUserId: string;
+  readonly widened: readonly string[];
+}): Effect.Effect<
+  { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] },
+  CliError
+> {
+  return Effect.gen(function* () {
+    // 検証済み削除の環境は scope に残っていても拡大分から外す(scope 外の注記を「誰も
+    // 埋められない環境」で出し続けない — pullfrog 指摘。backfillAllEnvironments と同じ集合)。
+    // 拡大分が無ければ問い合わせない(追記後の余計な要求で exit を汚さない)
+    const deletedVerified =
+      input.widened.length === 0
+        ? new Set<string>()
+        : yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    const live = input.widened.filter((environmentId) => !deletedVerified.has(environmentId));
+    const actor = input.verified.state.members.get(input.actorUserId);
+    const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
+    return {
+      widened: live.filter((environmentId) => scopeIncludesEnvironment(actorScope, environmentId)),
+      widenedOutOfScope: live.filter(
+        (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
+      ),
+    };
+  });
 }
 
 /**
@@ -1608,18 +1622,12 @@ export function memberChangeRoleOp<R>(input: {
     }
 
     const change = scopeChangesOf(verified, target);
-    // 検証済み削除の環境は scope に残っていても拡大分から外す(scope 外の注記を「誰も
-    // 埋められない環境」で出し続けない — pullfrog 指摘。backfillAllEnvironments と同じ集合)
-    // 拡大分が無ければ問い合わせない(追記後の余計な要求で exit を汚さない — resolveUnconvergedMandates と同じ前置き)
-    const deletedVerified =
-      change.widened.length === 0
-        ? new Set<string>()
-        : yield* verifiedDeletedEnvironmentSet(input.client, verified);
-    const { widened, widenedOutOfScope } = splitWidenedByActorScope(
+    const { widened, widenedOutOfScope } = yield* splitWidenedByActorScope({
+      client: input.client,
       verified,
-      input.signerUserId,
-      change.widened.filter((environmentId) => !deletedVerified.has(environmentId)),
-    );
+      actorUserId: input.signerUserId,
+      widened: change.widened,
+    });
 
     // (1) 拡大分のバックフィル — actor は包含規則により DEK を持つ(§12-6)。409 で冪等
     const backfill =
