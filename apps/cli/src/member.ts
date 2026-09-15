@@ -1342,6 +1342,35 @@ function signChangeRoleEntry(input: {
 }
 
 /**
+ * 署名するビューの対象の現状から新 (role, scope) を解決して署名する(据え置き側は
+ * **そのビュー**の現状)。CAS リトライで並行の change_role が据え置き側を変えていても
+ * 上書きしない(設計録 K4-A の「省略 = 変えない」— Cursor Bugbot 指摘対応)。
+ */
+function signChangeRoleAtView(input: {
+  readonly verified: VerifiedProject;
+  readonly signerUserId: string;
+  readonly targetUserId: string;
+  readonly request: ChangeRoleRequest;
+  readonly signingKeyPair: SigningKeyPair;
+}): Effect.Effect<ChainEntry, CliError> {
+  return Effect.gen(function* () {
+    const current = input.verified.state.members.get(input.targetUserId);
+    if (current === undefined) {
+      return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
+    }
+    const next = yield* resolveRoleChange(current, input.request);
+    return yield* signChangeRoleEntry({
+      verified: input.verified,
+      signerUserId: input.signerUserId,
+      targetUserId: input.targetUserId,
+      newRole: next.role,
+      newScope: next.scope,
+      signingKeyPair: input.signingKeyPair,
+    });
+  });
+}
+
+/**
  * 対象の最後の change_role エントリの seq(拡大分・縮小分の具体化の基準 — 追記した
  * 実行では今回の追記そのもの、中断復旧ではチェーン履歴から取る)。
  */
@@ -1405,13 +1434,14 @@ export function memberChangeRoleOp<R>(input: {
         verified,
         resync: input.resync,
         opLabel: "change_role",
+        // 省略した側(role / scope)は**署名するビュー**の対象の現状から解決する
+        // (signChangeRoleAtView — Cursor Bugbot 指摘対応)
         signEntry: (view) =>
-          signChangeRoleEntry({
+          signChangeRoleAtView({
             verified: view,
             signerUserId: input.signerUserId,
             targetUserId: input.targetUserId,
-            newRole: first.role,
-            newScope: first.scope,
+            request: input.request,
             signingKeyPair: input.signingKeyPair,
           }),
         recheck: (view) =>
@@ -1428,11 +1458,16 @@ export function memberChangeRoleOp<R>(input: {
 
     // 受理後の再同期で (role, scope) の掲載を確認(サーバー申告を真実源にしない)
     verified = yield* resyncExtended(input.resync, verified);
+    // 要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
+    // 据え置き側を変えていても、要求した側が載っていれば成立
     const target = verified.state.members.get(input.targetUserId);
+    const expected =
+      target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
     if (
       target === undefined ||
-      target.role !== first.role ||
-      !sameScope(target.scope, first.scope)
+      expected === undefined ||
+      target.role !== expected.role ||
+      !sameScope(target.scope, expected.scope)
     ) {
       return yield* Effect.fail(
         cliError(
@@ -1460,29 +1495,44 @@ export function memberChangeRoleOp<R>(input: {
 
     // (2) 降格 / 縮小の義務環境の rotate(§7)。対象の義務エントリが無ければ義務自体が
     // 発生していない(昇格・拡大・最初から reader の no-op)— 他人の未収束義務は拾わない
-    const mandates = memberMandatesFor(verified, input.targetUserId);
-    const base = {
+    const sweep = yield* sweepChangeRoleMandates({
+      client: input.client,
+      verified,
+      targetUserId: input.targetUserId,
+      rotateWith: input.rotateWith,
+    });
+    return {
       appended,
       targetUserId: input.targetUserId,
-      newRole: first.role,
-      newScope: first.scope,
+      newRole: target.role,
+      newScope: target.scope,
       widenedEnvironmentIds: change.widened,
       narrowedEnvironmentIds: change.narrowed,
       backfill,
+      sweep,
     };
-    if (mandates.length === 0) {
-      return { ...base, sweep: null };
-    }
-    const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
-    const sweep = yield* sweepAfterMandate({
-      client: input.client,
-      verified,
-      mandates,
-      rotate: input.rotateWith(
-        demoted ? ROLE_DEMOTED_ROTATION_REASON : SCOPE_NARROWED_ROTATION_REASON,
-      ),
-    });
-    return { ...base, sweep };
+  });
+}
+
+/** 対象の義務(降格 / 縮小)があれば sweep(理由は降格優先)、無ければ null。 */
+function sweepChangeRoleMandates<R>(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly targetUserId: string;
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
+}): Effect.Effect<MemberChangeRoleSummary["sweep"], CliError, R> {
+  const mandates = memberMandatesFor(input.verified, input.targetUserId);
+  if (mandates.length === 0) {
+    return Effect.succeed(null);
+  }
+  const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
+  return sweepAfterMandate({
+    client: input.client,
+    verified: input.verified,
+    mandates,
+    rotate: input.rotateWith(
+      demoted ? ROLE_DEMOTED_ROTATION_REASON : SCOPE_NARROWED_ROTATION_REASON,
+    ),
   });
 }
 

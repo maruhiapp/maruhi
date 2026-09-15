@@ -782,6 +782,55 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(env.logs.join("\n")).toContain("nothing was appended");
   });
 
+  it("CAS リトライは据え置き側(role / scope)を再同期後のビューから解決し、並行の変更を上書きしない(Cursor Bugbot)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "reader") },
+    ]);
+    // 送信と並行して別の owner 端末が対象を member へ昇格していた(延長チェーン)
+    const concurrent = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "reader") },
+      { actor: owner, operation: changeRoleOp(target, "member", null) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    // scope だけを変える実行: 再署名は並行昇格後の role(member)を据え置く
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(1);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    expect(entry.payload).toEqual({
+      targetUserId: target.userId,
+      newRole: "member",
+      scopeKind: "listed",
+      scopeEnvironmentIds: [ENV_DEV],
+    });
+    expect(entry.seq).toBe(6);
+  });
+
   it("入力規則: 変更なし・--env と --all-envs の併用・owner への --env は usage エラー(通信前)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
