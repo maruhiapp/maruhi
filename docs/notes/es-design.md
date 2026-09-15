@@ -585,7 +585,7 @@ CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変�
 
 ## 9. K3 追記(2026-09-15 — サーバーの scope 執行時の裁定)
 
-K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2-11-bis を変えない。読み込み時点の現状(K2 後): scope は「受理・保存・合意規則で検証」まで済み、API 認可の scope 軸・R(E)・要ローテーションの環境別窓は未実装、3′ はサーバー写像表で `chain-head-state-mismatch` に畳まれていた。各裁定は §4 の手順(列挙 → 上位互換 / 銀の弾丸の探索 → 連続 2 空巡で打ち止め → 原則の抽出 → UX 点検 → 選択)で行い、巡数は正直に記す(「列挙 1 巡 + 空巡 2」= 探索 3 巡)。
+K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2-11-bis を変えない。読み込み時点の現状(K2 後): scope は「受理・保存・合意規則で検証」まで済み、API 認可の scope 軸・R(E)・要ローテーションの環境別窓は未実装、3′ はサーバー写像表で `chain-head-state-mismatch` に畳まれていた。各裁定は所有者指示の手順(§3-bis / §3-ter の規律: 列挙 → 上位互換 / 銀の弾丸の探索 → 連続 2 空巡で打ち止め → 原則の抽出 → UX 点検 → 選択)で行い、巡数は正直に記す(「列挙 1 巡 + 空巡 2」= 探索 3 巡)。
 
 ### K3-A. 403 `InsufficientScope` のワイヤ表現(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -599,7 +599,7 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 
 **原則**: 「認可の拒否は 1 つの 403 型と閉集合の理由コードで表し、拒否の軸(トークン水準 / actor / org / role / scope)を reason で区別する」。既存 `insufficient-permission` / `actor-mismatch` / `org-membership-required` / `insufficient-role` はすべてこの原則から導出できる。導出できない規則なし。
 
-**UX**: CLI は `Insufficient permission (insufficient-scope)` に落ちる。K4 で CLI は通信前に検証済みチェーンから scope 外を型付きエラーにする(CRYPTO_SPEC §6.3「サーバーの 403 を待たない」)ため、この文言に到達するのはクライアントのチェーンが古い場合のみ。K3 では `failure.ts` の `ForbiddenError` 写像に reason 別の 1 文(scope 外は「対象環境が自分の scope 外」+ 再同期の案内)を足す(§2 冒頭の「新しい理由コードを人が読める文にする場合のみ」に該当)。**採用: A-a**。
+**UX**: CLI は `Insufficient permission (insufficient-scope)` に落ちる。K4 で CLI は通信前に検証済みチェーンから scope 外を型付きエラーにする(CRYPTO_SPEC §6.3「サーバーの 403 を待たない」)ため、この文言に到達するのはクライアントのチェーンが古い場合のみ。K3 では `failure.ts` の `ForbiddenError` 写像に reason 別の 1 文(scope 外は「対象環境が自分の scope 外」+ admin に拡大を依頼する案内。`project verify` の scope 列は K4 なので K3 の文言では案内しない — 独立レビュー B-2)を足す(§2 冒頭の「新しい理由コードを人が読める文にする場合のみ」に該当)。**採用: A-a**。
 
 ### K3-B. 3′(宣言ヘッド時点の scope)の HTTP 表現(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -628,7 +628,9 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 
 **探索**: 第 2 巡: 「環境 id を `requireMemberState` の必須引数にして環境非対象の経路も強制する」— 環境一覧・メタのみ pull・フラグ一覧は環境を持たない / 不問なので、optional にすると「不問」と「忘れ」が区別できなくなる。関数を分ける C-b が上位。銀の弾丸(scope 判定を verifyChain 等の 1 箇所に集約)は、データ操作がチェーン op を伴わないため不可(空巡)。第 3 巡: 新案なし(空巡)。打ち止め。
 
-**原則**: 「認可判定はチェーン導出状態だけで決まる検査(role・scope)を、サーバー保存状態を読む検査(存在・CAS・署名・内容突合)より先に置く」。§12-3 の順(role 403 → scope 403 → 意味論)、既存の role → 存在 → 意味論、いずれもこの原則から導出できる。
+**原則**: 「受理面の認可層(HTTP の 403 / 404 を返す層)では、チェーン導出状態だけで決まる検査(role・scope)を、サーバー保存状態を読む検査(存在・CAS・署名・内容突合)より先に置く」。§12-3 の順(role 403 → scope 403 → 意味論)、既存の role → 存在 → 意味論、いずれもこの原則から導出できる。合意規則層(verifyChain — `insufficient-role` / `environment-out-of-scope` の 422)は「意味論的検査」の一部であり、CAS の後に走る既存の順はこの原則の対象外(受理面の 403 が先に立った後の多層防御 — K3-G)。原則を「認可判定一般」と書くと既存のこの順が導出できなくなる(独立レビュー B-9 で訂正)。
+
+**scope を問わない環境座標つき経路**: 要ローテーションフラグの取り下げ(`programs-rotation.ts` の dismiss)は環境座標を持つが §12-3 の表に無いガバナンス操作で、AUDIT_SPEC §6(フラグのビューはクラス 1・可視性述語に環境軸を入れない)と §4.1 手順 5(取り下げは admin の判断)により scope 非依存。環境座標を持つ経路で `requireMemberState` のまま残る唯一の書き込みとして、コードのコメントと `scope-invariants.test.ts` で固定する(独立レビュー B-1)。
 
 **UX**: listed の主体が typo の環境 id で pull すると 403 `insufficient-scope`(「存在しない」とは言われない)。K4 の CLI は通信前に検証済みチェーンで存在と scope を判定して案内する(§6.3)ため実害なし。**採用: C-b + role → scope → 存在**。
 
@@ -659,7 +661,7 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 | `trigger` | (i) **payload に `trigger`(3 変種すべて)。ワイヤ `RotationFlagSchema.trigger` は optionalKey で、サーバーは常に載せる(K3 前の保存行は target の有無から補完: targetUserId → `remove_member`、targetKeyFingerprint → `revoke_server`)** (ii) ワイヤを必須にする | (i)。`storedRecipientEncPubHex`(§12-6)の先例と同じ「後方互換の追加のみ」(新 CLI × 旧サーバーで decode が壊れない)。K3 前の行は §2 K3-F のとおり存在しない前提だが、補完は無害 |
 | 表示側 | (i) **Web `flagTrigger` と CLI `describeTarget` は `trigger` があればそれを使い、無ければ従来の推定** (ii) K4 / K6 へ送る | (i)。無いと `trigger = change_role` の行が「member removed」と誤表示する。読み取り専用の 1 行変更で、K3 が足したワイヤ欄の消費側 |
 
-**探索**: 第 2 巡(上位互換): 「窓導出を member / grant で共有する」は (i) に含めた。「`trigger` を必須にする」は互換の欠点を持つため上位互換でない。銀の弾丸(窓を持たず「現 scope」だけで検出する)は §4.1 手順 2 の字面と、縮小前に読めた環境の見逃し(fail open)で棄却(空巡)。第 3 巡: 新案なし(空巡)。打ち止め。
+**探索(論点ごと — 独立レビュー B-7 で論点別に書き直した)**: 第 2 巡(上位互換 / 銀の弾丸): Q1 の入力 — 「ミラー行でなくチェーン本体から窓を復元する」案は AUDIT_SPEC §4.1 の「チェーンミラーが scope を写すためクエリの変更だけで成立」に反し、監査 seq 座標系(読み取り行との重なり判定)を失うため棄却。窓の復元 — 「窓導出を member / grant で共有する」は (i) に含めた(上位互換として採用済み)。`all` の意味 — 「`all` を現存環境の列挙に展開する」案は CRYPTO_SPEC §6.2 の集合代数(`all` = U、将来分を含む)に反し、`all` の期間中に作成された変数を見逃すため棄却(代替案なし)。`change_role` の検出契機 — 「降格で在籍区間を閉じる」(ii) は棄却済み(reader は DEK を受け取り続ける)、他に案なし。remove 時の候補 — 「現 scope のみ」(ii) は縮小時の検出が取り下げ済みだった場合に見逃しを生むため棄却(§4.1 手順 2 の字面に従う)。`trigger` — 「必須にする」は互換の欠点を持つため上位互換でない。表示側 — 「K4 / K6 へ送る」(ii) は誤表示を残すため棄却。銀の弾丸(窓を持たず「現 scope」だけで検出する)は §4.1 手順 2 の字面と、縮小前に読めた環境の見逃し(fail open)で棄却。以上、第 2 巡は棄却案のみ = 空巡。第 3 巡: 全論点で新案なし(空巡)。打ち止め(列挙 1 巡 + 空巡 2)。
 
 **原則**: 「候補集合は『対象がその環境の DEK を持ちえた seq 区間』の窓から導出し、窓はミラー payload の scope 状態の遷移点だけで決まる(受信者クラスを跨いで同一の窓導出)」。既存の remove 変種(在籍区間 = `all` の窓)と revoke 変種(grant 窓)はこの原則から導出できる。導出できない規則なし。
 
@@ -668,7 +670,7 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 ### K3-F. 既存データとの互換(単巡 — 事実確認)
 
 - `apps/server/test/es-migration.test.ts` が旧形式の add_member / 招待発行の fail-closed(400 / 422 `bad-signature`)を固定し、`docs/SELF_HOSTING.md` "Updates"(2026-09-14 ES + PF1 K2 の段落)が既存プロジェクトの再作成を規定している。K2 以降に受理されたチェーンは全エントリが scope 付きで、`ChainMember.scope` は crypto の型で必須。したがって **互換経路は不要**。
-- 監査ミラーの `chain.member_added` 行に scope が無い DO は「再作成対象」で存在しない前提だが、Q1 の payload 読み出しは防御的に parse し、scope が読めない行は **`all`(旧 v1 の意味論 = 全環境)として窓を開く**。検出は「見逃さない側」が fail-safe(拒否側ではない)。記録のみで、テストは「壊れた payload で defect にしない」既存規律に含める。
+- 監査ミラーの `chain.member_added` 行に scope が無い DO は「再作成対象」で存在しない前提だが、Q1 の payload 読み出しは防御的に parse し、scope が読めない行は **`all`(旧 v1 の意味論 = 全環境)として窓を開く**。検出は「見逃さない側」が fail-safe(拒否側ではない)。**同じ規律を全軸に適用する(独立レビュー B-3 / B-4 / B-5 で揃えた)**: `listed` で id 列が配列でない行も `all`(listed{} = 窓ゼロにしない)、role が読めない行は「降格だった」側(旧 role 不明 = 書き手だった、新 role 不明 = 書き手でなくなった)、在籍区間の外に現れた `update`(`chain.role_changed`)は open と同じに扱い、grant の再 grant は scope を単調に和集合で積む(縮小する再 grant が仮に通っても失効前に窓を閉じない)。到達不能な経路だが、原則(見逃さない側)と実装を一致させる。`scope-rotation.test.ts` の純関数テストで固定。
 
 ### K3-G. チェーン op を伴う経路の 403 と合意規則 422 の前後(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -685,11 +687,19 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 
 **原則**: 「呼び出し主体の scope に関する拒否は、対象環境が API 座標またはエントリ payload から確定する経路ではすべて受理面の 403 で先に返し、合意規則の同名検査は多層防御として残す」。role 403 が `insufficient-role` 422 に先行する既存の形はこの原則の role 軸版。
 
+**例外の記録(独立レビュー C-5)**: 環境の作成を「新 id ∈ actor scope」の 1 述語で判定するため、`listed` の主体が**自分の scope に既にある id** で create を試みた場合だけ 403 でなく合意規則の 422 `duplicate-environment` になる(受理される組は変わらず fail-closed)。「403 が 422 より先」の字面に対する唯一の例外。
+
 **UX**: 403 は 422 `environment-out-of-scope` より先に出るので、クライアントは「自分の scope 外」と即座に分かる(K4 では通信前に判定)。`membership-negatives-composite.test.ts` の `authz-create-env-listed-*` / `authz-rotate-out-of-scope*` の期待を 422 → 403 に、`membership-negatives-append.test.ts` の checkpoint 分は既存どおり(前提チェーンが API では再生できないため crypto 層で固定)。**採用: (a)**。
 
 ### K3-H. `chain_seq` の全単射(K1-3 の申し送り)— K5 へ据え置き
 
 四眼の適用行(同一 `chain_seq` に 2 行 — AUDIT_SPEC §3.4)がサーバーに現れるのは受理ガード(K2-10)を外す K5 であり、K3 の時点でサーバーには 1 エントリ 1 ミラー行しか存在しない。K3 の変更が `chain_seq` の一意性を新たに前提にしないことの確認: (1) 要ローテーション検出は監査 seq 順の畳み込みで、`chain_seq` は `triggerChainSeq` として payload に写すだけ、(2) Q1 の `chain.role_changed` 読み取りは seq 順の scope 遷移の畳み込みで、同一 `chain_seq` に適用行が加わっても(K5)遷移は監査 seq の順に 1 回ずつ適用されるだけで壊れない、(3) 3 変種の `trigger` は行の識別に `chain_seq` を使わない。したがって K1-3 の「K3 / K5」は **K5 に据え置く**(`audit verify` の全単射規則の改訂は K5 の PF1 ミラー行と同じ PR)。
+
+### K3-J. 申し送り(K4 以降へ — PR #178 のレビューから)
+
+- **scope 縮小後の旧ラップ**: K3 の 403 は受理面のガードであり、縮小で scope 外になったメンバーの手元の既存ラップ(保存済み DEK ラップ行を含む)を暗号的に無効化するのは K4 の sweep(縮小分の rotate 義務 — CRYPTO_SPEC §7)以降。K3 時点で `insufficient-scope` を「アクセス遮断」と説明しない(CLI 文言は現状そうなっていない — pullfrog 第 1 巡)
+- **バックフィルの liveness**: DEK ラップ登録者は対象環境を scope に含む必要がある(§12-6 末尾)ため、「誰も scope に含まない環境」が生じるとバックフィルが詰まる。owner は常に `all`(§6.2 `scope-role-mismatch`)なので現状は生じないが、owner の scope を将来 listed にする改訂があれば、この不変条件を先に確認する(pullfrog 第 1 巡)
+- **ベクター名と受理面の順**: `authz-rotate-unknown-precedes-out-of-scope` / `authz-create-env-duplicate-precedes-out-of-scope` は合意規則層の検査順を指す名前で、受理面では scope 403 が先(K3-G)。K3 はベクターを触らないため名前はそのまま(テストのコメントで明記)。次にベクターを再生成する段(K5 等)で改名してよい
 
 ### K3-I. 実装録(裁定の反映先)
 

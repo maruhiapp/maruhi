@@ -177,6 +177,24 @@ describe("R(E) — 追記経路(バックフィル — §12-6)", () => {
     expect(((await mine.json()) as { deks: unknown[] }).deks).toHaveLength(1);
   });
 
+  it("member 受信者の理由コード順は同定 → 鍵 → scope(scope 外かつ鍵不一致は recipient-key-mismatch — クラスを跨いで同一の順)", async () => {
+    const { otherDek } = await setupListed();
+    const response = await requestJson("POST", `/environments/${OTHER}/deks`, token(OWNER), {
+      deks: [
+        await wrapDekTo({
+          projectId,
+          environmentId: OTHER,
+          epoch: 1,
+          dek: otherDek,
+          recipientUserId: DEV,
+          recipientEncPubHex: "ee".repeat(32),
+          signerUserId: OWNER,
+        }),
+      ],
+    });
+    await expectDekRejected(response, "recipient-key-mismatch");
+  });
+
   it("登録者(署名者 = 呼び出し主体)の scope は 403 が先: scope 外の環境へは受信者の判定に到達しない", async () => {
     const { otherDek } = await setupListed();
     // DEV(listed{ENV})が OTHER へ、scope 内の受信者(OWNER)宛を登録しようとする

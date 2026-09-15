@@ -35,6 +35,7 @@ import { makeOidcToken } from "./support/lease.ts";
 registerDataScenario();
 
 const DEV = "user-devmember-0010";
+const DEVADMIN = "user-devadmin-0011";
 const OTHER = "env-other-0002";
 
 describe("リース経路は不変(AUTH_SPEC §14-1)", () => {
@@ -87,5 +88,24 @@ describe("可視性クラスは不変(AUDIT_SPEC §6)", () => {
     expect(flags.status).toBe(200);
     const body = (await flags.json()) as { flags: { environmentId: string }[] };
     expect(body.flags.some((flag) => flag.environmentId === ENV)).toBe(true);
+  });
+
+  it("要ローテーションフラグの取り下げは admin の判断で scope を問わない(§3.3 / §4.1-5 — 環境座標を持つ唯一の非 scope 経路)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createEnvironmentOk(fixture, OTHER, "Other");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await seedMemberToken(fixture, DEVADMIN, 9011);
+    await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [OTHER]));
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    // ENV は DEVADMIN の scope 外だが、取り下げ(admin × admin スコープ)は通る
+    const dismissed = await requestJson("POST", "/rotation/dismissals", token(DEVADMIN), {
+      targets: [{ environmentId: ENV, variableId: VAR }],
+    });
+    expect(dismissed.status).toBe(204);
+    const flags = await requestJson("GET", "/rotation/flags", token(DEVADMIN));
+    expect(((await flags.json()) as { flags: unknown[] }).flags).toHaveLength(0);
   });
 });

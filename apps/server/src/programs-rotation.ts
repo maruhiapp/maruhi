@@ -43,6 +43,10 @@ export const dismissRotationFlagsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
+    // 取り下げは環境座標を持つが scope を問わない(AUTH_SPEC §12-3 の表に無い
+    // ガバナンス操作 — AUDIT_SPEC §3.3 / §6: フラグのビューはクラス 1 で可視性
+    // 述語に環境軸を入れず、取り下げは admin の判断。設計録 §9 K3-C)。
+    // 環境座標を持つ経路で requireMemberState のまま残る唯一の書き込み
     yield* requireMemberState(actor.userId, "admin", cache);
     if (targets.length > MAX_ROTATION_DISMISSALS_PER_REQUEST) {
       return yield* rejectData({

@@ -18,6 +18,7 @@ import {
   deriveEffectiveFlags,
   detectMemberRemoval,
   detectRoleChange,
+  detectServerRevocation,
 } from "../src/rotation-detect.ts";
 import {
   addMemberOperation,
@@ -303,6 +304,23 @@ function fakeRead(input: {
   };
 }
 
+/** revoke_server 変種の純関数テスト用: grant 区間とリース発行行だけを持つ読み取り面。 */
+const grantRead = (
+  events: readonly { seq: number; event: string; scopeEnvironmentIds: readonly string[] }[],
+  access: readonly { seq: number; environmentId: string }[],
+): AuditRotationRead => ({
+  membershipEventsFor: () => [],
+  serverGrantEventsFor: () => events,
+  variableLifecycles: () => [
+    { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
+    { seq: 1, event: "var.created", environmentId: "env-b", variableId: "w" },
+  ],
+  variableReadsBy: () => [],
+  serverAccessEventsBy: () =>
+    access.map((row) => ({ ...row, event: "server.lease_issued", variableId: null })),
+  rotationFlagEvents: () => [],
+});
+
 describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
   it("scope を読めない member_added 行は all として窓を開く(検出は見逃さない側 — K3-F)", () => {
     const events = detectMemberRemoval({
@@ -369,6 +387,111 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
       variableId: "w",
       payload: { basis: "read", trigger: "change_role", triggerChainSeq: 11 },
     });
+  });
+
+  it("再追加を跨ぐ窓は別区間: 不在の間の読み取りは数えず、両区間の候補を含む(§4.1 手順 1)", () => {
+    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const events = detectMemberRemoval({
+      read: fakeRead({
+        membership: [
+          { seq: 2, event: "chain.member_added", role: "member", scope: listedA },
+          { seq: 4, event: "chain.member_removed", role: null, scope: null },
+          { seq: 6, event: "chain.member_added", role: "member", scope: listedA },
+          { seq: 10, event: "chain.member_removed", role: null, scope: null },
+        ],
+        lifecycles: [
+          { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
+          // 不在の間だけ存在した変数(どの窓とも重ならない)
+          { seq: 5, event: "var.created", environmentId: "env-a", variableId: "gap" },
+          { seq: 5, event: "var.deleted", environmentId: "env-a", variableId: "gap" },
+        ],
+        reads: [{ seq: 5, environmentId: "env-a", variableId: "v" }],
+      }),
+      targetUserId: "u",
+      triggerChainSeq: 9,
+      nowMs: 1,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ variableId: "v", payload: { basis: "readable" } });
+  });
+
+  it("在籍区間の外に現れた role_changed は open として窓を開く(壊れた入力でも見逃さない側)", () => {
+    const events = detectMemberRemoval({
+      read: fakeRead({
+        membership: [
+          {
+            seq: 3,
+            event: "chain.role_changed",
+            role: "member",
+            scope: { kind: "listed", environmentIds: ["env-a"] },
+          },
+          { seq: 8, event: "chain.member_removed", role: null, scope: null },
+        ],
+        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+      }),
+      targetUserId: "u",
+      triggerChainSeq: 7,
+      nowMs: 1,
+    });
+    expect(events.map((event) => event.variableId)).toEqual(["v"]);
+  });
+
+  it("role が読めない role_changed は降格として扱う(見逃さない側)", () => {
+    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const events = detectRoleChange({
+      read: fakeRead({
+        membership: [
+          { seq: 2, event: "chain.member_added", role: null, scope: listedA },
+          { seq: 6, event: "chain.role_changed", role: null, scope: listedA },
+        ],
+        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+      }),
+      targetUserId: "u",
+      triggerChainSeq: 5,
+      nowMs: 1,
+    });
+    expect(events.map((event) => event.variableId)).toEqual(["v"]);
+  });
+
+  it("revoke_server 変種: 失効 → 再 grant → 再失効は別の窓、縮小する再 grant は窓を閉じない(和集合)", () => {
+    // 失効中(seq 5)のリースは数えない → readable
+    const regranted = detectServerRevocation({
+      read: grantRead(
+        [
+          { seq: 2, event: "chain.server_granted", scopeEnvironmentIds: ["env-a"] },
+          { seq: 4, event: "chain.server_revoked", scopeEnvironmentIds: [] },
+          { seq: 6, event: "chain.server_granted", scopeEnvironmentIds: ["env-a"] },
+          { seq: 10, event: "chain.server_revoked", scopeEnvironmentIds: [] },
+        ],
+        [{ seq: 5, environmentId: "env-a" }],
+      ),
+      serverKeyFingerprintHex: "ab".repeat(16),
+      triggerChainSeq: 9,
+      nowMs: 1,
+    });
+    expect(regranted.map((event) => [event.variableId, event.payload?.["basis"]])).toEqual([
+      ["v", "readable"],
+    ]);
+    // 縮小する再 grant(合意規則は拒否するが検出側は fail-safe): env-b の窓は失効まで開いたまま
+    const narrowed = detectServerRevocation({
+      read: grantRead(
+        [
+          { seq: 2, event: "chain.server_granted", scopeEnvironmentIds: ["env-a", "env-b"] },
+          { seq: 4, event: "chain.server_granted", scopeEnvironmentIds: ["env-a"] },
+          { seq: 8, event: "chain.server_revoked", scopeEnvironmentIds: [] },
+        ],
+        [{ seq: 6, environmentId: "env-b" }],
+      ),
+      serverKeyFingerprintHex: "ab".repeat(16),
+      triggerChainSeq: 7,
+      nowMs: 1,
+    });
+    expect(
+      narrowed.map((event) => [event.variableId, event.payload?.["basis"]]).toSorted(),
+    ).toEqual([
+      ["v", "readable"],
+      ["w", "read"],
+    ]);
   });
 
   it("K3 前の rotation.recommended 行(trigger なし)は target 列から補完する", () => {

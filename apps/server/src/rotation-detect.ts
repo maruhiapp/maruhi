@@ -109,8 +109,9 @@ function scopeIncludes(scope: ScopeSnapshot, environmentId: string): boolean {
  * 環境 E のアクセス窓の列(§4.1 手順 2): E ∈ scope になった遷移で開き、E ∉ scope
  * になった遷移(update)または close で閉じる。在籍 / grant の区間を跨ぐ再開は
  * 別の窓。チェーン合意規則は二重追加・二重 grant を拒否するが、導出は防御的に
- * 「開いた区間があるときの open」を update と同じに扱い、区間外の update /
- * close を無視する。
+ * 「開いた区間があるときの open」を update と同じに扱い、「区間外の update」は
+ * open と同じに扱う(壊れた入力では見逃さない側 — 設計録 §9 K3-F。区間外の
+ * close だけは無視する = 削除後の遷移)。
  */
 function accessWindows(
   transitions: readonly ScopeTransition[],
@@ -118,7 +119,7 @@ function accessWindows(
 ): readonly SeqInterval[] {
   const windows: SeqInterval[] = [];
   // 窓導出の状態: 在籍 / grant 区間の内側か、E の窓がどの seq から開いているか
-  const state = { inTenure: false, openedAt: null as number | null };
+  const state = { openedAt: null as number | null };
   const closeWindow = (seq: number): void => {
     if (state.openedAt !== null) {
       windows.push({ start: state.openedAt, end: seq });
@@ -128,13 +129,8 @@ function accessWindows(
   for (const transition of transitions) {
     if (transition.kind === "close") {
       closeWindow(transition.seq);
-      state.inTenure = false;
       continue;
     }
-    if (transition.kind === "update" && !state.inTenure) {
-      continue;
-    }
-    state.inTenure = true;
     if (scopeIncludes(transition.scope, environmentId)) {
       state.openedAt ??= transition.seq;
     } else {
@@ -169,9 +165,10 @@ function membershipTransitions(events: readonly MembershipEventRow[]): readonly 
 
 /**
  * Q6 の grant 区間イベント(server_granted / server_revoked)を scope 遷移に写す。
- * 同一鍵 FP への再 grant は区間内では update(合意規則は拡大のみ受理 —
- * CRYPTO_SPEC §6.3 — なので窓は拡大 seq から開くだけで閉じない)、失効後の
- * 再 grant は新しい区間の open。
+ * 同一鍵 FP への再 grant は区間内では update、失効後の再 grant は新しい区間の
+ * open。区間内の scope は**単調に和集合**で積む(合意規則は拡大のみ受理 —
+ * CRYPTO_SPEC §6.3。仮に縮小する再 grant が通っても、サーバーが既に知る DEK の
+ * 開示窓を失効前に閉じない = 「見せかけの縮小」を検出側でも塞ぐ fail-safe)。
  */
 function grantTransitions(
   events: readonly {
@@ -181,19 +178,20 @@ function grantTransitions(
   }[],
 ): readonly ScopeTransition[] {
   const transitions: ScopeTransition[] = [];
-  let open = false;
+  let disclosed: Set<string> | null = null;
   for (const event of events) {
     if (event.event === "chain.server_revoked") {
       transitions.push({ seq: event.seq, kind: "close", scope: ALL_SCOPE });
-      open = false;
+      disclosed = null;
       continue;
     }
+    const kind = disclosed === null ? "open" : "update";
+    disclosed = new Set([...(disclosed ?? []), ...event.scopeEnvironmentIds]);
     transitions.push({
       seq: event.seq,
-      kind: open ? "update" : "open",
-      scope: { kind: "listed", environmentIds: event.scopeEnvironmentIds },
+      kind,
+      scope: { kind: "listed", environmentIds: [...disclosed] },
     });
-    open = true;
   }
   return transitions;
 }
@@ -374,10 +372,12 @@ export function detectRoleChange(input: {
   const previousRole =
     events.toReversed().find((event) => event.seq < trigger.seq && event.role !== null)?.role ??
     null;
+  // role が読めない行(壊れた payload — 到達不能)は「降格だった」側に倒す
+  // (見逃さない側 — 設計録 §9 K3-F): 旧 role 不明 = 書き手だったとみなし、
+  // 新 role 不明 = 書き手でなくなったとみなす
   const demoted =
-    previousRole !== null &&
-    WRITER_ROLES.has(previousRole) &&
-    !WRITER_ROLES.has(trigger.role ?? "");
+    (previousRole === null || WRITER_ROLES.has(previousRole)) &&
+    (trigger.role === null || !WRITER_ROLES.has(trigger.role));
   return detectForMember({
     ...input,
     trigger: "change_role",
@@ -389,7 +389,8 @@ export function detectRoleChange(input: {
           return [window];
         }
         // 降格: 契機時点で開いたままの窓(新 scope に残る環境)を契機 seq で切る
-        if (demoted && window.start < trigger.seq && window.end === Number.POSITIVE_INFINITY) {
+        // (遷移列は契機行で終わるので、契機より後まで続く窓 = 未閉包の窓)
+        if (demoted && window.start < trigger.seq && window.end > trigger.seq) {
           return [{ start: window.start, end: trigger.seq }];
         }
         return [];

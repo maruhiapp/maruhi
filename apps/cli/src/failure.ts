@@ -127,7 +127,7 @@ const renderers: readonly Renderer[] = [
   ),
   when(isInstanceOf(ForbiddenError), (e) =>
     e.reason === "insufficient-scope"
-      ? "Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain. Sync the chain (`maruhi project verify`) to see your scope; an admin can widen it"
+      ? "Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain. Ask a project admin to widen your scope"
       : `Insufficient permission (${e.reason})`,
   ),
   // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが

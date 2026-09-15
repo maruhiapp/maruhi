@@ -517,6 +517,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
     expect(byVariable.get("var-after-lease")).toMatchObject({
       environmentId: ENV,
       basis: "readable",
+      trigger: "revoke_server",
     });
     // スコープ外の環境の変数は候補にならない(§4.1 変種の手順 2)
     expect(byVariable.has(outVar)).toBe(false);

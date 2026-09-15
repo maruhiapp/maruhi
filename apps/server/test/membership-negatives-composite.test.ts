@@ -55,7 +55,10 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   // role 403 → scope 403 → 存在 404 → 意味論 422。設計録 es-design.md §9 K3-C /
   // K3-G)。合意規則 environment-out-of-scope(422)は多層防御として crypto 層の
   // 4 実行環境テストが固定する。listed の主体には「未作成の環境」も scope 外なので
-  // 404 より 403 が先(all の主体は従来どおり 404 — data-environment-rotation.test.ts)
+  // 404 より 403 が先(all の主体は従来どおり 404 — data-environment-rotation.test.ts)。
+  // ベクター名の `*-precedes-out-of-scope` は**合意規則層**(verifyChain)の検査順を
+  // 指し、受理面の順(scope 403 が先)とは逆になる。ベクターは K3 では触らない
+  // (再生成は crypto の範囲)ため名前はそのまま
   "authz-create-env-listed-admin": { status: 403, reason: "insufficient-scope" },
   "authz-create-env-listed-member": { status: 403, reason: "insufficient-scope" },
   "authz-rotate-out-of-scope": { status: 403, reason: "insufficient-scope" },

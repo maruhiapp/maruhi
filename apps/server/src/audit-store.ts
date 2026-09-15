@@ -881,6 +881,22 @@ function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly st
  * removed は両方 null。scopeKind が読めない行は scope = null(壊れた行で検出を
  * defect にしない — 窓導出側が all として扱う)。
  */
+/**
+ * ミラー payload の scope を読む。listed で id 列が配列でない壊れた行は listed{}
+ * (窓ゼロ = 見逃し)ではなく null(= 窓導出が all として扱う fail-safe)に倒す
+ * (設計録 §9 K3-F)。
+ */
+function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): ScopeSnapshot | null {
+  const kind = payload?.["scopeKind"];
+  if (kind === "all") {
+    return { kind: "all" };
+  }
+  if (kind === "listed" && Array.isArray(payload?.["scopeEnvironmentIds"])) {
+    return { kind: "listed", environmentIds: scopeOf(payload) };
+  }
+  return null;
+}
+
 function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventRow {
   const seq = Number(row["seq"]);
   const event = String(row["event"]);
@@ -892,14 +908,12 @@ function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventR
   }
   const payload = parsePayload(row["payload"]);
   const role = payload?.[event === "chain.role_changed" ? "newRole" : "role"];
-  const kind = payload?.["scopeKind"];
-  const scope: ScopeSnapshot | null =
-    kind === "all"
-      ? { kind: "all" }
-      : kind === "listed"
-        ? { kind: "listed", environmentIds: scopeOf(payload) }
-        : null;
-  return { seq, event, role: typeof role === "string" ? role : null, scope };
+  return {
+    seq,
+    event,
+    role: typeof role === "string" ? role : null,
+    scope: scopeSnapshotOf(payload),
+  };
 }
 
 const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
