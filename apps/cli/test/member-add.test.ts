@@ -381,8 +381,74 @@ describe("maruhi member add", () => {
     expect(wraps.every((wrap) => wrap.recipientEncPubHex === acceptor.encPubHex)).toBe(true);
     expect(state.removeBodies).toHaveLength(0);
     expect(env.logs.join("\n")).toContain(
-      "Done: DEK wraps for every environment × every epoch were distributed to the new member (CRYPTO_SPEC §7)",
+      "Done: DEK wraps for every environment in the member's scope × every epoch were distributed to the new member (CRYPTO_SPEC §7)",
     );
+  });
+
+  it("listed scope の招待は招待行の scope で署名し、バックフィルを対象の scope の環境に限る(ES K4 — §7)", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
+    ]);
+    // 発行文が scope を覆う(CRYPTO_SPEC §6.5)ので、listed の発行文で受諾ブロックを作る
+    issuedByProject.set(
+      built.projectId,
+      await issueInviteFixture({
+        inviter,
+        projectId: built.projectId,
+        headHashHex: "cd".repeat(32),
+        headSeq: 1,
+        scope: { scopeKind: "listed", scopeEnvironmentIds: [ENV_ID] },
+      }),
+    );
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor), {
+        scopeKind: "listed",
+        scopeEnvironmentIds: [ENV_ID],
+      }),
+      currentEpoch: 1,
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+      listedStatements: [
+        await environmentStatementFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          name: ENV_ID,
+          author: inviter,
+          head: headOf(built, 1),
+        }),
+        await environmentStatementFor({
+          projectId: built.projectId,
+          environmentId: "env-prod",
+          name: "env-prod",
+          author: inviter,
+          head: headOf(built, 1),
+        }),
+      ],
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(0);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "add_member") throw new Error("add_member entry missing");
+    expect(entry.payload.role).toBe("member");
+    expect(entry.payload.scopeKind).toBe("listed");
+    expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID]);
+    // prod は対象の scope 外 — ラップを作らない(作ればサーバーが 422 scope-out-of-range)
+    expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_ID]);
+    expect(env.logs.join("\n")).toContain("in the member's scope × every epoch");
   });
 
   it("ChainHeadConflict(409)は再同期して add_member を再署名し、リトライする(§12-4)", async () => {

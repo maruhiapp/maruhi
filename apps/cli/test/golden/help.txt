@@ -20,7 +20,7 @@ SUBCOMMANDS
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
-  member      Manage members (add / remove / change-role)
+  member      Manage members (add / remove / change-role / list)
   key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
@@ -53,7 +53,7 @@ SUBCOMMANDS
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
-  member      Manage members (add / remove / change-role)
+  member      Manage members (add / remove / change-role / list)
   key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint)
@@ -305,6 +305,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --role string       Role to grant (required — reader | member | admin)
+  --env string        Environment the invitee may access (repeatable; omitted = all environments, including ones created later)
   --github string     GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)
 
 GLOBAL FLAGS
@@ -365,7 +366,7 @@ GLOBAL FLAGS
 
 $ maruhi member --help
 DESCRIPTION
-  Manage members (add / remove / change-role)
+  Manage members (add / remove / change-role / list)
 
 USAGE
   maruhi member <subcommand> [flags]
@@ -377,7 +378,8 @@ GLOBAL FLAGS
 SUBCOMMANDS
   add            Add an accepted invitee as a member (mutual fingerprint confirmation, then key distribution)
   remove         Remove a member and force-rotate every environment
-  change-role    Change a member's role (demoting below member forces a rotation)
+  change-role    Change a member's role and/or environment scope (demotion and scope narrowing force a rotation)
+  list           List the verified members with their role, scope and key fingerprint
 
 $ maruhi member add --help
 DESCRIPTION
@@ -419,7 +421,7 @@ GLOBAL FLAGS
 
 $ maruhi member change-role --help
 DESCRIPTION
-  Change a member's role (demoting below member forces a rotation)
+  Change a member's role and/or environment scope (demotion and scope narrowing force a rotation)
 
 USAGE
   maruhi member change-role [flags] <user-id>
@@ -430,7 +432,25 @@ ARGUMENTS
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
-  --role string       New role (required — reader | member | admin | owner)
+  --role string       New role (reader | member | admin | owner; omitted = keep the current role)
+  --env string        Environment in the new scope (repeatable; replaces the whole scope; omitted = keep the current scope)
+  --all-envs          Set the scope to all environments (including ones created later); required for --role owner unless the target already has it
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi member list --help
+DESCRIPTION
+  List the verified members with their role, scope and key fingerprint
+
+USAGE
+  maruhi member list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --json              Print the members as JSON (user id, role, scope, key fingerprint)
 
 GLOBAL FLAGS
   --help, -h       Show help information

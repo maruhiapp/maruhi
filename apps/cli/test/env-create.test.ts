@@ -21,6 +21,7 @@ import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   buildChain,
   createEnvironmentOp,
   genesisOp,
@@ -566,6 +567,28 @@ describe("maruhi env create", () => {
     // ラップ・署名を済ませてから拒否されることになる(env rotate と同じ規律)
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("A reader cannot create environments");
+    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("listed scope のメンバーは環境を作成できない(scope = all のみ — §6.2 / 裁定 E)。ラップを作る前に拒否する", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const dev = await makeTestUser("user-dev-6666");
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("dev", dek) },
+      { actor: owner, operation: addScopedMemberOp(dev, "admin", ["dev"]) },
+    ]);
+    const server = await MockServer.start([chainHandler(built.projectId, built)]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, dev);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "Only members whose environment scope is `all` can create environments",
+    );
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 

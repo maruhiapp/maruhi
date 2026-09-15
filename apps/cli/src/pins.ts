@@ -22,6 +22,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { isEnvironmentId } from "@maruhi/core";
+import { MAX_SCOPE_ENVIRONMENTS, type ScopeKind } from "@maruhi/crypto";
 import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -46,6 +48,12 @@ export interface IssuedInvitePin {
   /** リンク公開鍵(hex 64)。サーバー申告の行の link_pub と突合する(SHOULD)。 */
   readonly linkPubHex: string;
   readonly role: "reader" | "member" | "admin";
+  /**
+   * 付与予定 scope(2026-09-15 ES K4 — role と同じ地位の追加突合材料。真実源は
+   * 発行署名)。K4 以前に発行したピンには無い(両方欠落 = 突合をスキップ)。
+   */
+  readonly scopeKind?: ScopeKind;
+  readonly scopeEnvironmentIds?: readonly string[];
   readonly expiresAtMs: number;
   /**
    * 宛先の GitHub login(`invite create --github` — 裏付け元の照合先。手元だけに
@@ -194,15 +202,52 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   const role = ROLES.find((known) => known === value["role"]) ?? null;
   const expiresAtMs = positiveIntField(value, "expiresAtMs");
   const expectedGithubLogin = optionalPatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
+  const scope = optionalScopeFields(value);
   if (
     linkPubHex === null ||
     role === null ||
     expiresAtMs === null ||
-    expectedGithubLogin === "invalid"
+    expectedGithubLogin === "invalid" ||
+    scope === "invalid"
   ) {
     return null;
   }
-  return { linkPubHex, role, expiresAtMs, expectedGithubLogin };
+  return { linkPubHex, role, ...scope, expiresAtMs, expectedGithubLogin };
+}
+
+/**
+ * 省略可能な scope の対(両方欠落 = 旧ピン → 空、片方だけ・構造規則違反 = "invalid")。
+ * 構造規則は CRYPTO_SPEC §6.2(kind の閉集合・all ⇒ 空・256 以下・重複なし・id 形式)。
+ */
+function optionalScopeFields(
+  record: Record<string, unknown>,
+):
+  | { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] }
+  | "invalid"
+  | {} {
+  const kind = record["scopeKind"];
+  const ids = record["scopeEnvironmentIds"];
+  if (kind === undefined && ids === undefined) {
+    return {};
+  }
+  if (
+    (kind !== "all" && kind !== "listed") ||
+    !isScopeIdList(ids) ||
+    (kind === "all" && ids.length > 0)
+  ) {
+    return "invalid";
+  }
+  return { scopeKind: kind, scopeEnvironmentIds: [...ids] };
+}
+
+/** 環境 id リストの構造規則(§12-1 形式・256 以下・重複なし)。 */
+function isScopeIdList(ids: unknown): ids is readonly string[] {
+  return (
+    Array.isArray(ids) &&
+    ids.length <= MAX_SCOPE_ENVIRONMENTS &&
+    ids.every((id) => isEnvironmentId(id)) &&
+    new Set(ids).size === ids.length
+  );
 }
 
 /** 厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない — 床と同じ)。 */

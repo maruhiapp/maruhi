@@ -26,6 +26,8 @@ import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
+  baselinesOf,
+  rotationMandates,
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
@@ -221,10 +223,16 @@ export function serverRevokeOp<R>(input: {
       .filter((environmentId) => deletedVerified.has(environmentId))
       .toSorted();
 
+    // 義務の環境集合 = revoke 時点の全環境(§7 — revoke_server は不変。後に作成された
+    // 環境の DEK をサーバー鍵は持ちえない)。導出は rotationMandates と共有
     const sweep = yield* sweepRotations({
       rotate: input.rotate,
       verified,
-      baselineSeq: revokeSeq,
+      baselines: baselinesOf(
+        rotationMandates(verified).filter(
+          (mandate) => mandate.kind === "server-revoked" && mandate.seq === revokeSeq,
+        ),
+      ),
       deletedVerified,
     });
 

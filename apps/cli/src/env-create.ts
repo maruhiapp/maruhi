@@ -53,6 +53,10 @@ function ensureCreatable(
       operation: "create an environment",
       forbidden:
         "A reader cannot create environments (create_environment requires the member role or above — CRYPTO_SPEC §6.2)",
+      // 環境の作成は scope = all の主体のみ(§6.2 — `listed` の scope に未存在の環境は
+      // 含まれえない。設計録 裁定 E / K4)。サーバーは 403 `insufficient-scope`
+      outOfScope:
+        "Only members whose environment scope is `all` can create environments (a listed scope cannot contain an environment that does not exist yet — CRYPTO_SPEC §6.2). Ask an owner or an all-scope admin to create it, or to widen your scope to all",
     });
     // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
     // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する

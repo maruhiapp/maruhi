@@ -32,7 +32,12 @@ import type {
   EnvValuesDigestEntry,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
+import {
+  computeChainEntryHash,
+  computeEnvValuesDigest,
+  scopeIncludesEnvironment,
+  SUITE_ID,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -43,6 +48,7 @@ import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
+import { requireEnvironmentInScope } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 
@@ -156,20 +162,49 @@ function determineAuditAttestation(input: {
   });
 }
 
-/** カバー対象の確定("all" = チェーン導出環境 − 検証済み削除)。 */
-function resolveTargets(input: CheckpointInput): Effect.Effect<readonly EnvironmentId[], CliError> {
+/**
+ * カバー対象の確定("all" = チェーン導出環境 − 検証済み削除 − **自分の scope 外**)。
+ * scope 外の環境は値付き pull ができず公証できない(CRYPTO_SPEC §6.2 `checkpoint` は
+ * 全タプルの環境 ∈ actor scope、§6.3 環境横断 (i) — 2026-09-15 ES K4)。除外は
+ * `outOfScope` に返し、呼び出し側が SHOULD 警告に載せる(全環境カバーの SHOULD から
+ * 漏れた理由を黙らせない)。明示リスト(契機 (i))は scope 外なら型付きエラー。
+ */
+function resolveTargets(
+  input: CheckpointInput,
+): Effect.Effect<
+  { readonly targets: readonly EnvironmentId[]; readonly outOfScope: readonly string[] },
+  CliError
+> {
   return Effect.gen(function* () {
     if (input.environmentIds !== "all") {
-      return input.environmentIds;
+      for (const environmentId of input.environmentIds) {
+        yield* requireEnvironmentInScope({
+          verified: input.verified,
+          userId: input.signerUserId,
+          environmentId,
+          operation: "checkpoint",
+        });
+      }
+      return { targets: input.environmentIds, outOfScope: [] };
     }
     const all = [...input.verified.state.environments.keys()];
     if (all.length === 0) {
-      return [];
+      return { targets: [], outOfScope: [] };
+    }
+    const self = input.verified.state.members.get(input.signerUserId);
+    if (self === undefined) {
+      return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
     }
     const deleted = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    return all
-      .filter((environmentId) => !deleted.has(environmentId))
-      .toSorted(compareUtf8Bytes) as readonly EnvironmentId[];
+    const active = all.filter((environmentId) => !deleted.has(environmentId));
+    return {
+      targets: active
+        .filter((environmentId) => scopeIncludesEnvironment(self.scope, environmentId))
+        .toSorted(compareUtf8Bytes) as readonly EnvironmentId[],
+      outOfScope: active
+        .filter((environmentId) => !scopeIncludesEnvironment(self.scope, environmentId))
+        .toSorted(compareUtf8Bytes),
+    };
   });
 }
 
@@ -409,6 +444,32 @@ function confirmAccepted(
 }
 
 /**
+ * カバー対象ゼロは失敗(scope 外だけが残る場合はその旨)、scope 外の除外は SHOULD 警告
+ * (全環境カバーの SHOULD から漏れた理由を黙らせない — 設計録 K4-M)。
+ */
+function scopeCoverageNotes(
+  targets: readonly EnvironmentId[],
+  outOfScope: readonly string[],
+): Effect.Effect<string[], CliError> {
+  const listed = outOfScope.map(displayText).join(", ");
+  if (targets.length === 0) {
+    return Effect.fail(
+      cliError(
+        outOfScope.length === 0
+          ? "This project has no active environments to checkpoint"
+          : `This project has no active environments in your scope to checkpoint (outside your scope: ${listed})`,
+      ),
+    );
+  }
+  if (outOfScope.length === 0) {
+    return Effect.succeed([]);
+  }
+  return Effect.succeed([
+    `${outOfScope.length === 1 ? "environment" : "environments"} ${listed} outside your scope cannot be covered (a checkpoint notarizes only environments in the issuer's scope — CRYPTO_SPEC §6.2); a member whose scope includes them should checkpoint separately`,
+  ]);
+}
+
+/**
  * `maruhi project checkpoint`(契機 (ii))と rotate 完了後の周期分(契機 (i))の
  * 共有実装。CRYPTO_SPEC §6.3 の発行 SHOULD の再試行・部分集合退避を含む。
  */
@@ -417,12 +478,9 @@ export function issueCheckpoint(
 ): Effect.Effect<CheckpointSummary, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const targets = yield* resolveTargets(input);
-    if (targets.length === 0) {
-      return yield* Effect.fail(cliError("This project has no active environments to checkpoint"));
-    }
+    const { targets, outOfScope } = yield* resolveTargets(input);
+    const warnings: string[] = yield* scopeCoverageNotes(targets, outOfScope);
     const attest = yield* determineAuditAttestation(input);
-    const warnings: string[] = [];
     const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
     let previous: BuiltView | null = null;
     let subset: readonly EnvironmentId[] | null = null;

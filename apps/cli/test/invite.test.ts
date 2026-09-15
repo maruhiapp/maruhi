@@ -29,7 +29,14 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
-import { buildChain, genesisOp, makeTestUser, type TestUser } from "./support/crypto.ts";
+import {
+  addScopedMemberOp,
+  buildChain,
+  createEnvironmentOp,
+  genesisOp,
+  makeTestUser,
+  type TestUser,
+} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   acceptanceFixture,
@@ -294,6 +301,8 @@ describe("maruhi invite create", () => {
       [body.id]: {
         linkPubHex: body.linkPubHex,
         role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
         expiresAtMs: 1755993600000,
         expectedGithubLogin: null,
       },
@@ -378,6 +387,118 @@ describe("maruhi invite create", () => {
     expect(await runCli(["invite", "create", "--role", "admin"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Only an owner can issue a role=admin invite");
     expect(issueCalls).toHaveLength(0);
+  });
+
+  it("--env(反復)は listed scope を発行文・body・リンク・発行ピンに昇順で載せる(ES K4 — 裁定 K)", async () => {
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp("env-staging", dek) },
+      { actor: inviter, operation: createEnvironmentOp("env-dev", dek) },
+    ]);
+    const issued: IssueBody[] = [];
+    const server = await start([
+      chainHandler(built),
+      issueHandler(built.projectId, (b) => issued.push(b)),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(
+      await runCli(
+        ["invite", "create", "--role", "reader", "--env", "env-staging", "--env", "env-dev"],
+        env.layer,
+      ),
+    ).toBe(0);
+    const body = issued[0];
+    if (body === undefined) throw new Error("no issue body");
+    expect(body.scopeKind).toBe("listed");
+    expect(body.scopeEnvironmentIds).toEqual(["env-dev", "env-staging"]);
+    // 発行署名は scope を覆う(CRYPTO_SPEC §6.5)
+    const verified = await verifyInviteIssueSignature({
+      context: {
+        suite: SUITE_ID,
+        inviteId: body.id,
+        projectId: built.projectId,
+        linkPubHex: body.linkPubHex,
+        headHashHex: body.headHashHex,
+        headSeq: body.headSeq,
+        role: "reader",
+        inviterUserId: inviter.userId,
+        inviterEncPubHex: inviter.encPubHex,
+        inviterSigPubHex: inviter.sigPubHex,
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["env-dev", "env-staging"],
+      },
+      signatureHex: body.issueSignatureHex,
+    });
+    expect(verified.ok).toBe(true);
+    const shown = env.logs.find((line) => line.startsWith(`${server.origin}/invite#v=2&`));
+    const parsed = parseInviteAcceptInput(Redacted.make(shown ?? ""));
+    if (parsed.kind !== "link") throw new Error("link did not parse");
+    expect(parsed.link.scopeKind).toBe("listed");
+    expect(parsed.link.scopeEnvironmentIds).toEqual(["env-dev", "env-staging"]);
+    const pins = await readPins(env, built.projectId);
+    const pin = (pins["issued"] as Record<string, Record<string, unknown>>)[body.id];
+    expect(pin?.["scopeKind"]).toBe("listed");
+    expect(pin?.["scopeEnvironmentIds"]).toEqual(["env-dev", "env-staging"]);
+    expect(env.errors.join("\n")).toContain("scope=env-dev, env-staging");
+
+    // 重複指定は usage(2)。チェーン上に無い環境は通信前に拒否(unknown-environment の手前判定)
+    const dup = await makeTestEnv();
+    seedSession(dup, server.origin, inviter);
+    await seedConfig(dup, { server: server.origin, defaultProject: built.projectId });
+    expect(
+      await runCli(
+        ["invite", "create", "--role", "reader", "--env", "env-dev", "--env", "env-dev"],
+        dup.layer,
+      ),
+    ).toBe(2);
+    expect(dup.errors.join("\n")).toContain("--env lists the same environment more than once");
+    const unknown = await makeTestEnv();
+    seedSession(unknown, server.origin, inviter);
+    await seedConfig(unknown, { server: server.origin, defaultProject: built.projectId });
+    expect(
+      await runCli(["invite", "create", "--role", "reader", "--env", "env-prod"], unknown.layer),
+    ).toBe(1);
+    expect(unknown.errors.join("\n")).toContain("does not exist on this project's chain");
+    expect(issued).toHaveLength(1);
+  });
+
+  it("listed の admin は自分の scope 外・all の招待を発行できない(scope-not-contained の手前判定 — 裁定 K4-G)", async () => {
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const devAdmin = await makeTestUser("user-devadmin-44");
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp("env-dev", dek) },
+      { actor: inviter, operation: createEnvironmentOp("env-prod", dek) },
+      { actor: inviter, operation: addScopedMemberOp(devAdmin, "admin", ["env-dev"]) },
+    ]);
+    const issued: IssueBody[] = [];
+    const server = await start([
+      chainHandler(built),
+      issueHandler(built.projectId, (b) => issued.push(b)),
+    ]);
+    const run = async (argv: readonly string[]) => {
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, devAdmin);
+      await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+      return { code: await runCli([...argv], env.layer), errors: env.errors.join("\n") };
+    };
+    const prod = await run(["invite", "create", "--role", "reader", "--env", "env-prod"]);
+    expect(prod.code).toBe(1);
+    expect(prod.errors).toContain("does not contain the invite's scope");
+    // 省略 = all は listed の admin には包含されない(all は将来の環境を含む U)
+    const all = await run(["invite", "create", "--role", "reader"]);
+    expect(all.code).toBe(1);
+    expect(all.errors).toContain("does not contain the invite's scope");
+    expect(issued).toHaveLength(0);
+    // 自分の scope 内なら発行できる
+    const dev = await run(["invite", "create", "--role", "reader", "--env", "env-dev"]);
+    expect(dev.code).toBe(0);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.scopeEnvironmentIds).toEqual(["env-dev"]);
   });
 
   it("手元の master 鍵がチェーン上の自分の鍵と違えば発行しない(検証不能な発行文を作らない)", async () => {

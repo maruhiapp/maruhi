@@ -17,6 +17,7 @@ import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
   importSigningPublicKey,
+  scopeIncludesEnvironment,
   SUITE_ID,
   unwrapDek,
   verifyDekCommitment,
@@ -28,6 +29,7 @@ import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { describeScope } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
@@ -241,6 +243,13 @@ export interface EnvironmentKeys {
  * あれば再取得しない → prefetched(値付き pull の同梱ラップ — §12-7 の二重取得
  * 解消)があればそれを検証・開封 → どちらも無ければ listMine を取得して検証・
  * 開封する。検証(§5.1 登録署名 + §5.2 コミットメント照合)は全経路で必須。
+ *
+ * **受信側の scope 規則(CRYPTO_SPEC §6.3 — 2026-09-15 ES K4、設計録 K4-F)**: 自分宛の
+ * ラップで環境 ∉ 自分の scope のものは使用しない。ここが自分宛 DEK の唯一の
+ * 取得口なので、判定をここに置けば「使わない」が構造で成立する。値付き経路は
+ * 通信前判定(K4-C)で先に止まるため、到達は競合類(同期の間に scope が縮んだ)か
+ * 呼び出し側の誤りに限られ、fail-closed の型付きエラーで中断する(ラップは
+ * 取得も開封もせず、内容は文言に出さない)。
  */
 export function environmentKeysFor(input: {
   readonly client: MaruhiClient;
@@ -256,6 +265,19 @@ export function environmentKeysFor(input: {
     // 現エポックはチェーン導出値(§6.2 — 環境未作成はここで止まる)
     const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
       .currentEpoch;
+    const self = input.verified.state.members.get(input.recipient.userId);
+    if (self === undefined) {
+      return yield* Effect.fail(
+        cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
+      );
+    }
+    if (!scopeIncludesEnvironment(self.scope, input.environmentId)) {
+      return yield* Effect.fail(
+        cliError(
+          `Environment ${displayText(input.environmentId)} is outside your environment scope (your scope: ${describeScope(self.scope)}), so a DEK wrap addressed to you for it is not used (CRYPTO_SPEC §6.3 — such a wrap would mean the server is not enforcing AUTH_SPEC §12-6). Your local chain view may be stale — re-run to resync, or ask an admin to widen your scope`,
+        ),
+      );
+    }
     if (input.cached?.has(currentEpoch) === true) {
       return { currentEpoch, deksByEpoch: input.cached };
     }

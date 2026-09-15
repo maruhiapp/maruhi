@@ -27,7 +27,6 @@ import {
 } from "@maruhi/api-schema";
 import { ulid } from "@maruhi/core";
 import {
-  ALL_SCOPE,
   type ChainMember,
   computeUserKeyFingerprint,
   decodeHex,
@@ -35,6 +34,7 @@ import {
   encodeHex,
   generateInviteLinkSeed,
   type InviteAcceptSignatureContext,
+  type MemberScope,
   type ScopeKind,
   type ScopePayloadFields,
   scopePayloadFieldsOf,
@@ -71,6 +71,7 @@ import {
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import type { ProcessRunner } from "./run.ts";
+import { describeScope, requireScopeEnvironmentsExist, sameScope, scopeContains } from "./scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
 
@@ -314,30 +315,49 @@ function ensureCanIssue(input: {
   readonly verified: VerifiedProject;
   readonly sessionUserId: string;
   readonly role: InviteRole;
+  readonly scope: MemberScope;
   readonly masterKeys: MasterKeys;
 }): Effect.Effect<ChainMember, CliError> {
-  const inviter = input.verified.state.members.get(input.sessionUserId);
-  if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
-    return Effect.fail(cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"));
-  }
-  if (input.role === "admin" && inviter.role !== "owner") {
-    return Effect.fail(
-      cliError(
-        "Only an owner can issue a role=admin invite (same level as the add_member permission table in CRYPTO_SPEC §6.2)",
-      ),
-    );
-  }
-  if (
-    inviter.encPubHex !== input.masterKeys.record.encPubHex ||
-    inviter.sigPubHex !== input.masterKeys.record.sigPubHex
-  ) {
-    return Effect.fail(
-      cliError(
-        "Your master key on this machine does not match your key on the project chain, so an issue signature made here would not verify. Restore the chain key (`maruhi key recover`) or have an owner re-add you",
-      ),
-    );
-  }
-  return Effect.succeed(inviter);
+  return Effect.gen(function* () {
+    const inviter = input.verified.state.members.get(input.sessionUserId);
+    if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
+      return yield* Effect.fail(
+        cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
+      );
+    }
+    if (input.role === "admin" && inviter.role !== "owner") {
+      return yield* Effect.fail(
+        cliError(
+          "Only an owner can issue a role=admin invite (same level as the add_member permission table in CRYPTO_SPEC §6.2)",
+        ),
+      );
+    }
+    // scope(2026-09-15 ES K4 — 設計録 K4-G): `--env` の各 id はチェーン上に存在し
+    // (`unknown-environment`)、自分の scope が招待 scope を包含する
+    // (`scope-not-contained` — 原則 1: add_member の権限変化の環境集合 = 新 scope)
+    // ことを通信前に検査する。サーバーは検査しない(AUTH_SPEC §15-2)が、通っても
+    // 受諾後の add_member が合意規則で落ちる = 受諾者を無駄に儀式へ進ませる罠なので
+    // 発行しない(逃げ道は置かない — scope = all の admin / owner に頼めばよい)
+    yield* requireScopeEnvironmentsExist(input.verified, input.scope);
+    if (!scopeContains(inviter.scope, input.scope)) {
+      return yield* Effect.fail(
+        cliError(
+          `Your environment scope (${describeScope(inviter.scope)}) does not contain the invite's scope (${describeScope(input.scope)}), so the add_member after acceptance would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Invite only environments in your own scope, or ask an owner / all-scope admin to issue this invite`,
+        ),
+      );
+    }
+    if (
+      inviter.encPubHex !== input.masterKeys.record.encPubHex ||
+      inviter.sigPubHex !== input.masterKeys.record.sigPubHex
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          "Your master key on this machine does not match your key on the project chain, so an issue signature made here would not verify. Restore the chain key (`maruhi key recover`) or have an owner re-add you",
+        ),
+      );
+    }
+    return inviter;
+  });
 }
 
 /** 発行文の材料(id・種・リンク公開鍵)と発行署名。 */
@@ -400,6 +420,7 @@ function reportIssued(input: {
   readonly link: Redacted.Redacted<string>;
   readonly inviteId: string;
   readonly role: InviteRole;
+  readonly scope: MemberScope;
   readonly expiresAtMs: number;
   readonly expectedGithubLogin: string | null;
 }): Effect.Effect<void, never, CliIo> {
@@ -409,7 +430,7 @@ function reportIssued(input: {
     // inviteCreateOp 冒頭の TTY + エージェントゲートで判定済みで、剥がすのはその後ろ
     yield* io.log(Redacted.value(input.link));
     yield* io.logError(
-      `Issued an invite (id=${displayText(input.inviteId)}, role=${input.role}, expires=${formatDateTimeUtc(input.expiresAtMs)})`,
+      `Issued an invite (id=${displayText(input.inviteId)}, role=${input.role}, scope=${describeScope(input.scope)}, expires=${formatDateTimeUtc(input.expiresAtMs)})`,
     );
     yield* io.logError(
       "This link is shown only once (the server holds only the link's public key and cannot rebuild it). Hand it to the invitee over a person-to-person channel",
@@ -431,6 +452,8 @@ export function inviteCreateOp(input: {
   readonly verified: VerifiedProject;
   readonly origin: string;
   readonly role: InviteRole;
+  /** 付与予定 scope(`--env` 反復 → listed、省略 = all — AUTH_SPEC §15-3 / 設計録 裁定 K)。 */
+  readonly scope: MemberScope;
   readonly sessionUserId: string;
   readonly masterKeys: MasterKeys;
   /** 宛先の GitHub login(`--github` — 裏付け元の照合先。発行ピンにのみ保持)。 */
@@ -447,9 +470,9 @@ export function inviteCreateOp(input: {
     // ため「発行して表示しない」形は取れない — 発行そのものを拒否する
     yield* ensureInviteLinkDisplayAllowed(io);
     const inviter = yield* ensureCanIssue(input);
-    // K2 の CLI は scope = all のみ発行する(`--env` による listed の発行は K4 —
-    // 設計録 es-design.md §4)。発行文・発行 body・リンクの 3 か所に同じ scope を載せる
-    const scope: ScopePayloadFields = scopePayloadFieldsOf(ALL_SCOPE);
+    // 発行文・発行 body・リンク・発行ピンの 4 か所に同じ scope を載せる(2026-09-15
+    // ES K4 — `--env` 反復 = listed、省略 = all。生成は昇順・重複なし — scope.ts)
+    const scope: ScopePayloadFields = scopePayloadFieldsOf(input.scope);
     const signed = yield* signIssuance({
       verified: input.verified,
       inviter,
@@ -499,6 +522,8 @@ export function inviteCreateOp(input: {
       .saveIssuedPin(input.verified.projectId, signed.inviteId, {
         linkPubHex: signed.linkPubHex,
         role: input.role,
+        scopeKind: scope.scopeKind,
+        scopeEnvironmentIds: scope.scopeEnvironmentIds,
         expiresAtMs: issued.expiresAtMs,
         expectedGithubLogin: input.expectedGithubLogin,
       })
@@ -513,6 +538,7 @@ export function inviteCreateOp(input: {
       link,
       inviteId: signed.inviteId,
       role: input.role,
+      scope: input.scope,
       expiresAtMs: issued.expiresAtMs,
       expectedGithubLogin: input.expectedGithubLogin,
     });
@@ -1171,31 +1197,11 @@ function displayStatus(row: InvitationRow, nowMs: number): string {
   return row.status === "pending" && row.expiresAtMs <= nowMs ? "expired" : row.status;
 }
 
-/** scope の表示(`all` または環境 id の列挙 — ユーザー向け文言)。 */
-function describeScope(scope: ScopePayloadFields): string {
-  return scope.scopeKind === "all"
-    ? "all environments"
-    : scope.scopeEnvironmentIds.length === 0
-      ? "no environments"
-      : scope.scopeEnvironmentIds.map((id) => displayText(id)).join(", ");
-}
-
-/** scope の一致(集合として比較 — 生成は昇順 SHOULD・検証は集合。CRYPTO_SPEC §6.2)。 */
-function sameScope(a: ScopePayloadFields, b: ScopePayloadFields): boolean {
-  if (a.scopeKind !== b.scopeKind) {
-    return false;
-  }
-  const ids = new Set(a.scopeEnvironmentIds);
-  return (
-    ids.size === new Set(b.scopeEnvironmentIds).size &&
-    b.scopeEnvironmentIds.every((id) => ids.has(id))
-  );
-}
-
 /**
  * 発行ピン突合(§6.5 の招待者側の追加材料 — SHOULD): サーバー申告の行が発行時の
- * link_pub・role と食い違えば、行のすり替え・role の虚偽申告の兆候。ピンが無い
- * (別端末発行)場合は発行署名の検証だけが行を固定する。
+ * link_pub・role・scope と食い違えば、行のすり替え・role / scope の虚偽申告の兆候。
+ * ピンが無い(別端末発行)場合は発行署名の検証だけが行を固定する。scope を持たない
+ * 旧ピン(K4 以前の発行)は scope の突合を省く(追加のみ・後方互換 — 設計録 K4-L)。
  */
 export function pinMismatchOf(
   pins: InvitePins | null,
@@ -1205,9 +1211,17 @@ export function pinMismatchOf(
   if (pin === undefined) {
     return "missing";
   }
-  return pin.linkPubHex !== row.issuance?.linkPubHex || pin.role !== row.role
-    ? "mismatch"
-    : "match";
+  if (pin.linkPubHex !== row.issuance?.linkPubHex || pin.role !== row.role) {
+    return "mismatch";
+  }
+  if (
+    pin.scopeKind !== undefined &&
+    pin.scopeEnvironmentIds !== undefined &&
+    !sameScope({ scopeKind: pin.scopeKind, scopeEnvironmentIds: pin.scopeEnvironmentIds }, row)
+  ) {
+    return "mismatch";
+  }
+  return "match";
 }
 
 /** 一覧 1 行の検証と表示(integrity failure の件数を返す)。 */
