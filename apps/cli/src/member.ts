@@ -63,6 +63,7 @@ import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
   baselinesOf,
+  isPendingAt,
   type RotationMandate,
   rotationMandates,
   type SweepOutcome,
@@ -131,13 +132,20 @@ function sweepAfterMandate<R>(input: {
     // 残っている場合)は rotate の対象に含めない(CRYPTO_SPEC §7 — 実行者も scope 外なら
     // rotate できない。独立レビュー S2)。常時警告が引き続き表示する
     const all = baselinesOf(input.mandates);
-    const outOfScope = [...all.keys()]
-      .filter((environmentId) => !scopeIncludesEnvironment(actorScope, environmentId))
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    // 注記は「scope 外 ∧ 未削除 ∧ 未収束」に限る(常時警告と同じ判定 — 独立レビュー S7)
+    const outOfScope = [...all]
+      .filter(
+        ([environmentId, baselineSeq]) =>
+          !scopeIncludesEnvironment(actorScope, environmentId) &&
+          !deletedVerified.has(environmentId) &&
+          isPendingAt(input.verified, environmentId, baselineSeq),
+      )
+      .map(([environmentId]) => environmentId)
       .toSorted(compareCodePoints);
     const baselines = new Map(
       [...all].filter(([environmentId]) => scopeIncludesEnvironment(actorScope, environmentId)),
     );
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
     const skippedDeleted = [...baselines.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
       .toSorted();
@@ -643,10 +651,14 @@ function ensureAddable(input: {
         ),
       );
     }
-    // 原則 1(§6.2 scope-not-contained): add の権限変化の環境集合 = 新 scope(招待行)。
-    // 発行時の検査(K4-G)は発行者のもので、add の実行者は別人・別時点でありうる
-    // (独立レビュー S1)。儀式の前に落とす。追記済みの再開(上)は remove / change-role
-    // と同じく包含を問わない(残るのはバックフィルだけで、持たない DEK は取得口で止まる)
+    const keyRejection = duplicateMemberKeyRejection(input.verified, input.acceptance);
+    if (keyRejection !== null) {
+      return yield* Effect.fail(cliError(keyRejection));
+    }
+    // 原則 1(§6.2 scope-not-contained — 検査順も §6.2: duplicate 系の後): add の権限変化の
+    // 環境集合 = 新 scope(招待行)。発行時の検査(K4-G)は発行者のもので、add の実行者は
+    // 別人・別時点でありうる(独立レビュー S1)。儀式の前に落とす。追記済みの再開(上)は
+    // remove / change-role と同じく包含を問わない(残るのはバックフィルだけ)
     const invited = memberScopeOf(input.scope);
     if (!scopeContains(actor.scope, invited)) {
       return yield* Effect.fail(
@@ -654,10 +666,6 @@ function ensureAddable(input: {
           `Your environment scope (${describeScope(actor.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
         ),
       );
-    }
-    const keyRejection = duplicateMemberKeyRejection(input.verified, input.acceptance);
-    if (keyRejection !== null) {
-      return yield* Effect.fail(cliError(keyRejection));
     }
     return { alreadyAdded: false };
   });
@@ -1205,8 +1213,10 @@ export interface MemberChangeRoleSummary {
   readonly targetUserId: string;
   readonly newRole: Role;
   readonly newScope: MemberScope;
-  /** 拡大分の環境(新 \ 旧 — actor のバックフィル義務。§12-6)。 */
+  /** 拡大分の環境(新 \ 旧 — actor のバックフィル義務。§12-6)のうち actor の scope 内。 */
   readonly widenedEnvironmentIds: readonly string[];
+  /** 履歴上の拡大分のうち actor の scope 外(自分の義務ではない — その環境を持つメンバーに委ねる)。 */
+  readonly widenedOutOfScopeEnvironmentIds: readonly string[];
   /** 縮小分の環境(旧 \ 新 — rotate 義務。§7)。 */
   readonly narrowedEnvironmentIds: readonly string[];
   /** 拡大分のバックフィルの結果(拡大なし = null)。 */
@@ -1237,7 +1247,7 @@ function resolveRoleChange(
     if (request.newScope !== null && request.newScope.kind !== "all") {
       return Effect.fail(
         usageError(
-          "An owner's scope is always all environments (CRYPTO_SPEC §6.2 scope-role-mismatch) — drop --env, or use --all-envs",
+          "An owner's scope is always all environments (CRYPTO_SPEC §6.2 scope-role-mismatch) — drop --env / --no-envs, or use --all-envs",
         ),
       );
     }
@@ -1373,7 +1383,15 @@ function ensureRoleChangeable(input: {
     }
     if (target.role === next.role && sameScope(target.scope, next.scope)) {
       // 追記済み(前回実行の中断・並行実行)または no-op。降格 / 縮小の中断復旧
-      // (エントリは載ったが義務が未了)をここから再開できる形にする
+      // (エントリは載ったが義務が未了)をここから再開できる形にする。再開(rotate /
+      // バックフィル)は member 以上(remove の再開と同じガード — 独立レビュー N11)
+      if (ROLE_RANK[actor.role] < ROLE_RANK.member) {
+        return yield* Effect.fail(
+          cliError(
+            "Resuming the rotation / backfill requires the member role or above (CRYPTO_SPEC §6.2)",
+          ),
+        );
+      }
       return { alreadyChanged: true, ...next };
     }
     // 検査順は §6.2 の合意規則と同じ: role 規則 → last-owner → unknown-environment →
@@ -1468,7 +1486,7 @@ function signChangeRoleAtView(input: {
  * 再開されない。sweep 側が対象の全義務を畳むのと同じく、履歴全体から導く。409 で
  * 冪等なので過剰分は「登録済み」に収束する)。縮小分は報告用で、最後のエントリの差。
  */
-function scopeChangesOf(
+export function scopeChangesOf(
   verified: VerifiedProject,
   target: ChainMember,
 ): { readonly widened: readonly string[]; readonly narrowed: readonly string[] } {
@@ -1492,6 +1510,26 @@ function scopeChangesOf(
     narrowed = change.narrowed;
   }
   return { widened: [...widened].toSorted(compareCodePoints), narrowed };
+}
+
+/**
+ * 履歴上の拡大分のうち actor の scope 外の環境は自分の義務ではない(§6.2 の系 —
+ * 義務の環境集合 ⊆ 権限変化の環境集合 ⊆ actor scope。独立レビュー S6)。sweep と同じく
+ * 注記に回し、その環境を scope に持つメンバーの再実行に委ねる。
+ */
+function splitWidenedByActorScope(
+  verified: VerifiedProject,
+  actorUserId: string,
+  widened: readonly string[],
+): { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] } {
+  const actor = verified.state.members.get(actorUserId);
+  const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
+  return {
+    widened: widened.filter((environmentId) => scopeIncludesEnvironment(actorScope, environmentId)),
+    widenedOutOfScope: widened.filter(
+      (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
+    ),
+  };
 }
 
 /**
@@ -1570,17 +1608,22 @@ export function memberChangeRoleOp<R>(input: {
     }
 
     const change = scopeChangesOf(verified, target);
+    const { widened, widenedOutOfScope } = splitWidenedByActorScope(
+      verified,
+      input.signerUserId,
+      change.widened,
+    );
 
     // (1) 拡大分のバックフィル — actor は包含規則により DEK を持つ(§12-6)。409 で冪等
     const backfill =
-      change.widened.length === 0
+      widened.length === 0
         ? null
         : yield* backfillAllEnvironments({
             client: input.client,
             verified,
             recipient: input.recipient,
             target,
-            environments: change.widened,
+            environments: widened,
             staleWrapSuspected: false,
             signerUserId: input.signerUserId,
             signingKeyPair: input.signingKeyPair,
@@ -1605,7 +1648,8 @@ export function memberChangeRoleOp<R>(input: {
       targetUserId: input.targetUserId,
       newRole: target.role,
       newScope: target.scope,
-      widenedEnvironmentIds: change.widened,
+      widenedEnvironmentIds: widened,
+      widenedOutOfScopeEnvironmentIds: widenedOutOfScope,
       narrowedEnvironmentIds: change.narrowed,
       backfill,
       demoted,

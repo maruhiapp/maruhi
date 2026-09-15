@@ -88,7 +88,7 @@ export function baselinesOf(mandates: readonly RotationMandate[]): EnvironmentBa
  * 導出できない環境は fail-closed で未収束に含める(環境が黙って対象から外れる形に
  * しない)。
  */
-function isPendingAt(
+export function isPendingAt(
   verified: VerifiedProject,
   environmentId: string,
   baselineSeq: number,

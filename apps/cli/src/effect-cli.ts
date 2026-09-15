@@ -2360,6 +2360,11 @@ function reportScopeBackfill(
     yield* io.log(
       `Scope widened by ${countNoun(summary.widenedEnvironmentIds.length, "environment")} (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
     );
+    if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
+      yield* logWarning(
+        `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
+      );
+    }
     for (const failure of summary.backfill.failed) {
       yield* logWarning(
         `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member change-role\` with the same flags to resume (409 converges as already-registered)`,

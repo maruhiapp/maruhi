@@ -501,6 +501,38 @@ describe("maruhi invite create", () => {
     expect(issued[0]?.scopeEnvironmentIds).toEqual(["env-dev"]);
   });
 
+  it("--no-envs は listed{}(環境ゼロ — §6.2 の空 listed)で発行し、--env / 省略と排他", async () => {
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp("env-dev", new Uint8Array(32)) },
+    ]);
+    const issued: IssueBody[] = [];
+    const server = await start([
+      chainHandler(built),
+      issueHandler(built.projectId, (b) => issued.push(b)),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(await runCli(["invite", "create", "--role", "reader", "--no-envs"], env.layer)).toBe(0);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.scopeKind).toBe("listed");
+    expect(issued[0]?.scopeEnvironmentIds).toEqual([]);
+    expect(env.errors.join("\n")).toContain("scope=no environments");
+
+    const mixed = await makeTestEnv();
+    seedSession(mixed, server.origin, inviter);
+    await seedConfig(mixed, { server: server.origin, defaultProject: built.projectId });
+    expect(
+      await runCli(
+        ["invite", "create", "--role", "reader", "--no-envs", "--env", "env-dev"],
+        mixed.layer,
+      ),
+    ).toBe(2);
+    expect(issued).toHaveLength(1);
+  });
+
   it("手元の master 鍵がチェーン上の自分の鍵と違えば発行しない(検証不能な発行文を作らない)", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
     // 同じ user_id で別の鍵(別デバイスで生成し直した形)

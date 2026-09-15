@@ -13,12 +13,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { environmentKeysFor } from "../src/deks.ts";
+import { scopeChangesOf } from "../src/member.ts";
 import { environmentsOfScopeAt, sameScope, scopeChangeAt, scopeContains } from "../src/scope.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/sync.ts";
 import {
   addScopedMemberOp,
   buildChain,
   type BuiltChain,
+  changeRoleOp,
   createEnvironmentOp,
   genesisOp,
   makeTestUser,
@@ -140,5 +142,63 @@ describe("包含述語(CRYPTO_SPEC §6.2 の集合代数 — K4-I)", () => {
     expect(sameScope(both, { kind: "listed", environmentIds: ["env-prod", "env-dev"] })).toBe(true);
     expect(sameScope(all, none)).toBe(false);
     expect(sameScope({ scopeKind: "all", scopeEnvironmentIds: [] }, all)).toBe(true);
+  });
+});
+
+describe("change_role 履歴からの拡大 / 縮小分の再導出(K4-N 追補 (2))", () => {
+  const dek = new Uint8Array(32);
+
+  function targetOf(view: VerifiedProject) {
+    const member = view.state.members.get(dev.userId);
+    if (member === undefined) throw new Error("dev is not a member");
+    return member;
+  }
+
+  it("拡大 → 縮小: 拡大分は履歴の和集合 ∩ 現 scope(縮小で外れた環境は含まない)、縮小分は最後の差", async () => {
+    const chain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-stg", dek) },
+      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod", "env-stg"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
+    ]);
+    const view = await verify(chain);
+    const change = scopeChangesOf(view, targetOf(view));
+    expect(change.widened).toEqual(["env-prod"]);
+    expect(change.narrowed).toEqual(["env-stg"]);
+  });
+
+  it("再拡大: 第三者の change_role が挟まっても、履歴全体の拡大分が現 scope に残る限り再開対象になる", async () => {
+    const chain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
+      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
+      // 拡大バックフィルの中断中に別の change_role(role だけ変更)が積まれた形
+      { actor: owner, operation: changeRoleOp(dev, "admin", ["env-dev", "env-prod"]) },
+    ]);
+    const view = await verify(chain);
+    const change = scopeChangesOf(view, targetOf(view));
+    expect(change.widened).toEqual(["env-prod"]);
+    expect(change.narrowed).toEqual([]);
+  });
+
+  it("all → listed → all: 縮小で外れた環境は再拡大で拡大分に戻り、縮小分は空になる", async () => {
+    const chain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
+      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev", "env-prod"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member", null) },
+      { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member", null) },
+    ]);
+    const view = await verify(chain);
+    const change = scopeChangesOf(view, targetOf(view));
+    expect(change.widened).toEqual(["env-prod"]);
+    expect(change.narrowed).toEqual([]);
   });
 });
