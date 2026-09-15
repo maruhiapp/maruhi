@@ -449,6 +449,8 @@ describe("maruhi member add", () => {
     // prod は対象の scope 外 — ラップを作らない(作ればサーバーが 422 scope-out-of-range)
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_ID]);
     expect(env.logs.join("\n")).toContain("in the member's scope × every epoch");
+    // 同じ手順で組んだチェーンは同じ projectId になる — listed の発行文を他テストに残さない
+    issuedByProject.delete(built.projectId);
   });
 
   it("ChainHeadConflict(409)は再同期して add_member を再署名し、リトライする(§12-4)", async () => {

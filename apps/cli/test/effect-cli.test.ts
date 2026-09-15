@@ -872,7 +872,7 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     const { env, server } = await startEnv();
     expect(await runCli(["member", "bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: add | remove | change-role)",
+      "Unknown subcommand (expected one of: add | remove | change-role | list)",
     );
     expect(server.requests).toHaveLength(0);
   });
@@ -897,10 +897,10 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(blank.server.requests).toHaveLength(0);
   });
 
-  it("change-role は --role 必須・重複指定と FP の形式は宣言と共用パーサで落ちる", async () => {
+  it("change-role は --role / --env / --all-envs のいずれか必須・重複指定と FP の形式は宣言と共用パーサで落ちる", async () => {
     const missing = await startEnv();
     expect(await runCli(["member", "change-role", "user-1"], missing.env.layer)).toBe(2);
-    expect(missing.env.errors.join("\n")).toContain("Specify --role");
+    expect(missing.env.errors.join("\n")).toContain("Specify what to change: --role");
     expect(missing.server.requests).toHaveLength(0);
 
     const dup = await startEnv();
