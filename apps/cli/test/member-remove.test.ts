@@ -19,8 +19,10 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   buildChain,
   type BuiltChain,
+  changeRoleOp,
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
@@ -82,6 +84,8 @@ interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: RotateBody[];
+  /** dek_wraps 登録(change-role の拡大分バックフィル — §12-6)。 */
+  readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
 }
 
@@ -98,26 +102,37 @@ async function makeRemoveServer(input: {
   readonly onAppend?: (call: number) => MockResponse | undefined;
   /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
   readonly chainAfterConflict?: BuiltChain;
+  /** rotate 複合を送る実行者(既定 = owner)。受理したマニフェストの issuer と保存する自分宛ラップの受信者。 */
+  readonly rotator?: TestUser;
+  /** 一覧に status = "deleted" のメタステートメントで載せる環境(検証済み削除)。 */
+  readonly deletedEnvironments?: readonly string[];
 }): Promise<RemoveServerState> {
+  const rotator = input.rotator ?? owner;
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
   const rotateBodies: RotateBody[] = [];
+  const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
   /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
   const manifests = new Map<string, WireDistributedManifest>();
   /** 環境ごとの保存済みチェックポイントスナップショット(§16-2 — 変数なし = 空列挙)。 */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
+  const deletedEnvironments = input.deletedEnvironments ?? [];
   const listedStatements = await Promise.all(
-    Object.keys(environments).map((environmentId) =>
+    [...new Set([...Object.keys(environments), ...deletedEnvironments])].map((environmentId) =>
       environmentStatementFor({
         projectId,
         environmentId,
         name: environmentId,
         author: owner,
         head: headOf(input.built, 1),
+        // 削除は tombstone(status deleted・metaVersion + 1 — §12-5)
+        ...(deletedEnvironments.includes(environmentId)
+          ? { status: "deleted" as const, metaVersion: 2 }
+          : {}),
       }),
     ),
   );
@@ -236,11 +251,11 @@ async function makeRemoveServer(input: {
       // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
       manifests.set(environmentId, {
         ...body.manifest,
-        issuerUserId: owner.userId,
-        issuerKeyFingerprintHex: owner.fingerprintHex,
+        issuerUserId: rotator.userId,
+        issuerKeyFingerprintHex: rotator.fingerprintHex,
       });
       for (const wrap of body.deks) {
-        if (wrap.recipientUserId !== owner.userId) {
+        if (wrap.recipientUserId !== rotator.userId) {
           continue;
         }
         environment.deks.push({
@@ -249,8 +264,8 @@ async function makeRemoveServer(input: {
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,
-          signerUserId: owner.userId,
-          signerKeyFingerprintHex: owner.fingerprintHex,
+          signerUserId: rotator.userId,
+          signerKeyFingerprintHex: rotator.fingerprintHex,
         });
       }
       return {
@@ -264,7 +279,29 @@ async function makeRemoveServer(input: {
       };
     },
   ];
-  return { handlers, appendedEntries, rotateBodies, counters };
+  // dek_wraps(自分宛の取得 = バックフィルの入力 / 登録 = 拡大分の出力)
+  handlers.push((request) => {
+    const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/deks$`).exec(
+      request.path,
+    );
+    if (match === null) {
+      return null;
+    }
+    const environment = environments[match[1] ?? ""];
+    if (environment === undefined) {
+      return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
+    }
+    if (request.method === "GET") {
+      return { status: 200, json: { deks: environment.deks } };
+    }
+    if (request.method === "POST") {
+      const body = request.body as { readonly deks: readonly WrappedDek[] };
+      registerBodies.push({ environmentId: match[1] ?? "", deks: body.deks });
+      return { status: 204 };
+    }
+    return null;
+  });
+  return { handlers, appendedEntries, rotateBodies, registerBodies, counters };
 }
 
 async function startEnv(
@@ -326,7 +363,7 @@ describe("maruhi member remove", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("Appended remove_member to the chain");
     expect(logs).toContain(
-      "Done: the member removal and the rotation of every environment completed",
+      "Done: the member removal and the rotation of every environment in the target's scope completed",
     );
   });
 
@@ -491,7 +528,7 @@ describe("maruhi member change-role", () => {
       [owner.userId, target.userId].toSorted(),
     );
     expect(env.logs.join("\n")).toContain(
-      "Done: the demotion and the rotation of every environment completed",
+      "Done: the change and the rotation of the affected environments completed",
     );
   });
 
@@ -514,7 +551,9 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
+    expect(env.logs.join("\n")).toContain(
+      "Done: the role / scope was changed (no rotation mandate)",
+    );
   });
 
   it("最初から reader のメンバーへの no-op 再実行は追記も sweep もしない", async () => {
@@ -536,7 +575,9 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
+    expect(env.logs.join("\n")).toContain(
+      "Done: the role / scope was changed (no rotation mandate)",
+    );
   });
 
   it("中断復旧: 降格エントリ追記済み・ローテーション未了なら、追記せず sweep を再開する", async () => {
@@ -598,7 +639,9 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
+    expect(env.logs.join("\n")).toContain(
+      "Done: the role / scope was changed (no rotation mandate)",
+    );
   });
 
   it("自分自身の member 未満への降格は拒否する(§7 の義務を本人が履行できない)", async () => {
@@ -614,5 +657,490 @@ describe("maruhi member change-role", () => {
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("You cannot demote yourself below member");
     expect(state.appendedEntries).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 環境スコープ(2026-09-15 ES K4 — CRYPTO_SPEC §6.2 / §7、設計録 es-design.md §10)
+// ---------------------------------------------------------------------------
+
+const ENV_DEV = "env-dev";
+const ENV_PROD = "env-prod";
+
+/** dev / prod の 2 環境(エポック 1)を持つモックの環境集合(owner 宛ラップつき)。 */
+async function twoEnvironments(
+  projectId: string,
+): Promise<Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>> {
+  return {
+    [ENV_DEV]: { currentEpoch: 1, deks: [await ownerWrap(projectId, ENV_DEV, 1, dek1)] },
+    [ENV_PROD]: { currentEpoch: 1, deks: [await ownerWrap(projectId, ENV_PROD, 1, dek2)] },
+  };
+}
+
+describe("環境スコープ(ES K4): 義務の環境集合と change-role --env", () => {
+  it("listed{dev} のメンバー削除は dev だけを rotate する(remove = 対象の現 scope — §7)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
+    expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_DEV]);
+    expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
+    expect(env.logs.join("\n")).toContain(
+      "Done: the member removal and the rotation of every environment in the target's scope completed",
+    );
+  });
+
+  it("change-role --env で縮小すると縮小分だけを reason=scope-narrowed で rotate し、新 DEK は対象へラップしない(R(E))", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(0);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    // role は据え置き(--role 省略)、scope は全置換(§6.2)
+    expect(entry.payload).toEqual({
+      targetUserId: target.userId,
+      newRole: "member",
+      scopeKind: "listed",
+      scopeEnvironmentIds: [ENV_DEV],
+    });
+    expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_PROD]);
+    expect(state.rotateBodies[0]?.entry.payload.reason).toBe("scope-narrowed");
+    // 新エポックの完全集合 = R(prod) = { owner }(縮小した対象を含まない — §6.3)
+    expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
+    expect(state.registerBodies).toHaveLength(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain(`scope=${ENV_DEV}`);
+    expect(logs).toContain("Scope narrowed by 1 environment");
+    expect(logs).toContain(
+      "Done: the change and the rotation of the affected environments completed",
+    );
+  });
+
+  it("change-role --all-envs で拡大すると拡大分の全エポックを対象へバックフィルし、rotate はしない(§12-6)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "change-role", target.userId, "--all-envs"], env.layer)).toBe(0);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    expect(entry.payload).toEqual({
+      targetUserId: target.userId,
+      newRole: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
+    expect(state.rotateBodies).toHaveLength(0);
+    // 拡大分 = prod のみ(dev は既に持つ)。受信者 = 対象、エポック 1
+    expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
+    expect(state.registerBodies[0]?.deks.map((wrap) => [wrap.epoch, wrap.recipientUserId])).toEqual(
+      [[1, target.userId]],
+    );
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("1 environment added to the member's scope");
+    expect(logs).toContain("Done: the role / scope was changed (no rotation mandate)");
+  });
+
+  it("中断復旧: 縮小エントリ追記済み・rotate 未了なら、同じフラグの再実行が追記せず縮小分だけを rotate する", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_PROD]);
+    expect(env.logs.join("\n")).toContain("nothing was appended");
+  });
+
+  it("CAS リトライは据え置き側(role / scope)を再同期後のビューから解決し、並行の変更を上書きしない(Cursor Bugbot)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "reader") },
+    ]);
+    // 送信と並行して別の owner 端末が対象を member へ昇格していた(延長チェーン)
+    const concurrent = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addMemberOp(target, "reader") },
+      { actor: owner, operation: changeRoleOp(target, "member", null) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    // scope だけを変える実行: 再署名は並行昇格後の role(member)を据え置く
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(1);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    expect(entry.payload).toEqual({
+      targetUserId: target.userId,
+      newRole: "member",
+      scopeKind: "listed",
+      scopeEnvironmentIds: [ENV_DEV],
+    });
+    expect(entry.seq).toBe(6);
+  });
+
+  it("入力規則: 変更なし・--env と --all-envs の併用・owner への --env は usage エラー(通信前)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: addMemberOp(target, "admin") },
+    ]);
+    for (const argv of [
+      ["member", "change-role", target.userId],
+      ["member", "change-role", target.userId, "--env", ENV_DEV, "--all-envs"],
+      ["member", "change-role", target.userId, "--role", "owner", "--env", ENV_DEV],
+    ]) {
+      const state = await makeRemoveServer({ built, environments: {} });
+      const env = await startEnv(state, built.projectId, owner);
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(state.appendedEntries, argv.join(" ")).toHaveLength(0);
+    }
+    // 未知の環境 id はチェーン上の存在検査で止まる(unknown-environment の手前判定)
+    const state = await makeRemoveServer({ built, environments: {} });
+    const env = await startEnv(state, built.projectId, owner);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", "env-nope"], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not exist on this project's chain");
+    expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  it("値付き pull は scope 外を通信前に拒否し、メタのみ(schema)は scope を問わない(§6.3 / §12-7 — 裁定 G-2)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const server = await MockServer.start([...state.handlers]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, target);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(await runCli(["pull", "--env", ENV_PROD], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `Cannot operate on environment ${ENV_PROD}: it is outside your environment scope`,
+    );
+    expect(env.errors.join("\n")).toContain(`your scope: ${ENV_DEV}`);
+    expect(server.requests.filter((request) => request.path.includes("/pull"))).toHaveLength(0);
+
+    // メタのみ pull(`maruhi schema`)は scope 外でも要求を出す(モックは持たないので
+    // 404 で終わるが、scope の拒否文言では止まらない)
+    const schemaEnv = await makeTestEnv();
+    seedSession(schemaEnv, server.origin, target);
+    await seedConfig(schemaEnv, { server: server.origin, defaultProject: built.projectId });
+    await runCli(["schema", "--env", ENV_PROD], schemaEnv.layer);
+    expect(schemaEnv.errors.join("\n")).not.toContain("outside your environment scope");
+    expect(
+      server.requests.filter((request) => request.path.includes(`/${ENV_PROD}/pull/metadata`)),
+    ).toHaveLength(1);
+  });
+
+  it("中断復旧: 拡大バックフィルの中断後に第三者の change_role が挟まっても、履歴全体から拡大分を再導出して再開する(pullfrog)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      // 拡大(バックフィル中断)→ 第三者が role だけを変える change_role を追記
+      { actor: owner, operation: changeRoleOp(target, "member", null) },
+      { actor: owner, operation: changeRoleOp(target, "admin", null) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "change-role", target.userId, "--all-envs"], env.layer)).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
+    expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("自分自身の scope の縮小は拒否する(§7 の義務を本人が履行できない)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(admin2, "admin", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({ built, environments: {} });
+    const env = await startEnv(state, built.projectId, admin2);
+    expect(
+      await runCli(["member", "change-role", admin2.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("You cannot narrow your own scope");
+    expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  it("--role owner は listed の対象でも scope を all に全置換し、拡大分をバックフィルする(§6.2 owner = all)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "admin", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--role", "owner"], env.layer),
+    ).toBe(0);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    expect(entry.payload).toMatchObject({ newRole: "owner", scopeKind: "all" });
+    expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
+  });
+
+  it("--no-envs は listed{}(環境ゼロ)へ置換し、旧 scope の全環境を縮小分として rotate する(§6.2 の空 listed)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "admin", [ENV_DEV]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: await twoEnvironments(built.projectId),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+    expect(await runCli(["member", "change-role", target.userId, "--no-envs"], env.layer)).toBe(0);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "change_role") throw new Error("change_role entry missing");
+    expect(entry.payload).toMatchObject({
+      newRole: "admin",
+      scopeKind: "listed",
+      scopeEnvironmentIds: [],
+    });
+    expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_DEV]);
+    expect(state.rotateBodies[0]?.entry.payload.reason).toBe("scope-narrowed");
+  });
+
+  it("change-role の --env は重複・不正形式を usage(2)で通信前に落とす", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    for (const argv of [
+      ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_DEV],
+      ["member", "change-role", target.userId, "--env", "-bad id"],
+      ["member", "change-role", target.userId, "--no-envs", "--all-envs"],
+    ]) {
+      const state = await makeRemoveServer({ built, environments: {} });
+      const env = await startEnv(state, built.projectId, owner);
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(state.appendedEntries, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("実行者の scope 外に残る他人の義務環境は rotate せず注記し、自分の義務は履行する(§7 — 独立レビュー S2)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    // owner が target を {dev, prod} → {dev} に縮めたが prod の rotate は未収束。dev 専任
+    // admin が target を reader へ降格する(対称差 ∅・旧 ∪ 新 = {dev} ⊆ {dev})
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV]) },
+    ]);
+    // 配布される自分宛ラップは実行者(devAdmin)宛(モックは受信者で絞らないため差し替える)
+    const environments = {
+      [ENV_DEV]: {
+        currentEpoch: 1,
+        deks: [
+          await wrapDekFor({
+            projectId: built.projectId,
+            environmentId: ENV_DEV,
+            epoch: 1,
+            dek: dek1,
+            recipient: devAdmin,
+            signer: owner,
+          }),
+        ],
+      },
+      [ENV_PROD]: { currentEpoch: 1, deks: [] },
+    };
+    const state = await makeRemoveServer({ built, environments, rotator: devAdmin });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--role", "reader"], env.layer),
+    ).toBe(0);
+    expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_DEV]);
+    expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
+    expect(env.errors.join("\n")).toContain(
+      `1 environment with a pending rotation mandate is outside your scope and cannot be rotated by you (${ENV_PROD})`,
+    );
+  });
+
+  it("他人の拡大の未収束分が自分の scope 外だけなら、バックフィル無しでも注記を出して 0 で終わる(Cursor Bugbot)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    // owner が target を {dev} → {dev, prod} に広げたが prod のバックフィルは未収束。
+    // dev 専任 admin が同じ scope で再実行(対称差 ∅ = 追記済みの再開)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({ built, environments: {} });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(
+        ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(
+      `1 environment widened earlier for this member (${ENV_PROD}) is outside your scope, so you cannot backfill it`,
+    );
+  });
+
+  it("検証済み削除の環境は拡大分から外れ、scope 外の注記にも出ない(pullfrog 指摘)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    // 上のケースと同じ「他人の拡大が未収束」だが、prod は後から削除されている。
+    // 誰も埋められない環境なので注記自体を出さない(§12-6 の義務は削除で消える)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: {},
+      deletedEnvironments: [ENV_PROD],
+    });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(
+        ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
+  });
+
+  it("listed の admin は自分の scope 外の対象を remove できない(原則 1 の手前判定 — pullfrog)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({ built, environments: {} });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not contain the target's scope");
+    expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  it("listed の admin は自分の scope 外に触れる change_role を追記できない(原則 1 の手前判定)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
+    ]);
+    // 対称差 {prod} ⊄ {dev}: dev 専任 admin は prod からの縮小を署名できない
+    const narrow = await makeRemoveServer({ built, environments: {} });
+    const narrowEnv = await startEnv(narrow, built.projectId, devAdmin);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], narrowEnv.layer),
+    ).toBe(1);
+    expect(narrowEnv.errors.join("\n")).toContain("scope-not-contained");
+    expect(narrow.appendedEntries).toHaveLength(0);
+    // role が変わる場合は 旧 ∪ 新 = {dev, prod} ⊄ {dev}
+    const promote = await makeRemoveServer({ built, environments: {} });
+    const promoteEnv = await startEnv(promote, built.projectId, devAdmin);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--role", "member"], promoteEnv.layer),
+    ).toBe(1);
+    expect(promoteEnv.errors.join("\n")).toContain("scope-not-contained");
+    expect(promote.appendedEntries).toHaveLength(0);
   });
 });

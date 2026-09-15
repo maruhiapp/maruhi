@@ -43,6 +43,7 @@ import type { ProjectFloor } from "../src/floor.ts";
 import { receiptVariableName } from "../src/sync-receipt.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   removeMemberOp,
   buildChain,
   type BuiltChain,
@@ -766,6 +767,48 @@ describe("maruhi env rotate", () => {
     expect(pushedA.value.prevValueSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(env.logs.join("\n")).toContain("epoch 1 → 2");
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
+  });
+
+  it("ラップ完全集合 = R(E): scope に環境を含まない現メンバーには新 DEK をラップしない(ES K4 — CRYPTO_SPEC §6.2 / §6.3)", async () => {
+    const insider = await makeTestUser("user-insider-7777");
+    const outsider = await makeTestUser("user-outsider-8888");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp("env-other", dek1) },
+      { actor: owner, operation: addScopedMemberOp(insider, "reader", [ENV_ID]) },
+      { actor: owner, operation: addScopedMemberOp(outsider, "member", ["env-other"]) },
+    ]);
+    const state = makeServer({
+      built,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "scope test"], env.layer)).toBe(0);
+    const body = state.rotateBodies[0];
+    if (body === undefined) throw new Error("rotate was not called");
+    expect(body.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
+      [owner.userId, insider.userId].toSorted(),
+    );
+
+    // scope 外の環境は通信前に拒否する(値付き pull = var.read の記録より前 — §6.3)
+    const outsiderEnv = await startEnv(state.handlers, outsider);
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "scope test"], outsiderEnv.layer),
+    ).toBe(1);
+    expect(outsiderEnv.errors.join("\n")).toContain("outside your environment scope");
+    expect(state.rotateBodies).toHaveLength(1);
   });
 
   it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3 — PR-M2)", async () => {

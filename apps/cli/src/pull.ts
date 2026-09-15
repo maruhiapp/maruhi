@@ -21,6 +21,7 @@ import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
+import { requireEnvironmentInScope } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
@@ -200,6 +201,16 @@ export function pullVariables(input: {
   readonly select?: (name: string) => boolean;
 }): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
+    // (0) 対象環境 ∈ 自分の scope(CRYPTO_SPEC §6.3 — サーバーの 403 を待たない。
+    // 2026-09-15 ES K4、設計録 K4-C)。値付き pull の唯一の共通経路(pull / run /
+    // sync / rotate の再暗号化)なので、`--env` の前段(context.ts)を通らない複数環境
+    // コマンドもここで止まる。値付き pull は `var.read` を記録するため、通信前に落とす
+    yield* requireEnvironmentInScope({
+      verified: input.verified,
+      userId: input.recipient.userId,
+      environmentId: input.environmentId,
+      operation: "pull values from",
+    });
     // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した
     // ビューが返る — 以降の検証(ラップ・エポック)も同じビューで行う
     const pulled = yield* pullVerifiedEnvironment(input);

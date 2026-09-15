@@ -31,6 +31,7 @@ import { runCli } from "../src/cli.ts";
 import { verifyChainSnapshot } from "../src/sync.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
@@ -366,6 +367,55 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     expect(state.appends[0]!.entry.payload.auditHeadHashHex).toBe("");
     expect(state.auditHeadCalls()).toBe(0);
+  });
+
+  it("listed scope の発行者は scope 内の環境だけをカバーし、scope 外は SHOULD 警告に載せる(ES K4 — §6.2 / §6.3 (i))", async () => {
+    const dekA = crypto.getRandomValues(new Uint8Array(32));
+    const dekB = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
+      { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+      { actor: owner, operation: addScopedMemberOp(member, "member", [ENV_A]) },
+    ]);
+    const environments = [
+      await makeEnvironment({
+        built,
+        environmentId: ENV_A,
+        dek: dekA,
+        headSeq: 4,
+        issuer: owner,
+        variableId: "var-a",
+      }),
+      await makeEnvironment({
+        built,
+        environmentId: ENV_B,
+        dek: dekB,
+        headSeq: 4,
+        issuer: owner,
+        variableId: "var-b",
+      }),
+    ];
+    const state = makeCheckpointServer({
+      built,
+      environments,
+      me: { userId: member.userId },
+      auditHeadHashHex: "ab".repeat(32),
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, built.projectId, member);
+
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    const entry = state.appends[0]!.entry;
+    expect(entry.payload.environments.map((tuple) => tuple.environmentId)).toEqual([ENV_A]);
+    // scope 外の環境は値付き pull を試みない(var.read を刻まない・403 を踏まない)
+    expect(
+      server.requests.filter((request) => request.path.includes(`/environments/${ENV_B}/pull`)),
+    ).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(
+      `environment ${ENV_B} outside your scope cannot be covered`,
+    );
   });
 
   it("admin role でも write スコープのトークンは公証しない(実効権限の min — §9-2)", async () => {

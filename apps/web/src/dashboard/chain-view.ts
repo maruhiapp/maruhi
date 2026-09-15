@@ -12,7 +12,10 @@ import type { ChainEntry } from "./types.ts";
 export interface ReportedMember {
   userId: string;
   role: string;
-  /** The reported chain seq that last set this member's role. */
+  /** Environment scope as reported (CRYPTO_SPEC §6.2 — `all`, or the listed environment ids). */
+  scopeKind: "all" | "listed";
+  scopeEnvironmentIds: ReadonlyArray<string>;
+  /** The reported chain seq that last set this member's role / scope. */
   sinceSeq: number;
 }
 
@@ -35,14 +38,30 @@ interface FoldState {
 
 type EntryOf<Op extends ChainEntry["op"]> = Extract<ChainEntry, { op: Op }>;
 
-function setMember(state: FoldState, userId: string, role: string, sinceSeq: number): void {
-  state.members.set(userId, { userId, role, sinceSeq });
+function setMember(
+  state: FoldState,
+  userId: string,
+  role: string,
+  scope: { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> },
+  sinceSeq: number,
+): void {
+  state.members.set(userId, {
+    userId,
+    role,
+    scopeKind: scope.scopeKind,
+    scopeEnvironmentIds: scope.scopeEnvironmentIds,
+    sinceSeq,
+  });
 }
+
+/** genesis の作成者は構造的に scope = all(CRYPTO_SPEC §6.2)。 */
+const ALL_SCOPE = { scopeKind: "all", scopeEnvironmentIds: [] } as const;
 
 function applyChangeRole(state: FoldState, entry: EntryOf<"change_role">): void {
   const existing = state.members.get(entry.payload.targetUserId);
   if (existing !== undefined) {
-    setMember(state, existing.userId, entry.payload.newRole, entry.seq);
+    // 新 (role, scope) の全置換(§6.2 — 2026-09-15 ES K4 で scope も写す)
+    setMember(state, existing.userId, entry.payload.newRole, entry.payload, entry.seq);
   }
 }
 
@@ -59,12 +78,12 @@ function applyGrantServer(state: FoldState, entry: EntryOf<"grant_server">): voi
 // 四眼の 4 op(set_approval_policy / propose / approve / withdraw — 2026-09-14 PF1)も
 // 載せない: 提案経由で適用された内側 op の表示は方針・pending の畳み込みを要し、
 // Web 面は K6(設計録 es-design.md §4)で扱う。scope(add_member / change_role の
-// 末尾 2 フィールド)の表示も同じく K6
+// 末尾 2 フィールド)は K4(2026-09-15 ES — 設計録 K4-D)で写す
 const ENTRY_FOLDERS: { [Op in ChainEntry["op"]]?: (state: FoldState, entry: EntryOf<Op>) => void } =
   {
-    genesis: (state, entry) => setMember(state, entry.actor.userId, "owner", entry.seq),
+    genesis: (state, entry) => setMember(state, entry.actor.userId, "owner", ALL_SCOPE, entry.seq),
     add_member: (state, entry) =>
-      setMember(state, entry.payload.targetUserId, entry.payload.role, entry.seq),
+      setMember(state, entry.payload.targetUserId, entry.payload.role, entry.payload, entry.seq),
     remove_member: (state, entry) => state.members.delete(entry.payload.targetUserId),
     change_role: applyChangeRole,
     grant_server: applyGrantServer,

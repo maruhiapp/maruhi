@@ -20,6 +20,7 @@ import {
   decodeHex,
   encodeHex,
   importEncryptionPublicKey,
+  scopeIncludesEnvironment,
   signDekWrap,
   SUITE_ID,
   wrapDek,
@@ -28,6 +29,7 @@ import { Effect, Redacted } from "effect";
 
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { outOfScopeMessage } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
@@ -50,15 +52,19 @@ function recipientEncPubHex(recipient: WrapRecipient): string {
 }
 
 /**
- * 対象環境のラップ完全集合の受信者(§12-4): 現メンバー全員 + 当該環境が開示
- * スコープに含まれる有効 grant のサーバー鍵。順序は決定論(member を user_id
- * 昇順 → server を FP 昇順)。
+ * 対象環境 E のラップ完全集合の受信者 = R(E)(CRYPTO_SPEC §6.2 の 1 定義 —
+ * 2026-09-15 ES K4): { 現メンバー m | E ∈ scope(m) } ∪ { 有効 grant g | E ∈
+ * scope_environments(g) }。判定は受信者クラスを跨いで同じ「E ∈ scope」の述語。
+ * 順序は決定論(member を user_id 昇順 → server を FP 昇順)。環境作成・rotate
+ * 複合・CAS リトライの再利用判定(sameWrapRecipientSet)がすべてここを通る。
+ * scope 外のメンバー宛はサーバーが 422 `scope-out-of-range` で拒否する(§12-6)。
  */
 function wrapRecipientsFor(
   verified: VerifiedProject,
   environmentId: string,
 ): readonly WrapRecipient[] {
   const members = [...verified.state.members.values()]
+    .filter((member) => scopeIncludesEnvironment(member.scope, environmentId))
     .toSorted((a, b) => (a.userId < b.userId ? -1 : 1))
     .map((member) => ({ kind: "member", member }) as const);
   const grants = [...verified.state.serverGrants.values()]
@@ -227,9 +233,11 @@ export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies 
 
 /**
  * 複合操作(環境作成・ローテーション)の共通ガード: 自分がチェーン導出の
- * 現メンバーであること・role が **member 以上**であること(§6.2)。いずれも
- * DEK 生成・HPKE ラップ・pull(= `var.read` の記録)より**前**に落とすための
- * もので、サーバーの汎用 403 を待たない。grant_server 有効時の拒否ガードは
+ * 現メンバーであること・role が **member 以上**であること・**対象環境が自分の
+ * scope に含まれる**こと(§6.2 — 2026-09-15 ES K4: create は `listed` に未存在の
+ * id が含まれえないので scope = all の主体だけが通る = サーバーと同じ 1 述語)。
+ * いずれも DEK 生成・HPKE ラップ・pull(= `var.read` の記録)より**前**に落とす
+ * ためのもので、サーバーの 403 を待たない。grant_server 有効時の拒否ガードは
  * 持たない — 完全集合がサーバー鍵宛を含む(buildWrapCompleteSet / §12-4)。
  *
  * 環境の存在検査(rotate)や ID の重複検査(create)は操作固有なので呼び出し側に残す。
@@ -242,6 +250,11 @@ export function requireWritingMember(input: {
   readonly operation: string;
   /** 権限不足時の文言(操作ごとに具体的に書く)。 */
   readonly forbidden: string;
+  /**
+   * scope 外の文言(省略 = 既定の「拡大を依頼」の案内)。create は「作成は
+   * scope = all のみ」と案内する(拡大の依頼は当てはまらない)。
+   */
+  readonly outOfScope?: string;
 }): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
     const member = input.verified.state.members.get(input.signerUserId);
@@ -252,6 +265,18 @@ export function requireWritingMember(input: {
     }
     if (ROLE_RANK[member.role] < ROLE_RANK.member) {
       return yield* Effect.fail(cliError(input.forbidden));
+    }
+    if (!scopeIncludesEnvironment(member.scope, input.environmentId)) {
+      return yield* Effect.fail(
+        cliError(
+          input.outOfScope ??
+            outOfScopeMessage({
+              member,
+              environmentId: input.environmentId,
+              operation: input.operation,
+            }),
+        ),
+      );
     }
     return member;
   });

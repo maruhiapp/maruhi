@@ -38,7 +38,7 @@ import {
   PASSKEY_LABEL_PATTERN,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import type { GuardianMode, MetaVarType, Role } from "@maruhi/crypto";
+import { ALL_SCOPE, type GuardianMode, type MetaVarType, type Role } from "@maruhi/crypto";
 import {
   Cause,
   Console,
@@ -141,12 +141,15 @@ import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import { loginOp, logoutOp } from "./login.ts";
 import {
-  MEMBER_REMOVED_ROTATION_REASON,
+  type ChangeRoleRequest,
+  formatMemberListRow,
   type MemberAddSummary,
   memberAddOp,
+  type MemberChangeRoleSummary,
   memberChangeRoleOp,
+  memberListJson,
+  memberListRows,
   memberRemoveOp,
-  ROLE_DEMOTED_ROTATION_REASON,
 } from "./member.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, recoverWithPasskeyOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
@@ -183,6 +186,7 @@ import {
   type SchemaSetSummary,
   schemaShowOp,
 } from "./schema.ts";
+import { describeScope, scopeFromFlags } from "./scope.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
@@ -755,9 +759,26 @@ function isInviteRole(value: string | undefined): value is InviteRole {
   return INVITE_ROLES.some((known) => known === value);
 }
 
+/** `--env <id>`(反復可)— 招待 / change-role の scope(CRYPTO_SPEC §6.2 — 2026-09-15 ES K4)。 */
+function scopeEnvFlag(description: string) {
+  return Flag.string("env").pipe(
+    Flag.withDescription(description),
+    Flag.withSchema(NonBlank),
+    // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
+    Flag.atLeast(0),
+  );
+}
+
 const inviteCreateConfig = {
   ...projectFlags(),
   role: singleValued("role", `Role to grant (required — ${INVITE_ROLES.join(" | ")})`),
+  env: scopeEnvFlag(
+    "Environment the invitee may access (repeatable; omitted = all environments, including ones created later)",
+  ),
+  "no-envs": singleFlag(
+    "no-envs",
+    "Grant no environment at all (an empty listed scope: the member sees names only; widen later with `maruhi member change-role --env`)",
+  ),
   github: singleValued(
     "github",
     "GitHub login of the invitee (at `maruhi member add` their acceptance key is checked against that account's signing keys, so no 12-word call is needed)",
@@ -835,8 +856,27 @@ const memberRemoveConfig = {
 
 const memberChangeRoleConfig = {
   ...projectFlags(),
-  role: singleValued("role", `New role (required — ${MEMBER_ROLES.join(" | ")})`),
+  role: singleValued(
+    "role",
+    `New role (${MEMBER_ROLES.join(" | ")}; omitted = keep the current role)`,
+  ),
+  env: scopeEnvFlag(
+    "Environment in the new scope (repeatable; replaces the whole scope; omitted = keep the current scope)",
+  ),
+  "all-envs": singleFlag(
+    "all-envs",
+    "Set the scope to all environments (including ones created later); `--role owner` always implies it",
+  ),
+  "no-envs": singleFlag(
+    "no-envs",
+    "Set the scope to no environment at all (an empty listed scope — the member keeps only metadata access)",
+  ),
   "user-id": memberTargetArgument(),
+};
+
+const memberListConfig = {
+  ...projectFlags(),
+  json: singleFlag("json", "Print the members as JSON (user id, role, scope, key fingerprint)"),
 };
 
 /** `maruhi schema`(表示 — bare 親が show を兼ねる。audit と同じ型)。 */
@@ -1048,6 +1088,7 @@ const GROUP_CONFIGS: Readonly<
     add: memberAddConfig,
     remove: memberRemoveConfig,
     "change-role": memberChangeRoleConfig,
+    list: memberListConfig,
   },
   key: {
     generate: keyGenerateConfig,
@@ -1503,11 +1544,10 @@ function projectVerify(
     );
     yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
     yield* io.log(`head: ${verified.state.headHashHex}`);
+    // scope 列(2026-09-15 ES K4 — 裁定 M)。`maruhi member list` と同じ行形式
     yield* io.log(`Members (${verified.state.members.size}):`);
-    for (const member of verified.state.members.values()) {
-      yield* io.log(
-        `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
-      );
+    for (const row of memberListRows(verified)) {
+      yield* io.log(`  ${formatMemberListRow(row)}`);
     }
     for (const [environmentId, environment] of verified.state.environments) {
       yield* io.log(
@@ -1532,6 +1572,20 @@ function projectVerify(
       );
     }
   });
+}
+
+/**
+ * §7: 実行者の scope 外の義務環境は rotate できない — 失敗ではなく注記(常時警告が引き続き
+ * 表示し、その環境を scope に持つメンバーの env rotate で収束する)。
+ */
+function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<void, never, CliIo> {
+  if (outOfScope.length === 0) {
+    return Effect.void;
+  }
+  const one = outOfScope.length === 1;
+  return logWarning(
+    `${countNoun(outOfScope.length, "environment")} with a pending rotation mandate ${one ? "is" : "are"} outside your scope and cannot be rotated by you (${outOfScope.map(displayText).join(", ")}) — a member whose scope includes ${one ? "it" : "them"} converges ${one ? "it" : "them"} with \`maruhi env rotate <environment> --new-epoch --reason <text>\``,
+  );
 }
 
 /**
@@ -1913,9 +1967,14 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
   );
 }
 
-/** `maruhi invite create --role <r> [--github <login>]`(§15-2 発行 + §15-3 リンク組み立て)。 */
+/** `maruhi invite create --role <r> [--env <id>]… [--github <login>]`(§15-2 発行 + §15-3 リンク組み立て)。 */
 function inviteCreateCommand(
-  flags: CommonFlags & { readonly role?: string | undefined; readonly github?: string | undefined },
+  flags: Omit<CommonFlags, "env"> & {
+    readonly role?: string | undefined;
+    readonly env: readonly string[];
+    readonly noEnvs: boolean;
+    readonly github?: string | undefined;
+  },
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     if (!isInviteRole(flags.role)) {
@@ -1925,10 +1984,15 @@ function inviteCreateCommand(
         ),
       );
     }
+    // scope: `--env` 反復 = listed(昇順・重複拒否)、`--no-envs` = listed{}、省略 = all
+    // (裁定 K — `--all-envs` は置かない)
+    const scope =
+      (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ??
+      ALL_SCOPE;
     const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
     const identityBacking = yield* loadIdentityBacking;
     // 発行署名(CRYPTO_SPEC §6.5)は招待者のチェーン sig 鍵で作る = master 鍵が要る
-    const context = yield* openProject(flags);
+    const context = yield* openProject({ server: flags.server, project: flags.project });
     // リンクの `il`(§15-3): 自分の GitHub login の表示用スナップショット(/auth/me)。
     // 取れなくても発行は成立する(受諾者側が儀式へ戻るだけ)
     const inviterLogin =
@@ -1943,6 +2007,7 @@ function inviteCreateCommand(
       verified: context.verified,
       origin: context.origin,
       role: flags.role,
+      scope,
       sessionUserId: context.session.userId,
       masterKeys: context.masterKeys,
       expectedGithubLogin,
@@ -2038,11 +2103,15 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
  * 片方だけ直る。
  */
 function reportSweepOutcome(
-  sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] },
+  sweep: SweepOutcome & {
+    readonly skippedDeleted: readonly string[];
+    readonly outOfScope?: readonly string[];
+  },
   options: { readonly rerunCommand: string; readonly alreadyRotatedBasis: string },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    yield* warnOutOfScopeMandates(sweep.outOfScope ?? []);
     if (sweep.skippedDeleted.length > 0) {
       yield* io.log(
         `Skipped deleted environments (signed deletion statements verified): ${sweep.skippedDeleted.join(", ")}`,
@@ -2130,7 +2199,7 @@ function reportMemberAdd(
     );
     if (summary.failed.length === 0) {
       yield* io.log(
-        "Done: DEK wraps for every environment × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run `maruhi pull` and confirm they can decrypt",
+        "Done: DEK wraps for every environment in the member's scope × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run `maruhi pull` and confirm they can decrypt",
       );
       return 0;
     }
@@ -2158,15 +2227,15 @@ function memberRemoveCommand(
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
-      rotate: sweepRotateFor(context, MEMBER_REMOVED_ROTATION_REASON),
+      rotateWith: (reason) => sweepRotateFor(context, reason),
     });
     if (summary.appended) {
       yield* io.log(
-        `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment (CRYPTO_SPEC §7)`,
+        `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
       );
     } else {
       yield* io.log(
-        "The target was already removed — skipping the append and resuming the rotation of every environment (crash recovery)",
+        "The target was already removed — skipping the append and resuming the rotation of every environment in the target's scope (crash recovery)",
       );
     }
     const exitCode = yield* reportSweepOutcome(summary, {
@@ -2174,7 +2243,9 @@ function memberRemoveCommand(
       alreadyRotatedBasis: "the mandate entry",
     });
     if (exitCode === 0) {
-      yield* io.log("Done: the member removal and the rotation of every environment completed");
+      yield* io.log(
+        "Done: the member removal and the rotation of every environment in the target's scope completed",
+      );
     }
     // 要ローテーションフラグの件数と導線(AUDIT_SPEC §4.1。ローテーションは
     // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
@@ -2187,49 +2258,166 @@ function memberRemoveCommand(
   });
 }
 
-/** `maruhi member change-role <user-id> --role <r>`(降格は §7 のローテーション義務)。 */
+/**
+ * `maruhi member change-role <user-id> [--role <r>] [--env <id>]… [--all-envs]`: 新
+ * (role, scope) の全置換(CRYPTO_SPEC §6.2)。省略は据え置き(設計録 K4-A)。拡大分は
+ * バックフィル、降格 / 縮小分は §7 のローテーション義務。
+ */
 function memberChangeRoleCommand(
-  flags: CommonFlags & { readonly target: string; readonly role?: string | undefined },
+  flags: Omit<CommonFlags, "env"> & {
+    readonly target: string;
+    readonly role?: string | undefined;
+    readonly env: readonly string[];
+    readonly allEnvs: boolean;
+    readonly noEnvs: boolean;
+  },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    if (!isMemberRole(flags.role)) {
-      return yield* Effect.fail(usageError(`Specify --role (${MEMBER_ROLES.join(" | ")})`));
-    }
-    // 収束系コマンド: 未収束義務の常時警告は抑制(降格の sweep 報告が担う)
-    const context = yield* openProject(flags, { quietMandateWarning: true });
+    const request = yield* parseChangeRoleRequest(flags);
+    // 収束系コマンド: 未収束義務の常時警告は抑制(降格 / 縮小の sweep 報告が担う)
+    const context = yield* openProject(
+      { server: flags.server, project: flags.project },
+      { quietMandateWarning: true },
+    );
     const summary = yield* memberChangeRoleOp({
       client: context.client,
       verified: context.verified,
       targetUserId: flags.target,
-      newRole: flags.role,
+      request,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
+      recipient: context.recipient,
       resync: context.resync,
-      rotate: sweepRotateFor(context, ROLE_DEMOTED_ROTATION_REASON),
+      rotateWith: (reason) => sweepRotateFor(context, reason),
     });
-    if (summary.appended) {
-      yield* io.log(
-        `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole})`,
-      );
-    } else {
-      yield* io.log("The target already has the specified role — nothing was appended");
-    }
+    yield* io.log(
+      summary.appended
+        ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
+        : "The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)",
+    );
+    const backfillCode = yield* reportScopeBackfill(io, summary);
     if (summary.sweep === null) {
-      yield* io.log("Done: the role was changed (no rotation mandate)");
+      yield* io.log(
+        backfillCode === 0
+          ? "Done: the role / scope was changed (no rotation mandate)"
+          : "The role / scope was changed, but the backfill is incomplete",
+      );
+      return backfillCode;
+    }
+    yield* reportChangeRoleMandates(io, summary);
+    const sweepCode = yield* reportSweepOutcome(summary.sweep, {
+      rerunCommand: "`maruhi member change-role` with the same flags",
+      alreadyRotatedBasis: "the mandate entry",
+    });
+    const exitCode = backfillCode === 0 && sweepCode === 0 ? 0 : 1;
+    if (exitCode === 0) {
+      yield* io.log("Done: the change and the rotation of the affected environments completed");
+    }
+    return exitCode;
+  });
+}
+
+/**
+ * change-role の入力: `--role` / `--env`… / `--all-envs` の少なくとも 1 つ(省略は
+ * 据え置き — 設計録 K4-A)。形式の不備は usage(2)で通信前に落とす。
+ */
+function parseChangeRoleRequest(flags: {
+  readonly role?: string | undefined;
+  readonly env: readonly string[];
+  readonly allEnvs: boolean;
+  readonly noEnvs: boolean;
+}): Effect.Effect<ChangeRoleRequest, CliError> {
+  return Effect.gen(function* () {
+    if (flags.role !== undefined && !isMemberRole(flags.role)) {
+      return yield* Effect.fail(usageError(`--role must be one of ${MEMBER_ROLES.join(" | ")}`));
+    }
+    const newScope = yield* scopeFromFlags({
+      env: flags.env,
+      allEnvs: flags.allEnvs,
+      noEnvs: flags.noEnvs,
+    });
+    if (flags.role === undefined && newScope === null) {
+      return yield* Effect.fail(
+        usageError(
+          `Specify what to change: --role (${MEMBER_ROLES.join(" | ")}) and/or the scope (--env <id>…, --all-envs or --no-envs)`,
+        ),
+      );
+    }
+    return { newRole: flags.role ?? null, newScope };
+  });
+}
+
+/** change-role の拡大分バックフィルの報告(失敗 = 部分完了 → 1)。 */
+function reportScopeBackfill(
+  io: CliIoShape,
+  summary: MemberChangeRoleSummary,
+): Effect.Effect<number, never, CliIo> {
+  return Effect.gen(function* () {
+    // scope 外に残る拡大分の注記は、自分の scope 内のバックフィルが無い場合にも出す
+    // (Cursor Bugbot 指摘: listed admin が他人の拡大の後に再実行する主経路)
+    if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
+      yield* logWarning(
+        `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
+      );
+    }
+    if (summary.backfill === null) {
       return 0;
     }
     yield* io.log(
-      "Demotion below member forces a rotation of every environment (CRYPTO_SPEC §7 — epoch-anchor soundness)",
+      `${countNoun(summary.widenedEnvironmentIds.length, "environment")} added to the member's scope (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
     );
-    const exitCode = yield* reportSweepOutcome(summary.sweep, {
-      rerunCommand: "`maruhi member change-role`",
-      alreadyRotatedBasis: "the mandate entry",
-    });
-    if (exitCode === 0) {
-      yield* io.log("Done: the demotion and the rotation of every environment completed");
+    for (const failure of summary.backfill.failed) {
+      yield* logWarning(
+        `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member change-role\` with the same flags to resume (409 converges as already-registered)`,
+      );
     }
-    return exitCode;
+    return summary.backfill.failed.length === 0 ? 0 : 1;
+  });
+}
+
+/** change-role の義務(降格 / 縮小)の説明行(sweep 報告の前置き)。 */
+function reportChangeRoleMandates(
+  io: CliIoShape,
+  summary: MemberChangeRoleSummary,
+): Effect.Effect<void, never> {
+  return Effect.gen(function* () {
+    if (summary.demoted) {
+      yield* io.log(
+        "Demotion below member forces a rotation of every environment in the target's scope (CRYPTO_SPEC §7 — epoch-anchor soundness)",
+      );
+    }
+    if (summary.narrowedEnvironmentIds.length > 0) {
+      yield* io.log(
+        `Scope narrowed by ${countNoun(summary.narrowedEnvironmentIds.length, "environment")} (${summary.narrowedEnvironmentIds.map(displayText).join(", ")}) — forcing a rotation of those environments (CRYPTO_SPEC §7 — the target keeps their old DEKs)`,
+      );
+    }
+  });
+}
+
+/**
+ * `maruhi member list [--json]`: 検証済みチェーンのメンバー(user id・role・scope・鍵 FP)。
+ * 値ゼロなので agent-gate(ensureValueDisplayAllowed)は掛けない(設計録 裁定 M /
+ * K4-E — `maruhi schema` と同じ許可側)。master 鍵も要求しない(project verify と同じ
+ * 鍵なしクラス)。
+ */
+function memberListCommand(
+  flags: CommonFlags & { readonly json: boolean },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openMetadataProject(flags);
+    const rows = memberListRows(context.verified);
+    if (flags.json) {
+      yield* io.log(memberListJson(rows));
+      return;
+    }
+    yield* io.log(
+      `Members (${rows.length}) — verified chain head seq=${context.verified.state.headSeq}:`,
+    );
+    for (const row of rows) {
+      yield* io.log(`  ${formatMemberListRow(row)}`);
+    }
   });
 }
 
@@ -3301,7 +3489,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
-    inviteCreateCommand(values),
+    inviteCreateCommand({
+      server: values.server,
+      project: values.project,
+      role: values.role,
+      env: values.env,
+      noEnvs: values["no-envs"],
+      github: values.github,
+    }),
   ).pipe(Command.withDescription("Issue an invite and build the invite link"));
 
   const inviteAccept = Command.make("accept", inviteAcceptConfig, (values) =>
@@ -3377,16 +3572,27 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           project: values.project,
           target: values["user-id"],
           role: values.role,
+          env: values.env,
+          allEnvs: values["all-envs"],
+          noEnvs: values["no-envs"],
         }),
       );
     }),
   ).pipe(
-    Command.withDescription("Change a member's role (demoting below member forces a rotation)"),
+    Command.withDescription(
+      "Change a member's role and/or environment scope (demotion and scope narrowing force a rotation)",
+    ),
+  );
+
+  const memberList = Command.make("list", memberListConfig, (values) =>
+    memberListCommand({ server: values.server, project: values.project, json: values.json }),
+  ).pipe(
+    Command.withDescription("List the verified members with their role, scope and key fingerprint"),
   );
 
   const member = Command.make("member").pipe(
-    Command.withDescription("Manage members (add / remove / change-role)"),
-    Command.withSubcommands([memberAdd, memberRemove, memberChangeRole]),
+    Command.withDescription("Manage members (add / remove / change-role / list)"),
+    Command.withSubcommands([memberAdd, memberRemove, memberChangeRole, memberList]),
   );
 
   const syncPlan = Command.make("plan", syncPlanConfig, (values) =>

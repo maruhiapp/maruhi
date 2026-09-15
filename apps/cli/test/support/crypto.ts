@@ -120,6 +120,42 @@ export function addMemberOp(
   };
 }
 
+/** add_member(listed scope — CRYPTO_SPEC §6.2 の ES。環境は昇順に並べて署名する)。 */
+export function addScopedMemberOp(
+  target: TestUser,
+  role: "admin" | "member" | "reader",
+  environmentIds: readonly string[],
+): ChainOperation {
+  return {
+    op: "add_member",
+    payload: {
+      targetUserId: target.userId,
+      encPubHex: target.encPubHex,
+      sigPubHex: target.sigPubHex,
+      role,
+      scopeKind: "listed",
+      scopeEnvironmentIds: [...environmentIds].toSorted(),
+    },
+  };
+}
+
+/** change_role(新 (role, scope) の全置換 — §6.2)。`environmentIds = null` は all。 */
+export function changeRoleOp(
+  target: TestUser,
+  role: "owner" | "admin" | "member" | "reader",
+  environmentIds: readonly string[] | null,
+): ChainOperation {
+  return {
+    op: "change_role",
+    payload: {
+      targetUserId: target.userId,
+      newRole: role,
+      scopeKind: environmentIds === null ? "all" : "listed",
+      scopeEnvironmentIds: environmentIds === null ? [] : [...environmentIds].toSorted(),
+    },
+  };
+}
+
 export function removeMemberOp(target: TestUser): ChainOperation {
   return { op: "remove_member", payload: { targetUserId: target.userId } };
 }

@@ -21,6 +21,7 @@ import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  changeRoleOp,
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
@@ -422,6 +423,26 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).toContain(
       `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );
+  });
+
+  it("scope の縮小は第 4 種 scope-narrowed として縮小分の環境だけを警告する(ES K4 — CRYPTO_SPEC §7)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp("env-other", dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: changeRoleOp(target, "member", ["env-other"]) },
+    ]);
+    const state = await makeRotationServer({ built, currentEpoch: 1, flags: [] });
+    const env = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `scope-narrowed (target=${target.userId}, seq=5): environments ${ENV_ID}`,
+    );
+    expect(errors).not.toContain(`environments ${ENV_ID}, env-other`);
+    expect(errors).toContain("maruhi member change-role");
+    expect(errors).not.toContain("role-demoted");
   });
 
   it("project verify は削除済み環境の検証失敗で失敗しない(注意を出して未収束判定だけ保留する)", async () => {

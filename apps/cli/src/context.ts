@@ -36,6 +36,7 @@ import { logNote, logWarning } from "./notice.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
+import { requireEnvironmentInScope } from "./scope.ts";
 import {
   type CliSession,
   loadMasterKeys,
@@ -641,8 +642,12 @@ export interface EnvironmentContext extends ProjectContext {
 }
 
 /**
- * 環境系コマンド(pull / push / run)共通の前段: 環境 ID の形式検証(ネット
- * ワークより先)→ openProject → 環境床ハンドル。config はここで 1 回だけ読む。
+ * 環境系コマンド(pull / push / run / var rm / schema set / import / env rotate)
+ * 共通の前段: 環境 ID の形式検証(ネットワークより先)→ openProject → **対象環境 ∈
+ * 自分の scope**(CRYPTO_SPEC §6.3「サーバーの 403 を待たない」— 2026-09-15 ES K4。
+ * 値系コマンドはすべてここを通り、メタのみのコマンドは openMetadataEnvironment を
+ * 通るので「不問」が関数の違いで分かる — 設計録 K4-C)→ 環境床ハンドル。config は
+ * ここで 1 回だけ読む。
  */
 export function openEnvironment(
   flags: CommonFlags,
@@ -653,6 +658,12 @@ export function openEnvironment(
     const config = yield* store.load;
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
     const context = yield* openProjectWith(config, flags, options);
+    yield* requireEnvironmentInScope({
+      verified: context.verified,
+      userId: context.session.userId,
+      environmentId,
+      operation: "operate on",
+    });
     const floorHandle = yield* floorHandleFor(context, environmentId);
     return { ...context, environmentId, floorHandle };
   });
@@ -691,6 +702,7 @@ export interface MetadataEnvironmentContext extends ProjectContextBase {
  * 環境単位のメタデータのみコマンド(`maruhi schema`)の前段: 環境 ID の形式
  * 検証(ネットワークより先)→ openMetadataProject(**master 鍵を要求しない**
  * — MARUHI_TOKEN 実行・エージェント環境で動く鍵なしクラス)→ 環境床ハンドル。
+ * **scope は問わない**(AUTH_SPEC §12-7 — メタのみ pull は scope 外でも可。裁定 G-2)。
  */
 export function openMetadataEnvironment(
   flags: CommonFlags,
