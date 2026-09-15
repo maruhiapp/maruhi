@@ -1038,6 +1038,33 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     );
   });
 
+  it("他人の拡大の未収束分が自分の scope 外だけなら、バックフィル無しでも注記を出して 0 で終わる(Cursor Bugbot)", async () => {
+    const devAdmin = await makeTestUser("user-devadmin-4444");
+    // owner が target を {dev} → {dev, prod} に広げたが prod のバックフィルは未収束。
+    // dev 専任 admin が同じ scope で再実行(対称差 ∅ = 追記済みの再開)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
+      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
+    ]);
+    const state = await makeRemoveServer({ built, environments: {} });
+    const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(
+        ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(
+      `1 environment widened earlier for this member (${ENV_PROD}) is outside your scope, so you cannot backfill it`,
+    );
+  });
+
   it("listed の admin は自分の scope 外の対象を remove できない(原則 1 の手前判定 — pullfrog)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
     const built = await buildChain([

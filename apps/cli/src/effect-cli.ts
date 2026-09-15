@@ -2354,17 +2354,19 @@ function reportScopeBackfill(
   summary: MemberChangeRoleSummary,
 ): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
+    // scope 外に残る拡大分の注記は、自分の scope 内のバックフィルが無い場合にも出す
+    // (Cursor Bugbot 指摘: listed admin が他人の拡大の後に再実行する主経路)
+    if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
+      yield* logWarning(
+        `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
+      );
+    }
     if (summary.backfill === null) {
       return 0;
     }
     yield* io.log(
       `${countNoun(summary.widenedEnvironmentIds.length, "environment")} added to the member's scope (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
     );
-    if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
-      yield* logWarning(
-        `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
-      );
-    }
     for (const failure of summary.backfill.failed) {
       yield* logWarning(
         `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member change-role\` with the same flags to resume (409 converges as already-registered)`,
