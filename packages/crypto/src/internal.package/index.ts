@@ -20,6 +20,7 @@ export {
   APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
   type ApprovalTargetOp,
+  type ApprovalVote,
   type ApprovePayload,
   type ChainActor,
   type ChainEntry,

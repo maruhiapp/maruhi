@@ -255,6 +255,7 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
       "authz-approve-proposer-demoted",
       "authz-approve-void-precedes-inner",
       "authz-approve-inner-apply-fails",
+      "authz-approve-readded-same-key-duplicate",
       "authz-approve-not-required-after-policy-change",
       "authz-approve-duplicate-precedes-not-required",
       "authz-approve-not-required-precedes-expired",
@@ -771,6 +772,13 @@ const KEYED_COLLECTIONS: readonly {
       "proposer-rekeyed",
       "proposer-demoted",
       "proposer-removed-target-gone",
+      "proposer-promoted",
+      "proposer-promoted-self-vote",
+      "proposer-promoted-completed",
+      "readded-approver-vote",
+      "readded-approver-revote",
+      "readded-approver-same-key",
+      "readded-approver-same-key-completed",
       "competing-proposals",
       "policy-narrowed",
       "policy-required-3",
@@ -862,5 +870,57 @@ export function vectorInventoryChecks(): CheckResult[] {
   for (const keyed of KEYED_COLLECTIONS) {
     namesMatch(c, keyed.label, keyed.actual, keyed.expected);
   }
+  chainDependencyMatches(c);
   return c.results;
+}
+
+// チェーン依存の分類(CRYPTO_SPEC §11 / README 規約 27)を機械検査で守る(設計録
+// es-design.md §8 K2-11-bis ①): 正規チェーンの entry_hash を 1 つでも埋め込むファイルは
+// チェーン依存(正規チェーンの再生成で必ず再生成される)、埋め込まないファイルは不変。
+// 分類は散文でなくここで固定する — head-attestation.json を「不変」に数えていた §11 の
+// 誤りは、この検査があれば K2 のベクター先行コミットで落ちていた
+const CHAIN_DEPENDENT_FILES: readonly { readonly label: string; readonly doc: unknown }[] = [
+  { label: "value-signature", doc: valueSignature },
+  { label: "metadata-signature", doc: metaVectors },
+  { label: "env-manifest", doc: envManifest },
+  { label: "head-attestation", doc: headAttestation },
+  { label: "invite-link", doc: inviteLink },
+];
+
+const CHAIN_INDEPENDENT_FILES: readonly { readonly label: string; readonly doc: unknown }[] = [
+  { label: "audit-head", doc: auditHeadVectors },
+  { label: "checkpoint-digest", doc: checkpointDigest },
+  { label: "dek-commitment", doc: dekCommitment },
+  { label: "dek-wrap-signature", doc: dekWrapSignature },
+  { label: "dek-wrap", doc: dekWrap },
+  { label: "encoding", doc: encoding },
+  { label: "hpke/rfc9180", doc: rfc9180Vectors },
+  { label: "invite-accept-signature", doc: inviteAccept },
+  { label: "lease-wrap", doc: leaseWrap },
+  { label: "master-key-wrap", doc: masterKeyWrap },
+  { label: "recovery-wrap", doc: recoveryWrap },
+  { label: "variable-encryption", doc: variableEncryption },
+];
+
+/** 正規チェーン(genesis を除く — genesis hash = project_id は不変)の entry_hash を含むか。 */
+function embedsCanonicalChainHash(doc: unknown): boolean {
+  const text = JSON.stringify(doc);
+  return chainEntries.entries
+    .filter((entry) => entry.op !== "genesis")
+    .some((entry) => text.includes(entry.entry_hash_hex));
+}
+
+function chainDependencyMatches(c: Checks): void {
+  for (const file of CHAIN_DEPENDENT_FILES) {
+    c.push(
+      `vector inventory: ${file.label} is chain-dependent (embeds a canonical entry hash)`,
+      embedsCanonicalChainHash(file.doc),
+    );
+  }
+  for (const file of CHAIN_INDEPENDENT_FILES) {
+    c.push(
+      `vector inventory: ${file.label} is chain-independent (embeds no canonical entry hash)`,
+      !embedsCanonicalChainHash(file.doc),
+    );
+  }
 }

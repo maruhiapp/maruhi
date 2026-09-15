@@ -138,6 +138,7 @@ export {
   APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
   type ApprovalTargetOp,
+  type ApprovalVote,
   type ApprovePayload,
   canonicalChainEntryBytes,
   canonicalChainPayloadBytes,

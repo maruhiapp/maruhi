@@ -281,6 +281,15 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     const fp = (await sha256(cat)).slice(0, 32);
     check(`chain: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
   }
+  // 派生チェーン固有の鍵(`keys` — 別鍵で再追加されたメンバーの新鍵)も同じ導出検査を通す。
+  // 申告 FP だけを信じて署名鍵を選ぶと、細工した override で偽造署名が通ってしまう
+  for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
+    for (const [uid, k] of Object.entries(ext.keys ?? {})) {
+      const cat = new Uint8Array([...fromHex(k.enc_pub_hex), ...fromHex(k.sig_pub_hex)]);
+      const fp = (await sha256(cat)).slice(0, 32);
+      check(`chain extended ${chainName}: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
+    }
+  }
   // サーバー鍵フィンガープリント: SHA-256(server_enc_pub) 先頭 16 バイト(enc 鍵のみ。§9)
   {
     const fp = (await sha256(fromHex(doc.server_key.enc_pub_hex))).slice(0, 32);
@@ -500,9 +509,16 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         payloadBytes,
         e.timestamp_ms,
       ]);
+      // 署名鍵は actor の申告 FP で選ぶ: 派生チェーン固有の鍵(`keys` — 別鍵で再追加された
+      // メンバーが署名する readded-approver-revote)が FP 一致なら優先し、それ以外は正規鍵
+      const overrideKey = ext.keys?.[e.actor.user_id];
+      const signerKey =
+        overrideKey !== undefined && overrideKey.key_fingerprint_hex === e.actor.key_fingerprint_hex
+          ? overrideKey
+          : doc.keys[e.actor.user_id];
       const sigOk = await crypto.subtle.verify(
         "Ed25519",
-        await importSigPub(doc.keys[e.actor.user_id].sig_pub_hex),
+        await importSigPub(signerKey.sig_pub_hex),
         fromHex(e.signature_hex),
         signed,
       );

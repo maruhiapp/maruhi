@@ -292,11 +292,23 @@ export interface ApprovalPolicy {
 }
 
 /**
+ * One element of a proposal's signer set S (CRYPTO_SPEC §6.2 原則 2): an
+ * accepted `approve` signature identified by the approver's user id and the
+ * key fingerprint the entry was signed with. A vote is bound to that key —
+ * an approver removed and re-added with a new key no longer carries it
+ * (2026-09-15 — 鍵更新は侵害鍵の票を失効させる).
+ */
+export interface ApprovalVote {
+  readonly userId: string;
+  readonly keyFingerprintHex: string;
+}
+
+/**
  * One pending proposal derived from a verified chain (CRYPTO_SPEC §6.2 の
  * 検証状態 — 提案 hash → 提案者・内側 op・期限・投票者). `approvals` records the
- * actors of the accepted `approve` entries in order; the vote count is never
- * read from this record alone but recomputed at every `approve` against the
- * owners current at that entry (原則 2 — 離脱済み投票者の票は数えない).
+ * accepted `approve` signatures in order; the vote count is never read from
+ * this record alone but recomputed at every `approve` against the members
+ * current at that entry (原則 2 — 離脱済み・鍵更新済み投票者の票は数えない).
  */
 export interface PendingProposal {
   readonly proposalSeq: number;
@@ -305,14 +317,15 @@ export interface PendingProposal {
   /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
   readonly proposerKeyFingerprintHex: string;
   /**
-   * Informational — the proposer's role at proposal time. Not an input to the
-   * vote count: votes are recomputed at every `approve` from the proposer's
-   * and approvers' *current* roles (原則 2 above).
+   * The proposer's role at proposal time. `owner` puts the proposal signature
+   * into the signer set S (owner の提案は 1 票 — CRYPTO_SPEC §6.2); any other
+   * role does not, and a later promotion to owner does not change that (the
+   * promoted proposer may append an `approve` instead — 2026-09-15 裁定 ②).
    */
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
-  readonly approvals: readonly string[];
+  readonly approvals: readonly ApprovalVote[];
 }
 
 /** An active server grant derived from a verified chain (CRYPTO_SPEC §9). */
