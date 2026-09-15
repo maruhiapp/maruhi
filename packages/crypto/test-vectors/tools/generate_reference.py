@@ -1380,6 +1380,11 @@ def gen_chain_entries():
     def policy_state(ops: list, required: int) -> dict:
         return {"ops": list(ops), "required_approvals": str(required)}
 
+    # 票 = (user_id, 署名時の鍵 FP)(2026-09-15 所有者委任裁定 ⑤ — 設計録 §8 K2-11)。
+    # approvals には user_id(現在の鍵)か、鍵を明示した dict(再追加前の旧鍵の票)を渡す
+    def vote(user_id: str, user: dict | None = None) -> dict:
+        return {"user_id": user_id, "key_fingerprint_hex": (user or users[user_id])["fp_hex"]}
+
     def pending_state(proposal_entry: dict, proposer_role: str, approvals: list) -> dict:
         payload = proposal_entry["payload"]
         return {
@@ -1390,7 +1395,7 @@ def gen_chain_entries():
             "inner_op": payload["inner_op"],
             "inner_payload": payload["inner_payload"],
             "expires_at_ms": payload["expires_at_ms"],
-            "approvals": list(approvals),
+            "approvals": [a if isinstance(a, dict) else vote(a) for a in approvals],
         }
 
     def pending_map(*items) -> dict:
@@ -2743,6 +2748,109 @@ def gen_chain_entries():
         approve_of(p25c), t0 + 28000, "unknown-target",
         "定足数到達時に内側 op を適用時点の状態で再検査する: 対象が既に削除済みなら unknown-target で承認エントリは無効、提案は pending のまま(withdraw で閉じる)",
         chain="competing-proposals",
+    )
+    # (7b) ② 字面の読み(2026-09-15 所有者委任裁定 — 設計録 §8 K2-11): 票は owner として
+    #      作られた署名。admin として提案した提案者が後に owner へ昇格しても提案署名は S に
+    #      入らず(1 票にならない)、owner として approve を追記すればその票は数える(自己承認は
+    #      duplicate-approval にならない — S の要素ではないため)
+    promote_admin = propose_payload("change_role", change_payload(admin_id, "owner"), EXPIRES)
+    promoted = extend(24, head24, [
+        ("propose", admin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),  # 25: admin の提案(S = ∅)
+        ("propose", owner_id, promote_admin, t0 + 25000),                        # 26: admin-0003 の owner 昇格提案(票 [0001])
+    ])
+    p25p, p26p = promoted
+    promoted += extend(26, p26p["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p26p), t0 + 26000),                    # 27: 適用 — admin-0003 は owner(all)
+    ])
+    members_promoted = dict(members_24, **{admin_id: member_state("owner", "all")})
+    promoted_other = promoted + extend(27, promoted[-1]["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p25p), t0 + 27000),                    # 28: S = {0015} = 1(提案者は admin として提案 → S 外)→ pending
+    ])
+    extended_chains["proposer-promoted"] = chain_doc(
+        "字面の読み(2026-09-15 裁定 ②): admin-0003 が remove_member を提案(seq 25 — admin としての"
+        "提案署名は票ではない)した後、提案経由で owner へ昇格(seq 26 → 27)。seq 28 の owner-0015 の"
+        " approve は S = {0015} の 1 票にしかならず、有効だが適用されない(pending・approvals = [0015])。"
+        "「S = {提案者} ∪ 承認者」で提案者を無条件に数える実装はここで完成させてしまう",
+        24, promoted_other, members_promoted, canonical_policy,
+        pending_map((p25p, "admin", [owner3_id])),
+    )
+    promoted_self = promoted + extend(27, promoted[-1]["entry_hash_hex"], [
+        ("approve", admin_id, approve_of(p25p), t0 + 27000),                     # 28: 昇格した提案者の自己承認 — S 外なので重複でなく 1 票(pending)
+    ])
+    extended_chains["proposer-promoted-self-vote"] = chain_doc(
+        "proposer-promoted の分岐: 昇格した提案者 admin-0003(現 owner)が自分の提案 25 を approve"
+        "(seq 28)。提案署名は S の要素ではないため duplicate-approval にならず、owner としての"
+        " approve が 1 票になる(pending・approvals = [0003])",
+        24, promoted_self, members_promoted, canonical_policy,
+        pending_map((p25p, "admin", [admin_id])),
+    )
+    promoted_completed = promoted_self + extend(28, promoted_self[-1]["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p25p), t0 + 28000),                    # 29: {0003, 0015} = 2 → 適用
+    ])
+    extended_chains["proposer-promoted-completed"] = chain_doc(
+        "proposer-promoted-self-vote の先で owner-0015 が投票(seq 29)し、{0003, 0015} = 2 で完成する"
+        "(適用時の提案者 admin-0003 は在籍・同鍵・owner で remove_member の role を持つ)。"
+        "定足数の各票が owner role での署名に対応する — 監査は署名だけで定足数を追える",
+        24, promoted_completed,
+        {k: v for k, v in members_promoted.items() if k != devmember_id},
+        canonical_policy, {},
+    )
+    # (7c) ⑤ 投票者の鍵束縛(2026-09-15 所有者委任裁定 — 設計録 §8 K2-11): S の要素は
+    #      (user_id, 署名時の鍵 FP)。投票後に削除され別鍵で再追加された owner の旧票は失効し
+    #      (鍵更新は侵害鍵の票を失効させる)、新鍵で改めて投票できる
+    rekeyed_owner = make_user(pat(0x71, 32), pat(0x81, 32))
+    users["user-owner-0001(rekeyed)"] = rekeyed_owner
+    remove_owner1 = propose_payload("remove_member", {"target_user_id": owner_id}, EXPIRES)
+    readd_owner1 = propose_payload("add_member", {
+        "target_user_id": owner_id, "enc_pub_hex": rekeyed_owner["enc_pub_hex"],
+        "sig_pub_hex": rekeyed_owner["sig_pub_hex"], "role": "owner", **scope_fields("all", []),
+    }, EXPIRES)
+    readded = extend(24, head24, [
+        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),  # 25: S = ∅
+    ])
+    p25k = readded[0]
+    readded += extend(25, p25k["entry_hash_hex"], [
+        ("approve", owner_id, approve_of(p25k), t0 + 25000),                     # 26: 票 [(0001, 旧鍵)]
+        ("propose", owner2_id, remove_owner1, t0 + 26000),                       # 27: owner-0001 の削除提案(票 [0014]。owner 3 → 2 ≥ 2)
+    ])
+    p27k = readded[-1]
+    readded += extend(27, p27k["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p27k), t0 + 27000),                    # 28: 適用 — owner-0001 削除
+        ("propose", owner2_id, readd_owner1, t0 + 28000),                        # 29: 別鍵で owner として再追加の提案(owner 確立 = 常時対象)
+    ])
+    p29k = readded[-1]
+    readded += extend(29, p29k["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p29k), t0 + 29000),                    # 30: 適用 — owner-0001 は新鍵で owner
+        ("approve", owner2_id, approve_of(p25k), t0 + 30000),                    # 31: S = {(0001, 旧鍵), 0014} → 0001 の現鍵 ≠ 旧鍵 → 1 票 → pending
+    ])
+    rekeyed_owner_keys = {
+        "user-owner-0001": {
+            "note": "seq 29 → 30 で再追加された owner-0001 の新鍵(seq 26 の投票時の鍵とは別)",
+            "enc_sk_seed_hex": pat(0x71, 32).hex(),
+            "sig_sk_seed_hex": pat(0x81, 32).hex(),
+            "enc_pub_hex": rekeyed_owner["enc_pub_hex"],
+            "sig_pub_hex": rekeyed_owner["sig_pub_hex"],
+            "key_fingerprint_hex": rekeyed_owner["fp_hex"],
+        },
+    }
+    extended_chains["readded-approver-vote"] = chain_doc(
+        "投票者の鍵束縛(2026-09-15 裁定 ⑤): dev 専任 admin の提案 25 に owner-0001 が旧鍵で投票"
+        "(seq 26)した後、owner-0001 を提案経由で削除(seq 27 → 28)し、**別の鍵**で owner として"
+        "再追加(seq 29 → 30)。seq 31 の owner-0014 の approve は、(0001, 旧鍵) の票を「今の鍵 FP を"
+        "持つ現 owner か」で数え直すため 1 票にしかならず、有効だが適用されない(pending・approvals ="
+        " [(0001, 旧鍵), 0014])。user_id だけで束縛する実装は侵害鍵の票を鍵更新後も数えてしまう",
+        24, readded, members_24, canonical_policy,
+        pending_map((p25k, "admin", [vote(owner_id, owner), owner2_id])),
+        keys=rekeyed_owner_keys,
+    )
+    revote = build_entry(32, "approve", owner_id, rekeyed_owner, approve_of(p25k), t0 + 31000,
+                         readded[-1]["entry_hash_hex"])
+    extended_chains["readded-approver-revote"] = chain_doc(
+        "readded-approver-vote の先で、再追加された owner-0001 が**新鍵**で改めて投票(seq 32)。"
+        "(0001, 新鍵) は S の要素ではないため duplicate-approval にならず、{0014, 0001} = 2 で完成する"
+        "(提案者 devadmin は在籍・同鍵・admin{dev, stage} ⊇ {dev} で有効。devmember は seq 32 で在籍終了)",
+        24, readded + [revote], members_24_without_devmember, canonical_policy, {},
+        keys=rekeyed_owner_keys,
     )
     # (8) 方針の縮小(ops から remove_member を外す)と pending 提案の関係
     NARROW_OPS = ["grant_server", "set_approval_policy"]

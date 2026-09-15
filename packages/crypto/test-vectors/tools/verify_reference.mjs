@@ -500,9 +500,16 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         payloadBytes,
         e.timestamp_ms,
       ]);
+      // 署名鍵は actor の申告 FP で選ぶ: 派生チェーン固有の鍵(`keys` — 別鍵で再追加された
+      // メンバーが署名する readded-approver-revote)が FP 一致なら優先し、それ以外は正規鍵
+      const overrideKey = ext.keys?.[e.actor.user_id];
+      const signerKey =
+        overrideKey !== undefined && overrideKey.key_fingerprint_hex === e.actor.key_fingerprint_hex
+          ? overrideKey
+          : doc.keys[e.actor.user_id];
       const sigOk = await crypto.subtle.verify(
         "Ed25519",
-        await importSigPub(doc.keys[e.actor.user_id].sig_pub_hex),
+        await importSigPub(signerKey.sig_pub_hex),
         fromHex(e.signature_hex),
         signed,
       );
