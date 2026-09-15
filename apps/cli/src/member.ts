@@ -628,17 +628,6 @@ function ensureAddable(input: {
     if (actorRejection !== null || actor === undefined) {
       return yield* Effect.fail(cliError(actorRejection ?? "You are not a member"));
     }
-    // 原則 1(§6.2 scope-not-contained): add の権限変化の環境集合 = 新 scope(招待行)。
-    // 発行時の検査(K4-G)は発行者のもので、add の実行者は別人・別時点でありうる
-    // (独立レビュー S1)。儀式の前に落とす
-    const invited = memberScopeOf(input.scope);
-    if (!scopeContains(actor.scope, invited)) {
-      return yield* Effect.fail(
-        cliError(
-          `Your environment scope (${describeScope(actor.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
-        ),
-      );
-    }
     const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
     if (existing !== undefined) {
       if (
@@ -651,6 +640,18 @@ function ensureAddable(input: {
       return yield* Effect.fail(
         cliError(
           "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and `maruhi project verify`",
+        ),
+      );
+    }
+    // 原則 1(§6.2 scope-not-contained): add の権限変化の環境集合 = 新 scope(招待行)。
+    // 発行時の検査(K4-G)は発行者のもので、add の実行者は別人・別時点でありうる
+    // (独立レビュー S1)。儀式の前に落とす。追記済みの再開(上)は remove / change-role
+    // と同じく包含を問わない(残るのはバックフィルだけで、持たない DEK は取得口で止まる)
+    const invited = memberScopeOf(input.scope);
+    if (!scopeContains(actor.scope, invited)) {
+      return yield* Effect.fail(
+        cliError(
+          `Your environment scope (${describeScope(actor.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
         ),
       );
     }
