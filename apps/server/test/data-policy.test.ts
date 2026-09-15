@@ -540,6 +540,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "not-initialized": { kind: "not-initialized" },
     "not-member": { kind: "not-member" },
     "insufficient-role": { kind: "insufficient-role" },
+    "insufficient-scope": { kind: "insufficient-scope" },
     "environment-not-found": { kind: "environment-not-found", environmentId: "env-contract" },
     "environment-conflict": {
       kind: "environment-conflict",
@@ -613,6 +614,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "not-initialized": "ProjectNotFound",
     "not-member": "ProjectNotFound",
     "insufficient-role": "Forbidden",
+    "insufficient-scope": "Forbidden",
     "environment-not-found": "EnvironmentNotFound",
     "environment-conflict": "EnvironmentConflict",
     "composite-required": "CompositeRequired",

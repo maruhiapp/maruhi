@@ -38,7 +38,13 @@ import type {
   EnvManifestInput,
   MetaStatementInput,
 } from "./data-plane.ts";
-import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
+import {
+  dataEvent,
+  loadInitializedChain,
+  rejectData,
+  requireRole,
+  requireRoleInScope,
+} from "./data-plane.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import {
@@ -61,22 +67,27 @@ export interface EnvironmentChainResultValue {
 
 /**
  * 複合共通の前段: 未初期化 / メンバーシップ / role 下限(いずれも member —
- * §12-3 の環境作成・rotate_epoch の水準)の検査と、チェーン全体のロード。
+ * §12-3 の環境作成・rotate_epoch の水準)/ **環境 ∈ scope**(§12-3 —
+ * 2026-09-15 ES K3。rotate = 対象環境、作成 = 新 environment_id。作成は
+ * `listed` に未存在 id が含まれえないため scope = all の主体だけが通る —
+ * 表の「scope = all」行を同じ 1 述語で満たす)の検査と、チェーン全体のロード。
+ * 受理面の 403 が先に立ち、合意規則 `environment-out-of-scope`(verifyChain の
+ * 422)は多層防御として残る(設計録 es-design.md §9 K3-G)。
  */
-const loadChainForComposite = (callerUserId: string, cache: StateCache) =>
+const loadChainForComposite = (callerUserId: string, environmentId: string, cache: StateCache) =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
     // history は追記前チェーンの履歴索引: 同梱ステートメントの宣言ヘッド実在
     // 検査は追記前のチェーンに対して行う(§12-4 — 同梱エントリ自身をヘッドに
     // 宣言する形は受理しない)
     const { state, history } = yield* deriveStoredState(chain, cache);
-    const member = yield* requireRole(state, callerUserId, "member");
+    const member = yield* requireRoleInScope(state, callerUserId, "member", environmentId);
     return { chain, state, history, member, projectId: chain.genesisHashHex };
   });
 
 /**
  * 複合同梱ラップの検査(§12-4 / §12-6): 全ラップの epoch = 同梱エントリが確立する
- * エポック(複合内整合検査)、現メンバー集合との完全一致(個数一致 = 完全一致 —
+ * エポック(複合内整合検査)、受信者集合 R(E) との完全一致(個数一致 = 完全一致 —
  * 受信者・重複は ensureWrapSetAcceptable が検査済み)、登録署名・行数上限。
  * 判定基準状態は同梱エントリ適用後(appliedState)。
  */
@@ -109,8 +120,9 @@ const ensureCompositeWrapSet = (input: {
     // リクエストに現れたエポックしか見ないため、空集合が素通りしないように。
     // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順は
     // 環境作成プログラムと同じ「個別検査 → 完全性」を保つ)。対象は
-    // 現メンバー集合 + 開示スコープ内の有効 grant_server のサーバー鍵
-    // (§12-4。dek-wraps.ts の期待数定義を共有する)
+    // 受信者集合 R(E) = scope に E を含む現メンバー + 開示スコープ内の有効
+    // grant_server のサーバー鍵(§12-4 — 2026-09-15 ES K3。dek-wraps.ts の
+    // 期待数定義を共有する)
     if (input.deks.length !== expectedWrapRecipientCount(input.appliedState, input.environmentId)) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
     }
@@ -291,6 +303,7 @@ export const createEnvironmentCompositeProgram = (
   Effect.gen(function* () {
     const { chain, state, history, member, projectId } = yield* loadChainForComposite(
       actor.userId,
+      input.entry.payload.environmentId,
       cache,
     );
     // DO ストレージ総量ガード(§12-8): 環境作成は成長面(環境行・
@@ -463,7 +476,13 @@ export const rotateEpochCompositeProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { chain, state, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
+    // scope は URL 座標の環境で判定する(URL とエントリの不一致は直後の
+    // 複合内整合検査が拒否する — どちらで判定しても受理される組は同じ)
+    const { chain, state, member, projectId } = yield* loadChainForComposite(
+      actor.userId,
+      environmentId,
+      cache,
+    );
     // 複合内整合検査(§12-4): URL 座標と同梱エントリの environment_id の一致。
     // 各部分の独立検証だけで別環境のエントリ × 別環境のラップの組を受理しない
     if (input.entry.payload.environmentId !== environmentId) {

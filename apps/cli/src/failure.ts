@@ -125,7 +125,11 @@ const renderers: readonly Renderer[] = [
     () =>
       "Authentication failed (the token may be expired or revoked). Log in again with `maruhi login`",
   ),
-  when(isInstanceOf(ForbiddenError), (e) => `Insufficient permission (${e.reason})`),
+  when(isInstanceOf(ForbiddenError), (e) =>
+    e.reason === "insufficient-scope"
+      ? "Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain. Ask a project admin to widen your scope"
+      : `Insufficient permission (${e.reason})`,
+  ),
   // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが
   // 自由に埋められる)— reason / op / resource(Literals)と異なり中和が必要
   when(

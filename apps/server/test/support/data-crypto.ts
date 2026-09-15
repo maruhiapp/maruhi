@@ -162,10 +162,27 @@ export function genesisOperation(userId: string): ChainOperation {
   };
 }
 
-/** add_member 用の payload(対象のベクター公開鍵一式)。 */
+/**
+ * メンバーの scope のテスト表現(CRYPTO_SPEC §6.2 — 2026-09-14 ES): 省略 = all、
+ * 配列 = listed(空配列 = listed{})。
+ */
+export type TestScope = readonly string[] | undefined;
+
+/** scope のテスト表現をワイヤの 2 フィールドへ写す。 */
+function scopeFieldsOf(scope: TestScope): {
+  readonly scopeKind: "all" | "listed";
+  readonly scopeEnvironmentIds: readonly string[];
+} {
+  return scope === undefined
+    ? { scopeKind: "all", scopeEnvironmentIds: [] }
+    : { scopeKind: "listed", scopeEnvironmentIds: scope };
+}
+
+/** add_member 用の payload(対象のベクター公開鍵一式。scope 省略 = all)。 */
 export function addMemberOperation(
   targetUserId: string,
   role: "owner" | "admin" | "member" | "reader",
+  scope?: TestScope,
 ): ChainOperation {
   const keys = vectorKeyOf(targetUserId);
   return {
@@ -175,9 +192,20 @@ export function addMemberOperation(
       encPubHex: keys.enc_pub_hex,
       sigPubHex: keys.sig_pub_hex,
       role,
-      scopeKind: "all",
-      scopeEnvironmentIds: [],
+      ...scopeFieldsOf(scope),
     },
+  };
+}
+
+/** change_role 用の payload(新 (role, scope) の全置換 — CRYPTO_SPEC §6.2。scope 省略 = all)。 */
+export function changeRoleOperation(
+  targetUserId: string,
+  newRole: "owner" | "admin" | "member" | "reader",
+  scope?: TestScope,
+): ChainOperation {
+  return {
+    op: "change_role",
+    payload: { targetUserId, newRole, ...scopeFieldsOf(scope) },
   };
 }
 

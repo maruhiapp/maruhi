@@ -32,11 +32,26 @@ import { KeyFingerprintHex, PositiveInt } from "./hex.ts";
 export const RotationFlagBasisSchema = Schema.Literals(["read", "readable"]);
 
 /**
+ * Which chain operation produced a rotation flag (AUDIT_SPEC §3.3
+ * `rotation.recommended` payload.trigger — 2026-09-14 ES): `remove_member`,
+ * `change_role` (demotion below member, or a scope narrowing — the
+ * `change_role` variant of §4.1) or `revoke_server`.
+ */
+export const RotationFlagTriggerSchema = Schema.Literals([
+  "remove_member",
+  "change_role",
+  "revoke_server",
+]);
+
+/**
  * One currently-effective `rotation.recommended` event (AUDIT_SPEC §3.3 —
  * one row per (variable × environment)). Exactly one of `targetUserId`
  * (remove_member variant) / `targetServerKeyFingerprintHex` (revoke_server
  * variant) is present. `triggerChainSeq` is the chain seq of the removal /
- * revocation entry that produced the flag.
+ * role-change / revocation entry that produced the flag; `trigger` names that
+ * operation (servers from the 2026-09-15 ES K3 release always set it — the key
+ * is optional only so that a newer client still decodes an older server's
+ * response, the same additive-only rule as `storedRecipientEncPubHex`).
  *
  * 監査 seq は運ばない(AUDIT_SPEC §7): 無欠番採番の
  * 序数はクラス 2 行の件数を漏らすため、クラス 1 ビューにも載せない。解消の
@@ -51,6 +66,7 @@ export const RotationFlagSchema = Schema.Struct({
   targetServerKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   recommendedAtMs: Schema.Number,
   triggerChainSeq: PositiveInt,
+  trigger: Schema.optionalKey(RotationFlagTriggerSchema),
 });
 
 /** One (environment, variable) dismissal target (AUDIT_SPEC §7). */

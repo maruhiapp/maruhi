@@ -8,7 +8,7 @@ import { Effect } from "effect";
 import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import type { DataActor, DekWrapInput, DekWrapRefInput } from "./data-plane.ts";
-import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
+import { currentEpochOf, dataEvent, rejectData, requireEnvironmentAccess } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import {
   checkWrapRequestCount,
@@ -27,7 +27,15 @@ export const registerDekWrapsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
+    // 登録者(署名者 = 呼び出し主体 — §12-6 (1))も対象環境を scope に含むこと
+    // (§12-6 末尾 = §12-3 の呼び出し主体の scope 判定と同一 → 403。受信者軸の
+    // 422 scope-out-of-range とは別段で、こちらが先)
+    const { state, member, projectId } = yield* requireEnvironmentAccess(
+      actor.userId,
+      "member",
+      environmentId,
+      cache,
+    );
     yield* requireActiveEnvironment(environmentId);
     // DO ストレージ総量ガード(§12-8): 登録(バックフィル・修復再登録)は
     // 成長面(存在検査の後・集合 / 登録署名の検証の前)。削除
@@ -60,7 +68,7 @@ export const deleteDekWrapsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "admin", cache);
+    yield* requireEnvironmentAccess(actor.userId, "admin", environmentId, cache);
     yield* requireActiveEnvironment(environmentId);
     const countRejection = checkWrapRequestCount(refs.length);
     if (countRejection !== null) {
@@ -120,7 +128,10 @@ export const deleteDekWrapsProgram = (
 
 export const listMyDekWrapsProgram = (actor: DataActor, environmentId: string, cache: StateCache) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "reader", cache);
+    // 自分宛 DEK 取得は環境 ∈ scope(§12-3 の「一括 pull(値付き)・自分宛 DEK
+    // 取得」行)。scope 外のメンバー宛ラップは §12-6 が受理しないので通常は
+    // 空になるが、受理面の 403 で「配布しない」を構造にする(fail-closed)
+    yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache);
     yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
     return yield* store.listWrapsForRecipient(environmentId, actor.userId);

@@ -86,6 +86,8 @@ interface WireFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
+  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES。旧サーバーは載せない)。 */
+  readonly trigger?: "remove_member" | "change_role" | "revoke_server";
 }
 
 interface RotationServerState {
@@ -236,7 +238,7 @@ describe("maruhi rotation list", () => {
       currentEpoch: 2,
       flags: [
         flagFor({ variableId: "va", basis: "read" }),
-        flagFor({ variableId: "vdel", basis: "readable" }),
+        flagFor({ variableId: "vdel", basis: "readable", trigger: "change_role" }),
       ],
     });
     const env = await startEnv(state, built.projectId);
@@ -244,6 +246,9 @@ describe("maruhi rotation list", () => {
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("Rotation flags: 2 active flags");
+    // trigger = change_role(降格 / 縮小 — 2026-09-14 ES)は削除と言い分ける。
+    // trigger なし(旧サーバー)は従来の member: 表示
+    expect(logs).toContain(`member (role/scope changed):${target.userId}`);
     // 名前解決: active はステートメント、削除済みは tombstone の name(§4.2)
     expect(logs).toContain("ALPHA (va)");
     expect(logs).toContain("DELETED_KEY (vdel)");

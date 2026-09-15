@@ -473,9 +473,17 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
-/** トリガー(削除された主体 / 失効されたサーバー鍵)の表示形。 */
+/**
+ * トリガー(削除 / 降格・縮小された主体 / 失効されたサーバー鍵)の表示形。
+ * `trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES)があればそれを使い、無ければ
+ * 従来どおり target の有無から推定する(旧サーバーの応答)。
+ */
 function flagTrigger(flag: RotationFlag): string {
-  if (flag.targetUserId !== undefined) return `member removed: ${flag.targetUserId}`;
+  if (flag.targetUserId !== undefined) {
+    return flag.trigger === "change_role"
+      ? `member role/scope changed: ${flag.targetUserId}`
+      : `member removed: ${flag.targetUserId}`;
+  }
   if (flag.targetServerKeyFingerprintHex !== undefined) {
     return `server revoked: ${flag.targetServerKeyFingerprintHex}`;
   }

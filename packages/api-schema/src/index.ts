@@ -143,6 +143,7 @@ export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api
 export {
   RotationDismissTargetSchema,
   RotationFlagBasisSchema,
+  RotationFlagTriggerSchema,
   RotationFlagSchema,
   rotationGroup,
 } from "./rotation-api.ts";

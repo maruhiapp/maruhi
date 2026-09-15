@@ -314,6 +314,8 @@ const rejectionErrors = {
   "not-initialized": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "not-member": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "insufficient-role": () => new ForbiddenError({ reason: "insufficient-role" }),
+  // 環境 ∉ 呼び出し主体の scope(§9-2 / §12-3 — role 不足と同じ層・同じ型)
+  "insufficient-scope": () => new ForbiddenError({ reason: "insufficient-scope" }),
   "environment-not-found": (rejection) =>
     new EnvironmentNotFoundError({ environmentId: rejection.environmentId }),
   "environment-conflict": (rejection) =>

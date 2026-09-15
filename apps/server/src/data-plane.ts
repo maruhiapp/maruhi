@@ -1,5 +1,5 @@
 // データプレーン(AUTH_SPEC §12)の共有部: RPC 境界を渡る型・拒否理由・
-// 認可ガード(チェーン導出 role — CRYPTO_SPEC §6.2)。
+// 認可ガード(チェーン導出 role と環境 scope — CRYPTO_SPEC §6.2)。
 //
 // 拒否は DataRejectedError 1 種に畳み、DO の RPC 境界では DataOutcome の
 // 判別 union として渡す(worker が api-schema の型付きエラーへ写像する)。
@@ -13,6 +13,7 @@ import type {
   ChainState,
   Role,
 } from "@maruhi/crypto";
+import { scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -477,6 +478,10 @@ export type DataRejection =
   | { readonly kind: "not-initialized" }
   | { readonly kind: "not-member" }
   | { readonly kind: "insufficient-role" }
+  // 対象環境 ∉ 呼び出し主体のチェーン導出 scope(AUTH_SPEC §9-2 / §12-3 —
+  // 2026-09-15 ES K3。role 403 の直後・存在 404 の前。worker が
+  // ForbiddenError〔insufficient-scope〕へ写す)
+  | { readonly kind: "insufficient-scope" }
   | { readonly kind: "environment-not-found"; readonly environmentId: string }
   | {
       readonly kind: "environment-conflict";
@@ -625,6 +630,41 @@ export function requireRole(
 }
 
 /**
+ * 環境対象 op の scope 判定(AUTH_SPEC §12-3 の「環境 ∈ scope」列 — CRYPTO_SPEC
+ * §6.2 の検証状態が導出した scope。2026-09-15 ES K3): role 下限の直後・
+ * 環境の存在(データ行)の前に置く(設計録 es-design.md §9 K3-C — チェーン導出
+ * 状態だけで決まる検査を、保存状態を読む検査より先に)。判定は
+ * `scopeIncludesEnvironment`(`all` = 全環境)の 1 述語で、環境の作成
+ * (§12-3「scope = all」行)も同じ述語で判定する — `listed` の scope に未存在の
+ * 環境 id は含まれえないため `all` の主体だけが通る(§6.2 と同じ形)。
+ */
+function requireEnvironmentInScope(
+  member: ChainMember,
+  environmentId: string,
+): Effect.Effect<ChainMember, DataRejectedError> {
+  return scopeIncludesEnvironment(member.scope, environmentId)
+    ? Effect.succeed(member)
+    : Effect.fail(rejectData({ kind: "insufficient-scope" }));
+}
+
+/**
+ * role 下限 → scope の 2 段(§12-3 の判定順)。環境対象 op のうち、チェーン全体を
+ * 自前でロードする経路(複合 — composite-programs.ts、standalone checkpoint —
+ * checkpoint-accept.ts)が使う。データプレーンのプログラムは
+ * requireEnvironmentAccess(下)を使う。
+ */
+export function requireRoleInScope(
+  state: ChainState,
+  callerUserId: string,
+  minimum: Role,
+  environmentId: string,
+): Effect.Effect<ChainMember, DataRejectedError> {
+  return Effect.flatMap(requireRole(state, callerUserId, minimum), (member) =>
+    requireEnvironmentInScope(member, environmentId),
+  );
+}
+
+/**
  * requireMemberState の結果: 導出状態・履歴索引(値署名の宣言ヘッド時点検証の
  * 入力 — CRYPTO_SPEC §4.1 / §6.4)に加えて、呼び出し主体のチェーンメンバー
  * (登録署名・値署名の検証鍵と署名者 FP の源 — §5.1 / §4.1)と、プロジェクト ID
@@ -675,6 +715,27 @@ export const requireMemberState = (
     const { state, history } = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, minimum);
     return { state, history, member, projectId: chain.genesisHashHex };
+  });
+
+/**
+ * 環境対象のデータ操作に共通する前段(§12-3): requireMemberState(未初期化 →
+ * メンバーシップ → role 下限)→ **環境 ∈ 呼び出し主体の scope**(403
+ * insufficient-scope)。環境の存在(データ行 — requireActiveEnvironment)は
+ * この後に呼び出し側が検査する(設計録 §9 K3-C: role → scope → 存在)。
+ * 環境を持たない / scope 不問の経路(環境一覧・メタのみ pull・フラグ・監査)は
+ * requireMemberState をそのまま使う — 関数を分けることで「不問」と「呼び忘れ」を
+ * 型で区別する。
+ */
+export const requireEnvironmentAccess = (
+  callerUserId: string,
+  minimum: Role,
+  environmentId: string,
+  cache: StateCache,
+): Effect.Effect<MemberContext, DataRejectedError, ChainStore> =>
+  Effect.gen(function* () {
+    const context = yield* requireMemberState(callerUserId, minimum, cache);
+    yield* requireEnvironmentInScope(context.member, environmentId);
+    return context;
   });
 
 /**

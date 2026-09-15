@@ -2,7 +2,12 @@
 // サーバー側)と dek.registered イベントの組み立て(AUDIT_SPEC §3.3)。
 
 import type { ChainMember, ChainState } from "@maruhi/crypto";
-import { decodeHex, importSigningPublicKey, verifyDekWrapSignature } from "@maruhi/crypto";
+import {
+  decodeHex,
+  importSigningPublicKey,
+  scopeIncludesEnvironment,
+  verifyDekWrapSignature,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -47,10 +52,21 @@ function wrapStorageKey(ref: { readonly epoch: number; readonly recipientUserId:
 }
 
 /**
- * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6):
- * 現メンバー全員 + 当該環境が開示スコープに含まれる有効な grant_server の
- * サーバー鍵。初回登録の完全一致と複合リクエストの個数検査の両方が
- * この 1 定義を使う(受理境界をズラさない)。
+ * 受信者集合 R(E) の member 側の所属述語(CRYPTO_SPEC §6.2 — 2026-09-15 ES K3):
+ * E ∈ scope(m)。grant 側の `scopeEnvironmentIds.includes(E)` と対にして、
+ * 期待数(下)と受信者判定(checkWrapRecipient)が同じ述語を使う —
+ * 「判定は受信者クラスを跨いで同一に適用」(§6.2 / AUTH_SPEC §12-6)。
+ */
+function memberReceivesEnvironment(member: ChainMember, environmentId: string): boolean {
+  return scopeIncludesEnvironment(member.scope, environmentId);
+}
+
+/**
+ * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6) =
+ * 受信者集合 R(E)(CRYPTO_SPEC §6.2 — 2026-09-15 ES K3): scope に E を含む現
+ * メンバー + 当該環境が開示スコープに含まれる有効な grant_server のサーバー鍵。
+ * 初回登録の完全一致と複合リクエストの個数検査の両方がこの 1 定義を使う
+ * (受理境界をズラさない)。
  */
 export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
   // 保存キー(= 登録経路の重複検出キー wrapStorageKey)は受信者クラスを含まない
@@ -66,7 +82,12 @@ export function expectedWrapRecipientCount(state: ChainState, environmentId: str
   // キーへのクラス追加 = DO スキーマと AUTH_SPEC §12-6 の改訂が要る(A-1 裁定の
   // 巻き戻し)ため、この関数の守備範囲は「不変条件を恒久に満たせない形にしない」
   // までとする
-  const recipients = new Set<string>(state.members.keys());
+  const recipients = new Set<string>();
+  for (const [userId, member] of state.members) {
+    if (memberReceivesEnvironment(member, environmentId)) {
+      recipients.add(userId);
+    }
+  }
   for (const [fingerprintHex, grant] of state.serverGrants) {
     if (grant.scopeEnvironmentIds.includes(environmentId)) {
       recipients.add(fingerprintHex);
@@ -89,9 +110,13 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
 
 /**
  * 受信者の同定(クラス別 — AUTH_SPEC §12-6)。member = user_id + enc 公開鍵の
- * 両方が現メンバーと厳密一致。server = recipientUserId 位置のサーバー鍵 FP +
- * enc 公開鍵の両方がチェーン導出の有効 grant_server の payload と厳密一致し、
- * かつ対象環境が開示スコープに含まれること(スコープ外は 422)。
+ * 両方が現メンバーと厳密一致し、かつ対象環境が受信者の scope に含まれること
+ * (scope 外は 422 `scope-out-of-range` — 2026-09-15 ES K3。CRYPTO_SPEC §6.3 の
+ * 「scope 外のメンバー宛のラップの受理は禁止」= ゴーストメンバー対策の環境軸版)。
+ * server = recipientUserId 位置のサーバー鍵 FP + enc 公開鍵の両方がチェーン導出の
+ * 有効 grant_server の payload と厳密一致し、かつ対象環境が開示スコープに
+ * 含まれること(スコープ外は同じ 422)。理由コードの順(同定 → 鍵 → scope)は
+ * クラスを跨いで同一。
  */
 function checkWrapRecipient(
   state: ChainState,
@@ -117,6 +142,9 @@ function checkWrapRecipient(
   }
   if (member.encPubHex !== wrap.recipientEncPubHex) {
     return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
+  }
+  if (!memberReceivesEnvironment(member, environmentId)) {
+    return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
   }
   return null;
 }
@@ -227,10 +255,11 @@ const ensureWrapSignatures = (
   });
 
 /**
- * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は現メンバー集合 +
- * 開示スコープ内の有効 grant_server のサーバー鍵との完全一致(受信者検査済み
- * なので個数一致 = 完全 — 判定は受信者クラスを跨いで同一に適用する)、既存
- * エポックへの追記は既存 (エポック, 受信者) との重複を拒否する。
+ * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は受信者集合 R(E)
+ * (scope に E を含む現メンバー + 開示スコープ内の有効 grant_server のサーバー鍵)
+ * との完全一致(受信者検査済みなので個数一致 = 完全 — 判定は受信者クラスを
+ * 跨いで同一に適用する)、既存エポックへの追記は既存 (エポック, 受信者) との
+ * 重複を拒否する。
  */
 const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly DekWrapInput[]) =>
   Effect.gen(function* () {

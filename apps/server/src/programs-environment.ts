@@ -2,7 +2,9 @@
 // 作成・ローテーションは複合リクエスト(composite-programs.ts)。
 //
 // 判定順(§12-3)と permit 直列化の前提は旧 data-programs.ts のとおり:
-// requireMemberState → 環境の存在 → 意味論的検査 → 数量ポリシー → 原子書き込み。
+// requireMemberState / requireEnvironmentAccess(role → scope — 2026-09-15 ES K3)→
+// 環境の存在 → 意味論的検査 → 数量ポリシー → 原子書き込み。環境一覧と
+// メタデータのみ pull は scope 不問(§12-3 の表 / §12-7)。
 
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
@@ -23,6 +25,7 @@ import {
   dataEvent,
   optionalDistributionFields,
   rejectData,
+  requireEnvironmentAccess,
   requireMemberState,
 } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
@@ -39,7 +42,12 @@ export const renameEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
+    const { history, member, projectId } = yield* requireEnvironmentAccess(
+      actor.userId,
+      "member",
+      environmentId,
+      cache,
+    );
     const environment = yield* requireActiveEnvironment(environmentId);
     // DO ストレージ総量ガード(§12-8 — H2): 環境の改名はステートメント行 +
     // マニフェストを積む成長面(存在検査の後・NFC / 一意性 / CAS / 署名の前)。
@@ -105,9 +113,14 @@ export const deleteEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    // 受理時点 admin(§12-3)。宣言ヘッド時点 admin は署名検証(§12-3 の
-    // 二重判定 — env × deleted の必要 role)が検査する
-    const { history, member, projectId } = yield* requireMemberState(actor.userId, "admin", cache);
+    // 受理時点 admin × 環境 ∈ scope(§12-3)。宣言ヘッド時点 admin / scope は
+    // 署名検証(§12-3 の二重判定 — env × deleted の必要 role、3′)が検査する
+    const { history, member, projectId } = yield* requireEnvironmentAccess(
+      actor.userId,
+      "admin",
+      environmentId,
+      cache,
+    );
     const environment = yield* requireActiveEnvironment(environmentId);
     // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
     if (statement.name !== environment.name) {
@@ -176,13 +189,23 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
   });
 
 /**
- * pull 系(値付き・メタデータのみ)共通の前段: reader 認可・環境の存在・
- * 環境自身の最新ステートメント(§12-7 の検証材料の同梱)。環境行はステート
- * メントと原子的に作られる(複合受理)ため、欠落は不変条件違反 = defect。
+ * pull 系(値付き・メタデータのみ)共通の前段: reader 認可(値付きは
+ * さらに環境 ∈ scope — §12-7。メタデータのみモードは scope 不問 = 平文メタは
+ * 全メンバーに見える線 — CRYPTO_SPEC §6.3)・環境の存在・環境自身の最新
+ * ステートメント(§12-7 の検証材料の同梱)。環境行はステートメントと原子的に
+ * 作られる(複合受理)ため、欠落は不変条件違反 = defect。
  */
-const requirePullContext = (actor: DataActor, environmentId: string, cache: StateCache) =>
+const requirePullContext = (
+  actor: DataActor,
+  environmentId: string,
+  mode: "values" | "metadata-only",
+  cache: StateCache,
+) =>
   Effect.gen(function* () {
-    const { state } = yield* requireMemberState(actor.userId, "reader", cache);
+    const { state } =
+      mode === "values"
+        ? yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache)
+        : yield* requireMemberState(actor.userId, "reader", cache);
     yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
     const statement = yield* store.environmentStatement(environmentId);
@@ -205,6 +228,7 @@ export const pullEnvironmentProgram = (
     const { state, store, statement, manifest } = yield* requirePullContext(
       actor,
       environmentId,
+      "values",
       cache,
     );
     // DO ストレージ総量ガードの観測のみ(§12-8 — 拒否しない): 値付き pull は
@@ -277,6 +301,7 @@ export const pullEnvironmentMetadataProgram = (
     const { state, store, statement, manifest } = yield* requirePullContext(
       actor,
       environmentId,
+      "metadata-only",
       cache,
     );
     // declared 変数のステートメントも variables に載る(削除済みでない全変数の
