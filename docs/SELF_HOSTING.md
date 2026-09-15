@@ -861,6 +861,12 @@ generic chain append carrying one of them is rejected with HTTP 422
 `ApprovalNotAccepted` (fail-closed) until the release that also ships their
 acceptance side effects (audit mirror rows, rotation detection, pending limit).
 Nothing in the CLI issues them in this release.
+*(2026-09-15, "ES K4")*: the CLI now issues listed environment scopes
+(`maruhi invite create --env …`, `maruhi member change-role --env … / --all-envs`,
+`maruhi member list`) and limits DEK wraps, backfills and post-removal rotations
+to the member's scope. No server change is needed beyond the K3 release that
+enforces scopes; an older CLI on a project with listed-scope members fails
+closed at wrap-set construction (HTTP 422 `scope-out-of-range`) — update the CLI.
 There is **no compatibility path**: a chain entry in the old format is invalid
 under the new rules, and an entry in the new format is invalid under the old
 ones. Concretely, the version-skew behaviors are:

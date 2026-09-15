@@ -25,7 +25,7 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
-import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
+import { deriveReportedView, type ReportedMember, type ReportedServer } from "./chain-view.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { isProjectId, shortId } from "./ids.ts";
@@ -60,7 +60,17 @@ import { useApiResource } from "./use-api-resource.ts";
 interface MemberRow extends Record<string, unknown> {
   id: string;
   role: string;
+  /** Environment scope as reported (`all environments` or the listed ids — ES K4). */
+  scope: string;
   sinceSeq: number;
+}
+
+/** 表示用の scope 文言(サーバー申告の畳み込み — Granted servers の Scope 列と同じ描き方)。 */
+function describeMemberScope(member: ReportedMember): string {
+  if (member.scopeKind === "all") return "all environments";
+  return member.scopeEnvironmentIds.length === 0
+    ? "no environments"
+    : member.scopeEnvironmentIds.join(", ");
 }
 
 const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
@@ -75,6 +85,16 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
     header: "Role",
     width: pixel(110),
     renderCell: (row: MemberRow) => <RoleToken role={row.role} />,
+  },
+  {
+    key: "scope",
+    header: "Scope",
+    width: proportional(1),
+    renderCell: (row: MemberRow) => (
+      <Text type="supporting" size="sm">
+        {row.scope}
+      </Text>
+    ),
   },
   {
     key: "sinceSeq",
@@ -165,6 +185,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   const memberRows: MemberRow[] = view.members.map((m) => ({
     id: m.userId,
     role: m.role,
+    scope: describeMemberScope(m),
     sinceSeq: m.sinceSeq,
   }));
   return (
@@ -172,7 +193,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
       <ChainSummary snapshot={snapshot} />
       <SectionBlock
         title="Members"
-        description="Chain-derived members and roles, as reported by the server."
+        description="Chain-derived members, roles and environment scopes, as reported by the server."
       >
         <Table
           data={memberRows}

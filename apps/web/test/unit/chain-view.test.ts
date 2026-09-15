@@ -58,7 +58,15 @@ describe("deriveReportedView", () => {
 
   it("folds genesis into an owner member", () => {
     const view = deriveReportedView([genesis]);
-    expect(view.members).toEqual([{ userId: "user_owner", role: "owner", sinceSeq: genesis.seq }]);
+    expect(view.members).toEqual([
+      {
+        userId: "user_owner",
+        role: "owner",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+        sinceSeq: genesis.seq,
+      },
+    ]);
   });
 
   it("applies add / change_role / remove in reported order", () => {
@@ -86,6 +94,29 @@ describe("deriveReportedView", () => {
     ]);
     // role を更新したエントリの seq が sinceSeq に反映される
     expect(view.members[1]?.sinceSeq).toBe(change.seq);
+  });
+
+  it("folds the environment scope of add_member / change_role (ES K4 — reported, not verified)", () => {
+    const add = addMember("user_a", "member");
+    const narrow: ChainEntry = {
+      ...base(),
+      op: "change_role",
+      payload: {
+        targetUserId: "user_a",
+        newRole: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["dev", "staging"],
+      },
+    };
+    const before = deriveReportedView([genesis, add]);
+    expect(before.members[1]).toMatchObject({ scopeKind: "all", scopeEnvironmentIds: [] });
+    const after = deriveReportedView([genesis, add, narrow]);
+    expect(after.members[1]).toMatchObject({
+      role: "member",
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["dev", "staging"],
+      sinceSeq: narrow.seq,
+    });
   });
 
   it("ignores change_role for an unknown member (as reported — no invention)", () => {

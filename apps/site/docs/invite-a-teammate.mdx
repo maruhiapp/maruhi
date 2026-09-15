@@ -36,6 +36,14 @@ maruhi invite create --role member --github bob
 
 `--role` is `reader`, `member`, or `admin`. `--github` names the invitee's GitHub login; it is kept only on your machine (never sent to the server) and is what `maruhi member add` checks the acceptance against. The command prints the invite link **once** — the server keeps only the link's public key and cannot rebuild it — then records a small issuance pin locally.
 
+Add `--env <id>` (repeatable) to limit the invitee to some environments:
+
+```sh
+maruhi invite create --role member --env dev --env staging --github bob
+```
+
+Without `--env` the invitee gets every environment, including ones created later. With it, the invitee receives decryption keys only for the listed environments — there is no key for the others anywhere, not even on the server — and can still see the other environments' names and variable names (`maruhi schema`), just not their values. The scope is part of the signed link, so the invitee reads it before accepting. Only environments in your own scope can be listed. Later, `maruhi member change-role <user-id> --env …` (or `--all-envs`) replaces the scope; narrowing it rotates the environments the member leaves, and `maruhi member list` shows everyone's current role and scope.
+
 Hand the link to the invitee over a person-to-person channel you trust (a direct message, not a shared room). Anyone who can read the link can accept it first; the check in step 3 catches that, but the right person then has to be re-invited. Links expire, and `maruhi invite list` shows their state; `maruhi invite revoke <id>` withdraws one.
 
 The link is long (about 530 characters). Everything after `#` stays in the invitee's CLI: the per-invite key seed, the project, your verified chain head, your public keys, the role, your GitHub login, and your signature over all of it except the seed and the login.
