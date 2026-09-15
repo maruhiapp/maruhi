@@ -708,3 +708,154 @@ K3 は執行の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2
 - **scope 縮小後の旧ラップ**: K3 の 403 は受理面のガードであり、縮小で scope 外になったメンバーの手元の既存ラップ(保存済み DEK ラップ行を含む)を暗号的に無効化するのは K4 の sweep(縮小分の rotate 義務 — CRYPTO_SPEC §7)以降。K3 時点で `insufficient-scope` を「アクセス遮断」と説明しない(CLI 文言は現状そうなっていない — pullfrog 第 1 巡)
 - **バックフィルの liveness**: DEK ラップ登録者は対象環境を scope に含む必要がある(§12-6 末尾)ため、「誰も scope に含まない環境」が生じるとバックフィルが詰まる。owner は常に `all`(§6.2 `scope-role-mismatch`)なので現状は生じないが、owner の scope を将来 listed にする改訂があれば、この不変条件を先に確認する(pullfrog 第 1 巡)
 - **ベクター名と受理面の順**: `authz-rotate-unknown-precedes-out-of-scope` / `authz-create-env-duplicate-precedes-out-of-scope` は合意規則層の検査順を指す名前で、受理面では scope 403 が先(K3-G)。K3 はベクターを触らないため名前はそのまま(テストのコメントで明記)。次にベクターを再生成する段(K5 等)で改名してよい
+
+## 10. K4 追記(2026-09-15 — CLI の環境スコープ実装時の裁定)
+
+K4 は CLI の段であり、承認済み項目 1〜24・§7 K1・§8 K2-1〜K2-11-bis・§9 K3-A〜K3-J を変えない。読み込み時点の現状(K3 後): CLI は scope を**読める**(招待行・リンクの `sk=`/`se=`・`invite list` の `scope=` 列・受諾時の集合比較・検証済み `ChainMember.scope`)が、**発行・執行する箇所がゼロ**(`invite create` は `ALL_SCOPE` 固定、`change-role` は現 scope 据え置き、`wrapRecipientsFor` は member 全員、バックフィル / sweep は全環境、通信前 scope 判定なし、scope 外ラップの判定なし)。`packages/crypto` の公開 API は `MemberScope` / `memberScopeOf` / `scopeIncludesEnvironment` / `scopePayloadFieldsOf` / `ALL_SCOPE` / `MAX_SCOPE_ENVIRONMENTS` で、包含述語 `scopeContainsEnvironmentSet` と集合演算は internal のまま(K4 は crypto を触らない — K4-I)。各裁定は §9 と同じ規律(列挙 → 上位互換 / 銀の弾丸の探索 → 連続 2 空巡で打ち止め → 原則 → UX → 選択)で行い、巡数は正直に記す。
+
+### K4-A. scope 変更のコマンド形(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| A-a `change-role --role <r> [--env <id>]…` のみ(`--role` 必須)。`--env` 省略 = **現 scope 据え置き** | 1 コマンド | scope だけを変えたい場合も role を打ち直す(打ち間違いで role が変わる) | — |
+| A-b `--env` 省略 = all(招待と揃える) | 招待と同じ既定 | **fail-open の形**: listed の対象に role だけ変えるつもりで打つと all へ拡大し、prod の全エポックをバックフィルしてしまう(署名済みの不可逆な鍵配布) | 棄却 |
+| A-c 別コマンド `member scope <user> --env …`(role 不変) | 名前が意図を表す | ワイヤは同じ `change_role`。事前検査・CAS・拡大バックフィル・縮小 sweep の後段が 2 コマンドに複製される。降格と縮小を同時にしたい場合は 2 回の追記(義務が 2 エントリに割れる) | — |
+| A-d **`change-role <user> [--role <r>] [--env <id>]… [--all-envs]`**: `--role` / `--env` / `--all-envs` のうち少なくとも 1 つ必須。`--role` 省略 = 現 role 据え置き、`--env` / `--all-envs` 省略 = 現 scope 据え置き、`--env` と `--all-envs` は排他。`--role owner` は all 固定(`--env` 併用は usage エラー — `scope-role-mismatch`) | A-a と A-c の上位互換: 1 コマンド・1 エントリで role / scope / 両方を置換でき、省略は常に「変えない」(fail-closed)。「拡大を all にする」だけが明示フラグ | 招待の「省略 = all」と既定が違う(下記 UX で説明) |
+
+**探索**: 第 2 巡(上位互換): A-d は A-a / A-c の利点を含む。`--env all` のような番兵は環境 id の名前空間と衝突する(裁定 B-3 と同じ理由)ので `--all-envs` を別フラグに置く — 招待で `--all-envs` を置かない裁定 K は「省略 = all なので冗長」という理由であり、change-role では省略 = 据え置きなので冗長ではない(K を覆さない)。銀の弾丸(scope 変更を change_role 以外の構造で表す)は §6.2 の全置換ワイヤで閉じており、なし(空巡)。第 3 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「署名済みの不可逆な変更(鍵配布・rotate 義務)を生む入力は、省略が『変えない』側に倒れ、拡大は明示の作為でのみ起きる」。招待の「省略 = all」はこの原則に反するように見えるが、招待は**新規メンバーの scope の初期値**であり「変えない」が定義できない(現状が無い)。既定 all は CRYPTO_SPEC §6.2「CLI の既定を all にすれば体験は変わらない」(裁定 C 第 3 巡)の導出で、原則の例外ではなく適用範囲外。既存の `remove` / `revoke` に省略可能な破壊的既定が無いことも整合。
+
+**UX**: `member change-role alice --env dev` = role 不変で scope を {dev} に置換(拡大分はバックフィル、縮小分は rotate — K4-B)。`--role reader` だけなら scope 不変の降格。エージェント環境でも対話入力なし。`invite create` と既定が違う点は `--help` の文言に「omitted = keep the current scope」と書く。**採用: A-d**。
+
+### K4-B. 縮小 + 拡大が同時の `change_role` の義務の直列化(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| B-a **追記 → 拡大分のバックフィル → 縮小分(+ 降格分)の rotate sweep** | 拡大分 = 新 \ 旧、縮小分 = 旧 \ 新、降格分 = 新 scope(CRYPTO_SPEC §6.2 系)。3 つは互いに素または縮小 ∩ 降格 = ∅(降格分は新 scope 内)なので順序に依存性はない。バックフィルは 409 で冪等、sweep はチェーン導出(第 4 種 `scope-narrowed`)で冪等 — 中断はどちらの再実行でも続きから収束する | 短い方(バックフィル)を先に置き、失敗しても sweep へ進む(両方の結果を報告して終了コードで部分完了を示す) |
+| B-b sweep → バックフィル | — | 縮小分の rotate は新 DEK を R(E) へラップし、対象は縮小で R(E) から外れているので新 DEK は渡らない。拡大分のバックフィルとは環境が異なり、順序を入れ替える利点がない |
+| B-c 縮小と拡大を 2 エントリに分けさせる(同時指定を拒否) | 単純 | 義務が 2 エントリに割れ、1 回の意図(「dev から staging へ移す」)が 2 回の署名になる。§6.2 は全置換を 1 エントリで受理する |
+
+**探索**: 第 2 巡: 「拡大分のバックフィルを change_role の複合に同梱する」は §12-4 / 承認項目 8(複合化しない)で棄却済み。上位互換なし(空巡)。第 3 巡: なし(空巡)。打ち止め。
+
+**原則**: 「1 エントリが生む複数の義務は、環境集合が互いに素である限り、それぞれ独立に冪等な収束手続きで履行し、順序は履行時間の短い順」。既存の `member add`(追記 → バックフィル)と `remove`(追記 → sweep)はこの原則の 1 義務の場合。
+
+**UX**: 部分失敗はコマンドが終了コード 1 で報告し、再実行が続きから収束する(既存の member add / remove と同じ案内)。**採用: B-a**。
+
+### K4-C. 通信前 scope 判定の置き場(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| C-a 各コマンドに個別 | — | 漏れる(pull / run / push / var rm / schema set / import / env rotate / env create / checkpoint / sync / バックフィル / sweep の 12 経路) |
+| C-b `openEnvironment`(context.ts)に 1 検査 | `--env` を取る値系コマンド(pull / run / push / var rm / schema set / import / env rotate)を 1 か所で覆う。`openMetadataEnvironment`(schema show / export / lint)は別関数なので「不問」が構造で分かる(K3-C と同型) | 複数環境を 1 コマンドで開く経路(checkpoint / sync の 3 環境 / sweep / バックフィル)を覆わない |
+| C-c **C-b + 共通述語 `requireEnvironmentInScope`(新設 `scope.ts`)を、複数環境経路が明示に呼ぶ + `requireWritingMember`(create / rotate の共通ガード)に scope 判定を組み込む + `environmentKeysFor`(自分宛 DEK の唯一の取得口 — deks.ts)で受信側規則(K4-F)を判定** | 述語は 1 つ。単一環境コマンドは前段で、複合ガードは `requireWritingMember` で、DEK 取得は `environmentKeysFor` で、それぞれ構造的に通る。残るのは checkpoint / sync の環境列挙だけ(明示呼び出し + テストで固定) | `pullVerifiedEnvironment`(values.ts)を唯一の漏斗にする形(K3 C-b と完全同型)は、values.ts が呼び出し主体の user_id を持たない(VerifiedProject は自分を知らない)ため、全呼び出し側の引数変更になる。DEK 取得口の判定が実質同じ漏斗になる(値付き pull は DEK なしに復号できない)ので採らない |
+| C-d サーバーの 403 に任せる | — | CRYPTO_SPEC §6.3「サーバーの 403 を待たない」に反する。値付き pull は `var.read` を記録するため、403 前に到達させない意味もある(K3 では 403 時に記録しないが、規範はクライアント側判定) |
+
+**古いチェーンの扱い**: 判定は検証済みチェーンに基づく。拡大直後に古いビューで実行すれば通信前に誤って拒否する(再実行で解消 — 前段は毎回全同期するので実際は起きにくい)。縮小直後に古いビューで通れば **サーバーの 403** に落ちる — `failure.ts` の `insufficient-scope` 文言に「ローカルのビューが古い可能性 — 再実行で再同期」を加える。
+
+**探索**: 第 2 巡: 「`VerifiedProject` に自分の user_id を持たせて values.ts で判定」— VerifiedProject はリース(ワークロード)経路と共有され自分が無い形が正当なので、型に自分を混ぜると意味が濁る。上位互換でない(空巡)。銀の弾丸(判定を 1 か所に集約)は C-c の `environmentKeysFor` が DEK の唯一の取得口である以上、値付き経路については既にそこ(空巡)。第 3 巡: なし(空巡)。打ち止め。
+
+**原則**: 「呼び出し主体の scope 判定は、対象環境が確定する最も手前の共通経路(前段・共通ガード・唯一の取得口)に置き、環境を持たない / 不問の経路は別の関数を通る」。K3-C の原則(受理面の順序)とは層が違うが、「不問と忘れを関数の違いで区別する」形は同じ。
+
+**UX**: listed の主体が scope 外の環境で `maruhi pull` すると通信前に `Environment <id> is outside your environment scope on this project's chain (…). Ask a project admin to widen your scope with \`maruhi member change-role <you> --env <id>\`` で止まる。`maruhi schema` は動く。**採用: C-c**。
+
+### K4-D. Web の scope 列の段(列挙 1 巡 + 空巡 2・打ち止め)
+
+食い違い: 設計録 §4 の K4 行は「Web `ProjectScreen` の scope 列」を K4 に含めるが、`apps/web/src/dashboard/chain-view.ts` のコメントと §8-ter 直後の K2 実装メモは「scope の表示は K6」としていた。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| D-a **K4 で入れる(最小)**: `chain-view.ts` の fold に `scopeKind` / `scopeEnvironmentIds` を写し、`ProjectScreen` の Members 表に「Scope」列(既存の Granted servers 表の Scope 列と同じ描き方 — `Text type="supporting"`。新規の視覚パターンなし・`xstyle` なし) | K4 完了 = ES 完了(§4 の K4 行の停止条件)が Web を含めて成立する。変更は fold 2 フィールド + 列 1 つで、React Doctor / StyleX 規律に触れない | web のテストと doctor が K4 の品質ゲートに入る |
+| D-b K6 へ送り §4 の行を訂正 | K4 が CLI に閉じる | ES の可視面が K6(四眼)まで欠け、「ES 完了」と言えない。K6 の pending 表示とは独立の変更なので束ねる理由がない |
+
+**探索**: 第 2 巡: 上位互換なし(空巡)。第 3 巡: なし(空巡)。打ち止め。**原則**: 「段の停止条件(§4)が正で、コード内コメントは段の記述に従う」。**UX**: Web の Members 表に `all` / 環境 id 列が並ぶ(表示規律「サーバー申告・未検証」は不変)。**採用: D-a**(chain-view のコメントと K2 実装メモの記述を訂正する)。
+
+### K4-E. `member list` の出力形と agent-gate(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| E-a 表のみ(`project verify` の member 行と同じ TSV 風) | 既存の行形式の再利用 | エージェントが読むには列の意味を推測させる |
+| E-b **表 + `--json`**(`{ members: [{ userId, role, scope: { kind, environmentIds }, keyFingerprintHex }] }` を stdout へ 1 文書) | 人には表、エージェント / スクリプトには JSON。`maruhi sync preset`(JSON を stdout へ)の先例に倣う(`json-record.ts` は JSON **読み取り**の共通口であり出力の先例ではない — 最初の報告の訂正) | フラグ 1 つ増える |
+| E-c JSON のみ | — | 人が読みにくい |
+
+agent-gate: 出力は user_id・role・scope・鍵 FP のみで値ゼロ(裁定 M)。`ensureValueDisplayAllowed` を**呼ばない**ことをテストで固定する(エージェント検出 + 非 TTY で成功する)。`project verify` と同じく master 鍵を要求しない(`openMetadataProject`)。
+
+**探索**: 第 2 巡: 上位互換なし(空巡)。第 3 巡: なし(空巡)。打ち止め。**原則**: 「値ゼロの読み取りは鍵なし・agent-gate 非適用で、機械可読形を併せ持つ」(`maruhi schema` の線)。**UX**: `maruhi member list --json | jq` がエージェント環境で動く。**採用: E-b**。
+
+### K4-F. scope 外ラップの警告の出し方(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| F-a pull のたびに警告して継続(ラップは使わない) | 正本の字面「使用せず警告する」 | 値付き pull は K4-C で通信前に止まるため、この経路に到達するのは「DEK 取得口に scope 外の環境で入った」場合だけ = 呼び出し側のバグか、チェーンが同期の間に縮小した競合類。継続する意味がない(DEK を使わないなら復号できない) |
+| F-b **`environmentKeysFor`(DEK の唯一の取得口)で環境 ∉ 自分の scope を型付きエラーにする**。文言は警告文の内容(「scope 外の環境のラップは使用しない — サーバーが §12-6 を執行していない証拠になりうる」)を含め、平文値・鍵素材・ラップの内容は出さない | 1 か所。取得口を通らない DEK は存在しないので「使用しない」が構造で成立する | 正本の「警告」を「エラーで中断」として実装する(使用しない結果は同じ。中断は fail-closed 側) |
+| F-c `project verify` の未収束警告に統合 | — | verify は鍵なしで DEK を取得しない。自分宛ラップの scope 外は本人の値付き経路でしか観測できない |
+
+**探索**: 第 2 巡: 上位互換なし(空巡)。第 3 巡: なし(空巡)。打ち止め。**原則**: 「受信側規則は資源の唯一の取得口で判定し、使わないものは取得口から出さない」(§5.2 コミットメント照合が `verifyAndUnwrapOne` の内側で完結する形と同じ)。**UX**: 到達は競合類のみ。文言は再同期の案内。**採用: F-b**(正本 §6.3 の「警告」は fail-closed 側の中断で満たす — 字面より厳しい側。所有者へ報告)。
+
+### K4-G. 招待発行時の包含検査(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| G-a **エラー(発行しない)。逃げ道なし** | 発行者の scope が招待 scope を包含しない・`--env` の id がチェーン上に無い(`unknown-environment`)場合は通信前に型付きエラー | 発行できても受諾後の `add_member` が `scope-not-contained` / `unknown-environment` で通らない = 受諾者を無駄に儀式へ進ませる罠。発行時と add 時で状態が変わりうる(§15-2)のは「発行時に通っても add 時に落ちる」方向で、エラーにしても失うものがない |
+| G-b 警告して発行 | 発行者の scope が後で広がる場合に備える | 招待は 7 日で切れる。scope の拡大は admin の 1 操作で、それを待ってから発行すればよい。警告は無視される(B2 裁定と同じ) |
+| G-c `--force` | — | 逃げ道が要る場面がない(all の主体に頼めばよい) |
+
+**探索**: 第 2 巡: 上位互換なし(空巡)。第 3 巡: なし(空巡)。打ち止め。**原則**: 「通信前の検査は、通しても後段で必ず落ちる入力を止めるもので、後段が受理しうる入力は止めない」。§15-2 の「検査は案内止まり」は「サーバーが検査しない」ことの記述で、CLI が止めることを禁じていない。**UX**: listed の admin が自分の scope 外を招待すると即座に理由が出る。**採用: G-a**。
+
+### K4-H. docs の範囲(列挙 1 巡 + 空巡 2・打ち止め)
+
+- `apps/site/docs/invite-a-teammate.mdx`: `--env` の 1 段落(K4 で利用者に見える挙動が変わる)を K4 に含める。`environment-scopes.mdx` の新規作成は K7。
+- `docs/SELF_HOSTING.md` "Updates": サーバーの挙動は K3 で確定済みで K4 は CLI のみ。K2 の段落の末尾に「CLI が listed の scope を発行できるようになった(2026-09-15 K4)」の 1 文を足す(利用者が「いつから使えるか」を読める)。
+- 探索: 第 2 巡・第 3 巡とも新案なし(空巡)。**採用: 上記**。
+
+### K4-I. 包含述語の置き場(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| I-a crypto の `index.ts` に `scopeContainsEnvironmentSet` 等を再エクスポート | 1 実装 | `packages/crypto` への変更 = 人間レビュー必須・K4 の範囲外 |
+| I-b **CLI に `scope.ts` を新設し、公開 API `scopeIncludesEnvironment` から導出する**: `scopeContains(actor, target)` = target が `all` なら actor が `all`、target が `listed{X}` なら ∀x ∈ X: `scopeIncludesEnvironment(actor, x)`。差集合は具体的な環境 id 列で表す(K4-J) | crypto 不変。CRYPTO_SPEC §6.2 の集合代数と同値(`all ⊇ 任意`、`listed ⊇ all` は偽、`listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X)。テストで crypto の合意規則と同じ真理値表を固定 | 2 実装(CLI は通信前の案内、crypto は合意規則)。ズレは合意規則の 422 が最終判定として拾う |
+
+**探索**: 第 2 巡・第 3 巡: なし(空巡)。**原則**: 「通信前の判定は公開 API から導出し、内部実装をコピーしない(CLAUDE.md の ImportLint 規律)」。**採用: I-b**(K5 以降でベクター再生成と同時に crypto 側の公開を検討してよい — 申し送り)。
+
+### K4-J. 義務ごとの環境集合と `sweepRotations` の一般化(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| J-a **`RotationMandate` に `environmentIds`(その義務の環境集合を、義務 seq 時点のチェーン導出環境集合に対して具体化した id 列)を持たせ、`sweepRotations` は「環境 → 基準 seq」の写像で走る** | remove = 対象の現 scope(`memberStateAt(target, seq-1).scope`)、降格 = 新 scope、縮小 = 旧 \ 新、revoke = 全環境(不変)。`all` は seq 時点で存在した全環境に具体化(`unconvergedMandates` の `createdAtSeq > seq` 除外と同じ線)。`all \ listed{X}` = 存在した全環境 − X。1 対象に複数の義務(縮小の後の remove)があれば環境ごとに最大の基準 seq を採る | 既存の「基準 seq より前に現エポックが始まった環境 = pending」の判定は不変。全環境 = 具体化した列の特殊形 |
+| J-b 義務を「全環境 + フィルタ述語」で持つ | — | 未収束判定・案内文・sweep の 3 か所で述語を評価する形になり、具体化の方が単純。上位互換ではない |
+
+**探索**: 第 2 巡・第 3 巡: なし(空巡)。**原則**: 「義務の環境集合は義務エントリの seq 時点のチェーン状態だけで決まり(K3-E の窓と同じ入力)、履行はその集合の各環境について独立」。既存 3 種はこの原則の「集合 = 全環境」の場合。**UX**: `member remove` の報告は「rotation of every environment」から「rotation of the N environments in the target's scope」になる。**採用: J-a**。
+
+### K4-K. 「バックフィル未了を未収束警告に含める」(§7 末尾)— 据え置き(単巡 — 事実確認)
+
+DEK ラップの配布は本人宛のみ(AUTH_SPEC §12-6「配布は本人宛のみ」)なので、**他人宛のラップの欠落は CLI から観測できない**。観測できるのは (i) 本人が自分宛の欠落を見る(`pullVariables` の欠落エポック警告 — 既存。scope 内の環境について全エポックを持つはず、という前提は ES 後も不変)、(ii) actor が自分のバックフィル実行の失敗を見る(`member add` / `change-role` の報告 — 既存 + K4)の 2 つ。`project verify` は鍵なし・DEK を取得しないため、他人の未了を表示する材料を持たない。したがって「未収束警告に含める」は本人側(i)と actor 側(ii)で満たし、第三者視点の検出は**据え置き**(材料がサーバーにしかなく、サーバー申告を警告の入力にしない規律 — §12-7 — と整合)。K7 の docs で「バックフィル未了は本人の pull が検出する」と書く。
+
+### K4-L. 発行ピンに scope を持つか(単巡 — 既存構造への追随)
+
+発行ピン(`invites/<projectId>.json` の `issued[<id>]` — AUTH_SPEC §15-3 の SHOULD)は `linkPubHex` / role / 期限 / 宛先 login を持つ。真実源は発行署名(scope を覆う)なので必須ではないが、role と同じ地位の scope をピンにも写し、`member add` の突合(role と同じ「一致しなければ拒否」)に加える。旧ピン(scope 無し)は突合をスキップ(追加のみ・後方互換)。
+
+### K4-M. 実装録(裁定の反映先)
+
+- 新設 `apps/cli/src/scope.ts`: `scopeContains` / `describeScope` / `requireEnvironmentInScope` / `scopeFromFlags`(`--env` 反復 → 昇順・重複拒否 → `ScopePayloadFields`)/ `environmentSetOfScopeAt`(義務の環境集合の具体化)
+- `dek-wrap.ts`: `wrapRecipientsFor` の member 側を `scopeIncludesEnvironment` で絞る(R(E))。`requireWritingMember` に scope 判定(create は `all` のみ、rotate は環境 ∈ scope)
+- `deks.ts`: `environmentKeysFor` の受信側規則(K4-F)
+- `context.ts`: `openEnvironment` の scope 判定(`openMetadataEnvironment` は不問)
+- `invite.ts`: `--env` の scope、存在検査 + 包含検査(K4-G)、発行ピンの scope(K4-L)、`reportIssued` に scope
+- `member.ts`: add のバックフィルを対象 scope に限定、`change-role` の (role, scope) 全置換 + 拡大バックフィル + 縮小 / 降格 sweep、`member list`
+- `rotation-sweep.ts`: 第 4 種 `scope-narrowed`、`environmentIds`、環境別基準 seq、案内文
+- `checkpoint.ts`: `"all"` を自分の scope に絞る(scope 外は SHOULD 警告つきで除外 — §6.3 環境横断 (i))
+- `effect-cli.ts`: `invite create --env`、`member change-role --role? --env… --all-envs`、`member list [--json]`、`project verify` の scope 列、sync の 3 環境の判定、文言
+- `failure.ts`: `insufficient-scope` に再同期の案内
+- Web: `chain-view.ts`(scope の fold)/ `ProjectScreen.tsx`(Scope 列)
+- docs: `invite-a-teammate.mdx`(`--env`)、`SELF_HOSTING.md`(1 文)、ROADMAP の ES 行
+
+### K4-N. 申し送り(K5 / K6 / K7 へ)
+
+- **CLI が発行する scope 付きエントリの形**: `add_member` = 招待行の scope(`invite create --env` → 発行文 → D1 行 → 受諾 → `member add`)、`change_role` = `--role` / `--env` / `--all-envs` から組んだ新 (role, scope) の全置換(省略 = 据え置き)。生成は昇順・重複なし(SHOULD)
+- **sweep の第 4 種** `scope-narrowed`(target = user_id、seq = change_role、environmentIds = 旧 \ 新 の具体化)。K6 の承認者側 sweep(四眼経由の適用)は `rotationMandates` に「適用 seq の approve エントリ」を義務エントリとして足すだけでよい(環境集合の導出は同じ関数)
+- **通信前判定の置き場**(K4-C): `openEnvironment` / `requireWritingMember` / `environmentKeysFor` / `requireEnvironmentInScope`(checkpoint・sync の明示呼び出し)。K6 の `approval` コマンドは環境を持たないので不問
+- **Web の scope 表示の段**: K4 で確定(`chain-view.ts` の fold + Members 表の Scope 列)。K6 は pending の表示のみ
+- **VH との交差**(§6): `var history` / `rollback` は K4 時点で存在しない。実装時は `openEnvironment` を通せば scope 判定が自動で掛かる(値付き経路は `environmentKeysFor` でも止まる)
+- **正本の字面との差**(所有者へ報告): §6.3 受信側の「使用せず警告する」を K4-F のとおり「取得口で型付きエラー(使用しない)」で実装した。字面より厳しい側で、緩める場合は F-a に戻すだけ
+- **crypto の公開 API**: 包含述語は CLI に 2 実装目がある(K4-I)。次にベクターを再生成する段で `scopeContainsEnvironmentSet` / 集合演算の公開を検討し、CLI 側を差し替えてよい
+- **バックフィル未了の第三者検出**は据え置き(K4-K)。docs(K7)で本人側検出を説明する
