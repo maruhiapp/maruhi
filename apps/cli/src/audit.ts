@@ -27,13 +27,13 @@ import {
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
   chainMirrorEvents,
-  indexProposals,
   VAR_READ_EVENT,
 } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { proposalIndexOf } from "./chain-applied.ts";
 import type { CliServices, ProjectContextBase, SessionContext } from "./context.ts";
 import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import type { CliError } from "./errors.ts";
@@ -42,7 +42,6 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * ワイヤの監査イベント(api-schema の AuditEventSchema の受信形 — 型は Schema
@@ -115,19 +114,6 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 
 function describeValue(value: unknown): string {
   return displayText(value === undefined ? "(none)" : JSON.stringify(value));
-}
-
-/**
- * 検証済みチェーンの提案索引(AUDIT_SPEC §3.4 の approve / withdraw 行と完成
- * approve の適用行の入力)。導出はサーバーの書き手と同じ core の indexProposals
- * (設計録 es-design.md §11 K5-F)。
- */
-function proposalIndexOf(verified: VerifiedProject): ProposalIndex {
-  return indexProposals(
-    verified.entries,
-    (seq) => verified.history.entryHashAt(seq),
-    new Set(verified.state.pendingProposals.keys()),
-  );
 }
 
 /**

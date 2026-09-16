@@ -18,14 +18,15 @@
 
 import {
   ALL_SCOPE,
-  type ChainEntry,
   type ChainMember,
   type MemberScope,
   memberScopeOf,
+  type ProposableOperation,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { AppliedOperation } from "./chain-applied.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { displayText } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
@@ -125,45 +126,53 @@ export interface RotationMandate {
  * memberStateAt で判定)、scope の縮小 `change_role`(旧 \ 新 ≠ ∅)、`revoke_server`
  * (常に)。member.ts の対象スコープ判定と未収束警告(下記)が同じ 1 導出を共有する
  * (判定のズレを構造的に防ぐ)。降格と縮小が同時なら 2 つの義務(同 seq)になる。
+ *
+ * 入力は**適用済み操作列**(設計録 K6-C): 提案経由で適用された op は定足数に達した
+ * `approve` の seq で載る(裁定 P7 — 義務の起点 = 適用時点)。
  */
 export function rotationMandates(verified: VerifiedProject): readonly RotationMandate[] {
-  return verified.entries.flatMap((entry) => mandatesOfEntry(verified, entry));
+  return verified.applied.flatMap((applied) => mandatesOfApplied(verified, applied));
 }
 
-/** 1 エントリが生む義務(0〜2 個 — 降格と縮小が同時なら 2 個)。 */
-function mandatesOfEntry(verified: VerifiedProject, entry: ChainEntry): readonly RotationMandate[] {
-  if (entry.op === "remove_member") {
-    const before = verified.history.memberStateAt(entry.payload.targetUserId, entry.seq - 1);
+/** 1 適用済み操作が生む義務(0〜2 個 — 降格と縮小が同時なら 2 個)。 */
+function mandatesOfApplied(
+  verified: VerifiedProject,
+  applied: AppliedOperation,
+): readonly RotationMandate[] {
+  const { seq, operation } = applied;
+  if (operation.op === "remove_member") {
+    const before = verified.history.memberStateAt(operation.payload.targetUserId, seq - 1);
     // 直前の状態が導出できなければ fail-closed で全環境(黙って縮めない)
     const scope: MemberScope = before?.scope ?? ALL_SCOPE;
     return [
       {
         kind: "member-removed",
-        target: entry.payload.targetUserId,
-        seq: entry.seq,
-        environmentIds: environmentsOfScopeAt(verified, scope, entry.seq),
+        target: operation.payload.targetUserId,
+        seq,
+        environmentIds: environmentsOfScopeAt(verified, scope, seq),
       },
     ];
   }
-  if (entry.op === "revoke_server") {
+  if (operation.op === "revoke_server") {
     return [
       {
         kind: "server-revoked",
-        target: entry.payload.serverKeyFingerprintHex,
-        seq: entry.seq,
-        environmentIds: environmentsOfScopeAt(verified, ALL_SCOPE, entry.seq),
+        target: operation.payload.serverKeyFingerprintHex,
+        seq,
+        environmentIds: environmentsOfScopeAt(verified, ALL_SCOPE, seq),
       },
     ];
   }
-  return entry.op === "change_role" ? changeRoleMandates(verified, entry) : [];
+  return operation.op === "change_role" ? changeRoleMandates(verified, seq, operation) : [];
 }
 
 /** change_role の義務: 降格(新 scope の全環境)と縮小(旧 \ 新)— 同時なら 2 個。 */
 function changeRoleMandates(
   verified: VerifiedProject,
-  entry: ChainEntry & { readonly op: "change_role" },
+  seq: number,
+  entry: Extract<ProposableOperation, { readonly op: "change_role" }>,
 ): readonly RotationMandate[] {
-  const before = verified.history.memberStateAt(entry.payload.targetUserId, entry.seq - 1);
+  const before = verified.history.memberStateAt(entry.payload.targetUserId, seq - 1);
   // 直前の状態が導出できなければ fail-closed(remove の分岐と同じ規律 — pullfrog 指摘):
   // 「書き手だった・全環境を持っていた」側に倒して義務を落とさない
   const beforeScope: MemberScope = before?.scope ?? ALL_SCOPE;
@@ -174,16 +183,16 @@ function changeRoleMandates(
     mandates.push({
       kind: "role-demoted",
       target: entry.payload.targetUserId,
-      seq: entry.seq,
-      environmentIds: environmentsOfScopeAt(verified, after, entry.seq),
+      seq,
+      environmentIds: environmentsOfScopeAt(verified, after, seq),
     });
   }
-  const { narrowed } = scopeChangeAt(verified, beforeScope, after, entry.seq);
+  const { narrowed } = scopeChangeAt(verified, beforeScope, after, seq);
   if (narrowed.length > 0) {
     mandates.push({
       kind: "scope-narrowed",
       target: entry.payload.targetUserId,
-      seq: entry.seq,
+      seq,
       environmentIds: narrowed,
     });
   }

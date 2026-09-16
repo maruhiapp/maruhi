@@ -19,11 +19,19 @@
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import type { ChainEntry, LeasePolicyIssuer, ServerGrant, SigningKeyPair } from "@maruhi/crypto";
+import type {
+  ChainEntry,
+  LeasePolicyIssuer,
+  ProposableOperation,
+  ServerGrant,
+  SigningKeyPair,
+} from "@maruhi/crypto";
 import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { isApprovalTarget } from "./approval-rules.ts";
+import { ensureStillTarget, proposeOperation, type ProposedSummary } from "./approval.ts";
 import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -295,6 +303,44 @@ interface GrantState {
   readonly verified: VerifiedProject;
 }
 
+/** grant の結果: 提案(四眼 — K6)か適用。 */
+export type ServerGrantOutcome =
+  | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
+  | { readonly kind: "applied"; readonly summary: GrantSummary };
+
+/**
+ * grant 適用後のサーバー宛バックフィル(開示スコープ内の全環境 × 全エポック — AUTH_SPEC
+ * §12-6)。直接追記の grant と、四眼で適用を完成させた承認者の履行(approval-approve.ts —
+ * §12-6 の 5 番目の経路)が共有する。
+ */
+export function backfillServerGrant(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly grant: ServerGrant;
+  readonly recipient: DekRecipient;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+}): Effect.Effect<{ readonly registered: number; readonly alreadyRegistered: number }, CliError> {
+  return Effect.gen(function* () {
+    let registered = 0;
+    let alreadyRegistered = 0;
+    for (const environmentId of input.grant.scopeEnvironmentIds) {
+      const result = yield* backfillEnvironment({
+        client: input.client,
+        verified: input.verified,
+        environmentId,
+        recipient: input.recipient,
+        grant: input.grant,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+      });
+      registered += result.registered;
+      alreadyRegistered += result.alreadyRegistered;
+    }
+    return { registered, alreadyRegistered };
+  });
+}
+
 export function serverGrantOp(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -305,7 +351,8 @@ export function serverGrantOp(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<GrantSummary, CliError, CliIo> {
+  readonly proposal: { readonly expiresAtMs: number; readonly nowMs: number };
+}): Effect.Effect<ServerGrantOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // スコープの正規化: コードポイント昇順・重複なし(§6.2 の SHOULD)
@@ -329,6 +376,38 @@ export function serverGrantOp(input: {
       fingerprintHex: serverConfig.serverKeyFingerprintHex,
       expectFingerprintHex: input.expectFingerprintHex,
     });
+
+    const inner: ProposableOperation = {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex: serverConfig.serverEncPubHex,
+        serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
+        scopeEnvironmentIds: scope,
+        leasePolicy: input.leasePolicy,
+      },
+    };
+    // 四眼(K6-A): 方針が grant_server を対象にしていれば提案して終わる(サーバー宛
+    // バックフィルは適用を完成させた承認者が行う — 承認項目 22)。儀式は提案者が済ませた
+    if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+      const proposal = yield* proposeOperation({
+        client: input.client,
+        verified: input.verified,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+        inner,
+        expiresAtMs: input.proposal.expiresAtMs,
+        resync: input.resync,
+        recheck: (view) =>
+          ensureGrantable({
+            verified: view,
+            signerUserId: input.signerUserId,
+            scope,
+            serverConfig,
+          }).pipe(Effect.asVoid),
+        nowMs: input.proposal.nowMs,
+      });
+      return { kind: "proposed", proposal };
+    }
 
     let verified = input.verified;
     if (unchanged) {
@@ -359,6 +438,7 @@ export function serverGrantOp(input: {
               // 延長検査付き再同期(短縮・分岐チェーンへの再署名を塞ぐ —
               // env create / rotate の CAS リトライと同じ規律)
               const resynced = yield* resyncExtended(input.resync, state.verified);
+              yield* ensureStillTarget(resynced, inner, false);
               yield* ensureGrantable({
                 verified: resynced,
                 signerUserId: input.signerUserId,
@@ -393,29 +473,25 @@ export function serverGrantOp(input: {
     }
 
     // バックフィル(開示スコープ内の全環境 × 全エポック — AUTH_SPEC §12-6)
-    let registered = 0;
-    let alreadyRegistered = 0;
-    for (const environmentId of grant.scopeEnvironmentIds) {
-      const result = yield* backfillEnvironment({
-        client: input.client,
-        verified,
-        environmentId,
-        recipient: input.recipient,
-        grant,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      });
-      registered += result.registered;
-      alreadyRegistered += result.alreadyRegistered;
-    }
+    const { registered, alreadyRegistered } = yield* backfillServerGrant({
+      client: input.client,
+      verified,
+      grant,
+      recipient: input.recipient,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    });
 
     return {
-      appended: !unchanged,
-      serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
-      scopeEnvironmentIds: grant.scopeEnvironmentIds,
-      leasePolicyCount: grant.leasePolicy.length,
-      registered,
-      alreadyRegistered,
+      kind: "applied",
+      summary: {
+        appended: !unchanged,
+        serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
+        scopeEnvironmentIds: grant.scopeEnvironmentIds,
+        leasePolicyCount: grant.leasePolicy.length,
+        registered,
+        alreadyRegistered,
+      },
     };
   });
 }

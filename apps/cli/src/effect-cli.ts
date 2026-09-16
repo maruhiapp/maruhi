@@ -38,7 +38,14 @@ import {
   PASSKEY_LABEL_PATTERN,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import { ALL_SCOPE, type GuardianMode, type MetaVarType, type Role } from "@maruhi/crypto";
+import {
+  ALL_SCOPE,
+  APPROVAL_TARGET_OPS,
+  type ApprovalTargetOp,
+  type GuardianMode,
+  type MetaVarType,
+  type Role,
+} from "@maruhi/crypto";
 import {
   Cause,
   Console,
@@ -68,6 +75,27 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
+import { approveProposalOp, type Fulfilment } from "./approval-approve.ts";
+import {
+  DEFAULT_POLICY_OPS,
+  describeInnerOperation,
+  describeInnerOperationLines,
+  describePolicy,
+  describeUnresolvedRef,
+  isApprovalTargetOp,
+  parseProposalExpiry,
+  type ProposalView,
+  proposalViewOf,
+  proposalViews,
+  resolveProposalRef,
+  voteEligibility,
+} from "./approval-rules.ts";
+import {
+  type PolicyRequest,
+  type ProposedSummary,
+  setApprovalPolicyOp,
+  withdrawProposalOp,
+} from "./approval.ts";
 import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
   type AuditListFilters,
@@ -117,7 +145,14 @@ import {
   reconcileGossip,
   resolveProjectId,
 } from "./context.ts";
-import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
+import {
+  countNoun,
+  displayText,
+  formatPulledLine,
+  formatUtcMinutes,
+  logWarnings,
+  showValues,
+} from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
@@ -145,11 +180,12 @@ import {
   formatMemberListRow,
   type MemberAddSummary,
   memberAddOp,
-  type MemberChangeRoleSummary,
   memberChangeRoleOp,
   memberListJson,
   memberListRows,
   memberRemoveOp,
+  type ProposalInput,
+  type RoleChangeFulfilment,
 } from "./member.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, recoverWithPasskeyOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
@@ -728,8 +764,20 @@ const envDiffConfig = {
   ),
 };
 
+/**
+ * 四眼(CRYPTO_SPEC §6.2 — K6)の下で提案になりうるコマンドが取る期限フラグ。方針が
+ * 対象にしていない操作では読まれない(直接追記)。
+ */
+const proposalFlags = () => ({
+  expires: singleValued(
+    "expires",
+    "How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)",
+  ),
+});
+
 const serverGrantConfig = {
   ...projectFlags(),
+  ...proposalFlags(),
   environments: singleValued(
     "environments",
     "Comma-separated environment IDs to disclose (required; environments are always explicit)",
@@ -746,6 +794,7 @@ const serverGrantConfig = {
 
 const serverRevokeConfig = {
   ...projectFlags(),
+  ...proposalFlags(),
   fingerprint: singleValued(
     "fingerprint",
     "Server key fingerprint to revoke (may be omitted when exactly one grant is active)",
@@ -823,6 +872,7 @@ function isMemberRole(value: string | undefined): value is Role {
 
 const memberAddConfig = {
   ...projectFlags(),
+  ...proposalFlags(),
   github: singleValued(
     "github",
     "GitHub login of the acceptor (their acceptance key is checked against that account's signing keys; overrides the login recorded at `maruhi invite create --github`)",
@@ -851,11 +901,13 @@ const memberTargetArgument = () =>
 
 const memberRemoveConfig = {
   ...projectFlags(),
+  ...proposalFlags(),
   "user-id": memberTargetArgument(),
 };
 
 const memberChangeRoleConfig = {
   ...projectFlags(),
+  ...proposalFlags(),
   role: singleValued(
     "role",
     `New role (${MEMBER_ROLES.join(" | ")}; omitted = keep the current role)`,
@@ -877,6 +929,46 @@ const memberChangeRoleConfig = {
 const memberListConfig = {
   ...projectFlags(),
   json: singleFlag("json", "Print the members as JSON (user id, role, scope, key fingerprint)"),
+};
+
+/** 提案 id の位置引数(`maruhi approval show / approve / withdraw` — 承認項目 23)。 */
+const proposalIdArgument = () =>
+  Argument.string("proposal-id").pipe(
+    Argument.withDescription(
+      "Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)",
+    ),
+    Argument.withSchema(NonBlank),
+  );
+
+const approvalListConfig = {
+  ...projectFlags(),
+  json: singleFlag(
+    "json",
+    "Print the policy and the pending proposals as JSON (votes recounted under the current policy)",
+  ),
+};
+
+const approvalShowConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
+
+const approvalApproveConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
+
+const approvalWithdrawConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
+
+const projectPolicyApprovalsConfig = {
+  ...projectFlags(),
+  ...proposalFlags(),
+  required: singleValued(
+    "required",
+    "Enable (or change) the four-eyes policy: number of distinct owner approvals an operation needs (at least 2; the project must have at least that many owners)",
+  ),
+  ops: singleValued(
+    "ops",
+    `Comma-separated operations that need approval (${APPROVAL_TARGET_OPS.join(" | ")}; default ${DEFAULT_POLICY_OPS.join(",")} — add_member is left out because adding an owner always needs approval, and other invites are already protected by the acceptance ceremony)`,
+  ),
+  off: singleFlag(
+    "off",
+    "Turn the policy off (while a policy is active, this itself needs the approvals)",
+  ),
 };
 
 /** `maruhi schema`(表示 — bare 親が show を兼ねる。audit と同じ型)。 */
@@ -1090,6 +1182,12 @@ const GROUP_CONFIGS: Readonly<
     "change-role": memberChangeRoleConfig,
     list: memberListConfig,
   },
+  approval: {
+    list: approvalListConfig,
+    show: approvalShowConfig,
+    approve: approvalApproveConfig,
+    withdraw: approvalWithdrawConfig,
+  },
   key: {
     generate: keyGenerateConfig,
     show: keyShowConfig,
@@ -1116,6 +1214,7 @@ const GROUP_CONFIGS: Readonly<
     anchor: projectAnchorConfig,
     checkpoint: projectCheckpointConfig,
   },
+  "project policy": { approvals: projectPolicyApprovalsConfig },
   ci: { run: ciRunConfig, sync: ciSyncConfig },
   agent: { status: agentStatusConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
@@ -1868,13 +1967,64 @@ function parseEnvironmentsFlag(
 }
 
 /** `maruhi server grant --environments <ids> [--lease-policy <file>]`(§9 / §12-6)。 */
+/**
+ * 四眼(K6-K): `--expires <duration>` → 提案の期限と時計。方針が対象にしていない操作では
+ * 読まれないが、形式の不備は通信前に usage(2)で落とす。
+ */
+function proposalInputOf(expires: string | undefined): Effect.Effect<ProposalInput, CliError> {
+  const parsed = parseProposalExpiry(expires);
+  if (!parsed.ok) {
+    return Effect.fail(usageError(parsed.message));
+  }
+  const nowMs = Date.now();
+  return Effect.succeed({ nowMs, expiresAtMs: nowMs + parsed.lifetimeMs });
+}
+
+/** 提案の残り票数の文言(「needs N more owner approval(s)」— 裁定 P8)。 */
+function describeNeeded(view: ProposalView): string {
+  if (view.needed === null) {
+    return "the policy is off, so it cannot be approved (withdraw it)";
+  }
+  const more = view.needed + 1;
+  return `needs ${countNoun(more, "more owner approval")} (${view.votes} of ${view.required} recounted so far)`;
+}
+
+/**
+ * 提案した(または既に提案されていた)ことの報告(K6-A — 「追記した」と取り違えない形)。
+ * 何も適用されていないことと、次に誰が何をするかを言う。
+ */
+function reportProposed(
+  io: CliIoShape,
+  proposal: ProposedSummary,
+): Effect.Effect<number, never, CliIo> {
+  return Effect.gen(function* () {
+    const view = proposal.view;
+    const id = view.proposal.proposalHashHex;
+    if (proposal.kind === "proposed") {
+      yield* io.log(
+        `Proposed ${describeInnerOperation(view.proposal.inner)} (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — the four-eyes policy requires approval, so nothing has been applied yet`,
+      );
+    } else {
+      yield* io.log(
+        `The same operation is already proposed (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}, by ${displayText(view.proposal.proposerUserId)}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — nothing new was proposed and nothing has been applied`,
+      );
+    }
+    yield* io.log(`  proposal id: ${id}`);
+    yield* io.log(
+      `  ${describeNeeded(view)}. Another owner runs \`maruhi approval approve ${id.slice(0, 12)}\`; the approver whose approval completes it runs the follow-up rotation / key distribution (CRYPTO_SPEC §7). \`maruhi approval list\` shows the status`,
+    );
+    return 0;
+  });
+}
+
 function serverGrantCommand(
   flags: CommonFlags & {
     readonly environments?: string | undefined;
     readonly leasePolicyPath?: string | undefined;
     readonly expectFingerprint?: string | undefined;
+    readonly expires?: string | undefined;
   },
-): Effect.Effect<void, CliError, CliServices> {
+): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
@@ -1883,8 +2033,9 @@ function serverGrantCommand(
       "--expect-fingerprint",
       flags.expectFingerprint,
     );
+    const proposal = yield* proposalInputOf(flags.expires);
     const context = yield* openProject(flags);
-    const summary = yield* serverGrantOp({
+    const outcome = yield* serverGrantOp({
       client: context.client,
       verified: context.verified,
       environmentIds,
@@ -1894,7 +2045,12 @@ function serverGrantCommand(
       signingKeyPair: context.masterKeys.sigKeyPair,
       recipient: context.recipient,
       resync: context.resync,
+      proposal,
     });
+    if (outcome.kind === "proposed") {
+      return yield* reportProposed(io, outcome.proposal);
+    }
+    const summary = outcome.summary;
     const policyNote =
       summary.leasePolicyCount === 0
         ? "no lease path (lease_policy is empty)"
@@ -1906,20 +2062,25 @@ function serverGrantCommand(
     yield* logNote(
       "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
     );
+    return 0;
   });
 }
 
 /** `maruhi server revoke [--fingerprint <hex>]`(§7 / §9)。 */
 function serverRevokeCommand(
-  flags: CommonFlags & { readonly fingerprint?: string | undefined },
+  flags: CommonFlags & {
+    readonly fingerprint?: string | undefined;
+    readonly expires?: string | undefined;
+  },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
+    const proposal = yield* proposalInputOf(flags.expires);
     // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
     const context = yield* openProject(flags, { quietMandateWarning: true });
     // 1 環境のローテーション(envRotateOp の再利用 — sweepRotateFor)
-    const summary = yield* serverRevokeOp({
+    const outcome = yield* serverRevokeOp({
       client: context.client,
       verified: context.verified,
       fingerprintHex,
@@ -1927,7 +2088,12 @@ function serverRevokeCommand(
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
       rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
+      proposal,
     });
+    if (outcome.kind === "proposed") {
+      return yield* reportProposed(io, outcome.proposal);
+    }
+    const summary = outcome.summary;
     yield* reportRevokeAppend(io, summary);
     const exitCode = yield* reportSweepOutcome(summary, {
       rerunCommand: "`maruhi server revoke`",
@@ -2155,6 +2321,7 @@ function memberAddCommand(
     readonly invite?: string | undefined;
     readonly github?: string | undefined;
     readonly expectFingerprint?: string | undefined;
+    readonly expires?: string | undefined;
   },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
@@ -2164,11 +2331,12 @@ function memberAddCommand(
       flags.expectFingerprint,
     );
     const githubLogin = yield* parseGithubLoginFlag("--github", flags.github);
+    const proposal = yield* proposalInputOf(flags.expires);
     const identityBacking = yield* loadIdentityBacking;
     const context = yield* openProject(flags);
     const store = yield* PinStore;
     const loaded = yield* store.load(context.projectId);
-    const summary = yield* memberAddOp({
+    const outcome = yield* memberAddOp({
       client: context.client,
       verified: context.verified,
       inviteId: flags.invite ?? null,
@@ -2181,21 +2349,32 @@ function memberAddCommand(
       signingKeyPair: context.masterKeys.sigKeyPair,
       recipient: context.recipient,
       resync: context.resync,
+      proposal,
     });
-    return yield* reportMemberAdd(io, summary);
+    if (outcome.kind === "proposed") {
+      const code = yield* reportProposed(io, outcome.proposal);
+      yield* logNote(
+        "the invite stays accepted until the proposal is applied; the completing approver distributes the DEK wraps to the new member (AUTH_SPEC §12-6)",
+      );
+      return code;
+    }
+    return yield* reportMemberAdd(io, outcome.summary);
   });
 }
 
 /** member add の結果報告と終了コード(バックフィル失敗 = 部分完了)。 */
 function reportMemberAdd(
   io: CliIoShape,
-  summary: MemberAddSummary,
+  summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
+    readonly targetUserId: string;
+    readonly role: Role | null;
+  },
 ): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const repaired =
       summary.repaired > 0 ? `, ${countNoun(summary.repaired, "old-key wrap")} repaired` : "";
     yield* io.log(
-      `Added member ${displayText(summary.targetUserId)} (role=${summary.role}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered${repaired}`,
+      `Added member ${displayText(summary.targetUserId)}${summary.role === null ? "" : ` (role=${summary.role})`}. Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered${repaired}`,
     );
     if (summary.failed.length === 0) {
       yield* io.log(
@@ -2214,13 +2393,14 @@ function reportMemberAdd(
 
 /** `maruhi member remove <user-id>`(§7 — 全環境の強制ローテーションを伴う)。 */
 function memberRemoveCommand(
-  flags: CommonFlags & { readonly target: string },
+  flags: CommonFlags & { readonly target: string; readonly expires?: string | undefined },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    const proposal = yield* proposalInputOf(flags.expires);
     // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
     const context = yield* openProject(flags, { quietMandateWarning: true });
-    const summary = yield* memberRemoveOp({
+    const outcome = yield* memberRemoveOp({
       client: context.client,
       verified: context.verified,
       targetUserId: flags.target,
@@ -2228,7 +2408,12 @@ function memberRemoveCommand(
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
       rotateWith: (reason) => sweepRotateFor(context, reason),
+      proposal,
     });
+    if (outcome.kind === "proposed") {
+      return yield* reportProposed(io, outcome.proposal);
+    }
+    const summary = outcome.summary;
     if (summary.appended) {
       yield* io.log(
         `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
@@ -2270,17 +2455,19 @@ function memberChangeRoleCommand(
     readonly env: readonly string[];
     readonly allEnvs: boolean;
     readonly noEnvs: boolean;
+    readonly expires?: string | undefined;
   },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const request = yield* parseChangeRoleRequest(flags);
+    const proposal = yield* proposalInputOf(flags.expires);
     // 収束系コマンド: 未収束義務の常時警告は抑制(降格 / 縮小の sweep 報告が担う)
     const context = yield* openProject(
       { server: flags.server, project: flags.project },
       { quietMandateWarning: true },
     );
-    const summary = yield* memberChangeRoleOp({
+    const outcome = yield* memberChangeRoleOp({
       client: context.client,
       verified: context.verified,
       targetUserId: flags.target,
@@ -2290,13 +2477,33 @@ function memberChangeRoleCommand(
       recipient: context.recipient,
       resync: context.resync,
       rotateWith: (reason) => sweepRotateFor(context, reason),
+      proposal,
     });
+    if (outcome.kind === "proposed") {
+      return yield* reportProposed(io, outcome.proposal);
+    }
+    const summary = outcome.summary;
     yield* io.log(
       summary.appended
         ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
         : "The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)",
     );
-    const backfillCode = yield* reportScopeBackfill(io, summary);
+    return yield* reportRoleChangeFulfilment(
+      io,
+      summary,
+      "`maruhi member change-role` with the same flags",
+    );
+  });
+}
+
+/** change-role の適用後段の報告(直接追記と、承認者の履行〔approval approve〕が共有する)。 */
+function reportRoleChangeFulfilment(
+  io: CliIoShape,
+  summary: RoleChangeFulfilment,
+  rerunCommand: string,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const backfillCode = yield* reportScopeBackfill(io, summary, rerunCommand);
     if (summary.sweep === null) {
       yield* io.log(
         backfillCode === 0
@@ -2307,7 +2514,7 @@ function memberChangeRoleCommand(
     }
     yield* reportChangeRoleMandates(io, summary);
     const sweepCode = yield* reportSweepOutcome(summary.sweep, {
-      rerunCommand: "`maruhi member change-role` with the same flags",
+      rerunCommand,
       alreadyRotatedBasis: "the mandate entry",
     });
     const exitCode = backfillCode === 0 && sweepCode === 0 ? 0 : 1;
@@ -2351,7 +2558,8 @@ function parseChangeRoleRequest(flags: {
 /** change-role の拡大分バックフィルの報告(失敗 = 部分完了 → 1)。 */
 function reportScopeBackfill(
   io: CliIoShape,
-  summary: MemberChangeRoleSummary,
+  summary: RoleChangeFulfilment,
+  rerunCommand: string,
 ): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
     // scope 外に残る拡大分の注記は、自分の scope 内のバックフィルが無い場合にも出す
@@ -2369,7 +2577,7 @@ function reportScopeBackfill(
     );
     for (const failure of summary.backfill.failed) {
       yield* logWarning(
-        `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member change-role\` with the same flags to resume (409 converges as already-registered)`,
+        `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${rerunCommand} to resume (409 converges as already-registered)`,
       );
     }
     return summary.backfill.failed.length === 0 ? 0 : 1;
@@ -2379,7 +2587,7 @@ function reportScopeBackfill(
 /** change-role の義務(降格 / 縮小)の説明行(sweep 報告の前置き)。 */
 function reportChangeRoleMandates(
   io: CliIoShape,
-  summary: MemberChangeRoleSummary,
+  summary: RoleChangeFulfilment,
 ): Effect.Effect<void, never> {
   return Effect.gen(function* () {
     if (summary.demoted) {
@@ -2418,6 +2626,424 @@ function memberListCommand(
     for (const row of rows) {
       yield* io.log(`  ${formatMemberListRow(row)}`);
     }
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* 四眼(CRYPTO_SPEC §6.2 — PF1 K6): approval list / show / approve / withdraw、  */
+/* project policy approvals。値ゼロなので agent-gate は掛けない(設計録 K6-E)  */
+/* -------------------------------------------------------------------------- */
+
+/** 1 提案の要約行(`approval list`)。 */
+function formatProposalRow(view: ProposalView): string {
+  const p = view.proposal;
+  const votes = view.required === null ? "policy off" : `${view.votes}/${view.required} approvals`;
+  const flags = [
+    ...(view.expired ? ["EXPIRED"] : []),
+    ...(!view.target ? ["NOT-A-TARGET"] : []),
+    ...(view.target && !view.expired && view.needed === 0 ? ["READY"] : []),
+  ];
+  return `${p.proposalHashHex.slice(0, 12)}…\tseq=${p.proposalSeq}\tby ${displayText(p.proposerUserId)}\t${describeInnerOperation(p.inner)}\t${votes}\texpires ${formatUtcMinutes(p.expiresAtMs)}${flags.length === 0 ? "" : `\t[${flags.join(", ")}]`}`;
+}
+
+/** `--json` の 1 文書(機械可読 — K6-O。値ゼロ)。 */
+function approvalListJson(
+  policy: Parameters<typeof describePolicy>[0],
+  views: readonly ProposalView[],
+): string {
+  return JSON.stringify(
+    {
+      policy:
+        policy === null
+          ? null
+          : { requiredApprovals: policy.requiredApprovals, ops: [...policy.ops].toSorted() },
+      proposals: views.map((view) => ({
+        id: view.proposal.proposalHashHex,
+        seq: view.proposal.proposalSeq,
+        proposerUserId: view.proposal.proposerUserId,
+        proposerRoleAtProposal: view.proposal.proposerRoleAtProposal,
+        inner: view.proposal.inner,
+        expiresAtMs: view.proposal.expiresAtMs,
+        expired: view.expired,
+        target: view.target,
+        required: view.required,
+        votes: view.votes,
+        voters: view.voters,
+        needed: view.needed,
+        eligibleApprovers: view.eligibleApprovers,
+      })),
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * 既に足りている pending 提案の案内(K5-L / K6 — `required_approvals` 引き下げ後): 次の
+ * approve で完成する・完成させられるのは未投票の owner だけ。
+ */
+function readyNote(view: ProposalView): string | null {
+  if (!view.target || view.expired || view.needed !== 0) {
+    return null;
+  }
+  const eligible =
+    view.eligibleApprovers.length === 0
+      ? "no current owner is left who has not voted — the proposal cannot be completed as is (add an owner, or withdraw it)"
+      : `an owner who has not voted yet completes it: ${view.eligibleApprovers.map(displayText).join(", ")} (owners who already voted get duplicate-approval)`;
+  return `${view.proposal.proposalHashHex.slice(0, 12)}… already has enough recounted approvals under the current policy — the next approve applies it; ${eligible}`;
+}
+
+/** `maruhi approval list [--json]`(検証済みチェーンの pending — K5-M。票数は再集計)。 */
+function approvalListCommand(
+  flags: CommonFlags & { readonly json: boolean },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openMetadataProject(flags);
+    const views = proposalViews(context.verified, Date.now());
+    if (flags.json) {
+      yield* io.log(approvalListJson(context.verified.state.approvalPolicy, views));
+      return;
+    }
+    yield* io.log(`Four-eyes policy: ${describePolicy(context.verified.state.approvalPolicy)}`);
+    yield* io.log(
+      `Pending proposals (${views.length}) — verified chain head seq=${context.verified.state.headSeq}:`,
+    );
+    for (const view of views) {
+      yield* io.log(`  ${formatProposalRow(view)}`);
+    }
+    for (const view of views) {
+      const note = readyNote(view);
+      if (note !== null) {
+        yield* logNote(note);
+      }
+    }
+  });
+}
+
+/** `maruhi approval show <id>`(提案者・内側 op・期限・投票者・自分が approve できるか)。 */
+function approvalShowCommand(
+  flags: CommonFlags & { readonly ref: string },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openMetadataProject(flags);
+    const resolution = resolveProposalRef(context.verified, flags.ref);
+    if (resolution.kind !== "pending") {
+      return yield* Effect.fail(cliError(describeUnresolvedRef(resolution)));
+    }
+    const view = proposalViewOf(context.verified, resolution.proposal, Date.now());
+    const p = view.proposal;
+    yield* io.log(`Proposal ${p.proposalHashHex}`);
+    yield* io.log(`  proposed at seq: ${p.proposalSeq}`);
+    yield* io.log(
+      `  proposer:        ${displayText(p.proposerUserId)} (as ${p.proposerRoleAtProposal}${p.proposerRoleAtProposal === "owner" ? " — counts as one approval" : " — does not count as an approval"})`,
+    );
+    yield* io.log(`  operation:       ${p.inner.op}`);
+    for (const line of describeInnerOperationLines(p.inner)) {
+      yield* io.log(`    ${line}`);
+    }
+    yield* io.log(
+      `  expires:         ${formatUtcMinutes(p.expiresAtMs)}${view.expired ? " (EXPIRED by this machine's clock)" : ""}`,
+    );
+    yield* io.log(
+      `  approvals:       ${view.required === null ? "policy off" : `${view.votes} of ${view.required} required`} (recounted — signers: ${view.voters.length === 0 ? "none" : view.voters.map(displayText).join(", ")})`,
+    );
+    const recorded = p.approvals.filter((vote) => !view.voters.includes(vote.userId));
+    if (recorded.length > 0) {
+      yield* io.log(
+        `  lapsed votes:    ${recorded.map((vote) => displayText(vote.userId)).join(", ")} (no longer an owner with the same key — not counted; they may approve again after being re-added with a new key)`,
+      );
+    }
+    if (!view.target) {
+      yield* io.log(
+        "  status:          not a target of the current policy (approval-not-required) — withdraw it; the operation can be run directly",
+      );
+    }
+    const eligibility = voteEligibility(context.verified, context.session.userId, view);
+    if (eligibility.ok) {
+      yield* io.log(
+        eligibility.completes
+          ? `  you:             can approve — your approval completes it and applies the operation (you become the fulfiller of its rotation / key distribution — CRYPTO_SPEC §7): \`maruhi approval approve ${p.proposalHashHex.slice(0, 12)}\``
+          : `  you:             can approve — after yours it still ${describeNeeded({ ...view, votes: view.votes + 1, needed: view.needed === null ? null : Math.max(0, view.needed - 1) })}: \`maruhi approval approve ${p.proposalHashHex.slice(0, 12)}\``,
+      );
+    } else {
+      yield* io.log(`  you:             cannot approve — ${eligibility.message}`);
+    }
+    const note = readyNote(view);
+    if (note !== null) {
+      yield* logNote(note);
+    }
+  });
+}
+
+/** 承認者の履行(承認項目 22)の報告と終了コード。 */
+function reportFulfilment(
+  io: CliIoShape,
+  fulfilment: Fulfilment,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    switch (fulfilment.kind) {
+      case "none":
+        yield* io.log("Done: the policy change was applied (no follow-up obligation)");
+        return 0;
+      case "member-rotation": {
+        if (fulfilment.sweep === null) {
+          yield* io.log("Done: applied (no rotation mandate for the target)");
+          return 0;
+        }
+        yield* io.log(
+          `Forcing a rotation of every environment in the removed member's scope (CRYPTO_SPEC §7 — you completed the removal, so you fulfil its mandate)`,
+        );
+        const code = yield* reportSweepOutcome(fulfilment.sweep, {
+          rerunCommand: `\`maruhi member remove ${displayText(fulfilment.targetUserId)}\``,
+          alreadyRotatedBasis: "the mandate entry",
+        });
+        if (code === 0) {
+          yield* io.log(
+            "Done: the removal and the rotation of the affected environments completed",
+          );
+        }
+        return code;
+      }
+      case "member-backfill":
+        return yield* reportMemberAdd(io, {
+          targetUserId: fulfilment.targetUserId,
+          role: null,
+          ...fulfilment.backfill,
+        });
+      case "role-change":
+        return yield* reportRoleChangeFulfilment(
+          io,
+          fulfilment.change,
+          `\`maruhi member change-role ${displayText(fulfilment.targetUserId)}\` with the member's current role and scope`,
+        );
+      case "server-backfill":
+        yield* io.log(
+          `Done: disclosure to server key ${fulfilment.serverKeyFingerprintHex} is active (scope=${fulfilment.scopeEnvironmentIds.join(", ")}). Backfill: ${fulfilment.registered} newly registered, ${fulfilment.alreadyRegistered} already registered`,
+        );
+        yield* logNote(
+          "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
+        );
+        return 0;
+      case "server-rotation": {
+        yield* io.log(
+          `Revoked server key ${fulfilment.serverKeyFingerprintHex}. Forcing a rotation of every environment (§7 — you completed the revocation, so you fulfil its mandate)`,
+        );
+        const code = yield* reportSweepOutcome(fulfilment.sweep, {
+          rerunCommand: "`maruhi server revoke`",
+          alreadyRotatedBasis: "the revocation",
+        });
+        if (code === 0) {
+          yield* io.log("Done: the revocation and the rotation of every environment completed");
+        }
+        return code;
+      }
+    }
+  });
+}
+
+/** `maruhi approval approve <id>`(署名 → 完成なら履行 — K6-B / 承認項目 22)。 */
+function approvalApproveCommand(
+  flags: CommonFlags & { readonly ref: string },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 完成時の sweep 報告が未収束義務を担うので常時警告は抑制(収束系コマンドと同じ)
+    const context = yield* openProject(flags, { quietMandateWarning: true });
+    const outcome = yield* approveProposalOp({
+      client: context.client,
+      verified: context.verified,
+      ref: flags.ref,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      recipient: context.recipient,
+      resync: context.resync,
+      rotateWith: (reason) => sweepRotateFor(context, reason),
+      nowMs: Date.now(),
+    });
+    switch (outcome.kind) {
+      case "recorded":
+        yield* io.log(
+          `Recorded your approval of ${describeInnerOperation(outcome.view.proposal.inner)} (proposal ${outcome.view.proposal.proposalHashHex.slice(0, 12)}…). It still ${describeNeeded(outcome.view)} — nothing has been applied yet`,
+        );
+        return 0;
+      case "completed-by-other":
+        yield* io.log(
+          `This proposal was already completed by another owner's approval at seq=${outcome.completedAtSeq} — your approval was not needed. That owner's CLI fulfils the follow-up rotation / key distribution (CRYPTO_SPEC §7); any unconverged mandate stays visible in \`maruhi project verify\``,
+        );
+        return 0;
+      case "withdrawn-concurrently":
+        return yield* Effect.fail(
+          cliError("The proposal was withdrawn concurrently — nothing to approve"),
+        );
+      case "applied":
+        return yield* reportFulfilment(io, outcome.fulfilment);
+    }
+  });
+}
+
+/** `maruhi approval withdraw <id>`(提案者または owner — K6-L)。 */
+function approvalWithdrawCommand(
+  flags: CommonFlags & { readonly ref: string },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openProject(flags);
+    const summary = yield* withdrawProposalOp({
+      client: context.client,
+      verified: context.verified,
+      ref: flags.ref,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+    });
+    if (summary.closedByOtherOwner) {
+      yield* logNote(
+        `withdrawing a proposal made by ${displayText(summary.proposerUserId)} (owners may close any proposal)`,
+      );
+    }
+    yield* io.log(
+      `Withdrew proposal ${summary.proposalHashHex.slice(0, 12)}… (seq=${summary.proposalSeq}) — nothing was applied`,
+    );
+  });
+}
+
+/** `--ops a,b` の解析(閉集合 — typo は usage エラー。昇順・重複なし)。 */
+function parsePolicyOps(
+  text: string | undefined,
+): Effect.Effect<readonly ApprovalTargetOp[], CliError> {
+  if (text === undefined) {
+    return Effect.succeed(DEFAULT_POLICY_OPS);
+  }
+  const ops: ApprovalTargetOp[] = [];
+  for (const raw of text.split(",")) {
+    const op = raw.trim();
+    if (!isApprovalTargetOp(op)) {
+      return Effect.fail(
+        usageError(
+          `--ops must list operations from ${APPROVAL_TARGET_OPS.join(" | ")} (comma-separated)`,
+        ),
+      );
+    }
+    if (!ops.includes(op)) {
+      ops.push(op);
+    }
+  }
+  return Effect.succeed(ops.toSorted());
+}
+
+/** `--required N` / `--off` → 方針要求(どちらも無ければ null = 表示のみ)。 */
+function parsePolicyRequest(flags: {
+  readonly required?: string | undefined;
+  readonly ops?: string | undefined;
+  readonly off: boolean;
+}): Effect.Effect<PolicyRequest | null, CliError> {
+  return Effect.gen(function* () {
+    if (flags.off) {
+      if (flags.required !== undefined || flags.ops !== undefined) {
+        return yield* Effect.fail(usageError("--off cannot be combined with --required / --ops"));
+      }
+      return { kind: "off" } as const;
+    }
+    if (flags.required === undefined) {
+      if (flags.ops !== undefined) {
+        return yield* Effect.fail(usageError("--ops requires --required <n>"));
+      }
+      return null;
+    }
+    const required = Number(flags.required);
+    if (!Number.isInteger(required) || required < 2 || required > 64) {
+      return yield* Effect.fail(
+        usageError("--required must be an integer of at least 2 (CRYPTO_SPEC §6.2)"),
+      );
+    }
+    const ops = yield* parsePolicyOps(flags.ops);
+    return { kind: "on", requiredApprovals: required, ops } as const;
+  });
+}
+
+/**
+ * `maruhi project policy approvals [--required N [--ops …]] [--off]`(承認項目 17 / K6-H):
+ * フラグなし = 現方針の表示(鍵なし)。有効化 / 変更 / オフは owner の署名。方針が有効な
+ * 間は set_approval_policy 自身が四眼の対象なので提案になる(CRYPTO_SPEC §6.2)。
+ */
+function projectPolicyApprovalsCommand(
+  flags: CommonFlags & {
+    readonly required?: string | undefined;
+    readonly ops?: string | undefined;
+    readonly off: boolean;
+    readonly expires?: string | undefined;
+  },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const request = yield* parsePolicyRequest(flags);
+    const proposal = yield* proposalInputOf(flags.expires);
+    if (request === null) {
+      const context = yield* openMetadataProject(flags);
+      yield* io.log(`Four-eyes policy: ${describePolicy(context.verified.state.approvalPolicy)}`);
+      const owners = [...context.verified.state.members.values()].filter((m) => m.role === "owner");
+      yield* io.log(
+        `Owners (${owners.length}): ${owners.map((m) => displayText(m.userId)).join(", ")}`,
+      );
+      return 0;
+    }
+    const context = yield* openProject(flags);
+    const outcome = yield* setApprovalPolicyOp({
+      client: context.client,
+      verified: context.verified,
+      request,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      expiresAtMs: proposal.expiresAtMs,
+      nowMs: proposal.nowMs,
+    });
+    if (outcome.kind === "unchanged") {
+      yield* io.log(
+        request.kind === "off"
+          ? "The four-eyes policy is already off — nothing to do"
+          : "The four-eyes policy already has these settings — nothing to do",
+      );
+      return 0;
+    }
+    if (outcome.kind === "proposed") {
+      const code = yield* reportProposed(io, outcome.proposal);
+      yield* warnPolicyAvailability(context.verified, request);
+      return code;
+    }
+    yield* io.log(
+      request.kind === "off"
+        ? `Appended set_approval_policy to the chain (seq=${outcome.headSeq}): the four-eyes policy is now off`
+        : `Appended set_approval_policy to the chain (seq=${outcome.headSeq}): ${describePolicy({ requiredApprovals: request.requiredApprovals, ops: request.ops })}`,
+    );
+    yield* warnPolicyAvailability(context.verified, request);
+    return 0;
+  });
+}
+
+/**
+ * 有効化の運用前提の案内(承認項目 17 の所有者選択 (i) — 案内に留め、プロンプトにしない):
+ * owner ≥ required + 1 と、全 owner のリカバリー登録。
+ */
+function warnPolicyAvailability(
+  verified: Parameters<typeof proposalViews>[0],
+  request: PolicyRequest,
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    if (request.kind === "off") {
+      return;
+    }
+    const owners = [...verified.state.members.values()].filter((m) => m.role === "owner").length;
+    if (owners <= request.requiredApprovals) {
+      yield* logWarning(
+        `the project has ${countNoun(owners, "owner")} and the policy requires ${request.requiredApprovals} approvals: if one owner becomes unavailable (lost key, left the team), owner additions, removals and policy changes can no longer reach the quorum and the admin plane locks up (data access keeps working). Keep at least ${request.requiredApprovals + 1} owners`,
+      );
+    }
+    yield* logNote(
+      "make sure every owner has a recovery registered (`maruhi key recovery` or a guardian group) — under the four-eyes policy a lost owner key cannot be replaced without the quorum",
+    );
   });
 }
 
@@ -3055,6 +3681,30 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const projectPolicyApprovals = Command.make("approvals", projectPolicyApprovalsConfig, (values) =>
+    Effect.gen(function* () {
+      onExitCode(
+        yield* projectPolicyApprovalsCommand({
+          server: values.server,
+          project: values.project,
+          required: values.required,
+          ops: values.ops,
+          off: values.off,
+          expires: values.expires,
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Show or set the four-eyes approval policy (owner approvals required for sensitive operations); no flags = show",
+    ),
+  );
+
+  const projectPolicy = Command.make("policy").pipe(
+    Command.withDescription("Project policies (approvals)"),
+    Command.withSubcommands([projectPolicyApprovals]),
+  );
+
   const projectCheckpoint = Command.make("checkpoint", projectCheckpointConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
@@ -3100,13 +3750,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   const project = Command.make("project").pipe(
-    Command.withDescription("Manage projects (init / list / verify / anchor / checkpoint)"),
+    Command.withDescription(
+      "Manage projects (init / list / verify / anchor / checkpoint / policy)",
+    ),
     Command.withSubcommands([
       projectInit,
       projectList,
       projectVerifyCommand,
       projectAnchor,
       projectCheckpoint,
+      projectPolicy,
     ]),
   );
 
@@ -3458,12 +4111,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   const serverGrant = Command.make("grant", serverGrantConfig, (values) =>
-    serverGrantCommand({
-      server: values.server,
-      project: values.project,
-      environments: values.environments,
-      leasePolicyPath: values["lease-policy"],
-      expectFingerprint: values["expect-fingerprint"],
+    Effect.gen(function* () {
+      onExitCode(
+        yield* serverGrantCommand({
+          server: values.server,
+          project: values.project,
+          environments: values.environments,
+          leasePolicyPath: values["lease-policy"],
+          expectFingerprint: values["expect-fingerprint"],
+          expires: values.expires,
+        }),
+      );
     }),
   ).pipe(
     Command.withDescription(
@@ -3478,6 +4136,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           server: values.server,
           project: values.project,
           fingerprint: values.fingerprint,
+          expires: values.expires,
         }),
       );
     }),
@@ -3543,6 +4202,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           invite: values["invite-id"],
           github: values.github,
           expectFingerprint: values["expect-fingerprint"],
+          expires: values.expires,
         }),
       );
     }),
@@ -3559,6 +4219,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           server: values.server,
           project: values.project,
           target: values["user-id"],
+          expires: values.expires,
         }),
       );
     }),
@@ -3575,6 +4236,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           env: values.env,
           allEnvs: values["all-envs"],
           noEnvs: values["no-envs"],
+          expires: values.expires,
         }),
       );
     }),
@@ -3593,6 +4255,55 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const member = Command.make("member").pipe(
     Command.withDescription("Manage members (add / remove / change-role / list)"),
     Command.withSubcommands([memberAdd, memberRemove, memberChangeRole, memberList]),
+  );
+
+  const approvalList = Command.make("list", approvalListConfig, (values) =>
+    approvalListCommand({ server: values.server, project: values.project, json: values.json }),
+  ).pipe(
+    Command.withDescription(
+      "List the pending four-eyes proposals (votes recounted under the current policy)",
+    ),
+  );
+
+  const approvalShow = Command.make("show", approvalShowConfig, (values) =>
+    approvalShowCommand({
+      server: values.server,
+      project: values.project,
+      ref: values["proposal-id"],
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Show a pending proposal (proposer, operation, expiry, voters, whether you can approve it)",
+    ),
+  );
+
+  const approvalApprove = Command.make("approve", approvalApproveConfig, (values) =>
+    Effect.gen(function* () {
+      onExitCode(
+        yield* approvalApproveCommand({
+          server: values.server,
+          project: values.project,
+          ref: values["proposal-id"],
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Approve a pending proposal as an owner; the approval that reaches the quorum applies it and runs the follow-up rotation / key distribution",
+    ),
+  );
+
+  const approvalWithdraw = Command.make("withdraw", approvalWithdrawConfig, (values) =>
+    approvalWithdrawCommand({
+      server: values.server,
+      project: values.project,
+      ref: values["proposal-id"],
+    }),
+  ).pipe(Command.withDescription("Withdraw a pending proposal (as its proposer or an owner)"));
+
+  const approval = Command.make("approval").pipe(
+    Command.withDescription("Four-eyes proposals (list / show / approve / withdraw)"),
+    Command.withSubcommands([approvalList, approvalShow, approvalApprove, approvalWithdraw]),
   );
 
   const syncPlan = Command.make("plan", syncPlanConfig, (values) =>
@@ -3695,6 +4406,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       server,
       invite,
       member,
+      approval,
       key,
       guardian,
       project,
