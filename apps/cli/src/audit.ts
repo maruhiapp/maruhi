@@ -220,6 +220,16 @@ function mirrorTrustOf(
       mismatches: [`chain_seq: the verified chain has no entry at seq=${observed.chainSeq}`],
     };
   }
+  if (
+    (entry.op === "approve" || entry.op === "withdraw") &&
+    !index.has(entry.payload.proposalHashHex)
+  ) {
+    return {
+      label:
+        "mirror=unverified (the referenced proposal is not on the verified chain — re-run after a full sync)",
+      mismatches: [],
+    };
+  }
   const mismatches = mirrorMismatches(expectedRowFor(entry, observed, index), observed);
   return mismatches.length === 0
     ? { label: "mirror=OK", mismatches }
@@ -933,6 +943,17 @@ function entryMirrorProblems(
   matched: readonly WireAuditEvent[],
   index: ProposalIndex,
 ): readonly string[] {
+  // 検証済みチェーンでは参照先の propose が必ず索引にある(unknown-proposal は無効
+  // エントリ)。欠けていれば索引の構築側の矛盾であり、期待行を組めないので defect で
+  // 落とさず検証失敗として chain_seq 付きで報告する(pullfrog 第 1 巡)
+  if (
+    (entry.op === "approve" || entry.op === "withdraw") &&
+    !index.has(entry.payload.proposalHashHex)
+  ) {
+    return [
+      `chain_seq=${entry.seq} (op=${entry.op}): the referenced proposal is not on the verified chain, so the expected mirror rows cannot be reconstructed — re-run \`maruhi audit verify\` after a full sync; if this persists it is a verifier inconsistency, not evidence about the audit log`,
+    ];
+  }
   const expectedRows = chainMirrorEvents(entry, 0, index);
   const expectedEvents = new Set(expectedRows.map((row) => row.event));
   const problems = expectedRows.flatMap((expected) =>

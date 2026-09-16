@@ -174,6 +174,9 @@ export function indexProposals(
   const withdrawn = new Set<string>();
   for (const entry of entries) {
     if (entry.op === "propose") {
+      // entryHashAt は検証済みチェーンの全 seq で定義される(索引は同じチェーンから
+      // 構築される)。undefined は呼び出し側の不整合で、その提案は索引に載らず、参照
+      // する approve / withdraw の写像は referencedProposal で契約違反として現れる
       const hash = entryHashAt(entry.seq);
       if (hash !== undefined) {
         proposals.set(hash, { entry, lastApproveSeq: null });

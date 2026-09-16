@@ -212,12 +212,33 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
     expect(fixture.head).toEqual(head);
     const rows = await readAuditEvents(projectId);
     expect(rows.filter((row) => row["event"] === "chain.proposed")).toHaveLength(0);
-    // 上界ちょうど(等号)は受理する
+    // 上界の内側は受理する(等号ちょうどは proposal-policy.test.ts で固定)
     const { response: atBound } = await appendRaw(
       OWNER,
       proposeOp(removeMemberOp(MEMBER), Date.now() + MAX_PROPOSAL_LIFETIME_MS - DAY_MS),
     );
     expect(atBound.status).toBe(200);
+  });
+
+  it("leaves no trace of a rejected propose: the next append succeeds and the pending set is unchanged", async () => {
+    await enableFourEyes(["remove_member"]);
+    const live = await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
+    const head = { ...fixture.head };
+    const { response: rejected } = await appendRaw(
+      OWNER,
+      proposeOp(removeMemberOp(MEMBER), Date.now() + MAX_PROPOSAL_LIFETIME_MS + DAY_MS),
+    );
+    expect(rejected.status).toBe(422);
+    expect(fixture.head).toEqual(head);
+    // 拒否は CAS / verifyChain の前で、導出状態にも保存状態にも痕跡を残さない: 同じ
+    // 親ヘッドでの次の追記が通り、pending は元の 1 件のまま(approve が完成する)
+    const { response: approved } = await appendRaw(OWNER2, approveOp(live));
+    expect(approved.status).toBe(200);
+    const chain = (await (await requestJson("GET", "/chain", token(OWNER))).json()) as {
+      entries: readonly { readonly op: string }[];
+    };
+    expect(chain.entries.filter((entry) => entry.op === "propose")).toHaveLength(1);
+    expect(await projectionRowsFor(MEMBER)).toBe(0);
   });
 
   it("caps live pending proposals at 32 (expired ones do not count; withdraw frees a slot)", async () => {
