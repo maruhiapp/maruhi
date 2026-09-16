@@ -6,6 +6,16 @@
 // 一切行わない。結果はすべて「サーバー申告(as reported by the server)」で
 // あり、UI もそう表示する。検証済みのメンバー集合が要る場面は
 // `maruhi project verify`(CLI)の領分。
+//
+// 四眼(CRYPTO_SPEC §6.2 — PF1。設計録 es-design.md §12 K6-J): 方針と pending 提案も
+// 同じ機械的な畳み込みで導く。approve / withdraw は提案を entry_hash で指すが、応答は
+// エントリごとの hash を運ばないので、**次のエントリの prevHashHex**(末尾は headHashHex)
+// から引く(hash を計算しない — 暗号を持ち込まない)。票数は記録をそのまま出さず、各
+// approve の時点で「現 owner かつ鍵 FP が一致する投票者」を再集計する(K2 の実装メモ)。
+// 鍵 FP は genesis の actor と、そのメンバーが署名した各エントリの actor から追跡し、
+// add_member で前在籍と同じ鍵なら引き継ぐ(異なれば署名するまで「未知」= 数えない —
+// 鍵が異なれば FP も異なるので合意規則も数えない)。定足数に達した approve は内側 op を
+// 畳み込む(適用された remove を Members から消すために必要)。
 import type { ChainEntry } from "./types.ts";
 
 /** One member row derived from the reported entries (server-reported, unverified). */
@@ -26,17 +36,66 @@ export interface ReportedServer {
   sinceSeq: number;
 }
 
+/** The four-eyes policy as reported (null = off). */
+export interface ReportedPolicy {
+  requiredApprovals: number;
+  ops: ReadonlyArray<string>;
+}
+
+/** One pending proposal as reported (votes recounted under the policy current at the head). */
+export interface ReportedProposal {
+  proposalHashHex: string;
+  proposalSeq: number;
+  proposerUserId: string;
+  /** `owner` puts the proposal signature into the signer set (one vote — §6.2). */
+  proposerRoleAtProposal: string;
+  innerOp: string;
+  /** One-line summary of the inner operation (ids are shown raw — the UI neutralizes on render). */
+  innerSummary: string;
+  expiresAtMs: number;
+  /** Distinct current owners whose signature counts (recounted — never the raw record). */
+  votes: number;
+  voterUserIds: ReadonlyArray<string>;
+}
+
 export interface ReportedChainView {
   members: ReportedMember[];
   servers: ReportedServer[];
+  policy: ReportedPolicy | null;
+  proposals: ReportedProposal[];
+}
+
+/** 投票の記録(user_id と署名時の鍵 FP — 原則 2 の S の要素)。 */
+interface Vote {
+  userId: string;
+  keyFingerprintHex: string;
+}
+
+type EntryOf<Op extends ChainEntry["op"]> = Extract<ChainEntry, { op: Op }>;
+
+/** 提案の内側 op(ワイヤ形 — approve の適用で畳み込む)。 */
+type ProposableEntry = EntryOf<"propose">["payload"]["inner"];
+
+interface PendingFold {
+  seq: number;
+  proposerUserId: string;
+  proposerKeyFingerprintHex: string;
+  proposerRoleAtProposal: string;
+  inner: ProposableEntry;
+  expiresAtMs: number;
+  approvals: Vote[];
 }
 
 interface FoldState {
   members: Map<string, ReportedMember>;
   servers: Map<string, ReportedServer>;
+  policy: ReportedPolicy | null;
+  pending: Map<string, PendingFold>;
+  /** メンバーの現在の鍵 FP(未知 = null — 署名するまで票を数えない)。 */
+  fingerprints: Map<string, string | null>;
+  /** メンバーの現在の鍵(add_member の payload — 再追加で同じ鍵なら FP を引き継ぐ)。 */
+  keys: Map<string, { encPubHex: string; sigPubHex: string }>;
 }
-
-type EntryOf<Op extends ChainEntry["op"]> = Extract<ChainEntry, { op: Op }>;
 
 function setMember(
   state: FoldState,
@@ -57,49 +116,251 @@ function setMember(
 /** genesis の作成者は構造的に scope = all(CRYPTO_SPEC §6.2)。 */
 const ALL_SCOPE = { scopeKind: "all", scopeEnvironmentIds: [] } as const;
 
-function applyChangeRole(state: FoldState, entry: EntryOf<"change_role">): void {
-  const existing = state.members.get(entry.payload.targetUserId);
+function applyChangeRole(
+  state: FoldState,
+  seq: number,
+  payload: EntryOf<"change_role">["payload"],
+): void {
+  const existing = state.members.get(payload.targetUserId);
   if (existing !== undefined) {
     // 新 (role, scope) の全置換(§6.2 — 2026-09-15 ES K4 で scope も写す)
-    setMember(state, existing.userId, entry.payload.newRole, entry.payload, entry.seq);
+    setMember(state, existing.userId, payload.newRole, payload, seq);
   }
 }
 
-function applyGrantServer(state: FoldState, entry: EntryOf<"grant_server">): void {
-  state.servers.set(entry.payload.serverKeyFingerprintHex, {
-    keyFingerprintHex: entry.payload.serverKeyFingerprintHex,
-    scopeEnvironmentIds: entry.payload.scopeEnvironmentIds,
-    sinceSeq: entry.seq,
+function applyGrantServer(
+  state: FoldState,
+  seq: number,
+  payload: EntryOf<"grant_server">["payload"],
+): void {
+  state.servers.set(payload.serverKeyFingerprintHex, {
+    keyFingerprintHex: payload.serverKeyFingerprintHex,
+    scopeEnvironmentIds: payload.scopeEnvironmentIds,
+    sinceSeq: seq,
   });
 }
 
-// op ごとの畳み込み(表示変換のみ)。create_environment / rotate_epoch /
-// checkpoint はメンバー・サーバー集合に影響しないため写像に載せない。
-// 四眼の 4 op(set_approval_policy / propose / approve / withdraw — 2026-09-14 PF1)も
-// 載せない: 提案経由で適用された内側 op の表示は方針・pending の畳み込みを要し、
-// Web 面は K6(設計録 es-design.md §4)で扱う。scope(add_member / change_role の
-// 末尾 2 フィールド)は K4(2026-09-15 ES — 設計録 K4-D)で写す
-const ENTRY_FOLDERS: { [Op in ChainEntry["op"]]?: (state: FoldState, entry: EntryOf<Op>) => void } =
-  {
-    genesis: (state, entry) => setMember(state, entry.actor.userId, "owner", ALL_SCOPE, entry.seq),
-    add_member: (state, entry) =>
-      setMember(state, entry.payload.targetUserId, entry.payload.role, entry.payload, entry.seq),
-    remove_member: (state, entry) => state.members.delete(entry.payload.targetUserId),
-    change_role: applyChangeRole,
-    grant_server: applyGrantServer,
-    revoke_server: (state, entry) => state.servers.delete(entry.payload.serverKeyFingerprintHex),
-  };
+/** add_member: メンバー集合へ + 鍵 FP の追跡(前在籍と同じ鍵なら FP を引き継ぐ)。 */
+function applyAddMember(
+  state: FoldState,
+  seq: number,
+  payload: EntryOf<"add_member">["payload"],
+): void {
+  setMember(state, payload.targetUserId, payload.role, payload, seq);
+  const previous = state.keys.get(payload.targetUserId);
+  const sameKey =
+    previous !== undefined &&
+    previous.encPubHex === payload.encPubHex &&
+    previous.sigPubHex === payload.sigPubHex;
+  if (!sameKey) {
+    state.fingerprints.set(payload.targetUserId, null);
+  }
+  state.keys.set(payload.targetUserId, {
+    encPubHex: payload.encPubHex,
+    sigPubHex: payload.sigPubHex,
+  });
+}
 
-/** 返された順のエントリ列を表示用のメンバー / サーバー集合へ畳み込む。 */
-export function deriveReportedView(entries: ReadonlyArray<ChainEntry>): ReportedChainView {
-  const state: FoldState = { members: new Map(), servers: new Map() };
-  for (const entry of entries) {
+/**
+ * 適用済み op の畳み込み(直接追記と、定足数に達した approve の内側 op が共有する)。
+ * `seq` = 適用 seq(提案経由なら approve の seq — inclusive 規約)。
+ */
+function applyOperation(state: FoldState, seq: number, operation: ProposableEntry): void {
+  switch (operation.op) {
+    case "add_member":
+      applyAddMember(state, seq, operation.payload);
+      return;
+    case "remove_member":
+      state.members.delete(operation.payload.targetUserId);
+      return;
+    case "change_role":
+      applyChangeRole(state, seq, operation.payload);
+      return;
+    case "grant_server":
+      applyGrantServer(state, seq, operation.payload);
+      return;
+    case "revoke_server":
+      state.servers.delete(operation.payload.serverKeyFingerprintHex);
+      return;
+    case "set_approval_policy":
+      state.policy =
+        operation.payload.requiredApprovals === 0
+          ? null
+          : {
+              requiredApprovals: operation.payload.requiredApprovals,
+              ops: [...new Set(operation.payload.ops)],
+            };
+      return;
+    default:
+      return;
+  }
+}
+
+/** 原則 2 の S = {owner として提案した提案者} ∪ approvals。 */
+function signersOf(pending: PendingFold): Vote[] {
+  const proposer: Vote[] =
+    pending.proposerRoleAtProposal === "owner"
+      ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
+      : [];
+  return [...proposer, ...pending.approvals];
+}
+
+/** 票数 = S のうち「現 owner かつ鍵 FP が一致(既知)」の distinct user_id(再集計)。 */
+function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): string[] {
+  const voters = new Set<string>();
+  for (const signer of signers) {
+    const member = state.members.get(signer.userId);
+    if (
+      member?.role === "owner" &&
+      state.fingerprints.get(signer.userId) === signer.keyFingerprintHex
+    ) {
+      voters.add(signer.userId);
+    }
+  }
+  return [...voters];
+}
+
+function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string | undefined): void {
+  if (hash === undefined) return;
+  state.pending.set(hash, {
+    seq: entry.seq,
+    proposerUserId: entry.actor.userId,
+    proposerKeyFingerprintHex: entry.actor.keyFingerprintHex,
+    proposerRoleAtProposal: state.members.get(entry.actor.userId)?.role ?? "unknown",
+    inner: entry.payload.inner,
+    expiresAtMs: entry.payload.expiresAtMs,
+    approvals: [],
+  });
+}
+
+/**
+ * approve: 票を記録し、再集計が現方針の required に達したら内側 op を適用して pending から
+ * 外す(§6.2 — approve エントリの seq で適用)。チェーンに載っている approve は受理面で
+ * 合意規則を通っている(無効なものは載らない)ので、ここでは票の算術だけを写す。
+ */
+function applyApprove(state: FoldState, entry: EntryOf<"approve">): void {
+  const pending = state.pending.get(entry.payload.proposalHashHex);
+  if (pending === undefined) return;
+  const vote: Vote = {
+    userId: entry.actor.userId,
+    keyFingerprintHex: entry.actor.keyFingerprintHex,
+  };
+  const votes = countedVoters(state, [...signersOf(pending), vote]).length;
+  const required = state.policy?.requiredApprovals;
+  if (required !== undefined && votes >= required) {
+    state.pending.delete(entry.payload.proposalHashHex);
+    applyOperation(state, entry.seq, pending.inner);
+    return;
+  }
+  pending.approvals.push(vote);
+}
+
+/** 内側 op の 1 行要約(識別子は生のまま — 描画側が中和する)。 */
+function summarizeInner(operation: ProposableEntry): string {
+  switch (operation.op) {
+    case "add_member":
+      return `add ${operation.payload.targetUserId} as ${operation.payload.role}`;
+    case "remove_member":
+      return `remove ${operation.payload.targetUserId}`;
+    case "change_role":
+      return `change ${operation.payload.targetUserId} to ${operation.payload.newRole}`;
+    case "grant_server":
+      return `grant server key ${operation.payload.serverKeyFingerprintHex}`;
+    case "revoke_server":
+      return `revoke server key ${operation.payload.serverKeyFingerprintHex}`;
+    case "set_approval_policy":
+      return operation.payload.requiredApprovals === 0
+        ? "turn the approval policy off"
+        : `set the approval policy to ${operation.payload.requiredApprovals} approvals`;
+    default:
+      return operation.op;
+  }
+}
+
+// 畳み込みに載せる op の閉集合(own-property 判定用)。create_environment / rotate_epoch /
+// checkpoint はメンバー・サーバー集合に影響しないため載せない。scope(add_member /
+// change_role の末尾 2 フィールド)は K4(2026-09-15 ES — 設計録 K4-D)で、四眼の 4 op は
+// K6(設計録 K6-J)で写す
+const ENTRY_KINDS: { readonly [Op in ChainEntry["op"]]?: true } = {
+  genesis: true,
+  add_member: true,
+  remove_member: true,
+  change_role: true,
+  grant_server: true,
+  revoke_server: true,
+  set_approval_policy: true,
+  propose: true,
+  approve: true,
+  withdraw: true,
+};
+
+/**
+ * 返された順のエントリ列を表示用のメンバー / サーバー集合・方針・pending 提案へ畳み込む。
+ * `headHashHex` は末尾エントリの hash(応答の headHashHex — サーバー申告)。
+ */
+export function deriveReportedView(
+  entries: ReadonlyArray<ChainEntry>,
+  headHashHex?: string,
+): ReportedChainView {
+  const state: FoldState = {
+    members: new Map(),
+    servers: new Map(),
+    policy: null,
+    pending: new Map(),
+    fingerprints: new Map(),
+    keys: new Map(),
+  };
+  entries.forEach((entry, index) => {
+    // 署名した本人の actor FP がそのメンバーの現在の鍵(受理面が検証済み — as reported)
+    if (state.members.has(entry.actor.userId)) {
+      state.fingerprints.set(entry.actor.userId, entry.actor.keyFingerprintHex);
+    }
     // Object.hasOwn: 敵対的サーバーの op(例: "__proto__")がプロトタイプ鎖の
     // 値に当たって throw で描画を落とさないための自衛
-    const fold = Object.hasOwn(ENTRY_FOLDERS, entry.op)
-      ? (ENTRY_FOLDERS[entry.op] as (s: FoldState, e: ChainEntry) => void)
-      : undefined;
-    fold?.(state, entry);
-  }
-  return { members: [...state.members.values()], servers: [...state.servers.values()] };
+    if (!Object.hasOwn(ENTRY_KINDS, entry.op)) return;
+    switch (entry.op) {
+      case "genesis":
+        setMember(state, entry.actor.userId, "owner", ALL_SCOPE, entry.seq);
+        state.fingerprints.set(entry.actor.userId, entry.actor.keyFingerprintHex);
+        state.keys.set(entry.actor.userId, {
+          encPubHex: entry.payload.encPubHex,
+          sigPubHex: entry.payload.sigPubHex,
+        });
+        return;
+      case "propose":
+        // エントリ i の hash = エントリ i + 1 の prevHashHex、末尾は headHashHex
+        applyPropose(state, entry, entries[index + 1]?.prevHashHex ?? headHashHex);
+        return;
+      case "approve":
+        applyApprove(state, entry);
+        return;
+      case "withdraw":
+        state.pending.delete(entry.payload.proposalHashHex);
+        return;
+      default:
+        applyOperation(state, entry.seq, entry);
+    }
+  });
+  const proposals = [...state.pending]
+    .map(([hash, pending]) => {
+      const voters = countedVoters(state, signersOf(pending));
+      return {
+        proposalHashHex: hash,
+        proposalSeq: pending.seq,
+        proposerUserId: pending.proposerUserId,
+        proposerRoleAtProposal: pending.proposerRoleAtProposal,
+        innerOp: pending.inner.op,
+        innerSummary: summarizeInner(pending.inner),
+        expiresAtMs: pending.expiresAtMs,
+        votes: voters.length,
+        voterUserIds: voters,
+      };
+    })
+    .toSorted((a, b) => a.proposalSeq - b.proposalSeq);
+  return {
+    members: [...state.members.values()],
+    servers: [...state.servers.values()],
+    policy: state.policy,
+    proposals,
+  };
 }
