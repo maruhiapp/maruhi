@@ -16,7 +16,7 @@
 
 import type { ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
-import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
+import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { verifyChainWithHistory } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -591,7 +591,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
   });
 });
 
-const removeMemberOp = (target: TestUser): ChainOperation => ({
+const removeMemberOp = (target: TestUser): ProposableOperation => ({
   op: "remove_member",
   payload: { targetUserId: target.userId },
 });
@@ -599,10 +599,14 @@ const policyOp = (requiredApprovals: number): ChainOperation => ({
   op: "set_approval_policy",
   payload: { ops: ["remove_member"], requiredApprovals },
 });
-const proposeOp = (inner: ChainOperation): ChainOperation =>
-  ({ op: "propose", payload: { inner, expiresAtMs: BASE_TS * 2 } }) as ChainOperation;
-const approveOp = (proposalHashHex: string): ChainOperation =>
-  ({ op: "approve", payload: { proposalHashHex } }) as ChainOperation;
+const proposeOp = (inner: ProposableOperation): ChainOperation => ({
+  op: "propose",
+  payload: { inner, expiresAtMs: BASE_TS * 2 },
+});
+const approveOp = (proposalHashHex: string): ChainOperation => ({
+  op: "approve",
+  payload: { proposalHashHex },
+});
 
 describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", () => {
   /**
@@ -714,6 +718,44 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     expect(logs).toContain("chain.member_removed");
     expect(logs).not.toContain("mirror=mismatch");
     expect(env.errors.join("\n")).not.toContain("chain provenance claim");
+  });
+});
+
+describe("maruhi audit verify — head より先の行の連続性(同一 chain_seq は 2 行まで)", () => {
+  it("3 行以上を名乗る head 先の chain_seq は偽造行として検出する", async () => {
+    const built = await baseChain();
+    const rows = await mirrorRowsOf(built);
+    const template = rows[2];
+    if (template === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    // chain_seq = head + 1 に 3 行(完成 approve でも 2 行が上限 — AUDIT_SPEC §3.4)
+    for (const seq of [4, 5, 6]) {
+      rows.push({ ...template, id: idOf(seq), seq, chainSeq: 4 });
+    }
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("no chain entry has more than 2 mirror rows");
+    expect(errors).toContain("chain_seq=4");
+    expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
+  });
+
+  it("head 先の 2 行(完成 approve の形)は連続性違反にしない", async () => {
+    const built = await baseChain();
+    const rows = await mirrorRowsOf(built);
+    const template = rows[2];
+    if (template === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    rows.push({ ...template, id: idOf(4), seq: 4, chainSeq: 4 });
+    rows.push({ ...template, id: idOf(5), seq: 5, chainSeq: 4 });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Mirror verification incomplete");
+    expect(errors).not.toContain("more than 2 mirror rows");
+    expect(errors).not.toContain("not contiguous");
   });
 });
 

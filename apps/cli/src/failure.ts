@@ -51,6 +51,9 @@ import { CliError, cliError } from "./errors.ts";
 
 type Renderer = (error: unknown) => string | null;
 
+/** ProposalLimit の生存期間(ミリ秒)を日で表示するための換算。 */
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 function when<T>(guard: (error: unknown) => error is T, render: (error: T) => string): Renderer {
   return (error) => (guard(error) ? render(error) : null);
 }
@@ -194,7 +197,7 @@ const renderers: readonly Renderer[] = [
   when(isInstanceOf(ProposalLimitError), (e) =>
     e.reason === "pending-proposals"
       ? `This project already has the maximum number of pending proposals (${e.limit}). Withdraw or complete an existing proposal first (expired proposals do not count)`
-      : `The proposal's expiry is too far in the future (server limit: ${Math.round(e.limit / 86_400_000)} days from now)`,
+      : `The proposal's expiry is too far in the future (server limit: ${Math.round(e.limit / MS_PER_DAY)} days from now)`,
   ),
   // 専用の有界再試行(checkpoint.ts / audit-reconcile.ts)を通らない残りの
   // 経路の受け皿。retryable なので再実行を案内する

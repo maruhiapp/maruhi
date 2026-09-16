@@ -864,7 +864,7 @@ DEK ラップの配布は本人宛のみ(AUTH_SPEC §12-6「配布は本人宛�
 
 ## 11. K5 追記(2026-09-16 — サーバーの四眼受理面の実装時の裁定)
 
-K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解除の前提(申し送り ⑤ = 投票者の鍵束縛)は K2-11 で正本(CRYPTO_SPEC §6.2 原則 2 の S = (user_id, 署名時の鍵 FP))・ベクター(`readded-approver-*`)・crypto(`ApprovalVote`)に反映済みであることを PR #177 の差分で確認した — 満たされている。正本 3 文書と設計録の食い違いは §11 末尾の実装録に記す。以下、§5 の手順(候補 ≥ 3 → 上位互換 / 銀の弾丸の探索 → 空巡 2 で打ち止め → 原則の抽出と旧裁定の導出確認 → UX 点検 → 選択)を各裁定点で回した。巡数は回した分だけ書く。
+K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解除の前提(申し送り ⑤ = 投票者の鍵束縛)は K2-11 で正本(CRYPTO_SPEC §6.2 原則 2 の S = (user_id, 署名時の鍵 FP))・ベクター(`readded-approver-*`)・crypto(`ApprovalVote`)に反映済みであることを PR #177 の差分で確認した — 満たされている。正本 3 文書と設計録の食い違いは §11 末尾の実装録に記す。以下、§5 の手順(候補 ≥ 3 → 上位互換 / 銀の弾丸の探索 → 空巡 2 で打ち止め → 原則の抽出と旧裁定の導出確認 → UX 点検 → 選択)を各裁定点で回した。巡数は回した分だけ書く。**巡の粒度の正直な注記(独立レビュー nit 7)**: K5-A / B / C / D / E / F / H の第 2 巡は具体の上位互換候補(版ズレ論・時計 2 つ・skew 幅・冗長判定・`client_ts` 変種・混成導出・層の問題)を挙げて棄却しているが、K5-G / I / J / L / M の第 2・3 巡は候補表の外に新案が出ず「空巡」の記録だけである(見出しにその旨を付す)。後者は候補表が正本の字面(§3.4 の全単射規則・§12-8 の型名・承認項目 19)にほぼ束縛されており探索の余地が小さかった、というのが実態で、巡を回したこと自体を成果として書かない。
 
 ### K5-A. `ApprovalNotAcceptedError` の去就(列挙 1 巡 + 空巡 2・打ち止め)
 
@@ -957,7 +957,7 @@ K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解�
 
 **原則**: 「ミラー写像とその入力の導出は core の 1 実装をサーバー(書き手)と CLI(検証器)が共有する」— K2 の `chainMirrorEvent` / `CHAIN_MIRROR_EVENTS` の置き場の裁定の延長 ✓。導出できない旧裁定なし。**採用: F-c**。
 
-### K5-G. `audit verify` の全単射規則と `audit list` の突合(列挙 1 巡 + 空巡 2・打ち止め)
+### K5-G. `audit verify` の全単射規則と `audit list` の突合(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
 
 | 案 | 内容 | 評価 |
 |---|---|---|
@@ -977,7 +977,7 @@ K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解�
 
 **探索**: 第 2 巡(上位互換 / 銀の弾丸): 投影・招待の突合を DO の受理タスク内に移す案は H-c と同じ層の問題。空巡。第 3 巡: 新案なし。空巡。打ち止め。**原則**: 「受理の判定は DO、D1 の導出状態の更新は worker — DO は判定結果を戻り値で渡す」(§11-5 (2)(3) の「DO 受理と別トランザクション」の規律のとおり)。**採用: H-a**。
 
-### K5-I. `ProposalLimit` のワイヤ形(承認項目 22 の範囲内 — 列挙 1 巡 + 空巡 2・打ち止め)
+### K5-I. `ProposalLimit` のワイヤ形(承認項目 22 の範囲内 — 列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
 
 | 案 | 内容 | 評価 |
 |---|---|---|
@@ -987,7 +987,7 @@ K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解�
 
 **探索**: 第 2 巡: 上位互換・銀の弾丸なし(空巡)。第 3 巡: 新案なし(空巡)。打ち止め。**原則**: 「型付きエラーは正本が名指す 1 型 + 閉集合の reason + 上限値」(K3-A の 403 の原則と同型)。**採用: I-a**。DO の拒否種別は `proposal-limit`。
 
-### K5-J. 持ち越し (i) — 鍵の再登録による票の復活を正本に載せるか(列挙 1 巡 + 空巡 2・打ち止め)
+### K5-J. 持ち越し (i) — 鍵の再登録による票の復活を正本に載せるか(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
 
 | 案 | 内容 | 評価 |
 |---|---|---|
@@ -1007,7 +1007,7 @@ K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解�
 
 **探索**: 第 2 巡: サーバーが「再登録された鍵」を監査に印す案(`chain.member_added` の payload に `rebound: true`)は、ミラー写像がエントリ単独から写す規律(K2)と、監査行は検証済みチェーンから再構成できる原則(AUDIT §1-5)に照らして、チェーンから導ける情報の重複。空巡。第 3 巡: なし(空巡)。**採用: K-b — 実装は K6**(申し送り)。
 
-### K5-L. 持ち越し (iii) — `required_approvals` 引き下げ後の pending 提案の完成(列挙 1 巡 + 空巡 2・打ち止め)
+### K5-L. 持ち越し (iii) — `required_approvals` 引き下げ後の pending 提案の完成(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
 
 | 案 | 内容 | 評価 |
 |---|---|---|
@@ -1017,7 +1017,7 @@ K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解�
 
 **探索**: 第 2 巡: なし(空巡)。第 3 巡: なし(空巡)。**採用: L-a — 実装は K6**。サーバー(K5)には該当する振る舞いがない(合意規則は crypto、案内は CLI)。
 
-### K5-M. 提案の読み取り口(列挙 1 巡 + 空巡 2・打ち止め)
+### K5-M. 提案の読み取り口(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
 
 ROADMAP の PF1 行と §8「K2 の実装メモ」は受理面に「提案 API」を数えるが、§4 の K5 行には無い(粒度の差 — 報告)。
 
@@ -1048,7 +1048,7 @@ ROADMAP の PF1 行と §8「K2 の実装メモ」は受理面に「提案 API�
   - `chain-commit.ts`: `commitAcceptedEntry(chain, entry, applied, canonicalBytes, extraSync?)` が受理後チェーンの提案索引を作り、適用した提案を返す。`checkpoint-accept.ts` は `appliedProposal: null`
   - `handlers-membership.ts`: 受理ガードを削除。D1 後処理(招待の completed 突合・membership 投影の upsert / delete)を「直接追記の op、または `appliedProposal.inner`」に対して行う
   - `authz.ts` / `rotation-detect.ts` / `audit-store.ts` / `do-schema.ts`: 変更なし(K5-N / K5-O / K5-P)
-- CLI(`apps/cli/src/audit.ts`): `proposalIndexOf(verified)`(core の `indexProposals` を `VerifiedProject` に適用)、`expectedRowFor`(観測行のイベント名で期待行を選ぶ)、`entryMirrorProblems`(期待行集合との突合 — 欠落 / 重複 / 過剰 / フィールド不一致)、`aheadContiguityProblems`(同一 seq 最大 2 行)。`failure.ts` に `ProposalLimit` の文言(K5-G)。`audit-reconcile.ts` は変更なし(`checkpoint` は提案できない op)
+- CLI(`apps/cli/src/audit.ts`): `proposalIndexOf(verified)`(core の `indexProposals` を `VerifiedProject` に適用)、`expectedRowFor`(観測行のイベント名で期待行を選ぶ)、`entryMirrorProblems`(期待行集合との突合 — 欠落 / 重複 / 過剰 / フィールド不一致)、`aheadContiguityProblems`(同一 seq 最大 2 行)。`failure.ts` に `ProposalLimit` の文言(K5-I)。`audit-reconcile.ts` は変更なし(`checkpoint` は提案できない op)
 - テスト: `apps/server/test/approval-accept.test.ts`(新規 — 受理ポリシー 2 件・完成 approve の副作用 3 件〔remove の検出 / 申告行 / 投影・提案経由 add_member の招待 completed 化 + 投影・withdraw と方針変更の無副作用〕)、`proposal-policy.test.ts`(新規 — 純関数)、`membership.test.ts`(正規チェーン 24 本の全再生・四眼 5 エントリのミラー行と適用行・派生チェーン `proposal-completed` の未完成 / 完成の分岐と投影削除)、`membership-negatives-append.test.ts`(**実測の分割**: checkpoint 20 / composite 24 / structureBeforeSignature 1 / wireSchema 8 / consensus 104 = 157 — K2-10 の `skipped` 58 + `fourEyesGuard` 7 は consensus +57 / wireSchema +7 / structureBeforeSignature +1 に戻った。K2-10 末尾の「12 + 派生チェーン 14 本」は当時の見積もりで、実測は 58 件)、`storage-guard.test.ts`(四眼経路の成長ガード)、`data-policy.test.ts`(拒否種別の網羅表)、`apps/cli/test/audit.test.ts`(完成 approve の 2 行の全単射 OK・適用行の欠落・`viaProposalSeq` / `completed` の改変・未完成 approve への過剰な適用行・`audit list` の 2 行の突合)
 - 正本との照合で見つけた食い違い: なし(CRYPTO_SPEC §6.4 / AUTH_SPEC §11-1 / §12-8 / AUDIT_SPEC §3.4 の字面どおりに実装できた)。設計録側の古い記述: ROADMAP PF1 行の K2 記録「汎用 append で受理」(受理ガード導入前)を訂正、§8「K2 の実装メモ」の「提案 API は K5」は K5-M で K6 送り(API なし)に更新
 

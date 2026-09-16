@@ -10,7 +10,7 @@
 //     seq)、申告行の削除、招待の completed 突合、membership 投影
 //   - 未完成の approve / propose / withdraw / set_approval_policy は副作用を持たない
 
-import type { ChainOperation } from "@maruhi/crypto";
+import type { ApprovalTargetOp, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
@@ -82,32 +82,41 @@ async function appendRaw(
 }
 
 /** owner 2 名 + 方針(ops, required = 2)を確立する。 */
-async function enableFourEyes(ops: readonly string[]): Promise<void> {
+async function enableFourEyes(ops: readonly ApprovalTargetOp[]): Promise<void> {
   await seedMemberToken(fixture, OWNER2, 9014);
   await appendOperation(fixture, OWNER, addMemberOperation(OWNER2, "owner"));
   await appendOperation(fixture, OWNER, {
     op: "set_approval_policy",
-    payload: { ops: [...ops], requiredApprovals: 2 },
-  } as ChainOperation);
+    payload: { ops, requiredApprovals: 2 },
+  });
 }
 
-const proposeOp = (inner: ChainOperation, expiresAtMs: number): ChainOperation =>
-  ({ op: "propose", payload: { inner, expiresAtMs } }) as ChainOperation;
+const proposeOp = (inner: ProposableOperation, expiresAtMs: number): ChainOperation => ({
+  op: "propose",
+  payload: { inner, expiresAtMs },
+});
 
-const removeMemberOp = (targetUserId: string): ChainOperation => ({
+const removeMemberOp = (targetUserId: string): ProposableOperation => ({
   op: "remove_member",
   payload: { targetUserId },
 });
 
 /** 提案を受理させ、提案エントリの hash(approve / withdraw の参照先)を返す。 */
-async function propose(actorUserId: string, inner: ChainOperation, expiresAtMs: number) {
+async function propose(actorUserId: string, inner: ProposableOperation, expiresAtMs: number) {
   const { response, hash } = await appendRaw(actorUserId, proposeOp(inner, expiresAtMs));
   expect(response.status).toBe(200);
   return hash;
 }
 
-const approveOp = (proposalHashHex: string): ChainOperation =>
-  ({ op: "approve", payload: { proposalHashHex } }) as ChainOperation;
+const approveOp = (proposalHashHex: string): ChainOperation => ({
+  op: "approve",
+  payload: { proposalHashHex },
+});
+
+const withdrawOp = (proposalHashHex: string): ChainOperation => ({
+  op: "withdraw",
+  payload: { proposalHashHex },
+});
 
 type AuditRow = Record<string, unknown>;
 
@@ -260,10 +269,7 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
       limit: MAX_PENDING_PROPOSALS,
     });
     // 失効済み提案を閉じても枠は空かない(数えていなかった)
-    const { response: withdrawExpired } = await appendRaw(OWNER, {
-      op: "withdraw",
-      payload: { proposalHashHex: expired },
-    } as ChainOperation);
+    const { response: withdrawExpired } = await appendRaw(OWNER, withdrawOp(expired));
     expect(withdrawExpired.status).toBe(200);
     const { response: stillFull } = await appendRaw(
       OWNER,
@@ -286,10 +292,10 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
       "SELECT entry_hash_hex FROM chain_entries WHERE seq = ?",
       lastPropose.seq,
     );
-    const { response: withdrawLive } = await appendRaw(OWNER, {
-      op: "withdraw",
-      payload: { proposalHashHex: String(hashes[0]?.["entry_hash_hex"]) },
-    } as ChainOperation);
+    const { response: withdrawLive } = await appendRaw(
+      OWNER,
+      withdrawOp(String(hashes[0]?.["entry_hash_hex"])),
+    );
     expect(withdrawLive.status).toBe(200);
     const { response: admitted } = await appendRaw(
       OWNER,
@@ -356,7 +362,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect((await acceptAs(fixture, STRANGER, keys, matched)).status).toBe(200);
     expect((await inviteRow(matched.id))?.status).toBe("accepted");
 
-    const addStranger: ChainOperation = {
+    const addStranger: ProposableOperation = {
       op: "add_member",
       payload: {
         targetUserId: STRANGER,
@@ -391,13 +397,71 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     });
   });
 
+  it("cleans the stale-key wraps of a member re-added via a proposal (dek.deleted with triggerChainSeq = approve seq)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // MEMBER は epoch 1 のラップ(現行鍵宛)を持つ。remove(方針オフなので直接追記)は
+    // ラップを消さない(§12-6 — 同一鍵での復帰に備える)
+    await appendOperation(fixture, OWNER, removeMemberOp(MEMBER));
+    const wrapsBefore = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id = ?",
+      MEMBER,
+    );
+    expect(Number(wrapsBefore[0]?.["n"])).toBe(1);
+
+    await enableFourEyes(["add_member"]);
+    // 別の鍵(ベクター鍵 user-prodreader-0012 を借用)で MEMBER を再追加する提案
+    const rekeyed = vectorKeyOf("user-prodreader-0012");
+    const readd: ProposableOperation = {
+      op: "add_member",
+      payload: {
+        targetUserId: MEMBER,
+        encPubHex: rekeyed.enc_pub_hex,
+        sigPubHex: rekeyed.sig_pub_hex,
+        role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
+    };
+    const proposalHash = await propose(OWNER, readd, Date.now() + 7 * DAY_MS);
+    // 提案時点では掃除しない
+    const wrapsPending = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id = ?",
+      MEMBER,
+    );
+    expect(Number(wrapsPending[0]?.["n"])).toBe(1);
+
+    const { response } = await appendRaw(OWNER2, approveOp(proposalHash));
+    expect(response.status).toBe(200);
+    const approveSeq = fixture.head.seq;
+    const wrapsAfter = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id = ?",
+      MEMBER,
+    );
+    expect(Number(wrapsAfter[0]?.["n"])).toBe(0);
+    const deleted = (await readAuditEvents(projectId)).filter(
+      (row) => row["event"] === "dek.deleted",
+    );
+    expect(deleted).toHaveLength(1);
+    const row = deleted[0];
+    if (row === undefined) throw new Error("unreachable");
+    expect(row["actor_type"]).toBe("system");
+    expect(row["target_user_id"]).toBe(MEMBER);
+    expect(row["environment_id"]).toBe(ENV);
+    expect(payloadOf(row)).toEqual({ cause: "member-readded", triggerChainSeq: approveSeq });
+    // 掃除は適用行(chain.member_added)の後(同一受理タスク)
+    const applied = rowAt(await readAuditEvents(projectId), approveSeq, 1);
+    expect(applied["event"]).toBe("chain.member_added");
+    expect(Number(row["seq"])).toBeGreaterThan(Number(applied["seq"]));
+  });
+
   it("does nothing for a withdrawn proposal and for a set_approval_policy entry", async () => {
     await enableFourEyes(["remove_member"]);
     const proposalHash = await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
-    const { response } = await appendRaw(OWNER, {
-      op: "withdraw",
-      payload: { proposalHashHex: proposalHash },
-    } as ChainOperation);
+    const { response } = await appendRaw(OWNER, withdrawOp(proposalHash));
     expect(response.status).toBe(200);
     expect(await projectionRowsFor(MEMBER)).toBe(1);
     expect(await readFlags()).toHaveLength(0);
