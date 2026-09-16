@@ -190,6 +190,17 @@ function entryIndexOf(entries: readonly ChainEntry[]): ReadonlyMap<number, Chain
   return new Map(entries.map((entry) => [entry.seq, entry]));
 }
 
+/**
+ * approve / withdraw の参照先が提案索引に無いか。検証済みチェーンでは到達不能
+ * (索引は同じ検証済みチェーンから構築される — unknown-proposal は無効エントリ)だが、
+ * verify(問題として報告)と list(unverified ラベル)が同じ述語を共有する。
+ */
+function proposalMissingFor(entry: ChainEntry, index: ProposalIndex): boolean {
+  return (
+    (entry.op === "approve" || entry.op === "withdraw") && !index.has(entry.payload.proposalHashHex)
+  );
+}
+
 /** chain.* 行のトラストラベル(表示用)と不一致詳細。 */
 interface MirrorTrust {
   readonly label: string;
@@ -220,10 +231,7 @@ function mirrorTrustOf(
       mismatches: [`chain_seq: the verified chain has no entry at seq=${observed.chainSeq}`],
     };
   }
-  if (
-    (entry.op === "approve" || entry.op === "withdraw") &&
-    !index.has(entry.payload.proposalHashHex)
-  ) {
+  if (proposalMissingFor(entry, index)) {
     return {
       label:
         "mirror=unverified (the referenced proposal is not on the verified chain — re-run after a full sync)",
@@ -946,10 +954,7 @@ function entryMirrorProblems(
   // 検証済みチェーンでは参照先の propose が必ず索引にある(unknown-proposal は無効
   // エントリ)。欠けていれば索引の構築側の矛盾であり、期待行を組めないので defect で
   // 落とさず検証失敗として chain_seq 付きで報告する(pullfrog 第 1 巡)
-  if (
-    (entry.op === "approve" || entry.op === "withdraw") &&
-    !index.has(entry.payload.proposalHashHex)
-  ) {
+  if (proposalMissingFor(entry, index)) {
     return [
       `chain_seq=${entry.seq} (op=${entry.op}): the referenced proposal is not on the verified chain, so the expected mirror rows cannot be reconstructed — re-run \`maruhi audit verify\` after a full sync; if this persists it is a verifier inconsistency, not evidence about the audit log`,
     ];
