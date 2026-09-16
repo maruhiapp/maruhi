@@ -13,7 +13,7 @@
 // §6 の緩和策)が同一実装を共有する**ため。写像が二重管理になると、検証器の
 // ドリフトが改竄の誤検出(または見逃し)になる。
 
-import type { ChainEntry, ChainOp } from "@maruhi/crypto";
+import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
 import type { AuthenticatedPrincipal } from "./auth.ts";
 
@@ -58,6 +58,10 @@ export function auditPayloadWith(
 // チェーンミラー(AUDIT_SPEC §3.4): 受理済みエントリ → 監査イベント。
 // actor はチェーンエントリの actor(user_id + 鍵 FP)をそのまま写し、
 // クライアント時刻(entry.timestampMs)とサーバー受理時刻の両方を持つ。
+// 四眼(PF1 — 2026-09-16 K5): approve / withdraw の行は参照先の提案エントリの
+// seq を、完成した approve は加えて内側 op の適用行(同じ chain_seq・actor =
+// 提案者・payload に viaProposalSeq)を持つ。どちらもエントリ単独からは写せず、
+// 検証済みチェーンから導いた提案の索引(ProposalIndex)を入力に取る。
 // ---------------------------------------------------------------------------
 
 /**
@@ -113,7 +117,7 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
 
 /**
  * All chain-mirror audit event names (AUDIT_SPEC §3.4) — the image of
- * `chainMirrorEvent`. Derived from the exhaustive per-op map so the mirror
+ * `chainMirrorEvents`. Derived from the exhaustive per-op map so the mirror
  * verifier (`maruhi audit verify`) cannot silently miss a future ChainOp.
  */
 export const CHAIN_MIRROR_EVENTS: readonly string[] = Object.values(MIRROR_EVENT_NAME);
@@ -126,117 +130,264 @@ export const CHAIN_MIRROR_EVENTS: readonly string[] = Object.values(MIRROR_EVENT
  */
 export const CHAIN_MIRROR_EVENT_PREFIX = "chain.";
 
-// op ごとの写像(§3.4 の表)。genesis の target は作成者 = actor(在籍区間の
-// 開始点を Q1 の索引で引けるようにするため)
+/** A `propose` entry on a verified chain. */
+export type ProposeEntry = ChainEntry & { readonly op: "propose" };
+
+/**
+ * One proposal on a verified chain (CRYPTO_SPEC §6.2 — identified by the
+ * `propose` entry's hash): the entry itself and, when the proposal was applied,
+ * the seq of the `approve` entry that reached the quorum (`null` while pending
+ * or after a `withdraw`).
+ */
+export interface IndexedProposal {
+  readonly entry: ProposeEntry;
+  readonly completedAtSeq: number | null;
+}
+
+/**
+ * Proposals of a verified chain keyed by the `propose` entry hash — the input
+ * `chainMirrorEvents` needs for `approve` / `withdraw` rows (AUDIT_SPEC §3.4:
+ * `proposalChainSeq` / `completed` / the applied inner-op row). Built once per
+ * verified chain by {@link indexProposals}; the server (mirror writer) and the
+ * CLI (`maruhi audit verify`) share that derivation so neither can drift.
+ */
+export type ProposalIndex = ReadonlyMap<string, IndexedProposal>;
+
+/**
+ * Derives the {@link ProposalIndex} of a verified chain. Completion is read
+ * off the chain's consensus rules rather than re-evaluated: once a proposal
+ * leaves the pending set (quorum reached or withdrawn) any later `approve` /
+ * `withdraw` naming it is `unknown-proposal` and cannot be on a verified
+ * chain. So a proposal that is absent from the final pending set and is not
+ * named by a `withdraw` was completed by the **last** `approve` naming it.
+ *
+ * @param entries the verified chain (seq order)
+ * @param entryHashAt entry hash by seq (CRYPTO_SPEC §4.1 history index)
+ * @param pendingHashes hashes of the proposals still pending at the head
+ */
+export function indexProposals(
+  entries: readonly ChainEntry[],
+  entryHashAt: (seq: number) => string | undefined,
+  pendingHashes: ReadonlySet<string>,
+): ProposalIndex {
+  const proposals = new Map<string, { entry: ProposeEntry; lastApproveSeq: number | null }>();
+  const withdrawn = new Set<string>();
+  for (const entry of entries) {
+    if (entry.op === "propose") {
+      const hash = entryHashAt(entry.seq);
+      if (hash !== undefined) {
+        proposals.set(hash, { entry, lastApproveSeq: null });
+      }
+    } else if (entry.op === "approve") {
+      const proposal = proposals.get(entry.payload.proposalHashHex);
+      if (proposal !== undefined) {
+        proposal.lastApproveSeq = entry.seq;
+      }
+    } else if (entry.op === "withdraw") {
+      withdrawn.add(entry.payload.proposalHashHex);
+    }
+  }
+  const index = new Map<string, IndexedProposal>();
+  for (const [hash, proposal] of proposals) {
+    const closedByQuorum = !pendingHashes.has(hash) && !withdrawn.has(hash);
+    index.set(hash, {
+      entry: proposal.entry,
+      completedAtSeq: closedByQuorum ? proposal.lastApproveSeq : null,
+    });
+  }
+  return index;
+}
+
+/** The actor an operation is attributed to (the entry actor, or the proposer for an applied inner op). */
+interface MirrorSubject {
+  readonly actor: ChainActor;
+}
+
+// op ごとの写像(§3.4 の表)。入力は op + payload(+ actor — genesis の target だけが
+// 使う)であり、署名済みエントリにも提案の内側 op にも適用できる。genesis の
+// target は作成者 = actor(在籍区間の開始点を Q1 の索引で引けるようにするため)
 const mirrorTails: {
-  readonly [K in ChainOp]: (entry: Extract<ChainEntry, { op: K }>) => MirrorTail;
+  readonly [K in ChainOp]: (
+    operation: Extract<ChainOperation, { op: K }> & MirrorSubject,
+  ) => MirrorTail;
 } = {
-  genesis: (entry) => ({
+  genesis: (operation) => ({
     event: MIRROR_EVENT_NAME.genesis,
-    targetUserId: entry.actor.userId,
+    targetUserId: operation.actor.userId,
   }),
   // scope も写す(AUDIT_SPEC §3.4 — 2026-09-14 ES: §4.1 の環境別アクセス窓の復元材料)
-  add_member: (entry) => ({
+  add_member: (operation) => ({
     event: MIRROR_EVENT_NAME.add_member,
-    targetUserId: entry.payload.targetUserId,
+    targetUserId: operation.payload.targetUserId,
     payload: {
-      role: entry.payload.role,
-      scopeKind: entry.payload.scopeKind,
-      scopeEnvironmentIds: entry.payload.scopeEnvironmentIds,
+      role: operation.payload.role,
+      scopeKind: operation.payload.scopeKind,
+      scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
     },
   }),
-  remove_member: (entry) => ({
+  remove_member: (operation) => ({
     event: MIRROR_EVENT_NAME.remove_member,
-    targetUserId: entry.payload.targetUserId,
+    targetUserId: operation.payload.targetUserId,
   }),
-  change_role: (entry) => ({
+  change_role: (operation) => ({
     event: MIRROR_EVENT_NAME.change_role,
-    targetUserId: entry.payload.targetUserId,
+    targetUserId: operation.payload.targetUserId,
     payload: {
-      newRole: entry.payload.newRole,
-      scopeKind: entry.payload.scopeKind,
-      scopeEnvironmentIds: entry.payload.scopeEnvironmentIds,
+      newRole: operation.payload.newRole,
+      scopeKind: operation.payload.scopeKind,
+      scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
     },
   }),
   // dek_commitment は payload に写す(AUDIT_SPEC §3.4 — 監査行と
   // チェーン掲載コミットメントの突合用)
-  create_environment: (entry) => ({
+  create_environment: (operation) => ({
     event: MIRROR_EVENT_NAME.create_environment,
-    environmentId: entry.payload.environmentId,
+    environmentId: operation.payload.environmentId,
     epoch: 1,
-    payload: { dekCommitmentHex: entry.payload.dekCommitmentHex },
+    payload: { dekCommitmentHex: operation.payload.dekCommitmentHex },
   }),
-  rotate_epoch: (entry) => ({
+  rotate_epoch: (operation) => ({
     event: MIRROR_EVENT_NAME.rotate_epoch,
-    environmentId: entry.payload.environmentId,
-    epoch: entry.payload.newEpoch,
-    payload: { reason: entry.payload.reason, dekCommitmentHex: entry.payload.dekCommitmentHex },
+    environmentId: operation.payload.environmentId,
+    epoch: operation.payload.newEpoch,
+    payload: {
+      reason: operation.payload.reason,
+      dekCommitmentHex: operation.payload.dekCommitmentHex,
+    },
   }),
-  grant_server: (entry) => ({
+  grant_server: (operation) => ({
     event: MIRROR_EVENT_NAME.grant_server,
-    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+    targetKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
     // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
     // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
     // 持ち込まない。ポリシーの真実源はチェーン(grant payload)で、chain_seq で
     // 突合できる。スコープ(内部 environment_id 集合)は §3.4 のとおり写す
-    payload: { scopeEnvironmentIds: entry.payload.scopeEnvironmentIds },
+    payload: { scopeEnvironmentIds: operation.payload.scopeEnvironmentIds },
   }),
-  revoke_server: (entry) => ({
+  revoke_server: (operation) => ({
     event: MIRROR_EVENT_NAME.revoke_server,
-    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+    targetKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
   }),
   // 公証対象のダイジェスト(環境ごとの epoch / manifest_version /
   // manifest_sig_hash / values_digest と audit_head_hash)を payload に写す
   // (AUDIT_SPEC §3.4。監査 seq・行数は payload にも写さない:
   // チェーン payload 自体が seq を含まない設計 — CRYPTO_SPEC §6.2)
-  checkpoint: (entry) => ({
+  checkpoint: (operation) => ({
     event: MIRROR_EVENT_NAME.checkpoint,
     payload: {
-      environments: entry.payload.environments.map((tuple) => ({
+      environments: operation.payload.environments.map((tuple) => ({
         environmentId: tuple.environmentId,
         epoch: tuple.epoch,
         manifestVersion: tuple.manifestVersion,
         manifestSigHashHex: tuple.manifestSigHashHex,
         valuesDigestHex: tuple.valuesDigestHex,
       })),
-      auditHeadHashHex: entry.payload.auditHeadHashHex,
+      auditHeadHashHex: operation.payload.auditHeadHashHex,
     },
   }),
-  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)。K2 ではエントリ単独から写せる値のみ:
-  // 内側 payload は写さない(正はチェーン)。approve / withdraw の参照先は提案
-  // エントリの hash で運び、§3.4 の `proposalChainSeq` / `completed` と完成 approve の
-  // 内側 op の適用行(同一 chain_seq の 2 行目)は検証状態を要するため K5 の
-  // 受理面(設計録 es-design.md §4)で追加する
-  set_approval_policy: (entry) => ({
+  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)。内側 payload は写さない(正は
+  // チェーン)。approve / withdraw の参照先(proposalChainSeq)と completed は
+  // 提案の索引を要するため chainMirrorEvents 側で足す(ここは名前だけ)
+  set_approval_policy: (operation) => ({
     event: MIRROR_EVENT_NAME.set_approval_policy,
-    payload: { ops: entry.payload.ops, requiredApprovals: entry.payload.requiredApprovals },
+    payload: {
+      ops: operation.payload.ops,
+      requiredApprovals: operation.payload.requiredApprovals,
+    },
   }),
-  propose: (entry) => ({
+  propose: (operation) => ({
     event: MIRROR_EVENT_NAME.propose,
-    payload: { innerOp: entry.payload.inner.op, expiresAtMs: entry.payload.expiresAtMs },
+    payload: { innerOp: operation.payload.inner.op, expiresAtMs: operation.payload.expiresAtMs },
   }),
-  approve: (entry) => ({
-    event: MIRROR_EVENT_NAME.approve,
-    payload: { proposalHashHex: entry.payload.proposalHashHex },
-  }),
-  withdraw: (entry) => ({
-    event: MIRROR_EVENT_NAME.withdraw,
-    payload: { proposalHashHex: entry.payload.proposalHashHex },
-  }),
+  approve: () => ({ event: MIRROR_EVENT_NAME.approve }),
+  withdraw: () => ({ event: MIRROR_EVENT_NAME.withdraw }),
 };
 
-/** 受理済みチェーンエントリを §3.4 のミラーイベントへ写す。 */
-export function chainMirrorEvent(entry: ChainEntry, serverTs: number): AuditEventRecord {
-  const tail = mirrorTails[entry.op](entry as never);
-  return {
-    ...tail,
+function mirrorTailOf(operation: ChainOperation & MirrorSubject): MirrorTail {
+  return mirrorTails[operation.op](operation as never);
+}
+
+/** The proposal an `approve` / `withdraw` entry names; a verified chain always has it. */
+function referencedProposal(
+  entry: ChainEntry & { readonly op: "approve" | "withdraw" },
+  index: ProposalIndex,
+): IndexedProposal {
+  const proposal = index.get(entry.payload.proposalHashHex);
+  if (proposal === undefined) {
+    // 検証済みチェーンでは参照先の propose が必ず先行する(unknown-proposal は無効
+    // エントリ)。欠けているのは索引の作り方の誤りであり、写像の入力の契約違反
+    throw new Error(
+      `chain mirror: entry seq=${entry.seq} (${entry.op}) names a proposal that is not in the proposal index`,
+    );
+  }
+  return proposal;
+}
+
+/**
+ * Maps one accepted chain entry to its §3.4 mirror row(s): exactly one row per
+ * entry, plus — for an `approve` that reached the quorum — the applied
+ * inner-op row (same `chainSeq`, actor = the proposer, `clientTs` = the
+ * approve entry's timestamp, payload = the inner op's mirror payload +
+ * `viaProposalSeq`). The order is mirror row first, applied row second (the
+ * server writes them in this order in one transaction; rotation detection
+ * reads the applied row as the latest membership event of its target).
+ *
+ * `index` comes from {@link indexProposals} over the verified chain the entry
+ * belongs to (only `approve` / `withdraw` entries consult it).
+ */
+export function chainMirrorEvents(
+  entry: ChainEntry,
+  serverTs: number,
+  index: ProposalIndex,
+): readonly AuditEventRecord[] {
+  const base = {
     serverTs,
     clientTs: entry.timestampMs,
     chainSeq: entry.seq,
-    actorType: "user",
+    actorType: "user" as const,
+  };
+  const own = (tail: MirrorTail): AuditEventRecord => ({
+    ...tail,
+    ...base,
     actorUserId: entry.actor.userId,
     actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
-  };
+  });
+  if (entry.op === "withdraw") {
+    const proposal = referencedProposal(entry, index);
+    return [
+      own({
+        ...mirrorTailOf(entry),
+        payload: { proposalChainSeq: proposal.entry.seq },
+      }),
+    ];
+  }
+  if (entry.op !== "approve") {
+    return [own(mirrorTailOf(entry))];
+  }
+  const proposal = referencedProposal(entry, index);
+  const completed = proposal.completedAtSeq === entry.seq;
+  const approved = own({
+    ...mirrorTailOf(entry),
+    payload: { proposalChainSeq: proposal.entry.seq, completed },
+  });
+  if (!completed) {
+    return [approved];
+  }
+  // 適用行(AUDIT_SPEC §3.4): 内側 op のミラー写像に viaProposalSeq を足し、actor は
+  // 提案者(内側 op の actor)。§4.1 の在籍区間(Q1)・grant 区間(Q6)の入力構造を
+  // 変えないための規律 — 検出は直接追記と同じ行を同じ索引で引く
+  const inner = proposal.entry.payload.inner;
+  const tail = mirrorTailOf({ ...inner, actor: proposal.entry.actor });
+  return [
+    approved,
+    {
+      ...tail,
+      ...base,
+      actorUserId: proposal.entry.actor.userId,
+      actorKeyFingerprintHex: proposal.entry.actor.keyFingerprintHex,
+      payload: { ...tail.payload, viaProposalSeq: proposal.entry.seq },
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------

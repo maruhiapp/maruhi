@@ -138,15 +138,43 @@ export class CompositeRequiredError extends Schema.TaggedError<CompositeRequired
 
 /**
  * 422: the four-eyes operations (`set_approval_policy` / `propose` / `approve`
- * / `withdraw` — CRYPTO_SPEC §6.2 PF1) are part of the chain format but this
- * server version does not accept them yet. Acceptance lands together with
- * its side effects (audit mirror rows for the applied inner op, rotation
- * detection, wrap cleanup, pending-proposal limit — AUDIT_SPEC §3.4 / AUTH_SPEC
- * §12-8; ES + PF1 K5). 受理副作用を伴わない受理は監査ミラーの恒久的な欠落を作る
- * ため、それまでは fail-closed に拒否する(設計録 es-design.md §8 K2-10)。
+ * / `withdraw` — CRYPTO_SPEC §6.2 PF1) are part of the chain format but the
+ * server does not accept them. Raised by servers before ES + PF1 K5 (the
+ * acceptance side effects — audit mirror rows for the applied inner op,
+ * rotation detection, wrap cleanup, pending-proposal limit — landed together
+ * with acceptance in K5). A K5+ server never raises it; the declaration stays
+ * on the wire so a newer CLI gets a typed message against an older self-hosted
+ * server (設計録 es-design.md §11 K5-A — ワイヤからの削除は所有者裁定)。
  */
 export class ApprovalNotAcceptedError extends Schema.TaggedError<ApprovalNotAcceptedError>()(
   "ApprovalNotAccepted",
   { op: Schema.Literals(["set_approval_policy", "propose", "approve", "withdraw"]) },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * Why a `propose` entry was refused by the pending-proposal acceptance policy
+ * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則ではない):
+ *
+ * - `pending-proposals`: the project already holds the maximum number of live
+ *   (unexpired by the server clock) pending proposals; `limit` = that count.
+ *   Withdrawing or completing a proposal frees a slot.
+ * - `proposal-lifetime`: `expires_at_ms` lies beyond the server clock plus the
+ *   maximum lifetime; `limit` = that lifetime in milliseconds.
+ */
+export const ProposalLimitReasonSchema = Schema.Literals([
+  "pending-proposals",
+  "proposal-lifetime",
+]);
+
+/**
+ * 422: a `propose` entry exceeds the pending-proposal acceptance policy
+ * (AUTH_SPEC §12-8: 32 live proposals per project, `expires_at_ms` at most 30
+ * days past the server clock). An acceptance policy, not a consensus rule —
+ * the entry may be valid under CRYPTO_SPEC §6.2 and still be refused here.
+ */
+export class ProposalLimitError extends Schema.TaggedError<ProposalLimitError>()(
+  "ProposalLimit",
+  { reason: ProposalLimitReasonSchema, limit: Schema.Number },
   { httpApiStatus: 422 },
 ) {}

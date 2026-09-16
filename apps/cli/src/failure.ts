@@ -33,6 +33,7 @@ import {
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
+  ProposalLimitError,
   SetupIncompleteError,
   TokenLimitError,
   UnauthorizedError,
@@ -188,6 +189,12 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ApprovalNotAcceptedError),
     (e) =>
       `This server does not accept four-eyes approval entries (${e.op}) yet — they land with a later server release`,
+  ),
+  // propose の受理ポリシー(AUTH_SPEC §12-8 — 合意規則ではない。K5)
+  when(isInstanceOf(ProposalLimitError), (e) =>
+    e.reason === "pending-proposals"
+      ? `This project already has the maximum number of pending proposals (${e.limit}). Withdraw or complete an existing proposal first (expired proposals do not count)`
+      : `The proposal's expiry is too far in the future (server limit: ${Math.round(e.limit / 86_400_000)} days from now)`,
   ),
   // 専用の有界再試行(checkpoint.ts / audit-reconcile.ts)を通らない残りの
   // 経路の受け皿。retryable なので再実行を案内する

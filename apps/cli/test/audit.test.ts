@@ -14,8 +14,10 @@
 //  5. 引数の書き方の誤り(self への --project・limit の範囲外・不明な操作)は
 //     通信より前に usage エラー(2)
 
-import { chainMirrorEvent } from "@maruhi/core";
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ProposalIndex } from "@maruhi/core";
+import { chainMirrorEvents, indexProposals } from "@maruhi/core";
+import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
+import { verifyChainWithHistory } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -79,36 +81,59 @@ function assignPresent(target: Record<string, unknown>, source: Record<string, u
   }
 }
 
-/** 検証済みエントリ → ワイヤのミラー行(サーバーと同じ共有写像から構成)。 */
-function wireMirrorRow(entry: ChainEntry, seq: number): WireRow {
-  const record = chainMirrorEvent(entry, BASE_TS + seq);
-  const actor: Record<string, unknown> = { type: record.actorType };
-  assignPresent(actor, {
-    userId: record.actorUserId,
-    keyFingerprintHex: record.actorKeyFingerprintHex,
-  });
-  const row: WireRow = {
-    id: idOf(seq),
-    seq,
-    serverTs: record.serverTs,
-    event: record.event,
-    actor,
-  };
-  assignPresent(row, {
-    clientTs: record.clientTs,
-    targetUserId: record.targetUserId,
-    targetKeyFingerprintHex: record.targetKeyFingerprintHex,
-    environmentId: record.environmentId,
-    epoch: record.epoch,
-    chainSeq: record.chainSeq,
-    payload: record.payload,
-  });
-  return row;
+/** 検証済みチェーンの提案索引(サーバーと同じ core の導出 — 四眼の行の入力)。 */
+async function proposalIndexOf(built: BuiltChain): Promise<ProposalIndex> {
+  const verified = await verifyChainWithHistory(built.entries);
+  if (!verified.ok) {
+    throw new Error(`fixture chain does not verify: ${JSON.stringify(verified.error)}`);
+  }
+  return indexProposals(
+    built.entries,
+    (seq) => built.hashes[seq - 1],
+    new Set(verified.value.state.pendingProposals.keys()),
+  );
 }
 
-/** チェーン全エントリのミラー行(監査 seq = chain seq に揃える)。 */
-function mirrorRowsOf(built: BuiltChain): WireRow[] {
-  return built.entries.map((entry) => wireMirrorRow(entry, entry.seq));
+/** 検証済みエントリ → ワイヤのミラー行(サーバーと同じ共有写像から構成)。 */
+function wireMirrorRows(entry: ChainEntry, firstSeq: number, index: ProposalIndex): WireRow[] {
+  return chainMirrorEvents(entry, BASE_TS + firstSeq, index).map((record, offset) => {
+    const seq = firstSeq + offset;
+    const actor: Record<string, unknown> = { type: record.actorType };
+    assignPresent(actor, {
+      userId: record.actorUserId,
+      keyFingerprintHex: record.actorKeyFingerprintHex,
+    });
+    const row: WireRow = {
+      id: idOf(seq),
+      seq,
+      serverTs: record.serverTs,
+      event: record.event,
+      actor,
+    };
+    assignPresent(row, {
+      clientTs: record.clientTs,
+      targetUserId: record.targetUserId,
+      targetKeyFingerprintHex: record.targetKeyFingerprintHex,
+      environmentId: record.environmentId,
+      epoch: record.epoch,
+      chainSeq: record.chainSeq,
+      payload: record.payload,
+    });
+    return row;
+  });
+}
+
+/**
+ * チェーン全エントリのミラー行(監査 seq は 1 から連番。完成した approve は 2 行 —
+ * AUDIT_SPEC §3.4 — なので四眼を含むチェーンでは監査 seq ≠ chain seq になる)。
+ */
+async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
+  const index = await proposalIndexOf(built);
+  const rows: WireRow[] = [];
+  for (const entry of built.entries) {
+    rows.push(...wireMirrorRows(entry, rows.length + 1, index));
+  }
+  return rows;
 }
 
 /**
@@ -261,7 +286,7 @@ describe("maruhi audit(list)", () => {
     const built = await baseChain();
     // seq=5 は変数の列挙以外の payload(authMethod)を持つ
     const rows = [
-      ...mirrorRowsOf(built),
+      ...(await mirrorRowsOf(built)),
       aggregatedReadRow(4),
       aggregatedReadRow(5, { authMethod: "github_oauth" }),
     ];
@@ -311,7 +336,7 @@ describe("maruhi audit(list)", () => {
   it("行を表示し、名前は検証済みステートメントから解決、ミラー行は突合 OK", async () => {
     const built = await baseChain();
     // payload の名前スナップショットはサーバー申告 — 表示名の位置に昇格しない
-    const rows = [...mirrorRowsOf(built), pushRow(4, { name: "EVIL_NAME" })];
+    const rows = [...(await mirrorRowsOf(built)), pushRow(4, { name: "EVIL_NAME" })];
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
 
     expect(await runCli(["audit"], env.layer)).toBe(0);
@@ -334,7 +359,7 @@ describe("maruhi audit(list)", () => {
 
   it("メタデータを取得できない環境は識別子表示へ劣化する(一覧は止めない)", async () => {
     const built = await baseChain();
-    const rows = [...mirrorRowsOf(built), pushRow(4)];
+    const rows = [...(await mirrorRowsOf(built)), pushRow(4)];
     const env = await startEnv(
       await makeAuditServer({ built, rows, metadataAvailable: false }),
       built.projectId,
@@ -347,7 +372,7 @@ describe("maruhi audit(list)", () => {
 
   it("改竄されたミラー行(actor の差し替え)は警告 + 終了コード 1", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const tampered = rows[2];
     if (tampered === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -369,7 +394,7 @@ describe("maruhi audit(list)", () => {
       chainSeq: 2,
     };
     const env = await startEnv(
-      await makeAuditServer({ built, rows: [...mirrorRowsOf(built), forged] }),
+      await makeAuditServer({ built, rows: [...(await mirrorRowsOf(built)), forged] }),
       built.projectId,
     );
 
@@ -387,7 +412,7 @@ describe("maruhi audit(list)", () => {
   it("--event と --before / --limit をそのままクエリへ写す", async () => {
     const built = await baseChain();
     // seq=9 の行を置き、そこから前(seq < 9)を row id カーソルで要求する
-    const rows = [...mirrorRowsOf(built), pushRow(4), pushRow(9)];
+    const rows = [...(await mirrorRowsOf(built)), pushRow(4), pushRow(9)];
     const handlers = await makeAuditServer({ built, rows });
     const server = await MockServer.start([...handlers]);
     servers.push(server);
@@ -420,7 +445,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
   it("全単射 + 全フィールド一致なら OK(終了コード 0)", async () => {
     const built = await baseChain();
     const env = await startEnv(
-      await makeAuditServer({ built, rows: mirrorRowsOf(built) }),
+      await makeAuditServer({ built, rows: await mirrorRowsOf(built) }),
       built.projectId,
     );
     expect(await runCli(["audit", "verify"], env.layer)).toBe(0);
@@ -430,17 +455,17 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
   it("ミラー行の欠落(削除の隠蔽)を検出する", async () => {
     const built = await baseChain();
     // seq=3(add_member)のミラーを落とす — per-row 突合では原理的に見えない欠落
-    const rows = mirrorRowsOf(built).filter((row) => row["seq"] !== 3);
+    const rows = (await mirrorRowsOf(built)).filter((row) => row["seq"] !== 3);
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("no corresponding mirror row");
+    expect(errors).toContain("no corresponding chain.member_added mirror row");
     expect(errors).toContain("chain_seq=3");
   });
 
   it("ミラー行の改変(鍵 FP の差し替え)を検出する", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const genesis = rows[0];
     if (genesis === undefined) {
       throw new Error("fixture is missing the genesis mirror row");
@@ -459,7 +484,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("同一 chain_seq への重複ミラー行を検出する", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const duplicated = rows[2];
     if (duplicated === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -472,7 +497,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("偽のトークン経由表示(actor.api_token_id の付与)を検出する", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const tampered = rows[2];
     if (tampered === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -488,7 +513,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("到達し得ない chain_seq を名乗る偽造行は連続性違反として検出する(恒久すり抜けの遮断)", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -504,7 +529,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("写像に無い chain.* 名を名乗る偽造行を検出する", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -522,7 +547,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("chain.* 外で chain_seq を名乗る偽造行も presence filter で取得して検出する", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const forged = {
       ...pushRow(9),
       event: "chainx.grant",
@@ -550,7 +575,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
 
   it("head 直後から連続する新しい行は偽造断定しないが、OK とも言わない(exit 1 + 再実行案内)", async () => {
     const built = await baseChain();
-    const rows = mirrorRowsOf(built);
+    const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
@@ -566,11 +591,137 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
   });
 });
 
+const removeMemberOp = (target: TestUser): ChainOperation => ({
+  op: "remove_member",
+  payload: { targetUserId: target.userId },
+});
+const policyOp = (requiredApprovals: number): ChainOperation => ({
+  op: "set_approval_policy",
+  payload: { ops: ["remove_member"], requiredApprovals },
+});
+const proposeOp = (inner: ChainOperation): ChainOperation =>
+  ({ op: "propose", payload: { inner, expiresAtMs: BASE_TS * 2 } }) as ChainOperation;
+const approveOp = (proposalHashHex: string): ChainOperation =>
+  ({ op: "approve", payload: { proposalHashHex } }) as ChainOperation;
+
+describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", () => {
+  /**
+   * 方針(required)の下で owner が member の remove を提案し、承認者が approve を
+   * 重ねたチェーン。required = 2 なら 2 番目の owner の 1 票で完成、required = 3 なら
+   * pending のまま(未完成の approve)。propose の hash は 1 度組んでから参照する
+   * (署名は決定的なので同じ前段は同じ hash になる)。
+   */
+  async function fourEyesChain(requiredApprovals: 2 | 3): Promise<BuiltChain> {
+    const owner2 = await makeTestUser("user-owner-3333");
+    const owner3 = await makeTestUser("user-owner-4444");
+    const prefix = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(member, "member") },
+      { actor: owner, operation: addMemberOp(owner2, "owner") },
+      { actor: owner, operation: addMemberOp(owner3, "owner") },
+      { actor: owner, operation: policyOp(requiredApprovals) },
+      { actor: owner, operation: proposeOp(removeMemberOp(member)) },
+    ];
+    const proposed = await buildChain(prefix);
+    const proposalHash = proposed.hashes[proposed.hashes.length - 1];
+    if (proposalHash === undefined) {
+      throw new Error("fixture chain has no propose hash");
+    }
+    return buildChain([...prefix, { actor: owner2, operation: approveOp(proposalHash) }]);
+  }
+
+  it("完成した approve の 2 行(chain.approved + 適用行)を含めて全単射 OK", async () => {
+    const built = await fourEyesChain(2);
+    const rows = await mirrorRowsOf(built);
+    // 8 エントリ ↔ 9 行(seq 8 の approve が chain.approved + chain.member_removed)
+    expect(rows).toHaveLength(built.entries.length + 1);
+    expect(rows.filter((row) => row["chainSeq"] === 8).map((row) => row["event"])).toEqual([
+      "chain.approved",
+      "chain.member_removed",
+    ]);
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("Mirror bijection verification OK");
+  });
+
+  it("適用行の欠落を検出する", async () => {
+    const built = await fourEyesChain(2);
+    const rows = (await mirrorRowsOf(built)).filter(
+      (row) => row["event"] !== "chain.member_removed",
+    );
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("chain_seq=8");
+    expect(errors).toContain("no corresponding chain.member_removed mirror row");
+  });
+
+  it("適用行の viaProposalSeq / actor の改変と completed の偽装を検出する", async () => {
+    const built = await fourEyesChain(2);
+    const rows = await mirrorRowsOf(built);
+    const applied = rows.findIndex((row) => row["event"] === "chain.member_removed");
+    const approved = rows.findIndex((row) => row["event"] === "chain.approved");
+    const appliedRow = rows[applied];
+    const approvedRow = rows[approved];
+    if (appliedRow === undefined || approvedRow === undefined) {
+      throw new Error("fixture is missing the four-eyes rows");
+    }
+    rows[applied] = { ...appliedRow, payload: { viaProposalSeq: 6 } };
+    rows[approved] = { ...approvedRow, payload: { proposalChainSeq: 7, completed: false } };
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("payload: expected");
+    expect(errors).toContain('"viaProposalSeq":7');
+    expect(errors).toContain('"completed":true');
+  });
+
+  it("未完成の approve に付いた適用行を過剰な行として検出する", async () => {
+    const built = await fourEyesChain(3);
+    const rows = await mirrorRowsOf(built);
+    // required = 3 で 1 票: chain.approved(completed = false)のみが正
+    expect(rows).toHaveLength(built.entries.length);
+    const approved = rows.find((row) => row["event"] === "chain.approved");
+    if (approved === undefined) {
+      throw new Error("fixture is missing the approve row");
+    }
+    expect(approved["payload"]).toEqual({ proposalChainSeq: 7, completed: false });
+    rows.push({
+      ...approved,
+      id: idOf(99),
+      seq: 99,
+      event: "chain.member_removed",
+      targetUserId: member.userId,
+      payload: { viaProposalSeq: 7 },
+    });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("unexpected mirror row");
+    expect(errors).toContain("chain.member_removed");
+  });
+
+  it("list は同じ chain_seq の 2 行をどちらも突合 OK と表示する", async () => {
+    const built = await fourEyesChain(2);
+    const env = await startEnv(
+      await makeAuditServer({ built, rows: await mirrorRowsOf(built) }),
+      built.projectId,
+    );
+    expect(await runCli(["audit", "list"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("chain.approved");
+    expect(logs).toContain("chain.member_removed");
+    expect(logs).not.toContain("mirror=mismatch");
+    expect(env.errors.join("\n")).not.toContain("chain provenance claim");
+  });
+});
+
 describe("maruhi audit invites / self", () => {
   it("invites は D1 側の invite.* 行を表示する", async () => {
     const built = await baseChain();
     const handlers = [
-      ...(await makeAuditServer({ built, rows: mirrorRowsOf(built) })),
+      ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
       onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
         status: 200,
         json: {
@@ -598,7 +749,7 @@ describe("maruhi audit invites / self", () => {
   it("D1 経路の chain_seq も無ラベル表示せず整合性違反にする", async () => {
     const built = await baseChain();
     const handlers = [
-      ...(await makeAuditServer({ built, rows: mirrorRowsOf(built) })),
+      ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
       onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
         status: 200,
         json: {

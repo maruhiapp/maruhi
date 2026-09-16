@@ -20,13 +20,14 @@
 // - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
 //   AuditStore)の背後に隔離する。DDL は do-schema.ts(コンストラクタで適用)
 
-import type { ChainEntry, Role } from "@maruhi/crypto";
+import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
 import type { HeadAttestationSubmissionInput } from "./attestation-accept.ts";
 import { putHeadAttestationProgram } from "./attestation-accept.ts";
 import { AuditStore, auditStoreLayer } from "./audit-store.ts";
+import type { AppliedProposal } from "./chain-accept.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
 import { commitAcceptedEntry } from "./chain-commit.ts";
 import type { StateCache } from "./chain-store.ts";
@@ -96,6 +97,7 @@ import {
   pushVersionProgram,
   renameVariableProgram,
 } from "./programs-variable.ts";
+import { ensureProposalAdmitted } from "./quotas.ts";
 import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 import type { StorageGuardDecision } from "./storage-guard.ts";
@@ -268,6 +270,15 @@ export interface ChainHeadValue {
 }
 
 /**
+ * 汎用追記の受理結果: 新ヘッド + 完成した approve が適用した提案(四眼 — K5)。
+ * worker は `appliedProposal.inner` に対して直接追記と同じ D1 後処理(招待の
+ * completed 突合・membership 投影)を行う。ワイヤ(HTTP 応答)には載せない
+ */
+export interface AppendValue extends ChainHeadValue {
+  readonly appliedProposal: AppliedProposal | null;
+}
+
+/**
  * チェーン全体のスナップショット(取得成功の RPC 値)。attestations は
  * **現メンバーの最新ヘッド申告のみ**(AUTH_SPEC §16-1 — remove 時の行削除
  * 〔chain-accept.ts〕に加えて配布側でも現メンバー集合で絞る独立の防衛層)。
@@ -316,7 +327,7 @@ export interface InitAdmission {
 }
 
 /** RPC 境界を渡る追記結果。 */
-export type AppendOutcome = DataOutcome<ChainHeadValue>;
+export type AppendOutcome = DataOutcome<AppendValue>;
 
 /** RPC 境界を渡るチェーン取得結果。 */
 export type SnapshotOutcome = DataOutcome<ChainSnapshotValue>;
@@ -365,7 +376,7 @@ const initProgram = (
     // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
     // init は Schema 上は全 op を受理するが、seq 1 の非 genesis は verifyChain の
-    // フレーミング規則(bad-genesis)で必ず 422 になる — 四眼 4 op の受理ガード
+    // フレーミング規則(bad-genesis)で必ず 422 になる — 四眼の受理ポリシー
     // (appendProgram)を init に置かないのはこの不変条件に依る(独立レビュー D3)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
     // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
@@ -373,7 +384,7 @@ const initProgram = (
     if (applied.state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
-    yield* commitAcceptedEntry(entry, applied, canonicalBytes);
+    yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
     updateStateCache(cache, applied);
     return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
@@ -399,16 +410,32 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
       genesisHashHex: chain.genesisHashHex,
       totalCanonicalBytes: chain.totalCanonicalBytes,
       members: state.members,
+      // 現導出状態(四眼の受理ポリシー・成長ガードの参照先 — appendProgram)
+      state,
     };
   });
 
-const APPROVAL_OPS = ["set_approval_policy", "propose", "approve", "withdraw"] as const;
-type ApprovalOp = (typeof APPROVAL_OPS)[number];
-
-/** 四眼の 4 op(PF1)か — K5 までの受理拒否の判定(worker ハンドラと同じ集合)。 */
-function isApprovalOp(op: ChainEntry["op"]): op is ApprovalOp {
-  return (APPROVAL_OPS as readonly string[]).includes(op);
+/**
+ * アクセス集合を拡げる op(AUTH_SPEC §12-8 の成長ガードの対象)か。直接追記の
+ * `add_member` / `grant_server` に加え、四眼経由では**その意図が最初に現れる
+ * エントリ**で止める(設計録 es-design.md §11 K5-D): 内側 op が成長 op の `propose`
+ * と、参照先の pending 提案の内側 op が成長 op の `approve`(完成するか否かに依らず)。
+ * 参照先が pending に無い approve は対象外(verifyChain が `unknown-proposal` で拒む)。
+ * `withdraw`(解放)/ `set_approval_policy`(チェーン容量で有界)/ remove・revoke・
+ * change_role の提案と承認(是正)は拒否下でも受理する(§12-8 (b)(c))。
+ */
+function growsAccessSet(entry: ChainEntry, state: ChainState): boolean {
+  if (entry.op === "propose") {
+    return isGrowthOp(entry.payload.inner.op);
+  }
+  if (entry.op === "approve") {
+    const pending = state.pendingProposals.get(entry.payload.proposalHashHex);
+    return pending !== undefined && isGrowthOp(pending.inner.op);
+  }
+  return isGrowthOp(entry.op);
 }
+
+const isGrowthOp = (op: ChainEntry["op"]): boolean => op === "add_member" || op === "grant_server";
 
 /**
  * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
@@ -421,7 +448,7 @@ export const appendProgram = (
   callerUserId: string,
   cache: StateCache,
 ): Effect.Effect<
-  ChainHeadValue,
+  AppendValue,
   DataRejectedError,
   ChainStore | AuditStore | DataStore | StorageMeter
 > =>
@@ -433,16 +460,6 @@ export const appendProgram = (
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
-    // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は K5 まで受理しない(fail-closed — 設計録
-    // es-design.md §8 K2-10)。verifyChain は受理できるが、完成した approve が内側 op
-    // を適用する副作用(AUDIT_SPEC §3.4 の適用行・§7 の要ローテーション検出・
-    // 再追加メンバーの旧鍵ラップ掃除・申告行の削除・§12-8 の成長ガード)は op 判定で
-    // 分岐する既存経路が拾えず、ミラー行は v1 でバックフィルしないため欠落が
-    // 恒久化する。worker ハンドラが先行拒否するが、受理判定の権威である DO 側にも
-    // 同じガードを置く(composite-required と同じ多層防御)
-    if (isApprovalOp(entry.op)) {
-      return yield* rejectData({ kind: "approval-not-accepted", op: entry.op });
-    }
     // standalone(周期)checkpoint(AUTH_SPEC §16-2):
     // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
     // スナップショットの原子保存を伴う専用経路へ分岐する
@@ -451,20 +468,37 @@ export const appendProgram = (
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
     // DO ストレージ総量ガード(AUTH_SPEC §12-8): アクセス集合を拡げる
-    // add_member / grant_server のみ(自然な後続のラップバックフィルが拒否対象
-    // のため入口で揃える)。remove_member / revoke_server / change_role(失効・
-    // 権限縮小 = セキュリティ是正)と checkpoint(有界)は拒否下でも受理する。
-    // 位置はメンバーシップの後(§11-2)・CAS / verifyChain の前(資源保護優先)
-    if (entry.op === "add_member" || entry.op === "grant_server") {
+    // add_member / grant_server(直接追記と、四眼経由の提案・承認 — growsAccessSet)
+    // のみ(自然な後続のラップバックフィルが拒否対象のため入口で揃える)。
+    // remove_member / revoke_server / change_role(失効・権限縮小 = セキュリティ
+    // 是正)と checkpoint(有界)は拒否下でも受理する。位置はメンバーシップの後
+    // (§11-2)・CAS / verifyChain の前(資源保護優先)
+    if (growsAccessSet(entry, chain.state)) {
       yield* ensureStorageAdmitsGrowth;
+    }
+    // 四眼の propose の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則では
+    // ない): expires_at_ms の上界 → pending 上限(期限切れは数えない)。判定材料は
+    // 現導出状態とサーバー時計で、DO のみが持つ(worker には置かない — K5-B)。
+    // 位置は成長ガードと同じ「意味論的検査(CAS / verifyChain)の前」
+    if (entry.op === "propose") {
+      yield* ensureProposalAdmitted(
+        entry.payload.expiresAtMs,
+        chain.state.pendingProposals,
+        Date.now(),
+      );
     }
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
-    // 共有(chain-accept.ts)
+    // 共有(chain-accept.ts)。完成した approve は内側 op のミラー適用行と副作用を
+    // 同じコミットで書き、適用した提案を worker へ返す(K5-H)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    yield* commitAcceptedEntry(entry, applied, canonicalBytes);
+    const appliedProposal = yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
     updateStateCache(cache, applied);
-    return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
+    return {
+      headSeq: applied.state.headSeq,
+      headHashHex: applied.state.headHashHex,
+      appliedProposal,
+    };
   });
 
 /** チェーン取得(公開はテスト用 — 拒否下でも読み取りが通ることの固定)。 */

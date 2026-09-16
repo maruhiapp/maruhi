@@ -11,22 +11,26 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
-import { insertAcceptedEntrySync } from "./chain-accept.ts";
-import type { VerifiedChainView } from "./chain-store.ts";
+import type { AppliedProposal } from "./chain-accept.ts";
+import { insertAcceptedEntrySync, proposalIndexOf } from "./chain-accept.ts";
+import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
 import { ChainStore } from "./chain-store.ts";
 import { DataStore } from "./data-store.ts";
 
 /**
- * 受理済みエントリの原子コミット。`extraSync` は同じ同期ブロック内で追加の
- * 書き込み(standalone checkpoint のスナップショット保存 — §6.4)を行う口で、
- * serverTs(nowMs)を共有する。
+ * 受理済みエントリの原子コミット。`chain` は受理前の保存チェーン(受理済み
+ * エントリを足した列が §3.4 の提案索引の入力 — chain-accept.ts)。`extraSync` は
+ * 同じ同期ブロック内で追加の書き込み(standalone checkpoint のスナップショット
+ * 保存 — §6.4)を行う口で、serverTs(nowMs)を共有する。戻り値は完成した approve が
+ * 適用した提案(それ以外は null)。
  */
 export const commitAcceptedEntry = (
+  chain: StoredChain,
   entry: ChainEntry,
   applied: VerifiedChainView,
   canonicalBytes: number,
   extraSync?: (nowMs: number) => void,
-) =>
+): Effect.Effect<AppliedProposal | null, never, ChainStore | AuditStore | DataStore> =>
   Effect.gen(function* () {
     const chainStore = yield* ChainStore;
     const audit = yield* AuditStore;
@@ -34,14 +38,17 @@ export const commitAcceptedEntry = (
     // 削除するため、汎用チェーン受理もデータストアの書き込み面を渡す
     const dataStore = yield* DataStore;
     const nowMs = Date.now();
-    yield* Effect.sync(() => {
-      insertAcceptedEntrySync(
+    const proposals = proposalIndexOf([...chain.entries, entry], applied);
+    return yield* Effect.sync(() => {
+      const appliedProposal = insertAcceptedEntrySync(
         { chainStore, audit, dataStore },
         entry,
         applied,
         canonicalBytes,
         nowMs,
+        proposals,
       );
       extraSync?.(nowMs);
+      return appliedProposal;
     });
   });

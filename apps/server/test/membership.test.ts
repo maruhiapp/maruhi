@@ -15,18 +15,21 @@ import {
   firstFourEyesSeq,
   toWireEntry,
   vectorEntries,
+  vectorExtendedChains,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
-import { resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
+import { signEntryAt } from "./support/data-crypto.ts";
 import {
   appendEntry,
   getChain,
   initChain,
   registerMembershipScenario,
+  replayNegativePrefix,
   replayVectorChain,
   tokenFor,
   VECTOR_ORG,
 } from "./support/membership-scenario.ts";
+import { queryProjectDo, readAuditEvents } from "./support/project-do.ts";
 
 registerMembershipScenario();
 
@@ -114,15 +117,15 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
 });
 
 describe("チェーン再生(正常系ベクター。create/rotate は複合経由)", () => {
-  // 四眼の 4 op(seq 20〜24)は K5 までサーバーが受理しない(下の describe)ので、
-  // 正規チェーンの再生は最初の四眼 op の直前(seq 19 = 方針オフのヘッド)まで
-  const replayableEntries = vectorEntries.filter((v) => v.seq < firstFourEyesSeq);
+  // 正規チェーン全 24 エントリ(2026-09-14 ES + PF1 — seq 20〜24 の四眼 4 op を含む。
+  // K5 で受理ガードを外し全再生に戻した)
+  const lastSeq = vectorEntries[vectorEntries.length - 1]?.seq ?? 0;
 
-  it("accepts the vector chain up to the first four-eyes entry with interleaved boundary checkpoints, append-only", async () => {
+  it("accepts the whole vector chain with interleaved boundary checkpoints, append-only", async () => {
     // 複合(vector seq 3 / 4 / 8 / 10 / 11)ごとに境界 checkpoint(H+2)が
-    // 挿入される(§12-4)。ベクターの seq 1〜19(2026-09-14 ES — seq 13〜19 は
-    // scope 付き add_member / change_role)はこの順序で全受理される
-    const { head } = await replayVectorChain(firstFourEyesSeq - 1);
+    // 挿入される(§12-4)。ベクターの seq 1〜24 はこの順序で全受理される
+    expect(lastSeq).toBeGreaterThan(firstFourEyesSeq);
+    const { head } = await replayVectorChain(lastSeq);
 
     const response = await getChain(vectorProjectId);
     expect(response.status).toBe(200);
@@ -133,7 +136,7 @@ describe("チェーン再生(正常系ベクター。create/rotate は複合経�
       headHashHex: string;
     };
     // 期待 op 列 = ベクター本編の op 列に、create / rotate の直後の境界 checkpoint を挿入したもの
-    const expectedOps = replayableEntries.flatMap((v) =>
+    const expectedOps = vectorEntries.flatMap((v) =>
       v.op === "create_environment" || v.op === "rotate_epoch" ? [v.op, "checkpoint"] : [v.op],
     );
     expect(body.projectId).toBe(vectorProjectId);
@@ -144,7 +147,7 @@ describe("チェーン再生(正常系ベクター。create/rotate は複合経�
     // checkpoint を除いた op 列はベクター本編と一致する(同じ操作列の受理)
     expect(
       body.entries.filter((entry) => entry.op !== "checkpoint").map((entry) => entry.op),
-    ).toEqual(replayableEntries.map((v) => v.op));
+    ).toEqual(vectorEntries.map((v) => v.op));
 
     // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)。最初の
     // 複合の checkpoint 挿入まで(seq 1〜3)はベクターの固定バイトのまま受理される
@@ -161,26 +164,147 @@ describe("チェーン再生(正常系ベクター。create/rotate は複合経�
   });
 });
 
-describe("四眼の 4 op の受理ガード(PF1 — K5 まで ApprovalNotAccepted 422。設計録 §8 K2-10)", () => {
-  // 正規チェーンの seq 20〜24(set_approval_policy / propose / approve / propose /
-  // withdraw)を方針オフのヘッド(seq 19)へ再署名して送る。受理ガードは verifyChain
-  // より先(worker ハンドラ)なので、合意規則上の正否に依らず op だけで拒否される
-  // (approve / withdraw の参照先が未知でも unknown-proposal には到達しない)
-  for (const vector of vectorEntries.filter((v) => v.seq >= firstFourEyesSeq)) {
-    it(`rejects ${vector.op} (vector seq ${vector.seq}) with 422 ApprovalNotAccepted`, async () => {
-      const { head } = await replayVectorChain(firstFourEyesSeq - 1);
-      const { entry } = await resignEntryAt(toWireEntry(vector), head.seq + 1, head.hashHex);
-      const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
-      expect(response.status).toBe(422);
-      const body = (await response.json()) as { _tag: string; op: string };
-      expect(body["_tag"]).toBe("ApprovalNotAccepted");
-      expect(body.op).toBe(vector.op);
-      // ヘッドは動かない(拒否は受理前)
-      const chain = await readChain();
-      expect(chain.headSeq).toBe(head.seq);
-      expect(chain.headHashHex).toBe(head.hashHex);
+type AuditRow = Record<string, unknown>;
+
+/** 監査行の payload(JSON 文字列)を読む。 */
+const payloadOf = (row: AuditRow): Record<string, unknown> =>
+  JSON.parse(String(row["payload"])) as Record<string, unknown>;
+
+/** chain_seq の行(監査 seq 順)。 */
+const rowsAt = (rows: readonly AuditRow[], chainSeq: number): AuditRow[] =>
+  rows.filter((row) => row["chain_seq"] === chainSeq);
+
+/** chain_seq の nth 行(無ければ失敗)。 */
+function rowAt(rows: readonly AuditRow[], chainSeq: number, nth = 0): AuditRow {
+  const row = rowsAt(rows, chainSeq)[nth];
+  if (row === undefined) throw new Error(`no audit row #${nth} for chain_seq=${chainSeq}`);
+  return row;
+}
+
+/** 再生済みチェーンから op の nth エントリの seq を引く。 */
+function seqOf(entries: readonly ChainEntry[], op: ChainEntry["op"], nth = 0): number {
+  const found = entries.filter((entry) => entry.op === op)[nth];
+  if (found === undefined) throw new Error(`replayed chain has no ${op} #${nth}`);
+  return found.seq;
+}
+
+async function projectionRowsFor(userId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND user_id = ?",
+  )
+    .bind(vectorProjectId, userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+describe("四眼の 4 op の受理とミラー(PF1 — K5。AUDIT_SPEC §3.4)", () => {
+  // 正規チェーンの seq 20〜24 = set_approval_policy / propose(change_role: devmember →
+  // reader listed{dev} — 提案者 owner-0001 の 1 票)/ approve(owner-0014 — 定足数 2 に
+  // 到達 = 完成)/ propose(remove_member — 提案者 devadmin-0011 は admin で票なし)/
+  // withdraw(owner-0015)。再生後の実 seq は境界 checkpoint の挿入分だけずれるので、
+  // 取得したチェーンから op で引く
+  it("mirrors the four-eyes entries with proposalChainSeq / completed and writes the applied inner-op row", async () => {
+    await replayVectorChain(vectorEntries[vectorEntries.length - 1]?.seq ?? 0);
+    const chain = await readChain();
+    const policySeq = seqOf(chain.entries, "set_approval_policy");
+    const firstProposeSeq = seqOf(chain.entries, "propose", 0);
+    const approveSeq = seqOf(chain.entries, "approve");
+    const secondProposeSeq = seqOf(chain.entries, "propose", 1);
+    const withdrawSeq = seqOf(chain.entries, "withdraw");
+    const rows = await readAuditEvents(vectorProjectId);
+
+    // 1 エントリ 1 行(全単射)— 完成した approve だけが 2 行目(適用行)を持つ
+    for (const entry of chain.entries) {
+      expect(rowsAt(rows, entry.seq).length, `chain_seq=${entry.seq} (${entry.op})`).toBe(
+        entry.seq === approveSeq ? 2 : 1,
+      );
+    }
+
+    const policy = rowAt(rows, policySeq);
+    expect(policy["event"]).toBe("chain.approval_policy_changed");
+    expect(payloadOf(policy)).toEqual({
+      ops: ["change_role", "grant_server", "remove_member", "set_approval_policy"],
+      requiredApprovals: 2,
     });
-  }
+
+    const proposed = rowAt(rows, firstProposeSeq);
+    expect(proposed["event"]).toBe("chain.proposed");
+    expect(payloadOf(proposed)).toMatchObject({ innerOp: "change_role" });
+    // 内側 payload は写さない(正はチェーン)
+    expect(payloadOf(proposed)["inner"]).toBeUndefined();
+
+    // 完成した approve: chain.approved(completed = true)+ 内側 op の適用行(同 chain_seq。
+    // actor = 提案者 owner-0001・target = devmember・viaProposalSeq = 提案の seq)
+    const approved = rowAt(rows, approveSeq, 0);
+    const applied = rowAt(rows, approveSeq, 1);
+    expect(approved["event"]).toBe("chain.approved");
+    expect(approved["actor_user_id"]).toBe("user-owner-0014");
+    expect(payloadOf(approved)).toEqual({ proposalChainSeq: firstProposeSeq, completed: true });
+    expect(applied["event"]).toBe("chain.role_changed");
+    expect(applied["actor_user_id"]).toBe("user-owner-0001");
+    expect(applied["target_user_id"]).toBe("user-devmember-0010");
+    expect(payloadOf(applied)).toEqual({
+      newRole: "reader",
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["env-dev-0002"],
+      viaProposalSeq: firstProposeSeq,
+    });
+    // 監査 seq はミラー行 → 適用行の順(検出はミラーの後に読む)
+    expect(Number(approved["seq"])).toBeLessThan(Number(applied["seq"]));
+
+    const withdrawn = rowAt(rows, withdrawSeq);
+    expect(withdrawn["event"]).toBe("chain.proposal_withdrawn");
+    expect(payloadOf(withdrawn)).toEqual({ proposalChainSeq: secondProposeSeq });
+
+    // devmember は seq 13 の add_member 受理で投影行を持ち(§11-5 (2))、降格(適用済み
+    // change_role)では消えない
+    expect(await projectionRowsFor("user-devmember-0010")).toBe(1);
+  });
+
+  it("writes the applied member_removed row only for the approve that reaches the quorum and drops the projection row", async () => {
+    // 派生チェーン proposal-completed(base 23): approve@24(owner-0014 — 1 票・未完成)
+    // → approve@25(owner-0015 — 定足数 2 で完成 = remove_member devmember の適用)
+    const extended = vectorExtendedChains["proposal-completed"];
+    const last = extended?.entries[extended.entries.length - 1];
+    if (last === undefined) throw new Error("missing extended chain proposal-completed");
+    // replayNegativePrefix は chain 指定で派生チェーンの全エントリを再生する
+    const { head } = await replayNegativePrefix({
+      entry: { seq: last.seq + 1 },
+      chain: "proposal-completed",
+    });
+
+    const chain = await readChain();
+    // 正規チェーンの完成 approve(seq 22 相当)に派生チェーンの 2 本が続く
+    const firstApproveSeq = seqOf(chain.entries, "approve", 1);
+    const completingSeq = seqOf(chain.entries, "approve", 2);
+    expect(completingSeq).toBe(head.seq);
+    const rows = await readAuditEvents(vectorProjectId);
+
+    expect(rowsAt(rows, firstApproveSeq).map((row) => row["event"])).toEqual(["chain.approved"]);
+    expect(payloadOf(rowAt(rows, firstApproveSeq))).toMatchObject({ completed: false });
+
+    const approved = rowAt(rows, completingSeq, 0);
+    const applied = rowAt(rows, completingSeq, 1);
+    expect(approved["event"]).toBe("chain.approved");
+    expect(payloadOf(approved)).toMatchObject({ completed: true });
+    expect(applied["event"]).toBe("chain.member_removed");
+    expect(applied["target_user_id"]).toBe("user-devmember-0010");
+    // 提案者(devadmin-0011 — admin。票にはならないが適用行の actor)
+    expect(applied["actor_user_id"]).toBe("user-devadmin-0011");
+    expect(payloadOf(applied)).toEqual({ viaProposalSeq: seqOf(chain.entries, "propose", 1) });
+
+    // §11-5 (3): 適用された remove_member は投影行を消す(worker の D1 後処理 — K5-H)
+    expect(await projectionRowsFor("user-devmember-0010")).toBe(0);
+    // 削除されたメンバーはもう読めない(§11-2)
+    const denied = await getChain(vectorProjectId, bearer(tokenFor("user-devmember-0010")));
+    expect(denied.status).toBe(404);
+    // チェーン行の数 = ミラー行の chain_seq の集合(適用行は既存 seq の 2 行目)
+    const distinct = new Set(rows.map((row) => row["chain_seq"]).filter((seq) => seq !== null));
+    expect(distinct.size).toBe(chain.headSeq);
+    expect(
+      await queryProjectDo(vectorProjectId, "SELECT COUNT(*) AS n FROM chain_entries"),
+    ).toEqual([{ n: chain.headSeq }]);
+  });
 });
 
 const readChain = async () => {

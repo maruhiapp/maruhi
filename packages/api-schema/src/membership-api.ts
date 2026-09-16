@@ -31,6 +31,7 @@ import {
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
+  ProposalLimitError,
 } from "./errors/index.ts";
 import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
@@ -194,9 +195,12 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // audit-head-unknown / stale を判定しない(fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
-        // 四眼の 4 op(PF1)は受理副作用(ミラー行・要ローテーション検出・
-        // ラップ掃除・pending 上限)が揃う K5 まで受理しない(fail-closed)
+        // 四眼の 4 op(PF1): K5 以降のサーバーは受理する。ApprovalNotAccepted は
+        // K5 より前のサーバーが返す型(errors/chain.ts — ワイヤ互換のため宣言を残す)。
+        // ProposalLimit は propose の受理ポリシー(AUTH_SPEC §12-8 — pending 32 件・
+        // expires_at_ms の上界 30 日。合意規則ではない)
         ApprovalNotAcceptedError,
+        ProposalLimitError,
         ForbiddenError,
         // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
         // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422

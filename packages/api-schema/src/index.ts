@@ -212,6 +212,8 @@ export {
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
+  ProposalLimitError,
+  ProposalLimitReasonSchema,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
   ResourceConflictReasonSchema,
