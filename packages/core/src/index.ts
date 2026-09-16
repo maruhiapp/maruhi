@@ -38,7 +38,11 @@ export {
   auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
-  chainMirrorEvent,
+  chainMirrorEvents,
+  type IndexedProposal,
+  indexProposals,
+  type ProposalIndex,
+  type ProposeEntry,
   VAR_READ_EVENT,
 } from "./audit.ts";
 export {

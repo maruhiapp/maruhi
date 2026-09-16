@@ -358,7 +358,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | **K2** | **テストベクターを先に書く**: `chain-entries.json` 全再生成(add_member / change_role の scope・新 op 4 種・`expected_head_states` に scope / 方針 / pending・正例・負例)、`invite-link.json` 再生成(発行文に scope)、チェーンを読み込む `value-signature.json` / `metadata-signature.json` / `env-manifest.json` の再生成 → `packages/crypto`(scope の型・正規化・合意規則 ES + PF1・履歴索引・宣言ヘッド時点の scope 検査・発行文)→ **api-schema のワイヤ + server / CLI の機械的追随**(scope は `all` 固定で発行、PF1 の op は生成しない)。**人間レビュー必須箇所を PR 本文に列挙**。**`docs/SELF_HOSTING.md` "Updates" に移行順序(サーバー → 全メンバー CLI → 既存プロジェクトの再作成)を同梱**(2026-09-14 所有者裁定 — K7 から前倒し。破壊的変更とその手順書を同じ PR で着地させる) | 挙動変更なし(全メンバー = all のまま)。crypto が新規則を理解し、旧形式を拒否する。この段のデプロイで既存プロジェクトのチェーンは無効になるため、K2 のマージ = 検証デプロイの再作成のタイミング |
 | **K3** | server(ES): 受信者集合 = scope(`expectedWrapRecipientCount` / `checkWrapRecipient`)、環境対象 op の scope 認可(`InsufficientScope`)、値・メタ・マニフェストの宣言ヘッド時点 scope 検査、招待行の scope、ミラー payload、要ローテーション検出の環境別窓・縮小変種。テストは `@cloudflare/vitest-plugin`。**完了(2026-09-15 — 裁定は §9 K3 追記: 403 は `ForbiddenError{reason: insufficient-scope}`、判定順 role → scope → 存在、3′ は `chain-head-state-mismatch` に畳んだまま、R(E) は 1 述語、環境別窓は member / server 共有の窓導出、`rotation.recommended` に `trigger`、AUDIT_SPEC §4.2 Q1 の列挙訂正、`chain_seq` 全単射は K5 へ据え置き)** | CLI はまだ all しか発行しないので配布は従来どおり。制限は眠ったまま |
 | **K4** | CLI(ES): `invite create --env`、`member add`(招待行の scope)、`member change-role --env` / `member scope`(拡大 backfill・縮小 sweep)、**`member list`**、`wrapRecipientsFor` / backfill / sweep の scope 対応、`env create` の前提検査、pull / push / rotate の scope 外エラー、scope 外ラップの警告、`project verify` の scope 列 + Web `ProjectScreen` の scope 列。テストは Vitest。**完了(2026-09-15 — 裁定は §10 K4 追記: `change-role` は 1 コマンドで (role, scope) を全置換〔省略 = 据え置き・`--all-envs`〕、通信前判定は前段 / 共通ガード / DEK 取得口 / 値付き pull の漏斗、sweep は義務ごとの環境集合を具体化、Web の scope 列は K4 で確定、受信側規則は取得口の型付きエラー)** | ES 完了。四眼は方針なし = オフのまま |
-| **K5** | server(PF1): **K2-10 の受理ガード(`ApprovalNotAccepted`)の解除と同じ PR で。解除の前提 = 正本への申し送り ⑤(投票者の鍵束縛)の所有者裁定と、その反映(正本 → ベクター → crypto)が済んでいること — 解除した瞬間に ⑤ が実効化するため。2026-09-15 の K2-11 で裁定・反映済み(前提は満たされた)。K5 で判断する持ち越し: 鍵の再登録による票の復活(K2-11 ⑤ 行「失効は単調ではない」)を CRYPTO_SPEC §6.2 の一文として正本に載せるか設計録のままにするか、および CLI / UI が過去に見た鍵 FP の再登録に警告するか(pullfrog 第 3 巡の指摘)。さらに `required_approvals` 引き下げ後の pending 提案の完成(既投票 owner の approve は `duplicate-approval` — K2-11-bis の UX 上の難点)を CLI / UI の案内で扱うか合意規則で扱うか**: 受理ポリシー(pending 上限。8-bis K2-5 e-3: 作成時点で失効済みの提案〔`expires_at_ms` < 受理時サーバー時計〕の拒否も受理ポリシー候補)、適用完了時の副作用(要ローテーション検出・旧鍵ラップ掃除・申告行削除・成長ガード)、ミラー 4 種 + 適用行、`audit verify` の全単射規則 | K2 のサーバーは 4 op を 422 で拒否する(受理ガード = 執行) |
+| **K5** | server(PF1): **K2-10 の受理ガード(`ApprovalNotAccepted`)の解除と同じ PR で。解除の前提 = 正本への申し送り ⑤(投票者の鍵束縛)の所有者裁定と、その反映(正本 → ベクター → crypto)が済んでいること — 解除した瞬間に ⑤ が実効化するため。2026-09-15 の K2-11 で裁定・反映済み(前提は満たされた)。K5 で判断する持ち越し: 鍵の再登録による票の復活(K2-11 ⑤ 行「失効は単調ではない」)を CRYPTO_SPEC §6.2 の一文として正本に載せるか設計録のままにするか、および CLI / UI が過去に見た鍵 FP の再登録に警告するか(pullfrog 第 3 巡の指摘)。さらに `required_approvals` 引き下げ後の pending 提案の完成(既投票 owner の approve は `duplicate-approval` — K2-11-bis の UX 上の難点)を CLI / UI の案内で扱うか合意規則で扱うか**: 受理ポリシー(pending 上限。8-bis K2-5 e-3: 作成時点で失効済みの提案〔`expires_at_ms` < 受理時サーバー時計〕の拒否も受理ポリシー候補)、適用完了時の副作用(要ローテーション検出・旧鍵ラップ掃除・申告行削除・成長ガード)、ミラー 4 種 + 適用行、`audit verify` の全単射規則。**完了(2026-09-16 — 裁定は §11 K5 追記: 受理ガード解除〔`ApprovalNotAccepted` はワイヤに残しサーバーは発生させない — K5-A〕、受理ポリシーは DO のみで上界 → pending 上限〔K5-B〕、失効済み提案は拒否しない〔K5-C〕、成長ガードは提案・承認の入口〔K5-D〕、適用行 = 同 chain_seq・actor = 提案者・`viaProposalSeq`〔K5-E〕、完成判定は core の `indexProposals` を server / CLI で共有〔K5-F〕、全単射は期待行集合との突合〔K5-G〕、DO の append が適用した提案を返し worker が D1 後処理〔K5-H〕、`ProposalLimit { reason, limit }`〔K5-I〕、持ち越し (i) = 設計録のまま・(ii)(iii) = CLI 案内で K6 実装〔K5-J〜L〕、提案 API は置かずクライアント導出〔K5-M〕)** | K2 のサーバーは 4 op を 422 で拒否する(受理ガード = 執行)→ K5 で解除 |
 | **K6** | CLI(PF1): `approval` グループ、`project policy approvals`、既存コマンドの提案化、承認者側の sweep、Web の pending 表示 | 既定オフ。有効化は owner ≥ 2 の明示操作 |
 | **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、~~`docs/SELF_HOSTING.md` "Updates" に移行順序~~(K2 へ前倒し — 2026-09-14 所有者裁定)、ROADMAP の完了記録 | docs のみ |
 
@@ -579,7 +579,7 @@ CRYPTO_SPEC §11 / 本設計録 §1-3 は `head-attestation.json` を「不変�
 ### K2 の実装メモ(K3〜K7 への申し送り)
 
 - CLI(K2 時点): `invite create` は scope = all のみ発行し、`member add` は招待行の scope で `add_member` を署名する。`change-role` は対象の**現 scope を据え置き**(owner への昇格時のみ all)、`--env` の指定は K4。**(K4 で置換済み — §10 K4-A: `--role` / `--env` / `--all-envs` の省略はそれぞれ据え置き)**
-- サーバー: 四眼の 4 op は **K5 まで受理しない**(`ApprovalNotAccepted` 422 — worker + DO の多層ガード。K2-10)。scope の執行(R(E)・`InsufficientScope`・422 の scope 軸)は K3、受理ガードの解除 + pending 上限 `ProposalLimit`・四眼のミラー行 / 適用行・要ローテーション検出・ラップ掃除・提案 API は K5(同じ PR で)。
+- サーバー: 四眼の 4 op は **K5 まで受理しない**(`ApprovalNotAccepted` 422 — worker + DO の多層ガード。K2-10)。scope の執行(R(E)・`InsufficientScope`・422 の scope 軸)は K3、受理ガードの解除 + pending 上限 `ProposalLimit`・四眼のミラー行 / 適用行・要ローテーション検出・ラップ掃除は K5(同じ PR で。**K5 で実施済み — §11**。提案 API は K5-M で置かないと裁定 = クライアント導出)。
 - Web: `chain-view` の畳み込みは 4 op を無視する(方針・pending の表示は K6。**scope の表示は K4 で入れた — §10 K4-D で §4 の K4 行を正とした**)。K6 の pending 表示は `approvals` の記録を票数として出さず、必ず再集計する(記録は失効票を保持する — 同一鍵再追加による復活のために必要)。`required_approvals` を下げた後は、既に足りている pending 提案も次の approve までは適用されず、完成させられるのは未投票の owner だけ(既投票者の再投票は `duplicate-approval`)— CLI / UI はこの前提で案内する(独立レビューの観察 ⑦・⑧)。
 
 
@@ -861,3 +861,206 @@ DEK ラップの配布は本人宛のみ(AUTH_SPEC §12-6「配布は本人宛�
 - **バックフィル未了の第三者検出**は据え置き(K4-K)。docs(K7)で本人側検出を説明する
 - **PR #179 レビューでの追補(pullfrog / Cursor Bugbot / 独立 Opus レビュー)**: (1) `change-role` の CAS リトライは据え置き側を**署名するビュー**の対象の現状から解決する(スナップショットを再署名しない)。(2) 拡大分のバックフィルは対象の **全 `change_role` 履歴**の拡大分の和集合 ∩ 現 scope から導く(最後の 1 件だけだと、中断中に第三者の change_role が挟まると再開されない)。sweep 側の「対象の全義務を畳む」と同じ形。(3) sweep の対象は**実行者の scope 内**に限り(§7「実行者も scope 外なら rotate できない」)、scope 外に残る他人の義務環境は失敗ではなく注記にする(常時警告が引き続き表示)。rotate エントリの `reason` は環境ごとの基準義務(最大 seq)の種別。(4) `member add` / `member remove` にも原則 1 の手前判定(add = 招待行の scope、remove = 対象の現 scope)。add は儀式の前に落とす(発行時検査 K4-G は発行者のもので、add の実行者は別人・別時点でありうる)。(5) `listed{}`(§6.2 の空 listed — 承認項目 3)を CLI から作れる `--no-envs` を `invite create` / `change-role` に置く(`--env` / `--all-envs` と排他)。K4-A の候補表には空 scope の扱いが無かった — 「省略 = 変えない」の原則から `--no-envs` は明示の作為で、原則と整合する。(6) `--role owner` は `--all-envs` なしで scope を all に全置換する(§6.2 owner = all)。これは K4-A の原則「拡大は明示の作為でのみ起きる」の唯一の例外で、owner 昇格という作為が全環境の付与を含意する(§6.2)ため原則の適用範囲外と整理する。ヘルプ文もそう書く。(7) `change_role` の義務導出で直前状態が導出できない場合は remove と同じく fail-closed(書き手だった・全環境を持っていた側)。(8) CLI の検査順を §6.2 の合意規則の順(role → last-owner → unknown-environment → scope-not-contained)に揃えた。(9) 拡大分のバックフィルは **実行者の scope 内**の環境に限る(scope 外の環境の DEK は実行者に無いので §6.3 の受信側規則で止まる — バックフィル前に切り分け、`widenedOutOfScopeEnvironmentIds` として報告し「その環境の書き手が `maruhi env rotate` か再度の change-role で埋める」と案内)。(10) sweep の「scope 外に残る義務」注記は **未消化(基準 seq より後に rotate が無い)かつ環境が未削除**のものだけ(消化済み・削除済みを毎回警告しない)。(11) `change-role` の「既に適用済み」再開判定は member 以上の役割にだけ許す(reader は追記できないので、再開の名目で成功扱いにしない)。(12) `--role owner` に `--env` / `--no-envs` を添えた usage 文は `--all-envs` への誘導を含む。(13) `member add` の包含判定は重複鍵の判定の後ろ(既存の順序に割り込まない)。(14) 拡大バックフィルの報告は「この変更で拡大した」ではなく「scope に加わった環境の未収束分」を指す文言にし、scope 外に残る拡大分の注記は自分の scope 内のバックフィルが無い場合(listed admin が他人の拡大の後に再実行する主経路)にも出す。(15) 履歴由来の拡大分から**検証済み削除**の環境を外す(削除済みは誰も埋められないので注記に出し続けない — 内側の `backfillAllEnvironments` の削除フィルタと同じ集合)。この問い合わせは拡大分が空なら行わない(追記後の余計な要求で exit を汚さない)。切り分け(削除済み除外 + 実行者 scope)は `splitWidenedByActorScope` に寄せた
 - **独立 Opus レビュー 3 回目(MERGE-SAFE)の残 nit(未対応・申し送り)**: (a) S7 の否定側(消化済み / 削除済みの scope 外義務は注記しない)のテストが無い。(b) `member add` の追記済み再開経路は change-role 側(追補 (9))のような実行者 scope での切り分けを持たず、listed の実行者が scope 外環境を含む add を再開すると当該環境は §6.3 の受信側エラーとして環境ごとの失敗文言になる(冪等な再実行で収束するので実害は文言のみ)。並べ替え比較子の不揃い(素の `toSorted()`)は `compareCodePoints` に統一済み
+
+## 11. K5 追記(2026-09-16 — サーバーの四眼受理面の実装時の裁定)
+
+K5 は受理面の段(§4 の K5 行)。前提の再確認: 受理ガード解除の前提(申し送り ⑤ = 投票者の鍵束縛)は K2-11 で正本(CRYPTO_SPEC §6.2 原則 2 の S = (user_id, 署名時の鍵 FP))・ベクター(`readded-approver-*`)・crypto(`ApprovalVote`)に反映済みであることを PR #177 の差分で確認した — 満たされている。正本 3 文書と設計録の食い違いは §11 末尾の実装録に記す。以下、§5 の手順(候補 ≥ 3 → 上位互換 / 銀の弾丸の探索 → 空巡 2 で打ち止め → 原則の抽出と旧裁定の導出確認 → UX 点検 → 選択)を各裁定点で回した。巡数は回した分だけ書く。**巡の粒度の正直な注記(独立レビュー nit 7)**: K5-A / B / C / D / E / F / H の第 2 巡は具体の上位互換候補(版ズレ論・時計 2 つ・skew 幅・冗長判定・`client_ts` 変種・混成導出・層の問題)を挙げて棄却しているが、K5-G / I / J / L / M の第 2・3 巡は候補表の外に新案が出ず「空巡」の記録だけである(見出しにその旨を付す)。後者は候補表が正本の字面(§3.4 の全単射規則・§12-8 の型名・承認項目 19)にほぼ束縛されており探索の余地が小さかった、というのが実態で、巡を回したこと自体を成果として書かない。
+
+### K5-A. `ApprovalNotAcceptedError` の去就(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| A-a 削除 | api-schema の型・エンドポイント宣言・DO の拒否種別・HTTP 写像・CLI 文言をすべて消す | ワイヤ形式の変更(公開エラー型の削除)= 所有者裁定を要する(§3 の「指示を仰ぐ範囲」)。K5 の自律実装の範囲外 |
+| A-b **サーバーの発生源だけを消し、ワイヤの宣言は残す** | DO の拒否種別 `approval-not-accepted` と HTTP 写像・両層のガードを消す。api-schema の型と `append` の宣言、CLI `failure.ts` の文言は据え置き(JSDoc を「K5 以降のサーバーは発生させない」に改訂) | ワイヤ不変。**K5 以降の CLI(K6 の `approval` コマンド)が K2〜K4 のセルフホストサーバーへ四眼エントリを送ったとき**、旧サーバーはこの型で拒否するので CLI の文言(「later server release」)がそのまま正しい案内になる = 削除すると版ズレの型付き案内を失う。サーバー内に到達不能な分岐は残らない(fallow の未使用検出に掛からない) |
+| A-c 用途変更(受理ポリシー違反に転用) | `ProposalLimit` の代わりに使う | AUTH_SPEC §12-8 が `ProposalLimit` の名を規定済み(承認項目 22)。転用は正本違反 |
+| A-d 用途変更(「副作用未実装の op」の汎用ガードとして残す) | 将来の新 op 追加時に再利用する | 今は該当 op が無く到達不能の分岐 = 死んだコード。K2-10 の原則「受理する op = 副作用実装済みの op」は、新 op を足すときに同じ PR で副作用を入れる規律であって、恒常的なガードを要しない |
+
+**探索**: 第 2 巡(上位互換): A-b の欠点は「サーバーが発生させない型が宣言に残る」ことのみで、それは版ズレ(旧サーバー × 新 CLI)では実際に発生する型なので欠点ではない。銀の弾丸(型を残すか消すかの判断を不要にする構造 — サーバーが機能フラグを配る等)は、四眼の受理可否は「サーバーのバージョン」そのものでありフラグを増やす利得がない。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「ワイヤに載る型の集合は所有者裁定でしか縮まず、サーバーがその型を発生させる分岐は受理副作用の実装状態に従う」— K2-10 の原則(受理する op = 副作用実装済みの op)はこの原則の「発生させる側」の帰結であり、K2 で型を**足した**判断(ワイヤの拡張 = 承認項目 22 の pending 上限と同じく承認済みの範囲)とも整合する。導出できない旧裁定なし。
+
+**UX**: K5 以降のサーバーでは利用者がこの文言を見ることはない。旧サーバーに対しては K6 の CLI が四眼エントリを送った時点でこの文言に落ち、「サーバーを更新せよ」の案内として機能する。悪化なし。**採用: A-b**。ワイヤからの削除は所有者への提案として最終報告に載せる(採るなら独立 PR)。
+
+### K5-B. 受理ポリシーの判定層と判定順(列挙 1 巡 + 空巡 2・打ち止め)
+
+対象: pending 上限(32・期限切れは数えない)と `expires_at_ms` の上界(受理時サーバー時計 + 30 日)。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| B-a worker + DO の両層 | `composite-required` / K2-10 のガードと同じ多層防御。上界は状態を要しないので worker でも判定できる | 上界の判定に**時計が 2 つ**(worker と DO)・定数が 2 箇所になる。状態を要する pending 上限は DO にしか置けないので、両層に置けるのは半分だけ = 「同じガードを両層に」の形にならない。既存の両層ガードは**op 種別だけ**で決まる無状態・無時計の判定であり、時計を持つ判定の先例ではない |
+| B-b **DO のみ(受理判定の権威)** | `appendProgram` で `propose` に対し、メンバーシップ判定 → 成長ガード → **受理ポリシー(上界 → pending 上限)** → CAS → verifyChain の順 | 判定材料(現 pending 集合 = 導出状態のキャッシュ、サーバー時計)が 1 箇所。招待の先例(`invite-domain.ts` — UNIQUE → pending 上限 → 固定窓)と同じく「受理ポリシーは意味論的検査(CAS / 合意規則)の前」(AUTH_SPEC §12-8 の測定点の規律と同じ位置) |
+| B-c verifyChain の中(crypto) | 合意規則の検査列に足す | 受理ポリシーは合意規則ではない(CRYPTO_SPEC §6.4 明記)。crypto は範囲外。棄却 |
+
+判定順の内訳: 上界(エントリ固有・時計のみ)を pending 上限(プロジェクト状態)より先に見る — サイズ(エントリ固有)→ 容量(チェーン状態)の既存順と同じ「エントリ固有 → 状態」。両方に違反したとき返るのは上界側で、利用者が直せるのは自分のエントリ(`--expires`)なのでその順が案内としても正しい。
+
+**探索**: 第 2 巡(上位互換): B-b に「worker の先行検査」を足す B-a′ は、DO を起こさずに拒否できる利得が上界違反(クライアントのバグか誤指定)のときだけで、DO の 1 往復を節約する価値より時計 2 つの費用が大きい。銀の弾丸(判定層の選択を不要にする構造 — 受理ポリシーを全部 worker に置ける形)は pending 集合が DO のチェーン導出状態にしか無いので存在しない。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「受理ポリシーは判定材料を持つ層に 1 箇所置き、多層に重ねるのは op 種別だけで決まる無状態のガードに限る」— `composite-required` / K2-10 の両層ガード(op 種別のみ)✓、サイズ検査の worker 先行(材料 = エントリ本体で両層が同じ材料を持つ)✓、成長ガード(`databaseSize` は DO にしか無い → DO のみ)✓、招待の pending 上限(D1 の行数 → worker / D1 のみ)✓。導出できない旧裁定なし。
+
+**UX**: 拒否は型付き 422 `ProposalLimit`(K5-I)。CLI(K6)は上界違反を通信前に(`--expires` の上限を CLI 既定 7 日・最大 30 日として)拒める。pending 上限は `approval list` で期限切れの提案を見せ `withdraw` を案内する。**採用: B-b**。
+
+### K5-C. 「作成時点で既に失効している提案」の扱い(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| C-a サーバー時計で拒否(`expires_at_ms < 受理時サーバー時計`) | §4 の K5 行の候補 | 受理ポリシーの時計と一致する。ただし**資源を守らない**: 失効済み提案は pending 上限の計算から既に除外されており、誰も承認できない(正直な承認者の `timestamp_ms ≤ expires_at_ms` が成立しない)ので占有もしない。守るのは「クライアントの意味論」であり、K6 の CLI が通信前に検査すれば足りる。副作用として、固定時刻のテストベクター(propose の `expires_at_ms` = 2025-08-08)をサーバーで再生できなくなる(サーバー時計 2026-09 で失効済み)= 検証デプロイの再生・サーバー統合テストの正規チェーン再生が時計に依存する |
+| C-b 提案者の申告時刻で拒否(`expires_at_ms < propose.timestamp_ms` — 8-bis K2-5 e-3) | 時計を使わない構造的な検査 | 合意規則に無い検査を「受理ポリシー」の名で全サーバーに課す = 事実上の合意規則の追加(K2-5 の原則「合意規則が時刻に触れるのは 1 比較だけ」に反する方向)。しかも捕まえるのは「自分の申告時刻より前に失効する」形だけで、時計ズレによる実時間の失効は捕まえない |
+| C-c 両方 | — | C-a と C-b の欠点の和 |
+| C-d **拒否しない(受理ポリシーにしない)** | 失効済み提案は受理し、上限の計算から除外されるだけ | 資源保護に不要(上表)。合意規則も既に閉じている(承認は `proposal-expired`)。K6 の CLI が `propose` の生成時に `expires_at_ms > now` を検査する(クライアントの通信前検査 — K4-C と同じ置き場) |
+
+**探索**: 第 2 巡(上位互換): C-a に許容幅(clock skew)を足す案は、幅の値が合意規則にも正本にも無く、時計を持つ判定を増やすだけ。銀の弾丸(失効の概念を受理面から消す)は C-d そのもの。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「受理ポリシーは**サーバーの資源**(pending 枠・ストレージ・チェーン容量)とストレージ収束を守るためにあり、クライアントの意味論の代行はしない」— pending 上限 ✓(枠)、上界 30 日 ✓(枠の占有時間)、サイズ / 容量 ✓、成長ガード ✓、招待の pending 上限 / 固定窓 ✓、`remove_member` 時の申告行削除・再追加時のラップ掃除 ✓(ストレージ収束)。CRYPTO_SPEC §6.4 の「提案者単位の副次上限は置かない(必要になれば加法的に)」もこの原則の帰結(必要 = 資源の観点で必要になったとき)。導出できない旧裁定なし。
+
+**UX**: 時計の狂った端末から出た失効済み提案は `approval list`(K6)に「expired」として現れ、提案者が `withdraw` する。誰も承認できない提案が一時的に見える以外の悪化はなく、K6 の通信前検査で通常は到達しない。**採用: C-d**。§4 K5 行の「候補」は不採用として閉じる。
+
+### K5-D. 成長ガード(§12-8)の四眼経由の適用点(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| D-a 直接追記の `add_member` / `grant_server` のみ(現状) | 四眼経由は素通り | 完成した approve が add_member を適用すると、バックフィルは拒否されるのに add は通る = §12-8 が入口で塞ごうとした「メンバーはいるがラップがない」中間状態が四眼経由で量産できる |
+| D-b 完成する approve のみ | verifyChain 後に完成を知ってから判定 | 判定の位置が「意味論的検査の後」になり §12-8 の測定点の規律(CAS / 署名検証 / 意味論の前)に反する。提案者は成功、承認者だけが 422 = 別人が最後の一手で止められる UX |
+| D-c **`propose`(内側 op が add_member / grant_server)と `approve`(参照先の pending 提案の内側 op が同じ)** | 参照先は CAS / verifyChain の前に現導出状態の `pendingProposals` から引く(未知の hash はガード対象外 — verifyChain が `unknown-proposal` で拒む)。完成するかどうかに依らず、成長提案への approve はガード下では受理しない | 提案の入口(提案者の `member add` / `server grant`)で直接追記と同じ位置・同じ材料で止まる。ガードの位置は既存と同じ(メンバーシップの後・CAS の前) |
+| D-d 4 op 全部 | — | `withdraw`(解放)・`set_approval_policy`(セキュリティ設定)・remove / revoke / 縮小の提案と承認(是正)を総量で止める = §12-8 (b)(c) の「拒否下でも受理し続ける面」に反する |
+
+**探索**: 第 2 巡(上位互換): D-c + D-b(完成時にも再判定)は D-c が approve を既に止めているので冗長。銀の弾丸(ガードを op 判定から外し「バックフィルの拒否」だけで足りるとする)は §12-8 が入口の拒否を明文で要求しており不可。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「成長ガードは**アクセス集合を拡げる意図が最初に現れるエントリ**で止める」— 直接追記の add / grant ✓、提案経由ではその提案と承認 ✓、ラップ登録(自然な後続)✓、schemaPolicy(内容の成長ではないが監査行の非有界)= 明示例外として §12-8 に列挙済み(原則からの導出ではなく列挙 — 既存の例外を維持)。`set_approval_policy` は監査行を 1 行積むがチェーン容量で有界(`change_role` 昇格と同じ扱い)= 原則どおりガード外。
+
+**UX**: 9 GB 超では `member add` / `server grant` の提案が直接追記と同じ `DataLimitExceeded(project-storage-bytes)` で止まり、案内は既存の文言。**採用: D-c**。
+
+### K5-E. ミラー行・適用行の書き込み単位と形(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| E-a **同一同期ブロックで「`chain.approved`(completed = true)→ 適用行 → 内側 op の副作用」** | `insertAcceptedEntrySync`(chain-accept.ts)の中。適用行 = 内側 op のミラー写像(`packages/core/src/audit.ts` の op 別 tail)+ `viaProposalSeq`、**actor = 提案者(propose エントリの actor = user_id + 鍵 FP)**、`chain_seq` = approve の seq、`client_ts` = approve エントリの `timestamp_ms`(適用を運んだエントリの時刻)、`server_ts` = 同一受理の nowMs | AUDIT_SPEC §3.4 の字面どおり。要ローテーション検出(Q1 = target_user_id の `chain.*` 行を監査 seq 順に畳む)は適用行を「直前に書いたミラー行」として読めるので、直接追記と同じ関数・同じ順序(ミラーの後に検出)で動く。`chain_seq` の UNIQUE 制約は現状なく(K1-3)、今後も置かない(2 行 / seq が正) |
+| E-b 適用行を別の監査 seq 単位のトランザクションに分ける | — | 「チェーンだけ書けてミラーが欠ける」不整合の再導入(chain-commit.ts の原則に反する) |
+| E-c 適用行を書かず `chain.approved` の payload に内側 op を写す | 行数 1:1 を保つ | Q1 / Q6 の入力構造(`chain.member_removed` 等を target 索引で引く)が変わり、検出の実装を 2 系統にする。AUDIT_SPEC §3.4 が明示的に棄却した形 |
+
+**探索**: 第 2 巡(上位互換): 適用行の `client_ts` に提案時刻(propose の `timestamp_ms`)を置く変種は「適用の時刻」でなく「意図の時刻」になり、`chain.proposed` 行が既に持つ情報の重複。銀の弾丸(ミラー行を書かず必要時にチェーンから再構成する = AUDIT_SPEC §1-5)は監査の可視性クラスと Q1 の索引要件が同 DO 内の行を前提としており K5 の範囲で覆せない。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「ミラー行は、監査の索引(Q1 / Q6)が**受理された事実**を直接追記と同じ形で引けるように書き、経路(直接 / 提案)は payload の追記(`viaProposalSeq`)で区別する」— 承認項目 22(適用行 = 同 chain_seq・`viaProposalSeq`・actor = 提案者)✓ 導出、K3-H(`chain_seq` 一意性を前提にしない)✓、`rotation.recommended` の `triggerChainSeq` = approve の seq(裁定 P7)✓。導出できない旧裁定なし。
+
+**UX**: `maruhi audit list` は同じ chain_seq の 2 行を別行として表示し(適用行は内側 op のイベント名)、突合はどちらの行も OK になる(K5-G)。**採用: E-a**。
+
+### K5-F. 完成判定と提案の索引の導出(サーバーと CLI の共有 — 列挙 1 巡 + 空巡 2・打ち止め)
+
+ミラー行の `proposalChainSeq` / `completed` と適用行の内側 op・提案者は、approve / withdraw エントリ単独からは写せない(K2 の申し送り 3)。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| F-a サーバー = 受理前後の `pendingProposals` の差分、CLI = 別の導出 | サーバーは安価(キャッシュ済み前状態 + 適用後状態)。CLI は検証済みチェーン(entries + 最終状態)から導く | 写像の入力の導出が 2 実装 = `packages/core/src/audit.ts` の冒頭が禁じるドリフト(検証器の誤検出 / 見逃し) |
+| F-b crypto が検証ループの `AppliedOperation`(chain-verify.ts 内部)を公開する | 正確・安価 | `packages/crypto` の公開 API 変更 = K5 の範囲外(§3)。到達したら止まって諮る案件であり、共有導出(F-c)で足りるので諮らない |
+| F-c **core に 1 実装 `indexProposals(entries, entryHashAt, finalPending)`** | 検証済みチェーン上で: 提案 P(propose エントリ・hash = entry_hash)が最終状態で pending でなく、P を参照する `withdraw` が無ければ、P を参照する**最後の** `approve` が完成エントリ(合意規則上、完成後の P への approve / withdraw は `unknown-proposal` で無効 = 検証済みチェーンには存在しない)。サーバーは `[...chain.entries, entry]` と適用後状態、CLI は `VerifiedProject.entries` と `state` で同じ関数を呼ぶ | O(n) の走査(署名検証を伴う verifyChain より軽い)。写像とその入力の導出が core の 1 実装に閉じる |
+
+**探索**: 第 2 巡(上位互換): F-c をサーバーだけ F-a の差分で高速化する混成は、F-a の欠点(2 実装)を再導入する。銀の弾丸(approve エントリの payload に `proposal_seq` / `completed` を載せてエントリ単独から写す)はワイヤ = 合意規則の変更(K2-2 の b-2 と同型)で棄却済み。空巡。第 3 巡: 新案なし。空巡。打ち止め。
+
+**原則**: 「ミラー写像とその入力の導出は core の 1 実装をサーバー(書き手)と CLI(検証器)が共有する」— K2 の `chainMirrorEvent` / `CHAIN_MIRROR_EVENTS` の置き場の裁定の延長 ✓。導出できない旧裁定なし。**採用: F-c**。
+
+### K5-G. `audit verify` の全単射規則と `audit list` の突合(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| G-a **seq ごとの期待行集合との突合** | 期待 = `chainMirrorEvents(entry, serverTs, index)`(1 行、完成 approve は 2 行)。観測行をイベント名で期待行に対応づけ、欠落 / 過剰(期待に無いイベント名の行・同名の重複)/ 各フィールドの不一致を列挙。`audit list` の行単位の突合は、観測行のイベント名に一致する期待行と比べる(適用行のイベント名は approve のミラー名と重ならない — 内側 op に `approve` は無い) | AUDIT_SPEC §3.4 の改訂規則の字面どおり(欠落・過剰・`viaProposalSeq` 不一致 = 失敗)。head より新しい行の連続性検査(`aheadContiguityProblems`)は、同一 seq の 2 行を許すため「重複 = 偽造」を「seq が飛ぶ = 偽造」に緩める(完成 approve の 2 行目が偽造と誤断定されない) |
+| G-b 行数の一致だけを見る(1 または 2) | — | `viaProposalSeq` の不一致・適用行のすり替えを見逃す |
+| G-c 適用行を検証対象から外す | — | 適用行が偽造の隠れ場になる |
+
+**探索**: 第 2 巡(上位互換): なし。銀の弾丸(2 行を 1 行に畳む = K5-E の E-c)は棄却済み。空巡。第 3 巡: 新案なし。空巡。打ち止め。**原則**: 「検証器は書き手と同じ写像から**期待行の集合**を再構成して突合し、行数の規則は集合の帰結として得る」— 従来の 1:1 も「集合の大きさ 1」の特殊形 ✓。`audit-reconcile.ts` の `chain.checkpointed` の 1 行同定は、`checkpoint` が提案できない op(CRYPTO_SPEC §6.2)なので影響しない — 変更なし。**採用: G-a**。
+
+### K5-H. 適用結果の worker への伝達(招待の completed 化・membership 投影 — 列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| H-a **DO の `append` の戻り値に `appliedProposal`(完成した提案の seq と内側 op)を足す** | worker は `entry.op` が add / remove のときと同じ D1 後処理(§15-2 の completed 突合・§11-5 の投影 upsert / delete)を「適用された内側 op」に対して行う。ワイヤ(HTTP 応答)は不変(ハンドラが `headSeq` / `headHashHex` だけを返す) | RPC は内部境界(structured clone)で、K5 の範囲。判定は受理面の権威(DO)が行い、worker は結果を写すだけ |
+| H-b worker が受理後にチェーンを再取得して自分で完成判定 | — | RPC 1 往復の追加と、完成判定の 2 実装目(K5-F の原則に反する) |
+| H-c DO が D1 を直接書く | — | DO は D1 バインディングを持たない(層の分離: D1 は worker の `db.package`) |
+
+**探索**: 第 2 巡(上位互換 / 銀の弾丸): 投影・招待の突合を DO の受理タスク内に移す案は H-c と同じ層の問題。空巡。第 3 巡: 新案なし。空巡。打ち止め。**原則**: 「受理の判定は DO、D1 の導出状態の更新は worker — DO は判定結果を戻り値で渡す」(§11-5 (2)(3) の「DO 受理と別トランザクション」の規律のとおり)。**採用: H-a**。
+
+### K5-I. `ProposalLimit` のワイヤ形(承認項目 22 の範囲内 — 列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| I-a **`{ reason: "pending-proposals" \| "proposal-lifetime", limit: number }`(422)** | `limit` は reason ごとの上限値(件数 32 / 生存期間 30 日のミリ秒) | `DataLimitExceeded { resource, limit }` と同じ語彙(閉集合の reason + 数値の上限)。1 型で 2 つの受理ポリシーを運ぶ |
+| I-b 2 型(`ProposalLimit` と `ProposalLifetime`) | — | AUTH_SPEC §12-8 は 1 つの名 `ProposalLimit` を規定。型を増やすのは正本の字面の外 |
+| I-c `DataLimitExceeded` の resource に `pending-proposals` を足す | 既存型の再利用 | §12-8 が `ProposalLimit` を名指し(承認済み)。上界は「resource の上限」ではない |
+
+**探索**: 第 2 巡: 上位互換・銀の弾丸なし(空巡)。第 3 巡: 新案なし(空巡)。打ち止め。**原則**: 「型付きエラーは正本が名指す 1 型 + 閉集合の reason + 上限値」(K3-A の 403 の原則と同型)。**採用: I-a**。DO の拒否種別は `proposal-limit`。
+
+### K5-J. 持ち越し (i) — 鍵の再登録による票の復活を正本に載せるか(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| J-a CRYPTO_SPEC §6.2 に 1 文を足す | 「同一鍵での再登録は旧票を復活させる(侵害既知の鍵の再登録は運用で禁じる)」 | 正本の変更 = 承認が先に要る(§3)。規則を変えない説明文であっても K5 で勝手には足せない |
+| J-b **設計録のまま(K2-11 ⑤ 行)+ K7 の docs で運用規律として書く** | 正本の規則(S の識別 = (user_id, 鍵 FP)・適用時点の現 owner)からの帰結であり、規則の追加ではない | 正本を変えない。利用者向けの説明(`four-eyes.mdx`)に「侵害した鍵を再登録しない」を置く |
+| J-c 合意規則で塞ぐ(在籍区間束縛) | K2-11-bis ⑤ d で棄却済み | 蒸し返さない |
+
+**探索**: 第 2 巡: なし(空巡)。第 3 巡: なし(空巡)。**原則**: 「正本には規則を書き、規則の帰結の説明は設計録と docs に置く」(K1-2 の相互参照の掃除と同じ線)。**採用: J-b**。J-a は所有者への提案として最終報告に載せる(採るなら K7 で正本に 1 文)。
+
+### K5-K. 持ち越し (ii) — 過去に見た鍵 FP の再登録への警告(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| K-a サーバーが拒否(受理ポリシー) | — | 同一鍵での再追加は §6.2 が明示的に許容する(同一人物の復帰)。受理ポリシーで合意規則の許容を狭めるのは K5-C の原則(資源の保護に限る)に反する |
+| K-b **CLI が `add_member` の署名前に警告(K6)** | 対象の鍵 FP が検証済みチェーンの履歴(`sigKeyByFingerprint` / `keyHistory`)に**別の在籍区間**として現れるとき、「この鍵は以前 X として在籍していた。侵害で削除した鍵なら再登録しないこと」を出す(agent-gate の対象外 — 値を表示しない)。直接追記・提案の両方(`member add` が propose を出す経路も同じ関数) | サーバーは何もしない。警告であって拒否ではない(合意規則の許容を保つ) |
+| K-c 何もしない | — | K2-11-bis ⑤ が「運用規律」と定めた以上、その規律を利用者に伝える口が要る |
+
+**探索**: 第 2 巡: サーバーが「再登録された鍵」を監査に印す案(`chain.member_added` の payload に `rebound: true`)は、ミラー写像がエントリ単独から写す規律(K2)と、監査行は検証済みチェーンから再構成できる原則(AUDIT §1-5)に照らして、チェーンから導ける情報の重複。空巡。第 3 巡: なし(空巡)。**採用: K-b — 実装は K6**(申し送り)。
+
+### K5-L. 持ち越し (iii) — `required_approvals` 引き下げ後の pending 提案の完成(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| L-a **CLI / UI の案内で扱う(規則不変)** | K6 の `approval list / show` が現方針で票数を再集計し、「この提案は次の approve で完成する。approve できるのは未投票の owner: …」を表示。既投票 owner が approve を試みたら通信前に `duplicate-approval` を予告する | 承認項目 19(適用 = 定足数到達の approve の seq)と `duplicate-approval` を変えない。K2-11-bis が推奨した (i) |
+| L-b `set_approval_policy` の適用時に既に足りている pending を完成させる合意規則 | — | 正本の変更(承認項目 19 の改訂)。方針変更のエントリが別 op を適用する二義性(裁定 P5 が「承認署名に閉じる効果を持たせない」と同じ線で棄却する形) |
+| L-c 既投票 owner の再投票を許す(`duplicate-approval` の緩和) | — | 同一鍵の 2 票目を認める = 原則 2 の distinct の破れ |
+
+**探索**: 第 2 巡: なし(空巡)。第 3 巡: なし(空巡)。**採用: L-a — 実装は K6**。サーバー(K5)には該当する振る舞いがない(合意規則は crypto、案内は CLI)。
+
+### K5-M. 提案の読み取り口(列挙 1 巡 + 空巡 2〔新案なし — 内容のある探索は第 1 巡のみ〕・打ち止め)
+
+ROADMAP の PF1 行と §8「K2 の実装メモ」は受理面に「提案 API」を数えるが、§4 の K5 行には無い(粒度の差 — 報告)。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| M-a 提案 API(`GET /projects/:id/proposals`)を K5 で置く | サーバーが pending 一覧を返す | エンドポイント宣言の追加 = 諮る案件。しかも返す内容(提案者・内側 op・期限・投票者)は**検証済みチェーンの導出状態 `ChainState.pendingProposals` そのもの**で、クライアントは同期のたびに自分で導出する(§6.3)。サーバー申告の pending を表示に使うと「サーバー申告を検証規則の入力にしない」(§12-7)線に近づく |
+| M-b **K6 送り = クライアント導出(API なし)** | `maruhi approval list / show` は `VerifiedProject.state.pendingProposals` から出す。票数は K2 の実装メモどおり再集計 | サーバーに何も足さない。Web の pending 表示も `chain-view` の畳み込み(検証済みチェーン)から |
+| M-c ミラー行(`chain.proposed` / `chain.approved`)から一覧を作る | 監査 API の再利用 | 監査行はサーバー管理データで検証の入力にしない(AUDIT §6)。棄却 |
+
+**探索**: 第 2 巡: なし(空巡)。第 3 巡: なし(空巡)。**原則**: 「認可・方針・pending の真実源はチェーンで、クライアントは検証済みチェーンから導出する」(§6.4)。**採用: M-b**。K6 が API を必要とする理由(例: Web が全チェーンを畳むコスト)が出たら、その時点で諮る。
+
+### K5-N〜K5-Q. 事実確認(単巡)
+
+- **K5-N 四眼経由の義務の履行者(承認項目 22)との整合**: サーバーの要ローテーション検出は「誰が履行するか」を持たない(`rotation.recommended` の `trigger` = 内側 op の種別、`triggerChainSeq` = 完成した approve の seq — 裁定 P7 / AUDIT §4.1 change_role 変種の末尾)。適用行が直接追記と同じ形で書かれるため検出関数(`detectMemberRemoval` / `detectRoleChange` / `detectServerRevocation`)は変更なしで、`triggerChainSeq` に approve の seq を渡すだけ。K6 の承認者側 sweep は K4-N のとおり「適用 seq の approve エントリ」を義務エントリとして足す。ずれなし
+- **K5-O `requiredPermissionForEntry`**: 4 op は既定分岐で `admin`(`checkpoint` / `create_environment` / `rotate_epoch` 以外はすべて admin)。裁定 P8「トークン水準は内側 op と同じ(admin)」と一致。変更なし
+- **K5-P スキーマ移行**: 不要。pending 集合はチェーン導出状態(メモリキャッシュ)で保存しない。適用行は `audit_events` の既存列(`chain_seq` に UNIQUE 制約なし — K1-3)に収まる。D1 も変更なし
+- **K5-Q サーバーテストの分割数**: `membership-negatives-append.test.ts` の `EXPECTED_PARTITION` は実測で更新する(K2-10 末尾の「12 + 派生チェーン 14 本」は当時の数字。実測は実装録に記す)
+
+### K5-R. 実装録(裁定の反映先)
+
+- api-schema: `errors/chain.ts` に `ProposalLimitError`(422、`{ reason: "pending-proposals" | "proposal-lifetime", limit }`)と `ProposalLimitReasonSchema` を新設し、`membership-api.ts` の `append` 宣言に追加(K5-I)。`ApprovalNotAcceptedError` は宣言を残し JSDoc を「K5 より前のサーバーが返す型」に改訂(K5-A)
+- core(`packages/core/src/audit.ts`): `chainMirrorEvent` を `chainMirrorEvents(entry, serverTs, index)`(1 行、完成 approve は 2 行)に置き換え、`indexProposals(entries, entryHashAt, pendingHashes)` / `ProposalIndex` / `IndexedProposal` / `ProposeEntry` を新設(K5-F)。op 別の写像(`mirrorTails`)を「op + payload + actor」の入力に一般化し、適用行は内側 op の写像 + `viaProposalSeq`・actor = 提案者・`client_ts` = approve の `timestamp_ms`(K5-E)。approve / withdraw 行の payload は `proposalChainSeq`(+ `completed`)— K2 の `proposalHashHex` は正本(AUDIT §3.4)の字面に置き換え
+- server:
+  - `policy.ts`: `MAX_PENDING_PROPOSALS = 32` / `MAX_PROPOSAL_LIFETIME_MS = 30 日`。`quotas.ts`: `proposalIsLive` / `proposalLifetimeExceeded` / `pendingProposalsExceeded` / `countLivePendingProposals` / `ensureProposalAdmitted`(上界 → pending 上限 — K5-B)
+  - `data-plane.ts`: 拒否種別 `approval-not-accepted` を削除し `proposal-limit { reason, limit }` を追加。`data-http.ts`: `ProposalLimitError` への写像
+  - `chain-do.ts`: 受理ガードを削除。`growsAccessSet`(直接追記の add / grant + 内側 op が成長 op の `propose` + 参照先 pending の内側 op が成長 op の `approve` — K5-D)で成長ガードを判定し、`propose` に `ensureProposalAdmitted`(位置: メンバーシップ → 成長ガード → 受理ポリシー → CAS → verifyChain)。`loadChainForMember` が現導出状態(`state`)を返す。`append` の戻り値 `AppendValue = ChainHeadValue & { appliedProposal }`(K5-H)
+  - `chain-accept.ts`: `insertAcceptedEntrySync` が `chainMirrorEvents` の行を書き、完成した approve では内側 op の副作用を approve の seq で走らせる(`applyAcceptanceSideEffectsSync(stores, operation, seq, nowMs)` — 入力を op + payload に一般化)。`proposalIndexOf` / `AppliedProposal` を新設。複合経路(`insertAcceptedEntryPairSync`)は提案できない op しか運ばないので空索引
+  - `chain-commit.ts`: `commitAcceptedEntry(chain, entry, applied, canonicalBytes, extraSync?)` が受理後チェーンの提案索引を作り、適用した提案を返す。`checkpoint-accept.ts` は `appliedProposal: null`
+  - `handlers-membership.ts`: 受理ガードを削除。D1 後処理(招待の completed 突合・membership 投影の upsert / delete)を「直接追記の op、または `appliedProposal.inner`」に対して行う
+  - `authz.ts` / `rotation-detect.ts` / `audit-store.ts` / `do-schema.ts`: 変更なし(K5-N / K5-O / K5-P)
+- CLI(`apps/cli/src/audit.ts`): `proposalIndexOf(verified)`(core の `indexProposals` を `VerifiedProject` に適用)、`expectedRowFor`(観測行のイベント名で期待行を選ぶ)、`entryMirrorProblems`(期待行集合との突合 — 欠落 / 重複 / 過剰 / フィールド不一致)、`aheadContiguityProblems`(同一 seq 最大 2 行)。`failure.ts` に `ProposalLimit` の文言(K5-I)。`audit-reconcile.ts` は変更なし(`checkpoint` は提案できない op)
+- テスト: `apps/server/test/approval-accept.test.ts`(新規 — 受理ポリシー 2 件・完成 approve の副作用 3 件〔remove の検出 / 申告行 / 投影・提案経由 add_member の招待 completed 化 + 投影・withdraw と方針変更の無副作用〕)、`proposal-policy.test.ts`(新規 — 純関数)、`membership.test.ts`(正規チェーン 24 本の全再生・四眼 5 エントリのミラー行と適用行・派生チェーン `proposal-completed` の未完成 / 完成の分岐と投影削除)、`membership-negatives-append.test.ts`(**実測の分割**: checkpoint 20 / composite 24 / structureBeforeSignature 1 / wireSchema 8 / consensus 104 = 157 — K2-10 の `skipped` 58 + `fourEyesGuard` 7 は consensus +57 / wireSchema +7 / structureBeforeSignature +1 に戻った。K2-10 末尾の「12 + 派生チェーン 14 本」は当時の見積もりで、実測は 58 件)、`storage-guard.test.ts`(四眼経路の成長ガード)、`data-policy.test.ts`(拒否種別の網羅表)、`apps/cli/test/audit.test.ts`(完成 approve の 2 行の全単射 OK・適用行の欠落・`viaProposalSeq` / `completed` の改変・未完成 approve への過剰な適用行・`audit list` の 2 行の突合)
+- 正本との照合で見つけた食い違い: なし(CRYPTO_SPEC §6.4 / AUTH_SPEC §11-1 / §12-8 / AUDIT_SPEC §3.4 の字面どおりに実装できた)。設計録側の古い記述: ROADMAP PF1 行の K2 記録「汎用 append で受理」(受理ガード導入前)を訂正、§8「K2 の実装メモ」の「提案 API は K5」は K5-M で K6 送り(API なし)に更新
+
+### K5-S. 申し送り(K6 / K7 へ)
+
+- **受理ポリシーの実装位置と判定順**: DO の `appendProgram`(`chain-do.ts`)で `propose` にのみ、メンバーシップ判定 → 成長ガード → **上界(`expires_at_ms ≤ サーバー時計 + 30 日`)→ pending 上限(期限内 32 件)** → CAS → verifyChain。worker には置かない。失効済み提案は拒否しない(K5-C)— **K6 の CLI は `propose` の生成時に `expires_at_ms > now` と `≤ now + 30 日` を通信前に検査し、既定 7 日・最大 30 日で案内する**。422 `ProposalLimit` の文言は `failure.ts` にある
+- **ミラー適用行の形**: 完成した approve の chain_seq に `chain.approved { proposalChainSeq, completed: true }` と内側 op のミラー行(actor = 提案者の user_id + 鍵 FP、`client_ts` = approve の `timestamp_ms`、payload = 内側 op の写像 + `viaProposalSeq`)の 2 行。全単射規則 = 「1 エントリ ↔ 1 行、完成 approve は + 1 行」(`chainMirrorEvents` が期待行の集合)。`chain.approved { completed: false }` / `chain.proposal_withdrawn { proposalChainSeq }` は 1 行。要ローテーション検出の `triggerChainSeq` は approve の seq、`trigger` は内側 op
+- **提案の読み取り口**: K5 では置かない(K5-M)。K6 の `maruhi approval list / show` と Web の pending 表示は `VerifiedProject.state.pendingProposals`(`chain-view` の畳み込み)から出し、票数は現方針で再集計する(記録は失効票を保持する — §8 K2 の実装メモ)。サーバー API が要る理由が出たら諮る
+- **持ち越し (ii)**(鍵 FP 再登録の警告): K-b を採用、**実装は K6**。`member add`(直接追記 / 提案化の両方)の署名前に、対象の鍵 FP がチェーン履歴の別の在籍区間に現れるとき警告する(拒否ではない)
+- **持ち越し (iii)**(`required_approvals` 引き下げ後の pending): L-a を採用、**実装は K6**。`approval list / show` が現方針で再集計し「次の approve で完成・approve できるのは未投票の owner」を案内、既投票 owner の approve は通信前に `duplicate-approval` を予告する。合意規則は不変
+- **持ち越し (i)**(同一鍵再登録による票の復活の正本への 1 文): J-b(設計録のまま)。K7 の `four-eyes.mdx` に「侵害した鍵は再登録しない」を運用規律として書く。正本への追記は所有者提案(最終報告)
+- **K6 の CLI が前提にしてよいサーバーの振る舞い**: (1) 4 op は汎用 `POST /projects/:id/chain/entries` で受理され、応答は他の op と同じ `{ projectId, headSeq, headHashHex }`(適用の有無は応答に載らない — クライアントは再同期した検証済みチェーンの `pendingProposals` の変化で知る)。(2) 完成した approve の受理と同一タスクで、内側 op の副作用(要ローテーション検出・申告行削除・招待の completed 化・投影)が走る — 承認者の CLI は承認後に再同期し、`rotationMandates` に「適用 seq の approve エントリ」を義務エントリとして足して sweep / バックフィルを走らせればよい(K4-N)。(3) 成長ガード下(9 GB 超)では add_member / grant_server の提案・承認が `DataLimitExceeded(project-storage-bytes)` になる。(4) 旧サーバー(K2〜K4)は 4 op を `ApprovalNotAccepted` で拒否する — 文言は据え置き
+- **`ApprovalNotAccepted` のワイヤからの削除**: 所有者裁定待ち(K5-A)。採るなら api-schema / CLI `failure.ts` / `membership-api.ts` の 3 箇所の独立 PR
+- **K3-J のベクター名の改名**(`authz-rotate-unknown-precedes-out-of-scope` 等): K5 はベクターを再生成しないので据え置き
+- **crypto 側の不変条件「期限切れの提案は pending 集合に残る」の固定**(独立レビュー第 2 巡 nit 12): core の `indexProposals` の完成導出(K5-F)とサーバーの適用行・受理副作用は、`chain-verify.ts` が pending から要素を消すのが定足数到達(`completeProposal`)と `withdraw` の 2 箇所だけであることに依存する(期限切れは `proposal-expired` の拒否理由であって削除ではない)。破れると偽の適用行 + 実際の副作用(削除・検出・投影削除)が走る。次に `packages/crypto` を触る段(ベクター再生成の機会)で、`authz-approve-expired` 系の negative に `expected_pending` を足すか、当該 2 箇所に「ここ以外で pending から削除しないこと(core の `indexProposals` が依存)」の注記を入れる。core 側は `packages/core/test/audit.test.ts` の冒頭にこの依存を明記済み

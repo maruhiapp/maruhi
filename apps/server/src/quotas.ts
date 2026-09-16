@@ -6,6 +6,7 @@
 //   ユニットテスト用に公開する — chain-accept.ts の chainCapacityExceeded と同じ形)
 // - ensure*: 判定 + limit-exceeded 拒否への持ち上げ
 
+import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MetaStatementStatusInput } from "./data-plane.ts";
@@ -16,8 +17,10 @@ import {
   MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
   MAX_ENVIRONMENT_ROWS,
+  MAX_PENDING_PROPOSALS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
   MAX_PROJECT_DEK_WRAP_ROWS,
+  MAX_PROPOSAL_LIFETIME_MS,
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
 } from "./policy.ts";
@@ -149,6 +152,70 @@ export const ensureWrapRowCapacity = (addedRows: number) =>
         kind: "limit-exceeded",
         resource: "dek-wrap-rows",
         limit: MAX_PROJECT_DEK_WRAP_ROWS,
+      });
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// 四眼の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則ではない。
+// 設計録 es-design.md §11 K5-B / K5-C)。判定材料は DO のチェーン導出状態
+// (pending 集合)とサーバー時計。判定順は上界(エントリ固有)→ pending 上限
+// (プロジェクト状態)— サイズ → 容量の既存順と同じ「エントリ固有 → 状態」。
+// 作成時点で既に失効している提案は拒否しない(K5-C: 上限の計算から除外される
+// だけで資源を占有せず、合意規則が承認を `proposal-expired` で閉じる)。
+// ---------------------------------------------------------------------------
+
+/** サーバー時計で期限内(= pending 上限の計算に数える)か。等号は期限内(§6.2 の `≤` と同じ向き)。 */
+export function proposalIsLive(expiresAtMs: number, nowMs: number): boolean {
+  return expiresAtMs >= nowMs;
+}
+
+/** §6.4: `expires_at_ms` が受理時サーバー時計 + 30 日を超えるか(純関数 — ユニットテスト用に公開)。 */
+export function proposalLifetimeExceeded(expiresAtMs: number, nowMs: number): boolean {
+  return expiresAtMs > nowMs + MAX_PROPOSAL_LIFETIME_MS;
+}
+
+/** §12-8: 期限内の pending 提案に 1 件足すと上限を超えるか(純関数 — ユニットテスト用に公開)。 */
+export function pendingProposalsExceeded(livePendingCount: number): boolean {
+  return livePendingCount + 1 > MAX_PENDING_PROPOSALS;
+}
+
+/** 現導出状態の pending 集合のうち、サーバー時計で期限内のものの数。 */
+export function countLivePendingProposals(
+  pending: ReadonlyMap<string, PendingProposal>,
+  nowMs: number,
+): number {
+  let count = 0;
+  for (const proposal of pending.values()) {
+    if (proposalIsLive(proposal.expiresAtMs, nowMs)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * `propose` の受理ポリシー(上界 → pending 上限)。呼び出しはメンバーシップ判定と
+ * 成長ガードの後・CAS / verifyChain の前(chain-do.ts の appendProgram)。
+ */
+export const ensureProposalAdmitted = (
+  expiresAtMs: number,
+  pending: ReadonlyMap<string, PendingProposal>,
+  nowMs: number,
+) =>
+  Effect.gen(function* () {
+    if (proposalLifetimeExceeded(expiresAtMs, nowMs)) {
+      return yield* rejectData({
+        kind: "proposal-limit",
+        reason: "proposal-lifetime",
+        limit: MAX_PROPOSAL_LIFETIME_MS,
+      });
+    }
+    if (pendingProposalsExceeded(countLivePendingProposals(pending, nowMs))) {
+      return yield* rejectData({
+        kind: "proposal-limit",
+        reason: "pending-proposals",
+        limit: MAX_PENDING_PROPOSALS,
       });
     }
   });

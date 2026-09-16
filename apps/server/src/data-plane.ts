@@ -460,6 +460,12 @@ export type CheckpointMismatchReason =
   | "audit-head-stale"
   | "environment-deleted";
 
+/**
+ * `propose` の受理ポリシー違反の理由(AUTH_SPEC §12-8 — 2026-09-16 K5)。
+ * api-schema の ProposalLimitReasonSchema と一致させる。
+ */
+export type ProposalLimitReason = "pending-proposals" | "proposal-lifetime";
+
 export type DataLimitResource =
   | "environments"
   | "environment-rows"
@@ -495,12 +501,13 @@ export type DataRejection =
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch";
     }
-  // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は受理副作用(AUDIT_SPEC §3.4 のミラー行 /
-  // 適用行・要ローテーション検出・旧鍵ラップ掃除・§12-8 の成長ガード・pending
-  // 上限)が揃う K5 まで受理しない — 副作用なしの受理はミラーの恒久欠落を作る
+  // 四眼の `propose` の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-16
+  // K5): pending 上限(期限切れは数えない)と `expires_at_ms` の上界。worker が
+  // api-schema の ProposalLimit(422)へ写す。語彙は ProposalLimitReasonSchema と一致
   | {
-      readonly kind: "approval-not-accepted";
-      readonly op: "set_approval_policy" | "propose" | "approve" | "withdraw";
+      readonly kind: "proposal-limit";
+      readonly reason: ProposalLimitReason;
+      readonly limit: number;
     }
   // checkpoint の内容突合(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 — 境界同梱分
   // 〔複合の適用後基準 — §12-4〕と standalone 分〔受理時点 = 適用前基準〕の

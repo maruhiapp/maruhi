@@ -6,9 +6,9 @@
 // 修正が片側にしか当たらないズレを構造的に防ぐ。エラーは DataRejection で運び、
 // 呼び出し側には outcome への畳み込みだけを残す。
 
-import type { ChainInvalidError } from "@maruhi/core";
-import { chainMirrorEvent } from "@maruhi/core";
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainInvalidError, ProposalIndex } from "@maruhi/core";
+import { chainMirrorEvents, indexProposals } from "@maruhi/core";
+import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
@@ -186,6 +186,37 @@ export interface ChainAcceptStores {
 }
 
 /**
+ * 完成した approve が適用した提案(内側 op と提案エントリの seq)。DO の append の
+ * 戻り値で worker へ渡し、worker は直接追記の add_member / remove_member と同じ
+ * D1 後処理(招待の completed 突合・membership 投影)を内側 op に対して行う
+ * (設計録 es-design.md §11 K5-H)。
+ */
+export interface AppliedProposal {
+  readonly proposalSeq: number;
+  readonly inner: ProposableOperation;
+}
+
+/**
+ * 受理後のチェーン(受理済みエントリを含む)の提案索引(AUDIT_SPEC §3.4 の
+ * approve / withdraw 行と適用行の入力)。導出は core の indexProposals をサーバーと
+ * CLI で共有する(K5-F)。
+ */
+export function proposalIndexOf(
+  entries: readonly ChainEntry[],
+  applied: VerifiedChainView,
+): ProposalIndex {
+  // entryHashAt は索引オブジェクトのメソッド(this 束縛)なので引数で包む
+  return indexProposals(
+    entries,
+    (seq) => applied.history.entryHashAt(seq),
+    new Set(applied.state.pendingProposals.keys()),
+  );
+}
+
+/** 提案できない op だけを運ぶ経路(複合の create / rotate + 境界 checkpoint)用の空索引。 */
+const NO_PROPOSALS: ProposalIndex = new Map();
+
+/**
  * 受理済みエントリの挿入 + §3.4 の監査ミラー + op 別の受理副作用(同期)。
  * チェーン挿入・ミラー追記・副作用を同一同期ブロック(= 同一タスク)で原子
  * コミットするために、呼び出し側の書き込みフェーズ内から呼ぶ。serverTs(nowMs)は
@@ -193,6 +224,12 @@ export interface ChainAcceptStores {
  * 統一する。副作用をここに置くのは、受理経路が将来増えても「remove を受理したのに
  * フラグが出ない」「再追加を受理したのに旧鍵ラップが残る」形を構造的に防ぐため
  * (受理 4 手順の共有と同じ理由)。
+ *
+ * 四眼(K5): 完成した approve は `chain.approved`(completed = true)に続けて内側 op の
+ * 適用行(同じ chain_seq・actor = 提案者・viaProposalSeq)を書き、そのうえで内側 op の
+ * 副作用を approve の seq を起点に走らせる(CRYPTO_SPEC §6.4「内側 op を直接受理した
+ * 場合と同一に、当該 approve エントリの受理タスク内で」)。戻り値は適用した提案
+ * (未完成・四眼以外は null)。
  */
 export function insertAcceptedEntrySync(
   stores: ChainAcceptStores,
@@ -200,10 +237,24 @@ export function insertAcceptedEntrySync(
   applied: VerifiedChainView,
   canonicalBytes: number,
   nowMs: number,
-): void {
+  proposals: ProposalIndex,
+): AppliedProposal | null {
   stores.chainStore.insertSync(entry, applied.state.headHashHex, canonicalBytes);
-  stores.audit.appendSync(chainMirrorEvent(entry, nowMs));
-  applyAcceptanceSideEffectsSync(stores, entry, nowMs);
+  const rows = chainMirrorEvents(entry, nowMs, proposals);
+  stores.audit.appendManySync(rows);
+  applyAcceptanceSideEffectsSync(stores, entry, entry.seq, nowMs);
+  if (entry.op !== "approve") {
+    return null;
+  }
+  const proposal = proposals.get(entry.payload.proposalHashHex);
+  if (proposal === undefined || proposal.completedAtSeq !== entry.seq) {
+    return null;
+  }
+  // 適用行はミラーの 2 行目として既に書かれている(chainMirrorEvents)。副作用は
+  // 内側 op に対して、適用 seq = この approve の seq で走らせる(裁定 P7 — 義務の
+  // 起点は適用時点。要ローテーション検出の triggerChainSeq も同じ)
+  applyAcceptanceSideEffectsSync(stores, proposal.entry.payload.inner, entry.seq, nowMs);
+  return { proposalSeq: proposal.entry.seq, inner: proposal.entry.payload.inner };
 }
 
 /**
@@ -212,7 +263,8 @@ export function insertAcceptedEntrySync(
  * (verifyChain が連鎖一致を検証済み)、H+2 のハッシュは両エントリ適用後の
  * ヘッドハッシュ。checkpoint のスナップショット保存(§6.4)はエントリ単体から
  * 導出できない(受理時点の保存状態の再構成物)ため、ここではなく呼び出し側の
- * 書き込みフェーズが同じ同期ブロック内で行う。
+ * 書き込みフェーズが同じ同期ブロック内で行う。この経路が運ぶ op(create /
+ * rotate / checkpoint)は提案できない(CRYPTO_SPEC §6.2)ので提案索引は空でよい。
  */
 export function insertAcceptedEntryPairSync(
   stores: ChainAcceptStores,
@@ -224,37 +276,40 @@ export function insertAcceptedEntryPairSync(
   nowMs: number,
 ): void {
   stores.chainStore.insertSync(first, second.prevHashHex, firstCanonicalBytes);
-  stores.audit.appendSync(chainMirrorEvent(first, nowMs));
-  applyAcceptanceSideEffectsSync(stores, first, nowMs);
+  stores.audit.appendManySync(chainMirrorEvents(first, nowMs, NO_PROPOSALS));
+  applyAcceptanceSideEffectsSync(stores, first, first.seq, nowMs);
   stores.chainStore.insertSync(second, applied.state.headHashHex, secondCanonicalBytes);
-  stores.audit.appendSync(chainMirrorEvent(second, nowMs));
-  applyAcceptanceSideEffectsSync(stores, second, nowMs);
+  stores.audit.appendManySync(chainMirrorEvents(second, nowMs, NO_PROPOSALS));
+  applyAcceptanceSideEffectsSync(stores, second, second.seq, nowMs);
 }
 
 /**
- * op 別の受理副作用(ミラー追記の後・同一タスク内)。
+ * op 別の受理副作用(ミラー追記の後・同一タスク内)。入力は op + payload
+ * (署名済みエントリ、または完成した approve が適用した内側 op)と適用 seq。
  *
  * - `add_member`: 再追加の旧鍵宛ラップ掃除(AUTH_SPEC §12-6 — §6.3 の
  *   「ラップ先 = 現メンバー鍵と厳密一致」不変条件へのストレージ収束)。
  *   削除は dek.deleted(actor = system + 原因 payload — AUDIT_SPEC §3.3)
  * - `remove_member` / `change_role`(降格・scope 縮小 — 2026-09-14 ES)/
  *   `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。検出はミラー追記の
- *   **後**に読む — 対象の在籍 / grant 区間・アクセス窓は直前に書いたミラー行で
- *   閉じている。四眼経由(完成した approve を契機とする検出 — CRYPTO_SPEC §7)は
- *   K5(受理ガードにより四眼エントリはまだサーバーに存在しない)
+ *   **後**に読む — 対象の在籍 / grant 区間・アクセス窓は直前に書いたミラー行
+ *   (四眼経由では適用行 — 同じイベント名・同じ target 索引)で閉じている
  * - `remove_member` はさらに対象のヘッド申告行を削除する(CRYPTO_SPEC §6.4 /
  *   AUTH_SPEC §16-1 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵
  *   ラップ掃除と同型)
+ * - 四眼の 4 op 自身(`set_approval_policy` / `propose` / `approve` / `withdraw`)に
+ *   固有の副作用はない(完成した approve の内側 op は呼び出し側が本関数を再度呼ぶ)
  */
 function applyAcceptanceSideEffectsSync(
   stores: ChainAcceptStores,
-  entry: ChainEntry,
+  operation: ChainOperation,
+  seq: number,
   nowMs: number,
 ): void {
-  if (entry.op === "add_member") {
+  if (operation.op === "add_member") {
     const stale = stores.dataStore.write.deleteStaleMemberWraps(
-      entry.payload.targetUserId,
-      entry.payload.encPubHex,
+      operation.payload.targetUserId,
+      operation.payload.encPubHex,
     );
     if (stale.length > 0) {
       stores.audit.appendManySync(
@@ -262,47 +317,47 @@ function applyAcceptanceSideEffectsSync(
           event: "dek.deleted",
           serverTs: nowMs,
           actorType: "system" as const,
-          targetUserId: entry.payload.targetUserId,
+          targetUserId: operation.payload.targetUserId,
           environmentId: ref.environmentId,
           epoch: ref.epoch,
-          payload: { cause: "member-readded", triggerChainSeq: entry.seq },
+          payload: { cause: "member-readded", triggerChainSeq: seq },
         })),
       );
     }
     return;
   }
-  if (entry.op === "remove_member") {
-    stores.dataStore.write.deleteHeadAttestation(entry.payload.targetUserId);
+  if (operation.op === "remove_member") {
+    stores.dataStore.write.deleteHeadAttestation(operation.payload.targetUserId);
     appendDetected(
       stores,
       detectMemberRemoval({
         read: stores.audit.readRotationSync,
-        targetUserId: entry.payload.targetUserId,
-        triggerChainSeq: entry.seq,
+        targetUserId: operation.payload.targetUserId,
+        triggerChainSeq: seq,
         nowMs,
       }),
     );
     return;
   }
-  if (entry.op === "change_role") {
+  if (operation.op === "change_role") {
     appendDetected(
       stores,
       detectRoleChange({
         read: stores.audit.readRotationSync,
-        targetUserId: entry.payload.targetUserId,
-        triggerChainSeq: entry.seq,
+        targetUserId: operation.payload.targetUserId,
+        triggerChainSeq: seq,
         nowMs,
       }),
     );
     return;
   }
-  if (entry.op === "revoke_server") {
+  if (operation.op === "revoke_server") {
     appendDetected(
       stores,
       detectServerRevocation({
         read: stores.audit.readRotationSync,
-        serverKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
-        triggerChainSeq: entry.seq,
+        serverKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
+        triggerChainSeq: seq,
         nowMs,
       }),
     );

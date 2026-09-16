@@ -21,12 +21,13 @@ import {
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "@maruhi/api-schema";
-import type { AuditEventRecord, AuditReadVariable } from "@maruhi/core";
+import type { AuditEventRecord, AuditReadVariable, ProposalIndex } from "@maruhi/core";
 import {
   auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
-  chainMirrorEvent,
+  chainMirrorEvents,
+  indexProposals,
   VAR_READ_EVENT,
 } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -41,6 +42,7 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
+import type { VerifiedProject } from "./sync.ts";
 
 /**
  * ワイヤの監査イベント(api-schema の AuditEventSchema の受信形 — 型は Schema
@@ -116,13 +118,44 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * chain.* ミラー行と検証済みエントリの突合。サーバーと同一の写像
- * (chainMirrorEvent)から期待行を再構成し、不一致フィールドを列挙する
- * (空 = 一致)。serverTs はサーバー受理時刻(クライアントに検証材料がない)
- * のため対象外。chain.* の payload は署名済みエントリ由来なので突合対象。
+ * 検証済みチェーンの提案索引(AUDIT_SPEC §3.4 の approve / withdraw 行と完成
+ * approve の適用行の入力)。導出はサーバーの書き手と同じ core の indexProposals
+ * (設計録 es-design.md §11 K5-F)。
  */
-function mirrorMismatches(entry: ChainEntry, observed: WireAuditEvent): readonly string[] {
-  const expected: AuditEventRecord = chainMirrorEvent(entry, observed.serverTs);
+function proposalIndexOf(verified: VerifiedProject): ProposalIndex {
+  return indexProposals(
+    verified.entries,
+    (seq) => verified.history.entryHashAt(seq),
+    new Set(verified.state.pendingProposals.keys()),
+  );
+}
+
+/**
+ * 1 エントリの期待ミラー行のうち、観測行と同じイベント名のもの(完成した approve は
+ * `chain.approved` と内側 op の適用行の 2 行を持つ — イベント名は重ならない)。名前が
+ * どの期待行にも一致しなければ先頭行を返し、event の不一致として報告される。
+ */
+function expectedRowFor(
+  entry: ChainEntry,
+  observed: WireAuditEvent,
+  index: ProposalIndex,
+): AuditEventRecord {
+  const rows = chainMirrorEvents(entry, observed.serverTs, index);
+  const first = rows[0];
+  if (first === undefined) {
+    // chainMirrorEvents は 1 行以上を返す(全 op が写像を持つ)
+    throw new Error("chain mirror mapping produced no rows");
+  }
+  return rows.find((row) => row.event === observed.event) ?? first;
+}
+
+/**
+ * chain.* ミラー行と期待行の突合。サーバーと同一の写像(chainMirrorEvents)から
+ * 期待行を再構成し、不一致フィールドを列挙する(空 = 一致)。serverTs はサーバー
+ * 受理時刻(クライアントに検証材料がない)のため対象外。chain.* の payload は
+ * 署名済みエントリ由来(適用行は提案エントリの内側 op 由来)なので突合対象。
+ */
+function mirrorMismatches(expected: AuditEventRecord, observed: WireAuditEvent): readonly string[] {
   const reasons: string[] = [];
   const check = (label: string, want: unknown, got: unknown): void => {
     if (!jsonEqual(want, got)) {
@@ -157,6 +190,17 @@ function entryIndexOf(entries: readonly ChainEntry[]): ReadonlyMap<number, Chain
   return new Map(entries.map((entry) => [entry.seq, entry]));
 }
 
+/**
+ * approve / withdraw の参照先が提案索引に無いか。検証済みチェーンでは到達不能
+ * (索引は同じ検証済みチェーンから構築される — unknown-proposal は無効エントリ)だが、
+ * verify(問題として報告)と list(unverified ラベル)が同じ述語を共有する。
+ */
+function proposalMissingFor(entry: ChainEntry, index: ProposalIndex): boolean {
+  return (
+    (entry.op === "approve" || entry.op === "withdraw") && !index.has(entry.payload.proposalHashHex)
+  );
+}
+
 /** chain.* 行のトラストラベル(表示用)と不一致詳細。 */
 interface MirrorTrust {
   readonly label: string;
@@ -167,6 +211,7 @@ function mirrorTrustOf(
   observed: WireAuditEvent,
   entries: ReadonlyMap<number, ChainEntry>,
   headSeq: number,
+  index: ProposalIndex,
 ): MirrorTrust {
   if (observed.chainSeq === undefined) {
     return { label: "mirror=mismatch", mismatches: ["chain_seq: the mirror row has no chain_seq"] };
@@ -186,7 +231,14 @@ function mirrorTrustOf(
       mismatches: [`chain_seq: the verified chain has no entry at seq=${observed.chainSeq}`],
     };
   }
-  const mismatches = mirrorMismatches(entry, observed);
+  if (proposalMissingFor(entry, index)) {
+    return {
+      label:
+        "mirror=unverified (the referenced proposal is not on the verified chain — re-run after a full sync)",
+      mismatches: [],
+    };
+  }
+  const mismatches = mirrorMismatches(expectedRowFor(entry, observed, index), observed);
   return mismatches.length === 0
     ? { label: "mirror=OK", mismatches }
     : { label: "mirror=mismatch", mismatches };
@@ -217,11 +269,12 @@ function projectMirrorTrustOf(
   event: WireAuditEvent,
   entries: ReadonlyMap<number, ChainEntry>,
   headSeq: number,
+  index: ProposalIndex,
 ): MirrorTrust | null {
   return (
     outsideChainNamespaceTrust(event) ??
     (event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)
-      ? mirrorTrustOf(event, entries, headSeq)
+      ? mirrorTrustOf(event, entries, headSeq, index)
       : null)
   );
 }
@@ -465,6 +518,7 @@ function renderListEvent(
   names: ReadonlyMap<string, NameIndex>,
   entries: ReadonlyMap<number, ChainEntry>,
   headSeq: number,
+  index: ProposalIndex,
   options: AuditListOptions,
   matchVariableId: string | null,
 ): { readonly lines: readonly string[]; readonly warnings: readonly string[] } {
@@ -472,7 +526,7 @@ function renderListEvent(
     event.environmentId === undefined ? undefined : names.get(event.environmentId);
   const name =
     event.variableId === undefined ? null : (environmentNames?.get(event.variableId) ?? null);
-  const trust = projectMirrorTrustOf(event, entries, headSeq);
+  const trust = projectMirrorTrustOf(event, entries, headSeq, index);
   const warnings = mirrorWarnings(event, trust);
   const listed = aggregatedReadOf(event);
   // --var 指定時: 集約行が一致した変数の項目(サーバーは列挙が当該変数を含む行を返す)
@@ -507,12 +561,14 @@ export function auditListOp(
       environmentIdsForNames(events, options, filters.variableId),
     );
     const entries = entryIndexOf(context.verified.entries);
+    const index = proposalIndexOf(context.verified);
     const integrityFailures = yield* logListEvents(events, (event) =>
       renderListEvent(
         event,
         names,
         entries,
         context.verified.state.headSeq,
+        index,
         options,
         filters.variableId,
       ),
@@ -790,18 +846,29 @@ interface MirrorBuckets {
 
 /**
  * head より新しい行の連続性検査。正直な伸長(同期とページ取得の間にチェーンが
- * 進んだ)なら、その行の chain_seq は head+1 から欠番・重複なく連続する — ミラーは
+ * 進んだ)なら、その行の chain_seq は head+1 から欠番なく連続する — ミラーは
  * 受理と同一トランザクションで書かれ、seq は無欠番だからである(§3.4 / §5.1)。
- * 連続しない・重複する行は「実在しないエントリを名乗る偽造行」の証拠として
- * 扱う(到達し得ない chain_seq による検証回避を塞ぐ)。
+ * 同一 chain_seq の行は最大 2 行(完成した approve の `chain.approved` + 適用行 —
+ * §3.4)。連続しない seq・3 行以上の seq は「実在しないエントリを名乗る偽造行」の
+ * 証拠として扱う(到達し得ない chain_seq による検証回避を塞ぐ)。
  */
 function aheadContiguityProblems(ahead: readonly number[], headSeq: number): readonly string[] {
   const problems: string[] = [];
+  const counts = new Map<number, number>();
+  for (const chainSeq of ahead) {
+    counts.set(chainSeq, (counts.get(chainSeq) ?? 0) + 1);
+  }
   let expected = headSeq + 1;
-  for (const chainSeq of [...ahead].toSorted((a, b) => a - b)) {
+  for (const chainSeq of [...counts.keys()].toSorted((a, b) => a - b)) {
     if (chainSeq !== expected) {
       problems.push(
-        `chain_seq=${chainSeq}: mirror rows newer than the local chain (head seq=${headSeq}) are not contiguous from just after the head (expected ${expected}) — an honest extension is contiguous with no gaps or duplicates, so this is evidence of forged rows claiming nonexistent entries`,
+        `chain_seq=${chainSeq}: mirror rows newer than the local chain (head seq=${headSeq}) are not contiguous from just after the head (expected ${expected}) — an honest extension is contiguous with no gaps, so this is evidence of forged rows claiming nonexistent entries`,
+      );
+    }
+    const count = counts.get(chainSeq) ?? 0;
+    if (count > 2) {
+      problems.push(
+        `chain_seq=${chainSeq}: ${countNoun(count, "mirror row")} newer than the local chain — no chain entry has more than 2 mirror rows (a completed approve has its own row plus the applied inner-op row — AUDIT_SPEC §3.4), so this is evidence of forged rows`,
       );
     }
     expected = chainSeq + 1;
@@ -847,30 +914,74 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   return { byChainSeq, problems, aheadRows: ahead.length };
 }
 
-/** 1 エントリ分の全単射 + 写像一致の検査(空 = 問題なし)。 */
-function entryMirrorProblems(
+/** 期待行 1 行に対する観測行の突合(欠落 / 重複 / フィールド不一致)。 */
+function expectedRowProblems(
   entry: ChainEntry,
-  matched: readonly WireAuditEvent[],
+  expected: AuditEventRecord,
+  rows: readonly WireAuditEvent[],
+  index: ProposalIndex,
 ): readonly string[] {
-  const observed = matched[0];
+  const observed = rows[0];
   if (observed === undefined) {
     return [
-      `chain_seq=${entry.seq} (op=${entry.op}): no corresponding mirror row (a missing row — mirrors are written in the same transaction as chain acceptance, so this is evidence of a concealed deletion)`,
+      `chain_seq=${entry.seq} (op=${entry.op}): no corresponding ${displayText(expected.event)} mirror row (a missing row — mirrors are written in the same transaction as chain acceptance, so this is evidence of a concealed deletion)`,
     ];
   }
-  if (matched.length > 1) {
+  if (rows.length > 1) {
     return [
-      `chain_seq=${entry.seq} (op=${entry.op}): ${countNoun(matched.length, "mirror row")} found (duplicates — rows ${matched.map((row) => displayText(row.id)).join(", ")})`,
+      `chain_seq=${entry.seq} (op=${entry.op}): ${countNoun(rows.length, `${displayText(expected.event)} mirror row`)} found (duplicates — rows ${rows.map((row) => displayText(row.id)).join(", ")})`,
     ];
   }
-  return mirrorMismatches(entry, observed).map(
+  // serverTs は突合対象外(観測行の値をそのまま期待行に写して比較する)
+  return mirrorMismatches(expectedRowFor(entry, observed, index), observed).map(
     (mismatch) => `chain_seq=${entry.seq} (audit row ${displayText(observed.id)}): ${mismatch}`,
   );
 }
 
 /**
+ * 1 エントリ分の全単射 + 写像一致の検査(空 = 問題なし)。期待行の集合は
+ * chainMirrorEvents が返す 1 行(完成した approve は 2 行)で、観測行はイベント名で
+ * 期待行に対応づける: 期待行に観測行が無ければ欠落、2 行以上あれば重複、期待に無い
+ * イベント名の行は過剰(未完成の approve に適用行がある・別 op の行を名乗る等)。
+ * 適用行の `viaProposalSeq` を含む全フィールドの不一致は写像の不一致として列挙する
+ * (AUDIT_SPEC §3.4 — 2026-09-16 K5)。
+ */
+function entryMirrorProblems(
+  entry: ChainEntry,
+  matched: readonly WireAuditEvent[],
+  index: ProposalIndex,
+): readonly string[] {
+  // 検証済みチェーンでは参照先の propose が必ず索引にある(unknown-proposal は無効
+  // エントリ)。欠けていれば索引の構築側の矛盾であり、期待行を組めないので defect で
+  // 落とさず検証失敗として chain_seq 付きで報告する(pullfrog 第 1 巡)
+  if (proposalMissingFor(entry, index)) {
+    return [
+      `chain_seq=${entry.seq} (op=${entry.op}): the referenced proposal is not on the verified chain, so the expected mirror rows cannot be reconstructed — re-run \`maruhi audit verify\` after a full sync; if this persists it is a verifier inconsistency, not evidence about the audit log`,
+    ];
+  }
+  const expectedRows = chainMirrorEvents(entry, 0, index);
+  const expectedEvents = new Set(expectedRows.map((row) => row.event));
+  const problems = expectedRows.flatMap((expected) =>
+    expectedRowProblems(
+      entry,
+      expected,
+      matched.filter((row) => row.event === expected.event),
+      index,
+    ),
+  );
+  const unexpected = matched
+    .filter((row) => !expectedEvents.has(row.event))
+    .map(
+      (row) =>
+        `chain_seq=${entry.seq} (op=${entry.op}): unexpected mirror row ${displayText(row.id)} (${displayText(row.event)}) — the entry maps to ${expectedRows.map((expected) => displayText(expected.event)).join(" + ")} only (an applied inner-op row exists only for an approve that reached the quorum — AUDIT_SPEC §3.4), so this is evidence of a forged row`,
+    );
+  return [...problems, ...unexpected];
+}
+
+/**
  * `maruhi audit verify`: ミラー全単射検証。検証済みチェーンの全エントリ
- * (1..headSeq)と chain.* ミラー行が 1 対 1 に対応し、全フィールドが写像どおり
+ * (1..headSeq)と chain.* ミラー行が 1 対 1 に対応し(完成した approve は
+ * + 内側 op の適用行 1 行 — AUDIT_SPEC §3.4)、全フィールドが写像どおり
  * であることを検査する。欠落(削除の隠蔽)・偽造(チェーンにない行)・改変の
  * 3 方向を検出する — per-row 突合(list のラベル)では原理的に見えない欠落まで
  * 覆うのがこのコマンドの追加価値。クラス 1 のみを読むため全メンバーが実行できる。
@@ -883,15 +994,16 @@ export function auditVerifyOp(
     const rows = yield* fetchAllMirrorRows(context.client, context.projectId);
     const headSeq = context.verified.state.headSeq;
     const buckets = bucketMirrorRows(rows, headSeq);
+    const index = proposalIndexOf(context.verified);
     const problems = [
       ...buckets.problems,
       ...context.verified.entries.flatMap((entry) =>
-        entryMirrorProblems(entry, buckets.byChainSeq.get(entry.seq) ?? []),
+        entryMirrorProblems(entry, buckets.byChainSeq.get(entry.seq) ?? [], index),
       ),
     ];
     if (problems.length === 0 && buckets.aheadRows === 0) {
       yield* io.log(
-        `Mirror bijection verification OK: chain entries 1..${headSeq} \u2194 chain.* mirror rows match the mapping (AUDIT_SPEC §3.4)`,
+        `Mirror bijection verification OK: chain entries 1..${headSeq} \u2194 chain.* mirror rows match the mapping (one row per entry, plus the applied inner-op row of each completed approve — AUDIT_SPEC §3.4)`,
       );
       return 0;
     }

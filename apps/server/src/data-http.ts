@@ -11,7 +11,6 @@ import {
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,
-  ApprovalNotAcceptedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -34,6 +33,7 @@ import {
   NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
+  ProposalLimitError,
   RotationFlagNotFoundError,
   SchemaDescriptionRejectedError,
   SchemaPolicyRejectedError,
@@ -279,7 +279,7 @@ type DataApiError =
   | EnvironmentNotFoundError
   | EnvironmentConflictError
   | CompositeRequiredError
-  | ApprovalNotAcceptedError
+  | ProposalLimitError
   | CheckpointStateMismatchError
   | AuditHeadNotReadyError
   | ChainHeadConflictError
@@ -325,7 +325,9 @@ const rejectionErrors = {
     }),
   // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API の共有)
   "composite-required": (rejection) => new CompositeRequiredError({ op: rejection.op }),
-  "approval-not-accepted": (rejection) => new ApprovalNotAcceptedError({ op: rejection.op }),
+  // 四眼の propose の受理ポリシー(AUTH_SPEC §12-8 — K5)
+  "proposal-limit": (rejection) =>
+    new ProposalLimitError({ reason: rejection.reason, limit: rejection.limit }),
   "checkpoint-state-mismatch": (rejection) =>
     new CheckpointStateMismatchError({ reason: rejection.reason }),
   // 監査ヘッド派生列の有界伸長が未完了(retryable 503 — AUDIT_SPEC §5.1 /

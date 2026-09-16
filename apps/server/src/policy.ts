@@ -80,6 +80,20 @@ export const MAX_DEK_WRAPS_PER_REQUEST = 10_000;
 export const MAX_PROJECT_DEK_WRAP_ROWS = 1_000_000;
 
 /**
+ * §12-8 / CRYPTO_SPEC §6.4: プロジェクトあたりの pending 提案数(四眼 — PF1)。
+ * 期限切れ(サーバー時計で `expires_at_ms` を過ぎたもの)は数えない。withdraw /
+ * 適用で解放される。合意規則ではない(セルフホストでの引き上げは自由)。
+ */
+export const MAX_PENDING_PROPOSALS = 32;
+
+/**
+ * CRYPTO_SPEC §6.4: `propose` の `expires_at_ms` の上界 = 受理時サーバー時計 +
+ * この値(30 日)。上界なしでは遠い未来の期限で pending 枠を占有でき、期限切れの
+ * 除外が効かない。合意規則ではない(§6.2 の構造検査は非負の安全整数しか課さない)。
+ */
+export const MAX_PROPOSAL_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
  * AUDIT_SPEC §7 の取り下げ操作: 1 リクエストの取り下げ対象数。DEK ラップの
  * リクエスト上限と同値に取る(取り下げ対象の理論上限 = フラグの対象
  * (variable × environment) 数は同じ量スケールに束縛される)。

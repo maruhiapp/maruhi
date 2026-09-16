@@ -9,8 +9,6 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  FOUR_EYES_OPS,
-  prefixReplayable,
   toWireEntry,
   vectorAuthzNegatives,
   vectorEntries,
@@ -82,28 +80,6 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "approve-hash-bad-length",
 ]);
 
-/**
- * 四眼(PF1)の 4 op の negative(前提チェーンが再生できるもの): サーバーは K5 まで
- * 4 op を受理しない(ApprovalNotAccepted 422 — 設計録 §8 K2-10)ので、合意規則の
- * 理由コードではなく受理ガードでの拒否を固定する(wire schema が先に拒む形は 400)。
- * K5 で受理ガードを外すときに本関数ごと外し、通常の 422 (expected_reason) 経路へ戻す
- */
-function registerFourEyesGuardTest(negative: AuthzNegative): void {
-  const schemaRejected = WIRE_SCHEMA_REJECTED.has(negative.name);
-  const label = schemaRejected ? "at the wire schema (400)" : "with 422 (ApprovalNotAccepted — K5)";
-  it(`rejects ${negative.name} ${label}`, async () => {
-    const response = await appendUnsignedAtHead(negative);
-    if (schemaRejected) {
-      expect(response.status).toBe(400);
-      return;
-    }
-    expect(response.status).toBe(422);
-    const body = (await response.json()) as { _tag: string; op: string };
-    expect(body["_tag"]).toBe("ApprovalNotAccepted");
-    expect(body.op).toBe(negative.entry.op);
-  });
-}
-
 type AuthzNegative = (typeof vectorAuthzNegatives)[number];
 
 /** 前提チェーンを再生し、seq / prev だけ実ヘッドへ付け替えた原本(再署名なし)を送る。 */
@@ -165,28 +141,25 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
 }
 
 /**
- * 認可 negative の分割(pullfrog 第 3 巡): `prefixReplayable` / `firstFourEyesSeq` /
- * `fourEyesChains` の判定が広がっても(例: 正規チェーンの再生成で四眼 op が前に動く)
- * suite が静かに空にならないよう、各分岐の件数を厳密に固定する。K5 で受理ガードを
- * 外すときは `skipped` を 0 にし、`fourEyesGuard` の分を `consensus` / `wireSchema` /
- * `structureBeforeSignature`(`propose-expires-negative`)へ戻す
+ * 認可 negative の分割(pullfrog 第 3 巡): 判定が広がっても suite が静かに空に
+ * ならないよう、各分岐の件数を厳密に固定する。K5(2026-09-16)で受理ガードを
+ * 外し、四眼 op の negative と四眼 op を含む派生チェーンを前提とする negative は
+ * すべて通常の経路(合意規則の 422 / wire schema の 400 / 署名前の構造段)へ戻した
+ * (K2-10 の `skipped` 58 + `fourEyesGuard` 7 = 65 件の内訳: consensus +57、
+ * wireSchema +7、structureBeforeSignature +1)
  */
 const EXPECTED_PARTITION = {
   checkpoint: 20,
   composite: 24,
-  skipped: 58,
-  fourEyesGuard: 7,
-  structureBeforeSignature: 0,
-  wireSchema: 1,
-  consensus: 47,
+  structureBeforeSignature: 1,
+  wireSchema: 8,
+  consensus: 104,
 } as const;
 
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
   const partition: Record<keyof typeof EXPECTED_PARTITION, number> = {
     checkpoint: 0,
     composite: 0,
-    skipped: 0,
-    fourEyesGuard: 0,
     structureBeforeSignature: 0,
     wireSchema: 0,
     consensus: 0,
@@ -202,20 +175,10 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
       partition.composite += 1;
       continue;
     }
-    // 四眼(PF1)の 4 op は K5 までサーバーが受理しない(ApprovalNotAccepted 422 —
-    // 設計録 §8 K2-10)。合意規則の理由コードは crypto 層の 4 実行環境テストが固定し、
-    // ここでは (a) 前提チェーンが再生できる四眼 op の negative は受理ガードでの拒否を、
-    // (b) 前提チェーン自体が四眼 op の受理を要する negative は再生できないため
-    // 登録しない(K5 で受理ガードを外すときに本分岐ごと外す)
-    if (!prefixReplayable(negative)) {
-      partition.skipped += 1;
-      continue;
-    }
-    if (FOUR_EYES_OPS.has(op)) {
-      partition.fourEyesGuard += 1;
-      registerFourEyesGuardTest(negative);
-      continue;
-    }
+    // 四眼(PF1)の 4 op と四眼 op を含む派生チェーンは K5 からサーバーが再生・受理
+    // する(propose の受理ポリシーは固定時刻のベクターを拒まない — expires_at_ms は
+    // 上界の内側で、失効済みの提案は pending 上限の計算から除外されるだけ。
+    // 設計録 es-design.md §11 K5-C)
     if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
       partition.structureBeforeSignature += 1;
       registerStructureBeforeSignatureTest(negative);
@@ -230,7 +193,7 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
     registerConsensusRejectTest(negative);
   }
 
-  it("partitions the authz negatives as expected (K2-10 — 受理ガードで再生しない分を含めて固定)", () => {
+  it("partitions the authz negatives as expected (K5 — 四眼 op を含めて全件を再生する)", () => {
     expect(partition).toEqual(EXPECTED_PARTITION);
     expect(Object.values(partition).reduce((a, b) => a + b, 0)).toBe(vectorAuthzNegatives.length);
   });

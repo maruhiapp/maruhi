@@ -7,7 +7,6 @@
 //   4. op ごとのチェーン role 認可は verifyChain(§6.2)が真実源
 
 import {
-  ApprovalNotAcceptedError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   CompositeRequiredError,
@@ -18,7 +17,7 @@ import {
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
-import type { ChainEntry, Role } from "@maruhi/crypto";
+import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { HttpApiEndpoint } from "effect/unstable/httpapi";
@@ -326,17 +325,10 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
         }
-        // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は受理副作用(AUDIT_SPEC §3.4 のミラー行 /
-        // 適用行・要ローテーション検出・ラップ掃除・pending 上限)が揃う K5 まで
-        // 受理しない(fail-closed。DO 側にも同じガード — 設計録 es-design.md §8 K2-10)
-        if (
-          payload.entry.op === "set_approval_policy" ||
-          payload.entry.op === "propose" ||
-          payload.entry.op === "approve" ||
-          payload.entry.op === "withdraw"
-        ) {
-          return yield* Effect.fail(new ApprovalNotAcceptedError({ op: payload.entry.op }));
-        }
+        // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は K5 から汎用追記で受理する(AUTH_SPEC
+        // §11-1)。受理ポリシー(pending 上限・expires_at_ms の上界 — §12-8)と成長
+        // ガードの四眼経由は DO(appendProgram)が判定し、ProposalLimit /
+        // DataLimitExceeded として届く
         // §11-1: 追記エントリの actor = 認証主体(受理ポリシー)
         yield* ensureActorMatches(principal, payload.entry);
         yield* ensureTokenScopeForProject(
@@ -353,6 +345,11 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           ),
         );
         const head = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
+        // 受理された効果 = 直接追記の op、または完成した approve が適用した内側 op
+        // (四眼 — CRYPTO_SPEC §6.4「内側 op を直接受理した場合と同一」。DO が
+        // appliedProposal で返す — 設計録 es-design.md §11 K5-H)。未完成の approve /
+        // propose / withdraw / set_approval_policy は D1 の後処理を持たない
+        const applied: ChainOperation = head.appliedProposal?.inner ?? payload.entry;
         // AUTH_SPEC §15-2: add_member 受理時、target = invitee の accepted 招待を
         // completed へ突合する(導出状態の更新であり真実源はチェーン。§15-4:
         // 証跡は chain.member_added — 独立の監査イベントは書かない)。DO 受理と
@@ -362,8 +359,8 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // を握って前進する(無言の握り潰しの禁止に対する明示例外: 失敗の帰結は
         // 「招待が accepted のまま一覧に残る」という可視・可修復な導出状態の
         // 欠落のみで、管理者が失効で掃除できる — 欠落側に倒す)
-        if (payload.entry.op === "add_member") {
-          const target = payload.entry.payload;
+        if (applied.op === "add_member") {
+          const target = applied.payload;
           const invites = yield* InviteRepo;
           yield* invites
             .completeAccepted({
@@ -381,13 +378,13 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
             .upsertMember(params.projectId, target.targetUserId, Date.now())
             .pipe(Effect.catchDefect(() => Effect.void));
         }
-        if (payload.entry.op === "remove_member") {
+        if (applied.op === "remove_member") {
           // §11-5 (3): 投影行の削除(候補集合の衛生)。一覧の正しさはこの削除の
           // 成否に依存しない — 読取時の DO 確認が stale 行を応答から排除 + 削除
           // する(session-42 裁定 BI-c)ため、ここも defect を握って前進する
           const projects = yield* ProjectRepo;
           yield* projects
-            .deleteMember(params.projectId, payload.entry.payload.targetUserId)
+            .deleteMember(params.projectId, applied.payload.targetUserId)
             .pipe(Effect.catchDefect(() => Effect.void));
         }
         return {

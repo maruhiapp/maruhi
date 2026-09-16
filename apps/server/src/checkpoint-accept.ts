@@ -180,7 +180,7 @@ export function standaloneCheckpointProgram(
     const dataStore = yield* DataStore;
     // スナップショット保存(§6.4)はチェーン挿入・ミラーと同じ同期ブロックで
     // 原子コミットする(commitAcceptedEntry の extraSync)
-    yield* commitAcceptedEntry(entry, applied, canonicalBytes, (nowMs) => {
+    yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes, (nowMs) => {
       for (const { tuple, values } of snapshots) {
         dataStore.write.upsertCheckpointSnapshot(
           tuple.environmentId,
@@ -198,6 +198,11 @@ export function standaloneCheckpointProgram(
       }
     });
     updateStateCache(cache, applied);
-    return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
+    // checkpoint は提案できない op(CRYPTO_SPEC §6.2)— 適用した提案はない
+    return {
+      headSeq: applied.state.headSeq,
+      headHashHex: applied.state.headHashHex,
+      appliedProposal: null,
+    };
   });
 }

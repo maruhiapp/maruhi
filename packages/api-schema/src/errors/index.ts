@@ -52,6 +52,8 @@ export {
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
+  ProposalLimitError,
+  ProposalLimitReasonSchema,
 } from "./chain.ts";
 export {
   ActivationRequiredError,

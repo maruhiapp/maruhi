@@ -71,8 +71,16 @@ import {
   renameVariableProgram,
 } from "../src/programs-variable.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
-import { signEntryAt } from "./support/data-crypto.ts";
-import { createEnvironmentOk, OWNER, projectId, READER, STRANGER } from "./support/data-fixture.ts";
+import { addMemberOperation, signEntryAt } from "./support/data-crypto.ts";
+import {
+  appendOperation,
+  createEnvironmentOk,
+  OWNER,
+  projectId,
+  READER,
+  seedMemberToken,
+  STRANGER,
+} from "./support/data-fixture.ts";
 import {
   aadFor,
   createVariableOk,
@@ -391,6 +399,101 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
       return Exit.isSuccess(pulled) ? pulled.value.variables.map((v) => v.version) : null;
     });
     expect(versions).toEqual([1]);
+  });
+
+  it("guards the four-eyes path at the entry that first carries the growth intent (propose / approve of add_member or grant_server) and leaves remove / withdraw open", async () => {
+    // 四眼の有効化(owner 2 名 + 方針)と pending の add_member 提案は通常の meter で
+    // HTTP 経由に作る(設計録 es-design.md §11 K5-D)
+    await seedMemberToken(fixture, "user-owner-0014", 9014);
+    await appendOperation(fixture, OWNER, addMemberOperation("user-owner-0014", "owner"));
+    await appendOperation(fixture, OWNER, {
+      op: "set_approval_policy",
+      payload: { ops: ["add_member", "grant_server", "remove_member"], requiredApprovals: 2 },
+    });
+    const addStranger = {
+      op: "add_member" as const,
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex: "ab".repeat(32),
+        sigPubHex: "cd".repeat(32),
+        role: "member" as const,
+        scopeKind: "all" as const,
+        scopeEnvironmentIds: [],
+      },
+    };
+    const expiresAtMs = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    await appendOperation(fixture, OWNER, {
+      op: "propose",
+      payload: { inner: addStranger, expiresAtMs },
+    });
+    const pendingAddHash = fixture.head.hashHex;
+
+    const proposeAdd = await signedEntry({
+      op: "propose",
+      payload: { inner: addStranger, expiresAtMs },
+    });
+    const proposeGrant = await signedEntry({
+      op: "propose",
+      payload: {
+        inner: {
+          op: "grant_server",
+          payload: {
+            serverEncPubHex: "ab".repeat(32),
+            serverKeyFingerprintHex: "cd".repeat(16),
+            scopeEnvironmentIds: [],
+            leasePolicy: [],
+          },
+        },
+        expiresAtMs,
+      },
+    });
+    const approveAdd = await signedEntry({
+      op: "approve",
+      payload: { proposalHashHex: pendingAddHash },
+    });
+    const proposeRemove = await signedEntry({
+      op: "propose",
+      payload: { inner: { op: "remove_member", payload: { targetUserId: READER } }, expiresAtMs },
+    });
+    const withdrawAdd = await signedEntry({
+      op: "withdraw",
+      payload: { proposalHashHex: pendingAddHash },
+    });
+    await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+      const cache: StateCache = { current: null, chain: null };
+      // 拒否される面(ヘッドは動かない)
+      const rejected = {
+        proposeAddMember: rejectionOf(
+          await run(appendProgram(fixture.head.hashHex, proposeAdd.entry, OWNER, cache)),
+        ),
+        proposeGrantServer: rejectionOf(
+          await run(appendProgram(fixture.head.hashHex, proposeGrant.entry, OWNER, cache)),
+        ),
+        approveOfPendingAddMember: rejectionOf(
+          await run(appendProgram(fixture.head.hashHex, approveAdd.entry, OWNER, cache)),
+        ),
+      };
+      for (const [surface, rejection] of Object.entries(rejected)) {
+        expect(rejection, surface).toEqual(STORAGE_REJECTION);
+      }
+      // 受理される面(是正の提案・提案の解放)
+      const removeProposed = await run(
+        appendProgram(fixture.head.hashHex, proposeRemove.entry, OWNER, cache),
+      );
+      expect(rejectionOf(removeProposed)).toBeNull();
+      if (!Exit.isSuccess(removeProposed)) throw new Error("unreachable");
+      const resigned = await signEntryAt({
+        seq: removeProposed.value.headSeq + 1,
+        prevHashHex: removeProposed.value.headHashHex,
+        actorUserId: OWNER,
+        operation: withdrawAdd.entry,
+      });
+      expect(
+        rejectionOf(
+          await run(appendProgram(removeProposed.value.headHashHex, resigned.entry, OWNER, cache)),
+        ),
+      ).toBeNull();
+    });
   });
 
   it("keeps reads, deletions, revocations, rotation, attestation, checkpoint and settings open", async () => {
