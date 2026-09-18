@@ -31,7 +31,12 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { isApprovalTarget } from "./approval-rules.ts";
-import { ensureStillTarget, proposeOperation, type ProposedSummary } from "./approval.ts";
+import {
+  ensureStillTarget,
+  type ProposalInput,
+  proposeOperation,
+  type ProposedSummary,
+} from "./approval.ts";
 import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -351,7 +356,7 @@ export function serverGrantOp(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly proposal: { readonly expiresAtMs: number; readonly nowMs: number };
+  readonly proposal: ProposalInput;
 }): Effect.Effect<ServerGrantOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -389,23 +394,14 @@ export function serverGrantOp(input: {
     // 四眼(K6-A): 方針が grant_server を対象にしていれば提案して終わる(サーバー宛
     // バックフィルは適用を完成させた承認者が行う — 承認項目 22)。儀式は提案者が済ませた
     if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation({
-        client: input.client,
-        verified: input.verified,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-        inner,
-        expiresAtMs: input.proposal.expiresAtMs,
-        resync: input.resync,
-        recheck: (view) =>
-          ensureGrantable({
-            verified: view,
-            signerUserId: input.signerUserId,
-            scope,
-            serverConfig,
-          }).pipe(Effect.asVoid),
-        nowMs: input.proposal.nowMs,
-      });
+      const proposal = yield* proposeOperation(input, inner, (view) =>
+        ensureGrantable({
+          verified: view,
+          signerUserId: input.signerUserId,
+          scope,
+          serverConfig,
+        }).pipe(Effect.asVoid),
+      );
       return { kind: "proposed", proposal };
     }
 

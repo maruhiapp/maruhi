@@ -33,7 +33,14 @@ import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { isApprovalTarget } from "./approval-rules.ts";
-import { ensureStillTarget, proposeOperation, type ProposedSummary } from "./approval.ts";
+import {
+  ensureStillTarget,
+  type ProposalInput,
+  type ProposeContext,
+  proposeOperation,
+  proposeRecheck,
+  type ProposedSummary,
+} from "./approval.ts";
 import { backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { IdentityBacking } from "./config.ts";
@@ -94,12 +101,6 @@ const MAX_ATTEMPTS = 5;
 export type MemberOpOutcome<S> =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: S };
-
-/** 提案化に要る入力(期限と時計 — 設計録 K6-K)。 */
-export interface ProposalInput {
-  readonly expiresAtMs: number;
-  readonly nowMs: number;
-}
 
 /** remove / 降格 / 縮小後のローテーションの理由(§6.2 payload の固定文字列)。 */
 const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
@@ -1103,28 +1104,15 @@ export function memberAddOp(input: {
     // 四眼(K6-A / K6-D): 方針が add_member を対象にしていれば提案して終わる。儀式
     // (prepareMemberAdd)は提案者が済ませ、バックフィルは適用を完成させた承認者が行う
     if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation({
-        client: input.client,
-        verified: input.verified,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
+      const proposal = yield* proposeOperation(
+        input,
         inner,
-        expiresAtMs: input.proposal.expiresAtMs,
-        resync: input.resync,
-        recheck: (view) =>
-          recheck(view).pipe(
-            Effect.flatMap((rechecked) =>
-              rechecked.alreadyAdded
-                ? Effect.fail(
-                    cliError(
-                      "The target was added by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member add` to resume the backfill",
-                    ),
-                  )
-                : Effect.void,
-            ),
-          ),
-        nowMs: input.proposal.nowMs,
-      });
+        proposeRecheck(
+          recheck,
+          (rechecked) => rechecked.alreadyAdded,
+          "The target was added by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member add` to resume the backfill",
+        ),
+      );
       return { kind: "proposed", proposal };
     }
 
@@ -1228,47 +1216,56 @@ function ensureRemovable(input: {
       input.targetUserId,
     );
     if (target === undefined) {
-      // 削除済みからの再開(中断復旧): チェーン上に当該 user_id の remove が
-      // あることを要求する(タイプミスの user_id で sweep が走る形を作らない)
-      // 提案経由で適用された remove(四眼 — K6)も同じ列に載る(設計録 K6-C)
-      const removedBefore = input.verified.applied.some(
-        ({ operation }) =>
-          operation.op === "remove_member" && operation.payload.targetUserId === input.targetUserId,
-      );
-      if (!removedBefore) {
-        return yield* Effect.fail(
-          cliError(
-            "The target is not a member and the chain has no removal record for it (check the user ID)",
-          ),
-        );
-      }
-      if (ROLE_RANK[actor.role] < ROLE_RANK.member) {
-        return yield* Effect.fail(
-          cliError("Resuming the rotation requires the member role or above (CRYPTO_SPEC §6.2)"),
-        );
-      }
-      return { alreadyRemoved: true };
+      const resumable = removalResumeRejection(input.verified, actor, input.targetUserId);
+      return resumable === null
+        ? { alreadyRemoved: true }
+        : yield* Effect.fail(cliError(resumable));
     }
-    const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
-    if (rejection !== null) {
-      return yield* Effect.fail(cliError(rejection));
-    }
-    // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
-    // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
-    if (!scopeContains(actor.scope, target.scope)) {
-      return yield* Effect.fail(
-        cliError(
-          `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`,
-        ),
-      );
-    }
-    if (target.role === "owner" && ownersCount(input.verified) === 1) {
-      return yield* Effect.fail(
-        cliError("The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"),
-      );
-    }
-    return { alreadyRemoved: false };
+    const rejection = removeRuleRejection(input.verified, actor, target);
+    return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
   });
+}
+
+/**
+ * 削除済みからの再開(中断復旧)の条件: チェーン上に当該 user_id の remove があること
+ * (タイプミスの user_id で sweep が走る形を作らない。提案経由で適用された remove — 四眼 K6 —
+ * も同じ列に載る: 設計録 K6-C)と、再開する実行者が member 以上であること。
+ */
+function removalResumeRejection(
+  verified: VerifiedProject,
+  actor: ChainMember,
+  targetUserId: string,
+): string | null {
+  const removedBefore = verified.applied.some(
+    ({ operation }) =>
+      operation.op === "remove_member" && operation.payload.targetUserId === targetUserId,
+  );
+  if (!removedBefore) {
+    return "The target is not a member and the chain has no removal record for it (check the user ID)";
+  }
+  return ROLE_RANK[actor.role] < ROLE_RANK.member
+    ? "Resuming the rotation requires the member role or above (CRYPTO_SPEC §6.2)"
+    : null;
+}
+
+/** remove_member の §6.2 規則(role → scope-not-contained → last-owner)の手前判定。 */
+function removeRuleRejection(
+  verified: VerifiedProject,
+  actor: ChainMember,
+  target: ChainMember,
+): string | null {
+  const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
+  if (rejection !== null) {
+    return rejection;
+  }
+  // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
+  // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
+  if (!scopeContains(actor.scope, target.scope)) {
+    return `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`;
+  }
+  return target.role === "owner" && ownersCount(verified) === 1
+    ? "The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"
+    : null;
 }
 
 /** remove_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
@@ -1315,28 +1312,15 @@ export function memberRemoveOp<R>(input: {
     // 四眼(K6-A): 方針が remove_member を対象にしていれば提案して終わる(rotate 義務は
     // 適用後に承認者の sweep が履行する — 裁定 P7 / P8)。再開(削除済み)は提案しない
     if (!first.alreadyRemoved && proposing) {
-      const proposal = yield* proposeOperation({
-        client: input.client,
-        verified: input.verified,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
+      const proposal = yield* proposeOperation(
+        input,
         inner,
-        expiresAtMs: input.proposal.expiresAtMs,
-        resync: input.resync,
-        recheck: (view) =>
-          recheck(view).pipe(
-            Effect.flatMap((rechecked) =>
-              rechecked.alreadyRemoved
-                ? Effect.fail(
-                    cliError(
-                      "The target was removed by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member remove` to resume the rotation",
-                    ),
-                  )
-                : Effect.void,
-            ),
-          ),
-        nowMs: input.proposal.nowMs,
-      });
+        proposeRecheck(
+          recheck,
+          (rechecked) => rechecked.alreadyRemoved,
+          "The target was removed by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member remove` to resume the rotation",
+        ),
+      );
       return { kind: "proposed", proposal };
     }
 
@@ -1768,6 +1752,108 @@ function changeRoleOperation(input: {
   };
 }
 
+/** change_role の提案(K6-A): 省略側の再解決が提案時と一致することも再同期後に確かめる。 */
+function proposeRoleChange(
+  input: ProposeContext,
+  inner: ProposableOperation,
+  resolved: { readonly role: Role; readonly scope: MemberScope },
+  recheck: (
+    view: VerifiedProject,
+  ) => Effect.Effect<
+    { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
+    CliError
+  >,
+): Effect.Effect<ProposedSummary, CliError> {
+  const notApplied = proposeRecheck(
+    recheck,
+    (rechecked) => rechecked.alreadyChanged,
+    "The target already has the requested role / scope (a concurrent run applied it) — nothing to propose. Re-run `maruhi member change-role` to resume any pending backfill / rotation",
+  );
+  return proposeOperation(input, inner, (view) =>
+    notApplied(view).pipe(
+      Effect.flatMap((rechecked) =>
+        rechecked.role === resolved.role && sameScope(rechecked.scope, resolved.scope)
+          ? Effect.void
+          : Effect.fail(
+              cliError(
+                "The target's role / scope changed concurrently, so the omitted side of this request no longer resolves to the same (role, scope) — re-run to propose against the current state",
+              ),
+            ),
+      ),
+    ),
+  );
+}
+
+/**
+ * change_role の直接追記(CAS)と、受理後の再同期での掲載確認(サーバー申告を真実源に
+ * しない)。要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
+ * 据え置き側を変えていても、要求した側が載っていれば成立。
+ */
+function appendRoleChange(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly targetUserId: string;
+  readonly request: ChangeRoleRequest;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly inner: ProposableOperation;
+  readonly alreadyChanged: boolean;
+  readonly recheck: (
+    view: VerifiedProject,
+  ) => Effect.Effect<{ readonly alreadyChanged: boolean }, CliError>;
+}): Effect.Effect<
+  { readonly verified: VerifiedProject; readonly appended: boolean; readonly target: ChainMember },
+  CliError
+> {
+  return Effect.gen(function* () {
+    let verified = input.verified;
+    let appended = false;
+    if (!input.alreadyChanged) {
+      const outcome = yield* appendWithCas({
+        client: input.client,
+        verified,
+        resync: input.resync,
+        opLabel: "change_role",
+        // 省略した側(role / scope)は**署名するビュー**の対象の現状から解決する
+        // (signChangeRoleAtView — Cursor Bugbot 指摘対応)
+        signEntry: (view) =>
+          signChangeRoleAtView({
+            verified: view,
+            signerUserId: input.signerUserId,
+            targetUserId: input.targetUserId,
+            request: input.request,
+            signingKeyPair: input.signingKeyPair,
+          }),
+        recheck: (view) =>
+          ensureStillTarget(view, input.inner, false).pipe(
+            Effect.flatMap(() => input.recheck(view)),
+            Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
+          ),
+      });
+      verified = outcome.verified;
+      appended = outcome.appended;
+    }
+    verified = yield* resyncExtended(input.resync, verified);
+    const target = verified.state.members.get(input.targetUserId);
+    const expected =
+      target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
+    if (
+      target === undefined ||
+      expected === undefined ||
+      target.role !== expected.role ||
+      !sameScope(target.scope, expected.scope)
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          "The resync after change_role was accepted does not show the target's new role / scope (the server's response contradicts the chain). Investigate the served chain",
+        ),
+      );
+    }
+    return { verified, appended, target };
+  });
+}
+
 /** change_role の適用後の履行の結果(拡大バックフィル + 降格 / 縮小 sweep)。 */
 export type RoleChangeFulfilment = Pick<
   MemberChangeRoleSummary,
@@ -1886,85 +1972,16 @@ export function memberChangeRoleOp<R>(input: {
     // 四眼(K6-A): 方針が対象にしていれば提案して終わる(拡大バックフィル・縮小 sweep は
     // 適用後に承認者が履行する — 承認項目 22)。省略側は提案時のビューの現状で固定される
     if (!first.alreadyChanged && proposing) {
-      const proposal = yield* proposeOperation({
-        client: input.client,
-        verified: input.verified,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-        inner,
-        expiresAtMs: input.proposal.expiresAtMs,
-        resync: input.resync,
-        recheck: (view) =>
-          recheck(view).pipe(
-            Effect.flatMap((rechecked) =>
-              rechecked.alreadyChanged
-                ? Effect.fail(
-                    cliError(
-                      "The target already has the requested role / scope (a concurrent run applied it) — nothing to propose. Re-run `maruhi member change-role` to resume any pending backfill / rotation",
-                    ),
-                  )
-                : rechecked.role === resolved.role && sameScope(rechecked.scope, resolved.scope)
-                  ? Effect.void
-                  : Effect.fail(
-                      cliError(
-                        "The target's role / scope changed concurrently, so the omitted side of this request no longer resolves to the same (role, scope) — re-run to propose against the current state",
-                      ),
-                    ),
-            ),
-          ),
-        nowMs: input.proposal.nowMs,
-      });
+      const proposal = yield* proposeRoleChange(input, inner, resolved, recheck);
       return { kind: "proposed", proposal };
     }
 
-    let verified = input.verified;
-    let appended = false;
-    if (!first.alreadyChanged) {
-      const outcome = yield* appendWithCas({
-        client: input.client,
-        verified,
-        resync: input.resync,
-        opLabel: "change_role",
-        // 省略した側(role / scope)は**署名するビュー**の対象の現状から解決する
-        // (signChangeRoleAtView — Cursor Bugbot 指摘対応)
-        signEntry: (view) =>
-          signChangeRoleAtView({
-            verified: view,
-            signerUserId: input.signerUserId,
-            targetUserId: input.targetUserId,
-            request: input.request,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        recheck: (view) =>
-          ensureStillTarget(view, inner, false).pipe(
-            Effect.flatMap(() => recheck(view)),
-            Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
-          ),
-      });
-      verified = outcome.verified;
-      appended = outcome.appended;
-    }
-
-    // 受理後の再同期で (role, scope) の掲載を確認(サーバー申告を真実源にしない)
-    verified = yield* resyncExtended(input.resync, verified);
-    // 要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
-    // 据え置き側を変えていても、要求した側が載っていれば成立
-    const target = verified.state.members.get(input.targetUserId);
-    const expected =
-      target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
-    if (
-      target === undefined ||
-      expected === undefined ||
-      target.role !== expected.role ||
-      !sameScope(target.scope, expected.scope)
-    ) {
-      return yield* Effect.fail(
-        cliError(
-          "The resync after change_role was accepted does not show the target's new role / scope (the server's response contradicts the chain). Investigate the served chain",
-        ),
-      );
-    }
-
+    const { verified, appended, target } = yield* appendRoleChange({
+      ...input,
+      inner,
+      alreadyChanged: first.alreadyChanged,
+      recheck,
+    });
     const fulfilment = yield* fulfilRoleChange({
       client: input.client,
       verified,

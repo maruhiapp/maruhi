@@ -23,7 +23,12 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { isApprovalTarget } from "./approval-rules.ts";
-import { ensureStillTarget, proposeOperation, type ProposedSummary } from "./approval.ts";
+import {
+  ensureStillTarget,
+  type ProposalInput,
+  proposeOperation,
+  type ProposedSummary,
+} from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -188,7 +193,7 @@ export function serverRevokeOp<R>(input: {
    * なければ確認のみ — 新エポックは作らない)。
    */
   readonly rotate: SweepRotate<R>;
-  readonly proposal: { readonly expiresAtMs: number; readonly nowMs: number };
+  readonly proposal: ProposalInput;
 }): Effect.Effect<ServerRevokeOutcome, CliError, R> {
   return Effect.gen(function* () {
     yield* requireOwner(input.verified, input.signerUserId);
@@ -203,27 +208,18 @@ export function serverRevokeOp<R>(input: {
         payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
       };
       if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-        const proposal = yield* proposeOperation({
-          client: input.client,
-          verified: input.verified,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-          inner,
-          expiresAtMs: input.proposal.expiresAtMs,
-          resync: input.resync,
-          recheck: (view) =>
-            Effect.gen(function* () {
-              yield* requireOwner(view, input.signerUserId);
-              if (!view.state.serverGrants.has(target.serverKeyFingerprintHex)) {
-                return yield* Effect.fail(
-                  cliError(
-                    "The grant was revoked by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi server revoke` to resume the rotation",
-                  ),
-                );
-              }
-            }),
-          nowMs: input.proposal.nowMs,
-        });
+        const proposal = yield* proposeOperation(input, inner, (view) =>
+          Effect.gen(function* () {
+            yield* requireOwner(view, input.signerUserId);
+            if (!view.state.serverGrants.has(target.serverKeyFingerprintHex)) {
+              return yield* Effect.fail(
+                cliError(
+                  "The grant was revoked by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi server revoke` to resume the rotation",
+                ),
+              );
+            }
+          }),
+        );
         return { kind: "proposed", proposal };
       }
     }

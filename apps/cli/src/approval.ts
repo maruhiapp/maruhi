@@ -45,8 +45,24 @@ export interface ProposedSummary {
   readonly headSeq: number;
 }
 
+/** 提案化に要る入力(期限と時計 — 設計録 K6-K)。 */
+export interface ProposalInput {
+  readonly expiresAtMs: number;
+  readonly nowMs: number;
+}
+
+/** 提案を追記する側が持つ文脈(各 op の入力の部分型 — 呼び出し側はそのまま渡せる)。 */
+export interface ProposeContext {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly proposal: ProposalInput;
+}
+
 /** 同じ内側 op の pending 提案(冪等性 — K6-A)。複数あれば最初(seq 最小)。 */
-export function findPendingSame(
+function findPendingSame(
   verified: VerifiedProject,
   inner: ProposableOperation,
 ): ProposalView["proposal"] | null {
@@ -81,23 +97,18 @@ interface ProposeState {
  * (再同期後にも同じ検査を通す — 中断復旧の既存規律)。受理後は再同期して pending に
  * 載ったことを確認する(サーバー申告を真実源にしない)。
  */
-export function proposeOperation(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-  readonly inner: ProposableOperation;
-  readonly expiresAtMs: number;
-  readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly recheck: (verified: VerifiedProject) => Effect.Effect<void, CliError>;
-  readonly nowMs: number;
-}): Effect.Effect<ProposedSummary, CliError> {
+export function proposeOperation(
+  input: ProposeContext,
+  inner: ProposableOperation,
+  recheck: (verified: VerifiedProject) => Effect.Effect<void, CliError>,
+): Effect.Effect<ProposedSummary, CliError> {
   return Effect.gen(function* () {
-    const existing = findPendingSame(input.verified, input.inner);
+    const { expiresAtMs, nowMs } = input.proposal;
+    const existing = findPendingSame(input.verified, inner);
     if (existing !== null) {
       return {
         kind: "already-pending",
-        view: proposalViewOf(input.verified, existing, input.nowMs),
+        view: proposalViewOf(input.verified, existing, nowMs),
         headSeq: input.verified.state.headSeq,
       };
     }
@@ -113,10 +124,7 @@ export function proposeOperation(input: {
                 const entry = yield* signEntryAtHead({
                   verified: state.verified,
                   signerUserId: input.signerUserId,
-                  operation: {
-                    op: "propose",
-                    payload: { inner: input.inner, expiresAtMs: input.expiresAtMs },
-                  },
+                  operation: { op: "propose", payload: { inner, expiresAtMs } },
                   signingKeyPair: input.signingKeyPair,
                   failureText: "Failed to sign the propose entry",
                 });
@@ -128,9 +136,9 @@ export function proposeOperation(input: {
         recover: (state) =>
           Effect.gen(function* () {
             const resynced = yield* resyncExtended(input.resync, state.verified);
-            yield* ensureStillTarget(resynced, input.inner, true);
-            yield* input.recheck(resynced);
-            return { verified: resynced, existing: findPendingSame(resynced, input.inner) };
+            yield* ensureStillTarget(resynced, inner, true);
+            yield* recheck(resynced);
+            return { verified: resynced, existing: findPendingSame(resynced, inner) };
           }),
         exhaustedMessage: `propose's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
       },
@@ -147,7 +155,7 @@ export function proposeOperation(input: {
       }
       return {
         kind: "already-pending",
-        view: proposalViewOf(verified, pending, input.nowMs),
+        view: proposalViewOf(verified, pending, nowMs),
         headSeq: verified.state.headSeq,
       };
     }
@@ -171,10 +179,27 @@ export function proposeOperation(input: {
     }
     return {
       kind: "proposed",
-      view: proposalViewOf(verified, pending, input.nowMs),
+      view: proposalViewOf(verified, pending, nowMs),
       headSeq: verified.state.headSeq,
     };
   });
+}
+
+/**
+ * 提案化の経路の再検査(CAS 競合の再同期後): 呼び出し側の追記前検査を通し、並行実行が
+ * 同じ変更を先に適用していたら(`already`)提案せずに止まる(K6-A)。
+ */
+export function proposeRecheck<A>(
+  check: (verified: VerifiedProject) => Effect.Effect<A, CliError>,
+  already: (checked: A) => boolean,
+  appliedMessage: string,
+): (verified: VerifiedProject) => Effect.Effect<A, CliError> {
+  return (verified) =>
+    check(verified).pipe(
+      Effect.flatMap((checked) =>
+        already(checked) ? Effect.fail(cliError(appliedMessage)) : Effect.succeed(checked),
+      ),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -341,8 +366,7 @@ export function setApprovalPolicyOp(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly expiresAtMs: number;
-  readonly nowMs: number;
+  readonly proposal: ProposalInput;
 }): Effect.Effect<PolicyOutcome, CliError> {
   return Effect.gen(function* () {
     const first = yield* ensurePolicySettable(input.verified, input.request, input.signerUserId);
@@ -352,18 +376,9 @@ export function setApprovalPolicyOp(input: {
     const operation = policyOperation(input.request);
     // 方針が有効な間は set_approval_policy 自身が常時対象(§6.2「方針」)
     if (isApprovalTarget(operation, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation({
-        client: input.client,
-        verified: input.verified,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-        inner: operation,
-        expiresAtMs: input.expiresAtMs,
-        resync: input.resync,
-        recheck: (view) =>
-          ensurePolicySettable(view, input.request, input.signerUserId).pipe(Effect.asVoid),
-        nowMs: input.nowMs,
-      });
+      const proposal = yield* proposeOperation(input, operation, (view) =>
+        ensurePolicySettable(view, input.request, input.signerUserId).pipe(Effect.asVoid),
+      );
       return { kind: "proposed", proposal };
     }
     const appended = yield* retryOnConflict<VerifiedProject, VerifiedProject, "head-conflict">(

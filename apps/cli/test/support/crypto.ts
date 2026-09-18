@@ -4,9 +4,11 @@
 // (server テスト支援と共有 — session-11 §5 裁定)。
 
 import type {
+  ApprovalTargetOp,
   ChainOperation,
   EncryptionKeyPair,
   GrantServerPayload,
+  ProposableOperation,
   SigningKeyPair,
 } from "@maruhi/crypto";
 import {
@@ -717,4 +719,43 @@ export async function encryptValueFor(input: {
     writerUserId: input.writer.userId,
     writerKeyFingerprintHex: input.writer.fingerprintHex,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 四眼の 4 op(CRYPTO_SPEC §6.2 — PF1 K6 のテスト用)
+// ---------------------------------------------------------------------------
+
+/** set_approval_policy(ops は昇順で署名する — 生成 SHOULD)。required 0 = オフ。 */
+export function setApprovalPolicyOp(
+  ops: readonly ApprovalTargetOp[],
+  requiredApprovals: number,
+): ChainOperation {
+  return {
+    op: "set_approval_policy",
+    payload: { ops: [...ops].toSorted(), requiredApprovals },
+  };
+}
+
+/** propose(内側 op と期限)。既定の期限は遠い未来(2096 年)。 */
+export function proposeOp(
+  inner: ProposableOperation,
+  expiresAtMs = 4_000_000_000_000,
+): ChainOperation {
+  return { op: "propose", payload: { inner, expiresAtMs } };
+}
+
+export function approveOp(proposalHashHex: string): ChainOperation {
+  return { op: "approve", payload: { proposalHashHex } };
+}
+
+export function withdrawOp(proposalHashHex: string): ChainOperation {
+  return { op: "withdraw", payload: { proposalHashHex } };
+}
+
+/** 内側 op を ProposableOperation として扱う(propose の入れ子は構造段で無効なので型で除く)。 */
+export function innerOf(operation: ChainOperation): ProposableOperation {
+  if (operation.op === "propose" || operation.op === "approve" || operation.op === "withdraw") {
+    throw new Error(`${operation.op} cannot be proposed`);
+  }
+  return operation;
 }

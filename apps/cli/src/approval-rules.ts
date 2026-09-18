@@ -45,7 +45,7 @@ export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
 ];
 
 /** Shortest proposal-id prefix accepted on the command line (承認項目 23). */
-export const MIN_PROPOSAL_REF_LENGTH = 8;
+const MIN_PROPOSAL_REF_LENGTH = 8;
 
 // ---------------------------------------------------------------------------
 // 対象判定と票の再集計(§6.2 原則 2 の CLI 側の写し)
@@ -96,7 +96,7 @@ export function signersOf(pending: PendingProposal): readonly ApprovalVote[] {
 }
 
 /** S の要素のうち、現時点で署名時と同じ鍵 FP を持つ現メンバーとして owner である distinct user_id。 */
-export function countedVoters(
+function countedVoters(
   members: ReadonlyMap<string, ChainMember>,
   signers: readonly ApprovalVote[],
 ): readonly string[] {
@@ -119,7 +119,7 @@ export function countOwnerVotes(
 }
 
 /** actor の (user_id, 現在の鍵 FP) が既に S の要素か(`duplicate-approval` の予告)。 */
-export function hasVoted(pending: PendingProposal, member: ChainMember): boolean {
+function hasVoted(pending: PendingProposal, member: ChainMember): boolean {
   return signersOf(pending).some(
     (signer) =>
       signer.userId === member.userId && signer.keyFingerprintHex === member.keyFingerprintHex,

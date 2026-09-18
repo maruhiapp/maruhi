@@ -92,6 +92,7 @@ import {
 } from "./approval-rules.ts";
 import {
   type PolicyRequest,
+  type ProposalInput,
   type ProposedSummary,
   setApprovalPolicyOp,
   withdrawProposalOp,
@@ -183,8 +184,8 @@ import {
   memberChangeRoleOp,
   memberListJson,
   memberListRows,
+  type MemberOpOutcome,
   memberRemoveOp,
-  type ProposalInput,
   type RoleChangeFulfilment,
 } from "./member.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
@@ -2410,37 +2411,48 @@ function memberRemoveCommand(
       rotateWith: (reason) => sweepRotateFor(context, reason),
       proposal,
     });
-    if (outcome.kind === "proposed") {
-      return yield* reportProposed(io, outcome.proposal);
-    }
-    const summary = outcome.summary;
-    if (summary.appended) {
-      yield* io.log(
-        `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
-      );
-    } else {
-      yield* io.log(
-        "The target was already removed — skipping the append and resuming the rotation of every environment in the target's scope (crash recovery)",
-      );
-    }
-    const exitCode = yield* reportSweepOutcome(summary, {
-      rerunCommand: "`maruhi member remove`",
-      alreadyRotatedBasis: "the mandate entry",
-    });
-    if (exitCode === 0) {
-      yield* io.log(
-        "Done: the member removal and the rotation of every environment in the target's scope completed",
-      );
-    }
-    // 要ローテーションフラグの件数と導線(AUDIT_SPEC §4.1。ローテーションは
-    // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
-    yield* reportRotationFlagCount({
-      client: context.client,
-      projectId: context.projectId,
-      target: { kind: "member", userId: summary.targetUserId },
-    });
-    return exitCode;
+    return yield* unlessProposed(io, outcome, (summary) =>
+      Effect.gen(function* () {
+        if (summary.appended) {
+          yield* io.log(
+            `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
+          );
+        } else {
+          yield* io.log(
+            "The target was already removed — skipping the append and resuming the rotation of every environment in the target's scope (crash recovery)",
+          );
+        }
+        const exitCode = yield* reportSweepOutcome(summary, {
+          rerunCommand: "`maruhi member remove`",
+          alreadyRotatedBasis: "the mandate entry",
+        });
+        if (exitCode === 0) {
+          yield* io.log(
+            "Done: the member removal and the rotation of every environment in the target's scope completed",
+          );
+        }
+        // 要ローテーションフラグの件数と導線(AUDIT_SPEC §4.1。ローテーションは
+        // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
+        yield* reportRotationFlagCount({
+          client: context.client,
+          projectId: context.projectId,
+          target: { kind: "member", userId: summary.targetUserId },
+        });
+        return exitCode;
+      }),
+    );
   });
+}
+
+/** 提案になった(K6-A)なら報告して 0、適用されたなら後段の報告へ。 */
+function unlessProposed<S>(
+  io: CliIoShape,
+  outcome: MemberOpOutcome<S>,
+  applied: (summary: S) => Effect.Effect<number, CliError, CliServices>,
+): Effect.Effect<number, CliError, CliServices> {
+  return outcome.kind === "proposed"
+    ? reportProposed(io, outcome.proposal)
+    : applied(outcome.summary);
 }
 
 /**
@@ -2479,19 +2491,19 @@ function memberChangeRoleCommand(
       rotateWith: (reason) => sweepRotateFor(context, reason),
       proposal,
     });
-    if (outcome.kind === "proposed") {
-      return yield* reportProposed(io, outcome.proposal);
-    }
-    const summary = outcome.summary;
-    yield* io.log(
-      summary.appended
-        ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
-        : "The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)",
-    );
-    return yield* reportRoleChangeFulfilment(
-      io,
-      summary,
-      "`maruhi member change-role` with the same flags",
+    return yield* unlessProposed(io, outcome, (summary) =>
+      Effect.gen(function* () {
+        yield* io.log(
+          summary.appended
+            ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
+            : "The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)",
+        );
+        return yield* reportRoleChangeFulfilment(
+          io,
+          summary,
+          "`maruhi member change-role` with the same flags",
+        );
+      }),
     );
   });
 }
@@ -2733,43 +2745,10 @@ function approvalShowCommand(
       return yield* Effect.fail(cliError(describeUnresolvedRef(resolution)));
     }
     const view = proposalViewOf(context.verified, resolution.proposal, Date.now());
-    const p = view.proposal;
-    yield* io.log(`Proposal ${p.proposalHashHex}`);
-    yield* io.log(`  proposed at seq: ${p.proposalSeq}`);
-    yield* io.log(
-      `  proposer:        ${displayText(p.proposerUserId)} (as ${p.proposerRoleAtProposal}${p.proposerRoleAtProposal === "owner" ? " — counts as one approval" : " — does not count as an approval"})`,
-    );
-    yield* io.log(`  operation:       ${p.inner.op}`);
-    for (const line of describeInnerOperationLines(p.inner)) {
-      yield* io.log(`    ${line}`);
+    for (const line of proposalDetailLines(view)) {
+      yield* io.log(line);
     }
-    yield* io.log(
-      `  expires:         ${formatUtcMinutes(p.expiresAtMs)}${view.expired ? " (EXPIRED by this machine's clock)" : ""}`,
-    );
-    yield* io.log(
-      `  approvals:       ${view.required === null ? "policy off" : `${view.votes} of ${view.required} required`} (recounted — signers: ${view.voters.length === 0 ? "none" : view.voters.map(displayText).join(", ")})`,
-    );
-    const recorded = p.approvals.filter((vote) => !view.voters.includes(vote.userId));
-    if (recorded.length > 0) {
-      yield* io.log(
-        `  lapsed votes:    ${recorded.map((vote) => displayText(vote.userId)).join(", ")} (no longer an owner with the same key — not counted; they may approve again after being re-added with a new key)`,
-      );
-    }
-    if (!view.target) {
-      yield* io.log(
-        "  status:          not a target of the current policy (approval-not-required) — withdraw it; the operation can be run directly",
-      );
-    }
-    const eligibility = voteEligibility(context.verified, context.session.userId, view);
-    if (eligibility.ok) {
-      yield* io.log(
-        eligibility.completes
-          ? `  you:             can approve — your approval completes it and applies the operation (you become the fulfiller of its rotation / key distribution — CRYPTO_SPEC §7): \`maruhi approval approve ${p.proposalHashHex.slice(0, 12)}\``
-          : `  you:             can approve — after yours it still ${describeNeeded({ ...view, votes: view.votes + 1, needed: view.needed === null ? null : Math.max(0, view.needed - 1) })}: \`maruhi approval approve ${p.proposalHashHex.slice(0, 12)}\``,
-      );
-    } else {
-      yield* io.log(`  you:             cannot approve — ${eligibility.message}`);
-    }
+    yield* io.log(eligibilityLine(context.verified, context.session.userId, view));
     const note = readyNote(view);
     if (note !== null) {
       yield* logNote(note);
@@ -2777,70 +2756,143 @@ function approvalShowCommand(
   });
 }
 
-/** 承認者の履行(承認項目 22)の報告と終了コード。 */
+/** `approval show` の詳細行(提案者・内側 op・期限・票 — 純関数)。 */
+function proposalDetailLines(view: ProposalView): readonly string[] {
+  const p = view.proposal;
+  const lapsed = p.approvals.filter((vote) => !view.voters.includes(vote.userId));
+  const proposerNote =
+    p.proposerRoleAtProposal === "owner"
+      ? " — counts as one approval"
+      : " — does not count as an approval";
+  return [
+    `Proposal ${p.proposalHashHex}`,
+    `  proposed at seq: ${p.proposalSeq}`,
+    `  proposer:        ${displayText(p.proposerUserId)} (as ${p.proposerRoleAtProposal}${proposerNote})`,
+    `  operation:       ${p.inner.op}`,
+    ...describeInnerOperationLines(p.inner).map((line) => `    ${line}`),
+    `  expires:         ${formatUtcMinutes(p.expiresAtMs)}${view.expired ? " (EXPIRED by this machine's clock)" : ""}`,
+    `  approvals:       ${view.required === null ? "policy off" : `${view.votes} of ${view.required} required`} (recounted — signers: ${view.voters.length === 0 ? "none" : view.voters.map(displayText).join(", ")})`,
+    ...(lapsed.length === 0
+      ? []
+      : [
+          `  lapsed votes:    ${lapsed.map((vote) => displayText(vote.userId)).join(", ")} (no longer an owner with the same key — not counted; they may approve again after being re-added with a new key)`,
+        ]),
+    ...(view.target
+      ? []
+      : [
+          "  status:          not a target of the current policy (approval-not-required) — withdraw it; the operation can be run directly",
+        ]),
+  ];
+}
+
+/** 「あなたは approve できるか」の行(K5-L の案内を含む)。 */
+function eligibilityLine(
+  verified: Parameters<typeof voteEligibility>[0],
+  userId: string,
+  view: ProposalView,
+): string {
+  const eligibility = voteEligibility(verified, userId, view);
+  if (!eligibility.ok) {
+    return `  you:             cannot approve — ${eligibility.message}`;
+  }
+  const command = `\`maruhi approval approve ${view.proposal.proposalHashHex.slice(0, 12)}\``;
+  if (eligibility.completes) {
+    return `  you:             can approve — your approval completes it and applies the operation (you become the fulfiller of its rotation / key distribution — CRYPTO_SPEC §7): ${command}`;
+  }
+  const afterMine = {
+    ...view,
+    votes: view.votes + 1,
+    needed: view.needed === null ? null : Math.max(0, view.needed - 1),
+  };
+  return `  you:             can approve — after yours it still ${describeNeeded(afterMine)}: ${command}`;
+}
+
+/** 承認者の履行のうち sweep(remove / revoke)の報告(前置き → sweep → 完了行)。 */
+function reportFulfilledSweep(
+  io: CliIoShape,
+  input: {
+    readonly intro: string;
+    readonly sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] };
+    readonly rerunCommand: string;
+    readonly alreadyRotatedBasis: string;
+    readonly done: string;
+  },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    yield* io.log(input.intro);
+    const code = yield* reportSweepOutcome(input.sweep, {
+      rerunCommand: input.rerunCommand,
+      alreadyRotatedBasis: input.alreadyRotatedBasis,
+    });
+    if (code === 0) {
+      yield* io.log(input.done);
+    }
+    return code;
+  });
+}
+
+/** 承認者の履行(承認項目 22)の報告と終了コード(内側 op の種類ごと)。 */
+const FULFILMENT_REPORTERS: {
+  readonly [K in Fulfilment["kind"]]: (
+    io: CliIoShape,
+    fulfilment: Extract<Fulfilment, { readonly kind: K }>,
+  ) => Effect.Effect<number, CliError, CliServices>;
+} = {
+  none: (io) =>
+    io.log("Done: the policy change was applied (no follow-up obligation)").pipe(Effect.as(0)),
+  "member-rotation": (io, fulfilment) =>
+    fulfilment.sweep === null
+      ? io.log("Done: applied (no rotation mandate for the target)").pipe(Effect.as(0))
+      : reportFulfilledSweep(io, {
+          intro:
+            "Forcing a rotation of every environment in the removed member's scope (CRYPTO_SPEC §7 — you completed the removal, so you fulfil its mandate)",
+          sweep: fulfilment.sweep,
+          rerunCommand: `\`maruhi member remove ${displayText(fulfilment.targetUserId)}\``,
+          alreadyRotatedBasis: "the mandate entry",
+          done: "Done: the removal and the rotation of the affected environments completed",
+        }),
+  "member-backfill": (io, fulfilment) =>
+    reportMemberAdd(io, {
+      targetUserId: fulfilment.targetUserId,
+      role: null,
+      ...fulfilment.backfill,
+    }),
+  "role-change": (io, fulfilment) =>
+    reportRoleChangeFulfilment(
+      io,
+      fulfilment.change,
+      `\`maruhi member change-role ${displayText(fulfilment.targetUserId)}\` with the member's current role and scope`,
+    ),
+  "server-backfill": (io, fulfilment) =>
+    Effect.gen(function* () {
+      yield* io.log(
+        `Done: disclosure to server key ${fulfilment.serverKeyFingerprintHex} is active (scope=${fulfilment.scopeEnvironmentIds.join(", ")}). Backfill: ${fulfilment.registered} newly registered, ${fulfilment.alreadyRegistered} already registered`,
+      );
+      yield* logNote(
+        "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
+      );
+      return 0;
+    }),
+  "server-rotation": (io, fulfilment) =>
+    reportFulfilledSweep(io, {
+      intro: `Revoked server key ${fulfilment.serverKeyFingerprintHex}. Forcing a rotation of every environment (§7 — you completed the revocation, so you fulfil its mandate)`,
+      sweep: fulfilment.sweep,
+      rerunCommand: "`maruhi server revoke`",
+      alreadyRotatedBasis: "the revocation",
+      done: "Done: the revocation and the rotation of every environment completed",
+    }),
+};
+
 function reportFulfilment(
   io: CliIoShape,
   fulfilment: Fulfilment,
 ): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    switch (fulfilment.kind) {
-      case "none":
-        yield* io.log("Done: the policy change was applied (no follow-up obligation)");
-        return 0;
-      case "member-rotation": {
-        if (fulfilment.sweep === null) {
-          yield* io.log("Done: applied (no rotation mandate for the target)");
-          return 0;
-        }
-        yield* io.log(
-          `Forcing a rotation of every environment in the removed member's scope (CRYPTO_SPEC §7 — you completed the removal, so you fulfil its mandate)`,
-        );
-        const code = yield* reportSweepOutcome(fulfilment.sweep, {
-          rerunCommand: `\`maruhi member remove ${displayText(fulfilment.targetUserId)}\``,
-          alreadyRotatedBasis: "the mandate entry",
-        });
-        if (code === 0) {
-          yield* io.log(
-            "Done: the removal and the rotation of the affected environments completed",
-          );
-        }
-        return code;
-      }
-      case "member-backfill":
-        return yield* reportMemberAdd(io, {
-          targetUserId: fulfilment.targetUserId,
-          role: null,
-          ...fulfilment.backfill,
-        });
-      case "role-change":
-        return yield* reportRoleChangeFulfilment(
-          io,
-          fulfilment.change,
-          `\`maruhi member change-role ${displayText(fulfilment.targetUserId)}\` with the member's current role and scope`,
-        );
-      case "server-backfill":
-        yield* io.log(
-          `Done: disclosure to server key ${fulfilment.serverKeyFingerprintHex} is active (scope=${fulfilment.scopeEnvironmentIds.join(", ")}). Backfill: ${fulfilment.registered} newly registered, ${fulfilment.alreadyRegistered} already registered`,
-        );
-        yield* logNote(
-          "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
-        );
-        return 0;
-      case "server-rotation": {
-        yield* io.log(
-          `Revoked server key ${fulfilment.serverKeyFingerprintHex}. Forcing a rotation of every environment (§7 — you completed the revocation, so you fulfil its mandate)`,
-        );
-        const code = yield* reportSweepOutcome(fulfilment.sweep, {
-          rerunCommand: "`maruhi server revoke`",
-          alreadyRotatedBasis: "the revocation",
-        });
-        if (code === 0) {
-          yield* io.log("Done: the revocation and the rotation of every environment completed");
-        }
-        return code;
-      }
-    }
-  });
+  // 網羅 Record は kind ごとに引数の型が狭まる(Extract)が、共通の呼び出し口では広い型で呼ぶ
+  const report = FULFILMENT_REPORTERS[fulfilment.kind] as (
+    io: CliIoShape,
+    fulfilment: Fulfilment,
+  ) => Effect.Effect<number, CliError, CliServices>;
+  return report(io, fulfilment);
 }
 
 /** `maruhi approval approve <id>`(署名 → 完成なら履行 — K6-B / 承認項目 22)。 */
@@ -2997,8 +3049,7 @@ function projectPolicyApprovalsCommand(
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
-      expiresAtMs: proposal.expiresAtMs,
-      nowMs: proposal.nowMs,
+      proposal,
     });
     if (outcome.kind === "unchanged") {
       yield* io.log(
