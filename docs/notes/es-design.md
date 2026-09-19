@@ -1400,6 +1400,8 @@ K6-F′ で `approval show / approve / withdraw` の id は `#<seq>` も受け�
 
 ### K7-L. 申し送り(docs を書いて見つけたコードとの食い違い — コードは触らず所有者に諮る)
 
+**所有者裁定(2026-09-19・PR #183 レビュー中)**: 下の 4 件(help の `#<seq>`・`member remove` の help 字面・`user-id` 引数の案内先・`pull` の欠落警告の案内先)は同じ PR で直す。文言のみの変更(`effect-cli.ts` / `pull.ts` / help golden)で、合意規則・ワイヤ・docs の主張は不変。docs 側は既に両方の次の一手を書いており、CLI の文言がそれに追随した形。
+
 - **help golden の `proposal-id` 引数の説明**(`approval show / approve / withdraw`)は「a unique prefix of at least 8 hex digits」のみで、K6-F′ の `#<seq>` に触れていない(`describeUnresolvedRef` の文言と `resolveProposalRef` は受ける)。docs は両方を書いた(K7-H)。help に「or `#<seq>`」を足す小変更の候補
 - **`member remove` の help**「Remove a member and force-rotate every environment」は K4 以降「対象の scope の環境」が正(CLI の実行時文言は「every environment in the target's scope」)。help の字面だけが K2 以前のまま
 - **`member remove` / `member change-role` の `user-id` 引数の説明**「see the member list in `maruhi project verify`」— K4 で `maruhi member list` ができたので、そちらを指す方が短い(`project verify` にも出るので誤りではない)
