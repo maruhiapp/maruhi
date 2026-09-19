@@ -1,0 +1,80 @@
+---
+title: Environment scopes
+description: Limit a member to some environments. The limit is enforced by key distribution, not by a server rule — a decryption key for an environment outside a member's scope does not exist anywhere.
+sidebar:
+  order: 8
+---
+
+Every member of a maruhi project has an environment **scope**: the set of environments whose values they can decrypt. The scope is part of the member's signed entry on the project's membership chain, and the CLI distributes an environment's keys only to the members whose scope includes it. There is no key for the other environments — not on the member's machine, not on the server — so a server that is compromised or misconfigured cannot hand them out either. This is what separates a scope from a role-based rule on a server: nothing has to be trusted to enforce it.
+
+| To                                    | Who            | Command                                                                       |
+| ------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| Invite someone into some environments | Inviter        | `maruhi invite create --role member --env dev --env staging --github <login>` |
+| Change a member's scope (or role)     | Admin or owner | `maruhi member change-role <user-id> --env dev --env staging`                 |
+| See everyone's role and scope         | Any member     | `maruhi member list` (`--json` for scripts)                                   |
+
+A scope is either **all environments** — including ones created later — or a **list** of environment IDs. The list may be empty: such a member can see the project and be given environments later, and decrypts nothing until then. Owners always have all environments; admins, members, and readers may have a list. An admin whose scope is `dev` and `staging` can invite, remove, and re-scope people within those two environments and cannot touch `production`, which is how you give someone charge of the development environments without a key to production.
+
+## Set the scope when you invite
+
+```sh
+maruhi invite create --role member --env dev --env staging --github bob
+```
+
+`--env <id>` is repeatable. Without it the invitee gets all environments, including ones created later. `--no-envs` issues an invitation with no environments at all (an empty list). The scope is part of the signed invite link, so the invitee reads it before accepting, and it is what `maruhi member add` writes to the chain: the inviter cannot widen it at that point, and a member's key distribution after the add covers exactly the invited environments. You can only list environments that are in your own scope. The rest of the invitation flow is unchanged; see [Invite a teammate](/docs/invite-a-teammate).
+
+## Change it later
+
+```sh
+maruhi member change-role bob --env dev            # narrow to dev
+maruhi member change-role bob --env dev --env prod # widen to dev and prod
+maruhi member change-role bob --all-envs           # every environment, including future ones
+maruhi member change-role bob --no-envs            # no environment (names only)
+maruhi member change-role bob --role admin         # change the role, keep the scope
+```
+
+One command changes the role, the scope, or both. `--env …` (repeatable), `--all-envs`, and `--no-envs` each **replace the whole scope**; what you leave out is kept, so `--role admin` alone keeps the current environments and `--env dev` alone keeps the current role. `--role owner` always means all environments, because an owner cannot have a list. The user ID comes from `maruhi member list`.
+
+What the CLI does after the entry is appended depends on the direction of the change:
+
+- **Narrowing** the scope, and **demoting** a member below `member` (to `reader`), rotates the environments the person leaves (the removed ones, or every environment in their scope for a demotion). Your CLI runs those rotations right after the change, exactly like `maruhi member remove` does for a removal, so that the keys the member holds stop opening new values. Values they already read are not un-read; `maruhi rotation list` points at the upstream credentials worth rotating.
+- **Widening** the scope makes your CLI distribute the keys of the added environments — every epoch of each — to the member, so they can also read the history. This is the same backfill `maruhi member add` runs for a new member.
+
+Both steps are resumable: if the command is interrupted, re-run it with the member's current role and scope and it picks up where it stopped ("The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)").
+
+### When the change reaches past your own scope
+
+An admin with a listed scope can only change permissions for environments inside it (the chain rejects anything else, and the CLI checks before signing). Within that rule, some follow-up work can still fall outside the scope of the person running the command — a member who was widened earlier by an owner, then re-scoped by you, for example. The CLI does not fail; it reports what it could not do and who can:
+
+- A rotation the change requires for an environment outside your scope is left as a pending mandate, and the command says so: "… environment(s) with a pending rotation mandate … outside your scope and cannot be rotated by you … — a member whose scope includes it converges it with `maruhi env rotate <environment> --new-epoch --reason <text>`". Until someone does, `maruhi project verify` keeps showing the unconverged mandate.
+- A backfill for an environment outside your scope is reported the same way: "… widened earlier for this member … outside your scope, so you cannot backfill … — a member whose scope includes it re-runs `maruhi member change-role` with the member's current scope to resume". Anyone whose scope covers the environment can run that command (or a `maruhi env rotate` of it, which distributes the new epoch's key to everyone in scope).
+
+Nobody else can see that a backfill is incomplete: keys are distributed to their recipient only, so the CLI has no view of what other members hold. The member finds out on their own `maruhi pull`, which warns when a key it should have is missing ("no DEK wraps for you exist at epochs …") and names the fix. See [What can go wrong](#what-can-go-wrong).
+
+## What a member sees outside their scope
+
+The scope limits keys, not the project's metadata. For an environment outside their scope a member still sees:
+
+- that the environment exists, its display name, and the names of its variables with their declared types and descriptions (`maruhi schema`, and the dashboard);
+- the project's membership chain, including every member's scope (`maruhi member list`, `maruhi project verify`).
+
+They do not receive its values or its keys, and the server refuses the operations that would need them: a value-bearing `maruhi pull` or `maruhi run`, `maruhi push`, `maruhi env rotate`, and `maruhi project checkpoint` for that environment are rejected with `insufficient-scope`, and the CLI itself stops before contacting the server when it can tell from the verified chain ("Cannot pull values from environment production: it is outside your environment scope on this project's chain …"). Creating an environment is possible only for members whose scope is all environments, since a list cannot name an environment that does not exist yet ("Only members whose environment scope is `all` can create environments …").
+
+`maruhi member list` prints every member's user ID, role, scope, and key fingerprint from the verified chain, with `--json` for scripts. The dashboard's **Members** table shows the same role and scope, as reported by the server and read-only; every change is made in the CLI.
+
+## Scopes and CI leases
+
+A CI job does not have a member scope: it leases the environments a project owner disclosed with `maruhi server grant --environments …`, and the lease policy in that grant decides which jobs may lease them. See [GitHub Actions](/docs/github-actions). For a person, the effective access to an environment is the smallest of the API token's scope, the chain role, and the environment scope — a token cannot reach past the scope of the account it belongs to.
+
+## Under a four-eyes policy
+
+When the project's [four-eyes policy](/docs/four-eyes) covers `change_role`, `maruhi member change-role` does not apply the change: it appends a proposal, prints "Proposed change_role … — the four-eyes policy requires approval, so nothing has been applied yet", and another owner approves it. The owner whose approval completes it runs the rotation or the backfill described above. `maruhi member remove` behaves the same way when `remove_member` is covered.
+
+## What can go wrong
+
+- **`Cannot pull values from environment production: it is outside your environment scope on this project's chain (your scope: dev, staging)`**, or the same for a push ("operate on"), `rotate the epoch`, and `checkpoint`. The environment is not in your scope; the CLI stopped before contacting the server. The message names the command an admin runs to widen it; metadata-only commands such as `maruhi schema` still work.
+- **`Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain`**. The server refused the same thing. Your local chain view may be stale — the scope may have just been narrowed — so re-run once to resync before asking an admin.
+- **`Your environment scope (…) does not contain the invite's scope (…), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained)`**, and the equivalents for `member remove` ("… does not contain the target's scope …") and `member change-role` ("… does not contain the environments whose permissions this change affects …"). The change touches an environment outside your scope. Ask an owner, or an admin whose scope covers it, to run the command; nothing was appended.
+- **`Specify what to change: --role (…) and/or the scope (--env <id>…, --all-envs or --no-envs)`**. `maruhi member change-role` needs at least one of them — leaving both out would change nothing.
+- **`no DEK wraps for you exist at epochs …`** on your `maruhi pull`. A backfill (after `maruhi member add`, or after a widening `maruhi member change-role`) was interrupted before it reached those epochs, so historical versions in them cannot be decrypted yet. Ask an administrator whose scope covers the environment to re-run the command that was interrupted (`maruhi member add <invite-id>` or `maruhi member change-role <you> …` with your current role and scope); a `maruhi env rotate` of the environment also gives you the new epoch's key.
+- **`… environment(s) with a pending rotation mandate … outside your scope and cannot be rotated by you`**. Part of the rotation your change requires is in an environment you cannot rotate. A member whose scope includes it runs `maruhi env rotate <environment> --new-epoch --reason <text>`; until then `maruhi project verify` shows the pending mandate.

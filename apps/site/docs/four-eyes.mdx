@@ -1,0 +1,106 @@
+---
+title: Four-eyes approvals
+description: Require the signatures of two (or more) owners before a member is removed, a server key is granted, a role is changed, or the policy itself changes. The requirement is a rule of the project's signed chain, not a server setting.
+sidebar:
+  order: 9
+---
+
+With a four-eyes policy, a sensitive operation on the project's membership chain is applied only when enough **distinct owners** have signed it: the person who wants it appends a proposal, other owners append approvals, and the approval that reaches the quorum applies the operation. Every client verifies this when it reads the chain, so one owner's account — stolen, or acting alone — cannot remove a member, disclose keys to the server, or promote someone to owner. The server holds no switch that turns the rule off.
+
+The policy is **off by default**; a project with a single owner works exactly as before. Turning it on takes one command from an owner, and once it is on, the existing commands keep their names: a `maruhi member remove` that needs approval becomes a proposal on its own.
+
+| Step                       | Who                | Command                                                              |
+| -------------------------- | ------------------ | -------------------------------------------------------------------- |
+| Turn the policy on         | Owner              | `maruhi project policy approvals --required 2`                       |
+| Run an operation it covers | Whoever may run it | `maruhi member remove <user-id>` (it is proposed instead of applied) |
+| See what is waiting        | Any member         | `maruhi approval list`                                               |
+| Approve                    | Another owner      | `maruhi approval approve <proposal-id>`                              |
+| Change your mind           | Proposer or owner  | `maruhi approval withdraw <proposal-id>`                             |
+
+This is a different thing from [Four eyes on production](/docs/github-actions#four-eyes-on-production) in GitHub Actions: that one puts a reviewer between a CI run and the **delivery of values** to a deploy target. This page is about who may change the **chain** — members, server keys, and the policy — and it applies wherever the CLI runs, with no CI involved.
+
+## Before you turn it on
+
+Two things to have in place, because the policy also binds you:
+
+- **Keep at least one owner more than the number of approvals you require.** With `--required 2` and exactly two owners, one owner losing their key or leaving the team is enough to lock the administrative side of the project: adding an owner, removing anyone, and changing the policy all need the quorum, and the quorum can no longer be reached (reading and pushing values keep working). The CLI warns when you enable the policy with exactly `required` owners; it refuses when there are fewer, since the chain would reject the entry.
+- **Every owner registers a recovery** — a recovery code with `maruhi key recovery`, or a guardian group; see [Recover your key](/docs/recover-your-key). Under the policy, an owner who lost their key cannot simply be removed and re-added by another owner: that is an owner addition, and it needs the quorum. The CLI prints this reminder every time the policy is set.
+
+## Turn it on, change it, turn it off
+
+```sh
+maruhi project policy approvals                              # show the policy and the owners
+maruhi project policy approvals --required 2                 # enable with the default operations
+maruhi project policy approvals --required 2 --ops grant_server,remove_member
+maruhi project policy approvals --off
+```
+
+Without flags the command prints the current policy ("Four-eyes policy: off (every operation is appended directly)", or "on — required approvals: 2; targeted ops: …") and the list of owners. `--required N` is the number of distinct owner approvals an operation needs, at least 2, and the project must have at least that many owners. `--ops` lists the operations that need approval, comma-separated; the default is `change_role,grant_server,remove_member,set_approval_policy`. `revoke_server` and `add_member` may be added.
+
+`add_member` is left out of the default on purpose. Adding an **owner** always needs approval, whatever `--ops` says (below), and adding anyone else is already protected by the invitation ceremony described in [Invite a teammate](/docs/invite-a-teammate): the invitee's key is confirmed against their GitHub account or over a call before the entry is signed. Requiring a second owner for every new reader would slow down the routine case without closing a gap.
+
+Two things are always covered while the policy is on, whether or not they appear in `--ops`: **the policy itself** (changing or turning it off with `maruhi project policy approvals` is a proposal like any other, so nobody can quietly disable the requirement), and **any `add_member` or `change-role` that makes someone an owner** (otherwise one owner could create a second owner identity of their own and approve their own proposals with it). For the same reason the chain refuses an operation that would leave fewer owners than the required approvals.
+
+## The existing commands become proposals
+
+When the policy covers an operation, the command that performs it appends a proposal instead:
+
+```
+$ maruhi member remove bob
+Proposed remove_member for bob (proposal 3f9a1c2d4e5f…, seq=41; expires 2026-09-26 10:00 UTC) — the four-eyes policy requires approval, so nothing has been applied yet
+  proposal id: 3f9a1c2d4e5f…
+  needs 1 more owner approval (1 of 2 recounted so far). Another owner runs `maruhi approval approve 3f9a1c2d4e5f`; the approver whose approval completes it runs the follow-up rotation / key distribution (CRYPTO_SPEC §7). `maruhi approval list` shows the status
+```
+
+This applies to `maruhi member add`, `maruhi member remove`, `maruhi member change-role`, `maruhi server grant`, `maruhi server revoke`, and `maruhi project policy approvals`. There is no separate "propose" command to learn, and there is no way to slip past the policy: a direct entry for a covered operation is invalid on the chain, so the CLI never tries one.
+
+- **Who can propose.** Anyone who could run the operation directly. An admin's proposal to remove a member is valid, but it carries no vote: it needs the full number of owner approvals. An owner's proposal counts as their own approval (`(1 of 2 recounted so far)` above).
+- **Nothing happens until the quorum.** A proposal changes nothing on the chain except that it is pending. `maruhi member add` still runs the fingerprint check before proposing, so the proposal itself vouches for the invitee's key; the invitation stays accepted-but-not-completed until the quorum.
+- **Re-running is safe.** The same command a second time does not create a second proposal: the CLI finds the pending one with the same operation and prints its status ("The same operation is already proposed …").
+- **`--expires`.** A proposal can be approved for 7 days by default; `--expires 48h` or `--expires 14d` changes that, up to 30 days. The server also accepts at most 32 pending, unexpired proposals per project.
+- **Proposing your own removal** is allowed (you cannot remove yourself directly, because the person who removes someone also runs the follow-up rotation; with a proposal, an approving owner does). The CLI notes "this proposal removes you — once an owner approves it, you lose access to the project".
+
+## Review, approve, withdraw
+
+```sh
+maruhi approval list            # the policy and every pending proposal, votes recounted
+maruhi approval list --json     # the same as JSON
+maruhi approval show 3f9a1c2d   # one proposal: proposer, operation, expiry, voters, whether you can approve
+maruhi approval approve 3f9a1c2d
+maruhi approval withdraw 3f9a1c2d
+```
+
+A **proposal ID** is the hash of the proposal's chain entry. `maruhi approval list` prints the first 12 hex digits and the entry's sequence number; on the command line, give at least 8 hex digits of the hash (enough to be unique among pending proposals), or `#<seq>` with the sequence number. An ID that belongs to a completed or withdrawn proposal is told apart from an unknown one.
+
+`maruhi approval show` is what an approving owner reads before approving. For a proposed `add_member` it prints the member's user ID, role, scope, and public keys, and warns if that key was registered on this project before (see [Keys and votes](#keys-and-votes)).
+
+- **Approving** is for owners only. Each owner's current key counts once; the proposer's signature is their vote when they proposed as an owner. The last approval applies the operation — until then the output says "Recorded your approval of … It still needs 1 more owner approval (1 of 2 recounted so far) — nothing has been applied yet", and after the quorum the CLI goes on with the work.
+- **The owner whose approval completes it does the follow-up work.** Whatever the operation would have made its runner do — rotate the environments a removed or narrowed member leaves, distribute keys to a new member or to a widened scope, wrap keys for a granted server — is done by the CLI of that approver, right after the approval is accepted. Because of this, you cannot complete a proposal that targets you: approving your own removal, your own demotion below `member`, or a narrowing of your own scope is refused before anything is signed (for a removal: "This proposal removes you. Completing it would leave the post-removal rotation … to a member who no longer exists — ask another owner to approve it"). If another owner completed the same proposal a moment before you, the CLI says so and leaves the follow-up to them.
+- **Withdrawing** closes a pending proposal without applying it. The proposer can withdraw their own; any owner can withdraw anyone's (the CLI notes "withdrawing a proposal made by …"). Withdrawing is also the way to clear a proposal that can no longer be approved — one that expired, or whose operation the policy no longer covers.
+
+The dashboard shows the policy and the pending proposals under **Four-eyes approvals**, with the votes recounted, as reported by the server. It cannot approve or withdraw: those are signatures, and the dashboard holds no key.
+
+## How votes are counted
+
+A proposal is applied by the approval that brings the count of distinct owners who signed it — the proposer, if they proposed as an owner, plus the approvers — to the number the policy requires. The count is taken **at each approval, against the project as it is then**, not as it was when the proposal was made:
+
+- An approver who has since been removed, demoted, or re-added with a new key no longer counts. `maruhi approval show` lists such votes as lapsed.
+- If the required number is lowered while proposals are pending, a proposal that already has enough signatures is applied by the **next** approval from an owner who has not voted yet. Owners who already signed cannot sign again (`duplicate-approval`); `maruhi approval list` names who can complete it.
+- If the policy is turned off, or the operation is dropped from `--ops`, pending proposals for it cannot be approved anymore (`approval-not-required`): withdraw them and run the operation directly.
+
+**Expiry** is checked against the approver's clock and the proposal's expiry time; an approval after the expiry is invalid. This is a safeguard for owners who act in good faith, so that a proposal is not approved weeks later out of context. It is not a guarantee against an owner who sets their clock back — such an owner holds one of the required signatures either way. The guarantee of the policy is the quorum, and it does not depend on expiry.
+
+## Keys and votes
+
+A vote belongs to an owner's **key**, not to the person. If an owner is removed and later re-added with a new key, the votes cast with the old key are gone; if the same key is registered again, its old votes on still-pending proposals count again. That is why a key that was removed because it may have been compromised must not be re-registered: issue a fresh invitation for a new key instead. The CLI warns on both sides when a proposed or added key was registered on the project before — at `maruhi member add` ("… was registered before for this same user … If that key was removed because it was compromised, do not re-register it …") and at `maruhi approval show` for a proposed `add_member`.
+
+## What can go wrong
+
+- **`The project has 1 owner, fewer than the 2 required approvals — the chain would reject this policy (CRYPTO_SPEC §6.2 approval-quorum-unreachable)`**. The policy needs at least as many owners as approvals. Promote a second owner first (`maruhi member change-role <user-id> --role owner`), then enable it, and keep one owner more than required.
+- **`only an owner can approve (your role: admin — CRYPTO_SPEC §6.2)`**. Approvals are owner signatures. An admin can propose, and can withdraw their own proposal, but not vote.
+- **`you already approved this with your current key (duplicate-approval); another owner has to approve`**, or the same for a proposal you made as an owner. One key, one vote. After a lowered `--required`, this is what the owners who already signed see; an owner who has not signed completes it.
+- **`the current policy no longer targets this operation, so this proposal can no longer be approved (approval-not-required)`**, or `the four-eyes policy is off …`. The policy changed under the proposal. Withdraw it; the operation can now be run directly.
+- **`it expired on … by this machine's clock (proposal-expired)`**. Ask the proposer to withdraw and re-propose (with a longer `--expires` if 7 days is too short). If the clock on your machine is wrong, fix it first.
+- **`This project already has the maximum number of pending proposals (32)`**. Withdraw or complete some; expired proposals do not count against the limit but stay listed until withdrawn. **`The proposal's expiry is too far in the future (server limit: 30 days from now)`**: shorten `--expires`.
+- **`The four-eyes policy changed while this command was appending … — re-run to apply the new policy`**. Someone enabled or disabled the policy while your command was running; nothing was appended. Re-run it and it takes the form the policy now requires.
+- **`This server does not accept four-eyes approval entries (…) yet`** (HTTP 422 `ApprovalNotAccepted`). The server predates the four-eyes release of 2026-09-16 while the CLI does not. Update the server first — see [Updates in the self-hosting guide](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md#updates-version-upgrades).

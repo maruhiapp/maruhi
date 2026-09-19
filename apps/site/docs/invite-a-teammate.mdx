@@ -42,7 +42,7 @@ Add `--env <id>` (repeatable) to limit the invitee to some environments:
 maruhi invite create --role member --env dev --env staging --github bob
 ```
 
-Without `--env` the invitee gets every environment, including ones created later. With it, the invitee receives decryption keys only for the listed environments — there is no key for the others anywhere, not even on the server — and can still see the other environments' names and variable names (`maruhi schema`), just not their values. The scope is part of the signed link, so the invitee reads it before accepting. Only environments in your own scope can be listed. `--no-envs` issues an invitation with no environments at all (the invitee can join now and be given environments later). Later, `maruhi member change-role <user-id> --env …` (or `--all-envs`) replaces the scope; narrowing it rotates the environments the member leaves, and `maruhi member list` shows everyone's current role and scope.
+Without `--env` the invitee gets every environment, including ones created later. With it, the invitee receives decryption keys only for the listed environments — there is no key for the others anywhere, not even on the server — and can still see the other environments' names and variable names (`maruhi schema`), just not their values. The scope is part of the signed link, so the invitee reads it before accepting. Only environments in your own scope can be listed. `--no-envs` issues an invitation with no environments at all (the invitee can join now and be given environments later). Later, `maruhi member change-role <user-id> --env …` (or `--all-envs`) replaces the scope; narrowing it rotates the environments the member leaves, and `maruhi member list` shows everyone's current role and scope. [Environment scopes](/docs/environment-scopes) covers the rest: what a member sees outside their scope, what widening and narrowing make the CLI do, and how an admin with a limited scope manages people.
 
 Hand the link to the invitee over a person-to-person channel you trust (a direct message, not a shared room). Anyone who can read the link can accept it first; the check in step 3 catches that, but the right person then has to be re-invited. Links expire, and `maruhi invite list` shows their state; `maruhi invite revoke <id>` withdraws one.
 
@@ -76,7 +76,9 @@ The CLI fetches the acceptance, verifies that it is bound to the invite you issu
 - If that account has not registered the key, the CLI stops and asks: wait for them to run `maruhi key publish` and re-run `maruhi member add`, or confirm the 12 words now. The acceptor's words are shown by `maruhi key show` on their side.
 - `--expect-fingerprint <hex>` accepts the fingerprint you noted out of band instead of the interactive read-out; combined with `--github` it is checked in addition, not instead.
 
-After the membership entry is appended, the CLI wraps every environment's keys for the new member. Ask them to run `maruhi pull` to confirm they can decrypt. To remove someone later, `maruhi member remove <user-id>` rotates every environment so their old keys stop working.
+After the membership entry is appended, the CLI wraps the keys of every environment in the member's scope for them. Ask them to run `maruhi pull` to confirm they can decrypt. To remove someone later, `maruhi member remove <user-id>` rotates the environments in their scope so their old keys stop working.
+
+If the project has a [four-eyes policy](/docs/four-eyes) that covers the operation, `maruhi member add` and `maruhi member remove` do not apply the change: they append a proposal, say so ("… the four-eyes policy requires approval, so nothing has been applied yet"), and another owner approves it with `maruhi approval approve`. The key confirmation above still happens before the proposal is signed.
 
 ## Turning the GitHub check off
 
