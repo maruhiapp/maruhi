@@ -74,7 +74,7 @@ R(E) = { (m, d) | m ∈ 現メンバー, d ∈ devices(m), E ∈ scope(m) ∩ sc
 | crypto | `chain-types.ts`(`ChainMember.devices`・`AddDevicePayload` / `RevokeDevicePayload`・`DeviceCap`)/ `chain-canonical.ts`(2 op のフィールド順・FP リストの入れ子 LP)/ `chain-verify.ts`(2 op の合意規則・実効権限の置換・単調性・鍵一意性の端末集合・票の端末妥当性)/ `chain-history.ts`(端末ごとの有効区間 (added_seq, revoked_seq, cap))/ `validate.ts` / `value-verify.ts` / `meta-verify.ts` / `manifest-verify.ts` / `attestation` の鍵選択(FP → 端末鍵・有効区間・実効 (role, scope))/ `member-scope.ts`(∩)/ `master-wrap.ts`(kind `device` の削除)/ `errors.ts`(理由コード) |
 | test-vectors | `chain-entries.json` **追記**(seq 25〜: add_device / revoke_device の正例・負例・`expected_head_states` の members に `devices`。正規チェーン seq 1〜24 のバイト列は不変)、`value-signature.json` / `metadata-signature.json` / `env-manifest.json` / `head-attestation.json` に端末軸の負例を**追記**(既存正例・負例は不変 — 参照する seq ≤ 24 のハッシュが変わらないため)、`master-key-wrap.json` **再生成**(`handoff-device` 正例と `aad-kind-mismatch` の kind=device 形の削除 — 互換経路を作らない裁定の写し・README 規約 28 として意図的な例外)、`dek-wrap.json` / `dek-wrap-signature.json` / `dek-commitment.json` / `recovery-wrap.json` / `lease-wrap.json` / `invite-*.json` / `audit-head.json` / `checkpoint-digest.json` / `encoding.json` / `variable-encryption.json` は**不変**(HPKE info・AAD・発行文・受諾文に触れない) |
 | api-schema | `chain.ts`(2 op)/ `dek-wraps`(受信者に端末 enc 公開鍵 — 既存フィールド)/ `key-wraps`(device 経路の削除・保護者分片の端末行)/ 新 `devices` グループ(登録簿・追加要求)/ `errors`(`DeviceLimit`) |
-| server | `chain-accept.ts`(2 op の受理副作用: ミラー・要ローテーション検出・申告行削除)/ `dek-wraps.ts`(R(E) の端末展開・受信者判定・スロット主キーに enc 公開鍵)/ `do-schema.ts`(`dek_wraps` PK・`head_attestations` の端末軸)/ `rotation-detect.ts`(端末の窓)/ `handlers-key-wraps.ts` + `db.package/key-wraps.ts`(device 経路削除・分片の端末行)/ 新 `handlers-devices.ts`(登録簿・要求)/ `policy.ts`(端末数)/ `authz.ts`(reader の自己バックフィル)/ `core/audit.ts`(ミラー写像) |
+| server | `chain-accept.ts`(2 op の受理副作用: ミラー・要ローテーション検出・申告行削除)/ `dek-wraps.ts`(R(E) の端末展開・受信者判定・スロット主キーに enc 公開鍵)/ `do-schema.ts`(`dek_wraps` PK・`head_attestations` の端末軸)/ `rotation-detect.ts`(端末の窓)/ `handlers-key-wraps.ts` + `db.package/key-wraps.ts`(device 経路削除・分片の端末行)/ 新 `handlers-devices.ts`(登録簿・要求)/ `policy.ts`(端末数)/ `authz.ts`(reader の自己バックフィル)/ `audit-store.ts`(ミラー写像) |
 | CLI | **新規 `device.ts`**(`device add / approve / list / revoke`)/ `keygen.ts`(端末鍵 + 初回のみ予備鍵)/ `recovery.ts` / `passkey.ts` / `guardian.ts`(B = 予備鍵・台帳変更時の予備鍵開封・保護者の端末列挙)/ `handoff.ts`(device 経路削除 → 保護者承認は `guardian approve`)/ `master-ops.ts`(端末鍵の狭い操作 — 名前は据え置き可)/ `dek-wrap.ts` / `backfill.ts`(R(E) の端末展開・add_device バックフィル)/ `rotation-sweep.ts`(第 5 種 `device-revoked`)/ `known-fingerprints.ts`(user_id → FP の集合)/ `context.ts` / `sync.ts`(自分の端末鍵の有効性・初回同期の端末登録)/ `member.ts`(`member list` に端末数)/ `login.ts`(トークンと端末 FP の紐付け — 任意)/ `effect-cli.ts` / `help.txt` |
 | web | `chain-view.ts` / `ProjectScreen.tsx`(メンバー行に端末数 — 読み取りのみ)/ 端末一覧(登録簿 — 「サーバー申告」表示)・トークン失効への導線(既存機能) |
 | docs | `apps/site/docs/recover-your-key.mdx`(予備鍵・ハンドオフの整理)/ `linux-keychain.mdx`(Codespaces = 端末として追加)/ 新規 `devices.mdx` / `invite-a-teammate.mdx`(`key publish` は端末ごと)/ `docs/SELF_HOSTING.md` "Updates" |
@@ -272,3 +272,76 @@ R(E) = { (m, d) | m ∈ 現メンバー, d ∈ devices(m), E ∈ scope(m) ∩ sc
 | 新規ファイル | なし | 端末追加のコードは既存の FP 表示形(12 語 / hex)を再利用し、新しい符号化を持たない |
 
 K2 の負例は原則ごとに列挙する(3-ter の教訓): 原則「鍵は端末に属し権限は人に属する」= 実効権限の置換の各軸(role 上限 / scope ∩)× 各検査(役割・包含・環境対象・値・メタ・票)、単調性の各軸、失効後の各署名。
+
+### 2-bis. 最終読み直し(敵対的 — 承認依頼の前)
+
+採用案を 5 観点(義務の履行者の有無・不変条件を破れる状態への到達可能性・クライアント検証とサーバー受理の一致・時点のずれ・DK × ES × PF1 の交差)で読み直した。裁定を変える欠陥は見つからず、補強を 3 件加えた:
+
+- **盗まれた端末による端末の温存**(到達可能性): 失効前に紛失端末が `add_device` した端末は失効で自動には消えない。対処は一括失効(payload の FP リスト)+ チェーン上の可視性(actor FP)+ 単調性(強い端末は作れない)。§14.2-11 に「保証しないもの」として明記(ドラフト A-12)
+- **owner の全端末が cap < owner になる状態**(到達可能性): `last-device-protected` は端末の**数**しか守らない。owner が自分の (owner, all) の端末をすべて失効させ、残りが電話(owner, listed{})だけになると、その人は票を入れられるが DEK を持たず、`add_device` の単調性で強い端末を作り直せない(予備鍵からは可能)。合意規則で守る対象ではない(役割の到達可能性は user_id で数え、鍵の喪失と同じ運用の失敗)— CLI が `device revoke` 前に「残る端末では prod を読めません / 強い端末を作れません」と警告する(K4)。§14.2-10 の可用性の注記と同じ棚
+- **予備鍵が登録されないプロジェクト**(時点のずれ): 予備鍵の `add_device` は本人の端末の初回同期に依存する。受諾直後に同期せず端末を失った人は、そのプロジェクトでは予備鍵が無く再招待になる。CLI は `invite accept` / `member add` 完了時の同期で即座に登録し、`project verify` は「予備鍵が未登録」を警告する(K4)。合意規則にはできない(チェーンは予備鍵を知らない)
+
+検証できていないもの: 実効権限の置換が既存の全検査(crypto の `validate.ts` / `value-verify.ts` / `meta-verify.ts` / `manifest-verify.ts` / attestation / チェーン認可)で漏れなく入力に入ること、`ChainMember` の型変更の消費者の全列挙、`dek_wraps` の主キー変更のマイグレーション形 — K2 のベクター(原則ごとの負例)と実装テストでしか固定できない。
+
+---
+
+## 3. 実装分割(K1〜K6)と独立停止可能性
+
+系列はテストベクター → crypto → api-schema → server → CLI → Web → docs(CLAUDE.md の順序)。各段はマージ後にそこで止めても安全であることを要件とする。K2 の受理ガード(2 op を K3 まで 422 で拒否する — ES K2-10 の原則「サーバーが受理する op の集合 = 受理副作用が実装済みの op の集合」)を踏襲する。
+
+| 段 | 内容 | 停止しても安全な理由 | 人間レビュー |
+|---|---|---|---|
+| **K1** | 仕様の正本へ反映(CRYPTO_SPEC 0.11 → **0.12-draft**、AUTH_SPEC 0.23 → **0.24-draft**、AUDIT_SPEC 1.8 → **1.9-draft**。Status 欄に改訂履歴)。dk-spec-drafts.md を正本へ写し、承認項目の所有者選択を確定値に置く | docs のみ | 承認そのもの |
+| **K2** | **テストベクターを先に書く**: `chain-entries.json` の追記(seq 25〜 — DK-M)、`value-signature.json` 等 4 ファイルの端末軸の追記、`master-key-wrap.json` の再生成(device 経路の削除・規約 28)→ `packages/crypto`(`ChainMember.devices`・2 op の正規化と合意規則・実効権限の置換・単調性・鍵一意性の端末集合・履歴索引の端末区間・鍵選択・`master-wrap.ts` の kind 縮小)→ **api-schema のワイヤ + server / CLI / Web の機械的追随**(`ChainMember` の型変更に伴う消費側の書き換え。端末は 1 つのまま・2 op は生成しない)。**サーバーは 2 op を K3 まで 422(`DeviceOpsNotAccepted` — worker + DO の多層ガード)で拒否する**。人間レビュー必須箇所を PR 本文に列挙 | 挙動変更なし(全メンバー = 端末 1 つ・cap (owner, all))。crypto が新規則を理解し、旧クライアントは新 op を含むチェーンを拒否する。既存チェーンは有効なまま(再作成不要 — DK-J) | **必須**(packages/crypto — 実効権限の置換が全検査に入ること・単調性・票の端末妥当性) |
+| **K3** | server: 受理ガード解除 + 2 op の受理副作用(ミラー 2 行・`revoke_device` の要ローテーション検出変種・申告行の削除)、`dek_wraps` スロットの端末軸(主キーに `recipient_enc_pub_hex`)+ R(E) の端末展開(`expectedWrapRecipientCount` / `checkWrapRecipient`)+ reader の自己バックフィル(受信者が全て自分の端末鍵)、端末数の受理ポリシー(`DeviceLimit`)、保護者分片の端末行(`guardian_shares` の主キー)、**新 `devices` グループ**(§13-11 登録簿・追加要求)、申告行の端末軸(`head_attestations`)、D1 / DO マイグレーション。テストは `@cloudflare/vitest-plugin`。**`docs/SELF_HOSTING.md` "Updates" に移行順序(サーバー → 全メンバー CLI → 各人の予備鍵の分離と複製端末の再登録)を同梱**(ES K2 の先例 — 破壊的変更と手順書を同じ PR で) | CLI はまだ 2 op を出さず端末 1 つでラップする(挙動不変)。ハンドオフの旧端末経路(`source = "device"`)は **K4 まで残す**(K3 で消すと K4 までの間に端末移行の手段が無くなる) | 認可(reader 自己バックフィルの「受信者が全て自分の端末鍵」判定・追加要求の FP 再計算・失効の副作用の列挙)、セッション拒否の列挙 |
+| **K4** | CLI: **新 `device` グループ**(`add / approve / list / revoke`)、`key generate`(端末鍵 + 初回のみ予備鍵 → コード + 任意のパスキー)、`key recover`(予備鍵の復元 → 端末鍵の発行 → 予備鍵の秘密の破棄)、`key recovery` / `key seal` / `guardian add`(予備鍵の開封を前置)、`key reserve rotate`、`key approve` → `guardian approve`、`wrapRecipientsFor` / backfill の端末展開、sweep 第 5 種 `device-revoked`、初回同期の端末登録(3 条件)、指紋帳の集合化、`member list` / `project verify` の端末数と予備鍵未登録の警告、`device revoke` 前の残端末の警告、トークン失効の提案、移行の案内(既存 K の予備鍵分離)。**同じ PR で server のハンドオフ旧端末経路(`source = "device"` / blob 列 / `kind = "device"` の AAD)を削除**(置き換えと削除を同時に着地させる)。テストは Vitest | DK の機能面は完了。Web は端末数を出さないだけ | 儀式ゲート(`device approve` = TTY + 非エージェント)、予備鍵の秘密を永続化しないこと(Redacted 規律)、`device revoke` の一括対象の確認 UX、移行案内の文言 |
+| **K5** | Web: `ProjectScreen` のメンバー行に端末数、端末一覧(登録簿 — 「サーバー申告」)、紛失時の導線(トークン失効へのリンク — 既存機能)。読み取りのみ(ADR-0018) | 読み取りのみ。K4 で止めても CLI で全操作できる | — |
+| **K6** | docs: 新規 `apps/site/docs/devices.mdx`(端末の追加・失効・cap・紛失時の導線)、`recover-your-key.mdx`(予備鍵・保護者経路。旧端末経路の削除)、`linux-keychain.mdx`(Codespaces = `device add` / `approve`)、`invite-a-teammate.mdx`(`key publish` は受諾端末)、`getting-started.mdx` の鍵生成の 1 文、README の docs 一覧、ROADMAP の DK 行 `[x]` | docs のみ | — |
+
+- 移行の順序要件: サーバー(K3)→ 全メンバーの CLI(K4)→ 各人の予備鍵の分離(`key generate` の案内)と複製端末の再登録(`device add` / `approve`)。旧 CLI は 2 op を含むチェーンを `invalid-payload` で拒否し(fail-closed)、新 CLI は K3 より前のサーバーへ 2 op を送ると 422(K2 のガード)で止まる(どちらの向きも黙って旧解釈しない)。既存プロジェクトの再作成は要らない(DK-J)
+- 見積もり: 仕様 1 日 → K2 3〜4 日(人間レビュー込み)→ K3 3〜4 日 → K4 4〜5 日 → K5 1 日 → K6 1 日 = ROADMAP の概算 3〜4 週の範囲。律速は所有者承認と crypto 人間レビュー(ES / KL3 の実測どおり)
+- ベータゲート: DK 全体が招待制ベータのゲート(ROADMAP)。K5(Web の読み取り)は並走に外してよい(承認項目 16)
+
+---
+
+## 4. 承認依頼項目(所有者裁定を要するもの)
+
+各項目に「採用案 / 棄却案 / 理由」の要約。仕様・暗号・チェーン規則・ワイヤ形式・監査事件の追加に係るものを積む。実装の内部構造・テストの形は自分で決めて進める。**所有者選択**の印がある項目は迷いが残る点で、回答で確定する(未回答なら採用案で進める)。
+
+| # | 項目 | 採用 | 棄却 | 理由(要約) |
+|---|---|---|---|---|
+| 1 | 鍵の単位(DK-A) | **メンバー(人)は不変で、端末鍵の集合を持つ**。`add_device` / `revoke_device` の 2 op を追加。`add_member` / `change_role` / `genesis` の payload は不変(既存チェーン有効・ES の再生成なし)。署名者の同定 (user_id, 鍵 FP) は不変で FP が端末を指す | (i) 台帳に端末クラス(失効が空文)/ 端末 = メンバー行 / root 鍵 2 層 / ユーザー単位の端末チェーン | 「鍵は端末に属し、権限は人に属する」。既存規則の FP 選択がそのまま端末選択になる |
+| 2 | 端末の cap(DK-A γ)**〔所有者選択〕** | **(a) 推奨**: `add_device` payload に `role_cap` + scope(2 フィールド)を持ち、実効権限 = (min, ∩)、単調性(新端末 ≤ 署名端末)。v1 の CLI で `device approve --cap <role> --env …` を露出(既定 = (owner, all) = 人の権限そのもの) | (b) 合意規則には入れるが CLI は露出しない / (c) cap を持たない(payload = 鍵 2 つ — 後で足すと形式変更 = 全再生成) | 「票だけの電話」「dev だけの CI 箱」を 1 機構で表し、盗まれた端末が強い端末を作れない。公開前に形式を確定する(ES A-1 の教訓)。対価は全検査が実効権限を読むこと |
+| 3 | 予備鍵(DK-A / DK-G) | 台帳にだけ住む端末鍵(cap (owner, all))。チェーン上は普通の端末。復元後は新端末を `add_device` して予備鍵の秘密を消す。予備鍵未登録のプロジェクトは再招待(CLI が警告) | 予備鍵なし(全端末喪失 = 再招待 — 単独 owner が死ぬ)/ 各端末鍵を台帳に | 「端末に置かない鍵」が 1 本要る。KL3 の B の意味の読み替えだけで済む |
+| 4 | 失効の義務(DK-B)**〔所有者選択〕** | 失効端末の実効 scope の全環境に rotate 義務(MUST — remove と同型)。履行者 = actor。reader の自己失効は拒否せず、義務は検出フラグ(`trigger = revoke_device`)と `project verify` の警告で member 以上に見せる | 理由依存の免除(`retired` = 義務なし — fail-open)/ reader の自己失効を拒否(安全側の操作を止める)/ 読んだ環境だけ rotate | 「失効 = R(E) からの除去 + 実効 scope の rotate」。**ephemeral 端末の摩擦を免除で解くか(B-2)は所有者選択 — 推奨は採らない(転送 agent の領分)** |
+| 5 | 四眼との交差(DK-C) | S の要素 (user_id, FP) 不変・distinct は人・`duplicate-approval` = その人が生きている票を持つ(別端末でも)・失効端末の票は失効・cap < owner の端末は票を入れられない・`proposal-void` は提案端末の有効性で判定・2 op は四眼の対象外 | 別端末の 2 票目を黙って数えない / 失効端末の票を残す / `add_device` を常時対象に | 原則 2 の端末語彙。K2-11 ⑤(鍵更新で票が失効)と整合 |
+| 6 | 端末追加の認可と儀式(DK-D) | actor = 本人のみ(role 不問・reader 可)。新端末の cap ≤ 署名端末。鍵一意性は現メンバーの全端末。**儀式なし**: FP(12 語 / hex)を本人が運び、承認端末は要求行の公開鍵を FP で照合 + yes(TTY ゲート)。要求側はゲートなし。`key publish` は受諾端末の鍵。指紋帳は FP の集合。初回同期の登録は 3 条件(自分が生成・自分が承認・検証済みチェーンで観測)の鍵のみ | admin が他人の端末を追加 / 招待型 / ハンドオフ型 / 所持証明の共同署名 / 裏付け元の照合 | 「鍵を増やせるのは本人だけ・自分以下の端末だけ」。秘密を運ばない |
+| 7 | R(E)・受理(DK-E) | R(E) = (人, 端末) の対 × 実効 scope。§12-6 の同定 (user_id, enc 公開鍵) 不変・スロット主キーに enc 公開鍵。reader の自己バックフィル(受信者が全て自分の端末鍵)。端末数 ≤ 16 / member / project(受理ポリシー `DeviceLimit`)。HPKE info・登録署名は不変 | 人の enc 鍵 1 本(= 複製)/ env KEK 層 / 端末数を合意規則に | K3-D の 1 述語に「実効」を足すだけ |
+| 8 | 載せ場所・登録簿・監査(DK-F)**〔所有者選択〕** | チェーン op + **advisory の端末登録簿**(AUTH §13-11: 表示名・公開鍵・任意の `tokenId`・追加要求行。検証に使わない)。ミラー `chain.device_added` / `chain.device_revoked` ★。検出変種は端末の窓 + actor 鍵 FP。クラス 1。登録簿に監査事件は持たない | 台帳 API(ゴースト鍵)/ 登録簿なし(FP だけで失効対象を選ぶ) | 「R(E) を変える事実はチェーン op、変えない事実は advisory」。**`tokenId` の紐付け欄を持つかは所有者選択 — 推奨は持つ(任意欄)** |
+| 9 | KL3 台帳(DK-G)**〔所有者選択〕** | B = 予備鍵・`kind` ∈ {passkey-prf, guardian}(`device` 削除)・`source = "device"` と blob 列の削除・保護者分片は保護者の各端末鍵へ(行 = 端末ごと)・台帳の変更は予備鍵の開封(コード / パスキー)を前置。命名衝突は削除で解消 | 予備鍵の秘密を端末に置く / 分片を保護者の予備鍵へ | 「台帳が守るのは端末に置かない鍵 1 本」。**§8 の表題「予備鍵ラップ台帳」と英語 UI 語 "reserve key" は所有者選択** |
+| 10 | 委任モデル(DK-H) | KL4 の据え置きを維持。DK で構造的に安くはならない。転送 agent の主用途を「ephemeral 環境」に書き直す(申し送り) | DK と同時に委任化 | 据え置きの蒸し返しをしない。情報として提示 |
+| 11 | 移行(DK-J)**〔所有者選択〕** | **J-1 推奨**: チェーン据え置き(既存 master 鍵 = 最初の端末鍵)。台帳は予備鍵へ置換(コード再発行 / パスキー再封印 / 保護者再作成)。複製端末は `device add` / `approve` で再登録し複製を消す。CLI が初回起動で案内 | J-2 検証デプロイの再作成 / 既存鍵を予備鍵に読み替え | 破壊的変更なしで済む。再作成を選ぶなら ES A-1 と同じ帰結 |
+| 12 | CLI 命名(DK-L)**〔所有者選択〕** | `maruhi device add / approve / list / revoke`(新グループ)。`key generate / show / publish / recover / recovery / seal` は「自分の鍵」に留め、`key approve` → **`guardian approve`**、新設 `key reserve rotate` | `key` の拡張 / `member device …` | 端末は自分の資源。**名称は所有者選択**(`device` / `guardian approve` / `reserve`) |
+| 13 | テストベクター(DK-M) | `chain-entries.json` 追記(正規チェーン 1〜24 不変)、4 ファイルに端末軸の負例を追記、`master-key-wrap.json` 再生成(device 経路の削除 — 規約 28 の意図的な例外)。他は不変。新規ファイルなし | 全再生成 | 既存 op の payload に触れない |
+| 14 | 端末ごとの申告行(DK-A / ドラフト A-7 / B-8) | ヘッド申告の保存・配布を (user_id, 端末 FP) ごとに。`revoke_device` で当該行を削除 | メンバーごと 1 行のまま(遅れた端末の申告が 409 になる) | 端末は独立に同期する |
+| 15 | 実装分割 K1〜K6(§3) | 順序・受理ガード(K2 → K3)・旧端末経路の削除は K4(CLI と同時)・SELF_HOSTING は K3 に同梱・人間レビュー箇所 | — | ES / KL3 の手順の踏襲 |
+| 16 | ゲートの範囲**〔所有者選択〕** | DK 全体(K1〜K4 + K6)を招待制ベータのゲート(ROADMAP 既定)。**K5(Web の読み取り)は並走に外してよい** | 全段をゲート | Web は読み取りのみで CLI に代替がある |
+
+承認までフェーズ 2(K1 正本反映)には入らない。
+
+---
+
+## 5. 申し送り・スコープ外
+
+- **封印(device-key-sealing.md 案 3)**: 端末鍵レコード(`StoredMasterKey` の JSON 形)は不変で、封印バックエンドはこのブロブを包む保存層。端末ごとの鍵は端末ごとの封印と対応し、封印器 1 つの喪失 = その端末の失効で済む。**予備鍵は端末束縛の封印器で封印しない**(台帳のみ — ドラフト A-9 の禁止事項)。本メモ §6 の見取り図(2026-08-10)は KL3 / ES / PF1 を反映していないため、影響範囲は本設計録 §1-3 を正とする(device-key-sealing.md 冒頭に相互参照を追記)
+- **委任(KL4)**: 据え置き維持。再評価時の観点を「盗難への備え」から「ephemeral 環境(コンテナ再作成のたびに端末が消え、失効 + rotate が重い)」へ書き直す。DK 後の agent 侵害 = 端末 1 台の失効で収束するため、委任の価値は「鍵素材をソケットに出さない」に純化する
+- **VH(値の履歴)との交差**: `var history` の書き手 FP は端末を指す。端末の表示名は本人だけが読める(登録簿)ので、VH の表示は FP(12 語)+ user のまま(登録簿を他人に見せない)。ロールバックの書き手も端末。VH 側の仕様変更は不要
+- **PF2(ミラー)との交差**: 受信者クラス server は不変。ミラーをメンバー化する設計になっても端末軸の外(サーバー鍵に端末はない)
+- **`set_device_cap`(端末の cap の変更)**: v1 では cap は不変(変更 = 失効 + 再追加)。需要が出れば新 op として追記で足せる(payload 形式の変更なし)— 拡大は actor のバックフィル、縮小は rotate 義務(`change_role` と同型)
+- **四眼の履行者(K6-D)**: 承認した端末が DEK を持たない(cap の scope が空の電話)場合、適用後の sweep / バックフィルは同じ人の別端末か次の同期に持ち越す。履行者は同じ人のまま。CLI の案内で扱う(K4)
+- **K4-K の pull 警告**: 「no DEK wraps for you」の次の一手に `device approve` の再実行を足す(端末追加のバックフィル未了)
+- **Codespaces の docs(K6)**: 1 codespace = 1 端末(`device add` / `approve`)+ KL1 の永続キーリングで端末鍵を持ち越す。コンテナを毎回捨てる運用は端末の失効 + rotate を繰り返すので、その場合は転送 agent(KL4)を待つか `agent --key-ttl` 相当の運用で留める旨を書く
+- **ES §6 の申し送り「(ii) 案なら `add_member` の payload に再度触れる」**: 生じない(`add_member` 不変 — 解消)
+- **残余(脅威モデル文書へ)**: (1) 紛失端末が失効前に作った端末は自動では消えない(一括失効・可視性・単調性で対処)。(2) 復元に使った端末が侵害されていれば予備鍵も侵害される(`key reserve rotate`)。(3) 端末登録簿はサーバー申告であり、表示名の偽装は失効対象の取り違えを誘えるが、失効は FP で確定し CLI は FP 12 語を併記する
+- **スコープ外(本設計で扱わない)**: ハードウェア封印の設計・実装(案 3)、PQ スイート、委任モデルの実装(KL4)、ユーザー単位の端末チェーン / 組織の鍵台帳、端末ごとの履歴エポックの制限、端末のトークン以外の資格(セッション)との対応
+- **未実施の確認(K2 で固定するもの)**: 実効権限の置換が既存の全検査の入力に入ること、`ChainMember` の型変更の消費者の全列挙(fallow で計測)、`dek_wraps` / `guardian_shares` / `head_attestations` の主キー変更のマイグレーション形、端末 16 台 × メンバー × 環境 × エポックのラップ数の実測
