@@ -281,6 +281,12 @@ describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
     const hashB = await hashOfLast(second);
     const verified = await verifiedOf(second);
     expect(resolveProposalRef(verified, hashA.slice(0, 8))).toMatchObject({ kind: "pending" });
+    // `#<seq>`(K6-F′): 提案エントリの seq でも指せる
+    expect(resolveProposalRef(verified, `#${prefix.length + 1}`)).toMatchObject({
+      kind: "pending",
+      proposal: { proposalHashHex: hashA },
+    });
+    expect(resolveProposalRef(verified, "#999")).toEqual({ kind: "unknown" });
     expect(resolveProposalRef(verified, hashA.toUpperCase())).toMatchObject({ kind: "pending" });
     expect(resolveProposalRef(verified, hashB.slice(0, 7))).toEqual({ kind: "malformed" });
     expect(resolveProposalRef(verified, "not-hex!")).toEqual({ kind: "malformed" });
@@ -304,6 +310,9 @@ describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
     expect(resolveProposalRef(closed, hashB.slice(0, 10))).toEqual({
       kind: "withdrawn",
       proposalSeq: prefix.length + 2,
+    });
+    expect(resolveProposalRef(closed, `#${prefix.length + 1}`)).toMatchObject({
+      kind: "completed",
     });
   });
 });

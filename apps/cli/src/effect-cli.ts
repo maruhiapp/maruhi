@@ -80,9 +80,11 @@ import {
   DEFAULT_POLICY_OPS,
   describeInnerOperation,
   describeInnerOperationLines,
+  describeKeyReuse,
   describePolicy,
   describeUnresolvedRef,
   isApprovalTargetOp,
+  keyReuseOf,
   parseProposalExpiry,
   type ProposalView,
   proposalViewOf,
@@ -2411,6 +2413,12 @@ function memberRemoveCommand(
       rotateWith: (reason) => sweepRotateFor(context, reason),
       proposal,
     });
+    // 自己 remove の提案(K6-N′): 提案は適用ではないが、承認者に頼む前に帰結を本人に見せる
+    if (outcome.kind === "proposed" && flags.target === context.session.userId) {
+      yield* logNote(
+        "this proposal removes you — once an owner approves it, you lose access to the project",
+      );
+    }
     return yield* unlessProposed(io, outcome, (summary) =>
       Effect.gen(function* () {
         if (summary.appended) {
@@ -2747,6 +2755,12 @@ function approvalShowCommand(
     const view = proposalViewOf(context.verified, resolution.proposal, Date.now());
     for (const line of proposalDetailLines(view)) {
       yield* io.log(line);
+    }
+    // 承認者側の鍵 FP 再登録の警告(K6-I′ — 提案者側の K6-I と同じ述語・文言)
+    if (view.proposal.inner.op === "add_member") {
+      for (const reuse of keyReuseOf(context.verified, view.proposal.inner.payload)) {
+        yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
+      }
     }
     yield* io.log(eligibilityLine(context.verified, context.session.userId, view));
     const note = readyNote(view);

@@ -140,14 +140,22 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
   });
 
   it("member remove: 提案化の経路では自己 remove を拒否しない(履行者は承認者 — K6-N)", async () => {
-    const built = await buildChain(baseSteps(["remove_member"]));
+    // owner 3 名(到達可能性: owner2 を除いても required 2 に届く — 提案時の quorum 検査を通す)
+    const owner3 = await makeTestUser("user-owner-3333");
+    const steps = baseSteps(["remove_member"]);
+    const built = await buildChain([
+      ...steps.slice(0, -1),
+      { actor: owner, operation: addMemberOp(owner3, "owner") },
+      ...steps.slice(-1),
+    ]);
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
-    // owner2 が自分の remove を提案(到達可能性: owner は 2 名で required 2 → 合意規則では無効だが
-    // それは適用時 / 提案時の quorum 検査。ここでは CLI が「自己 remove」だけで止めないことを見る)
-    const code = await runCli(["member", "remove", target.userId], env.layer);
+    // owner2 が自分の remove を提案: CLI は「自己 remove」だけで止めない(履行者は承認者)
+    const code = await runCli(["member", "remove", owner2.userId], env.layer);
     expect(code).toBe(0);
     expect(state.appendedEntries.map((entry) => entry.op)).toEqual(["propose"]);
+    // K6-N′: 適用後の帰結を本人に見せる(拒否ではない)
+    expect(env.errors.join("\n")).toContain("this proposal removes you");
   });
 
   it("member change-role: 対象 op なら提案(省略側は提案時の現状で解決)。対象外は直接追記", async () => {

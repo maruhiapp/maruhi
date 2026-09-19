@@ -280,6 +280,12 @@ export type ProposalRefResolution =
  */
 export function resolveProposalRef(verified: VerifiedProject, ref: string): ProposalRefResolution {
   const normalized = ref.trim().toLowerCase();
+  // `#<seq>`: 提案エントリの seq による参照(K6-F′ — チェーンが定める不変の値。`#` 接頭で
+  // hex 接頭辞と構造的に分ける)
+  const bySeq = /^#(\d{1,9})$/.exec(normalized);
+  if (bySeq !== null) {
+    return resolveProposalSeq(verified, Number(bySeq[1]));
+  }
   if (
     normalized.length < MIN_PROPOSAL_REF_LENGTH ||
     normalized.length > 64 ||
@@ -306,13 +312,62 @@ export function resolveProposalRef(verified: VerifiedProject, ref: string): Prop
     : { kind: "completed", proposalSeq: only.entry.seq, completedAtSeq: only.completedAtSeq };
 }
 
+/** 提案 seq での解決(pending → 完成 / 撤回 → 未知の順に言い分ける)。 */
+function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRefResolution {
+  for (const proposal of verified.state.pendingProposals.values()) {
+    if (proposal.proposalSeq === seq) {
+      return { kind: "pending", proposal };
+    }
+  }
+  for (const indexed of proposalIndexOf(verified).values()) {
+    if (indexed.entry.seq === seq) {
+      return indexed.completedAtSeq === null
+        ? { kind: "withdrawn", proposalSeq: seq }
+        : { kind: "completed", proposalSeq: seq, completedAtSeq: indexed.completedAtSeq };
+    }
+  }
+  return { kind: "unknown" };
+}
+
+/**
+ * 鍵 FP 再登録の判定(設計録 K5-K / K6-I / K6-I′): 登録しようとする鍵が検証済みチェーンの
+ * 履歴(`keyHistory` — 提案経由の追加も含む)の別の在籍区間に現れる user_id。同一 user_id の
+ * 過去の在籍と別 user_id を言い分ける。提案者側(`member add`)と承認者側(`approval show`)
+ * が同じ 1 述語を使う。
+ */
+export function keyReuseOf(
+  verified: VerifiedProject,
+  key: { readonly targetUserId: string; readonly encPubHex: string; readonly sigPubHex: string },
+): readonly { readonly userId: string; readonly sameUser: boolean }[] {
+  const reuse: { readonly userId: string; readonly sameUser: boolean }[] = [];
+  for (const [userId, bindings] of verified.keyHistory) {
+    const reused = bindings.some(
+      (binding) => binding.encPubHex === key.encPubHex || binding.sigPubHex === key.sigPubHex,
+    );
+    if (reused) {
+      reuse.push({ userId, sameUser: userId === key.targetUserId });
+    }
+  }
+  return reuse;
+}
+
+/** 鍵 FP 再登録の警告文(提案者側・承認者側で同じ文言。`subject` = 「the acceptance key」等)。 */
+export function describeKeyReuse(
+  subject: string,
+  reuse: { readonly userId: string; readonly sameUser: boolean },
+): string {
+  return reuse.sameUser
+    ? `${subject} was registered before for this same user (a previous membership that has since ended). If that key was removed because it was compromised, do not re-register it: a re-registered key revives the four-eyes approval votes it cast (CRYPTO_SPEC §6.2) — issue a fresh invite for a new key instead`
+    : `${subject} was registered before for a different user (${displayText(reuse.userId)}). A key must not move between identities — unless this is expected, abort and ask the acceptor to generate a new key`;
+}
+
 /** Human-readable failure for a reference that did not resolve to a pending proposal. */
 export function describeUnresolvedRef(
   resolution: Exclude<ProposalRefResolution, { readonly kind: "pending" }>,
 ): string {
   switch (resolution.kind) {
     case "malformed":
-      return `A proposal id is the propose entry's hash (64 hex digits); at least the first ${MIN_PROPOSAL_REF_LENGTH} digits are required (see \`maruhi approval list\`)`;
+      return `A proposal id is the propose entry's hash (64 hex digits; at least the first ${MIN_PROPOSAL_REF_LENGTH} digits) or #<seq> of the propose entry (see \`maruhi approval list\`)`;
     case "ambiguous":
       return `The prefix matches more than one pending proposal (${resolution.candidates.map((candidate) => candidate.proposalHashHex.slice(0, 12)).join(", ")}) — use a longer prefix`;
     case "completed":

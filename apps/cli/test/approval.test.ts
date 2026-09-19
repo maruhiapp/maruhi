@@ -168,7 +168,7 @@ describe("maruhi approval list / show", () => {
     expect(await runCli(["approval", "show", "0000000000"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("No proposal matches that id");
     expect(await runCli(["approval", "show", "abc"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("at least the first 8 digits are required");
+    expect(env.errors.join("\n")).toContain("at least the first 8 digits) or #<seq>");
   });
 });
 
@@ -318,6 +318,27 @@ describe("maruhi approval approve", () => {
     expect(env.logs.join("\n")).toContain(
       `Added member ${newbie.userId}. Backfill: 1 newly registered`,
     );
+  });
+});
+
+describe("maruhi approval show — 鍵 FP 再登録の警告(K6-I′)", () => {
+  it("過去の在籍と同じ鍵での add_member 提案には、承認者側にも警告を出す", async () => {
+    const steps = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(owner2, "owner") },
+      { actor: owner, operation: addMemberOp(newbie, "member") },
+      { actor: owner, operation: removeMemberOp(newbie) },
+      { actor: owner, operation: setApprovalPolicyOp(["add_member"], 2) },
+      { actor: owner, operation: proposeOp(innerOf(addMemberOp(newbie, "member"))) },
+    ];
+    const built = await buildChain(steps);
+    const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
+    const env = await startEnv(state, built.projectId, owner2);
+    expect(await runCli(["approval", "show", `#${steps.length}`], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain(
+      "the proposed member's key was registered before for this same user",
+    );
+    expect(env.logs.join("\n")).toContain("you:             can approve");
   });
 });
 

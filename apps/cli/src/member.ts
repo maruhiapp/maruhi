@@ -32,7 +32,7 @@ import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
-import { isApprovalTarget } from "./approval-rules.ts";
+import { describeKeyReuse, isApprovalTarget, keyReuseOf } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,
@@ -638,27 +638,15 @@ function warnKeyReuse(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
 ): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    for (const [userId, bindings] of verified.keyHistory) {
-      const reused = bindings.some(
-        (binding) =>
-          binding.encPubHex === acceptance.inviteeEncPubHex ||
-          binding.sigPubHex === acceptance.inviteeSigPubHex,
-      );
-      if (!reused) {
-        continue;
-      }
-      if (userId === acceptance.inviteeUserId) {
-        yield* logWarning(
-          `the acceptance key was registered before for this same user (a previous membership that has since ended). If that key was removed because it was compromised, do not re-register it: a re-registered key revives the four-eyes approval votes it cast (CRYPTO_SPEC §6.2) — issue a fresh invite for a new key instead`,
-        );
-      } else {
-        yield* logWarning(
-          `the acceptance key was registered before for a different user (${displayText(userId)}). A key must not move between identities — unless this is expected, abort and ask the acceptor to generate a new key`,
-        );
-      }
-    }
-  });
+  return Effect.forEach(
+    keyReuseOf(verified, {
+      targetUserId: acceptance.inviteeUserId,
+      encPubHex: acceptance.inviteeEncPubHex,
+      sigPubHex: acceptance.inviteeSigPubHex,
+    }),
+    (reuse) => logWarning(describeKeyReuse("the acceptance key", reuse)),
+    { discard: true },
+  );
 }
 
 /** add_member の実行者 role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
