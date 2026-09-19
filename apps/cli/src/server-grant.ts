@@ -35,6 +35,7 @@ import {
   ensureStillTarget,
   type ProposalInput,
   proposeOperation,
+  proposeRecheck,
   type ProposedSummary,
 } from "./approval.ts";
 import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
@@ -303,6 +304,19 @@ function backfillEnvironment(input: {
   });
 }
 
+/** 同一内容(scope と lease_policy)の有効 grant が既にあるか(追記スキップ / 提案スキップの判定)。 */
+function grantUnchanged(
+  existing: ServerGrant | null,
+  scope: readonly string[],
+  leasePolicy: readonly LeasePolicyIssuer[],
+): boolean {
+  return (
+    existing !== null &&
+    sameScope([...existing.scopeEnvironmentIds].toSorted(), scope) &&
+    samePolicy(existing.leasePolicy, leasePolicy)
+  );
+}
+
 /** CAS リトライの状態。 */
 interface GrantState {
   readonly verified: VerifiedProject;
@@ -370,10 +384,7 @@ export function serverGrantOp(input: {
       serverConfig,
     });
 
-    const unchanged =
-      existing !== null &&
-      sameScope([...existing.scopeEnvironmentIds].toSorted(), scope) &&
-      samePolicy(existing.leasePolicy, input.leasePolicy);
+    const unchanged = grantUnchanged(existing, scope, input.leasePolicy);
 
     // 儀式(§9)は追記の有無に関わらず行う(バックフィルだけの再実行でも、
     // これから開示し続ける鍵の照合を省略しない)
@@ -394,13 +405,21 @@ export function serverGrantOp(input: {
     // 四眼(K6-A): 方針が grant_server を対象にしていれば提案して終わる(サーバー宛
     // バックフィルは適用を完成させた承認者が行う — 承認項目 22)。儀式は提案者が済ませた
     if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation(input, inner, (view) =>
-        ensureGrantable({
-          verified: view,
-          signerUserId: input.signerUserId,
-          scope,
-          serverConfig,
-        }).pipe(Effect.asVoid),
+      // 再同期後に同じ内容の grant が既に有効なら提案しない(Cursor Bugbot 指摘対応 — 冗長な提案)
+      const proposal = yield* proposeOperation(
+        input,
+        inner,
+        proposeRecheck(
+          (view) =>
+            ensureGrantable({
+              verified: view,
+              signerUserId: input.signerUserId,
+              scope,
+              serverConfig,
+            }),
+          (checked) => grantUnchanged(checked.existing, scope, input.leasePolicy),
+          "An active grant with identical content was appended by a concurrent run — nothing to propose. Re-run `maruhi server grant` to resume the backfill",
+        ),
       );
       return { kind: "proposed", proposal };
     }

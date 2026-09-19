@@ -376,8 +376,15 @@ export function setApprovalPolicyOp(input: {
     const operation = policyOperation(input.request);
     // 方針が有効な間は set_approval_policy 自身が常時対象(§6.2「方針」)
     if (isApprovalTarget(operation, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation(input, operation, (view) =>
-        ensurePolicySettable(view, input.request, input.signerUserId).pipe(Effect.asVoid),
+      // 再同期後に同じ方針が既に適用されていれば提案しない(Cursor Bugbot 指摘対応 — 冗長な提案)
+      const proposal = yield* proposeOperation(
+        input,
+        operation,
+        proposeRecheck(
+          (view) => ensurePolicySettable(view, input.request, input.signerUserId),
+          (checked) => checked.unchanged,
+          "A concurrent run already set the same policy — nothing to propose (check with `maruhi project policy approvals`)",
+        ),
       );
       return { kind: "proposed", proposal };
     }

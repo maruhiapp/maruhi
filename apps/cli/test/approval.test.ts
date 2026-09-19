@@ -18,6 +18,7 @@ import {
   approveOp,
   buildChain,
   type BuiltChain,
+  changeRoleOp,
   createEnvironmentOp,
   genesisOp,
   innerOf,
@@ -84,7 +85,7 @@ function wrapFor(projectId: string, user: TestUser): Promise<WireRecipientDek> {
 /** owner 2 名(+ 任意で 3 名目)・member 1 名・方針(remove_member, required 2)+ owner の提案。 */
 function prefixSteps(options?: {
   readonly thirdOwner?: boolean;
-  readonly ops?: readonly ("remove_member" | "add_member")[];
+  readonly ops?: readonly ("remove_member" | "add_member" | "change_role")[];
 }) {
   return [
     { actor: owner, operation: genesisOp(owner) },
@@ -264,6 +265,23 @@ describe("maruhi approval approve", () => {
     expect(state.counters.appendAttempts).toBe(0);
   });
 
+  it("自分の scope を縮める(owner → admin listed{})提案も承認者として完成させられない(Cursor Bugbot 指摘)", async () => {
+    const steps = [
+      ...prefixSteps({ thirdOwner: true, ops: ["change_role"] }),
+      {
+        actor: owner,
+        operation: proposeOp(innerOf(changeRoleOp(owner2, "admin", []))),
+      },
+    ];
+    const built = await buildChain(steps);
+    const hash = built.hashes[built.hashes.length - 1] ?? "";
+    const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
+    const env = await startEnv(state, built.projectId, owner2);
+    expect(await runCli(["approval", "approve", hash.slice(0, 8)], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("This proposal narrows your own scope");
+    expect(state.counters.appendAttempts).toBe(0);
+  });
+
   it("CAS 競合の再同期で他 owner が先に完成させていたら追記せず「履行者ではない」と案内する", async () => {
     const { steps, built, hash } = await proposedChain({ thirdOwner: true });
     const concurrent = await buildChain([...steps, { actor: owner3, operation: approveOp(hash) }]);
@@ -427,6 +445,55 @@ describe("maruhi project policy approvals", () => {
     ).toBe(0);
     expect(activeEnv.logs.join("\n")).toContain("already has these settings");
     expect(activeState.appendedEntries).toHaveLength(1);
+  });
+
+  it("CAS 競合の再同期で同じ方針が既に適用されていれば、冗長な提案を追記しない(Cursor Bugbot 指摘)", async () => {
+    const base = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(owner2, "owner") },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: setApprovalPolicyOp(["remove_member"], 2) },
+    ];
+    const built = await buildChain(base);
+    // 送信と並行して、同じ変更(required 2 → ops を change_role に)が提案 + 承認で適用された
+    const proposed = await buildChain([
+      ...base,
+      { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["change_role"], 2))) },
+    ]);
+    const policyHash = proposed.hashes[proposed.hashes.length - 1] ?? "";
+    const concurrent = await buildChain([
+      ...base,
+      { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["change_role"], 2))) },
+      { actor: owner2, operation: approveOp(policyHash) },
+    ]);
+    const state = await makeFourEyesServer({
+      built,
+      environments: {},
+      actor: owner,
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner);
+    expect(
+      await runCli(
+        ["project", "policy", "approvals", "--required", "2", "--ops", "change_role"],
+        env.layer,
+      ),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "A concurrent run already set the same policy — nothing to propose",
+    );
+    expect(state.appendedEntries).toHaveLength(0);
   });
 
   it("--ops の typo と --expires の不備は usage(2)で落ちる", async () => {

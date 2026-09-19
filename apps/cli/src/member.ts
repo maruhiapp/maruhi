@@ -1505,23 +1505,41 @@ function rejectSelfObligation(
   target: ChainMember,
   next: { readonly role: Role; readonly scope: MemberScope },
 ): Effect.Effect<void, CliError> {
+  switch (selfObligationReason(verified, target, next)) {
+    case "demotion":
+      return Effect.fail(
+        cliError(
+          "You cannot demote yourself below member. You would be unable to run the post-demotion rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to demote you",
+        ),
+      );
+    case "scope-narrowing":
+      return Effect.fail(
+        cliError(
+          "You cannot narrow your own scope. You would be unable to run the rotation of the environments you leave (CRYPTO_SPEC §7) — ask another admin / owner to narrow it",
+        ),
+      );
+    case null:
+      return Effect.void;
+  }
+}
+
+/**
+ * 対象自身が §7 の義務を履行できなくなる (role, scope) の変更か: member 未満への降格、
+ * または scope の縮小(履行者 = 対象自身になる直接追記、および承認者 = 対象の approve —
+ * 設計録 K6-N / Cursor Bugbot 指摘対応)。
+ */
+export function selfObligationReason(
+  verified: VerifiedProject,
+  target: ChainMember,
+  next: { readonly role: Role; readonly scope: MemberScope },
+): "demotion" | "scope-narrowing" | null {
   if (ROLE_RANK[target.role] >= ROLE_RANK.member && ROLE_RANK[next.role] < ROLE_RANK.member) {
-    return Effect.fail(
-      cliError(
-        "You cannot demote yourself below member. You would be unable to run the post-demotion rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to demote you",
-      ),
-    );
+    return "demotion";
   }
-  if (
-    scopeChangeAt(verified, target.scope, next.scope, verified.state.headSeq).narrowed.length > 0
-  ) {
-    return Effect.fail(
-      cliError(
-        "You cannot narrow your own scope. You would be unable to run the rotation of the environments you leave (CRYPTO_SPEC §7) — ask another admin / owner to narrow it",
-      ),
-    );
-  }
-  return Effect.void;
+  return scopeChangeAt(verified, target.scope, next.scope, verified.state.headSeq).narrowed.length >
+    0
+    ? "scope-narrowing"
+    : null;
 }
 
 /**

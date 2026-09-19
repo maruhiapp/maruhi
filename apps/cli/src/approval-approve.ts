@@ -16,6 +16,7 @@
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { PendingProposal, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
+import { memberScopeOf } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -28,7 +29,6 @@ import {
 } from "./approval-rules.ts";
 import { proposalStatusOf } from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -39,6 +39,7 @@ import {
   type MemberAddSummary,
   type MemberSweepOutcome,
   type RoleChangeFulfilment,
+  selfObligationReason,
   sweepMemberMandates,
 } from "./member.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -107,15 +108,28 @@ function selfObligationRejection(
   if (inner.op === "remove_member" && inner.payload.targetUserId === signerUserId) {
     return "This proposal removes you. Completing it would leave the post-removal rotation (CRYPTO_SPEC §7) to a member who no longer exists — ask another owner to approve it";
   }
+  const self = verified.state.members.get(signerUserId);
   if (
-    inner.op === "change_role" &&
-    inner.payload.targetUserId === signerUserId &&
-    ROLE_RANK[inner.payload.newRole] < ROLE_RANK.member &&
-    (verified.state.members.get(signerUserId)?.role ?? "reader") !== "reader"
+    inner.op !== "change_role" ||
+    inner.payload.targetUserId !== signerUserId ||
+    self === undefined
   ) {
-    return "This proposal demotes you below member. Completing it would leave the post-demotion rotation (CRYPTO_SPEC §7) to you without the role to run it — ask another owner to approve it";
+    return null;
   }
-  return null;
+  // 降格 / scope の縮小の判定は直接追記の自己義務(member.ts)と同じ 1 述語
+  switch (
+    selfObligationReason(verified, self, {
+      role: inner.payload.newRole,
+      scope: memberScopeOf(inner.payload),
+    })
+  ) {
+    case "demotion":
+      return "This proposal demotes you below member. Completing it would leave the post-demotion rotation (CRYPTO_SPEC §7) to you without the role to run it — ask another owner to approve it";
+    case "scope-narrowing":
+      return "This proposal narrows your own scope. Completing it would leave the rotation of the environments you leave (CRYPTO_SPEC §7) to you without access to them — ask another owner to approve it";
+    case null:
+      return null;
+  }
 }
 
 /** approve の前検査(再同期後にも通す)。 */
