@@ -856,20 +856,42 @@ membership-chain consensus rules (CRYPTO_SPEC §6.2). `add_member` and
 (`scopeKind` / `scopeEnvironmentIds`) inside the signed payload, invitations
 carry the scope in the issue statement and link, and four new chain
 operations exist (`set_approval_policy` / `propose` / `approve` / `withdraw`).
-**This server release does not accept the four four-eyes operations yet**: a
-generic chain append carrying one of them is rejected with HTTP 422
-`ApprovalNotAccepted` (fail-closed) until the release that also ships their
-acceptance side effects (audit mirror rows, rotation detection, pending limit).
-Nothing in the CLI issues them in this release.
+**This server release did not accept the four four-eyes operations yet**: a
+generic chain append carrying one of them was rejected with HTTP 422
+`ApprovalNotAccepted` (fail-closed) until the 2026-09-16 release below, which
+ships their acceptance side effects (audit mirror rows, rotation detection,
+pending limit). Nothing in the CLI issued them before the 2026-09-18 release.
 *(2026-09-15, "ES K4")*: the CLI now issues listed environment scopes
 (`maruhi invite create --env …`, `maruhi member change-role --env … / --all-envs`,
 `maruhi member list`) and limits DEK wraps, backfills and post-removal rotations
 to the member's scope. No server change is needed beyond the K3 release that
 enforces scopes; an older CLI on a project with listed-scope members fails
 closed at wrap-set construction (HTTP 422 `scope-out-of-range`) — update the CLI.
-There is **no compatibility path**: a chain entry in the old format is invalid
-under the new rules, and an entry in the new format is invalid under the old
-ones. Concretely, the version-skew behaviors are:
+*(2026-09-16, "PF1 K5")*: the server now accepts the four four-eyes operations
+(`set_approval_policy` / `propose` / `approve` / `withdraw`) on the generic
+chain append, with their side effects (audit mirror rows plus the applied
+operation's row, rotation detection, invite completion, membership projection).
+Acceptance policy, not a consensus rule (`apps/server/src/policy.ts`; a
+self-hosted deployment may raise it): at most 32 pending, unexpired proposals
+per project, and a proposal's `expires_at_ms` at most 30 days past the server's
+clock — both rejected with HTTP 422 `ProposalLimit`. **Existing projects are
+unaffected**: the four-eyes policy is off by default, so nothing changes until
+an owner enables it.
+*(2026-09-18, "PF1 K6")*: the CLI now sets the policy
+(`maruhi project policy approvals --required N [--ops …] | --off`), turns the
+covered operations of `maruhi member add / remove / change-role` and
+`maruhi server grant / revoke` into proposals, and approves them
+(`maruhi approval list / show / approve / withdraw`) — see the
+[Four-eyes approvals](https://maruhi.app/docs/four-eyes) page. Version skew:
+a **new CLI against an old server (K2–K4)** has every four-eyes entry rejected
+with HTTP 422 `ApprovalNotAccepted` (the CLI reports it and suggests the server
+update), so update the server first, as always; an **old CLI against a new
+server** issues no four-eyes entry and is unaffected until it reads a chain
+that contains one (unknown operation — the fail-closed rule below).
+For the chain-format change itself there is **no compatibility path**: a chain
+entry in the old format is invalid under the new rules, and an entry in the
+new format is invalid under the old ones. Concretely, the version-skew
+behaviors are:
 
 - **Updated server × not-yet-updated CLI**: the old CLI's `add_member` /
   `change_role` appends and invite issuance are rejected with HTTP 400 (schema
@@ -905,9 +927,10 @@ Do the migration in this order:
 3. **Update every CLI and CI workflow** (`maruhi ci …` included).
 4. **Recreate each affected project**: `maruhi project init`, create the
    environments, push the values, and re-invite the members (`maruhi invite
-   create` — the CLI issues scope `all` at this release; per-environment
-   scopes arrive with a later release). Then delete the old project. Workload
-   leases and `maruhi server grant` need to be redone on the new project.
+   create`, with `--env …` for a per-environment scope — the K2 CLI issued
+   scope `all` only; the K4 CLI and later issue listed scopes). Then delete the
+   old project. Workload leases and `maruhi server grant` need to be redone on
+   the new project.
 
 ## Troubleshooting
 

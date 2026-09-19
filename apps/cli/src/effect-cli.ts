@@ -898,7 +898,7 @@ const memberAddConfig = {
 /** remove / change-role の対象 user_id(必須・非空)。 */
 const memberTargetArgument = () =>
   Argument.string("user-id").pipe(
-    Argument.withDescription("Target user ID (see the member list in `maruhi project verify`)"),
+    Argument.withDescription("Target user ID (see `maruhi member list`)"),
     Argument.withSchema(NonBlank),
   );
 
@@ -938,7 +938,7 @@ const memberListConfig = {
 const proposalIdArgument = () =>
   Argument.string("proposal-id").pipe(
     Argument.withDescription(
-      "Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)",
+      "Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits, or #<seq> of the propose entry — see `maruhi approval list`)",
     ),
     Argument.withSchema(NonBlank),
   );
@@ -4288,7 +4288,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         }),
       );
     }),
-  ).pipe(Command.withDescription("Remove a member and force-rotate every environment"));
+  ).pipe(
+    Command.withDescription(
+      "Remove a member and force-rotate every environment in the member's scope",
+    ),
+  );
 
   const memberChangeRole = Command.make("change-role", memberChangeRoleConfig, (values) =>
     Effect.gen(function* () {

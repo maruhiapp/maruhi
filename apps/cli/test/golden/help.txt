@@ -382,7 +382,7 @@ GLOBAL FLAGS
 
 SUBCOMMANDS
   add            Add an accepted invitee as a member (mutual fingerprint confirmation, then key distribution)
-  remove         Remove a member and force-rotate every environment
+  remove         Remove a member and force-rotate every environment in the member's scope
   change-role    Change a member's role and/or environment scope (demotion and scope narrowing force a rotation)
   list           List the verified members with their role, scope and key fingerprint
 
@@ -409,13 +409,13 @@ GLOBAL FLAGS
 
 $ maruhi member remove --help
 DESCRIPTION
-  Remove a member and force-rotate every environment
+  Remove a member and force-rotate every environment in the member's scope
 
 USAGE
   maruhi member remove [flags] <user-id>
 
 ARGUMENTS
-  user-id string    Target user ID (see the member list in `maruhi project verify`)
+  user-id string    Target user ID (see `maruhi member list`)
 
 FLAGS
   --server string     Server URL (defaults to config server)
@@ -434,7 +434,7 @@ USAGE
   maruhi member change-role [flags] <user-id>
 
 ARGUMENTS
-  user-id string    Target user ID (see the member list in `maruhi project verify`)
+  user-id string    Target user ID (see `maruhi member list`)
 
 FLAGS
   --server string     Server URL (defaults to config server)
@@ -506,7 +506,7 @@ USAGE
   maruhi approval show [flags] <proposal-id>
 
 ARGUMENTS
-  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits, or #<seq> of the propose entry — see `maruhi approval list`)
 
 FLAGS
   --server string     Server URL (defaults to config server)
@@ -524,7 +524,7 @@ USAGE
   maruhi approval approve [flags] <proposal-id>
 
 ARGUMENTS
-  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits, or #<seq> of the propose entry — see `maruhi approval list`)
 
 FLAGS
   --server string     Server URL (defaults to config server)
@@ -542,7 +542,7 @@ USAGE
   maruhi approval withdraw [flags] <proposal-id>
 
 ARGUMENTS
-  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits, or #<seq> of the propose entry — see `maruhi approval list`)
 
 FLAGS
   --server string     Server URL (defaults to config server)

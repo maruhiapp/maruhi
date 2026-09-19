@@ -360,7 +360,7 @@ CLI に `maruhi member list` を新設(現状は `project verify` の出力に�
 | **K4** | CLI(ES): `invite create --env`、`member add`(招待行の scope)、`member change-role --env` / `member scope`(拡大 backfill・縮小 sweep)、**`member list`**、`wrapRecipientsFor` / backfill / sweep の scope 対応、`env create` の前提検査、pull / push / rotate の scope 外エラー、scope 外ラップの警告、`project verify` の scope 列 + Web `ProjectScreen` の scope 列。テストは Vitest。**完了(2026-09-15 — 裁定は §10 K4 追記: `change-role` は 1 コマンドで (role, scope) を全置換〔省略 = 据え置き・`--all-envs`〕、通信前判定は前段 / 共通ガード / DEK 取得口 / 値付き pull の漏斗、sweep は義務ごとの環境集合を具体化、Web の scope 列は K4 で確定、受信側規則は取得口の型付きエラー)** | ES 完了。四眼は方針なし = オフのまま |
 | **K5** | server(PF1): **K2-10 の受理ガード(`ApprovalNotAccepted`)の解除と同じ PR で。解除の前提 = 正本への申し送り ⑤(投票者の鍵束縛)の所有者裁定と、その反映(正本 → ベクター → crypto)が済んでいること — 解除した瞬間に ⑤ が実効化するため。2026-09-15 の K2-11 で裁定・反映済み(前提は満たされた)。K5 で判断する持ち越し: 鍵の再登録による票の復活(K2-11 ⑤ 行「失効は単調ではない」)を CRYPTO_SPEC §6.2 の一文として正本に載せるか設計録のままにするか、および CLI / UI が過去に見た鍵 FP の再登録に警告するか(pullfrog 第 3 巡の指摘)。さらに `required_approvals` 引き下げ後の pending 提案の完成(既投票 owner の approve は `duplicate-approval` — K2-11-bis の UX 上の難点)を CLI / UI の案内で扱うか合意規則で扱うか**: 受理ポリシー(pending 上限。8-bis K2-5 e-3: 作成時点で失効済みの提案〔`expires_at_ms` < 受理時サーバー時計〕の拒否も受理ポリシー候補)、適用完了時の副作用(要ローテーション検出・旧鍵ラップ掃除・申告行削除・成長ガード)、ミラー 4 種 + 適用行、`audit verify` の全単射規則。**完了(2026-09-16 — 裁定は §11 K5 追記: 受理ガード解除〔`ApprovalNotAccepted` はワイヤに残しサーバーは発生させない — K5-A〕、受理ポリシーは DO のみで上界 → pending 上限〔K5-B〕、失効済み提案は拒否しない〔K5-C〕、成長ガードは提案・承認の入口〔K5-D〕、適用行 = 同 chain_seq・actor = 提案者・`viaProposalSeq`〔K5-E〕、完成判定は core の `indexProposals` を server / CLI で共有〔K5-F〕、全単射は期待行集合との突合〔K5-G〕、DO の append が適用した提案を返し worker が D1 後処理〔K5-H〕、`ProposalLimit { reason, limit }`〔K5-I〕、持ち越し (i) = 設計録のまま・(ii)(iii) = CLI 案内で K6 実装〔K5-J〜L〕、提案 API は置かずクライアント導出〔K5-M〕)** | K2 のサーバーは 4 op を 422 で拒否する(受理ガード = 執行)→ K5 で解除 |
 | **K6** | CLI(PF1): `approval` グループ、`project policy approvals`、既存コマンドの提案化、承認者側の sweep、Web の pending 表示。**完了(2026-09-18 — 裁定は §12 K6 追記: 自動提案化 + 冪等〔K6-A〕、完成は再同期 + core の `indexProposals`〔K6-B〕、適用済み操作列への一般化〔K6-C — sync.ts の鍵索引の欠陥も同時に閉じた〕、履行者 = 承認者〔K6-D〕、agent-gate なし〔K6-E〕、id 接頭辞〔K6-F〕、判定の 2 実装目 + 差分テスト〔K6-G〕、有効化の案内〔K6-H〕、鍵 FP 警告〔K6-I〕、Web は prevHash 連鎖で票を再集計〔K6-J〕、`--expires`〔K6-K〕)** | 既定オフ。有効化は owner ≥ 2 の明示操作 |
-| **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、~~`docs/SELF_HOSTING.md` "Updates" に移行順序~~(K2 へ前倒し — 2026-09-14 所有者裁定)、ROADMAP の完了記録 | docs のみ |
+| **K7** | docs: `apps/site/docs/`(`environment-scopes.mdx` 新規・`invite-a-teammate.mdx` の `--env`・`four-eyes.mdx` 新規)、~~`docs/SELF_HOSTING.md` "Updates" に移行順序~~(K2 へ前倒し — 2026-09-14 所有者裁定)、ROADMAP の完了記録。**完了(2026-09-19 — 裁定は §13 K7 追記: 語彙は CLI / Web から写し既存節は改名しない〔K7-A〕、`sidebar.order` 8 / 9〔K7-B〕、索引は How maruhi works に 2 行〔K7-C〕、2 ページ〔K7-D〕、What can go wrong の箇条書き〔K7-E〕、SELF_HOSTING の追補は K4 と同じ形 + 古い予告の修正〔K7-F〕。加えて `github-actions.mdx` の「no approval feature」の 1 文の修正〔K7-G〕、README の docs 一覧、ROADMAP の ES / PF1 両行の `[x]` 化)** | docs のみ |
 
 - 移行の順序要件: サーバー(K2 デプロイ)→ 全メンバーの CLI(K2 以降)。旧 CLI は新チェーンを `bad-signature` / 未知 op で拒否し(fail-closed — **A-1 固有**。A-8 では `set_member_scope` を含まないチェーンを旧 CLI が旧解釈で受理しうる — 3-bis 裁定 A 行)、新 CLI は旧サーバーへの add_member を新形式で送るため旧サーバーが拒否する(どちらの向きも黙って旧解釈しない)
 - 見積もり: ROADMAP の概算(ES 2〜3 週・PF1 3〜4 週)は人手前提。実測(KL3 / IV)から、律速は所有者承認と crypto 人間レビュー
@@ -1289,3 +1289,122 @@ K4-E「値ゼロの読み取りは鍵なし・agent-gate 非適用で、機械�
 `member remove <自分>` が提案になったとき、「this proposal removes you — once an owner approves it you lose access to the project」を Note で出す(拒否ではない — K6-N の提案者側の裁定は不変)。
 
 **訂正(2026-09-19 — PR #182 の Cursor Bugbot / pullfrog 指摘)**: K6-N の承認者側の拒否は「自分の remove / member 未満への降格」だけを写していたが、直接追記側の自己義務の拒否(`rejectSelfObligation`)は **scope の縮小** も含む(履行不能の理由が同じ)。承認者側も同じ 1 述語(`selfObligationReason` = 降格 / 縮小)で判定するよう揃えた。owner のまま縮小する経路は無い(`--role owner` は all を含意)ので、実際の入口は admin / member への降格と縮小の同時指定。
+
+## 13. K7 追記(2026-09-19 — docs の段の裁定)
+
+K7 は docs のみの段(§4 の K7 行)。着手前に §4 K7 行・K4-H / K4-K / K4-N・K5-J〜L / K5-S・§12 K6-H / I / K / N / Q・§12-bis を読み直した。書く内容は K2〜K6 で出荷済みの利用者に見える挙動だけで、コード・正本・ベクターは触らない。命名・フラグ・既定値・出力文言の正は `apps/cli/test/golden/help.txt` と CLI の実装(`effect-cli.ts` / `approval-rules.ts` / `failure.ts` / `scope.ts` / `member.ts`)、数値は `apps/server/src/policy.ts`、Web の節名は `ProjectScreen.tsx` から写す(言い換えない)。以下、§5 の手続き(候補 3 案以上 → 上位互換 / 銀の弾丸の巡を空巡が連続 2 回になるまで → 原則の抽出と既存裁定の導出確認 → UX の点検 → 採用)を各裁定点で回した。**巡の粒度の注記**: 各巡で「何を試みて何が出なかったか」を 1 行ずつ残す(§12-bis の訂正に従う)。
+
+### K7-A. 「four eyes」の名前の衝突(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+前提: `github-actions.mdx` に「Four eyes on production」(GitHub Environment の required reviewers = CI リースの承認)が既にあり、`deploy-targets.mdx` と README がそのアンカー `#four-eyes-on-production` を参照している。CLI の語彙は `maruhi approval …`・help の "Four-eyes proposals" / "four-eyes policy"、Web の節名は "Four-eyes approvals"。同節には「maruhi has no approval feature of its own, and does not need one」の 1 文があり、K6 以降は事実でない(チェーン上の承認は存在する — ただし CI 書き込みの承認ではない)。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| A-a **新ページ = `four-eyes.mdx`・タイトル "Four-eyes approvals"。既存節は改名せず、両側に区別の 1〜2 文と相互リンクを置く。既存節の「no approval feature」の 1 文は事実の漂流として直す** | 語彙を CLI / Web と一致させる(利用者は `maruhi approval --help` の "four-eyes" で検索する)。既存アンカーを壊さない | 「four eyes」が 2 箇所に現れるが、対象(チェーン op / CI の値の配送)が違うことを両側で言えば衝突は語の共有に留まる |
+| A-b 新ページを `approvals.mdx` / `owner-approvals.mdx` にする | 衝突を URL で避ける | CLI の help が "four-eyes" と言い、docs だけ別の名で呼ぶ = 語彙の食い違い(K4-H の「help と docs が同じことを言う」に反する) |
+| A-c 既存節を "Required reviewers on production" に改名し、"four eyes" をチェーン側に譲る | 語の一意化 | `#four-eyes-on-production` を参照する 2 ページ + README のリンク変更と、既存読者の URL 切れ。K7 の「最小」の範囲を越える |
+| A-d 両方を 1 ページに畳む | — | 読者が違う(CI を組む人 / owner として方針を持つ人)。K7-D で棄却 |
+
+**探索**: 第 2 巡(上位互換): 「A-a + 既存節の冒頭に『maruhi 自身の四眼はチェーン上の操作(メンバー・サーバー鍵・方針)を守り、値の配送は守らない — 配送の第二の目は GitHub Environments』の 1 文を置き、"no approval feature" の文をそれに置き換える」— A-a の具体化(事実の漂流の修正と区別の文を同じ 1 文にする)。採用案の具体化であり新案ではない。銀の弾丸(語を変えず対象で区別する — "four eyes **on the chain**" / "four eyes **on production**")は見出しの並置としてそのまま使える(新ページの区別節の見出しに採る)。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「docs の語彙は CLI の help と Web の節名から写し、docs が名前を発明しない。衝突は語の変更でなく対象の明示で解く」— K4-H(`invite create --help` と docs が同じ既定を言う)✓、blume-update-docs の「正の字面をコードから写す」✓、K6-J の Web 節名 "Four-eyes approvals" ✓ 導出。**UX**: `maruhi approval` の help を見た人が docs を "four-eyes" で検索して `/docs/four-eyes` に着く。CI を組む人は `/docs/github-actions#four-eyes-on-production` のまま。どちらの節からも相手へ 1 リンク。**採用: A-a**。
+
+### K7-B. ページの位置と `sidebar.order`(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+既存: getting-started(1)→ deploy-targets(2)→ github-actions(3)→ self-hosting(4)→ linux-keychain(5)→ recover-your-key(6)→ invite-a-teammate(7)。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| B-a **末尾に足す: environment-scopes(8)→ four-eyes(9)** | invite-a-teammate(7)が既に末尾なので「チームの話の隣」と「末尾」が一致する。既存番号は触らない | 導線「招待する → 環境を絞る → 危険な操作に承認を要る」がサイドバーの並びそのものになる |
+| B-b invite-a-teammate の前後に挟んで振り直す | — | 既存 7 ページの frontmatter を触る。得るものが B-a と同じ |
+| B-c `meta.ts` でグループ(Team)を作る | 3 ページを節にまとめる | Blume の navigation 構成物を初めて持ち込む(現状は `sidebar.order` のみ)。3 ページのために構造を増やす対価が見合わない |
+
+**探索**: 第 2 巡(上位互換): 「B-a + four-eyes を先(8)・scopes を後(9)」— 四眼は既定オフの任意機能、scope は招待のたびに触れる必然の話なので、招待 → scope → 四眼の順が読者の頻度順。棄却(B-a の順のまま)。銀の弾丸: 順序を frontmatter でなくファイル名の接頭辞で持つ — Blume は `sidebar.order` を既に使っており、方式の混在になる。棄却。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「サイドバーの並びは読者の作業の順(始める → 配る → 守る)であり、既存ページの番号は必要がなければ触らない」— DP2 の `sidebar.order` 導入(SY1 の裁定「順序を明示」)✓。**UX**: 「Invite a teammate」の次に「Environment scopes」「Four-eyes approvals」が並び、招待ページ末尾のリンクと一致する。**採用: B-a**。
+
+### K7-C. 索引(`index.mdx`)の導線(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| C-a **「How maruhi works」に箇条書きを 2 行足す(scope = 鍵配布で絞る / 四眼 = 2 名の owner の署名)、各行から新ページへリンク。Card は 4 枚のまま** | 既存 4 行はいずれも maruhi の性質を 1 つずつ言う(E2EE / diskless / CLI 中心 / 言わざる)。ES と PF1 は「チームの軸」での同じ種類の性質で、この節が置き場として自然 | Card が無いぶん一覧性は劣るが、サイドバーと invite ページの導線が補う |
+| C-b Card を 2 枚足す(6 枚 = 3 段) | 目立つ | Card は「始める・配る・CI・自前で立てる」の入口 4 枚で、招待ページにも Card は無い。四眼の Card だけ置くと招待の Card が無いことが不釣り合いになる |
+| C-c 両方 | — | C-b の欠点を持ち込む |
+| C-d Card を 1 枚「Teams」として招待 / scope / 四眼をまとめる | 5 枚 = 2 列に 1 枚余る | 奇数の Card は 2 列で片側が空く。3 ページを 1 枚に畳むと Card の説明が長くなる |
+
+**探索**: 第 2 巡(上位互換): 「C-a の 2 行を 1 行に畳む(『Team access is enforced by keys, not policy』の 1 行に両リンク)」— 既存 4 行が 1 行 1 性質なので 2 行の方が節の規律に合う。棄却。銀の弾丸: `getting-started.mdx` の「Next steps」段落(招待ページへの導線がある)に新 2 ページも足す — 導線は増えるが、同ページは「漂流点検」の対象で、言い換え・整形の変更をしない規律(§2 項目 10)に照らして事実の漂流ではないため K7 では触らない。棄却(申し送りにもしない — 索引と招待ページからの導線で足りる)。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「索引の Card は作業の入口、『How maruhi works』は性質の一覧。新機能は性質として後者に足し、Card は入口が増えたときだけ足す」— DP2 / SY1 の Card 3 枚 → 4 枚(入口の追加)✓。**UX**: 索引で「Scoped by key distribution」「Four-eyes」の語を見た人がリンクで新ページへ。検索(Orama)は本文も引くので `prod` / `approval` でも当たる。**採用: C-a**。
+
+### K7-D. ES と PF1 を 1 ページにするか 2 ページにするか(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| D-a **2 ページ(§4 の予定どおり)** | `environment-scopes.mdx` = 招待するたびに触れる必然の話(admin / owner)。`four-eyes.mdx` = 既定オフで owner が有効化する任意の話 | 読者・頻度・検索語が違う。招待ページ → scope → 四眼のリンクで導線は保てる |
+| D-b 1 ページ「Team access」 | 導線を 1 ページに閉じる | 長い(scope だけで縮小 / 拡大 / バックフィル / 失敗の読み方があり、四眼は方針 / 運用前提 / 提案 / 承認 / 票 / 鍵の規律がある)。四眼を使わないチームが scope を読むために四眼の節を跨ぐ |
+| D-c 3 ページ(四眼を「方針を持つ」と「提案と承認」に分ける) | 各ページが短い | 方針の表示と承認の一覧は同じ `approval list` の出力に並ぶ。分けると相互参照が増えるだけ |
+
+**探索**: 第 2 巡(上位互換): 「D-a + 招待ページの `--env` 段落を短くして scope ページへ寄せる」— K4-H は「`--env` の 1 段落は同ページに置く」と裁定済みで、段落は残す。寄せるのは詳細(縮小 / 拡大の義務・バックフィル未了の検出・失敗の読み方)だけ。採用案の具体化。銀の弾丸: なし(問題の立て方は「読者が何を探すか」であり、2 ページで解けている)。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「1 ページ = 1 つの作業(誰が・いつ・何のために読むかが 1 つ)」— DP2 / SY1(deploy-targets と github-actions を分けた)✓、§4 K7 行の 2 ページ ✓。**UX**: 招待ページの `--env` 段落 → scope ページ、招待ページの `member add` / `remove` の 1〜2 文 → 四眼ページ、scope ページ末尾 → 四眼ページ(縮小 / 降格が方針下では提案になる)。**採用: D-a**(§4 の表は変えない)。
+
+### K7-E. エラー文言の載せ方(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| E-a **各ページ末尾に「What can go wrong」の箇条書き(太字の見出し語 + 何が起きたか + 次に何をするか)。理由コードと CLI の可視文言の断片はコードから写し、引用符で括る** | `github-actions.mdx` の同名節と同じ形(既存 voice) | 表より自由に「次に何をするか」を書ける。読者は理由コード(`insufficient-scope` / `duplicate-approval` / `approval-not-required` / `proposal-expired` / `ProposalLimit` / `ApprovalNotAccepted`)で検索して当たる |
+| E-b 表(見た文言 / 意味 / 次の一手) | 一覧性 | 既存ページに同種の表は無く、CLI の文言は長い(表の 1 セルに収まらない) |
+| E-c 本文の流れに埋める | 文脈で読める | 検索で当たりにくい。失敗を踏んだ人は本文を読み直さない |
+
+**探索**: 第 2 巡(上位互換): 「E-a + 本文の該当箇所からも 1 文で触れる(例: 縮小の段落で『scope 外の環境への操作は拒否される』)」— 採用案の具体化(本文 = 規則、末尾 = 症状からの逆引き)。銀の弾丸: 文言を docs に載せず CLI の文言だけに任せる(CLI が次の一手を言う)— CLI の文言は「次の一手」を言うが「なぜそうなるか」(例: `duplicate-approval` が `required` 引き下げ後に起きる理由)を言わないので docs の役が残る。棄却。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「docs は症状(コードから写した字面)→ 原因(正本の帰結)→ 次の一手(CLI の案内と同じ)の順で、文言を手で言い換えない」— K5-J の「帰結の説明は docs に置く」✓、blume-update-docs の「exact source-of-truth wording」✓。**UX**: エラー文の一部をコピーして docs 検索 → 「What can go wrong」の該当行。**採用: E-a**。
+
+### K7-F. SELF_HOSTING "Updates" の K5 / K6 追補の粒度と置き場(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+前提: 「ES + PF1 K2」ブロックは、本文 → 「ES K4」追補(斜体の日付ラベル `*(2026-09-15, "ES K4")*:` の段落)→ 「There is **no compatibility path**」以下の版ずれ箇条書き → 移行手順 1〜4、の順。本文には「This server release does not accept the four four-eyes operations yet … until the release that also ships their acceptance side effects」、手順 4 には「per-environment scopes arrive with a later release」の予告があり、いずれも出荷済みで古い。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| F-a **「ES K4」追補の直後に、同じ形の斜体日付ラベル段落を 2 つ(`*(2026-09-16, "PF1 K5")*` / `*(2026-09-18, "PF1 K6")*`)置く。K5 = サーバーが 4 op を受理・受理ポリシー(期限内 pending 32 件・期限の上界 30 日 = `policy.ts`)・既存プロジェクトは方針が既定オフなので挙動不変。K6 = CLI が方針の設定と提案 / 承認を発行・**新 CLI × 旧サーバー(K2〜K4)** は 4 op を HTTP 422 `ApprovalNotAccepted` で拒否(サーバーを先に更新)・**旧 CLI × 新サーバー** は 4 op を生成しないので影響なし。K2 本文の「does not accept … yet」は「did not accept … until the 2026-09-16 release (below)」の過去形に、手順 4 の予告は現状(`--env` で listed を発行できる)に直す** | 「ES K4」追補と同じ形・同じ場所(時系列で K2 → K4 → K5 → K6 と読める)。古い予告を残さない(§2 項目 6 / §4「出荷していない機能の予告を書かない」の裏面) | 追補の直後に続く「There is no compatibility path」の文が K5 / K6 を指すように読めるので、その文頭に「For the chain-format change itself,」を足して K2 の話であることを明示する(1 句の追加) |
+| F-b K2 ブロックの末尾(手順 4 の後)に独立の太字見出しブロック(「Periodic checkpoints」等と同じ形)を置く | 既存の他リリースの形 | K5 / K6 は K2 の同じ改訂サイクルの続きで、K4 追補と同じ場所に置かないと「K4 は中・K5 / K6 は外」の非対称になる。時系列も切れる |
+| F-c 「ES K4」追補の 1 段落に K5 / K6 を追記する | 最小 | 1 段落に 3 段の話が混ざる。日付ラベルで分けた方が「いつから使えるか」を読める(K4-H の UX) |
+
+**探索**: 第 2 巡(上位互換): 「F-a + 版ずれの箇条書き(Updated server × old CLI / Updated CLI × old server / Existing projects)に四眼の行を足す」— 箇条書きは K2 のチェーン形式変更の版ずれで、四眼の版ずれは追補側に自足して書く方が「どの変更の話か」が明確。棄却。銀の弾丸: 「Updates」全体を時系列の表に作り直す — 書式変更は K7 の範囲外(行幅・書式は既存段落に揃える)。棄却。第 3 巡: 新案なし(空巡)。第 4 巡: 新案なし(空巡)。打ち止め。
+
+**原則**: 「同じ改訂サイクルの段は同じブロックの中に時系列で積み、出荷した段の古い予告は同じ PR で現状に直す」— K4-H(K4 の追補を K2 ブロックに置いた)✓、K2 の SELF_HOSTING 前倒し裁定 ✓。**UX**: セルフホスト運用者は 1 ブロックで K2 → K6 の順序要件(サーバー → CLI)と「既存プロジェクトに影響なし」を読める。**採用: F-a**。
+
+### K7-G. `github-actions.mdx` の「maruhi has no approval feature of its own」(単巡 — 事実確認)
+
+K6 以降、maruhi はチェーン上の四眼を持つ。ただし守る対象はチェーン op(メンバー・サーバー鍵・方針)であり、CI の値の配送(`maruhi ci sync --yes`)は守らない — 同節の主張「配送の第二の目は GitHub Environments」自体は不変。したがって当該 1 文を「maruhi's own four-eyes policy (link) covers the chain — who is a member, what the server holds, the policy itself — not the delivery of values to a target; for that, the second pair of eyes is GitHub's」の趣旨に置き換える(§2 項目 4 の「1〜2 文」= この置換)。K7-A の採用案の一部。
+
+### K7-H. `#<seq>` を docs に書くか(単巡 — 事実確認)
+
+K6-F′ で `approval show / approve / withdraw` の id は `#<seq>` も受ける(`approval-rules.ts` の `resolveProposalRef` と `describeUnresolvedRef` の文言 "or #<seq> of the propose entry")。一方 help golden の `proposal-id` 引数の説明は hex 接頭辞のみ。docs は**出荷済みの挙動**(コード)を書く(§2 項目 2 が明示)ので `#<seq>` を書き、help の説明との差は申し送り(コードは触らない — §4)。
+
+### K7-I. e2e の期待値に新ページを足すか(単巡 — DP5 の線)
+
+`apps/site/test/e2e.test.ts` の llms.txt の期待(`toContain` の URL 列)に新 2 ページの URL を足す(書いた文言と検査対象を一致させる)。索引の Card の検査(4 枚の `data-blume-card`)は K7-C で Card を足さないので不変。e2e はこの環境で動けば走らせ、動かなければ未実施と報告する。
+
+### K7-J. scope ページの「バックフィル未了」の案内文(単巡 — K4-K の帰結の確認)
+
+本人の `maruhi pull` が自分宛のラップの欠落を検出する(K4-K — `pull.ts` の警告「no DEK wraps for you exist at epochs … A member-add backfill may have been interrupted … re-run `maruhi member add`」)。scope 拡大のバックフィル未了でも同じ警告が出るが、文言は `member add` の再実行しか案内しない(拡大分は `member change-role` の再実行か `maruhi env rotate` — `effect-cli.ts` 2589 行の案内)。docs には両方の次の一手(add の再実行 / change-role の再実行 / 当該環境の書き手の `env rotate`)を書き、`pull.ts` の文言の狭さは申し送り(コードは触らない)。
+
+### K7-K. 実装録(裁定の反映先 — 2026-09-19 実装後に照合)
+
+- `apps/site/docs/environment-scopes.mdx`(新規・`sidebar.order: 8`)/ `apps/site/docs/four-eyes.mdx`(新規・`sidebar.order: 9`): 本文の規則は CRYPTO_SPEC §6.2 / §6.3 / §7・AUTH_SPEC §9-2 / §12-6 / §12-7 の帰結、コマンド・フラグ・既定は help golden、文言は `effect-cli.ts`(`reportProposed` / `describeNeeded` / `readyNote` / `eligibilityLine` / `warnPolicyAvailability` / scope 外の注記)・`approval-rules.ts`(`describePolicy` / `voteEligibility` / `describeKeyReuse` / `describeUnresolvedRef`)・`approval.ts`(`ensurePolicySettable` / CAS 中の方針変化)・`approval-approve.ts`(`selfObligationRejection`)・`failure.ts`(`insufficient-scope` / `ApprovalNotAccepted` / `ProposalLimit`)・`scope.ts`(scope 外の通信前拒否)・`env-create.ts`(all 限定)・`member.ts`(`scope-not-contained` の 3 文言・再開の文言)・`pull.ts`(欠落エポックの警告)、数値は `policy.ts`(`MAX_PENDING_PROPOSALS = 32` / `MAX_PROPOSAL_LIFETIME_MS = 30 日`)、Web の節名は `ProjectScreen.tsx`(「Four-eyes approvals」「Members」)から写した
+- `apps/site/docs/invite-a-teammate.mdx`: `--env` 段落の末尾に scope ページへの 1 文(K4-H の段落は据え置き)、`member add` の段落を scope の字面(「every environment in the member's scope」)に直し、add / remove の提案化の 1 段落 + `four-eyes.mdx` へのリンク。`apps/site/docs/github-actions.mdx`: K7-G の 1 文の置換のみ。`apps/site/docs/index.mdx`: How maruhi works に 2 行(K7-C)。`apps/site/test/e2e.test.ts`: llms.txt の期待に新 2 ページ(K7-I)
+- `docs/SELF_HOSTING.md` "Updates": K2 ブロック内に `*(2026-09-16, "PF1 K5")*` / `*(2026-09-18, "PF1 K6")*` の追補、K2 本文の「does not accept … yet」を過去形に、「no compatibility path」の文頭に「For the chain-format change itself」、手順 4 の予告を現状に(K7-F)。`README.md` の docs 一覧に 2 行。`ROADMAP.md` の ES / PF1 両行に K7 完了と `[x]`
+- 漂流点検(§2 項目 10): `getting-started.mdx` / `self-hosting.mdx` / `recover-your-key.mdx` / `deploy-targets.mdx` / `linux-keychain.mdx` に member / scope / approval に触れる古い記述はなし(`deploy-targets.mdx` の「Four eyes on production」へのリンクは CI の話で正しい)。修正なし
+- 検証: `bun run fmt:check` / `lint` / `typecheck` / `importlint` / `fallow:audit`(既存 baseline の crypto の clone group 警告のみ)/ `--filter @maruhi/site build`(12 ページ)/ `validate`(broken links 0)/ `bunx vitest run --project site-unit`(57 件)を通した。e2e は最終報告に記す
+
+### K7-L. 申し送り(docs を書いて見つけたコードとの食い違い — コードは触らず所有者に諮る)
+
+**所有者裁定(2026-09-19・PR #183 レビュー中)**: 下の 4 件(help の `#<seq>`・`member remove` の help 字面・`user-id` 引数の案内先・`pull` の欠落警告の案内先)は同じ PR で直す。文言のみの変更(`effect-cli.ts` / `pull.ts` / help golden)で、合意規則・ワイヤ・docs の主張は不変。docs 側は既に両方の次の一手を書いており、CLI の文言がそれに追随した形。
+
+- **help golden の `proposal-id` 引数の説明**(`approval show / approve / withdraw`)は「a unique prefix of at least 8 hex digits」のみで、K6-F′ の `#<seq>` に触れていない(`describeUnresolvedRef` の文言と `resolveProposalRef` は受ける)。docs は両方を書いた(K7-H)。help に「or `#<seq>`」を足す小変更の候補
+- **`member remove` の help**「Remove a member and force-rotate every environment」は K4 以降「対象の scope の環境」が正(CLI の実行時文言は「every environment in the target's scope」)。help の字面だけが K2 以前のまま
+- **`member remove` / `member change-role` の `user-id` 引数の説明**「see the member list in `maruhi project verify`」— K4 で `maruhi member list` ができたので、そちらを指す方が短い(`project verify` にも出るので誤りではない)
+- **`pull.ts` の欠落エポックの警告**は次の一手として `maruhi member add` の再実行しか案内しない。scope 拡大のバックフィル未了でも同じ警告が出るので、`member change-role` の再実行(または当該環境の `env rotate`)も案内候補(K7-J)。docs には両方を書いた
+- **`github-actions.mdx` の旧文**「maruhi has no approval feature of its own, and does not need one」は K6 で事実でなくなっていた(K7-G で修正済み)。K6 の PR は docs を K7 に送ったので漏れではないが、「利用者に見える挙動が変わる段で docs を同じ PR に載せる」(K4-H の原則)の観点では、既存 docs の否定文の点検を段ごとの手順に含める価値がある
+- K6-Q の据え置き(不変): `ApprovalNotAccepted` の削除は独立 PR(K6-M — docs は「K5 より前のサーバーが返す」として現状のまま書いた)、crypto の公開 API(`isApprovalTarget` / `countOwnerVotes` / `scopeContainsEnvironmentSet`)は次の crypto 改訂
