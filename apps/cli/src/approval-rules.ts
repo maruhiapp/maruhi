@@ -269,6 +269,8 @@ export function voteEligibility(
 export type ProposalRefResolution =
   | { readonly kind: "pending"; readonly proposal: PendingProposal }
   | { readonly kind: "ambiguous"; readonly candidates: readonly PendingProposal[] }
+  /** The prefix matches more than one completed / withdrawn proposal (nothing pending). */
+  | { readonly kind: "ambiguous-closed"; readonly proposalSeqs: readonly number[] }
   | { readonly kind: "completed"; readonly proposalSeq: number; readonly completedAtSeq: number }
   | { readonly kind: "withdrawn"; readonly proposalSeq: number }
   | { readonly kind: "unknown" }
@@ -304,8 +306,14 @@ export function resolveProposalRef(verified: VerifiedProject, ref: string): Prop
   }
   const closed = [...proposalIndexOf(verified)].filter(([hash]) => hash.startsWith(normalized));
   const only = closed[0]?.[1];
-  if (only === undefined || closed.length > 1) {
+  if (only === undefined) {
     return { kind: "unknown" };
+  }
+  if (closed.length > 1) {
+    return {
+      kind: "ambiguous-closed",
+      proposalSeqs: closed.map(([, indexed]) => indexed.entry.seq).toSorted((a, b) => a - b),
+    };
   }
   return only.completedAtSeq === null
     ? { kind: "withdrawn", proposalSeq: only.entry.seq }
@@ -370,6 +378,8 @@ export function describeUnresolvedRef(
       return `A proposal id is the propose entry's hash (64 hex digits; at least the first ${MIN_PROPOSAL_REF_LENGTH} digits) or #<seq> of the propose entry (see \`maruhi approval list\`)`;
     case "ambiguous":
       return `The prefix matches more than one pending proposal (${resolution.candidates.map((candidate) => candidate.proposalHashHex.slice(0, 12)).join(", ")}) — use a longer prefix`;
+    case "ambiguous-closed":
+      return `The prefix matches more than one completed / withdrawn proposal (seq ${resolution.proposalSeqs.join(", ")}) and nothing pending — use a longer prefix or #<seq>`;
     case "completed":
       return `That proposal (seq=${resolution.proposalSeq}) was already completed at seq=${resolution.completedAtSeq} — nothing is pending for it`;
     case "withdrawn":

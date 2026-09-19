@@ -1287,3 +1287,5 @@ K4-E「値ゼロの読み取りは鍵なし・agent-gate 非適用で、機械�
 ### K6-N′. 自己 remove の提案への Note
 
 `member remove <自分>` が提案になったとき、「this proposal removes you — once an owner approves it you lose access to the project」を Note で出す(拒否ではない — K6-N の提案者側の裁定は不変)。
+
+**訂正(2026-09-19 — PR #182 の Cursor Bugbot / pullfrog 指摘)**: K6-N の承認者側の拒否は「自分の remove / member 未満への降格」だけを写していたが、直接追記側の自己義務の拒否(`rejectSelfObligation`)は **scope の縮小** も含む(履行不能の理由が同じ)。承認者側も同じ 1 述語(`selfObligationReason` = 降格 / 縮小)で判定するよう揃えた。owner のまま縮小する経路は無い(`--role owner` は all を含意)ので、実際の入口は admin / member への降格と縮小の同時指定。
