@@ -21,9 +21,10 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
+  approval    Four-eyes proposals (list / show / approve / withdraw)
   key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
-  project     Manage projects (init / list / verify / anchor / checkpoint)
+  project     Manage projects (init / list / verify / anchor / checkpoint / policy)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
@@ -54,9 +55,10 @@ SUBCOMMANDS
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
+  approval    Four-eyes proposals (list / show / approve / withdraw)
   key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
   guardian    Manage guardians for master-key recovery (add / list / remove / wards)
-  project     Manage projects (init / list / verify / anchor / checkpoint)
+  project     Manage projects (init / list / verify / anchor / checkpoint / policy)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
@@ -253,6 +255,7 @@ USAGE
 FLAGS
   --server string                Server URL (defaults to config server)
   --project string               Project ID (default: the `defaultProject` setting)
+  --expires string               How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --environments string          Comma-separated environment IDs to disclose (required; environments are always explicit)
   --lease-policy string          Path to a workload lease-policy JSON file (defaults to no lease path)
   --expect-fingerprint string    Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)
@@ -271,6 +274,7 @@ USAGE
 FLAGS
   --server string         Server URL (defaults to config server)
   --project string        Project ID (default: the `defaultProject` setting)
+  --expires string        How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --fingerprint string    Server key fingerprint to revoke (may be omitted when exactly one grant is active)
 
 GLOBAL FLAGS
@@ -395,6 +399,7 @@ ARGUMENTS
 FLAGS
   --server string                Server URL (defaults to config server)
   --project string               Project ID (default: the `defaultProject` setting)
+  --expires string               How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --github string                GitHub login of the acceptor (their acceptance key is checked against that account's signing keys; overrides the login recorded at `maruhi invite create --github`)
   --expect-fingerprint string    Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)
 
@@ -415,6 +420,7 @@ ARGUMENTS
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
+  --expires string    How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -433,6 +439,7 @@ ARGUMENTS
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
+  --expires string    How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --role string       New role (reader | member | admin | owner; omitted = keep the current role)
   --env string        Environment in the new scope (repeatable; replaces the whole scope; omitted = keep the current scope)
   --all-envs          Set the scope to all environments (including ones created later); `--role owner` always implies it
@@ -453,6 +460,93 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --json              Print the members as JSON (user id, role, scope, key fingerprint)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi approval --help
+DESCRIPTION
+  Four-eyes proposals (list / show / approve / withdraw)
+
+USAGE
+  maruhi approval <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  list        List the pending four-eyes proposals (votes recounted under the current policy)
+  show        Show a pending proposal (proposer, operation, expiry, voters, whether you can approve it)
+  approve     Approve a pending proposal as an owner; the approval that reaches the quorum applies it and runs the follow-up rotation / key distribution
+  withdraw    Withdraw a pending proposal (as its proposer or an owner)
+
+$ maruhi approval list --help
+DESCRIPTION
+  List the pending four-eyes proposals (votes recounted under the current policy)
+
+USAGE
+  maruhi approval list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --json              Print the policy and the pending proposals as JSON (votes recounted under the current policy)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi approval show --help
+DESCRIPTION
+  Show a pending proposal (proposer, operation, expiry, voters, whether you can approve it)
+
+USAGE
+  maruhi approval show [flags] <proposal-id>
+
+ARGUMENTS
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi approval approve --help
+DESCRIPTION
+  Approve a pending proposal as an owner; the approval that reaches the quorum applies it and runs the follow-up rotation / key distribution
+
+USAGE
+  maruhi approval approve [flags] <proposal-id>
+
+ARGUMENTS
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi approval withdraw --help
+DESCRIPTION
+  Withdraw a pending proposal (as its proposer or an owner)
+
+USAGE
+  maruhi approval withdraw [flags] <proposal-id>
+
+ARGUMENTS
+  proposal-id string    Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits — see `maruhi approval list`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -714,7 +808,7 @@ GLOBAL FLAGS
 
 $ maruhi project --help
 DESCRIPTION
-  Manage projects (init / list / verify / anchor / checkpoint)
+  Manage projects (init / list / verify / anchor / checkpoint / policy)
 
 USAGE
   maruhi project <subcommand> [flags]
@@ -729,6 +823,7 @@ SUBCOMMANDS
   verify        Verify the chain, the local floor, and the invite anchor, then print the project state
   anchor        Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
   checkpoint    Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
+  policy        Project policies (approvals)
 
 $ maruhi project init --help
 DESCRIPTION
@@ -799,6 +894,39 @@ USAGE
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project policy --help
+DESCRIPTION
+  Project policies (approvals)
+
+USAGE
+  maruhi project policy <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  approvals    Show or set the four-eyes approval policy (owner approvals required for sensitive operations); no flags = show
+
+$ maruhi project policy approvals --help
+DESCRIPTION
+  Show or set the four-eyes approval policy (owner approvals required for sensitive operations); no flags = show
+
+USAGE
+  maruhi project policy approvals [flags]
+
+FLAGS
+  --server string      Server URL (defaults to config server)
+  --project string     Project ID (default: the `defaultProject` setting)
+  --expires string     How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
+  --required string    Enable (or change) the four-eyes policy: number of distinct owner approvals an operation needs (at least 2; the project must have at least that many owners)
+  --ops string         Comma-separated operations that need approval (grant_server | revoke_server | remove_member | change_role | add_member | set_approval_policy; default change_role,grant_server,remove_member,set_approval_policy — add_member is left out because adding an owner always needs approval, and other invites are already protected by the acceptance ceremony)
+  --off                Turn the policy off (while a policy is active, this itself needs the approvals)
 
 GLOBAL FLAGS
   --help, -h       Show help information

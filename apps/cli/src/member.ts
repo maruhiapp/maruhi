@@ -21,6 +21,7 @@ import {
   type ChainMember,
   type MemberScope,
   memberScopeOf,
+  type ProposableOperation,
   type Role,
   type ScopePayloadFields,
   scopeIncludesEnvironment,
@@ -31,6 +32,15 @@ import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
+import { describeKeyReuse, isApprovalTarget, keyReuseOf } from "./approval-rules.ts";
+import {
+  ensureStillTarget,
+  type ProposalInput,
+  type ProposeContext,
+  proposeOperation,
+  proposeRecheck,
+  type ProposedSummary,
+} from "./approval.ts";
 import { backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { IdentityBacking } from "./config.ts";
@@ -58,7 +68,7 @@ import {
   type FingerprintBook,
   usableBookHit,
 } from "./known-fingerprints.ts";
-import { logNote } from "./notice.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -83,6 +93,14 @@ import {
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
+
+/**
+ * 四眼(K6)の下での各 op の結果: 方針が内側 op を対象にしていれば `propose` を追記して
+ * 終わる(`proposed` — 何も適用されない)。それ以外は従来の適用結果(`applied`)。
+ */
+export type MemberOpOutcome<S> =
+  | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
+  | { readonly kind: "applied"; readonly summary: S };
 
 /** remove / 降格 / 縮小後のローテーションの理由(§6.2 payload の固定文字列)。 */
 const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
@@ -163,6 +181,21 @@ function sweepAfterMandate<R>(input: {
     });
     return { ...sweep, skippedDeleted, outOfScope };
   });
+}
+
+/**
+ * 対象の義務(remove / 降格 / 縮小 — 提案経由の適用を含む)の sweep。直接追記の後段と、
+ * 四眼で適用を完成させた承認者の履行(approval-approve.ts — 承認項目 22)が共有する。
+ */
+export function sweepMemberMandates<R>(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly targetUserId: string;
+  readonly actorUserId: string;
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
+}): Effect.Effect<MemberSweepOutcome | null, CliError, R> {
+  const mandates = memberMandatesFor(input.verified, input.targetUserId);
+  return mandates.length === 0 ? Effect.succeed(null) : sweepAfterMandate({ ...input, mandates });
 }
 
 /** member 系の sweep の結果(削除済み環境と、実行者の scope 外で回せなかった環境を含む)。 */
@@ -595,6 +628,27 @@ function confirmInviteeViaBacking(input: {
   });
 }
 
+/**
+ * 鍵 FP 再登録の警告(設計録 K5-K / K6-I): 受諾鍵が検証済みチェーンの履歴の別の在籍区間に
+ * 現れるとき警告する(拒否ではない — 同一鍵での復帰は §6.2 が許容する)。同一 user_id の
+ * 過去の在籍と、別 user_id の在籍の両方を言い分ける。判定材料は `keyHistory`(提案経由の
+ * 追加も含む — K6-C)。直接追記・提案化の両経路で署名の前に出す。
+ */
+function warnKeyReuse(
+  verified: VerifiedProject,
+  acceptance: InviteAcceptance,
+): Effect.Effect<void, never, CliIo> {
+  return Effect.forEach(
+    keyReuseOf(verified, {
+      targetUserId: acceptance.inviteeUserId,
+      encPubHex: acceptance.inviteeEncPubHex,
+      sigPubHex: acceptance.inviteeSigPubHex,
+    }),
+    (reuse) => logWarning(describeKeyReuse("the acceptance key", reuse)),
+    { discard: true },
+  );
+}
+
 /** add_member の実行者 role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
 function addActorRejection(actor: ChainMember | undefined, role: Role): string | null {
   if (actor === undefined || ROLE_RANK[actor.role] < ROLE_RANK.admin) {
@@ -862,6 +916,9 @@ function prepareMemberAdd(input: {
       role: row.role,
       scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
     });
+    if (!first.alreadyAdded) {
+      yield* warnKeyReuse(input.verified, row.acceptance);
+    }
 
     // 充足形 4(裏付け元)→ 不成立なら充足形 1〜3(儀式 / フラグ / 帳)
     const backed = yield* confirmInviteeViaBacking({
@@ -935,6 +992,70 @@ function backfillAllEnvironments(input: {
   });
 }
 
+/** add_member の内側 op(直接追記と提案で同じ payload — 招待行の scope)。 */
+function addMemberOperation(
+  row: AddableRow,
+): Extract<ProposableOperation, { readonly op: "add_member" }> {
+  return {
+    op: "add_member",
+    payload: {
+      targetUserId: row.acceptance.inviteeUserId,
+      encPubHex: row.acceptance.inviteeEncPubHex,
+      sigPubHex: row.acceptance.inviteeSigPubHex,
+      role: row.role,
+      scopeKind: row.scopeKind,
+      scopeEnvironmentIds: row.scopeEnvironmentIds,
+    },
+  };
+}
+
+/**
+ * 新メンバー宛のバックフィル(add_member の追記後段 — CRYPTO_SPEC §7 / AUTH_SPEC §12-6)。
+ * 直接追記の add と、四眼で適用を完成させた承認者の履行(§12-6 の 5 番目の経路 —
+ * approval-approve.ts)が共有する。対象は再同期後の現メンバー(`target`)。
+ */
+export function backfillNewMember(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly target: ChainMember;
+  readonly recipient: DekRecipient;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+}): Effect.Effect<
+  Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
+  CliError,
+  CliIo
+> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 再追加(過去在籍が別鍵)の検出: 鍵履歴に現在の鍵と異なる束縛があるか。
+    // 409 の判定は応答の保存済み enc 公開鍵との厳密比較が優先で(AUTH_SPEC
+    // §12-6 追補)、このヒューリスティックは応答にフィールドが無い旧サーバー
+    // への 409 だけに使うフォールバックである。なお追補済みサーバーは
+    // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
+    // 409 自体が「現行鍵で登録済み」しか意味しない
+    const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
+      (binding) =>
+        binding.encPubHex !== input.target.encPubHex ||
+        binding.sigPubHex !== input.target.sigPubHex,
+    );
+    if (staleWrapSuspected) {
+      yield* io.log(
+        "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
+      );
+    }
+    return yield* backfillAllEnvironments({
+      client: input.client,
+      verified: input.verified,
+      recipient: input.recipient,
+      target: input.target,
+      staleWrapSuspected,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    });
+  });
+}
+
 export function memberAddOp(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -948,14 +1069,40 @@ export function memberAddOp(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly proposal: ProposalInput;
 }): Effect.Effect<
-  MemberAddSummary,
+  MemberOpOutcome<MemberAddSummary>,
   CliError,
   CliIo | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const { row, alreadyAdded } = yield* prepareMemberAdd(input);
+    const inner = addMemberOperation(row);
+    const scope = { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds };
+    const recheck = (view: VerifiedProject) =>
+      ensureAddable({
+        verified: view,
+        signerUserId: input.signerUserId,
+        acceptance: row.acceptance,
+        role: row.role,
+        scope,
+      });
+
+    // 四眼(K6-A / K6-D): 方針が add_member を対象にしていれば提案して終わる。儀式
+    // (prepareMemberAdd)は提案者が済ませ、バックフィルは適用を完成させた承認者が行う
+    if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+      const proposal = yield* proposeOperation(
+        input,
+        inner,
+        proposeRecheck(
+          recheck,
+          (rechecked) => rechecked.alreadyAdded,
+          "The target was added by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member add` to resume the backfill",
+        ),
+      );
+      return { kind: "proposed", proposal };
+    }
 
     let verified = input.verified;
     let appended = false;
@@ -975,17 +1122,14 @@ export function memberAddOp(input: {
             signerUserId: input.signerUserId,
             acceptance: row.acceptance,
             role: row.role,
-            scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
+            scope,
             signingKeyPair: input.signingKeyPair,
           }),
         recheck: (view) =>
-          ensureAddable({
-            verified: view,
-            signerUserId: input.signerUserId,
-            acceptance: row.acceptance,
-            role: row.role,
-            scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
-          }).pipe(Effect.map((rechecked) => ({ already: rechecked.alreadyAdded }))),
+          ensureStillTarget(view, inner, false).pipe(
+            Effect.flatMap(() => recheck(view)),
+            Effect.map((rechecked) => ({ already: rechecked.alreadyAdded })),
+          ),
       });
       appended = outcome.appended;
       verified = outcome.verified;
@@ -1011,33 +1155,18 @@ export function memberAddOp(input: {
       );
     }
 
-    // 再追加(過去在籍が別鍵)の検出: 鍵履歴に受諾鍵と異なる束縛があるか。
-    // 409 の判定は応答の保存済み enc 公開鍵との厳密比較が優先で(AUTH_SPEC
-    // §12-6 追補)、このヒューリスティックは応答にフィールドが無い旧サーバー
-    // への 409 だけに使うフォールバックである。なお追補済みサーバーは
-    // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
-    // 409 自体が「現行鍵で登録済み」しか意味しない
-    const staleWrapSuspected = (verified.keyHistory.get(target.userId) ?? []).some(
-      (binding) =>
-        binding.encPubHex !== row.acceptance.inviteeEncPubHex ||
-        binding.sigPubHex !== row.acceptance.inviteeSigPubHex,
-    );
-    if (staleWrapSuspected) {
-      yield* io.log(
-        "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
-      );
-    }
-
-    const backfilled = yield* backfillAllEnvironments({
+    const backfilled = yield* backfillNewMember({
       client: input.client,
       verified,
-      recipient: input.recipient,
       target,
-      staleWrapSuspected,
+      recipient: input.recipient,
       signerUserId: input.signerUserId,
       signingKeyPair: input.signingKeyPair,
     });
-    return { appended, targetUserId: target.userId, role: row.role, ...backfilled };
+    return {
+      kind: "applied",
+      summary: { appended, targetUserId: target.userId, role: row.role, ...backfilled },
+    };
   });
 }
 
@@ -1051,14 +1180,18 @@ export interface MemberRemoveSummary extends MemberSweepOutcome {
   readonly targetUserId: string;
 }
 
-/** remove の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。 */
+/**
+ * remove の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。`proposing` = 提案化の
+ * 経路(自己 remove の拒否は履行者が承認者に移るので外す — 設計録 K6-N)。
+ */
 function ensureRemovable(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly targetUserId: string;
+  readonly proposing: boolean;
 }): Effect.Effect<{ readonly alreadyRemoved: boolean }, CliError> {
   return Effect.gen(function* () {
-    if (input.targetUserId === input.signerUserId) {
+    if (input.targetUserId === input.signerUserId && !input.proposing) {
       return yield* Effect.fail(
         cliError(
           "You cannot remove yourself. You would be unable to run the post-removal rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to remove you",
@@ -1071,46 +1204,56 @@ function ensureRemovable(input: {
       input.targetUserId,
     );
     if (target === undefined) {
-      // 削除済みからの再開(中断復旧): チェーン上に当該 user_id の remove が
-      // あることを要求する(タイプミスの user_id で sweep が走る形を作らない)
-      const removedBefore = input.verified.entries.some(
-        (entry) =>
-          entry.op === "remove_member" && entry.payload.targetUserId === input.targetUserId,
-      );
-      if (!removedBefore) {
-        return yield* Effect.fail(
-          cliError(
-            "The target is not a member and the chain has no removal record for it (check the user ID)",
-          ),
-        );
-      }
-      if (ROLE_RANK[actor.role] < ROLE_RANK.member) {
-        return yield* Effect.fail(
-          cliError("Resuming the rotation requires the member role or above (CRYPTO_SPEC §6.2)"),
-        );
-      }
-      return { alreadyRemoved: true };
+      const resumable = removalResumeRejection(input.verified, actor, input.targetUserId);
+      return resumable === null
+        ? { alreadyRemoved: true }
+        : yield* Effect.fail(cliError(resumable));
     }
-    const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
-    if (rejection !== null) {
-      return yield* Effect.fail(cliError(rejection));
-    }
-    // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
-    // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
-    if (!scopeContains(actor.scope, target.scope)) {
-      return yield* Effect.fail(
-        cliError(
-          `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`,
-        ),
-      );
-    }
-    if (target.role === "owner" && ownersCount(input.verified) === 1) {
-      return yield* Effect.fail(
-        cliError("The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"),
-      );
-    }
-    return { alreadyRemoved: false };
+    const rejection = removeRuleRejection(input.verified, actor, target);
+    return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
   });
+}
+
+/**
+ * 削除済みからの再開(中断復旧)の条件: チェーン上に当該 user_id の remove があること
+ * (タイプミスの user_id で sweep が走る形を作らない。提案経由で適用された remove — 四眼 K6 —
+ * も同じ列に載る: 設計録 K6-C)と、再開する実行者が member 以上であること。
+ */
+function removalResumeRejection(
+  verified: VerifiedProject,
+  actor: ChainMember,
+  targetUserId: string,
+): string | null {
+  const removedBefore = verified.applied.some(
+    ({ operation }) =>
+      operation.op === "remove_member" && operation.payload.targetUserId === targetUserId,
+  );
+  if (!removedBefore) {
+    return "The target is not a member and the chain has no removal record for it (check the user ID)";
+  }
+  return ROLE_RANK[actor.role] < ROLE_RANK.member
+    ? "Resuming the rotation requires the member role or above (CRYPTO_SPEC §6.2)"
+    : null;
+}
+
+/** remove_member の §6.2 規則(role → scope-not-contained → last-owner)の手前判定。 */
+function removeRuleRejection(
+  verified: VerifiedProject,
+  actor: ChainMember,
+  target: ChainMember,
+): string | null {
+  const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
+  if (rejection !== null) {
+    return rejection;
+  }
+  // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
+  // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
+  if (!scopeContains(actor.scope, target.scope)) {
+    return `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`;
+  }
+  return target.role === "owner" && ownersCount(verified) === 1
+    ? "The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"
+    : null;
 }
 
 /** remove_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
@@ -1137,13 +1280,37 @@ export function memberRemoveOp<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<MemberRemoveSummary, CliError, R> {
+  readonly proposal: ProposalInput;
+}): Effect.Effect<MemberOpOutcome<MemberRemoveSummary>, CliError, R> {
   return Effect.gen(function* () {
-    const first = yield* ensureRemovable({
-      verified: input.verified,
-      signerUserId: input.signerUserId,
-      targetUserId: input.targetUserId,
-    });
+    const inner: ProposableOperation = {
+      op: "remove_member",
+      payload: { targetUserId: input.targetUserId },
+    };
+    const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
+    const recheck = (view: VerifiedProject) =>
+      ensureRemovable({
+        verified: view,
+        signerUserId: input.signerUserId,
+        targetUserId: input.targetUserId,
+        proposing,
+      });
+    const first = yield* recheck(input.verified);
+
+    // 四眼(K6-A): 方針が remove_member を対象にしていれば提案して終わる(rotate 義務は
+    // 適用後に承認者の sweep が履行する — 裁定 P7 / P8)。再開(削除済み)は提案しない
+    if (!first.alreadyRemoved && proposing) {
+      const proposal = yield* proposeOperation(
+        input,
+        inner,
+        proposeRecheck(
+          recheck,
+          (rechecked) => rechecked.alreadyRemoved,
+          "The target was removed by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member remove` to resume the rotation",
+        ),
+      );
+      return { kind: "proposed", proposal };
+    }
 
     let verified = input.verified;
     let appended = false;
@@ -1161,11 +1328,10 @@ export function memberRemoveOp<R>(input: {
             signingKeyPair: input.signingKeyPair,
           }),
         recheck: (view) =>
-          ensureRemovable({
-            verified: view,
-            signerUserId: input.signerUserId,
-            targetUserId: input.targetUserId,
-          }).pipe(Effect.map((rechecked) => ({ already: rechecked.alreadyRemoved }))),
+          ensureStillTarget(view, inner, false).pipe(
+            Effect.flatMap(() => recheck(view)),
+            Effect.map((rechecked) => ({ already: rechecked.alreadyRemoved })),
+          ),
       });
       verified = outcome.verified;
       appended = outcome.appended;
@@ -1199,7 +1365,7 @@ export function memberRemoveOp<R>(input: {
       actorUserId: input.signerUserId,
       rotateWith: input.rotateWith,
     });
-    return { appended, targetUserId: input.targetUserId, ...sweep };
+    return { kind: "applied", summary: { appended, targetUserId: input.targetUserId, ...sweep } };
   });
 }
 
@@ -1339,31 +1505,53 @@ function rejectSelfObligation(
   target: ChainMember,
   next: { readonly role: Role; readonly scope: MemberScope },
 ): Effect.Effect<void, CliError> {
-  if (ROLE_RANK[target.role] >= ROLE_RANK.member && ROLE_RANK[next.role] < ROLE_RANK.member) {
-    return Effect.fail(
-      cliError(
-        "You cannot demote yourself below member. You would be unable to run the post-demotion rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to demote you",
-      ),
-    );
+  switch (selfObligationReason(verified, target, next)) {
+    case "demotion":
+      return Effect.fail(
+        cliError(
+          "You cannot demote yourself below member. You would be unable to run the post-demotion rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to demote you",
+        ),
+      );
+    case "scope-narrowing":
+      return Effect.fail(
+        cliError(
+          "You cannot narrow your own scope. You would be unable to run the rotation of the environments you leave (CRYPTO_SPEC §7) — ask another admin / owner to narrow it",
+        ),
+      );
+    case null:
+      return Effect.void;
   }
-  if (
-    scopeChangeAt(verified, target.scope, next.scope, verified.state.headSeq).narrowed.length > 0
-  ) {
-    return Effect.fail(
-      cliError(
-        "You cannot narrow your own scope. You would be unable to run the rotation of the environments you leave (CRYPTO_SPEC §7) — ask another admin / owner to narrow it",
-      ),
-    );
-  }
-  return Effect.void;
 }
 
-/** change_role の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。 */
+/**
+ * 対象自身が §7 の義務を履行できなくなる (role, scope) の変更か: member 未満への降格、
+ * または scope の縮小(履行者 = 対象自身になる直接追記、および承認者 = 対象の approve —
+ * 設計録 K6-N / Cursor Bugbot 指摘対応)。
+ */
+export function selfObligationReason(
+  verified: VerifiedProject,
+  target: ChainMember,
+  next: { readonly role: Role; readonly scope: MemberScope },
+): "demotion" | "scope-narrowing" | null {
+  if (ROLE_RANK[target.role] >= ROLE_RANK.member && ROLE_RANK[next.role] < ROLE_RANK.member) {
+    return "demotion";
+  }
+  return scopeChangeAt(verified, target.scope, next.scope, verified.state.headSeq).narrowed.length >
+    0
+    ? "scope-narrowing"
+    : null;
+}
+
+/**
+ * change_role の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。`proposing` = 提案化の
+ * 経路(自己降格 / 自己縮小の拒否は履行者が承認者に移るので外す — 設計録 K6-N)。
+ */
 function ensureRoleChangeable(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly targetUserId: string;
   readonly request: ChangeRoleRequest;
+  readonly proposing: boolean;
 }): Effect.Effect<
   { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
   CliError
@@ -1378,7 +1566,7 @@ function ensureRoleChangeable(input: {
       return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
     }
     const next = yield* resolveRoleChange(target, input.request);
-    if (input.targetUserId === input.signerUserId) {
+    if (input.targetUserId === input.signerUserId && !input.proposing) {
       yield* rejectSelfObligation(input.verified, target, next);
     }
     if (target.role === next.role && sameScope(target.scope, next.scope)) {
@@ -1493,15 +1681,16 @@ export function scopeChangesOf(
   const current = new Set(environmentsOfScopeAt(verified, target.scope, verified.state.headSeq));
   const widened = new Set<string>();
   let narrowed: readonly string[] = [];
-  for (const entry of verified.entries) {
-    if (entry.op !== "change_role" || entry.payload.targetUserId !== target.userId) {
+  // 提案経由で適用された change_role も同じ列に載る(設計録 K6-C)
+  for (const { seq, operation } of verified.applied) {
+    if (operation.op !== "change_role" || operation.payload.targetUserId !== target.userId) {
       continue;
     }
-    const before = verified.history.memberStateAt(target.userId, entry.seq - 1);
+    const before = verified.history.memberStateAt(target.userId, seq - 1);
     if (before === undefined) {
       continue;
     }
-    const change = scopeChangeAt(verified, before.scope, memberScopeOf(entry.payload), entry.seq);
+    const change = scopeChangeAt(verified, before.scope, memberScopeOf(operation.payload), seq);
     for (const environmentId of change.widened) {
       if (current.has(environmentId)) {
         widened.add(environmentId);
@@ -1551,29 +1740,82 @@ function splitWidenedByActorScope(input: {
  * バックフィル(§12-6 の追記経路)→ 降格 / 縮小分の義務環境を rotate(§7)する
  * (順序は設計録 K4-B: 3 つの環境集合は互いに素で、どちらも冪等に再開できる)。
  */
-export function memberChangeRoleOp<R>(input: {
+/** change_role の内側 op(提案化 — 省略側は提案時のビューの対象の現状で解決済み)。 */
+function changeRoleOperation(input: {
+  readonly targetUserId: string;
+  readonly newRole: Role;
+  readonly newScope: MemberScope;
+}): Extract<ProposableOperation, { readonly op: "change_role" }> {
+  const scope = scopePayloadFieldsOf(input.newScope);
+  return {
+    op: "change_role",
+    payload: {
+      targetUserId: input.targetUserId,
+      newRole: input.newRole,
+      scopeKind: scope.scopeKind,
+      scopeEnvironmentIds: scope.scopeEnvironmentIds,
+    },
+  };
+}
+
+/** change_role の提案(K6-A): 省略側の再解決が提案時と一致することも再同期後に確かめる。 */
+function proposeRoleChange(
+  input: ProposeContext,
+  inner: ProposableOperation,
+  resolved: { readonly role: Role; readonly scope: MemberScope },
+  recheck: (
+    view: VerifiedProject,
+  ) => Effect.Effect<
+    { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
+    CliError
+  >,
+): Effect.Effect<ProposedSummary, CliError> {
+  const notApplied = proposeRecheck(
+    recheck,
+    (rechecked) => rechecked.alreadyChanged,
+    "The target already has the requested role / scope (a concurrent run applied it) — nothing to propose. Re-run `maruhi member change-role` to resume any pending backfill / rotation",
+  );
+  return proposeOperation(input, inner, (view) =>
+    notApplied(view).pipe(
+      Effect.flatMap((rechecked) =>
+        rechecked.role === resolved.role && sameScope(rechecked.scope, resolved.scope)
+          ? Effect.void
+          : Effect.fail(
+              cliError(
+                "The target's role / scope changed concurrently, so the omitted side of this request no longer resolves to the same (role, scope) — re-run to propose against the current state",
+              ),
+            ),
+      ),
+    ),
+  );
+}
+
+/**
+ * change_role の直接追記(CAS)と、受理後の再同期での掲載確認(サーバー申告を真実源に
+ * しない)。要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
+ * 据え置き側を変えていても、要求した側が載っていれば成立。
+ */
+function appendRoleChange(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
   readonly request: ChangeRoleRequest;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-  readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** 義務の理由(降格 = role-demoted / 縮小のみ = scope-narrowed)ごとのローテーション注入。 */
-  readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<MemberChangeRoleSummary, CliError, R> {
+  readonly inner: ProposableOperation;
+  readonly alreadyChanged: boolean;
+  readonly recheck: (
+    view: VerifiedProject,
+  ) => Effect.Effect<{ readonly alreadyChanged: boolean }, CliError>;
+}): Effect.Effect<
+  { readonly verified: VerifiedProject; readonly appended: boolean; readonly target: ChainMember },
+  CliError
+> {
   return Effect.gen(function* () {
-    const first = yield* ensureRoleChangeable({
-      verified: input.verified,
-      signerUserId: input.signerUserId,
-      targetUserId: input.targetUserId,
-      request: input.request,
-    });
-
     let verified = input.verified;
     let appended = false;
-    if (!first.alreadyChanged) {
+    if (!input.alreadyChanged) {
       const outcome = yield* appendWithCas({
         client: input.client,
         verified,
@@ -1590,21 +1832,15 @@ export function memberChangeRoleOp<R>(input: {
             signingKeyPair: input.signingKeyPair,
           }),
         recheck: (view) =>
-          ensureRoleChangeable({
-            verified: view,
-            signerUserId: input.signerUserId,
-            targetUserId: input.targetUserId,
-            request: input.request,
-          }).pipe(Effect.map((rechecked) => ({ already: rechecked.alreadyChanged }))),
+          ensureStillTarget(view, input.inner, false).pipe(
+            Effect.flatMap(() => input.recheck(view)),
+            Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
+          ),
       });
       verified = outcome.verified;
       appended = outcome.appended;
     }
-
-    // 受理後の再同期で (role, scope) の掲載を確認(サーバー申告を真実源にしない)
     verified = yield* resyncExtended(input.resync, verified);
-    // 要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
-    // 据え置き側を変えていても、要求した側が載っていれば成立
     const target = verified.state.members.get(input.targetUserId);
     const expected =
       target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
@@ -1620,11 +1856,40 @@ export function memberChangeRoleOp<R>(input: {
         ),
       );
     }
+    return { verified, appended, target };
+  });
+}
 
-    const change = scopeChangesOf(verified, target);
+/** change_role の適用後の履行の結果(拡大バックフィル + 降格 / 縮小 sweep)。 */
+export type RoleChangeFulfilment = Pick<
+  MemberChangeRoleSummary,
+  | "widenedEnvironmentIds"
+  | "widenedOutOfScopeEnvironmentIds"
+  | "narrowedEnvironmentIds"
+  | "backfill"
+  | "demoted"
+  | "sweep"
+>;
+
+/**
+ * change_role の適用後段(設計録 K4-B の順序: 拡大分のバックフィル → 降格 / 縮小分の
+ * rotate)。直接追記の change-role と、四眼で適用を完成させた承認者の履行
+ * (approval-approve.ts — 承認項目 22)が共有する。対象は再同期後の現メンバー。
+ */
+export function fulfilRoleChange<R>(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly target: ChainMember;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+  readonly recipient: DekRecipient;
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
+}): Effect.Effect<RoleChangeFulfilment, CliError, R> {
+  return Effect.gen(function* () {
+    const change = scopeChangesOf(input.verified, input.target);
     const { widened, widenedOutOfScope } = yield* splitWidenedByActorScope({
       client: input.client,
-      verified,
+      verified: input.verified,
       actorUserId: input.signerUserId,
       widened: change.widened,
     });
@@ -1635,9 +1900,9 @@ export function memberChangeRoleOp<R>(input: {
         ? null
         : yield* backfillAllEnvironments({
             client: input.client,
-            verified,
+            verified: input.verified,
             recipient: input.recipient,
-            target,
+            target: input.target,
             environments: widened,
             staleWrapSuspected: false,
             signerUserId: input.signerUserId,
@@ -1646,29 +1911,101 @@ export function memberChangeRoleOp<R>(input: {
 
     // (2) 降格 / 縮小の義務環境の rotate(§7)。対象の義務エントリが無ければ義務自体が
     // 発生していない(昇格・拡大・最初から reader の no-op)— 他人の未収束義務は拾わない
-    const mandates = memberMandatesFor(verified, input.targetUserId);
+    const mandates = memberMandatesFor(input.verified, input.target.userId);
     const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
     const sweep =
       mandates.length === 0
         ? null
         : yield* sweepAfterMandate({
             client: input.client,
-            verified,
+            verified: input.verified,
             mandates,
             actorUserId: input.signerUserId,
             rotateWith: input.rotateWith,
           });
     return {
-      appended,
-      targetUserId: input.targetUserId,
-      newRole: target.role,
-      newScope: target.scope,
       widenedEnvironmentIds: widened,
       widenedOutOfScopeEnvironmentIds: widenedOutOfScope,
       narrowedEnvironmentIds: change.narrowed,
       backfill,
       demoted,
       sweep,
+    };
+  });
+}
+
+export function memberChangeRoleOp<R>(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly targetUserId: string;
+  readonly request: ChangeRoleRequest;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+  readonly recipient: DekRecipient;
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** 義務の理由(降格 = role-demoted / 縮小のみ = scope-narrowed)ごとのローテーション注入。 */
+  readonly rotateWith: (reason: string) => SweepRotate<R>;
+  readonly proposal: ProposalInput;
+}): Effect.Effect<MemberOpOutcome<MemberChangeRoleSummary>, CliError, R> {
+  return Effect.gen(function* () {
+    // 提案化の判定は要求を現ビューで解決した新 (role, scope) で行う(owner の確立は常時対象)。
+    // 検査の順(§6.2 の合意規則の順 — 自己義務 → role 規則 …)は ensureRoleChangeable が持つ
+    const { target: current } = yield* resolveActorAndTarget(
+      input.verified,
+      input.signerUserId,
+      input.targetUserId,
+    );
+    if (current === undefined) {
+      return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
+    }
+    const resolved = yield* resolveRoleChange(current, input.request);
+    const inner = changeRoleOperation({
+      targetUserId: input.targetUserId,
+      newRole: resolved.role,
+      newScope: resolved.scope,
+    });
+    const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
+    const recheck = (view: VerifiedProject) =>
+      ensureRoleChangeable({
+        verified: view,
+        signerUserId: input.signerUserId,
+        targetUserId: input.targetUserId,
+        request: input.request,
+        proposing,
+      });
+    const first = yield* recheck(input.verified);
+
+    // 四眼(K6-A): 方針が対象にしていれば提案して終わる(拡大バックフィル・縮小 sweep は
+    // 適用後に承認者が履行する — 承認項目 22)。省略側は提案時のビューの現状で固定される
+    if (!first.alreadyChanged && proposing) {
+      const proposal = yield* proposeRoleChange(input, inner, resolved, recheck);
+      return { kind: "proposed", proposal };
+    }
+
+    const { verified, appended, target } = yield* appendRoleChange({
+      ...input,
+      inner,
+      alreadyChanged: first.alreadyChanged,
+      recheck,
+    });
+    const fulfilment = yield* fulfilRoleChange({
+      client: input.client,
+      verified,
+      target,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+      recipient: input.recipient,
+      rotateWith: input.rotateWith,
+    });
+    return {
+      kind: "applied",
+      summary: {
+        appended,
+        targetUserId: input.targetUserId,
+        newRole: target.role,
+        newScope: target.scope,
+        ...fulfilment,
+      },
     };
   });
 }

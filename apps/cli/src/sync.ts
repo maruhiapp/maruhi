@@ -26,6 +26,7 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { type AppliedOperation, appliedOperations } from "./chain-applied.ts";
 import { type CliError, cliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 
@@ -74,6 +75,13 @@ export interface VerifiedProject {
    */
   readonly entries: readonly ChainEntry[];
   /**
+   * 適用済み操作の列(seq 順 — 設計録 K6-C)。直接追記の op と、定足数に達した
+   * `approve` の内側 op(seq = approve の seq、actor = 提案者)を同じ形で運ぶ。
+   * ローテーション義務・削除記録・scope 履歴・鍵索引はエントリ列ではなくこちらを
+   * 走査する(提案経由の適用を見落とさない)。
+   */
+  readonly applied: readonly AppliedOperation[];
+  /**
    * 同じ応答に同梱された他メンバーのヘッド申告(§6.6 — **未検証**)。旧サーバー
    * の応答には欠ける(欠落 = 空。omission は §6.3 の規範的非保証であり拒否
    * しない)。lease 応答由来のビューでは常に空(§14-2 — 非同梱)。
@@ -93,7 +101,7 @@ function bindingKey(binding: KeyBinding): string {
 class ChainDerivationError extends Error {}
 
 async function buildKeyHistory(
-  entries: readonly ChainEntry[],
+  applied: readonly AppliedOperation[],
 ): Promise<ReadonlyMap<string, readonly KeyBinding[]>> {
   const history = new Map<string, KeyBinding[]>();
   const seen = new Set<string>();
@@ -110,35 +118,31 @@ async function buildKeyHistory(
       list.push(binding);
     }
   };
-  for (const entry of entries) {
-    // 鍵を登録する op は genesis と add_member のみ(§6.2)。verifyChain 通過後
-    // なので hex は正規形、genesis の actor FP は payload 鍵と一致検証済み
-    if (entry.op === "genesis") {
-      add(entry.actor.userId, {
-        encPubHex: entry.payload.encPubHex,
-        sigPubHex: entry.payload.sigPubHex,
-        keyFingerprintHex: entry.actor.keyFingerprintHex,
-      });
-    } else if (entry.op === "add_member") {
-      const enc = decodeHex(entry.payload.encPubHex);
-      const sig = decodeHex(entry.payload.sigPubHex);
-      if (enc === null || sig === null) {
-        throw new ChainDerivationError(
-          `Cannot decode the public-key hex in add_member (seq=${entry.seq})`,
-        );
-      }
-      const fingerprint = await computeUserKeyFingerprint(enc, sig);
-      if (!fingerprint.ok) {
-        throw new ChainDerivationError(
-          `Cannot compute the key fingerprint for add_member (seq=${entry.seq})`,
-        );
-      }
-      add(entry.payload.targetUserId, {
-        encPubHex: entry.payload.encPubHex,
-        sigPubHex: entry.payload.sigPubHex,
-        keyFingerprintHex: encodeHex(fingerprint.value),
-      });
+  for (const { seq, operation, actorUserId } of applied) {
+    // 鍵を登録する op は genesis と add_member のみ(§6.2)。提案経由で適用された
+    // add_member(四眼 — K6)も同じ形で載る。verifyChain 通過後なので hex は正規形。
+    // FP は payload の鍵から再計算する(genesis の actor FP は payload 鍵と一致検証済み)
+    if (operation.op !== "genesis" && operation.op !== "add_member") {
+      continue;
     }
+    const enc = decodeHex(operation.payload.encPubHex);
+    const sig = decodeHex(operation.payload.sigPubHex);
+    if (enc === null || sig === null) {
+      throw new ChainDerivationError(
+        `Cannot decode the public-key hex in ${operation.op} (seq=${seq})`,
+      );
+    }
+    const fingerprint = await computeUserKeyFingerprint(enc, sig);
+    if (!fingerprint.ok) {
+      throw new ChainDerivationError(
+        `Cannot compute the key fingerprint for ${operation.op} (seq=${seq})`,
+      );
+    }
+    add(operation.op === "genesis" ? actorUserId : operation.payload.targetUserId, {
+      encPubHex: operation.payload.encPubHex,
+      sigPubHex: operation.payload.sigPubHex,
+      keyFingerprintHex: encodeHex(fingerprint.value),
+    });
   }
   return history;
 }
@@ -210,8 +214,14 @@ export function verifyChainSnapshot(input: {
       );
     }
 
+    // 適用済み操作列(K6-C)— 完成判定は core の indexProposals(K5-F)
+    const applied = appliedOperations(
+      entries,
+      (seq) => history.entryHashAt(seq),
+      new Set(state.pendingProposals.keys()),
+    );
     const keyHistory = yield* Effect.tryPromise({
-      try: () => buildKeyHistory(entries),
+      try: () => buildKeyHistory(applied),
       catch: (error) =>
         cliError(
           `Chain-derivation inconsistency: ${
@@ -225,6 +235,7 @@ export function verifyChainSnapshot(input: {
       history,
       keyHistory,
       entries,
+      applied,
       attestations: input.attestations ?? [],
     } satisfies VerifiedProject;
   });

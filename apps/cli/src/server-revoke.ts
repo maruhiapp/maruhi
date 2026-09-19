@@ -18,10 +18,17 @@
 // 対象に残り、rotate の失敗として表面化する)。
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import type { ChainEntry, SigningKeyPair } from "@maruhi/crypto";
+import type { ChainEntry, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { isApprovalTarget } from "./approval-rules.ts";
+import {
+  ensureStillTarget,
+  type ProposalInput,
+  proposeOperation,
+  type ProposedSummary,
+} from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -40,6 +47,11 @@ const MAX_ATTEMPTS = 5;
 
 /** revoke 後の全環境ローテーションでチェーンに記録される理由(§6.2 payload)。 */
 export const REVOKE_ROTATION_REASON = "server-revoked";
+
+/** revoke の結果: 提案(四眼 — K6)か適用。 */
+export type ServerRevokeOutcome =
+  | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
+  | { readonly kind: "applied"; readonly summary: RevokeSummary };
 
 export interface RevokeSummary extends SweepOutcome {
   /** チェーンへ追記したか(false = 有効 grant がない・並行 revoke 済みで、失効後の続きから再開)。 */
@@ -112,12 +124,12 @@ function signRevokeEntry(input: {
   });
 }
 
-/** チェーン上の最後の revoke_server の seq(存在しなければ null)。 */
+/** チェーン上の最後の revoke_server の適用 seq(存在しなければ null。提案経由の適用も含む — K6-C)。 */
 function lastRevokeSeq(verified: VerifiedProject): number | null {
-  for (let index = verified.entries.length - 1; index >= 0; index -= 1) {
-    const entry = verified.entries[index];
-    if (entry !== undefined && entry.op === "revoke_server") {
-      return entry.seq;
+  for (let index = verified.applied.length - 1; index >= 0; index -= 1) {
+    const applied = verified.applied[index];
+    if (applied !== undefined && applied.operation.op === "revoke_server") {
+      return applied.seq;
     }
   }
   return null;
@@ -128,6 +140,43 @@ interface RevokeState {
   readonly target: string;
   /** 並行 revoke で既に失効済み — 追記せずローテーションへ進む。 */
   readonly alreadyRevoked: boolean;
+}
+
+/**
+ * revoke 適用後の全環境走査(§7)。直接追記の revoke と、四眼で適用を完成させた承認者の
+ * 履行(approval-approve.ts)が共有する。`revokeSeq` = 義務の基準(適用 seq)。
+ */
+export function sweepAfterRevoke<R>(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly revokeSeq: number;
+  readonly rotate: SweepRotate<R>;
+}): Effect.Effect<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
+  return Effect.gen(function* () {
+    // 検証済みの削除環境をローテーション対象から除外する(削除済み環境は
+    // rotate も pull も 404 で、回すべきラップも残っていない)。除外の根拠は
+    // **署名済み削除ステートメントの検証**のみ — サーバーの 404 申告だけで
+    // 黙ってスキップしない(§7)。検証できなければ対象に残り、失敗として
+    // 表面化する
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    const skippedDeleted = [...input.verified.state.environments.keys()]
+      .filter((environmentId) => deletedVerified.has(environmentId))
+      .toSorted(compareCodePoints);
+
+    // 義務の環境集合 = revoke 時点の全環境(§7 — revoke_server は不変。後に作成された
+    // 環境の DEK をサーバー鍵は持ちえない)。導出は rotationMandates と共有
+    const sweep = yield* sweepRotations({
+      rotate: input.rotate,
+      verified: input.verified,
+      baselines: baselinesOf(
+        rotationMandates(input.verified).filter(
+          (mandate) => mandate.kind === "server-revoked" && mandate.seq === input.revokeSeq,
+        ),
+      ),
+      deletedVerified,
+    });
+    return { ...sweep, skippedDeleted };
+  });
 }
 
 export function serverRevokeOp<R>(input: {
@@ -144,10 +193,36 @@ export function serverRevokeOp<R>(input: {
    * なければ確認のみ — 新エポックは作らない)。
    */
   readonly rotate: SweepRotate<R>;
-}): Effect.Effect<RevokeSummary, CliError, R> {
+  readonly proposal: ProposalInput;
+}): Effect.Effect<ServerRevokeOutcome, CliError, R> {
   return Effect.gen(function* () {
     yield* requireOwner(input.verified, input.signerUserId);
     const target = yield* selectGrant(input.verified, input.fingerprintHex);
+
+    // 四眼(K6-A): 方針が revoke_server を対象にしていれば提案して終わる(全環境の
+    // rotate は適用を完成させた承認者が行う — 承認項目 22)。再開(有効 grant なし)は
+    // 提案しない
+    if (target !== null) {
+      const inner: ProposableOperation = {
+        op: "revoke_server",
+        payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
+      };
+      if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+        const proposal = yield* proposeOperation(input, inner, (view) =>
+          Effect.gen(function* () {
+            yield* requireOwner(view, input.signerUserId);
+            if (!view.state.serverGrants.has(target.serverKeyFingerprintHex)) {
+              return yield* Effect.fail(
+                cliError(
+                  "The grant was revoked by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi server revoke` to resume the rotation",
+                ),
+              );
+            }
+          }),
+        );
+        return { kind: "proposed", proposal };
+      }
+    }
 
     let verified = input.verified;
     let appended = false;
@@ -181,6 +256,11 @@ export function serverRevokeOp<R>(input: {
             Effect.gen(function* () {
               const resynced = yield* resyncExtended(input.resync, state.verified);
               yield* requireOwner(resynced, input.signerUserId);
+              yield* ensureStillTarget(
+                resynced,
+                { op: "revoke_server", payload: { serverKeyFingerprintHex: state.target } },
+                false,
+              );
               // 並行 revoke で既に失効していたら追記せず先へ(ローテーションは行う)
               return {
                 verified: resynced,
@@ -214,34 +294,15 @@ export function serverRevokeOp<R>(input: {
         ),
       );
     }
-    // 検証済みの削除環境をローテーション対象から除外する(削除済み環境は
-    // rotate も pull も 404 で、回すべきラップも残っていない)。除外の根拠は
-    // **署名済み削除ステートメントの検証**のみ — サーバーの 404 申告だけで
-    // 黙ってスキップしない(§7)。検証できなければ対象に残り、失敗として
-    // 表面化する
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, verified);
-    const skippedDeleted = [...verified.state.environments.keys()]
-      .filter((environmentId) => deletedVerified.has(environmentId))
-      .toSorted(compareCodePoints);
-
-    // 義務の環境集合 = revoke 時点の全環境(§7 — revoke_server は不変。後に作成された
-    // 環境の DEK をサーバー鍵は持ちえない)。導出は rotationMandates と共有
-    const sweep = yield* sweepRotations({
-      rotate: input.rotate,
+    const sweep = yield* sweepAfterRevoke({
+      client: input.client,
       verified,
-      baselines: baselinesOf(
-        rotationMandates(verified).filter(
-          (mandate) => mandate.kind === "server-revoked" && mandate.seq === revokeSeq,
-        ),
-      ),
-      deletedVerified,
+      revokeSeq,
+      rotate: input.rotate,
     });
-
     return {
-      appended,
-      serverKeyFingerprintHex: revokedFingerprint,
-      ...sweep,
-      skippedDeleted,
+      kind: "applied",
+      summary: { appended, serverKeyFingerprintHex: revokedFingerprint, ...sweep },
     };
   });
 }

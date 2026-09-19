@@ -25,7 +25,13 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
-import { deriveReportedView, type ReportedMember, type ReportedServer } from "./chain-view.ts";
+import {
+  deriveReportedView,
+  type ReportedMember,
+  type ReportedPolicy,
+  type ReportedProposal,
+  type ReportedServer,
+} from "./chain-view.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { isProjectId, shortId } from "./ids.ts";
@@ -34,6 +40,7 @@ import { projectRoute, spaPaths } from "./routes.ts";
 import {
   Callout,
   EmptyNotice,
+  ExpiryCell,
   FailureNotice,
   HexText,
   LoadingRow,
@@ -180,8 +187,133 @@ function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): R
   );
 }
 
+interface ProposalRow extends Record<string, unknown> {
+  id: string;
+  seq: number;
+  proposer: string;
+  operation: string;
+  approvals: string;
+  expiresAtMs: number;
+}
+
+const PROPOSAL_COLUMNS: TableColumn<ProposalRow>[] = [
+  {
+    key: "id",
+    header: "Proposal",
+    width: proportional(1),
+    renderCell: (row: ProposalRow) => <HexText>{shortId(row.id)}</HexText>,
+  },
+  {
+    key: "seq",
+    header: "Seq",
+    width: pixel(80),
+    renderCell: (row: ProposalRow) => (
+      <Text type="supporting" size="sm" hasTabularNumbers>
+        {row.seq}
+      </Text>
+    ),
+  },
+  {
+    key: "proposer",
+    header: "Proposer",
+    width: proportional(1),
+    renderCell: (row: ProposalRow) => <HexText>{row.proposer}</HexText>,
+  },
+  {
+    key: "operation",
+    header: "Operation",
+    width: proportional(2),
+    renderCell: (row: ProposalRow) => (
+      <Text type="supporting" size="sm">
+        {row.operation}
+      </Text>
+    ),
+  },
+  {
+    key: "approvals",
+    header: "Approvals",
+    width: pixel(110),
+    renderCell: (row: ProposalRow) => (
+      <Text type="supporting" size="sm" hasTabularNumbers>
+        {row.approvals}
+      </Text>
+    ),
+  },
+  {
+    key: "expiresAtMs",
+    header: "Expires",
+    width: pixel(180),
+    renderCell: (row: ProposalRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
+  },
+];
+
+function describePolicy(policy: ReportedPolicy | null): string {
+  if (policy === null) return "Off — every operation is appended directly";
+  return `On — ${policy.requiredApprovals} owner approvals for: ${[...policy.ops].toSorted().join(", ")} (plus policy changes and any owner addition or promotion)`;
+}
+
+/**
+ * 四眼の方針と pending 提案(K6-J — 読み取りのみ。承認・撤回は CLI: ADR-0018)。票数は
+ * 記録ではなく再集計(chain-view の畳み込み)。
+ */
+function ApprovalsView({
+  policy,
+  proposals,
+}: {
+  policy: ReportedPolicy | null;
+  proposals: ReadonlyArray<ReportedProposal>;
+}): ReactNode {
+  const rows: ProposalRow[] = proposals.map((proposal) => ({
+    id: proposal.proposalHashHex,
+    seq: proposal.proposalSeq,
+    proposer: proposal.proposerUserId,
+    operation: proposal.innerSummary,
+    approvals:
+      policy === null
+        ? `${proposal.votes} (policy off)`
+        : `${proposal.votes} / ${policy.requiredApprovals}`,
+    expiresAtMs: proposal.expiresAtMs,
+  }));
+  return (
+    <SectionBlock
+      title="Four-eyes approvals"
+      description="Approval policy and pending proposals, as reported by the server. Approvals are recounted against the current owners; approve or withdraw with the CLI."
+      testId="approvals-section"
+    >
+      <MetadataList columns="single" label={{ position: "start", width: CHAIN_LABEL_WIDTH }}>
+        <MetadataListItem label="Policy">
+          <Text>{describePolicy(policy)}</Text>
+        </MetadataListItem>
+      </MetadataList>
+      {rows.length === 0 ? (
+        <EmptyNotice
+          title="No pending proposals"
+          description="Nothing is waiting for approval, as reported by the server."
+          headingLevel={3}
+          testId="proposals-empty"
+        />
+      ) : (
+        <Table
+          data={rows}
+          columns={PROPOSAL_COLUMNS}
+          idKey="id"
+          density="compact"
+          dividers="rows"
+          data-testid="proposal-table"
+        />
+      )}
+      <Callout title="Approve from the CLI" headingLevel={3} testId="approvals-note">
+        Owners approve with <Text type="code">maruhi approval approve</Text> and proposers withdraw
+        with <Text type="code">maruhi approval withdraw</Text>. The approval that reaches the quorum
+        applies the operation and runs the follow-up rotation or key distribution. Approving is not
+        available in the dashboard.
+      </Callout>
+    </SectionBlock>
+  );
+}
+
 function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
-  const view = deriveReportedView(snapshot.entries ?? []);
+  const view = deriveReportedView(snapshot.entries ?? [], snapshot.headHashHex);
   const memberRows: MemberRow[] = view.members.map((m) => ({
     id: m.userId,
     role: m.role,
@@ -206,6 +338,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
         />
       </SectionBlock>
       <ServersList servers={view.servers} />
+      <ApprovalsView policy={view.policy} proposals={view.proposals} />
     </VStack>
   );
 }
