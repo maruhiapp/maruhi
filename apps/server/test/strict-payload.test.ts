@@ -24,6 +24,7 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
+import { vectorKeyNamed } from "./support/data-crypto.ts";
 import { dataUrl, OWNER, projectId } from "./support/data-fixture.ts";
 import {
   aadFor,
@@ -437,6 +438,34 @@ describe("リカバリーブロブ登録(§13-2)", () => {
     });
     // control は実受理まで通る(probe が状態を変えないことの裏取り込み)
     expect(status).toBe(204);
+  });
+});
+
+describe("端末登録簿(§13-11)", () => {
+  it("device register rejects an unknown field with 400 (clean body still succeeds)", async () => {
+    const keys = vectorKeyNamed("user-owner-0001@phone");
+    const send = sendJson(
+      "PUT",
+      `${BASE}/auth/devices/${keys.key_fingerprint_hex}`,
+      bearer(token(OWNER)),
+    );
+    const status = await expectStrictReject(send, {
+      encPubHex: keys.enc_pub_hex,
+      sigPubHex: keys.sig_pub_hex,
+      label: "phone",
+    });
+    expect(status).toBe(204);
+  });
+
+  it("device add request rejects an unknown field with 400 (clean body still succeeds)", async () => {
+    const keys = vectorKeyNamed("user-owner-0001@reserve");
+    const send = sendJson("POST", `${BASE}/auth/devices/requests`, bearer(token(OWNER)));
+    const status = await expectStrictReject(send, {
+      encPubHex: keys.enc_pub_hex,
+      sigPubHex: keys.sig_pub_hex,
+      label: "reserve",
+    });
+    expect(status).toBe(200);
   });
 });
 

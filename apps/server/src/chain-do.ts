@@ -71,6 +71,7 @@ import {
   snapshotObjectKey,
   writeSnapshot,
 } from "./do-snapshot.ts";
+import { MAX_DEVICES_PER_MEMBER } from "./policy.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
 import { auditEventsProgram, auditHeadProgram } from "./programs-audit.ts";
 import {
@@ -280,8 +281,9 @@ export interface AppendValue extends ChainHeadValue {
 
 /**
  * チェーン全体のスナップショット(取得成功の RPC 値)。attestations は
- * **現メンバーの最新ヘッド申告のみ**(AUTH_SPEC §16-1 — remove 時の行削除
- * 〔chain-accept.ts〕に加えて配布側でも現メンバー集合で絞る独立の防衛層)。
+ * **現メンバーの有効な端末の最新ヘッド申告のみ**(AUTH_SPEC §16-1 — remove /
+ * revoke_device 時の行削除〔chain-accept.ts〕に加えて配布側でも現メンバーの端末
+ * 集合で絞る独立の防衛層)。
  */
 export interface ChainSnapshotValue {
   readonly entries: readonly ChainEntry[];
@@ -460,11 +462,6 @@ export const appendProgram = (
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
-    // 端末鍵の 2 op(2026-09-19 DK)は K3 まで受理しない(worker のガードと同じ判定を
-    // 受理判定の権威である DO 側にも置く — 受理副作用の無い op を状態へ入れない)
-    if (entry.op === "add_device" || entry.op === "revoke_device") {
-      return yield* rejectData({ kind: "device-ops-not-accepted", op: entry.op });
-    }
     // standalone(周期)checkpoint(AUTH_SPEC §16-2):
     // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
     // スナップショットの原子保存を伴う専用経路へ分岐する
@@ -492,6 +489,16 @@ export const appendProgram = (
         Date.now(),
       );
     }
+    // 端末数の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-19 DK K3):
+    // `add_device` は actor の**有効な**端末が上限に達していれば受理しない(受理前の
+    // 導出状態で数える — 失効済みは数えない)。四眼の pending 上限と同じ位置
+    // (メンバーシップの後・CAS / verifyChain の前)。合意規則ではない
+    if (entry.op === "add_device") {
+      const active = chain.state.members.get(callerUserId)?.devices.size ?? 0;
+      if (active >= MAX_DEVICES_PER_MEMBER) {
+        return yield* rejectData({ kind: "device-limit", limit: MAX_DEVICES_PER_MEMBER });
+      }
+    }
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
     // 共有(chain-accept.ts)。完成した approve は内側 op のミラー適用行と副作用を
@@ -513,12 +520,14 @@ export const snapshotProgram = (
 ): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> =>
   Effect.gen(function* () {
     const chain = yield* loadChainForMember(callerUserId, cache);
-    // 申告の同梱(AUTH_SPEC §16-1): 現メンバーの最新申告のみ。remove_member
-    // 受理時の行削除(chain-accept.ts)が真実源への収束を担い、ここでの現
-    // メンバー絞り込みは独立の防衛層(§6.6 (1) のクライアント検査とも一致)
+    // 申告の同梱(AUTH_SPEC §16-1): 現メンバーの**有効な端末**の最新申告のみ。
+    // remove_member / revoke_device 受理時の行削除(chain-accept.ts)が真実源への
+    // 収束を担い、ここでの絞り込みは独立の防衛層(§6.6 (1) のクライアント検査とも一致)
     const dataStore = yield* DataStore;
     const attestations = (yield* dataStore.listHeadAttestations).filter((attestation) =>
-      chain.members.has(attestation.attesterUserId),
+      chain.members
+        .get(attestation.attesterUserId)
+        ?.devices.has(attestation.attesterKeyFingerprintHex),
     );
     return {
       entries: chain.entries,

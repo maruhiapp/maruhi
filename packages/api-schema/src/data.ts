@@ -511,6 +511,15 @@ export type WrappedDek = typeof WrappedDekSchema.Type;
 export const RecipientDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
+  /**
+   * The recipient device key this wrap was sealed to (AUTH_SPEC §12-6 の端末軸 —
+   * 2026-09-19 DK K3). A member's wraps for all of its devices travel in one
+   * response, so the recipient opens only the rows sealed to the key it holds
+   * (an open failure on another device's row is not a poisoned wrap). Optional
+   * on the wire: servers before K3 omit it (one device per member = every row
+   * is for the caller's only key).
+   */
+  recipientEncPubHex: Schema.optionalKey(EncPubHex),
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
   signatureHex: WrapSignatureHex,
@@ -531,6 +540,13 @@ export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
   recipientClass: Schema.optionalKey(DekRecipientClassSchema),
   recipientUserId: BoundedUserId,
+  /**
+   * The recipient device key of the slot (AUTH_SPEC §12-6 の端末軸 — 2026-09-19 DK
+   * K3: slots are per device). Optional for backward compatibility: when omitted
+   * the reference must name exactly one stored slot (a member with several
+   * devices makes it ambiguous — 422 `duplicate-recipient`; 設計録 §8 K3-3).
+   */
+  recipientEncPubHex: Schema.optionalKey(EncPubHex),
 });
 
 /** Reference naming one stored wrap (§12-6 repair path). */

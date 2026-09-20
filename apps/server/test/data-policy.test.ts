@@ -548,7 +548,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       reason: "duplicate-name",
     },
     "composite-required": { kind: "composite-required", op: "create_environment" },
-    "device-ops-not-accepted": { kind: "device-ops-not-accepted", op: "add_device" },
+    "device-limit": { kind: "device-limit", limit: 16 },
     "proposal-limit": { kind: "proposal-limit", reason: "pending-proposals", limit: 32 },
     "checkpoint-state-mismatch": {
       kind: "checkpoint-state-mismatch",
@@ -619,7 +619,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "environment-not-found": "EnvironmentNotFound",
     "environment-conflict": "EnvironmentConflict",
     "composite-required": "CompositeRequired",
-    "device-ops-not-accepted": "DeviceOpsNotAccepted",
+    "device-limit": "DeviceLimit",
     "proposal-limit": "ProposalLimit",
     "checkpoint-state-mismatch": "CheckpointStateMismatch",
     "chain-head-conflict": "ChainHeadConflict",

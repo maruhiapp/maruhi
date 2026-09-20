@@ -21,7 +21,14 @@ import type {
   ValueInput,
   VariableVersionValue,
 } from "./data-plane.ts";
-import { currentEpochOf, dataEvent, rejectData, requireEnvironmentAccess } from "./data-plane.ts";
+import {
+  currentEpochOf,
+  dataEvent,
+  ensureDevicePermission,
+  rejectData,
+  requireEnvironmentAccess,
+  withSigningDevice,
+} from "./data-plane.ts";
 import type { DataWriteOps, VariableRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
@@ -253,22 +260,29 @@ export const createVariableProgram = (
     // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名検証を
     // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可。declared 作成は
     // 値がないため値署名の検証のみ対象外)。判定順:
-    // CAS → メタ署名 → 値署名 → 数量ポリシー(裁定 D への挿入)
-    const metaSignedBytesHashHex = yield* ensureMetaStatementSignature({
-      projectId,
-      environmentId,
-      target: { kind: "variable", variableId: input.variableId },
-      history,
+    // CAS → メタ署名 → 値署名 → 数量ポリシー(裁定 D への挿入)。署名した端末は
+    // メタ署名から解き(設計録 §8 K3-1)、第 2 段の認可を通してから値署名・
+    // マニフェストを同じ端末で検証する
+    const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement: input.statement,
-    });
+      (candidate) =>
+        ensureMetaStatementSignature({
+          projectId,
+          environmentId,
+          target: { kind: "variable", variableId: input.variableId },
+          history,
+          member: candidate,
+          statement: input.statement,
+        }),
+    );
+    yield* ensureDevicePermission(author, "member", environmentId);
     const acceptedValue =
       input.value === undefined
         ? null
         : yield* acceptCreationValue({
             state,
             history,
-            member,
+            member: author,
             projectId,
             environmentId,
             variableId: input.variableId,
@@ -282,7 +296,7 @@ export const createVariableProgram = (
       projectId,
       environmentId,
       history,
-      member,
+      member: author,
       manifest: input.manifest,
       digestOverride: {
         variableId: input.variableId,
@@ -309,7 +323,7 @@ export const createVariableProgram = (
         input.variableId,
         input.statement,
         metaSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       // var.created の FP = author FP(declared 作成 — 値署名なし — は
@@ -319,7 +333,7 @@ export const createVariableProgram = (
           environmentId,
           variableId: input.variableId,
           payload: { name: input.statement.name },
-          actorKeyFingerprintHex: member.keyFingerprintHex,
+          actorKeyFingerprintHex: author.keyFingerprintHex,
         }),
       );
       if (acceptedValue !== null) {
@@ -328,7 +342,7 @@ export const createVariableProgram = (
           store.write,
           audit.appendSync,
           actor,
-          member,
+          author,
           environmentId,
           input.variableId,
           acceptedValue.value,
@@ -373,15 +387,22 @@ export const pushVersionProgram = (
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
     // 判定順(裁定 D): epoch / version CAS → 値署名(署名 → 宣言 head →
     // head 時点状態 → predecessor)→ 数量ポリシー → 原子書き込み。
-    // 不受理時は variable / version / latest / audit のいずれも変更しない
-    const signedBytesHashHex = yield* ensureValueSignature({
-      projectId,
-      environmentId,
-      variableId,
-      history,
+    // 不受理時は variable / version / latest / audit のいずれも変更しない。
+    // writer の端末は値署名から解く(設計録 §8 K3-1)— 第 2 段の認可(端末の実効
+    // 権限: member × 環境 ∈ 実効 scope)は署名の直後
+    const { device: writer, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
-      value,
-    });
+      (candidate) =>
+        ensureValueSignature({
+          projectId,
+          environmentId,
+          variableId,
+          history,
+          member: candidate,
+          value,
+        }),
+    );
+    yield* ensureDevicePermission(writer, "member", environmentId);
     if (value.version > MAX_VERSIONS_PER_VARIABLE) {
       return yield* rejectData({
         kind: "limit-exceeded",
@@ -398,7 +419,7 @@ export const pushVersionProgram = (
         store.write,
         audit.appendSync,
         actor,
-        member,
+        writer,
         environmentId,
         variableId,
         value,
@@ -470,21 +491,26 @@ export const activateVariableProgram = (
     // (declared → active の遷移と v2 単調性は crypto の predecessor 検査)。
     // schemaPolicy は渡さない — 上の declared ガードにより直前は必ず v2 で、
     // 継続ステートメントはポリシーに依らず受理される(§12-11)
-    const metaSignedBytesHashHex = yield* acceptMetaStatement({
-      projectId,
-      environmentId,
-      target: { kind: "variable", variableId },
-      latestMetaVersion: variable.latestMetaVersion,
-      history,
+    const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement: input.statement,
-    });
+      (candidate) =>
+        acceptMetaStatement({
+          projectId,
+          environmentId,
+          target: { kind: "variable", variableId },
+          latestMetaVersion: variable.latestMetaVersion,
+          history,
+          member: candidate,
+          statement: input.statement,
+        }),
+    );
+    yield* ensureDevicePermission(author, "member", environmentId);
     const signedBytesHashHex = yield* ensureValueSignature({
       projectId,
       environmentId,
       variableId,
       history,
-      member,
+      member: author,
       value: input.value,
     });
     // マニフェストの複合受理(§12-5): activation はメタ状態が変わるため
@@ -494,7 +520,7 @@ export const activateVariableProgram = (
       projectId,
       environmentId,
       history,
-      member,
+      member: author,
       manifest: input.manifest,
       digestOverride: {
         variableId,
@@ -516,7 +542,7 @@ export const activateVariableProgram = (
         variableId,
         input.statement,
         metaSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       acceptedManifest.writeSync(now);
@@ -525,7 +551,7 @@ export const activateVariableProgram = (
         store.write,
         audit.appendSync,
         actor,
-        member,
+        author,
         environmentId,
         variableId,
         input.value,
@@ -576,24 +602,30 @@ export const renameVariableProgram = (
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    const signedBytesHashHex = yield* acceptMetaStatement({
-      projectId,
-      environmentId,
-      target: { kind: "variable", variableId },
-      latestMetaVersion: variable.latestMetaVersion,
-      history,
+    const schemaPolicy = yield* store.schemaPolicy;
+    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement,
-      // 有効化ゲート(§12-11): disabled 下の「v1 変数への v2 再発行」を拒否する
-      // (直前が v2 の継続はポリシーに依らず通る — アンカー実値で判定)
-      schemaPolicy: yield* store.schemaPolicy,
-    });
+      (candidate) =>
+        acceptMetaStatement({
+          projectId,
+          environmentId,
+          target: { kind: "variable", variableId },
+          latestMetaVersion: variable.latestMetaVersion,
+          history,
+          member: candidate,
+          statement,
+          // 有効化ゲート(§12-11): disabled 下の「v1 変数への v2 再発行」を拒否する
+          // (直前が v2 の継続はポリシーに依らず通る — アンカー実値で判定)
+          schemaPolicy,
+        }),
+    );
+    yield* ensureDevicePermission(author, "member", environmentId);
     // マニフェストの複合受理(§12-5): rename 適用後の集合で再計算・突合
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
-      member,
+      member: author,
       manifest,
       digestOverride: {
         variableId,
@@ -617,7 +649,7 @@ export const renameVariableProgram = (
         variableId,
         statement,
         signedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       acceptedManifest.writeSync(now);
@@ -626,7 +658,7 @@ export const renameVariableProgram = (
           environmentId,
           variableId,
           payload: { name: statement.name },
-          actorKeyFingerprintHex: member.keyFingerprintHex,
+          actorKeyFingerprintHex: author.keyFingerprintHex,
         }),
       );
     });
@@ -653,22 +685,27 @@ export const deleteVariableProgram = (
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    const signedBytesHashHex = yield* acceptMetaStatement({
-      projectId,
-      environmentId,
-      target: { kind: "variable", variableId },
-      latestMetaVersion: variable.latestMetaVersion,
-      history,
+    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement,
-    });
+      (candidate) =>
+        acceptMetaStatement({
+          projectId,
+          environmentId,
+          target: { kind: "variable", variableId },
+          latestMetaVersion: variable.latestMetaVersion,
+          history,
+          member: candidate,
+          statement,
+        }),
+    );
+    yield* ensureDevicePermission(author, "member", environmentId);
     // マニフェストの複合受理(§12-5): tombstone を含む集合で再計算・突合
     // (tombstone 隠しの digest 不一致はここで落ちる — §4.3 (3))
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
-      member,
+      member: author,
       manifest,
       digestOverride: {
         variableId,
@@ -690,7 +727,7 @@ export const deleteVariableProgram = (
         variableId,
         statement,
         signedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       acceptedManifest.writeSync(now);
@@ -698,7 +735,7 @@ export const deleteVariableProgram = (
         dataEvent(actor, now, "var.deleted", {
           environmentId,
           variableId,
-          actorKeyFingerprintHex: member.keyFingerprintHex,
+          actorKeyFingerprintHex: author.keyFingerprintHex,
         }),
       );
     });

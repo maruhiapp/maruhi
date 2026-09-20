@@ -287,30 +287,89 @@ export const guardianGroups = sqliteTable(
   (t) => [index("gg_user").on(t.userId)],
 );
 
-/** クラス G: 分片(保護者の enc 公開鍵への HPKE Seal)。 */
+/**
+ * クラス G: 分片(保護者の enc 公開鍵への HPKE Seal)。**保護者の端末ごとに 1 行**
+ * (2026-09-19 DK — AUTH_SPEC §13-6: 同じ論理分片 share_index を保護者の各有効端末鍵へ
+ * 封印する。info は端末を含まないが受信者鍵が異なるため相互に開けない — CRYPTO_SPEC §8.3)。
+ * 主キーは (group_id, share_index, guardian_key_fingerprint_hex)、同一保護者の同一端末は
+ * 1 行(UNIQUE)。論理分片(share_index ↔ 保護者)の一意性は受理段(handlers-key-wraps.ts)が
+ * 検査する(設計録 dk-design.md §8 K3-10)。
+ */
 export const guardianShares = sqliteTable(
   "guardian_shares",
   {
     groupId: text("group_id")
       .notNull()
       .references(() => guardianGroups.id, { onDelete: "cascade" }),
-    /** 1..n */
+    /** 1..n(論理分片 — 保護者 1 人につき 1 つ) */
     shareIndex: integer("share_index").notNull(),
     guardianUserId: text("guardian_user_id")
       .notNull()
       .references(() => users.id),
     /** 封印先(ward クライアントが確認済みの鍵) */
     guardianEncPubHex: text("guardian_enc_pub_hex").notNull(),
+    /** 封印先の端末鍵 FP(保護者の各端末に 1 行 — DK) */
     guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex").notNull(),
     encHex: text("enc_hex").notNull(),
     /** 32 バイト分片 + 16 バイトタグ = 48 バイト */
     ciphertextHex: text("ciphertext_hex").notNull(),
   },
   (t) => [
-    primaryKey({ columns: [t.groupId, t.shareIndex] }),
-    uniqueIndex("gs_group_guardian").on(t.groupId, t.guardianUserId),
+    primaryKey({ columns: [t.groupId, t.shareIndex, t.guardianKeyFingerprintHex] }),
+    uniqueIndex("gs_group_guardian_device").on(
+      t.groupId,
+      t.guardianUserId,
+      t.guardianKeyFingerprintHex,
+    ),
     index("gs_guardian").on(t.guardianUserId),
   ],
+);
+
+/**
+ * 端末登録簿(AUTH_SPEC §13-11 — 2026-09-19 DK。**advisory**: 表示名・トークンの対応・
+ * 公開鍵の置き場であり、いかなる検証・認可の入力にもならない。真実源は各プロジェクトの
+ * チェーンの `add_device` / `revoke_device`)。user あたり 32 行(受理ポリシー)。
+ * 監査イベントは持たない(§6 のトークン一覧と同じ規律)。
+ */
+/**
+ * 端末登録簿・端末追加要求に共通の列: 所有者 + 端末鍵 FP(CRYPTO_SPEC §3 — enc ‖ sig の
+ * SHA-256 先頭 16 バイト。body の公開鍵から再計算して照合)+ 公開鍵 + 表示名(§6 の
+ * トークン名と同じ受理規律 — 制御文字・bidi 禁止・128 文字以下)。
+ */
+const deviceKeyColumns = () => ({
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  keyFingerprintHex: text("key_fingerprint_hex").notNull(),
+  encPubHex: text("enc_pub_hex").notNull(),
+  sigPubHex: text("sig_pub_hex").notNull(),
+  label: text("label").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const devices = sqliteTable(
+  "devices",
+  {
+    ...deviceKeyColumns(),
+    /** 任意: この端末の API トークン id(§6 — advisory。認可の入力にしない) */
+    tokenId: text("token_id"),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.keyFingerprintHex] })],
+);
+
+/**
+ * 端末追加要求(AUTH_SPEC §13-11): 新端末の公開鍵を承認端末へ渡す要求行(TTL 15 分)。
+ * 状態列は持たない(行 = 未消費の要求。承認後はクライアントが削除、失効行は日和見削除 —
+ * 設計録 §8 K3-8)。承認クライアントは応答の公開鍵から FP を再計算し、人が運んだ FP と
+ * 一致するもの以外を無視する(サーバーによる公開鍵のすり替えは FP 照合で落ちる)。
+ */
+export const deviceAddRequests = sqliteTable(
+  "device_add_requests",
+  {
+    ...deviceKeyColumns(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.keyFingerprintHex] })],
 );
 
 /** クラス H: ハンドオフ要求(E.pub は保存しない — request_id はその導出値)。 */

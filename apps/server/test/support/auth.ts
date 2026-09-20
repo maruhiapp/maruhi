@@ -27,6 +27,9 @@ const AUTH_TABLES = [
   // CLI ログインハンドオフのフロー行(AUTH_SPEC §4)。users への FK を持つ
   "cli_login_flows",
   "recovery_wraps",
+  // 端末登録簿・端末追加要求(AUTH_SPEC §13-11 — DK K3)。users への FK を持つ
+  "devices",
+  "device_add_requests",
   // master 鍵ラップ台帳(AUTH_SPEC §13-6 — KL3)。子 → 親の順
   "key_handoff_approvals",
   "key_handoff_requests",

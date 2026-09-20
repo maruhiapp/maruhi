@@ -230,16 +230,16 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(full.status).toBe(200);
   });
 
-  it("rejects a cross-class recipient collision with 422 duplicate-recipient, not a defect", async () => {
+  it("keeps cross-class recipients with distinct keys as separate slots, and rejects the same (id, key) pair with 422 duplicate-recipient", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
 
     // add_member の対象 user_id は意図的に存在検証されない自由文字列(AUTH_SPEC
     // §11-1)なので、admin は「user_id = 有効 grant のサーバー鍵 FP」という
-    // メンバーをチェーンに追加できる(鍵は別物なのでメンバー鍵一意性にも
-    // 触れない)。以降この環境の完全集合は member としての fpHex 宛と server と
-    // しての fpHex 宛の両方を要求するが、保存行の主キーは (environment, epoch,
-    // recipient_user_id) なので両方は書けない
+    // メンバーをチェーンに追加できる。保存行の主キーは端末軸
+    // (environment, epoch, recipient_user_id, recipient_enc_pub_hex — 2026-09-19 DK K3)
+    // なので、鍵が違えば member としての fpHex 宛と server としての fpHex 宛は
+    // 別スロットに両方書ける(設計録 §8 K3-4 第 2 巡)
     const encPair = await generateEncryptionKeyPair();
     const sigPair = await generateSigningKeyPair();
     const sockEncPubHex = encodeHex(await exportEncryptionPublicKey(encPair.publicKey));
@@ -274,8 +274,6 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
       recipientEncPubHex: sockEncPubHex,
       signerUserId: MEMBER,
     });
-    // 受理前の検査で 422(duplicate-recipient)に倒れること(受理段を通過させると
-    // 書き込みフェーズの主キー違反 = defect(500)になる)
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -287,34 +285,91 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
       dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
       actorUserId: MEMBER,
     });
-    expect(response.status).toBe(422);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body["reason"]).toBe("duplicate-recipient");
+    expect(response.status).toBe(200);
+    const slots = await queryProjectDo(
+      projectId,
+      "SELECT recipient_class, recipient_enc_pub_hex FROM dek_wraps WHERE environment_id = ? AND epoch = 2 AND recipient_user_id = ? ORDER BY recipient_class",
+      ENV,
+      fpHex,
+    );
+    expect(slots).toEqual([
+      { recipient_class: "member", recipient_enc_pub_hex: sockEncPubHex },
+      { recipient_class: "server", recipient_enc_pub_hex: SERVER_ENC_PUB_HEX },
+    ]);
 
-    // 受理段で倒れるため書き込みフェーズには入らない(epoch 2 の行は 1 行も
-    // 作られない)。なお衝突が存在する限り完全集合は本質的に充足不能なので、
-    // ローテーション自体は塞がったまま — これは下の運用復旧で解く
+    // 同じ id **かつ同じ鍵**(member の enc 公開鍵 = サーバー鍵)は依然 1 スロット:
+    // 期待数は保存キー粒度で重複除去し、両クラス宛を送ると受理前の検査で 422
+    // (duplicate-recipient)に倒れる(受理段を通過させると書き込みフェーズの主キー
+    // 違反 = defect〔500〕になる)
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: fpHex },
+    });
+    const sameKeySigPair = await generateSigningKeyPair();
+    await appendOperation(fixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: fpHex,
+        encPubHex: SERVER_ENC_PUB_HEX,
+        sigPubHex: encodeHex(await exportSigningPublicKey(sameKeySigPair.publicKey)),
+        role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
+    });
+    const dek3 = makeDek();
+    const memberWraps3 = await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: 3,
+      dek: dek3,
+      recipientUserIds: ALL_MEMBERS,
+      signerUserId: MEMBER,
+    });
+    const sameKeyWrap = await wrapDekTo({
+      projectId,
+      environmentId: ENV,
+      epoch: 3,
+      dek: dek3,
+      recipientUserId: fpHex,
+      recipientEncPubHex: SERVER_ENC_PUB_HEX,
+      signerUserId: MEMBER,
+    });
+    const collided = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 3,
+      deks: [
+        ...memberWraps3,
+        sameKeyWrap,
+        await serverWrap({ epoch: 3, dek: dek3, fpHex, signerUserId: MEMBER }),
+      ],
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 3, dek3),
+      actorUserId: MEMBER,
+    });
+    expect(collided.status).toBe(422);
+    const body = (await collided.json()) as Record<string, unknown>;
+    expect(body["reason"]).toBe("duplicate-recipient");
     const rows = await queryProjectDo(
       projectId,
-      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 2",
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 3",
       ENV,
     );
     expect(rows[0]?.["n"]).toBe(0);
 
-    // 運用復旧: 衝突メンバーを
-    // remove_member すれば完全集合が再び充足可能になり、ローテーションが通る
+    // 運用復旧: 衝突メンバーを remove_member すれば完全集合が再び充足可能になり、
+    // ローテーションが通る
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: fpHex },
     });
     const recovered = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
-      newEpoch: 2,
+      newEpoch: 3,
       deks: [
-        ...memberWraps,
-        await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
+        ...memberWraps3,
+        await serverWrap({ epoch: 3, dek: dek3, fpHex, signerUserId: MEMBER }),
       ],
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 3, dek3),
       actorUserId: MEMBER,
     });
     expect(recovered.status).toBe(200);
@@ -445,12 +500,16 @@ const memberOf = (userId: string) =>
       ]),
     },
   ] as const;
-const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
+const grantOf = (
+  fingerprintHex: string,
+  scope: readonly string[],
+  serverEncPubHex: string = "44".repeat(32),
+) =>
   [
     fingerprintHex,
     {
       serverKeyFingerprintHex: fingerprintHex,
-      serverEncPubHex: "44".repeat(32),
+      serverEncPubHex,
       grantSeq: 1,
       scopeEnvironmentIds: scope,
       leasePolicy: [],
@@ -458,11 +517,11 @@ const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
   ] as const;
 
 describe("expectedWrapRecipientCount", () => {
-  it("member user_id と in-scope サーバー鍵 FP の重複除去済み和集合で数える", () => {
+  it("(id, 鍵) の保存キー粒度で重複除去した和集合で数える(端末軸 — K3)", () => {
     // add_member の対象 user_id は存在検証されない自由文字列(AUTH_SPEC §11-1)
-    // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーはクラスを
-    // 含まないため、この 2 受信者は 1 スロット — 期待数もクラス別の単純和でなく
-    // 和集合で数えないと、環境作成・ローテーションの完全集合検査が恒久に失敗する
+    // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーは端末軸
+    // (id, enc 公開鍵)なので、鍵が違えば別スロット(2 と数える)、同じ id かつ同じ
+    // 鍵なら 1 スロット — 期待数もこの粒度で数えないと完全集合検査が恒久に失敗する
     const collidingFp = "ab".repeat(16);
     const otherFp = "cd".repeat(16);
     const state: ChainState = {
@@ -478,12 +537,18 @@ describe("expectedWrapRecipientCount", () => {
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-a: {user-1, collidingFp, otherFp} — collidingFp は member と grant の
-    // 双方に現れるが 1 と数える(単純和なら 4 で、受理不能な期待数になる)
-    expect(expectedWrapRecipientCount(state, "env-a")).toBe(3);
+    // env-a: {user-1, collidingFp(member 鍵), collidingFp(server 鍵), otherFp} — 4 スロット
+    expect(expectedWrapRecipientCount(state, "env-a")).toBe(4);
     // env-b: in-scope な grant は otherFp のみ
     expect(expectedWrapRecipientCount(state, "env-b")).toBe(3);
     // スコープ外の環境は member のみ
     expect(expectedWrapRecipientCount(state, "env-c")).toBe(2);
+
+    // 同じ id かつ同じ鍵(member の enc 公開鍵 = サーバー鍵)は 1 スロット
+    const sameKey: ChainState = {
+      ...state,
+      serverGrants: new Map([grantOf(collidingFp, ["env-a"], "11".repeat(32))]),
+    };
+    expect(expectedWrapRecipientCount(sameKey, "env-a")).toBe(2);
   });
 });

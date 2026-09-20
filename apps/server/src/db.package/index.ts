@@ -11,6 +11,7 @@ export {
   LOGIN_FAILED_WINDOW_LIMIT,
   LOGIN_FAILED_WINDOW_MS,
 } from "./audit.ts";
+export { type DeviceAddRequestRecord, type DeviceRecord, DeviceRepo } from "./devices.ts";
 export {
   APPROVAL_LIMIT,
   HANDOFF_REQUEST_LIMIT,

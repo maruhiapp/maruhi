@@ -52,6 +52,19 @@ export interface MembershipEventRow {
   readonly scope: ScopeSnapshot | null;
 }
 
+/**
+ * Q1 の端末軸(2026-09-19 DK — AUDIT_SPEC §4.1 `revoke_device` 変種): 対象 user_id の
+ * chain.device_added(payload の deviceKeyFingerprint 1 つ + 端末 scope)/
+ * chain.device_revoked(payload の deviceKeyFingerprints)。scope は device_added の
+ * payload から(読めない行は null = 窓導出が fail-safe に all として扱う)。
+ */
+export interface DeviceEventRow {
+  readonly seq: number;
+  readonly event: string;
+  readonly fingerprintsHex: readonly string[];
+  readonly scope: ScopeSnapshot | null;
+}
+
 /** Q6: サーバー鍵 FP の grant 区間イベント(chain.server_granted / revoked)。 */
 export interface GrantEventRow {
   readonly seq: number;
@@ -102,6 +115,7 @@ export interface RotationFlagSourceRow {
 /** 検出・フラグ導出が使う同期読み取り面(索引は §4.2 / do-schema.ts)。 */
 export interface AuditRotationRead {
   readonly membershipEventsFor: (targetUserId: string) => readonly MembershipEventRow[];
+  readonly deviceEventsFor: (targetUserId: string) => readonly DeviceEventRow[];
   readonly serverGrantEventsFor: (fpHex: string) => readonly GrantEventRow[];
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
   readonly variableReadsBy: (actorUserId: string) => readonly VariableReadRow[];
@@ -936,6 +950,41 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(membershipRowOf),
+  // Q1 の端末軸(同じ ae_target 索引 — AUDIT_SPEC §3.4 の device_added / device_revoked は
+  // target_user_id = 対象)。FP は payload から読む(§4.1 の revoke_device 変種)
+  deviceEventsFor: (targetUserId) =>
+    sql
+      .exec(
+        `SELECT seq, event, payload FROM audit_events
+         WHERE target_user_id = ?
+           AND event IN ('chain.device_added', 'chain.device_revoked')
+         ORDER BY seq`,
+        targetUserId,
+      )
+      .toArray()
+      .map((row): DeviceEventRow => {
+        const event = String(row["event"]);
+        const payload = parsePayload(row["payload"]);
+        if (event === "chain.device_revoked") {
+          const fps = payload?.["deviceKeyFingerprints"];
+          return {
+            seq: Number(row["seq"]),
+            event,
+            fingerprintsHex:
+              Array.isArray(fps) && fps.every((fp) => typeof fp === "string")
+                ? (fps as readonly string[])
+                : [],
+            scope: null,
+          };
+        }
+        const fp = payload?.["deviceKeyFingerprint"];
+        return {
+          seq: Number(row["seq"]),
+          event,
+          fingerprintsHex: typeof fp === "string" ? [fp] : [],
+          scope: scopeSnapshotOf(payload),
+        };
+      }),
   // Q6: (target_key_fingerprint, seq) 索引(ae_target_fp)
   serverGrantEventsFor: (fpHex) =>
     sql

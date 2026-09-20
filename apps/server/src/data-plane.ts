@@ -12,9 +12,10 @@ import type {
   ChainInvalidReason,
   ChainMember,
   ChainState,
+  EffectivePermission,
   Role,
 } from "@maruhi/crypto";
-import { scopeIncludesEnvironment, soleDeviceOf } from "@maruhi/crypto";
+import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -64,11 +65,16 @@ export interface DekWrapInput {
   readonly signatureHex: string;
 }
 
-/** 保存済みラップの参照(§12-6 の修復経路の削除単位)。 */
+/**
+ * 保存済みラップの参照(§12-6 の修復経路の削除単位)。`recipientEncPubHex` は端末軸
+ * (2026-09-19 DK — スロットは端末ごと)。省略時は当該 (epoch, 受信者) のスロットが
+ * ちょうど 1 つのときだけ消す(複数なら 422 duplicate-recipient — 設計録 §8 K3-3)。
+ */
 export interface DekWrapRefInput {
   readonly epoch: number;
   readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
+  readonly recipientEncPubHex?: string;
 }
 
 /**
@@ -257,6 +263,12 @@ export interface PulledVariableValue {
 export interface RecipientDekValue {
   readonly suite: WireSuite;
   readonly epoch: number;
+  /**
+   * 受信者の端末鍵(enc 公開鍵 — AUTH_SPEC §12-6 の端末軸。2026-09-19 DK)。同じ人の
+   * 複数端末宛のラップが同じ応答に並ぶため、受信者は自分の端末鍵の行だけを開封する
+   * (開封失敗を毒ラップと取り違えない)。
+   */
+  readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly signatureHex: string;
@@ -502,12 +514,10 @@ export type DataRejection =
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch";
     }
-  // 端末鍵の 2 op(CRYPTO_SPEC §6.2 — 2026-09-19 DK)は K3 の受理副作用まで受理しない
-  // (ES K2-10 の原則。worker が api-schema の DeviceOpsNotAccepted〔422〕へ写す)
-  | {
-      readonly kind: "device-ops-not-accepted";
-      readonly op: "add_device" | "revoke_device";
-    }
+  // 端末数の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-19 DK K3):
+  // `add_device` の受理時に actor の有効な端末が上限(16)に達している。worker が
+  // api-schema の DeviceLimit(422)へ写す。合意規則ではない
+  | { readonly kind: "device-limit"; readonly limit: number }
   // 四眼の `propose` の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-16
   // K5): pending 上限(期限切れは数えない)と `expires_at_ms` の上界。worker が
   // api-schema の ProposalLimit(422)へ写す。語彙は ProposalLimitReasonSchema と一致
@@ -628,51 +638,172 @@ export function roleAtLeast(role: Role, minimum: Role): boolean {
 }
 
 /**
- * A chain member resolved together with its **sole** device key (2026-09-19 DK —
- * K2 の橋渡し): the server still attributes every signature of a member to one
- * key (受理時点の署名者 FP・DEK ラップの受信者鍵・監査行の FP). A member with zero
- * or several devices cannot exist on a K2 server — `add_device` / `revoke_device`
- * are rejected before verification (DeviceOpsNotAccepted) — so anything else is a
- * storage / verifier defect (fail-closed: `Effect.die`, never "the first device").
- * K3 replaces this with the request's own device (AUTH_SPEC §6 — token ↔ device
- * key; 設計録 dk-design.md §7 K2 の申し送り).
+ * A chain member together with **the device that signed this request** (2026-09-19
+ * DK — K3。設計録 dk-design.md §8 K3-1): the key every chain-external signature of
+ * the request is attributed to (受理時点の署名者 FP・DEK ラップの受信者鍵・監査行の
+ * FP)and the effective permission that device holds — `(min(role, role_cap), scope ∩
+ * device scope)`(CRYPTO_SPEC §6.2)。The device is resolved **from the signature
+ * itself** (`withSigningDevice` — the caller's active devices are tried in
+ * fingerprint order; key uniqueness across current members makes at most one
+ * verify) or, for chain entries, from `entry.actor.keyFingerprintHex` (`deviceOf`).
+ * The advisory device registry (AUTH_SPEC §13-11) is never an input here.
  */
 export interface MemberWithDevice extends ChainMember {
   readonly device: ChainDevice;
   readonly keyFingerprintHex: string;
   readonly encPubHex: string;
   readonly sigPubHex: string;
+  /** The signing device's effective permission (§6.2 — the input of the second-stage authorization). */
+  readonly permission: EffectivePermission;
 }
 
-/** `member` + その唯一の端末鍵(K2 — 端末は 1 つ)。0 / 2 以上は defect(上記)。 */
-function withSoleDevice(member: ChainMember): Effect.Effect<MemberWithDevice> {
-  const device = soleDeviceOf(member);
-  if (device === undefined) {
-    // 文言は版・段階を漏らさない(Worker の 500 本文に現れうる — Security Reviewer 指摘)
-    return Effect.die(new Error("internal: unexpected device count for a chain-derived member"));
-  }
-  return Effect.succeed({
+/** `member` + 指定 FP の有効な端末(無ければ undefined — 呼び出し側が理由コードを選ぶ)。 */
+export function deviceOf(
+  member: ChainMember,
+  keyFingerprintHex: string,
+): MemberWithDevice | undefined {
+  const device = member.devices.get(keyFingerprintHex);
+  return device === undefined ? undefined : withDevice(member, device);
+}
+
+function withDevice(member: ChainMember, device: ChainDevice): MemberWithDevice {
+  return {
     ...member,
     device,
     keyFingerprintHex: device.keyFingerprintHex,
     encPubHex: device.encPubHex,
     sigPubHex: device.sigPubHex,
+    permission: effectivePermissionOf(member, device),
+  };
+}
+
+/** 呼び出し主体の有効な端末を FP 昇順で(試行順を決定的にする — 結果は順序に依らない)。 */
+function activeDevicesOf(member: ChainMember): readonly MemberWithDevice[] {
+  return [...member.devices.values()]
+    .toSorted((a, b) => (a.keyFingerprintHex < b.keyFingerprintHex ? -1 : 1))
+    .map((device) => withDevice(member, device));
+}
+
+/**
+ * A rejection that only says "this signature does not verify under this key" —
+ * the one outcome that makes `withSigningDevice` try the caller's next device.
+ * Every other rejection (head unknown, state mismatch, CAS, …) is final for the
+ * device that produced it: a signature that verified under one key has found
+ * its device, and a non-signature rejection cannot be cured by another key.
+ */
+function isSignatureInvalidRejection(rejection: DataRejection): boolean {
+  switch (rejection.kind) {
+    case "value-rejected":
+    case "meta-rejected":
+    case "manifest-rejected":
+    case "attestation-rejected":
+    case "dek-wrap-rejected":
+      return rejection.reason === "signature-invalid";
+    default:
+      return false;
+  }
+}
+
+/**
+ * Resolves the request's signing device from a signature (設計録 §8 K3-1 —
+ * 案 a-3): runs `attempt` with each of the member's active devices in
+ * fingerprint order until one does not answer `signature-invalid`. Returns that
+ * device with the attempt's value. When every device answers `signature-invalid`
+ * the last such rejection is returned (fail-closed — the signature belongs to no
+ * active device of the caller: a revoked device, a foreign key, or garbage).
+ * At most 16 devices (AUTH_SPEC §12-8) bound the trial.
+ */
+export function withSigningDevice<A, R>(
+  member: ChainMember,
+  attempt: (device: MemberWithDevice) => Effect.Effect<A, DataRejectedError, R>,
+): Effect.Effect<{ readonly device: MemberWithDevice; readonly value: A }, DataRejectedError, R> {
+  return Effect.gen(function* () {
+    const candidates = activeDevicesOf(member);
+    if (candidates.length === 0) {
+      // 検証済みチェーンの現メンバーは端末を 1 つ以上持つ(§6.2 last-device-protected)
+      return yield* Effect.die(new Error("internal: a current member has no active device"));
+    }
+    let lastRejection: DataRejectedError | null = null;
+    for (const device of candidates) {
+      // signature-invalid だけを「次の端末を試す」に畳む。他の拒否はその端末で確定
+      const outcome: { readonly verified: A } | { readonly retry: DataRejectedError } =
+        yield* attempt(device).pipe(
+          Effect.map((value) => ({ verified: value })),
+          Effect.catchTag("DataRejected", (error) =>
+            isSignatureInvalidRejection(error.rejection)
+              ? Effect.succeed({ retry: error })
+              : Effect.fail(error),
+          ),
+        );
+      if ("verified" in outcome) {
+        return { device, value: outcome.verified };
+      }
+      lastRejection = outcome.retry;
+    }
+    // candidates は非空なので lastRejection は必ず設定されている
+    return yield* Effect.fail(
+      lastRejection ?? rejectData({ kind: "value-rejected", reason: "signature-invalid" }),
+    );
   });
 }
 
-/** チェーン導出 role の下限検査(複合プログラム — composite-programs.ts — と共有)。 */
+/**
+ * Second-stage authorization (設計録 §8 K3-1): the signing device's **effective**
+ * permission must satisfy the same role floor and (when an environment is
+ * targeted) the same scope predicate the person already passed at the first
+ * stage. Same reason codes as the first stage (403 — AUTH_SPEC §12-3). A device
+ * never exceeds its person, so this can only narrow what the first stage let
+ * through.
+ *
+ * Reachability (設計録 §8 K3 実装録): on the composite, checkpoint and DEK-register
+ * paths this is the check that produces the 403 (pinned by
+ * membership-negatives-composite / device-ops tests). On the value push, metadata
+ * statement and manifest paths the crypto layer's declared-head authorization
+ * (CRYPTO_SPEC §6.3 — `deviceStateAt`, effective permission since DK K2) runs
+ * first inside signature verification and rejects a capped device with 422
+ * `chain-head-state-mismatch`; a device cap is immutable and the person's role
+ * is bounded by the first stage, so no request passes the declared-head check
+ * and fails here. Those call sites are defense in depth by construction, not a
+ * coverage gap — do not delete them, and do not expect a test to reach them.
+ * The head-attestation path has no second-stage call at all: `reader` is the
+ * floor of the role enum, so no device's effective role can fall below the
+ * op's requirement, and the op is chain-wide (no environment to scope).
+ */
+export function ensureDevicePermission(
+  device: MemberWithDevice,
+  minimum: Role,
+  environmentId?: string,
+): Effect.Effect<void, DataRejectedError> {
+  if (!roleAtLeast(device.permission.role, minimum)) {
+    return Effect.fail(rejectData({ kind: "insufficient-role" }));
+  }
+  if (
+    environmentId !== undefined &&
+    !scopeIncludesEnvironment(device.permission.scope, environmentId)
+  ) {
+    return Effect.fail(rejectData({ kind: "insufficient-scope" }));
+  }
+  return Effect.void;
+}
+
+/**
+ * チェーン導出 role の下限検査(複合プログラム — composite-programs.ts — と共有)。
+ * 第 1 段(人の role — 設計録 §8 K3-1): 端末の実効権限は人の権限を超えないので、
+ * ここで落ちる主体は端末でも落ちる。署名した端末の実効権限(第 2 段)は署名検証の
+ * 後に ensureDevicePermission で判定する。
+ */
 export function requireRole(
   state: ChainState,
   callerUserId: string,
   minimum: Role,
-): Effect.Effect<MemberWithDevice, DataRejectedError> {
+): Effect.Effect<ChainMember, DataRejectedError> {
   const member = state.members.get(callerUserId);
   if (member === undefined) {
     // §11-2: 非メンバーには現ヘッド・受理判定を含む一切を返さない(worker が 404 に写す)
     return Effect.fail(rejectData({ kind: "not-member" }));
   }
   return roleAtLeast(member.role, minimum)
-    ? withSoleDevice(member)
+    ? Effect.succeed(member)
     : Effect.fail(rejectData({ kind: "insufficient-role" }));
 }
 
@@ -705,7 +836,7 @@ export function requireRoleInScope(
   callerUserId: string,
   minimum: Role,
   environmentId: string,
-): Effect.Effect<MemberWithDevice, DataRejectedError> {
+): Effect.Effect<ChainMember, DataRejectedError> {
   return Effect.flatMap(requireRole(state, callerUserId, minimum), (member) =>
     requireEnvironmentInScope(member, environmentId),
   );
@@ -720,8 +851,13 @@ export function requireRoleInScope(
 export interface MemberContext {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
-  /** The caller with its sole device key (K2 — 署名者 FP / 受信者鍵の源)。 */
-  readonly member: MemberWithDevice;
+  /**
+   * The caller as a **person** (role・scope・端末集合). The device that signed the
+   * request is resolved later from the signature (`withSigningDevice`) or the
+   * entry actor (`deviceOf`) — 設計録 §8 K3-1. Unsigned operations (reads,
+   * deletions, dismissals) have no device and are judged on the person alone.
+   */
+  readonly member: ChainMember;
   readonly projectId: string;
 }
 

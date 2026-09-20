@@ -184,6 +184,23 @@ export interface KeyWrapRepoShape {
 
 export class KeyWrapRepo extends Context.Service<KeyWrapRepo, KeyWrapRepoShape>()("KeyWrapRepo") {}
 
+/**
+ * 端末行の列を論理分片(share_index ごと 1 つ — 保護者 1 人)へ畳む(2026-09-19 DK:
+ * 同じ share_index が保護者の端末数ぶん並ぶ。監査の指名・解除事件は保護者単位)。
+ */
+function logicalShares<T extends { readonly shareIndex: number; readonly guardianUserId: string }>(
+  rows: readonly T[],
+): readonly T[] {
+  const seen = new Set<number>();
+  return rows.filter((row) => {
+    if (seen.has(row.shareIndex)) {
+      return false;
+    }
+    seen.add(row.shareIndex);
+    return true;
+  });
+}
+
 function toMode(value: string): GuardianMode {
   return value === "all" ? "all" : "any";
 }
@@ -496,7 +513,8 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             actor,
             payload: { kind: "guardian", groupId, mode, recipientCount: shares.length },
           },
-          ...shares.map((share): D1AuditEventInput => ({
+          // 指名は論理分片(保護者)ごとに 1 事件 — 端末行の数ではない(2026-09-19 DK)
+          ...logicalShares(shares).map((share): D1AuditEventInput => ({
             event: "auth.guardian_designated",
             actor,
             targetUserId: share.guardianUserId,
@@ -554,7 +572,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             actor,
             payload: { kind: "guardian", groupId },
           }),
-          ...group.shares.map((share) =>
+          ...logicalShares(group.shares).map((share) =>
             userAuditInsert(db, nowMs, {
               event: "auth.guardian_released",
               actor,
@@ -573,6 +591,8 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             groupId: guardianShares.groupId,
             mode: guardianGroups.mode,
             shareIndex: guardianShares.shareIndex,
+            guardianKeyFingerprintHex: guardianShares.guardianKeyFingerprintHex,
+            guardianEncPubHex: guardianShares.guardianEncPubHex,
             encHex: guardianShares.encHex,
             ciphertextHex: guardianShares.ciphertextHex,
             createdAt: guardianGroups.createdAt,
@@ -587,7 +607,8 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
                   eq(guardianGroups.userId, wardUserId),
                 ),
           )
-          .orderBy(guardianGroups.createdAt);
+          // 端末行は FP 昇順(配布の先頭行を決定的にする — 設計録 §8 K3-10)
+          .orderBy(guardianGroups.createdAt, guardianShares.guardianKeyFingerprintHex);
         const wardIds = [...new Set(rows.map((r) => r.wardUserId))];
         const logins =
           wardIds.length === 0
@@ -608,6 +629,8 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           groupId: row.groupId,
           mode: toMode(row.mode),
           shareIndex: row.shareIndex,
+          guardianKeyFingerprintHex: row.guardianKeyFingerprintHex,
+          guardianEncPubHex: row.guardianEncPubHex,
           encHex: row.encHex,
           ciphertextHex: row.ciphertextHex,
           createdAtMs: row.createdAt,

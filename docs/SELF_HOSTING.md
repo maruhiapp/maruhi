@@ -932,6 +932,47 @@ Do the migration in this order:
    old project. Workload leases and `maruhi server grant` need to be redone on
    the new project.
 
+*(2026-09-20, "DK K3")*: the server now accepts the device-key operations
+(`add_device` / `revoke_device` — one person, several device keys, each with
+its own cap) and stores DEK wraps, head attestations and guardian shares
+**per device** instead of per person. New surface: `GET/PUT/DELETE
+/auth/devices[/:fp]` and `/auth/devices/requests` (the device registry —
+advisory only, never an authorization input), a 422 `DeviceLimit` on the 17th
+active device of a member, and a `revoke_device` rotation trigger. Storage
+changes are automatic: the D1 migration rebuilds `guardian_shares` and adds
+the registry tables; each project's Durable Object rebuilds its `dek_wraps` /
+`head_attestations` tables on first access after the deploy (row-proportional,
+inside one transaction). **The update is one-way per project**: once a
+project's Durable Object has been opened on the new code, redeploying the
+previous Worker version makes that project unavailable (the older code refuses
+to run on the newer schema and the project cannot be opened at all until you
+deploy forward again — consistency over availability). Recovery is a forward
+deploy, not a rollback. Do the update in this order:
+
+1. **Update the server** (`git pull` + `bun run deploy` as above). A K2-era
+   CLI keeps working unchanged against the updated server — it holds one
+   device key per person, and every request it sends (single-device wrap
+   sets, device-less wrap references, attestations, pushes) is accepted
+   exactly as before.
+2. **Update every CLI and CI workflow** once the device-key CLI (K4) ships.
+   Until then, do not add a second device from any tool: a CLI that predates
+   the device-key crypto release ("DK K2") fails closed at verification time
+   when it *reads* a chain that contains an `add_device` / `revoke_device`
+   entry (the entry is reported as invalid — `invalid-payload`, or an unknown
+   operation), so a project must not carry such an entry before all of its
+   members' CLIs are updated.
+3. **Separate the reserve key and re-register duplicated devices** with the
+   updated CLI: today one key pair is copied to every machine; after the CLI
+   update each machine gets its own device key (`maruhi device …`), the copied
+   key stays on one machine only, and the reserve key moves into the key-wrap
+   ledger. Revoking a lost machine is then `maruhi device revoke` plus the
+   token revocation (`maruhi token revoke` — revoking a device never revokes
+   its API token) and the rotation the CLI recommends.
+
+Tenant note: DEK wraps are now one row per (member, device); measured cost is
+about 633 bytes per row in the project Durable Object (8,000 rows ≈ 4.8 MiB),
+well inside the per-project storage guard.
+
 ## Troubleshooting
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
