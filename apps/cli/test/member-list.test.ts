@@ -88,11 +88,17 @@ describe("maruhi member list", () => {
     expect(logs.indexOf(noneReader.userId)).toBeLessThan(logs.indexOf(owner.userId));
   });
 
-  it("--json は 1 文書(userId / role / scope / keyFingerprintHex)を stdout に出す", async () => {
+  it("--json は 1 文書(userId / role / scope / keyFingerprintHex / deviceKeyFingerprintsHex)を stdout に出す", async () => {
     const env = await startEnv(devMember);
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
     const document = JSON.parse(env.logs.join("\n")) as {
-      members: { userId: string; role: string; scope: unknown; keyFingerprintHex: string }[];
+      members: {
+        userId: string;
+        role: string;
+        scope: unknown;
+        keyFingerprintHex: string;
+        deviceKeyFingerprintsHex: string[];
+      }[];
     };
     expect(document.members.map((member) => member.userId)).toEqual([
       devMember.userId,
@@ -106,6 +112,8 @@ describe("maruhi member list", () => {
     expect(document.members[1]?.scope).toEqual({ kind: "listed", environmentIds: [] });
     expect(document.members[2]?.scope).toEqual({ kind: "all" });
     expect(document.members[2]?.keyFingerprintHex).toBe(owner.fingerprintHex);
+    // 構造化した端末 FP 列(2026-09-19 DK — K2 は端末 1 つ。設計録 §7 K2-10 j-4)
+    expect(document.members[2]?.deviceKeyFingerprintsHex).toEqual([owner.fingerprintHex]);
   });
 
   it("値ゼロなので agent-gate は掛からない: エージェント検出 + 非 TTY + 鍵なしでも成功する", async () => {
