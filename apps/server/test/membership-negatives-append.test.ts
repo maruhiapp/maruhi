@@ -9,6 +9,8 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  DEVICE_OPS,
+  prefixReplayable,
   toWireEntry,
   vectorAuthzNegatives,
   vectorEntries,
@@ -78,6 +80,52 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "propose-inner-shape-precedes-role",
   "approve-hash-uppercase",
   "approve-hash-bad-length",
+  // 端末鍵(DK): 閉集合リテラル(role_cap / ops)・固定長 hex(公開鍵・FP)は api-schema が先に 400
+  "add-device-role-cap-unknown",
+  "add-device-enc-pub-bad-length",
+  "add-device-sig-pub-uppercase-hex",
+  "add-device-format-precedes-actor",
+  "revoke-device-fp-bad-length",
+  "policy-ops-add-device",
+  "policy-ops-revoke-device",
+]);
+
+/**
+ * 端末鍵の 2 op(CRYPTO_SPEC §6.2 — 2026-09-19 DK)の negative と、`set_approval_policy` の
+ * ops に端末 op を書く negative: サーバーは K3 まで 2 op を受理しない
+ * (DeviceOpsNotAccepted 422 — 設計録 dk-design.md §7 K2-6。ES K2-10 の先例)ので、
+ * 合意規則の理由コードではなく受理ガードでの拒否を固定する(wire schema が先に拒む形は
+ * 400)。前提チェーン(端末 op を含む派生チェーン)は再生できないため、正規ヘッド 24 の
+ * 直後へ原本(再署名なし)を送る — ガードは署名検証・合意規則より前に立つ。K3 で受理
+ * ガードを外すときに本関数ごと外し、通常の 422 (expected_reason) 経路へ戻す
+ */
+function registerDeviceOpsGuardTest(negative: AuthzNegative): void {
+  const schemaRejected = WIRE_SCHEMA_REJECTED.has(negative.name);
+  const label = schemaRejected
+    ? "at the wire schema (400)"
+    : "with 422 (DeviceOpsNotAccepted — K3)";
+  it(`rejects ${negative.name} ${label}`, async () => {
+    const { head } = await replayVectorChain(vectorEntries.length);
+    const response = await appendEntry(vectorProjectId, head.hashHex, {
+      ...toWireEntry(negative.entry),
+      seq: head.seq + 1,
+      prevHashHex: head.hashHex,
+    });
+    if (schemaRejected) {
+      expect(response.status).toBe(400);
+      return;
+    }
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { _tag: string; op: string };
+    expect(body["_tag"]).toBe("DeviceOpsNotAccepted");
+    expect(body.op).toBe(negative.entry.op);
+  });
+}
+
+/** 端末 op を `set_approval_policy` の ops に書く negative(構造検査 — 前提チェーンは端末派生)。 */
+const POLICY_OPS_DEVICE_NEGATIVES: ReadonlySet<string> = new Set([
+  "policy-ops-add-device",
+  "policy-ops-revoke-device",
 ]);
 
 type AuthzNegative = (typeof vectorAuthzNegatives)[number];
@@ -146,54 +194,85 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
  * 外し、四眼 op の negative と四眼 op を含む派生チェーンを前提とする negative は
  * すべて通常の経路(合意規則の 422 / wire schema の 400 / 署名前の構造段)へ戻した
  * (K2-10 の `skipped` 58 + `fourEyesGuard` 7 = 65 件の内訳: consensus +57、
- * wireSchema +7、structureBeforeSignature +1)
+ * wireSchema +7、structureBeforeSignature +1)。
+ *
+ * 2026-09-20 DK K2(認可 negative +57): 端末 op の negative(41)+ ops に端末 op を書く
+ * negative(2)は受理ガード(`deviceOpsGuard` — wire schema が先の 7 件を含む)、
+ * checkpoint(+1)/ create・rotate(+3)は既存の分岐(複合側は端末派生チェーンを
+ * skip — membership-negatives-composite.test.ts)、端末派生チェーンを前提とする残り
+ * (10)は再生できないため `skipped`(合意規則は crypto 層の 4 実行環境テストが固定)。
+ * K3 で受理ガードを外すときは `skipped` を 0 にし、`deviceOpsGuard` の分を `consensus` /
+ * `wireSchema` へ戻す(ES K2-10 → K5 と同じ手順)
  */
 const EXPECTED_PARTITION = {
-  checkpoint: 20,
-  composite: 24,
+  checkpoint: 21,
+  composite: 27,
+  deviceOpsGuard: 43,
+  skipped: 10,
   structureBeforeSignature: 1,
   wireSchema: 8,
   consensus: 104,
 } as const;
 
+type PartitionBucket = keyof typeof EXPECTED_PARTITION;
+
+/**
+ * negative の分岐(判定順は固定): checkpoint → 複合(create / rotate)→ 端末鍵(DK)の
+ * 2 op と ops に端末 op を書く negative(K3 までサーバーが受理しない — DeviceOpsNotAccepted
+ * 422。設計録 dk-design.md §7 K2-6。(a) 受理ガード / wire schema での拒否を固定、(b) 前提
+ * チェーン自体が端末 op の受理を要するものは再生できないため `skipped`。K3 で両分岐ごと
+ * 外す)→ 四眼(PF1)の 4 op と四眼 op を含む派生チェーンは K5 からサーバーが再生・受理する
+ * (propose の受理ポリシーは固定時刻のベクターを拒まない — expires_at_ms は上界の内側で、
+ * 失効済みの提案は pending 上限の計算から除外されるだけ。設計録 es-design.md §11 K5-C)
+ */
+function bucketOf(negative: AuthzNegative): PartitionBucket {
+  const op = negative.entry.op;
+  if (op === "checkpoint") {
+    return "checkpoint";
+  }
+  if (op === "create_environment" || op === "rotate_epoch") {
+    return "composite";
+  }
+  if (DEVICE_OPS.has(op) || POLICY_OPS_DEVICE_NEGATIVES.has(negative.name)) {
+    return "deviceOpsGuard";
+  }
+  if (!prefixReplayable(negative)) {
+    return "skipped";
+  }
+  if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
+    return "structureBeforeSignature";
+  }
+  return WIRE_SCHEMA_REJECTED.has(negative.name) ? "wireSchema" : "consensus";
+}
+
+/** 分岐ごとの登録(複合は membership-negatives-composite.test.ts、skipped は crypto 層のみ)。 */
+const REGISTER_BY_BUCKET: Record<PartitionBucket, (negative: AuthzNegative) => void> = {
+  checkpoint: registerCheckpointAppendGuardTest,
+  composite: () => undefined,
+  deviceOpsGuard: registerDeviceOpsGuardTest,
+  skipped: () => undefined,
+  structureBeforeSignature: registerStructureBeforeSignatureTest,
+  wireSchema: registerWireSchemaRejectTest,
+  consensus: registerConsensusRejectTest,
+};
+
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
-  const partition: Record<keyof typeof EXPECTED_PARTITION, number> = {
+  const partition: Record<PartitionBucket, number> = {
     checkpoint: 0,
     composite: 0,
+    deviceOpsGuard: 0,
+    skipped: 0,
     structureBeforeSignature: 0,
     wireSchema: 0,
     consensus: 0,
   };
   for (const negative of vectorAuthzNegatives) {
-    const op = negative.entry.op;
-    if (op === "checkpoint") {
-      partition.checkpoint += 1;
-      registerCheckpointAppendGuardTest(negative);
-      continue;
-    }
-    if (op === "create_environment" || op === "rotate_epoch") {
-      partition.composite += 1;
-      continue;
-    }
-    // 四眼(PF1)の 4 op と四眼 op を含む派生チェーンは K5 からサーバーが再生・受理
-    // する(propose の受理ポリシーは固定時刻のベクターを拒まない — expires_at_ms は
-    // 上界の内側で、失効済みの提案は pending 上限の計算から除外されるだけ。
-    // 設計録 es-design.md §11 K5-C)
-    if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {
-      partition.structureBeforeSignature += 1;
-      registerStructureBeforeSignatureTest(negative);
-      continue;
-    }
-    if (WIRE_SCHEMA_REJECTED.has(negative.name)) {
-      partition.wireSchema += 1;
-      registerWireSchemaRejectTest(negative);
-      continue;
-    }
-    partition.consensus += 1;
-    registerConsensusRejectTest(negative);
+    const bucket = bucketOf(negative);
+    partition[bucket] += 1;
+    REGISTER_BY_BUCKET[bucket](negative);
   }
 
-  it("partitions the authz negatives as expected (K5 — 四眼 op を含めて全件を再生する)", () => {
+  it("partitions the authz negatives as expected (K5 — 四眼 op を含めて全件を再生する。DK K2 — 端末 op は受理ガード)", () => {
     expect(partition).toEqual(EXPECTED_PARTITION);
     expect(Object.values(partition).reduce((a, b) => a + b, 0)).toBe(vectorAuthzNegatives.length);
   });
