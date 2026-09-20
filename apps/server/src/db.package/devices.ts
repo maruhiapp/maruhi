@@ -123,17 +123,12 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
       }),
     upsert: ({ userId, keyFingerprintHex, encPubHex, sigPubHex, label, tokenId, limit, nowMs }) =>
       run(async () => {
-        // 既存行の更新(表示名・トークン id・公開鍵は FP が同じなら同じ鍵対 = 不変)
-        const updated = await db
-          .update(devices)
-          .set({ label, tokenId })
-          .where(and(eq(devices.userId, userId), eq(devices.keyFingerprintHex, keyFingerprintHex)))
-          .returning({ fp: devices.keyFingerprintHex });
-        if (updated.length === 1) {
-          return true;
-        }
-        // 新規行は上限付き INSERT … SELECT(TokenRepo と同じ形 — 並行登録の超過を許さない)
-        const inserted = await db
+        // 1 文の上限付き INSERT … SELECT … ON CONFLICT DO UPDATE(TokenRepo と同じ形 —
+        // 並行登録の超過を許さない)。同じ (user, FP) の行が既にあれば表示名・トークン id
+        // だけを更新する(公開鍵は FP が同じなら同じ鍵対 = 不変)。存在する行は上限に
+        // 数えない(更新は WHERE の OR 側で通す)。同じ FP への並行した初回 PUT は片方が
+        // INSERT、もう片方が主キー衝突 → DO UPDATE に倒れ、どちらも冪等に 204 になる
+        const upserted = await db
           .insert(devices)
           .select(
             db
@@ -148,11 +143,17 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
               })
               .from(sql`(select 1)`)
               .where(
-                sql`(select count(*) from ${devices} where ${devices.userId} = ${userId}) < ${limit}`,
+                sql`(select count(*) from ${devices} where ${devices.userId} = ${userId}) < ${limit}
+                  or exists(select 1 from ${devices} where ${devices.userId} = ${userId}
+                            and ${devices.keyFingerprintHex} = ${keyFingerprintHex})`,
               ),
           )
+          .onConflictDoUpdate({
+            target: [devices.userId, devices.keyFingerprintHex],
+            set: { label, tokenId },
+          })
           .returning({ fp: devices.keyFingerprintHex });
-        return inserted.length === 1;
+        return upserted.length === 1;
       }),
     remove: (userId, keyFingerprintHex) =>
       run(async () => {
