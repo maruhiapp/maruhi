@@ -23,7 +23,8 @@ import { forEachEndpoint, requireRegisteredEndpoint } from "./sweep.ts";
  * Endpoints a session principal may call (AUTH_SPEC §5 の肯定列挙のうち実装済み
  * 面) — `[group, endpoint]` pairs:
  *
- * - 認証・自己情報系: `auth.me` / `auth.logout` / `auth.recoveryStatus`
+ * - 認証・自己情報系: `auth.me` / `auth.logout` / `auth.recoveryStatus` /
+ *   `devices.list`(§13-11 — DK)
  *   (§3 のフロー — githubStart / githubCallback — は未認証面であり本表の外)
  * - 読み取り: チェーン取得(§11)、プロジェクト一覧(§11-5 — W2a)、環境一覧
  *   (§12-4)、メタデータのみ pull(§12-7)、監査読み取り(AUDIT_SPEC §7 —
@@ -42,6 +43,9 @@ export const SESSION_ALLOWED_ENDPOINTS: ReadonlyArray<readonly [group: string, e
     // 台帳の状態表示(§13-7 — KL3。ラップ・分片を運ばない。登録・取得・削除・
     // 承認はすべて端末限定 = 列挙外)
     ["keyWraps", "status"],
+    // 端末登録簿の読み取り(§13-11 — DK。表示名と鍵 FP・公開鍵のみ、秘密を運ばない。
+    // 登録・更新・削除・追加要求はすべて端末限定 = 列挙外)
+    ["devices", "list"],
     ["auth", "listTokens"],
     ["auth", "revokeTokenById"],
     ["membership", "get"],

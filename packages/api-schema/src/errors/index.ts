@@ -26,6 +26,14 @@ export {
   UnauthorizedError,
 } from "./auth.ts";
 export {
+  DeviceFingerprintMismatchError,
+  DeviceNotFoundError,
+  DeviceRegistryConflictError,
+  DeviceRegistryConflictReasonSchema,
+  DeviceRegistryLimitError,
+  DeviceRegistryLimitReasonSchema,
+} from "./devices.ts";
+export {
   HandoffConflictError,
   HandoffConflictReasonSchema,
   HandoffNotFoundError,
@@ -49,6 +57,7 @@ export {
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
   CompositeRequiredError,
+  DeviceLimitError,
   DeviceOpsNotAcceptedError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,

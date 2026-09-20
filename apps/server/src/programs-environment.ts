@@ -23,10 +23,12 @@ import type {
 import {
   currentEpochOf,
   dataEvent,
+  ensureDevicePermission,
   optionalDistributionFields,
   rejectData,
   requireEnvironmentAccess,
   requireMemberState,
+  withSigningDevice,
 } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
@@ -63,16 +65,23 @@ export const renameEnvironmentProgram = (
       });
     }
     // 判定順(値の裁定 D と同型): 上限 → CAS → ステートメント署名 →
-    // マニフェスト受理 → 原子書き込み
-    const signedBytesHashHex = yield* acceptMetaStatement({
-      projectId,
-      environmentId,
-      target: { kind: "environment" },
-      latestMetaVersion: environment.latestMetaVersion,
-      history,
+    // マニフェスト受理 → 原子書き込み。署名した端末はステートメント署名から解き
+    // (設計録 §8 K3-1)、第 2 段の認可(端末の実効権限 — member × 環境 ∈ 実効 scope)
+    // を通してからマニフェストを同じ端末で検証する
+    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement,
-    });
+      (candidate) =>
+        acceptMetaStatement({
+          projectId,
+          environmentId,
+          target: { kind: "environment" },
+          latestMetaVersion: environment.latestMetaVersion,
+          history,
+          member: candidate,
+          statement,
+        }),
+    );
+    yield* ensureDevicePermission(author, "member", environmentId);
     // マニフェストの複合受理(§12-4 / §12-5): 環境 rename は新しい
     // envMetaSigHashHex を写したマニフェスト(manifestVersion + 1)を同梱する。
     // envMeta の期待値は rename 適用後 = 今回のステートメント自身
@@ -80,7 +89,7 @@ export const renameEnvironmentProgram = (
       projectId,
       environmentId,
       history,
-      member,
+      member: author,
       manifest,
       digestOverride: null,
       envMeta: { metaVersion: statement.metaVersion, sigHashHex: signedBytesHashHex },
@@ -92,7 +101,7 @@ export const renameEnvironmentProgram = (
         environmentId,
         statement,
         signedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       acceptedManifest.writeSync(now);
@@ -100,7 +109,7 @@ export const renameEnvironmentProgram = (
         dataEvent(actor, now, "env.renamed", {
           environmentId,
           payload: { name: statement.name },
-          actorKeyFingerprintHex: member.keyFingerprintHex,
+          actorKeyFingerprintHex: author.keyFingerprintHex,
         }),
       );
     });
@@ -126,15 +135,21 @@ export const deleteEnvironmentProgram = (
     if (statement.name !== environment.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    const signedBytesHashHex = yield* acceptMetaStatement({
-      projectId,
-      environmentId,
-      target: { kind: "environment" },
-      latestMetaVersion: environment.latestMetaVersion,
-      history,
+    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
-      statement,
-    });
+      (candidate) =>
+        acceptMetaStatement({
+          projectId,
+          environmentId,
+          target: { kind: "environment" },
+          latestMetaVersion: environment.latestMetaVersion,
+          history,
+          member: candidate,
+          statement,
+        }),
+    );
+    // 第 2 段(設計録 §8 K3-1): 署名した端末の実効権限で admin × 環境 ∈ 実効 scope
+    yield* ensureDevicePermission(author, "admin", environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
@@ -150,7 +165,7 @@ export const deleteEnvironmentProgram = (
         environmentId,
         statement,
         signedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
       audit.appendManySync([
@@ -158,13 +173,13 @@ export const deleteEnvironmentProgram = (
           dataEvent(actor, now, "var.deleted", {
             environmentId,
             variableId: variable.variableId,
-            actorKeyFingerprintHex: member.keyFingerprintHex,
+            actorKeyFingerprintHex: author.keyFingerprintHex,
           }),
         ),
         dataEvent(actor, now, "env.deleted", {
           environmentId,
           payload: { name: environment.name },
-          actorKeyFingerprintHex: member.keyFingerprintHex,
+          actorKeyFingerprintHex: author.keyFingerprintHex,
         }),
       ]);
     });

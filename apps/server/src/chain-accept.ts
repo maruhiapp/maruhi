@@ -6,7 +6,7 @@
 // 修正が片側にしか当たらないズレを構造的に防ぐ。エラーは DataRejection で運び、
 // 呼び出し側には outcome への畳み込みだけを残す。
 
-import type { ChainInvalidError, ProposalIndex } from "@maruhi/core";
+import type { ChainInvalidError, ChainMirrorSubject, ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -23,6 +23,7 @@ import {
   MAX_ENTRY_CANONICAL_BYTES,
 } from "./policy.ts";
 import {
+  detectDeviceRevocation,
   detectMemberRemoval,
   detectRoleChange,
   detectServerRevocation,
@@ -181,6 +182,10 @@ export interface ChainAcceptStores {
         keepEncPubHex: string,
       ) => readonly StaleWrapRef[];
       readonly deleteHeadAttestation: (attesterUserId: string) => void;
+      readonly deleteDeviceHeadAttestation: (
+        attesterUserId: string,
+        keyFingerprintHex: string,
+      ) => void;
     };
   };
 }
@@ -230,6 +235,9 @@ const NO_PROPOSALS: ProposalIndex = new Map();
  * 副作用を approve の seq を起点に走らせる(CRYPTO_SPEC §6.4「内側 op を直接受理した
  * 場合と同一に、当該 approve エントリの受理タスク内で」)。戻り値は適用した提案
  * (未完成・四眼以外は null)。
+ *
+ * 端末鍵(K3): `subject` は `add_device` の載せた端末 FP(受理側が計算 — chain-commit.ts)。
+ * `revoke_device` は当該端末の申告行の削除 + 要ローテーション検出変種(AUDIT_SPEC §4.1)。
  */
 export function insertAcceptedEntrySync(
   stores: ChainAcceptStores,
@@ -238,9 +246,10 @@ export function insertAcceptedEntrySync(
   canonicalBytes: number,
   nowMs: number,
   proposals: ProposalIndex,
+  subject: ChainMirrorSubject = {},
 ): AppliedProposal | null {
   stores.chainStore.insertSync(entry, applied.state.headHashHex, canonicalBytes);
-  const rows = chainMirrorEvents(entry, nowMs, proposals);
+  const rows = chainMirrorEvents(entry, nowMs, proposals, subject);
   stores.audit.appendManySync(rows);
   applyAcceptanceSideEffectsSync(stores, entry, entry.seq, nowMs);
   if (entry.op !== "approve") {
@@ -297,6 +306,10 @@ export function insertAcceptedEntryPairSync(
  * - `remove_member` はさらに対象のヘッド申告行を削除する(CRYPTO_SPEC §6.4 /
  *   AUTH_SPEC §16-1 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵
  *   ラップ掃除と同型)
+ * - `revoke_device`(2026-09-19 DK — CRYPTO_SPEC §6.4): 失効した各端末の申告行の
+ *   削除(AUTH_SPEC §16-1)+ 要ローテーション検出の `revoke_device` 変種(AUDIT_SPEC
+ *   §4.1 — 端末の有効区間 ∩ 人のアクセス窓 ∩ 端末 scope)。`add_device` の副作用は
+ *   ミラーのみ(バックフィルはクライアント — §7)
  * - 四眼の 4 op 自身(`set_approval_policy` / `propose` / `approve` / `withdraw`)に
  *   固有の副作用はない(完成した approve の内側 op は呼び出し側が本関数を再度呼ぶ)
  */
@@ -357,6 +370,25 @@ function applyAcceptanceSideEffectsSync(
       detectServerRevocation({
         read: stores.audit.readRotationSync,
         serverKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
+        triggerChainSeq: seq,
+        nowMs,
+      }),
+    );
+    return;
+  }
+  if (operation.op === "revoke_device") {
+    for (const fingerprintHex of operation.payload.deviceFingerprintsHex) {
+      stores.dataStore.write.deleteDeviceHeadAttestation(
+        operation.payload.targetUserId,
+        fingerprintHex,
+      );
+    }
+    appendDetected(
+      stores,
+      detectDeviceRevocation({
+        read: stores.audit.readRotationSync,
+        targetUserId: operation.payload.targetUserId,
+        deviceFingerprintsHex: operation.payload.deviceFingerprintsHex,
         triggerChainSeq: seq,
         nowMs,
       }),

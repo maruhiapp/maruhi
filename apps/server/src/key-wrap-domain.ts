@@ -42,7 +42,7 @@ export interface GuardianGroupRecord {
   readonly shares: readonly GuardianShareRecord[];
 }
 
-/** 保護者から見た自分の分片(ward 情報つき)。 */
+/** 保護者から見た自分の分片(ward 情報つき)。**端末ごとに 1 行**(2026-09-19 DK)。 */
 export interface WardShareRecord {
   readonly wardUserId: string;
   /** linked_identities.provider_login の表示用スナップショット(識別子ではない) */
@@ -50,6 +50,9 @@ export interface WardShareRecord {
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
+  /** 封印先の端末鍵(保護者の端末 — 行の同定) */
+  readonly guardianKeyFingerprintHex: string;
+  readonly guardianEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly createdAtMs: number;
@@ -77,7 +80,7 @@ export interface HandoffApprovalRecord {
 }
 
 /** §13-8 の固定窓の種別。 */
-export type KeyWrapWindowKind = "blob-fetch" | "handoff-request" | "approval";
+export type KeyWrapWindowKind = "blob-fetch" | "handoff-request" | "approval" | "device-request";
 
 /** 固定窓の消費結果。 */
 export type KeyWrapWindowDecision =

@@ -296,6 +296,7 @@ function fakeRead(input: {
 }): AuditRotationRead {
   return {
     membershipEventsFor: () => input.membership,
+    deviceEventsFor: () => [],
     serverGrantEventsFor: () => [],
     variableLifecycles: () => input.lifecycles,
     variableReadsBy: () => input.reads ?? [],
@@ -314,6 +315,7 @@ const grantRead = (
   access: readonly { seq: number; environmentId: string }[],
 ): AuditRotationRead => ({
   membershipEventsFor: () => [],
+  deviceEventsFor: () => [],
   serverGrantEventsFor: () => events,
   variableLifecycles: () => [
     { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },

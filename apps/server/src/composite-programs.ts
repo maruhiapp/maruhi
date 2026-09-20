@@ -41,6 +41,8 @@ import type {
 } from "./data-plane.ts";
 import {
   dataEvent,
+  deviceOf,
+  ensureDevicePermission,
   loadInitializedChain,
   rejectData,
   requireRole,
@@ -75,14 +77,33 @@ export interface EnvironmentChainResultValue {
  * 受理面の 403 が先に立ち、合意規則 `environment-out-of-scope`(verifyChain の
  * 422)は多層防御として残る(設計録 es-design.md §9 K3-G)。
  */
-const loadChainForComposite = (callerUserId: string, environmentId: string, cache: StateCache) =>
+const loadChainForComposite = (
+  callerUserId: string,
+  environmentId: string,
+  entryActorFingerprintHex: string,
+  entrySeq: number,
+  cache: StateCache,
+) =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
     // history は追記前チェーンの履歴索引: 同梱ステートメントの宣言ヘッド実在
     // 検査は追記前のチェーンに対して行う(§12-4 — 同梱エントリ自身をヘッドに
     // 宣言する形は受理しない)
     const { state, history } = yield* deriveStoredState(chain, cache);
-    const member = yield* requireRoleInScope(state, callerUserId, "member", environmentId);
+    const person = yield* requireRoleInScope(state, callerUserId, "member", environmentId);
+    // 第 2 段(設計録 §8 K3-1): 同梱エントリの actor FP が名指す端末の実効権限で
+    // member × 環境 ∈ 実効 scope を再判定する(端末は試行不要 — エントリが名指す)。
+    // 呼び出し主体の有効な端末でない FP は verifyChain の actor-key-mismatch と同じ
+    // 理由で拒否する(受理面の 403 が verifyChain の 422 より先に立つ形は不変)
+    const member = deviceOf(person, entryActorFingerprintHex);
+    if (member === undefined) {
+      return yield* rejectData({
+        kind: "chain-entry-invalid",
+        seq: entrySeq,
+        reason: "actor-key-mismatch",
+      });
+    }
+    yield* ensureDevicePermission(member, "member", environmentId);
     return { chain, state, history, member, projectId: chain.genesisHashHex };
   });
 
@@ -109,7 +130,7 @@ const ensureCompositeWrapSet = (input: {
         return yield* rejectData({ kind: "dek-wrap-rejected", reason: "epoch-out-of-range" });
       }
     }
-    yield* ensureWrapSetAcceptable(
+    const signer = yield* ensureWrapSetAcceptable(
       input.projectId,
       input.environmentId,
       input.appliedState,
@@ -117,6 +138,11 @@ const ensureCompositeWrapSet = (input: {
       input.establishedEpoch,
       input.deks,
     );
+    // 同梱ラップの署名者 = 同梱エントリの端末(§12-4 — 1 リクエスト 1 端末)。
+    // 別の有効な端末で署名したラップは受理しない(fail-closed)
+    if (signer !== null && signer.keyFingerprintHex !== input.member.keyFingerprintHex) {
+      return yield* rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" });
+    }
     // 完全一致(§12-6 の初回登録)を個数で明示要求する: checkWrapSets は
     // リクエストに現れたエポックしか見ないため、空集合が素通りしないように。
     // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順は
@@ -305,6 +331,8 @@ export const createEnvironmentCompositeProgram = (
     const { chain, state, history, member, projectId } = yield* loadChainForComposite(
       actor.userId,
       input.entry.payload.environmentId,
+      input.entry.actor.keyFingerprintHex,
+      input.entry.seq,
       cache,
     );
     // DO ストレージ総量ガード(§12-8): 環境作成は成長面(環境行・
@@ -482,6 +510,8 @@ export const rotateEpochCompositeProgram = (
     const { chain, state, member, projectId } = yield* loadChainForComposite(
       actor.userId,
       environmentId,
+      input.entry.actor.keyFingerprintHex,
+      input.entry.seq,
       cache,
     );
     // 複合内整合検査(§12-4): URL 座標と同梱エントリの environment_id の一致。

@@ -22,6 +22,7 @@ import {
   KeyWrapPolicyError,
   KeyWrapRateLimitedError,
   maruhiApi,
+  MAX_GUARDIAN_DEVICES_PER_GUARDIAN,
   MAX_GUARDIAN_GROUPS_PER_USER,
   MAX_HANDOFF_APPROVALS_PER_REQUEST,
   MAX_PASSKEY_WRAPS_PER_USER,
@@ -49,7 +50,9 @@ import type {
 
 /** 窓の拒否を型付き 429 へ写す。 */
 function rateLimited(
-  window: KeyWrapWindowKind,
+  // 台帳の 3 窓のみ(端末追加要求の窓 `device-request` は devices グループが自分の
+  // 型付き 429 へ写す — handlers-devices.ts)
+  window: Exclude<KeyWrapWindowKind, "device-request">,
   decision: KeyWrapWindowDecision,
 ): Effect.Effect<void, KeyWrapRateLimitedError> {
   return decision.allowed
@@ -89,25 +92,74 @@ function parsePasskeyParams(json: string): PasskeyParams {
 }
 
 /**
- * 分片集合の構造検査(§13-7 / §13-8): share_index が 1..n をちょうど 1 回ずつ
- * 覆う・保護者が重複しない・ward 自身を含まない・`all` は 2 人以上。
+ * 分片集合の構造検査(§13-7 / §13-8 — 端末行。2026-09-19 DK / 設計録 §8 K3-10):
+ * **論理分片** = distinct な share_index が 1..n をちょうど 1 回ずつ覆う・同じ
+ * share_index は同じ保護者・保護者が論理分片を跨いで重複しない・ward 自身を含まない・
+ * `all` は 2 人以上。端末行は同じ (share_index, 保護者) に端末鍵 FP が異なる行が
+ * 複数並ぶ形で、(share_index, FP) の重複と 1 保護者あたりの端末行数(16 — §12-8)超過は
+ * `duplicate-guardian` / `share-count`。
  */
+interface LogicalShareIndex {
+  readonly guardianOfIndex: ReadonlyMap<number, string>;
+  readonly devicesOfIndex: ReadonlyMap<number, ReadonlySet<string>>;
+}
+
+/**
+ * 端末行を論理分片(share_index)ごとに畳む。同じ share_index に 2 人の保護者、または
+ * 同じ (share_index, FP) が 2 行あれば `duplicate-guardian`。
+ */
+function indexLogicalShares(
+  shares: readonly {
+    readonly shareIndex: number;
+    readonly guardianUserId: string;
+    readonly guardianKeyFingerprintHex: string;
+  }[],
+): LogicalShareIndex | "duplicate-guardian" {
+  const guardianOfIndex = new Map<number, string>();
+  const devicesOfIndex = new Map<number, Set<string>>();
+  for (const share of shares) {
+    const guardian = guardianOfIndex.get(share.shareIndex);
+    if (guardian !== undefined && guardian !== share.guardianUserId) {
+      return "duplicate-guardian";
+    }
+    guardianOfIndex.set(share.shareIndex, share.guardianUserId);
+    const devices = devicesOfIndex.get(share.shareIndex) ?? new Set<string>();
+    if (devices.has(share.guardianKeyFingerprintHex)) {
+      return "duplicate-guardian";
+    }
+    devices.add(share.guardianKeyFingerprintHex);
+    devicesOfIndex.set(share.shareIndex, devices);
+  }
+  return { guardianOfIndex, devicesOfIndex };
+}
+
 function guardianPolicyViolation(input: {
   readonly wardUserId: string;
   readonly mode: "any" | "all";
-  readonly shares: readonly { readonly shareIndex: number; readonly guardianUserId: string }[];
+  readonly shares: readonly {
+    readonly shareIndex: number;
+    readonly guardianUserId: string;
+    readonly guardianKeyFingerprintHex: string;
+  }[];
 }): "share-count" | "self-guardian" | "duplicate-guardian" | null {
-  const indexes = new Set(input.shares.map((s) => s.shareIndex));
-  const contiguous =
-    indexes.size === input.shares.length &&
-    input.shares.every((s) => s.shareIndex >= 1 && s.shareIndex <= input.shares.length);
-  if (!contiguous || (input.mode === "all" && input.shares.length < 2)) {
+  const indexed = indexLogicalShares(input.shares);
+  if (indexed === "duplicate-guardian") {
+    return indexed;
+  }
+  const { guardianOfIndex, devicesOfIndex } = indexed;
+  const n = guardianOfIndex.size;
+  const contiguous = [...guardianOfIndex.keys()].every((index) => index >= 1 && index <= n);
+  const withinDeviceLimit = [...devicesOfIndex.values()].every(
+    (devices) => devices.size <= MAX_GUARDIAN_DEVICES_PER_GUARDIAN,
+  );
+  if (!contiguous || !withinDeviceLimit || (input.mode === "all" && n < 2)) {
     return "share-count";
   }
-  if (input.shares.some((s) => s.guardianUserId === input.wardUserId)) {
+  const guardians = [...guardianOfIndex.values()];
+  if (guardians.includes(input.wardUserId)) {
     return "self-guardian";
   }
-  if (new Set(input.shares.map((s) => s.guardianUserId)).size !== input.shares.length) {
+  if (new Set(guardians).size !== guardians.length) {
     return "duplicate-guardian";
   }
   return null;
@@ -125,20 +177,39 @@ function rolesFor(
   if (request.userId === principalUserId) {
     return Effect.succeed(["device"] as const);
   }
-  return repo
-    .sharesOfGuardian(principalUserId, request.userId)
-    .pipe(
-      Effect.map((shares) =>
-        shares.length === 0
-          ? null
-          : shares.map((s) => ({ groupId: s.groupId, mode: s.mode, shareIndex: s.shareIndex })),
-      ),
-    );
+  return repo.sharesOfGuardian(principalUserId, request.userId).pipe(
+    Effect.map((shares) =>
+      shares.length === 0
+        ? null
+        : // 役割は論理分片(グループ × share_index)ごと 1 つ — 端末行を畳む(DK)
+          logicalShareRoles(shares),
+    ),
+  );
 }
 
 type HandoffRole =
   | "device"
   | { readonly groupId: string; readonly mode: "any" | "all"; readonly shareIndex: number };
+
+/** 端末行の列 → 論理分片ごとの役割(同じ (group, share_index) は 1 つ)。 */
+function logicalShareRoles(
+  shares: readonly {
+    readonly groupId: string;
+    readonly mode: "any" | "all";
+    readonly shareIndex: number;
+  }[],
+): readonly HandoffRole[] {
+  const seen = new Set<string>();
+  const roles: HandoffRole[] = [];
+  for (const share of shares) {
+    const key = `${share.groupId}:${share.shareIndex}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      roles.push({ groupId: share.groupId, mode: share.mode, shareIndex: share.shareIndex });
+    }
+  }
+  return roles;
+}
 
 /**
  * 役割と承認 payload の整合(§13-7): device は ward 本人・share_index 0・blob 必須。
@@ -422,15 +493,26 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const shares = yield* repo.sharesOfGuardian(principal.userId);
+        // 一覧は論理分片(グループ)ごと 1 行 — 端末行を畳む(2026-09-19 DK)
+        const seen = new Set<string>();
         return {
-          wards: shares.map((s) => ({
-            wardUserId: s.wardUserId,
-            wardLogin: s.wardLogin,
-            groupId: s.groupId,
-            mode: s.mode,
-            shareIndex: s.shareIndex,
-            createdAtMs: s.createdAtMs,
-          })),
+          wards: shares
+            .filter((s) => {
+              const key = `${s.groupId}:${s.shareIndex}`;
+              if (seen.has(key)) {
+                return false;
+              }
+              seen.add(key);
+              return true;
+            })
+            .map((s) => ({
+              wardUserId: s.wardUserId,
+              wardLogin: s.wardLogin,
+              groupId: s.groupId,
+              mode: s.mode,
+              shareIndex: s.shareIndex,
+              createdAtMs: s.createdAtMs,
+            })),
         };
       }),
     )
@@ -440,7 +522,10 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const shares = yield* repo.sharesOfGuardian(principal.userId);
-        const share = shares.find((s) => s.groupId === params.groupId);
+        // 自分の端末行(FP 昇順 — repo が並べる)。先頭行が従来のフィールド、全行が
+        // deviceShares(設計録 §8 K3-10 — 端末 1 つなら唯一の行 = 従来どおり)
+        const deviceRows = shares.filter((s) => s.groupId === params.groupId);
+        const share = deviceRows[0];
         if (share === undefined) {
           return yield* Effect.fail(new KeyWrapNotFoundError());
         }
@@ -467,6 +552,12 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           shareIndex: share.shareIndex,
           encHex: share.encHex,
           ciphertextHex: share.ciphertextHex,
+          deviceShares: deviceRows.map((row) => ({
+            guardianKeyFingerprintHex: row.guardianKeyFingerprintHex,
+            guardianEncPubHex: row.guardianEncPubHex,
+            encHex: row.encHex,
+            ciphertextHex: row.ciphertextHex,
+          })),
         };
       }),
     )

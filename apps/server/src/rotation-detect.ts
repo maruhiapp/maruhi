@@ -2,7 +2,7 @@
 // フラグの解消導出(§4.1 手順 5)。
 //
 // - 検出は `remove_member` / `change_role`(降格・scope 縮小 — 2026-09-14 ES)/
-//   `revoke_server` の受理時に project DO 内で走り、ミラー追記と同一の同期タスクで
+//   `revoke_server` / `revoke_device`(端末の窓 — 2026-09-19 DK)の受理時に project DO 内で走り、ミラー追記と同一の同期タスクで
 //   `rotation.recommended`(1 (variable × environment) 1 行 — §3.3)を追記する
 //   (chain-accept.ts が結線)。座標系は監査 seq(DO 内の全順序 — チェーン受理も
 //   データ操作も同じ列に載る)
@@ -23,6 +23,7 @@
 import type {
   AuditEventInput,
   AuditRotationRead,
+  DeviceEventRow,
   MembershipEventRow,
   RotationFlagSourceRow,
   ScopeSnapshot,
@@ -36,7 +37,7 @@ export type RotationBasis = "read" | "readable";
  * 検出を起こした op(§3.3 `rotation.recommended` の payload.trigger — 2026-09-14
  * ES): remove_member / change_role(降格・縮小)/ revoke_server。
  */
-export type RotationTrigger = "remove_member" | "change_role" | "revoke_server";
+export type RotationTrigger = "remove_member" | "change_role" | "revoke_server" | "revoke_device";
 
 /** 現在有効な要ローテーションフラグ(§4.1 手順 5 の導出結果。RPC 境界を渡る)。 */
 export interface EffectiveRotationFlag {
@@ -252,6 +253,8 @@ function recommendedEvent(input: {
   readonly triggerChainSeq: number;
   readonly targetUserId?: string;
   readonly targetKeyFingerprintHex?: string;
+  /** revoke_device 変種のみ: 失効 FP 集合(AUDIT_SPEC §4.1 — payload に写す)。 */
+  readonly revokedDeviceKeyFingerprints?: readonly string[];
 }): AuditEventInput {
   return {
     event: "rotation.recommended",
@@ -267,6 +270,9 @@ function recommendedEvent(input: {
       basis: input.basis,
       triggerChainSeq: input.triggerChainSeq,
       trigger: input.trigger,
+      ...(input.revokedDeviceKeyFingerprints === undefined
+        ? {}
+        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
     },
   };
 }
@@ -285,8 +291,12 @@ function detectForMember(input: {
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
   readonly nowMs: number;
-  readonly selectWindows: (windows: readonly SeqInterval[]) => readonly SeqInterval[];
+  readonly selectWindows: (
+    windows: readonly SeqInterval[],
+    environmentId: string,
+  ) => readonly SeqInterval[];
   readonly transitions: readonly ScopeTransition[];
+  readonly revokedDeviceKeyFingerprints?: readonly string[];
 }): readonly AuditEventInput[] {
   const windowsOf = windowsByEnvironment(input.transitions);
   const selected = new Map<string, readonly SeqInterval[]>();
@@ -294,7 +304,7 @@ function detectForMember(input: {
     (lifetime) => {
       let windows = selected.get(lifetime.environmentId);
       if (windows === undefined) {
-        windows = input.selectWindows(windowsOf(lifetime.environmentId));
+        windows = input.selectWindows(windowsOf(lifetime.environmentId), lifetime.environmentId);
         selected.set(lifetime.environmentId, windows);
       }
       return windows.some((window) => overlaps(window, lifetime.start, lifetime.end));
@@ -319,6 +329,9 @@ function detectForMember(input: {
       trigger: input.trigger,
       triggerChainSeq: input.triggerChainSeq,
       targetUserId: input.targetUserId,
+      ...(input.revokedDeviceKeyFingerprints === undefined
+        ? {}
+        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
     }),
   );
 }
@@ -406,6 +419,98 @@ export function detectRoleChange(input: {
   });
 }
 
+/** 2 区間の交差(空なら null)。 */
+function intersect(a: SeqInterval, b: SeqInterval): SeqInterval | null {
+  const start = Math.max(a.start, b.start);
+  const end = Math.min(a.end, b.end);
+  return start < end ? { start, end } : null;
+}
+
+/**
+ * 失効した端末の有効区間と端末 scope(§4.1 の revoke_device 変種 — 手順 1。設計録
+ * dk-design.md §8 K3-11): 契機より前の最新の `chain.device_added`(payload の FP が
+ * 一致)から契機まで。どの device_added にも無い FP は `add_member` / `genesis` の
+ * 最初の鍵で、区間は在籍区間の開始(契機より前の最新の open 遷移)から、scope は
+ * all(最初の鍵の cap は構造的に (owner, all) — CRYPTO_SPEC §6.2)。scope が読めない
+ * 行は all(見逃さない側 — ES K3-F)。
+ */
+function revokedDeviceSpans(
+  membership: readonly MembershipEventRow[],
+  devices: readonly DeviceEventRow[],
+  fingerprintsHex: readonly string[],
+  triggerSeq: number,
+): readonly { readonly interval: SeqInterval; readonly scope: ScopeSnapshot }[] {
+  const tenureStart =
+    membership
+      .filter(
+        (event) =>
+          event.seq < triggerSeq &&
+          (event.event === "chain.genesis" || event.event === "chain.member_added"),
+      )
+      .at(-1)?.seq ?? 0;
+  return fingerprintsHex.map((fingerprintHex) => {
+    const added = devices
+      .filter(
+        (event) =>
+          event.seq < triggerSeq &&
+          event.event === "chain.device_added" &&
+          event.fingerprintsHex.includes(fingerprintHex),
+      )
+      .at(-1);
+    return {
+      interval: { start: added?.seq ?? tenureStart, end: triggerSeq },
+      scope: added?.scope ?? ALL_SCOPE,
+    };
+  });
+}
+
+/**
+ * `revoke_device` 受理時の検出(§4.1 の revoke_device 変種 — 2026-09-19 DK)。
+ * 呼び出しはミラー追記の後(直前に書いた `chain.device_revoked` 行が契機)。
+ * 候補 = 各失効端末の有効区間 ∩ 人の環境別アクセス窓 ∩ 端末 scope(端末 scope に
+ * E を含まない端末は窓なし = 票だけの端末〔scope 空〕の失効は行を書かない)。
+ * (a) は remove の変種と同じく actor.user_id の `var.read` を区間内で照合する
+ * (`var.read` は FP を持たない — K1-12)。対象者は在籍を続けるため在籍区間は
+ * 閉じない(契機 seq で切った窓で検出する — 降格の変種と同型)。
+ */
+export function detectDeviceRevocation(input: {
+  readonly read: AuditRotationRead;
+  readonly targetUserId: string;
+  readonly deviceFingerprintsHex: readonly string[];
+  readonly triggerChainSeq: number;
+  readonly nowMs: number;
+}): readonly AuditEventInput[] {
+  const membership = input.read.membershipEventsFor(input.targetUserId);
+  if (membership.length === 0) {
+    return [];
+  }
+  const trigger = input.read.deviceEventsFor(input.targetUserId).at(-1);
+  if (trigger === undefined || trigger.event !== "chain.device_revoked") {
+    return [];
+  }
+  const spans = revokedDeviceSpans(
+    membership,
+    input.read.deviceEventsFor(input.targetUserId),
+    input.deviceFingerprintsHex,
+    trigger.seq,
+  );
+  return detectForMember({
+    ...input,
+    trigger: "revoke_device",
+    transitions: membershipTransitions(membership),
+    revokedDeviceKeyFingerprints: input.deviceFingerprintsHex,
+    selectWindows: (windows, environmentId) =>
+      windows.flatMap((window) =>
+        spans
+          .filter((span) => scopeIncludes(span.scope, environmentId))
+          .flatMap((span) => {
+            const clipped = intersect(window, span.interval);
+            return clipped === null ? [] : [clipped];
+          }),
+      ),
+  });
+}
+
 /**
  * `revoke_server` 受理時の検出(§4.1 の revoke_server 変種)。区間 = 当該
  * サーバー鍵 FP の grant 区間(再 grant があれば区間ごと)、候補 = 各区間の
@@ -465,7 +570,12 @@ export function detectServerRevocation(input: {
 /** payload.trigger の読み出し(サーバー自身が書いた行 — 型は防御的に確認)。 */
 function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   const trigger = row.payload?.["trigger"];
-  if (trigger === "remove_member" || trigger === "change_role" || trigger === "revoke_server") {
+  if (
+    trigger === "remove_member" ||
+    trigger === "change_role" ||
+    trigger === "revoke_server" ||
+    trigger === "revoke_device"
+  ) {
     return trigger;
   }
   // K3(2026-09-15)前の保存行は trigger を持たない: 当時の変種は remove_member /

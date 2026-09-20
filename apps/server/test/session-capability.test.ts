@@ -73,28 +73,30 @@ function listEndpoints(): EndpointInfo[] {
  * 使い、許可面の検証がスコープ検査(404)でなくエンドポイント本体まで届くように
  * する。未知のパラメータ名は fail-loud(新設面はここへの追記を強制される)。
  */
+/**
+ * パスパラメータの置換表。実在しなくてよいものは 404 = 非 session-not-allowed で
+ * 十分(tokenId / wrapId / groupId = ULID 形、requestId = ハンドオフ要求 id〔SHA-256
+ * hex — AUTH_SPEC §13-7〕、fp = 端末鍵フィンガープリント〔§13-11〕)。
+ */
+const PATH_PARAM_SUBSTITUTIONS: Readonly<Record<string, () => string>> = {
+  projectId: () => projectId,
+  environmentId: () => ENV,
+  variableId: () => VAR,
+  id: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  tokenId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  wrapId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  groupId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  requestId: () => "ab".repeat(32),
+  fp: () => "ab".repeat(16),
+};
+
 function concreteUrl(path: string): string {
   const substituted = path.replace(/:(\w+)/g, (_m, param: string) => {
-    switch (param) {
-      case "projectId":
-        return projectId;
-      case "environmentId":
-        return ENV;
-      case "variableId":
-        return VAR;
-      case "id":
-        return "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-      case "tokenId":
-      case "wrapId":
-      case "groupId":
-        // 実在しなくてよい(許可面は 404 = 非 session-not-allowed で十分)
-        return "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-      case "requestId":
-        // ハンドオフ要求 id(SHA-256 hex — AUTH_SPEC §13-7)。実在しなくてよい
-        return "ab".repeat(32);
-      default:
-        throw new Error(`session-capability matrix: no substitution for path param :${param}`);
+    const substitute = PATH_PARAM_SUBSTITUTIONS[param];
+    if (substitute === undefined) {
+      throw new Error(`session-capability matrix: no substitution for path param :${param}`);
     }
+    return substitute();
   });
   return `${BASE}${substituted}`;
 }
@@ -149,6 +151,12 @@ const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
   ["auth", "recoveryPut"], // リカバリーブロブの登録(§13-2)
   ["auth", "recoveryGet"], // リカバリーブロブの取得(§13-2)
   ["schemaPolicy", "set"], // schemaPolicy の変更(§12-11 — セッション主体は拒否と明記)
+  ["devices", "register"], // 端末登録簿の登録(§13-11 — セッションは一覧のみ)
+  ["devices", "remove"],
+  ["devices", "requestCreate"],
+  ["devices", "requestList"],
+  ["devices", "requestGet"],
+  ["devices", "requestCancel"],
 ];
 
 describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 機械導出)", () => {

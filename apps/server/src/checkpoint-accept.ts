@@ -29,7 +29,14 @@ import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
 import { commitAcceptedEntry } from "./chain-commit.ts";
 import type { StateCache } from "./chain-store.ts";
 import { deriveStoredState, updateStateCache } from "./chain-store.ts";
-import { loadInitializedChain, rejectData, requireRole, requireRoleInScope } from "./data-plane.ts";
+import {
+  deviceOf,
+  ensureDevicePermission,
+  loadInitializedChain,
+  rejectData,
+  requireRole,
+  requireRoleInScope,
+} from "./data-plane.ts";
 import type { CheckpointValueEntryRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
@@ -153,7 +160,7 @@ export function standaloneCheckpointProgram(
     const { state } = yield* deriveStoredState(chain, cache);
     // §11-2: 非メンバーには一切を返さない(worker が 404 に写す)。checkpoint
     // 自体の role 下限(member)は合意規則(verifyChain)が 422 で拒否する
-    yield* requireRole(state, callerUserId, "reader");
+    const person = yield* requireRole(state, callerUserId, "reader");
     // §16-2: 非空 audit_head_hash はチェーン role admin 以上(不足 403。
     // スコープ半分〔admin スコープ〕は worker が先行検査済み)
     if (entry.payload.auditHeadHashHex !== "") {
@@ -164,6 +171,23 @@ export function standaloneCheckpointProgram(
     // の 422 は多層防御として残る — 設計録 es-design.md §9 K3-G)
     for (const tuple of entry.payload.environments) {
       yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
+    }
+    // 第 2 段(設計録 §8 K3-1): エントリの actor FP が名指す端末の実効権限で同じ
+    // 検査を繰り返す(呼び出し主体の有効な端末でない FP は actor-key-mismatch)
+    const device = deviceOf(person, entry.actor.keyFingerprintHex);
+    if (device === undefined) {
+      return yield* rejectData({
+        kind: "chain-entry-invalid",
+        seq: entry.seq,
+        reason: "actor-key-mismatch",
+      });
+    }
+    yield* ensureDevicePermission(
+      device,
+      entry.payload.auditHeadHashHex === "" ? "reader" : "admin",
+    );
+    for (const tuple of entry.payload.environments) {
+      yield* ensureDevicePermission(device, "reader", tuple.environmentId);
     }
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain = §6.2 の合意規則)は他経路と共有

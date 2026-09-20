@@ -20,7 +20,7 @@
 //      徴候であり静かに握り潰さない)、同一 seq = 冪等 204(署名は決定論的で
 //      ヘッド一致検査済み = 同一内容の再送。リトライ安全)、前進 = upsert
 //
-// 保存はメンバーごと最新 1 行(チェーンに載せない — §6.4)。受理時刻は保存する
+// 保存は端末ごと最新 1 行(2026-09-19 DK。チェーンに載せない — §6.4)。受理時刻は保存する
 // が配布しない(§16-1)。監査イベント化もしない(§16-3)。
 
 import type { AttestationInvalidReason } from "@maruhi/crypto";
@@ -29,7 +29,7 @@ import { Effect } from "effect";
 
 import type { ChainStore, StateCache } from "./chain-store.ts";
 import type { AttestationRejectReason, DataRejectedError } from "./data-plane.ts";
-import { rejectData, requireMemberState } from "./data-plane.ts";
+import { rejectData, requireMemberState, withSigningDevice } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "./policy.ts";
 
@@ -89,37 +89,44 @@ export const putHeadAttestationProgram = (
 
     // 3. §6.6 検証(クライアントと同一実装を受理時点の履歴索引へ適用する。
     //    project_id は DO 自身のチェーン(genesis ハッシュ)から取る — §12-5 の
-    //    座標再構成の不変条件。申告値から組まない)
-    const verified = yield* Effect.promise(() =>
-      verifyDistributedHeadAttestation({
-        history: context.history,
-        context: {
-          suite: input.suite,
-          projectId: context.projectId,
-          attesterUserId: context.member.userId,
-          chainHeadHashHex: input.chainHeadHashHex,
-          chainHeadSeq: input.chainHeadSeq,
-        },
-        attesterKeyFingerprintHex: context.member.keyFingerprintHex,
-        signatureHex: input.signatureHex,
+    //    座標再構成の不変条件。申告値から組まない)。申告した端末は署名から解く
+    //    (呼び出し主体の有効な端末を試行 — 設計録 §8 K3-1。attester の鍵 = 署名した
+    //    端末の端末鍵 — CRYPTO_SPEC §6.6)
+    const { device: attester } = yield* withSigningDevice(context.member, (candidate) =>
+      Effect.gen(function* () {
+        const verified = yield* Effect.promise(() =>
+          verifyDistributedHeadAttestation({
+            history: context.history,
+            context: {
+              suite: input.suite,
+              projectId: context.projectId,
+              attesterUserId: candidate.userId,
+              chainHeadHashHex: input.chainHeadHashHex,
+              chainHeadSeq: input.chainHeadSeq,
+            },
+            attesterKeyFingerprintHex: candidate.keyFingerprintHex,
+            signatureHex: input.signatureHex,
+          }),
+        );
+        if (!verified.ok) {
+          if (verified.error.kind === "HeadAttestationInvalid") {
+            return yield* rejectData({
+              kind: "attestation-rejected",
+              reason: ATTESTATION_REJECT_REASONS[verified.error.reason],
+            });
+          }
+          // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済み
+          // チェーン由来の鍵では到達しない(実装バグ = defect。秘密は含まれない)
+          return yield* Effect.die(
+            new Error(`head attestation verification failed: ${verified.error.kind}`),
+          );
+        }
       }),
     );
-    if (!verified.ok) {
-      if (verified.error.kind === "HeadAttestationInvalid") {
-        return yield* rejectData({
-          kind: "attestation-rejected",
-          reason: ATTESTATION_REJECT_REASONS[verified.error.reason],
-        });
-      }
-      // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済み
-      // チェーン由来の鍵では到達しない(実装バグ = defect。秘密は含まれない)
-      return yield* Effect.die(
-        new Error(`head attestation verification failed: ${verified.error.kind}`),
-      );
-    }
 
-    // 4. seq 単調前進(後退 409 / 同一 seq 冪等 204 / 前進 upsert)
-    const storedSeq = yield* store.headAttestationSeq(callerUserId);
+    // 4. seq 単調前進(後退 409 / 同一 seq 冪等 204 / 前進 upsert)— 同じ端末の
+    //    保存行に対してのみ(端末を跨いだ単調性は課さない — AUTH_SPEC §16-1)
+    const storedSeq = yield* store.headAttestationSeq(callerUserId, attester.keyFingerprintHex);
     if (storedSeq !== null && input.chainHeadSeq < storedSeq) {
       return yield* rejectData({ kind: "attestation-regression", storedSeq });
     }
@@ -131,12 +138,12 @@ export const putHeadAttestationProgram = (
     yield* Effect.sync(() =>
       store.write.upsertHeadAttestation(
         {
-          attesterUserId: context.member.userId,
+          attesterUserId: attester.userId,
           suite: input.suite,
           chainHeadSeq: input.chainHeadSeq,
           chainHeadHashHex: input.chainHeadHashHex,
           signatureHex: input.signatureHex,
-          attesterKeyFingerprintHex: context.member.keyFingerprintHex,
+          attesterKeyFingerprintHex: attester.keyFingerprintHex,
         },
         nowMs,
       ),

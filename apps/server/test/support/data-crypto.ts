@@ -64,18 +64,57 @@ const VECTOR_KEY_ALIASES: Record<string, string> = {
   "user-reader-0003": "user-admin-0003",
 };
 
+/**
+ * 端末鍵の差し替え(2026-09-19 DK — K3 テスト): user_id ごとに「いま署名に使う鍵」を
+ * ベクター鍵名(`user-owner-0001@phone` 等)で上書きする。以後の signEntryAt /
+ * signValueAs / signMetaStatementAs / signEnvManifestAs / signWrapAs がその端末鍵で
+ * 署名する(actor FP もその鍵)。null で解除。data-scenario の beforeEach が全解除する。
+ */
+const deviceKeyOverrides = new Map<string, string>();
+
+export function useDeviceKey(userId: string, vectorKeyName: string | null): void {
+  if (vectorKeyName === null) {
+    deviceKeyOverrides.delete(userId);
+  } else {
+    deviceKeyOverrides.set(userId, vectorKeyName);
+  }
+}
+
+export function resetDeviceKeys(): void {
+  deviceKeyOverrides.clear();
+}
+
+/** ベクター鍵を名前で引く(端末鍵 `<user>@<label>` を含む)。 */
+export function vectorKeyNamed(name: string) {
+  const keys = vectorKeys[name];
+  if (keys === undefined) {
+    throw new Error(`no vector keys named ${name}`);
+  }
+  return keys;
+}
+
 /** ベクター固定鍵のユーザー(user-owner-0001 / user-member-0002 / user-admin-0003 + 借用者)。 */
 export function vectorKeyOf(userId: string) {
-  const keys = vectorKeys[VECTOR_KEY_ALIASES[userId] ?? userId];
+  const keys = vectorKeys[deviceKeyOverrides.get(userId) ?? VECTOR_KEY_ALIASES[userId] ?? userId];
   if (keys === undefined) {
     throw new Error(`no vector keys for ${userId}`);
   }
   return keys;
 }
 
-/** ベクター seed でエントリを署名する(actor = entry.actor.userId の鍵)。 */
+/** ベクター鍵を FP で引く(端末鍵を含む全鍵から。無ければ undefined)。 */
+function vectorKeyByFingerprint(fingerprintHex: string) {
+  return Object.values(vectorKeys).find((keys) => keys.key_fingerprint_hex === fingerprintHex);
+}
+
+/**
+ * ベクター seed でエントリを署名する。actor ブロックの FP がベクター鍵(端末鍵を含む)
+ * のどれかなら、その鍵で署名する(DK 後は同一ユーザーが複数の端末鍵を持つため、
+ * 「actor.user_id の鍵」では端末署名を再現できない)。未知の FP は user_id の鍵へ
+ * フォールバックする(FP 不一致 negative の意味論を保つ)。
+ */
 async function signAs(userId: string, unsigned: UnsignedChainEntry): Promise<ChainEntry> {
-  const keys = vectorKeyOf(userId);
+  const keys = vectorKeyByFingerprint(unsigned.actor.keyFingerprintHex) ?? vectorKeyOf(userId);
   const pair = unwrapResult(
     await importSigningKeyPair({
       publicKey: hexBytes(keys.sig_pub_hex),

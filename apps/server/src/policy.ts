@@ -94,6 +94,13 @@ export const MAX_PENDING_PROPOSALS = 32;
 export const MAX_PROPOSAL_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * §12-8 / CRYPTO_SPEC §6.4: メンバー 1 人あたりの有効な端末数(プロジェクト単位 —
+ * 2026-09-19 DK)。`add_device` の受理時に受理前の導出状態で数える(失効済みは
+ * 数えない = `revoke_device` / `remove_member` で解放)。合意規則ではない。
+ */
+export const MAX_DEVICES_PER_MEMBER = 16;
+
+/**
  * AUDIT_SPEC §7 の取り下げ操作: 1 リクエストの取り下げ対象数。DEK ラップの
  * リクエスト上限と同値に取る(取り下げ対象の理論上限 = フラグの対象
  * (variable × environment) 数は同じ量スケールに束縛される)。

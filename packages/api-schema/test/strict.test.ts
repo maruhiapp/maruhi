@@ -118,6 +118,9 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["keyWraps", "passkeyRegister"],
       ["keyWraps", "guardianCreate"],
       ["keyWraps", "handoffApprove"],
+      // 端末登録簿(§13-11 — DK K3): 公開鍵の登録 = 鍵宣言クラス
+      ["devices", "register"],
+      ["devices", "requestCreate"],
       ["lease", "issue"],
       ["invites", "issue"],
       ["invites", "accept"],

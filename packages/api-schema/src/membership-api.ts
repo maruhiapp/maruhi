@@ -14,6 +14,7 @@ import { authCliGroup } from "./auth-cli-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema, RoleSchema } from "./chain.ts";
 import { deksGroup, environmentsGroup, schemaPolicyGroup, variablesGroup } from "./data-api.ts";
+import { devicesGroup } from "./devices-api.ts";
 import {
   AttestationRateLimitedError,
   AttestationRegressionError,
@@ -27,6 +28,7 @@ import {
   CheckpointStateMismatchError,
   CompositeRequiredError,
   DataLimitExceededError,
+  DeviceLimitError,
   DeviceOpsNotAcceptedError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
@@ -202,10 +204,12 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // expires_at_ms の上界 30 日。合意規則ではない)
         ApprovalNotAcceptedError,
         ProposalLimitError,
-        // 端末鍵の 2 op(2026-09-19 DK): K3 で受理副作用と同時に解除する。それまでの
-        // サーバーが返す型(errors/chain.ts — ES K2-10 の原則。解除後もワイヤ互換のため
-        // 宣言を残す)
+        // 端末鍵の 2 op(2026-09-19 DK): K3(2026-09-20)以降のサーバーは受理する。
+        // DeviceOpsNotAccepted は K3 より前のサーバーが返す型(errors/chain.ts —
+        // ワイヤ互換のため宣言を残す)。DeviceLimit は add_device の受理ポリシー
+        // (AUTH_SPEC §12-8 — 有効な端末 16 / メンバー / プロジェクト。合意規則ではない)
         DeviceOpsNotAcceptedError,
+        DeviceLimitError,
         ForbiddenError,
         // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
         // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
@@ -249,8 +253,10 @@ export const maruhiApi = HttpApi.make("maruhi")
   // admin × admin。セッション主体はどちらも拒否 = §5 の許可列挙外)
   .add(schemaPolicyGroup)
   .add(invitesGroup)
-  // master 鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。status のみセッション可
+  // 予備鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。status のみセッション可
   .add(keyWrapsGroup)
+  // 端末登録簿と端末追加要求(AUTH_SPEC §13-11 — DK K3。advisory。読み取りのみセッション可)
+  .add(devicesGroup)
   .add(rotationGroup)
   .add(auditGroup)
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)

@@ -41,6 +41,8 @@ export const RotationFlagTriggerSchema = Schema.Literals([
   "remove_member",
   "change_role",
   "revoke_server",
+  // 端末の失効(AUDIT_SPEC §4.1 の revoke_device 変種 — 2026-09-19 DK K3)
+  "revoke_device",
 ]);
 
 /**

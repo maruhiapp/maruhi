@@ -45,6 +45,7 @@ import {
   orgAuditInsert,
   userAuditInsert,
 } from "./audit.ts";
+import { DeviceRepo, makeDeviceRepo } from "./devices.ts";
 import {
   KEY_BLOB_FETCH_LIMIT,
   KeyWrapRepo,
@@ -1987,7 +1988,8 @@ export type DbServices =
   | CliFlowRepo
   | D1AuditRepo
   | OpsRepo
-  | KeyWrapRepo;
+  | KeyWrapRepo
+  | DeviceRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
@@ -2008,5 +2010,7 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(D1AuditRepo, makeD1AuditRepo(db)),
     // 運用(H3 — hosted-ops.md §6): カウンタ・退避記録・状態 kv
     Context.add(OpsRepo, makeOpsRepo(db)),
+    // 端末登録簿・端末追加要求(AUTH_SPEC §13-11 — DK K3。advisory)
+    Context.add(DeviceRepo, makeDeviceRepo(db)),
   );
 }

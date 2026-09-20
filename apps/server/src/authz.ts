@@ -18,13 +18,22 @@ import { Effect } from "effect";
  * エンドポイント経由のみで、汎用 append はハンドラが CompositeRequired で
  * 先に拒否する — ここの写像は表の網羅性のために保持)、`checkpoint` は
  * payload 依存: 空 audit_head_hash = write、非空 = admin(§16-2 — 実効権限
- * admin のスコープ半分。チェーン role 半分は DO が判定する)。メンバー /
- * サーバー鍵管理系 = admin。append に genesis が来た場合も admin(verifyChain
- * が bad-genesis で拒否する)。
+ * admin のスコープ半分。チェーン role 半分は DO が判定する)。端末鍵の 2 op
+ * (§11-1 — 2026-09-19 DK): `add_device` と対象 = 自分の `revoke_device` = write
+ * (端末の追加はその後のバックフィル〔write〕、失効はその後の rotate〔write〕を
+ * 伴う — read トークンでは行えない)、対象 = 他人の `revoke_device` = admin
+ * (`remove_member` と同じ)。メンバー / サーバー鍵管理系 = admin。append に
+ * genesis が来た場合も admin(verifyChain が bad-genesis で拒否する)。
  */
 export function requiredPermissionForEntry(entry: ChainEntry): TokenPermission {
   if (entry.op === "checkpoint") {
     return entry.payload.auditHeadHashHex === "" ? "write" : "admin";
+  }
+  if (entry.op === "add_device") {
+    return "write";
+  }
+  if (entry.op === "revoke_device") {
+    return entry.payload.targetUserId === entry.actor.userId ? "write" : "admin";
   }
   return entry.op === "rotate_epoch" || entry.op === "create_environment" ? "write" : "admin";
 }

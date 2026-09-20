@@ -251,8 +251,13 @@ export interface DataWriteOps {
     signer: WrapSignerInfo,
     nowMs: number,
   ) => void;
-  /** §12-6 修復経路: 1 ラップの削除(存在検証は呼び出し側が済ませる)。 */
-  readonly deleteWrap: (environmentId: string, epoch: number, recipientUserId: string) => void;
+  /** §12-6 修復経路: 1 ラップ(端末スロット)の削除(存在検証は呼び出し側が済ませる)。 */
+  readonly deleteWrap: (
+    environmentId: string,
+    epoch: number,
+    recipientUserId: string,
+    recipientEncPubHex: string,
+  ) => void;
   /**
    * §12-6 の再追加受理時掃除: 対象 user_id 宛(受信者クラス
    * member)で受信者 enc 公開鍵が `keepEncPubHex` と一致しないラップを削除し、
@@ -265,17 +270,22 @@ export interface DataWriteOps {
     keepEncPubHex: string,
   ) => readonly StaleWrapRef[];
   /**
-   * ヘッド申告の upsert(AUTH_SPEC §16-1 — メンバーごと最新 1 行)。seq の
-   * 単調前進は呼び出し側(attestation-accept.ts)が保存済み seq と照合してから
-   * 呼ぶ(後退 409 / 同一 seq 冪等 204)。
+   * ヘッド申告の upsert(AUTH_SPEC §16-1 — **端末ごと**最新 1 行。2026-09-19 DK)。
+   * seq の単調前進は呼び出し側(attestation-accept.ts)が同じ端末の保存済み seq と
+   * 照合してから呼ぶ(後退 409 / 同一 seq 冪等 204)。
    */
   readonly upsertHeadAttestation: (attestation: StoredHeadAttestation, nowMs: number) => void;
   /**
-   * `remove_member` 受理時の申告行・レート窓行の削除(CRYPTO_SPEC §6.4 —
-   * 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵ラップ掃除と同型)。
+   * `remove_member` 受理時の申告行(対象の全端末)・レート窓行の削除(CRYPTO_SPEC
+   * §6.4 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵ラップ掃除と同型)。
    * add_member 受理の書き込みフェーズと同じく単一タスク内から呼ぶ。
    */
   readonly deleteHeadAttestation: (attesterUserId: string) => void;
+  /**
+   * `revoke_device` 受理時の当該端末の申告行の削除(AUTH_SPEC §16-1 — 2026-09-19 DK)。
+   * 窓行(メンバー単位)は触らない。
+   */
+  readonly deleteDeviceHeadAttestation: (attesterUserId: string, keyFingerprintHex: string) => void;
   /**
    * schemaPolicy の upsert(AUTH_SPEC §12-11)。監査 project.schema_policy_changed
    * と同じ同期ブロックで呼ぶ(設定変更と監査行の原子性)。
@@ -290,9 +300,9 @@ export interface StaleWrapRef {
 }
 
 /**
- * 保存されたヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — メンバーごと
- * 最新 1 行)。attesterKeyFingerprintHex は受理時点のチェーン導出メンバーの
- * 鍵 FP(配布時の検証材料)。受理時刻(accepted_at)は**含めない** — 保存は
+ * 保存されたヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — **端末ごと**
+ * 最新 1 行。2026-09-19 DK)。attesterKeyFingerprintHex は申告に署名した端末の
+ * 鍵 FP(主キーの一部。配布時の検証材料)。受理時刻(accepted_at)は**含めない** — 保存は
  * するが配布しない(§16-1)ため、配布材料の型に最初から載せない。
  */
 export interface StoredHeadAttestation {
@@ -427,10 +437,22 @@ interface DataStoreShape {
    * 監査列の選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
    * enc 公開鍵は上書き禁止 409 の応答材料(AUTH_SPEC §12-6)。
    */
+  /**
+   * (環境, エポック, 受信者) の全スロット(端末ごと — 2026-09-19 DK)。削除参照が
+   * 端末鍵を省略したときの一意性判定の材料(設計録 §8 K3-3)。
+   */
+  readonly listWrapSlots: (
+    environmentId: string,
+    epoch: number,
+    recipientUserId: string,
+  ) => Effect.Effect<
+    readonly { readonly recipientClass: string; readonly recipientEncPubHex: string }[]
+  >;
   readonly wrapStoredRecipient: (
     environmentId: string,
     epoch: number,
     recipientUserId: string,
+    recipientEncPubHex: string,
   ) => Effect.Effect<StoredWrapRecipient | null>;
   readonly listWrapsForRecipient: (
     environmentId: string,
@@ -488,7 +510,11 @@ interface DataStoreShape {
    */
   readonly schemaPolicy: Effect.Effect<SchemaPolicy>;
   /** 保存済みヘッド申告の seq(未提出なら null — 単調前進判定の材料。§16-1)。 */
-  readonly headAttestationSeq: (attesterUserId: string) => Effect.Effect<number | null>;
+  /** 同じ端末(user_id + 鍵 FP)の保存済み申告 seq(AUTH_SPEC §16-1 — 端末ごと)。 */
+  readonly headAttestationSeq: (
+    attesterUserId: string,
+    keyFingerprintHex: string,
+  ) => Effect.Effect<number | null>;
   /**
    * 全メンバーの保存済みヘッド申告(AUTH_SPEC §16-1 の配布材料)。現メンバー
    * への絞り込みは呼び出し側(chain-do.ts — チェーン導出の現メンバー集合)が
@@ -1222,14 +1248,35 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "n");
   }),
-  wrapStoredRecipient: (environmentId: string, epoch: number, recipientUserId: string) =>
-    Effect.sync(() => {
-      const row = sql
+  listWrapSlots: (environmentId: string, epoch: number, recipientUserId: string) =>
+    Effect.sync(() =>
+      sql
         .exec(
-          "SELECT recipient_class, recipient_enc_pub_hex FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? LIMIT 1",
+          "SELECT recipient_class, recipient_enc_pub_hex FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? ORDER BY recipient_enc_pub_hex",
           environmentId,
           epoch,
           recipientUserId,
+        )
+        .toArray()
+        .map((row) => ({
+          recipientClass: stringColumn(row, "recipient_class"),
+          recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
+        })),
+    ),
+  wrapStoredRecipient: (
+    environmentId: string,
+    epoch: number,
+    recipientUserId: string,
+    recipientEncPubHex: string,
+  ) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          "SELECT recipient_class, recipient_enc_pub_hex FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? AND recipient_enc_pub_hex = ? LIMIT 1",
+          environmentId,
+          epoch,
+          recipientUserId,
+          recipientEncPubHex,
         )
         .toArray()[0];
       return row === undefined
@@ -1247,9 +1294,11 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         environmentId,
         recipientClass: "member",
         recipientUserId,
-        extraColumns: "signature_hex, signer_user_id, signer_key_fingerprint",
+        extraColumns:
+          "recipient_enc_pub_hex, signature_hex, signer_user_id, signer_key_fingerprint",
       }).map((row) => ({
         ...wrapBodyOf(row),
+        recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
         signatureHex: stringColumn(row, "signature_hex"),
         signerUserId: stringColumn(row, "signer_user_id"),
         signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
@@ -1344,12 +1393,13 @@ const makeSettingsQueries = (sql: SqlStorage) => ({
  * 窓切れ = 数え直し)はリース窓と同一で、キーがメンバー単位になっただけ。
  */
 const makeAttestationQueries = (sql: SqlStorage) => ({
-  headAttestationSeq: (attesterUserId: string) =>
+  headAttestationSeq: (attesterUserId: string, keyFingerprintHex: string) =>
     Effect.sync(() => {
       const row = sql
         .exec(
-          "SELECT chain_head_seq FROM head_attestations WHERE attester_user_id = ?",
+          "SELECT chain_head_seq FROM head_attestations WHERE attester_user_id = ? AND attester_key_fingerprint = ?",
           attesterUserId,
+          keyFingerprintHex,
         )
         .toArray()[0];
       return row === undefined ? null : numberColumn(row, "chain_head_seq");
@@ -1359,7 +1409,7 @@ const makeAttestationQueries = (sql: SqlStorage) => ({
       .exec(
         `SELECT attester_user_id, suite, chain_head_seq, chain_head_hash_hex,
                 signature_hex, attester_key_fingerprint
-         FROM head_attestations ORDER BY attester_user_id`,
+         FROM head_attestations ORDER BY attester_user_id, attester_key_fingerprint`,
       )
       .toArray()
       .map((row): StoredHeadAttestation => ({
@@ -1782,12 +1832,13 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       nowMs,
     );
   },
-  deleteWrap: (environmentId, epoch, recipientUserId) => {
+  deleteWrap: (environmentId, epoch, recipientUserId, recipientEncPubHex) => {
     sql.exec(
-      "DELETE FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ?",
+      "DELETE FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? AND recipient_enc_pub_hex = ?",
       environmentId,
       epoch,
       recipientUserId,
+      recipientEncPubHex,
     );
   },
   // SELECT → DELETE の 2 文だが同一同期タスク内(permit 下・原子コミット)。
@@ -1826,12 +1877,11 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
          (attester_user_id, suite, chain_head_seq, chain_head_hash_hex,
           signature_hex, attester_key_fingerprint, accepted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(attester_user_id) DO UPDATE SET
+       ON CONFLICT(attester_user_id, attester_key_fingerprint) DO UPDATE SET
          suite = excluded.suite,
          chain_head_seq = excluded.chain_head_seq,
          chain_head_hash_hex = excluded.chain_head_hash_hex,
          signature_hex = excluded.signature_hex,
-         attester_key_fingerprint = excluded.attester_key_fingerprint,
          accepted_at = excluded.accepted_at`,
       attestation.attesterUserId,
       attestation.suite,
@@ -1845,6 +1895,13 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   deleteHeadAttestation: (attesterUserId) => {
     sql.exec("DELETE FROM head_attestations WHERE attester_user_id = ?", attesterUserId);
     sql.exec("DELETE FROM attestation_windows WHERE attester_user_id = ?", attesterUserId);
+  },
+  deleteDeviceHeadAttestation: (attesterUserId, keyFingerprintHex) => {
+    sql.exec(
+      "DELETE FROM head_attestations WHERE attester_user_id = ? AND attester_key_fingerprint = ?",
+      attesterUserId,
+      keyFingerprintHex,
+    );
   },
   setSchemaPolicy: (policy) => {
     sql.exec(

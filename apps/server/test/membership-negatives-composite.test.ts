@@ -6,11 +6,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { prefixReplayable, toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
+import { toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
 import { resignEntryAt } from "./support/data-crypto.ts";
 import {
   registerMembershipScenario,
-  replayVectorChain,
+  replayNegativePrefix,
   submitComposite,
 } from "./support/membership-scenario.ts";
 
@@ -67,25 +67,21 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   // create の scope 判定(403)は verifyChain(duplicate-environment 422)より先:
   // negative の actor は listed admin なので scope で落ちる
   "authz-create-env-duplicate-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  // 端末鍵(2026-09-19 DK — K3 から受理面が端末の実効権限で判定する。設計録 dk-design.md
+  // §8 K3-1 の第 2 段: 同梱エントリの actor FP が名指す端末の実効 (role, scope) が
+  // verifyChain より先に 403 を返す。合意規則 `insufficient-role` /
+  // `environment-out-of-scope`(422)は crypto 層の 4 実行環境テストが固定する)。
+  // reader cap の端末による rotate = 実効 role reader、listed cap の端末による
+  // rotate / 作成 = 実効 scope の外
+  "authz-rotate-by-reader-cap-device": { status: 403, reason: "insufficient-role" },
+  "authz-rotate-out-of-device-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-create-env-by-listed-device": { status: 403, reason: "insufficient-scope" },
 };
 
-/**
- * 端末派生チェーン(2026-09-19 DK — device-ops 等)を前提とする create / rotate の negative
- * は、サーバーが K3 まで端末 op を受理しないため API では再生できない(合意規則は crypto
- * 層の 4 実行環境テストが固定)。件数を固定し、K3 で受理ガードを外すときに
- * compositeExpectations へ戻す(`insufficient-scope` 403 が先 — K3-C の判定順)
- */
-const EXPECTED_SKIPPED_DEVICE_CHAIN = 3;
-
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合経由)", () => {
-  let skipped = 0;
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
     if (op !== "create_environment" && op !== "rotate_epoch") {
-      continue;
-    }
-    if (!prefixReplayable(negative)) {
-      skipped += 1;
       continue;
     }
     const expectation = compositeExpectations[negative.name];
@@ -93,7 +89,8 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合
       throw new Error(`missing composite expectation for ${negative.name}`);
     }
     it(`rejects ${negative.name} via the composite endpoint with ${expectation.status}${expectation.reason === undefined ? "" : ` (${expectation.reason})`}`, async () => {
-      const { members, head } = await replayVectorChain(negative.entry.seq - 1);
+      // 前提チェーン(端末派生チェーンを含む — K3 から汎用 append で再生できる)
+      const { members, head } = await replayNegativePrefix(negative);
       // 実ヘッドで再署名する(境界 checkpoint 挿入分の seq / prev のずれを吸収。
       // op / payload / actor ブロックはベクター negative のまま)
       const { entry } = await resignEntryAt(
@@ -112,7 +109,4 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合
       }
     });
   }
-  it("skips exactly the device-chain negatives (DK K2 — K3 で戻す)", () => {
-    expect(skipped).toBe(EXPECTED_SKIPPED_DEVICE_CHAIN);
-  });
 });

@@ -131,6 +131,9 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["keyWraps", "passkeyRegister"],
   ["keyWraps", "guardianCreate"],
   ["keyWraps", "handoffApprove"],
+  // 端末登録簿(§13-11 — DK K3): 公開鍵の登録 = 鍵宣言クラス(未知フィールドを黙って落とさない)
+  ["devices", "register"],
+  ["devices", "requestCreate"],
   ["lease", "issue"],
   ["invites", "issue"],
   ["invites", "accept"],

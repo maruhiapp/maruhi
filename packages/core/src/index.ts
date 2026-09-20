@@ -39,6 +39,7 @@ export {
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
   chainMirrorEvents,
+  type ChainMirrorSubject,
   type IndexedProposal,
   indexProposals,
   type ProposalIndex,

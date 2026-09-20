@@ -479,6 +479,78 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       );
     },
   },
+  {
+    // 端末軸(2026-09-19 DK — AUTH_SPEC §12-6 / §16-1。設計録 dk-design.md §8 K3-2 / K3-7):
+    //
+    // - dek_wraps: スロット主キーに受信者 enc 公開鍵を加える — (environment_id, epoch,
+    //   recipient_user_id, recipient_enc_pub_hex)。同じ人の端末ごとに 1 スロット(R(E) の
+    //   端末展開 — CRYPTO_SPEC §6.2)。既存行(旧 PK で一意)は新 PK でも一意なので
+    //   INSERT … SELECT で無損失に写す(生きたラップを捨てない — ES の招待表と違い、
+    //   行は現行チェーンの下で復号可能)。上書き禁止・完全一致・不足分追記・修復
+    //   経路は不変
+    // - head_attestations: 端末ごとに最新 1 行 — PK (attester_user_id,
+    //   attester_key_fingerprint)。端末は独立に同期するため端末を跨いだ seq 単調性は
+    //   課さない(§16-1)。既存行(メンバーごと 1 行)は端末 1 つの申告としてそのまま
+    //   写す。attestation_windows(メンバー単位の固定窓)は不変
+    //
+    // SQLite は主キーの ALTER を持たないため表を再構築する(行数比例 — 部分索引化
+    // ステップと同じ爆風半径の注記が当てはまる。ラップ行は §12-8 の累積上限 1,000,000
+    // で有界)。1 transactionSync で走るため途中失敗は丸ごと巻き戻る
+    tables: [],
+    apply(sql) {
+      sql.exec(
+        `CREATE TABLE dek_wraps_new (
+           environment_id TEXT NOT NULL,
+           epoch INTEGER NOT NULL,
+           recipient_user_id TEXT NOT NULL,
+           suite TEXT NOT NULL,
+           recipient_enc_pub_hex TEXT NOT NULL,
+           enc_hex TEXT NOT NULL,
+           ciphertext_hex TEXT NOT NULL,
+           signature_hex TEXT NOT NULL,
+           signer_user_id TEXT NOT NULL,
+           signer_key_fingerprint TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           recipient_class TEXT NOT NULL DEFAULT 'member',
+           PRIMARY KEY (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex)
+         )`,
+      );
+      sql.exec(
+        `INSERT INTO dek_wraps_new
+           (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex,
+            ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint, created_at,
+            recipient_class)
+         SELECT environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex,
+                ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint, created_at,
+                recipient_class
+         FROM dek_wraps`,
+      );
+      sql.exec("DROP TABLE dek_wraps");
+      sql.exec("ALTER TABLE dek_wraps_new RENAME TO dek_wraps");
+      sql.exec(
+        `CREATE TABLE head_attestations_new (
+           attester_user_id TEXT NOT NULL,
+           attester_key_fingerprint TEXT NOT NULL,
+           suite TEXT NOT NULL,
+           chain_head_seq INTEGER NOT NULL,
+           chain_head_hash_hex TEXT NOT NULL,
+           signature_hex TEXT NOT NULL,
+           accepted_at INTEGER NOT NULL,
+           PRIMARY KEY (attester_user_id, attester_key_fingerprint)
+         )`,
+      );
+      sql.exec(
+        `INSERT INTO head_attestations_new
+           (attester_user_id, attester_key_fingerprint, suite, chain_head_seq,
+            chain_head_hash_hex, signature_hex, accepted_at)
+         SELECT attester_user_id, attester_key_fingerprint, suite, chain_head_seq,
+                chain_head_hash_hex, signature_hex, accepted_at
+         FROM head_attestations`,
+      );
+      sql.exec("DROP TABLE head_attestations");
+      sql.exec("ALTER TABLE head_attestations_new RENAME TO head_attestations");
+    },
+  },
 ];
 
 /**

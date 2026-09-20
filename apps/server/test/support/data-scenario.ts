@@ -18,7 +18,7 @@ import {
   signMetaStatementAs,
   signValueAs,
 } from "./data-crypto.ts";
-import { makeDek, wrapDekForAll } from "./data-crypto.ts";
+import { makeDek, resetDeviceKeys, wrapDekForAll } from "./data-crypto.ts";
 import type { DataFixture, EnvManifestState } from "./data-fixture.ts";
 import {
   manifestForVariableOp,
@@ -45,6 +45,8 @@ export let varStatements: Map<
 /** 各テストファイルの冒頭で 1 回呼ぶ: フィクスチャの beforeEach を登録する。 */
 export function registerDataScenario(): void {
   beforeEach(async () => {
+    // 端末鍵の差し替え(useDeviceKey)はテストを跨いで持ち越さない
+    resetDeviceKeys();
     fixture = await setupDataProject();
     varStatements = new Map();
   });

@@ -92,6 +92,17 @@ export {
   WrappedDekSchema,
 } from "./data.ts";
 export {
+  DEVICE_ADD_REQUEST_TTL_MS,
+  DeviceAddRequestSchema,
+  DeviceAddRequestSummarySchema,
+  DeviceLabelSchema,
+  DeviceRegistrationSchema,
+  devicesGroup,
+  DeviceSummarySchema,
+  MAX_DEVICE_ADD_REQUESTS_PER_HOUR,
+  MAX_DEVICE_REGISTRY_ROWS_PER_USER,
+} from "./devices-api.ts";
+export {
   deksGroup,
   EnvironmentChainResultSchema,
   EnvironmentMetadataPullSchema,
@@ -116,6 +127,7 @@ export {
   InviteStatusSchema,
 } from "./invites-api.ts";
 export {
+  GuardianDeviceShareSchema,
   GuardianGroupRegistrationSchema,
   GuardianGroupResultSchema,
   GuardianModeSchema,
@@ -129,7 +141,9 @@ export {
   HandoffSourceSchema,
   keyWrapsGroup,
   KeyWrapStatusSchema,
+  MAX_GUARDIAN_DEVICES_PER_GUARDIAN,
   MAX_GUARDIAN_GROUPS_PER_USER,
+  MAX_GUARDIAN_SHARE_ROWS_PER_GROUP,
   MAX_GUARDIAN_SHARES_PER_GROUP,
   MAX_HANDOFF_APPROVALS_PER_REQUEST,
   MAX_PASSKEY_WRAPS_PER_USER,
@@ -174,7 +188,14 @@ export {
   DekWrapNotFoundError,
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
+  DeviceFingerprintMismatchError,
+  DeviceLimitError,
+  DeviceNotFoundError,
   DeviceOpsNotAcceptedError,
+  DeviceRegistryConflictError,
+  DeviceRegistryConflictReasonSchema,
+  DeviceRegistryLimitError,
+  DeviceRegistryLimitReasonSchema,
   EnvironmentConflictError,
   EnvironmentConflictReasonSchema,
   EnvironmentNotFoundError,
