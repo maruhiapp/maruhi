@@ -28,8 +28,8 @@ import {
   verifyMetaStatementSignature,
 } from "../../src/index.ts";
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
-import { canonicalHistory } from "./chain-history.ts";
-import { vectorKeys } from "./chain-vector.ts";
+import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
+import { importVectorSigner, vectorKeys } from "./chain-vector.ts";
 import { metaExtendedHistory } from "./meta-history.ts";
 import {
   type CheckResult,
@@ -61,6 +61,8 @@ interface VectorContext {
 
 interface MetaVector {
   readonly name: string;
+  /** 照合先チェーン(無指定 = canonical。device-ops = 端末鍵派生 — 2026-09-19 DK)。 */
+  readonly chain?: string;
   readonly context: VectorContext;
   readonly author_key_fingerprint_hex: string;
   readonly signed_bytes_hex: string;
@@ -121,6 +123,16 @@ function contextOf(v: VectorContext): MetaStatementContext {
 }
 
 const positives: readonly MetaVector[] = metaVectors.vectors;
+
+/** 照合先チェーン(名前 → 検証済み履歴索引)。ベクターの `chain` 無指定は canonical。 */
+type Histories = Readonly<Record<string, ChainHistoryIndex>>;
+
+function historyFor(
+  histories: Histories,
+  chain: string | undefined,
+): ChainHistoryIndex | undefined {
+  return histories[chain ?? "canonical"];
+}
 const byName = new Map(positives.map((v) => [v.name, v]));
 
 function predecessorOf(vector: MetaVector) {
@@ -144,22 +156,15 @@ async function signAndVerifyChecks(
   name: string,
   context: MetaStatementContext,
   signatureHex: string,
+  authorKeyFingerprintHex: string,
 ): Promise<void> {
-  const keys = vectorKeys[context.authorUserId];
-  if (keys === undefined) {
-    c.push(`meta-sig ${name}: author keys`, false, "author keys missing");
+  // author の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  const signer = await importVectorSigner(context.authorUserId, authorKeyFingerprintHex);
+  if (signer === null) {
+    c.push(`meta-sig ${name}: author keys`, false, "signer keys missing or failed to import");
     return;
   }
-  const pair = await importSigningKeyPair({
-    publicKey: fromHex(keys.sig_pub_hex),
-    privateSeed: fromHex(keys.sig_sk_seed_hex),
-  });
-  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
-  if (!pair.ok || !publicKey.ok) {
-    c.push(`meta-sig ${name}: author keys`, false, "key import failed");
-    return;
-  }
-  const signed = await signMetaStatement({ context, signingKey: pair.value.privateKey });
+  const signed = await signMetaStatement({ context, signingKey: signer.privateKey });
   c.push(
     `meta-sig ${name}: deterministic re-sign matches vector`,
     signed.ok && signed.value === signatureHex,
@@ -167,13 +172,18 @@ async function signAndVerifyChecks(
   const verified = await verifyMetaStatementSignature({
     context,
     signatureHex,
-    authorPublicKey: publicKey.value,
+    authorPublicKey: signer.publicKey,
   });
   c.push(`meta-sig ${name}: raw signature verify`, verified.ok);
 }
 
-async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   for (const vector of positives) {
+    const history = historyFor(histories, vector.chain);
+    if (history === undefined) {
+      c.push(`meta-sig ${vector.name}: history`, false, "history missing");
+      continue;
+    }
     const context = contextOf(vector.context);
     c.push(
       `meta-sig ${vector.name}: signed bytes construction`,
@@ -186,7 +196,13 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
     );
     // 削除ステートメント(status deleted、metaVersion > 1)は正当に署名できる
     // 必要があるため、削除ベクターも決定論的再署名まで検査する
-    await signAndVerifyChecks(c, vector.name, context, vector.signature_hex);
+    await signAndVerifyChecks(
+      c,
+      vector.name,
+      context,
+      vector.signature_hex,
+      vector.author_key_fingerprint_hex,
+    );
 
     // 履歴ベースの複合検証(§6.3): prev_base があれば predecessor 込みで検査。
     // var-meta-head-before-env-create(環境作成前ヘッド)もここを通る = positive
@@ -305,11 +321,14 @@ const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
 async function ruleNegativeCheck(
   c: Checks,
   negative: MetaNegative,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
+  histories: Histories,
   exercised: Set<MetaInvalidReason>,
 ): Promise<void> {
-  const chainHistory = negative.chain === "tenure-extension" ? extended : history;
+  const chainHistory = historyFor(histories, negative.chain);
+  if (chainHistory === undefined) {
+    c.push(`meta-sig rule negative: ${negative.name}`, false, `unknown chain ${negative.chain}`);
+    return;
+  }
   const result = await verifyDistributedMetaStatement({
     history: chainHistory,
     context: contextOf(negative.context),
@@ -397,15 +416,14 @@ async function invalidInputNegativeCheck(c: Checks, negative: MetaNegative): Pro
 
 async function negativeChecks(
   c: Checks,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
+  histories: Histories,
   exercised: Set<MetaInvalidReason>,
 ): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of metaVectors.negative as readonly MetaNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history, extended, exercised);
+      await ruleNegativeCheck(c, negative, histories, exercised);
     } else if (negative.kind === "invalid-input") {
       await invalidInputNegativeCheck(c, negative);
     } else {
@@ -749,12 +767,16 @@ async function roundtripChecks(c: Checks): Promise<void> {
 export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
-  const extended = await metaExtendedHistory();
+  const histories: Histories = {
+    canonical: history,
+    "tenure-extension": await metaExtendedHistory(),
+    "device-ops": await extendedVectorChainHistory("device-ops"),
+  };
   const exercised = new Set<MetaInvalidReason>();
-  await vectorChecks(c, history);
+  await vectorChecks(c, histories);
   await forkChecks(c, history);
   await nameSwapChecks(c, history);
-  await negativeChecks(c, history, extended, exercised);
+  await negativeChecks(c, histories, exercised);
   await invalidInputChecks(c);
   await layoutInvalidInputChecks(c);
   await layoutSelectionChecks(c, history);

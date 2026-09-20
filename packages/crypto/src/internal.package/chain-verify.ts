@@ -17,9 +17,23 @@
 // 相関数を共有する。原則 1(権限変更の環境集合の包含)と原則 2(署名者集合 S
 // の owner 票数)はそれぞれ 1 つの導出関数(permissionChangeEnvironments /
 // countOwnerVotes)で表し、op ごとの if 列挙にしない。
+//
+// 2026-09-19 DK(端末鍵 — §6.2「端末鍵」): メンバーは端末鍵の集合を持ち、actor の解決は
+// (user_id, FP) で端末を選ぶ。認可判定の主体 ActorContext は**署名した端末の実効権限**
+// (effectivePermissionOf — chain-device.ts)を持ち、role 規則・原則 1・環境対象 op・
+// 四眼の票はすべてそれに対して判定する(人の (role, scope) を直接は使わない)。
 
 import { concatBytes, decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { canonicalChainSignedBytes, computeChainEntryHash } from "./chain-canonical.ts";
+import {
+  type ChainDevice,
+  type EffectivePermission,
+  FIRST_DEVICE_CAP,
+  ROLE_RANK,
+  capWithinCap,
+  effectivePermissionOf,
+  soleDeviceOf,
+} from "./chain-device.ts";
 import { ChainHistoryBuilder, type ChainHistoryIndex } from "./chain-history.ts";
 import {
   APPROVAL_TARGET_OPS,
@@ -42,7 +56,6 @@ import {
   ALL_SCOPE,
   type EnvironmentSet,
   MAX_SCOPE_ENVIRONMENTS,
-  type MemberScope,
   memberScopeOf,
   scopeAsEnvironmentSet,
   scopeContainsEnvironmentSet,
@@ -54,7 +67,6 @@ import {
 import { SUITE_ID } from "./suite.ts";
 
 const GENESIS_PREV_HASH = "0".repeat(64);
-const ROLE_RANK: Readonly<Record<Role, number>> = { reader: 0, member: 1, admin: 2, owner: 3 };
 const ROLES: readonly Role[] = ["owner", "admin", "member", "reader"];
 const FINGERPRINT_BYTES = 16;
 const SIGNATURE_BYTES = 64;
@@ -69,6 +81,8 @@ const MAX_LEASE_POLICY_ISSUERS = 8;
 const MAX_LEASE_CLAIM_CONSTRAINTS = 8;
 // 四眼の必要承認数(§6.2): 0 = オフ、それ以外は 2 以上
 const MIN_ACTIVE_REQUIRED_APPROVALS = 2;
+// revoke_device の FP リスト上限(§6.2 — 1 要素以上・256 要素以下・重複無効)
+const MAX_REVOKE_DEVICE_FINGERPRINTS = 256;
 
 interface MutableEnvironmentState {
   currentEpoch: number;
@@ -99,9 +113,10 @@ interface MutableChainState {
   // 環境ごとの最新チェックポイントタプル(§6.2 checkpoint の導出状態 —
   // checkpoint-regression の比較対象と §6.3 チェックポイント整合の基準)
   readonly checkpoints: Map<string, EnvironmentCheckpointState>;
-  // 現メンバー集合の enc / sig 公開鍵の索引(メンバー鍵の一意性 — §6.2)。
-  // 本規則自体が「各鍵は高々 1 メンバーに属する」を不変条件にするため、
-  // remove_member での Set 削除は他メンバーの鍵を消さない(健全)。
+  // 現メンバー集合の**全端末鍵**の enc / sig 公開鍵の索引(メンバー鍵の一意性 — §6.2。
+  // 2026-09-19 DK で端末集合へ拡張)。本規則自体が「各鍵は高々 1 端末に属する」を
+  // 不変条件にするため、remove_member / revoke_device での Set 削除は他の端末の鍵を
+  // 消さない(健全)。
   // hex は §6.1 の形状検証(decodeHex = 小文字のみ)を通った正規形なので
   // 文字列一致 = バイト一致
   readonly memberEncPubs: Set<string>;
@@ -111,12 +126,15 @@ interface MutableChainState {
   readonly pendingProposals: Map<string, MutablePendingProposal>;
 }
 
-/** 認可判定の主体(直接追記の actor、または提案の適用時の提案者)。 */
+/**
+ * 認可判定の主体(直接追記の actor、または提案の適用時の提案者): 人(user_id)と
+ * 署名した端末、およびその端末の実効権限(§6.2 — 人の (role, scope) は ChainMember に
+ * あるが、検査へ渡すのは brand 付きの EffectivePermission のみ)。
+ */
 interface ActorContext {
   readonly userId: string;
-  readonly role: Role;
-  readonly scope: MemberScope;
-  readonly keyFingerprintHex: string;
+  readonly device: ChainDevice;
+  readonly permission: EffectivePermission;
 }
 
 /** 適用された(履歴索引へ記録すべき)op とその帰属主体。 */
@@ -390,6 +408,39 @@ function shapeProposalRef(p: { proposalHashHex: unknown }): boolean {
   return isHexOfLength(p.proposalHashHex, SHA256_BYTES);
 }
 
+/**
+ * add_device の構造(§6.2 — 2026-09-19 DK): 公開鍵は hex 小文字 64、role_cap は role 表の
+ * 値、scope の 2 フィールドは環境スコープと同じ構造規則(`all` ⇒ 空リスト・256 以下・
+ * 重複無効・`listed` の空リストは有効)
+ */
+function shapeAddDevice(p: {
+  encPubHex: unknown;
+  sigPubHex: unknown;
+  roleCap: unknown;
+  scopeKind: unknown;
+  scopeEnvironmentIds: unknown;
+}): boolean {
+  return shapeGenesis(p) && isRole(p.roleCap) && shapeScope(p);
+}
+
+/**
+ * revoke_device の構造(§6.2 — 2026-09-19 DK): 対象 user_id と、FP(hex 小文字 32)の
+ * リスト(1 要素以上・256 要素以下・重複無効。順序は署名対象だが検証は集合として扱う)
+ */
+function shapeRevokeDevice(p: { targetUserId: unknown; deviceFingerprintsHex: unknown }): boolean {
+  if (!isBoundedId(p.targetUserId) || !Array.isArray(p.deviceFingerprintsHex)) {
+    return false;
+  }
+  const fps = p.deviceFingerprintsHex;
+  if (fps.length < 1 || fps.length > MAX_REVOKE_DEVICE_FINGERPRINTS) {
+    return false;
+  }
+  if (!fps.every((fp) => isHexOfLength(fp, FINGERPRINT_BYTES))) {
+    return false;
+  }
+  return new Set(fps as readonly string[]).size === fps.length;
+}
+
 // op ごとの payload 形状述語(§6.1 / §6.2 の構造検査)。分岐でなく表引きにして
 // op 追加時の検査漏れを型(網羅 Record)で防ぐ
 const PAYLOAD_SHAPES: {
@@ -408,6 +459,8 @@ const PAYLOAD_SHAPES: {
   propose: shapePropose,
   approve: shapeProposalRef,
   withdraw: shapeProposalRef,
+  add_device: shapeAddDevice,
+  revoke_device: shapeRevokeDevice,
 };
 
 const APPROVAL_OPS: readonly string[] = ["propose", "approve", "withdraw"];
@@ -449,10 +502,12 @@ async function resolveActorSigPub(
   if (record === undefined) {
     return { reason: "actor-not-member" };
   }
-  if (record.keyFingerprintHex !== entry.actor.keyFingerprintHex) {
+  // 申告 FP が現在有効な端末を選ぶ(§6.2 — 失効した端末・未登録の鍵は actor-key-mismatch)
+  const device = record.devices.get(entry.actor.keyFingerprintHex);
+  if (device === undefined) {
     return { reason: "actor-key-mismatch" };
   }
-  return { sigPubHex: record.sigPubHex };
+  return { sigPubHex: device.sigPubHex };
 }
 
 async function verifyEntrySignature(entry: ChainEntry, sigPubHex: string): Promise<boolean> {
@@ -495,12 +550,34 @@ function ownersCount(state: MutableChainState): number {
   return count;
 }
 
-function actorContextOf(member: ChainMember): ActorContext {
+/** 署名した端末の実効権限を持つ主体(§6.2 — effectivePermissionOf が唯一の計算点)。 */
+function actorContextOf(member: ChainMember, device: ChainDevice): ActorContext {
+  return { userId: member.userId, device, permission: effectivePermissionOf(member, device) };
+}
+
+/** 現メンバー集合の全端末鍵の索引へ端末の鍵を載せる / 外す(メンバー鍵の一意性 — §6.2)。 */
+function indexDeviceKeys(state: MutableChainState, device: ChainDevice): void {
+  state.memberEncPubs.add(device.encPubHex);
+  state.memberSigPubs.add(device.sigPubHex);
+}
+
+function unindexDeviceKeys(state: MutableChainState, device: ChainDevice): void {
+  state.memberEncPubs.delete(device.encPubHex);
+  state.memberSigPubs.delete(device.sigPubHex);
+}
+
+/** 最初の端末鍵(genesis / add_member — cap は構造的に (owner, all))。 */
+function firstDeviceOf(
+  keys: { readonly encPubHex: string; readonly sigPubHex: string },
+  keyFingerprintHex: string,
+  addedSeq: number,
+): ChainDevice {
   return {
-    userId: member.userId,
-    role: member.role,
-    scope: member.scope,
-    keyFingerprintHex: member.keyFingerprintHex,
+    ...FIRST_DEVICE_CAP,
+    encPubHex: keys.encPubHex,
+    sigPubHex: keys.sigPubHex,
+    keyFingerprintHex,
+    addedSeq,
   };
 }
 
@@ -570,20 +647,31 @@ function signersOf(pending: MutablePendingProposal): readonly ApprovalVote[] {
   return [...proposer, ...pending.approvals];
 }
 
-function sameSigner(a: ApprovalVote, b: ApprovalVote): boolean {
-  return a.userId === b.userId && a.keyFingerprintHex === b.keyFingerprintHex;
+/**
+ * 票の端末が**いま**その人の有効な端末か(§6.2「approve の票の端末語彙」— 2026-09-19 DK)。
+ * 失効した端末の票・削除されたメンバーの票・別鍵で再追加された人の旧票は生きていない
+ * (同じ FP を同じ人が add_device で再登録すれば復活する — 失効は単調ではない)
+ */
+function voteDevice(state: MutableChainState, signer: ApprovalVote): ChainDevice | undefined {
+  return state.members.get(signer.userId)?.devices.get(signer.keyFingerprintHex);
 }
 
 /**
- * 原則 2(§6.2): 署名者集合 S のうち、**現時点で署名時と同じ鍵 FP を持つ現メンバーとして
- * owner である** distinct な user_id 数。提案後に降格・削除された投票者の票は数えず、
- * 別鍵で再追加されても復活しない(判定状態は「今のエントリの適用前状態」— 2026-09-15 裁定 ⑤)
+ * 原則 2(§6.2): 署名者集合 S のうち、**現時点でその FP が現 owner の有効な端末であり、
+ * 端末の実効 role が owner である** distinct な user_id 数(同じ人の別端末は 1 票)。
+ * 提案後に降格・削除された投票者の票は数えず、別鍵で再追加されても復活しない
+ * (判定状態は「今のエントリの適用前状態」— 2026-09-15 裁定 ⑤)
  */
 function countOwnerVotes(state: MutableChainState, signers: readonly ApprovalVote[]): number {
   const voters = new Set<string>();
   for (const signer of signers) {
     const member = state.members.get(signer.userId);
-    if (member?.role === "owner" && member.keyFingerprintHex === signer.keyFingerprintHex) {
+    const device = voteDevice(state, signer);
+    if (
+      member !== undefined &&
+      device !== undefined &&
+      effectivePermissionOf(member, device).role === "owner"
+    ) {
       voters.add(signer.userId);
     }
   }
@@ -649,9 +737,11 @@ function addMemberRoleReason(grantedRole: Role, actorRole: Role): ChainInvalidRe
 }
 
 /**
- * op の role 規則のうち actor だけで決まる部分(§6.2 の権限列)。対象メンバーの
- * role に依存する部分(admin / owner を対象とする remove / change は owner のみ)は
- * 対象の解決(unknown-target)の後に targetRoleReason が検査する。網羅 Record で
+ * op の role 規則のうち actor だけで決まる部分(§6.2 の権限列 — actor の role は
+ * 署名した端末の実効 role)。対象メンバーの role に依存する部分(admin / owner を
+ * 対象とする remove / change は owner のみ)は対象の解決(unknown-target)の後に
+ * targetRoleReason が検査する。add_device は role 不問、revoke_device の role 規則は
+ * 対象依存(自分なら不問)なので合意規則側(revokeDeviceReason)にある。網羅 Record で
  * op 追加時の規則漏れを型で防ぐ
  */
 const ROLE_RULES: {
@@ -661,16 +751,19 @@ const ROLE_RULES: {
   ) => ChainInvalidReason | null;
 } = {
   genesis: () => null,
-  add_member: (operation, actor) => addMemberRoleReason(operation.payload.role, actor.role),
-  remove_member: (_operation, actor) => requireRole(actor.role, "admin"),
-  change_role: (_operation, actor) => requireRole(actor.role, "admin"),
-  create_environment: (_operation, actor) => requireRole(actor.role, "member"),
-  rotate_epoch: (_operation, actor) => requireRole(actor.role, "member"),
+  add_member: (operation, actor) =>
+    addMemberRoleReason(operation.payload.role, actor.permission.role),
+  remove_member: (_operation, actor) => requireRole(actor.permission.role, "admin"),
+  change_role: (_operation, actor) => requireRole(actor.permission.role, "admin"),
+  create_environment: (_operation, actor) => requireRole(actor.permission.role, "member"),
+  rotate_epoch: (_operation, actor) => requireRole(actor.permission.role, "member"),
   checkpoint: (operation, actor) =>
-    checkpointRoleReason(operation.payload.auditHeadHashHex, actor.role),
-  grant_server: (_operation, actor) => requireRole(actor.role, "owner"),
-  revoke_server: (_operation, actor) => requireRole(actor.role, "owner"),
-  set_approval_policy: (_operation, actor) => requireRole(actor.role, "owner"),
+    checkpointRoleReason(operation.payload.auditHeadHashHex, actor.permission.role),
+  grant_server: (_operation, actor) => requireRole(actor.permission.role, "owner"),
+  revoke_server: (_operation, actor) => requireRole(actor.permission.role, "owner"),
+  set_approval_policy: (_operation, actor) => requireRole(actor.permission.role, "owner"),
+  add_device: () => null,
+  revoke_device: () => null,
 };
 
 function roleReason(
@@ -681,17 +774,20 @@ function roleReason(
 }
 
 function targetRoleReason(
-  operation: Extract<ProposableOperation, { op: "remove_member" | "change_role" }>,
+  operation: Extract<
+    ProposableOperation,
+    { op: "remove_member" | "change_role" | "revoke_device" }
+  >,
   actor: ActorContext,
   target: ChainMember,
 ): ChainInvalidReason | null {
-  if (atLeast(target.role, "admin") && actor.role !== "owner") {
+  if (atLeast(target.role, "admin") && actor.permission.role !== "owner") {
     return "insufficient-role";
   }
   if (
     operation.op === "change_role" &&
     atLeast(operation.payload.newRole, "admin") &&
-    actor.role !== "owner"
+    actor.permission.role !== "owner"
   ) {
     return "insufficient-role";
   }
@@ -733,7 +829,10 @@ function memberScopeReason(
   return (
     scopeEnvironmentsReason(operation.payload, state) ??
     scopeRoleReason(establishedRole, operation.payload.scopeKind) ??
-    (scopeContainsEnvironmentSet(actor.scope, permissionChangeEnvironments(operation, target))
+    (scopeContainsEnvironmentSet(
+      actor.permission.scope,
+      permissionChangeEnvironments(operation, target),
+    )
       ? null
       : "scope-not-contained")
   );
@@ -813,10 +912,77 @@ function removeMemberReason(
   if (typeof target === "string") {
     return target;
   }
-  if (!scopeContainsEnvironmentSet(actor.scope, permissionChangeEnvironments(operation, target))) {
+  if (
+    !scopeContainsEnvironmentSet(
+      actor.permission.scope,
+      permissionChangeEnvironments(operation, target),
+    )
+  ) {
     return "scope-not-contained";
   }
   return quorumReachableAfter(operation, state, target) ? null : "approval-quorum-unreachable";
+}
+
+/**
+ * add_device の合意規則(§6.2 — 2026-09-19 DK)。検査順序(ベクターで固定): role 規則なし →
+ * duplicate-member-key(現メンバー集合の全端末鍵)→ unknown-environment → device-cap-exceeded
+ * (原則 D2 — 新端末の cap ≤ 署名した端末**自身**の cap。実効権限では比べない)
+ */
+function addDeviceReason(
+  operation: Extract<ProposableOperation, { op: "add_device" }>,
+  actor: ActorContext,
+  state: MutableChainState,
+): ChainInvalidReason | null {
+  const p = operation.payload;
+  if (state.memberEncPubs.has(p.encPubHex) || state.memberSigPubs.has(p.sigPubHex)) {
+    return "duplicate-member-key";
+  }
+  return (
+    scopeEnvironmentsReason(p, state) ??
+    (capWithinCap({ roleCap: p.roleCap, scope: memberScopeOf(p) }, actor.device)
+      ? null
+      : "device-cap-exceeded")
+  );
+}
+
+/**
+ * revoke_device の合意規則(§6.2 — 2026-09-19 DK)。検査順序(ベクターで固定):
+ * unknown-target → unknown-device(各 FP は対象の現在有効な端末)→ 対象依存の role 規則
+ * (自分なら不問・他人なら remove_member と同じ)→ last-device-protected(失効後に端末 0)→
+ * scope-not-contained(他人のみ — 対象**の人**の scope ⊆ actor の実効 scope。原則 1)
+ */
+function revokeDeviceReason(
+  operation: Extract<ProposableOperation, { op: "revoke_device" }>,
+  actor: ActorContext,
+  state: MutableChainState,
+): ChainInvalidReason | null {
+  const p = operation.payload;
+  const target = state.members.get(p.targetUserId);
+  if (target === undefined) {
+    return "unknown-target";
+  }
+  if (p.deviceFingerprintsHex.some((fp) => !target.devices.has(fp))) {
+    return "unknown-device";
+  }
+  const self = target.userId === actor.userId;
+  if (!self) {
+    const role =
+      requireRole(actor.permission.role, "admin") ?? targetRoleReason(operation, actor, target);
+    if (role !== null) {
+      return role;
+    }
+  }
+  // FP は構造段で重複無効なので、リスト長 = 失効する端末数
+  if (target.devices.size - p.deviceFingerprintsHex.length < 1) {
+    return "last-device-protected";
+  }
+  if (
+    !self &&
+    !scopeContainsEnvironmentSet(actor.permission.scope, scopeAsEnvironmentSet(target.scope))
+  ) {
+    return "scope-not-contained";
+  }
+  return null;
 }
 
 async function grantServerReason(
@@ -867,7 +1033,7 @@ function createEnvironmentReason(
   if (state.environments.has(operation.payload.environmentId)) {
     return "duplicate-environment";
   }
-  return scopeIncludesEnvironment(actor.scope, operation.payload.environmentId)
+  return scopeIncludesEnvironment(actor.permission.scope, operation.payload.environmentId)
     ? null
     : "environment-out-of-scope";
 }
@@ -885,7 +1051,7 @@ function rotateEpochReason(
   if (environment === undefined) {
     return "unknown-environment";
   }
-  if (!scopeIncludesEnvironment(actor.scope, p.environmentId)) {
+  if (!scopeIncludesEnvironment(actor.permission.scope, p.environmentId)) {
     return "environment-out-of-scope";
   }
   // エポックは環境ごとのカウンタで必ず +1(所有者裁定・案 3)。
@@ -918,7 +1084,7 @@ function checkpointReason(
   return (
     stage((tuple) => !state.environments.has(tuple.environmentId), "unknown-environment") ??
     stage(
-      (tuple) => !scopeIncludesEnvironment(actor.scope, tuple.environmentId),
+      (tuple) => !scopeIncludesEnvironment(actor.permission.scope, tuple.environmentId),
       "environment-out-of-scope",
     ) ??
     stage(
@@ -962,6 +1128,8 @@ const CONSENSUS_RULES: {
     checkpointReason(operation.payload.environments, actor, state),
   set_approval_policy: (operation, _actor, state) =>
     quorumReachableAfter(operation, state, undefined) ? null : "approval-quorum-unreachable",
+  add_device: addDeviceReason,
+  revoke_device: revokeDeviceReason,
 };
 
 async function consensusReason(
@@ -982,36 +1150,82 @@ function applyGenesis(
   entry: ChainEntry & { readonly op: "genesis" },
   state: MutableChainState,
 ): void {
+  // genesis の鍵 = 最初の端末(cap は構造的に (owner, all)。FP は resolveActorSigPub で照合済み)
+  const device = firstDeviceOf(entry.payload, entry.actor.keyFingerprintHex, entry.seq);
   state.members.set(entry.actor.userId, {
     userId: entry.actor.userId,
     role: "owner",
     // 作成者の scope は構造的に all(§6.2 — genesis は payload に scope を持たない)
     scope: ALL_SCOPE,
-    encPubHex: entry.payload.encPubHex,
-    sigPubHex: entry.payload.sigPubHex,
-    keyFingerprintHex: entry.actor.keyFingerprintHex,
+    devices: new Map([[device.keyFingerprintHex, device]]),
   });
   // genesis 時点のメンバー集合は空なので鍵重複は構造上生じない(§6.2)。
-  // 以後の add_member の比較対象として owner の鍵も索引に載せる
-  state.memberEncPubs.add(entry.payload.encPubHex);
-  state.memberSigPubs.add(entry.payload.sigPubHex);
+  // 以後の add_member / add_device の比較対象として owner の鍵も索引に載せる
+  indexDeviceKeys(state, device);
 }
 
 async function applyAddMember(
   operation: Extract<ProposableOperation, { op: "add_member" }>,
   state: MutableChainState,
+  seq: number,
 ): Promise<void> {
   const p = operation.payload;
+  const device = firstDeviceOf(p, await userFingerprintHex(p.encPubHex, p.sigPubHex), seq);
   state.members.set(p.targetUserId, {
     userId: p.targetUserId,
     role: p.role,
     scope: memberScopeOf(p),
+    devices: new Map([[device.keyFingerprintHex, device]]),
+  });
+  indexDeviceKeys(state, device);
+}
+
+/** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。 */
+async function applyAddDevice(
+  operation: Extract<ProposableOperation, { op: "add_device" }>,
+  state: MutableChainState,
+  seq: number,
+  actorUserId: string,
+): Promise<void> {
+  const p = operation.payload;
+  const member = state.members.get(actorUserId);
+  if (member === undefined) {
+    return;
+  }
+  const device: ChainDevice = {
+    keyFingerprintHex: await userFingerprintHex(p.encPubHex, p.sigPubHex),
     encPubHex: p.encPubHex,
     sigPubHex: p.sigPubHex,
-    keyFingerprintHex: await userFingerprintHex(p.encPubHex, p.sigPubHex),
+    roleCap: p.roleCap,
+    scope: memberScopeOf(p),
+    addedSeq: seq,
+  };
+  state.members.set(member.userId, {
+    ...member,
+    devices: new Map([...member.devices, [device.keyFingerprintHex, device]]),
   });
-  state.memberEncPubs.add(p.encPubHex);
-  state.memberSigPubs.add(p.sigPubHex);
+  indexDeviceKeys(state, device);
+}
+
+/** revoke_device: 対象の端末集合から列挙された端末を外す(鍵索引からも外す)。 */
+function applyRevokeDevice(
+  operation: Extract<ProposableOperation, { op: "revoke_device" }>,
+  state: MutableChainState,
+): void {
+  const p = operation.payload;
+  const target = state.members.get(p.targetUserId);
+  if (target === undefined) {
+    return;
+  }
+  const devices = new Map(target.devices);
+  for (const fp of p.deviceFingerprintsHex) {
+    const device = devices.get(fp);
+    if (device !== undefined) {
+      devices.delete(fp);
+      unindexDeviceKeys(state, device);
+    }
+  }
+  state.members.set(target.userId, { ...target, devices });
 }
 
 function applyChangeRole(
@@ -1033,8 +1247,10 @@ function applyRemoveMember(
   const target = state.members.get(operation.payload.targetUserId);
   if (target !== undefined) {
     state.members.delete(target.userId);
-    state.memberEncPubs.delete(target.encPubHex);
-    state.memberSigPubs.delete(target.sigPubHex);
+    // remove_member は対象の全端末を同時に終える(§6.2)
+    for (const device of target.devices.values()) {
+      unindexDeviceKeys(state, device);
+    }
   }
 }
 
@@ -1118,12 +1334,14 @@ function applySetApprovalPolicy(
 
 // op ごとの状態遷移(合意規則を通過した op の適用)。網羅 Record で op 追加時の
 // 適用漏れを型で防ぐ。seq は適用エントリの seq(提案経由なら定足数に達した
-// approve エントリの seq — inclusive 規約)
+// approve エントリの seq — inclusive 規約)。actorUserId は帰属主体(add_device の
+// 対象 = actor 自身)
 const OPERATION_APPLIERS: {
   readonly [K in ProposableOperation["op"]]: (
     operation: Extract<ProposableOperation, { op: K }>,
     state: MutableChainState,
     seq: number,
+    actorUserId: string,
   ) => void | Promise<void>;
 } = {
   // 直接追記の genesis は applyGenesis(actor を要する)。内側 op としては到達しない
@@ -1139,6 +1357,8 @@ const OPERATION_APPLIERS: {
   rotate_epoch: applyRotateEpoch,
   checkpoint: applyCheckpoint,
   set_approval_policy: applySetApprovalPolicy,
+  add_device: applyAddDevice,
+  revoke_device: applyRevokeDevice,
 };
 
 /** 合意規則を通過した op を状態へ適用する。 */
@@ -1146,8 +1366,9 @@ async function applyOperation(
   operation: ProposableOperation,
   state: MutableChainState,
   seq: number,
+  actorUserId: string,
 ): Promise<void> {
-  await OPERATION_APPLIERS[operation.op](operation as never, state, seq);
+  await OPERATION_APPLIERS[operation.op](operation as never, state, seq, actorUserId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,7 +1395,7 @@ async function evaluateDirect(
   if (reason !== null) {
     return reason;
   }
-  await applyOperation(operation, state, seq);
+  await applyOperation(operation, state, seq, actor.userId);
   return { operation, actorUserId: actor.userId };
 }
 
@@ -1205,8 +1426,8 @@ async function evaluatePropose(
     proposalSeq: entry.seq,
     proposalHashHex: entryHashHex,
     proposerUserId: actor.userId,
-    proposerKeyFingerprintHex: actor.keyFingerprintHex,
-    proposerRoleAtProposal: actor.role,
+    proposerKeyFingerprintHex: actor.device.keyFingerprintHex,
+    proposerRoleAtProposal: actor.permission.role,
     inner,
     expiresAtMs: entry.payload.expiresAtMs,
     approvals: [],
@@ -1226,7 +1447,7 @@ async function evaluateApprove(
   actor: ActorContext,
   state: MutableChainState,
 ): Promise<ChainInvalidReason | AppliedOperation | null> {
-  if (actor.role !== "owner") {
+  if (actor.permission.role !== "owner") {
     return "insufficient-role";
   }
   const pending = state.pendingProposals.get(entry.payload.proposalHashHex);
@@ -1241,7 +1462,7 @@ async function evaluateApprove(
   // 有効(非 null)を確認済み — 万一 null なら定足数に届かない側へ倒す
   const signature: ApprovalVote = {
     userId: actor.userId,
-    keyFingerprintHex: actor.keyFingerprintHex,
+    keyFingerprintHex: actor.device.keyFingerprintHex,
   };
   const required = state.approvalPolicy?.requiredApprovals ?? Number.POSITIVE_INFINITY;
   if (countOwnerVotes(state, [...signersOf(pending), signature]) < required) {
@@ -1252,11 +1473,12 @@ async function evaluateApprove(
 }
 
 /**
- * approve の投票前検査(§6.2 の順序): duplicate-approval(actor の (user_id, 現在の鍵 FP) が
- * 既に S の要素 — owner の提案は 1 票 = 自己承認は重複。別鍵で再追加された投票者は改めて
- * 投票できる)→ approval-not-required(現方針で対象外 — 方針オフを含む)→
- * proposal-expired(timestamp_ms > expires_at_ms — 本仕様で timestamp を合意規則に用いる
- * 唯一の箇所)
+ * approve の投票前検査(§6.2 の順序): duplicate-approval(actor の user_id が S に**生きた**
+ * 票を持つ — 票の端末がいまその人の有効な端末である。owner の提案は 1 票 = 自己承認は重複。
+ * 同じ人の別端末の再投票も重複〔distinct は user_id — 2026-09-19 DK〕。失効した端末の票・
+ * 別鍵で再追加された投票者の旧票は生きていないので改めて投票できる)→
+ * approval-not-required(現方針で対象外 — 方針オフを含む)→ proposal-expired
+ * (timestamp_ms > expires_at_ms — 本仕様で timestamp を合意規則に用いる唯一の箇所)
  */
 function approveVoteReason(
   entry: ChainEntry & { readonly op: "approve" },
@@ -1264,8 +1486,10 @@ function approveVoteReason(
   pending: MutablePendingProposal,
   state: MutableChainState,
 ): ChainInvalidReason | null {
-  const vote: ApprovalVote = { userId: actor.userId, keyFingerprintHex: actor.keyFingerprintHex };
-  if (signersOf(pending).some((signer) => sameSigner(signer, vote))) {
+  const live = signersOf(pending).some(
+    (signer) => signer.userId === actor.userId && voteDevice(state, signer) !== undefined,
+  );
+  if (live) {
     return "duplicate-approval";
   }
   if (!isApprovalTarget(pending.inner, state.approvalPolicy)) {
@@ -1275,10 +1499,10 @@ function approveVoteReason(
 }
 
 /**
- * 定足数到達時の適用(§6.2): 適用時点の状態で提案者(在籍・鍵 FP・内側 op の
- * role — `proposal-void`)と内側 op の合意規則を再検査し、通れば提案者を actor として
- * 適用する。失敗した approve は無効エントリであり、提案は pending のまま残る
- * (withdraw で閉じる)
+ * 定足数到達時の適用(§6.2): 適用時点の状態で提案者(在籍・提案した端末がいま有効・
+ * 内側 op の role〔提案した端末の実効 role〕— `proposal-void`)と内側 op の合意規則を
+ * 再検査し、通れば提案者を actor として適用する。失敗した approve は無効エントリであり、
+ * 提案は pending のまま残る(withdraw で閉じる)
  */
 async function completeProposal(
   pending: MutablePendingProposal,
@@ -1286,22 +1510,24 @@ async function completeProposal(
   seq: number,
 ): Promise<ChainInvalidReason | AppliedOperation> {
   const proposer = state.members.get(pending.proposerUserId);
-  if (
-    proposer === undefined ||
-    proposer.keyFingerprintHex !== pending.proposerKeyFingerprintHex ||
-    roleReason(pending.inner, actorContextOf(proposer)) !== null
-  ) {
+  const device = proposer?.devices.get(pending.proposerKeyFingerprintHex);
+  if (proposer === undefined || device === undefined) {
     return "proposal-void";
   }
-  const reason = await consensusReason(pending.inner, actorContextOf(proposer), state);
+  const actor = actorContextOf(proposer, device);
+  if (roleReason(pending.inner, actor) !== null) {
+    return "proposal-void";
+  }
+  const reason = await consensusReason(pending.inner, actor, state);
   if (reason !== null) {
     return reason;
   }
-  await applyOperation(pending.inner, state, seq);
+  await applyOperation(pending.inner, state, seq, proposer.userId);
   state.pendingProposals.delete(pending.proposalHashHex);
   // 適用した内側 op の actor は提案者として扱う(在籍・帰属の記録)
   return { operation: pending.inner, actorUserId: proposer.userId };
 }
+
 function evaluateWithdraw(
   entry: ChainEntry & { readonly op: "withdraw" },
   actor: ActorContext,
@@ -1310,7 +1536,7 @@ function evaluateWithdraw(
   const pending = state.pendingProposals.get(entry.payload.proposalHashHex);
   // 非 owner は「参照先の pending 提案の提案者」である場合にのみ role を満たす
   // (未知の提案の提案者にはなりえないため role 規則が先に落ちる — ベクター固定)
-  if (actor.role !== "owner" && pending?.proposerUserId !== actor.userId) {
+  if (actor.permission.role !== "owner" && pending?.proposerUserId !== actor.userId) {
     return "insufficient-role";
   }
   if (pending === undefined) {
@@ -1333,12 +1559,16 @@ async function evaluateEntry(
     applyGenesis(entry, state);
     return { operation: entry, actorUserId: entry.actor.userId };
   }
-  // actor は resolveActorSigPub で存在確認済み
+  // actor は resolveActorSigPub で存在・端末を確認済み
   const member = state.members.get(entry.actor.userId);
   if (member === undefined) {
     return "actor-not-member";
   }
-  const actor = actorContextOf(member);
+  const device = member.devices.get(entry.actor.keyFingerprintHex);
+  if (device === undefined) {
+    return "actor-key-mismatch";
+  }
+  const actor = actorContextOf(member, device);
   switch (entry.op) {
     case "propose":
       return evaluatePropose(entry, entryHashHex, actor, state);
@@ -1354,7 +1584,7 @@ async function evaluateEntry(
 // ---------------------------------------------------------------------------
 // 履歴索引への記録
 
-/** 適用済み状態から対象メンバーの鍵束縛を引いて tenure 開始を記録する。 */
+/** 適用済み状態から対象メンバーの最初の端末(在籍開始時は端末 1 つ)を引いて tenure 開始を記録する。 */
 function recordTenureStartOf(
   history: ChainHistoryBuilder,
   state: MutableChainState,
@@ -1362,15 +1592,24 @@ function recordTenureStartOf(
   seq: number,
 ): void {
   const member = state.members.get(userId);
-  if (member !== undefined) {
-    history.recordTenureStart(
-      userId,
-      seq,
-      member,
-      member.keyFingerprintHex,
-      member.role,
-      member.scope,
-    );
+  const device = member === undefined ? undefined : soleDeviceOf(member);
+  if (member !== undefined && device !== undefined) {
+    history.recordTenureStart(userId, seq, device, member.role, member.scope);
+  }
+}
+
+/** 適用済み状態から add_device で載った端末(enc 公開鍵で同定)を引いて記録する。 */
+function recordDeviceAddedOf(
+  history: ChainHistoryBuilder,
+  state: MutableChainState,
+  actorUserId: string,
+  encPubHex: string,
+): void {
+  for (const device of state.members.get(actorUserId)?.devices.values() ?? []) {
+    if (device.encPubHex === encPubHex) {
+      history.recordDeviceAdded(actorUserId, device);
+      return;
+    }
   }
 }
 
@@ -1410,7 +1649,16 @@ const HISTORY_RECORDERS: {
   grant_server: () => undefined,
   revoke_server: () => undefined,
   set_approval_policy: () => undefined,
+  add_device: (history: ChainHistoryBuilder, operation, _seq, state, actorUserId) =>
+    recordDeviceAddedOf(history, state, actorUserId, operation.payload.encPubHex),
+  revoke_device: (history: ChainHistoryBuilder, operation, seq) =>
+    history.recordDevicesRevoked(
+      operation.payload.targetUserId,
+      seq,
+      operation.payload.deviceFingerprintsHex,
+    ),
 };
+
 function recordHistory(
   history: ChainHistoryBuilder,
   applied: AppliedOperation,

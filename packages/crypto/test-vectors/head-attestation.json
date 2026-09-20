@@ -58,6 +58,40 @@
       "signed_bytes_sha256_hex": "464694432bd412d1054f056950c62b77a42ebb6788677560184017e6e4847a32",
       "signature_hex": "0cc52fa17e23ecd2a4a3e67d66f418967ff06563c3a474476094c00dcb18e90ea92a5855965220daa73cc0df4483743a3c9f94ad82c93573200cdb67b20f2f02",
       "note": "seq 5 で削除済みの attester による在籍区間内(head 4)の過去申告。§6.6 の署名・ヘッド時点検証は通る(検証鍵は当時の鍵 — チェーンは鍵履歴を保持する)が、attester は現メンバーでないため配布対象外(サーバーは remove_member 受理時に申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1) — 現メンバー検査)。この二層の意図をベクターで固定する"
+    },
+    {
+      "name": "phone-attestation",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "e507b529a6b06597fc0f0463b09d7c9a66b919faf762a399c9e6eebe9453f8ca",
+        "chain_head_seq": 33
+      },
+      "attester_key_fingerprint_hex": "f3f1c4508e09e158b255be186d87f8ad",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004065353037623532396136623036353937666330663034363362303964376339613636623931396661663736326133393963396536656562653934353366386361000000023333",
+      "signed_bytes_sha256_hex": "f4875cd039d2d4fa0949d62c2ce28bed896749f933f559daa6883e592ca79767",
+      "signature_hex": "75ff4d908df4c6e9c9d8cdeb387b19c207182d5a0ea4665b8406996cae53f1776c720a08e87c070c6b808e2f9b8b04961c19416e83880ea49405f61726af1c05",
+      "note": "第 2 端末の正例: owner-0001 の電話 P(cap (owner, listed{}) — DEK を受け取らない票だけの端末)が有効区間内のヘッド(33)を申告する。申告は端末ごと(AUTH_SPEC §16-1)",
+      "chain": "device-ops"
+    },
+    {
+      "name": "reader-cap-device-attestation",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0015",
+        "chain_head_hash_hex": "b2f7540759c7d043477ab67fd3844cca3789c0fc72dadcba6d58030b659bdd8a",
+        "chain_head_seq": 37
+      },
+      "attester_key_fingerprint_hex": "ba49455118006f34f0427f01f130a9c9",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303031350000004062326637353430373539633764303433343737616236376664333834346363613337383963306663373264616463626136643538303330623635396264643861000000023337",
+      "signed_bytes_sha256_hex": "a8d4eb8348f0bcb8913f8dcd04d8e46f99aacd4926766becfa60486e5d38d577",
+      "signature_hex": "25af071489e08197ff93cdd726ad8e5ba670a626298b8e0a21cc917f55b1c8f72404cc08fc90a19e5dae99b123224bc17d7c3be082cb0b0ba830f7236fd0870b",
+      "note": "cap (reader, all) の端末 L による現ヘッド(37)の申告: 申告の必要 role の下限は reader なので、実効 role reader の端末でも申告できる",
+      "chain": "device-ops"
     }
   ],
   "negative": [
@@ -225,6 +259,27 @@
       "expected_reason": "attester-not-member-at-head",
       "must_fail": true,
       "note": "seq 5 で削除済みの attester が削除後のヘッド(24)を申告する形は拒否する(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で在籍区間の境界を固定する)"
+    },
+    {
+      "name": "attester-device-revoked-at-head",
+      "kind": "authorization",
+      "chain": "device-ops",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "b2f7540759c7d043477ab67fd3844cca3789c0fc72dadcba6d58030b659bdd8a",
+        "chain_head_seq": 37
+      },
+      "attester_key_fingerprint_hex": "f3f1c4508e09e158b255be186d87f8ad",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004062326637353430373539633764303433343737616236376664333834346363613337383963306663373264616463626136643538303330623635396264643861000000023337",
+      "signed_bytes_sha256_hex": "ba78cf73b804fd749c53e728e1e72cb1d8b620f7cc96e20ec8c072bae4d7bc00",
+      "signature_hex": "49868511bc2ca40b5d25a6f19b5f973b2c46e8123a866621b3ae07d7caf170811e929588e25e20b083423d64fff0304d07e85597e901d430ea50caf4b090c103",
+      "verify_key_hex": "debaf7c478bfb3b3f0f8ebc58bf11dc3b373c62aa9250db53d663fca965c36ec",
+      "expected_reason": "attester-key-mismatch-at-head",
+      "must_fail": true,
+      "note": "seq 35 で失効した電話 P が失効後のヘッド(37)を申告する形は attester-key-mismatch-at-head(人〔owner-0001〕は在籍のまま — 端末の有効区間の終了境界)"
     }
   ]
 }

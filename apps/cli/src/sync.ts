@@ -119,10 +119,15 @@ async function buildKeyHistory(
     }
   };
   for (const { seq, operation, actorUserId } of applied) {
-    // 鍵を登録する op は genesis と add_member のみ(§6.2)。提案経由で適用された
+    // 鍵を登録する op は genesis / add_member / add_device(§6.2 — 2026-09-19 DK: 端末鍵も
+    // その人に束縛された鍵として履歴に載る。失効は履歴を消さない)。提案経由で適用された
     // add_member(四眼 — K6)も同じ形で載る。verifyChain 通過後なので hex は正規形。
     // FP は payload の鍵から再計算する(genesis の actor FP は payload 鍵と一致検証済み)
-    if (operation.op !== "genesis" && operation.op !== "add_member") {
+    if (
+      operation.op !== "genesis" &&
+      operation.op !== "add_member" &&
+      operation.op !== "add_device"
+    ) {
       continue;
     }
     const enc = decodeHex(operation.payload.encPubHex);
@@ -138,7 +143,8 @@ async function buildKeyHistory(
         `Cannot compute the key fingerprint for ${operation.op} (seq=${seq})`,
       );
     }
-    add(operation.op === "genesis" ? actorUserId : operation.payload.targetUserId, {
+    // genesis / add_device の対象 = actor 自身、add_member の対象 = payload の target
+    add(operation.op === "add_member" ? operation.payload.targetUserId : actorUserId, {
       encPubHex: operation.payload.encPubHex,
       sigPubHex: operation.payload.sigPubHex,
       keyFingerprintHex: encodeHex(fingerprint.value),

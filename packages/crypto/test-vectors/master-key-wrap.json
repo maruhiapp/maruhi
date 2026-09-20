@@ -1,6 +1,6 @@
 {
-  "description": "CRYPTO_SPEC §8(0.9-draft / KL3): master 鍵ラップ台帳。B(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変",
-  "provenance_note": "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B に対する受信者ごとのラップの集合であることを実データで表す",
+  "description": "CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂 — 旧端末のハンドオフ経路〔kind = \"device\" / source = \"device\"〕を削除して再生成、他のケースのバイト列は不変): B = 予備鍵のブロブ(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 保護者の承認 — 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変",
+  "provenance_note": "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B(2026-09-20 DK 以後は予備鍵のブロブ)に対する受信者ごとのラップの集合であることを実データで表す。kind ∈ {passkey-prf, guardian}、ハンドオフの承認者は保護者のみ(旧端末経路の handoff-device と kind = device への付け替え負例は DK で削除 — README 規約 28)",
   "master_wrap_aad_fields_order": ["domain", "user_id", "kind", "wrap_ref", "mode"],
   "guardian_wrap_info_fields_order": [
     "domain",
@@ -45,7 +45,7 @@
     "ikm_hex": "d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0",
     "sk_hex": "a35b7f24526af62ebf2110b0a59fafc6f19052efc142375d8dfb2bf93a6599a6",
     "pk_hex": "c821a250bf4c1338abc1c5330e3f7c90703a6cb4180b499f32f977795c4c8335",
-    "note": "要求者(新端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)"
+    "note": "要求者(予備鍵を復元する端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)"
   },
   "passkey": {
     "hkdf": {
@@ -186,37 +186,15 @@
       "enc_hex": "d0bd2dc09360d0b2d737ccd1e5194f9018c751c4abcc42a64e24314b0952c46d",
       "ciphertext_hex": "7b01ad3752dafa6b853c01f7989bb47122221879ee571b8dac61d275d439f7318103cef0bf0bb5cd863f69ad7934df64",
       "note": "保護者 user-member-0002 が guardian-all-3 の分片 1 を開き、その場で要求者の E.pub へ再封印した承認"
-    },
-    {
-      "name": "handoff-device",
-      "class": "H",
-      "source": "device",
-      "share_index": 0,
-      "approver_user_id": "user-owner-0001",
-      "request_id_hex": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
-      "value_hex": "b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
-      "info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000000664657669636500000001300000000f757365722d6f776e65722d30303031",
-      "ikmE_hex": "9798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6",
-      "aad_hex": "",
-      "enc_hex": "d286656760feab2bcd37966133b8a0855ac54e5cb8b99f4b573734afd6d79345",
-      "ciphertext_hex": "4cd02019f49fc7513820be05b5d33395d7566a6ab65de847283b910f92b34bf5363019b131b5dee287d941d59a16532d",
-      "blob_wrap": {
-        "kind": "device",
-        "wrap_ref": "304dcb76408be9d4b038f40910e44601dfdf633ae540dc0fa1208119e223e4fc",
-        "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000006646576696365000000403330346463623736343038626539643462303338663430393130653434363031646664663633336165353430646330666131323038313139653232336534666300000000",
-        "nonce_hex": "e3e4e5e6e7e8e9eaebecedee",
-        "ciphertext_hex": "3982e7f5644f02cbeadf760997dbc99e5544362121c8cdbd5ebe5fab3940ea928ef765b7b472dc7b0e53aafb480501c16db89a3e28d83a60af267fa09dcb4f3c2426928f4d1e7305421cd56a51a332a6"
-      },
-      "note": "旧端末(ward 本人)の承認: 乱数 KEK_h で B をラップ(AAD kind='device', wrap_ref=request_id)し、KEK_h を E.pub へ封印して同送"
     }
   ],
   "negative": [
     {
       "name": "aad-kind-mismatch",
-      "base": "passkey-prf-basic",
-      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d30303031000000066465766963650000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
+      "base": "guardian-any-2",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b4752503030303030303030303030303030414e59303200000000",
       "must_fail": true,
-      "note": "kind の付け替え(passkey-prf → device。同じ wrap_ref・空 mode のまま)は復号失敗"
+      "note": "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)"
     },
     {
       "name": "aad-wrap-ref-mismatch",
@@ -317,9 +295,9 @@
     {
       "name": "handoff-transplant-source",
       "base": "handoff-guardian-share",
-      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d30303031000000403330346463623736343038626539643462303338663430393130653434363031646664663633336165353430646330666131323038313139653232336534666300000006646576696365000000013100000010757365722d6d656d6265722d30303032",
+      "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414e593032000000013100000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "source の付け替え(保護者分片 → device)は Open 失敗(要求者の組み立て経路を偽れない)"
+      "note": "source の付け替え(保護者分片のグループ all-3 → 別グループ any-2)は Open 失敗(要求者の組み立て経路〔どのグループの分片か〕を偽れない。2026-09-20 DK で旧 → device の形から作り直した)"
     },
     {
       "name": "handoff-share-index-mismatch",

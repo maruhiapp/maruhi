@@ -174,6 +174,7 @@ export {
   DekWrapNotFoundError,
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
+  DeviceOpsNotAcceptedError,
   EnvironmentConflictError,
   EnvironmentConflictReasonSchema,
   EnvironmentNotFoundError,

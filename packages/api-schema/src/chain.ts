@@ -243,6 +243,29 @@ const SetApprovalPolicyEntrySchema = Schema.Struct({
 });
 
 /**
+ * `add_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): the actor's new
+ * device key and its cap. The scope pair reuses the member-scope fields (same
+ * encoding and structure rules — verifyChain checks them as `invalid-payload`).
+ */
+const AddDevicePayloadSchema = Schema.Struct({
+  encPubHex: PublicKeyHex,
+  sigPubHex: PublicKeyHex,
+  roleCap: RoleSchema,
+  ...scopePayloadFields,
+});
+
+/**
+ * `revoke_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): the target and the
+ * fingerprints of that member's devices to revoke, carried as-signed (the nested
+ * length-prefixed canonical form is computed by the crypto layer). 1..256 entries
+ * and no duplicates are consensus rules (`invalid-payload`), not Schema checks.
+ */
+const RevokeDevicePayloadSchema = Schema.Struct({
+  targetUserId: Schema.String,
+  deviceFingerprintsHex: Schema.Array(KeyFingerprintHex),
+});
+
+/**
  * An operation carried inside a `propose` entry (CRYPTO_SPEC §6.2): any
  * non-approval operation as `{ op, payload }` — structured on the wire, the
  * `inner_payload_lp_hex` canonical form is computed by the crypto layer.
@@ -265,6 +288,10 @@ const ProposableOperationSchema = Schema.Union([
     op: Schema.Literal("set_approval_policy"),
     payload: SetApprovalPolicyPayloadSchema,
   }),
+  // 端末鍵の 2 op(2026-09-19 DK)は構造上は内側 op になれるが、方針の対象にはなりえない
+  // (`approval-not-required` — CRYPTO_SPEC §6.2「四眼との関係」。verifyChain が判定する)
+  Schema.Struct({ op: Schema.Literal("add_device"), payload: AddDevicePayloadSchema }),
+  Schema.Struct({ op: Schema.Literal("revoke_device"), payload: RevokeDevicePayloadSchema }),
 ]);
 
 const ProposeEntrySchema = Schema.Struct({
@@ -292,6 +319,18 @@ const WithdrawEntrySchema = Schema.Struct({
   payload: ProposalRefPayloadSchema,
 });
 
+const AddDeviceEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("add_device"),
+  payload: AddDevicePayloadSchema,
+});
+
+const RevokeDeviceEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("revoke_device"),
+  payload: RevokeDevicePayloadSchema,
+});
+
 /** Wire schema for one signed chain entry, discriminated by `op` (CRYPTO_SPEC §6.1). */
 export const ChainEntrySchema = Schema.Union([
   GenesisEntrySchema,
@@ -307,6 +346,9 @@ export const ChainEntrySchema = Schema.Union([
   ProposeEntrySchema,
   ApproveEntrySchema,
   WithdrawEntrySchema,
+  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)。サーバーは K3 まで DeviceOpsNotAccepted で拒否する
+  AddDeviceEntrySchema,
+  RevokeDeviceEntrySchema,
 ]);
 
 // デコード結果が @maruhi/crypto の ChainEntry へそのまま渡せることの静的検査。

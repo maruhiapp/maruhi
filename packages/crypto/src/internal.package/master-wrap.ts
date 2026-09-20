@@ -1,6 +1,6 @@
-// CRYPTO_SPEC §8(0.9-draft / KL3): master 鍵ラップ台帳 — 同一の master 鍵ブロブ B を
-// 受信者ごとに包むラップの集合。recovery-code 経路(recovery.ts)は不変で、本ファイルは
-// 新しい受信者クラスだけを扱う:
+// CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂): 予備鍵の
+// ブロブ B(2026-09-19 DK 以前は master 鍵ブロブ)を受信者ごとに包むラップの集合。
+// recovery-code 経路(recovery.ts)は不変で、本ファイルは新しい受信者クラスだけを扱う:
 //
 //   クラス S(対称 KEK): passkey-prf
 //     KEK = HKDF-SHA256(prf_out, salt = 空, info = "maruhi/v1/passkey-prf")
@@ -8,13 +8,15 @@
 //     グループ KEK = 乱数 256-bit。mode any = 全分片が KEK / mode all = 乱数 XOR 分割
 //     分片は HPKE Base mode 単発 Seal(info = LP("maruhi/v1/guardian-wrap", user_id,
 //     group_id, mode, share_index, guardian_user_id)、aad 空)
-//   クラス H(ハンドオフ = 一時受信者): 要求者の一時 X25519 鍵 E へ 32 バイト値を Seal
+//   クラス H(ハンドオフ = 一時受信者。承認者は保護者のみ — 2026-09-19 DK で旧端末の承認
+//     〔kind = "device" の B ラップの同送〕は削除): 要求者の一時 X25519 鍵 E へ 32 バイト値を Seal
 //     (info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index,
 //     approver_user_id)、aad 空)。request_id = SHA-256(LP("maruhi/v1/handoff-id",
 //     E_pub_hex))。ハンドオフコード = Base32(E_pub ‖ SHA-256(E_pub)[:4])
 //
-//   B のラップ(S / G / H の端末移行に共通): AES-256-GCM、96-bit 乱数 nonce、
+//   B のラップ(S / G に共通): AES-256-GCM、96-bit 乱数 nonce、
 //     AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
+//     kind ∈ {passkey-prf, guardian}(`device` は 2026-09-19 DK で削除 — AAD の構成は不変)
 //
 // 新しいプリミティブは無い: HKDF / AES-GCM / SHA-256 は WebCrypto、Seal / Open は §5 と
 // 同じ HPKE スイート、XOR 分割は情報理論的 n-of-n 秘密分散の標準形(乱数と XOR のみ)。
@@ -50,8 +52,13 @@ const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /** Receipt policy ceiling for shares per group (AUTH_SPEC §13-8); enforced here as an input bound. */
 const MAX_SHARES = 5;
 
-/** Recipient kinds that use the shared master-wrap AAD (CRYPTO_SPEC §8.1). */
-export type MasterWrapKind = "passkey-prf" | "guardian" | "device";
+/**
+ * Recipient kinds that use the shared master-wrap AAD (CRYPTO_SPEC §8.1). `device`
+ * (the old-device handoff approval) was removed by the 2026-09-19 DK revision:
+ * everyday devices never hold the reserve-key blob B, so no device can approve a
+ * handoff (§8.4 — approvers are guardians only). The AAD layout is unchanged.
+ */
+export type MasterWrapKind = "passkey-prf" | "guardian";
 
 /** Guardian group threshold mode (CRYPTO_SPEC §8.3): `any` = 1-of-n, `all` = n-of-n. */
 export type GuardianMode = "any" | "all";
@@ -59,9 +66,9 @@ export type GuardianMode = "any" | "all";
 /**
  * Context a master-blob wrap is bound to (CRYPTO_SPEC §8.1):
  * `LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)`.
- * `wrapRef` is the wrap_id (passkey-prf), group_id (guardian) or request_id
- * (device). `mode` is required for `guardian` and must be absent otherwise
- * (it is encoded as the empty string).
+ * `wrapRef` is the wrap_id (passkey-prf) or group_id (guardian). `mode` is
+ * required for `guardian` and must be absent otherwise (it is encoded as the
+ * empty string).
  */
 export interface MasterWrapContext {
   readonly userId: string;
@@ -81,7 +88,8 @@ export interface GuardianWrapContext {
 
 /**
  * Context a handoff approval is bound to (CRYPTO_SPEC §8.4). `source` is the
- * guardian group_id or the literal `"device"`; `shareIndex` is 0 for device.
+ * guardian group_id of the share being re-sealed (the old-device source
+ * `"device"` was removed by DK — approvers are guardians only).
  */
 export interface HandoffWrapContext {
   readonly userId: string;
@@ -156,7 +164,7 @@ export async function derivePasskeyKek(prfOutput: Uint8Array): Promise<CryptoRes
   }
 }
 
-/** Generates a fresh 256-bit KEK (guardian group KEK or a device-handoff KEK_h). */
+/** Generates a fresh 256-bit KEK (guardian group KEK — CRYPTO_SPEC §8.3). */
 export function generateMasterWrapKek(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(KEK_BYTES));
 }
@@ -434,7 +442,7 @@ export function buildHandoffWrapInfo(context: HandoffWrapContext): Uint8Array {
 }
 
 /**
- * Seals a 32-byte value (a guardian share, or a device-handoff KEK_h) to the
+ * Seals a 32-byte value (a guardian share) to the
  * requester's ephemeral public key (single-shot HPKE Seal).
  */
 export async function sealHandoffValue(input: {

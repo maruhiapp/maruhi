@@ -105,15 +105,6 @@ const passkey = vectorNamed<
 const any2 = vectorNamed<GuardianGroupVector>("guardian-any-2");
 const all3 = vectorNamed<GuardianGroupVector>("guardian-all-3");
 const handoffShare = vectorNamed<HandoffVector>("handoff-guardian-share");
-const handoffDevice = vectorNamed<
-  HandoffVector & {
-    readonly blob_wrap: {
-      readonly aad_hex: string;
-      readonly nonce_hex: string;
-      readonly ciphertext_hex: string;
-    };
-  }
->("handoff-device");
 
 const passkeyContext: MasterWrapContext = { userId, kind: "passkey-prf", wrapRef: passkey.wrap_id };
 const groupContext = (g: GuardianGroupVector): MasterWrapContext => ({
@@ -276,7 +267,8 @@ async function handoffIdChecks(c: Checks): Promise<void> {
 }
 
 async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
-  for (const h of [handoffShare, handoffDevice]) {
+  // 承認者は保護者のみ(2026-09-19 DK — 旧端末の承認 handoff-device は §8.4 から消えた)
+  for (const h of [handoffShare]) {
     c.push(
       `master-wrap: ${h.name} info construction`,
       toHex(buildHandoffWrapInfo(handoffContext(h))) === h.info_hex,
@@ -296,21 +288,6 @@ async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<vo
     "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
     handoffShare.source === all3.group_id && handoffShare.value_hex === all3.shares[0]?.share_hex,
   );
-  // 端末移行: 同送されたラップを KEK_h(= 開いた値)で開くと B
-  const deviceContext: MasterWrapContext = {
-    userId,
-    kind: "device",
-    wrapRef: handoffDevice.request_id_hex,
-  };
-  c.push(
-    "master-wrap: handoff-device blob aad construction",
-    toHex(buildMasterWrapAad(deviceContext)) === handoffDevice.blob_wrap.aad_hex,
-  );
-  const blob = await unwrapVector(
-    { kek_hex: handoffDevice.value_hex, ...handoffDevice.blob_wrap },
-    deviceContext,
-  );
-  c.push("master-wrap: handoff-device blob unwrap == B", blob.ok && toHex(blob.value) === blobHex);
 }
 
 /** AAD 差し替え negative: ベクターの decrypt_aad_hex と AAD 構築が一致し、復号が失敗する。 */
@@ -330,7 +307,13 @@ async function aadNegativeCheck(
 }
 
 async function aadNegativeChecks(c: Checks): Promise<void> {
-  await aadNegativeCheck(c, "aad-kind-mismatch", passkey, { ...passkeyContext, kind: "device" });
+  // kind 1 軸だけの差し替え(guardian → passkey-prf。同じ wrap_ref・同じ mode — 2026-09-20 DK で
+  // kind の集合から device が消えたため、guardian-any-2 を base に作り直した)
+  // (mode は guardian のみの欄なので、passkey-prf の文脈は mode を持たない — 持てば InvalidInput)
+  await aadNegativeCheck(c, "aad-kind-mismatch", any2, {
+    ...passkeyContext,
+    wrapRef: any2.group_id,
+  });
   await aadNegativeCheck(c, "aad-wrap-ref-mismatch", passkey, {
     ...passkeyContext,
     wrapRef: "01JMKWRAP0000000000000OTHER",
@@ -446,7 +429,8 @@ async function handoffNegativeChecks(c: Checks, pair: EncryptionKeyPair): Promis
       name: "handoff-transplant-approver",
       context: { ...base, approverUserId: "user-admin-0003" },
     },
-    { name: "handoff-transplant-source", context: { ...base, source: "device" } },
+    // 保護者分片のグループの付け替え(all-3 → any-2 — 2026-09-20 DK で旧 → device の形から作り直した)
+    { name: "handoff-transplant-source", context: { ...base, source: any2.group_id } },
     { name: "handoff-share-index-mismatch", context: { ...base, shareIndex: 2 } },
     { name: "handoff-request-id-other-key", context: base },
   ];
@@ -536,7 +520,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     sealHandoffValue({
       ephemeralPublicKey: pair.publicKey,
       value: kek,
-      context: { userId, requestId: "r", source: "device", shareIndex: -1, approverUserId: "u" },
+      context: { userId, requestId: "r", source: "g", shareIndex: -1, approverUserId: "u" },
     }),
   ]);
   c.push(
@@ -675,7 +659,7 @@ async function handoffRoundtrip(c: Checks): Promise<void> {
   const context: HandoffWrapContext = {
     userId: "user-roundtrip",
     requestId: requestId ?? "",
-    source: "device",
+    source: "01JMKGRP0000000000ROUNDTRIP",
     shareIndex: 0,
     approverUserId: "user-roundtrip",
   };

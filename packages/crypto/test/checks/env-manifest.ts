@@ -44,7 +44,12 @@ import {
 } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
-import { typedEntries, vectorEnvironmentDeks, vectorKeys } from "./chain-vector.ts";
+import {
+  importVectorSigner,
+  typedEntries,
+  vectorEnvironmentDeks,
+  vectorKeys,
+} from "./chain-vector.ts";
 import { manifestExtendedHistory } from "./manifest-history.ts";
 import {
   type CheckResult,
@@ -248,22 +253,15 @@ async function signAndVerifyChecks(
   name: string,
   context: EnvManifestContext,
   signatureHex: string,
+  issuerKeyFingerprintHex: string,
 ): Promise<void> {
-  const keys = vectorKeys[context.issuerUserId];
-  if (keys === undefined) {
-    c.push(`env-manifest ${name}: issuer keys`, false, "issuer keys missing");
+  // issuer の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  const signer = await importVectorSigner(context.issuerUserId, issuerKeyFingerprintHex);
+  if (signer === null) {
+    c.push(`env-manifest ${name}: issuer keys`, false, "signer keys missing or failed to import");
     return;
   }
-  const pair = await importSigningKeyPair({
-    publicKey: fromHex(keys.sig_pub_hex),
-    privateSeed: fromHex(keys.sig_sk_seed_hex),
-  });
-  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
-  if (!pair.ok || !publicKey.ok) {
-    c.push(`env-manifest ${name}: issuer keys`, false, "key import failed");
-    return;
-  }
-  const signed = await signEnvManifest({ context, signingKey: pair.value.privateKey });
+  const signed = await signEnvManifest({ context, signingKey: signer.privateKey });
   c.push(
     `env-manifest ${name}: deterministic re-sign matches vector`,
     signed.ok && signed.value === signatureHex,
@@ -271,7 +269,7 @@ async function signAndVerifyChecks(
   const verified = await verifyEnvManifestSignature({
     context,
     signatureHex,
-    issuerPublicKey: publicKey.value,
+    issuerPublicKey: signer.publicKey,
   });
   c.push(`env-manifest ${name}: raw signature verify`, verified.ok);
 }
@@ -287,6 +285,8 @@ type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 const POSITIVE_CHAIN: Readonly<Record<string, string>> = {
   "manifest-v1-create": "checkpoint-boundary-create",
   "manifest-rotate": "checkpoint-boundary-rotate",
+  // 第 2 端末の発行(2026-09-19 DK): 照合先は端末鍵派生チェーン(strict 経路)
+  "manifest-second-device-issuer-in-scope": "device-ops",
 };
 
 async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
@@ -312,7 +312,13 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       `env-manifest ${vector.name}: digest recomputation`,
       digest.ok && digest.value === context.variablesDigestHex,
     );
-    await signAndVerifyChecks(c, vector.name, context, vector.signature_hex);
+    await signAndVerifyChecks(
+      c,
+      vector.name,
+      context,
+      vector.signature_hex,
+      vector.issuer_key_fingerprint_hex,
+    );
 
     // 履歴ベースの複合検証(§4.3 / §6.3): prev_base があれば predecessor 込み。
     // manifest-v1-create / manifest-rotate(複合発行のエポック整合)もここを通る
@@ -731,6 +737,7 @@ export async function envManifestChecks(): Promise<CheckResult[]> {
     "checkpoint-boundary-equivocation": await extendedVectorChainHistory(
       "checkpoint-boundary-equivocation",
     ),
+    "device-ops": await extendedVectorChainHistory("device-ops"),
   };
   const canonical = histories["canonical"];
   if (canonical === undefined) {

@@ -53,6 +53,7 @@ import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import type { IdentityBacking } from "./config.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
+import { memberHasKeys, soleDeviceOrFail } from "./device-key.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -147,6 +148,8 @@ export function verifyIssuance(input: {
     if (inviter === undefined) {
       return { ok: false, reason: "inviter-not-member" } as const;
     }
+    // 発行署名の検証鍵 = 招待者の唯一の端末鍵(K2 — 端末は 1 つ。device-key.ts)
+    const inviterDevice = yield* soleDeviceOrFail(inviter);
     const verified = yield* Effect.tryPromise({
       try: () =>
         verifyInviteIssueSignature({
@@ -159,8 +162,8 @@ export function verifyIssuance(input: {
             headSeq: issuance.headSeq,
             role: input.row.role,
             inviterUserId: inviter.userId,
-            inviterEncPubHex: inviter.encPubHex,
-            inviterSigPubHex: inviter.sigPubHex,
+            inviterEncPubHex: inviterDevice.encPubHex,
+            inviterSigPubHex: inviterDevice.sigPubHex,
             scopeKind: input.row.scopeKind,
             scopeEnvironmentIds: input.row.scopeEnvironmentIds,
           },
@@ -346,9 +349,9 @@ function ensureCanIssue(input: {
         ),
       );
     }
+    // 手元の鍵が招待者の端末鍵の 1 つであること(2026-09-19 DK — 署名者は端末単位)
     if (
-      inviter.encPubHex !== input.masterKeys.record.encPubHex ||
-      inviter.sigPubHex !== input.masterKeys.record.sigPubHex
+      !memberHasKeys(inviter, input.masterKeys.record.encPubHex, input.masterKeys.record.sigPubHex)
     ) {
       return yield* Effect.fail(
         cliError(
@@ -372,6 +375,8 @@ interface SignedIssuance {
 function signIssuance(input: {
   readonly verified: VerifiedProject;
   readonly inviter: ChainMember;
+  /** The inviter's signing device (its keys — the local master-key record — go into the issuance). */
+  readonly inviterKeys: { readonly encPubHex: string; readonly sigPubHex: string };
   readonly role: InviteRole;
   readonly scope: ScopePayloadFields;
   readonly signingKey: MasterKeys["sigKeyPair"]["privateKey"];
@@ -399,8 +404,8 @@ function signIssuance(input: {
             headSeq: input.verified.state.headSeq,
             role: input.role,
             inviterUserId: input.inviter.userId,
-            inviterEncPubHex: input.inviter.encPubHex,
-            inviterSigPubHex: input.inviter.sigPubHex,
+            inviterEncPubHex: input.inviterKeys.encPubHex,
+            inviterSigPubHex: input.inviterKeys.sigPubHex,
             scopeKind: input.scope.scopeKind,
             scopeEnvironmentIds: input.scope.scopeEnvironmentIds,
           },
@@ -473,9 +478,15 @@ export function inviteCreateOp(input: {
     // 発行文・発行 body・リンク・発行ピンの 4 か所に同じ scope を載せる(2026-09-15
     // ES K4 — `--env` 反復 = listed、省略 = all。生成は昇順・重複なし — scope.ts)
     const scope: ScopePayloadFields = scopePayloadFieldsOf(input.scope);
+    // 発行する端末 = 手元の鍵(ensureCanIssue が招待者の端末鍵の 1 つであることを検査済み)
+    const inviterKeys = {
+      encPubHex: input.masterKeys.record.encPubHex,
+      sigPubHex: input.masterKeys.record.sigPubHex,
+    };
     const signed = yield* signIssuance({
       verified: input.verified,
       inviter,
+      inviterKeys,
       role: input.role,
       scope,
       signingKey: input.masterKeys.sigKeyPair.privateKey,
@@ -506,8 +517,8 @@ export function inviteCreateOp(input: {
         headHashHex,
         headSeq,
         inviterUserId: inviter.userId,
-        inviterEncPubHex: inviter.encPubHex,
-        inviterSigPubHex: inviter.sigPubHex,
+        inviterEncPubHex: inviterKeys.encPubHex,
+        inviterSigPubHex: inviterKeys.sigPubHex,
         role: input.role,
         scopeKind: scope.scopeKind,
         scopeEnvironmentIds: scope.scopeEnvironmentIds,

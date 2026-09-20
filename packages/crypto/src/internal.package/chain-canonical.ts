@@ -11,6 +11,8 @@
 // checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2)。
 // add_member / change_role の scope、set_approval_policy の ops は環境 ID / op 名リストの
 // 入れ子 LP の hex、propose の内側 payload は内側 op の payload_bytes の hex(2026-09-14)。
+// add_device の scope は member scope と同じ入れ子 LP、revoke_device の device_fingerprints
+// は FP リストの入れ子 LP の hex(2026-09-19 DK — §6.2)。
 
 import { encodeHex } from "./bytes.ts";
 import type {
@@ -151,6 +153,26 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
     case "approve":
     case "withdraw": {
       return encodeLengthPrefixed([operation.payload.proposalHashHex]);
+    }
+    // 端末鍵(2026-09-19 DK — §6.2)。add_device = [enc_pub_hex, sig_pub_hex, role_cap,
+    // scope_kind, scope_environments_lp_hex]、revoke_device = [target_user_id,
+    // device_fingerprints_lp_hex](FP リストの入れ子 LP — 順序は署名対象)
+    case "add_device": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([
+        p.encPubHex,
+        p.sigPubHex,
+        p.roleCap,
+        p.scopeKind,
+        canonicalScopeEnvironmentsHex(p.scopeEnvironmentIds),
+      ]);
+    }
+    case "revoke_device": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([
+        p.targetUserId,
+        encodeHex(encodeLengthPrefixed(p.deviceFingerprintsHex)),
+      ]);
     }
   }
 }

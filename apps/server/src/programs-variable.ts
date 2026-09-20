@@ -5,7 +5,7 @@
 // 存在 → CAS → 署名検証 → 数量ポリシー →
 // 原子書き込み + 監査(AUDIT_SPEC §3.3)。
 
-import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
+import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -15,6 +15,7 @@ import type {
   DataActor,
   DataRejection,
   EnvManifestInput,
+  MemberWithDevice,
   MetaStatementInput,
   SchemaPolicy,
   ValueInput,
@@ -70,7 +71,7 @@ function writeVersionWithAudit(
   write: DataWriteOps,
   appendAudit: (event: AuditEventInput) => void,
   actor: DataActor,
-  writer: ChainMember,
+  writer: MemberWithDevice,
   environmentId: string,
   variableId: string,
   value: ValueInput,
@@ -170,7 +171,7 @@ const ensureVariableCreatable = (
 const acceptCreationValue = (context: {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly projectId: string;
   readonly environmentId: string;
   readonly variableId: string;

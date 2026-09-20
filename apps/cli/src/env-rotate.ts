@@ -27,7 +27,13 @@ import {
   type WrappedDek,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import type { ChainEntry, ChainMember, EnvValuesDigestEntry, SigningKeyPair } from "@maruhi/crypto";
+import type {
+  ChainDevice,
+  ChainEntry,
+  ChainMember,
+  EnvValuesDigestEntry,
+  SigningKeyPair,
+} from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -36,6 +42,7 @@ import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { issueCheckpoint } from "./checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
+import { soleDeviceOrFail } from "./device-key.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import { CliError, cliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
@@ -269,6 +276,7 @@ function signRotateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
   return Effect.gen(function* () {
+    const device = yield* soleDeviceOrFail(input.member);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -277,10 +285,7 @@ function signRotateEntry(input: {
             seq: input.verified.state.headSeq + 1,
             prevHashHex: input.verified.state.headHashHex,
             op: "rotate_epoch",
-            actor: {
-              userId: input.member.userId,
-              keyFingerprintHex: input.member.keyFingerprintHex,
-            },
+            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
             payload: {
               environmentId: input.environmentId,
               newEpoch: input.newEpoch,
@@ -675,7 +680,11 @@ function appendRotation(
                   ),
                 );
               }
-              const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
+              const deks = (yield* sameWrapRecipientSet(
+                state.verified,
+                resynced,
+                input.environmentId,
+              ))
                 ? state.deks
                 : yield* buildWraps(resynced);
               return { verified: resynced, member, deks };
@@ -1472,7 +1481,8 @@ function asOutcome<A, R>(
 /** RotateInput + エポック固有の材料から再暗号化の文脈を組む。 */
 function reencryptContext(
   input: RotateInput,
-  member: ChainMember,
+  /** The writer's signing device (K2: the member's sole device — device-key.ts). */
+  writerDevice: ChainDevice,
   epochMaterial: {
     readonly epoch: number;
     readonly dek: Redacted.Redacted<Uint8Array>;
@@ -1485,7 +1495,7 @@ function reencryptContext(
     floor: input.floor,
     resync: input.resync,
     writerUserId: input.signerUserId,
-    writerKeyFingerprintHex: member.keyFingerprintHex,
+    writerKeyFingerprintHex: writerDevice.keyFingerprintHex,
     signingKey: input.signingKeyPair.privateKey,
     ...epochMaterial,
   };
@@ -2063,7 +2073,7 @@ function resumeReencryption(input: {
             written: [],
           }
         : yield* reencryptCurrentValues({
-            context: reencryptContext(input.input, member, {
+            context: reencryptContext(input.input, yield* soleDeviceOrFail(member), {
               epoch: currentEpoch,
               dek,
               deksByEpoch: input.keys.deksByEpoch,
@@ -2360,7 +2370,11 @@ function rotateWithWarnings(
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
       // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
-      context: reencryptContext(input, rotated.member, { epoch: newEpoch, dek, deksByEpoch }),
+      context: reencryptContext(input, yield* soleDeviceOrFail(rotated.member), {
+        epoch: newEpoch,
+        dek,
+        deksByEpoch,
+      }),
       view: rotated.view,
       targets,
       sink: warnings,

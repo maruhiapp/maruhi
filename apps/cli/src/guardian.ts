@@ -14,6 +14,7 @@
 // 平文の KEK・分片・B はローカル変数にのみ存在する。
 
 import {
+  type ChainMember,
   decodeHex,
   encodeHex,
   generateMasterWrapKek,
@@ -29,6 +30,7 @@ import type { HttpClient } from "effect/unstable/http";
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, type CommonFlags, openMetadataProject, openSession } from "./context.ts";
+import { soleDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -157,22 +159,24 @@ interface SealedShare {
 /** 保護者候補をチェーンの現メンバーから引く(§8.3 — 公開鍵ディレクトリを作らない)。 */
 function resolveGuardians(input: {
   readonly projectId: string;
-  readonly members: ReadonlyMap<string, { encPubHex: string; keyFingerprintHex: string }>;
+  readonly members: ReadonlyMap<string, ChainMember>;
   readonly userIds: readonly string[];
 }): Effect.Effect<readonly GuardianMember[], CliError> {
   return Effect.forEach(input.userIds, (userId) => {
     const member = input.members.get(userId);
-    return member === undefined
-      ? Effect.fail(
-          cliError(
-            `${displayText(userId)} is not a current member of project ${displayText(input.projectId)}. Guardians must be members of a project you share (their key comes from that project's verified chain)`,
-          ),
-        )
-      : Effect.succeed({
-          userId,
-          encPubHex: member.encPubHex,
-          keyFingerprintHex: member.keyFingerprintHex,
-        });
+    if (member === undefined) {
+      return Effect.fail(
+        cliError(
+          `${displayText(userId)} is not a current member of project ${displayText(input.projectId)}. Guardians must be members of a project you share (their key comes from that project's verified chain)`,
+        ),
+      );
+    }
+    // 保護者の鍵 = その唯一の端末鍵(K2 — 分片の各端末への封印は K4。device-key.ts)
+    return Effect.map(soleDeviceOrFail(member), (device) => ({
+      userId,
+      encPubHex: device.encPubHex,
+      keyFingerprintHex: device.keyFingerprintHex,
+    }));
   });
 }
 
@@ -361,7 +365,7 @@ type Staleness = "left" | "rekeyed" | null;
 
 function stalenessOf(
   guardian: GuardianRow,
-  chainMembers: ReadonlyMap<string, { keyFingerprintHex: string }> | null,
+  chainMembers: ReadonlyMap<string, ChainMember> | null,
 ): Staleness {
   if (chainMembers === null) {
     return null;
@@ -370,7 +374,8 @@ function stalenessOf(
   if (current === undefined) {
     return "left";
   }
-  return current.keyFingerprintHex === guardian.guardianKeyFingerprintHex ? null : "rekeyed";
+  // 分片を封印した鍵が、いまもその人の有効な端末か(2026-09-19 DK — 端末単位)
+  return current.devices.has(guardian.guardianKeyFingerprintHex) ? null : "rekeyed";
 }
 
 function reportGroup(
@@ -379,7 +384,7 @@ function reportGroup(
     readonly mode: GuardianMode;
     readonly guardians: readonly GuardianRow[];
   },
-  chainMembers: ReadonlyMap<string, { keyFingerprintHex: string }> | null,
+  chainMembers: ReadonlyMap<string, ChainMember> | null,
 ): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;

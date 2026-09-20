@@ -14,10 +14,18 @@
 // - remove_member エントリ自身の seq で対象は無効
 // - create_environment エントリ自身の seq でエポック 1 が有効
 // - rotate_epoch エントリ自身の seq で新エポックが有効
+// - add_device エントリ自身の seq で新端末は有効、revoke_device エントリ自身の seq で
+//   その端末は無効(2026-09-19 DK — §6.2「端末の有効区間」。在籍区間の内側に端末ごとの
+//   有効区間を持ち、remove_member は全端末を同時に終える)
 //
 // timestamp は認可判定に使わない(すべて seq ベース)。remove → re-add は別
 // tenure として保持する(同じ鍵の dedupe で tenure を消さない — 裁定 A)。
 
+import {
+  type ChainDevice,
+  type EffectivePermission,
+  effectivePermissionOf,
+} from "./chain-device.ts";
 import type {
   CheckpointEnvironmentEntry,
   EnvironmentCheckpointState,
@@ -25,15 +33,31 @@ import type {
 } from "./chain-types.ts";
 import type { MemberScope } from "./member-scope.ts";
 
-/** A member's chain-derived state at one inclusive seq (§6.3 の宣言ヘッド時点). */
+/**
+ * A member's chain-derived state at one inclusive seq (§6.3 の宣言ヘッド時点): the
+ * person's (role, scope) and the devices active at that seq. There is no single
+ * key field (2026-09-19 DK — 鍵は端末に属する): a signature's key is resolved with
+ * `deviceStateAt`, and single-device callers use `soleDeviceOf`.
+ */
 export interface MemberStateAtSeq {
   readonly role: Role;
   /** Environment scope at that seq (§6.3 の 3′ — 宣言ヘッド時点の scope 検査の入力). */
   readonly scope: MemberScope;
-  readonly encPubHex: string;
-  readonly sigPubHex: string;
-  readonly keyFingerprintHex: string;
+  /** Devices active at that seq (inclusive intervals — §6.2), keyed by fingerprint. */
+  readonly devices: ReadonlyMap<string, ChainDevice>;
   /** Seq of the genesis / add_member entry that started this tenure. */
+  readonly tenureStartSeq: number;
+}
+
+/**
+ * One device of a member at one inclusive seq (§6.3-1 の鍵選択 + 3 / 3′ の入力):
+ * the device and the effective permission it held at that seq
+ * (`effectivePermissionOf(person-at-seq, device)` — chain-device.ts).
+ */
+export interface DeviceStateAtSeq {
+  readonly device: ChainDevice;
+  readonly permission: EffectivePermission;
+  /** Seq of the genesis / add_member entry that started the member's tenure. */
   readonly tenureStartSeq: number;
 }
 
@@ -86,6 +110,20 @@ export interface ChainHistoryIndex {
    */
   readonly memberStateAt: (userId: string, seq: number) => MemberStateAtSeq | undefined;
   /**
+   * The device `keyFingerprintHex` of `userId` with `seq` applied inclusively —
+   * the key the chain bound to the user at that point (§6.3-1: 端末の有効区間 =
+   * add_device / add_member / genesis の seq から revoke_device の seq の直前まで) —
+   * or undefined when the user is not a member at `seq` or the device is not
+   * active at `seq` (never added, added later, revoked at or before `seq`, or
+   * belonging to another tenure). The result carries the device's effective
+   * permission at `seq` (§6.3-3 / -3′ の入力).
+   */
+  readonly deviceStateAt: (
+    userId: string,
+    keyFingerprintHex: string,
+    seq: number,
+  ) => DeviceStateAtSeq | undefined;
+  /**
    * The environment state with `seq` applied inclusively, or undefined when
    * the environment's `create_environment` has not occurred by `seq`.
    */
@@ -95,10 +133,10 @@ export interface ChainHistoryIndex {
   ) => EnvironmentStateAtSeq | undefined;
   /**
    * The sig public key (lowercase hex) the chain history binds to
-   * (userId, keyFingerprintHex) in any tenure — the §6.3-1 candidate-key
-   * selection (head-time validity is `memberStateAt`'s separate check, so a
-   * cross-tenure key × head combination still gets its signature verified
-   * first and is then rejected as `writer-key-mismatch-at-head`).
+   * (userId, keyFingerprintHex) as any device of any tenure — the §6.3-1
+   * candidate-key selection (head-time validity is `deviceStateAt`'s separate
+   * check, so a cross-tenure or revoked key × head combination still gets its
+   * signature verified first and is then rejected as `writer-key-mismatch-at-head`).
    */
   readonly sigKeyByFingerprint: (userId: string, keyFingerprintHex: string) => string | undefined;
   /**
@@ -128,13 +166,19 @@ interface MemberSpan {
   readonly scope: MemberScope;
 }
 
+/** One device's validity interval inside a tenure (§6.2 — [addedSeq, revokedSeq)). */
+interface DeviceRecord {
+  readonly device: ChainDevice;
+  /** Seq of the revoke_device entry (device invalid at this seq — inclusive), or null while active. */
+  revokedSeq: number | null;
+}
+
 interface TenureRecord {
   readonly startSeq: number;
   /** Seq of the remove_member entry (member invalid at this seq — inclusive). */
   endSeq: number | null;
-  readonly encPubHex: string;
-  readonly sigPubHex: string;
-  readonly keyFingerprintHex: string;
+  /** Devices in order of addition (the first is the genesis / add_member key). */
+  readonly devices: DeviceRecord[];
   readonly spans: MemberSpan[];
 }
 
@@ -164,6 +208,21 @@ function spanAt(tenure: TenureRecord, seq: number): MemberSpan | undefined {
     }
   }
   return current;
+}
+
+/** 端末は add_device の seq で有効・revoke_device の seq で無効(inclusive — §6.2)。 */
+function deviceActiveAt(record: DeviceRecord, seq: number): boolean {
+  return record.device.addedSeq <= seq && (record.revokedSeq === null || seq < record.revokedSeq);
+}
+
+function activeDevicesAt(tenure: TenureRecord, seq: number): ReadonlyMap<string, ChainDevice> {
+  const devices = new Map<string, ChainDevice>();
+  for (const record of tenure.devices) {
+    if (deviceActiveAt(record, seq)) {
+      devices.set(record.device.keyFingerprintHex, record.device);
+    }
+  }
+  return devices;
 }
 
 class ChainHistory implements ChainHistoryIndex {
@@ -198,16 +257,20 @@ class ChainHistory implements ChainHistoryIndex {
     return this.#entryHashes[seq - 1];
   }
 
-  memberStateAt(userId: string, seq: number): MemberStateAtSeq | undefined {
+  #tenureAt(userId: string, seq: number): TenureRecord | undefined {
     if (!Number.isSafeInteger(seq) || seq < 1 || seq > this.headSeq) {
       return undefined;
     }
     const tenures = this.#tenures.get(userId) ?? [];
     // remove は endSeq 自身で無効(inclusive)なので有効区間は [startSeq, endSeq)
-    const tenure = tenures.find(
+    return tenures.find(
       (candidate) =>
         candidate.startSeq <= seq && (candidate.endSeq === null || seq < candidate.endSeq),
     );
+  }
+
+  memberStateAt(userId: string, seq: number): MemberStateAtSeq | undefined {
+    const tenure = this.#tenureAt(userId, seq);
     if (tenure === undefined) {
       return undefined;
     }
@@ -218,9 +281,31 @@ class ChainHistory implements ChainHistoryIndex {
     return {
       role: span.role,
       scope: span.scope,
-      encPubHex: tenure.encPubHex,
-      sigPubHex: tenure.sigPubHex,
-      keyFingerprintHex: tenure.keyFingerprintHex,
+      devices: activeDevicesAt(tenure, seq),
+      tenureStartSeq: tenure.startSeq,
+    };
+  }
+
+  deviceStateAt(
+    userId: string,
+    keyFingerprintHex: string,
+    seq: number,
+  ): DeviceStateAtSeq | undefined {
+    const tenure = this.#tenureAt(userId, seq);
+    if (tenure === undefined) {
+      return undefined;
+    }
+    const span = spanAt(tenure, seq);
+    const record = tenure.devices.find(
+      (candidate) =>
+        candidate.device.keyFingerprintHex === keyFingerprintHex && deviceActiveAt(candidate, seq),
+    );
+    if (span === undefined || record === undefined) {
+      return undefined;
+    }
+    return {
+      device: record.device,
+      permission: effectivePermissionOf(span, record.device),
       tenureStartSeq: tenure.startSeq,
     };
   }
@@ -248,8 +333,18 @@ class ChainHistory implements ChainHistoryIndex {
   }
 
   sigKeyByFingerprint(userId: string, keyFingerprintHex: string): string | undefined {
-    const tenures = this.#tenures.get(userId) ?? [];
-    return tenures.find((tenure) => tenure.keyFingerprintHex === keyFingerprintHex)?.sigPubHex;
+    // 全 tenure・全端末(失効済みを含む)から FP で選ぶ(§6.3-1 の鍵選択 — 有効区間の
+    // 検査は deviceStateAt が署名検証の後に行う)。同じ FP は同じ鍵対なので、失効 →
+    // 再登録で複数レコードに現れても sig 公開鍵は一致する
+    for (const tenure of this.#tenures.get(userId) ?? []) {
+      const record = tenure.devices.find(
+        (candidate) => candidate.device.keyFingerprintHex === keyFingerprintHex,
+      );
+      if (record !== undefined) {
+        return record.device.sigPubHex;
+      }
+    }
+    return undefined;
   }
 
   checkpointTupleFor(
@@ -304,20 +399,21 @@ export class ChainHistoryBuilder {
     return last !== undefined && last.endSeq === null ? last : undefined;
   }
 
+  /**
+   * genesis / add_member: a tenure starts at `startSeq` with its first device
+   * (structural cap (owner, all) — §6.2; `firstDevice.addedSeq` must equal `startSeq`).
+   */
   recordTenureStart(
     userId: string,
     startSeq: number,
-    keys: { readonly encPubHex: string; readonly sigPubHex: string },
-    keyFingerprintHex: string,
+    firstDevice: ChainDevice,
     role: Role,
     scope: MemberScope,
   ): void {
     const record: TenureRecord = {
       startSeq,
       endSeq: null,
-      encPubHex: keys.encPubHex,
-      sigPubHex: keys.sigPubHex,
-      keyFingerprintHex,
+      devices: [{ device: firstDevice, revokedSeq: null }],
       spans: [{ fromSeq: startSeq, role, scope }],
     };
     const tenures = this.#tenures.get(userId);
@@ -325,6 +421,25 @@ export class ChainHistoryBuilder {
       this.#tenures.set(userId, [record]);
     } else {
       tenures.push(record);
+    }
+  }
+
+  /** add_device: the device is active from `device.addedSeq` (inclusive — §6.2). */
+  recordDeviceAdded(userId: string, device: ChainDevice): void {
+    this.#openTenure(userId)?.devices.push({ device, revokedSeq: null });
+  }
+
+  /** revoke_device: each listed active device is invalid from `seq` (inclusive — §6.2). */
+  recordDevicesRevoked(userId: string, seq: number, keyFingerprintsHex: readonly string[]): void {
+    const open = this.#openTenure(userId);
+    if (open === undefined) {
+      return;
+    }
+    const revoked = new Set(keyFingerprintsHex);
+    for (const record of open.devices) {
+      if (record.revokedSeq === null && revoked.has(record.device.keyFingerprintHex)) {
+        record.revokedSeq = seq;
+      }
     }
   }
 

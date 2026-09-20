@@ -133,6 +133,7 @@ export {
 // role と操作種別(§6.2 — 2026-09-14 ES の環境スコープ / PF1 の四眼を含む)、
 // 検証(§6.3 / §6.4)、導出状態
 export {
+  type AddDevicePayload,
   type AddMemberPayload,
   ALL_SCOPE,
   APPROVAL_TARGET_OPS,
@@ -144,6 +145,7 @@ export {
   canonicalChainPayloadBytes,
   canonicalChainSignedBytes,
   type ChainActor,
+  type ChainDevice,
   type ChainEntry,
   type ChainHistoryIndex,
   type ChainInvalidReason,
@@ -158,6 +160,10 @@ export {
   computeChainEntryHash,
   computeEnvValuesDigest,
   type CreateEnvironmentPayload,
+  type DeviceCap,
+  type DeviceStateAtSeq,
+  type EffectivePermission,
+  effectivePermissionOf,
   type EnvironmentChainState,
   type EnvironmentCheckpointState,
   type EnvironmentStateAtSeq,
@@ -175,6 +181,7 @@ export {
   type ProposableOperation,
   type ProposePayload,
   type RemoveMemberPayload,
+  type RevokeDevicePayload,
   type RevokeServerPayload,
   type Role,
   type RotateEpochPayload,
@@ -186,6 +193,7 @@ export {
   type ServerGrant,
   type SetApprovalPolicyPayload,
   signChainEntry,
+  soleDeviceOf,
   type UnsignedChainEntry,
   verifyChain,
   verifyChainWithHistory,

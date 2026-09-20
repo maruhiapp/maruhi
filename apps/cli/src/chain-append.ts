@@ -13,6 +13,7 @@ import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { soleDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -35,6 +36,8 @@ export function signEntryAtHead(input: {
     if (actor === undefined) {
       return yield* Effect.fail(cliError("Not a chain-derived member"));
     }
+    // 署名する端末 = その唯一の端末鍵(K2 — device-key.ts)
+    const device = yield* soleDeviceOrFail(actor);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -43,7 +46,7 @@ export function signEntryAtHead(input: {
             seq: input.verified.state.headSeq + 1,
             prevHashHex: input.verified.state.headHashHex,
             ...input.operation,
-            actor: { userId: actor.userId, keyFingerprintHex: actor.keyFingerprintHex },
+            actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
             timestampMs: Date.now(),
           },
           signingKey: input.signingKeyPair.privateKey,

@@ -27,6 +27,7 @@ import {
   CheckpointStateMismatchError,
   CompositeRequiredError,
   DataLimitExceededError,
+  DeviceOpsNotAcceptedError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
@@ -201,6 +202,10 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // expires_at_ms の上界 30 日。合意規則ではない)
         ApprovalNotAcceptedError,
         ProposalLimitError,
+        // 端末鍵の 2 op(2026-09-19 DK): K3 で受理副作用と同時に解除する。それまでの
+        // サーバーが返す型(errors/chain.ts — ES K2-10 の原則。解除後もワイヤ互換のため
+        // 宣言を残す)
+        DeviceOpsNotAcceptedError,
         ForbiddenError,
         // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
         // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422

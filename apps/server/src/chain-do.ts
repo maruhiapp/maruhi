@@ -460,6 +460,11 @@ export const appendProgram = (
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
+    // 端末鍵の 2 op(2026-09-19 DK)は K3 まで受理しない(worker のガードと同じ判定を
+    // 受理判定の権威である DO 側にも置く — 受理副作用の無い op を状態へ入れない)
+    if (entry.op === "add_device" || entry.op === "revoke_device") {
+      return yield* rejectData({ kind: "device-ops-not-accepted", op: entry.op });
+    }
     // standalone(周期)checkpoint(AUTH_SPEC §16-2):
     // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
     // スナップショットの原子保存を伴う専用経路へ分岐する

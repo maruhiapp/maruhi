@@ -9,13 +9,22 @@ export {
   computeChainEntryHash,
 } from "./chain-canonical.ts";
 export {
+  type ChainDevice,
+  type DeviceCap,
+  type EffectivePermission,
+  effectivePermissionOf,
+  soleDeviceOf,
+} from "./chain-device.ts";
+export {
   type ChainHistoryIndex,
   type CheckpointTupleLookup,
+  type DeviceStateAtSeq,
   type EnvironmentStateAtSeq,
   type MemberStateAtSeq,
 } from "./chain-history.ts";
 export { signChainEntry } from "./chain-sign.ts";
 export {
+  type AddDevicePayload,
   type AddMemberPayload,
   APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
@@ -42,6 +51,7 @@ export {
   type ProposableOperation,
   type ProposePayload,
   type RemoveMemberPayload,
+  type RevokeDevicePayload,
   type RevokeServerPayload,
   type Role,
   type RotateEpochPayload,

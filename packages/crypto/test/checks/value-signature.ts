@@ -13,15 +13,14 @@ import {
   buildValueSignedBytes,
   computeValueSignedBytesHash,
   generateSigningKeyPair,
-  importSigningKeyPair,
   importSigningPublicKey,
   signValue,
   verifyDistributedValue,
   verifyValueSignature,
 } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
-import { canonicalHistory, extendedHistory } from "./chain-history.ts";
-import { vectorKeys } from "./chain-vector.ts";
+import { canonicalHistory, extendedHistory, extendedVectorChainHistory } from "./chain-history.ts";
+import { importVectorSigner } from "./chain-vector.ts";
 import {
   type CheckResult,
   Checks,
@@ -85,29 +84,35 @@ function contextOf(v: VectorContext): ValueSignatureContext {
 const positives = valueVectors.vectors;
 const byName = new Map(positives.map((v) => [v.name, v]));
 
+/**
+ * 照合先チェーン(名前 → 検証済み履歴索引): canonical(正規 24)、tenure-extension
+ * (value-signature.json の re-add 派生)、device-ops(chain-entries.json の端末鍵派生 —
+ * 2026-09-19 DK)。ベクターの `chain` 無指定は canonical
+ */
+type Histories = Readonly<Record<string, ChainHistoryIndex>>;
+
+function historyFor(
+  histories: Histories,
+  chain: string | undefined,
+): ChainHistoryIndex | undefined {
+  return histories[chain ?? "canonical"];
+}
+
 /** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
   context: ValueSignatureContext,
   signatureHex: string,
+  writerKeyFingerprintHex: string,
 ): Promise<void> {
-  // 署名方向: writer の seed で署名し期待署名と一致(Ed25519 は決定論的)
-  const keys = vectorKeys[context.writerUserId];
-  if (keys === undefined) {
-    c.push(`value-sig ${name}: writer keys`, false, "writer keys missing");
+  // 署名方向: writer の端末(user_id, FP)の seed で署名し期待署名と一致(Ed25519 は決定論的)
+  const signer = await importVectorSigner(context.writerUserId, writerKeyFingerprintHex);
+  if (signer === null) {
+    c.push(`value-sig ${name}: writer keys`, false, "signer keys missing or failed to import");
     return;
   }
-  const pair = await importSigningKeyPair({
-    publicKey: fromHex(keys.sig_pub_hex),
-    privateSeed: fromHex(keys.sig_sk_seed_hex),
-  });
-  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
-  if (!pair.ok || !publicKey.ok) {
-    c.push(`value-sig ${name}: writer keys`, false, "key import failed");
-    return;
-  }
-  const signed = await signValue({ context, signingKey: pair.value.privateKey });
+  const signed = await signValue({ context, signingKey: signer.privateKey });
   c.push(
     `value-sig ${name}: deterministic re-sign matches vector`,
     signed.ok && signed.value === signatureHex,
@@ -115,13 +120,18 @@ async function signAndVerifyChecks(
   const verified = await verifyValueSignature({
     context,
     signatureHex,
-    writerPublicKey: publicKey.value,
+    writerPublicKey: signer.publicKey,
   });
   c.push(`value-sig ${name}: raw signature verify`, verified.ok);
 }
 
-async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   for (const vector of positives) {
+    const history = historyFor(histories, "chain" in vector ? vector.chain : undefined);
+    if (history === undefined) {
+      c.push(`value-sig ${vector.name}: history`, false, "history missing");
+      continue;
+    }
     const context = contextOf(vector.context);
     c.push(
       `value-sig ${vector.name}: signed bytes construction`,
@@ -132,7 +142,13 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
       `value-sig ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    await signAndVerifyChecks(c, vector.name, context, vector.signature_hex);
+    await signAndVerifyChecks(
+      c,
+      vector.name,
+      context,
+      vector.signature_hex,
+      vector.writer_key_fingerprint_hex,
+    );
 
     // 履歴ベースの複合検証(§6.3): prev_base があれば predecessor 込みで検査
     const base = "prev_base" in vector ? byName.get(vector.prev_base as string) : undefined;
@@ -208,11 +224,14 @@ const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
 async function ruleNegativeCheck(
   c: Checks,
   negative: RuleNegative,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
+  histories: Histories,
   exercised: Set<ValueInvalidReason>,
 ): Promise<void> {
-  const chainHistory = negative.chain === "tenure-extension" ? extended : history;
+  const chainHistory = historyFor(histories, negative.chain);
+  if (chainHistory === undefined) {
+    c.push(`value-sig rule negative: ${negative.name}`, false, `unknown chain ${negative.chain}`);
+    return;
+  }
   const result = await verifyDistributedValue({
     history: chainHistory,
     context: contextOf(negative.context),
@@ -267,15 +286,14 @@ async function tamperNegativeCheck(
 
 async function negativeChecks(
   c: Checks,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
+  histories: Histories,
   exercised: Set<ValueInvalidReason>,
 ): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of valueVectors.negative as readonly RuleNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history, extended, exercised);
+      await ruleNegativeCheck(c, negative, histories, exercised);
     } else {
       await tamperNegativeCheck(c, negative, exercised);
     }
@@ -389,11 +407,15 @@ async function roundtripChecks(c: Checks): Promise<void> {
 export async function valueSignatureChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
-  const extended = await extendedHistory();
+  const histories: Histories = {
+    canonical: history,
+    "tenure-extension": await extendedHistory(),
+    "device-ops": await extendedVectorChainHistory("device-ops"),
+  };
   const exercised = new Set<ValueInvalidReason>();
-  await vectorChecks(c, history);
+  await vectorChecks(c, histories);
   await forkChecks(c, history);
-  await negativeChecks(c, history, extended, exercised);
+  await negativeChecks(c, histories, exercised);
   await invalidInputChecks(c);
   await roundtripChecks(c);
   reasonCoverageChecks(c, "value-sig", VALUE_REASON_COVERAGE, exercised);

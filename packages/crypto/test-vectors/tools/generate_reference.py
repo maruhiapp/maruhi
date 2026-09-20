@@ -231,6 +231,12 @@ PAYLOAD_FIELD_ORDER = {
     "propose": ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
     "approve": ["proposal_hash_hex"],
     "withdraw": ["proposal_hash_hex"],
+    # 2026-09-20(CRYPTO_SPEC 0.12-draft §6.2 — DK 端末鍵): 2 op を追加。add_device の
+    # scope 2 フィールドは「環境スコープ」と同じ符号化、revoke_device の
+    # device_fingerprints_lp_hex = FP(hex 小文字 32)リストの入れ子 LP の hex
+    "add_device": ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind",
+                   "scope_environments_lp_hex"],
+    "revoke_device": ["target_user_id", "device_fingerprints_lp_hex"],
 }
 
 # CRYPTO_SPEC §6.2: checkpoint の values_digest。
@@ -3138,6 +3144,572 @@ def gen_chain_entries():
 
     negatives += authz_cases[es_start:]
 
+    # =========================================================================
+    # DK(2026-09-20 K2 — CRYPTO_SPEC 0.12-draft §6.2 / §11): 端末鍵の 2 op
+    # `add_device` / `revoke_device` の正例・負例。**正規チェーン seq 1〜24 は 1 バイトも
+    # 変えない**: DK の正例列は seq 25〜37 の派生チェーン(extended_chains — 規約 19 の
+    # `checkpoint` op と同じ「追記で拡張」の型。value / meta / manifest / attestation の
+    # 端末軸ケースは `chain: "device-ops"` でこの派生チェーンのヘッドを指す)。途中の
+    # ヘッド(29 / 33 / 34 / 36)を要する負例のために、同じ列のプレフィックスを独立の
+    # 派生チェーンとして重ねて置く(エントリのバイト列は同一 — 設計録 dk-design.md §7 K2-10)。
+    #
+    # 端末の配役(cap = (role_cap, scope) — 設計録 §1-2 の絵):
+    #   owner-0001: D1(最初の鍵 — 構造的に (owner, all))/ R = 予備鍵 (owner, all)〔予備鍵で
+    #     あることは CLI の規律 — チェーン上は普通の端末鍵〕/ P = 電話 (owner, listed{}) =
+    #     票だけの端末 / D1n = 予備鍵で登録し直した新端末 (owner, all)
+    #   allmember-0013(member, all): C = CI 箱 (member, listed{dev, stage}) → 実効 (member, {dev, stage})
+    #   owner-0014: D14b = 第 2 端末 (owner, all)(票を入れた後に自己失効 → 票は数えられない)
+    #   owner-0015: L = cap (reader, all) の端末(approve できない・値を書けない)
+    # =========================================================================
+    dk_start = len(authz_cases)
+    reserve = make_user(pat(0x5A, 32), pat(0x6A, 32))       # owner-0001 の予備鍵 R
+    phone = make_user(pat(0x5B, 32), pat(0x6B, 32))         # owner-0001 の電話 P
+    cibox = make_user(pat(0x5C, 32), pat(0x6C, 32))         # allmember-0013 の CI 箱 C
+    owner2_second = make_user(pat(0x5D, 32), pat(0x6D, 32))  # owner-0014 の第 2 端末 D14b
+    owner3_readercap = make_user(pat(0x5E, 32), pat(0x6E, 32))  # owner-0015 の cap reader 端末 L
+    recovered = make_user(pat(0x5F, 32), pat(0x6F, 32))     # owner-0001 の復帰後の新端末 D1n
+    reader_second = make_user(pat(0x59, 32), pat(0x69, 32))  # prodreader-0012 の第 2 端末
+    fresh_device = make_user(pat(0x58, 32), pat(0x68, 32))   # 未使用の端末鍵(許容側・負例の材料)
+
+    def device_payload(dev: dict, role_cap: str, kind: str = "all",
+                       environment_ids: list | None = None) -> dict:
+        return {
+            "enc_pub_hex": dev["enc_pub_hex"],
+            "sig_pub_hex": dev["sig_pub_hex"],
+            "role_cap": role_cap,
+            **scope_fields(kind, environment_ids or []),
+        }
+
+    def revoke_payload(target_id: str, fps: list) -> dict:
+        # device_fingerprints_lp_hex = FP(hex 小文字 32)リストの入れ子 LP の hex(scope と同型。
+        # 順序は署名対象 — 生成は昇順 SHOULD・検証は集合)
+        return {
+            "target_user_id": target_id,
+            "device_fingerprints": list(fps),  # 可読性のための平文表現(正規化対象は *_lp_hex)
+            "device_fingerprints_lp_hex": lp_encode(list(fps)).hex(),
+        }
+
+    def device_state(dev: dict, role_cap: str, kind: str, environment_ids: list | None,
+                     added_seq: int) -> dict:
+        scope = {"kind": kind}
+        if kind == "listed":
+            scope["environments"] = list(environment_ids or [])
+        return {"role_cap": role_cap, "scope": scope, "added_seq": added_seq}
+
+    def first_device(user: dict, added_seq: int) -> dict:
+        # genesis / add_member の最初の鍵は構造的に cap (owner, all)(§6.2)
+        return {user["fp_hex"]: device_state(user, "owner", "all", None, added_seq)}
+
+    def member_state_dk(role: str, kind: str, environment_ids: list | None, devices: dict) -> dict:
+        return {**member_state(role, kind, environment_ids), "devices": devices}
+
+    def ts_at(seq: int) -> int:
+        return t0 + (seq - 1) * 1000
+
+    def extend_dk(base_seq, base_hash, steps):
+        """steps = [(op, actor_id, actor_keys, payload)] を base の直後へ連鎖して署名する(端末鍵で署名する
+        エントリは actor_keys に端末の鍵を渡す — actor.user_id は人・FP は端末)。"""
+        out = []
+        prev = base_hash
+        seq = base_seq
+        for op, actor_id, actor_keys, payload in steps:
+            seq += 1
+            entry = build_entry(seq, op, actor_id, actor_keys, payload, ts_at(seq), prev)
+            out.append(entry)
+            prev = entry["entry_hash_hex"]
+        return out
+
+    # --- 正例列 seq 25〜37 ---------------------------------------------------------
+    dk_entries = extend_dk(24, head24, [
+        ("add_device", owner_id, owner, device_payload(reserve, "owner")),                       # 25 予備鍵 R
+        ("add_device", owner_id, owner, device_payload(phone, "owner", "listed", [])),            # 26 電話 P
+        ("add_device", allmember_id, allmember, device_payload(cibox, "member", "listed", [DEV, STAGE])),  # 27 CI 箱 C
+        ("add_device", owner2_id, owner2, device_payload(owner2_second, "owner")),               # 28 第 2 端末 D14b
+        ("add_device", owner3_id, owner3, device_payload(owner3_readercap, "reader")),           # 29 cap reader の端末 L
+    ])
+    p30_payload = propose_payload("remove_member", remove_devmember, EXPIRES)
+    dk_entries += extend_dk(29, dk_entries[-1]["entry_hash_hex"], [
+        ("propose", devadmin_id, devadmin, p30_payload),                                         # 30 提案(票 0)
+    ])
+    p30 = dk_entries[-1]
+    dk_entries += extend_dk(30, p30["entry_hash_hex"], [
+        ("approve", owner2_id, owner2_second, approve_of(p30)),                                  # 31 D14b の票
+        ("revoke_device", owner2_id, owner2, revoke_payload(owner2_id, [owner2_second["fp_hex"]])),  # 32 自己失効
+        ("approve", owner_id, phone, approve_of(p30)),                                           # 33 電話の票(D14b の票は死票 → 未完成)
+        ("approve", owner2_id, owner2, approve_of(p30)),                                         # 34 別端末で再投票 → 完成(devmember 削除)
+        ("revoke_device", owner_id, owner, revoke_payload(owner_id, sorted([owner["fp_hex"], phone["fp_hex"]]))),  # 35 一括 + 署名中の端末
+        ("add_device", owner_id, reserve, device_payload(recovered, "owner")),                   # 36 予備鍵で新端末を登録
+        ("revoke_device", admin_id, admin, revoke_payload(allmember_id, [cibox["fp_hex"]])),     # 37 admin による他人の端末の失効
+    ])
+    assert [e["seq"] for e in dk_entries] == list(range(25, 38))
+    dk_at = {e["seq"]: e for e in dk_entries}
+    dk_head = {seq: dk_at[seq]["entry_hash_hex"] for seq in dk_at}
+    dk_head[24] = head24
+
+    def dk_prefix(upto: int) -> list:
+        return [e for e in dk_entries if e["seq"] <= upto]
+
+    # --- 導出状態(端末つき)----------------------------------------------------------
+    # 端末は members[user_id].devices に FP → {role_cap, scope, added_seq}(payload の 2 フィールドと
+    # 1:1 の scope 表現)。`devices` を省略した既存の状態は「最初の鍵 1 つ = cap (owner, all)」
+    # を意味する(既存ベクターのバイト列を変えない — 設計録 §7 K2-1)
+    def base_devices(members: dict) -> dict:
+        added = {owner_id: 1, admin_id: 6, devmember_id: 13, devadmin_id: 14,
+                 prodreader_id: 15, allmember_id: 16, owner2_id: 18, owner3_id: 19}
+        return {
+            uid: member_state_dk(st["role"], st["scope"]["kind"], st["scope"].get("environments"),
+                                 first_device(users[uid], added[uid]))
+            for uid, st in members.items()
+        }
+
+    def with_devices(members: dict, uid: str, *extra: dict) -> dict:
+        out = dict(members)
+        devices = dict(out[uid]["devices"])
+        for d in extra:
+            devices.update(d)
+        out[uid] = {**out[uid], "devices": devices}
+        return out
+
+    def without_device(members: dict, uid: str, *fps: str) -> dict:
+        out = dict(members)
+        devices = {fp: st for fp, st in out[uid]["devices"].items() if fp not in fps}
+        out[uid] = {**out[uid], "devices": devices}
+        return out
+
+    dev_R = {reserve["fp_hex"]: device_state(reserve, "owner", "all", None, 25)}
+    dev_P = {phone["fp_hex"]: device_state(phone, "owner", "listed", [], 26)}
+    dev_C = {cibox["fp_hex"]: device_state(cibox, "member", "listed", [DEV, STAGE], 27)}
+    dev_D14b = {owner2_second["fp_hex"]: device_state(owner2_second, "owner", "all", None, 28)}
+    dev_L = {owner3_readercap["fp_hex"]: device_state(owner3_readercap, "reader", "all", None, 29)}
+    dev_D1n = {recovered["fp_hex"]: device_state(recovered, "owner", "all", None, 36)}
+
+    members_29 = base_devices(members_24)
+    members_29 = with_devices(members_29, owner_id, dev_R, dev_P)
+    members_29 = with_devices(members_29, allmember_id, dev_C)
+    members_29 = with_devices(members_29, owner2_id, dev_D14b)
+    members_29 = with_devices(members_29, owner3_id, dev_L)
+    members_33 = without_device(members_29, owner2_id, owner2_second["fp_hex"])
+    members_34 = {k: v for k, v in members_33.items() if k != devmember_id}
+    members_36 = with_devices(
+        without_device(members_34, owner_id, owner["fp_hex"], phone["fp_hex"]), owner_id, dev_D1n)
+    members_37 = without_device(members_36, allmember_id, cibox["fp_hex"])
+    dead_vote_pending = pending_map((p30, "admin", [vote(owner2_id, owner2_second), vote(owner_id, phone)]))
+
+    dk_chain_docs = {
+        "device-added": (29, members_29, canonical_policy, {},
+                         "正規チェーン seq 1〜24 に端末 5 台の `add_device`(seq 25〜29)を追記した派生チェーン: "
+                         "owner-0001 の予備鍵 R (owner, all)〔予備鍵であることは CLI の規律 — チェーン上は普通の端末鍵〕と"
+                         "電話 P (owner, listed{}) = 票だけの端末、allmember-0013(member, all)の CI 箱 C (member, listed{dev, stage})、"
+                         "owner-0014 の第 2 端末 D14b (owner, all)、owner-0015 の cap (reader, all) の端末 L。"
+                         "単調性(新端末の cap ≤ 署名端末自身の cap — 最初の鍵は構造的に (owner, all))の許容側"),
+        "device-dead-vote": (33, members_33, canonical_policy, dead_vote_pending,
+                             "device-added に続けて、devadmin の提案(seq 30 = remove_member devmember。票 0)へ owner-0014 が"
+                             "第 2 端末 D14b で投票(seq 31)→ owner-0014 が D14b を自己失効(seq 32)→ owner-0001 が電話 P で投票"
+                             "(seq 33)。S = {(0014, D14b), (0001, P)} のうち生きている票は (0001, P) の 1 票だけ(失効端末の票は"
+                             "数えない — §6.2 approve の端末語彙)ため定足数 2 に届かず pending のまま"),
+        "device-revote-applied": (34, members_34, canonical_policy, {},
+                                  "device-dead-vote に続けて owner-0014 が最初の端末 K14 で改めて投票(seq 34 — 別端末での再投票は"
+                                  "duplicate-approval にならない)。生きている票 = (0001, P) + (0014, K14) = 2 で定足数に達し、"
+                                  "内側 remove_member を seq 34 で適用(devmember は seq 34 で在籍終了 — inclusive)"),
+        "device-recovered": (36, members_36, canonical_policy, {},
+                             "device-revote-applied に続けて owner-0001 が最初の端末 D1 で D1 自身と電話 P を一括失効(seq 35 — "
+                             "自分がいま署名している端末を失効させてよい・FP リストは昇順)し、残った予備鍵 R で新端末 D1n (owner, all) を"
+                             "登録する(seq 36 — 全端末喪失からの復帰の形。予備鍵からは任意の cap を作れる)"),
+        "device-ops": (37, members_37, canonical_policy, {},
+                       "DK の正例列の全体(seq 25〜37)。末尾の seq 37 は admin-0003(admin, all)による他人(allmember-0013 — "
+                       "member)の CI 箱 C の失効(remove_member と同じ role 規則 + 対象の人の scope ⊆ actor の実効 scope)。"
+                       "value-signature / metadata-signature / env-manifest / head-attestation の端末軸ケースはこのチェーンを "
+                       "`chain: \"device-ops\"` で参照する(C は seq 27〜36 で有効・seq 37 以後は失効端末)"),
+    }
+    for name, (upto, members, policy, pending, description) in dk_chain_docs.items():
+        extended_chains[name] = chain_doc(description, 24, dk_prefix(upto), members, policy, pending)
+
+    # (a) reader が自分の端末を足す(role 不問 — reader も可)
+    reader_add = extend_dk(37, dk_head[37], [
+        ("add_device", prodreader_id, prodreader,
+         device_payload(reader_second, "reader", "listed", [PROD])),
+    ])
+    members_38_reader = with_devices(members_37, prodreader_id, {
+        reader_second["fp_hex"]: device_state(reader_second, "reader", "listed", [PROD], 38)})
+    extended_chains["reader-second-device"] = chain_doc(
+        "device-ops に続けて reader(prodreader-0012 — listed{prod})が自分の第 2 端末 (reader, listed{prod}) を"
+        "足す(seq 38)。`add_device` の actor は role 不問(reader も可 — §6.2 role 表)。自分の端末の "
+        "`revoke_device` も role 不問(valid_appends の reader-revokes-own-device)",
+        24, dk_entries + reader_add, members_38_reader, canonical_policy, {},
+        keys={
+            f"{prodreader_id}@second": {
+                "user_id": prodreader_id,
+                "label": "second",
+                "enc_sk_seed_hex": pat(0x59, 32).hex(),
+                "sig_sk_seed_hex": pat(0x69, 32).hex(),
+                "enc_pub_hex": reader_second["enc_pub_hex"],
+                "sig_pub_hex": reader_second["sig_pub_hex"],
+                "key_fingerprint_hex": reader_second["fp_hex"],
+            },
+        },
+    )
+    reader_head = reader_add[-1]["entry_hash_hex"]
+
+    # (b) 提案した端末の失効 → 定足数到達時に proposal-void
+    void_steps = extend_dk(37, dk_head[37], [
+        ("propose", owner_id, recovered,
+         propose_payload("remove_member", {"target_user_id": prodreader_id}, EXPIRES)),          # 38 owner の提案(票 1: (0001, D1n))
+    ])
+    p38 = void_steps[-1]
+    void_steps += extend_dk(38, p38["entry_hash_hex"], [
+        ("revoke_device", owner_id, reserve, revoke_payload(owner_id, [recovered["fp_hex"]])),   # 39 提案端末 D1n を予備鍵で失効
+        ("approve", owner2_id, owner2, approve_of(p38)),                                         # 40 生きている票 = (0014) の 1 票 → pending
+    ])
+    members_void = without_device(members_37, owner_id, recovered["fp_hex"])
+    extended_chains["proposer-device-revoked"] = chain_doc(
+        "device-ops に続けて owner-0001 が新端末 D1n で提案(seq 38 — owner の提案は 1 票 = (0001, D1n))し、"
+        "予備鍵 R で D1n を失効(seq 39)。owner-0014 の approve(seq 40)の時点で提案者の票は死票(端末失効)"
+        "なので生きている票は 1 で pending のまま。次の owner の approve は定足数に達するが、提案した端末が"
+        "有効でないため proposal-void(§6.2 — 提案端末の有効性で判定)",
+        24, dk_entries + void_steps, members_void, canonical_policy,
+        pending_map((p38, "owner", [owner2_id])),
+    )
+    void_head = void_steps[-1]["entry_hash_hex"]
+
+    # --- 署名系 negative(改竄・順序入替 — 端末 op のフィールドは署名対象)-----------------
+    e25 = dk_at[25]
+    e27 = dk_at[27]
+    e35 = dk_at[35]
+    e37 = dk_at[37]
+
+    def resign_dk(name, base_entry, actor_keys, payload, note):
+        case = resign_variant(name, base_entry, payload, note, verify_key_hex=actor_keys["sig_pub_hex"])
+        case["chain"] = "device-ops"
+        return case
+
+    negatives += [
+        resign_dk(
+            "add-device-tampered-role-cap", e27, allmember,
+            device_payload(cibox, "owner", "listed", [DEV, STAGE]),
+            "role_cap の書き換え(member → owner)は署名検証に失敗する(cap は署名対象 — 上限の付け替え対策)",
+        ),
+        resign_dk(
+            "add-device-scope-relabel-all", e27, allmember,
+            device_payload(cibox, "member", "all"),
+            "端末 scope の書き換え(listed{dev, stage} → all)は署名検証に失敗する",
+        ),
+        resign_dk(
+            "add-device-scope-reorder", e27, allmember,
+            device_payload(cibox, "member", "listed", [STAGE, DEV]),
+            "端末 scope の環境 id の順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象 — add_member の scope と同型)",
+        ),
+        resign_dk(
+            "add-device-scope-flat-concat", e27, allmember,
+            dict(device_payload(cibox, "member", "listed", [DEV, STAGE]),
+                 scope_environments_lp_hex="".join([DEV, STAGE]).encode("utf-8").hex()),
+            "端末 scope を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する(§2.1 の曖昧性排除)",
+        ),
+        resign_dk(
+            "add-device-tampered-enc-pub", e25, owner,
+            dict(device_payload(reserve, "owner"), enc_pub_hex=fresh_device["enc_pub_hex"]),
+            "新端末の enc 公開鍵の差し替えは署名検証に失敗する(登録する鍵は署名対象 — サーバーによる鍵のすり替え対策)",
+        ),
+        resign_dk(
+            "revoke-device-fp-reorder", e35, owner,
+            revoke_payload(owner_id, sorted([owner["fp_hex"], phone["fp_hex"]], reverse=True)),
+            "失効 FP リストの順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象。生成は昇順 SHOULD・検証は集合)",
+        ),
+        resign_dk(
+            "revoke-device-fp-flat-concat", e35, owner,
+            dict(revoke_payload(owner_id, sorted([owner["fp_hex"], phone["fp_hex"]])),
+                 device_fingerprints_lp_hex="".join(sorted([owner["fp_hex"], phone["fp_hex"]])).encode("utf-8").hex()),
+            "FP リストを入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する",
+        ),
+        resign_dk(
+            "revoke-device-tampered-target", e37, admin,
+            revoke_payload(owner3_id, [cibox["fp_hex"]]),
+            "失効対象 user_id の差し替えは署名検証に失敗する(対象は署名対象)",
+        ),
+    ]
+
+    # --- 認可系 negative(構造 → actor → 署名 → 認可の段順。理由コードは §6.2「端末鍵」の検査順序)---
+    dk_cases = []
+
+    def add_dk(name, seq, prev_hex, op, actor_id, actor_keys, payload, expected_reason, note,
+               chain="device-ops"):
+        entry = build_entry(seq, op, actor_id, actor_keys, payload, ts_at(seq), prev_hex)
+        case = authz(name, entry, expected_reason, note)
+        case["verify_key_hex"] = actor_keys["sig_pub_hex"]
+        case["chain"] = chain
+        authz_cases.append(case)
+        dk_cases.append(name)
+
+    # 構造(invalid-payload)。actor = owner-0001 の新端末 D1n(head 37)
+    add_dk("add-device-role-cap-unknown", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), role_cap="superuser"), "invalid-payload",
+           "role_cap は閉集合 {reader, member, admin, owner}。それ以外は構造段で拒否する")
+    add_dk("add-device-scope-all-nonempty", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), **scope_fields("all", [DEV])), "invalid-payload",
+           "端末 scope も「環境スコープ」と同じ構造規則: scope_kind = all のとき scope_environments は空リスト")
+    add_dk("add-device-scope-duplicate-id", 38, dk_head[37], "add_device", owner_id, recovered,
+           device_payload(fresh_device, "owner", "listed", [DEV, DEV]), "invalid-payload",
+           "重複 environment_id を含む端末 scope は無効(構造段)")
+    add_dk("add-device-enc-pub-bad-length", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), enc_pub_hex=fresh_device["enc_pub_hex"][:62]), "invalid-payload",
+           "enc_pub_hex の長さ不正(62 文字)は構造段で拒否する(hex 小文字 64 が正規形)")
+    add_dk("add-device-sig-pub-uppercase-hex", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), sig_pub_hex=fresh_device["sig_pub_hex"].upper()), "invalid-payload",
+           "sig_pub_hex の大文字 hex は構造段で拒否する")
+    add_dk("revoke-device-empty-list", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, []), "invalid-payload",
+           "失効 FP リストは 1 要素以上(§6.2 — 空の失効は意味を持たない。黙って成功させない)")
+    add_dk("revoke-device-duplicate-fp", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, [reserve["fp_hex"], reserve["fp_hex"]]), "invalid-payload",
+           "重複 FP を含む失効リストは無効(構造段)")
+    add_dk("revoke-device-fp-bad-length", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, [reserve["fp_hex"][:30]]), "invalid-payload",
+           "FP の長さ不正(30 文字)は構造段で拒否する(hex 小文字 32 が正規形)")
+    add_dk("revoke-device-too-many-fps", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, [f"{i:032x}" for i in range(257)]), "invalid-payload",
+           "失効 FP リストが 257 要素(上限 256 超過)のエントリは署名が有効でも拒否する")
+    add_dk("add-device-format-precedes-actor", 38, dk_head[37], "add_device", devmember_id, devmember,
+           dict(device_payload(fresh_device, "owner"), role_cap="superuser"), "invalid-payload",
+           "構造違反 × 非メンバー actor(seq 34 で削除済みの devmember)の複合違反は構造検査が先に判定される(検証段順: 構造 → actor)")
+    add_dk("policy-ops-add-device", 38, dk_head[37], "set_approval_policy", owner_id, recovered,
+           policy_payload(["add_device"], 2), "invalid-payload",
+           "`add_device` / `revoke_device` は set_approval_policy の ops に含められない(構造検査 — 端末の追加は定足数に影響せず、失効は安全側の操作 — §6.2 端末鍵「四眼との関係」)")
+    add_dk("policy-ops-revoke-device", 38, dk_head[37], "set_approval_policy", owner_id, recovered,
+           policy_payload(["revoke_device"], 2), "invalid-payload",
+           "同上(revoke_device)")
+
+    # add_device の認可: actor 規則 → duplicate-member-key → unknown-environment → device-cap-exceeded
+    add_dk("authz-add-device-nonmember-actor", 38, dk_head[37], "add_device", devmember_id, devmember,
+           device_payload(fresh_device, "reader", "listed", [DEV]), "actor-not-member",
+           "seq 34 で削除済みの devmember はチェーンに追記できない(端末の追加も同じ — 削除済みメンバーの鍵は現メンバーの端末でない)")
+    add_dk("authz-add-device-revoked-device-actor", 38, dk_head[37], "add_device", owner_id, owner,
+           device_payload(fresh_device, "owner"), "actor-key-mismatch",
+           "seq 35 で失効した端末 D1 による以後の署名は無効(actor の FP が現メンバーの有効な端末でない = actor-key-mismatch。失効端末が端末を増やす経路を閉じる)")
+    add_dk("authz-add-device-duplicate-key-other-member", 38, dk_head[37], "add_device", owner_id, recovered,
+           device_payload(owner2, "owner"), "duplicate-member-key",
+           "他人(owner-0014)の端末鍵一式を自分の端末として登録することは拒否する(メンバー鍵の一意性の対象は現メンバーの全端末鍵 — §6.2)")
+    add_dk("authz-add-device-duplicate-own-key", 38, dk_head[37], "add_device", owner_id, recovered,
+           device_payload(reserve, "owner"), "duplicate-member-key",
+           "自分の既存端末(予備鍵 R)の鍵一式の再登録も拒否する(同じ鍵は同時に 2 端末になれない)")
+    add_dk("authz-add-device-duplicate-enc-key", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), enc_pub_hex=reserve["enc_pub_hex"]), "duplicate-member-key",
+           "enc 公開鍵だけが現メンバーの端末鍵と一致する登録も拒否する(判定は個別鍵単位 — add_member と同じ)")
+    add_dk("authz-add-device-duplicate-sig-key", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(device_payload(fresh_device, "owner"), sig_pub_hex=owner3_readercap["sig_pub_hex"]), "duplicate-member-key",
+           "sig 公開鍵だけが他人(owner-0015 の端末 L)の鍵と一致する登録も拒否する")
+    add_dk("authz-add-device-unknown-environment", 38, dk_head[37], "add_device", owner_id, recovered,
+           device_payload(fresh_device, "owner", "listed", [GHOST]), "unknown-environment",
+           "listed の各 environment_id は create_environment が先行していなければならない(typo の fail-closed — scope と同じ理由コード)")
+    add_dk("authz-add-device-cap-role-exceeded", 38, dk_head[37], "add_device", owner3_id, owner3_readercap,
+           device_payload(fresh_device, "member"), "device-cap-exceeded",
+           "単調性(原則 D2)の role 軸: cap (reader, all) の端末 L は role_cap member の端末を作れない(比較は署名端末自身の cap 同士 — 人の role〔owner〕ではない)")
+    add_dk("authz-add-device-cap-scope-exceeded-listed", 37, dk_head[36], "add_device", allmember_id, cibox,
+           device_payload(fresh_device, "member", "listed", [DEV, PROD, STAGE]), "device-cap-exceeded",
+           "単調性の scope 軸: cap (member, listed{dev, stage}) の CI 箱 C は listed{dev, prod, stage} の端末を作れない(端末 scope_new ⊆ 端末 scope_signer)",
+           chain="device-recovered")
+    add_dk("authz-add-device-cap-scope-exceeded-all", 37, dk_head[36], "add_device", allmember_id, cibox,
+           device_payload(fresh_device, "member"), "device-cap-exceeded",
+           "listed の端末は all の端末を作れない(all = U は listed に包含されない — 集合代数は環境スコープと同じ)",
+           chain="device-recovered")
+    add_dk("authz-add-device-cap-scope-exceeded-empty", 35, dk_head[34], "add_device", owner_id, phone,
+           device_payload(fresh_device, "owner", "listed", [DEV]), "device-cap-exceeded",
+           "票だけの端末 P (owner, listed{}) は listed{dev} の端末を作れない(空 scope の端末が作れるのは空 scope の端末だけ — 盗まれた電話が読める端末を作れない)",
+           chain="device-revote-applied")
+    add_dk("authz-add-device-cap-both-axes-exceeded", 38, dk_head[37], "add_device", owner3_id, owner3_readercap,
+           device_payload(fresh_device, "owner", "listed", [DEV]), "device-cap-exceeded",
+           "role 軸(reader → owner)と scope 軸(all ⊇ listed は通る)の複合: 1 軸でも超えれば device-cap-exceeded")
+    add_dk("authz-add-device-actor-not-member-precedes-duplicate-key", 38, dk_head[37], "add_device", devmember_id, devmember,
+           device_payload(reserve, "reader"), "actor-not-member",
+           "非メンバー × 鍵重複(予備鍵 R の流用)の複合違反は actor 規則が先に判定される(add_device: actor 規則 → duplicate-member-key)")
+    add_dk("authz-add-device-key-mismatch-precedes-duplicate-key", 38, dk_head[37], "add_device", owner_id, owner,
+           device_payload(owner2, "owner"), "actor-key-mismatch",
+           "失効端末の署名 × 鍵重複の複合違反は actor 規則(actor-key-mismatch)が先に判定される")
+    add_dk("authz-add-device-duplicate-key-precedes-unknown-environment", 38, dk_head[37], "add_device", owner_id, recovered,
+           device_payload(reserve, "owner", "listed", [GHOST]), "duplicate-member-key",
+           "鍵重複 × 未知環境の複合違反は duplicate-member-key が先に判定される(add_device: duplicate-member-key → unknown-environment)")
+    add_dk("authz-add-device-unknown-environment-precedes-cap", 38, dk_head[37], "add_device", owner3_id, owner3_readercap,
+           device_payload(fresh_device, "owner", "listed", [GHOST]), "unknown-environment",
+           "未知環境 × cap 超過(reader の端末が owner を作る)の複合違反は unknown-environment が先に判定される(add_device: unknown-environment → device-cap-exceeded)")
+
+    # revoke_device の認可: unknown-target → unknown-device → 対象依存の role 規則 → last-device-protected →
+    # scope-not-contained(他人のみ)
+    add_dk("authz-revoke-device-unknown-target", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload("user-ghost-9999", [reserve["fp_hex"]]), "unknown-target",
+           "対象 user_id が現メンバーでなければ unknown-target(削除済みメンバーの端末も失効できない — 端末は remove_member で同時に終わっている)")
+    add_dk("authz-revoke-device-unknown-device", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, [owner2["fp_hex"]]), "unknown-device",
+           "各 FP は対象の現在有効な端末でなければならない(他人の端末の FP を自分の失効リストに載せても unknown-device)")
+    add_dk("authz-revoke-device-already-revoked", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, [owner["fp_hex"]]), "unknown-device",
+           "seq 35 で失効済みの端末 D1 の再失効は unknown-device(失効は冪等でなく、有効な端末に対してのみ成立する)")
+    add_dk("authz-revoke-device-member-revokes-admin", 38, dk_head[37], "revoke_device", allmember_id, allmember,
+           revoke_payload(admin_id, [admin["fp_hex"]]), "insufficient-role",
+           "他人の端末の失効は remove_member と同じ role 規則: member は誰の端末も失効させられない")
+    add_dk("authz-revoke-device-admin-revokes-owner", 38, dk_head[37], "revoke_device", admin_id, admin,
+           revoke_payload(owner_id, [reserve["fp_hex"]]), "insufficient-role",
+           "admin / owner の端末の失効は owner のみ(対象の role で決まる — admin は owner の端末を失効させられない)")
+    add_dk("authz-revoke-device-reader-revokes-other", 38, dk_head[37], "revoke_device", prodreader_id, prodreader,
+           revoke_payload(owner3_id, [owner3_readercap["fp_hex"]]), "insufficient-role",
+           "reader が他人の端末を失効させる形は role 規則で拒否する(reader に許されるのは自分の端末の add / revoke のみ)")
+    add_dk("authz-revoke-device-last-device-self", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload(owner_id, sorted([reserve["fp_hex"], recovered["fp_hex"]])), "last-device-protected",
+           "失効後に対象の端末が 0 になるエントリは無効(端末のないメンバーは復帰不能 — その形は remove_member で表す)。自分の全端末の一括失効も同じ")
+    add_dk("authz-revoke-device-last-device-other", 38, dk_head[37], "revoke_device", admin_id, admin,
+           revoke_payload(allmember_id, [allmember["fp_hex"]]), "last-device-protected",
+           "admin が他人(allmember — seq 37 で C を失効済み・残り 1 台)の最後の端末を失効させる形も無効")
+    add_dk("authz-revoke-device-scope-not-contained", 37, dk_head[36], "revoke_device", devadmin_id, devadmin,
+           revoke_payload(allmember_id, [cibox["fp_hex"]]), "scope-not-contained",
+           "原則 1 の包含は対象**の人**の scope で判定する(設計録 §6 K1-10 (3)(a)): dev 専任 admin(listed{dev, stage})は、端末 C の scope が {dev, stage} ⊆ 自分の scope でも、"
+           "人(allmember)の scope = all を包含しないため C を失効させられない(失効の rotate 義務〔人の scope ∩ 端末の scope〕の履行者は人の scope を包含する者)",
+           chain="device-recovered")
+    add_dk("authz-revoke-device-unknown-target-precedes-unknown-device", 38, dk_head[37], "revoke_device", owner_id, recovered,
+           revoke_payload("user-ghost-9999", ["ab" * 16]), "unknown-target",
+           "未知の対象 × 未知の FP の複合違反は unknown-target が先に判定される(revoke_device: unknown-target → unknown-device)")
+    add_dk("authz-revoke-device-unknown-device-precedes-role", 38, dk_head[37], "revoke_device", allmember_id, allmember,
+           revoke_payload(admin_id, ["ab" * 16]), "unknown-device",
+           "未知の FP × role 不足(member が admin の端末を失効)の複合違反は unknown-device が先に判定される(revoke_device: unknown-device → 対象依存の role 規則 — 対象の存在を先に解決する remove_member と同じ形)")
+    add_dk("authz-revoke-device-role-precedes-last-device", 38, dk_head[37], "revoke_device", admin_id, admin,
+           revoke_payload(owner2_id, [owner2["fp_hex"]]), "insufficient-role",
+           "role 不足(admin が owner の端末を失効)× 最後の端末の複合違反は role 規則が先に判定される(revoke_device: role 規則 → last-device-protected)")
+    add_dk("authz-revoke-device-last-device-precedes-scope", 38, dk_head[37], "revoke_device", devadmin_id, devadmin,
+           revoke_payload(prodreader_id, [prodreader["fp_hex"]]), "last-device-protected",
+           "最後の端末 × scope 外(prodreader の scope {prod} ⊄ {dev, stage})の複合違反は last-device-protected が先に判定される(revoke_device: last-device-protected → scope-not-contained)")
+    add_dk("authz-revoke-device-revoked-actor", 38, dk_head[37], "revoke_device", owner_id, phone,
+           revoke_payload(owner_id, [reserve["fp_hex"]]), "actor-key-mismatch",
+           "seq 35 で失効した電話 P による失効エントリは actor-key-mismatch(失効端末は他の端末を失効させられない)")
+
+    # 実効権限の置換 — チェーン op の役割・包含・環境対象の各検査(§1 原則 7: 署名した端末の実効権限)
+    add_dk("authz-rotate-by-reader-cap-device", 38, dk_head[37], "rotate_epoch", owner3_id, owner3_readercap,
+           rotate_payload(PROD, 3), "insufficient-role",
+           "役割: owner-0015 の cap (reader, all) の端末 L の実効 role は min(owner, reader) = reader。rotate_epoch(member 以上)は拒否する")
+    add_dk("authz-add-member-by-reader-cap-device", 38, dk_head[37], "add_member", owner3_id, owner3_readercap,
+           add_payload(newcomer_id, newcomer, "member"), "insufficient-role",
+           "役割: 端末 L からの add_member(admin 以上)も実効 role reader で拒否する")
+    add_dk("authz-add-member-by-empty-scope-device", 35, dk_head[34], "add_member", owner_id, phone,
+           add_payload(newcomer_id, newcomer, "member", "listed", [DEV]), "scope-not-contained",
+           "包含(原則 1): 電話 P (owner, listed{}) の実効 scope は all ∩ {} = {}。listed{dev} の付与は包含できない(add_member は ops に無く、member の付与は常時対象でもないので approval-required には当たらない)",
+           chain="device-revote-applied")
+    add_dk("authz-propose-by-empty-scope-device", 35, dk_head[34], "propose", owner_id, phone,
+           propose_payload("remove_member", {"target_user_id": prodreader_id}, EXPIRES), "scope-not-contained",
+           "包含(原則 1・提案段): 電話 P の実効 scope {} は prodreader の scope {prod} を包含しないので、remove_member の提案は提案者の実効 scope で拒否する",
+           chain="device-revote-applied")
+    add_dk("authz-revoke-device-by-empty-scope-device", 35, dk_head[34], "revoke_device", owner_id, phone,
+           revoke_payload(allmember_id, [cibox["fp_hex"]]), "scope-not-contained",
+           "包含(revoke_device): 電話 P の実効 scope {} は allmember の scope(all)を包含しない — 他人の端末の失効も署名端末の実効 scope で判定する",
+           chain="device-revote-applied")
+    add_dk("authz-rotate-out-of-device-scope", 37, dk_head[36], "rotate_epoch", allmember_id, cibox,
+           rotate_payload(PROD, 3), "environment-out-of-scope",
+           "環境対象 op: CI 箱 C の実効 scope は all ∩ {dev, stage} = {dev, stage}。prod の rotate_epoch は人の scope(all)に含まれても端末の実効 scope 外なので拒否する",
+           chain="device-recovered")
+    add_dk("authz-create-env-by-listed-device", 37, dk_head[36], "create_environment", allmember_id, cibox,
+           create_env_payload(FRESH), "environment-out-of-scope",
+           "環境対象 op: listed の端末は環境を作れない(新 environment_id は端末の実効 scope に含まれえない — 人が all でも同じ)",
+           chain="device-recovered")
+    add_dk("authz-checkpoint-out-of-device-scope", 37, dk_head[36], "checkpoint", allmember_id, cibox,
+           checkpoint_payload([checkpoint_env_entry(PROD, 2, 1)]), "environment-out-of-scope",
+           "環境対象 op: 端末の実効 scope 外の環境のタプルを含む checkpoint は拒否する",
+           chain="device-recovered")
+
+    # 四眼の票 × 端末(§6.2 approve の端末語彙)
+    add_dk("authz-approve-revoked-device", 34, dk_head[33], "approve", owner2_id, owner2_second,
+           approve_of(p30), "actor-key-mismatch",
+           "失効した端末 D14b(seq 32)による approve は actor-key-mismatch(失効端末の票は入れられない・既に入れた票も数えない — device-dead-vote)",
+           chain="device-dead-vote")
+    add_dk("authz-approve-other-device-duplicate", 34, dk_head[33], "approve", owner_id, owner,
+           approve_of(p30), "duplicate-approval",
+           "同じ人の別端末からの 2 票目: owner-0001 は電話 P で投票済み(seq 33)なので、端末 D1 からの approve は duplicate-approval(distinct は user_id — 1 人 1 票)",
+           chain="device-dead-vote")
+    add_dk("authz-approve-cap-below-owner", 34, dk_head[33], "approve", owner3_id, owner3_readercap,
+           approve_of(p30), "insufficient-role",
+           "cap (reader, all) の端末 L の実効 role は reader なので、owner-0015 でも L からは票を入れられない(approve の role 規則は署名した端末の実効 role — §6.2)",
+           chain="device-dead-vote")
+    add_dk("authz-approve-cap-precedes-unknown-proposal", 38, dk_head[37], "approve", owner3_id, owner3_readercap,
+           {"proposal_hash_hex": BOGUS_HASH}, "insufficient-role",
+           "実効 role 不足 × 未知の提案の複合違反は role 規則が先に判定される(approve: role → unknown-proposal)")
+    add_dk("authz-propose-add-device", 38, dk_head[37], "propose", owner_id, recovered,
+           propose_payload("add_device", device_payload(fresh_device, "owner"), EXPIRES), "approval-not-required",
+           "add_device は方針の対象にできない(§6.2 端末鍵「四眼との関係」)ため、その提案は approval-not-required")
+    add_dk("authz-propose-revoke-device", 38, dk_head[37], "propose", owner_id, recovered,
+           propose_payload("revoke_device", revoke_payload(owner_id, [reserve["fp_hex"]]), EXPIRES), "approval-not-required",
+           "revoke_device の提案も approval-not-required(失効は安全側の操作 — rotate と同じ線)")
+    add_dk("authz-approve-proposer-device-revoked", 41, void_head, "approve", owner3_id, owner3,
+           approve_of(p38), "proposal-void",
+           "定足数到達時(生きている票 = (0014, K14) + (0015, K15) = 2)に提案した端末 D1n が失効済み(seq 39)なら proposal-void(提案端末の有効性で判定 — 提案者の在籍・鍵 FP の端末語彙)",
+           chain="proposer-device-revoked")
+
+    negatives += authz_cases[dk_start:]
+
+    # --- 許容側(valid_appends)------------------------------------------------------------
+    def dk_append(name, seq, prev_hex, op, actor_id, actor_keys, payload, members, note,
+                  chain="device-ops", pending=None, environments=None):
+        case = {
+            "name": name,
+            "entry": build_entry(seq, op, actor_id, actor_keys, payload, ts_at(seq), prev_hex),
+            "chain": chain,
+            "expected_members": members,
+            "expected_environments": environments if environments is not None else base_environments,
+            "expected_server_grants": [],
+            "expected_policy": canonical_policy,
+            "expected_pending": pending if pending is not None else {},
+            "note": note,
+        }
+        return case
+
+    valid_appends += [
+        dk_append(
+            "member-registers-reserve-key", 38, dk_head[37], "add_device", allmember_id, allmember,
+            device_payload(fresh_device, "owner"),
+            with_devices(members_37, allmember_id, {fresh_device["fp_hex"]: device_state(fresh_device, "owner", "all", None, 38)}),
+            "member(allmember-0013)が最初の端末(構造的に cap (owner, all))から cap (owner, all) の端末 = 予備鍵を登録できる(単調性は署名端末自身の cap 同士の比較 — 実効権限 min(member, owner) = member で比べない。2026-09-19 Cursor Bugbot 指摘対応)。登録された端末の実効権限は (member, all) のまま",
+        ),
+        dk_append(
+            "readd-revoked-device-same-key", 38, dk_head[37], "add_device", allmember_id, allmember,
+            device_payload(cibox, "member", "listed", [DEV, STAGE]),
+            with_devices(members_37, allmember_id, {cibox["fp_hex"]: device_state(cibox, "member", "listed", [DEV, STAGE], 38)}),
+            "seq 37 で失効した端末 C の鍵一式を同じ人が再登録することは拒否されない(鍵一意性の対象は現メンバーの**有効な**端末鍵のみ — 失効した鍵の再登録で旧票が復活する「失効は単調ではない」の端末形の帰結。CLI は失効済み FP の再登録に警告する)",
+        ),
+        dk_append(
+            "reader-revokes-own-device", 39, reader_head, "revoke_device", prodreader_id, prodreader,
+            revoke_payload(prodreader_id, [reader_second["fp_hex"]]), members_37,
+            "reader が自分の端末を失効させる(role 不問。§7 — reader は rotate 義務を履行できないが失効は拒否しない〔安全側の操作を止めない〕)",
+            chain="reader-second-device",
+        ),
+        dk_append(
+            "other-owner-completes-after-dead-vote", 34, dk_head[33], "approve", owner3_id, owner3,
+            approve_of(p30), members_34,
+            "device-dead-vote(生きている票 = (0001, P) の 1 票)へ owner-0015 が投票すると定足数 2 に達して内側 remove_member を適用する(失効端末 D14b の票は数えず、別の owner の票で完成する形)",
+            chain="device-dead-vote",
+        ),
+        dk_append(
+            "ci-device-rotates-in-scope", 37, dk_head[36], "rotate_epoch", allmember_id, cibox,
+            rotate_payload(DEV, 3), members_36,
+            "CI 箱 C(実効 (member, {dev, stage}))は端末の実効 scope 内の環境を rotate できる(環境対象 op の許容側)",
+            chain="device-recovered", environments=dict(base_environments, **{DEV: "3"}),
+        ),
+        dk_append(
+            "ci-device-checkpoints-in-scope", 37, dk_head[36], "checkpoint", allmember_id, cibox,
+            checkpoint_payload([dev_scoped_checkpoint]), members_36,
+            "CI 箱 C は端末の実効 scope 内の環境のタプルだけを公証できる",
+            chain="device-recovered",
+        ),
+        dk_append(
+            "phone-approves-then-listed-device-added", 35, dk_head[34], "add_device", owner_id, phone,
+            device_payload(fresh_device, "owner", "listed", []), with_devices(
+                members_34, owner_id, {fresh_device["fp_hex"]: device_state(fresh_device, "owner", "listed", [], 35)}),
+            "電話 P (owner, listed{}) は同じ cap (owner, listed{}) の端末を作れる(単調性の等号側 — 空 scope ⊆ 空 scope)",
+            chain="device-revote-applied",
+        ),
+    ]
+    valid_appends[-2]["expected_checkpoints"] = {DEV: expected_checkpoint(37, dev_scoped_checkpoint)}
+
+    device_keys = {
+        f"{owner_id}@reserve": ("reserve", owner_id, reserve, 0x5A, 0x6A),
+        f"{owner_id}@phone": ("phone", owner_id, phone, 0x5B, 0x6B),
+        f"{allmember_id}@ci-box": ("ci-box", allmember_id, cibox, 0x5C, 0x6C),
+        f"{owner2_id}@second": ("second", owner2_id, owner2_second, 0x5D, 0x6D),
+        f"{owner3_id}@reader-cap": ("reader-cap", owner3_id, owner3_readercap, 0x5E, 0x6E),
+        f"{owner_id}@recovered": ("recovered", owner_id, recovered, 0x5F, 0x6F),
+    }
+
     def key_record(user: dict, enc_prefix: int, sig_prefix: int) -> dict:
         return {
             "enc_sk_seed_hex": pat(enc_prefix, 32).hex(),
@@ -3161,6 +3733,7 @@ def gen_chain_entries():
                 "member_scope": "add_member / change_role の末尾 2 フィールド: scope_kind(\"all\" | \"listed\")と scope_environments_lp_hex(environment_id リストの LP の hex 小文字 — grant_server の scope_environments と同じ入れ子 LP。順序は署名対象。生成は昇順 SHOULD・検証は集合)。構造規則: all ⇒ 空リスト必須・256 要素以下・重複 id は無効・listed の空リストは有効(§6.2 — 2026-09-14 ES)。genesis は scope を持たず作成者は構造的に all → 要レビュー",
                 "approval_policy": "set_approval_policy = LP(ops_lp_hex, required_approvals)。ops_lp_hex = op 名リストの LP の hex(入れ子 LP。順序は署名対象。生成は昇順 SHOULD・検証は集合)。ops ⊆ {grant_server, revoke_server, remove_member, change_role, add_member, set_approval_policy}、required_approvals は 0(オフ)または 2 以上(§6.2 — 2026-09-14 PF1)→ 要レビュー",
                 "proposal": "propose = LP(inner_op, inner_payload_lp_hex, expires_at_ms)。inner_payload_lp_hex = 内側 op の payload_bytes(PAYLOAD_FIELD_ORDER[inner_op] の順の LP — §6.1 の入れ子 LP)の hex 小文字(内側 op が scope / ops / lease_policy を持てば 2 段以上の入れ子)。内側 op は propose / approve / withdraw 以外(再帰なし — 構造段で拒否)。approve / withdraw = LP(proposal_hash_hex) — 提案エントリの entry_hash(hex 小文字 64)→ 要レビュー",
+                "device_ops": "add_device = LP(enc_pub_hex, sig_pub_hex, role_cap, scope_kind, scope_environments_lp_hex)(role_cap ∈ {reader, member, admin, owner} — owner = 上限なし。scope の 2 フィールドは member_scope と同じ符号化・構造規則)、revoke_device = LP(target_user_id, device_fingerprints_lp_hex)(FP〔hex 小文字 32〕リストの入れ子 LP の hex。1 要素以上・256 要素以下・重複無効。順序は署名対象 — 生成は昇順 SHOULD・検証は集合)。正規チェーン seq 1〜24 は不変で、2 op の正例列は派生チェーン device-ops(seq 25〜37)とそのプレフィックス(device-added / device-dead-vote / device-revote-applied / device-recovered)。端末の導出状態は members[user_id].devices = FP → {role_cap, scope, added_seq}(省略 = 最初の鍵 1 つ = cap (owner, all))(§6.2 — 2026-09-20 DK)→ 要レビュー",
                 "key_fingerprint": "SHA-256(enc_pub(32B) || sig_pub(32B)) の先頭 16 バイト(固定長のため素の連結)",
                 "server_key_fingerprint": "SHA-256(server_enc_pub(32B)) の先頭 16 バイト(サーバーは enc 鍵のみ。§9)→ 要レビュー",
                 "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
@@ -3180,6 +3753,13 @@ def gen_chain_entries():
                 allmember_id: key_record(allmember, 0x3D, 0x4D),
                 owner2_id: key_record(owner2, 0x3E, 0x4E),
                 owner3_id: key_record(owner3, 0x3F, 0x4F),
+                # 2026-09-20 DK: 端末鍵(派生チェーン device-ops の seq 25〜36 で足す端末)。
+                # キーは "<user_id>@<label>"、user_id / label を併記する。検証器は actor の
+                # (user_id, FP) で鍵を選ぶ(FP が端末を指す — §1 原則 7)
+                **{
+                    label_key: {"user_id": uid, "label": label, **key_record(dev, enc_p, sig_p)}
+                    for label_key, (label, uid, dev, enc_p, sig_p) in device_keys.items()
+                },
             },
             "server_key": {
                 "enc_sk_seed_hex": pat(0x90, 32).hex(),
@@ -3646,7 +4226,10 @@ def gen_value_signature():
     admin_id = "user-admin-0003"
 
     def make_value(name, writer_id, environment_id, epoch, variable_id, version,
-                   nonce, plaintext, prev_hash_hex, head_seq, note, prev_base=None):
+                   nonce, plaintext, prev_hash_hex, head_seq, note, prev_base=None,
+                   key=None, chain_ref=None, head_hash_hex=None):
+        # key / chain_ref / head_hash_hex(2026-09-20 DK): 端末鍵で署名する正例は鍵記録
+        # (chain-entries.json の keys の端末エントリ)と参照チェーン名を明示する
         ct_hex = encrypt(environment_id, epoch, variable_id, version, nonce, plaintext)
         ctx = {
             "suite": suite,
@@ -3660,24 +4243,28 @@ def gen_value_signature():
             "ciphertext_hex": ct_hex,
             "prev_value_sig_hash_hex": prev_hash_hex,
             "writer_user_id": writer_id,
-            "chain_head_hash_hex": head_hash(head_seq),
+            "chain_head_hash_hex": head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
             "chain_head_seq": head_seq,
         }
         signed = value_signed_bytes(ctx)
+        signer = (Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key["sig_sk_seed_hex"]))
+                  if key is not None else signer_of(writer_id))
         vector = {
             "name": name,
             "context": ctx,
-            "writer_key_fingerprint_hex": fp_of(writer_id),
+            "writer_key_fingerprint_hex": key["key_fingerprint_hex"] if key is not None else fp_of(writer_id),
             "plaintext_utf8": plaintext,
             "aad_hex": var_aad(suite, project_id, environment_id, epoch, variable_id, version).hex(),
             "dek_ref": {"environment_id": environment_id, "epoch": epoch},
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(writer_id).sign(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
             "note": note,
         }
         if prev_base is not None:
             vector["prev_base"] = prev_base
+        if chain_ref is not None:
+            vector["chain"] = chain_ref
         return vector
 
     # --- 正例(§8-1)。宣言ヘッド時点の inclusive 規約(§6.3)を境界で固定する ---
@@ -4083,6 +4670,74 @@ def gen_value_signature():
         ),
     ]
 
+    # --- 端末軸(2026-09-20 DK — CRYPTO_SPEC 0.12-draft §6.3「端末鍵の選択と実効権限」):
+    # 検証規則 1 の鍵選択は端末の有効区間、3 / 3′ は署名した端末の実効権限で判定する。
+    # 参照チェーンは chain-entries.json の派生チェーン device-ops(seq 25〜37 — 既存の
+    # 正例・負例と `canonical` の意味は不変。規約 28)。理由コードはいずれも既存のもの
+    dk_chain = chain["extended_chains"]["device-ops"]["entries"]
+
+    def dk_head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"] if seq <= len(entries) else dk_chain[seq - 25]["entry_hash_hex"]
+
+    def device_key(label: str) -> dict:
+        return chain["keys"][label]
+
+    def device_signer(label: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
+
+    cibox = device_key("user-allmember-0013@ci-box")           # C: 実効 (member, {dev, stage})。seq 27〜36 有効
+    readercap = device_key("user-owner-0015@reader-cap")       # L: 実効 (reader, all)
+    allmember_id = "user-allmember-0013"
+    owner3_id = "user-owner-0015"
+    vectors.append(
+        make_value(
+            "second-device-writer-in-scope", allmember_id, "env-dev-0002", 2, "var-ci-scoped-0007", 1,
+            pat(0xAD, 12), "ci-scoped-dummy-v1", "", 28,
+            "第 2 端末の正例: allmember-0013(member, all)の CI 箱 C(cap (member, listed{dev, stage}) — seq 27)による"
+            "実効 scope 内の環境(env-dev-0002)への push は通る(宣言ヘッド 28 は C の有効区間内)",
+            key=cibox, chain_ref="device-ops", head_hash_hex=dk_head_hash(28),
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "writer-device-revoked-at-head", allmember_id, "env-dev-0002", 2, "var-ci-scoped-0007", 1,
+            pat(0xBF, 12), "rule-dummy", "", dk_head_hash(37), 37,
+            "writer-key-mismatch-at-head",
+            "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言した署名は writer-key-mismatch-at-head"
+            "(端末の有効区間 = add_device 以後・revoke_device の直前まで。人〔allmember〕は在籍のまま — "
+            "在籍区間跨ぎと同じ既存の理由コード)",
+            chain_ref="device-ops", writer_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+        rule_negative(
+            "writer-device-role-insufficient", owner3_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xC0, 12), "rule-dummy", "", dk_head_hash(29), 29,
+            "writer-role-insufficient-at-head",
+            "owner-0015 の cap (reader, all) の端末 L(seq 29)の実効 role は min(owner, reader) = reader。"
+            "人が owner でも、この端末による値の push は writer-role-insufficient-at-head",
+            chain_ref="device-ops", writer_fp=readercap["key_fingerprint_hex"],
+            sign_with=device_signer("user-owner-0015@reader-cap"), verify_key_hex=readercap["sig_pub_hex"],
+        ),
+        rule_negative(
+            "writer-device-environment-out-of-scope", allmember_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xC1, 12), "rule-dummy", "", dk_head_hash(28), 28,
+            "writer-environment-out-of-scope-at-head",
+            "CI 箱 C の実効 scope は all ∩ {dev, stage} = {dev, stage}。人(allmember)の scope が all でも、"
+            "端末 scope 外の env-prod-0001 への署名は writer-environment-out-of-scope-at-head",
+            chain_ref="device-ops", writer_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+        rule_negative(
+            "writer-device-unknown-before-add", allmember_id, "env-dev-0002", 2, "var-rule-0004", 1,
+            pat(0xC2, 12), "rule-dummy", "", dk_head_hash(26), 26,
+            "writer-key-mismatch-at-head",
+            "端末 C の add_device(seq 27)より前のヘッド(26)を宣言した C の署名は writer-key-mismatch-at-head"
+            "(有効区間の開始境界 — 追加前の端末は人に束縛されていない)",
+            chain_ref="device-ops", writer_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+    ]
+
     write(
         "value-signature.json",
         {
@@ -4218,21 +4873,28 @@ def gen_metadata_signature():
 
     def make_statement(name, kind, environment_id, variable_id, display_name, status,
                        meta_version, prev_hash_hex, author_id, head_seq, note,
-                       prev_base=None):
+                       prev_base=None, key=None, chain_ref=None, head_hash_hex=None):
+        # key / chain_ref / head_hash_hex(2026-09-20 DK): 端末鍵で署名する正例の鍵記録と参照チェーン
         ctx = make_context(kind, environment_id, variable_id, display_name, status,
-                           meta_version, prev_hash_hex, author_id, head_hash(head_seq), head_seq)
+                           meta_version, prev_hash_hex, author_id,
+                           head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
+                           head_seq)
         signed = meta_signed_bytes(ctx)
+        signer = (Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key["sig_sk_seed_hex"]))
+                  if key is not None else signer_of(author_id))
         vector = {
             "name": name,
             "context": ctx,
-            "author_key_fingerprint_hex": fp_of(author_id),
+            "author_key_fingerprint_hex": key["key_fingerprint_hex"] if key is not None else fp_of(author_id),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(author_id).sign(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
             "note": note,
         }
         if prev_base is not None:
             vector["prev_base"] = prev_base
+        if chain_ref is not None:
+            vector["chain"] = chain_ref
         return vector
 
     # --- 正例(session-12 §8-2)。宣言ヘッド時点の inclusive 規約(§6.3)と
@@ -4947,6 +5609,67 @@ def gen_metadata_signature():
         ),
     ]
 
+    # --- 端末軸(2026-09-20 DK — §6.3「端末鍵の選択と実効権限」。参照チェーンは派生チェーン
+    # device-ops。既存の正例・負例と `canonical` の意味は不変 — 規約 28)
+    dk_chain = chain["extended_chains"]["device-ops"]["entries"]
+
+    def dk_head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"] if seq <= len(entries) else dk_chain[seq - 25]["entry_hash_hex"]
+
+    def device_key(label: str) -> dict:
+        return chain["keys"][label]
+
+    def device_signer(label: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
+
+    cibox = device_key("user-allmember-0013@ci-box")
+    readercap = device_key("user-owner-0015@reader-cap")
+    allmember_id = "user-allmember-0013"
+    owner3_id = "user-owner-0015"
+    vectors.append(
+        make_statement(
+            "second-device-author-in-scope", "variable", "env-dev-0002", "var-ci-scoped-0007", "CI_SCOPED",
+            "active", 1, "", allmember_id, 28,
+            "第 2 端末の正例: allmember-0013 の CI 箱 C(cap (member, listed{dev, stage}))による実効 scope 内の"
+            "環境(env-dev-0002)の変数ステートメントは通る",
+            key=cibox, chain_ref="device-ops", head_hash_hex=dk_head_hash(28),
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "author-device-revoked-at-head", "variable", "env-dev-0002", "var-ci-scoped-0007", "CI_SCOPED",
+            "active", 1, "", allmember_id, dk_head_hash(37), 37,
+            "author-key-mismatch-at-head",
+            "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言したステートメントは author-key-mismatch-at-head",
+            chain_ref="device-ops", author_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+        rule_negative(
+            "author-device-role-insufficient", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", owner3_id, dk_head_hash(29), 29,
+            "author-role-insufficient-at-head",
+            "owner-0015 の cap (reader, all) の端末 L の実効 role は reader。変数ステートメント(member 以上)は拒否する",
+            chain_ref="device-ops", author_fp=readercap["key_fingerprint_hex"],
+            sign_with=device_signer("user-owner-0015@reader-cap"), verify_key_hex=readercap["sig_pub_hex"],
+        ),
+        rule_negative(
+            "author-device-environment-out-of-scope", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", allmember_id, dk_head_hash(28), 28,
+            "author-environment-out-of-scope-at-head",
+            "CI 箱 C の実効 scope {dev, stage} 外の env-prod-0001 のステートメントは、人の scope が all でも拒否する",
+            chain_ref="device-ops", author_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+        rule_negative(
+            "env-author-device-environment-out-of-scope", "environment", "env-prod-0001", None, "Production Renamed",
+            "active", 1, "", allmember_id, dk_head_hash(28), 28,
+            "author-environment-out-of-scope-at-head",
+            "環境メタステートメント(rename)も端末の実効 scope で判定する",
+            chain_ref="device-ops", author_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+    ]
+
     write(
         "metadata-signature.json",
         {
@@ -5166,26 +5889,33 @@ def gen_env_manifest():
 
     def make_manifest(name, environment_id, epoch, manifest_version, digest_entries,
                       env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
-                      head_seq, note, prev_base=None):
+                      head_seq, note, prev_base=None, key=None, chain_ref=None,
+                      head_hash_hex=None):
+        # key / chain_ref / head_hash_hex(2026-09-20 DK): 端末鍵で署名する正例の鍵記録と参照チェーン
         digest_hex = variables_digest_hex(digest_entries)
         ctx = make_context(environment_id, epoch, manifest_version, digest_hex,
                            env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
-                           head_hash(head_seq), head_seq)
+                           head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
+                           head_seq)
         signed = manifest_signed_bytes(ctx)
+        signer = (Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key["sig_sk_seed_hex"]))
+                  if key is not None else signer_of(issuer_id))
         vector = {
             "name": name,
             "context": ctx,
-            "issuer_key_fingerprint_hex": fp_of(issuer_id),
+            "issuer_key_fingerprint_hex": key["key_fingerprint_hex"] if key is not None else fp_of(issuer_id),
             # ダイジェストの原像(正規形 = variable_id のバイト昇順)。検証側は
             # これを再ダイジェストして context の variables_digest_hex と照合する
             "entries": sorted(digest_entries, key=lambda e: e["variable_id"].encode("utf-8")),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(issuer_id).sign(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
             "note": note,
         }
         if prev_base is not None:
             vector["prev_base"] = prev_base
+        if chain_ref is not None:
+            vector["chain"] = chain_ref
         return vector
 
     # --- 正例(session-27 §13-2): 発行契機ごとの manifest_version 連鎖。
@@ -5730,6 +6460,59 @@ def gen_env_manifest():
             "issuer-environment-out-of-scope-at-head",
             "scope 外 × prev の形違反(manifestVersion 4 で prev 空)の複合違反は scope 検査(3′)が"
             " prev 連鎖(§4.3 (1))に先行する",
+        ),
+    ]
+
+    # --- 端末軸(2026-09-20 DK — §6.3「端末鍵の選択と実効権限」。参照チェーンは派生チェーン
+    # device-ops。既存の正例・負例と `canonical` の意味は不変 — 規約 28)
+    dk_chain = chain["extended_chains"]["device-ops"]["entries"]
+
+    def dk_head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"] if seq <= len(entries) else dk_chain[seq - 25]["entry_hash_hex"]
+
+    def device_key(label: str) -> dict:
+        return chain["keys"][label]
+
+    def device_signer(label: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
+
+    cibox = device_key("user-allmember-0013@ci-box")
+    readercap = device_key("user-owner-0015@reader-cap")
+    allmember_id = "user-allmember-0013"
+    owner3_id = "user-owner-0015"
+    vectors.append(
+        make_manifest(
+            "manifest-second-device-issuer-in-scope", "env-dev-0002", 2, 1, [], 1, dev_env_meta_v1_hash, "",
+            allmember_id, 28,
+            "第 2 端末の正例: allmember-0013 の CI 箱 C(cap (member, listed{dev, stage}))による実効 scope 内の"
+            "環境(env-dev-0002 — エポック 2・manifestVersion 1・変数空集合)のマニフェストは通る(strict 経路)",
+            key=cibox, chain_ref="device-ops", head_hash_hex=dk_head_hash(28),
+        )
+    )
+    rule_negatives += [
+        rule_negative(
+            "issuer-device-revoked-at-head", "env-dev-0002", 2, 1, [], 1, dev_env_meta_v1_hash,
+            "", allmember_id, dk_head_hash(37), 37,
+            "issuer-key-mismatch-at-head",
+            "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言したマニフェストは issuer-key-mismatch-at-head",
+            chain_ref="device-ops", issuer_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
+        ),
+        rule_negative(
+            "issuer-device-role-insufficient", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], owner3_id, dk_head_hash(29), 29,
+            "issuer-role-insufficient-at-head",
+            "owner-0015 の cap (reader, all) の端末 L の実効 role は reader。マニフェストの発行(member 以上)は拒否する",
+            chain_ref="device-ops", issuer_fp=readercap["key_fingerprint_hex"],
+            sign_with=device_signer("user-owner-0015@reader-cap"), verify_key_hex=readercap["sig_pub_hex"],
+        ),
+        rule_negative(
+            "issuer-device-environment-out-of-scope", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], allmember_id, dk_head_hash(28), 28,
+            "issuer-environment-out-of-scope-at-head",
+            "CI 箱 C の実効 scope {dev, stage} 外の env-prod-0001 のマニフェストは、人の scope が all でも拒否する",
+            chain_ref="device-ops", issuer_fp=cibox["key_fingerprint_hex"],
+            sign_with=device_signer("user-allmember-0013@ci-box"), verify_key_hex=cibox["sig_pub_hex"],
         ),
     ]
 
@@ -6405,18 +7188,27 @@ def gen_head_attestation():
             "chain_head_seq": head_seq,
         }
 
-    def make_attestation(name, attester_id, head_seq, note):
-        ctx = make_context(attester_id, head_hash(head_seq), head_seq)
+    def make_attestation(name, attester_id, head_seq, note, key=None, chain_ref=None,
+                         head_hash_hex=None):
+        # key / chain_ref / head_hash_hex(2026-09-20 DK): 端末鍵で署名する正例の鍵記録と参照チェーン
+        ctx = make_context(attester_id,
+                           head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
+                           head_seq)
         signed = head_attestation_signed_bytes(ctx)
-        return {
+        signer = (Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key["sig_sk_seed_hex"]))
+                  if key is not None else signer_of(attester_id))
+        vector = {
             "name": name,
             "context": ctx,
-            "attester_key_fingerprint_hex": fp_of(attester_id),
+            "attester_key_fingerprint_hex": key["key_fingerprint_hex"] if key is not None else fp_of(attester_id),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(attester_id).sign(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
             "note": note,
         }
+        if chain_ref is not None:
+            vector["chain"] = chain_ref
+        return vector
 
     basic = make_attestation(
         "basic", owner_id, len(entries),
@@ -6496,19 +7288,24 @@ def gen_head_attestation():
     # --- negative(検証規則系。kind = "authorization"): 署名は有効だが、検証済み
     # チェーン履歴に対する §6.6 / §6.3-2 の検証規則で拒否されるべきもの。
     # expected_reason は実装の理由コードを固定する(value / meta と同じ運び方)
-    def rule_negative(name, attester_id, head_hash_hex, head_seq, expected_reason, note):
+    def rule_negative(name, attester_id, head_hash_hex, head_seq, expected_reason, note,
+                      chain_ref="canonical", attester_key=None):
         ctx = make_context(attester_id, head_hash_hex, head_seq)
         signed = head_attestation_signed_bytes(ctx)
+        signer = (Ed25519PrivateKey.from_private_bytes(bytes.fromhex(attester_key["sig_sk_seed_hex"]))
+                  if attester_key is not None else signer_of(attester_id))
         return {
             "name": name,
             "kind": "authorization",
-            "chain": "canonical",
+            "chain": chain_ref,
             "context": ctx,
-            "attester_key_fingerprint_hex": fp_of(attester_id),
+            "attester_key_fingerprint_hex": (attester_key["key_fingerprint_hex"] if attester_key is not None
+                                             else fp_of(attester_id)),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(attester_id).sign(signed).hex(),
-            "verify_key_hex": sig_pub_of(attester_id),
+            "signature_hex": signer.sign(signed).hex(),
+            "verify_key_hex": (attester_key["sig_pub_hex"] if attester_key is not None
+                               else sig_pub_of(attester_id)),
             "expected_reason": expected_reason,
             "must_fail": True,
             "note": note,
@@ -6535,6 +7332,47 @@ def gen_head_attestation():
             "seq 5 で削除済みの attester が削除後のヘッド(24)を申告する形は拒否する"
             "(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で"
             "在籍区間の境界を固定する)",
+        ),
+    ]
+
+
+    # --- 端末軸(2026-09-20 DK — §6.6「端末鍵」: attester の鍵 = 署名した端末。申告ヘッド時点で
+    # 有効だった鍵は端末の有効区間で判定する。参照チェーンは派生チェーン device-ops — 規約 28)
+    dk_chain = chain["extended_chains"]["device-ops"]["entries"]
+
+    def dk_head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"] if seq <= len(entries) else dk_chain[seq - 25]["entry_hash_hex"]
+
+    def device_key(label: str) -> dict:
+        return chain["keys"][label]
+
+    def device_signer(label: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
+
+    phone = device_key("user-owner-0001@phone")            # P: (owner, listed{}) — seq 26〜34 有効
+    readercap = device_key("user-owner-0015@reader-cap")   # L: 実効 (reader, all)
+    owner3_id = "user-owner-0015"
+    vectors += [
+        make_attestation(
+            "phone-attestation", owner_id, 33,
+            "第 2 端末の正例: owner-0001 の電話 P(cap (owner, listed{}) — DEK を受け取らない票だけの端末)が"
+            "有効区間内のヘッド(33)を申告する。申告は端末ごと(AUTH_SPEC §16-1)",
+            key=phone, chain_ref="device-ops", head_hash_hex=dk_head_hash(33),
+        ),
+        make_attestation(
+            "reader-cap-device-attestation", owner3_id, 37,
+            "cap (reader, all) の端末 L による現ヘッド(37)の申告: 申告の必要 role の下限は reader なので、"
+            "実効 role reader の端末でも申告できる",
+            key=readercap, chain_ref="device-ops", head_hash_hex=dk_head_hash(37),
+        ),
+    ]
+    rule_negatives += [
+        rule_negative(
+            "attester-device-revoked-at-head", owner_id, dk_head_hash(37), 37,
+            "attester-key-mismatch-at-head",
+            "seq 35 で失効した電話 P が失効後のヘッド(37)を申告する形は attester-key-mismatch-at-head"
+            "(人〔owner-0001〕は在籍のまま — 端末の有効区間の終了境界)",
+            chain_ref="device-ops", attester_key=phone,
         ),
     ]
 

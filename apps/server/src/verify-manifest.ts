@@ -21,7 +21,6 @@
 
 import type {
   ChainHistoryIndex,
-  ChainMember,
   EnvManifestEnvMeta,
   ManifestInvalidReason,
   VariablesDigestEntry,
@@ -29,7 +28,7 @@ import type {
 import { verifyDistributedEnvManifest } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { EnvManifestInput, ManifestRejectReason } from "./data-plane.ts";
+import type { EnvManifestInput, ManifestRejectReason, MemberWithDevice } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 
@@ -126,7 +125,7 @@ export const acceptManifestForMetaOp = (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly manifest: EnvManifestInput;
   readonly digestOverride: {
     readonly variableId: string;
@@ -197,7 +196,7 @@ export const acceptEnvManifest = (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly manifest: EnvManifestInput;
   /** 受理後のメタ状態から再構成した集合(manifestDigestEntries)。 */
   readonly entries: readonly VariablesDigestEntry[];

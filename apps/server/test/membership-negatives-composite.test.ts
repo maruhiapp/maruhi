@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
+import { prefixReplayable, toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
 import { resignEntryAt } from "./support/data-crypto.ts";
 import {
   registerMembershipScenario,
@@ -69,10 +69,23 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "authz-create-env-duplicate-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
 };
 
+/**
+ * 端末派生チェーン(2026-09-19 DK — device-ops 等)を前提とする create / rotate の negative
+ * は、サーバーが K3 まで端末 op を受理しないため API では再生できない(合意規則は crypto
+ * 層の 4 実行環境テストが固定)。件数を固定し、K3 で受理ガードを外すときに
+ * compositeExpectations へ戻す(`insufficient-scope` 403 が先 — K3-C の判定順)
+ */
+const EXPECTED_SKIPPED_DEVICE_CHAIN = 3;
+
 describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合経由)", () => {
+  let skipped = 0;
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
     if (op !== "create_environment" && op !== "rotate_epoch") {
+      continue;
+    }
+    if (!prefixReplayable(negative)) {
+      skipped += 1;
       continue;
     }
     const expectation = compositeExpectations[negative.name];
@@ -99,4 +112,7 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合
       }
     });
   }
+  it("skips exactly the device-chain negatives (DK K2 — K3 で戻す)", () => {
+    expect(skipped).toBe(EXPECTED_SKIPPED_DEVICE_CHAIN);
+  });
 });

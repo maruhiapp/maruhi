@@ -113,6 +113,9 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   propose: "chain.proposed",
   approve: "chain.approved",
   withdraw: "chain.proposal_withdrawn",
+  // 端末鍵(AUDIT_SPEC §3.4 — 2026-09-19 DK)。行の生成(受理副作用)は K3
+  add_device: "chain.device_added",
+  revoke_device: "chain.device_revoked",
 };
 
 /**
@@ -204,6 +207,19 @@ export function indexProposals(
 /** The actor an operation is attributed to (the entry actor, or the proposer for an applied inner op). */
 interface MirrorSubject {
   readonly actor: ChainActor;
+  /**
+   * `add_device` only: the fingerprint of the key the entry puts on the chain
+   * (AUDIT_SPEC §3.4 `chain.device_added` payload). SHA-256 is asynchronous, so
+   * the caller (the acceptance side effect — K3) computes it and hands it in;
+   * the mapping itself stays synchronous. Missing for an `add_device` = a
+   * contract violation (throw), never a silent row without the fingerprint.
+   */
+  readonly addedDeviceKeyFingerprintHex?: string;
+}
+
+/** The per-entry extra input of {@link chainMirrorEvents} (see {@link MirrorSubject}). */
+export interface ChainMirrorSubject {
+  readonly addedDeviceKeyFingerprintHex?: string;
 }
 
 // op ごとの写像(§3.4 の表)。入力は op + payload(+ actor — genesis の target だけが
@@ -304,6 +320,29 @@ const mirrorTails: {
   }),
   approve: () => ({ event: MIRROR_EVENT_NAME.approve }),
   withdraw: () => ({ event: MIRROR_EVENT_NAME.withdraw }),
+  // 端末鍵(AUDIT_SPEC §3.4 — 2026-09-19 DK)。add_device の target = actor(自分の端末しか
+  // 足せない)、payload は端末 FP + cap。revoke_device の target = 対象、payload = 失効 FP 列
+  // (§4.1 の検出契機 ★ — 検出変種は K3)
+  add_device: (operation) => {
+    if (operation.addedDeviceKeyFingerprintHex === undefined) {
+      throw new Error("chain mirror: add_device requires the added device's key fingerprint");
+    }
+    return {
+      event: MIRROR_EVENT_NAME.add_device,
+      targetUserId: operation.actor.userId,
+      payload: {
+        deviceKeyFingerprint: operation.addedDeviceKeyFingerprintHex,
+        roleCap: operation.payload.roleCap,
+        scopeKind: operation.payload.scopeKind,
+        scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
+      },
+    };
+  },
+  revoke_device: (operation) => ({
+    event: MIRROR_EVENT_NAME.revoke_device,
+    targetUserId: operation.payload.targetUserId,
+    payload: { deviceKeyFingerprints: operation.payload.deviceFingerprintsHex },
+  }),
 };
 
 function mirrorTailOf(operation: ChainOperation & MirrorSubject): MirrorTail {
@@ -342,6 +381,7 @@ export function chainMirrorEvents(
   entry: ChainEntry,
   serverTs: number,
   index: ProposalIndex,
+  subject: ChainMirrorSubject = {},
 ): readonly AuditEventRecord[] {
   const base = {
     serverTs,
@@ -355,6 +395,19 @@ export function chainMirrorEvents(
     actorUserId: entry.actor.userId,
     actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
   });
+  if (entry.op === "add_device") {
+    // add_device の写像は載せた端末の FP を要する(MirrorSubject — 受理側が計算して渡す)
+    return [
+      own(
+        mirrorTailOf({
+          ...entry,
+          ...(subject.addedDeviceKeyFingerprintHex === undefined
+            ? {}
+            : { addedDeviceKeyFingerprintHex: subject.addedDeviceKeyFingerprintHex }),
+        }),
+      ),
+    ];
+  }
   if (entry.op === "withdraw") {
     const proposal = referencedProposal(entry, index);
     return [

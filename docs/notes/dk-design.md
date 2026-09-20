@@ -561,3 +561,131 @@ K1 は反映作業であり、承認済み項目 1〜16(§4)は変えていな�
 
 所有者は PR #185 のレビュー(pullfrog 6 巡・Cursor Bugbot・Security Reviewer 1 件 — 指摘はすべて反映済み。第 7 巡は本記録への nit 2 件)の後、「あなたの決定で本当に問題がなければマージまでしてOK」と指示した。設計者は「所有者へ諮る点」の 4 件を再点検し、いずれも長期的に最良と判断して**そのままマージした**(PR #184 の承認と同じ形): (1) K1-12 — `var.read` は FP 列を持たないという事実に基づく訂正で、監査の類型(§3.3)と部分索引(§5.2)を壊さない唯一の案。承認項目 8 の「+ actor 鍵 FP」は「+ 端末の窓による区間の絞り込み」に改まる(§4 の表は書き換えず本項が正)。(2) K1-15 — advisory な登録簿を認可の入力にしない線(承認項目 8)と整合し、サーバー側の強制失効は必要になれば加法的に足せる(仕様形式の変更を伴わない)。(3) K1-13 — 保証を増やさない advisory の警告で、負例列挙と `project verify` の設計が固まる。(4) HTTP 状態(§13-11 の作成系 200・§13-7 の承認 204)— 正本の先例どおりで、K3 が別の値を採るなら 1 語で直せる。以上をもって CRYPTO_SPEC 0.12-draft / AUTH_SPEC 0.24-draft / AUDIT_SPEC 1.9-draft の仕様文言は承認済みとなり、フェーズ 2 は K2(テストベクター先行 + crypto — 別セッション)へ進む。
 
+
+## 7. K2 追記(2026-09-20 — テストベクター先行 + crypto + ワイヤ / 受理ガード / 機械的追随)
+
+K2 の実装 PR での裁定。K1 と同じく候補表 → 巡(上位互換・銀の弾丸が出ない巡が連続 2 で打ち止め)→ 原則の抽出 → 読み手の点検 → 採用の形で記す。**正本の規範文は変えていない**(食い違い・曖昧さは fail-closed に実装し、末尾の「正本への申し送り」に列挙)。数値・名前は正本(CRYPTO_SPEC 0.12-draft §6.2「端末鍵」/ §6.3 / §8.1、AUDIT_SPEC 1.9-draft §3.4)と README 規約 28 から写した。
+
+### K2-1. 端末鍵の正例の置き場 — 正規チェーンの延長か派生チェーンか(候補 1)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| a-1 正規チェーン `entries` を seq 25〜37 へ延長する(DK-M の「seq 25〜」の字面) | 既存 4 ファイルの正例・負例のうち `head-beyond-local-seq`(seq 25 = 未来ヘッド)・`tenure_extension`(seq 25 の re-add)・`basic`(ヘッド 24)の意味が変わり、4 ファイルの再生成 + 規約 27 の「正規チェーン依存」の再計算が要る | 棄却 |
+| a-2 **派生チェーン `device-ops`(base 24、seq 25〜37)に正例を置き、中間ヘッド(29 / 33 / 34 / 36)は接頭辞派生チェーン(`device-added` / `device-dead-vote` / `device-revote-applied` / `device-recovered`)で与える** | 正規チェーン seq 1〜24 のバイト列と `expected_head_states` は不変(DK-M の「既存の正例・負例は不変」の側を採る)。4 ファイルの端末軸の正例・負例は `chain: "device-ops"` で派生チェーンを参照する(規約 28) | **採用** |
+| a-3 端末 op だけの独立チェーン(新 genesis) | 既存メンバー・環境・方針との交差(cap × scope ∩・四眼の票)が試せない | 棄却 |
+
+第 2 巡: 「派生チェーンの接頭辞を `base_seq` だけで表し、接頭辞派生チェーンを作らない」→ 4 ファイルの正例が中間ヘッド(33 = 死んだ票の後、36 = 復帰)を宣言するには、その時点の entry_hash を引く先が要る(`extendedVectorChainHistory(name)` はチェーン名で解決する)。接頭辞を新たな参照意味論で表すより、既存の派生チェーン機構(ES K2-2 の先例)で 4 本置く方が安い。空巡。第 3 巡: 空巡。打ち止め。**原則**: 「ベクターの参照先は常に『チェーン名 + seq』であり、新しい参照意味論を持ち込まない」— ES K2-2(提案 hash は entry_hash を直接埋める)✓、checkpoint 系の派生チェーン(規約 19)✓。**読み手の点検**: 4 ファイルの `chain` は `canonical` / `tenure-extension` / 派生チェーン名の 3 語彙のまま。**採用: a-2**。
+
+### K2-2. 署名者の同定と鍵レコード — `keys` の形(候補 2)
+
+`keys` に端末鍵を `"<user_id>@<label>"`(`user_id` / `label` 欄つき)で追加し、生成器・`verify_reference.mjs`・ハーネス(`vectorKeyFor(userId, fp)` / `importVectorSigner`)は署名者を **(user_id, 鍵 FP)** で選ぶ(§6.2「署名者は (user_id, 鍵 FP) で同定」の直訳)。代替「`keys` を user_id → 鍵の配列にする」は既存 9 レコードの形を変え、正規チェーンの再署名ハーネスまで触る(規約 27 の不変側を破る)ので棄却。第 2 巡: 「FP だけで引く(user_id を外す)」は同じ鍵を別 user_id が持つ negative(`reuse-removed-member-key-new-user`)で曖昧になる。空巡 ×2。**原則**: 「ハーネスの鍵解決は正本の同定規則(user_id + FP)と同じ形」。**採用**。
+
+### K2-3. 検証状態の形 — `ChainMember` から単一鍵フィールドを外すか(候補 3)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| c-1 `ChainMember` に `encPubHex` / `sigPubHex` / `keyFingerprintHex` を残し(= 最初の端末)、`devices` を足す | 消費側の変更が最小 | 「最初の端末」が意味を持つのは端末が 1 つのときだけで、`add_device` 後は任意の 1 端末を静かに選ぶ。K3 / K4 で必ず踏む地雷 | 棄却 |
+| c-2 **単一鍵フィールドを削除し `devices: ReadonlyMap<FP, ChainDevice>` のみ。単一端末前提の呼び出し側は `soleDeviceOf`(端末が 1 つでなければ `undefined`)を通す** | 型が消費側の全列挙を強制する(設計録 §5「消費者の全列挙」— tsc の 26 ファイル)。多端末は fail-closed | **採用** |
+| c-3 `devices` を配列にする | FP による照会(票・申告・アンカー)が線形探索になり、重複 FP を型で防げない | 棄却 |
+
+第 2 巡: 「`ChainMember` を人と端末の 2 型に分け `ChainState.devices` を別マップに持つ」→ 端末は人に属する(DK-A)ので人のレコードから引けるべきで、2 マップは整合の責務が増える。空巡 ×2。**原則**: 「検証状態は正本の『現メンバーごとの端末集合(FP → 公開鍵・cap)』を 1:1 に写し、旧形の互換フィールドを残さない」— ES K2-1(scope を 1 フィールドに畳まない)✓。**読み手の点検**: `member.keyFingerprintHex` を書こうとする実装者は型エラーで `soleDeviceOf` に導かれる。**採用: c-2**。
+
+### K2-4. 実効権限の置換点 — 型で置換漏れを防ぐ(候補 4)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| d-1 各検査で `min(role, cap)` / `scope ∩` を計算する | 置換漏れ(人の role を渡したまま)が型では見えない | 棄却 |
+| d-2 **`effectivePermissionOf(person, device)` を唯一の計算点にし、結果を brand 付き `EffectivePermission` で返す。`ActorContext` は `permission` だけを持ち、role 規則・原則 1・環境対象 op・票は `actor.permission.*` を読む。配布検証(value / meta / manifest / attestation)の置換点は `headAuthorizationReason` の 1 箇所(`deviceStateAt` が実効権限を返す)** | 人の (role, scope) は `ChainMember` にあるが、検査へ渡せるのは `EffectivePermission` 型のみ | **採用** |
+| d-3 `ChainMember.role` 自体を実効 role にする | 人の role は `change_role` / 四眼の owner 数の入力であり、端末で変わってはならない | 棄却 |
+
+第 2 巡: 「`deviceStateAt` を廃し `memberStateAt` に端末引数を足す」→ 人の状態(在籍・(role, scope))と端末の状態(区間・cap)は照会の単位が違い、`notMemberAtHead` と `keyMismatchAtHead` の順序(既存ベクター)を両方から出すには 2 照会が要る。空巡 ×2。**原則**: 「実効権限は 1 関数で計算し、型で経路を閉じる」。**読み手の点検(人間レビュー箇所)**: `chain-verify.ts` の `actor.permission.role` / `.scope` への置換(`sed` で機械的 — 旧 `actor.role` の残りは 0)、`validate.ts` の `headAuthorizationReason`、`countOwnerVotes` / `approveVoteReason` / `completeProposal` の端末判定。**採用: d-2**。
+
+### K2-5. 履歴索引の端末区間(候補 4 の続き)
+
+在籍区間(tenure)の内側に端末ごとの `[addedSeq, revokedSeq)` を持ち、`deviceStateAt(userId, fp, seq)` は「在籍 ∧ 端末が有効」のとき実効権限を返す。`sigKeyByFingerprint` は失効済みを含む全端末から FP で引く(§6.3-1 の鍵選択は全区間・有効性は後段 — 既存の tenure 跨ぎと同じ検査順)。`remove_member` は tenure を閉じるだけで端末の `revokedSeq` は書かない(区間は tenure に含まれる)。`MemberStateAtSeq` は鍵フィールドを失い `devices`(その時点の有効端末)を持つ。代替「端末を tenure と独立の区間列にする」は「再追加は最初の端末 1 つから」(§6.2)を別途強制する必要があり棄却。空巡 ×2。**採用**。
+
+### K2-6. サーバーの受理ガード(候補 5 — ES K2-10 の原則の適用)
+
+「サーバーが受理する op の集合 = 受理副作用が実装済みの op の集合」(ES K2-10)を写す: worker ハンドラ(`DeviceOpsNotAccepted` 422)と DO の `appendProgram`(`device-ops-not-accepted`)の多層ガード。複合経路は構造的に 2 op を含まない。テストは (a) 端末 op の negative 41 + `set_approval_policy` の ops に端末 op を書く negative 2 = 43 件を正規ヘッド 24 の直後で受理ガード(wire schema が先の 7 件は 400)、(b) 端末派生チェーンを前提とする negative 10(汎用 append 側)+ 3(複合側)は再生できないため skip を件数で固定、(c) 有効に署名した `add_device` / `revoke_device` が worker・DO の両層で拒否されることを専用テストで固定(`device-ops-guard.test.ts`)。K3 で受理ガードを外すときは ES K2-10 → K5 と同じ手順(partition の `deviceOpsGuard` / `skipped` を戻す)。**採用**。
+
+### K2-7. `master-key-wrap.json` の再生成と不変性の固定(候補 6)
+
+他ベクターのバイト列不変を「旧 JSON とのケース名照合」(scratchpad の照合スクリプト)で確認した: 正例 4(`passkey-prf-basic` / `guardian-any-2` / `guardian-all-3` / `handoff-guardian-share`)と負例 18 は byte-identical、`handoff-device` は削除、`aad-kind-mismatch` は guardian-any-2 を base に kind → passkey-prf、`handoff-transplant-source` は → any-2 の group_id。**訂正(② で発見)**: `aad-kind-mismatch` の初版(①)は passkey-prf へ付け替えた AAD に mode `any` を残していたが、§8.1 は「`mode` = guardian のみ、それ以外は空文字列」なので実装(`buildMasterWrapAad`)と一致せず、生成器を直して再生成した(README 規約 28 の文言も訂正)。**原則**: 「負例の AAD も正本の構成規則に従う(規則外の AAD を『不一致』の材料にしない)」。**採用**。
+
+### K2-8. 旧クライアントの `invalid-payload`(候補 7)
+
+`isKnownOp`(`PAYLOAD_SHAPES` の own-property 判定)が既存のまま新 op を弾くため、旧クライアント(K2 前の crypto)は新 op を含むチェーンを `invalid-payload` で拒否する(DK-J の要件)。ベクターは書かない(旧実装に対するベクターは持てない)— 記録のみ。
+
+### K2-9. ラップ数の見積もり(候補 8)
+
+未実測(K2 は 2 op を生成しないため測る対象がない)。**K3 への申し送り**: 端末 16 × メンバー × 環境 × エポックの実測は R(E) の端末展開と同時に行う。
+
+### K2-10. 消費側の橋渡し(候補 9 — server / CLI の「端末は 1 つのまま」)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| j-1 消費側で `devices.values().next()`(最初の端末) | 黙って任意の端末を選ぶ | 棄却 |
+| j-2 **server: `MemberWithDevice`(`requireRole` が `soleDeviceOf` で解決。0 / 2 以上は `Effect.die` — K2 サーバーは 2 op を受理しないので到達は defect)。CLI: `soleDeviceOrFail`(型付き `CliError` — K3 以降のサーバーから多端末のチェーンが届きうる)。鍵一意性・招待受諾・`server-grant`・`keyHistory`・票・申告・アンカーは端末集合の意味論で書く** | 到達しうる側(CLI)は利用者向けの失敗、到達しえない側(server)は defect | **採用** |
+| j-3 CLI も `die` | 多端末は K3 サーバー + K2 CLI の組み合わせで正当に起こる(移行順序 J-1: サーバーが先) | 棄却 |
+
+第 2 巡: 「CLI の `wrapRecipientsFor` を同期のまま多端末を無視する」→ ラップ完全集合の欠落 = サーバーの §12-6 受信者一致で 422 になるだけだが、失敗の理由が利用者に見えない。Effect 化して型付きで失敗させる(`sameWrapRecipientSet` も Effect — 呼び出し側 2 箇所を `yield*` に。**② で 1 箇所の `yield*` 漏れを CLI テストが捕まえた**: Effect オブジェクトが truthy でラップ集合の再生成を飛ばしていた)。空巡 ×2。**原則**: 「単一端末前提の橋渡しは、その前提が破れたとき黙らない(型付き失敗か defect)」。**読み手の点検**: `member list` の JSON `keyFingerprintHex` は端末 1 つのとき従来どおり、複数のとき昇順に `,` で連ねる(K4 で端末一覧へ置き換える — 申し送り)。**採用: j-2**。
+
+### K2-11. CLI の旧端末経路と crypto の kind 縮小の両立(候補 10)
+
+§3 の分割は「crypto の `master-wrap.ts` の kind 縮小は K2、旧端末経路の削除は K4(K3 で消すと K4 までの間に端末移行の手段が無くなる)」で、K2 では CLI の `kind: "device"` が型に無い。案: (i) crypto に `device` を残す — 正本 §8.1 と ① の `verify_reference.mjs`(kind の閉集合を機械照合)に反する、(ii) CLI の旧端末経路を K2 で消す — §3 の順序(K4)に反する、(iii) **CLI 側に `LEGACY_DEVICE_WRAP_KIND = "device" as MasterWrapKind` を置く(`buildMasterWrapAad` は kind を文字列として LP に載せるだけで実行時の検査は無く、バイト列は旧仕様どおり)。K4 で定数ごと削除**。第 2 巡: 「crypto に `legacyDeviceWrapKind()` を輸出する」→ crypto の公開面に正本にない kind を戻す形。空巡 ×2。**原則**: 「正本にない語彙は、それを使う消える側(CLI の K4 削除対象)に閉じ込め、正本を写す側(crypto)へ漏らさない」。**採用: (iii)**(所有者に諮る点)。
+
+### K2-12. AUDIT ミラー写像の端末 2 op(`chainMirrorEvents` の網羅性)
+
+`MIRROR_EVENT_NAME` / `mirrorTails` は `ChainOp` の網羅 Record なので、行の生成は K3 でも写像は K2 で要る。`chain.device_added` の payload の `deviceKeyFingerprint` は SHA-256(非同期)を要し、同期の写像では計算できない → `ChainMirrorSubject.addedDeviceKeyFingerprintHex` を呼び出し側(K3 の受理副作用)が渡し、欠落は throw(`referencedProposal` と同じ契約違反の扱い — 静かに FP 無しの行を作らない)。代替「payload に enc / sig 公開鍵を写す」は AUDIT §3.4 の形と違う。**採用**。
+
+### K2-13. コミット分割の変更(依頼 §6 の順序との差)
+
+依頼の ② crypto → ③ ワイヤ + ガード → ④ 追随 の順では、② 単独で `tsc` が通らない(`ChainMember` の型変更の消費者 26 ファイル + `ChainEntrySchema` の網羅検査)。各コミットで fmt / lint / typecheck / importlint を通す要件を優先し、**② = crypto + api-schema のワイヤ型(entry schema・理由コード・`DeviceOpsNotAccepted` の宣言)+ server / CLI の機械的追随**、**③ = 受理ガード(worker + DO)+ サーバーテスト**の 2 コミットにした。
+
+### K2 追加巡(訂正 — 2026-09-20、所有者の指摘)
+
+**訂正**: §7 の初版は、ES §8-bis で自ら定めた打ち止め条件(上位互換も銀の弾丸も出ない巡が連続 2)を K2-2 / K2-5〜K2-9 / K2-12 / K2-13 で満たしていなかった(単巡、または探索せずに「空巡 ×2」と書いた)。K2-1 / K2-3 / K2-4 / K2-10 / K2-11 も追加の巡を足した。以下、各裁定について実際に回した巡と出た案を記す。**結論: 裁定を変える案は出なかった。上位互換が 1 件(K2-10 j-4 — JSON の構造化列の追加)、記録すべき事実が 2 件(K2-5 e-4、K2-9 の概算)、所有者に諮る点の補強が 1 件(申し送り 4 — 欠けているベクター)**。
+
+| 裁定 | 追加巡で出た案 | 評価 | 巡 |
+|---|---|---|---|
+| K2-1 | a-4 正例を `valid_appends` だけで表す(派生チェーンを持たない) | 多段の筋(死んだ票 → 別端末の再投票 → 完成、失効 → 再登録)は 1 追記では表せない。a-2 の部分集合 | 第 3 巡 |
+| | a-5 端末鍵専用の第 2 正規チェーンファイル(`chain-entries-dk.json`) | README 規約に「ファイル」の次元が増え、4 ファイルの `chain` 参照が「ファイル + チェーン名」になる。上位互換でない | 第 3 巡 → 第 4・5 巡 空 |
+| K2-2 | b-3 端末鍵を派生チェーンの `keys`(`proposer-rekeyed` の先例)に統一して置く | 4 ファイルが参照する鍵はトップレベル `keys`、チェーン局所の鍵(`reader-second-device`)は派生側 — 既存の先例どおりの使い分けで、統一は好みの差(機械照合は (user_id, FP) で同じ) | 第 2 巡 |
+| | b-4 FP だけで引く | `reuse-removed-member-key-new-user`(同じ鍵を別 user_id が持つ)で曖昧 | 第 2 巡 → 第 3・4 巡 空 |
+| K2-3 | c-4 `ChainMember` は不変のまま `ChainState.devices` を別マップに持つ | 「2 型に分ける」の変形で、整合の責務が増える(第 2 巡と同じ) | 第 3 巡 空 → 第 4 巡 空 |
+| K2-4 | d-4 `headAuthorizationReason` が `EffectivePermission` を引数に取り、呼び出し側(4 検証器)が計算する | 置換点が 1 → 4 に増える。逆行 | 第 3 巡 → 第 4 巡 空 |
+| K2-5 | e-2 端末区間を tenure と独立の列に持つ | 「再追加は最初の端末 1 つから」(§6.2)を別途強制する必要。初版の「代替」と同じ | 第 2 巡 |
+| | e-3 `deviceStateAt` が人の状態も返す(`headAuthorizationReason` の 2 照会を 1 に) | 「在籍でない」と「端末が無効」の区別(`notMemberAtHead` → `keyMismatchAtHead` の既存順)を返り値の形で表すことになり、2 照会の方が検査順が字面に出る。等価・非採用 | 第 2 巡 |
+| | e-4 `sigKeyByFingerprint` を宣言ヘッド時点の有効端末に限る | 失効端末の署名が `*-key-mismatch-at-head` でなく `*-unknown` になり、ベクター `writer-device-revoked-at-head` 等(既存の理由コードを再利用 — §6.3)に反する。**記録**: 鍵選択は全区間・有効性は後段、が正本の形 | 第 2 巡 → 第 3・4 巡 空 |
+| K2-6 | f-2 DO 側だけの単層ガード | ES K2-10 の多層(worker の型付き 422 + DO の権威)より弱い | 第 2 巡 |
+| | f-3 api-schema の `ChainEntrySchema` から 2 op を K3 まで外す(400) | 型付きの 422 でなく 400 になり、新 CLI × 旧サーバーの文言が出せない(ES K5-A の「ワイヤに残す」の逆) | 第 2 巡 |
+| | f-4 署名検証の後にガードを置く(有効な署名だけ拒否) | 副作用の無い op を状態へ入れない、という原則に「検証だけはする」例外を作る。拒否理由も曖昧になる | 第 2 巡 → 第 3・4 巡 空 |
+| K2-7 | g-2 `aad-kind-mismatch` を passkey-prf 基底 → guardian の付け替えにする | guardian は mode を要する(実装は mode 無しを InvalidInput)ので「kind だけの差し替え」は §8.1 のもとでどちら向きにも作れない。採用形(guardian-any-2 → passkey-prf、mode 欄は空)が最小差 | 第 2 巡 |
+| | g-3 旧 JSON を fixture に置いてバイト同一をテストで固定する | 旧ファイルを恒久的に持つことになりリポジトリが肥大。名前の集合は `vector-inventory.ts` が固定し、同一性は PR 本文の記録で足りる(規約 28) | 第 2 巡 → 第 3・4 巡 空 |
+| K2-8 | h-2 旧版 crypto を取り込んで拒否を機械検査する | 旧パッケージ版を test 依存に持ち込む。`isKnownOp` の own-property 判定は既存テスト(未知 op → invalid-payload)で固定済み | 第 2 巡 → 第 3・4 巡 空 |
+| K2-9 | i-2 実測の代わりに概算を置く | **記録**: 1 ラップ ≈ enc 32 B + 暗号文 ≈ 48 B + 署名 64 B + 列 ≈ 250 B。端末 16 × メンバー 10 × 環境 5 × 保持エポック 10 = 8,000 行 ≈ 2 MB(§12-8 の DO ガードの内側)。上限側の見積もりなので K3 の実測を置き換えない | 第 2 巡 → 第 3・4 巡 空 |
+| K2-10 | **j-4 `member list --json` に構造化した `deviceKeyFingerprintsHex: string[]` を足す(`keyFingerprintHex` は互換のため据え置き)** | **上位互換(採用)**: 消費側に連結文字列を分解させない。既存フィールドは不変で、K4 の端末一覧への置き換えを妨げない | 第 3 巡 |
+| | j-5 人が読む行に端末数を出す | 端末が 1 つの K2 では常に 1 で情報がない。K4 | 第 4 巡 → 第 5・6 巡 空 |
+| K2-11 | k-4 crypto の `test-support` 経由で旧 kind を輸出する | 製品コードがテスト支援面を import する形。禁止線 | 第 3 巡 |
+| | k-5 `MasterWrapKind` を brand 化し CLI 局所モジュールだけが旧 kind を作れるようにする | (iii) と同じ形をより重い型で書くだけ | 第 3 巡 → 第 4・5 巡 空 |
+| K2-12 | l-2 `mirrorTails` / `chainMirrorEvents` を非同期にして FP を内部で計算する | 純写像(CLI の `audit verify` も同じ関数を同期で回す)の署名が変わり、ES K5 の全単射規則のテストまで波及。呼び出し側が FP を渡す方が小さい | 第 2 巡 |
+| | l-3 payload に enc / sig 公開鍵を写し FP を写さない | AUDIT §3.4 の形(`deviceKeyFingerprint`)に反する | 第 2 巡 → 第 3・4 巡 空 |
+| K2-13 | m-2 ② を crypto のみにして typecheck の赤を 1 コミット許す | 依頼の要件(各コミットで通す)に反する | 第 2 巡 |
+| | m-3 `ChainMember` に非推奨の互換 getter を一時的に残して消費側を後で直す | c-1(fail-open の「最初の端末」)を一時的に作る。棄却 | 第 2 巡 → 第 3・4 巡 空 |
+
+**申し送り 4 の補強(所有者に諮る点)**: `revoke_device` の他人向け role 規則は「actor の実効 role が admin 以上、かつ対象が admin / owner なら owner」(`remove_member` の 2 段 — 厳しい側の読み)で実装した。緩い読み(対象依存の段だけ = member が member の端末を失効できる)との差が現れる negative(member の actor × member の対象 × 端末 2 つ)はベクターに無い(端末が 2 つの member は `device-ops` 内で allmember-0013 自身しかおらず、member の actor は devmember-0010 のみ — `device-dead-vote` ヘッドで devmember が allmember の C を失効させる形なら、厳しい読みは `insufficient-role`、緩い読みは `scope-not-contained`)。所有者の読みが確定したら、その negative を追記して固定する(生成器の追記のみ — 正規チェーン不変)。
+
+### 正本への申し送り(K2 — 規範文は変えていない)
+
+1. CRYPTO §11 の 0.12-draft 項: `aad-kind-mismatch` の作り直しは「kind の付け替え(mode 欄は passkey-prf では空)」と書く(K2-7)。
+2. README 規約 28(本 PR で訂正済み)と §8.1 の関係は上記のとおり — 正本の変更なし。
+3. AUDIT §3.4 `chain.device_added` の `deviceKeyFingerprint`: 受理側が FP を計算して写像へ渡す実装形(K2-12)— 仕様の変更は不要だが K3 の実装者向けに注記候補。
+4. §6.2「検査順序」の `revoke_device`: 「対象依存の role 規則(自分なら通る・他人なら `insufficient-role`)」は「actor の実効 role が admin 以上 → 対象が admin / owner なら owner」(`remove_member` と同じ 2 段)で実装した(K2 ベクター `authz-revoke-device-member-revokes-admin` / `-admin-revokes-owner` / `-reader-revokes-other` が固定)。
+
+### K3 への申し送り
+
+- 受理ガードの解除手順(K2-6)、`DeviceOpsNotAccepted` はワイヤに残す(ES K5-A と同じ)。
+- `MemberWithDevice`(server)を「リクエストの端末(AUTH §6 トークン ↔ 端末鍵)」に置き換える。`dek-wraps.ts` の受信者判定 `soleDeviceOf(member)?.encPubHex` は R(E) の端末展開へ。
+- `chainMirrorEvents(entry, serverTs, index, { addedDeviceKeyFingerprintHex })` で `add_device` の FP を渡す(K2-12)。
+- ラップ数の実測(K2-9)。
+- CLI(K4): `soleDeviceOrFail` の全呼び出し(`device-key.ts` を grep)、`LEGACY_DEVICE_WRAP_KIND` の削除、`member list` の端末一覧、`wrapRecipientsFor` の端末展開、`keyHistory` の端末鍵。**四眼の予告層と集計層の一致**(PR #186 pullfrog 指摘): `approval-rules.ts` の `eligibleApprovers` / `voteEligibility` は K2 では「いずれかの端末が実効 owner」(`ownerOnAnyDevice`)で集計層(`countedVoters`)と同じ述語を読むが、K4 では署名する端末(手元の鍵)の実効 role に絞る — cap < owner の端末から approve を促さないこと。

@@ -7,13 +7,14 @@
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
 import type {
+  ChainDevice,
   ChainHistoryIndex,
   ChainInvalidReason,
   ChainMember,
   ChainState,
   Role,
 } from "@maruhi/crypto";
-import { scopeIncludesEnvironment } from "@maruhi/crypto";
+import { scopeIncludesEnvironment, soleDeviceOf } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -501,6 +502,12 @@ export type DataRejection =
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch";
     }
+  // 端末鍵の 2 op(CRYPTO_SPEC §6.2 — 2026-09-19 DK)は K3 の受理副作用まで受理しない
+  // (ES K2-10 の原則。worker が api-schema の DeviceOpsNotAccepted〔422〕へ写す)
+  | {
+      readonly kind: "device-ops-not-accepted";
+      readonly op: "add_device" | "revoke_device";
+    }
   // 四眼の `propose` の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-16
   // K5): pending 上限(期限切れは数えない)と `expires_at_ms` の上界。worker が
   // api-schema の ProposalLimit(422)へ写す。語彙は ProposalLimitReasonSchema と一致
@@ -620,19 +627,52 @@ export function roleAtLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
+/**
+ * A chain member resolved together with its **sole** device key (2026-09-19 DK —
+ * K2 の橋渡し): the server still attributes every signature of a member to one
+ * key (受理時点の署名者 FP・DEK ラップの受信者鍵・監査行の FP). A member with zero
+ * or several devices cannot exist on a K2 server — `add_device` / `revoke_device`
+ * are rejected before verification (DeviceOpsNotAccepted) — so anything else is a
+ * storage / verifier defect (fail-closed: `Effect.die`, never "the first device").
+ * K3 replaces this with the request's own device (AUTH_SPEC §6 — token ↔ device
+ * key; 設計録 dk-design.md §7 K2 の申し送り).
+ */
+export interface MemberWithDevice extends ChainMember {
+  readonly device: ChainDevice;
+  readonly keyFingerprintHex: string;
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+}
+
+/** `member` + その唯一の端末鍵(K2 — 端末は 1 つ)。0 / 2 以上は defect(上記)。 */
+function withSoleDevice(member: ChainMember): Effect.Effect<MemberWithDevice> {
+  const device = soleDeviceOf(member);
+  if (device === undefined) {
+    // 文言は版・段階を漏らさない(Worker の 500 本文に現れうる — Security Reviewer 指摘)
+    return Effect.die(new Error("internal: unexpected device count for a chain-derived member"));
+  }
+  return Effect.succeed({
+    ...member,
+    device,
+    keyFingerprintHex: device.keyFingerprintHex,
+    encPubHex: device.encPubHex,
+    sigPubHex: device.sigPubHex,
+  });
+}
+
 /** チェーン導出 role の下限検査(複合プログラム — composite-programs.ts — と共有)。 */
 export function requireRole(
   state: ChainState,
   callerUserId: string,
   minimum: Role,
-): Effect.Effect<ChainMember, DataRejectedError> {
+): Effect.Effect<MemberWithDevice, DataRejectedError> {
   const member = state.members.get(callerUserId);
   if (member === undefined) {
     // §11-2: 非メンバーには現ヘッド・受理判定を含む一切を返さない(worker が 404 に写す)
     return Effect.fail(rejectData({ kind: "not-member" }));
   }
   return roleAtLeast(member.role, minimum)
-    ? Effect.succeed(member)
+    ? withSoleDevice(member)
     : Effect.fail(rejectData({ kind: "insufficient-role" }));
 }
 
@@ -645,10 +685,10 @@ export function requireRole(
  * (§12-3「scope = all」行)も同じ述語で判定する — `listed` の scope に未存在の
  * 環境 id は含まれえないため `all` の主体だけが通る(§6.2 と同じ形)。
  */
-function requireEnvironmentInScope(
-  member: ChainMember,
+function requireEnvironmentInScope<M extends ChainMember>(
+  member: M,
   environmentId: string,
-): Effect.Effect<ChainMember, DataRejectedError> {
+): Effect.Effect<M, DataRejectedError> {
   return scopeIncludesEnvironment(member.scope, environmentId)
     ? Effect.succeed(member)
     : Effect.fail(rejectData({ kind: "insufficient-scope" }));
@@ -665,7 +705,7 @@ export function requireRoleInScope(
   callerUserId: string,
   minimum: Role,
   environmentId: string,
-): Effect.Effect<ChainMember, DataRejectedError> {
+): Effect.Effect<MemberWithDevice, DataRejectedError> {
   return Effect.flatMap(requireRole(state, callerUserId, minimum), (member) =>
     requireEnvironmentInScope(member, environmentId),
   );
@@ -680,7 +720,8 @@ export function requireRoleInScope(
 export interface MemberContext {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  /** The caller with its sole device key (K2 — 署名者 FP / 受信者鍵の源)。 */
+  readonly member: MemberWithDevice;
   readonly projectId: string;
 }
 

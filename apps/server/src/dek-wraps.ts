@@ -2,6 +2,7 @@
 // サーバー側)と dek.registered イベントの組み立て(AUDIT_SPEC §3.3)。
 
 import type { ChainMember, ChainState } from "@maruhi/crypto";
+import { soleDeviceOf } from "@maruhi/crypto";
 import {
   decodeHex,
   importSigningPublicKey,
@@ -11,7 +12,13 @@ import {
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
-import type { DataActor, DataRejection, DekRecipientClass, DekWrapInput } from "./data-plane.ts";
+import type {
+  DataActor,
+  DataRejection,
+  DekRecipientClass,
+  DekWrapInput,
+  MemberWithDevice,
+} from "./data-plane.ts";
 import { dataEvent, rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
@@ -140,7 +147,9 @@ function checkWrapRecipient(
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
-  if (member.encPubHex !== wrap.recipientEncPubHex) {
+  // 受信者の鍵 = その人の唯一の端末鍵(K2 — 端末は 1 つ)。端末が複数の受信者への
+  // ラップ(R(E) の端末展開 — AUTH_SPEC §12-6)は K3 で、それまでは一致しない側へ倒す
+  if (soleDeviceOf(member)?.encPubHex !== wrap.recipientEncPubHex) {
     return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
   }
   if (!memberReceivesEnvironment(member, environmentId)) {
@@ -204,7 +213,7 @@ function checkWrapRecipients(
 const ensureWrapSignatures = (
   projectId: string,
   environmentId: string,
-  signer: ChainMember,
+  signer: MemberWithDevice,
   wraps: readonly DekWrapInput[],
 ) =>
   Effect.gen(function* () {
@@ -306,7 +315,7 @@ export const ensureWrapSetAcceptable = (
   projectId: string,
   environmentId: string,
   state: ChainState,
-  signer: ChainMember,
+  signer: MemberWithDevice,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ) =>
@@ -332,7 +341,7 @@ export const ensureWrapSetAcceptable = (
  */
 export function dekRegisteredEvent(
   actor: DataActor,
-  signer: ChainMember,
+  signer: MemberWithDevice,
   nowMs: number,
   environmentId: string,
   wrap: DekWrapInput,

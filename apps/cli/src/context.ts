@@ -378,14 +378,19 @@ function anchorFailureOf(
   if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
     return `Invite-link anchor check failed: the distributed chain does not contain the verified head pinned in the invite link (seq=${anchor.headSeq}) (CRYPTO_SPEC §6.3 out-of-band anchor (a)). This suggests a server-side rollback or fork distribution — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
   }
-  const inviter = verified.history.memberStateAt(anchor.inviterUserId, anchor.headSeq);
-  if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
+  // 招待者の鍵 = ピン留めヘッド時点で有効な端末(2026-09-19 DK — 端末の有効区間で引く)
+  const inviter = verified.history.deviceStateAt(
+    anchor.inviterUserId,
+    anchor.inviterKeyFingerprintHex,
+    anchor.headSeq,
+  );
+  if (inviter === undefined) {
     return `Invite-link anchor check failed: the link's inviter (user_id + key FP) does not match the chain member at the pinned head (the CRYPTO_SPEC §6.5 mechanical check). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
   }
   // IV 改訂: リンクの `is=`(招待者 sig 公開鍵)もピン留めされていれば、FP に
   // 加えて鍵そのものの一致を検査する(発行署名の検証鍵がチェーン上の鍵で
   // あることの固定)
-  if (inviter.sigPubHex !== anchor.inviterSigPubHex) {
+  if (inviter.device.sigPubHex !== anchor.inviterSigPubHex) {
     return `Invite-link anchor check failed: the link's inviter signing key (is=) does not match the chain member's key at the pinned head (CRYPTO_SPEC §6.3 (a) / §6.5). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`;
   }
   return null;

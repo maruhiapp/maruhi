@@ -1,4 +1,5 @@
-// master-key-wrap.json(CRYPTO_SPEC §8 — master 鍵ラップ台帳。0.9-draft / KL3)の参照生成器。
+// master-key-wrap.json(CRYPTO_SPEC §8 — 予備鍵ラップ台帳。0.9-draft / KL3、0.12-draft / DK で
+// 旧端末のハンドオフ経路〔kind = "device" / source = "device"〕を削除して再生成)の参照生成器。
 // dek-wrap.json / lease-wrap.json と同じ理由で hpke-js を使う: 製品実装が採用する
 // panva hpke とは独立の実装系であり、ekm による derandomize で Seal 方向を決定論的に
 // 固定できる(panva では不可。docs/notes/spike-c.md)。HKDF / AES-GCM / SHA-256 は
@@ -7,9 +8,14 @@
 // recovery-wrap.json を読み、その master_secret_blob_hex(ブロブ B)と user_id を
 // 引き継ぐ: 台帳は「同じ B を受信者ごとに包んだラップの集合」であり、recovery-code
 // 行(既存ベクター — 不変)と新経路が同じ B を指すことをベクター上で追跡できる。
+// 2026-09-20 DK 以後、B は予備鍵のブロブ(§3 / §8.1)。旧「端末移行」(旧端末が承認者になる
+// ハンドオフ — kind = "device" の B ラップの同送)は削除され、承認者は保護者のみ(§8.4)。
+// 端末の追加はチェーン op `add_device`(§6.2)であり本ベクターの対象外。削除は README 規約 28
+// の意図的な例外(既存ベクター不変の規律に対する)で、他のケースのバイト列は不変
 //
 // 固定するもの(§8.1〜8.4):
 //   - master_wrap_aad = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
+//     (kind ∈ {passkey-prf, guardian} — `device` は 2026-09-20 DK で削除)
 //   - passkey-prf: KEK = HKDF(prf_out, salt=空, info="maruhi/v1/passkey-prf")
 //   - guardian: mode any = 全分片が KEK / mode all = 乱数 XOR 分割(s_n = KEK ⊕ 他)、
 //     分片は HPKE Seal(info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode,
@@ -252,14 +258,7 @@ const guardianApproval = await seal(
   guardianApprovalEkm,
 );
 
-// 旧端末の承認: KEK_h を生成し、B を device 形 AAD でラップ、KEK_h を E.pub へ封印
-const kekH = pat(0xb8, 32);
-const deviceNonce = pat(0xe3, 12);
-const deviceAad = masterAad("device", requestId, "");
-const deviceCt = await aesGcmEncrypt(kekH, deviceNonce, deviceAad, blob);
-const deviceApprovalInfo = handoffInfo(requestId, "device", 0, userId);
-const deviceApprovalEkm = pat(0x97, 32);
-const deviceApproval = await seal(ephemeral.pk_hex, deviceApprovalInfo, kekH, deviceApprovalEkm);
+// (旧端末の承認 — kind = "device" の B ラップの同送 — は 2026-09-20 DK で削除。承認者は保護者のみ)
 
 // --- 負例の材料 ---------------------------------------------------------------------
 const flipFirstHexNibble = (h) =>
@@ -271,9 +270,9 @@ const badPaddingSymbols = `${code.symbols.slice(0, 57)}${B32[(lastValue + 1) % 3
 
 const vector = {
   description:
-    "CRYPTO_SPEC §8(0.9-draft / KL3): master 鍵ラップ台帳。B(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変",
+    'CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂 — 旧端末のハンドオフ経路〔kind = "device" / source = "device"〕を削除して再生成、他のケースのバイト列は不変): B = 予備鍵のブロブ(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 保護者の承認 — 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変',
   provenance_note:
-    "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B に対する受信者ごとのラップの集合であることを実データで表す",
+    "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B(2026-09-20 DK 以後は予備鍵のブロブ)に対する受信者ごとのラップの集合であることを実データで表す。kind ∈ {passkey-prf, guardian}、ハンドオフの承認者は保護者のみ(旧端末経路の handoff-device と kind = device への付け替え負例は DK で削除 — README 規約 28)",
   master_wrap_aad_fields_order: ["domain", "user_id", "kind", "wrap_ref", "mode"],
   guardian_wrap_info_fields_order: [
     "domain",
@@ -309,7 +308,7 @@ const vector = {
     ikm_hex: ephemeral.ikm_hex,
     sk_hex: ephemeral.sk_hex,
     pk_hex: ephemeral.pk_hex,
-    note: "要求者(新端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)",
+    note: "要求者(予備鍵を復元する端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)",
   },
   passkey: {
     hkdf: { salt: "", info_utf8: PASSKEY_HKDF_INFO, length: 32 },
@@ -390,36 +389,15 @@ const vector = {
       ciphertext_hex: guardianApproval.ciphertext_hex,
       note: "保護者 user-member-0002 が guardian-all-3 の分片 1 を開き、その場で要求者の E.pub へ再封印した承認",
     },
-    {
-      name: "handoff-device",
-      class: "H",
-      source: "device",
-      share_index: 0,
-      approver_user_id: userId,
-      request_id_hex: requestId,
-      value_hex: hex(kekH),
-      info_hex: hex(deviceApprovalInfo),
-      ikmE_hex: hex(deviceApprovalEkm),
-      aad_hex: "",
-      enc_hex: deviceApproval.enc_hex,
-      ciphertext_hex: deviceApproval.ciphertext_hex,
-      blob_wrap: {
-        kind: "device",
-        wrap_ref: requestId,
-        aad_hex: hex(deviceAad),
-        nonce_hex: hex(deviceNonce),
-        ciphertext_hex: hex(deviceCt),
-      },
-      note: "旧端末(ward 本人)の承認: 乱数 KEK_h で B をラップ(AAD kind='device', wrap_ref=request_id)し、KEK_h を E.pub へ封印して同送",
-    },
   ],
   negative: [
     {
       name: "aad-kind-mismatch",
-      base: "passkey-prf-basic",
-      decrypt_aad_hex: hex(masterAad("device", passkeyWrapId, "")),
+      base: "guardian-any-2",
+      // mode は guardian のみ(§8.1)。passkey-prf へ付け替えた AAD の mode 欄は空文字列
+      decrypt_aad_hex: hex(masterAad("passkey-prf", any2.group_id, "")),
       must_fail: true,
-      note: "kind の付け替え(passkey-prf → device。同じ wrap_ref・空 mode のまま)は復号失敗",
+      note: "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)",
     },
     {
       name: "aad-wrap-ref-mismatch",
@@ -524,9 +502,9 @@ const vector = {
     {
       name: "handoff-transplant-source",
       base: "handoff-guardian-share",
-      open_info_hex: hex(handoffInfo(requestId, "device", 1, "user-member-0002")),
+      open_info_hex: hex(handoffInfo(requestId, any2.group_id, 1, "user-member-0002")),
       must_fail: true,
-      note: "source の付け替え(保護者分片 → device)は Open 失敗(要求者の組み立て経路を偽れない)",
+      note: "source の付け替え(保護者分片のグループ all-3 → 別グループ any-2)は Open 失敗(要求者の組み立て経路〔どのグループの分片か〕を偽れない。2026-09-20 DK で旧 → device の形から作り直した)",
     },
     {
       name: "handoff-share-index-mismatch",
