@@ -648,11 +648,8 @@ export interface MemberWithDevice extends ChainMember {
 function withSoleDevice(member: ChainMember): Effect.Effect<MemberWithDevice> {
   const device = soleDeviceOf(member);
   if (device === undefined) {
-    return Effect.die(
-      new Error(
-        "chain-derived member does not hold exactly one device key (device ops are not accepted yet)",
-      ),
-    );
+    // 文言は版・段階を漏らさない(Worker の 500 本文に現れうる — Security Reviewer 指摘)
+    return Effect.die(new Error("internal: unexpected device count for a chain-derived member"));
   }
   return Effect.succeed({
     ...member,

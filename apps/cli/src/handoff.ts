@@ -38,7 +38,12 @@ import { Duration, Effect, Stdio } from "effect";
  * 2026-09-19 DK で仕様の kind 集合(`passkey-prf` / `guardian`)から外れたが、経路自体は
  * K4(`device` グループの着地)まで残す(設計録 dk-design.md §3 K3 / K4 — K3 で消すと K4 までの
  * 間に端末移行の手段が無くなる)。バイト列は旧仕様どおり(`buildMasterWrapAad` は kind を
- * 文字列として LP に載せるだけ)。K4 で本定数ごと削除する
+ * 文字列として LP に載せるだけ)。
+ *
+ * TODO(K4): delete LEGACY_DEVICE_WRAP_KIND together with the old-device handoff path
+ * (`assembleApprovals` の device 分岐・`approveDeviceHandoff`・test/handoff.test.ts の同じキャスト)。
+ * crypto 側に kind の allowlist を足す場合はこの経路を先に消すこと(型を越えたキャストは
+ * ここと同テストの 2 箇所だけ — `grep -n 'as MasterWrapKind'`)
  */
 const LEGACY_DEVICE_WRAP_KIND = "device" as MasterWrapKind;
 import type { HttpClient } from "effect/unstable/http";
