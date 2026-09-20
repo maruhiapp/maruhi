@@ -102,6 +102,18 @@ function voteIsLive(members: ReadonlyMap<string, ChainMember>, signer: ApprovalV
 }
 
 /**
+ * 端末の実効 role が owner か(§6.2「approve の票の端末語彙」)。予告(eligibleApprovers /
+ * voteEligibility)と集計(countedVoters)は同じ述語を読む — 予告層と集計層が cap つき端末で
+ * 食い違わないため(PR #186 pullfrog 指摘)。K2 の CLI は端末 1 つなので「いずれかの端末」=
+ * その端末。K4 で署名する端末(手元の鍵)に絞る
+ */
+function ownerOnAnyDevice(member: ChainMember): boolean {
+  return [...member.devices.values()].some(
+    (device) => effectivePermissionOf(member, device).role === "owner",
+  );
+}
+
+/**
  * S の要素のうち、現時点でその FP が現 owner の有効な端末であり、端末の実効 role が
  * owner である distinct user_id(同じ人の別端末は 1 票 — §6.2)。
  */
@@ -188,7 +200,7 @@ export function proposalViewOf(
   const signers = signersOf(proposal);
   const voters = countedVoters(members, signers);
   const eligibleApprovers = [...members.values()]
-    .filter((member) => member.role === "owner" && !hasVoted(members, proposal, member))
+    .filter((member) => ownerOnAnyDevice(member) && !hasVoted(members, proposal, member))
     .map((member) => member.userId)
     .toSorted();
   return {
@@ -242,11 +254,11 @@ export function voteEligibility(
       message: "you are not a chain-derived member of this project",
     };
   }
-  if (member.role !== "owner") {
+  if (!ownerOnAnyDevice(member)) {
     return {
       ok: false,
       reason: "insufficient-role",
-      message: `only an owner can approve (your role: ${member.role} — CRYPTO_SPEC §6.2)`,
+      message: `only an owner can approve (your role: ${member.role}${member.role === "owner" ? ", but none of your device keys carries an owner cap" : ""} — CRYPTO_SPEC §6.2)`,
     };
   }
   if (hasVoted(verified.state.members, view.proposal, member)) {

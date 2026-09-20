@@ -655,4 +655,4 @@ K2 の実装 PR での裁定。K1 と同じく候補表 → 巡(上位互換・�
 - `MemberWithDevice`(server)を「リクエストの端末(AUTH §6 トークン ↔ 端末鍵)」に置き換える。`dek-wraps.ts` の受信者判定 `soleDeviceOf(member)?.encPubHex` は R(E) の端末展開へ。
 - `chainMirrorEvents(entry, serverTs, index, { addedDeviceKeyFingerprintHex })` で `add_device` の FP を渡す(K2-12)。
 - ラップ数の実測(K2-9)。
-- CLI(K4): `soleDeviceOrFail` の全呼び出し(`device-key.ts` を grep)、`LEGACY_DEVICE_WRAP_KIND` の削除、`member list` の端末一覧、`wrapRecipientsFor` の端末展開、`keyHistory` の端末鍵。
+- CLI(K4): `soleDeviceOrFail` の全呼び出し(`device-key.ts` を grep)、`LEGACY_DEVICE_WRAP_KIND` の削除、`member list` の端末一覧、`wrapRecipientsFor` の端末展開、`keyHistory` の端末鍵。**四眼の予告層と集計層の一致**(PR #186 pullfrog 指摘): `approval-rules.ts` の `eligibleApprovers` / `voteEligibility` は K2 では「いずれかの端末が実効 owner」(`ownerOnAnyDevice`)で集計層(`countedVoters`)と同じ述語を読むが、K4 では署名する端末(手元の鍵)の実効 role に絞る — cap < owner の端末から approve を促さないこと。
