@@ -86,9 +86,12 @@ function duplicateServerKeyRejection(
   verified: VerifiedProject,
   serverEncPubHex: string,
 ): string | null {
+  // 比較対象は現メンバー集合の全端末鍵(§6.2 — 2026-09-19 DK)
   for (const chainMember of verified.state.members.values()) {
-    if (chainMember.encPubHex === serverEncPubHex) {
-      return "The server enc public key equals a current member's enc public key (consensus rule duplicate-server-key — CRYPTO_SPEC §6.2). Check the deployment's key configuration";
+    for (const device of chainMember.devices.values()) {
+      if (device.encPubHex === serverEncPubHex) {
+        return "The server enc public key equals a current member's enc public key (consensus rule duplicate-server-key — CRYPTO_SPEC §6.2). Check the deployment's key configuration";
+      }
     }
   }
   return null;

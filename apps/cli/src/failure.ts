@@ -20,6 +20,7 @@ import {
   DekWrapExistsError,
   DekWrapNotFoundError,
   DekWrapRejectedError,
+  DeviceOpsNotAcceptedError,
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
@@ -193,6 +194,12 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This server does not accept four-eyes approval entries (${e.op}) yet — they land with a later server release`,
   ),
+  // 端末鍵の 2 op(DK): K3 より前のサーバーが返す(errors/chain.ts)
+  when(
+    isInstanceOf(DeviceOpsNotAcceptedError),
+    (e) =>
+      `This server does not accept device operations (${e.op}) yet; upgrade the server (they land with a later server release)`,
+  ),
   // propose の受理ポリシー(AUTH_SPEC §12-8 — 合意規則ではない。K5)
   when(isInstanceOf(ProposalLimitError), (e) =>
     e.reason === "pending-proposals"
@@ -320,6 +327,7 @@ export function isServerRejection(error: unknown): boolean {
     DekWrapExistsError,
     DekWrapNotFoundError,
     DekWrapRejectedError,
+    DeviceOpsNotAcceptedError,
     EnvironmentConflictError,
     EnvironmentNotFoundError,
     EpochConflictError,

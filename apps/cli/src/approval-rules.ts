@@ -18,6 +18,7 @@ import {
   type ApprovalVote,
   canonicalChainPayloadBytes,
   type ChainMember,
+  effectivePermissionOf,
   type PendingProposal,
   type ProposableOperation,
 } from "@maruhi/crypto";
@@ -95,7 +96,15 @@ export function signersOf(pending: PendingProposal): readonly ApprovalVote[] {
   return [...proposer, ...pending.approvals];
 }
 
-/** S の要素のうち、現時点で署名時と同じ鍵 FP を持つ現メンバーとして owner である distinct user_id。 */
+/** 票の端末がいまその人の有効な端末か(§6.2「approve の票の端末語彙」— 2026-09-19 DK)。 */
+function voteIsLive(members: ReadonlyMap<string, ChainMember>, signer: ApprovalVote): boolean {
+  return members.get(signer.userId)?.devices.has(signer.keyFingerprintHex) === true;
+}
+
+/**
+ * S の要素のうち、現時点でその FP が現 owner の有効な端末であり、端末の実効 role が
+ * owner である distinct user_id(同じ人の別端末は 1 票 — §6.2)。
+ */
 function countedVoters(
   members: ReadonlyMap<string, ChainMember>,
   signers: readonly ApprovalVote[],
@@ -103,7 +112,12 @@ function countedVoters(
   const voters = new Set<string>();
   for (const signer of signers) {
     const member = members.get(signer.userId);
-    if (member?.role === "owner" && member.keyFingerprintHex === signer.keyFingerprintHex) {
+    const device = member?.devices.get(signer.keyFingerprintHex);
+    if (
+      member !== undefined &&
+      device !== undefined &&
+      effectivePermissionOf(member, device).role === "owner"
+    ) {
       voters.add(signer.userId);
     }
   }
@@ -118,11 +132,14 @@ export function countOwnerVotes(
   return countedVoters(members, signers).length;
 }
 
-/** actor の (user_id, 現在の鍵 FP) が既に S の要素か(`duplicate-approval` の予告)。 */
-function hasVoted(pending: PendingProposal, member: ChainMember): boolean {
+/** actor の user_id が S に生きた票(いま有効な端末の署名)を持つか(`duplicate-approval` の予告)。 */
+function hasVoted(
+  members: ReadonlyMap<string, ChainMember>,
+  pending: PendingProposal,
+  member: ChainMember,
+): boolean {
   return signersOf(pending).some(
-    (signer) =>
-      signer.userId === member.userId && signer.keyFingerprintHex === member.keyFingerprintHex,
+    (signer) => signer.userId === member.userId && voteIsLive(members, signer),
   );
 }
 
@@ -171,7 +188,7 @@ export function proposalViewOf(
   const signers = signersOf(proposal);
   const voters = countedVoters(members, signers);
   const eligibleApprovers = [...members.values()]
-    .filter((member) => member.role === "owner" && !hasVoted(proposal, member))
+    .filter((member) => member.role === "owner" && !hasVoted(members, proposal, member))
     .map((member) => member.userId)
     .toSorted();
   return {
@@ -232,7 +249,7 @@ export function voteEligibility(
       message: `only an owner can approve (your role: ${member.role} — CRYPTO_SPEC §6.2)`,
     };
   }
-  if (hasVoted(view.proposal, member)) {
+  if (hasVoted(verified.state.members, view.proposal, member)) {
     const asProposer = view.proposal.proposerUserId === userId;
     return {
       ok: false,

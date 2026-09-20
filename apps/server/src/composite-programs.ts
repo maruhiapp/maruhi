@@ -19,7 +19,7 @@
 // 権威で、duplicate-environment / unknown-environment / エポック順序 / role /
 // コミットメント形式はすべてそこで判定される。
 
-import type { ChainEntry, ChainMember, ChainState } from "@maruhi/crypto";
+import type { ChainEntry, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
@@ -36,6 +36,7 @@ import type {
   DataActor,
   DekWrapInput,
   EnvManifestInput,
+  MemberWithDevice,
   MetaStatementInput,
 } from "./data-plane.ts";
 import {
@@ -95,7 +96,7 @@ const ensureCompositeWrapSet = (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly appliedState: ChainState;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly establishedEpoch: number;
   readonly deks: readonly DekWrapInput[];
 }) =>
@@ -233,7 +234,7 @@ interface CompositeWriteContext {
     readonly readRotationSync: AuditRotationRead;
   };
   readonly actor: DataActor;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly environmentId: string;
   readonly nowMs: number;
 }
@@ -257,7 +258,7 @@ function insertCompositeWrapsSync(
 const makeWriteContext = (input: {
   readonly dataStore: { readonly write: DataWriteOps };
   readonly actor: DataActor;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly environmentId: string;
 }) =>
   Effect.gen(function* () {

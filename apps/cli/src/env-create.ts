@@ -27,6 +27,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
+import { soleDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -80,6 +81,7 @@ function signCreateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
   return Effect.gen(function* () {
+    const device = yield* soleDeviceOrFail(input.member);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -88,10 +90,7 @@ function signCreateEntry(input: {
             seq: input.verified.state.headSeq + 1,
             prevHashHex: input.verified.state.headHashHex,
             op: "create_environment",
-            actor: {
-              userId: input.member.userId,
-              keyFingerprintHex: input.member.keyFingerprintHex,
-            },
+            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
             payload: {
               environmentId: input.environmentId,
               dekCommitmentHex: input.dekCommitmentHex,
@@ -217,7 +216,11 @@ export function envCreateOp(input: {
               input.environmentId,
               input.signerUserId,
             );
-            const rebuiltDeks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
+            const rebuiltDeks = (yield* sameWrapRecipientSet(
+              state.verified,
+              resynced,
+              input.environmentId,
+            ))
               ? state.deks
               : yield* buildWrapCompleteSet({
                   verified: resynced,

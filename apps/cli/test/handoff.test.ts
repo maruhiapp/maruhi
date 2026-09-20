@@ -27,6 +27,7 @@ import {
   sealHandoffValue,
   unwrapMasterBlob,
   wrapMasterBlob,
+  type MasterWrapKind,
 } from "@maruhi/crypto";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -140,7 +141,7 @@ async function deviceApprovalFor(env: TestEnv, owner: TestUser): Promise<Approva
   const wrapped = await wrapMasterBlob({
     kek,
     masterSecretBlob: blob,
-    context: { userId: owner.userId, kind: "device", wrapRef: requestId },
+    context: { userId: owner.userId, kind: "device" as MasterWrapKind, wrapRef: requestId },
   });
   const ephemeral = await importEncryptionPublicKey(publicKey);
   if (!wrapped.ok || !ephemeral.ok) throw new Error("wrap");
@@ -432,7 +433,11 @@ describe("maruhi key approve <code>(承認者)", () => {
     const blob = await unwrapMasterBlob({
       kek: kek.value,
       wrapped: { nonce: hex(body.blob.nonceHex), ciphertext: hex(body.blob.ciphertextHex) },
-      context: { userId: ward.userId, kind: "device", wrapRef: requester.requestId },
+      context: {
+        userId: ward.userId,
+        kind: "device" as MasterWrapKind,
+        wrapRef: requester.requestId,
+      },
     });
     if (!blob.ok) throw new Error("blob");
     expect(new TextDecoder().decode(blob.value)).toBe(

@@ -242,9 +242,20 @@ const memberOf = (userId: string, scope: MemberScope) =>
       userId,
       role: "member" as const,
       scope,
-      encPubHex: "11".repeat(32),
-      sigPubHex: "22".repeat(32),
-      keyFingerprintHex: "33".repeat(16),
+      // 最初の鍵 1 つ = 端末 1 つ(cap は構造的に (owner, all) — CRYPTO_SPEC §6.2 DK)
+      devices: new Map([
+        [
+          "33".repeat(16),
+          {
+            keyFingerprintHex: "33".repeat(16),
+            encPubHex: "11".repeat(32),
+            sigPubHex: "22".repeat(32),
+            roleCap: "owner" as const,
+            scope: { kind: "all" as const },
+            addedSeq: 1,
+          },
+        ],
+      ]),
     },
   ] as const;
 

@@ -18,6 +18,7 @@ import {
   AuditHeadNotReadyError,
   CheckpointStateMismatchError,
   CompositeRequiredError,
+  DeviceOpsNotAcceptedError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -279,6 +280,7 @@ type DataApiError =
   | EnvironmentNotFoundError
   | EnvironmentConflictError
   | CompositeRequiredError
+  | DeviceOpsNotAcceptedError
   | ProposalLimitError
   | CheckpointStateMismatchError
   | AuditHeadNotReadyError
@@ -325,6 +327,7 @@ const rejectionErrors = {
     }),
   // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API の共有)
   "composite-required": (rejection) => new CompositeRequiredError({ op: rejection.op }),
+  "device-ops-not-accepted": (rejection) => new DeviceOpsNotAcceptedError({ op: rejection.op }),
   // 四眼の propose の受理ポリシー(AUTH_SPEC §12-8 — K5)
   "proposal-limit": (rejection) =>
     new ProposalLimitError({ reason: rejection.reason, limit: rejection.limit }),

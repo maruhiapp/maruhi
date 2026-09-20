@@ -46,6 +46,7 @@ import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { IdentityBacking } from "./config.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
+import { deviceFingerprintsOf, memberHasKeys, soleDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -665,12 +666,15 @@ function duplicateMemberKeyRejection(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
 ): string | null {
+  // 比較対象は現メンバー集合の全端末鍵(§6.2 — 2026-09-19 DK)
   for (const member of verified.state.members.values()) {
-    if (
-      member.encPubHex === acceptance.inviteeEncPubHex ||
-      member.sigPubHex === acceptance.inviteeSigPubHex
-    ) {
-      return `The acceptance key equals current member ${displayText(member.userId)}'s key (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
+    for (const device of member.devices.values()) {
+      if (
+        device.encPubHex === acceptance.inviteeEncPubHex ||
+        device.sigPubHex === acceptance.inviteeSigPubHex
+      ) {
+        return `The acceptance key equals current member ${displayText(member.userId)}'s key (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
+      }
     }
   }
   return null;
@@ -693,8 +697,11 @@ function ensureAddable(input: {
     const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
     if (existing !== undefined) {
       if (
-        existing.encPubHex === input.acceptance.inviteeEncPubHex &&
-        existing.sigPubHex === input.acceptance.inviteeSigPubHex
+        memberHasKeys(
+          existing,
+          input.acceptance.inviteeEncPubHex,
+          input.acceptance.inviteeSigPubHex,
+        )
       ) {
         // 追記済み(前回実行の中断・並行実行)— バックフィルのみの再開へ
         return { alreadyAdded: true };
@@ -790,54 +797,59 @@ function backfillMemberEnvironment(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
   const register = registerWraps(input.client, input.verified.projectId, input.environmentId);
-  return backfillEnvironmentFor({
-    client: input.client,
-    verified: input.verified,
-    environmentId: input.environmentId,
-    recipient: input.recipient,
-    wrapRecipient: { kind: "member", member: input.target },
-    recipientLabel: "new-member-addressed",
-    signerUserId: input.signerUserId,
-    signingKeyPair: input.signingKeyPair,
-    onSlotConflict: (wrap, storedRecipientEncPubHex) =>
-      Effect.gen(function* () {
-        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
-        // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
-        const staleWrap =
-          storedRecipientEncPubHex === null
-            ? input.staleWrapSuspected
-            : storedRecipientEncPubHex !== input.target.encPubHex;
-        if (!staleWrap) {
-          return "already-registered" as const;
-        }
-        // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する
-        yield* input.client.deks
-          .remove({
-            params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-            payload: { wraps: [{ epoch: wrap.epoch, recipientUserId: input.target.userId }] },
-          })
-          .pipe(
-            Effect.asVoid,
-            Effect.catch((error) =>
-              // 並行修復でスロットが消えた場合は再登録だけ行えばよい
-              error instanceof DekWrapNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
+  // 対象の鍵 = その唯一の端末鍵(K2 — 端末は 1 つ。device-key.ts)
+  return Effect.flatMap(soleDeviceOrFail(input.target), (targetDevice) =>
+    backfillEnvironmentFor({
+      client: input.client,
+      verified: input.verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      wrapRecipient: { kind: "member", member: input.target, device: targetDevice },
+      recipientLabel: "new-member-addressed",
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+      onSlotConflict: (wrap, storedRecipientEncPubHex) =>
+        Effect.gen(function* () {
+          // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
+          // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
+          const staleWrap =
+            storedRecipientEncPubHex === null
+              ? input.staleWrapSuspected
+              : storedRecipientEncPubHex !== targetDevice.encPubHex;
+          if (!staleWrap) {
+            return "already-registered" as const;
+          }
+          // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する
+          yield* input.client.deks
+            .remove({
+              params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+              payload: { wraps: [{ epoch: wrap.epoch, recipientUserId: input.target.userId }] },
+            })
+            .pipe(
+              Effect.asVoid,
+              Effect.catch((error) =>
+                // 並行修復でスロットが消えた場合は再登録だけ行えばよい
+                error instanceof DekWrapNotFoundError
+                  ? Effect.void
+                  : Effect.fail(toCliError(error)),
+              ),
+            );
+          // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
+          // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
+          // 空スロットへの直登録になるため、そのまま復旧経路になる)
+          const retried = yield* register([wrap]).pipe(
+            Effect.mapError((error) =>
+              cliError(
+                `After the repair path deleted the old wrap, re-registering the new-key wrap failed — the epoch ${wrap.epoch} slot remains empty (the target cannot decrypt this epoch; a re-run recovers it as a direct registration into the empty slot): ${error.message}`,
+              ),
             ),
           );
-        // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
-        // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
-        // 空スロットへの直登録になるため、そのまま復旧経路になる)
-        const retried = yield* register([wrap]).pipe(
-          Effect.mapError((error) =>
-            cliError(
-              `After the repair path deleted the old wrap, re-registering the new-key wrap failed — the epoch ${wrap.epoch} slot remains empty (the target cannot decrypt this epoch; a re-run recovers it as a direct registration into the empty slot): ${error.message}`,
-            ),
-          ),
-        );
-        // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
-        // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
-        return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
-      }),
-  });
+          // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
+          // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
+          return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
+        }),
+    }),
+  );
 }
 
 /**
@@ -1034,10 +1046,11 @@ export function backfillNewMember(input: {
     // への 409 だけに使うフォールバックである。なお追補済みサーバーは
     // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
     // 409 自体が「現行鍵で登録済み」しか意味しない
+    const targetDevice = yield* soleDeviceOrFail(input.target);
     const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
       (binding) =>
-        binding.encPubHex !== input.target.encPubHex ||
-        binding.sigPubHex !== input.target.sigPubHex,
+        binding.encPubHex !== targetDevice.encPubHex ||
+        binding.sigPubHex !== targetDevice.sigPubHex,
     );
     if (staleWrapSuspected) {
       yield* io.log(
@@ -1140,8 +1153,7 @@ export function memberAddOp(input: {
     const target = verified.state.members.get(row.acceptance.inviteeUserId);
     if (
       target === undefined ||
-      target.encPubHex !== row.acceptance.inviteeEncPubHex ||
-      target.sigPubHex !== row.acceptance.inviteeSigPubHex
+      !memberHasKeys(target, row.acceptance.inviteeEncPubHex, row.acceptance.inviteeSigPubHex)
     ) {
       return yield* Effect.fail(
         cliError(
@@ -2019,7 +2031,8 @@ export interface MemberListRow {
   readonly userId: string;
   readonly role: Role;
   readonly scope: MemberScope;
-  readonly keyFingerprintHex: string;
+  /** The member's device key fingerprints (ascending — 2026-09-19 DK: 端末は複数ありうる)。 */
+  readonly keyFingerprintsHex: readonly string[];
 }
 
 /** 検証済みチェーンのメンバー一覧(user_id 昇順)。 */
@@ -2029,7 +2042,7 @@ export function memberListRows(verified: VerifiedProject): readonly MemberListRo
       userId: member.userId,
       role: member.role,
       scope: member.scope,
-      keyFingerprintHex: member.keyFingerprintHex,
+      keyFingerprintsHex: deviceFingerprintsOf(member),
     }))
     .toSorted((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 }
@@ -2045,7 +2058,9 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
           row.scope.kind === "all"
             ? { kind: "all" }
             : { kind: "listed", environmentIds: [...row.scope.environmentIds] },
-        keyFingerprintHex: row.keyFingerprintHex,
+        // 端末が 1 つのメンバーは従来の `keyFingerprintHex`(K4 で端末一覧へ置き換える —
+        // それまでは複数端末の FP を昇順に連ねる)
+        keyFingerprintHex: row.keyFingerprintsHex.join(","),
       })),
     },
     null,
@@ -2055,5 +2070,5 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
 
 /** 人が読む 1 行(user id・role・scope・鍵 FP。id は中和する)。 */
 export function formatMemberListRow(row: MemberListRow): string {
-  return `${displayText(row.userId)}\t${row.role}\tscope=${describeScope(row.scope)}\tfp=${row.keyFingerprintHex}`;
+  return `${displayText(row.userId)}\t${row.role}\tscope=${describeScope(row.scope)}\tfp=${row.keyFingerprintsHex.join(",")}`;
 }

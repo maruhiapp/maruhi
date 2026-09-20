@@ -21,6 +21,7 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { soleDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 
 /**
@@ -52,6 +53,7 @@ export function signBoundaryCheckpoint(input: {
       try: () => computeChainEntryHash(input.compositeEntry),
       catch: () => cliError("Failed to sign the boundary checkpoint entry"),
     });
+    const device = yield* soleDeviceOrFail(input.member);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -60,10 +62,7 @@ export function signBoundaryCheckpoint(input: {
             seq: input.compositeEntry.seq + 1,
             prevHashHex,
             op: "checkpoint",
-            actor: {
-              userId: input.member.userId,
-              keyFingerprintHex: input.member.keyFingerprintHex,
-            },
+            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
             payload: {
               environments: [
                 {

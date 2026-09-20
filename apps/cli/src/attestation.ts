@@ -56,10 +56,8 @@ async function matchAttestation(
   // 現メンバーでない申告は照合材料にしない(サーバーは remove 時に行を削除する —
   // §6.4。配布されても在籍区間内の過去申告に警告価値はない)
   const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
-  if (
-    current === undefined ||
-    current.keyFingerprintHex !== attestation.attesterKeyFingerprintHex
-  ) {
+  // 申告 FP は attester の現在有効な端末の 1 つ(2026-09-19 DK — 端末単位の同定)
+  if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
     return { kind: "skip" };
   }
   const verified = await verifyDistributedHeadAttestation({

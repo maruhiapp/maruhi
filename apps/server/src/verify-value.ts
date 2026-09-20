@@ -2,7 +2,6 @@
 
 import type {
   ChainHistoryIndex,
-  ChainMember,
   ChainState,
   ValueInvalidReason,
   ValuePredecessor,
@@ -13,6 +12,7 @@ import { Effect } from "effect";
 import type {
   DataRejectedError,
   DataRejection,
+  MemberWithDevice,
   ValueInput,
   ValueSignatureRejectReason,
 } from "./data-plane.ts";
@@ -96,7 +96,7 @@ export const ensureValueSignature = (input: {
   readonly environmentId: string;
   readonly variableId: string;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly value: ValueInput;
 }) =>
   Effect.gen(function* () {

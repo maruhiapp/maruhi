@@ -168,6 +168,7 @@ export {
   CliFlowExpiredError,
   CliFlowRejectedError,
   CompositeRequiredError,
+  DeviceOpsNotAcceptedError,
   DataLimitExceededError,
   DataLimitResourceSchema,
   DekWrapExistsError,

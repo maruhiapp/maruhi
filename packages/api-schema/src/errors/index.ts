@@ -49,6 +49,7 @@ export {
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
   CompositeRequiredError,
+  DeviceOpsNotAcceptedError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,

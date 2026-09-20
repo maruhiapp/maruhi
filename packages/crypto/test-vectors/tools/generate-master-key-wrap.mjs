@@ -394,9 +394,10 @@ const vector = {
     {
       name: "aad-kind-mismatch",
       base: "guardian-any-2",
-      decrypt_aad_hex: hex(masterAad("passkey-prf", any2.group_id, any2.mode)),
+      // mode は guardian のみ(§8.1)。passkey-prf へ付け替えた AAD の mode 欄は空文字列
+      decrypt_aad_hex: hex(masterAad("passkey-prf", any2.group_id, "")),
       must_fail: true,
-      note: "kind の付け替え(guardian → passkey-prf。同じ wrap_ref・同じ mode のまま — kind 1 軸だけの差し替え)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)",
+      note: "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)",
     },
     {
       name: "aad-wrap-ref-mismatch",

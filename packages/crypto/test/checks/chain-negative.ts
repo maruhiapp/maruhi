@@ -66,6 +66,8 @@ interface TamperVariant {
   readonly name: string;
   readonly entry: ChainEntry;
   readonly expect: string;
+  /** base エントリの派生チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  readonly chain?: string;
 }
 
 /** 期待した op のベクターエントリ(不一致はフィクスチャ破損 = throw)。 */
@@ -75,6 +77,35 @@ function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry &
     throw new Error(`chain vector seq ${seq}: expected ${op}, got ${entry.op}`);
   }
   return entry as ChainEntry & { op: K };
+}
+
+/** 派生チェーンの期待した op のエントリ(不一致・欠落はフィクスチャ破損 = throw)。 */
+function extendedEntryOfOp<K extends ChainEntry["op"]>(
+  chainName: string,
+  seq: number,
+  op: K,
+): ChainEntry & { op: K } {
+  const raw = vectorExtendedChains[chainName]?.entries.find((entry) => entry.seq === seq);
+  if (raw === undefined) {
+    throw new Error(`chain vector extended entry ${chainName}#${seq} missing`);
+  }
+  const entry = toTypedEntry(raw);
+  if (entry.op !== op) {
+    throw new Error(`chain vector ${chainName}#${seq}: expected ${op}, got ${entry.op}`);
+  }
+  return entry as ChainEntry & { op: K };
+}
+
+/** 派生チェーン上の seq の直前までのプレフィックス(base + seq 未満の派生エントリ)。 */
+function extendedPrefix(chainName: string, seq: number): readonly ChainEntry[] {
+  const extended = vectorExtendedChains[chainName];
+  if (extended === undefined) {
+    throw new Error(`chain vector extended chain ${chainName} missing`);
+  }
+  return [
+    ...typedEntries.slice(0, extended.base_seq),
+    ...extended.entries.filter((entry) => entry.seq < seq).map((entry) => toTypedEntry(entry)),
+  ];
 }
 
 /** ベクターの (environment, epoch) のコミットメント(欠落はフィクスチャ破損 = throw)。 */
@@ -111,6 +142,79 @@ function payloadTamperVariants(): readonly TamperVariant[] {
       prodCommitment,
     ),
     ...scopeAndApprovalTamperVariants(),
+    ...deviceTamperVariants(),
+  ];
+}
+
+/** add-device-tampered-enc-pub が差し替える未登録のダミー enc 公開鍵(ベクターの payload と一致)。 */
+const FRESH_DEVICE_ENC_PUB_HEX = "1349ac6a06c18c9fb1cc6f15b1907ca645b45fe524716d690bb29f354dffa76e";
+
+/** DK(端末鍵 — 2026-09-19)の payload 改竄変種(派生チェーン device-ops の seq 25 / 27 / 35 / 37 が base)。 */
+function deviceTamperVariants(): readonly TamperVariant[] {
+  const chain = "device-ops";
+  const eReserve = extendedEntryOfOp(chain, 25, "add_device");
+  const eCiBox = extendedEntryOfOp(chain, 27, "add_device");
+  const eRevokeSelf = extendedEntryOfOp(chain, 35, "revoke_device");
+  const eRevokeOther = extendedEntryOfOp(chain, 37, "revoke_device");
+  return [
+    // cap(role_cap / scope)は署名対象 — 上限の付け替え対策
+    {
+      name: "add-device-tampered-role-cap",
+      entry: { ...eCiBox, payload: { ...eCiBox.payload, roleCap: "owner" } },
+      expect: "bad-signature",
+      chain,
+    },
+    {
+      name: "add-device-scope-relabel-all",
+      entry: {
+        ...eCiBox,
+        payload: { ...eCiBox.payload, scopeKind: "all", scopeEnvironmentIds: [] },
+      },
+      expect: "bad-signature",
+      chain,
+    },
+    // 端末 scope の入れ子 LP の順序も署名対象(add_member の scope と同型)
+    {
+      name: "add-device-scope-reorder",
+      entry: {
+        ...eCiBox,
+        payload: {
+          ...eCiBox.payload,
+          scopeEnvironmentIds: eCiBox.payload.scopeEnvironmentIds.toReversed(),
+        },
+      },
+      expect: "bad-signature",
+      chain,
+    },
+    // 登録する鍵は署名対象(サーバーによる鍵のすり替え対策)
+    {
+      name: "add-device-tampered-enc-pub",
+      entry: { ...eReserve, payload: { ...eReserve.payload, encPubHex: FRESH_DEVICE_ENC_PUB_HEX } },
+      expect: "bad-signature",
+      chain,
+    },
+    // 失効 FP リストの順序も署名対象(生成は昇順 SHOULD・検証は集合)
+    {
+      name: "revoke-device-fp-reorder",
+      entry: {
+        ...eRevokeSelf,
+        payload: {
+          ...eRevokeSelf.payload,
+          deviceFingerprintsHex: eRevokeSelf.payload.deviceFingerprintsHex.toReversed(),
+        },
+      },
+      expect: "bad-signature",
+      chain,
+    },
+    {
+      name: "revoke-device-tampered-target",
+      entry: {
+        ...eRevokeOther,
+        payload: { ...eRevokeOther.payload, targetUserId: "user-owner-0015" },
+      },
+      expect: "bad-signature",
+      chain,
+    },
   ];
 }
 
@@ -326,7 +430,7 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // bytesLevelChecks が担う 10 件(この実装からは生成されないバイト列)
+      // bytesLevelChecks が担う 12 件(この実装からは生成されないバイト列)
       ...BYTES_LEVEL_NEGATIVES,
       // checkpointTamperChecks が担う 1 件(派生チェーンのエントリが base)
       "checkpoint-tampered-environments",
@@ -343,7 +447,10 @@ async function tamperedChecks(c: Checks): Promise<void> {
       vector.signed_bytes_hex === undefined ||
       variant.name === "wrong-signer" ||
       toHex(canonicalChainSignedBytes(variant.entry)) === vector.signed_bytes_hex;
-    const prefix = typedEntries.slice(0, variant.entry.seq - 1);
+    const prefix =
+      variant.chain === undefined
+        ? typedEntries.slice(0, variant.entry.seq - 1)
+        : extendedPrefix(variant.chain, variant.entry.seq);
     const result = await verifyChain([...prefix, variant.entry]);
     c.push(
       `chain negative: ${variant.name}`,
@@ -371,7 +478,9 @@ function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): Ch
 // checkpoint-environments-flat-concat は環境タプルの入れ子 LP の平坦化(§6.2)。
 // 2026-09-14 ES / PF1: *-scope-dropped は scope 2 フィールドを欠く旧形式(新形式が
 // 正規形であることの固定 — 互換受理なし)、*-flat-concat は scope / ops の入れ子 LP の
-// 平坦化、propose-inner-payload-flat は内側 payload を外側 LP に展開した形
+// 平坦化、propose-inner-payload-flat は内側 payload を外側 LP に展開した形。
+// 2026-09-19 DK: add-device-scope-flat-concat / revoke-device-fp-flat-concat は端末 scope /
+// 失効 FP リストの入れ子 LP の平坦化(派生チェーン device-ops が base)
 const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "field-order-swap",
   "grant-server-scope-flat-concat",
@@ -383,6 +492,8 @@ const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "add-member-scope-flat-concat",
   "policy-ops-flat-concat",
   "propose-inner-payload-flat",
+  "add-device-scope-flat-concat",
+  "revoke-device-fp-flat-concat",
 ];
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
@@ -1133,6 +1244,51 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     {
       name: "withdraw payload missing",
       entry: { ...base, op: "withdraw", payload: undefined },
+    },
+    // 端末鍵(§6.2 — 2026-09-19 DK)の payload 構造: 実行時型の乖離も invalid-payload に落とす
+    {
+      name: "add_device role cap is a number",
+      entry: {
+        ...base,
+        op: "add_device",
+        payload: {
+          encPubHex: "ab".repeat(32),
+          sigPubHex: "cd".repeat(32),
+          roleCap: 3,
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
+        },
+      },
+    },
+    {
+      name: "add_device scope environments is not an array",
+      entry: {
+        ...base,
+        op: "add_device",
+        payload: {
+          encPubHex: "ab".repeat(32),
+          sigPubHex: "cd".repeat(32),
+          roleCap: "member",
+          scopeKind: "listed",
+          scopeEnvironmentIds: "env-dev-0002",
+        },
+      },
+    },
+    {
+      name: "revoke_device fingerprints is not an array",
+      entry: {
+        ...base,
+        op: "revoke_device",
+        payload: { targetUserId: "user-owner-0001", deviceFingerprintsHex: "ab".repeat(16) },
+      },
+    },
+    {
+      name: "revoke_device fingerprint element is a number",
+      entry: {
+        ...base,
+        op: "revoke_device",
+        payload: { targetUserId: "user-owner-0001", deviceFingerprintsHex: [42] },
+      },
     },
     // 未知の op: PAYLOAD_SHAPES の表引きが membership を確認せずに
     // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し

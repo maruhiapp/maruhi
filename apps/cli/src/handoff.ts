@@ -24,6 +24,7 @@ import {
   exportEncryptionPublicKey,
   generateEncryptionKeyPair,
   generateMasterWrapKek,
+  type MasterWrapKind,
   type GuardianMode,
   importEncryptionPublicKey,
   joinGuardianShares,
@@ -31,6 +32,15 @@ import {
   unwrapMasterBlob,
 } from "@maruhi/crypto";
 import { Duration, Effect, Stdio } from "effect";
+
+/**
+ * 旧端末経路(`kind = "device"` の B ラップの同送 — 旧 CRYPTO_SPEC §8.4)の AAD の kind。
+ * 2026-09-19 DK で仕様の kind 集合(`passkey-prf` / `guardian`)から外れたが、経路自体は
+ * K4(`device` グループの着地)まで残す(設計録 dk-design.md §3 K3 / K4 — K3 で消すと K4 までの
+ * 間に端末移行の手段が無くなる)。バイト列は旧仕様どおり(`buildMasterWrapAad` は kind を
+ * 文字列として LP に載せるだけ)。K4 で本定数ごと削除する
+ */
+const LEGACY_DEVICE_WRAP_KIND = "device" as MasterWrapKind;
 import type { HttpClient } from "effect/unstable/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
@@ -194,7 +204,10 @@ function recoverBlob(input: {
       }
       return yield* unwrapOrFail(kek, yield* decodeBlobWrap(blob), {
         userId: input.userId,
-        kind: "device",
+        // 旧端末経路(source = "device")は K4 で置き換えと同時に削除する(設計録 dk-design.md
+        // §3 K3 / K4)。crypto の kind の集合からは 2026-09-19 DK で `device` が消えた(仕様
+        // §8.1)ため、それまでの互換経路として AAD の文字列だけを型を越えて渡す(バイト列は不変)
+        kind: LEGACY_DEVICE_WRAP_KIND,
         wrapRef: input.requestId,
       });
     }
@@ -570,7 +583,11 @@ function approveAsDevice(input: {
     const blob = yield* wrapOwnBlob({
       masterKeys: input.masterKeys,
       kek,
-      context: { userId: input.target.wardUserId, kind: "device", wrapRef: input.target.requestId },
+      context: {
+        userId: input.target.wardUserId,
+        kind: LEGACY_DEVICE_WRAP_KIND,
+        wrapRef: input.target.requestId,
+      },
     });
     const sealed = yield* sealForRequester({
       ephemeralPublicKey: input.target.ephemeralPublicKey,

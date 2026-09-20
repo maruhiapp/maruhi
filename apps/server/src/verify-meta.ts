@@ -2,7 +2,6 @@
 
 import type {
   ChainHistoryIndex,
-  ChainMember,
   MetaInvalidReason,
   MetaPredecessor,
   MetaStatementTarget,
@@ -13,6 +12,7 @@ import { Effect } from "effect";
 
 import type {
   DataRejectedError,
+  MemberWithDevice,
   MetaStatementInput,
   MetaStatementRejectReason,
   SchemaPolicy,
@@ -86,7 +86,7 @@ export const ensureMetaStatementSignature = (input: {
   readonly environmentId: string;
   readonly target: MetaStatementTarget;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly statement: MetaStatementInput;
   /** metaVersion > 1 のとき保存済み直前ステートメントのアンカー(呼び出し側が引く)。 */
   readonly predecessor?: MetaPredecessor | undefined;
@@ -290,7 +290,7 @@ export const acceptMetaStatement = (input: {
   readonly target: MetaStatementTarget;
   readonly latestMetaVersion: number;
   readonly history: ChainHistoryIndex;
-  readonly member: ChainMember;
+  readonly member: MemberWithDevice;
   readonly statement: MetaStatementInput;
   /**
    * 受理時点の schemaPolicy(変数ステートメントのみ — 呼び出し側が DO permit

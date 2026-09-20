@@ -17,15 +17,14 @@ import {
   buildHeadAttestationSignedBytes,
   computeHeadAttestationSignedBytesHash,
   generateSigningKeyPair,
-  importSigningKeyPair,
   importSigningPublicKey,
   signHeadAttestation,
   verifyDistributedHeadAttestation,
   verifyHeadAttestationSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/head-attestation.json" with { type: "json" };
-import { canonicalHistory } from "./chain-history.ts";
-import { vectorKeys } from "./chain-vector.ts";
+import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
+import { importVectorSigner } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 interface VectorContext {
@@ -38,6 +37,8 @@ interface VectorContext {
 
 interface AttestationVector {
   readonly name: string;
+  /** 照合先チェーン(無指定 = canonical。device-ops = 端末鍵派生 — 2026-09-19 DK)。 */
+  readonly chain?: string;
   readonly context: VectorContext;
   readonly attester_key_fingerprint_hex: string;
   readonly signed_bytes_hex: string;
@@ -48,6 +49,7 @@ interface AttestationVector {
 interface AttestationNegative {
   readonly name: string;
   readonly kind?: string;
+  readonly chain?: string;
   readonly context: VectorContext;
   readonly attester_key_fingerprint_hex?: string;
   readonly verify_signed_bytes_hex?: string;
@@ -69,28 +71,35 @@ function contextOf(v: VectorContext): HeadAttestationContext {
 
 const positives: readonly AttestationVector[] = vectors.vectors;
 
+/** 照合先チェーン(名前 → 検証済み履歴索引)。ベクターの `chain` 無指定は canonical。 */
+type Histories = Readonly<Record<string, ChainHistoryIndex>>;
+
+function historyFor(
+  histories: Histories,
+  chain: string | undefined,
+): ChainHistoryIndex | undefined {
+  return histories[chain ?? "canonical"];
+}
+
 /** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
   context: HeadAttestationContext,
   signatureHex: string,
+  attesterKeyFingerprintHex: string,
 ): Promise<void> {
-  const keys = vectorKeys[context.attesterUserId];
-  if (keys === undefined) {
-    c.push(`head-attestation ${name}: attester keys`, false, "attester keys missing");
+  // attester の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  const signer = await importVectorSigner(context.attesterUserId, attesterKeyFingerprintHex);
+  if (signer === null) {
+    c.push(
+      `head-attestation ${name}: attester keys`,
+      false,
+      "signer keys missing or failed to import",
+    );
     return;
   }
-  const pair = await importSigningKeyPair({
-    publicKey: fromHex(keys.sig_pub_hex),
-    privateSeed: fromHex(keys.sig_sk_seed_hex),
-  });
-  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
-  if (!pair.ok || !publicKey.ok) {
-    c.push(`head-attestation ${name}: attester keys`, false, "key import failed");
-    return;
-  }
-  const signed = await signHeadAttestation({ context, signingKey: pair.value.privateKey });
+  const signed = await signHeadAttestation({ context, signingKey: signer.privateKey });
   c.push(
     `head-attestation ${name}: deterministic re-sign matches vector`,
     signed.ok && signed.value === signatureHex,
@@ -98,13 +107,18 @@ async function signAndVerifyChecks(
   const verified = await verifyHeadAttestationSignature({
     context,
     signatureHex,
-    attesterPublicKey: publicKey.value,
+    attesterPublicKey: signer.publicKey,
   });
   c.push(`head-attestation ${name}: raw signature verify`, verified.ok);
 }
 
-async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   for (const vector of positives) {
+    const history = historyFor(histories, vector.chain);
+    if (history === undefined) {
+      c.push(`head-attestation ${vector.name}: history`, false, "history missing");
+      continue;
+    }
     const context = contextOf(vector.context);
     c.push(
       `head-attestation ${vector.name}: signed bytes construction`,
@@ -115,7 +129,13 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
       `head-attestation ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    await signAndVerifyChecks(c, vector.name, context, vector.signature_hex);
+    await signAndVerifyChecks(
+      c,
+      vector.name,
+      context,
+      vector.signature_hex,
+      vector.attester_key_fingerprint_hex,
+    );
 
     // 履歴ベースの複合検証(§6.6): removed-attester-in-tenure も positive
     const distributed = await verifyDistributedHeadAttestation({
@@ -130,16 +150,21 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
       distributed.ok ? undefined : JSON.stringify(distributed.error),
     );
   }
-  // 配布対象の選別ゲート(§6.6 (1) 前半 = 現メンバー検査)の材料の固定:
-  // removed-attester-in-tenure の attester は検証は通るが現メンバーではない
+}
+
+/**
+ * 配布対象の選別ゲート(§6.6 (1) 前半 = 現メンバー検査)の材料の固定:
+ * removed-attester-in-tenure の attester は検証は通るが現メンバーではない
+ */
+function distributionGateChecks(c: Checks, canonical: ChainHistoryIndex): void {
   const removed = positives.find((vector) => vector.name === "removed-attester-in-tenure");
   const basic = positives.find((vector) => vector.name === "basic");
   c.push(
     "head-attestation: removed attester is not a current member (distribution gate)",
     removed !== undefined &&
-      history.memberStateAt(removed.context.attester_user_id, history.headSeq) === undefined &&
+      canonical.memberStateAt(removed.context.attester_user_id, canonical.headSeq) === undefined &&
       basic !== undefined &&
-      history.memberStateAt(basic.context.attester_user_id, history.headSeq) !== undefined,
+      canonical.memberStateAt(basic.context.attester_user_id, canonical.headSeq) !== undefined,
   );
 }
 
@@ -147,8 +172,17 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
 async function ruleNegativeCheck(
   c: Checks,
   negative: AttestationNegative,
-  history: ChainHistoryIndex,
+  histories: Histories,
 ): Promise<void> {
+  const history = historyFor(histories, negative.chain);
+  if (history === undefined) {
+    c.push(
+      `head-attestation rule negative: ${negative.name}`,
+      false,
+      `unknown chain ${negative.chain}`,
+    );
+    return;
+  }
   const result = await verifyDistributedHeadAttestation({
     history,
     context: contextOf(negative.context),
@@ -188,12 +222,12 @@ async function tamperNegativeCheck(c: Checks, negative: AttestationNegative): Pr
   );
 }
 
-async function negativeChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+async function negativeChecks(c: Checks, histories: Histories): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of vectors.negative as readonly AttestationNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history);
+      await ruleNegativeCheck(c, negative, histories);
     } else {
       await tamperNegativeCheck(c, negative);
     }
@@ -292,9 +326,14 @@ async function roundtripChecks(c: Checks): Promise<void> {
 
 export async function headAttestationChecks(): Promise<CheckResult[]> {
   const c = new Checks();
-  const history = await canonicalHistory();
-  await vectorChecks(c, history);
-  await negativeChecks(c, history);
+  const canonical = await canonicalHistory();
+  const histories: Histories = {
+    canonical,
+    "device-ops": await extendedVectorChainHistory("device-ops"),
+  };
+  await vectorChecks(c, histories);
+  distributionGateChecks(c, canonical);
+  await negativeChecks(c, histories);
   await invalidInputChecks(c);
   await roundtripChecks(c);
   return c.results;

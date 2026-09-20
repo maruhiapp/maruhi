@@ -192,9 +192,9 @@
     {
       "name": "aad-kind-mismatch",
       "base": "guardian-any-2",
-      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616e79",
+      "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b4752503030303030303030303030303030414e59303200000000",
       "must_fail": true,
-      "note": "kind の付け替え(guardian → passkey-prf。同じ wrap_ref・同じ mode のまま — kind 1 軸だけの差し替え)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)"
+      "note": "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)"
     },
     {
       "name": "aad-wrap-ref-mismatch",

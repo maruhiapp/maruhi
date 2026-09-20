@@ -9,6 +9,10 @@
 // 持つ。
 
 import { decodeHex, encodeHex } from "./bytes.ts";
+import { ROLE_RANK } from "./chain-device.ts";
+
+// role の順序は chain-device.ts が唯一の定義(署名系モジュールへはここから再輸出する)
+export { ROLE_RANK };
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
@@ -135,9 +139,6 @@ export async function importActorKeyByFingerprint(input: {
   return importSigningPublicKey(keyBytes);
 }
 
-/** チェーン role の順序(§6.3-3 の認可水準比較に使う)。 */
-export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } as const;
-
 /**
  * ヘッド束縛・認可時点検査(§6.3-1〜-3)の理由コード写像。語彙は呼び出し側
  * (ValueInvalidReason / MetaInvalidReason)が所有し、ここでは統合しない。
@@ -166,9 +167,11 @@ export interface HeadScopeCheck<R> {
  * - 不一致 2 種の区別: seq > 自ヘッド = future(再同期の入口)、seq ≤ 自ヘッドの
  *   ハッシュ不一致 = 分岐または偽造の硬い証拠
  * - 宣言ヘッド時点(inclusive)の在籍・鍵束縛・role。鍵不一致は remove → 別鍵
- *   re-add の tenure 跨ぎ(旧区間の鍵 × 新区間のヘッド)の拒否を含む
- * - 3′ スコープ(`scope` が渡された場合): role の直後に、宣言ヘッド時点の scope が
- *   当該環境を含むこと(§6.3 — 2026-09-14 ES)
+ *   re-add の tenure 跨ぎ(旧区間の鍵 × 新区間のヘッド)と、失効した端末 × 失効後の
+ *   ヘッド(2026-09-19 DK — 端末の有効区間)の拒否を含む
+ * - role / 3′ スコープ(`scope` が渡された場合)は**署名した端末の実効権限**で判定する
+ *   (§6.3「端末鍵の選択と実効権限」— 人の (role, scope) ではなく deviceStateAt の
+ *   EffectivePermission。置換点はこの 1 箇所 — 設計録 dk-design.md §7 K2-4)
  * エポック整合(§6.3-4)は値署名のみの検査なので呼び出し側に残す。
  */
 export function headAuthorizationReason<R>(input: {
@@ -187,19 +190,24 @@ export function headAuthorizationReason<R>(input: {
   if (input.history.entryHashAt(input.chainHeadSeq) !== input.chainHeadHashHex) {
     return input.reasons.chainHeadMismatch;
   }
-  const member = input.history.memberStateAt(input.actorUserId, input.chainHeadSeq);
-  if (member === undefined) {
+  if (input.history.memberStateAt(input.actorUserId, input.chainHeadSeq) === undefined) {
     return input.reasons.notMemberAtHead;
   }
-  if (member.keyFingerprintHex !== input.actorKeyFingerprintHex) {
+  const device = input.history.deviceStateAt(
+    input.actorUserId,
+    input.actorKeyFingerprintHex,
+    input.chainHeadSeq,
+  );
+  if (device === undefined) {
     return input.reasons.keyMismatchAtHead;
   }
-  if (ROLE_RANK[member.role] < input.requiredRoleRank) {
+  const permission = device.permission;
+  if (ROLE_RANK[permission.role] < input.requiredRoleRank) {
     return input.reasons.roleInsufficientAtHead;
   }
   if (
     input.scope !== undefined &&
-    !scopeIncludesEnvironment(member.scope, input.scope.environmentId)
+    !scopeIncludesEnvironment(permission.scope, input.scope.environmentId)
   ) {
     return input.scope.outOfScopeAtHead;
   }

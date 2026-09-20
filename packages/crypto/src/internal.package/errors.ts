@@ -48,7 +48,13 @@ export type ChainInvalidReason =
   | "unknown-proposal"
   | "duplicate-approval"
   | "proposal-expired"
-  | "proposal-void";
+  | "proposal-void"
+  // 端末鍵(§6.2 — 2026-09-19 DK)。鍵一意性は duplicate-member-key、端末 scope の各 id は
+  // unknown-environment、失効端末の署名は actor-key-mismatch、他人の端末の失効の包含は
+  // scope-not-contained を再利用する
+  | "unknown-device"
+  | "last-device-protected"
+  | "device-cap-exceeded";
 
 /**
  * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /

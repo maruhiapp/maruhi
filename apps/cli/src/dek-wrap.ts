@@ -15,13 +15,14 @@
 // ランダムなので不要な再ラップを避ける)。
 
 import type { WrappedDek } from "@maruhi/api-schema";
-import type { ChainMember, Role, ServerGrant, SigningKeyPair } from "@maruhi/crypto";
+import type { ChainDevice, ChainMember, Role, ServerGrant, SigningKeyPair } from "@maruhi/crypto";
 import {
   decodeHex,
   encodeHex,
   importEncryptionPublicKey,
   scopeIncludesEnvironment,
   signDekWrap,
+  soleDeviceOf,
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
@@ -38,7 +39,12 @@ import type { VerifiedProject } from "./sync.ts";
  * そのまま入る — CRYPTO_SPEC §9)。
  */
 export type WrapRecipient =
-  | { readonly kind: "member"; readonly member: ChainMember }
+  | {
+      readonly kind: "member";
+      readonly member: ChainMember;
+      /** The member's sole device (K2 — 端末は 1 つ。R(E) の端末展開は K4 — device-key.ts)。 */
+      readonly device: ChainDevice;
+    }
   | { readonly kind: "server"; readonly grant: ServerGrant };
 
 function recipientId(recipient: WrapRecipient): string {
@@ -48,7 +54,7 @@ function recipientId(recipient: WrapRecipient): string {
 }
 
 function recipientEncPubHex(recipient: WrapRecipient): string {
-  return recipient.kind === "member" ? recipient.member.encPubHex : recipient.grant.serverEncPubHex;
+  return recipient.kind === "member" ? recipient.device.encPubHex : recipient.grant.serverEncPubHex;
 }
 
 /**
@@ -62,16 +68,31 @@ function recipientEncPubHex(recipient: WrapRecipient): string {
 function wrapRecipientsFor(
   verified: VerifiedProject,
   environmentId: string,
-): readonly WrapRecipient[] {
-  const members = [...verified.state.members.values()]
-    .filter((member) => scopeIncludesEnvironment(member.scope, environmentId))
-    .toSorted((a, b) => (a.userId < b.userId ? -1 : 1))
-    .map((member) => ({ kind: "member", member }) as const);
+): Effect.Effect<readonly WrapRecipient[], CliError> {
+  const members: WrapRecipient[] = [];
+  for (const member of [...verified.state.members.values()].toSorted((a, b) =>
+    a.userId < b.userId ? -1 : 1,
+  )) {
+    if (!scopeIncludesEnvironment(member.scope, environmentId)) {
+      continue;
+    }
+    // 受信者の鍵 = その唯一の端末鍵(K2)。端末が 0 / 2 つ以上のメンバーがいる環境の
+    // ラップ完全集合はこの段では作れない(黙って最初の端末へ倒さない — fail-closed)
+    const device = soleDeviceOf(member);
+    if (device === undefined) {
+      return Effect.fail(
+        cliError(
+          `Member ${displayText(member.userId)} holds ${member.devices.size} device keys on the chain, and this maruhi release wraps for exactly one device per member. Update maruhi to a release with device support`,
+        ),
+      );
+    }
+    members.push({ kind: "member", member, device });
+  }
   const grants = [...verified.state.serverGrants.values()]
     .filter((grant) => grant.scopeEnvironmentIds.includes(environmentId))
     .toSorted((a, b) => (a.serverKeyFingerprintHex < b.serverKeyFingerprintHex ? -1 : 1))
     .map((grant) => ({ kind: "server", grant }) as const);
-  return [...members, ...grants];
+  return Effect.succeed([...members, ...grants]);
 }
 
 /** 1 ラップの生成結果(実理由コード付きのタグ付き Result — 複数原因を 1 汎用文言に潰さない)。 */
@@ -164,7 +185,7 @@ export function buildWrapCompleteSet(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<readonly WrappedDek[], CliError> {
   return Effect.gen(function* () {
-    const recipients = wrapRecipientsFor(input.verified, input.environmentId);
+    const recipients = yield* wrapRecipientsFor(input.verified, input.environmentId);
     const wraps: WrappedDek[] = [];
     for (const recipient of recipients) {
       // 識別子はチェーン由来の自由文字列 — 端末へ出す前に必ず中和する
@@ -204,20 +225,22 @@ export function sameWrapRecipientSet(
   a: VerifiedProject,
   b: VerifiedProject,
   environmentId: string,
-): boolean {
-  const left = wrapRecipientsFor(a, environmentId);
-  const right = wrapRecipientsFor(b, environmentId);
-  if (left.length !== right.length) {
-    return false;
-  }
-  return left.every((recipient, index) => {
-    const other = right[index];
-    return (
-      other !== undefined &&
-      recipient.kind === other.kind &&
-      recipientId(recipient) === recipientId(other) &&
-      recipientEncPubHex(recipient) === recipientEncPubHex(other)
-    );
+): Effect.Effect<boolean, CliError> {
+  return Effect.gen(function* () {
+    const left = yield* wrapRecipientsFor(a, environmentId);
+    const right = yield* wrapRecipientsFor(b, environmentId);
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((recipient, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        recipient.kind === other.kind &&
+        recipientId(recipient) === recipientId(other) &&
+        recipientEncPubHex(recipient) === recipientEncPubHex(other)
+      );
+    });
   });
 }
 

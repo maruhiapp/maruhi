@@ -44,6 +44,10 @@ const CHAIN_INVALID_REASONS = [
   "duplicate-approval",
   "proposal-expired",
   "proposal-void",
+  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)
+  "unknown-device",
+  "last-device-protected",
+  "device-cap-exceeded",
 ] as const satisfies readonly ChainInvalidReason[];
 
 // 逆方向の静的検査: crypto 側に理由コードが追加されたらここがコンパイルエラーになる
@@ -149,6 +153,23 @@ export class CompositeRequiredError extends Schema.TaggedError<CompositeRequired
 export class ApprovalNotAcceptedError extends Schema.TaggedError<ApprovalNotAcceptedError>()(
   "ApprovalNotAccepted",
   { op: Schema.Literals(["set_approval_policy", "propose", "approve", "withdraw"]) },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 422: the device-key operations (`add_device` / `revoke_device` — CRYPTO_SPEC
+ * §6.2, 2026-09-19 DK) are part of the chain format but this server does not
+ * accept them yet. Raised by servers before DK K3 (the acceptance side effects —
+ * mirror rows, rotation detection for revoked devices, attestation-row cleanup,
+ * the per-member device limit — land together with acceptance in K3; 設計録
+ * dk-design.md §3 / §7 K2-6 — ES K2-10 の原則「サーバーが受理する op の集合 =
+ * 受理副作用が実装済みの op の集合」). A K3+ server never raises it; the
+ * declaration stays on the wire so a newer CLI gets a typed message against an
+ * older self-hosted server (ApprovalNotAccepted と同じ扱い).
+ */
+export class DeviceOpsNotAcceptedError extends Schema.TaggedError<DeviceOpsNotAcceptedError>()(
+  "DeviceOpsNotAccepted",
+  { op: Schema.Literals(["add_device", "revoke_device"]) },
   { httpApiStatus: 422 },
 ) {}
 

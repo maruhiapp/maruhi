@@ -21,7 +21,7 @@ import {
   vectorEntries,
   vectorExtendedChains,
   vectorHeadStates,
-  vectorKeys,
+  vectorKeyFor,
   vectorValidAppends,
 } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
@@ -61,11 +61,20 @@ async function canonicalizationChecks(c: Checks): Promise<void> {
 
 async function deterministicSigningChecks(c: Checks): Promise<void> {
   // WebCrypto Ed25519 は RFC 8032 の決定論的署名なので、ベクターの seed で
-  // 署名し直すと signature_hex が完全一致するはず(正規化 + 署名の同時固定)
-  for (const vector of vectorEntries) {
-    const keys = vectorKeys[vector.actor.user_id];
+  // 署名し直すと signature_hex が完全一致するはず(正規化 + 署名の同時固定)。
+  // 派生チェーンの端末鍵エントリ(device-ops — 署名者は (user_id, FP) で選ぶ)も同水準で固定する
+  const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
+    ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
+    ...Object.entries(vectorExtendedChains).flatMap(([name, extended]) =>
+      extended.entries.map(
+        (vector) => [`chain extended ${name} seq ${vector.seq}`, vector] as const,
+      ),
+    ),
+  ];
+  for (const [label, vector] of labeled) {
+    const keys = vectorKeyFor(vector.actor.user_id, vector.actor.key_fingerprint_hex);
     if (keys === undefined) {
-      c.push(`chain seq ${vector.seq}: deterministic re-sign`, false, "actor keys missing");
+      c.push(`${label}: deterministic re-sign`, false, "actor keys missing");
       continue;
     }
     const pair = await importSigningKeyPair({
@@ -73,13 +82,13 @@ async function deterministicSigningChecks(c: Checks): Promise<void> {
       privateSeed: fromHex(keys.sig_sk_seed_hex),
     });
     if (!pair.ok) {
-      c.push(`chain seq ${vector.seq}: deterministic re-sign`, false, "key import failed");
+      c.push(`${label}: deterministic re-sign`, false, "key import failed");
       continue;
     }
     const { signatureHex: _ignored, ...unsigned } = toTypedEntry(vector);
     const signed = await signChainEntry({ entry: unsigned, signingKey: pair.value.privateKey });
     c.push(
-      `chain seq ${vector.seq}: deterministic re-sign matches vector`,
+      `${label}: deterministic re-sign matches vector`,
       signed.ok && signed.value.signatureHex === vector.signature_hex,
     );
   }

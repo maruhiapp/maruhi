@@ -5,17 +5,21 @@ import {
   type ApprovalTargetOp,
   type ApprovalVote,
   canonicalChainPayloadBytes,
+  type ChainDevice,
   type ChainEntry,
   type ChainMember,
   type ChainOperation,
+  type MemberScope,
   type PendingProposal,
   type ProposableOperation,
   type Role,
   type ScopeKind,
   type ServerGrant,
+  soleDeviceOf,
 } from "../../src/index.ts";
+import { importSigningKeyPair, importSigningPublicKey } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
-import { toHex } from "./support.ts";
+import { fromHex, toHex } from "./support.ts";
 
 export interface VectorEntry {
   readonly seq: number;
@@ -77,10 +81,27 @@ export interface VectorCheckpointState {
   readonly values_digest_hex: string;
 }
 
-/** メンバー状態の期待値(role + scope — §6.2 の検証状態。2026-09-14 ES)。 */
+/** scope の期待値(all / listed)。 */
+interface VectorScope {
+  readonly kind: string;
+  readonly environments?: readonly string[];
+}
+
+/** 端末 1 つの期待値(FP → cap + 追加 seq — §6.2 の検証状態。2026-09-19 DK)。 */
+export interface VectorDeviceState {
+  readonly role_cap: string;
+  readonly scope: VectorScope;
+  readonly added_seq: number;
+}
+
+/**
+ * メンバー状態の期待値(role + scope — §6.2 の検証状態。2026-09-14 ES)。`devices` 省略は
+ * 「最初の鍵 1 つ(cap (owner, all))のみ」を意味する(規約 28 — 既存の期待値は不変)
+ */
 export interface VectorMemberState {
   readonly role: string;
-  readonly scope: { readonly kind: string; readonly environments?: readonly string[] };
+  readonly scope: VectorScope;
+  readonly devices?: Readonly<Record<string, VectorDeviceState>>;
 }
 
 /** 四眼の方針の期待値(null = オフ)。 */
@@ -125,6 +146,8 @@ interface VectorExtendedChain {
   readonly base_seq: number;
   readonly entries: readonly VectorEntry[];
   readonly expected_members: Readonly<Record<string, VectorMemberState>>;
+  /** 派生チェーンだけが使う鍵(再追加の新鍵・第 2 端末 — トップレベル keys と同じ形)。 */
+  readonly keys?: Readonly<Record<string, VectorKey>>;
   /** 派生チェーン検証後の環境ごとの最新チェックポイント(checkpoint-baseline)。 */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
@@ -147,7 +170,46 @@ interface VectorHeadState {
   readonly pending_proposals: Readonly<Record<string, VectorPendingProposal>>;
 }
 
-/** 導出状態のメンバー集合がベクター期待(role + scope)と一致するか(集合として比較)。 */
+function scopeMatchesVector(actual: MemberScope, expected: VectorScope): boolean {
+  if (expected.kind === "all") {
+    return actual.kind === "all";
+  }
+  const expectedIds = new Set(expected.environments ?? []);
+  return (
+    actual.kind === "listed" &&
+    actual.environmentIds.length === expectedIds.size &&
+    actual.environmentIds.every((id) => expectedIds.has(id))
+  );
+}
+
+/**
+ * 端末集合の一致(§6.2 — 2026-09-19 DK)。期待に `devices` が無ければ「端末 1 つ・cap
+ * (owner, all)」のみを要求する(追加 seq は検査しない — 既存の期待値は seq を持たない)
+ */
+function devicesMatchVector(
+  actual: ReadonlyMap<string, ChainDevice>,
+  expected: Readonly<Record<string, VectorDeviceState>> | undefined,
+): boolean {
+  if (expected === undefined) {
+    const sole = soleDeviceOf({ devices: actual });
+    return sole !== undefined && sole.roleCap === "owner" && sole.scope.kind === "all";
+  }
+  return (
+    actual.size === Object.keys(expected).length &&
+    Object.entries(expected).every(([fp, device]) => {
+      const found = actual.get(fp);
+      return (
+        found !== undefined &&
+        found.keyFingerprintHex === fp &&
+        found.roleCap === device.role_cap &&
+        found.addedSeq === device.added_seq &&
+        scopeMatchesVector(found.scope, device.scope)
+      );
+    })
+  );
+}
+
+/** 導出状態のメンバー集合がベクター期待(role + scope + 端末集合)と一致するか(集合として比較)。 */
 export function membersMatchVector(
   members: ReadonlyMap<string, ChainMember>,
   expected: Readonly<Record<string, VectorMemberState>>,
@@ -156,17 +218,11 @@ export function membersMatchVector(
     members.size === Object.keys(expected).length &&
     Object.entries(expected).every(([userId, state]) => {
       const actual = members.get(userId);
-      if (actual === undefined || actual.role !== state.role) {
-        return false;
-      }
-      if (state.scope.kind === "all") {
-        return actual.scope.kind === "all";
-      }
-      const expectedIds = new Set(state.scope.environments ?? []);
       return (
-        actual.scope.kind === "listed" &&
-        actual.scope.environmentIds.length === expectedIds.size &&
-        actual.scope.environmentIds.every((id) => expectedIds.has(id))
+        actual !== undefined &&
+        actual.role === state.role &&
+        scopeMatchesVector(actual.scope, state.scope) &&
+        devicesMatchVector(actual.devices, state.devices)
       );
     })
   );
@@ -286,18 +342,43 @@ export const vectorValidAppends =
 export const vectorExtendedChains = chainVectors.extended_chains as unknown as Readonly<
   Record<string, VectorExtendedChain>
 >;
-export const vectorKeys = chainVectors.keys as Readonly<
-  Record<
-    string,
-    {
-      readonly enc_sk_seed_hex: string;
-      readonly sig_sk_seed_hex: string;
-      readonly enc_pub_hex: string;
-      readonly sig_pub_hex: string;
-      readonly key_fingerprint_hex: string;
+/**
+ * 鍵レコード。`keys` のキーはメンバーの user_id、または端末鍵の `"<user_id>@<label>"`
+ * (2026-09-19 DK — 規約 28。端末鍵は `user_id` / `label` を持つ)。署名者は (user_id, FP) で選ぶ
+ */
+export interface VectorKey {
+  readonly user_id?: string;
+  readonly label?: string;
+  readonly enc_sk_seed_hex: string;
+  readonly sig_sk_seed_hex: string;
+  readonly enc_pub_hex: string;
+  readonly sig_pub_hex: string;
+  readonly key_fingerprint_hex: string;
+}
+
+export const vectorKeys = chainVectors.keys as Readonly<Record<string, VectorKey>>;
+
+/**
+ * (user_id, 鍵 FP) で署名鍵を選ぶ(§6.2 — 署名者の同定は端末単位)。トップレベル keys と
+ * 派生チェーンの keys の両方を引く。見つからなければ undefined
+ */
+export function vectorKeyFor(userId: string, keyFingerprintHex: string): VectorKey | undefined {
+  const pools: readonly Readonly<Record<string, VectorKey>>[] = [
+    vectorKeys,
+    ...Object.values(vectorExtendedChains).flatMap((extended) =>
+      extended.keys === undefined ? [] : [extended.keys],
+    ),
+  ];
+  for (const pool of pools) {
+    for (const [name, key] of Object.entries(pool)) {
+      const owner = key.user_id ?? name;
+      if (owner === userId && key.key_fingerprint_hex === keyFingerprintHex) {
+        return key;
+      }
     }
-  >
->;
+  }
+  return undefined;
+}
 /** checkpoint の values_digest 正規形の単体ベクター(§6.2)。 */
 export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly name: string;
@@ -447,6 +528,23 @@ const OPERATION_DECODERS: Readonly<
     op: "withdraw",
     payload: { proposalHashHex: str(payload, "proposal_hash_hex") },
   }),
+  // 端末鍵(§6.2 — 2026-09-19 DK)。revoke_device の FP リストは署名順のまま載せる
+  add_device: (payload) => ({
+    op: "add_device",
+    payload: {
+      encPubHex: str(payload, "enc_pub_hex"),
+      sigPubHex: str(payload, "sig_pub_hex"),
+      roleCap: str(payload, "role_cap") as Role,
+      ...scopeFields(payload),
+    },
+  }),
+  revoke_device: (payload) => ({
+    op: "revoke_device",
+    payload: {
+      targetUserId: str(payload, "target_user_id"),
+      deviceFingerprintsHex: payload["device_fingerprints"] as readonly string[],
+    },
+  }),
 };
 
 /**
@@ -487,3 +585,27 @@ export function toTypedEntry(vector: VectorEntry): ChainEntry {
 }
 
 export const typedEntries: readonly ChainEntry[] = vectorEntries.map(toTypedEntry);
+
+/**
+ * (user_id, 鍵 FP) の署名鍵をベクターの seed から WebCrypto へ import する(決定論的
+ * 再署名と生署名検証の共通前段 — value / meta / manifest / attestation の 4 ハーネス)。
+ * 鍵が無い・import に失敗した場合は null
+ */
+export async function importVectorSigner(
+  userId: string,
+  keyFingerprintHex: string,
+): Promise<{ readonly privateKey: CryptoKey; readonly publicKey: CryptoKey } | null> {
+  const keys = vectorKeyFor(userId, keyFingerprintHex);
+  if (keys === undefined) {
+    return null;
+  }
+  const pair = await importSigningKeyPair({
+    publicKey: fromHex(keys.sig_pub_hex),
+    privateSeed: fromHex(keys.sig_sk_seed_hex),
+  });
+  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
+  if (!pair.ok || !publicKey.ok) {
+    return null;
+  }
+  return { privateKey: pair.value.privateKey, publicKey: publicKey.value };
+}

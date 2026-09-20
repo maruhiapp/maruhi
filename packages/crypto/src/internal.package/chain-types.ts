@@ -3,12 +3,16 @@
 // アイデンティティ規則(絶対): 主体識別は内部 user_id と鍵フィンガープリントのみ。
 // GitHub ID 等のプロバイダ情報・メールアドレスをこの構造に入れてはならない。
 
+import type { ChainDevice } from "./chain-device.ts";
 import type { MemberScope, ScopePayloadFields } from "./member-scope.ts";
 
 /** Project role on the membership chain (CRYPTO_SPEC §6.2). */
 export type Role = "owner" | "admin" | "member" | "reader";
 
-/** Chain operation kind (CRYPTO_SPEC §6.2 — 2026-09-14 PF1 で四眼の 4 op を追加). */
+/**
+ * Chain operation kind (CRYPTO_SPEC §6.2 — 2026-09-14 PF1 で四眼の 4 op、2026-09-19 DK で
+ * 端末鍵の 2 op `add_device` / `revoke_device` を追加).
+ */
 export type ChainOp =
   | "genesis"
   | "add_member"
@@ -22,7 +26,9 @@ export type ChainOp =
   | "set_approval_policy"
   | "propose"
   | "approve"
-  | "withdraw";
+  | "withdraw"
+  | "add_device"
+  | "revoke_device";
 
 /**
  * Operations a four-eyes policy may name in `ops` (CRYPTO_SPEC §6.2). Data /
@@ -245,6 +251,40 @@ export interface WithdrawPayload {
   readonly proposalHashHex: string;
 }
 
+/**
+ * `add_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): a new device key of the
+ * **actor** (there is no target field — only the person can add their own device)
+ * with its cap. Canonical field order `[enc_pub_hex, sig_pub_hex, role_cap,
+ * scope_kind, scope_environments_lp_hex]`; the scope pair uses the same encoding
+ * and structure rules as the member scope. Consensus: the actor's current device
+ * signs (any role — reader も可), the keys must not collide with any current
+ * member's device keys (`duplicate-member-key`), listed environments must exist
+ * (`unknown-environment`), and the cap must not exceed the signing device's own
+ * cap (`device-cap-exceeded` — 原則 D2).
+ */
+export interface AddDevicePayload extends ScopePayloadFields {
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  /** Upper bound on the role the device acts with (`owner` = no bound). */
+  readonly roleCap: Role;
+}
+
+/**
+ * `revoke_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): the target member and
+ * the fingerprints (lowercase hex, 32 chars) of that member's devices to revoke,
+ * canonicalized as a nested length-prefixed list whose lowercase-hex form is the
+ * second field (order is signed; generation SHOULD sort, verification treats it
+ * as a set; 1..256 entries, no duplicates). Revoking one's own devices needs no
+ * role; another member's devices follow the `remove_member` role rule plus
+ * principle 1 on the **person's** scope (`scope-not-contained`). Every listed
+ * fingerprint must be an active device of the target (`unknown-device`) and at
+ * least one device must remain (`last-device-protected`).
+ */
+export interface RevokeDevicePayload {
+  readonly targetUserId: string;
+  readonly deviceFingerprintsHex: readonly string[];
+}
+
 /** Operation + payload, discriminated by `op`. */
 export type ChainOperation =
   | { readonly op: "genesis"; readonly payload: GenesisPayload }
@@ -259,7 +299,9 @@ export type ChainOperation =
   | { readonly op: "set_approval_policy"; readonly payload: SetApprovalPolicyPayload }
   | { readonly op: "propose"; readonly payload: ProposePayload }
   | { readonly op: "approve"; readonly payload: ApprovePayload }
-  | { readonly op: "withdraw"; readonly payload: WithdrawPayload };
+  | { readonly op: "withdraw"; readonly payload: WithdrawPayload }
+  | { readonly op: "add_device"; readonly payload: AddDevicePayload }
+  | { readonly op: "revoke_device"; readonly payload: RevokeDevicePayload };
 
 /** A chain entry before signing (CRYPTO_SPEC §6.1). */
 export type UnsignedChainEntry = ChainOperation & {
@@ -273,15 +315,22 @@ export type UnsignedChainEntry = ChainOperation & {
 /** A complete signed chain entry (CRYPTO_SPEC §6.1). */
 export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
 
-/** A current member derived from a verified chain (role + environment scope — §6.2). */
+/**
+ * A current member derived from a verified chain (§6.2): the **person** — role and
+ * environment scope — and the set of device keys it currently holds (2026-09-19
+ * DK: 鍵は端末に属し、権限は人に属する). There is no "the member's key": every
+ * signature is attributed to one device (`devices` keyed by fingerprint), and the
+ * permission a signature carries is the device's effective permission
+ * (`effectivePermissionOf` — chain-device.ts), never the person's raw (role, scope).
+ * Callers still written for a single device use `soleDeviceOf` (fail-closed).
+ */
 export interface ChainMember {
   readonly userId: string;
   readonly role: Role;
   /** Environment scope (CRYPTO_SPEC §6.2 — R(E) / 環境対象 op / §6.3 の 3′ の入力). */
   readonly scope: MemberScope;
-  readonly encPubHex: string;
-  readonly sigPubHex: string;
-  readonly keyFingerprintHex: string;
+  /** Active device keys, keyed by key fingerprint (§6.2 の検証状態 — 端末集合). */
+  readonly devices: ReadonlyMap<string, ChainDevice>;
 }
 
 /** The active four-eyes policy derived from a verified chain (`null` = off — §6.2). */
