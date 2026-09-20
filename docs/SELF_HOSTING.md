@@ -942,7 +942,12 @@ active device of a member, and a `revoke_device` rotation trigger. Storage
 changes are automatic: the D1 migration rebuilds `guardian_shares` and adds
 the registry tables; each project's Durable Object rebuilds its `dek_wraps` /
 `head_attestations` tables on first access after the deploy (row-proportional,
-inside one transaction). Do the update in this order:
+inside one transaction). **The update is one-way per project**: once a
+project's Durable Object has been opened on the new code, redeploying the
+previous Worker version makes that project unavailable (the older code refuses
+to run on the newer schema and the project cannot be opened at all until you
+deploy forward again — consistency over availability). Recovery is a forward
+deploy, not a rollback. Do the update in this order:
 
 1. **Update the server** (`git pull` + `bun run deploy` as above). A K2-era
    CLI keeps working unchanged against the updated server — it holds one

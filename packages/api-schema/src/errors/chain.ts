@@ -167,6 +167,9 @@ export class ApprovalNotAcceptedError extends Schema.TaggedError<ApprovalNotAcce
  * declaration stays on the wire so a newer CLI gets a typed message against an
  * older self-hosted server (ApprovalNotAccepted と同じ扱い). K3(2026-09-20)で
  * サーバーの発生源は消えた(設計録 dk-design.md §8 — ES K5-A と同じ「ワイヤに残す」)。
+ * 削除の節目: K4(端末鍵 CLI)の配布後、K3 未満のセルフホストサーバーを支える互換窓が
+ * 終わった時点(所有者裁定 — ApprovalNotAccepted と同じ扱い)。それまでは CLI の型付き
+ * エラー表示のためだけに残る。
  */
 export class DeviceOpsNotAcceptedError extends Schema.TaggedError<DeviceOpsNotAcceptedError>()(
   "DeviceOpsNotAccepted",

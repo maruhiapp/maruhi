@@ -328,9 +328,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // 四眼の 4 op(CRYPTO_SPEC §6.2 PF1)は K5 から汎用追記で受理する(AUTH_SPEC
         // §11-1)。端末鍵の 2 op(2026-09-19 DK)は K3 から受理する — 受理副作用
         // (ミラー・失効の要ローテーション検出・申告行の削除)は DO の受理タスク内、
-        // 端末数の受理ポリシー(§12-8)は DO の appendProgram が DeviceLimit で返す。受理ポリシー(pending 上限・expires_at_ms の上界 — §12-8)と成長
-        // ガードの四眼経由は DO(appendProgram)が判定し、ProposalLimit /
-        // DataLimitExceeded として届く
+        // 端末数の受理ポリシー(§12-8)は DO の appendProgram が DeviceLimit で返す。
+        // 四眼の受理ポリシー(pending 上限・expires_at_ms の上界 — §12-8)と成長ガード
+        // も DO(appendProgram)が判定し、ProposalLimit / DataLimitExceeded として届く
         // §11-1: 追記エントリの actor = 認証主体(受理ポリシー)
         yield* ensureActorMatches(principal, payload.entry);
         yield* ensureTokenScopeForProject(
