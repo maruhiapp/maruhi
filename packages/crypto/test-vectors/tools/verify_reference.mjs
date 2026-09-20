@@ -9,6 +9,21 @@ import { readFileSync } from "node:fs";
 import * as HPKE from "hpke";
 
 const read = (name) => JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"));
+// 2026-09-20 DK: チェーン依存ベクターの参照チェーンは `chain`(省略 / "canonical" = 正規チェーン、
+// それ以外 = chain-entries.json の extended_chains の名前 — 正規プレフィックス + 派生エントリ)。
+// 署名鍵は (user_id, FP) で選ぶ(FP が端末を指す — `keys` の端末エントリは user_id 欄を持つ)
+const chainHeadHash = (chain, chainName, seq) => {
+  if (chainName === undefined || chainName === "canonical" || seq <= chain.entries.length) {
+    return chain.entries[seq - 1].entry_hash_hex;
+  }
+  const ext = chain.extended_chains[chainName];
+  return ext.entries[seq - ext.base_seq - 1].entry_hash_hex;
+};
+const chainKeyFor = (chain, userId, fingerprintHex) =>
+  Object.entries(chain.keys)
+    .map(([id, k]) => ({ userId: k.user_id ?? id, ...k }))
+    .find((k) => k.userId === userId && k.key_fingerprint_hex === fingerprintHex) ??
+  chain.keys[userId];
 const fromHex = (h) => Uint8Array.from(h.match(/.{2}/g) ?? [], (b) => Number.parseInt(b, 16));
 const toHex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
 const sha256Bytes = async (u8) => new Uint8Array(await crypto.subtle.digest("SHA-256", u8));
@@ -74,6 +89,10 @@ const PAYLOAD_FIELD_ORDER = {
   propose: ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
   approve: ["proposal_hash_hex"],
   withdraw: ["proposal_hash_hex"],
+  // 2026-09-20(CRYPTO_SPEC 0.12-draft §6.2 — DK 端末鍵): add_device の scope は member_scope と
+  // 同じ入れ子 LP、revoke_device の device_fingerprints_lp_hex は FP リストの入れ子 LP
+  add_device: ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind", "scope_environments_lp_hex"],
+  revoke_device: ["target_user_id", "device_fingerprints_lp_hex"],
 };
 
 // メンバー scope / 方針 ops の入れ子 LP(§6.2 — grant_server の scope_environments と同型):
@@ -236,6 +255,18 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  // 署名鍵は actor の (user_id, FP) で選ぶ(2026-09-20 DK — FP が端末を指す: §1 原則 7)。
+  // `keys` の端末エントリ("<user_id>@<label>" — user_id 欄あり)と派生チェーン固有の
+  // `keys`(別鍵で再追加されたメンバー)を同じ規則で探し、見つからなければ人の最初の鍵
+  const keyRecords = (extKeys) =>
+    [...Object.entries(doc.keys), ...Object.entries(extKeys ?? {})].map(([id, k]) => ({
+      userId: k.user_id ?? id,
+      ...k,
+    }));
+  const signerKeyFor = (e, extKeys) =>
+    keyRecords(extKeys).find(
+      (k) => k.userId === e.actor.user_id && k.key_fingerprint_hex === e.actor.key_fingerprint_hex,
+    ) ?? doc.keys[e.actor.user_id];
   for (const e of doc.entries) {
     const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
     check(`chain seq ${e.seq}: payload bytes`, toHex(payloadBytes) === e.payload_bytes_hex);
@@ -251,7 +282,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     ]);
     check(`chain seq ${e.seq}: signed bytes`, toHex(signed) === e.signed_bytes_hex);
     check(`chain seq ${e.seq}: prev_hash linkage`, e.prev_hash_hex === prevHash);
-    const sigPubHex = doc.keys[e.actor.user_id].sig_pub_hex;
+    const sigPubHex = signerKeyFor(e, undefined).sig_pub_hex;
     const ok = await crypto.subtle.verify(
       "Ed25519",
       await importSigPub(sigPubHex),
@@ -337,6 +368,29 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
           toHex(stringListLp(p.scope_environments)) === p.scope_environments_lp_hex &&
             (negativeEntries.has(e) || p.scope_kind === "all" || p.scope_kind === "listed"),
         );
+      } else if (e.op === "add_device") {
+        // 2026-09-20 DK: 端末 scope は member_scope と同じ入れ子 LP。role_cap は閉集合
+        // (負例 add-device-role-cap-unknown は対象外)
+        scoped += 1;
+        const p = e.payload;
+        check(
+          `${label}: device scope nested LP`,
+          toHex(stringListLp(p.scope_environments)) === p.scope_environments_lp_hex &&
+            (negativeEntries.has(e) ||
+              (["reader", "member", "admin", "owner"].includes(p.role_cap) &&
+                (p.scope_kind === "all" || p.scope_kind === "listed"))),
+        );
+      } else if (e.op === "revoke_device") {
+        // 2026-09-20 DK: 失効 FP リストの入れ子 LP。正例は 1 要素以上・重複なし・hex 小文字 32
+        const p = e.payload;
+        check(
+          `${label}: device fingerprints nested LP`,
+          toHex(stringListLp(p.device_fingerprints)) === p.device_fingerprints_lp_hex &&
+            (negativeEntries.has(e) ||
+              (p.device_fingerprints.length >= 1 &&
+                new Set(p.device_fingerprints).size === p.device_fingerprints.length &&
+                p.device_fingerprints.every((fp) => /^[0-9a-f]{32}$/.test(fp)))),
+        );
       } else if (e.op === "set_approval_policy") {
         policies += 1;
         check(
@@ -376,6 +430,44 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         doc.entries[23].op === "withdraw" &&
         doc.entries[23].payload.proposal_hash_hex === doc.entries[22].entry_hash_hex,
     );
+  }
+  // DK(2026-09-20): 派生チェーン device-ops のプレフィックス(device-added / device-dead-vote /
+  // device-revote-applied / device-recovered)はエントリのバイト列が device-ops と同一であり、
+  // add_device が載せる公開鍵は `keys` の端末エントリ(actor の user_id と一致)と対応する
+  {
+    const full = doc.extended_chains["device-ops"];
+    check("chain: device-ops derived chain exists", full !== undefined && full.base_seq === 24);
+    for (const name of [
+      "device-added",
+      "device-dead-vote",
+      "device-revote-applied",
+      "device-recovered",
+    ]) {
+      const prefix = doc.extended_chains[name];
+      check(
+        `chain: ${name} is a byte-identical prefix of device-ops`,
+        prefix !== undefined &&
+          prefix.entries.every((e, i) => JSON.stringify(e) === JSON.stringify(full.entries[i])),
+      );
+    }
+    const deviceKeys = keyRecords(undefined).filter((k) => k.label !== undefined);
+    for (const e of full.entries.filter((x) => x.op === "add_device")) {
+      const registered = deviceKeys.find(
+        (k) => k.enc_pub_hex === e.payload.enc_pub_hex && k.sig_pub_hex === e.payload.sig_pub_hex,
+      );
+      check(
+        `chain device-ops seq ${e.seq}: add_device key is a registered device key of the actor`,
+        registered !== undefined && registered.userId === e.actor.user_id,
+      );
+    }
+    // revoke_device の FP は同一チェーン上で先に載った端末(または人の最初の鍵)を指す
+    const canonicalFps = new Set(Object.values(doc.keys).map((k) => k.key_fingerprint_hex));
+    for (const e of full.entries.filter((x) => x.op === "revoke_device")) {
+      check(
+        `chain device-ops seq ${e.seq}: revoked fingerprints are known device keys`,
+        e.payload.device_fingerprints.every((fp) => canonicalFps.has(fp)),
+      );
+    }
   }
   // checkpoint(§6.2 — PR-F3a): 構造化表現(environments)からの入れ子 LP 再構築が
   // environments_lp_hex と一致する。対象は checkpoint op を含む全エントリ
@@ -456,7 +548,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     ]);
     const sigOk = await crypto.subtle.verify(
       "Ed25519",
-      await importSigPub(doc.keys[e.actor.user_id].sig_pub_hex),
+      await importSigPub(signerKeyFor(e, undefined).sig_pub_hex),
       fromHex(e.signature_hex),
       signed,
     );
@@ -509,13 +601,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         payloadBytes,
         e.timestamp_ms,
       ]);
-      // 署名鍵は actor の申告 FP で選ぶ: 派生チェーン固有の鍵(`keys` — 別鍵で再追加された
-      // メンバーが署名する readded-approver-revote)が FP 一致なら優先し、それ以外は正規鍵
-      const overrideKey = ext.keys?.[e.actor.user_id];
-      const signerKey =
-        overrideKey !== undefined && overrideKey.key_fingerprint_hex === e.actor.key_fingerprint_hex
-          ? overrideKey
-          : doc.keys[e.actor.user_id];
+      // 署名鍵は actor の (user_id, 申告 FP) で選ぶ: 派生チェーン固有の鍵(`keys` — 別鍵で
+      // 再追加されたメンバーが署名する readded-approver-revote / reader-second-device の端末鍵)
+      // と正規の `keys`(人の最初の鍵・端末鍵)を同じ規則で探す
+      const signerKey = signerKeyFor(e, ext.keys);
       const sigOk = await crypto.subtle.verify(
         "Ed25519",
         await importSigPub(signerKey.sig_pub_hex),
@@ -976,10 +1065,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     check(`value-sig ${v.name}: project id is genesis hash`, ctx.project_id === projectId);
     check(
       `value-sig ${v.name}: head hash matches chain`,
-      ctx.chain_head_hash_hex === chain.entries[ctx.chain_head_seq - 1].entry_hash_hex,
+      ctx.chain_head_hash_hex === chainHeadHash(chain, v.chain, ctx.chain_head_seq),
     );
-    // writer 鍵(chain-entries の keys)で Ed25519 検証
-    const writerKeys = chain.keys[ctx.writer_user_id];
+    // writer 鍵(chain-entries の keys — 端末鍵は (user_id, FP) で選ぶ)で Ed25519 検証
+    const writerKeys = chainKeyFor(chain, ctx.writer_user_id, v.writer_key_fingerprint_hex);
     check(
       `value-sig ${v.name}: writer fingerprint matches chain keys`,
       writerKeys.key_fingerprint_hex === v.writer_key_fingerprint_hex,
@@ -1170,7 +1259,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`meta-sig ${label}: project id is genesis hash`, ctx.project_id === projectId);
     check(`meta-sig ${label}: name is NFC-normal`, ctx.name.normalize("NFC") === ctx.name);
-    const authorKeys = chain.keys[ctx.author_user_id];
+    const authorKeys = chainKeyFor(chain, ctx.author_user_id, v.author_key_fingerprint_hex);
     check(
       `meta-sig ${label}: author fingerprint matches chain keys`,
       authorKeys.key_fingerprint_hex === v.author_key_fingerprint_hex,
@@ -1189,7 +1278,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     // チェーン参照の整合(rule negative は bogus ヘッドを持つため positive のみ)
     check(
       `meta-sig ${v.name}: head hash matches chain`,
-      v.context.chain_head_hash_hex === chain.entries[v.context.chain_head_seq - 1].entry_hash_hex,
+      v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
     // prev 連鎖: prev_base を持つベクターは直前 metaVersion の signed_bytes ハッシュへ連鎖
     if (v.prev_base !== undefined) {
@@ -1444,7 +1533,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       `env-manifest ${label}: variables digest recomputation`,
       (await digestHex(v.entries)) === ctx.variables_digest_hex,
     );
-    const issuerKeys = chain.keys[ctx.issuer_user_id];
+    const issuerKeys = chainKeyFor(chain, ctx.issuer_user_id, v.issuer_key_fingerprint_hex);
     check(
       `env-manifest ${label}: issuer fingerprint matches chain keys`,
       issuerKeys.key_fingerprint_hex === v.issuer_key_fingerprint_hex,
@@ -1462,7 +1551,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     await verifyManifest(v, v.name);
     check(
       `env-manifest ${v.name}: head hash matches chain`,
-      v.context.chain_head_hash_hex === chain.entries[v.context.chain_head_seq - 1].entry_hash_hex,
+      v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
     // prev 連鎖: prev_base を持つベクターは直前 manifestVersion の signed_bytes ハッシュへ連鎖
     if (v.prev_base !== undefined) {
@@ -2032,7 +2121,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       doc.handoff.other_ephemeral.request_id_hex !== doc.handoff.request_id_hex,
     );
   }
-  for (const h of [vectorByName("handoff-guardian-share"), vectorByName("handoff-device")]) {
+  // 2026-09-20 DK: ハンドオフの承認者は保護者のみ(handoff-device は削除)
+  for (const h of [vectorByName("handoff-guardian-share")]) {
     check(
       `master-wrap: ${h.name} info reconstruction`,
       toHex(handoffInfo(h.request_id_hex, h.source, h.share_index, h.approver_user_id)) ===
@@ -2048,20 +2138,13 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
       h.source === all3.group_id && h.value_hex === all3.shares[0].share_hex,
     );
-    const d = vectorByName("handoff-device");
+    // 2026-09-20 DK: 旧端末の承認(handoff-device — kind = "device" の B ラップの同送)は削除。
+    // kind の集合は {passkey-prf, guardian} に閉じる
     check(
-      "master-wrap: handoff-device blob aad reconstruction",
-      toHex(masterAad("device", d.request_id_hex, "")) === d.blob_wrap.aad_hex,
-    );
-    const pt = await aesGcmDecrypt(
-      d.value_hex,
-      d.blob_wrap.nonce_hex,
-      d.blob_wrap.aad_hex,
-      d.blob_wrap.ciphertext_hex,
-    );
-    check(
-      "master-wrap: handoff-device blob decrypt == B",
-      toHex(pt) === doc.master_secret_blob_hex,
+      "master-wrap: no device kind remains (DK)",
+      doc.vectors.every(
+        (v) => v.kind === undefined || v.kind === "passkey-prf" || v.kind === "guardian",
+      ) && doc.vectors.every((v) => v.source !== "device"),
     );
   }
   for (const n of doc.negative) {

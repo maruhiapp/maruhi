@@ -267,6 +267,36 @@
       "signed_bytes_sha256_hex": "928067d59c88da24fab5d283547baf9990677c12cff5bf6c7bedf582186558ff",
       "signature_hex": "758ac167f7dbcbdeb589551453d1195fedaa2eb1f79a0ba12e58a4453d1a3d5f95bdcc5e0afac7c84fc987fba490b56fc3c05e2f8718455a187b3229f7a5c702",
       "note": "listed の writer(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002)への push は通る(3′ の許容側)"
+    },
+    {
+      "name": "second-device-writer-in-scope",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/value-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-dev-0002",
+        "epoch": 2,
+        "variable_id": "var-ci-scoped-0007",
+        "version": 1,
+        "nonce_hex": "adaeafb0b1b2b3b4b5b6b7b8",
+        "ciphertext_hex": "54daa603a1e5d346fa8f10e66db106abe166c63d942b4a932d25c3dbd295f90d4249",
+        "prev_value_sig_hash_hex": "",
+        "writer_user_id": "user-allmember-0013",
+        "chain_head_hash_hex": "549182bef35aeb5379cabe8ba5057305a6b2173e3d275295fa944949803d7087",
+        "chain_head_seq": 28
+      },
+      "writer_key_fingerprint_hex": "f920b0f2e8dc88b9bbc6a34d92224368",
+      "plaintext_utf8": "ci-scoped-dummy-v1",
+      "aad_hex": "000000096d61727568692f763100000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000127661722d63692d73636f7065642d303030370000000131",
+      "dek_ref": {
+        "environment_id": "env-dev-0002",
+        "epoch": 2
+      },
+      "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000127661722d63692d73636f7065642d303030370000000131000000186164616561666230623162326233623462356236623762380000004435346461613630336131653564333436666138663130653636646231303661626531363663363364393432623461393332643235633364626432393566393064343234390000000000000013757365722d616c6c6d656d6265722d303031330000004035343931383262656633356165623533373963616265386261353035373330356136623231373365336432373532393566613934343934393830336437303837000000023238",
+      "signed_bytes_sha256_hex": "225756014d766b5b7fae528fb6b712717a147bda797b8d686ff76431455197ab",
+      "signature_hex": "a9aaacc4d2b1a81ba581f304c44dcce7edc608e7c59fa4f97d3ea250ed9b6a44a3a89b28bc61bfda25b36520773712003e53d2a652628a31278369b4f600070a",
+      "note": "第 2 端末の正例: allmember-0013(member, all)の CI 箱 C(cap (member, listed{dev, stage}) — seq 27)による実効 scope 内の環境(env-dev-0002)への push は通る(宣言ヘッド 28 は C の有効区間内)",
+      "chain": "device-ops"
     }
   ],
   "fork_same_version": {
@@ -1100,6 +1130,118 @@
       "expected_reason": "writer-environment-out-of-scope-at-head",
       "must_fail": true,
       "note": "scope 外 × 旧エポック(1 — head 19 の現エポックは 2)の複合違反は scope 検査(3′)がエポック整合(4)に先行する"
+    },
+    {
+      "name": "writer-device-revoked-at-head",
+      "kind": "authorization",
+      "chain": "device-ops",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/value-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-dev-0002",
+        "epoch": 2,
+        "variable_id": "var-ci-scoped-0007",
+        "version": 1,
+        "nonce_hex": "bfc0c1c2c3c4c5c6c7c8c9ca",
+        "ciphertext_hex": "962f3d7714ba5e40aecffea50d1cde77fbafc54700e325c5e795",
+        "prev_value_sig_hash_hex": "",
+        "writer_user_id": "user-allmember-0013",
+        "chain_head_hash_hex": "b2f7540759c7d043477ab67fd3844cca3789c0fc72dadcba6d58030b659bdd8a",
+        "chain_head_seq": 37
+      },
+      "writer_key_fingerprint_hex": "f920b0f2e8dc88b9bbc6a34d92224368",
+      "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000127661722d63692d73636f7065642d3030303700000001310000001862666330633163326333633463356336633763386339636100000034393632663364373731346261356534306165636666656135306431636465373766626166633534373030653332356335653739350000000000000013757365722d616c6c6d656d6265722d303031330000004062326637353430373539633764303433343737616236376664333834346363613337383963306663373264616463626136643538303330623635396264643861000000023337",
+      "signed_bytes_sha256_hex": "3f35160c812a6a767aa50786c0aa7a785e71dc424ea975991aee025f3c79cbd2",
+      "signature_hex": "85dc38eeea26287a6e7c8b0bd0f3a9abb86726e3af996f3195808acf0bda43d1774adaec5467d89c36337e6aee41c3ea292b94bb1896c2c0ee563a9e9c8e480f",
+      "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
+      "expected_reason": "writer-key-mismatch-at-head",
+      "must_fail": true,
+      "note": "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言した署名は writer-key-mismatch-at-head(端末の有効区間 = add_device 以後・revoke_device の直前まで。人〔allmember〕は在籍のまま — 在籍区間跨ぎと同じ既存の理由コード)"
+    },
+    {
+      "name": "writer-device-role-insufficient",
+      "kind": "authorization",
+      "chain": "device-ops",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/value-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "variable_id": "var-rule-0004",
+        "version": 1,
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacb",
+        "ciphertext_hex": "5ff3da166dc327fc05cdce60b27360345a8624d6bdc2de15fbfa",
+        "prev_value_sig_hash_hex": "",
+        "writer_user_id": "user-owner-0015",
+        "chain_head_hash_hex": "8888777dec00ed924acbe2b0ada1375309e6dd4e1b4d9c278d58f404e5441f77",
+        "chain_head_seq": 29
+      },
+      "writer_key_fingerprint_hex": "ba49455118006f34f0427f01f130a9c9",
+      "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000d7661722d72756c652d303030340000000131000000186330633163326333633463356336633763386339636163620000003435666633646131363664633332376663303563646365363062323733363033343561383632346436626463326465313566626661000000000000000f757365722d6f776e65722d303031350000004038383838373737646563303065643932346163626532623061646131333735333039653664643465316234643963323738643538663430346535343431663737000000023239",
+      "signed_bytes_sha256_hex": "63c191766ad19944073082a36c90dd6890582766386b0b9c016732996154b6a4",
+      "signature_hex": "891c21ab11d0f9348fc510e6e16cb2f24b308ded757903e3a1f9ac09d815ff0fb76f96207feb8d404f9c8ee51fb73b66473e5496fe61a9327fe61aae03e4d405",
+      "verify_key_hex": "7f06222150f8782176dcf9d51b37751051b95f6421836e657a76379d2e616a1b",
+      "expected_reason": "writer-role-insufficient-at-head",
+      "must_fail": true,
+      "note": "owner-0015 の cap (reader, all) の端末 L(seq 29)の実効 role は min(owner, reader) = reader。人が owner でも、この端末による値の push は writer-role-insufficient-at-head"
+    },
+    {
+      "name": "writer-device-environment-out-of-scope",
+      "kind": "authorization",
+      "chain": "device-ops",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/value-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "variable_id": "var-rule-0004",
+        "version": 1,
+        "nonce_hex": "c1c2c3c4c5c6c7c8c9cacbcc",
+        "ciphertext_hex": "2eedcacba33b7097338eaaa430efa0c12d6e6b621af195d24e11",
+        "prev_value_sig_hash_hex": "",
+        "writer_user_id": "user-allmember-0013",
+        "chain_head_hash_hex": "549182bef35aeb5379cabe8ba5057305a6b2173e3d275295fa944949803d7087",
+        "chain_head_seq": 28
+      },
+      "writer_key_fingerprint_hex": "f920b0f2e8dc88b9bbc6a34d92224368",
+      "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000d7661722d72756c652d3030303400000001310000001863316332633363346335633663376338633963616362636300000034326565646361636261333362373039373333386561616134333065666130633132643665366236323161663139356432346531310000000000000013757365722d616c6c6d656d6265722d303031330000004035343931383262656633356165623533373963616265386261353035373330356136623231373365336432373532393566613934343934393830336437303837000000023238",
+      "signed_bytes_sha256_hex": "de46903f318d7be8ea96da578ec7abe87fb0cb28204543a72b293787e89b9c5c",
+      "signature_hex": "bb2d152471e521e4cec77dff0adcbed8927636b2f12ad4f9bd8b2638db914a4bce3507a418264ead323eb1a60338d19dd3d644fc601a5c9105f8fe3f23f79a04",
+      "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
+      "expected_reason": "writer-environment-out-of-scope-at-head",
+      "must_fail": true,
+      "note": "CI 箱 C の実効 scope は all ∩ {dev, stage} = {dev, stage}。人(allmember)の scope が all でも、端末 scope 外の env-prod-0001 への署名は writer-environment-out-of-scope-at-head"
+    },
+    {
+      "name": "writer-device-unknown-before-add",
+      "kind": "authorization",
+      "chain": "device-ops",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/value-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-dev-0002",
+        "epoch": 2,
+        "variable_id": "var-rule-0004",
+        "version": 1,
+        "nonce_hex": "c2c3c4c5c6c7c8c9cacbcccd",
+        "ciphertext_hex": "19106e21d9d03cc7a17dd51807e717f9cd1ded1de5590a6e50ca",
+        "prev_value_sig_hash_hex": "",
+        "writer_user_id": "user-allmember-0013",
+        "chain_head_hash_hex": "7f77d9535c2323eef7648f29f62b97ddc75b35eadb27bc94a580129f165cd54a",
+        "chain_head_seq": 26
+      },
+      "writer_key_fingerprint_hex": "f920b0f2e8dc88b9bbc6a34d92224368",
+      "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d3030303200000001320000000d7661722d72756c652d3030303400000001310000001863326333633463356336633763386339636163626363636400000034313931303665323164396430336363376131376464353138303765373137663963643164656431646535353930613665353063610000000000000013757365722d616c6c6d656d6265722d303031330000004037663737643935333563323332336565663736343866323966363262393764646337356233356561646232376263393461353830313239663136356364353461000000023236",
+      "signed_bytes_sha256_hex": "0fc0137ca6f8e8e6c6ffc0c53b645f9649dea9fb1f735aa05018fd4fe17ac763",
+      "signature_hex": "52064649bf76073b1766001fcb600441bca754fe281837d3cc2950de04734ef201bfbd44a587936e2920338c88567bc3ace2dc01101db63b565522fb3ddb060e",
+      "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
+      "expected_reason": "writer-key-mismatch-at-head",
+      "must_fail": true,
+      "note": "端末 C の add_device(seq 27)より前のヘッド(26)を宣言した C の署名は writer-key-mismatch-at-head(有効区間の開始境界 — 追加前の端末は人に束縛されていない)"
     }
   ]
 }
