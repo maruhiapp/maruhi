@@ -758,14 +758,16 @@ export function withSigningDevice<A, R>(
  * Reachability (設計録 §8 K3 実装録): on the composite, checkpoint and DEK-register
  * paths this is the check that produces the 403 (pinned by
  * membership-negatives-composite / device-ops tests). On the value push, metadata
- * statement, manifest and attestation paths the crypto layer's declared-head
- * authorization (CRYPTO_SPEC §6.3 — `deviceStateAt`, effective permission since
- * DK K2) runs first inside signature verification and rejects a capped device
- * with 422 `chain-head-state-mismatch`; a device cap is immutable and the
- * person's role is bounded by the first stage, so no request passes the
- * declared-head check and fails here. Those call sites are defense in depth by
- * construction, not a coverage gap — do not delete them, and do not expect a
- * test to reach them.
+ * statement and manifest paths the crypto layer's declared-head authorization
+ * (CRYPTO_SPEC §6.3 — `deviceStateAt`, effective permission since DK K2) runs
+ * first inside signature verification and rejects a capped device with 422
+ * `chain-head-state-mismatch`; a device cap is immutable and the person's role
+ * is bounded by the first stage, so no request passes the declared-head check
+ * and fails here. Those call sites are defense in depth by construction, not a
+ * coverage gap — do not delete them, and do not expect a test to reach them.
+ * The head-attestation path has no second-stage call at all: `reader` is the
+ * floor of the role enum, so no device's effective role can fall below the
+ * op's requirement, and the op is chain-wide (no environment to scope).
  */
 export function ensureDevicePermission(
   device: MemberWithDevice,
