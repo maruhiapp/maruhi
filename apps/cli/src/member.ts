@@ -2059,8 +2059,10 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
             ? { kind: "all" }
             : { kind: "listed", environmentIds: [...row.scope.environmentIds] },
         // 端末が 1 つのメンバーは従来の `keyFingerprintHex`(K4 で端末一覧へ置き換える —
-        // それまでは複数端末の FP を昇順に連ねる)
+        // それまでは複数端末の FP を昇順に連ねる)。構造化した列は `deviceKeyFingerprintsHex`
+        // (設計録 §7 K2-10 追加巡 j-4 — 連結文字列を消費側に分解させない)
         keyFingerprintHex: row.keyFingerprintsHex.join(","),
+        deviceKeyFingerprintsHex: [...row.keyFingerprintsHex],
       })),
     },
     null,

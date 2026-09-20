@@ -642,6 +642,39 @@ K2 の実装 PR での裁定。K1 と同じく候補表 → 巡(上位互換・�
 
 依頼の ② crypto → ③ ワイヤ + ガード → ④ 追随 の順では、② 単独で `tsc` が通らない(`ChainMember` の型変更の消費者 26 ファイル + `ChainEntrySchema` の網羅検査)。各コミットで fmt / lint / typecheck / importlint を通す要件を優先し、**② = crypto + api-schema のワイヤ型(entry schema・理由コード・`DeviceOpsNotAccepted` の宣言)+ server / CLI の機械的追随**、**③ = 受理ガード(worker + DO)+ サーバーテスト**の 2 コミットにした。
 
+### K2 追加巡(訂正 — 2026-09-20、所有者の指摘)
+
+**訂正**: §7 の初版は、ES §8-bis で自ら定めた打ち止め条件(上位互換も銀の弾丸も出ない巡が連続 2)を K2-2 / K2-5〜K2-9 / K2-12 / K2-13 で満たしていなかった(単巡、または探索せずに「空巡 ×2」と書いた)。K2-1 / K2-3 / K2-4 / K2-10 / K2-11 も追加の巡を足した。以下、各裁定について実際に回した巡と出た案を記す。**結論: 裁定を変える案は出なかった。上位互換が 1 件(K2-10 j-4 — JSON の構造化列の追加)、記録すべき事実が 2 件(K2-5 e-4、K2-9 の概算)、所有者に諮る点の補強が 1 件(申し送り 4 — 欠けているベクター)**。
+
+| 裁定 | 追加巡で出た案 | 評価 | 巡 |
+|---|---|---|---|
+| K2-1 | a-4 正例を `valid_appends` だけで表す(派生チェーンを持たない) | 多段の筋(死んだ票 → 別端末の再投票 → 完成、失効 → 再登録)は 1 追記では表せない。a-2 の部分集合 | 第 3 巡 |
+| | a-5 端末鍵専用の第 2 正規チェーンファイル(`chain-entries-dk.json`) | README 規約に「ファイル」の次元が増え、4 ファイルの `chain` 参照が「ファイル + チェーン名」になる。上位互換でない | 第 3 巡 → 第 4・5 巡 空 |
+| K2-2 | b-3 端末鍵を派生チェーンの `keys`(`proposer-rekeyed` の先例)に統一して置く | 4 ファイルが参照する鍵はトップレベル `keys`、チェーン局所の鍵(`reader-second-device`)は派生側 — 既存の先例どおりの使い分けで、統一は好みの差(機械照合は (user_id, FP) で同じ) | 第 2 巡 |
+| | b-4 FP だけで引く | `reuse-removed-member-key-new-user`(同じ鍵を別 user_id が持つ)で曖昧 | 第 2 巡 → 第 3・4 巡 空 |
+| K2-3 | c-4 `ChainMember` は不変のまま `ChainState.devices` を別マップに持つ | 「2 型に分ける」の変形で、整合の責務が増える(第 2 巡と同じ) | 第 3 巡 空 → 第 4 巡 空 |
+| K2-4 | d-4 `headAuthorizationReason` が `EffectivePermission` を引数に取り、呼び出し側(4 検証器)が計算する | 置換点が 1 → 4 に増える。逆行 | 第 3 巡 → 第 4 巡 空 |
+| K2-5 | e-2 端末区間を tenure と独立の列に持つ | 「再追加は最初の端末 1 つから」(§6.2)を別途強制する必要。初版の「代替」と同じ | 第 2 巡 |
+| | e-3 `deviceStateAt` が人の状態も返す(`headAuthorizationReason` の 2 照会を 1 に) | 「在籍でない」と「端末が無効」の区別(`notMemberAtHead` → `keyMismatchAtHead` の既存順)を返り値の形で表すことになり、2 照会の方が検査順が字面に出る。等価・非採用 | 第 2 巡 |
+| | e-4 `sigKeyByFingerprint` を宣言ヘッド時点の有効端末に限る | 失効端末の署名が `*-key-mismatch-at-head` でなく `*-unknown` になり、ベクター `writer-device-revoked-at-head` 等(既存の理由コードを再利用 — §6.3)に反する。**記録**: 鍵選択は全区間・有効性は後段、が正本の形 | 第 2 巡 → 第 3・4 巡 空 |
+| K2-6 | f-2 DO 側だけの単層ガード | ES K2-10 の多層(worker の型付き 422 + DO の権威)より弱い | 第 2 巡 |
+| | f-3 api-schema の `ChainEntrySchema` から 2 op を K3 まで外す(400) | 型付きの 422 でなく 400 になり、新 CLI × 旧サーバーの文言が出せない(ES K5-A の「ワイヤに残す」の逆) | 第 2 巡 |
+| | f-4 署名検証の後にガードを置く(有効な署名だけ拒否) | 副作用の無い op を状態へ入れない、という原則に「検証だけはする」例外を作る。拒否理由も曖昧になる | 第 2 巡 → 第 3・4 巡 空 |
+| K2-7 | g-2 `aad-kind-mismatch` を passkey-prf 基底 → guardian の付け替えにする | guardian は mode を要する(実装は mode 無しを InvalidInput)ので「kind だけの差し替え」は §8.1 のもとでどちら向きにも作れない。採用形(guardian-any-2 → passkey-prf、mode 欄は空)が最小差 | 第 2 巡 |
+| | g-3 旧 JSON を fixture に置いてバイト同一をテストで固定する | 旧ファイルを恒久的に持つことになりリポジトリが肥大。名前の集合は `vector-inventory.ts` が固定し、同一性は PR 本文の記録で足りる(規約 28) | 第 2 巡 → 第 3・4 巡 空 |
+| K2-8 | h-2 旧版 crypto を取り込んで拒否を機械検査する | 旧パッケージ版を test 依存に持ち込む。`isKnownOp` の own-property 判定は既存テスト(未知 op → invalid-payload)で固定済み | 第 2 巡 → 第 3・4 巡 空 |
+| K2-9 | i-2 実測の代わりに概算を置く | **記録**: 1 ラップ ≈ enc 32 B + 暗号文 ≈ 48 B + 署名 64 B + 列 ≈ 250 B。端末 16 × メンバー 10 × 環境 5 × 保持エポック 10 = 8,000 行 ≈ 2 MB(§12-8 の DO ガードの内側)。上限側の見積もりなので K3 の実測を置き換えない | 第 2 巡 → 第 3・4 巡 空 |
+| K2-10 | **j-4 `member list --json` に構造化した `deviceKeyFingerprintsHex: string[]` を足す(`keyFingerprintHex` は互換のため据え置き)** | **上位互換(採用)**: 消費側に連結文字列を分解させない。既存フィールドは不変で、K4 の端末一覧への置き換えを妨げない | 第 3 巡 |
+| | j-5 人が読む行に端末数を出す | 端末が 1 つの K2 では常に 1 で情報がない。K4 | 第 4 巡 → 第 5・6 巡 空 |
+| K2-11 | k-4 crypto の `test-support` 経由で旧 kind を輸出する | 製品コードがテスト支援面を import する形。禁止線 | 第 3 巡 |
+| | k-5 `MasterWrapKind` を brand 化し CLI 局所モジュールだけが旧 kind を作れるようにする | (iii) と同じ形をより重い型で書くだけ | 第 3 巡 → 第 4・5 巡 空 |
+| K2-12 | l-2 `mirrorTails` / `chainMirrorEvents` を非同期にして FP を内部で計算する | 純写像(CLI の `audit verify` も同じ関数を同期で回す)の署名が変わり、ES K5 の全単射規則のテストまで波及。呼び出し側が FP を渡す方が小さい | 第 2 巡 |
+| | l-3 payload に enc / sig 公開鍵を写し FP を写さない | AUDIT §3.4 の形(`deviceKeyFingerprint`)に反する | 第 2 巡 → 第 3・4 巡 空 |
+| K2-13 | m-2 ② を crypto のみにして typecheck の赤を 1 コミット許す | 依頼の要件(各コミットで通す)に反する | 第 2 巡 |
+| | m-3 `ChainMember` に非推奨の互換 getter を一時的に残して消費側を後で直す | c-1(fail-open の「最初の端末」)を一時的に作る。棄却 | 第 2 巡 → 第 3・4 巡 空 |
+
+**申し送り 4 の補強(所有者に諮る点)**: `revoke_device` の他人向け role 規則は「actor の実効 role が admin 以上、かつ対象が admin / owner なら owner」(`remove_member` の 2 段 — 厳しい側の読み)で実装した。緩い読み(対象依存の段だけ = member が member の端末を失効できる)との差が現れる negative(member の actor × member の対象 × 端末 2 つ)はベクターに無い(端末が 2 つの member は `device-ops` 内で allmember-0013 自身しかおらず、member の actor は devmember-0010 のみ — `device-dead-vote` ヘッドで devmember が allmember の C を失効させる形なら、厳しい読みは `insufficient-role`、緩い読みは `scope-not-contained`)。所有者の読みが確定したら、その negative を追記して固定する(生成器の追記のみ — 正規チェーン不変)。
+
 ### 正本への申し送り(K2 — 規範文は変えていない)
 
 1. CRYPTO §11 の 0.12-draft 項: `aad-kind-mismatch` の作り直しは「kind の付け替え(mode 欄は passkey-prf では空)」と書く(K2-7)。
