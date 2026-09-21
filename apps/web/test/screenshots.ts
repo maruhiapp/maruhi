@@ -1,4 +1,4 @@
-// 認証済み画面(S3〜S9)のスクリーンショット取得(DP3 裁定 F — docs/notes/web-design-pass.md §5)。
+// 認証済み画面(S3〜S9・S11)のスクリーンショット取得(DP3 裁定 F — docs/notes/web-design-pass.md §5)。
 //
 // 配信物にプレビュー用ルートやモックデータを混ぜず、e2e と同じ page.route で API だけを
 // 差し替えて実配信(wrangler dev)を Chromium で描く。light / dark / mobile(390px)の
@@ -18,6 +18,7 @@ import { chromium, type Page, type Route } from "playwright";
 
 import {
   chainFixture,
+  devicesFixture,
   environmentsFixture,
   invitationsFixture,
   meFixture,
@@ -119,6 +120,10 @@ async function mockApi(
     (r) => json(r, 200, opts.empty ? { tokens: [] } : tokensFixture),
   );
   await page.route(
+    (u) => u.pathname === "/auth/devices",
+    (r) => json(r, 200, opts.empty ? { devices: [] } : devicesFixture),
+  );
+  await page.route(
     (u) => u.pathname === "/auth/audit/events",
     (r) => json(r, 200, opts.empty || before(r) !== null ? { events: [] } : selfAuditEvents),
   );
@@ -215,6 +220,7 @@ const SHOTS: ReadonlyArray<Shot> = [
     },
   },
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
+  { name: "s11-devices", path: "/dashboard/devices", ready: "[data-testid=device-table]" },
   // 空状態(見出しの無い箱では空状態の見出しが h2 — shared.tsx の EmptyNotice)。
   // 変数名の空状態(環境はあるが変数が無い)は empty モードでは描けない(環境も空になる)
   {
@@ -260,6 +266,12 @@ const SHOTS: ReadonlyArray<Shot> = [
     name: "s9-tokens-empty",
     path: "/dashboard/tokens",
     ready: "[data-testid=token-empty]",
+    empty: true,
+  },
+  {
+    name: "s11-devices-empty",
+    path: "/dashboard/devices",
+    ready: "[data-testid=device-empty]",
     empty: true,
   },
 ];

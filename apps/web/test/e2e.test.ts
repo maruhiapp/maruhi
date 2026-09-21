@@ -20,6 +20,7 @@ import {
   AuditEventSchema,
   ChainSnapshotSchema,
   CSRF_HEADER_NAME,
+  DeviceSummarySchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
   InvitationSummarySchema,
@@ -34,7 +35,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   chainFixture,
+  devicesFixture,
   environmentsFixture,
+  FP_D2,
   invitationsAfterRevoke,
   invitationsFixture,
   meFixture,
@@ -519,6 +522,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     for (const token of tokensFixture.tokens) {
       Schema.decodeUnknownSync(TokenSummarySchema)(token);
     }
+    for (const device of devicesFixture.devices) {
+      Schema.decodeUnknownSync(DeviceSummarySchema)(device);
+    }
   });
 
   it("serves /dashboard routes with the strict SPA CSP header", async () => {
@@ -530,6 +536,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       `/dashboard/projects/${PROJECT_1}`,
       "/dashboard/account",
       "/dashboard/tokens",
+      "/dashboard/devices",
     ]) {
       const res = await fetch(`${BASE}${path}`);
       expect(res.status, `path: ${path}`).toBe(200);
@@ -648,6 +655,20 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     // S5 概要: チェーン導出メンバー(サーバー申告)+ 環境 + 変数名(メタのみ pull)
     await page.getByTestId("member-table").waitFor();
     await expect(page.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
+    // 端末(DK K5): user_e2e = D1(FP 束縛済み — genesis の actor)+ R(add_device の
+    // ワイヤは FP を運ばないので "fingerprint not reported")。D2 は seq 5 で失効済み。
+    // user_colleague = 最初の鍵 1 台(署名していないので FP 未束縛)
+    const members = page.getByTestId("member-table");
+    await expect(members.getByText("565656…565656", { exact: true }).count()).resolves.toBe(1);
+    await expect(
+      members.getByText("fingerprint not reported", { exact: true }).count(),
+    ).resolves.toBe(2);
+    await expect(members.getByText("d2d2d2…d2d2d2").count()).resolves.toBe(0);
+    // 端末数: user_e2e の行は 2(D1 + R)、user_colleague の行は 1(最初の鍵)
+    const e2eRow = members.getByRole("row").filter({ hasText: "user_e2e" });
+    await expect(e2eRow.getByText("2", { exact: true }).count()).resolves.toBe(1);
+    const colleagueRow = members.getByRole("row").filter({ hasText: "user_colleague" });
+    await expect(colleagueRow.getByText("1", { exact: true }).count()).resolves.toBe(1);
     await page.getByTestId("env-table").waitFor();
     await page.getByText("Variable names", { exact: true }).click();
     await page.getByTestId("variable-list").waitFor();
@@ -669,6 +690,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     // 行の右端に "seq N" として出る(応答適応)
     await expect(page.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
+    // 端末 2 事件(AUDIT_SPEC §3.4 — DK)は汎用描画で落ちない(K5-6): 行が出て、開くと
+    // 記録どおりの payload(FP)が出る
+    await expect(page.getByText("chain.device_added").count()).resolves.toBe(1);
+    await expect(page.getByText("chain.device_revoked").count()).resolves.toBe(1);
     // 行(トリガー = button)を開くとその直下に全フィールド(MetadataList)が出る。
     // 閉じた展開部は DOM に残る(hidden)ので、可視の要素だけを数える
     const list = page.getByTestId("audit-list-project");
@@ -689,9 +714,16 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("button", { name: "Invites", pressed: false }).click();
     await page.getByText("Not available to your role").first().waitFor();
 
-    // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
+    // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)。端末失効の変種は
+    // "device revoked: <userId>"(K5-5)、trigger の無い旧行は従来の推定のまま
     await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
+    await expect(page.getByText("device revoked: user_e2e", { exact: true }).count()).resolves.toBe(
+      1,
+    );
+    await expect(
+      page.getByText("member removed: user_colleague", { exact: true }).count(),
+    ).resolves.toBe(1);
     await expect(page.getByTestId("rotation-note").textContent()).resolves.toContain(
       "maruhi rotation dismiss",
     );
@@ -988,7 +1020,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await list.waitFor();
     // Table ではなく行(トリガー button)で描かれ、行の意味(イベント名・seq・actor・target)は保たれる
     await expect(list.locator("table").count()).resolves.toBe(0);
-    await expect(list.getByRole("button", { expanded: false }).count()).resolves.toBe(2);
+    await expect(list.getByRole("button", { expanded: false }).count()).resolves.toBe(4);
     await expect(list.getByText("chain.member_added").count()).resolves.toBe(1);
     await expect(list.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
     await expect(list.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
@@ -1003,6 +1035,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await list.getByRole("button", { name: /chain\.member_added/ }).click();
     await expect(genesis.getAttribute("aria-expanded")).resolves.toBe("false");
     await expect(visibleRowIds.count()).resolves.toBe(1);
+    // 端末失効のミラー行を開くと、記録どおりの payload に失効した端末の FP が出る(K5-6)
+    await list.getByRole("button", { name: /chain\.device_revoked/ }).click();
+    await list.getByText(FP_D2).locator("visible=true").first().waitFor();
     // サイドバーはドロワーへ: トグルで開き、到達点とユーザー id が並ぶ
     await page.getByRole("button", { name: "Open navigation" }).click();
     const drawer = page.getByRole("dialog", { name: "Navigation" });
@@ -1098,6 +1133,143 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
     expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
     expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // S11 端末登録簿(DK K5 — 設計録 dk-design.md §10 K5-7〜K5-10)
+  // -------------------------------------------------------------------------
+
+  it("lists the device registry with token links resolved against the token list (S11)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === "/auth/devices",
+      (route) => fulfillJson(route, 200, devicesFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
+    await page.getByTestId("device-table").waitFor();
+    await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe("Devices");
+    await expect(
+      page.getByRole("link", { name: "Devices" }).getAttribute("aria-current"),
+    ).resolves.toBe("page");
+    const table = page.getByTestId("device-table");
+    // 表示名(テキストノード)と全長 FP(参照値)
+    for (const label of ["macbook", "phone", "codespace"]) {
+      await expect(table.getByText(label, { exact: true }).count()).resolves.toBe(1);
+    }
+    await expect(table.getByText(FP_D2, { exact: true }).count()).resolves.toBe(1);
+    // tokenId の突合(K5-8): 一覧にある → 名前 + prefix、無い → id だけ、欠落 → none linked
+    await expect(table.getByText("ci", { exact: true }).count()).resolves.toBe(1);
+    await expect(table.getByText("maruhi_pat_abcdefgh", { exact: true }).count()).resolves.toBe(1);
+    await expect(table.getByText("tok-gone", { exact: true }).count()).resolves.toBe(1);
+    await expect(
+      table.getByText("not among your tokens (revoked or expired?)", { exact: true }).count(),
+    ).resolves.toBe(1);
+    await expect(table.getByText("none linked", { exact: true }).count()).resolves.toBe(1);
+    // 失効の入口は突合できた行だけ("Revoke token" — 端末の失効ではない)
+    await expect(table.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(1);
+    // 登録・削除・承認の操作は無い。紛失時の導線は CLI の device revoke → トークン失効
+    await expect(
+      page.getByRole("button", { name: /register|approve|remove device/i }).count(),
+    ).resolves.toBe(0);
+    const notes = page.getByTestId("device-notes");
+    await expect(notes.textContent()).resolves.toContain("maruhi device revoke <fingerprint>");
+    await expect(
+      notes.getByRole("link", { name: "API tokens" }).getAttribute("href"),
+    ).resolves.toBe("/dashboard/tokens");
+    // advisory の但し書き(登録簿は真実源でない — チェーンを CLI が検証する)
+    await expect(page.getByText(/maruhi device list/).count()).resolves.toBeGreaterThan(0);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("revokes the linked token from a device row with the CSRF header and refreshes both lists (S11)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let revoked = false;
+    let deleteMethod: string | null = null;
+    let deleteCsrf: string | null = null;
+    let deviceFetches = 0;
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === "/auth/devices",
+      (route) => {
+        deviceFetches += 1;
+        return fulfillJson(route, 200, devicesFixture);
+      },
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens/tok-active",
+      (route) => {
+        deleteMethod = route.request().method();
+        deleteCsrf = route.request().headers()[CSRF_HEADER_NAME] ?? null;
+        revoked = true;
+        return route.fulfill({ status: 204 });
+      },
+    );
+    await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
+    await page.getByTestId("device-table").waitFor();
+    await page.getByRole("button", { name: "Revoke token" }).click();
+    // 確認ダイアログはトークンを名指しし、端末鍵の失効ではないことを言う
+    const dialog = page.getByRole("alertdialog");
+    await dialog.waitFor();
+    await expect(dialog.textContent()).resolves.toContain('Revoke token "ci"?');
+    await expect(dialog.textContent()).resolves.toContain("does not revoke the device key");
+    await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
+    // 再取得後: 登録簿の tokenId 欄は残る(advisory)ので突合先無しへ落ち、Revoke token は消える
+    await page
+      .getByText("not among your tokens (revoked or expired?)", { exact: true })
+      .nth(1)
+      .waitFor();
+    await expect(page.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(0);
+    expect(deleteMethod).toBe("DELETE");
+    expect(deleteCsrf).toBe("1");
+    expect(deviceFetches).toBe(2);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("shows the empty registry, the older-server 404 wording, and the sign-in screen on 401 (S11)", async () => {
+    const page = await browser.newPage();
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    let mode: "empty" | "not-found" | "unauthorized" = "empty";
+    await page.route(
+      (url) => url.pathname === "/auth/devices",
+      (route) => {
+        if (mode === "empty") return fulfillJson(route, 200, { devices: [] });
+        if (mode === "not-found") return fulfillJson(route, 404, { _tag: "NotFound" });
+        return unauthorized(route);
+      },
+    );
+    await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
+    await page.getByTestId("device-empty").waitFor();
+    await expect(page.getByText("No devices registered").count()).resolves.toBe(1);
+    // 旧サーバー(devices グループ無し)の 404 は空状態に畳まず、登録簿の名詞で写す(K5-9)
+    mode = "not-found";
+    await page.reload({ waitUntil: "networkidle" });
+    await page
+      .getByText(
+        "The server reports no device registry for your account (older servers do not have one).",
+      )
+      .waitFor();
+    // 401 はシェルがその場でサインイン画面へ
+    mode = "unauthorized";
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByTestId("login-card").waitFor();
     await page.close();
   });
 });

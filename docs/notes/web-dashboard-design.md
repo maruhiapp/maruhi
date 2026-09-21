@@ -155,6 +155,25 @@ AUDIT_SPEC §6 の可視性クラス)が真実源で、Web は結果を写すだ
 - 同時解消: 既定 TTL(SECURITY_REVIEW L-2 — AUTH_SPEC §6 改訂に含める。
   W3a で実装済み — 移行規則・明示 TTL は session-44.md 裁定 CE / CF)
 
+### S11. 端末登録簿(読み取り + 紐づくトークンの失効 — 2026-09-21 DK K5 追記)
+
+- 対象: P3〜P5(本人の登録簿のみ — user 軸のリソース。独立ルート `/dashboard/devices`、
+  S9 と同じ配置 — 裁定 CP)。裁定の経緯は docs/notes/dk-design.md §10(K5-7〜K5-10)
+- 実装済み API: `GET /auth/devices`(AUTH_SPEC §13-11 — セッション許可列挙内)+ S9 の
+  `GET /auth/tokens` / `DELETE /auth/tokens/:tokenId`(`tokenId` の突合と失効の導線)
+- **登録簿は advisory**(表示名・トークンの対応の置き場 — 検証・認可の入力にならない)。
+  端末鍵の真実源は各プロジェクトのチェーンで、S5 の Members 表が `add_device` /
+  `revoke_device` の畳み込み(端末数・FP・cap)を「サーバー申告」として出す。S11 の説明文は
+  「as reported by the server; the chain is the source of truth — `maruhi device list`
+  verifies it」と言い、表示名の隣に全長 FP を必ず並べる(表示名の偽装への表示上の備え)
+- **置かないもの**: 登録 / 表示名の更新 / 削除 / 追加要求の承認(いずれもセッション主体が
+  拒否される API であり、ADR-0018 改訂 2 のチェーン書き込み禁止・資格生成禁止にも当たる)。
+  チェーンの `revoke_device` も Web からは行わない。置くのは紛失時の導線 = 既存のトークン
+  失効(S9 の許可 mutation をそのまま — 「Lost a device? `maruhi device revoke <fingerprint>`
+  from another device, then revoke its API token here」)
+- gap なし(ワイヤの不足 = `add_device` エントリが FP を運ばない点は S5 の畳み込み側の
+  劣化形〔not reported / unresolved〕で受け、所有者判断 — dk-design.md §10 K5-1)
+
 ### S10.(任意・後続)セッション一覧・失効
 
 - 対象: P3〜P5。実装済み API: `POST /auth/logout`(現セッションのみ)
@@ -194,6 +213,7 @@ ADR-0018 改訂 2 の規範。根拠と棄却案は session-39 裁定 AP・AQ:
 | S7 要ローテーションフラグ | × | ○ | ○ | ○ | ○ |
 | S8 招待管理(一覧・失効) | × | × | × | ○ | ○ |
 | S9 トークン管理(本人分) | × | ○ | ○ | ○ | ○ |
+| S11 端末登録簿(本人分 — 読み取り + 紐づくトークンの失効) | × | ○ | ○ | ○ | ○ |
 
 - 真実源はサーバー認可(§11-2 / §12-3 / AUDIT_SPEC §6)。表は UI の出し分けで
   あり防御ではない。境界(§2 の原則)の強制は 2 層で行う:

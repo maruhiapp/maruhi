@@ -8,6 +8,7 @@
 import type {
   AuditEvent,
   ChainSnapshot,
+  DeviceList,
   EnvironmentList,
   EnvironmentMetadataPull,
   InvitationList,
@@ -24,6 +25,13 @@ const SIG = "34".repeat(64);
 const FP = "56".repeat(16);
 const ROW_ID_1 = "78".repeat(16);
 const ROW_ID_2 = "9a".repeat(16);
+const ROW_ID_3 = "bc".repeat(16);
+const ROW_ID_4 = "de".repeat(16);
+// 端末鍵(DK K5): D2 = 電話(cap member / production)、R = 予備鍵(owner / all)。公開鍵は
+// 最初の鍵(HEX64)と重複させない(chain-view の duplicate-member-key の fold)
+export const FP_D2 = "d2".repeat(16);
+const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
+const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
 
 export const meFixture: Me = { userId: "user_e2e", orgs: [] };
 
@@ -43,9 +51,12 @@ export const projectsPage2: ProjectList = {
   projects: [{ projectId: PROJECT_2, role: "reader" }],
 };
 
+// 端末鍵の 2 op を含む(DK K5): seq 3 = D1 が D2 を足す、seq 4 = D2 が署名して R を足す
+// (D2 の FP はここで束縛される)、seq 5 = D1 が D2 を失効。畳み込み後の user_e2e の
+// 端末 = D1(FP 束縛済み)+ R(FP 未束縛・owner/all)= 2 台
 export const chainFixture: ChainSnapshot = {
   projectId: PROJECT_1,
-  headSeq: 2,
+  headSeq: 5,
   headHashHex: HEX64,
   entries: [
     {
@@ -74,6 +85,41 @@ export const chainFixture: ChainSnapshot = {
         scopeKind: "all",
         scopeEnvironmentIds: [],
       },
+    },
+    {
+      suite: "maruhi/v1",
+      seq: 3,
+      prevHashHex: HEX64,
+      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      timestampMs: 1_756_000_200_000,
+      signatureHex: SIG,
+      op: "add_device",
+      payload: {
+        ...KEYS_D2,
+        roleCap: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["production"],
+      },
+    },
+    {
+      suite: "maruhi/v1",
+      seq: 4,
+      prevHashHex: HEX64,
+      actor: { userId: "user_e2e", keyFingerprintHex: FP_D2 },
+      timestampMs: 1_756_000_300_000,
+      signatureHex: SIG,
+      op: "add_device",
+      payload: { ...KEYS_R, roleCap: "owner", scopeKind: "all", scopeEnvironmentIds: [] },
+    },
+    {
+      suite: "maruhi/v1",
+      seq: 5,
+      prevHashHex: HEX64,
+      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      timestampMs: 1_756_000_400_000,
+      signatureHex: SIG,
+      op: "revoke_device",
+      payload: { targetUserId: "user_e2e", deviceFingerprintsHex: [FP_D2] },
     },
   ],
   attestations: [],
@@ -111,9 +157,35 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
   deletedVariables: [],
 };
 
-// admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)
+// admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)。端末 2 事件(AUDIT_SPEC §3.4 —
+// DK)は汎用描画のまま(K5-6): payload は記録どおりの JSON で出る
 export const projectAuditEvents: { events: AuditEvent[] } = {
   events: [
+    {
+      id: ROW_ID_4,
+      seq: 5,
+      serverTs: 1_756_000_400_000,
+      event: "chain.device_revoked",
+      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
+      targetUserId: "user_e2e",
+      chainSeq: 5,
+      payload: { deviceKeyFingerprints: [FP_D2] },
+    },
+    {
+      id: ROW_ID_3,
+      seq: 3,
+      serverTs: 1_756_000_200_000,
+      event: "chain.device_added",
+      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
+      targetUserId: "user_e2e",
+      chainSeq: 3,
+      payload: {
+        deviceKeyFingerprint: FP_D2,
+        roleCap: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["production"],
+      },
+    },
     {
       id: ROW_ID_1,
       seq: 2,
@@ -156,6 +228,16 @@ export const rotationFlagsFixture: RotationFlagList = {
       targetUserId: "user_colleague",
       recommendedAtMs: 1_756_000_300_000,
       triggerChainSeq: 3,
+    },
+    // 端末失効の変種(AUDIT_SPEC §4.1 — DK): trigger = revoke_device、対象は人(FP は運ばない)
+    {
+      environmentId: "production",
+      variableId: "var-api-key",
+      basis: "readable",
+      targetUserId: "user_e2e",
+      recommendedAtMs: 1_756_000_400_000,
+      triggerChainSeq: 5,
+      trigger: "revoke_device",
     },
   ],
 };
@@ -276,3 +358,34 @@ export const tokensFixture: TokenList = {
 
 // 指定失効は行の削除(サーバー実装 — 一覧から消える)
 export const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
+
+// ---------------------------------------------------------------------------
+// S11(端末登録簿 — AUTH_SPEC §13-11。advisory)。tokenId は tokens の一覧と id で突合する
+// (K5-8): 1 行目は "ci"(tok-active)に紐づき、2 行目は一覧に無いトークン、3 行目は紐づけなし
+// ---------------------------------------------------------------------------
+
+export const devicesFixture: DeviceList = {
+  devices: [
+    {
+      keyFingerprintHex: FP,
+      encPubHex: HEX64,
+      sigPubHex: HEX64,
+      label: "macbook",
+      tokenId: "tok-active",
+      createdAtMs: 1_756_000_000_000,
+    },
+    {
+      keyFingerprintHex: FP_D2,
+      ...KEYS_D2,
+      label: "phone",
+      tokenId: "tok-gone",
+      createdAtMs: 1_756_000_200_000,
+    },
+    {
+      keyFingerprintHex: "0e".repeat(16),
+      ...KEYS_R,
+      label: "codespace",
+      createdAtMs: 1_756_000_300_000,
+    },
+  ],
+};
