@@ -155,6 +155,7 @@ import {
   deviceRevokeOp,
   type DeviceRevokeSummary,
   parseApproveRef,
+  type ProjectRevokeOutcome,
   parseCapRole,
   reportApproveOutcomes,
 } from "./device.ts";
@@ -2396,38 +2397,49 @@ function reportDeviceRevoke(
   summary: DeviceRevokeSummary,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     let exitCode = 0;
     for (const project of summary.projects) {
-      const label = displayText(project.projectId);
-      if (project.skipped !== null) {
-        continue;
-      }
-      if (project.failed !== null) {
-        yield* logWarning(`${label}: revocation failed — ${project.failed}`);
-        exitCode = 1;
-        continue;
-      }
-      yield* io.log(
-        `${label}: revoked ${project.revoked.length === 0 ? "nothing (already revoked)" : project.revoked.join(", ")}`,
-      );
-      if (project.sweep === null) {
-        if (project.revoked.length > 0) {
-          yield* logNote(
-            `${label}: the rotation mandated by the revocation was not run from this device (it cannot sign here any more, or nothing is mandated). It stays listed as an unconverged mandate until another device rotates`,
-          );
-        }
-        continue;
-      }
-      const code = yield* reportSweepOutcome(project.sweep, {
-        rerunCommand: "`maruhi env rotate <environment> --new-epoch --reason <text>`",
-        alreadyRotatedBasis: "the revocation",
-      });
-      if (code !== 0) {
+      if (project.skipped === null && (yield* reportRevokedProject(project)) !== 0) {
         exitCode = 1;
       }
     }
     return exitCode;
+  });
+}
+
+/** 1 プロジェクトの失効結果の報告(終了コード: 追記失敗・sweep 失敗・rotate 失敗は 1)。 */
+function reportRevokedProject(
+  project: ProjectRevokeOutcome,
+): Effect.Effect<number, CliError, CliServices> {
+  const label = displayText(project.projectId);
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (project.failed !== null) {
+      yield* logWarning(`${label}: revocation failed — ${project.failed}`);
+      return 1;
+    }
+    yield* io.log(
+      `${label}: revoked ${project.revoked.length === 0 ? "nothing (already revoked)" : project.revoked.join(", ")}`,
+    );
+    if (project.sweepFailed !== null) {
+      // 失効は載っている。義務の履行だけが残る(常時警告が引き続き表示する)
+      yield* logWarning(
+        `${label}: the rotation sweep after the revocation failed — ${project.sweepFailed}. The revocation itself is on the chain; the mandate stays listed as unconverged until \`maruhi env rotate <environment> --new-epoch --reason <text>\` is run for the affected environments`,
+      );
+      return 1;
+    }
+    if (project.sweep === null) {
+      if (project.revoked.length > 0) {
+        yield* logNote(
+          `${label}: the rotation mandated by the revocation was not run from this device (it cannot sign here any more, or nothing is mandated). It stays listed as an unconverged mandate until another device rotates`,
+        );
+      }
+      return 0;
+    }
+    return yield* reportSweepOutcome(project.sweep, {
+      rerunCommand: "`maruhi env rotate <environment> --new-epoch --reason <text>`",
+      alreadyRotatedBasis: "the revocation",
+    });
   });
 }
 

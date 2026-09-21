@@ -144,6 +144,8 @@ async function makeServer(input: {
   readonly tokensStatus?: number;
   /** 追加のハンドラ(MockServer は起動時に列を写すので、後から push できない)。 */
   readonly extra?: readonly MockHandler[];
+  /** 環境一覧 GET の応答コード(既定 200。500 = 受理後の sweep を失敗させる)。 */
+  readonly environmentsStatus?: number;
   /**
    * `POST /auth/devices/requests` の応答: 期限と、合図(登録簿の行)を即座に立てるか。
    * `conflict` を置くと(合図を立てた後に)409 を返す。
@@ -200,15 +202,19 @@ async function makeServer(input: {
         json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
       };
     },
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
-      status: 200,
-      json: {
-        environments:
-          envStatement === null
-            ? []
-            : [{ environmentId: ENV_ID, currentEpoch: 1, statement: envStatement }],
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/environments`, () =>
+      input.environmentsStatus !== undefined && input.environmentsStatus !== 200
+        ? { status: input.environmentsStatus, json: { _tag: "Internal" } }
+        : {
+            status: 200,
+            json: {
+              environments:
+                envStatement === null
+                  ? []
+                  : [{ environmentId: ENV_ID, currentEpoch: 1, statement: envStatement }],
+            },
+          },
+    ),
     (request: MockRequest) => {
       const base = `/projects/${projectId}/environments/${ENV_ID}/deks`;
       if (request.path !== base) {
@@ -796,6 +802,42 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
 });
 
 describe("maruhi device revoke", () => {
+  it("受理後の sweep が失敗しても失効は成功として扱い、ローカル記録と登録簿の後段を飛ばさない", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    // 環境一覧 GET が 500 → 受理後の sweep(削除済み環境の検証)が失敗する
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      environmentsStatus: 500,
+      registryRows: [
+        {
+          keyFingerprintHex: dev2.fingerprintHex,
+          encPubHex: dev2.encPubHex,
+          sigPubHex: dev2.sigPubHex,
+          label: "laptop",
+          createdAtMs: Date.now(),
+        },
+      ],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "revoke", dev2.fingerprintHex, "--yes"], env.layer)).toBe(1);
+    expect(state.appended.map((entry) => entry.op)).toEqual(["revoke_device"]);
+    expect(env.logs.join("\n")).toContain(`revoked ${dev2.fingerprintHex}`);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("the rotation sweep after the revocation failed");
+    expect(errors).not.toContain(": revocation failed —");
+    // 後段は走る: ローカル記録は失効、登録簿の行は削除
+    const recorded = await readOwnDevices(env, server.origin);
+    expect(
+      recorded.find((row) => row.keyFingerprintHex === dev2.fingerprintHex)?.revokedAtMs,
+    ).not.toBeNull();
+    expect(state.registryDeletes).toEqual([dev2.fingerprintHex]);
+  });
+
   it("FP の接頭辞で確定し、revoke_device を追記してローカル記録と登録簿に反映する(--yes)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

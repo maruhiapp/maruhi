@@ -892,7 +892,10 @@ export interface ProjectRevokeOutcome {
   readonly revoked: readonly string[];
   readonly sweep: DeviceSweepOutcome | null;
   readonly skipped: string | null;
+  /** `revoke_device` の追記が失敗した(何も失効していない)。 */
   readonly failed: string | null;
+  /** 追記は受理されたが、受理後の再同期か sweep が失敗した(失効は載っている)。 */
+  readonly sweepFailed: string | null;
 }
 
 /** `device revoke` 全体の結果。 */
@@ -1085,7 +1088,14 @@ function planRevokeAll(input: {
     for (const projectId of input.projectIds) {
       const planned = yield* planRevoke({ ...input, projectId });
       if (typeof planned === "string") {
-        outcomes.push({ projectId, revoked: [], sweep: null, skipped: planned, failed: null });
+        outcomes.push({
+          projectId,
+          revoked: [],
+          sweep: null,
+          skipped: planned,
+          failed: null,
+          sweepFailed: null,
+        });
       } else {
         plans.push(planned);
       }
@@ -1268,6 +1278,14 @@ function executeRevoke(input: {
   readonly masterKeys: MasterKeys;
 }): Effect.Effect<ProjectRevokeOutcome, never, CliServices> {
   const { context } = input.plan;
+  const base = {
+    projectId: context.projectId,
+    revoked: [] as readonly string[],
+    sweep: null,
+    skipped: null,
+    failed: null,
+    sweepFailed: null,
+  } satisfies ProjectRevokeOutcome;
   return Effect.gen(function* () {
     const appended = yield* appendRevokeDevice({
       client: context.client,
@@ -1278,47 +1296,54 @@ function executeRevoke(input: {
       fingerprintsHex: input.plan.revoking.map((device) => device.keyFingerprintHex),
     });
     const { revoked } = appended;
+    // 追記の受理後は失効が載っている: 再同期・sweep の失敗は「失効の失敗」に畳まず、
+    // 失効は残したまま sweep の失敗として報告する(ローカル記録・登録簿の後段を飛ばさない)
+    return yield* sweepAfterRevoke({ ...input, appended }).pipe(
+      Effect.map((sweep) => ({ ...base, revoked, sweep })),
+      Effect.catch((error) =>
+        Effect.succeed({
+          ...base,
+          revoked,
+          sweepFailed: error.message,
+        } satisfies ProjectRevokeOutcome),
+      ),
+    );
+  }).pipe(Effect.catch((error) => Effect.succeed({ ...base, failed: error.message })));
+}
+
+/** 受理後の再同期と sweep(失敗はそのまま返す — 呼び出し側が sweepFailed に畳む)。 */
+function sweepAfterRevoke(input: {
+  readonly session: CliSession;
+  readonly plan: ProjectRevokePlan;
+  readonly targetUserId: string;
+  readonly masterKeys: MasterKeys;
+  readonly appended: { readonly verified: VerifiedProject; readonly revoked: readonly string[] };
+}): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {
+  const { context } = input.plan;
+  return Effect.gen(function* () {
     // 受理後の再同期(追記前のビューには失効の義務が無い — sweep は掲載を確認した
     // ビューで導出する。member remove と同じ規律: サーバー申告を真実源にしない)
     const verified =
-      revoked.length === 0
-        ? appended.verified
-        : yield* resyncExtended(context.resync, appended.verified);
+      input.appended.revoked.length === 0
+        ? input.appended.verified
+        : yield* resyncExtended(context.resync, input.appended.verified);
     const self = verified.state.members.get(input.session.userId);
     const actorDevice =
       self === undefined
         ? undefined
         : findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
     // 自分の端末自身を失効させた場合、sweep はこの端末では履行できない(K4-7 反例 5)
-    const sweep =
-      actorDevice === undefined
-        ? null
-        : yield* sweepAfterDeviceRevoke({
-            client: context.client,
-            verified,
-            targetUserId: input.targetUserId,
-            actorUserId: input.session.userId,
-            actorDevice,
-            rotate: sweepRotateFor({ ...context, verified }, DEVICE_REVOKED_ROTATION_REASON),
-          });
-    return {
-      projectId: context.projectId,
-      revoked,
-      sweep,
-      skipped: null,
-      failed: null,
-    } satisfies ProjectRevokeOutcome;
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed({
-        projectId: context.projectId,
-        revoked: [],
-        sweep: null,
-        skipped: null,
-        failed: error.message,
-      } satisfies ProjectRevokeOutcome),
-    ),
-  );
+    return actorDevice === undefined
+      ? null
+      : yield* sweepAfterDeviceRevoke({
+          client: context.client,
+          verified,
+          targetUserId: input.targetUserId,
+          actorUserId: input.session.userId,
+          actorDevice,
+          rotate: sweepRotateFor({ ...context, verified }, DEVICE_REVOKED_ROTATION_REASON),
+        });
+  });
 }
 
 /**
