@@ -434,12 +434,8 @@ function replaceReserveWithoutOpening(input: {
         ).pipe(Effect.as(null)),
       ),
     );
-    const sealed =
-      status === null || status.passkeys.length + status.guardianGroups.length === 0
-        ? "any passkey wraps and guardian groups that seal the current reserve key are deleted"
-        : `${countNoun(status.passkeys.length, "passkey wrap")} and ${countNoun(status.guardianGroups.length, "guardian group")} that seal the current reserve key are deleted`;
     yield* logWarning(
-      `replacing the recovery ledger without opening it: the previous recovery code stops working, the reserve keys recorded on this machine are revoked on every project, and ${sealed}. If you still have a passkey for the current reserve key, stop here and run \`maruhi key recovery --passkey\` instead: it reissues the code for the same reserve key. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
+      `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
     );
     const next = yield* generateReserveKeys();
     yield* issueRecoveryCodeOp({
@@ -455,6 +451,32 @@ function replaceReserveWithoutOpening(input: {
     }
     return yield* registerReserveAndRetire({ ...input, next, retiring });
   });
+}
+
+/**
+ * `--replace` の警告に添える、旧 B を封印していた台帳の行の説明(pullfrog 指摘): 一覧が
+ * 読めなければ一般形、行が無ければ何も言わない(無い行の削除も、成立しない `--passkey`
+ * の案内も出さない)、あればその件数と、パスキーがあるなら `--passkey` の代替を示す。
+ */
+function describeSealedRows(
+  status: {
+    readonly passkeys: readonly unknown[];
+    readonly guardianGroups: readonly unknown[];
+  } | null,
+): string {
+  if (status === null) {
+    return ", and any passkey wraps and guardian groups that seal the current reserve key are deleted. If you still have a passkey for the current reserve key, stop here and run `maruhi key recovery --passkey` instead: it reissues the code for the same reserve key";
+  }
+  const passkeys = status.passkeys.length;
+  const groups = status.guardianGroups.length;
+  if (passkeys + groups === 0) {
+    return "";
+  }
+  const passkeyAdvice =
+    passkeys === 0
+      ? ""
+      : ". If you still have that passkey, stop here and run `maruhi key recovery --passkey` instead: it reissues the code for the same reserve key";
+  return `, and ${countNoun(passkeys, "passkey wrap")} and ${countNoun(groups, "guardian group")} that seal the current reserve key are deleted${passkeyAdvice}`;
 }
 
 /**

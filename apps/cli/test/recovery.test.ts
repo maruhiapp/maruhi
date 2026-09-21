@@ -472,11 +472,9 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(errors).toContain(
       "no previous reserve key is recorded on this machine, so none was revoked",
     );
-    // 書き込みの前に、台帳の行(パスキー / 保護者)が消えることと --passkey の代替を示す
-    expect(errors).toContain(
-      "any passkey wraps and guardian groups that seal the current reserve key are deleted",
-    );
-    expect(errors).toContain("run `maruhi key recovery --passkey` instead");
+    // 台帳に行(パスキー / 保護者)が無ければ、無い行の削除も成立しない --passkey の案内も出さない
+    expect(errors).not.toContain("seal the current reserve key are deleted");
+    expect(errors).not.toContain("run `maruhi key recovery --passkey` instead");
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
     // --passkey は --replace と両立しない(台帳を開かないので)— 何も書かずに使い方エラー
     const before = env.errors.length;
@@ -484,6 +482,57 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(env.errors.slice(before).join("\n")).toContain(
       "--passkey cannot be combined with --replace",
     );
+  });
+
+  it("--replace はパスキーの行があれば件数と --passkey の代替を書き込みの前に示し、その行を消す", async () => {
+    const user = await makeTestUser("user-0001");
+    const wrapId = "01JMKWRAP000000000000PASSK";
+    const deleted: string[] = [];
+    let put: PutBody | null = null;
+    const maruhi = await start([
+      statusHandler(true),
+      putHandler((body) => {
+        put = body;
+      }),
+      noProjectsHandler(),
+      onRequest("GET", "/auth/key-wraps", () => ({
+        status: 200,
+        json: {
+          recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
+          passkeys: [
+            {
+              wrapId,
+              label: "yubikey",
+              credentialIdHex: "ab".repeat(16),
+              prfSaltHex: "22".repeat(32),
+              updatedAtMs: 1754006400000,
+            },
+          ],
+          guardianGroups: [],
+        },
+      })),
+      onRequest("DELETE", `/auth/key-wraps/passkey/${wrapId}`, () => {
+        deleted.push(wrapId);
+        return { status: 204 };
+      }),
+    ]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    seedSession(env, maruhi.origin, user);
+    env.setPromptResponses([lastGroupOf(env)]);
+    expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
+      0,
+    );
+    expect(put).not.toBeNull();
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "1 passkey wrap and 0 guardian groups that seal the current reserve key are deleted. If you still have that passkey, stop here and run `maruhi key recovery --passkey` instead",
+    );
+    // 警告は書き込み(コード発行の表示)より前
+    expect(errors.indexOf("replacing the recovery ledger")).toBeLessThan(
+      errors.indexOf("Issued your recovery code"),
+    );
+    expect(deleted).toEqual([wrapId]);
+    expect(errors).toContain("removed 1 passkey wrap and 0 guardian groups");
   });
 
   it("--replace は台帳の行の一覧が読めなくても置換を止めない(警告は一般形 + Note)", async () => {
