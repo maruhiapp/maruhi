@@ -389,6 +389,23 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
     expect(message).not.toContain("SUPER_SECRET_VALUE");
   });
 
+  it("run の command が 0 個の MissingArgument は実行対象の文面になる", () => {
+    // rc.117 は `Argument.atLeast(1)` の 0 個を InvalidValue("at least")ではなく
+    // MissingArgument にする。他の欠落引数の文面は変えない
+    const missing = describeError(
+      new EffectCliError.MissingArgument({ argument: "command" }),
+      "run",
+      { run: { flags: [], positionals: ["command"] } },
+    );
+    expect(missing).toContain("Specify the command to run after `--`");
+    const other = describeError(
+      new EffectCliError.MissingArgument({ argument: "environment-id" }),
+      "run",
+      { run: { flags: [], positionals: ["environment-id"] } },
+    );
+    expect(other).toBe("Missing positional argument environment-id");
+  });
+
   it("UnexpectedArgument は個数だけを出す", () => {
     const message = describeError(
       new EffectCliError.UnexpectedArgument({ arguments: ["SECRET_A", "SECRET_B"] }),

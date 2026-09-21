@@ -129,6 +129,17 @@ function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string
   return `Unknown flag (flags this command accepts: ${declared.join(" ")})`;
 }
 
+/**
+ * `atLeast(1)` の command が 0 個だったとき(rc.117 の `MissingArgument`)。
+ * 文面は run / ci run と agent で違う。他の欠落引数には使わない。
+ */
+function isMissingRunCommand(error: CliError.MissingArgument, commandKey: string): boolean {
+  return (
+    bareName(error.argument) === "command" &&
+    (commandKey === "run" || commandKey === "ci run" || commandKey === "agent")
+  );
+}
+
 function unexpectedArgumentMessage(
   error: CliError.UnexpectedArgument,
   spec: CommandSpec | undefined,
@@ -225,6 +236,12 @@ export function describeError(
     return invalidValueMessage(error, commandKey);
   }
   if (error instanceof CliError.MissingArgument) {
+    // rc.117: `Argument.atLeast(n)` の 0 個は `InvalidValue`("at least")ではなく
+    // `MissingArgument`。run / ci run / agent の command は「`--` の後ろに
+    // 実行対象が無い」の文面へ戻す。他の位置引数は欠落のまま出す。
+    if (isMissingRunCommand(error, commandKey)) {
+      return commandKey === "agent" ? AGENT_COMMAND_REQUIRED : RUN_COMMAND_REQUIRED;
+    }
     return `Missing positional argument ${bareName(error.argument)}`;
   }
   if (error instanceof CliError.MissingOption) {

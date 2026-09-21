@@ -393,7 +393,9 @@ const runCommandArgument = () =>
   // `--` の後ろはここに入る(空文字列も保持される)。`atLeast(1)` が
   // 「実行対象のない実行」を、`filter` が「実行対象が空文字列」
   // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
-  // 2 つ目以降の空文字列は**子プロセスの引数として保つ**
+  // 2 つ目以降の空文字列は**子プロセスの引数として保つ**。
+  // rc.117 では 0 個の `atLeast` が `MissingArgument` になる。文面への写像は
+  // cli-formatter.ts(command 引数だけ RUN_COMMAND_REQUIRED)
   Argument.String("command").pipe(
     Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
