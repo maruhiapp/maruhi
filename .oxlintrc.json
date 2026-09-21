@@ -5,6 +5,11 @@
     "correctness": "error",
     "suspicious": "error"
   },
+  "rules": {
+    // oxlint 1.85 が correctness に昇格させた。テスト内の補助関数を外へ出す大規模な
+    // 移動で、捕捉の有無は呼び出しのたびに変わりうる。局所性を残す。
+    "unicorn/consistent-function-scoping": "off"
+  },
   "ignorePatterns": ["fallow-baselines", ".agents", ".claude", ".deepsec"],
   "overrides": [
     {

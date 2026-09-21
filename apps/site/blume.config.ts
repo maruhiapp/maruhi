@@ -79,8 +79,16 @@ export default defineConfig({
   search: { provider: "orama" },
   ai: {
     // llms.txt / raw Markdown / Copy as Markdown は自己配信の静的物なので既定のまま。
-    // Open in chat(ChatGPT / Claude 等へのリンク)は第三者への導線なので置かない
+    // Open in chat(ChatGPT / Claude 等へのリンク)は第三者への導線なので置かない。
+    // Ask AI と MCP はライブな外部呼び出し・常駐エンドポイントになるので明示的に off
+    // (Blume 1.7 の既定も off。将来の既定変更で黙って有効にしない)。
+    // JSON docs API と AI catalog は公開 docs の静的索引(llms.txt と同じ類)で、
+    // ビルド成果物以外へは送らない。Blume 1.7 で既定 on になったものを意図して残す。
     openInChat: false,
+    ask: { enabled: false },
+    mcp: { enabled: false },
+    api: true,
+    catalog: true,
   },
   seo: {
     // OG カードはビルド時にローカルで描画される(外部通信なし)。LP は og.png を使う
