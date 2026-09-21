@@ -914,9 +914,14 @@ describe("maruhi device add", () => {
     );
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
-    expect(env.logs.join("\n")).toContain(
+    const logs = env.logs.join("\n");
+    expect(logs).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain)",
     );
+    // 要求行は無いので approve の案内・期限は出さず、登録簿に載っている旨を出す
+    expect(logs).toContain("This key is already in your device registry (no pending request)");
+    expect(logs).not.toContain("The request expires at");
+    expect(logs).not.toContain("Waiting for approval");
     // 要求の照会には行かない(登録簿の行が合図)
     expect(
       state.paths().some((path) => /^GET \/auth\/devices\/requests\/[0-9a-f]{32}$/.test(path)),

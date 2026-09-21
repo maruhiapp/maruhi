@@ -154,17 +154,26 @@ export function deviceAddOp(input: {
     const io = yield* CliIo;
     const keys = yield* deviceKeyForRequest(input);
     const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
-    const expiresAtMs = yield* createOrResumeRequest(input, keys);
+    const request = yield* createOrResumeRequest(input, keys);
     yield* io.log(`This device's key fingerprint: ${keys.fingerprintHex}`);
     yield* io.log(`fp words: ${formatWordList(words)}`);
-    yield* io.log(
-      `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting or creates a new request`,
-    );
-    yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
+    if (request.kind === "already-registered") {
+      // 要求行は無い(登録簿の行が合図)— approve の案内は出さず、チェーンの確認へ
+      yield* io.log(
+        "This key is already in your device registry (no pending request); verifying it on each project's chain",
+      );
+    } else {
+      yield* io.log(
+        `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(request.expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting or creates a new request`,
+      );
+      yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
+    }
     const signalled = yield* waitForRegistryRow({
       client: input.client,
       fingerprintHex: keys.fingerprintHex,
-      expiresAtMs,
+      // 登録簿に載っている鍵は 1 巡目で合図を拾う(期限は形式上 TTL ぶん先)
+      expiresAtMs:
+        request.kind === "pending" ? request.expiresAtMs : Date.now() + DEVICE_ADD_REQUEST_TTL_MS,
       intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
     });
     if (!signalled) {
@@ -262,11 +271,16 @@ function deviceKeyForRequest(input: {
   });
 }
 
-/** 要求の作成(409 は再開 — request-exists / device-registered)。expiresAtMs を返す。 */
+/** 要求の作成の結果: 待機中の要求(期限つき)か、登録簿に既に載っている鍵か。 */
+type RequestState =
+  | { readonly kind: "pending"; readonly expiresAtMs: number }
+  | { readonly kind: "already-registered" };
+
+/** 要求の作成(409 は再開 — request-exists / device-registered)。 */
 function createOrResumeRequest(
   input: { readonly client: MaruhiClient; readonly label: string },
   keys: MasterKeys,
-): Effect.Effect<number, CliError> {
+): Effect.Effect<RequestState, CliError> {
   return input.client.devices
     .requestCreate({
       payload: {
@@ -276,22 +290,24 @@ function createOrResumeRequest(
       },
     })
     .pipe(
-      Effect.map((response) => response.expiresAtMs),
+      Effect.map((response): RequestState => ({
+        kind: "pending",
+        expiresAtMs: response.expiresAtMs,
+      })),
       Effect.catch((error) =>
         Effect.gen(function* () {
           if (error instanceof DeviceRegistryConflictError) {
             const conflict: DeviceRegistryConflictError = error;
             if (conflict.reason === "device-registered") {
-              // 登録簿に既に自分の行がある = 合図は立っている。要求行は無いので
-              // 期限は TTL ぶん先に置き、待機の 1 巡目で合図を拾わせる
-              return Date.now() + DEVICE_ADD_REQUEST_TTL_MS;
+              // 登録簿に既に自分の行がある = 合図は立っている(要求行は無い)
+              return { kind: "already-registered" } satisfies RequestState;
             }
             // 同じ鍵の要求が生きている = 待機の再開(K4-5 第 2 巡)。照会の失敗は
             // 握り潰さず伝える(「失効した」と誤って案内しない — 409 は生存の証)
             const request = yield* input.client.devices
               .requestGet({ params: { fp: keys.fingerprintHex } })
               .pipe(Effect.mapError(toCliError));
-            return request.expiresAtMs;
+            return { kind: "pending", expiresAtMs: request.expiresAtMs } satisfies RequestState;
           }
           if (error instanceof DeviceRegistryLimitError) {
             const limit: DeviceRegistryLimitError = error;
