@@ -1,59 +1,58 @@
 ---
 title: Recover your key
-description: Three ways to get your master key onto a machine that does not have it — a recovery code, an approval from another device of yours, or approvals from guardians you designated.
+description: When every device is lost, the reserve key in the recovery ledger registers a new one. Three ways to open it — a recovery code, a passkey, or approvals from guardians you designated.
 sidebar:
   order: 6
 ---
 
-Your master key is created once, by `maruhi key generate`, and lives only in the OS keychain (or in a running `maruhi agent`). maruhi is zero-knowledge: the server holds encrypted copies at most, so it can never hand the key back to you on its own. When a new laptop, a rebuilt dev container, or a Codespace needs the key, one of the three paths below brings the _same_ key there — you keep your place in every project without being re-invited.
+Each of your machines has its own [device key](/docs/devices), and one more key — the **reserve key** — lives only in the recovery ledger on the server, sealed so that the server cannot open it. maruhi is zero-knowledge: what the server holds is ciphertext, and the three paths below are the three ways _you_ can open it. Opening the reserve key does not put it on the new machine to stay: `maruhi key recover` uses it once, to register the machine's own new device key on every project, and then discards it. You keep your place in every project without being re-invited.
 
-| Path                                                        | What you need                                              | Typical use                                       |
-| ----------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------- |
-| [Recovery code](#recovery-code)                             | The 52-character code shown by `maruhi key generate`       | Lost every device, or a machine you set up rarely |
-| [Handoff from another device](#handoff-from-another-device) | A device that still has the key, and you at both keyboards | A new laptop, a Codespace, a container rebuild    |
-| [Guardians](#guardians)                                     | Teammates you designated beforehand, and a call to them    | Lost every device _and_ the recovery code         |
+This page is for the case where **no device of yours is left**. To put maruhi on a new laptop or a Codespace while you still have a device, do not recover: add the machine as a device (`maruhi device add` there, `maruhi device approve` on a device you have — [Devices](/docs/devices)). Nothing secret moves, and the ledger is not touched.
 
-Every path ends in the same state: the key is stored on the new machine, and `maruhi key show` prints its fingerprint. All of them run only on a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI agent environments are refused), because the recovered key lands on that machine.
+| Path                            | What you need                                                          | Command                        |
+| ------------------------------- | ---------------------------------------------------------------------- | ------------------------------ |
+| [Recovery code](#recovery-code) | The 52-character code shown when the reserve key was created           | `maruhi key recover`           |
+| [Passkey](#passkey)             | A passkey you sealed the reserve key to with `maruhi key seal passkey` | `maruhi key recover --passkey` |
+| [Guardians](#guardians)         | Teammates you designated beforehand, and a call to them                | `maruhi key recover --handoff` |
+
+Every path ends in the same state: the machine has a device key of its own, registered on your projects, and `maruhi key show` prints its fingerprint and the reserve key's. All of them run only on a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI agent environments are refused), because key material passes through that machine. The server allows five fetches of the sealed reserve key per user per hour — enough for a lost laptop, not for daily container churn ([keychain page](/docs/linux-keychain#dev-containers-and-codespaces)).
+
+Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key, so only someone who can open it can change it. Which material each of those commands accepts differs; see [Passkey](#passkey).
 
 ## Recovery code
 
-`maruhi key generate` wraps your key with a random code, stores the wrapped copy on the server, and shows the code once. On a machine without the key:
+`maruhi key generate` creates the reserve key together with your first device key, seals it with a random code, stores the sealed copy on the server, and shows the code once. On a machine without a key:
 
 ```sh
 maruhi login
 maruhi key recover            # asks for the recovery code
 ```
 
-The server allows five recovery fetches per user per hour, so this is for occasional loss, not for daily container churn — use a handoff for that. `maruhi key recovery` issues a new code (the old one stops working) if you suspect the code was seen by someone else.
+The CLI opens the reserve key, asks one question — whether the opened key was created as your reserve key, never used as a daily device key (type `yes`; on an install from before device keys the ledger holds a copy of a device key instead, and the answer is no) — then generates this machine's device key, registers it on every project where the reserve key is a device, distributes the environment keys to it, and discards the reserve key from memory. Projects where the reserve key is not registered are listed: ask an admin there to re-invite you.
 
-## Handoff from another device
+`maruhi key recovery` reissues the code (the old one stops working) if you suspect it was seen by someone else; it opens the ledger with the current code, or with `--passkey`. When the code is lost, `maruhi key recovery --replace` creates a new reserve key sealed with a new code without opening the ledger, and revokes the reserve keys recorded on that machine on every project — see [The reserve key](/docs/devices#the-reserve-key) for the check to run afterwards.
 
-A handoff moves the key from a device that has it to one that does not, without the recovery code and without registering anything on the server in advance. The new device shows a short code, you type that code on the old device and approve, and the key arrives.
+If the recovery was interrupted before every project registered the new device, `maruhi key recover --resume` keeps the device key already on the machine and only registers it where it is still missing.
 
-On the **new** device:
+## Passkey
 
-```sh
-maruhi login
-maruhi key recover --handoff
-```
-
-It prints a code in groups of four letters and waits. The code is a one-time public key, not a secret: anyone who sees it can only send _you_ an approval. On the **old** device, in the same account:
+A passkey (a platform or security-key authenticator) can open the reserve key instead of the code:
 
 ```sh
-maruhi key approve <code>      # asks you to type yes
+maruhi key seal passkey --label "YubiKey"      # once, on a registered device: opens the ledger, then a page on localhost registers the passkey
+maruhi key seal list
+maruhi key seal remove <wrap-id>
 ```
 
-The new device picks up the approval within a few seconds, stores the key, and prints who approved it. Requests expire after 15 minutes; run `maruhi key recover --handoff` again for a fresh code. Only approve codes you generated yourself moments ago — approving sends your master key to whichever device showed the code.
-
-Why this is safe to do over a screenshot or a chat window: the old device encrypts the key to the one-time key inside the code, so the server relays ciphertext it cannot open, and the new device's one-time key never leaves its memory. The server never sees the code itself; it only knows a hash of it.
+On a machine without a key, `maruhi key recover --passkey` opens the reserve key with the passkey and continues exactly as with the code. `maruhi key recovery`, `maruhi key seal passkey` and `maruhi key reserve rotate` accept `--passkey` in place of the code; `maruhi guardian add` opens the ledger with the code.
 
 ## Guardians
 
-Guardians are project teammates you designate in advance. Each guardian gets an encrypted share of a key that unlocks a copy of your master key. When you have lost every device and the recovery code, a guardian's approval (or all of them, depending on the mode you chose) restores it.
+Guardians are project teammates you designate in advance. Each guardian gets an encrypted share of a key that unlocks a copy of your reserve key. When you have lost every device, the code, and any passkey, a guardian's approval (or all of them, depending on the mode you chose) opens it.
 
 ### Designating guardians
 
-Guardians must be members of a project you share, because their public keys come from that project's verified membership chain — maruhi has no global key directory. Pick the mode:
+Guardians must be members of a project you share, because their public keys come from that project's verified membership chain — maruhi has no global key directory. A share is sealed to each of a guardian's devices **as they are at that moment**: a device they add later holds no copy of it and cannot approve with it, and a device they revoke keeps one until you re-create the group. Pick the mode:
 
 - `any` — one approval from any guardian is enough. Convenient, and each guardian alone could approve a request they believe is yours.
 - `all` — every guardian in the group must approve. Nobody can act alone; losing contact with one guardian makes the group unusable.
@@ -62,29 +61,35 @@ Guardians must be members of a project you share, because their public keys come
 maruhi guardian add --project <project-id> --mode any <user-id> [<user-id> …]
 ```
 
-For each guardian, the command shows their key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag; like the handoff commands, it runs only on a human interactive terminal and is refused in AI agent environments.
+The command opens the ledger with your recovery code first. Then, for each device of each guardian, it shows the device key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag; it runs only on a human interactive terminal and is refused in AI agent environments.
 
-`maruhi guardian list` shows your groups; with `--project <id>` it also checks every guardian's key against the project's current membership and marks a guardian who left, or who rebuilt their key with `maruhi key generate`, as `STALE`. A stale guardian cannot open their share, so remove that group and add it again. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
+`maruhi guardian list` shows your groups and how many devices each share is sealed to; with `--project <id>` it also checks those devices against the project's current membership. A guardian is marked `STALE` when none of them is left — they are no longer a member, or every sealed device has been revoked — and their share cannot be opened at all, so remove that group and add it again. When only some of the sealed devices are gone, the share still opens on the rest and the CLI suggests re-creating the group so the revoked device's copy is retired. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
 
 ### Recovering with guardians
 
-The requester's side is identical to a device handoff:
+On the machine without a key:
 
 ```sh
 maruhi login
 maruhi key recover --handoff
 ```
 
-Send the code to a guardian and ask them to run, on their own machine:
+It prints a code in groups of four letters and waits. The code is a one-time public key, not a secret: anyone who sees it can only send _you_ an approval. Send it to a guardian and ask them to run, on their own machine:
 
 ```sh
-maruhi key approve <code>      # shows whose key it is, and asks for yes
+maruhi guardian approve <code>      # shows whose key it is, and asks for yes
 ```
 
-Before typing `yes`, the guardian should confirm out of band — over a call to a number they already know — that you asked for this right now. Anyone who took over your account could show them a code. The guardian's command opens their share and re-seals it to the one-time key in the code; nothing is stored on the guardian's machine. In `all` mode, the new device keeps waiting until every guardian has approved.
+Before typing `yes`, the guardian should confirm out of band — over a call to a number they already know — that you asked for this right now. Anyone who took over your account could show them a code. The guardian's command opens their share and re-seals it to the one-time key in the code; nothing is stored on the guardian's machine. In `all` mode, your machine keeps waiting until every guardian has approved. Requests expire after 15 minutes; run `maruhi key recover --handoff` again for a fresh code. Once the approvals are in, the CLI opens the reserve key and continues exactly as with the code.
+
+Why this is safe to do over a screenshot or a chat window: the guardian encrypts to the one-time key inside the code, so the server relays ciphertext it cannot open, and your machine's one-time key never leaves its memory. The server never sees the code itself; it only knows a hash of it.
+
+## Starting over
+
+`maruhi key generate` refuses when your account already has a reserve key in the ledger: a second machine is a device to add, not a new identity. Only when every device _and_ every way to open the ledger — code, passkeys, guardians — are lost, `maruhi key generate --new-identity` creates a new key pair; existing project values stay undecryptable until an admin re-invites you.
 
 ## Limits and rate limits
 
-- The new device refuses to start a handoff when it already holds a key (it would overwrite it); use `maruhi key show` to check.
-- Handoff requests: five per user per hour. Approvals: 20 per user per hour. Fetches of the encrypted key copies (recovery code and guardian groups together): five per user per hour.
+- `maruhi key recover` refuses to start when the machine already holds a device key (`--resume` is the exception); use `maruhi key show` to check.
+- Guardian handoff requests: five per user per hour. Approvals: 20 per user per hour. Fetches of the sealed reserve key (recovery code and guardian groups together): five per user per hour.
 - Nothing on this page is scriptable on purpose: every path needs a human at a terminal, and the code entry or approval is refused when maruhi detects an AI agent environment.

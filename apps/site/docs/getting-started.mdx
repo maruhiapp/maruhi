@@ -35,13 +35,13 @@ maruhi login
 
 The token is stored in the OS keychain. On a headless Linux box, in WSL, or in a dev container there may be no keychain yet and this command fails — [Keychain on Linux and in containers](/docs/linux-keychain) shows the five-line setup, and `maruhi agent -- bash` for a session that keeps the token and key in memory only.
 
-## 4. Generate your master key (first time only)
+## 4. Generate your keys (first time only)
 
 ```sh
 maruhi key generate
 ```
 
-This runs on a human's machine and issues a recovery code. Keep it somewhere safe: maruhi is zero-knowledge, so nobody can recover your key for you. To bring the same key to a second machine later, run `maruhi key recover --handoff` there and approve from this one — [Recover your key](/docs/recover-your-key) covers that, the recovery code, and guardians (teammates who can help restore the key when everything else is lost).
+This creates two keys: this device's key, which stays in this machine's keychain, and a reserve key that lives only in the recovery ledger, sealed with the recovery code the command shows. It runs on a human's machine. Keep the code somewhere safe: maruhi is zero-knowledge, so nobody can recover your key for you. A second machine does not get a copy: run `maruhi device add` there and approve it from this one — [Devices](/docs/devices) covers that, and [Recover your key](/docs/recover-your-key) covers the reserve key, the code, passkeys, and guardians (teammates who can help when every device is lost).
 
 ## 5. Create a project and push a secret
 

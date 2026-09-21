@@ -33,6 +33,7 @@ maruhi is in **private preview**. The hosted service is invite-only, and release
 - **Everything happens in the CLI.** The web dashboard is read-only and never receives a key or a plaintext value.
 - **Scoped by keys, not by policy.** A member limited to some environments receives the keys of those environments only; there is no key for the others anywhere, so no server rule has to hold. See [Environment scopes](/docs/environment-scopes).
 - **Two owners for the dangerous operations.** With a [four-eyes policy](/docs/four-eyes), removing a member, granting a server key, or changing a role takes the signatures of two owners on the project's chain — a rule every client verifies, not a server setting.
+- **Keys belong to devices, access belongs to people.** Each machine has its own device key, added by approving its fingerprint from a device you already have and revoked on its own when lost; one reserve key lives only in the recovery ledger. See [Devices](/docs/devices).
 - **Nothing phones home.** The CLI, the dashboard, and this site send no telemetry and load no third-party scripts.
 
 ## Reference

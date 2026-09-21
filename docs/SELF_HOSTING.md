@@ -990,7 +990,9 @@ and registers it on each project at the next sync; every keyed command warns
 holds a copy of the same key run `maruhi device add --replace` and approve it
 from the first machine with `maruhi device approve <fingerprint>` (the copy is
 removed from that machine's keychain and replaced by its own device key —
-`maruhi device list` shows the result per project).
+`maruhi device list` shows the result per project). The user-facing procedure
+(adding, listing and revoking devices, the reserve key, and this migration) is on
+the docs site: https://maruhi.app/docs/devices (source `apps/site/docs/devices.mdx`).
 
 ## Troubleshooting
 

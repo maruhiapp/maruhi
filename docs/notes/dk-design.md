@@ -1317,3 +1317,274 @@ K5 の実装 PR での裁定。§9 と同じく候補(3 案以上)→ 巡(採用
 - **レビュー後の構造化(K5-16)**: K5-13 / K5-15 の簿記(失効 FP の集合・`pushDevice` のガード)を `FingerprintTable`(鍵 ↔ FP の単射・set-once の対応表)に置き換え、stale actor・在籍またぎ・他人の FP の流用・失効済み FP を並べた失効を同じ 1 規則で排除。Rotation の trigger 文言に `triggerChainSeq` を添えた(K5-5 再探索)。
 - **所有者に諮る点**: (1) `add_device` のワイヤに FP が無く、Web は hash を計算しない(K6-J)ため Members の端末表示は劣化形(「fingerprint not reported」/ unresolved)— 正規の手段は「WebCrypto SHA-256 を表示用識別子の導出として許す(ADR-0018 改訂 2・4 項の解釈)」か「サーバーがエントリに導出 FP を注記する(api-schema 改訂)」のどちらか(K5-1)。(2) Astryx `CodeBlock` は inline style を出し厳格 CSP と両立しない(K5-11)— upstream issue の候補。`overflowWrap: anywhere` の xstyle 上書きが HexText / payload の 2 か所目になったので、variant 化か ui.package 昇格の判断(ADR-0013 の規律)。
 - **申し送り(K6 / 正本へ)**: (0) `GET /auth/devices` の応答の envelope(`{ devices }`)は api-schema に名前付き Schema が無く、Web の `DeviceList` 型は手書き(pullfrog の指摘 — 本 PR は api-schema を触らない)。`DeviceListSchema` として名前を付け export する小改訂を K6 以降の api-schema PR に載せる。(0-b) K6 の Members / Devices の docs に「Web は読める行だけを畳み、読めない行は集合を変えない(表示は上位集合になりうる)。読めなかった行があれば件数を出す — 検証は `maruhi project verify`」の 1 文(K5-17)。(1) docs の Devices ページは「Web は登録簿と端末数を『サーバー申告』として見せるだけで、検証と失効は CLI」の 1 文を持つ(K5-7 の説明文と同じ字面)。(2) 端末失効の要ローテーション行は人を対象に出る(FP は運ばない — K5-5)— docs で `maruhi rotation list` の表示と揃える。(3) Web の端末表示が正確になる条件(所有者裁定 (1))が決まるまで、docs は「fingerprint not reported」の意味(署名していない端末・予備鍵)を 1 行で説明する。(4) `ROADMAP` の DK 行に K5 完了を追記済み。K6(公開 docs)は未着手。
+
+## 11. K6 追記(2026-09-21 — 公開 docs〔apps/site〕への端末鍵分離の反映)
+
+K6 は docs のみの段(§3 の K6 行)。着手前に CLAUDE.md → §1 / §3 / §5(「Codespaces の docs(K6)」「残余」)→ §9 の申し送り (1)(6)(8)(10) と原則 2 つ(K4-2「台帳を変えるのは台帳を開ける者だけ」・K4-5「advisory は合図にしてよいが判断の入力にはしない」)→ §10 の所有者に諮る点と申し送り (0)(0-b)(1)(2)(3) → es-design.md §13(K7-A〜K7-K)→ `apps/site/docs/` 全 10 ページ → README の docs 一覧 → ROADMAP の DK 行 → SELF_HOSTING の "DK K3" / "DK K4" 追補 → help golden(`key` / `device` / `token` / `guardian` / `agent`)→ `ProjectScreen.tsx` / `DevicesScreen.tsx` の画面文言、の順に読んだ。書くのは K4 / K5 で出荷済みの利用者に見える挙動だけで、コード・正本・ベクター・api-schema は触らない。語彙の正: コマンド名・フラグ・既定値・出力文言は help golden と `device.ts` / `device-sync.ts` / `key-recover.ts` / `keygen.ts` / `recovery.ts` / `handoff.ts` / `failure.ts` / `rotation.ts`、数値は `policy.ts`(`MAX_DEVICES_PER_MEMBER = 16`)と `packages/api-schema/src/devices-api.ts`(登録簿 32 行・要求 5 件 / 時・要求 TTL 15 分)と `db.package/key-wraps.ts`(`KEY_BLOB_FETCH_LIMIT = 5`・`HANDOFF_REQUEST_LIMIT = 5`・`APPROVAL_LIMIT = 20`)、Web の節名・chip は `ProjectScreen.tsx`(「Devices」列・"fingerprint not reported"・"… device entries in the reported chain could not be read …")と `DevicesScreen.tsx`(「Devices」画面・「Lost a device?」・"as reported by the server")から写す。各裁定点で §3 の手続き(候補 3 案以上 → 上位互換 / 銀の弾丸 / 反例の巡を、新規案の出ない巡が連続 2 回になるまで → 原則の抽出と既存原則との ✓ / ✗ → 採用)を回し、巡ごとに「何を試みて何が出たか」を残す。**裁定は実装の前に記録し、実装中の追加判断は K6-N 以降として同じ形でその場に足す。**
+
+**事実確認(単巡 — docs を書く前にコードで確かめたこと)**: (1) `device add` は鍵ありのとき「要求行あり = 待機再開 / 登録簿行あり = チェーン確認 / どちらも無し = 拒否(`--replace` の案内)」(K4-21)。要求の TTL 切れ後は要求行も登録簿行も無いので、再実行は拒否される — 一方、CLI の期限切れ文言は「re-run `maruhi device add` … it reuses this key and creates a new request」と言い、実装と食い違う(→ 申し送り 1)。(2) `device approve` は「≥1 registered / already」のときだけ登録簿 PUT + 要求取消を行う(K4-31)ので、承認が途中で止まれば要求は残り、承認側の再実行で完了する。(3) `key recover` は儀式(TTY + 非エージェント)、`device add` はゲートなし、`device approve` は儀式ゲート、`device revoke` は儀式ではない(`--yes` 可、`--revoke-token` は明示)。(4) 復元後の「予備鍵か」の 1 問は既定 no(K4-10)。(5) `rotation list` の端末失効行は "member (device revoked)" と人を対象に出る(FP は運ばない — K5-5)。(6) `maruhi agent` の help は "master key" のまま(K4-12 の据え置き範囲外 — 触っていない)。(7) `session.ts` の「鍵なし」文言は `--handoff` を "approval from another device or a guardian" と説明している(旧経路の残滓 → 申し送り 2)。
+
+### K6-A. 端末のページ構成 — 1 枚か分けるか(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| A-a **1 枚 `devices.mdx`**(追加 / 一覧 / 失効 / 予備鍵 / 移行 / Web / 残余) | 端末は「自分の資源」の 1 作業単位(DK-L) | 「端末を失った」人が 1 ページで失効 → トークン → rotate まで辿れる。`maruhi device --help` の 4 サブコマンドと 1 対 1 | 長い(7 節) |
+| A-b 2 枚(`devices.mdx` = 追加 / 一覧 / 失効、`reserve-key.mdx` = 予備鍵 / 移行) | 予備鍵は `key` グループの話 | 各ページが短い | 予備鍵の rotate と端末失効(`device revoke <fp>` で取り残しを消す)が相互参照になる。`recover-your-key.mdx` が既に予備鍵の開封を扱うので 3 ページに散る |
+| A-c 予備鍵を `recover-your-key.mdx` に吸収し、`devices.mdx` は端末だけ | 「復元」と「予備鍵」は同じ読者 | 予備鍵の rotate / 分離は復元の文脈でない(平時の操作) |
+| A-d Web の端末表示を `environment-scopes.mdx` の Members 段落に足し、`devices.mdx` からは外す | 既存の Web 節 | Members 表の端末列と Devices 画面の 2 か所を別ページで説明することになる |
+
+**第 2 巡**: (a) 上位互換 — 「A-a + 予備鍵の**開封 3 形**(コード / パスキー / 保護者)は `recover-your-key.mdx` に置き、`devices.mdx` は予備鍵を『台帳にだけ住む端末鍵』として**参照**する(rotate と分離は devices 側)」→ 読者の分割が「端末を持つ人(平時)」と「端末を失った人(有事)」で綺麗に切れる。A-a の具体化として採用。(b) 銀の弾丸 — 「ページを作らず既存 4 ページに散らす」→ `device revoke` の導線(失効 → トークン → rotate)が 1 か所に無くなる。棄却。(c) 反例 — 読み手「端末を失った既存ユーザー(移行未了)」: 失効したい端末が pre-DK の複製鍵だとどうなるか? → 複製鍵は最初の端末鍵と同じ FP なので `device revoke` は自分の唯一の端末を失効させることになり `last-device-protected` で止まる。この人の導線は「全端末喪失」の形(`key recover` → 新端末 → それから失効)であり、devices.mdx の失効節に「複製を消していないなら」の 1 文が要る(内容のある巡)。**第 3 巡**: 「Web の節を別ページ(`dashboard.mdx`)に」→ 既存 docs に Web 専用ページは無く、K5 の Members / Devices は端末の話なので devices.mdx が置き場。新案なし(空巡)。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「1 ページ = 1 つの作業(K7-D)。端末は平時の資源、復元は有事の作業で、予備鍵は両方に現れるので『住む場所』で分ける — 開封は復元側、登録 / rotate / 分離は端末側」— DK-A ✓、K7-D ✓、ADR-0017(英語)✓。**採用: A-a(第 2 巡 (a) の分割 + (c) の 1 文)**。
+
+### K6-B. 旧「Handoff from another device」節の消し方(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| B-a **節ごと削除し、「新しい端末に鍵を入れる」の問いに対する答えを『端末追加(devices.mdx)』への 1 文で置き換える** | 旧経路は K1 で仕様から・K4 で CLI から消えた | 存在しない機能を書かない(§1-bis)。前提 (3)「利用者不在のうちは古い実装を削除」の docs 側 | 旧 docs を覚えている人が「消えた」理由を読めない |
+| B-b 「Previously …」の注記を残す | 移行者への説明 | 出荷していない / 消した機能の予告・追憶は書かない(K7-F の裏面)。利用者不在で読者がいない |
+| B-c 節名を残し中身を保護者経路にする(アンカー維持) | リンク切れなし | アンカー `#handoff-from-another-device` を参照するのは同ページの表と linux-keychain だけ(K6 で両方書き直す)。名前が嘘になる |
+
+**第 2 巡**: (a) 上位互換 — 「B-a + linux-keychain の旧アンカー参照も同 PR で消す + `bun run validate --strict` で切れたリンクを機械検査」→ B-a の具体化(構造で固定)。(b) 銀の弾丸 — 「`--handoff` という語を docs から消す」→ `key recover --handoff` は保護者経路の実フラグ(help golden)。語は残し意味を「保護者の承認」に写す。棄却。(c) 反例 — 読み手「旧 CLI を持つ保護者」: 要求者が新 CLI で `key recover --handoff` を出し、保護者が旧 CLI で `key approve` を打つ → K4 サーバーは旧形を 400 で拒む(K4-15)。docs は保護者側のコマンドを `maruhi guardian approve <code>` とだけ書き、SELF_HOSTING の順序 2(全 CLI 更新)に任せる。混在の案内は docs に書かない(セルフホスト管理者の領分)。新案なし。**第 3 巡**: 空巡(「アンカーのリダイレクト」は Blume の構成物を増やす — 参照元が無いので不要)。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「消した経路は docs からも消し、代替への導線だけを残す。切れたリンクは検査(validate --strict)で固定する」— 前提 (3) ✓、K7-A「docs が名前を発明しない」✓。**採用: B-a + validate**。
+
+### K6-C. Codespaces / dev container の推奨運用(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| C-a **永続ボリュームで端末鍵を持ち越す(1 codespace = 1 端末: `device add` → ラップトップで `device approve`)を主、`maruhi agent`(`--key-ttl`)内での短命運用を従とし、毎回捨てる運用は「失効 + rotate を繰り返す」と明記して勧めない** | §5「Codespaces の docs(K6)」の字面 | 端末鍵の意味(1 端末 = 1 鍵、捨てる = 失効義務)が運用に直結する | ボリューム運用の手順は Codespaces 側の機能に依存(既存ページも同じ) |
+| C-b 毎回 `device add` / `approve` を勧める | 秘密を運ばない | rebuild ごとに add(承認の儀式)+ 旧端末の revoke + rotate。端末 16 台の上限に当たる(捨てた端末を失効しないと溜まる) |
+| C-c cap を絞った端末(`--cap member --env dev`)として毎回追加する | 失効の rotate 義務が dev だけになる | rotate 義務は減るが失効の手間は残る。ただし「CI 箱に prod を渡さない」用途は正しい → C-a の補助として cap の例を 1 文足す |
+| C-d 転送 agent(KL4)を待つと書く | §5 の字面「KL4 を待つか」 | 出荷していない機能を書かない(§1-bis)。棄却 |
+
+**第 2 巡**: (a) 上位互換 — 「C-a + 短命コンテナは `--cap` で狭い端末にし、捨てるときは `device revoke <label>` を打つ、の 2 文」→ C-c の利点を C-a に取り込む(内容のある巡)。(b) 銀の弾丸 — 「コンテナで鍵を持たず `MARUHI_TOKEN` だけで動かす」→ 値操作は端末鍵が要る(既存ページの「Value operations do not」)。CI は OIDC リース(github-actions.mdx)。棄却。(c) 反例 — 読み手「エージェント環境の codespace(Copilot agent 等)」: `device add` はゲートなしで動くが `device approve` は登録済み端末の人が打つ。承認後の初回同期の登録(K4-37)は儀式ゲートの内側 — codespace が非対話なら候補の Note だけ出る。docs には「承認はいつも人の端末で」と書き、それ以上は書かない。反例 2「レート制限」: 要求 5 件 / 時(`MAX_DEVICE_ADD_REQUESTS_PER_HOUR`)— 毎回捨てる運用は 1 時間に 5 rebuild で止まる。C-a の「勧めない」理由に足す。**第 3 巡**: 空巡(「dotfiles で `own-devices.json` も持ち越す」→ 非機密の記録で、無くても観測で埋まる〔K4-3 反例 6〕。書かない)。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「端末は鍵の単位なので、捨てる端末は失効する端末。捨てない運用(ボリューム)を主、捨てるなら狭い cap と失効の 2 文」— DK-A ✓、DK-B(失効 = rotate 義務)✓、§5 の申し送り ✓。**採用: C-a + (a) の 2 文 + レート制限の理由**。
+
+### K6-D. Web の端末表示の説明の置き場と文言(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| D-a **`devices.mdx` に「In the dashboard」の 1 節: Members 表の Devices 列(端末数 + chip)と Devices 画面(登録簿)は「as reported by the server」で、検証と失効は CLI。"fingerprint not reported" = 申告のバイト列から束縛できない端末(署名していない端末・予備鍵)。読めない行があれば件数の 1 文が出る — 検証は `maruhi project verify`。要ローテーション行は人を対象に "member (device revoked)"** | K5 申し送り (0-b)(1)(2)(3) の 4 文を 1 節に | 端末の話は 1 ページ(K6-A) | `environment-scopes.mdx` の Members の文(role と scope)からは離れる |
+| D-b `environment-scopes.mdx` の Members 段落に端末列を足す | 既存の Web 節 | scope のページに端末の話が混ざる |
+| D-c 書かない(Web は自明) | 最小 | "fingerprint not reported" の意味は画面から読めない(K5 (3) が docs を要求) |
+
+**第 2 巡**: (a) 上位互換 — 「D-a + Devices 画面の『Lost a device?』Callout と同じ順(CLI で失効 → Web でトークン失効)を docs の失効節に写す」→ D-a の具体化(Web と docs で同じ順序)。(b) 銀の弾丸 — 「K5 所有者裁定 (1) が決まれば not reported は消えるので書かない」→ 未決のまま出荷しているので現状を書く(K5 申し送り (3) の字面)。決まったら docs を直す(申し送り 3)。(c) 反例 — 読み手「Web で verified と読む人」: 文言に "verified" を置かない(§2 表示規律)。docs で「検証する」と言えるのは `device list` / `project verify` / `member list` だけ。反例 2「rotation list と Web の文言差」: CLI は "member (device revoked)"、Web は "device revoked: <userId> (chain seq N)"。両方を写し「人を対象に出る(端末 FP は Audit の `chain.device_revoked` に)」と書く。**第 3 巡**: 空巡。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「Web の記述は『サーバー申告』の注記を落とさず、検証を名乗るのは CLI だけ(ADR-0018 改訂 2・K5-17『言えなかったことを隠さない』)」— ✓。**採用: D-a + (a)**。
+
+### K6-E. フィンガープリントの表記(列挙 1 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| E-a **コマンドごとに写す**: `device approve` = 全長 32 hex または 12 語(`fp-or-words` — 切り詰めなし)、`device revoke` = 接頭辞 8 hex 以上か自分の端末のラベル、`--user` のときは FP のみ、`key show` / `device add` が hex と 12 語の両方を出す | help golden の字面(K4-6 / K4-7 の裁定どおりに違う) | **採用** |
+| E-b 12 語で統一 | 読みやすい | `revoke` は語を受けない(接頭辞 hex かラベル)。嘘になる |
+| E-c hex で統一 | 一様 | `approve` の 12 語(電話で読み上げる形)を隠す |
+
+**第 2 巡**: 反例「approve に接頭辞を打つ」→ CLI が "fingerprints are never truncated for approval" と拒む。docs の What can go wrong に写す。新案なし(空巡)。**第 3 巡**: 空巡。打ち止め。**原則**: 「語彙は写す(K7-A)— 入力形が違うなら違うまま書く」✓。**採用: E-a**。
+
+### K6-F. 脅威モデルの残余の載せ方(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| F-a **`devices.mdx` 末尾に「What revoking a device does not do」の節: (1) 紛失端末が失効前に追加した端末は自動では消えない — `device list` の "added by <fp>" を見て一括失効、(2) 登録簿のラベルは偽装できるが失効は FP で確定(確認表が FP を出す)、(3) 復元に使った端末が侵害されていれば予備鍵も侵害 — `key reserve rotate`、(4) 失効はトークンを失効させない(AUTH §6)** | §5「残余」(1)〜(3) + K4 (4) をそのまま | 保証を弱めず増やさない | 「できない」の列挙が不安を煽る |
+| F-b 各節に散らす | 文脈で読める | 失効の後に読む人が 1 か所で見られない |
+| F-c 書かない | — | §5 は「脅威モデル文書へ」と指定。docs 以外に公開文書が無い |
+
+**第 2 巡**: (a) 上位互換 — 「F-a + 各項目に『何で気づけるか』(device list の added by / 確認表の FP / key show の reserve key)を添える」→ 「できない」を「見える」に変える(内容のある巡)。(b) 銀の弾丸 — なし(残余は設計の帰結で docs で消せない)。(c) 反例 — 「保証を増やして書く」誘惑: (1) を「cap の単調性が守る」と書くと嘘(§2-bis: (owner, all) の端末は同じ cap の端末を作れる)。単調性は「盗まれた端末は自分より強い端末を作れない」までに留める。反例 2「K5 (0-b) の『Web は上位集合になりうる』」→ K6-D に入れる(Web の節)。**第 3 巡**: 空巡。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「残余は正本の非保証(§14.3)と設計録 §5 の字面から逸脱せず、各項目に検出手段を添える」— CRYPTO §1 原則 ✓(保証を増やさない)、K4-4「端末集合の変化は隠さない」✓。**採用: F-a + (a)**。
+
+### K6-G. `sidebar.order` / index の導線 / e2e の期待値(単巡 — K7-B / K7-C / K7-I の先例)
+
+- `devices.mdx` は `sidebar.order: 10`(scope 8・四眼 9 の次)。既存番号は触らない(K7-B)。`recover-your-key.mdx`(6)は据え置き — 順序を「端末 → 復元」に入れ替える案は既存 5 ページの番号変更を要し、得るものが無い。
+- `index.mdx` の "How maruhi works" に 1 行「**Keys belong to devices, access belongs to people.**」(ES K7-C の C-a)。Card は足さない(入口の追加ではない)。
+- `apps/site/test/e2e.test.ts` の llms.txt 期待に `/docs/devices`(K7-I)。Card 検査は不変。
+
+### K6-H. `master key` の言い換えの範囲(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+4 ページ 17 箇所(getting-started 1・invite 1・linux-keychain 9・recover 6 — うち recover の 6 と linux-keychain の 2 は節ごと書き直す)。
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| H-a **文単位で判定: 「master key」が『この端末に住む鍵』を指す文は "device key" に、『台帳が守る鍵』を指す文は "reserve key" に、「1 つの鍵を全端末に運ぶ」前提の文(the _same_ key arrives / bring the same key to a second machine)は事実が変わったので書き直す。それ以外の文は触らない** | K7-A「事実と違う文だけ直す」 | **採用** |
+| H-b 機械的に全置換 | 一様 | 「master key」→「device key」で嘘になる文(台帳の話)を作る |
+| H-c 触らない | 最小 | `maruhi key show` は "device key fingerprint" と出す。docs だけ旧語 = K7-A の語彙の食い違い |
+
+**第 2 巡**: (a) 上位互換 — 「H-a + `linux-keychain.mdx` 冒頭の『persists exactly two secrets』を『token と this device's key』に直し、`maruhi agent` の説明は "this device's key" と書く」→ H-a の適用。(b) 反例 — 「`maruhi agent --help` と `agent status` は "master key" と表示する(help golden)。docs が "device key" と言うと画面と食い違う」→ 語彙の正は help golden だが、`key` / `device` グループの新しい help と `agent` の古い help が既に食い違っており、docs は新しい方(正本 §3 の語)に揃える。`agent` の help は所有者への改訂提案(申し送り 4 — 文言のみ・golden 更新)。docs には「(the agent's own messages still call it the master key)」の注記を **1 か所**だけ置き、読者が `agent status` の出力で迷わないようにする(内容のある巡 — 画面との食い違いは docs が黙らない)。**第 3 巡**: 空巡。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「語彙は正本と新しい help に揃え、古い help との差は隠さず 1 か所で言い、改訂は所有者に諮る(K4-12)」— ADR-0017 ✓、K7-A ✓。**採用: H-a + 注記 1 か所 + 申し送り**。
+
+### K6-I. `docs/SELF_HOSTING.md` への参照(単巡)
+
+K4 追補の末尾に 1 文「The user-facing procedure is on the docs site: https://maruhi.app/docs/devices (source `apps/site/docs/devices.mdx`)」を足す。他は触らない(§1 項目 8)。
+
+### K6-J. 要求 TTL 切れ後の導線(列挙 1 巡 + 内容のある第 2 巡 + 空巡 2・打ち止め)
+
+事実確認 (1): 期限切れ後の `device add` 再実行は拒否される(要求行も登録簿行も無い → K4-21 の (c))。K4 申し送り (1) は「承認側の再実行を案内」と言うが、承認側は要求行が無ければ照合できない(K4-6: 一致 0 件 = 「要求が無い / 失効した」)。
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| J-a **docs は実装どおりに書く: 承認が 15 分以内に終わらなかったら、新端末で `maruhi device add --replace` を打つ(この鍵はまだどこにも登録されていないので失うものは無い)→ 新しい FP を承認する。承認が**途中で止まった**場合(要求は残る)は承認側が `device approve` を再実行し、新端末は「N projects」の報告の後に不足プロジェクトを見て `device approve` の再実行を頼む** | 出荷済みの挙動 | **採用** |
+| J-b CLI の期限切れ文言(「re-run reuses this key」)を写す | 文言は写す規律 | 実装と食い違う文言を docs に固定する(嘘) |
+| J-c K4 申し送り (1) の「承認側の再実行」を書く | 設計録の字面 | 要求が無いので承認側は何もできない |
+
+**第 2 巡**: (a) 反例 — 「`--replace` は『複製のときだけ』と help が言う(`device add --replace` = "only for installs from before device keys")」→ 未登録の鍵を捨てる用途でも害は無いが、help の字面と docs の案内が食い違う。docs は「the key was never registered anywhere, so replacing it loses nothing」と理由を添える。(b) 上位互換 — 「CLI 側で『鍵あり + 要求なし + 登録簿なし + どのチェーンにも無い』なら同じ鍵で要求を作り直す」→ コードの変更(本 PR の範囲外)。申し送り 1 として所有者に諮る(期限切れ文言の訂正か、同じ鍵での再要求の許可か)。**第 3 巡**: 空巡。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「docs は出荷済みの挙動を書き、CLI の文言が挙動と食い違うときは挙動を書いて文言の不一致を申し送る(K7-H の型)」✓。**採用: J-a + 申し送り 1**。
+
+### K6-K. 「台帳の変更には予備鍵の開封が要る」の置き場(単巡)
+
+`recover-your-key.mdx` の冒頭段落(3 形の表の直前)に 1 文: "Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key with the code or a passkey; only someone who can open the ledger can change it." K4-2 の原則の指定どおり。devices.mdx の予備鍵節からは参照のみ。
+
+### K6-L. `recipes.test.ts` との衝突(単巡)
+
+新ページ・改訂ページに `maruhi run --env production -- ` で始まる ```sh ブロックは置かない(devices.mdx に `maruhi run` は出ない)。grep で確認する(K7 の DP5 の線)。
+
+### K6-M. CLI help に残る "master key"(`maruhi agent` / `--key-ttl`)と docs の語彙(K6-H に含む — 申し送り 4)
+
+### K6 の裁定一覧(実装前の固定)
+
+| # | 論点 | 採用 | 他案に対して何が上位か |
+|---|---|---|---|
+| K6-A | ページ構成 | 1 枚 `devices.mdx` + 開封 3 形は recover 側 | 失効 → トークン → rotate の導線が 1 か所。予備鍵は「住む場所」で分割 |
+| K6-B | 旧ハンドオフ節 | 削除 + 端末追加への導線 + validate --strict | 存在しない機能を書かない。切れたリンクは検査で固定 |
+| K6-C | Codespaces | ボリューム主・agent `--key-ttl` 従・捨てるなら狭い cap + revoke | 「捨てる端末 = 失効する端末」を運用に直結。レート制限 5 件 / 時が毎回捨てる運用を止める |
+| K6-D | Web の説明 | devices.mdx に 1 節・「as reported」・検証は CLI | K5 申し送り 4 文を 1 節に。Web の Callout と同じ順序 |
+| K6-E | FP の表記 | コマンドごとに写す(approve = 全長 / 12 語、revoke = 接頭辞 / ラベル) | 統一案は嘘になる |
+| K6-F | 残余 | 末尾 1 節 + 検出手段 | 「できない」を「見える」に |
+| K6-G | order / index / e2e | 10・1 行・llms | K7 の先例 |
+| K6-H | master key | 文単位で device / reserve に、agent の注記 1 か所 | 機械置換は嘘を作る。画面との差は黙らない |
+| K6-I | SELF_HOSTING | 参照 1 文 | — |
+| K6-J | TTL 切れ | `--replace`(未登録なので無害)+ 途中停止は承認側の再実行 | CLI 文言 / K4 (1) は実装と食い違う → 申し送り |
+| K6-K | 開封の 1 文 | recover の冒頭 | K4-2 の指定 |
+| K6-L | recipes | `maruhi run --env production` ブロックを置かない | 構造で固定 |
+
+### 実装中の追加裁定(K6-N〜K6-P — その場で列挙・反例・原則)
+
+| # | 論点 | 候補と反例 | 採用 / 原則 |
+|---|---|---|---|
+| K6-N | `device approve` に yes 確認が無い(K4-6 の裁定「FP で照合 + yes(TTY ゲート)」と実装 `device.ts` の食い違い — 実装は儀式ゲート → 照合 → 表示 → 即登録) | (a) 設計録の字面(yes を聞く)を書く — 出荷済みの挙動と違う(嘘)。(b) **実装どおり「ラベル・FP・12 語を表示して登録する」と書き、yes の有無を書かない**。(c) 「yes を聞かない」と明示 — 読者に不安を与え、CLI が将来 yes を足しても docs が古くなる。**第 2 巡(反例)**: 「yes 無しで誤った FP を承認する」— 引数に全長 FP / 12 語を打つ行為そのものが照合(K4-6 f-1)で、一致しなければ登録されない。yes は照合の後の再確認にすぎない。**第 3 巡・第 4 巡**: 試した案「docs に『Ctrl+C で止められる』を書く」→ 登録は要求一覧の照合直後で、止める窓が無い。新案なし | (b)。原則「docs は出荷済みの挙動を書き、裁定録との差は申し送る(K6-J と同型)」→ 申し送り 5 |
+| K6-O | `guardian add` は `--passkey` を受けない(help golden)のに、初稿は「台帳を変えるコマンドはすべて `--passkey` を受ける」と書いた | (a) 初稿のまま — 嘘。(b) **受けるコマンド(`key recovery` / `key seal passkey` / `key reserve rotate`)を列挙し、`guardian add` はコードで開くと書く**。(c) 「多くは」とぼかす — 読者が試して失敗する。**第 2 巡(反例)**: 「パスキーしか無い人が保護者を指名したい」— `key recovery --passkey` でコードを再発行してから `guardian add`。docs の Passkey 節の文で導ける | (b)。原則「フラグは help golden から写す(K7-A)— 一般化して書かない」。`guardian add --passkey` の有無は所有者に諮る(申し送り 6) |
+| K6-P | MDX は `<fingerprint>` / `<user>` の裸の山括弧を JSX と読む(ビルド失敗) | (a) `&lt;` にエスケープ — 生の HTML 実体を本文に混ぜる。(b) **コードスパンに入れる**(CLI の出力断片は元々コードスパンで写す規律 — K7-E)。(c) 「fingerprint」と括弧なしで書く — CLI の字面から離れる。**第 2 巡(反例)**: 「表(`<fp-or-words>`)」— 表の中は既にコードスパン。**第 3 巡・第 4 巡**: 空巡(既存ページも同じ規律で書かれていることを grep で確認) | (b)。原則「CLI の字面はコードスパンで写す」 |
+
+### K6 完了記録(2026-09-21)
+
+- **成果物**: 新規 `apps/site/docs/devices.mdx`(`sidebar.order: 10` — 端末鍵と cap / 追加〔`device add --label` → `device approve <fp-or-words>` → 「N projects」〕/ 一覧〔チェーン・登録簿 "(server-reported)"・この端末の記録 reserve / approved / observed〕/ 失効〔参照 = 8 hex 以上か自分のラベル・確認表・`--yes` / `--project` / `--user`・実効 scope の rotate・持ち越しは `env rotate`・**トークンは別に失効** `token list` / `token revoke` / `--revoke-token`・pre-DK 複製の注意〕/ 予備鍵〔`key reserve rotate`・記録に無い旧予備鍵の取り残しを `device list` の reserve / observed で見比べる〕/ pre-DK からの移行〔`key recovery` → `device add --replace` + `approve`〕/ ダッシュボード〔Members の Devices 列・"fingerprint not reported"・読めない行の件数・Devices 画面 = 登録簿・"device revoked: <user>" と `rotation list` の "member (device revoked)"〕/ 失効がしないこと〔§5 残余 (1)〜(3) + トークン〕/ What can go wrong〔CLI の文言 11 件を写し〕)。`recover-your-key.mdx` = 予備鍵の開封 3 形(コード / `--passkey` / `--handoff` = `guardian approve`)・旧「Handoff from another device」節を削除・「新端末に鍵を入れる」は devices へ・`--resume` / `key recovery --replace` / `key generate --new-identity`・K4-2 の 1 文・レート制限(`KEY_BLOB_FETCH_LIMIT` 5 / `HANDOFF_REQUEST_LIMIT` 5 / `APPROVAL_LIMIT` 20)。`linux-keychain.mdx` = 「2 つの秘密 = トークンと端末鍵」・agent 節の `device add`・`--key-ttl` の帰結(忘れた鍵は失効する)と agent help の "master key" 注記 1 か所・Codespaces = 1 codespace 1 端末(ボリューム主・毎回捨てる運用は承認 + 失効 + rotate と 5 件 / 時で勧めない・短命なら `--cap member --env dev`)。`invite-a-teammate.mdx` = `key publish` は受諾端末の鍵(GitHub は複数可)・12 語 = 端末鍵の FP・初回は端末鍵 + 予備鍵・ラップは受諾端末へ。`getting-started.mdx` = 鍵生成の段落(端末鍵 + 予備鍵 + コード、2 台目は `device add`)。`index.mdx` = How maruhi works に 1 行。`README.md` の docs 一覧に Devices 行、`ROADMAP.md` の DK 行 `[x]` + K6 完了、`apps/site/test/e2e.test.ts` の llms 期待に `/docs/devices`、`docs/SELF_HOSTING.md` K4 追補に docs への参照 1 文。
+- **語彙点検(§1 項目 7)**: `master key` 17 箇所はすべて「この端末の鍵 / 台帳が守る鍵 / 1 鍵を全端末に運ぶ前提」のいずれかで事実が変わっており、文単位で書き直した(K6-H)。残るのは `linux-keychain.mdx` の注記 1 か所(agent help の語)のみ。`four-eyes.mdx` 27 行「recovery code with `maruhi key recovery`, or a guardian group」・95 行「same key … re-registered」は端末鍵でも正しいので不変。`github-actions.mdx` / `deploy-targets.mdx` / `environment-scopes.mdx` / `self-hosting.mdx` に master key / handoff / key approve の記述なし(grep)。`environment-scopes.mdx` 63 行の Members(role / scope)は不変で正しい。
+- **検証**: `bun run fmt:check` / `lint` / `typecheck` / `importlint` / `fallow:audit`(既存 baseline の重複警告のみ)/ `doctor`(web 差分なし・exit 0)/ `test`(141 ファイル 4904 件)/ `apps/site`: `validate --strict`(broken links 0)/ `build`(13 ページ)/ `e2e`(11 件 — `/opt/pw-browsers` の Chromium 1194 を Playwright 1.62.1 が期待する revision 1234 の配置にスクラッチ領域で別名づけして実行。`playwright install` は実行していない)。recipes.test.ts の対象(`maruhi run --env production -- ` で始まる sh ブロック)は新規 / 改訂ページに無い(grep)。
+- **所有者に諮る点**: (1) CLAUDE.md「master 秘密鍵」→「端末鍵の秘密鍵(DK 以後)」の語の改訂(K4 (6) の再掲 — 本 PR では触っていない)。(2) `maruhi agent` / `--key-ttl` / `agent status` の help と実行時文言の "master key" を "device key" に改める文言のみの改訂(help golden 更新 — K6-H)。docs は正本の語に揃え、注記 1 か所で差を言っている。(3) 要求 TTL 切れ後の `device add` 再実行: 実装は拒否(K4-21 (c))だが CLI の期限切れ文言は「re-run … reuses this key」と言う。docs は `--replace` を案内した(K6-J)。文言を実装に合わせるか、「鍵あり + 要求なし + 登録簿なし + どのチェーンにも無い」なら同じ鍵で要求を作り直す実装にするか。(4) K5 所有者裁定 (1)(Web の FP 束縛)が決まったら devices.mdx「In the dashboard」の "fingerprint not reported" の説明を改める。
+- **申し送り**(コードは触っていない — 挙動と文言の食い違い): (1) = 諮る点 (3)。(2) `session.ts` の「鍵なし」文言が `--handoff` を "approval from another device or a guardian" と説明している(旧端末経路の残滓 — 保護者のみが正)。同じく `recovery.ts` 226 行 "another device that still has the master key"、`invite.ts` / `login.ts` の "master key"。文言のみ。(3) K5 申し送り (0)(`DeviceListSchema` の export)は据え置き(api-schema の変更)。(4) = 諮る点 (2)。(5) `device approve` は yes 確認を持たない(K4-6 の裁定文は「+ yes」— 実装が正で、裁定録の字面が古い。K6-N)。(6) `guardian add` は `--passkey` を受けない(`key recovery` / `key seal passkey` / `key reserve rotate` は受ける)— パスキーしか無い人は `key recovery --passkey` でコード再発行が要る。フラグを足すかは所有者判断(K6-O)。(7) `linux-keychain.mdx` の `--key-ttl` の帰結(TTL 後に鍵は消え、再登録 + 失効が要る)は端末鍵の帰結として書いた — `--key-ttl` の用途(共有機の放置対策)と失効の手間の釣り合いは KL4(転送 agent)の再評価材料。
+
+### レビュー対応中の追加裁定(K6-Q〜K6-S — PR #190 pullfrog 第 1 巡への応答)
+
+pullfrog の 2 件(いずれも ℹ️・非ブロッキングだが**事実の誤り**)を検証し、裁定の手続きを回し直した。どちらも「文言の訂正」で閉じず、**同じ誤りが再発しない構造**まで持っていく(K5-16 の型)。
+
+| 裁定 | 論点 | 候補と反例 | 採用 / 原則 |
+|---|---|---|---|
+| K6-Q | `DeviceLimit`(16 台)が**どの端末に出るか**。初稿は「17 台目の `add` が拒否される」と書いたが、上限は DO の `appendProgram`(`add_device` の受理)で検査され、CLI に事前判定は無い(`MAX_DEVICES_PER_MEMBER` は CLI から参照されていない — 確認済み)。追記を行うのは**承認側**なので、422 は `device add` を打った新端末ではなく `device approve` を打った端末に出る。読者が違う端末を見張る | (a) pullfrog の suggestion をそのまま採る(「`device approve` が拒否される。要求自体は作られる」)— 承認以外の追記経路(初回同期の予備鍵登録・`key recover` の `finishRecovery`・`key reserve rotate`)を覆わない。(b) 追記経路を全列挙 — 正確だが 4 経路の列挙は読者の関心(16 台に達したらどうなるか)から遠い。(c) **規則で書く: 「上限はチェーンへの追記時に検査されるので、追記するコマンド(通常は承認側の `maruhi device approve`)に出る。プロジェクト単位なので、上限に達したプロジェクトだけが失敗し、他は登録される。失効済みの端末は数えないので、1 台失効させれば枠が空く」** — 経路が増えても嘘にならず、次の一手(失効)まで言える。(d) 数値だけ書き出どころを書かない — 初稿より後退。**第 2 巡(反例)**: 反例 1「reader が予備鍵を初回同期で登録しようとして 16 台目」— (a) では説明できない((c) は「追記するコマンド」で覆い、`device-sync.ts` は Note にして続けるので本体は失敗しない)。反例 2「`--project` 無しで 4 プロジェクトを承認し、1 つだけ上限」— `approveOnProject` はプロジェクト単位に `failed` を報告するので、(a) の「approve が拒否される」は言い過ぎ → (c) の「プロジェクト単位」節が要る。反例 3「失効済みが枠を占めるか」— `policy.ts` の JSDoc「失効済みは数えない = `revoke_device` / `remove_member` で解放」。次の一手として書く。**第 3 巡(上位互換)**: 「What can go wrong に症状として再掲する」— 同じ文字列を 1 ページに 2 度出す(K7-E の逆引きの利得より重複の害が大きい。追加節は数値の計画情報で、症状ではない)。試したが採らない。**第 4 巡**: 空巡 | **(c)**。原則「制約は『どの端末で起きるか』でなく『どの操作が検査を踏むか』で書く — 経路が増えても嘘にならない書き方を選ぶ」— K7-A(語彙は写す)✓、K6-J(出荷済みの挙動を書く)✓ |
+| K6-R | 「台帳の変更には予備鍵の開封が要る」の文(K6-K)を `devices.mdx` と `recover-your-key.mdx` に**同じ字面で複製**し、K6-O で見つけた例外(`guardian add` は `--passkey` を受けない)を recover 側にだけ足した。結果、devices 側だけが「the code or a passkey」と包括的に嘘をつく | (a) devices 側にも例外を足す(複製したまま両方直す)— 次にフラグが増減したとき再び片方が古くなる(今回と同じ失敗の再生産)。(b) **規範の主張を 1 ページが持つ: 開封の**手段**(どのコマンドが `--passkey` を受けるか)は台帳を主題とする `recover-your-key.mdx` だけが述べ、`devices.mdx` は K4-2 の**原則**(「台帳を変えられるのは台帳を開ける者だけ」)だけを述べて手段はリンクで渡す**。(c) devices 側を正とし recover 側が参照 — 台帳の開封 3 形は recover の主題(K6-A で分割済み)。持ち主が逆。(d) 両方に置いたまま「2 文が一致すること」の検査を足す — 散文の一致検査は脆く、2 ページは長さも文脈も違う。**第 2 巡(反例)**: 反例 1「ダッシュボードから `devices.mdx#the-reserve-key` に直接来た読者」— その読者に要るのは原則(開封が要る)であってフラグ表ではない。(b) で足りる。**これが今回の失敗の診断でもある**: 1 文に「安定した原則」と「揮発する詳細(フラグ)」を混ぜたから、詳細の訂正が原則の複製を取り残した。反例 2「`key recovery --replace` は開封しない」— 原則の例外。devices:115 / recover:33 が既に明示しており、(b) の原則文は「開封が要る(コードを失ったときの `--replace` を除く)」と括弧で持つ。反例 3「recover 側が将来消えたら原則が浮く」— リンクは `validate --strict` が切れを検出する。**第 3 巡(上位互換)**: 「共通文を Blume の snippet / MDX import にして 1 ソースにする」— 構造的には最強だが、2 ページで要る長さが違う(devices = 1 節、recover = 導入の 1 文)ため、同じ文字列を共有すると片方が冗長になる。ページ構成物を 1 文のために増やす対価(K7-B の C 案と同じ論法)。試したが採らない。**第 4 巡**: 空巡 | **(b)**。原則「**規範の主張は 1 ページが持ち、他ページは原則だけを述べて参照する。安定した原則と揮発する詳細(フラグ・数値)を同じ 1 文に混ぜない**」— K5-16「不変条件は簿記でなくデータ構造の性質から従わせる」の docs 版 ✓、K7-A ✓、K6-O ✓(例外の発見を全ページに適用する手段を構造で持つ) |
+| K6-S | K6-O のような「実装中に見つけた例外」を全ページに適用し漏らさない手段(今回の再発防止) | (a) 目視で読み返す — 今回それで漏れた。(b) **規範文の重複を grep で棚卸しし(「台帳の開封」「レート制限の数値」「端末追加の手順」の 3 種)、複製されている主張は K6-R の原則で 1 ページに寄せる**。実施結果: 「台帳の開封」= 複製 1 件(K6-R で解消)、「数値」= `devices.mdx`(16 / 5 / 32 / 15 分)と `recover-your-key.mdx`(5 / 5 / 20)と `linux-keychain.mdx`(5 / 5)に分散するが、**各ページが自分の作業に要る数値を述べているだけで同じ主張の複製ではない**(linux-keychain は device-add 5 件 / 時と blob fetch 5 件 / 時を両方名指しており、devices / recover のどちらとも矛盾しない)ので寄せない。「端末追加の手順」= `linux-keychain` / `getting-started` / `recover` はいずれも 1〜2 文 + `devices.mdx` へのリンクで、手順の正は devices にある(複製ではない)。(c) 文言の一致を CI で検査 — (d) と同じ脆さ。**第 2 巡(反例)**: 反例「grep の網から漏れる規範文(別の言い回し)」— 網は「同じ規則を 2 か所で言っていないか」の点検であって完全性は保証しない。だからこそ (b) の結論は「複製を減らす」であって「複製を検査する」ではない。**第 3 巡・第 4 巡**: 空巡 | **(b) を実施し結果を記録**。原則「再発防止は点検の追加でなく複製の削減で行う」 |
+
+**探索の回し直しの正直な棚卸し(2026-09-21 — PR #190 レビュー後)**: K6-A〜K6-L は候補 3 案以上 + 反例の巡を回したが、**K6-N〜K6-P(実装中の追加裁定)は「見つけた箇所を直す」で閉じ、同じ誤りが他のページにもあるかを掃いていなかった**。pullfrog の 2 件はどちらもその穴から出ている(K6-O の例外の適用漏れ = K6-R、K6-Q は「どの端末に出るか」を実装で確かめずに書いた箇所)。K6-Q / K6-R では採用案を壊す反例(承認以外の追記経路・プロジェクト単位の部分失敗・ダッシュボードから直接来た読者・フラグの将来の増減)を実際に構成し、上位互換(規則で書く / 1 ページが持つ)と銀の弾丸候補(MDX snippet)を試したうえで空巡 2 で止めた。
+
+### K6-T. 裁定を構造へ回し直す(2026-09-21 — 所有者の問い「裁定それぞれで上位互換案・構造から解決する案を模索するループを回したか」への回答)
+
+**正直な棚卸し**: K6-A〜K6-L は候補 3 案以上 + 上位互換 + 銀の弾丸 + 反例で空巡 2 まで回したが、そこで出した「構造で解く案」は K6-B(`validate --strict` で切れたリンクを固定)と K6-L(recipes の形に一致させない)の 2 つだけで、**残りは「文言をこう書く」で閉じていた**。依頼 §3-6 は「構造で解決できるものは文言でなく構造で解決する」と言っており、pullfrog の 2 件(K6-Q / K6-R)はまさに文言で閉じた裁定が漂流した例。ここで A〜P の各裁定について「この裁定の正しさを検査で固定できるか」を 1 件ずつ問い直し、できるものは実装した(`apps/site/test/unit/cli-vocabulary.test.ts` — ルートの `bun run test` の `site-unit` に載るので品質ゲート 7 の内側)。
+
+| 裁定 | 構造で固定できるか | 実施 |
+|---|---|---|
+| **全体(K7-A / K6-O)**「docs の語彙は help から写す」 | **できる**: docs の ```sh とインラインコードに現れる `maruhi …` の呼び出しを、help golden から作ったコマンド経路 → フラグ集合の索引と突き合わせる。経路は「help にある最長の前置」で解決し、残りは引数(`maruhi member remove bob`)。ただしグループ(SUBCOMMANDS があり ARGUMENTS が無い経路)の後ろは子コマンドに限る | **実装**。ミューテーションで確認: `maruhi guardian add --passkey` → no such flag、`maruhi device frobnicate` → no such subcommand、`maruhi device approve --caps` → no such flag。**副産物として K6-B も固定される**(撤去した `maruhi key approve` を書けば `key` グループの子コマンドに無く落ちる) |
+| K6-A ページ構成 | **できる(部分)**: 「Devices のページは `device` / `token` / `key reserve` の子コマンドを網羅する」を検査に。グループに子コマンドが増えたとき、書くか否かを裁定し直す合図になる | **実装** |
+| K6-D Web の文言 | **できる**: docs が引用するダッシュボードの字面("fingerprint not reported" / "as reported by the server" / "Lost a device?")が `ProjectScreen.tsx` / `DevicesScreen.tsx` に実在することを検査(両側を突き合わせるので、docs の言い換えも Web の改名も落ちる) | **実装** |
+| K6-H `master key` の語 | **できる**: docs 中の `master key` は `linux-keychain.mdx` の 1 か所(`maruhi agent` の help がまだその語を使うことを断る注記)だけ、他ページは 0 件 | **実装**(所有者裁定 (2) で help が改まったらこの数も直す) |
+| K6-L recipes との衝突 | **できる**: `deploy-targets.mdx` 以外のページに `maruhi run --env production -- ` で始まる ```sh が無いこと(初稿は grep で目視していた) | **実装** |
+| K6-R 規範文の複製 | **構造で解決済み**(検査ではなく複製の削減 — 開封の手段は 1 ページが持つ)。散文の主張は機械で捉えられないので、検査でなく「1 ページが持つ」で守るのが正 | 実装(文面) |
+| K6-C Codespaces の推奨 / K6-E FP の表記 / K6-F 残余 / K6-G order・index / K6-I SELF_HOSTING / K6-J TTL 切れ / K6-K 開封の 1 文 / K6-N〜K6-P | **落ちない**: いずれも「どちらの運用を勧めるか」「どの粒度で書くか」という編集判断で、真偽が機械で判定できない。K6-E は「approve は接頭辞を受けない」という**実装の事実**なら検査できるが、それは CLI 側のテスト(`device.test.ts` が既に固定)であり docs 側で二重化しても漂流を防がない | 実施せず(試して落ちないことを確かめた) |
+
+**第 2 巡(反例の構成)**: 反例 1「検査が偽陽性を出して docs が書けなくなる」— 散文中の "runs maruhi at an interactive terminal"(CLI の文言の引用)を呼び出しと誤認した。→ 呼び出しと見なすのは行またはシェル連結の**先頭**の `maruhi` だけ、と絞った(実際に 3 ページで偽陽性が出たので直した)。反例 2「検査が素通りする」— `maruhi device frobnicate` が「グループ + 引数」と区別できず通った。→ グループ判定(SUBCOMMANDS あり・ARGUMENTS なし)を足した。反例 3「help golden が古い(`maruhi agent` の master key)」— 検査は「docs が help に無い語を名乗らない」ことしか言わず、help 側の古さは別問題(所有者に諮る点 (2))。反例 4「他ページ(既存)が落ちる」— 全 10 ページで走らせ、偽陽性の修正後は緑。既存ページの語彙も同時に固定された。**第 3 巡(上位互換)**: 「help golden 全体の網羅(どの子コマンドもどこかの docs に出る)を検査する」— `anchor` / `checkpoint` / `rotation dismiss` 等、意図的に docs を持たないコマンドがあり、網羅は現状の方針でない(ページは作業単位で作る — K7-D)。DK の 3 グループに限るのが正。試して採らなかった。「MDX snippet で規範文を 1 ソースにする」— K6-R 第 3 巡で棄却済み(2 ページで要る長さが違う)。**第 4 巡**: 空巡。打ち止め。
+
+**原則**: 「裁定は文言で終わらせず、**真偽が機械で判定できるものは検査に、できないものは『1 ページが持つ』という所有権に**落とす。どちらにも落ちない編集判断だけを散文の約束として残す」— §3-6 ✓、K5-16「不変条件は構造から従わせる」✓、K7-A ✓、DP5 の golden ✓。
+
+### K6-U. 複製を消すとき、残す側(持ち主)を読み直していなかった(PR #190 pullfrog 第 2 巡)
+
+K6-R で「開封の手段は `recover-your-key.mdx` が持つ」と決め、`devices.mdx` の複製を消した。ところが**持ち主に指定した側の導入文(`recover-your-key.mdx:20`)が包括的なまま**で、「the code or a passkey」と言いながら `designating guardians` を列挙していた(同ページ :47 が 27 行後に正しい例外を述べているのに)。同じ誤りが 3 度目(K6-O = 発見、K6-R = 複製側の修正、K6-U = 原本)。
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| u-1 指摘の suggestion どおり導入文から材料を落とし、`#passkey` へ渡す | 原則と詳細の分離(K6-R)を**原本にも**適用する。持ち主のページ内でも「原則の文」と「手段の節」は別 | **採用** |
+| u-2 導入文に例外を書き足す(「コードかパスキー、ただし `guardian add` はコードのみ」) | 1 文が長くなり、フラグが増減するたびに 2 か所(導入文と :47)を直す = K6-R が避けたかった形の再生産 | 棄却 |
+| u-3 導入文を削る | 原則(K4-2 の指定 — K6-K)が消える | 棄却 |
+
+**第 2 巡(反例)**: 反例 1「`#passkey` の節に guardian の話が無い」— :47 が「`key recovery` / `key seal passkey` / `key reserve rotate` は `--passkey` を受け、`guardian add` はコードで開く」と全コマンドを述べている(確認済み)。反例 2「読者が導入文だけ読んで材料を知らないまま `guardian add --passkey` を打つ」— 導入文が材料を名乗らないので、打つ前に節へ行く。CLI 側も未知フラグで落ちる。反例 3「同じ誤りが 4 度目に別の文で出る」→ **第 3 巡(構造)**: この誤りの形は「台帳を変えるコマンドの列挙に開封の材料を帰属させる」であり、これは機械で判定できる。`designating guardians` を含む文が `with the code` / `or a passkey` を含まないことを検査に足した(`cli-vocabulary.test.ts`)。ミューテーション(直す前の文に戻す)で落ちることを確認。散文の主張一般は検査できないが、**3 度出た具体的な誤りは検査でピン留めできる**。第 4 巡: 空巡。
+
+**原則**: 「**複製を消すときは、残す側を読み直す**(複製の削除は片側の編集ではない)。同じ誤りが 3 度出たら、一般則を諦めて**その誤りの形**を検査にピン留めする」— K6-R ✓、K6-T ✓、K5-16 ✓。**採用: u-1 + 検査のピン留め**。
+
+**pullfrog の nit(`maruhi agent` は SUBCOMMANDS と ARGUMENTS の両方を持つ唯一の節なので、`agent` の後ろの語だけは子コマンド検査の穴。短縮フラグも対象外)**: 事実。`agent` は `-- <command…>` を取るので「グループ + 引数」の区別が原理的に付かず、埋めると偽陽性(`maruhi agent -- bash` 等)を生む。**偽陽性ゼロ**が docs のゲートとして守るべき性質なので、穴として知っておくに留める(指摘者の結論と同じ)。
+
+**K6-U 補**(PR #190 pullfrog 第 3 巡 — 検査の空虚化): K6-U の pin を `it.each(pages)` で書いたため、列挙の文が 1 つも無いページでは `expect([]).toEqual([])` が素通りし、**言い回しを変える(「designating guardians」→「naming guardians」)だけで検査が静かに消える**。1 つ上の網羅検査(K6-A)では `expect(subcommands.length).toBeGreaterThan(0)` で同じ穴を塞いでいたのに、こちらに適用していなかった。候補: (a) ページ横断で集め、件数が 0 でないことも固定する(K6-A と同じ型)。(b) 正規表現を緩めて言い回しの揺れを吸収 — 何を吸収すべきかが決まらず、緩めるほど偽陽性が増える。(c) 現状維持(pin は努力目標)— 3 度出た誤りに対して弱すぎる。**第 2 巡(反例)**: 反例「将来この文を正当に書き換えたいとき、検査が邪魔になる」— それが狙い: pin ごと直すのは意図的な作業であるべきで、無関係な編集で失われてはいけない(コメントにそう書いた)。**採用: (a)**。ミューテーション 2 種(言い回しの変更・材料の書き戻し)で落ちることを確認。**原則**: 「検査は『破れること』と『空虚にならないこと』の両方を確かめてから置く(非空虚の型は 1 つ置いたらすべてに適用する)」。
+
+### K6-V. UX の点検(2026-09-21 — 所有者の問い「ユーザー体験が悪くない裁定はないか」)
+
+K6-A〜K6-U は「事実として正しいか」を軸に回しており、**読み手の体験を軸にした巡を回していなかった**(ES K7 の手続きには「UX の点検」の段があるのに、K6 では反例の読み手列挙で代用していた)。ここで 3 種の読み手(端末を失った人 = 有事・新端末を足す人 = 平時・移行中の既存ユーザー)でページを読み直し、docs で直せるものは直し、製品側の体験の悪さは申し送る。
+
+| # | 体験の悪さ | docs で直せるか | 対応 |
+|---|---|---|---|
+| V-1 | **端末を失った人が、概念(鍵は端末に属し…)→ cap → 予備鍵と読まされてから失効に着く**。有事の読み手に平時の説明を読ませる構成 | 直せる | 冒頭の表の直後に `:::note` で失効への直行導線 +「他は急がない」の 1 文。候補: (a) 失効節をページ先頭へ移す — 平時の読み手(追加)が主で、章立てが `device` グループの順(add / approve / list / revoke)と食い違う。(b) **note で導線だけ置く** — 章立ては保ち、有事の読み手だけ飛ばす。(c) 別ページ「Lost a device」を作る — 1 ページ 1 作業(K7-D)に反し、失効の説明が 2 か所に散る。**第 2 巡(反例)**: 反例 1「note が長いと結局読まれない」→ 2 文に抑え、リンクは 1 つ。反例 2「ダッシュボードの Lost a device? から来た人は既に失効を知っている」→ その人にも次(トークン失効・rotate)の順序を示すので無駄にならない。**採用: (b)** |
+| V-2 | **承認が全プロジェクトで失敗したとき、要求側は何も知らされず 15 分待たされる**(登録簿の行が書かれない = 合図が来ない — K4-31 (c))。しかも期限切れの文言は「同じ鍵で要求を作り直す」と言うが、実装は拒否する(K6-J / 申し送り 1)。承認側にだけ原因が出ているのに、要求側の人はそれを見ていない可能性が高い | **一部**(製品側の穴は残る) | docs に「承認が失敗したら、承認側に原因が出る。要求は残るので新端末は待ったままでよく、再起動は要らない」を明記。**製品側は申し送り**: 要求側に失敗を伝える手段が無い(登録簿の行を「失敗」の合図に使うと K4-5 の「advisory は合図まで」に触れるので、面の設計が要る) |
+| V-3 | **Codespaces の rebuild ごとに approve(人の儀式)+ revoke + rotate が要る**。5 要求 / 時の上限にも当たる。docs は「ボリュームを使え」と勧めるしかない | 直せない | 申し送り(KL4 転送 agent の再評価材料 — 設計録 §5 は既に「ephemeral 環境」を主用途に書き直すと言っている) |
+| V-4 | **`key recover` が「この鍵は予備鍵として作られたものですか」と人に聞く**(K4-10 j-1)。利用者は自分の鍵の素性を判断できないことがある(pre-DK かどうかは分かりにくい) | 一部 | docs は「pre-DK の台帳は端末鍵の複製を持つので答は no」と書いた。製品側は、開封した B の FP が**チェーン上で日常の端末として署名しているか**を見れば機械的に判定できる余地がある(申し送り) |
+| V-5 | **`device approve` に yes の確認が無い**(K4-6 の裁定文は「FP 照合 + yes」だが実装は照合のみ — K6-N)。FP の貼り付けを誤ると、その場で別の鍵を全プロジェクトに足してしまう(取り消しは revoke + rotate) | 直せない | 申し送り(裁定文と実装のどちらを正とするか。UX としては「これから足す端末の label と cap を見せて yes」があった方が安全側) |
+| V-6 | **`device approve` は全長 32 hex / 12 語、`device revoke` は 8 hex の接頭辞**と入力形が違う | 直せない(理由は書いた) | docs に「承認は切り詰めない — 承認こそがサーバーの差し替えを止める場だから」と理由を書いた。UX の非対称は仕様上の必然 |
+| V-7 | **サイドバーで Devices が最後(order 10)**。端末鍵は全利用者が最初から持つのに、任意機能(四眼)より後ろ | 直せるが**依頼が 10 を指定** | 依頼 §1 の指定に従い 10 のまま。導線は getting-started / linux-keychain / recover / index から張った。**所有者に諮る点**: 読者の頻度で並べるなら Devices は recover(6)の前後が自然 |
+
+**原則**: 「docs は正しいだけでは足りない。**有事の読み手が最初の画面で次の一手に着けること**を、章立てとは別の導線で保証する。docs で緩和できない体験の悪さは、緩和した上で製品側の穴として申し送る」— ES K7 の「UX の点検」✓、B2「誰も見ない警告は検出にならない」✓。**第 3 巡(上位互換)**: 「V-2 を docs でなく CLI で直す(要求側のポーリングに『要求は残っているが登録は進んでいない』を出す)」— 面の設計が要りコード変更(本 PR の範囲外)。申し送りに格上げ。「V-1 を Blume の `Steps` で組む」— 既存 10 ページが素の見出しと箇条書きで書かれており、1 ページだけ構成物を増やすと様式が割れる(K7-B C 案と同じ論法)。棄却。**第 4 巡**: 空巡。
+
+### K6-W. UX の各点について上位互換と「構造ごと消す案」を探す(2026-09-21 — 所有者の指示)
+
+K6-V は体験の悪さを**列挙して申し送った**だけで、各点について上位互換 / 銀の弾丸の巡を回していなかった(「直せない」は探索の結論ではなく、docs の範囲という制約の言い換えにすぎない)。ここで各点を回す。docs で今すぐ直せるものは直し、コードを要するものは**具体形まで詰めて**所有者提案にする(「改善の余地がある」で止めない)。
+
+**事実確認**: `requestCreate` の認可は `ensureKeyMaterialAccess(principal)` のみ(`handlers-devices.ts`)。**鍵素材アクセスを持つトークンがあれば、誰でもその人のアカウントに端末追加要求を置ける**。要求から署名者への昇格を止めているのは、承認者が FP を照合する行為ただ 1 つ。
+
+| # | 論点 | 候補 → 上位互換 → 銀の弾丸 → 反例 | 結論 |
+|---|---|---|---|
+| W-1 | **V-2 承認の失敗が要求側に届かない**(登録簿の行が合図で、失敗時は書かれない) | (a) 登録簿の要求行に `status` を足して失敗を伝える — ワイヤ追加。偽の failed を差し込まれても害は「早く諦める」= 可用性のみで、今日の「黙って沈黙」と同類。ただし api-schema 改訂が要る。(b) **上位互換: 面を増やさず文言 2 か所を直す** — ① 待機の途中(TTL の 1/3 経過)で「まだどのプロジェクトにも登録されていない。承認側の端末の出力を確認せよ(失敗しても要求は残る)」を 1 行出す、② 期限切れの文言を実装に合わせる(今は「同じ鍵で要求を作り直す」と言うが K4-21 で拒否される — 申し送り 1 と**同じ 1 文の修正で両方閉じる**)。ワイヤも面も増えない。(c) 銀の弾丸: 承認側と要求側が同一人物なのだから、**承認側が成功でも失敗でも要求行を消す** — 失敗を「消えた」で伝えると成功と区別できない(K4-5 e-4 で棄却済み)。**反例 1**「承認側が別人(将来の委任)」— 今は本人のみ(DK-D)。反例 2「途中経過の 1 行がうるさい」— TTL 15 分に 1 回だけ。反例 3「(b) は原因そのものは運ばない」— 運ばないが、**原因のある場所**を指すので人は 5 分で着く(今は 15 分待って誤った案内を受ける)。第 3 巡: (a) と (b) は排他でなく、(b) を今・(a) を面の設計が要るときに。新案なし。第 4 巡: 空巡 | **所有者提案 (b)**(文言 **3** か所・コード変更は本 PR の範囲外): ① 待機の途中の 1 行、② 期限切れの文言(実装は拒否するのに「同じ鍵で作り直す」と言う)、③ **`device.ts:206-208` の「not registered yet」の Note**(「承認側がまだ作業中かもしれない / `device approve` を再実行せよ」と言うが、登録簿への PUT はプロジェクトのループの**後**なので合図を見た時点で作業は終わっており、一部成功なら要求は取り消し済みで再実行は「該当する要求が無い」で落ちる — pullfrog 第 6 巡)。docs は 97f8c0e / この追記で一貫させたが、**CLI がまだ別のことを言っている**ので ③ は docs と一緒に動かすのが正しい |
+| W-2 | **V-5 `device approve` に確認が無い** | (a) yes を足す(K4-6 の裁定文どおり)— 32 hex を打った直後に yes は儀式の水増しで、押し慣れると効かない。(b) **銀の弾丸: 問題の立て方を変える**。危険は「打ち間違い」ではない(誤った FP は要求に一致せず落ちる)。危険は**鍵素材アクセスを持つトークンを盗った者が要求を置き、その FP を人に送って承認させる**こと。yes はこれを止めない(送られた FP を信じている人は yes も押す)。止めるのは「**FP は追加する機械の画面から読む**」という規律。→ **docs に 1 文**(実装済み: 本追記と同じコミット)。(c) 承認時に「この要求はいつ・どのラベルで作られたか」を出す — 既に label は出る。ラベルは攻撃者が決められる(advisory)ので判断の足しにならない。**反例 1**「人が画面を見られない遠隔の同僚の端末を足したい」— それは委任(KL4)であり今は対象外。反例 2「docs を読まない人」— CLI の承認出力に同じ 1 文を出すのが上位互換 → 所有者提案(文言のみ)。第 3 巡: 「要求作成に儀式ゲートを課す」— `device add` は非対話環境で動く必要がある(コンテナ = DK-D)。棄却。第 4 巡: 空巡 | **docs に規律を明記(本 PR で実施)** + **所有者提案**: `device approve` の出力にも同じ 1 文。裁定 K4-6 の「+ yes」は**撤回を提案**(yes は脅威を止めない) |
+| W-3 | **V-4 `key recover` が鍵の素性を人に聞く**(「これは予備鍵として作られましたか」) | (a) 聞き続ける(今日)。全端末を失った直後の人に、答えられないことがある問いを出す。(b) ヒューリスティック(その鍵が日常の署名をしているか)— 何も書いていない pre-DK 利用者を予備鍵と誤判定する(安全でない側に倒れる)。(c) **銀の弾丸: 定義から機械的に決まる**。DK では**予備鍵は必ず `add_device` で登録される**(K4-30 — 手元の端末が署名する)。pre-DK の B は**その人の最初の鍵**(genesis か `add_member` の payload)であり `add_device` では載らない。復元の過程でチェーンは同期するのだから、**開封した B の FP がチェーン上でどう載ったかを見れば、問いは消える**(pre-DK = 最初の鍵 / DK = add_device で追加された鍵)。**反例 1**「B がどのチェーンにも無い」— 今日も「再招待が要る」と列挙する経路。そこでは記録しない(fail-closed)で同じ。反例 2「`key generate --new-identity` で作り直した人」— 新しい身元の最初の鍵は端末鍵、予備鍵は add_device。整合。反例 3「複数プロジェクトで載り方が違う」— 同じ鍵が片方で最初の鍵・片方で add_device になるのは、pre-DK の鍵を別プロジェクトに端末として足した場合。その鍵は実際に日常の端末鍵なので「予備鍵ではない」に倒す(いずれかで最初の鍵なら pre-DK)。第 3 巡(上位互換): 「機械判定 + 結果を人に見せて確認」— 答えを人に押し付けず、事実を見せて yes を取る形。儀式の中で **1 問は残るが『はい/いいえ』が判断でなく確認になる**。これが最良。第 4 巡: 空巡 | **所有者提案**: 問いを「チェーン上の載り方による判定 + 確認」に置き換える(K4-10 j-1 の改訂)。UX の核心は「**利用者に判断させず、事実を見せて確認させる**」 |
+| W-4 | **V-3 Codespaces の churn**(rebuild ごとに approve + revoke + rotate、5 要求/時) | (a) ボリューム運用を勧める(今日の docs)。(b) 短命端末に狭い cap(実装済み・rotate の範囲は縮むが儀式は残る)。(c) 期限付き端末(自動失効)— 新 op か payload 変更(§5 の `set_device_cap` と同じ扱い)。**しかも失効は rotate 義務を生むので、自動失効は自動 rotate を生む** = 解決にならない。(d) **銀の弾丸: 使い捨ての機械に端末鍵を与えない**。値を読む使い捨ての実行環境に対する既存の答えは**ワークロードリース**(CI の OIDC 経路 — `maruhi ci run`)であって端末鍵ではない。rotate 義務は「端末が DEK を保持した」ことから来るので、リースなら発生しない。→ 構造的な答えは「Codespaces を CI 側の経路に載せられるか(issuer の一般化 — ROADMAP の SDK 行 / AUTH §14)」。**反例 1**「Codespaces の OIDC が GitHub Actions と同じ claim を出すとは限らない」— 未確認なので docs には書かない(存在しない機能を書かない)。所有者提案に留める。反例 2「対話開発では人が値を読みたい」— リースは `maruhi run` 相当の注入に使える設計(§9.1)。第 3 巡: 「agent + `--key-ttl` を勧める」— 鍵が消えるたびに再登録 + 失効が要る(V-3 と同じ)。上位互換でない。第 4 巡: 空巡 | **所有者提案**: 使い捨て実行環境は端末鍵でなくリースへ(issuer 一般化の動機として ROADMAP の SDK / KL4 行に接続)。docs は現状どおりボリューム推奨 |
+| W-5 | **V-6 承認は全長 FP・失効は 8 hex 接頭辞** | (a) 揃える(承認も接頭辞)— §3 の切り詰め禁止に触れる。(b) 揃える(失効も全長)— `device list` の出力から選ぶ操作で全長を打たせるのは退行。(c) **非対称は正しい**: 承認は**敵対的な照合**(サーバーが差し替えた鍵を落とす)、失効は**検証済みチェーンの行から選ぶ**(取り違えは確認表の全長 FP が止める)。役割が違うので入力形が違う。**反例**「読者が理由を知らないと不整合に見える」— docs は承認側に理由を書いている(「承認こそがサーバーの差し替えを止める場だから」)。失効側は確認表の説明で担保。第 2 巡以降: 新案なし | **変えない**(原則を記録)。UX の非対称は仕様の必然で、理由を書くのが正しい扱い |
+| W-6 | **V-7 サイドバーの位置**(Devices が最後) | (a) 依頼の指定どおり 10(本 PR)。(b) 番号の振り直し — 既存 4 ページの frontmatter を触る(K7-B で棄却した形)。(c) **構造: `meta.ts` でグループを作る**。K7-B は「3 ページのために構造を増やさない」と棄却したが、**当時 7 ページ・今 11 ページで、鍵と端末の 3 ページ(linux-keychain / recover-your-key / devices)が明確な塊になった**という新しい事実がある。棄却の前提が変わったので再提示に値する。**反例**「グループ化は全ページの導線を変える」— そのとおりで、K6(docs の 1 段)でやる変更ではない。第 3 巡: 「index の Card を 5 枚目に」— 奇数の Card は 2 列で崩れる(K7-C の棄却理由)。第 4 巡: 空巡 | **所有者提案**: 次の docs 段で `meta.ts` のグループ化を再検討(棄却の前提が変わった)。本 PR は 10 のまま |
+
+**原則**: 「『docs では直せない』は探索の結論ではない。制約の外に出た案(文言 1 か所・定義からの機械判定・別機構への移送)まで出して初めて打ち止め。そして**利用者に判断させる設計は、事実を見せて確認させる設計に置き換えられないかを必ず問う**」— K4-10(既定は安全側)✓、K4-5(advisory は合図まで)✓、DK-D ✓。
+
+### K6-X. 手続きそのものを構造で直す(所有者の問いが 4 回繰り返された理由)
+
+所有者は「ループを回したか」を 4 回問うている。そのたびに私は「回した裁定」と「止めた裁定」が混在していると答えた。原因は**手続きが散文だから**: §3 の (a) 上位互換・(b) 銀の弾丸・(c) 反例は、書かなければ書かなかったことが見えない。候補: (a) 気をつける — 4 回失敗した。(b) 各裁定に「上位互換 / 銀の弾丸 / 反例」を**欄として持つ表**にし、空欄を可視化する。(c) 裁定ごとに巡数を書く(既存 — 「空巡 2」と書けてしまうので K5 の定型句問題の再来)。**採用: (b)**。以後の追記(K7 以降・他系列)はこの欄を持つ。空欄は「探していない」の印であり、レビュアーも所有者も 1 目で分かる。**原則**: 「守れない規律は、書式で見えるようにする(K5-16『不変条件は構造から従わせる』の手続き版)」。
+
+**K6-V 補**(PR #190 pullfrog 第 4 巡): K6-V で足した「承認が失敗したとき」の段落を、**全滅時の挙動のまま無条件に書いていた**。実際は 1 つでも登録されれば後段(記録・登録簿の PUT・要求の取消)が走る(K4-31 (c))ので、一部成功では要求が消費され、要求側の待機は「N projects + not registered yet」で終わり、`device approve` の再実行は「該当する要求が無い」で落ちる。不足分は承認側の記録("approved")が次の同期で拾う(`device-sync.ts` の `registrationCandidates` — 儀式ゲートの内側なので人の端末で)。段落を全滅時に限定し、一部成功の経路を書き足した。**同じ誤りの型が 2 度目**(1 度目 = `DeviceLimit` がどの端末に出るか — K6-Q): どちらも**分岐の条件を設計録の記述から書き、コードの分岐を読んでいない**。設計録は分岐を畳んで書いてあることがあるので、**挙動の分岐を docs に書くときは分岐の条件そのものをコードで読む**(K7-A「語彙は写す」の分岐版)。機械検査には落ちない(散文の主張)ので、原則として記す。
+
+**同 3 度目**(pullfrog 第 5 巡): 承認の規律に添えた「要求はあなたのトークンを持つ者なら誰でも置ける」も広すぎた。`ensureKeyMaterialAccess` は**セッション主体を拒否し、`*` × admin スコープのトークンだけ**を通す(`authz.ts`)ので、プロジェクト限定トークンや非 admin トークンでは要求を置けない。私は**呼び出し側(`requestCreate` が `ensureKeyMaterialAccess` を呼ぶこと)だけを読み、述語の中身を読んでいなかった**。原則を一般化する: 「**分岐・認可・上限を docs に書くときは、呼び出し側でなく述語の定義を読む**」。利用者にとっての差は小さくない(「トークンを持つ者」と「アカウント全域の admin トークンを持つ者」では取るべき対策が違う — `maruhi token list` のスコープ欄で確かめられる)。
+
+**K6-V 補 2**(PR #190 pullfrog 第 7 巡): 「承認側が次の同期で不足プロジェクトを拾う」は**「あなたがそのプロジェクトのメンバーでない」起因にしか当てはまらず、cap 起因には当てはまらない**。自己回復の経路 `registerRecorded`(`device-sync.ts`)は、skip を生んだのと**同じ検査** `capWithinSignerCap` を再適用し、「Sync from a device with a wider cap to register it」と言って何もしない。cap は変更できない(K6-A の「cap は承認時に決まり後から変えられない」)ので、その端末では永久に登録されない。正しい回復は「**cap が足りる別の端末**が、登録に成功したプロジェクトでその鍵を**観測**して記録し(`observeDevices`)、不足プロジェクトで登録する」。両方の段落を直し、**回復手順の記述は :59 が持ち、:63 は参照するだけにした**(同じ主張を 2 段落に複製していたことが、2 巡続けて食い違いを生んだ原因 — K6-R の原則のページ内版)。**原則の追加**: 「**回復手順を書くときは、その回復経路自身の前提条件を読む**。失敗を生んだ検査を回復経路が再適用していれば、それは回復ではない」。K6-V 補(分岐)・同 3 度目(述語)に続く**同じ族の 3 つ目**で、いずれも「呼び出しの名前や設計録の要約から書いた」ことが原因。
+
+### K6-Y. マージ前の掃き直し(2026-09-21 — 所有者の問い「他に上位互換・構造から直せるところは」)
+
+pullfrog の指摘 9 件はすべて `devices.mdx` に集中していた。**私が同じ目で見ていないページが残っている**(linux-keychain / invite-a-teammate / getting-started / index / recover-your-key の新しい主張)ので、同じ観点(要約でなく定義を読む)で掃き直した。
+
+| 掃いた主張 | 結果 |
+|---|---|
+| `recover-your-key.mdx`「分片は保護者の端末鍵に封印されるので、どの端末からでも承認できる」 | **誤り**。`guardian add` の CLI 自身が「shares are sealed to the guardians' **current** devices; a guardian who adds a device later or revokes one cannot open the share on it」と言う。**封印は作成時点の端末集合に対して**で、後から足した端末は分片を持たない。訂正 |
+| 同「`guardian list` は鍵が変わった保護者を STALE にする」 | **不正確**(pre-DK の言い回し)。実装は端末行ごとに判定し、**生きている封印端末が 0 のとき**だけ STALE(退会したか、封印した端末が全部失効した)。一部だけ失効なら残りで開け、CLI はグループの作り直しを勧める。訂正 |
+| `linux-keychain.mdx` の `--key-ttl` の帰結・rebuild ごとの失効 + rotate・狭い cap の効果(`--cap member --env dev` なら失効時の rotate は dev だけ) | 正しい(実効 scope = 人 ∩ 端末 cap。`policy.ts` / sweep の義務の導出と一致) |
+| `invite-a-teammate.mdx`「ラップは受諾した端末へ。他の端末は `device approve` で足したときに受け取る」 | 正しい(`member add` のバックフィルは受諾端末、以後は `approveOnProject` のバックフィル) |
+| `getting-started.mdx` / `index.mdx` の 1 行 | 正しい |
+| **数値(16 台 / 5 件・時 / 32 行 / 15 分 / 5 fetch / 5 handoff / 20 approvals)** | 正しいが**目視で写しただけだった**。語彙・網羅・引用は機械化済みなのに、数値だけ人の目に依存していた → **検査に釘で留める**(`cli-vocabulary.test.ts` の K6-Y): 定義側の定数の**右辺の字面**と docs の語句を対で固定。ミューテーション 2 方向(定数を変える・docs の数値を変える)で落ちることを確認 |
+
+**原則**: 「指摘が 1 ファイルに集中したときは、**同じ目で見ていないファイル**を疑う(レビュアーが見つけた型は、レビュアーが見ていない場所にもある)。人の目に依存している最後の類(数値)は、気づいた時点で機械化する」— K6-T ✓、K6-S「再発防止は複製の削減と機械検査で」✓。
+
+**K6-Y 補**(PR #190 pullfrog 第 8 巡): 数値の釘を **(定数, 1 ページ)** の対で持ったため、(1) `HANDOFF_REQUEST_TTL_MS`(保護者の要求の 15 分 — `recover-your-key.mdx`)が漏れ、(2) `linux-keychain.mdx` が自分の言い回しで写している同じ数値(device-add 5 件 / 時・blob fetch 5 件 / 時)を**どの行も見ていなかった**。釘は **(定数, ページ × 語句の並び)** に広げた。ミューテーション 2 方向(別ページの写しを変える・定数を変える)で落ちることを確認。**原則**: 「釘は**写しのある場所すべて**に打つ。1 か所だけ留めた釘は、複製が増えるたびに守備範囲が痩せる」— K6-R の『複製を減らす』と対になる(減らせない複製は全部留める)。
+
+**K6-Y 補 2**(PR #190 pullfrog 第 9 巡): 釘をページ単位に広げた(補 1)だけでは足りず、**同じページの中の 2 つ目の写し**が抜けていた。`recover-your-key.mdx` は台帳の取得上限を導入(:18)とまとめの節(:94)の 2 か所で述べており、留めていたのは前者だけ。さらに悪いことに、保護者の要求の釘に使った語句「five per user per hour」が**まとめの節の行の先頭の節に偶然一致**していたため、その行は「留まっているように見えて何も保証していない」状態だった。両方に見分けのつく語句(節の見出し語・括弧)を使い、各節が独立に落ちることをミューテーションで確認。選択肢として K6-R(まとめの節を消して 1 か所に)もあったが、まとめの節は承認の上限(20 / 時)の**唯一の持ち主**で、読者が上限をまとめて探す場でもあるので残した。**原則**: 「釘の語句は**留めたい 1 か所だけに一致する**こと(偶然の一致は検査ではない)。複製の単位はページではなく**文**」— K6-U の『検査は破れることと空虚でないことの両方を確かめる』の続き(『別の場所に当たっていないか』も確かめる)。
+
+**K6-Y 補 3**(PR #190 pullfrog 第 10 巡): 補 2 で「複製の単位は文」と書いたのに、**検査の側がまだページ単位の存在検査(`includes`)**だった。`linux-keychain.mdx` は device-add の上限と fetch の上限を 2 回ずつ述べ、`devices.mdx` は 16 を「16 active devices」と CLI の引用「for that member (16)」(`failure.ts` が `${e.limit}` で埋める)の 2 通りで述べる。存在検査は最初の 1 つで満たされるので、**2 つ目を編集しても緑のまま**だった(pullfrog がミューテーションで確認)。候補: (a) 見分けのつく語句を写しの数だけ足す — 今日の穴は塞がるが、複製が増えるたびに同じ掃き直しが要る。(b) **語句の出現回数を留める** — どの写しを編集しても回数が変わって落ち、**将来の複製も回数の増加として自動的に表面化**する(黙って増えない)。(c) docs 側の複製を全部消す — `linux-keychain` の 2 回は文脈が違い(agent 節と Codespaces 節)、引用エラーは CLI の字面そのものなので消せない。**採用: (b)**(pullfrog の「構造的な代案」)。ミューテーション 4 種で確認: 2 つ目の写しの編集 3 件(linux-keychain の 2 か所・引用内の 16)と、**写しを 1 つ増やす**編集。**原則**: 「複製を数える検査は、複製が増えたことも教える。存在検査は『今ある写し』しか守らない」。これで K6-Y の釘は (定数, ページ, 語句, **回数**) の 4 つ組になった。
