@@ -424,9 +424,18 @@ function replaceReserveWithoutOpening(input: {
     // 書き込みの前に、何が消えるかを名指しする: コード・記録上の予備鍵の登録・旧 B を
     // 封印していた台帳の行(パスキー / 保護者)。パスキーが残っているなら --passkey の方が
     // 同じ予備鍵を保てる(pullfrog 指摘)
-    const status = yield* input.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
+    // 台帳の行の件数は警告の文面のためだけに読む: 読めなくても置換は止めない(コードを
+    // 失った利用者の逃げ道なので、一覧の障害で塞がない — Bugbot 指摘)。読めなかった事実は Note
+    const status = yield* input.client.keyWraps.status({}).pipe(
+      Effect.mapError(toCliError),
+      Effect.catch((error) =>
+        logNote(
+          `could not read the ledger's passkey wraps and guardian groups (${error.message}); the warning below names them generically`,
+        ).pipe(Effect.as(null)),
+      ),
+    );
     const sealed =
-      status.passkeys.length + status.guardianGroups.length === 0
+      status === null || status.passkeys.length + status.guardianGroups.length === 0
         ? "any passkey wraps and guardian groups that seal the current reserve key are deleted"
         : `${countNoun(status.passkeys.length, "passkey wrap")} and ${countNoun(status.guardianGroups.length, "guardian group")} that seal the current reserve key are deleted`;
     yield* logWarning(

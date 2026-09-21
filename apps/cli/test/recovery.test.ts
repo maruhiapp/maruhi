@@ -486,6 +486,31 @@ describe("maruhi key recovery(発行・再発行)", () => {
     );
   });
 
+  it("--replace は台帳の行の一覧が読めなくても置換を止めない(警告は一般形 + Note)", async () => {
+    const user = await makeTestUser("user-0001");
+    let put: PutBody | null = null;
+    const maruhi = await start([
+      statusHandler(true),
+      putHandler((body) => {
+        put = body;
+      }),
+      noProjectsHandler(),
+      onRequest("GET", "/auth/key-wraps", () => ({ status: 500, json: { _tag: "Internal" } })),
+    ]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    seedSession(env, maruhi.origin, user);
+    env.setPromptResponses([lastGroupOf(env)]);
+    // 最後の台帳行の削除(同じ一覧)は失敗するので終了コードは 1 だが、封印は済んでいる
+    expect(await runCli(["key", "recovery", "--replace"], env.layer)).toBe(1);
+    expect(put).not.toBeNull();
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("could not read the ledger's passkey wraps and guardian groups");
+    expect(errors).toContain(
+      "any passkey wraps and guardian groups that seal the current reserve key are deleted",
+    );
+    expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
+  });
+
   it("AI エージェント環境では発行を拒否する", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([statusHandler(false), putHandler(() => {})]);
