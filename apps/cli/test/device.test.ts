@@ -142,8 +142,15 @@ async function makeServer(input: {
   readonly tokensStatus?: number;
   /** 追加のハンドラ(MockServer は起動時に列を写すので、後から push できない)。 */
   readonly extra?: readonly MockHandler[];
-  /** `POST /auth/devices/requests` の応答: 期限と、合図(登録簿の行)を即座に立てるか。 */
-  readonly requestCreate?: { readonly expiresAtMs: number; readonly signal: boolean };
+  /**
+   * `POST /auth/devices/requests` の応答: 期限と、合図(登録簿の行)を即座に立てるか。
+   * `conflict` を置くと(合図を立てた後に)409 を返す。
+   */
+  readonly requestCreate?: {
+    readonly expiresAtMs: number;
+    readonly signal: boolean;
+    readonly conflict?: "request-exists" | "device-registered";
+  };
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -275,6 +282,12 @@ async function makeServer(input: {
         );
         if (!fp.ok) throw new Error("fp");
         registry.push({ keyFingerprintHex: encodeHex(fp.value), ...body, createdAtMs: Date.now() });
+      }
+      if (input.requestCreate.conflict !== undefined) {
+        return {
+          status: 409,
+          json: { _tag: "DeviceRegistryConflict", reason: input.requestCreate.conflict },
+        };
       }
       return { status: 200, json: { expiresAtMs: input.requestCreate.expiresAtMs } };
     },
@@ -490,6 +503,22 @@ describe("maruhi device approve", () => {
       "must be the full 32-character fingerprint or its 12 words",
     );
   });
+  it("同じ鍵の要求が複数あれば黙って選ばず、ラベルを示して止まる", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2, "laptop"), requestRowOf(dev2, "desk")],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `2 pending device-add requests carry the same key fingerprint ${dev2.fingerprintHex} (labels: laptop, desk)`,
+    );
+    expect(state.appended).toEqual([]);
+    expect(state.requestCancels).toEqual([]);
+  });
+
   it("どのプロジェクトにも載らなければ、ローカル記録・登録簿 PUT・要求の取消を行わない(再実行できる)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
@@ -793,6 +822,49 @@ describe("maruhi device add", () => {
       "Approved: this device is registered on 0 projects (verified on each project's chain)",
     );
     expect(env.errors.join("\n")).toContain(`not registered yet on ${built.projectId}`);
+  });
+
+  it("409 request-exists の再開で要求の照会に失敗したら、その失敗を伝える(「失効」と誤案内しない)", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      extra: [
+        onRequest("POST", "/auth/devices/requests", () => ({
+          status: 409,
+          json: { _tag: "DeviceRegistryConflict", reason: "request-exists" },
+        })),
+      ],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    // 既定のモックは GET /auth/devices/requests/:fp に 404 を返す
+    expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("expired before it was approved");
+    expect(errors).toContain("DeviceNotFound");
+  });
+
+  it("409 device-registered なら登録簿の行を合図として待機の 1 巡目で拾い、チェーンで確認へ進む", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: true, conflict: "device-registered" },
+    });
+    const env = await makeTestEnv();
+    env.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
+    );
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      "Approved: this device is registered on 0 projects (verified on each project's chain)",
+    );
+    // 要求の照会には行かない(登録簿の行が合図)
+    expect(
+      state.paths().some((path) => /^GET \/auth\/devices\/requests\/[0-9a-f]{32}$/.test(path)),
+    ).toBe(false);
   });
 
   it("要求が失効していれば TTL の案内で終わる(合図なし)", async () => {

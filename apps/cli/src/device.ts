@@ -20,6 +20,7 @@
 // 封印・承認・観測の 3 経路だけが書く(K4-3)。
 
 import {
+  DEVICE_ADD_REQUEST_TTL_MS,
   DeviceRegistryConflictError,
   DeviceRegistryLimitError,
   ForbiddenError,
@@ -279,14 +280,18 @@ function createOrResumeRequest(
       Effect.catch((error) =>
         Effect.gen(function* () {
           if (error instanceof DeviceRegistryConflictError) {
-            // 同じ鍵の要求が生きている / 既に登録簿にある = 待機の再開(K4-5 第 2 巡)
-            const row = yield* input.client.devices
+            const conflict: DeviceRegistryConflictError = error;
+            if (conflict.reason === "device-registered") {
+              // 登録簿に既に自分の行がある = 合図は立っている。要求行は無いので
+              // 期限は TTL ぶん先に置き、待機の 1 巡目で合図を拾わせる
+              return Date.now() + DEVICE_ADD_REQUEST_TTL_MS;
+            }
+            // 同じ鍵の要求が生きている = 待機の再開(K4-5 第 2 巡)。照会の失敗は
+            // 握り潰さず伝える(「失効した」と誤って案内しない — 409 は生存の証)
+            const request = yield* input.client.devices
               .requestGet({ params: { fp: keys.fingerprintHex } })
-              .pipe(
-                Effect.map((request) => request.expiresAtMs),
-                Effect.catch(() => Effect.succeed(Date.now())),
-              );
-            return row;
+              .pipe(Effect.mapError(toCliError));
+            return request.expiresAtMs;
           }
           if (error instanceof DeviceRegistryLimitError) {
             const limit: DeviceRegistryLimitError = error;
@@ -416,6 +421,15 @@ function matchRequest(
       return yield* Effect.fail(
         cliError(
           "No pending device-add request matches that fingerprint. Requests expire 15 minutes after `maruhi device add`; re-run it on the new device and compare the fingerprint it prints (full hex or the 12 words) with what you typed",
+        ),
+      );
+    }
+    if (matches.length > 1) {
+      // 同じ鍵の要求が複数(サーバーは FP で一意にするはず)。どれかを黙って選んで
+      // チェーン権限を与えるより、止めて示す
+      return yield* Effect.fail(
+        cliError(
+          `${countNoun(matches.length, "pending device-add request")} carry the same key fingerprint ${match.fingerprintHex} (labels: ${matches.map((item) => displayText(item.label)).join(", ")}). The server should hold at most one request per fingerprint, so refusing to pick one. Wait for them to expire (15 minutes), re-run \`maruhi device add\` on the new device and approve the single new request`,
         ),
       );
     }
