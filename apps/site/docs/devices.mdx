@@ -20,6 +20,10 @@ One more device key is the **reserve key**: a device key that lives only in the 
 | Revoke its API token                      | Any device, or the dashboard | `maruhi token revoke <token-id>`      |
 | Replace the reserve key                   | A registered device          | `maruhi key reserve rotate`           |
 
+:::note
+Lost a device right now? Go straight to [Revoke a lost or retired device](#revoke-a-lost-or-retired-device): revoke its key from another device of yours, revoke its API token, and let the rotation finish. Nothing else on this page is urgent.
+:::
+
 `maruhi device --help` lists the group. Only you can add or revoke your own devices (any role, readers included); an admin or owner can revoke another member's device by fingerprint. Registering, approving and revoking devices is done in the CLI — the dashboard only shows what the server reports ([below](#in-the-dashboard)).
 
 ## Add a device
@@ -55,6 +59,8 @@ maruhi device approve <fp> --no-envs                  # a vote-only device: no e
 Back on the new machine, the wait ends with "Approved: this device is registered on N projects (verified on each project's chain)". That is the completion signal: the new machine syncs each project and counts the chains that actually hold its key, rather than trusting the server. If it also lists projects that are "not registered yet", the approving device is still working or skipped them (its cap does not cover them, or you are not a member there); re-run `maruhi device approve` there once it finishes.
 
 Approving runs only on a human interactive terminal (stdin and stdout must both be terminals; pipes, redirects, CI, and AI agent environments are refused) — the fingerprint comparison is the whole safeguard, so it is done by a person. `maruhi device add` itself has no such rule — a container can request, but a person approves.
+
+**If the approval fails** — the limit below, a cap that does not cover the projects, or a project you are not a member of — the approving device prints the cause and leaves the request in place, and the new machine simply keeps waiting: it gets no signal and needs no restart. Read the approving device's output, fix what it names, and re-run `maruhi device approve` there.
 
 **If the request expires** before it was approved, the new machine's key is still registered nowhere. Run `maruhi device add --replace` there: it discards that never-registered key, generates a new one and prints a new fingerprint to approve. (Without `--replace`, `maruhi device add` refuses because the machine already holds a key.) If instead the approval was interrupted halfway, the request is still there: re-run `maruhi device approve` on the approving device; it skips the projects that already have the device.
 
