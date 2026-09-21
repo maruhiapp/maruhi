@@ -1772,3 +1772,109 @@ K6 で docs は出荷済みの挙動を書き、CLI がまだ別のことを言�
 |---|---|---|---|---|---|---|
 | K7-15 | 「not registered yet」の Note が「承認側が**飛ばした**」と言い、原因を 3 つに閉じている。だが `approveOnProject` は失敗を `failed` に畳み(`Effect.catch`)、後段のゲートは registered / already が 1 つでもあれば走る(K4-31 (c))ので、**一部成功の合図の後には failed のプロジェクトも混じる**(pullfrog)。K7-2 で「分岐の条件をコードで読む」と書きながら、`missing` の集合が skipped と failed の和であることを読んでいなかった(K6-X の同じ型の 4 度目) | (a) 文言に failed を足す(「skipped or failed on them … or the append failed there」)。`--project` は承認側の出力に無い(`resolveProjectIds` は他のプロジェクトを訪れない)ので「you approved with --project」と読者の行為として書く。docs :59 も同じ語に | (a) + 「its output says **which**, and why」で、skipped / failed の区別が承認側の出力(`reportApproveOutcome` の `skipped —` / `failed —`)にあることを言う | 要求側で skipped / failed を区別する → 要求側はチェーンしか持たず、承認側の結果は持たない(登録簿は advisory)。K7-2 (c) と同じく面の設計 = 所有者に諮る点 (3) に含まれる | 反例「failed の原因は一時的(ネットワーク)で、承認側の再同期(`registerRecorded`)で直る」— 回復の半分(cap が覆う端末の次の鍵付きコマンド)は failed にも当てはまる。変更不要 | **(a) + 上位互換**。原則「集合を列挙するときは、その集合を作る全分岐を読む(K6-X の分岐版の再掲 — `missing` = 全体 − チェーン上の端末で、skipped も failed も入る)」 |
 | K7-16 | K6-Y の釘が `DEVICE_ADD_WAIT_HINT_AFTER_MS` の右辺を記号(`DEVICE_ADD_REQUEST_TTL_MS / 3`)で留めている。TTL が変わっても右辺は変わらず、docs の「five minutes」が黙って嘘になる(pullfrog nit) | (a) 実効ミリ秒で留める → 右辺が `DEVICE_ADD_REQUEST_TTL_MS / 3` の字面なので `constantOf` では取れない。(b) **TTL の釘(`DEVICE_ADD_REQUEST_TTL_MS`)の mentions に「five minutes after the request」を足す** — TTL を変えれば TTL の釘が落ち、docs と一緒に直す | (b) は記号の釘(比 1/3 を留める)と TTL の釘(絶対値を留める)の両方を持つ = 2 方向のミューテーションで落ちる | 「閾値を api-schema の定数にして TTL の隣に置く」→ CLI の待機の作法を api-schema(ワイヤ)に置くのは置き場が違う | 反例「1/3 を 1/2 に変える」— 記号の釘が落ちる(既存)。「TTL を 30 分に変える」— TTL の釘が落ちる(新規) | **(b)**。原則「導出した値の釘は、導出元の釘にも写しを登録する(K6-Y 補『写しのある場所すべてに釘』)」。nit 2(クロックスキューで経過分がずれる)は診断表示のみで、サーバー時刻を局所時計に写す手段が無い — 変えない |
+
+## 13. K8 追記(2026-09-21 — K7 の申し送りの回収: Web の envelope 型の導出化と裁定文の撤回)
+
+K7(PR #191)が完了記録に残した「所有者に諮る点」(1)(6) と「申し送り」(1) の回収。所有者の裁定(K8 のプロンプト §0-bis)は **A(Web の手書き envelope 4 つの導出型化)= ON、B(K4-6 の「+ yes」の撤回の追記)= ON、C(承認側の登録簿 PUT が失敗したとき要求の取消を飛ばす)= OFF、D(期限切れ後の同一鍵での再要求)= OFF**。C / D は実装せず、案を「所有者に諮る点」に残す。仕様・ADR・`CLAUDE.md`・`packages/crypto`・サーバーの認可は触らない。表は K6-X の書式(空欄は「探していない」の印 — 埋めてから打ち止めと書く)。
+
+### K8 の事実確認(コードを読んだ — K6-X の 3 原則)
+
+- `apps/web/src/dashboard/types.ts` の手書き `interface` は 4 つ: `AuditEventsPage { events }`・`EnvironmentList { environments }`・`RotationFlagList { flags }`・`InvitationList { invitations }`。使う側は `ProjectScreen.tsx`(`useApiResource<EnvironmentList>` / `<RotationFlagList>`、`apiGet<AuditEventsPage>` ×2)・`AccountAuditScreen.tsx`(`apiGet<AuditEventsPage>`)・`AuditEventList.tsx`(`AuditPageFetcher` の戻り)・`InvitesTab.tsx`(`ResourceState<InvitationList>` / `useApiResource<InvitationList>`)。**同じ envelope の手書き複製は `types.ts` の外に無い**(`useApiResource<...>` の型引数はすべて `types.ts` の名前を使う — grep で確認)。
+- api-schema 側: `AuditEventsPageSchema` は **既に名前付き**(`audit-api.ts` :100 — 3 つの監査エンドポイントの `success` が参照)で `index.ts` から export 済み。Web が使っていなかっただけ。`environments` の `list`(`data-api.ts` :334)・`rotation` の `flags`(`rotation-api.ts` :84)・`invites` の `list`(`invites-api.ts` :205)の `success` は**インラインの `Schema.Struct`**。先例 `TokenListSchema`(`auth-api.ts` :153)/ `DeviceListSchema`(`devices-api.ts` — K7-8)は「`XxxListSchema` を `export const` で置き、エンドポイントの `success` から参照」。
+- **`environments` の `success` は `{ environments, schemaPolicy? }`** で、Web の手書き `EnvironmentList` は `schemaPolicy` を落としている(§12-7 / §12-11 の advisory 同梱)。導出型にすると `schemaPolicy?: SchemaPolicy` が型に現れるが、これは**ワイヤに既にある**フィールドで、Web は読まない(`ProjectScreen.tsx` は `.environments` だけを触る)。
+- 検査の先例: `apps/site/test/unit/cli-vocabulary.test.ts` は `apps/web/src/dashboard/*.tsx` を `readFileSync` で読み、語句を釘で留める(K6-D)。`apps/web/test/unit/` には純関数の unit テストが 5 本あり、ルート `vitest.config.ts` の projects に載る(品質ゲート 7)。`.oxlintrc.json` は `eslint-js/no-restricted-syntax` を `apps/web/**`(styling 規律)と `apps/cli/src/**`(K7-13 の語彙)の override で使っている。
+- C の現状(`device.ts` `deviceApproveOp`): 後段は「≥1 registered / already」でゲート(K4-31 (c))、その内側で **ローカル記録 → 登録簿 PUT(失敗は Note に畳む — 429 なら「rows を消して `device approve` を再実行せよ」)→ 要求の取消(失敗は無視)** の順で、PUT の成否は取消の条件に入っていない。要求側の `waitForRegistryRow` は登録簿の行だけを合図にする(K4-5)。
+- D の現状(`deviceKeyForRequest`): 鍵あり + 要求行なし + 登録簿の行なし → 拒否(K4-21 (c))。`--replace` だけが先へ進む。docs(`devices.mdx` :65 / :152 / :154)と K7-1 の文言はこの挙動を写している。
+
+### K8-1. 3 つの envelope Schema の名前と置き場(A)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 1-a **各 `*-api.ts` にエンドポイントの直前で `export const EnvironmentListSchema` / `RotationFlagListSchema` / `InvitationListSchema = Schema.Struct({...同じ定義...})` を置き、`success` から参照。`index.ts` で export。`AuditEventsPageSchema` は既存を使う。Web は `typeof X.Type`** | `TokenListSchema` / `DeviceListSchema` と同じ命名・同じ置き場。ワイヤ不変(同じ `Schema.Struct` を名前で参照するだけ) | 「`EnvironmentListSchema` から `schemaPolicy` を落とした Web 専用の Struct を別に置く」→ 定義が 2 つになり単一定義の意図(裁定 BR)に反する。棄却 | 「HttpApi の型からエンドポイントの success を取り出す」→ K7-8 8-c で棄却済み(Effect v4 の内部型式に依存) | 反例 1「`EnvironmentList` の導出型に `schemaPolicy?` が現れ、Web の `useApiResource<EnvironmentList>` の意味が広がる」— 広がるのは**型**だけで、ワイヤは元からそのフィールドを運んでいる。手書き型がワイヤの写しとして不完全だったのが正される(K8-3)。反例 2「サーバーの `handlers-*.ts` が inline の形を返している」— `success` の参照先が同じ Struct なので型は同じ。typecheck で追随を確認。反例 3「命名 `InvitationListSchema` か `InviteListSchema` か」— 行の型が `InvitationSummarySchema`、Web の手書きが `InvitationList` なので `InvitationListSchema`(行の型の語幹に揃える — `TokenSummary` → `TokenList`、`DeviceSummary` → `DeviceList` と同型) | **採用** |
+| 1-b `packages/api-schema/src/index.ts` に 3 つをまとめて置く | 1 か所 | — | — | `index.ts` は再 export のみ(定義を持たない — 現状)。先例の置き場と違う | 棄却 |
+| 1-c Web 側で `Schema.Struct` を組み立てて `typeof` を取る | api-schema を触らない | — | — | Web に Schema の実行コードが入る(type-only import の理由に反する — TCB) | 棄却 |
+
+**第 2 巡**: 上位互換 = 反例 3 の命名規則を「行の型の語幹 + List」と明文化(1-a に取り込む)。銀の弾丸 = 「名前付きにするか否かを機械で強制する(api-schema の `success:` に inline `Schema.Struct` を禁じる lint)」→ inline の `success` は `{ expiresAtMs }` / `{ deks }` / `{ schemaPolicy }` など Web が使わないものにも多く、K8 の範囲(Web が消費する envelope)を超える全面改訂になる。所有者に諮る点へ。反例 = 「`AuditEventsPageSchema` の名前は `*List` の型と揃わない」— 監査は page(`before` カーソルで続く)で list ではない。既存名が正しく、Web の `AuditEventsPage` とも一致。新案なし。**第 3 巡**: 試した案「`RotationFlagListSchema` を `RotationFlagsSchema` に(エンドポイント名 `flags` に揃える)」→ 先例は行の型の語幹 + `List`(`TokenListSchema` はエンドポイント `list`、フィールド `tokens`)。フィールド名でなく行の型で揃える。新案なし。打ち止め。**原則**: 「envelope の名前は行の型の語幹 + `List`(page なら `Page`)で、定義はエンドポイントの隣に 1 つ」— K6-R ✓(主張は 1 か所)、ワイヤ不変 ✓、裁定 BR(単一定義)✓。**採用: 1-a**。
+
+### K8-2. `types.ts` に `interface` が残らないことの検査の置き場(A)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 2-a **`apps/web/test/unit/types-derived.test.ts`(新規): `types.ts` を `readFileSync` で読み、(i) `interface` 宣言が 0、(ii) `import` 文がすべて `import type`、(iii) `typeof XxxSchema.Type` の導出が ≥ 1 件で、かつ `export type` の件数と一致(手書きの `type X = { ... }` も残さない)** | 空虚でない(ファイルが無ければ `readFileSync` が落ちる。導出 0 件でも落ちる)。type-only の不変条件(コメントに書かれた理由 — TCB)も同じ検査で機械化 | — | `.oxlintrc.json` の override で `apps/web/src/dashboard/types.ts` に `TSInterfaceDeclaration` を禁じる(K7-13 の型 — 既存機構) | 反例 1(2-a)「`type X = { a: string }` の手書きは `interface` でないので通る」→ (iii) の「`export type` の件数 = `typeof …Schema.Type` の件数」で捕まる。反例 2(2-a)「型を 1 つ足すたびに件数を数え直す」→ 件数の定数は持たず、2 つの数を**互いに**比べる(数え直し不要)。反例 3(2-a)「`import type` を `import { type X }` と書く」→ `verbatimModuleSyntax` では inline `type` 修飾子でも消えるが、コメントの規律は文頭 `import type`。検査は文頭 `import type` を要求し、inline 形は落とす(規律を 1 形に固定) | **採用** |
+| 2-b lint override(`TSInterfaceDeclaration` を `types.ts` に禁止) | 編集した場所にメッセージが出る(次の編集者に理由が届く) | — | 既存機構 | 反例「ファイルを改名 / 移動すると override の glob が 0 件に当たり、黙って通る」— 空虚さを機械で捕まえられない。反例「`type X = {...}` の手書きは捕まえられない(`TSTypeLiteral` を禁じると `Type` の索引型など正当な形まで落ちる)」 | 棄却(2-a の (iii) が上位) |
+| 2-c `cli-vocabulary.test.ts` に足す | 既に Web のファイルを読んでいる | — | — | あのテストは「docs が CLI / Web の語彙を写す」検査で、型の構造は主題が違う。置き場の主題を混ぜない | 棄却 |
+
+**第 2 巡**: 上位互換 = 2-a に (ii)(iii) を取り込んだ(表に反映)。銀の弾丸 = 「`types.ts` 自体を無くし、各画面が `typeof XSchema.Type` を直接書く」→ 同じ導出が画面ごとに複製され、裁定 BR(単一定義)と逆行。棄却。反例 = 「検査がコメントを `interface` と誤読する」→ 先頭コメントに `interface` の語は無いが、将来入りうる。宣言の正規表現は行頭 `(export )?interface ` に限定し、コメント行(`//` 始まり)は除く。新案なし。**第 3 巡**: 試した案「2-a と 2-b を両方置く」→ 主張の持ち主が 2 つになる(K6-R ✗)。2-a のみ。新案なし。打ち止め。**原則**: 「検査は空虚さを自分で否定できる形(対象の読み込みが失敗すれば落ち、件数を件数と比べる)で置く」— K6-T ✓、K7-13 ✓(lint は空虚さで負ける)、K6-R ✓。**採用: 2-a**。
+
+### K8-3. `EnvironmentList` の導出型に現れる `schemaPolicy?`(A の事実確認から)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 3-a **そのまま導出する(`schemaPolicy?` が型に入る)。Web は読まない** | ワイヤの写しが完全になる。Web のコードは変更なし(`.environments` だけ触る) | — | — | 反例「Web の表示層が `Object.keys(list)` で列挙している」— していない(grep: `EnvironmentList` の使用は `useApiResource` の型引数 1 か所) | **採用** |
+| 3-b `Omit<typeof EnvironmentListSchema.Type, "schemaPolicy">` | 型を従来の形に保つ | — | — | 「Web が読まないフィールドを型から隠す」は Web の都合で単一定義を歪める。読まないなら害は無い | 棄却 |
+| 3-c Web で `schemaPolicy` を表示する | フィールドを活かす | — | — | 機能追加(K8 の範囲外) | 棄却 |
+
+**第 2 巡・第 3 巡**: 試した案「`schemaPolicy` の同梱を別 Schema(`EnvironmentListWithPolicySchema`)に分ける」→ ワイヤの形の分割 = 変更。禁止(§2)。新案なし。打ち止め。**原則**: 「導出型はワイヤの写しであり、消費側の都合で削らない」— ワイヤ不変 ✓、裁定 BR ✓。**採用: 3-a**。
+
+### K8-4. K4-6 の「+ yes」の撤回の書き方(B)
+
+所有者の指示は「裁定文の改訂でなく §12 / §13 に追記(K4-6 の本文は消さない)」なので、形は固定。置き場だけが裁定点(単巡): §13 の末尾(本節の直後の「K8 の裁定一覧」の前)に 1 段落。K4-6 本文には触れない(履歴)。撤回の根拠は K6-W W-2(yes は「送られた FP を信じる人」を止めない — 止めるのは「FP は追加する機械の画面から読む」の規律)と K7-7(その規律を `device approve` の出力に 1 文で出した)。**原則**: 「裁定文は履歴として残し、撤回は追記で行う(設計録の append-only)」。
+
+**撤回の追記(B)**: **K4-6 の裁定文(および §2 / §4 / §5 の「照合 + yes」の記述)の「+ yes」は撤回する。実装(儀式ゲート → 全長 FP の照合 → 表示 → 即 `add_device`。yes は無い — K6-N)が正。** 根拠: yes は誤入力(誤った FP は要求に一致せず落ちる)にも、脅威(鍵素材アクセスを持つトークンを盗った者が要求を置き、その FP を送って承認させる)にも効かない — 送られた FP を信じている人は yes も押す(K6-W W-2)。脅威を止めるのは「FP は追加する機械の画面から読む」の規律で、それは docs(`devices.mdx`)と `device approve` の出力の 1 文(K7-7)が持つ。K4-6 の本文と §2 / §4 / §5 の字面は履歴として残す(改訂しない)。
+
+### K8-5. 承認側の登録簿 PUT が失敗したときの要求の取消(C — OFF: 実装しない。案だけ諮る点へ)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 5-a PUT が失敗したら要求の取消を飛ばす(要求は残り、承認側が rows を消して `device approve` を再実行すると全プロジェクト already → PUT → 取消) | Note の案内(「再実行せよ」)がそのまま従える。要求側は再実行の PUT を合図に待機を抜ける(TTL 内なら) | 5-a + Note に「the request is left in place so that the re-run can signal the new device」を足し、要求側の期限切れの文言の条件(K7-1「承認側が何も登録していなければ」)を「承認側が登録簿への書き込みに失敗したと言っていれば、rows を消して承認側で再実行」に広げる | 「登録簿の行なしでもチェーンで確認へ進める面」(要求側が待機を抜けた後にチェーンを見る経路を、合図なしでも `device add --check` 等で呼べる)→ 新しい面(フラグ)で、K4-5(advisory は合図まで)には触れないが範囲が広い | 反例 1「PUT の失敗が 429 でなく一時的な 5xx」— 取消を飛ばせば要求は残り、承認側の再実行で収束(冪等)。害なし。反例 2「承認側が再実行しないまま TTL が切れる」— 要求側は期限切れの文言に至る(現状と同じ)。反例 3「PUT が失敗したのに取消が走った現状は、要求側が合図を得ず、承認側の再実行は『No pending device-add request』で落ちる」— これが申し送り (1) そのもので、5-a はこれを消す | **所有者に諮る(OFF)** |
+| 5-b PUT を取消の後にする(順序を入れ替える) | — | — | — | 取消の後に PUT が失敗すると要求も合図も無い(現状より悪い)。K4-31「advisory の書き込みは真実の後」は満たすが回復経路が消える | 棄却 |
+| 5-c PUT 失敗時に要求側へ別の合図を出す(要求行に `registryFull` 等の印) | 要求側が原因を知る | — | — | 要求行はサーバーの Schema(ワイヤ変更 + K3 の改訂)。advisory を判断の入力にする(K4-5 ✗) | 棄却 |
+
+**第 2 巡**: 上位互換 = 5-a の上位互換(表)。銀の弾丸 = 表の「面」案。反例 = 「5-a で要求が残ると、承認側が再実行するまで要求は他の承認者(同じ人の別端末)にも見える」— 同じ人の要求で、承認は冪等(already)。害なし。新案なし。**第 3 巡**: 試した案「PUT の失敗を後段のゲート(≥1 registered)と同列に扱い、警告 + 終了コード 1」→ チェーンには載っているので「失敗」ではない。終了コードは現状(Note)でよく、取消の有無だけが論点。新案なし。打ち止め。**原則(採用時)**: 「合図を出せなかったなら、合図を出し直せる材料(要求)を消さない」— K4-31 ✓(取消は advisory の後の後)、K4-5 ✓。**所有者に諮る点 (1)**: 5-a(上位互換つき)を採るか。採るなら Note の文言・`devices.mdx` :65 の条件(「its write to the registry … can fail when the registry is full」の段落)・`device.test.ts`(取消の有無)を同じ PR で揃える。
+
+### K8-6. 期限切れ後の同一鍵での再要求(D — OFF: 実装しない。案だけ諮る点へ)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 6-a 「鍵あり + 要求なし + 登録簿なし + どのチェーンにも無い」なら同じ鍵で要求を作り直す。「どのチェーンにも無い」は全プロジェクトの同期(`openProject` × N)で判定し、1 つでも同期できなければ fail-closed で拒否(`--replace` を案内) | 期限切れのたびに鍵を捨てなくてよい(承認側が写した FP が有効なまま) | 6-a + 判定の置き場を `deviceKeyForRequest` の「鍵あり + 要求なし + 登録簿なし」分岐の内側に限定し、同期の失敗は型付きエラー(K4-33 の型)で伝える | 「期限切れを無くす(要求の TTL を延ばす / 再延長する)」→ TTL は api-schema の定数(`DEVICE_ADD_REQUEST_TTL_MS`)で、延長はサーバー(K3)の改訂 + 受理ポリシーの値 = 範囲外 | 反例 1「プロジェクトが 0 件のユーザー」— 「どのチェーンにも無い」は真(空集合)で再要求できる。正しい。反例 2「非メンバーになったプロジェクトが同期できない(403)」— fail-closed で拒否 = `--replace` の案内(現状と同じ)。安全側だが、退会したプロジェクトが 1 つあるだけで永久に再要求できない。反例 3「同期が遅い(N が大きい)」— 期限切れ後の再実行に限るので頻度は低い。反例 4「pre-DK の複製鍵(K4-18)」— 複製鍵は他端末のチェーンに載っているので「どのチェーンにも無い」が偽 → 拒否(現状の `--replace` 案内)。正しい | **所有者に諮る(OFF)** |
+| 6-b 登録簿の行なし + 要求なし だけで再要求(チェーンを見ない) | 同期不要 | — | — | 登録簿は advisory(DK-D)。行を消された既登録の鍵で要求を作り直すと、承認側は「already」で終わり害は無いが、判断の入力に advisory を使う(K4-5 ✗) | 棄却 |
+| 6-c `--replace` のまま(現状) | 分岐なし | — | — | 反例(UX)「期限切れのたびに FP が変わり、承認側に写した FP が無駄になる」— K7-1 で文言を実装に合わせた。挙動の穴は残る | 現状維持(OFF) |
+
+**第 2 巡**: 上位互換 = 表。銀の弾丸 = 表(TTL)。反例 = 反例 2 が 6-a の穴(退会したプロジェクトの 403)。改案「403 は『非メンバー』として『載っていない』扱いにする」→ 非メンバーでもチェーンに自分の端末が残ることは無い(退会 = remove_member で端末も消える)ので、403 を「載っていない」と読むのは正しい。ただし 403 の理由の判別(`ForbiddenReason`)が要る。6-a に含める。新案なし。**第 3 巡**: 試した案「`device add --resume` の明示フラグで再要求」→ フラグが 1 つ増える(面)。`--replace` との使い分けを人が判断する = 期限切れの文言に 2 択が出る。6-a(自動)が上位。新案なし。打ち止め。**原則(採用時)**: 「鍵を捨てる判断は真実(チェーン)を全部見てから、見られなければ捨てない側に倒す(fail-closed)」— DK-D ✓、K4-5 ✓。**所有者に諮る点 (2)**: 6-a(上位互換 + 403 = 非メンバーの読み)を採るか。採るなら期限切れの文言(K7-1)・`devices.mdx` :65 / :152 / :154・`device add --replace` の help・`device.test.ts` を同じ PR で揃える。
+
+### K8 の裁定一覧(実装前の固定)
+
+| # | 論点 | 採用 | 他案に対して何が上位か | 原則 |
+|---|---|---|---|---|
+| K8-1 | 3 つの envelope Schema | 各 `*-api.ts` に `EnvironmentListSchema` / `RotationFlagListSchema` / `InvitationListSchema`。`AuditEventsPageSchema` は既存 | 先例(`TokenListSchema` / `DeviceListSchema`)と同じ命名・置き場。ワイヤ不変 | envelope の名前は行の型の語幹 + `List`、定義はエンドポイントの隣に 1 つ |
+| K8-2 | `interface` 不在の検査 | `apps/web/test/unit/types-derived.test.ts`(interface 0・`import type` のみ・`export type` 数 = `typeof …Schema.Type` 数) | lint は改名で空虚に負ける。件数を件数と比べるので数え直し不要。type-only の規律も同時に機械化 | 検査は空虚さを自分で否定できる形で置く |
+| K8-3 | `schemaPolicy?` | そのまま導出 | 消費側の都合で単一定義を削らない | 導出型はワイヤの写し |
+| K8-4 | 「+ yes」の撤回 | §13 に追記(本文は残す) | 所有者の指定どおり。設計録は append-only | 撤回は追記で |
+| K8-5 | C(OFF) | 5-a(上位互換つき)を諮る点へ | 合図を出し直せる材料を消さない | — |
+| K8-6 | D(OFF) | 6-a(403 = 非メンバー)を諮る点へ | 真実を全部見てから捨てる | — |
+
+§1 の項目で「直す必要が無い」と判断したもの: 「同じ envelope の複製が Web の別の場所に残っていないか」— grep で `types.ts` の外に無い(事実確認)ので変更なし。`AuditEventsPage` の Schema 側は既に名前付きで export 済み(変更なし。Web 側の導出だけ)。
+
+### K8 の回し直し(2026-09-21 — 所有者の問い「裁定それぞれで上位互換案・構造から解決できる案を模索するループを回したか」への回答)
+
+**正直な棚卸し**: K8-5 / K8-6(OFF の C / D)は欄を埋めて回した。**K8-1 は表の「上位互換」欄に棄却案(`schemaPolicy` を落とした Web 専用 Struct)を入れており、上位互換を構成していない**。第 2 巡の「命名規則の明文化」も案でなく注記。**K8-2 は上位互換 (ii)(iii) と銀の弾丸(`types.ts` 廃止)を回したが、pullfrog が指摘した「検査の射程が 1 ファイル」に対する上位互換を構成しておらず、検査自体への反例(折り返し・ブロックコメント・ネストした型引数)も構成していなかった**。さらに K8-2 の (ii)「`import type` のみ」は、**既存の `endpoints.test.ts`「keeps effect / api-schema imports type-only in bundle sources(裁定 BR/CD)」が `src/` 全体で持つ主張の複製**だった(K6-R ✗ — 置く前に既存の検査を grep していない。K6-U と同じ型)。K8-3 / K8-4 は単巡相当。ここで各点を回す。
+
+| # | 論点 | 試した上位互換 | 試した銀の弾丸(構造) | 反例 | 結論 |
+|---|---|---|---|---|---|
+| K8-1 補 | 3 つの envelope Schema | 「`success` の Struct を名前付きにするとき、行の型(`XxxSummarySchema`)の直下に置き JSDoc にエンドポイントのパスを書く」→ 1-a の実装がそのとおり(`TokenListSchema` の JSDoc と同形)。上位互換でなく既に採った形の確認 | 「api-schema の `success:` に inline の `Schema.Struct` を禁じる lint(`no-restricted-syntax` で `Property[key.name='success'] > CallExpression[callee.object.name='Schema'][callee.property.name='Struct']`)」— 既存機構(K7-13 の型)に落ちる。残り 5 面(`{ expiresAtMs }` / `{ requests }` / `{ deks }` / `{ schemaPolicy }` / `{ ok }` 系)の全面改訂を伴うので範囲外 → 諮る点 (3) に**具体の selector まで**書く | 反例「`success: Schema.Struct(...)` を `success: EnvironmentListSchema` に替えたとき、サーバーの handler が返すオブジェクトに余分なキーがあれば Struct の encode で落ちる」— 同じ Struct なので挙動は同一(K8-1 反例 2 で確認済み)。新案なし | 変えない。表の欄の誤り(棄却案を上位互換欄に)を本節で訂正 |
+| K8-2 補 | `interface` 不在の検査の射程と堅牢さ | **呼び出し側のスイープ**: `src/` 全体で消費面の入口(`apiGet` / `useApiResource` / `ApiResult` / `ResourceState`)の型引数を集め、どれも `types.ts` の `export type` 名であることを要求する(入口を宣言する `api.ts` / `use-api-resource.ts` と `types.ts` は除外)。射程が 1 ファイルから消費面全体に広がり、画面での手書き envelope(`useApiResource<{ flags: … }>`)も局所の別名(`useApiResource<LocalFlags>`)も落ちる | **既存の走査機構(`endpoints.test.ts` の `findSourceOffenders` / `isSweepTarget` — 裁定 BW の消費面スイープ)に載せる**: 新規ファイル `types-derived.test.ts` を消し、同じ describe 群に 2 つの `it` として置く(主張の置き場が「消費面のスイープ」に揃う)。(ii)「`import type` のみ」は既存の検査の複製なので**削除** | 反例 1「oxfmt が長い名前で `=` の後を折り返すと行単位の正規表現が外れ、件数が合わず**偽の失敗**」— 正規表現を `\s*` で折り返しを跨ぐ形にし、ミューテーション(折り返した導出)で**通る**ことを確認。反例 2「ブロックコメント内の `interface`」— `/* … */` と `//` を落としてから数える。ミューテーションで通ることを確認。反例 3「呼び出し側の型引数がネストした `<…>` を含む(`{ flags: ReadonlyArray<RotationFlag> }`)と `[^<>]+` が当たらず**見逃す**」— 実際に踏んだ(最初の実装はこのミューテーションを通した)。角括弧の深さを数えて型引数を切り出す `typeArgumentAt` に替え、落ちることを確認 | **採用(K8-7)**。原則「検査を置く前に、同じ主張を既に持つ検査を grep する(K6-U の検査版)」+「検査への反例は、検査が**通ってはいけない入力**と**通らなければならない入力**の両方で構成する」 |
+| K8-3 補 | `schemaPolicy?` | 「`EnvironmentList` の JSDoc に `schemaPolicy` が advisory 同梱であることを書く」→ 導出元 `EnvironmentListSchema` の JSDoc が持つ(K6-R)。Web 側に写さない | 「Web の型から optional を機械で落とす」→ 3-b と同じ(棄却済み) | 反例「`useApiResource<EnvironmentList>` の `state.value` を `JSON.stringify` して表示する画面」— 無い(grep)。新案なし | 変えない |
+| K8-4 補 | 「+ yes」の撤回の書き方 | 「K4-6 本文の該当語に脚注を打つ(『撤回 — §13 K8-4』)」→ 本文を触らない指示(所有者)に反する。§2 / §4 / §5 の「照合 + yes」の字面も同様に残す | 「設計録の裁定文と実装の一致を機械で検査する」→ 散文の主張は機械化できない(K6-V 補と同じ) | 反例「§13 を読まない人が K4-6 だけを読んで yes を実装する」— K6-N / K7-7 の裁定表と本節の 3 か所が撤回を持つ。新案なし | 変えない |
+| K8-5 / K8-6 補 | OFF の C / D | 回した(表)。追加で試した案: C「PUT の失敗を要求行の `label` 経由で要求側に伝える」→ label は advisory で攻撃者が決められる(K6-W W-2 (c))。棄却。D「`device add` が要求の期限を延長する(`PATCH`)」→ ワイヤ変更 + K3 改訂。棄却 | — | — | 変えない |
+
+**K8-7(実装中の追加裁定)**: 検査の置き場を `apps/web/test/unit/endpoints.test.ts`(裁定 BW の消費面スイープ)に移し、`types-derived.test.ts` は置かない。主張 (a)「`types.ts` は `typeof XxxSchema.Type` の導出のみ(interface 0・`export type` 数 = 導出数)」、(b)「消費面の入口の型引数はすべて `types.ts` の export 名」。ミューテーション: 落ちるべき 4 種(`interface` に戻す / 型リテラルの手書き / 呼び出し側の inline envelope / 呼び出し側の局所別名)で落ち、通るべき 2 種(折り返した導出 / ブロックコメント内の `interface`)で通ることを確認。空虚でないこと = `types.ts` が無ければ `readFileSync` が落ち、`export type` 0 件・消費面 0 件でも落ちる。**既知の限界**(PR #192 pullfrog 第 2 巡の情報メモ — 反例として自分では構成していなかった): 入口の型引数に関数型(`=>`)や `void` / 合併型が正当に現れる日が来ると、スイープは「derive it there」と誤った案内で落ちる(黙って通りはしない — fail-loud)。そのときは `types.ts` に別名を発明せず、除外集合か入口の列挙を狭める。今は該当する面が無いので先回りの許容は置かない。
+
+**原則**(K6-X の続き): 「上位互換の欄には**採用案の利点を残して欠点を消す案**だけを書く(棄却案を入れて埋めた気にならない)」「検査を置く前に同じ主張の既存検査を grep する」「検査への反例は通るべき入力と通ってはいけない入力の両方で構成する」。
+
+### K8 完了記録(2026-09-21)
+
+- **成果物**: `packages/api-schema` = `EnvironmentListSchema`(`data-api.ts` — `schemaPolicy?` の同梱を含む同じ定義)・`RotationFlagListSchema`(`rotation-api.ts`)・`InvitationListSchema`(`invites-api.ts`)を名前付き export にし、各エンドポイントの `success` から参照(ワイヤ不変 — 同じ `Schema.Struct` に名前を付けただけ)。`index.ts` で export。`AuditEventsPageSchema` は既存を使う。`apps/web/src/dashboard/types.ts` = 手書き `interface` 4 つを `typeof XxxSchema.Type` の導出型に置き換え(type-only import のまま)。`interface` は 0。検査 = `apps/web/test/unit/endpoints.test.ts` の describe「dashboard envelope types are derived from api-schema」(K8-2 / K8-7: `types.ts` は `interface` 0・`export type` の件数 = `typeof …Schema.Type` の件数、消費面の入口〔`apiGet` / `useApiResource` / `ApiResult` / `ResourceState`〕の型引数はすべて `types.ts` の export 名。type-only import は既存の裁定 BR/CD の検査が持つ)。設計録 = 本 §13(裁定 K8-1〜K8-7、K4-6 の「+ yes」の撤回の追記 = K8-4、回し直し)。
+- **テスト**: ミューテーション = 落ちるべき 4 種(`RotationFlagList` を `interface` に戻す / `InvitationList` を型リテラルの手書きにする / `ProjectScreen.tsx` の `useApiResource<RotationFlagList>` を inline の `{ flags: … }` にする / 局所の別名 `LocalFlags` にする)でそれぞれ落ち、通るべき 2 種(`=` の後で折り返した導出 / ブロックコメント内の `interface`)で通ることを確認。逆向きの編集で戻して `git diff --stat` が K8 の差分だけであることを確認。空虚でないこと = `types.ts` が無ければ `readFileSync` が落ち、`export type` 0 件・消費面 0 件でも落ちる。別の場所に当たっていないこと = (a) は `types.ts` のみ、(b) は入口の 4 名を名指しし、入口を宣言する 2 モジュールを除外。
+- **検証**: `bun run fmt:check` / `lint` / `typecheck`(7 パッケージ)/ `importlint` / `fallow:audit`(exit 0 — 既存 baseline の重複警告のみ、新規指摘なし)/ `doctor`(exit 0)/ `test`(142 ファイル 4960 件 — K7 の 142 / 4958 + 本 PR の 2 件〔`endpoints.test.ts` に追加〕)。`apps/web`: `build` → `e2e`(34 件)。e2e は K7 と同じ手順で `/opt/pw-browsers` の Chromium 1194 を revision 1234 の名前でスクラッチ領域に別名づけして `PLAYWRIGHT_BROWSERS_PATH` で実行(`playwright install` は実行していない)。`apps/site` の docs は触っていないので site の build / e2e は未実施(`cli-vocabulary.test.ts` は `bun run test` に含まれ緑)。
+- **所有者に諮る点**: (0) K8 の回し直しで K8-2 の検査を `endpoints.test.ts` に移し、呼び出し側のスイープを足した(K8-7 — 射程の拡張。挙動は変えない)。(1) C = K8-5 の 5-a(承認側の登録簿 PUT が失敗したら要求の取消を飛ばし、Note に「要求は残した」を足す。期限切れの文言の条件も広げる)を採るか — 挙動変更(K4-31 の後段の順序)。(2) D = K8-6 の 6-a(期限切れ後、鍵あり + 要求なし + 登録簿なし + 全プロジェクトのチェーンに無い〔403 は非メンバー = 無い と読む〕なら同じ鍵で要求を作り直す。同期できないプロジェクトがあれば fail-closed で拒否)を採るか — 分岐と同期の追加。(3) K8-1 第 2 巡の銀の弾丸: api-schema の `success:` に inline の `Schema.Struct` を禁じる lint(`.oxlintrc.json` の `no-restricted-syntax`、selector `Property[key.name='success'] > CallExpression[callee.object.name='Schema'][callee.property.name='Struct']` を `packages/api-schema/src/**` に — `{ expiresAtMs }` / `{ deks }` / `{ schemaPolicy }` / `{ requests }` 等の残りも名前付きにする全面改訂)を別 PR で行うか。
+- **申し送り**(本 PR の範囲外 — 別タスク): K7 の諮る点 (3)(要求側でチェーンから不足プロジェクトの原因を導く面)・(4)(`CLAUDE.md` の「master 秘密鍵」の語)・(5)(`--handoff` の改名)、K7 の申し送り (2)(一部のプロジェクトにだけ登録された端末の直接登録コマンド)・(4)(§11 の W-3 / W-4 / W-6)は据え置き。

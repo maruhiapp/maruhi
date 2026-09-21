@@ -126,6 +126,11 @@ export const InvitationSummarySchema = Schema.Struct({
   acceptance: Schema.NullOr(InviteAcceptanceSchema),
 });
 
+/** GET /projects/:projectId/invites: the project's invitations (AUTH_SPEC §15-2). */
+export const InvitationListSchema = Schema.Struct({
+  invitations: Schema.Array(InvitationSummarySchema),
+});
+
 /** 発行の要求(§15-2): クライアント採番の id + 発行文(role・scope を含む)。 */
 export const InviteIssuePayloadSchema = withInviteScopeShape(
   Schema.Struct({
@@ -202,7 +207,7 @@ export const invitesGroup = HttpApiGroup.make("invites")
   .add(
     HttpApiEndpoint.get("list", "/projects/:projectId/invites", {
       params: { projectId: ProjectIdSchema },
-      success: Schema.Struct({ invitations: Schema.Array(InvitationSummarySchema) }),
+      success: InvitationListSchema,
       error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   )

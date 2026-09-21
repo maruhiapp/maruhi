@@ -71,6 +71,11 @@ export const RotationFlagSchema = Schema.Struct({
   trigger: Schema.optionalKey(RotationFlagTriggerSchema),
 });
 
+/** GET /projects/:projectId/rotation/flags: the project's active rotation flags (AUDIT_SPEC §7). */
+export const RotationFlagListSchema = Schema.Struct({
+  flags: Schema.Array(RotationFlagSchema),
+});
+
 /** One (environment, variable) dismissal target (AUDIT_SPEC §7). */
 export const RotationDismissTargetSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
@@ -81,7 +86,7 @@ export const rotationGroup = HttpApiGroup.make("rotation")
   .add(
     HttpApiEndpoint.get("flags", "/projects/:projectId/rotation/flags", {
       params: { projectId: ProjectIdSchema },
-      success: Schema.Struct({ flags: Schema.Array(RotationFlagSchema) }),
+      success: RotationFlagListSchema,
       error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   )

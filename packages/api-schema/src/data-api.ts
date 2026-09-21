@@ -98,6 +98,13 @@ export const EnvironmentSummarySchema = Schema.Struct({
   statement: DistributedEnvironmentMetaStatementSchema,
 });
 
+/** GET /projects/:projectId/environments: the project's environments (AUTH_SPEC §12-4). */
+export const EnvironmentListSchema = Schema.Struct({
+  environments: Schema.Array(EnvironmentSummarySchema),
+  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — pull と同じ規約)。 */
+  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+});
+
 /**
  * Result of a composite environment creation / rotation (AUTH_SPEC §12-4):
  * the accepted chain head (the entry was appended atomically with the data)
@@ -331,11 +338,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.get("list", "/projects/:projectId/environments", {
       params: projectParams,
-      success: Schema.Struct({
-        environments: Schema.Array(EnvironmentSummarySchema),
-        /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — pull と同じ規約)。 */
-        schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
-      }),
+      success: EnvironmentListSchema,
       error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   )
