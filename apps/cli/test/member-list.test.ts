@@ -76,19 +76,19 @@ describe("maruhi member list", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("Members (3) — verified chain head seq=5:");
     expect(logs).toContain(
-      `${devMember.userId}\tmember\tscope=env-dev, env-staging\tfp=${devMember.fingerprintHex}`,
+      `${devMember.userId}\tmember\tscope=env-dev, env-staging\tdevices=1\tfp=${devMember.fingerprintHex}`,
     );
     expect(logs).toContain(
-      `${noneReader.userId}\treader\tscope=no environments\tfp=${noneReader.fingerprintHex}`,
+      `${noneReader.userId}\treader\tscope=no environments\tdevices=1\tfp=${noneReader.fingerprintHex}`,
     );
     expect(logs).toContain(
-      `${owner.userId}\towner\tscope=all environments\tfp=${owner.fingerprintHex}`,
+      `${owner.userId}\towner\tscope=all environments\tdevices=1\tfp=${owner.fingerprintHex}`,
     );
     expect(logs.indexOf(devMember.userId)).toBeLessThan(logs.indexOf(noneReader.userId));
     expect(logs.indexOf(noneReader.userId)).toBeLessThan(logs.indexOf(owner.userId));
   });
 
-  it("--json は 1 文書(userId / role / scope / keyFingerprintHex / deviceKeyFingerprintsHex)を stdout に出す", async () => {
+  it("--json は 1 文書(userId / role / scope / devices / deviceKeyFingerprintsHex)を stdout に出す", async () => {
     const env = await startEnv(devMember);
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
     const document = JSON.parse(env.logs.join("\n")) as {
@@ -96,7 +96,7 @@ describe("maruhi member list", () => {
         userId: string;
         role: string;
         scope: unknown;
-        keyFingerprintHex: string;
+        devices: { keyFingerprintHex: string; roleCap: string; scope: unknown }[];
         deviceKeyFingerprintsHex: string[];
       }[];
     };
@@ -111,8 +111,11 @@ describe("maruhi member list", () => {
     });
     expect(document.members[1]?.scope).toEqual({ kind: "listed", environmentIds: [] });
     expect(document.members[2]?.scope).toEqual({ kind: "all" });
-    expect(document.members[2]?.keyFingerprintHex).toBe(owner.fingerprintHex);
-    // 構造化した端末 FP 列(2026-09-19 DK — K2 は端末 1 つ。設計録 §7 K2-10 j-4)
+    // 端末一覧(DK K4-20): FP + cap。連結した keyFingerprintHex は撤去
+    expect(document.members[2]?.devices).toEqual([
+      { keyFingerprintHex: owner.fingerprintHex, roleCap: "owner", scope: { kind: "all" } },
+    ]);
+    expect(document.members[2]).not.toHaveProperty("keyFingerprintHex");
     expect(document.members[2]?.deviceKeyFingerprintsHex).toEqual([owner.fingerprintHex]);
   });
 
@@ -131,7 +134,9 @@ describe("maruhi member list", () => {
     const env = await startEnv(owner);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain(`${devMember.userId}\tmember\tscope=env-dev, env-staging\tfp=`);
-    expect(logs).toContain(`${owner.userId}\towner\tscope=all environments\tfp=`);
+    expect(logs).toContain(
+      `${devMember.userId}\tmember\tscope=env-dev, env-staging\tdevices=1\tfp=`,
+    );
+    expect(logs).toContain(`${owner.userId}\towner\tscope=all environments\tdevices=1\tfp=`);
   });
 });

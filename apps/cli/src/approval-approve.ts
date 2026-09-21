@@ -137,6 +137,7 @@ function ensureApprovable(
   verified: VerifiedProject,
   proposalHashHex: string,
   signerUserId: string,
+  signerFingerprintHex: string,
   nowMs: number,
 ): Effect.Effect<ProposalView, CliError> {
   const resolution = resolveProposalRef(verified, proposalHashHex);
@@ -144,7 +145,7 @@ function ensureApprovable(
     return Effect.fail(cliError(describeUnresolvedRef(resolution)));
   }
   const view = proposalViewOf(verified, resolution.proposal, nowMs);
-  const eligibility = voteEligibility(verified, signerUserId, view);
+  const eligibility = voteEligibility(verified, signerUserId, signerFingerprintHex, view);
   if (!eligibility.ok) {
     return Effect.fail(cliError(`You cannot approve this proposal: ${eligibility.message}`));
   }
@@ -172,6 +173,7 @@ function fulfil<R>(input: {
           verified,
           targetUserId: inner.payload.targetUserId,
           actorUserId: input.signerUserId,
+          signingKeyPair: input.signingKeyPair,
           rotateWith: input.rotateWith,
         });
         return { kind: "member-rotation", targetUserId: inner.payload.targetUserId, sweep };
@@ -272,6 +274,8 @@ export function approveProposalOp<R>(input: {
   readonly verified: VerifiedProject;
   readonly ref: string;
   readonly signerUserId: string;
+  /** 署名する端末の FP(票の資格は端末の実効 role — approval-rules.ts)。 */
+  readonly signerFingerprintHex: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -283,6 +287,7 @@ export function approveProposalOp<R>(input: {
       input.verified,
       input.ref,
       input.signerUserId,
+      input.signerFingerprintHex,
       input.nowMs,
     );
     const proposal = first.proposal;
@@ -323,6 +328,7 @@ export function approveProposalOp<R>(input: {
               resynced,
               proposal.proposalHashHex,
               input.signerUserId,
+              input.signerFingerprintHex,
               input.nowMs,
             );
             return { verified: resynced, closed: null };

@@ -384,7 +384,7 @@ describe("guardian groups(クラス G — §13-7)", () => {
 });
 
 describe("handoff(クラス H — §13-7)", () => {
-  it("runs the device + guardian approval flow end to end with uniform 404 for strangers", async () => {
+  it("runs the guardian approval flow end to end with uniform 404 for strangers (the ward has no approval role — DK K4)", async () => {
     const { a, b, aId, groupId } = await guardianFixture();
     const stranger = await cliToken(704);
     const requestId = requestIdOf(0xa1);
@@ -396,11 +396,11 @@ describe("handoff(クラス H — §13-7)", () => {
     expect(duplicate.status).toBe(409);
     expect((await json(duplicate))["reason"]).toBe("request-exists");
 
-    // 照会: ward = device、保護者 = 自分の分片、部外者 = 一様 404
+    // 照会: ward = 役割なし(照会はできる)、保護者 = 自分の分片、部外者 = 一様 404
     const byWard = await json<{ roles: unknown[]; wardUserId: string; wardLogin: string }>(
       await get(`/auth/handoff/${requestId}`, a),
     );
-    expect(byWard.roles).toEqual(["device"]);
+    expect(byWard.roles).toEqual([]);
     expect(byWard.wardUserId).toBe(aId);
     expect(byWard.wardLogin).toBe("user701");
     const byGuardian = await json<{ roles: unknown[] }>(await get(`/auth/handoff/${requestId}`, b));
@@ -408,7 +408,7 @@ describe("handoff(クラス H — §13-7)", () => {
     expect((await get(`/auth/handoff/${requestId}`, stranger)).status).toBe(404);
     expect((await get(`/auth/handoff/${requestIdOf(0xa2)}`, a)).status).toBe(404);
 
-    // 保護者の承認(自分の分片のみ)。device を名乗る・別 share_index は 422
+    // 保護者の承認(自分の分片のみ)。別 share_index・他人のグループ名は 422
     const guardianApproval = {
       source: groupId,
       shareIndex: 1,
@@ -422,34 +422,23 @@ describe("handoff(クラス H — §13-7)", () => {
     const again = await post(`/auth/handoff/${requestId}/approvals`, b, guardianApproval);
     expect(again.status).toBe(409);
     expect((await json(again))["reason"]).toBe("already-approved");
-    const asDevice = await post(`/auth/handoff/${requestId}/approvals`, b, {
-      ...guardianApproval,
-      source: "device",
-      shareIndex: 0,
-      blob: WRAP,
-    });
-    expect(asDevice.status).toBe(422);
-    expect((await json(asDevice))["reason"]).toBe("source-mismatch");
     const wrongIndex = await post(`/auth/handoff/${requestId}/approvals`, b, {
       ...guardianApproval,
       shareIndex: 2,
     });
     expect(wrongIndex.status).toBe(422);
+    expect((await json(wrongIndex))["reason"]).toBe("source-mismatch");
     // 部外者の承認は一様 404
     expect(
       (await post(`/auth/handoff/${requestId}/approvals`, stranger, guardianApproval)).status,
     ).toBe(404);
 
-    // 旧端末(ward 本人)の承認: blob 必須・share_index 0
-    const deviceWithoutBlob = await post(`/auth/handoff/${requestId}/approvals`, a, {
-      source: "device",
-      shareIndex: 0,
-      approverKeyFingerprintHex: FP,
-      encHex: HPKE_ENC,
-      ciphertextHex: SHARE_CT,
-    });
-    expect(deviceWithoutBlob.status).toBe(422);
-    const device = await post(`/auth/handoff/${requestId}/approvals`, a, {
+    // ward 本人は自分の要求を承認できない(旧端末経路の撤去): 自分のグループ名でも 422、
+    // 旧ワイヤの `source: "device"` + `blob` は strict 受理で 400
+    const byWardApproval = await post(`/auth/handoff/${requestId}/approvals`, a, guardianApproval);
+    expect(byWardApproval.status).toBe(422);
+    expect((await json(byWardApproval))["reason"]).toBe("source-mismatch");
+    const legacyDevice = await post(`/auth/handoff/${requestId}/approvals`, a, {
       source: "device",
       shareIndex: 0,
       approverKeyFingerprintHex: FP,
@@ -457,19 +446,18 @@ describe("handoff(クラス H — §13-7)", () => {
       ciphertextHex: SHARE_CT,
       blob: WRAP,
     });
-    expect(device.status).toBe(204);
+    expect(legacyDevice.status).toBe(400);
 
-    // 取得は ward のみ。2 件が届き、collected は 1 回だけ記録される
+    // 取得は ward のみ。保護者の 1 件が届き(blob 列は無い)、collected は 1 回だけ記録される
     expect((await get(`/auth/handoff/${requestId}/approvals`, b)).status).toBe(404);
-    const first = await json<{ approvals: { source: string; blob: unknown }[] }>(
+    const first = await json<{ approvals: Record<string, unknown>[] }>(
       await get(`/auth/handoff/${requestId}/approvals`, a),
     );
-    expect(first.approvals.map((x) => x.source).toSorted()).toEqual([groupId, "device"].toSorted());
-    expect(first.approvals.find((x) => x.source === "device")?.blob).toEqual(WRAP);
-    expect(first.approvals.find((x) => x.source === groupId)?.blob).toBeNull();
+    expect(first.approvals.map((x) => x["source"])).toEqual([groupId]);
+    expect(first.approvals[0]).not.toHaveProperty("blob");
     await get(`/auth/handoff/${requestId}/approvals`, a);
     expect(await auditCount("auth.key_handoff_collected")).toBe(1);
-    expect(await auditCount("auth.key_handoff_approved")).toBe(2);
+    expect(await auditCount("auth.key_handoff_approved")).toBe(1);
     expect(await auditCount("auth.key_handoff_requested")).toBe(1);
     const approvedTargets = await env.DB.prepare(
       "SELECT target_user_id FROM user_audit_events WHERE event = 'auth.key_handoff_approved'",
@@ -506,12 +494,11 @@ describe("handoff(クラス H — §13-7)", () => {
     expect((await get(`/auth/handoff/${requestId}`, a)).status).toBe(404);
     expect((await get(`/auth/handoff/${requestId}/approvals`, a)).status).toBe(404);
     const approve = await post(`/auth/handoff/${requestId}/approvals`, a, {
-      source: "device",
+      source: ledgerId(),
       shareIndex: 0,
       approverKeyFingerprintHex: FP,
       encHex: HPKE_ENC,
       ciphertextHex: SHARE_CT,
-      blob: WRAP,
     });
     expect(approve.status).toBe(404);
   });

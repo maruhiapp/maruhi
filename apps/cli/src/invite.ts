@@ -52,8 +52,9 @@ import type { HttpClient } from "effect/unstable/http";
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import type { IdentityBacking } from "./config.ts";
+import type { CliServices } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
-import { memberHasKeys, soleDeviceOrFail } from "./device-key.ts";
+import { devicesOf, memberHasKeys } from "./device-key.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -71,7 +72,6 @@ import {
 } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
-import type { ProcessRunner } from "./run.ts";
 import { describeScope, requireScopeEnvironmentsExist, sameScope, scopeContains } from "./scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -148,30 +148,36 @@ export function verifyIssuance(input: {
     if (inviter === undefined) {
       return { ok: false, reason: "inviter-not-member" } as const;
     }
-    // 発行署名の検証鍵 = 招待者の唯一の端末鍵(K2 — 端末は 1 つ。device-key.ts)
-    const inviterDevice = yield* soleDeviceOrFail(inviter);
-    const verified = yield* Effect.tryPromise({
-      try: () =>
-        verifyInviteIssueSignature({
-          context: {
-            suite: SUITE_ID,
-            inviteId: input.row.id,
-            projectId: input.verified.projectId,
-            linkPubHex: issuance.linkPubHex,
-            headHashHex: issuance.headHashHex,
-            headSeq: issuance.headSeq,
-            role: input.row.role,
-            inviterUserId: inviter.userId,
-            inviterEncPubHex: inviterDevice.encPubHex,
-            inviterSigPubHex: inviterDevice.sigPubHex,
-            scopeKind: input.row.scopeKind,
-            scopeEnvironmentIds: input.row.scopeEnvironmentIds,
-          },
-          signatureHex: issuance.issueSignatureHex,
-        }),
-      catch: () => cliError("Failed to verify the issue signature (crypto error)"),
-    });
-    return verified.ok ? ({ ok: true } as const) : ({ ok: false, reason: "signature" } as const);
+    // 発行署名の検証鍵 = 招待者の**現端末のいずれか**(DK K4-16 — 発行文は端末の鍵対を
+    // 名指しするので、有効な端末を全部回して 1 つでも検証が通れば本物。失効した端末で
+    // 発行された行は通らない = 招待者が発行し直す)
+    for (const inviterDevice of devicesOf(inviter)) {
+      const verified = yield* Effect.tryPromise({
+        try: () =>
+          verifyInviteIssueSignature({
+            context: {
+              suite: SUITE_ID,
+              inviteId: input.row.id,
+              projectId: input.verified.projectId,
+              linkPubHex: issuance.linkPubHex,
+              headHashHex: issuance.headHashHex,
+              headSeq: issuance.headSeq,
+              role: input.row.role,
+              inviterUserId: inviter.userId,
+              inviterEncPubHex: inviterDevice.encPubHex,
+              inviterSigPubHex: inviterDevice.sigPubHex,
+              scopeKind: input.row.scopeKind,
+              scopeEnvironmentIds: input.row.scopeEnvironmentIds,
+            },
+            signatureHex: issuance.issueSignatureHex,
+          }),
+        catch: () => cliError("Failed to verify the issue signature (crypto error)"),
+      });
+      if (verified.ok) {
+        return { ok: true } as const;
+      }
+    }
+    return { ok: false, reason: "signature" } as const;
   });
 }
 
@@ -760,15 +766,11 @@ function confirmInviterFingerprint(input: {
 function ensureMasterKeysForAccept(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  readonly keyGenerate: Effect.Effect<
-    void,
-    CliError,
-    Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
-  >;
+  readonly keyGenerate: Effect.Effect<void, CliError, CliServices>;
 }): Effect.Effect<
   { readonly keys: MasterKeys; readonly generated: boolean },
   CliError,
-  Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
+  CliServices
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -928,22 +930,8 @@ export function inviteAcceptOp(input: {
   readonly expectedFromLogin: string | null;
   readonly identityBacking: IdentityBacking;
   /** keyGenerateOp(生成 → リカバリー儀式)そのもの(cli.ts が結線する)。 */
-  readonly keyGenerate: Effect.Effect<
-    void,
-    CliError,
-    Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
-  >;
-}): Effect.Effect<
-  InviteAcceptSummary,
-  CliError,
-  | CliIo
-  | Keychain
-  | PinStore
-  | FingerprintBook
-  | ProcessRunner
-  | Stdio.Stdio
-  | HttpClient.HttpClient
-> {
+  readonly keyGenerate: Effect.Effect<void, CliError, CliServices>;
+}): Effect.Effect<InviteAcceptSummary, CliError, CliServices> {
   return Effect.gen(function* () {
     const { link } = input;
     // §15-3 の順序: 発行署名の検証(機械)→ 相互確認(充足形 4 → 1〜3)→

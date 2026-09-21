@@ -973,6 +973,25 @@ Tenant note: DEK wraps are now one row per (member, device); measured cost is
 about 633 bytes per row in the project Durable Object (8,000 rows ≈ 4.8 MiB),
 well inside the per-project storage guard.
 
+*(2026-09-21, "DK K4")*: the device-key CLI is out, so steps 2 and 3 above are
+now actionable. The K4 CLI **requires the K3 server**: against an older server
+every device operation (`maruhi device add / approve / revoke`, the first sync
+after `maruhi key recovery` registers the reserve key) is refused with a 422
+`DeviceOpsNotAccepted` that names the server update, and the account is limited
+to one device per project until the server is updated. Server-side, this
+release also drops the retired own-device handoff columns from
+`key_handoff_approvals` (D1 migration, automatic on `bun run deploy`; the old
+`source = "device"` approval is no longer accepted). Per person, after every
+CLI is updated: run `maruhi key recovery` once from the machine that holds the
+key (on a pre-K4 install the recovery ledger holds a copy of the device key —
+the command creates a separate reserve key, seals it with a new recovery code
+and registers it on each project at the next sync; every keyed command warns
+"no reserve key is registered" until then), then on each other machine that
+holds a copy of the same key run `maruhi device add --replace` and approve it
+from the first machine with `maruhi device approve <fingerprint>` (the copy is
+removed from that machine's keychain and replaced by its own device key —
+`maruhi device list` shows the result per project).
+
 ## Troubleshooting
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503

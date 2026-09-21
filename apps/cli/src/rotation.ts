@@ -109,7 +109,12 @@ function describeTarget(flag: RotationFlagView): string {
   if (flag.targetUserId !== undefined) {
     // change_role 変種(降格 / scope 縮小 — AUDIT_SPEC §4.1)は削除ではないので
     // trigger で言い分ける。trigger の無い応答(旧サーバー)は従来の表示
-    const prefix = flag.trigger === "change_role" ? "member (role/scope changed)" : "member";
+    const prefix =
+      flag.trigger === "change_role"
+        ? "member (role/scope changed)"
+        : flag.trigger === "revoke_device"
+          ? "member (device revoked)"
+          : "member";
     return `${prefix}:${displayText(flag.targetUserId)}`;
   }
   if (flag.targetServerKeyFingerprintHex !== undefined) {

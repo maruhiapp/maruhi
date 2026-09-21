@@ -1,8 +1,10 @@
-// master 鍵を使う KL3 の狭い操作(CRYPTO_SPEC §8.3 / §8.4)。
+// 台帳(CRYPTO_SPEC §8.3 / §8.4 — KL3 / DK)の狭い暗号操作。
 //
-// ここに集めるのは「master 鍵で 1 回演算する」3 操作だけ: 保護者としての分片の
-// 開封、旧端末としての B のラップ(承認バンドル)、要求者の一時鍵への封印(こちらは
-// 鍵を要さないが、承認の組み立てを 1 か所に置く)。KL4(委任モデル — agent が
+// ここに集めるのは「鍵で 1 回演算する」3 操作だけ: 保護者としての分片の開封
+// (自分の**端末鍵**で)、予備鍵のブロブ B のラップ(パスキー封印・保護者グループ —
+// 2026-09-19 DK 以後、B は予備鍵のレコード)、要求者の一時鍵への封印(こちらは
+// 鍵を要さないが、承認の組み立てを 1 か所に置く)。旧端末の承認バンドル
+// (`kind = "device"`)は DK K4 で削除した。KL4(委任モデル — agent が
 // 署名 / HPKE open を代行し鍵素材をソケットに出さない。integration-options.md
 // 補足 19-3 (a))でサービス化する下地として、呼び出し側は `MasterKeys` を直に
 // 触らずこの関数群を経由する。
@@ -25,7 +27,7 @@ import {
 import { Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
-import { serializeStoredMasterKey } from "./keychain.ts";
+import { serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import type { MasterKeys } from "./session.ts";
 
 /** 保護者として自分宛の分片を開く(承認の直前に呼び、結果は即座に再封印する)。 */
@@ -48,7 +50,7 @@ export function openOwnGuardianShare(input: {
     if (!opened.ok) {
       return yield* Effect.fail(
         cliError(
-          "Cannot open your guardian share with the master key on this device. The ward may have registered the group against a previous key of yours — ask them to re-add you with `maruhi guardian add`",
+          "Cannot open your guardian share with the device key on this machine. The ward may have sealed the group to a previous key of yours, or before this device was registered — ask them to re-add you with `maruhi guardian add`",
         ),
       );
     }
@@ -57,23 +59,25 @@ export function openOwnGuardianShare(input: {
 }
 
 /**
- * 自分の B を KEK でラップする(§8.1 の master-wrap 形)。旧端末の承認バンドル
- * (kind = device — §8.4)と passkey 登録(kind = passkey-prf — §8.2)の共通本体。
+ * 予備鍵のブロブ B を KEK でラップする(§8.1 の master-wrap 形)。passkey 登録
+ * (kind = passkey-prf — §8.2)と保護者グループ(kind = guardian — §8.3)の共通本体。
+ * `record` は予備鍵のレコード(reserve.ts の `ReserveKeys.record`)であり、端末鍵の
+ * レコードを渡す経路は無い(型は同じだが、呼び出し側は予備鍵しか持ち込まない)。
  */
-export function wrapOwnBlob(input: {
-  readonly masterKeys: MasterKeys;
+export function wrapReserveBlob(input: {
+  readonly record: StoredMasterKey;
   readonly kek: Uint8Array;
   readonly context: MasterWrapContext;
 }): Effect.Effect<{ readonly nonce: Uint8Array; readonly ciphertext: Uint8Array }, CliError> {
   return Effect.gen(function* () {
     // JSON.stringify(record) は使わない(秘密側が伏字になる — keychain.ts の注記)
-    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.masterKeys.record));
+    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
     const wrapped = yield* Effect.tryPromise({
       try: () => wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
-      catch: () => cliError("Failed to wrap the master key (crypto error)"),
+      catch: () => cliError("Failed to wrap the reserve key (crypto error)"),
     });
     if (!wrapped.ok) {
-      return yield* Effect.fail(cliError("Failed to wrap the master key"));
+      return yield* Effect.fail(cliError("Failed to wrap the reserve key"));
     }
     return wrapped.value;
   });

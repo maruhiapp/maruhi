@@ -136,7 +136,7 @@ describe("maruhi key", () => {
     const output = env.logs.join("\n");
     expect(output).toContain(user.encPubHex);
     expect(output).toContain(user.fingerprintHex);
-    expect(output).toContain("recovery:        registered");
+    expect(output).toContain("recovery:               registered");
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(user.sigSkSeedHex);
   });
@@ -149,7 +149,7 @@ describe("maruhi key", () => {
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain(user.fingerprintHex);
-    expect(env.logs.join("\n")).toContain("recovery:        could not be checked");
+    expect(env.logs.join("\n")).toContain("recovery:               could not be checked");
     expect(env.errors.join("\n")).toContain("recovery registration status could not be checked");
   });
 
@@ -159,8 +159,8 @@ describe("maruhi key", () => {
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("recovery:        not registered");
-    expect(env.errors.join("\n")).toContain("issue one with `maruhi key recovery`");
+    expect(env.logs.join("\n")).toContain("recovery:               not registered");
+    expect(env.errors.join("\n")).toContain("create one with `maruhi key recovery`");
   });
 
   it("show は制御文字を含む userId をサニタイズする", async () => {

@@ -313,11 +313,11 @@ async function startAddEnv(
 /** 検証済み指紋帳(KF)のファイル内容を読み出す。 */
 async function readBook(
   env: TestEnv,
-): Promise<Record<string, Record<string, { fingerprintHex: string; verifiedAtMs: number }>>> {
+): Promise<Record<string, Record<string, { fingerprints: Record<string, unknown> }>>> {
   const json = await readFile(env.fingerprintBookPath, "utf8");
   return (
     JSON.parse(json) as {
-      known: Record<string, Record<string, { fingerprintHex: string; verifiedAtMs: number }>>;
+      known: Record<string, Record<string, { fingerprints: Record<string, unknown> }>>;
     }
   ).known;
 }
@@ -585,7 +585,16 @@ describe("maruhi member add", () => {
     ).toBe(1);
     // 削除は実行済み = スロットは空
     expect(state.removeBodies).toEqual([
-      { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
+      {
+        environmentId: ENV_ID,
+        wraps: [
+          {
+            epoch: 1,
+            recipientUserId: acceptor.userId,
+            recipientEncPubHex: expect.any(String) as string,
+          },
+        ],
+      },
     ]);
     const errors = env.errors.join("\n");
     expect(errors).toContain("slot remains empty");
@@ -719,7 +728,16 @@ describe("maruhi member add", () => {
 
     // epoch 1 は削除 → 再登録(修復)、epoch 2 は通常登録
     expect(state.removeBodies).toEqual([
-      { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
+      {
+        environmentId: ENV_ID,
+        wraps: [
+          {
+            epoch: 1,
+            recipientUserId: acceptor.userId,
+            recipientEncPubHex: expect.any(String) as string,
+          },
+        ],
+      },
     ]);
     const registered = state.registerBodies.flatMap((body) =>
       body.deks.map((wrap) => [wrap.epoch, wrap.recipientEncPubHex] as const),
@@ -819,7 +837,16 @@ describe("maruhi member add", () => {
     ).toBe(0);
     // 不一致 = 修復(削除 → 再登録)。鍵履歴ゲートに依存しない
     expect(state.removeBodies).toEqual([
-      { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
+      {
+        environmentId: ENV_ID,
+        wraps: [
+          {
+            epoch: 1,
+            recipientUserId: acceptor.userId,
+            recipientEncPubHex: expect.any(String) as string,
+          },
+        ],
+      },
     ]);
     const registered = state.registerBodies.flatMap((body) =>
       body.deks.map((wrap) => [wrap.epoch, wrap.recipientEncPubHex] as const),
@@ -1171,9 +1198,10 @@ describe("maruhi member add", () => {
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
     const recorded = await readBook(env);
-    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
-      acceptor.fingerprintHex,
-    );
+    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    expect(
+      Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
+    ).toContain(acceptor.fingerprintHex);
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
     // 2 回目(在籍済み → バックフィルのみの再実行): 帳のヒットで 12 語の
@@ -1263,11 +1291,12 @@ describe("maruhi member add", () => {
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
-    expect(env.errors.join("\n")).toContain("differs from the one verified");
+    expect(env.errors.join("\n")).toContain("is not among the one verified");
     const recorded = await readBook(env);
-    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
-      acceptor.fingerprintHex,
-    );
+    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    expect(
+      Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
+    ).toContain(acceptor.fingerprintHex);
 
     // エージェント環境 + 不一致 + フラグなし = 従来どおり拒否(auto-pass しない)
     const state2 = await makeAddServer({ built, invitation, ownDeks });
@@ -1318,10 +1347,11 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
-    expect(env.errors.join("\n")).not.toContain("differs from the one verified");
+    expect(env.errors.join("\n")).not.toContain("is not among the one verified");
     const recorded = await readBook(env);
-    expect(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprintHex).toBe(
-      acceptor.fingerprintHex,
-    );
+    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    expect(
+      Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
+    ).toContain(acceptor.fingerprintHex);
   });
 });

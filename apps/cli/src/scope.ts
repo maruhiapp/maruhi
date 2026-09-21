@@ -13,8 +13,13 @@
 //   `createdAtSeq > seq` 除外と同じ線)
 
 import { isEnvironmentId } from "@maruhi/core";
-import type { ChainMember, MemberScope, ScopePayloadFields } from "@maruhi/crypto";
-import { ALL_SCOPE, MAX_SCOPE_ENVIRONMENTS, scopeIncludesEnvironment } from "@maruhi/crypto";
+import type { ChainMember, DeviceCap, MemberScope, ScopePayloadFields } from "@maruhi/crypto";
+import {
+  ALL_SCOPE,
+  effectivePermissionOf,
+  MAX_SCOPE_ENVIRONMENTS,
+  scopeIncludesEnvironment,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { displayText } from "./display.ts";
@@ -148,33 +153,50 @@ export function requireScopeEnvironmentsExist(
 /** 自分が scope 外の環境を指したときの文言(K4-C — サーバーの 403 を待たない)。 */
 export function outOfScopeMessage(input: {
   readonly member: ChainMember;
+  /** 署名・開封する端末(与えられれば端末の scope cap を言い分ける — DK K4-17)。 */
+  readonly device?: DeviceCap | undefined;
   readonly environmentId: string;
   /** 例: "pull values from" — 「<operation> environment X」の形に埋める。 */
   readonly operation: string;
 }): string {
-  return `Cannot ${input.operation} environment ${displayText(input.environmentId)}: it is outside your environment scope on this project's chain (your scope: ${describeScope(input.member.scope)}). Ask a project admin to widen it (\`maruhi member change-role ${displayText(input.member.userId)} --env ${displayText(input.environmentId)} …\`). Metadata-only commands such as \`maruhi schema\` still work`;
+  const environment = displayText(input.environmentId);
+  // 人の scope は含むが端末の scope cap が外している場合は、拡大を頼む相手が違う
+  // (admin ではなく、cap 無しの自分の端末か `device approve` のやり直し)
+  if (
+    input.device !== undefined &&
+    scopeIncludesEnvironment(input.member.scope, input.environmentId)
+  ) {
+    return `Cannot ${input.operation} environment ${environment}: this device's key is capped to ${describeScope(input.device.scope)} on this project's chain, which excludes it (your own scope: ${describeScope(input.member.scope)}). Use one of your devices whose cap covers it (\`maruhi device list\`), or re-register this device with a wider cap (\`maruhi device revoke\` then \`maruhi device add\` / \`maruhi device approve --env …\`)`;
+  }
+  return `Cannot ${input.operation} environment ${environment}: it is outside your environment scope on this project's chain (your scope: ${describeScope(input.member.scope)}). Ask a project admin to widen it (\`maruhi member change-role ${displayText(input.member.userId)} --env ${environment} …\`). Metadata-only commands such as \`maruhi schema\` still work`;
 }
 
 /**
  * 対象環境 ∈ 自分の scope(AUTH_SPEC §12-3 の「環境 ∈ scope」行の通信前判定)。
- * 自分が現メンバーでなければその旨で失敗する。環境の存在はここでは見ない(存在
- * 判定は各経路が担う — チェーン導出で全メンバーに既知のため順序は漏洩に関係しない)。
+ * 自分が現メンバーでなければその旨で失敗する。`device` が与えられれば判定は
+ * **端末の実効 scope**(人 ∩ 端末 — DK K4-17)で行う(値を開く端末は cap の外の
+ * 環境の DEK を持たない)。環境の存在はここでは見ない(存在判定は各経路が担う —
+ * チェーン導出で全メンバーに既知のため順序は漏洩に関係しない)。
  */
 export function requireEnvironmentInScope(input: {
   readonly verified: VerifiedProject;
   readonly userId: string;
   readonly environmentId: string;
   readonly operation: string;
+  readonly device?: DeviceCap | undefined;
 }): Effect.Effect<ChainMember, CliError> {
   const member = input.verified.state.members.get(input.userId);
   if (member === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  if (!scopeIncludesEnvironment(member.scope, input.environmentId)) {
+  const scope =
+    input.device === undefined ? member.scope : effectivePermissionOf(member, input.device).scope;
+  if (!scopeIncludesEnvironment(scope, input.environmentId)) {
     return Effect.fail(
       cliError(
         outOfScopeMessage({
           member,
+          device: input.device,
           environmentId: input.environmentId,
           operation: input.operation,
         }),

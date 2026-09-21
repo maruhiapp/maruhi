@@ -826,7 +826,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     await runCli(["key", "show"], env.layer);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("Warning: the maruhi token expires on");
+    expect(errors).toContain("Warning: the API token expires on");
     expect(errors).toContain("days left");
     expect(errors).toContain("--show-token");
   });
@@ -846,7 +846,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     await runCli(["key", "show"], env.layer);
-    expect(env.errors.join("\n")).not.toContain("Warning: the maruhi token expires");
+    expect(env.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
   it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は従来どおり", async () => {
@@ -867,7 +867,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     );
     await runCli(["key", "show"], nearEnv.layer);
     const nearErrors = nearEnv.errors.join("\n");
-    expect(nearErrors).toContain("Warning: the maruhi token expires on");
+    expect(nearErrors).toContain("Warning: the API token expires on");
     expect(nearErrors).toContain("Sign in again with `maruhi login`");
     // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
     expect(server.requests).toHaveLength(0);
@@ -880,7 +880,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
       JSON.stringify({ token: "maruhi_pat_keychain", userId: "user-0001", tokenId: "tok_1" }),
     );
     await runCli(["key", "show"], legacyEnv.layer);
-    expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the maruhi token expires");
+    expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
   it("環境変数がキーチェーンより優先される", async () => {

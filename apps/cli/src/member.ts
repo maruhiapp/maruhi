@@ -17,8 +17,10 @@
 import { ChainHeadConflictError, DekWrapNotFoundError } from "@maruhi/api-schema";
 import {
   ALL_SCOPE,
+  type ChainDevice,
   type ChainEntry,
   type ChainMember,
+  effectivePermissionOf,
   type MemberScope,
   memberScopeOf,
   type ProposableOperation,
@@ -41,12 +43,12 @@ import {
   proposeRecheck,
   type ProposedSummary,
 } from "./approval.ts";
-import { backfillEnvironmentFor, registerWraps } from "./backfill.ts";
+import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { IdentityBacking } from "./config.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
+import { deviceReceivesEnvironment, ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
-import { deviceFingerprintsOf, memberHasKeys, soleDeviceOrFail } from "./device-key.ts";
+import { describeDevice, devicesOf, memberHasKeys, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -74,7 +76,7 @@ import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
   baselinesOf,
-  isPendingAt,
+  partitionSweepBaselines,
   type RotationMandate,
   rotationMandates,
   type SweepOutcome,
@@ -129,8 +131,13 @@ function memberMandatesFor(
   verified: VerifiedProject,
   targetUserId: string,
 ): readonly RotationMandate[] {
+  // 端末失効の義務(`device-revoked`)は `device revoke` 自身の sweep(device-ops.ts)が
+  // 履行する — member 系コマンドの再実行が他の操作の義務を拾わない(同じ線)
   return rotationMandates(verified).filter(
-    (mandate) => mandate.kind !== "server-revoked" && mandate.target === targetUserId,
+    (mandate) =>
+      mandate.kind !== "server-revoked" &&
+      mandate.kind !== "device-revoked" &&
+      mandate.target === targetUserId,
   );
 }
 
@@ -141,33 +148,28 @@ function sweepAfterMandate<R>(input: {
   readonly mandates: readonly RotationMandate[];
   /** 実行者(actor)。scope 外の義務環境は rotate できない(§7)ので対象から外して注記する。 */
   readonly actorUserId: string;
+  /** 実行者が署名する端末の鍵(履行できる範囲 = 端末の実効 scope — DK K4-17)。 */
+  readonly signingKeyPair: SigningKeyPair;
   /** 義務の種別ごとのローテーション注入(rotate エントリの reason を義務に合わせる)。 */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.Effect<MemberSweepOutcome, CliError, R> {
   return Effect.gen(function* () {
-    const actor = input.verified.state.members.get(input.actorUserId);
-    const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
-    // 自分の scope 外の義務環境(他人が過去に作った縮小 / remove の義務が対象の履歴に
-    // 残っている場合)は rotate の対象に含めない(CRYPTO_SPEC §7 — 実行者も scope 外なら
-    // rotate できない。独立レビュー S2)。常時警告が引き続き表示する
-    const all = baselinesOf(input.mandates);
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    // 注記は「scope 外 ∧ 未削除 ∧ 未収束」に限る(常時警告と同じ判定 — 独立レビュー S7)
-    const outOfScope = [...all]
-      .filter(
-        ([environmentId, baselineSeq]) =>
-          !scopeIncludesEnvironment(actorScope, environmentId) &&
-          !deletedVerified.has(environmentId) &&
-          isPendingAt(input.verified, environmentId, baselineSeq),
-      )
-      .map(([environmentId]) => environmentId)
-      .toSorted(compareCodePoints);
-    const baselines = new Map(
-      [...all].filter(([environmentId]) => scopeIncludesEnvironment(actorScope, environmentId)),
+    const actorScope = yield* actorEffectiveScope(
+      input.verified,
+      input.actorUserId,
+      input.signingKeyPair,
     );
-    const skippedDeleted = [...baselines.keys()]
-      .filter((environmentId) => deletedVerified.has(environmentId))
-      .toSorted(compareCodePoints);
+    // 自分の(端末の実効)scope 外の義務環境(他人が過去に作った縮小 / remove の義務が
+    // 対象の履歴に残っている場合、cap 付き端末で実行した場合)は rotate の対象に含めない
+    // (CRYPTO_SPEC §7 — 実行者も scope 外なら rotate できない。独立レビュー S2)。
+    // 常時警告が引き続き表示する
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
+      verified: input.verified,
+      all: baselinesOf(input.mandates),
+      actorScope,
+      deletedVerified,
+    });
     // 環境ごとの reason = その環境の基準になった義務(最大 seq)の種別(独立レビュー N3)
     const reasons = reasonsByEnvironment(input.mandates);
     const sweep = yield* sweepRotations({
@@ -185,6 +187,34 @@ function sweepAfterMandate<R>(input: {
 }
 
 /**
+ * 実行者が rotate を履行できる環境の範囲 = 署名する端末の実効 scope(人 ∩ 端末 — DK
+ * K4-17)。実効 role が member 未満(reader、または member cap の端末)なら空(rotate は
+ * member 以上 — §6.2)。非メンバー・未登録端末も空(fail-closed — 常時警告に残る)。
+ */
+function actorEffectiveScope(
+  verified: VerifiedProject,
+  actorUserId: string,
+  signingKeyPair: SigningKeyPair,
+): Effect.Effect<MemberScope, CliError> {
+  return Effect.gen(function* () {
+    const actor = verified.state.members.get(actorUserId);
+    if (actor === undefined) {
+      return { kind: "listed", environmentIds: [] };
+    }
+    const device = yield* ownDeviceBySigningKey(actor, signingKeyPair).pipe(
+      Effect.catch(() => Effect.succeed<ChainDevice | null>(null)),
+    );
+    if (device === null) {
+      return { kind: "listed", environmentIds: [] };
+    }
+    const permission = effectivePermissionOf(actor, device);
+    return ROLE_RANK[permission.role] >= ROLE_RANK.member
+      ? permission.scope
+      : { kind: "listed", environmentIds: [] };
+  });
+}
+
+/**
  * 対象の義務(remove / 降格 / 縮小 — 提案経由の適用を含む)の sweep。直接追記の後段と、
  * 四眼で適用を完成させた承認者の履行(approval-approve.ts — 承認項目 22)が共有する。
  */
@@ -193,6 +223,7 @@ export function sweepMemberMandates<R>(input: {
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
   readonly actorUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.Effect<MemberSweepOutcome | null, CliError, R> {
   const mandates = memberMandatesFor(input.verified, input.targetUserId);
@@ -211,6 +242,7 @@ const MANDATE_REASONS = {
   "role-demoted": ROLE_DEMOTED_ROTATION_REASON,
   "scope-narrowed": SCOPE_NARROWED_ROTATION_REASON,
   "server-revoked": "server-revoked",
+  "device-revoked": "device-revoked",
 } satisfies Record<RotationMandate["kind"], string>;
 
 /** 環境 → 基準(最大 seq)の義務の reason(同 seq なら降格を優先)。 */
@@ -796,60 +828,96 @@ function backfillMemberEnvironment(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
+  return Effect.gen(function* () {
+    // 対象の**全端末**のうち実効 scope に E を含むもの(R(E) の端末展開 — CRYPTO_SPEC
+    // §6.2、DK K4)。端末ごとにスロットが別なので、端末ごとに登録する
+    const devices = devicesOf(input.target).filter((device) =>
+      deviceReceivesEnvironment(input.target, device, input.environmentId),
+    );
+    let registered = 0;
+    let alreadyRegistered = 0;
+    let repaired = 0;
+    for (const device of devices) {
+      const result = yield* backfillMemberDevice({ ...input, targetDevice: device });
+      registered += result.registered;
+      alreadyRegistered += result.alreadyRegistered;
+      repaired += result.repaired;
+    }
+    return { registered, alreadyRegistered, repaired };
+  });
+}
+
+/** 1 環境 × 対象の 1 端末のバックフィル(スロット = (epoch, user_id, enc 鍵))。 */
+function backfillMemberDevice(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly recipient: DekRecipient;
+  readonly target: ChainMember;
+  readonly targetDevice: ChainDevice;
+  readonly staleWrapSuspected: boolean;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+}): Effect.Effect<MemberBackfillResult, CliError> {
   const register = registerWraps(input.client, input.verified.projectId, input.environmentId);
-  // 対象の鍵 = その唯一の端末鍵(K2 — 端末は 1 つ。device-key.ts)
-  return Effect.flatMap(soleDeviceOrFail(input.target), (targetDevice) =>
-    backfillEnvironmentFor({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      wrapRecipient: { kind: "member", member: input.target, device: targetDevice },
-      recipientLabel: "new-member-addressed",
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-      onSlotConflict: (wrap, storedRecipientEncPubHex) =>
-        Effect.gen(function* () {
-          // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
-          // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
-          const staleWrap =
-            storedRecipientEncPubHex === null
-              ? input.staleWrapSuspected
-              : storedRecipientEncPubHex !== targetDevice.encPubHex;
-          if (!staleWrap) {
-            return "already-registered" as const;
-          }
-          // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する
-          yield* input.client.deks
-            .remove({
-              params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-              payload: { wraps: [{ epoch: wrap.epoch, recipientUserId: input.target.userId }] },
-            })
-            .pipe(
-              Effect.asVoid,
-              Effect.catch((error) =>
-                // 並行修復でスロットが消えた場合は再登録だけ行えばよい
-                error instanceof DekWrapNotFoundError
-                  ? Effect.void
-                  : Effect.fail(toCliError(error)),
-              ),
-            );
-          // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
-          // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
-          // 空スロットへの直登録になるため、そのまま復旧経路になる)
-          const retried = yield* register([wrap]).pipe(
-            Effect.mapError((error) =>
-              cliError(
-                `After the repair path deleted the old wrap, re-registering the new-key wrap failed — the epoch ${wrap.epoch} slot remains empty (the target cannot decrypt this epoch; a re-run recovers it as a direct registration into the empty slot): ${error.message}`,
-              ),
+  const { targetDevice } = input;
+  return backfillEnvironmentFor({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    wrapRecipient: { kind: "member", member: input.target, device: targetDevice },
+    recipientLabel: "new-member-addressed",
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
+    onSlotConflict: (wrap, storedRecipientEncPubHex) =>
+      Effect.gen(function* () {
+        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
+        // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
+        const staleWrap =
+          storedRecipientEncPubHex === null
+            ? input.staleWrapSuspected
+            : storedRecipientEncPubHex !== targetDevice.encPubHex;
+        if (!staleWrap) {
+          return "already-registered" as const;
+        }
+        // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する。参照は
+        // 端末の enc 鍵まで名指しする(複数端末では省略が 422 duplicate-recipient)
+        yield* input.client.deks
+          .remove({
+            params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+            payload: {
+              wraps: [
+                {
+                  epoch: wrap.epoch,
+                  recipientUserId: input.target.userId,
+                  recipientEncPubHex: storedRecipientEncPubHex ?? targetDevice.encPubHex,
+                },
+              ],
+            },
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.catch((error) =>
+              // 並行修復でスロットが消えた場合は再登録だけ行えばよい
+              error instanceof DekWrapNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
             ),
           );
-          // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
-          // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
-          return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
-        }),
-    }),
-  );
+        // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
+        // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
+        // 空スロットへの直登録になるため、そのまま復旧経路になる)
+        const retried = yield* register([wrap]).pipe(
+          Effect.mapError((error) =>
+            cliError(
+              `After the repair path deleted the old wrap, re-registering the new-key wrap failed — the epoch ${wrap.epoch} slot remains empty (the target cannot decrypt this epoch; a re-run recovers it as a direct registration into the empty slot): ${error.message}`,
+            ),
+          ),
+        );
+        // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
+        // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
+        return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
+      }),
+  });
 }
 
 /**
@@ -981,26 +1049,9 @@ function backfillAllEnvironments(input: {
           scopeIncludesEnvironment(input.target.scope, environmentId),
       )
       .toSorted(compareCodePoints);
-    let registered = 0;
-    let alreadyRegistered = 0;
-    let repaired = 0;
-    const failed: { readonly environmentId: string; readonly message: string }[] = [];
-    for (const environmentId of environments) {
-      const result = yield* backfillMemberEnvironment({ ...input, environmentId }).pipe(
-        Effect.map((outcome) => ({ kind: "ok", outcome }) as const),
-        Effect.catch((error) =>
-          Effect.succeed({ kind: "failed", message: error.message } as const),
-        ),
-      );
-      if (result.kind === "ok") {
-        registered += result.outcome.registered;
-        alreadyRegistered += result.outcome.alreadyRegistered;
-        repaired += result.outcome.repaired;
-      } else {
-        failed.push({ environmentId, message: result.message });
-      }
-    }
-    return { registered, alreadyRegistered, repaired, failed };
+    return yield* backfillEachEnvironment(environments, (environmentId) =>
+      backfillMemberEnvironment({ ...input, environmentId }),
+    );
   });
 }
 
@@ -1046,11 +1097,10 @@ export function backfillNewMember(input: {
     // への 409 だけに使うフォールバックである。なお追補済みサーバーは
     // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
     // 409 自体が「現行鍵で登録済み」しか意味しない
-    const targetDevice = yield* soleDeviceOrFail(input.target);
+    // 「別鍵」= 履歴の束縛のうち、対象の現端末集合のどれとも一致しないもの(端末が
+    // 複数でも、現端末の鍵は旧鍵ではない — DK K4)
     const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
-      (binding) =>
-        binding.encPubHex !== targetDevice.encPubHex ||
-        binding.sigPubHex !== targetDevice.sigPubHex,
+      (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
     );
     if (staleWrapSuspected) {
       yield* io.log(
@@ -1375,6 +1425,7 @@ export function memberRemoveOp<R>(input: {
       verified,
       mandates,
       actorUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
       rotateWith: input.rotateWith,
     });
     return { kind: "applied", summary: { appended, targetUserId: input.targetUserId, ...sweep } };
@@ -1933,6 +1984,7 @@ export function fulfilRoleChange<R>(input: {
             verified: input.verified,
             mandates,
             actorUserId: input.signerUserId,
+            signingKeyPair: input.signingKeyPair,
             rotateWith: input.rotateWith,
           });
     return {
@@ -2026,13 +2078,13 @@ export function memberChangeRoleOp<R>(input: {
 // member list
 // ---------------------------------------------------------------------------
 
-/** 1 メンバー行(検証済みチェーン導出 — 値ゼロ。設計録 裁定 M / K4-E)。 */
+/** 1 メンバー行(検証済みチェーン導出 — 値ゼロ。設計録 裁定 M / K4-E、端末列は DK K4-20)。 */
 export interface MemberListRow {
   readonly userId: string;
   readonly role: Role;
   readonly scope: MemberScope;
-  /** The member's device key fingerprints (ascending — 2026-09-19 DK: 端末は複数ありうる)。 */
-  readonly keyFingerprintsHex: readonly string[];
+  /** The member's device keys (fingerprint ascending — 2026-09-19 DK: 端末は複数ありうる)。 */
+  readonly devices: readonly ChainDevice[];
 }
 
 /** 検証済みチェーンのメンバー一覧(user_id 昇順)。 */
@@ -2042,7 +2094,7 @@ export function memberListRows(verified: VerifiedProject): readonly MemberListRo
       userId: member.userId,
       role: member.role,
       scope: member.scope,
-      keyFingerprintsHex: deviceFingerprintsOf(member),
+      devices: devicesOf(member),
     }))
     .toSorted((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 }
@@ -2054,15 +2106,15 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
       members: rows.map((row) => ({
         userId: row.userId,
         role: row.role,
-        scope:
-          row.scope.kind === "all"
-            ? { kind: "all" }
-            : { kind: "listed", environmentIds: [...row.scope.environmentIds] },
-        // 端末が 1 つのメンバーは従来の `keyFingerprintHex`(K4 で端末一覧へ置き換える —
-        // それまでは複数端末の FP を昇順に連ねる)。構造化した列は `deviceKeyFingerprintsHex`
-        // (設計録 §7 K2-10 追加巡 j-4 — 連結文字列を消費側に分解させない)
-        keyFingerprintHex: row.keyFingerprintsHex.join(","),
-        deviceKeyFingerprintsHex: [...row.keyFingerprintsHex],
+        scope: jsonScope(row.scope),
+        // 端末一覧(K4-20): FP と cap を構造化して出す。連結した `keyFingerprintHex` は
+        // K4 で撤去(消費側に分解させない — 設計録 §7 K2-10 追加巡 j-4 の完成形)
+        devices: row.devices.map((device) => ({
+          keyFingerprintHex: device.keyFingerprintHex,
+          roleCap: device.roleCap,
+          scope: jsonScope(device.scope),
+        })),
+        deviceKeyFingerprintsHex: row.devices.map((device) => device.keyFingerprintHex),
       })),
     },
     null,
@@ -2070,7 +2122,13 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
   );
 }
 
-/** 人が読む 1 行(user id・role・scope・鍵 FP。id は中和する)。 */
+function jsonScope(scope: MemberScope) {
+  return scope.kind === "all"
+    ? { kind: "all" as const }
+    : { kind: "listed" as const, environmentIds: [...scope.environmentIds] };
+}
+
+/** 人が読む 1 行(user id・role・scope・端末数・端末 FP(cap)。id は中和する)。 */
 export function formatMemberListRow(row: MemberListRow): string {
-  return `${displayText(row.userId)}\t${row.role}\tscope=${describeScope(row.scope)}\tfp=${row.keyFingerprintsHex.join(",")}`;
+  return `${displayText(row.userId)}\t${row.role}\tscope=${describeScope(row.scope)}\tdevices=${row.devices.length}\tfp=${row.devices.map(describeDevice).join(",")}`;
 }

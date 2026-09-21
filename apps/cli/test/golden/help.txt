@@ -22,8 +22,10 @@ SUBCOMMANDS
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
-  key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
-  guardian    Manage guardians for master-key recovery (add / list / remove / wards)
+  key         Manage this device's key and your reserve key (generate / show / publish / recover / recovery / seal / reserve)
+  device      Manage your device keys (add / approve / list / revoke)
+  token       Manage your API tokens (list / revoke)
+  guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
@@ -56,8 +58,10 @@ SUBCOMMANDS
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
-  key         Manage your master key (generate / show / publish / recover / recovery / approve / seal)
-  guardian    Manage guardians for master-key recovery (add / list / remove / wards)
+  key         Manage this device's key and your reserve key (generate / show / publish / recover / recovery / seal / reserve)
+  device      Manage your device keys (add / approve / list / revoke)
+  token       Manage your API tokens (list / revoke)
+  guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
   rotation    Manage rotation flags (list / dismiss)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
@@ -554,7 +558,7 @@ GLOBAL FLAGS
 
 $ maruhi key --help
 DESCRIPTION
-  Manage your master key (generate / show / publish / recover / recovery / approve / seal)
+  Manage this device's key and your reserve key (generate / show / publish / recover / recovery / seal / reserve)
 
 USAGE
   maruhi key <subcommand> [flags]
@@ -564,23 +568,24 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  generate    Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
-  show        Print the public keys and fingerprint (never the private keys)
+  generate    Generate this device's key and store it in the OS keychain (or in the current `maruhi agent` session); the first time, also create the reserve key and seal it with a recovery code
+  show        Print this device's public keys and fingerprint, and the reserve key fingerprint (never the private keys)
   publish     Print your signing public key as an OpenSSH line to register on GitHub as a signing key (--gh adds it through the gh CLI)
-  recover     Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians
-  recovery    Issue (or reissue) the recovery code
-  approve     Approve a master-key handoff request (as your other device, or as a guardian)
-  seal        Seal the master key to a passkey (passkey / list / remove)
+  recover     Recover on a new machine: open the reserve key (recovery code, --passkey, or --handoff via your guardians), then register a new device key for this machine with it
+  recovery    Create the reserve key and its recovery code (first time), separate it from this device's key on an install from before device keys, or reissue the recovery code
+  seal        Seal the reserve key to a passkey (passkey / list / remove)
+  reserve     Manage the reserve key (rotate)
 
 $ maruhi key generate --help
 DESCRIPTION
-  Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)
+  Generate this device's key and store it in the OS keychain (or in the current `maruhi agent` session); the first time, also create the reserve key and seal it with a recovery code
 
 USAGE
   maruhi key generate [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
+  --new-identity     Create a new identity even though your account already has a reserve key in the recovery ledger (only when every device and every recovery path is lost)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -588,7 +593,7 @@ GLOBAL FLAGS
 
 $ maruhi key show --help
 DESCRIPTION
-  Print the public keys and fingerprint (never the private keys)
+  Print this device's public keys and fingerprint, and the reserve key fingerprint (never the private keys)
 
 USAGE
   maruhi key show [flags]
@@ -617,15 +622,16 @@ GLOBAL FLAGS
 
 $ maruhi key recover --help
 DESCRIPTION
-  Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians
+  Recover on a new machine: open the reserve key (recovery code, --passkey, or --handoff via your guardians), then register a new device key for this machine with it
 
 USAGE
   maruhi key recover [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
-  --handoff          Restore by approval from another device of yours or from your guardians instead of a recovery code
-  --passkey          Restore with a passkey registered by `maruhi key seal passkey` instead of a recovery code
+  --handoff          Open the reserve key by approval from your guardians instead of a recovery code
+  --passkey          Open the reserve key with a passkey registered by `maruhi key seal passkey` instead of a recovery code
+  --resume           Keep the device key already on this machine and only register it on the projects where it is still missing (re-run after an interrupted recovery)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -633,30 +639,15 @@ GLOBAL FLAGS
 
 $ maruhi key recovery --help
 DESCRIPTION
-  Issue (or reissue) the recovery code
+  Create the reserve key and its recovery code (first time), separate it from this device's key on an install from before device keys, or reissue the recovery code
 
 USAGE
   maruhi key recovery [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
-
-GLOBAL FLAGS
-  --help, -h       Show help information
-  --version, -v    Show version information
-
-$ maruhi key approve --help
-DESCRIPTION
-  Approve a master-key handoff request (as your other device, or as a guardian)
-
-USAGE
-  maruhi key approve [flags] <code>
-
-ARGUMENTS
-  code string    Handoff code shown by `maruhi key recover --handoff` on the requesting device
-
-FLAGS
-  --server string    Server URL (defaults to config server)
+  --passkey          Open the existing ledger with a passkey instead of the current recovery code
+  --replace          Replace the reserve key with a new one (when the current recovery code may be compromised); the old reserve key is revoked on every project
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -664,7 +655,7 @@ GLOBAL FLAGS
 
 $ maruhi key seal --help
 DESCRIPTION
-  Seal the master key to a passkey (passkey / list / remove)
+  Seal the reserve key to a passkey (passkey / list / remove)
 
 USAGE
   maruhi key seal <subcommand> [flags]
@@ -674,19 +665,20 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  passkey    Seal the master key to a new passkey via a page served on localhost (register it for recovery)
-  list       List the passkeys your master key is sealed to
+  passkey    Seal the reserve key to a new passkey via a page served on localhost (opens the ledger first with the recovery code or --passkey)
+  list       List the passkeys your reserve key is sealed to
   remove     Remove a passkey wrap from the recovery ledger
 
 $ maruhi key seal passkey --help
 DESCRIPTION
-  Seal the master key to a new passkey via a page served on localhost (register it for recovery)
+  Seal the reserve key to a new passkey via a page served on localhost (opens the ledger first with the recovery code or --passkey)
 
 USAGE
   maruhi key seal passkey [flags]
 
 FLAGS
   --server string    Server URL (defaults to config server)
+  --passkey          Open the ledger with an already registered passkey instead of the recovery code
   --label string     Display name for this passkey in `maruhi key seal list` (1 to 64 characters)
 
 GLOBAL FLAGS
@@ -695,7 +687,7 @@ GLOBAL FLAGS
 
 $ maruhi key seal list --help
 DESCRIPTION
-  List the passkeys your master key is sealed to
+  List the passkeys your reserve key is sealed to
 
 USAGE
   maruhi key seal list [flags]
@@ -724,9 +716,175 @@ GLOBAL FLAGS
   --help, -h       Show help information
   --version, -v    Show version information
 
+$ maruhi key reserve --help
+DESCRIPTION
+  Manage the reserve key (rotate)
+
+USAGE
+  maruhi key reserve <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  rotate    Replace the reserve key: create a new one, seal it with a new recovery code, register it on every project and revoke the old one
+
+$ maruhi key reserve rotate --help
+DESCRIPTION
+  Replace the reserve key: create a new one, seal it with a new recovery code, register it on every project and revoke the old one
+
+USAGE
+  maruhi key reserve rotate [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --passkey          Open the current ledger with a passkey instead of the recovery code
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi device --help
+DESCRIPTION
+  Manage your device keys (add / approve / list / revoke)
+
+USAGE
+  maruhi device <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  add        Register this machine as a new device: generate its key, print the fingerprint to approve from a registered device, and wait for the approval
+  approve    Approve a device-add request from this (registered) device: adds the device key to your projects' chains and backfills its DEK wraps
+  list       List your device keys: what each project's chain holds, with registry labels (server-reported) and this machine's records
+  revoke     Revoke device keys (a lost or retired device) on every project and rotate the environments they could open
+
+$ maruhi device add --help
+DESCRIPTION
+  Register this machine as a new device: generate its key, print the fingerprint to approve from a registered device, and wait for the approval
+
+USAGE
+  maruhi device add [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --label string     Display name for this device in the device registry (default: the hostname)
+  --replace          Generate a new key even though this machine already has one (removes a copied key from this keychain — only for installs from before device keys)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi device approve --help
+DESCRIPTION
+  Approve a device-add request from this (registered) device: adds the device key to your projects' chains and backfills its DEK wraps
+
+USAGE
+  maruhi device approve [flags] <fp-or-words>
+
+ARGUMENTS
+  fp-or-words string    The new device's full 32-character fingerprint, or its 12 words, as shown by `maruhi device add`
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Register the device on this project only (default: every project you belong to)
+  --cap string        Role cap for the new device: owner (default, no bound), admin, member or reader
+  --env string        Environment the device may hold keys for (repeatable; default: all environments)
+  --all-envs          Let the device hold keys for every environment (default)
+  --no-envs           Let the device hold no environment keys (a vote-only device)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi device list --help
+DESCRIPTION
+  List your device keys: what each project's chain holds, with registry labels (server-reported) and this machine's records
+
+USAGE
+  maruhi device list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Show only this project's chain (default: every project you belong to)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi device revoke --help
+DESCRIPTION
+  Revoke device keys (a lost or retired device) on every project and rotate the environments they could open
+
+USAGE
+  maruhi device revoke [flags] <ref...>
+
+ARGUMENTS
+  ref... string    Fingerprint prefix (at least 8 hex characters) or, for your own devices, the registry label (repeatable)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Revoke on this project only (default: every project you belong to)
+  --user string       Revoke another member's device (admin/owner; devices are named by fingerprint)
+  --yes               Skip the confirmation prompt
+  --revoke-token      Also revoke the API tokens the registry associates with the revoked devices
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi token --help
+DESCRIPTION
+  Manage your API tokens (list / revoke)
+
+USAGE
+  maruhi token <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  list      List your API tokens (ids, names, scopes, expiry)
+  revoke    Revoke one of your API tokens by id
+
+$ maruhi token list --help
+DESCRIPTION
+  List your API tokens (ids, names, scopes, expiry)
+
+USAGE
+  maruhi token list [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi token revoke --help
+DESCRIPTION
+  Revoke one of your API tokens by id
+
+USAGE
+  maruhi token revoke [flags] <token-id>
+
+ARGUMENTS
+  token-id string    Token id as shown by `maruhi token list`
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
 $ maruhi guardian --help
 DESCRIPTION
-  Manage guardians for master-key recovery (add / list / remove / wards)
+  Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
 
 USAGE
   maruhi guardian <subcommand> [flags]
@@ -736,14 +894,15 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  add       Designate project members as guardians who can approve restoring your master key
-  list      List your guardian groups (with --project, flag guardians whose key changed)
-  remove    Remove a guardian group
-  wards     List the people who made you one of their guardians
+  add        Designate project members as guardians who can approve restoring your reserve key (opens the ledger with the recovery code first)
+  approve    Approve a reserve-key handoff request as one of the requester's guardians (the code comes from `maruhi key recover --handoff` on the requesting device)
+  list       List your guardian groups (with --project, flag guardians whose key changed)
+  remove     Remove a guardian group
+  wards      List the people who made you one of their guardians
 
 $ maruhi guardian add --help
 DESCRIPTION
-  Designate project members as guardians who can approve restoring your master key
+  Designate project members as guardians who can approve restoring your reserve key (opens the ledger with the recovery code first)
 
 USAGE
   maruhi guardian add [flags] <user-id...>
@@ -755,6 +914,23 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --mode string       Approval mode: any (one guardian is enough) or all (every guardian must approve)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi guardian approve --help
+DESCRIPTION
+  Approve a reserve-key handoff request as one of the requester's guardians (the code comes from `maruhi key recover --handoff` on the requesting device)
+
+USAGE
+  maruhi guardian approve [flags] <code>
+
+ARGUMENTS
+  code string    Handoff code shown by `maruhi key recover --handoff` on the requesting device
+
+FLAGS
+  --server string    Server URL (defaults to config server)
 
 GLOBAL FLAGS
   --help, -h       Show help information

@@ -127,3 +127,42 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
     }
   },
 );
+
+/**
+ * 儀式の 2 層ゲートの共通形(ADR-0016 決定 7 と同じ材料: 既知エージェントの検出 →
+ * stdin / stdout が端末か)。拒否文は儀式ごとに与える(何が拒否されたか → なぜ →
+ * どうすればよいか)。`agentRefusal` は検出名の括弧書き(空文字あり)を受ける。
+ */
+export function ensureHumanCeremonyAllowed(input: {
+  readonly agentRefusal: (detected: string) => string;
+  readonly terminalRefusal: (reason: string) => string;
+}): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const agent = yield* AgentProfileRef;
+    if (agent.isAgent) {
+      const detected = agent.name === undefined ? "" : ` (${agent.name})`;
+      return yield* Effect.fail(cliError(input.agentRefusal(detected)));
+    }
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (!stdinIsTerminal || !stdoutIsTerminal) {
+      return yield* Effect.fail(
+        cliError(input.terminalRefusal(describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal }))),
+      );
+    }
+  });
+}
+
+/**
+ * `maruhi device approve` の儀式ゲート(設計録 dk-design.md §9 K4-6 — ADR-0016 決定 7 の
+ * 2 層と同じ材料): 承認は人が別端末から運んだ FP を照合する行為で、エージェント環境や
+ * 非対話(パイプ・CI)では成立しない。指紋帳の一致も人の yes を代替しない(K4-3)。
+ */
+export const ensureDeviceApproveAllowed: Effect.Effect<void, CliError, Stdio.Stdio> =
+  ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) =>
+      `Refused to approve a device: an AI agent environment was detected${detected}. Approving a device key adds a signer to every project you are a member of, so it is done only by a person at an interactive terminal who compared the fingerprint with the new device. Run \`maruhi device approve\` yourself in a terminal`,
+    terminalRefusal: (reason) =>
+      `Refused to approve a device: ${reason}. Approving a device key is done only by a person at a terminal (pipes, redirects, CI, and AI agents are refused). Run \`maruhi device approve\` yourself in a terminal, without redirecting its input or output`,
+  });

@@ -27,7 +27,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
-import { soleDeviceOrFail } from "./device-key.ts";
+import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -42,15 +42,17 @@ function ensureCreatable(
   verified: VerifiedProject,
   environmentId: string,
   signerUserId: string,
+  signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // メンバー性 + role は env rotate と共有。role をここで落とさないと、
-    // reader は DEK 生成と全受信者分の HPKE ラップ・署名を済ませて複合を
-    // 送ってから、サーバーの汎用 403 を受け取ることになる
-    const member = yield* requireWritingMember({
+    // メンバー性 + 端末の実効 role / scope は env rotate と共有。role をここで
+    // 落とさないと、reader は DEK 生成と全受信者分の HPKE ラップ・署名を済ませて
+    // 複合を送ってから、サーバーの汎用 403 を受け取ることになる
+    const { member } = yield* requireWritingMember({
       verified,
       environmentId,
       signerUserId,
+      signingKeyPair,
       operation: "create an environment",
       forbidden:
         "A reader cannot create environments (create_environment requires the member role or above — CRYPTO_SPEC §6.2)",
@@ -81,7 +83,7 @@ function signCreateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
   return Effect.gen(function* () {
-    const device = yield* soleDeviceOrFail(input.member);
+    const device = yield* ownDeviceBySigningKey(input.member, input.signingKeyPair);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -153,7 +155,12 @@ export function envCreateOp(input: {
   readonly floor: FloorHandle;
 }): Effect.Effect<{ readonly currentEpoch: number; readonly memberCount: number }, CliError> {
   return Effect.gen(function* () {
-    const member = yield* ensureCreatable(input.verified, input.environmentId, input.signerUserId);
+    const member = yield* ensureCreatable(
+      input.verified,
+      input.environmentId,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     // 生成直後に包む(以降 DEK は Redacted としてしか流れない)
@@ -215,12 +222,9 @@ export function envCreateOp(input: {
               resynced,
               input.environmentId,
               input.signerUserId,
+              input.signingKeyPair,
             );
-            const rebuiltDeks = (yield* sameWrapRecipientSet(
-              state.verified,
-              resynced,
-              input.environmentId,
-            ))
+            const rebuiltDeks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
               ? state.deks
               : yield* buildWrapCompleteSet({
                   verified: resynced,
@@ -310,6 +314,7 @@ function attemptCreate(
       manifestSigHashHex: signedManifest.manifestSigHashHex,
       values: [],
       member: state.member,
+      deviceFingerprintHex: entry.actor.keyFingerprintHex,
       signingKey: input.signingKeyPair.privateKey,
     });
     // journal-before-send(3-F): 送信前に intent を追記する(永続化に失敗したら

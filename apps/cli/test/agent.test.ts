@@ -558,11 +558,17 @@ async function wrappedBlobHandler(
 }
 
 describeSocket("key recover は agent セッションの中でメモリへ着地する", () => {
-  it("復元した master 鍵は agent にだけ入り、テスト用キーチェーンには何も残らない", async () => {
+  it("発行した新しい端末鍵は agent にだけ入り、テスト用キーチェーンには何も残らない", async () => {
+    // DK: 台帳から開いた予備鍵 B は端末鍵の発行にだけ使い、保存しない(§8.1)。
+    // 保存されるのは新しい端末鍵で、その着地先が agent のメモリであることを固定する
     const user = await makeTestUser("user-agent-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
-    const maruhi = await MockServer.start([handler]);
+    const maruhi = await MockServer.start([
+      handler,
+      // 復元の後段が走査するプロジェクト一覧(AUTH_SPEC §11-5)— 空
+      onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } })),
+    ]);
     cleanups.push(() => maruhi.close());
 
     const dir = await privateDir();
@@ -579,7 +585,8 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
 
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    env.setPromptResponses([code]);
+    // コード → 「予備鍵か」の 1 問(yes)
+    env.setPromptResponses([code, "yes"]);
     // live.ts が MARUHI_AGENT_SOCK で行う差し替えと同じ: Keychain だけ agent 実装へ
     const layer = Layer.merge(env.layer, Layer.succeed(Keychain, agent));
     expect(await runCli(["key", "recover"], layer)).toBe(0);
@@ -589,16 +596,23 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
     const stored = await Effect.runPromise(
       agent.get(masterKeyEntryName(maruhi.origin, user.userId)),
     );
-    const restored = parseStoredMasterKey(stored ?? "");
-    if (restored === null) throw new Error("expected the restored master key in the agent");
-    expect(serializeStoredMasterKey(restored)).toBe(
+    const device = parseStoredMasterKey(stored ?? "");
+    if (device === null) throw new Error("expected the new device key in the agent");
+    // 入っているのは新しい端末鍵。台帳の予備鍵 B はどこにも保存されない
+    expect(device.encPubHex).not.toBe(user.encPubHex);
+    expect(serializeStoredMasterKey(device)).not.toBe(
       serializeStoredMasterKey(storedMasterRecord(user)),
     );
+    expect(stored).not.toContain(user.encSkHex);
+    expect(stored).not.toContain(user.sigSkSeedHex);
     const output = env.logs.join("\n");
     expect(output).toContain(
-      "Restored the master key and stored it in the maruhi agent's memory (this session only)",
+      "Generated this device's key and stored it in the maruhi agent's memory (this session only)",
     );
-    expect(output).toContain(`key fingerprint: ${user.fingerprintHex}`);
+    const shown = env.logs.find((line) => line.startsWith("key fingerprint: "));
+    expect(shown).toMatch(/^key fingerprint: [0-9a-f]{32}$/);
+    expect(shown).not.toBe(`key fingerprint: ${user.fingerprintHex}`);
+    expect(env.errors.join("\n")).toContain("the reserve key was discarded from memory");
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(code);
 
@@ -619,6 +633,7 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
       agent.set(masterKeyEntryName(maruhi2.origin, user.userId), stored ?? ""),
     );
     expect(await runCli(["key", "show", "--server", maruhi2.origin], layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain(`key fingerprint: ${user.fingerprintHex}`);
+    const deviceFingerprint = shown?.slice("key fingerprint: ".length) ?? "";
+    expect(env.logs.join("\n")).toContain(`device key fingerprint: ${deviceFingerprint}`);
   });
 });

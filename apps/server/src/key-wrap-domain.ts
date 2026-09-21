@@ -75,7 +75,6 @@ export interface HandoffApprovalRecord {
   readonly approverKeyFingerprintHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
-  readonly blob: MasterKeyWrapBlob | null;
   readonly createdAtMs: number;
 }
 

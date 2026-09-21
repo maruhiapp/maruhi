@@ -1,10 +1,11 @@
-// リカバリーコードの発行・再発行・復元(CRYPTO_SPEC §8 / AUTH_SPEC §13)。
+// リカバリーコードの発行・再発行・開封(CRYPTO_SPEC §8 / AUTH_SPEC §13)。
 //
 // - リカバリーコード(256-bit)はプロセスメモリと表示にのみ存在し、ディスク・
 //   キーチェーン・ログへ書かない(コードの保管はユーザーの責務)
-// - ラップ対象の master 鍵ブロブ = キーチェーンの StoredMasterKey レコードの
-//   JSON 直列化(CRYPTO_SPEC §8 の「直列化形式は CLI 実装時に確定」の確定点。
-//   復元側は importMasterKeys の自己検証を通してから保存する)
+// - ラップ対象 B = **予備鍵**のレコード(2026-09-19 DK — 旧: master 鍵)の JSON 直列化
+//   (CRYPTO_SPEC §8 の「直列化形式は CLI 実装時に確定」の確定点。端末鍵と同じ形)。
+//   開封側は importMasterKeys の自己検証を通してから、**端末鍵の発行にだけ用いる**
+//   (§8.1 — 保存はしない。復元の後段は key-recover.ts)
 // - コードの表示・入力は鍵素材を端末へ通すため、stdin / stdout / stderr の
 //   全てが TTY の人間環境だけ許可する(既知 AI agent は二次層でも拒否)
 // - 保存確認(ROADMAP の紛失対策 UX): 表示したコードの最終グループを再入力
@@ -32,23 +33,21 @@ import {
   classifyUnreadableMasterKey,
   declaredSuiteOf,
   hasRedactedPlaceholder,
-  Keychain,
   parseStoredMasterKey,
   placeholderCause,
   serializeStoredMasterKey,
   type StoredMasterKey,
 } from "./keychain.ts";
+import { logNote } from "./notice.ts";
+import { OwnDeviceStore } from "./own-devices.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
+import { generateReserveKeys, recordReserveLocally } from "./reserve.ts";
 import {
   type CliSession,
-  ensureNoStoredMasterKey,
   cryptoBackendUsable,
-  importMasterKeys,
+  type MasterKeyImportError,
   retryOnSupportedRuntime,
-  storeMasterKeyAndReport,
   unsupportedCryptoCause,
-  loadMasterKeys,
-  type MasterKeys,
 } from "./session.ts";
 
 /** 保存確認・コード入力の再試行回数(タイプミスの救済。超過は明示エラー)。 */
@@ -73,14 +72,15 @@ function ensureRecoveryCodeInteractionAllowed(
 }
 
 /**
- * Issues (or reissues) the recovery code: generate → wrap → register →
- * display → save confirmation. `maruhi key generate` と `maruhi key recovery`
- * の共通本体。
+ * Issues (or reissues) the recovery code for the reserve key `record`:
+ * generate → wrap → register → display → save confirmation. `maruhi key
+ * generate`(初回封印)/ `maruhi key recovery`(再発行・分離)/ `maruhi key reserve
+ * rotate` の共通本体。`record` は予備鍵のレコード(reserve.ts)— 端末鍵を渡す経路は無い。
  */
 export function issueRecoveryCodeOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  readonly masterKeys: MasterKeys;
+  readonly record: StoredMasterKey;
 }): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -98,7 +98,7 @@ export function issueRecoveryCodeOp(input: {
     // JSON.stringify(record) は使わない — 秘密側が伏字のままラップされ、
     // 「復元できたのに鍵が使えない」リカバリーブロブを登録してしまう
     // (キーチェーン保存と同じ罠。keychain.ts の注記)
-    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.masterKeys.record));
+    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
     const wrapped = yield* Effect.tryPromise({
       try: () =>
         wrapMasterSecret({
@@ -139,7 +139,7 @@ export function issueRecoveryCodeOp(input: {
       "Recommended: print it or save it in a password manager. This code will never be shown again",
     );
     yield* io.logError(
-      "With this code plus GitHub authentication, you can restore the master key on a device that lost it (`maruhi key recover`)",
+      "With this code plus your account sign-in, you can restore your reserve key on a machine that has no device key and register that machine as a new device (`maruhi key recover`)",
     );
     yield* confirmCodeSaved(code);
     yield* io.logError("Save confirmation complete");
@@ -172,30 +172,28 @@ function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, 
 }
 
 /**
- * `maruhi key recover`: 認証済みセッションでラップ済みブロブを取得し、
- * リカバリーコードの入力で復号して master 鍵をキーチェーンへ復元する
- * (CRYPTO_SPEC §8 のデバイス追加・鍵喪失フロー)。
+ * Opens the recovery blob with a prompted recovery code and returns the reserve
+ * key record (memory only — nothing is stored). `maruhi key recover`(復元の
+ * 前段)と台帳変更の開封(ledger-open.ts — `key recovery` / `key seal passkey` /
+ * `guardian add` / `key reserve rotate`)が共有する。復元の後段(新端末鍵の発行 →
+ * `add_device` → 予備鍵の破棄)は key-recover.ts。
  */
-export function recoverMasterKeyOp(input: {
+export function unwrapRecoveryBlobWithCode(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // 発行側と対称の線引き: コードは鍵素材であり、エージェント越しの stdin に
     // 打ち込ませる経路も作らない(入力はエージェントのセッション層から読める)。
-    // 復元は人間の対話端末で行う
+    // 開封は人間の対話端末で行う
     yield* ensureRecoveryCodeInteractionAllowed(io, "read");
-    const entryName = yield* ensureNoStoredMasterKey(
-      input.session,
-      "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
-    );
 
     const wrap = yield* input.client.auth.recoveryGet({}).pipe(
       Effect.catchTag("RecoveryWrapNotFound", () =>
         Effect.fail(
           cliError(
-            "No recovery is registered. Run `maruhi key recovery` on a device that still has the key to register one",
+            "No recovery code is registered for your account. Run `maruhi key recovery` on a device that is registered, or restore with `maruhi key recover --passkey` / `--handoff`",
           ),
         ),
       ),
@@ -215,32 +213,10 @@ export function recoverMasterKeyOp(input: {
     }
 
     // コード入力 → 復号はローカル再試行(取得レート制限の窓を消費しない)
-    const record = yield* unwrapWithPromptedCode({
+    return yield* unwrapWithPromptedCode({
       nonce,
       ciphertext,
       userId: input.session.userId,
-    });
-    // ブロブは解釈できたが鍵素材として読み込めない場合、壊れているのは
-    // **サーバー登録済みのブロブ**。既定の文言はキーチェーンのレコードを指すが、
-    // この経路は ensureNoStoredMasterKey を通っており、このデバイスに master 鍵の
-    // エントリは存在しない — 無い物を指した診断になってしまう。
-    // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
-    const validated = yield* importMasterKeys(record).pipe(
-      Effect.catchTag("MasterKeyUnknownSuite", (error) =>
-        Effect.fail(cliError(foreignRecoveryBlobMessage(error.suite))),
-      ),
-      Effect.catchTag("MasterKeyCorrupt", () =>
-        Effect.flatMap(corruptBlobMessage(), (message) => Effect.fail(cliError(message))),
-      ),
-    );
-    // keygen と同じ上書き検出つき保存: ガードからブロブ取得と
-    // コード入力を挟むため窓はさらに広く、素の set では並行実行の鍵を
-    // 黙って消しうる
-    yield* storeMasterKeyAndReport({
-      entryName,
-      serialized: serializeStoredMasterKey(record),
-      action: "Restored the master key",
-      fingerprintHex: validated.fingerprintHex,
     });
   });
 }
@@ -259,16 +235,23 @@ const reRegisterAction =
 const reRegisterGuidance = `This code cannot restore the key — ${reRegisterAction}`;
 
 /**
- * ブロブが破損しているときの文言。
- *
- * 未知スイート(より新しい maruhi が別デバイスで登録した)は破損ではないので
- * ここには来ない — 分岐は呼び出し側の {@link Effect.catchTag} が型で見分ける。
- * 残る 2 つを区別する: 環境が非対応ならブロブもコードも無事(**捨てさせない**)、
- * そうでなければ本当に壊れている(再登録が要る)。
+ * 開封したブロブが鍵素材として読み込めない({@link importMasterKeys} の失敗)ときの
+ * 写し(key-recover.ts / ledger-open.ts が使う)。未知スイート(より新しい maruhi が
+ * 別デバイスで登録した)は破損ではない。残る 2 つを区別する: 環境が非対応なら
+ * ブロブもコードも無事(**捨てさせない**)、そうでなければ本当に壊れている(再登録が要る)。
  */
-function corruptBlobMessage(): Effect.Effect<string> {
-  return Effect.map(cryptoBackendUsable(), (usable) =>
-    usable ? brokenRecoveryBlobMessage : unsupportedCryptoOnRecover,
+export function mapUnloadableRecoveryBlob<A, R>(
+  effect: Effect.Effect<A, MasterKeyImportError, R>,
+): Effect.Effect<A, CliError, R> {
+  return effect.pipe(
+    Effect.catchTag("MasterKeyUnknownSuite", (error) =>
+      Effect.fail(cliError(foreignRecoveryBlobMessage(error.suite))),
+    ),
+    Effect.catchTag("MasterKeyCorrupt", () =>
+      Effect.flatMap(cryptoBackendUsable(), (usable) =>
+        Effect.fail(cliError(usable ? brokenRecoveryBlobMessage : unsupportedCryptoOnRecover)),
+      ),
+    ),
   );
 }
 
@@ -408,28 +391,51 @@ function unwrapWithPromptedCode(input: {
 }
 
 /**
- * `maruhi key generate` の後段: リカバリーコードの初回発行。エージェント環境
- * では発行そのものをスキップし(拒否ではなく案内)、鍵生成は成立させる。
+ * `maruhi key generate` の後段: 予備鍵の生成と初回封印(K4-2 — 予備鍵は最初の台帳封印で
+ * 生まれる)。順序は封印 → ローカル記録(→ チェーン登録は次の同期 — K4-1 の反例 1)。
+ * エージェント環境では封印(儀式)そのものをスキップし(拒否ではなく案内)、端末鍵の
+ * 生成は成立させる。予備鍵は後日の `maruhi key recovery` が作る。
  */
 export function issueRecoveryAfterKeygen(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     if (io.agentProfile().isAgent) {
       yield* io.log(
-        "Skipped issuing a recovery code because this is an AI agent environment. Run `maruhi key recovery` on a human interactive terminal (until then you are not protected against key loss)",
+        "Skipped creating the reserve key and its recovery code because this is an AI agent environment. Run `maruhi key recovery` on a human interactive terminal (until then you have no reserve key: losing this device means losing access)",
       );
       return;
     }
-    const masterKeys = yield* loadMasterKeys(input.session);
-    yield* issueRecoveryCodeOp({ session: input.session, client: input.client, masterKeys }).pipe(
+    yield* sealNewReserve(input).pipe(
       Effect.mapError((error) =>
         cliError(
-          `${error.message} (the master key generation itself is complete; you can issue a recovery code later with \`maruhi key recovery\`)`,
+          `${error.message} (the device key generation itself is complete; create the reserve key later with \`maruhi key recovery\`)`,
         ),
       ),
+    );
+  });
+}
+
+/**
+ * Generates a reserve key, seals it with a fresh recovery code and records its
+ * public side locally (K4-1 の順序: 封印 → 記録。チェーン登録は次の同期)。
+ */
+export function sealNewReserve(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore> {
+  return Effect.gen(function* () {
+    const reserve = yield* generateReserveKeys();
+    yield* issueRecoveryCodeOp({
+      session: input.session,
+      client: input.client,
+      record: reserve.record,
+    });
+    yield* recordReserveLocally(input.session, reserve);
+    yield* logNote(
+      `created your reserve key (fingerprint ${reserve.fingerprintHex}). It lives only in the recovery ledger; it is registered on each project the next time this device syncs it`,
     );
   });
 }

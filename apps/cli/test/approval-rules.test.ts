@@ -158,13 +158,16 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     const twoView = proposalViewOf(two, twoPending, 0);
     expect(twoView.votes).toBe(2);
     expect(twoView.needed).toBe(0);
-    expect(voteEligibility(two, owner4.userId, twoView)).toEqual({ ok: true, completes: true });
+    expect(voteEligibility(two, owner4.userId, owner4.fingerprintHex, twoView)).toEqual({
+      ok: true,
+      completes: true,
+    });
     // 既投票者(owner3)と降格済み(owner2)は approve できない
-    expect(voteEligibility(two, owner3.userId, twoView)).toMatchObject({
+    expect(voteEligibility(two, owner3.userId, owner3.fingerprintHex, twoView)).toMatchObject({
       ok: false,
       reason: "duplicate-approval",
     });
-    expect(voteEligibility(two, owner2.userId, twoView)).toMatchObject({
+    expect(voteEligibility(two, owner2.userId, owner2.fingerprintHex, twoView)).toMatchObject({
       ok: false,
       reason: "insufficient-role",
     });
@@ -221,7 +224,9 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     expect(views[0]?.eligibleApprovers.toSorted()).toEqual(
       [owner3.userId, owner4.userId].toSorted(),
     );
-    expect(voteEligibility(verified, owner2.userId, views[0]!)).toMatchObject({
+    expect(
+      voteEligibility(verified, owner2.userId, owner2.fingerprintHex, views[0]!),
+    ).toMatchObject({
       ok: false,
       reason: "duplicate-approval",
     });
@@ -237,7 +242,7 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     const verified = await verifiedOf(proposed);
     const view = proposalViewOf(verified, verified.state.pendingProposals.get(hash)!, 5_000);
     expect(view.expired).toBe(true);
-    expect(voteEligibility(verified, owner2.userId, view)).toMatchObject({
+    expect(voteEligibility(verified, owner2.userId, owner2.fingerprintHex, view)).toMatchObject({
       ok: false,
       reason: "proposal-expired",
     });
@@ -258,7 +263,7 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     );
     const stale = proposalViewOf(narrowed, narrowed.state.pendingProposals.get(hash)!, 0);
     expect(stale.target).toBe(false);
-    expect(voteEligibility(narrowed, owner2.userId, stale)).toMatchObject({
+    expect(voteEligibility(narrowed, owner2.userId, owner2.fingerprintHex, stale)).toMatchObject({
       ok: false,
       reason: "approval-not-required",
     });
