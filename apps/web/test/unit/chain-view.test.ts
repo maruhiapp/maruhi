@@ -674,6 +674,69 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     expect(devicesOf(dup, "user_owner")?.devices[1]?.roleCap).toBe("owner");
   });
 
+  it("never binds a revoked device's fingerprint to another device, and keeps the arithmetic sound under a duplicate-FP report (K5-13)", () => {
+    // user_a の最初の鍵は他メンバーと重複しない鍵にする(実チェーンの不変条件 — 重複鍵は受理されない)
+    const KEYS_A1 = { encPubHex: "a1".repeat(32), sigPubHex: "b1".repeat(32) };
+    const owner: ChainEntry = {
+      ...base(),
+      op: "add_member",
+      payload: {
+        targetUserId: "user_a",
+        ...KEYS_A1,
+        role: "owner",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
+    };
+    const addD2 = addDevice("user_a", FP_A, KEYS_D2); // D1 (FP_A bound) + D2 (unbound)
+    const revokeD1 = revokeDevice("user_a", FP_A, "user_a", [FP_A]);
+    // 失効した D1 の FP で署名した行が申告される(stale actor)→ D2 へ束縛しない
+    const stale = addDevice("user_a", FP_A, KEYS_D3);
+    const afterStale = deriveReportedView([genesis, owner, addD2, revokeD1, stale]);
+    expect(devicesOf(afterStale, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
+      null,
+      null,
+    ]);
+    // D1 の鍵を再追加 → 学習済み FP_A を復元(1 行だけが FP_A を持つ)
+    const readdD1 = addDevice("user_a", FP_A, KEYS_A1);
+    const readd = deriveReportedView([genesis, owner, addD2, revokeD1, stale, readdD1]);
+    expect(devicesOf(readd, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
+      null,
+      null,
+      FP_A,
+    ]);
+    // FP_A の失効は 1 行だけ外す(端末数 2)— 2 行が同じ FP を持つ形は作られない
+    const again = deriveReportedView([
+      genesis,
+      owner,
+      addD2,
+      revokeD1,
+      stale,
+      readdD1,
+      revokeDevice("user_a", FP_A, "user_a", [FP_A]),
+    ]);
+    expect(reportedDeviceCount(devicesOf(again, "user_a")!)).toBe(2);
+    // 失効した端末の FP で入れた票は数えない(§6.2 — 失効した端末の票は失効)
+    const proposal = proposeRemove("user_owner", FP, "user_m");
+    const vote = approve("user_a", FP_A, HASH_P);
+    const entries = linked(
+      [
+        genesis,
+        owner,
+        addMember("user_m", "member"),
+        policyEntry(2, ["remove_member"]),
+        addD2,
+        revokeD1,
+        proposal,
+        vote,
+      ],
+      6,
+      HASH_P,
+    );
+    const view = deriveReportedView(entries, "99".repeat(32));
+    expect(view.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
+  });
+
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {
     const add = addMember("user_a", "member");
     const before = deriveReportedView([genesis, add]);

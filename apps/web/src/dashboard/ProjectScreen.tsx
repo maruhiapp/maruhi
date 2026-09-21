@@ -714,16 +714,15 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
-// 人を対象にする trigger の字面(未知・欠落は従来どおり除名として推定 — 旧サーバーの行)
-const USER_TRIGGER_LABELS: Readonly<Record<string, string>> = {
-  change_role: "member role/scope changed",
-  revoke_device: "device revoked",
-};
+// 人を対象にする trigger の字面(未知・欠落は従来どおり除名として推定 — 旧サーバーの行)。
+// Map なのでプロトタイプ鎖の名前(敵対的な trigger 文字列)に当たらない
+const USER_TRIGGER_LABELS: ReadonlyMap<string, string> = new Map([
+  ["change_role", "member role/scope changed"],
+  ["revoke_device", "device revoked"],
+]);
 
 function userTriggerLabel(trigger: string | undefined): string {
-  return trigger !== undefined && Object.hasOwn(USER_TRIGGER_LABELS, trigger)
-    ? (USER_TRIGGER_LABELS[trigger] ?? "member removed")
-    : "member removed";
+  return (trigger === undefined ? undefined : USER_TRIGGER_LABELS.get(trigger)) ?? "member removed";
 }
 
 /**

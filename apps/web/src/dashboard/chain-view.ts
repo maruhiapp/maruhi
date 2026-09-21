@@ -154,6 +154,12 @@ interface MutableMember {
    * 票の判定(K5-2)にだけ使い、失効で未束縛端末が減るたびに捨てる(fail-closed)。
    */
   unboundSignerFps: Set<string>;
+  /**
+   * この在籍で失効した束縛済み端末の FP(K5-13)。失効後に申告される同じ FP の署名は、
+   * 別の未束縛端末へ束縛しない(FP は端末を指す — 失効した端末の署名は無効)。同じ鍵の
+   * 再追加(学習済み FP の復元)で外す。
+   */
+  revokedFingerprints: Set<string>;
 }
 
 interface FoldState {
@@ -217,6 +223,7 @@ function startTenure(
     devices: [newDevice(state, userId, keys, FIRST_DEVICE_CAP, seq)],
     unresolvedRevocations: 0,
     unboundSignerFps: new Set(),
+    revokedFingerprints: new Set(),
   };
   state.members.set(userId, member);
   return member;
@@ -238,16 +245,16 @@ function unboundDevicesOf(member: MutableMember): MutableDevice[] {
   return member.devices.filter((d) => d.keyFingerprintHex === null);
 }
 
-/** 署名者のレコード(不在・または FP が既に束縛済みなら undefined = 結ぶものがない)。 */
+/** 署名者のレコード(不在・FP が束縛済み・または失効済み端末の FP なら undefined = 結ぶものがない)。 */
 function signerNeedingBinding(
   state: FoldState,
   userId: string,
   fp: string,
 ): MutableMember | undefined {
   const member = state.members.get(userId);
-  if (member === undefined || member.devices.some((d) => d.keyFingerprintHex === fp))
-    return undefined;
-  return member;
+  // 失効した端末の FP は別の端末へ結ばない(K5-13 — 1 人の端末集合の中で FP は単射)
+  if (member === undefined || member.revokedFingerprints.has(fp)) return undefined;
+  return member.devices.some((d) => d.keyFingerprintHex === fp) ? undefined : member;
 }
 
 /**
@@ -520,13 +527,20 @@ function keyAvailable(state: FoldState, encPubHex: string, sigPubHex: string): b
   return holder === undefined || resolveStaleHolder(holder);
 }
 
+/** 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)ので失効済みから外す。 */
+function pushDevice(member: MutableMember, device: MutableDevice): void {
+  if (device.keyFingerprintHex !== null)
+    member.revokedFingerprints.delete(device.keyFingerprintHex);
+  member.devices.push(device);
+}
+
 /** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。 */
 function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
   const member = state.members.get(entry.actor.userId);
   const payload = entry.payload;
   if (member === undefined || !readableAddDevice(payload)) return;
   if (!keyAvailable(state, payload.encPubHex, payload.sigPubHex)) return;
-  member.devices.push(newDevice(state, member.userId, payload, payload, entry.seq));
+  pushDevice(member, newDevice(state, member.userId, payload, payload, entry.seq));
 }
 
 /** revoke_device の payload が読める形か(FP のリスト: 1 要素以上・重複なし)。 */
@@ -553,9 +567,14 @@ function planRevocation(member: MutableMember, fps: ReadonlySet<string>): Revoca
   const matched = new Set(
     member.devices.filter((d) => d.keyFingerprintHex !== null && fps.has(d.keyFingerprintHex)),
   );
-  const unmatched = fps.size - matched.size;
+  // 一致しない FP の数は「どの端末にも無い FP」を数える(行数の差にしない — 単射が破れた
+  // 申告でも負にならない。K5-13)
+  const unmatched = [...fps].filter(
+    (fp) => !member.devices.some((d) => d.keyFingerprintHex === fp),
+  ).length;
   const unboundRemaining = unboundDevicesOf(member).length - member.unresolvedRevocations;
-  const countAfter = member.devices.length - member.unresolvedRevocations - fps.size;
+  const countAfter =
+    member.devices.length - member.unresolvedRevocations - matched.size - unmatched;
   return {
     matched,
     unmatched,
@@ -570,6 +589,14 @@ function revocationTarget(
   payload: EntryOf<"revoke_device">["payload"],
 ): MutableMember | undefined {
   return readableRevokeDevice(payload) ? state.members.get(payload.targetUserId) : undefined;
+}
+
+/** 一致した束縛済み端末を外し、その FP を失効済みとして覚える(K5-13 — 別の端末へ再束縛しない)。 */
+function revokeMatched(member: MutableMember, plan: RevocationPlan): void {
+  for (const device of plan.matched) {
+    if (device.keyFingerprintHex !== null) member.revokedFingerprints.add(device.keyFingerprintHex);
+  }
+  member.devices = member.devices.filter((d) => !plan.matched.has(d));
 }
 
 /** 一致しない FP を未束縛端末から算術で外す(残り全部なら消し、少なければ unresolved に数える)。 */
@@ -594,7 +621,7 @@ function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): v
   if (member === undefined) return;
   const plan = planRevocation(member, new Set(entry.payload.deviceFingerprintsHex));
   if (!plan.readable) return;
-  member.devices = member.devices.filter((d) => !plan.matched.has(d));
+  revokeMatched(member, plan);
   if (plan.unmatched > 0) revokeUnbound(member, plan);
 }
 

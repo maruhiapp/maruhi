@@ -10,7 +10,7 @@
 //   紛失時の導線 = 既存のトークン失効(`DELETE /auth/tokens/:tokenId` — 資格を減らす方向)
 // - `tokenId` は `GET /auth/tokens` の一覧と id で突合して名前 + prefix を出す(K5-8)。
 //   一覧に無ければ id だけ(失効済み / 期限切れの可能性)。一覧の取得だけ失敗しても
-//   登録簿は描く(部分失敗で画面を落とさない)
+//   登録簿は描く(部分失敗で画面を落とさない)。読込中は何も主張しない(id だけ — K5-14)
 // - 表示名 / FP / tokenId はサーバー由来の文字列としてテキストノードにだけ描く。href に
 //   埋めるのは `apiPaths.tokenRevoke(tokenId)`(encodeURIComponent)のみ
 import { VStack } from "@astryxdesign/core/Layout";
@@ -42,6 +42,9 @@ type LinkedToken =
   | { kind: "none" }
   | { kind: "found"; token: TokenSummary }
   | { kind: "not-listed"; tokenId: string }
+  /** トークン一覧をまだ読んでいる(何も主張しない — id だけ出す。K5-14)。 */
+  | { kind: "pending"; tokenId: string }
+  /** トークン一覧の取得に失敗した(id だけ出し、一覧が無いと言う)。 */
   | { kind: "unresolved"; tokenId: string };
 
 interface DeviceRow extends Record<string, unknown> {
@@ -52,12 +55,17 @@ interface DeviceRow extends Record<string, unknown> {
   linked: LinkedToken;
 }
 
-/** tokenId → 一覧の行(一覧が取れていなければ unresolved = id だけを出す)。 */
+/** 取得済みの一覧との突合(あれば found、無ければ not-listed)。 */
+function linkedFromList(tokenId: string, tokens: TokenList): LinkedToken {
+  const token = tokens.tokens.find((t) => t.id === tokenId);
+  return token === undefined ? { kind: "not-listed", tokenId } : { kind: "found", token };
+}
+
+/** tokenId → 一覧の行(読込中は pending、取れなければ unresolved — どちらも id だけを出す)。 */
 function linkedTokenOf(tokenId: string | undefined, tokens: ResourceState<TokenList>): LinkedToken {
   if (tokenId === undefined) return { kind: "none" };
-  if (tokens.kind !== "ok") return { kind: "unresolved", tokenId };
-  const token = tokens.value.tokens.find((t) => t.id === tokenId);
-  return token === undefined ? { kind: "not-listed", tokenId } : { kind: "found", token };
+  if (tokens.kind === "ok") return linkedFromList(tokenId, tokens.value);
+  return tokens.kind === "loading" ? { kind: "pending", tokenId } : { kind: "unresolved", tokenId };
 }
 
 function toDeviceRow(device: DeviceSummary, tokens: ResourceState<TokenList>): DeviceRow {
@@ -89,13 +97,24 @@ function LinkedTokenCell({ linked }: { linked: LinkedToken }): ReactNode {
       </VStack>
     );
   }
+  return <UnmatchedTokenCell linked={linked} />;
+}
+
+/** 突合できなかった id(読込中は何も主張しない — K5-14)。 */
+function UnmatchedTokenCell({
+  linked,
+}: {
+  linked: Extract<LinkedToken, { kind: "not-listed" | "pending" | "unresolved" }>;
+}): ReactNode {
   return (
     <VStack gap={1}>
-      <Text type="supporting" size="sm">
-        {linked.kind === "not-listed"
-          ? "not among your tokens (revoked or expired?)"
-          : "token list unavailable"}
-      </Text>
+      {linked.kind === "pending" ? null : (
+        <Text type="supporting" size="sm">
+          {linked.kind === "not-listed"
+            ? "not among your tokens (revoked or expired?)"
+            : "token list unavailable"}
+        </Text>
+      )}
       <HexText>{linked.tokenId}</HexText>
     </VStack>
   );
