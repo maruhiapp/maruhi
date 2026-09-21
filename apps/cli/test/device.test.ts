@@ -53,6 +53,7 @@ import {
   headOf,
   hexBytes,
   makeTestUser,
+  rotateEpochOp,
   type TestUser,
   wrapDekFor,
   type WireRecipientDek,
@@ -747,6 +748,29 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
         deviceFingerprintsHex: [dev2.fingerprintHex],
       },
     ]);
+  });
+  it("失効時に回せなかった環境(outOfScope)の義務は後の同期でも未収束として警告される(持ち越し)", async () => {
+    // dev2(owner / all)を失効 → env-a だけ rotate 済み。env-b の義務は残ったまま
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-a", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-b", dek) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
+      {
+        actor: owner,
+        operation: rotateEpochOp("env-a", 2, crypto.getRandomValues(new Uint8Array(32))),
+      },
+    ]);
+    const { server } = await makeServer({ built, withEnvironment: false });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "list"], env.layer), env.errors.join("\n")).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("there are unconverged rotation mandates");
+    expect(errors).toMatch(
+      new RegExp(`device-revoked \\(target=${owner.userId}, seq=5\\): environments env-b —`),
+    );
+    expect(errors).not.toMatch(/device-revoked[^\n]*environments env-a/);
   });
 });
 
