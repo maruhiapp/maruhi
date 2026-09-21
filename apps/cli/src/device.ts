@@ -83,7 +83,7 @@ import {
   storeMasterKeyAndReport,
 } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
-import type { VerifiedProject } from "./sync.ts";
+import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /** 登録簿 1 行(server-reported)。 */
 interface RegistryRow {
@@ -1269,7 +1269,7 @@ function executeRevoke(input: {
 }): Effect.Effect<ProjectRevokeOutcome, never, CliServices> {
   const { context } = input.plan;
   return Effect.gen(function* () {
-    const { verified, revoked } = yield* appendRevokeDevice({
+    const appended = yield* appendRevokeDevice({
       client: context.client,
       verified: context.verified,
       resync: context.resync,
@@ -1277,6 +1277,13 @@ function executeRevoke(input: {
       targetUserId: input.targetUserId,
       fingerprintsHex: input.plan.revoking.map((device) => device.keyFingerprintHex),
     });
+    const { revoked } = appended;
+    // 受理後の再同期(追記前のビューには失効の義務が無い — sweep は掲載を確認した
+    // ビューで導出する。member remove と同じ規律: サーバー申告を真実源にしない)
+    const verified =
+      revoked.length === 0
+        ? appended.verified
+        : yield* resyncExtended(context.resync, appended.verified);
     const self = verified.state.members.get(input.session.userId);
     const actorDevice =
       self === undefined

@@ -749,7 +749,7 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
       },
     ]);
   });
-  it("失効時に回せなかった環境(outOfScope)の義務は後の同期でも未収束として警告される(持ち越し)", async () => {
+  it("部分的に収束した義務(env-a は rotate 済み・env-b は未)は後の同期でも env-b だけを未収束として警告する(持ち越し)", async () => {
     // dev2(owner / all)を失効 → env-a だけ rotate 済み。env-b の義務は残ったまま
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -771,6 +771,27 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
       new RegExp(`device-revoked \\(target=${owner.userId}, seq=5\\): environments env-b —`),
     );
     expect(errors).not.toMatch(/device-revoked[^\n]*environments env-a/);
+  });
+  it("失効する端末の実効 scope が署名端末の scope 外なら、その環境は rotate せず outOfScope として注記する", async () => {
+    // 署名端末 dev2 = (owner, listed {})。失効対象 reserve = (owner, all) → 義務 env-a / env-b
+    // はどちらも dev2 の scope 外 = rotate できない(注記して常時警告に委ねる)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-a", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-b", dek) },
+      { actor: owner, operation: addDeviceOp(dev2, { roleCap: "owner", environmentIds: [] }) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { server, state } = await makeServer({ built, withEnvironment: false });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(
+      await runCli(["device", "revoke", reserve.fingerprintHex, "--yes"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.appended.map((entry) => entry.op)).toEqual(["revoke_device"]);
+    expect(env.errors.join("\n")).toContain(
+      "2 environments with a pending rotation mandate are outside your scope and cannot be rotated by you (env-a, env-b)",
+    );
   });
 });
 
