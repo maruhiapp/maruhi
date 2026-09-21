@@ -1764,7 +1764,7 @@ K6 で docs は出荷済みの挙動を書き、CLI がまだ別のことを言�
 
 **所有者に諮る点の追加**: (6) `apps/web/src/dashboard/types.ts` の手書き envelope 4 つ(`AuditEventsPage` / `EnvironmentList` / `RotationFlagList` / `InvitationList`)を api-schema の名前付き Schema(`AuditEventsPageSchema` 等 — `TokenListSchema` の先例)に置き換え、`types.ts` に `interface` を残さない検査を置く(K7-8 の上位互換 — 範囲の拡張なので別 PR)。
 
-**申し送りの訂正**: 完了記録の申し送り (3)(実行時文言の "master key" は機械で捕まえられない)は **K7-13 で消えた**(`.oxlintrc.json` の override。ミューテーション 3 種 — 文字列 / テンプレート / コメント — で確認)。
+**申し送りの訂正**: 完了記録の申し送り (3)(実行時文言の "master key" は機械で捕まえられない)は **K7-13 で語句の分だけ消えた**: lint が留めるのは `master key` / `master-key` / `master private key` の字面であり(`.oxlintrc.json` の override。ミューテーション 3 種 — 文字列 / テンプレート / コメント — で確認)、語彙そのものではない。`your master signing key` のような近傍は通る(PR #191 pullfrog 第 2 巡)。残る穴は「master が鍵を指す語として文言に戻る」ことで、それは人の目の領分のまま。
 
 ### レビュー対応中の追加裁定(K7-15〜K7-16 — PR #191 pullfrog 第 1 巡への応答)
 
