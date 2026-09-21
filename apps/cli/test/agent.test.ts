@@ -410,7 +410,12 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.errors.join("\n")).toContain("Write --key-ttl as a number followed by s, m, or h");
     expect(await runCli(["agent", "--key-ttl", "2h", "--", "bash"], env.layer)).toBe(0);
     expect(env.sessionCalls).toHaveLength(1);
-    expect(env.errors.join("\n")).toContain("This device's key is forgotten 2h after it is stored");
+    const ttlHint = env.errors.join("\n");
+    expect(ttlHint).toContain("This device's key is forgotten 2h after it is stored");
+    // 導線(K7-4): 消えた端末鍵は新しい端末として登録し直し、忘れた鍵は失効(復元ではない)
+    expect(ttlHint).toContain("`maruhi device add`");
+    expect(ttlHint).toContain("`maruhi device revoke`");
+    expect(ttlHint).not.toContain("`maruhi key recover`");
   });
 
   it("`agent -- status` は子コマンドの実行であってサブコマンドではない(`--` を跨がない)", async () => {

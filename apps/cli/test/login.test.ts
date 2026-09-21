@@ -651,7 +651,11 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("`maruhi key recover`");
+    const hint = env.errors.join("\n");
+    expect(hint).toContain("`maruhi key recover`");
+    // 導線の順序(K7-4): 端末が残っていれば追加、無ければ復元
+    expect(hint.indexOf("`maruhi device add`")).toBeGreaterThan(-1);
+    expect(hint.indexOf("`maruhi device add`")).toBeLessThan(hint.indexOf("`maruhi key recover`"));
   });
 
   it("ログイン後、鍵あり + リカバリー未登録なら発行を促す(保管リマインダ)", async () => {
