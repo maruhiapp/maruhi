@@ -2,7 +2,7 @@
 // 入力は api-schema のワイヤ型に適合するフィクスチャ(型は tsc が拘束する)。
 import { describe, expect, it } from "vitest";
 
-import { deriveReportedView } from "../../src/dashboard/chain-view.ts";
+import { deriveReportedView, reportedDeviceCount } from "../../src/dashboard/chain-view.ts";
 import type { ChainEntry } from "../../src/dashboard/types.ts";
 
 const HEX64 = "12".repeat(32);
@@ -61,7 +61,7 @@ describe("deriveReportedView", () => {
     });
   });
 
-  it("folds genesis into an owner member", () => {
+  it("folds genesis into an owner member whose first device is the genesis key (cap owner/all, FP = actor)", () => {
     const view = deriveReportedView([genesis]);
     expect(view.members).toEqual([
       {
@@ -70,6 +70,18 @@ describe("deriveReportedView", () => {
         scopeKind: "all",
         scopeEnvironmentIds: [],
         sinceSeq: genesis.seq,
+        devices: [
+          {
+            keyFingerprintHex: FP,
+            encPubHex: HEX64,
+            sigPubHex: HEX64,
+            roleCap: "owner",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
+            addedSeq: genesis.seq,
+          },
+        ],
+        unresolvedRevocations: 0,
       },
     ]);
   });
@@ -466,5 +478,315 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     );
     expect(view.proposals).toEqual([]);
     expect(view.members.map((m) => m.userId)).toContain("user_m");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 端末鍵(DK K5 — 設計録 dk-design.md §10 K5-1 / K5-2 / K5-4): 端末は公開鍵対で同定し、
+// FP は申告のバイト列から機械的に束縛できる範囲だけ結ぶ(hash は計算しない)。失効は
+// 束縛済みなら一致で、未束縛なら算術で外し、端末数は常に正確に保つ
+// ---------------------------------------------------------------------------
+
+const FP_D2 = "d2".repeat(16);
+const FP_D3 = "d3".repeat(16);
+const FP_R = "0e".repeat(16);
+const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
+const KEYS_D3 = { encPubHex: "a3".repeat(32), sigPubHex: "b3".repeat(32) };
+const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
+
+function addDevice(
+  userId: string,
+  signerFp: string,
+  keys: { encPubHex: string; sigPubHex: string },
+  cap: {
+    roleCap: "owner" | "admin" | "member" | "reader";
+    scopeKind: "all" | "listed";
+    scopeEnvironmentIds: string[];
+  } = { roleCap: "owner", scopeKind: "all", scopeEnvironmentIds: [] },
+): ChainEntry {
+  return { ...signedBy(userId, signerFp), op: "add_device", payload: { ...keys, ...cap } };
+}
+
+function revokeDevice(
+  userId: string,
+  signerFp: string,
+  target: string,
+  fps: ReadonlyArray<string>,
+): ChainEntry {
+  return {
+    ...signedBy(userId, signerFp),
+    op: "revoke_device",
+    payload: { targetUserId: target, deviceFingerprintsHex: [...fps] },
+  };
+}
+
+function devicesOf(view: ReturnType<typeof deriveReportedView>, userId: string) {
+  return view.members.find((m) => m.userId === userId);
+}
+
+describe("deriveReportedView — device keys (DK K5)", () => {
+  it("adds a device with its reported cap and no fingerprint (the wire carries public keys only)", () => {
+    const view = deriveReportedView([
+      genesis,
+      addDevice("user_owner", FP, KEYS_D2, {
+        roleCap: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: ["dev"],
+      }),
+    ]);
+    const owner = devicesOf(view, "user_owner");
+    expect(reportedDeviceCount(owner!)).toBe(2);
+    expect(owner?.devices.map((d) => [d.keyFingerprintHex, d.roleCap, d.scopeKind])).toEqual([
+      [FP, "owner", "all"],
+      [null, "member", "listed"],
+    ]);
+    expect(owner?.devices[1]?.scopeEnvironmentIds).toEqual(["dev"]);
+  });
+
+  it("binds a fingerprint when the member signs and exactly one device is unbound", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    // D2 が署名(R を足す)→ 未束縛は D2 だけ → 束縛。R は未束縛のまま
+    const addR = addDevice("user_owner", FP_D2, KEYS_R);
+    const view = deriveReportedView([genesis, addD2, addR]);
+    expect(devicesOf(view, "user_owner")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
+      FP,
+      FP_D2,
+      null,
+    ]);
+  });
+
+  it("revokes a bound device by fingerprint and keeps the count exact", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const addR = addDevice("user_owner", FP_D2, KEYS_R);
+    const revokeD2 = revokeDevice("user_owner", FP, "user_owner", [FP_D2]);
+    const view = deriveReportedView([genesis, addD2, addR, revokeD2]);
+    const owner = devicesOf(view, "user_owner");
+    expect(owner?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP, null]);
+    expect(owner?.unresolvedRevocations).toBe(0);
+    expect(reportedDeviceCount(owner!)).toBe(2);
+  });
+
+  it("revokes fingerprint-less devices by arithmetic: all of them when the counts match, otherwise counts the revocation as unresolved", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const addR = addDevice("user_owner", FP, KEYS_R);
+    // 未束縛 2(D2・R)に対し 1 つの FP → どれかは不明。端末数 2 は正確
+    const one = deriveReportedView([
+      genesis,
+      addD2,
+      addR,
+      revokeDevice("user_owner", FP, "user_owner", [FP_R]),
+    ]);
+    const partial = devicesOf(one, "user_owner");
+    expect(partial?.devices).toHaveLength(3);
+    expect(partial?.unresolvedRevocations).toBe(1);
+    expect(reportedDeviceCount(partial!)).toBe(2);
+    // 残りの 1 つも失効 → 未束縛の残り 1 = 一致しない FP 1 → 未束縛を全部外す
+    const both = deriveReportedView([
+      genesis,
+      addD2,
+      addR,
+      revokeDevice("user_owner", FP, "user_owner", [FP_R]),
+      revokeDevice("user_owner", FP, "user_owner", [FP_D2]),
+    ]);
+    const resolved = devicesOf(both, "user_owner");
+    expect(resolved?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP]);
+    expect(resolved?.unresolvedRevocations).toBe(0);
+    expect(reportedDeviceCount(resolved!)).toBe(1);
+  });
+
+  it("ignores a revoke_device the reported bytes cannot read (unknown target, too many fingerprints, duplicates, last device)", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const prefix = [genesis, addD2];
+    const count = (entries: ChainEntry[]) =>
+      reportedDeviceCount(devicesOf(deriveReportedView(entries), "user_owner")!);
+    expect(count([...prefix, revokeDevice("user_owner", FP, "user_ghost", [FP_D2])])).toBe(2);
+    // 一致しない FP 2 に対し未束縛は 1 → 読めない
+    expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP_D2, FP_D3])])).toBe(
+      2,
+    );
+    expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP_D2, FP_D2])])).toBe(
+      2,
+    );
+    // 失効後 0 台(last-device-protected)
+    expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2])])).toBe(2);
+    expect(count([genesis, revokeDevice("user_owner", FP, "user_owner", [FP])])).toBe(1);
+    // 壊れた payload
+    const broken = {
+      ...signedBy("user_owner", FP),
+      op: "revoke_device",
+      payload: { targetUserId: "user_owner", deviceFingerprintsHex: "not-a-list" },
+    } as unknown as ChainEntry;
+    expect(count([...prefix, broken])).toBe(2);
+  });
+
+  it("ignores an add_device from a non-member or with a key already held by a current member's device", () => {
+    const view = deriveReportedView([
+      genesis,
+      addDevice("user_ghost", FP_D2, KEYS_D2),
+      // genesis の鍵(HEX64 / HEX64)と同じ公開鍵 → duplicate-member-key
+      addDevice("user_owner", FP, { encPubHex: HEX64, sigPubHex: "b9".repeat(32) }),
+    ]);
+    expect(view.members).toHaveLength(1);
+    expect(reportedDeviceCount(view.members[0]!)).toBe(1);
+  });
+
+  it("re-adds a revoked key as a new device and carries its learned fingerprint over (same key ⇒ same FP)", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const signD2 = addDevice("user_owner", FP_D2, KEYS_R);
+    const revokeD2 = revokeDevice("user_owner", FP, "user_owner", [FP_D2]);
+    const readdD2 = addDevice("user_owner", FP, KEYS_D2, {
+      roleCap: "reader",
+      scopeKind: "listed",
+      scopeEnvironmentIds: [],
+    });
+    const view = deriveReportedView([genesis, addD2, signD2, revokeD2, readdD2]);
+    const owner = devicesOf(view, "user_owner");
+    expect(owner?.devices.map((d) => [d.keyFingerprintHex, d.roleCap, d.addedSeq])).toEqual([
+      [FP, "owner", genesis.seq],
+      [null, "owner", signD2.seq],
+      [FP_D2, "reader", readdD2.seq],
+    ]);
+  });
+
+  it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {
+    const add = addMember("user_a", "member");
+    const before = deriveReportedView([genesis, add]);
+    expect(devicesOf(before, "user_a")?.devices).toEqual([
+      {
+        keyFingerprintHex: null,
+        encPubHex: HEX64,
+        sigPubHex: HEX64,
+        roleCap: "owner",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+        addedSeq: add.seq,
+      },
+    ]);
+    const after = deriveReportedView([genesis, add, addDevice("user_a", FP_A, KEYS_D3)]);
+    expect(devicesOf(after, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
+      FP_A,
+      null,
+    ]);
+    expect(reportedDeviceCount(devicesOf(after, "user_a")!)).toBe(2);
+  });
+
+  it("removes every device with remove_member and starts the re-added member from one device", () => {
+    const add = addMember("user_a", "member");
+    const view = deriveReportedView([
+      genesis,
+      add,
+      addDevice("user_a", FP_A, KEYS_D3),
+      { ...signedBy("user_owner", FP), op: "remove_member", payload: { targetUserId: "user_a" } },
+      addMember("user_a", "reader"),
+    ]);
+    expect(reportedDeviceCount(devicesOf(view, "user_a")!)).toBe(1);
+    expect(devicesOf(view, "user_a")?.role).toBe("reader");
+  });
+
+  it("does not apply add_device / revoke_device carried inside a proposal (not proposable — §6.2)", () => {
+    const proposal: ChainEntry = {
+      ...signedBy("user_owner", FP),
+      op: "propose",
+      payload: {
+        inner: {
+          op: "add_device",
+          payload: { ...KEYS_D2, roleCap: "owner", scopeKind: "all", scopeEnvironmentIds: [] },
+        },
+        expiresAtMs: 4_000_000_000_000,
+      },
+    };
+    const entries = linked(
+      [
+        genesis,
+        addMember("user_a", "owner"),
+        policyEntry(1, ["remove_member"]),
+        proposal,
+        approve("user_a", FP_A, HASH_P),
+      ],
+      3,
+      HASH_P,
+    );
+    const view = deriveReportedView(entries, "99".repeat(32));
+    expect(view.proposals).toEqual([]);
+    expect(reportedDeviceCount(devicesOf(view, "user_owner")!)).toBe(1);
+  });
+
+  describe("four-eyes votes are counted per device (K5-2)", () => {
+    const setup = () => [
+      genesis,
+      addMember("user_a", "owner"),
+      addMember("user_m", "member"),
+      policyEntry(2, ["remove_member"]),
+    ];
+
+    it("keeps a vote cast from one device when the owner later signs from another", () => {
+      const proposal = proposeRemove("user_owner", FP, "user_m");
+      const addD2 = addDevice("user_a", FP_A, KEYS_D2);
+      const voteFromD2 = approve("user_a", FP_D2, HASH_P);
+      const signFromD1 = addDevice("user_a", FP_A, KEYS_R);
+      const entries = linked([...setup(), addD2, proposal, voteFromD2, signFromD1], 5, HASH_P);
+      const view = deriveReportedView(entries, "99".repeat(32));
+      // D2 は署名時に唯一の未束縛端末 → 束縛。D1 が後で署名しても D2 の票は残る
+      expect(view.proposals).toEqual([]);
+      expect(view.members.map((m) => m.userId)).toEqual(["user_owner", "user_a"]);
+    });
+
+    it("does not count a vote from a device whose cap is below owner", () => {
+      const proposal = proposeRemove("user_owner", FP, "user_m");
+      const phone = addDevice("user_a", FP_A, KEYS_D2, {
+        roleCap: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: [],
+      });
+      const vote = approve("user_a", FP_D2, HASH_P);
+      const entries = linked([...setup(), phone, proposal, vote], 5, HASH_P);
+      const view = deriveReportedView(entries, "99".repeat(32));
+      expect(view.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
+    });
+
+    it("counts an unbindable vote only when every unbound device of that owner is owner-capped, and drops it after an unresolved revocation", () => {
+      const proposal = proposeRemove("user_owner", FP, "user_m");
+      const addD2 = addDevice("user_a", FP_A, KEYS_D2);
+      const addR = addDevice("user_a", FP_A, KEYS_R);
+      // 未束縛 2(どちらも owner/all)から署名 → どの端末でも owner → 数える
+      const vote = approve("user_a", FP_D2, HASH_P);
+      const counted = deriveReportedView(
+        linked([...setup(), addD2, addR, proposal, vote], 6, HASH_P),
+        "99".repeat(32),
+      );
+      expect(counted.proposals).toEqual([]);
+      // 片方が member cap なら結論が端末で変わる → 数えない
+      const capped = addDevice("user_a", FP_A, KEYS_R, {
+        roleCap: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      });
+      const notCounted = deriveReportedView(
+        linked([...setup(), addD2, capped, proposal, vote], 6, HASH_P),
+        "99".repeat(32),
+      );
+      expect(notCounted.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
+      // 数えた後に未束縛の 1 つが失効(どれかは不明)→ 票は失効したかもしれない → 数えない
+      const policy3 = policyEntry(3, ["remove_member"]);
+      const revoked = deriveReportedView(
+        linked(
+          [
+            genesis,
+            addMember("user_a", "owner"),
+            addMember("user_m", "member"),
+            policy3,
+            addD2,
+            addR,
+            proposal,
+            vote,
+            revokeDevice("user_a", FP_A, "user_a", [FP_R]),
+          ],
+          6,
+          HASH_P,
+        ),
+        "99".repeat(32),
+      );
+      expect(revoked.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
+    });
   });
 });
