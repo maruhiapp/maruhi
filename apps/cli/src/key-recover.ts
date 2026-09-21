@@ -42,7 +42,7 @@ import {
 } from "./device-ops.ts";
 import { describeBackfill, reportRegisteredDevice } from "./device.ts";
 import { countNoun, displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { requestHandoffReserve } from "./handoff.ts";
 import { CliIo } from "./io.ts";
@@ -364,6 +364,15 @@ export function keyRecoveryOp(input: {
       return 0;
     }
     if (input.replace) {
+      if (input.via === "passkey") {
+        // --passkey は台帳を開く手段。--replace は開かない前提なので両立しない —
+        // パスキーがあるなら開いて再発行する方が同じ予備鍵を保てる(pullfrog 指摘)
+        return yield* Effect.fail(
+          usageError(
+            "--passkey cannot be combined with --replace: --replace never opens the ledger. If you still have a passkey, run `maruhi key recovery --passkey` (without --replace) to reissue the recovery code for the same reserve key",
+          ),
+        );
+      }
       return yield* replaceReserveWithoutOpening(input);
     }
     const opened = yield* openLedgerReserve({
@@ -412,8 +421,16 @@ function replaceReserveWithoutOpening(input: {
   readonly client: MaruhiClient;
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
+    // 書き込みの前に、何が消えるかを名指しする: コード・記録上の予備鍵の登録・旧 B を
+    // 封印していた台帳の行(パスキー / 保護者)。パスキーが残っているなら --passkey の方が
+    // 同じ予備鍵を保てる(pullfrog 指摘)
+    const status = yield* input.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
+    const sealed =
+      status.passkeys.length + status.guardianGroups.length === 0
+        ? "any passkey wraps and guardian groups that seal the current reserve key are deleted"
+        : `${countNoun(status.passkeys.length, "passkey wrap")} and ${countNoun(status.guardianGroups.length, "guardian group")} that seal the current reserve key are deleted`;
     yield* logWarning(
-      "replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project. A previous reserve key that is not recorded here stays registered until you revoke it with `maruhi device revoke <fingerprint>` (`maruhi device list` shows your devices)",
+      `replacing the recovery ledger without opening it: the previous recovery code stops working, the reserve keys recorded on this machine are revoked on every project, and ${sealed}. If you still have a passkey for the current reserve key, stop here and run \`maruhi key recovery --passkey\` instead: it reissues the code for the same reserve key. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
     );
     const next = yield* generateReserveKeys();
     yield* issueRecoveryCodeOp({

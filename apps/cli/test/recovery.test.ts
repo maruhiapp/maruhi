@@ -472,7 +472,18 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(errors).toContain(
       "no previous reserve key is recorded on this machine, so none was revoked",
     );
+    // 書き込みの前に、台帳の行(パスキー / 保護者)が消えることと --passkey の代替を示す
+    expect(errors).toContain(
+      "any passkey wraps and guardian groups that seal the current reserve key are deleted",
+    );
+    expect(errors).toContain("run `maruhi key recovery --passkey` instead");
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
+    // --passkey は --replace と両立しない(台帳を開かないので)— 何も書かずに使い方エラー
+    const before = env.errors.length;
+    expect(await runCli(["key", "recovery", "--passkey", "--replace"], env.layer)).toBe(2);
+    expect(env.errors.slice(before).join("\n")).toContain(
+      "--passkey cannot be combined with --replace",
+    );
   });
 
   it("AI エージェント環境では発行を拒否する", async () => {
