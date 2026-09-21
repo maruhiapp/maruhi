@@ -419,7 +419,8 @@ function rotateReserveOnProject(input: {
   readonly session: CliSession;
   readonly projectId: string;
   readonly newReserve: ReserveKeys;
-  readonly oldFingerprintHex: string;
+  /** 失効させる旧予備鍵の FP(開封した B + 記録上の旧予備鍵 — 中断後の再実行で取り残さない)。 */
+  readonly oldFingerprintsHex: readonly string[];
 }): Effect.Effect<ReserveRotateOutcome, never, CliServices> {
   return Effect.gen(function* () {
     const context: ProjectContext = yield* openProject(
@@ -465,7 +466,7 @@ function rotateReserveOnProject(input: {
       resync: context.resync,
       signer: { userId: context.session.userId, signingKeyPair: context.masterKeys.sigKeyPair },
       targetUserId: context.session.userId,
-      fingerprintsHex: [input.oldFingerprintHex],
+      fingerprintsHex: input.oldFingerprintsHex,
     });
     verified = yield* context.resync;
     const actorMember = verified.state.members.get(context.session.userId);
@@ -553,6 +554,31 @@ function reportReserveSweep(
   });
 }
 
+/**
+ * 失効させる旧予備鍵の FP 集合(昇順): 開封した B と、ローカル記録で出所 "reserve" の
+ * 行すべて(revoked の印の有無を問わない — 前回の中断で印だけ先に付いた鍵を拾う)から
+ * 新鍵を除いたもの。
+ */
+function staleReserveFingerprints(
+  session: CliSession,
+  openedFingerprintHex: string,
+  nextFingerprintHex: string,
+): Effect.Effect<readonly string[], CliError, OwnDeviceStore> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    const lookup = yield* store.load(session.origin, session.userId);
+    const recorded =
+      lookup.state === "loaded"
+        ? lookup.devices
+            .filter((entry) => entry.source === "reserve")
+            .map((entry) => entry.keyFingerprintHex)
+        : [];
+    return [...new Set([openedFingerprintHex, ...recorded])]
+      .filter((fingerprintHex) => fingerprintHex !== nextFingerprintHex)
+      .toSorted();
+  });
+}
+
 /** 旧 B のパスキー行・保護者グループを削除する(失効した鍵しか復元しない行 — K4-11)。 */
 function retireOldLedgerRows(
   client: MaruhiClient,
@@ -605,15 +631,19 @@ export function keyReserveRotateOp(input: {
       record: next.record,
     });
     const store = yield* OwnDeviceStore;
-    yield* recordReserveLocally(input.session, next);
-    yield* store.markRevoked(
-      input.session.origin,
-      input.session.userId,
-      [old.fingerprintHex],
-      Date.now(),
+    // 失効対象 = 開封した B + ローカル記録上の予備鍵(失効済みの印を含む)のうち新鍵以外。
+    // 中断した前回の実行が台帳だけ差し替えて終わっていた場合、B は前回の新鍵で、
+    // 元の予備鍵は記録に revoked として残るがチェーンにはまだ載っている(Bugbot 指摘)。
+    // appendRevokeDevice はチェーン上で有効な端末だけを失効させる(冪等)
+    const retiring = yield* staleReserveFingerprints(
+      input.session,
+      old.fingerprintHex,
+      next.fingerprintHex,
     );
+    yield* recordReserveLocally(input.session, next);
+    yield* store.markRevoked(input.session.origin, input.session.userId, retiring, Date.now());
     yield* io.log(
-      `Sealed the new reserve key ${next.fingerprintHex}; registering it and revoking the previous reserve key ${old.fingerprintHex} on every project`,
+      `Sealed the new reserve key ${next.fingerprintHex}; registering it and revoking the previous reserve key${retiring.length === 1 ? "" : "s"} ${retiring.join(", ")} on every project`,
     );
     const projects = yield* fetchProjectMemberships(input.client);
     let exitCode = 0;
@@ -622,7 +652,7 @@ export function keyReserveRotateOp(input: {
         session: input.session,
         projectId: project.projectId,
         newReserve: next,
-        oldFingerprintHex: old.fingerprintHex,
+        oldFingerprintsHex: retiring,
       });
       if ((yield* reportReserveRotateOutcome(outcome)) !== 0) {
         exitCode = 1;

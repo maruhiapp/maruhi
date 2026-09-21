@@ -471,6 +471,15 @@ export function deviceApproveOp(input: {
         }),
       );
     }
+    // どのプロジェクトにも載らなかった(全部 failed / skipped)なら、後段(記録・登録簿・
+    // 要求の取消)を行わない: 記録すると初回同期が同じ失敗を繰り返し、登録簿の行は
+    // 要求側に偽の合図を送り、要求の取消は再実行の材料を消す(Bugbot 指摘)
+    if (!outcomes.some((item) => item.state === "registered" || item.state === "already")) {
+      yield* logWarning(
+        "the device was not registered on any project, so nothing was recorded and the request was left in place. Fix the cause reported above and re-run `maruhi device approve` with the same fingerprint (the request stays valid until it expires)",
+      );
+      return outcomes;
+    }
     // ローカル記録(approved — K4-3 の書き手 (2))。承認者の端末 FP を出所として残す
     const store = yield* OwnDeviceStore;
     const entry: OwnDeviceEntry = {
