@@ -28,7 +28,7 @@ import {
   HexText,
   LoadingRow,
   RevokeButton,
-  RevokeDialog,
+  RevocationOutcome,
   SectionBlock,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
@@ -223,20 +223,14 @@ export function TokensScreen(): ReactNode {
           <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
         </SectionBlock>
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
-        <RevokeDialog
-          isOpen={revocation.armedId !== undefined}
+        <RevocationOutcome
+          revocation={revocation}
           title={`Revoke ${armedName(state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
-          isPending={revocation.pendingId !== undefined}
-          onCancel={() => arm(undefined)}
-          onConfirm={() => {
-            if (revocation.armedId !== undefined) confirm(revocation.armedId);
-          }}
+          subject="token"
+          arm={arm}
+          confirm={confirm}
         />
-        {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
-        {revocation.failure !== undefined ? (
-          <FailureNotice failure={revocation.failure} subject="token" />
-        ) : null}
         <TokenNotes />
       </VStack>
     </DashboardShell>

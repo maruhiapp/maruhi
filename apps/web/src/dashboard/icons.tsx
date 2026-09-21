@@ -4,7 +4,7 @@
 //
 // Astryx のテンプレート(`astryx template shell-side-nav` / `SideNavWithHeaderMenu`)は
 // @heroicons/react を使うか SVG をインラインで持つ。依存を増やさない方針(CLAUDE.md)に
-// 従い、後者と同じ形で 5 つだけをここに置く。パスは heroicons の optimized/24/outline を
+// 従い、後者と同じ形で 6 つだけをここに置く。パスは heroicons の optimized/24/outline を
 // そのまま写したもの。Icon / SideNavItem の `icon` に渡すと size / color が適用される。
 import type { SVGProps } from "react";
 
@@ -41,4 +41,9 @@ export const UserCircleIcon = outline(
 /** heroicons `arrow-right-start-on-rectangle` */
 export const ArrowRightStartOnRectangleIcon = outline(
   "M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9",
+);
+
+/** heroicons `computer-desktop` */
+export const ComputerDesktopIcon = outline(
+  "M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25",
 );

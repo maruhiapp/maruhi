@@ -1,7 +1,7 @@
 "use client";
 
 // アプリシェル(DP3 裁定 A 改訂 1 — docs/notes/web-design-pass.md §5)。認証が要る画面
-// (S4〜S9)はすべてこのシェルの中に描く。形は Astryx のテンプレートに従う:
+// (S4〜S9・S11)はすべてこのシェルの中に描く。形は Astryx のテンプレートに従う:
 //
 // - フレーム = `astryx template shell-side-nav` / `AppShellSideNavOnly`: AppShell +
 //   SideNav(ヘッダー = ㊙ ロゴ + maruhi、本文 = 到達点、フッター = アカウント〔ユーザー
@@ -52,6 +52,7 @@ import { apiPaths } from "./endpoints.ts";
 import {
   ArrowRightStartOnRectangleIcon,
   ClipboardDocumentListIcon,
+  ComputerDesktopIcon,
   FolderIcon,
   KeyIcon,
   UserCircleIcon,
@@ -63,7 +64,7 @@ import { FailureNotice, LoadingRow, SECTION_GAP, ServerReportedNote } from "./sh
 import type { Me } from "./types.ts";
 
 /** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
-type ShellDestination = "projects" | "tokens" | "account";
+type ShellDestination = "projects" | "tokens" | "devices" | "account";
 
 /** 親階層(パンくずの先頭。現在地はプロジェクトの短縮 ID か title — 改訂 7 で `Breadcrumbs` に)。 */
 interface BackLink {
@@ -137,6 +138,7 @@ const DESTINATIONS: ReadonlyArray<{
 }> = [
   { id: "projects", label: "Projects", href: spaPaths.dashboard(), icon: FolderIcon },
   { id: "tokens", label: "API tokens", href: spaPaths.tokens(), icon: KeyIcon },
+  { id: "devices", label: "Devices", href: spaPaths.devices(), icon: ComputerDesktopIcon },
   {
     id: "account",
     label: "Account audit",
