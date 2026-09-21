@@ -58,7 +58,7 @@ Approving runs only on a human interactive terminal (stdin and stdout must both 
 
 **If the request expires** before it was approved, the new machine's key is still registered nowhere. Run `maruhi device add --replace` there: it discards that never-registered key, generates a new one and prints a new fingerprint to approve. (Without `--replace`, `maruhi device add` refuses because the machine already holds a key.) If instead the approval was interrupted halfway, the request is still there: re-run `maruhi device approve` on the approving device; it skips the projects that already have the device.
 
-A person can have at most 16 active devices per project; the 17th `add` is refused ("This project already has the maximum number of active devices for that member (16). Revoke a device first"). The server accepts five device-add requests per hour and keeps at most 32 rows in your device registry.
+A person can have at most 16 active devices per project. The limit is checked when the device is appended to a project's chain, so it is the command that appends — usually `maruhi device approve` on the approving device — that is refused ("This project already has the maximum number of active devices for that member (16). Revoke a device first"), not `maruhi device add` on the new machine. It is counted per project, so the projects below the limit are still registered, and revoked devices do not count: revoking one frees a slot. The server accepts five device-add requests per hour and keeps at most 32 rows in your device registry.
 
 ## See your devices
 
@@ -104,7 +104,7 @@ If your machines still share one copied key from an install before device keys, 
 
 ## The reserve key
 
-`maruhi key generate` creates two keys the first time: this device's key, and the reserve key, which it seals with a recovery code right away and never stores on the machine. The reserve key is registered on each of your projects at the next sync, as a device with your full access, so that `maruhi key recover` on a new machine can use it to register that machine. `maruhi key show` prints its fingerprint ("reserve key fingerprint: …", or "not recorded on this machine"). Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key with the code or a passkey; only someone who can open the ledger can change it.
+`maruhi key generate` creates two keys the first time: this device's key, and the reserve key, which it seals with a recovery code right away and never stores on the machine. The reserve key is registered on each of your projects at the next sync, as a device with your full access, so that `maruhi key recover` on a new machine can use it to register that machine. `maruhi key show` prints its fingerprint ("reserve key fingerprint: …", or "not recorded on this machine"). Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key, so only someone who can open it can change it (the one exception is `maruhi key recovery --replace`, for when the code is lost). Which material each of those commands accepts is on [Recover your key](/docs/recover-your-key#passkey).
 
 If you suspect the recovery code or the reserve key was exposed — for example, the machine you recovered on later turns out to have been compromised — replace it:
 
