@@ -217,3 +217,85 @@ function findSourceOffenders(
   }
   return offenders;
 }
+
+// ---------------------------------------------------------------------------
+// 消費面の envelope 型のスイープ(DK K8-2 / K8-7)。
+//
+// 裁定 BR は「ダッシュボードのワイヤ型は api-schema の Schema からの導出だけで持つ」
+// (types.ts)。手書きの写しは api-schema の改訂で黙って古くなる(K7-8 の上位互換)。
+// 主張は 2 つで、どちらも件数を件数と比べる(数え直し不要)。対象が消えれば
+// readFileSync / 件数 0 で落ちる(空虚に通らない)。type-only import の規律は上の
+// 「keeps effect / api-schema imports type-only」が src/ 全体で持つので、ここでは
+// 繰り返さない(主張は 1 か所 — K6-R)。
+// ---------------------------------------------------------------------------
+
+const TYPES_MODULE = "dashboard/types.ts";
+
+/** コメントを落とした本文(ブロック / JSDoc / 行コメント)。 */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+/**
+ * `<` の直後から対応する `>` までの型引数(ネストした `<…>` / `{…}` を跨ぐ —
+ * 正規表現 `[^<>]+` はネストで当たらず、手書きの envelope を見逃す)。
+ */
+function typeArgumentAt(source: string, start: number): string {
+  let depth = 1;
+  for (const bracket of source.slice(start).matchAll(/[<>]/g)) {
+    depth += bracket[0] === "<" ? 1 : -1;
+    if (depth === 0) return source.slice(start, start + bracket.index).trim();
+  }
+  throw new Error("unterminated type argument list");
+}
+
+describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
+  const srcRoot = join(import.meta.dirname, "../../src");
+  const typesSource = stripComments(readFileSync(join(srcRoot, TYPES_MODULE), "utf8"));
+  const exportedNames = [...typesSource.matchAll(/^export type (\w+)\b/gm)].map((m) => m[1]);
+
+  it("keeps types.ts to `typeof XxxSchema.Type` derivations only (no interface, no literal)", () => {
+    expect(typesSource.match(/^(?:export )?interface\s/gm), "hand-written interface").toBeNull();
+    // 折り返し(oxfmt が `=` の後で改行しうる)を跨いで数える
+    const derived = typesSource.match(/^export type \w+\s*=\s*typeof \w+Schema\.Type;/gm) ?? [];
+    expect(exportedNames.length, "types.ts must export at least one type").toBeGreaterThan(0);
+    expect(derived.length, "every exported type must be `typeof XxxSchema.Type`").toBe(
+      exportedNames.length,
+    );
+  });
+
+  it("names a types.ts export at every consumption site (no inline envelope in screens)", () => {
+    // 消費面の入口(apiGet / useApiResource / ApiResult / ResourceState)の型引数を
+    // 全 src/ から集め、どれも types.ts の export 名であることを要求する —
+    // 検査の射程を types.ts の 1 ファイルから消費面全体へ広げる(pullfrog の指摘)
+    const known = new Set(exportedNames);
+    // 入口を宣言する 2 モジュール(`<T>` / `<void>`)と types.ts 自身は対象外
+    const entranceModules = new Set(
+      [TYPES_MODULE, "dashboard/api.ts", "dashboard/use-api-resource.ts"].map((p) =>
+        join(srcRoot, p),
+      ),
+    );
+    const sites: Array<{ file: string; typeArg: string }> = [];
+    for (const entry of readdirSync(srcRoot, { recursive: true, withFileTypes: true })) {
+      const filePath = join(entry.parentPath, entry.name);
+      if (!isSweepTarget(entry, filePath, entranceModules)) continue;
+      const source = stripComments(readFileSync(filePath, "utf8"));
+      for (const match of source.matchAll(
+        /\b(?:apiGet|useApiResource|ApiResult|ResourceState)</g,
+      )) {
+        sites.push({
+          file: filePath.slice(srcRoot.length + 1),
+          typeArg: typeArgumentAt(source, match.index + match[0].length),
+        });
+      }
+    }
+    expect(sites.length, "no consumption site found — the sweep pattern is stale").toBeGreaterThan(
+      0,
+    );
+    const offenders = sites.filter((site) => !known.has(site.typeArg));
+    expect(
+      offenders,
+      "consumption site whose type argument is not a types.ts export — derive it there",
+    ).toEqual([]);
+  });
+});
