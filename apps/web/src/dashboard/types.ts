@@ -8,18 +8,22 @@
 // 4 項)。形の崩れへの防御は表示層の optional アクセスで足りる。
 import type {
   AuditEventSchema,
+  AuditEventsPageSchema,
   ChainEntrySchema,
   ChainSnapshotSchema,
   DeviceListSchema,
   DeviceSummarySchema,
+  EnvironmentListSchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
   ForbiddenReasonSchema,
+  InvitationListSchema,
   InvitationSummarySchema,
   InviteStatusSchema,
   MeSchema,
   ProjectListSchema,
   RoleSchema,
+  RotationFlagListSchema,
   RotationFlagSchema,
   TokenListSchema,
   TokenSummarySchema,
@@ -38,19 +42,13 @@ export type RotationFlag = typeof RotationFlagSchema.Type;
 export type ForbiddenReason = typeof ForbiddenReasonSchema.Type;
 
 /** `{ events }` page shape shared by every audit read endpoint (AUDIT_SPEC §7). */
-export interface AuditEventsPage {
-  readonly events: ReadonlyArray<AuditEvent>;
-}
+export type AuditEventsPage = typeof AuditEventsPageSchema.Type;
 
 /** `{ environments }` shape of the environment listing (AUTH_SPEC §12-4). */
-export interface EnvironmentList {
-  readonly environments: ReadonlyArray<EnvironmentSummary>;
-}
+export type EnvironmentList = typeof EnvironmentListSchema.Type;
 
 /** `{ flags }` shape of the rotation-flag view (AUDIT_SPEC §7). */
-export interface RotationFlagList {
-  readonly flags: ReadonlyArray<RotationFlag>;
-}
+export type RotationFlagList = typeof RotationFlagListSchema.Type;
 
 /** One invitation row of the S8 management listing (AUTH_SPEC §15-2). */
 export type InvitationSummary = typeof InvitationSummarySchema.Type;
@@ -58,10 +56,8 @@ export type InvitationSummary = typeof InvitationSummarySchema.Type;
 /** 保存上の招待状態の閉じた列挙(AUTH_SPEC §15-1 — 表示色の鍵に使う)。 */
 export type InviteStatus = typeof InviteStatusSchema.Type;
 
-/** `{ invitations }` shape of the invite listing (AUTH_SPEC §15-2 — スキーマはインライン宣言)。 */
-export interface InvitationList {
-  readonly invitations: ReadonlyArray<InvitationSummary>;
-}
+/** `{ invitations }` shape of the invite listing (AUTH_SPEC §15-2). */
+export type InvitationList = typeof InvitationListSchema.Type;
 
 /** One token row of the S9 self-inventory listing (AUTH_SPEC §6). */
 export type TokenSummary = typeof TokenSummarySchema.Type;
