@@ -13,8 +13,7 @@
 //       (a) 置換: リソース本体の代わりに描く。再取得手段があれば onRetry を渡す
 //       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
 //           行から再操作できる失敗(失効)は onRetry を渡さない
-//     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
-//     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1)= 置換 9 / 追記 4
+//     失効の追記形は `RevocationOutcome`(S8 / S9 / S11 で共用)が 1 か所で持つ
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -33,6 +32,7 @@ import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
 import { useReportSessionExpired } from "./session-expiry.ts";
 import type { ChainRole, ForbiddenReason } from "./types.ts";
+import type { RevocationState } from "./use-revocation.ts";
 
 /**
  * SPA 内の命令的ナビゲーション(ID 直入力の Open 等)。Navigation API が
@@ -125,12 +125,15 @@ const SESSION_NOT_ALLOWED = "session-not-allowed" satisfies ForbiddenReason;
  * 一様 404 の意味(他人の・存在しないを区別しない)は変えず、画面の対象に
  * 合わせて名詞だけ替える — 文言の一元化(裁定 BP)は本モジュールが保つ。
  */
-export type FailureSubject = "project" | "invitation" | "token";
+export type FailureSubject = "project" | "invitation" | "token" | "device registry";
 
 const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
   project: "The server reports no such project for your account.",
   invitation: "The server reports no such invitation for this project.",
   token: "The server reports no such token for your account.",
+  // 旧サーバー(`devices` グループ無し)の 404 — 空状態には畳まない(K5-9)
+  "device registry":
+    "The server reports no device registry for your account (older servers do not have one).",
 };
 
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */
@@ -419,16 +422,19 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
  * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
  * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
  * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
- * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。
+ * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は対象の名詞を
+ * 添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で使う。
  */
 export function RevokeButton({
   onArm,
   isLocked,
+  label = "Revoke",
 }: {
   onArm: () => void;
   isLocked: boolean;
+  label?: string;
 }): ReactNode {
-  return <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
+  return <Button label={label} variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
 }
 
 /**
@@ -436,7 +442,7 @@ export function RevokeButton({
  * `title` / `description` は対象の名詞と帰結を画面側が与える(裁定 CO の「帰結の注記」を
  * 確認の場で読ませる)。実行中は action ボタンが isActionLoading、Cancel は閉じるだけ。
  */
-export function RevokeDialog({
+function RevokeDialog({
   isOpen,
   title,
   description,
@@ -463,6 +469,45 @@ export function RevokeDialog({
       isActionLoading={isPending}
       onAction={onConfirm}
     />
+  );
+}
+
+/**
+ * 失効の結果面(S8 / S9 / S11 で共用 — DK K5 で 3 画面目が出たので昇格): 武装中は
+ * `RevokeDialog`、直近の失敗は一覧の下の追記形(裁定 B-b — 再操作は行から行えるので
+ * Retry なし)。`arm(undefined)` / `confirm(id)` は use-revocation.ts の操作をそのまま渡す。
+ */
+export function RevocationOutcome({
+  revocation,
+  title,
+  description,
+  subject,
+  arm,
+  confirm,
+}: {
+  revocation: RevocationState;
+  title: string;
+  description: string;
+  subject: FailureSubject;
+  arm: (id: string | undefined) => void;
+  confirm: (id: string) => void;
+}): ReactNode {
+  return (
+    <>
+      <RevokeDialog
+        isOpen={revocation.armedId !== undefined}
+        title={title}
+        description={description}
+        isPending={revocation.pendingId !== undefined}
+        onCancel={() => arm(undefined)}
+        onConfirm={() => {
+          if (revocation.armedId !== undefined) confirm(revocation.armedId);
+        }}
+      />
+      {revocation.failure !== undefined ? (
+        <FailureNotice failure={revocation.failure} subject={subject} />
+      ) : null}
+    </>
   );
 }
 

@@ -10,6 +10,7 @@ import type {
   AuditEventSchema,
   ChainEntrySchema,
   ChainSnapshotSchema,
+  DeviceSummarySchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
   ForbiddenReasonSchema,
@@ -66,3 +67,11 @@ export type TokenSummary = typeof TokenSummarySchema.Type;
 
 /** `{ tokens }` shape of the token listing (AUTH_SPEC §6). */
 export type TokenList = typeof TokenListSchema.Type;
+
+/** One device-registry row of the S11 listing (AUTH_SPEC §13-11 — advisory, server-reported). */
+export type DeviceSummary = typeof DeviceSummarySchema.Type;
+
+/** `{ devices }` shape of the device registry listing (AUTH_SPEC §13-11). */
+export interface DeviceList {
+  readonly devices: ReadonlyArray<DeviceSummary>;
+}

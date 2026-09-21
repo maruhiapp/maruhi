@@ -25,7 +25,7 @@ import {
   HexText,
   LoadingRow,
   RevokeButton,
-  RevokeDialog,
+  RevocationOutcome,
   RoleToken,
   SectionBlock,
 } from "./shared.tsx";
@@ -208,21 +208,15 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
       >
         <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
       </SectionBlock>
-      {/* 確認はモーダル(AlertDialogAsyncAction テンプレート) */}
-      <RevokeDialog
-        isOpen={revocation.armedId !== undefined}
+      {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)+ 追記形の失敗(裁定 B-b) */}
+      <RevocationOutcome
+        revocation={revocation}
         title="Revoke this invitation?"
         description="The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it."
-        isPending={revocation.pendingId !== undefined}
-        onCancel={() => arm(undefined)}
-        onConfirm={() => {
-          if (revocation.armedId !== undefined) confirm(revocation.armedId);
-        }}
+        subject="invitation"
+        arm={arm}
+        confirm={confirm}
       />
-      {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
-      {revocation.failure !== undefined ? (
-        <FailureNotice failure={revocation.failure} subject="invitation" />
-      ) : null}
       <InviteNotes />
     </VStack>
   );

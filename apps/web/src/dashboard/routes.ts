@@ -15,6 +15,7 @@ const ABOUT_PATH = "/about";
 const DASHBOARD_PATH = "/dashboard";
 const ACCOUNT_AUDIT_PATH = "/dashboard/account";
 const TOKENS_PATH = "/dashboard/tokens";
+const DEVICES_PATH = "/dashboard/devices";
 const PROJECT_PATH = "/dashboard/projects/:projectId";
 
 /** S1 landing (static, unauthenticated). */
@@ -32,12 +33,15 @@ export const accountAuditRoute = route({ id: "dashboard-account", path: ACCOUNT_
 /** S9 token management (user axis — 裁定 CP, docs/notes/session-45.md). */
 export const tokensRoute = route({ id: "dashboard-tokens", path: TOKENS_PATH });
 
+/** S11 device registry (user axis — DK K5, 設計録 dk-design.md §10 K5-7). */
+export const devicesRoute = route({ id: "dashboard-devices", path: DEVICES_PATH });
+
 /** S5 overview / S6 project audit / S7 rotation flags for one project. */
 export const projectRoute = route({ id: "dashboard-project", path: PROJECT_PATH });
 
 /**
  * 認証が要る画面(S4〜S9)の親ルート(pathless — パス名を消費しない)。App.tsx が
- * `DashboardLayout`(セッション状態 + AppShell + SideNav + Outlet)を結合し、上の 4 ルートを
+ * `DashboardLayout`(セッション状態 + AppShell + SideNav + Outlet)を結合し、上の 5 ルートを
  * 子にする。シェルは遷移をまたいで 1 回だけマウントされ、`GET /auth/me` の再取得と
  * サイドバーの再生成が起きない。パスを持たないので
  * SPA_ROUTES(非交差スイープの目録 — 全件パス付き)には載せない。
@@ -55,6 +59,7 @@ export const spaPaths = {
   dashboard: () => DASHBOARD_PATH,
   account: () => ACCOUNT_AUDIT_PATH,
   tokens: () => TOKENS_PATH,
+  devices: () => DEVICES_PATH,
   project: (projectId: string) => PROJECT_PATH.replace(":projectId", projectId),
 } as const;
 
@@ -72,5 +77,6 @@ export const SPA_ROUTES = [
   dashboardRoute,
   accountAuditRoute,
   tokensRoute,
+  devicesRoute,
   projectRoute,
 ];

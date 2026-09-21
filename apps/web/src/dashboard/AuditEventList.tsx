@@ -21,12 +21,13 @@
 // Table は使わない(行が読める幅を保つ)。文言・項目・順序は不変(§4 の表示規律 —
 // 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
 import { Button } from "@astryxdesign/core/Button";
-import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { Card } from "@astryxdesign/core/Card";
 import { Collapsible, CollapsibleGroup } from "@astryxdesign/core/Collapsible";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { Text } from "@astryxdesign/core/Text";
+import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiFailure, ApiResult } from "./api.ts";
@@ -161,18 +162,30 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
   );
 }
 
-/** 記録どおりの payload(サーバー申告の JSON をそのまま)。 */
+// 整形 JSON の改行・字下げを保ち、長い hex は任意位置で折る(横スクロールを作らない)。
+// Astryx `CodeBlock` は行チャンクに inline `style`(contain-intrinsic-block-size)を出すため
+// 厳格 CSP(style-src 'self')下では描けない(DK K5-11 — 設計録 dk-design.md §10)。payload は
+// 監査の記録値であり構文強調は要らないので、`Text type="code"` + xstyle の pre-wrap で描く
+const payloadStyles = stylex.create({
+  pre: {
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    wordBreak: "break-all",
+    minWidth: 0,
+  },
+});
+
+/** 記録どおりの payload(サーバー申告の JSON をそのまま — 構文強調なし・inline style なし)。 */
 function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
   return (
-    <CodeBlock
-      code={JSON.stringify(payload, null, 2)}
-      language="json"
-      title="Payload (as recorded)"
-      size="sm"
-      width="100%"
-      isWrapped
-      hasCopyButton={false}
-    />
+    <VStack gap={1}>
+      <Text weight="semibold">Payload (as recorded)</Text>
+      <Card variant="muted" padding={3}>
+        <Text as="div" type="code" size="sm" xstyle={payloadStyles.pre}>
+          {JSON.stringify(payload, null, 2)}
+        </Text>
+      </Card>
+    </VStack>
   );
 }
 

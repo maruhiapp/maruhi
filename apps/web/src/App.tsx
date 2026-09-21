@@ -9,12 +9,14 @@ import { Providers } from "./components/Providers.tsx";
 import { AccountAuditScreen } from "./dashboard/AccountAuditScreen.tsx";
 import { DashboardScreen } from "./dashboard/DashboardScreen.tsx";
 import { DashboardLayout } from "./dashboard/DashboardShell.tsx";
+import { DevicesScreen } from "./dashboard/DevicesScreen.tsx";
 import { ProjectScreen } from "./dashboard/ProjectScreen.tsx";
 import {
   aboutRoute,
   accountAuditRoute,
   dashboardRoute,
   dashboardShellRoute,
+  devicesRoute,
   homeRoute,
   projectRoute,
   tokensRoute,
@@ -36,6 +38,7 @@ const routes = [
       bindRoute(dashboardRoute, { component: <DashboardScreen /> }),
       bindRoute(accountAuditRoute, { component: <AccountAuditScreen /> }),
       bindRoute(tokensRoute, { component: <TokensScreen /> }),
+      bindRoute(devicesRoute, { component: <DevicesScreen /> }),
       bindRoute(projectRoute, { component: <ProjectScreen /> }),
     ],
   }),

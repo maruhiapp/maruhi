@@ -27,6 +27,8 @@ import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import {
   deriveReportedView,
+  type ReportedDevice,
+  reportedDeviceCount,
   type ReportedMember,
   type ReportedPolicy,
   type ReportedProposal,
@@ -70,6 +72,10 @@ interface MemberRow extends Record<string, unknown> {
   /** Environment scope as reported (`all environments` or the listed ids — ES K4). */
   scope: string;
   sinceSeq: number;
+  /** Device keys as reported (DK K5 — chain-view の畳み込み)。 */
+  devices: ReadonlyArray<ReportedDevice>;
+  deviceCount: number;
+  unresolvedRevocations: number;
 }
 
 /** 表示用の scope 文言(サーバー申告の畳み込み — Granted servers の Scope 列と同じ描き方)。 */
@@ -78,6 +84,78 @@ function describeMemberScope(member: ReportedMember): string {
   return member.scopeEnvironmentIds.length === 0
     ? "no environments"
     : member.scopeEnvironmentIds.join(", ");
+}
+
+/**
+ * 端末 cap の字面(CLI `describeCap` — apps/cli/src/device-key.ts — と同じ: `owner/all`、
+ * `member/dev, staging`、`owner/no environments`)。Web と CLI で同じ事実は同じ字面(K5-3)。
+ */
+function describeCap(device: ReportedDevice): string {
+  if (device.scopeKind === "all") return `${device.roleCap}/all`;
+  return `${device.roleCap}/${
+    device.scopeEnvironmentIds.length === 0
+      ? "no environments"
+      : device.scopeEnvironmentIds.join(", ")
+  }`;
+}
+
+/** 上限のある端末だけ cap を添える(CLI `describeDevice` と同じ)。 */
+function isBounded(device: ReportedDevice): boolean {
+  return device.roleCap !== "owner" || device.scopeKind !== "all";
+}
+
+const FINGERPRINT_NOT_REPORTED = "fingerprint not reported";
+
+/** chip の字面: 短縮 FP(無ければ not reported)+ 上限があるときだけ `(cap)`。 */
+function deviceChipLabel(device: ReportedDevice): string {
+  const fp = device.keyFingerprintHex;
+  const head = fp === null ? FINGERPRINT_NOT_REPORTED : shortId(fp);
+  return isBounded(device) ? `${head} (${describeCap(device)})` : head;
+}
+
+/** chip の説明(全長 FP・cap・追加 seq — hover / 支援技術向け)。 */
+function deviceChipDescription(device: ReportedDevice): string {
+  const fp = device.keyFingerprintHex ?? FINGERPRINT_NOT_REPORTED;
+  return `${fp} · cap ${describeCap(device)} · since seq ${device.addedSeq}`;
+}
+
+/** 端末 1 つの chip(短縮 FP + 上限。全長 FP と cap は description)。 */
+function DeviceChip({ device }: { device: ReportedDevice }): ReactNode {
+  return (
+    <Token
+      label={deviceChipLabel(device)}
+      size="sm"
+      color={device.keyFingerprintHex === null ? "gray" : "default"}
+      description={deviceChipDescription(device)}
+    />
+  );
+}
+
+/**
+ * Devices 列: 端末数(算術で正確)+ 端末ごとの chip。FP は申告のバイト列から束縛できた
+ * ときだけ出る(`add_device` のワイヤは FP を運ばない — K5-1)。unresolved があれば、
+ * 未束縛のうち幾つが失効したか(どれかは不明)を 1 文で添える。
+ */
+function DeviceChips({ row }: { row: MemberRow }): ReactNode {
+  return (
+    <VStack gap={1}>
+      <Text size="sm" hasTabularNumbers>
+        {row.deviceCount}
+      </Text>
+      <HStack gap={1} wrap="wrap">
+        {row.devices.map((device) => (
+          <DeviceChip key={`${device.encPubHex}:${device.sigPubHex}`} device={device} />
+        ))}
+      </HStack>
+      {row.unresolvedRevocations === 0 ? null : (
+        <Text type="supporting" size="sm">
+          {row.unresolvedRevocations === 1
+            ? "1 of the devices without a reported fingerprint was revoked; which one is not reported."
+            : `${row.unresolvedRevocations} of the devices without a reported fingerprint were revoked; which ones is not reported.`}
+        </Text>
+      )}
+    </VStack>
+  );
 }
 
 const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
@@ -102,6 +180,12 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
         {row.scope}
       </Text>
     ),
+  },
+  {
+    key: "devices",
+    header: "Devices",
+    width: proportional(2),
+    renderCell: (row: MemberRow) => <DeviceChips row={row} />,
   },
   {
     key: "sinceSeq",
@@ -312,6 +396,22 @@ function ApprovalsView({
   );
 }
 
+/**
+ * 読めずに落とした端末 op は黙って吸収しない(K5-17): 落とした `add_device` は端末を欠かせ、
+ * 落とした `revoke_device` は端末を残すので、表示はどちらの向きにもずれうる(片方向を言わない —
+ * K5-18)。0 なら描かない。検証は CLI
+ */
+function UnreadableDeviceEntriesNote({ count }: { count: number }): ReactNode {
+  if (count === 0) return null;
+  const rows = count === 1 ? "1 device entry" : `${count} device entries`;
+  const verb = count === 1 ? "was" : "were";
+  return (
+    <Text type="supporting" size="sm" data-testid="unreadable-device-entries">
+      {`${rows} in the reported chain could not be read and ${verb} left out; the device sets above may not match what those entries would have produced. Verify with maruhi project verify.`}
+    </Text>
+  );
+}
+
 function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   const view = deriveReportedView(snapshot.entries ?? [], snapshot.headHashHex);
   const memberRows: MemberRow[] = view.members.map((m) => ({
@@ -319,13 +419,16 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
     role: m.role,
     scope: describeMemberScope(m),
     sinceSeq: m.sinceSeq,
+    devices: m.devices,
+    deviceCount: reportedDeviceCount(m),
+    unresolvedRevocations: m.unresolvedRevocations,
   }));
   return (
     <VStack gap={SECTION_GAP} data-testid="chain-section">
       <ChainSummary snapshot={snapshot} />
       <SectionBlock
         title="Members"
-        description="Chain-derived members, roles and environment scopes, as reported by the server."
+        description="Chain-derived members, roles, environment scopes and device keys, as reported by the server. A device's fingerprint appears once the reported entries bind it; an unbound fingerprint does not change the count. Verify with maruhi member list."
       >
         <Table
           data={memberRows}
@@ -336,6 +439,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
           dividers="rows"
           data-testid="member-table"
         />
+        <UnreadableDeviceEntriesNote count={view.unreadableDeviceEntries} />
       </SectionBlock>
       <ServersList servers={view.servers} />
       <ApprovalsView policy={view.policy} proposals={view.proposals} />
@@ -627,21 +731,33 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
+// 人を対象にする trigger の字面(未知・欠落は従来どおり除名として推定 — 旧サーバーの行)。
+// Map なのでプロトタイプ鎖の名前(敵対的な trigger 文字列)に当たらない
+const USER_TRIGGER_LABELS: ReadonlyMap<string, string> = new Map([
+  ["change_role", "member role/scope changed"],
+  ["revoke_device", "device revoked"],
+]);
+
+function userTriggerLabel(trigger: string | undefined): string {
+  return (trigger === undefined ? undefined : USER_TRIGGER_LABELS.get(trigger)) ?? "member removed";
+}
+
 /**
- * トリガー(削除 / 降格・縮小された主体 / 失効されたサーバー鍵)の表示形。
- * `trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES)があればそれを使い、無ければ
- * 従来どおり target の有無から推定する(旧サーバーの応答)。
+ * トリガー(削除 / 降格・縮小された主体 / 失効された端末の持ち主 / 失効されたサーバー鍵)
+ * の表示形。`trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES、`revoke_device` は 2026-09-19 DK)が
+ * あればそれを使い、無ければ従来どおり target の有無から推定する(旧サーバーの応答)。
+ * 末尾に契機のチェーン seq(`triggerChainSeq` — 応答が運ぶ)を添える: `revoke_device` の行は
+ * 端末 FP を運ばないので、seq で Audit タブのミラー行(`chain.device_revoked` — FP 入り)を
+ * 辿れるようにする(K5-5 再探索)。
  */
 function flagTrigger(flag: RotationFlag): string {
-  if (flag.targetUserId !== undefined) {
-    return flag.trigger === "change_role"
-      ? `member role/scope changed: ${flag.targetUserId}`
-      : `member removed: ${flag.targetUserId}`;
-  }
-  if (flag.targetServerKeyFingerprintHex !== undefined) {
-    return `server revoked: ${flag.targetServerKeyFingerprintHex}`;
-  }
-  return "";
+  const subject =
+    flag.targetUserId !== undefined
+      ? `${userTriggerLabel(flag.trigger)}: ${flag.targetUserId}`
+      : flag.targetServerKeyFingerprintHex !== undefined
+        ? `server revoked: ${flag.targetServerKeyFingerprintHex}`
+        : "";
+  return subject === "" ? "" : `${subject} (chain seq ${flag.triggerChainSeq})`;
 }
 
 function toFlagRow(flag: RotationFlag): FlagRow {

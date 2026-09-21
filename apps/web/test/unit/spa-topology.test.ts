@@ -73,6 +73,7 @@ describe("SPA route space vs run_worker_first (裁定 BZ)", () => {
       spaPaths.dashboard(),
       spaPaths.account(),
       spaPaths.tokens(),
+      spaPaths.devices(),
       spaPaths.project(SAMPLE_PROJECT_ID),
     ];
     for (const path of built) {
@@ -82,6 +83,7 @@ describe("SPA route space vs run_worker_first (裁定 BZ)", () => {
     expect(declaredPaths.has(spaPaths.dashboard())).toBe(true);
     expect(declaredPaths.has(spaPaths.account())).toBe(true);
     expect(declaredPaths.has(spaPaths.tokens())).toBe(true);
+    expect(declaredPaths.has(spaPaths.devices())).toBe(true);
     expect(declaredPaths.has(spaPaths.home())).toBe(true);
     expect(declaredPaths.has(spaPaths.about())).toBe(true);
     expect(declaredPaths.has(spaPaths.project(":projectId"))).toBe(true);

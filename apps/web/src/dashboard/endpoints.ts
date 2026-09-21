@@ -60,6 +60,8 @@ export const apiPaths = {
     `/projects/${projectId}/invites/${encodeURIComponent(inviteId)}`,
   tokens: () => "/auth/tokens",
   tokenRevoke: (tokenId: string) => `/auth/tokens/${encodeURIComponent(tokenId)}`,
+  /** S11 端末登録簿(AUTH_SPEC §13-11 — advisory。読み取りのみ、セッション可)。 */
+  devices: () => "/auth/devices",
 } as const;
 
 /** One dashboard-consumed endpoint bound to its api-schema identity. */
@@ -164,4 +166,6 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     access: "session",
     sample: apiPaths.tokenRevoke(SAMPLE_TOKEN_ID),
   },
+  // S11 端末登録簿(DK K5): 一覧のみ。登録・削除・要求はセッション拒否の面で消費しない
+  { group: "devices", endpoint: "list", access: "session", sample: apiPaths.devices() },
 ];
