@@ -17,14 +17,14 @@ Inviters need the `admin` role or above; only an `owner` can invite an `admin`. 
 
 ## Before you start: register your signing key on GitHub
 
-maruhi checks a person's key against the SSH **signing keys** published on their GitHub account. Each of you registers your own key once:
+maruhi checks a person's key against the SSH **signing keys** published on their GitHub account. The key that accepts an invite is the [device key](/docs/devices) of the machine that accepts, so each of you registers the key of each device you accept invites from (GitHub allows several signing keys):
 
 ```sh
 maruhi key publish           # prints an ssh-ed25519 line and where to paste it
 maruhi key publish --gh      # or: add it through the gh CLI (gh auth login first)
 ```
 
-Paste the printed line at `https://github.com/settings/ssh/new` with **Key type = Signing Key**. This is your maruhi signing public key in OpenSSH form — it cannot be used to log in over SSH, and publishing it reveals nothing secret. `maruhi key generate` and a first `maruhi invite accept` offer to do this for you when the `gh` CLI is signed in.
+Paste the printed line at `https://github.com/settings/ssh/new` with **Key type = Signing Key**. This is this device's maruhi signing public key in OpenSSH form — it cannot be used to log in over SSH, and publishing it reveals nothing secret. `maruhi key generate` and a first `maruhi invite accept` offer to do this for you when the `gh` CLI is signed in.
 
 Once both sides are registered, inviting is three commands and no call. Nothing else changes if someone is not registered: the CLI falls back to the 12-word confirmation described at the end.
 
@@ -60,7 +60,7 @@ Quote the link so the shell does not interpret it. The CLI first verifies the in
 - Without `--from`, on a terminal: the CLI shows the inviter's login and asks you to type `yes`.
 - If the inviter's key cannot be verified through GitHub (not registered, offline, or `identityBacking` is `none`), the CLI shows the inviter's 12 fingerprint words and asks you to type the last one after checking them with the inviter over a call. `--inviter-fingerprint <hex>` replaces that read-out when you noted the fingerprint out of band.
 
-If this is your first maruhi project, the command generates your master key first (and issues a recovery code — keep it, see [Recover your key](/docs/recover-your-key)), then offers to register the new key on GitHub. Accept the offer, or run `maruhi key publish` afterwards, so the inviter can add you without a call.
+If this is your first maruhi project, the command generates this device's key and your reserve key first (and issues a recovery code — keep it, see [Recover your key](/docs/recover-your-key)), then offers to register the new device key on GitHub. Accept the offer, or run `maruhi key publish` afterwards, so the inviter can add you without a call.
 
 Acceptance is single-use. If the server reports that the invite was already accepted and it was not you, tell the inviter: the link was seen by someone else, and they should revoke and reissue.
 
@@ -73,10 +73,10 @@ maruhi member add
 The CLI fetches the acceptance, verifies that it is bound to the invite you issued (your issue signature, the link signature, and the acceptor's own signature all have to check out — a failure here is a rejection, not a prompt), and then confirms the acceptor's key:
 
 - If the acceptor's key is registered as a signing key on the GitHub account you named with `--github` (or pass `--github <login>` now, for invites issued elsewhere), the member is added with no further input.
-- If that account has not registered the key, the CLI stops and asks: wait for them to run `maruhi key publish` and re-run `maruhi member add`, or confirm the 12 words now. The acceptor's words are shown by `maruhi key show` on their side.
+- If that account has not registered the key, the CLI stops and asks: wait for them to run `maruhi key publish` on the device they accepted from and re-run `maruhi member add`, or confirm the 12 words now. The acceptor's words are shown by `maruhi key show` on that device.
 - `--expect-fingerprint <hex>` accepts the fingerprint you noted out of band instead of the interactive read-out; combined with `--github` it is checked in addition, not instead.
 
-After the membership entry is appended, the CLI wraps the keys of every environment in the member's scope for them. Ask them to run `maruhi pull` to confirm they can decrypt. To remove someone later, `maruhi member remove <user-id>` rotates the environments in their scope so their old keys stop working.
+After the membership entry is appended, the CLI wraps the keys of every environment in the member's scope for the device that accepted; the member's other devices get them when the member adds those devices (`maruhi device approve`). Ask them to run `maruhi pull` to confirm they can decrypt. To remove someone later, `maruhi member remove <user-id>` rotates the environments in their scope so their old keys stop working.
 
 If the project has a [four-eyes policy](/docs/four-eyes) that covers the operation, `maruhi member add` and `maruhi member remove` do not apply the change: they append a proposal, say so ("… the four-eyes policy requires approval, so nothing has been applied yet"), and another owner approves it with `maruhi approval approve`. The key confirmation above still happens before the proposal is signed.
 
@@ -92,7 +92,7 @@ Every invite then uses the 12-word confirmation. The default, `github-signing-ke
 
 ## The 12-word confirmation
 
-Fingerprint words are a display of a key's fingerprint (the same 12 words `maruhi key show` prints). The read-out is what stands between a stolen link and a wrong member when GitHub cannot vouch for the key:
+Fingerprint words are a display of a device key's fingerprint (the same 12 words `maruhi key show` prints on that device; a person with several devices has several). The read-out is what stands between a stolen link and a wrong member when GitHub cannot vouch for the key:
 
 1. The acceptor reads their 12 words to the inviter over a call or another channel where they recognize each other.
 2. The inviter compares them with the words `maruhi member add` shows and types the last word to confirm.

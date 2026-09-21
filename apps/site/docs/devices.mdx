@@ -1,0 +1,156 @@
+---
+title: Devices
+description: Every machine you use has its own device key, and one reserve key lives only in the recovery ledger. Add a laptop or a Codespace without moving a secret, revoke a lost device and rotate what it could open, and keep the reserve key separate.
+sidebar:
+  order: 10
+---
+
+In maruhi, **keys belong to devices and access belongs to people**. You are one member of a project — one user ID, one role, one [environment scope](/docs/environment-scopes) — and that membership holds a set of **device keys**, one per machine. Each key is generated on its machine and never leaves it. When a device is lost, its key alone is revoked; you stay a member, your other devices keep working, and nobody has to re-invite you.
+
+Each device key carries a **cap**: a role bound and a subset of your environments that the device may hold keys for. The default cap is your full access; a phone that only votes on [four-eyes proposals](/docs/four-eyes), or a container that only needs `dev`, can be registered with less. Your effective access on a device is the smaller of your membership and the device's cap, so a device can never reach past you.
+
+One more device key is the **reserve key**: a device key that lives only in the recovery ledger on the server, sealed with your recovery code (and optionally a passkey or your guardians). It is what brings you back when every machine is lost — see [Recover your key](/docs/recover-your-key).
+
+| To                                        | Where                        | Command                               |
+| ----------------------------------------- | ---------------------------- | ------------------------------------- |
+| Register a new machine                    | The new machine              | `maruhi device add --label <name>`    |
+| Approve it                                | A registered device          | `maruhi device approve <fp-or-words>` |
+| See your devices on every project's chain | Any of your devices          | `maruhi device list`                  |
+| Revoke a lost or retired device           | Another device               | `maruhi device revoke <ref…>`         |
+| Revoke its API token                      | Any device, or the dashboard | `maruhi token revoke <token-id>`      |
+| Replace the reserve key                   | A registered device          | `maruhi key reserve rotate`           |
+
+`maruhi device --help` lists the group. Only you can add or revoke your own devices (any role, readers included); an admin or owner can revoke another member's device by fingerprint. Registering, approving and revoking devices is done in the CLI — the dashboard only shows what the server reports ([below](#in-the-dashboard)).
+
+## Add a device
+
+Nothing secret moves. The new machine generates its own key and shows its fingerprint; a device you already have approves that fingerprint and adds the key to your projects' chains.
+
+On the **new** machine:
+
+```sh
+maruhi login
+maruhi device add --label "MacBook"      # default label: the hostname
+```
+
+It generates this machine's device key, prints the fingerprint as 32 hex characters and as 12 words, and waits ("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…"). The request lives 15 minutes. The fingerprint is public: anyone who sees it can only approve _this_ key onto _your_ account, from a device that is already yours.
+
+On a **registered** device of yours:
+
+```sh
+maruhi device approve <32-hex-fingerprint>      # or the 12 words, quoted
+```
+
+Type the full fingerprint or all 12 words as shown by `maruhi device add` — fingerprints are never truncated for approval, because the approval is what stops a server from slipping in a key of its own. The CLI prints the request's label, fingerprint and 12 words again, then appends the device to every project you belong to and distributes the keys of every environment in the device's cap, every epoch, so the new device can read history too. `--project <id>` limits it to one project.
+
+The cap is set at approval time and cannot be changed later (revoke and re-add instead):
+
+```sh
+maruhi device approve <fp> --cap member --env dev     # reads and writes dev only
+maruhi device approve <fp> --no-envs                  # a vote-only device: no environment keys at all
+```
+
+`--cap` is `owner` (the default, no bound), `admin`, `member` or `reader`; `--env <id>` (repeatable), `--all-envs` (the default) and `--no-envs` set the environments. A device can only register devices bounded by its own cap, so a narrow device cannot create a wider one.
+
+Back on the new machine, the wait ends with "Approved: this device is registered on N projects (verified on each project's chain)". That is the completion signal: the new machine syncs each project and counts the chains that actually hold its key, rather than trusting the server. If it also lists projects that are "not registered yet", the approving device is still working or skipped them (its cap does not cover them, or you are not a member there); re-run `maruhi device approve` there once it finishes.
+
+Approving runs only on a human interactive terminal (stdin and stdout must both be terminals; pipes, redirects, CI, and AI agent environments are refused) — the fingerprint comparison is the whole safeguard, so it is done by a person. `maruhi device add` itself has no such rule — a container can request, but a person approves.
+
+**If the request expires** before it was approved, the new machine's key is still registered nowhere. Run `maruhi device add --replace` there: it discards that never-registered key, generates a new one and prints a new fingerprint to approve. (Without `--replace`, `maruhi device add` refuses because the machine already holds a key.) If instead the approval was interrupted halfway, the request is still there: re-run `maruhi device approve` on the approving device; it skips the projects that already have the device.
+
+A person can have at most 16 active devices per project; the 17th `add` is refused ("This project already has the maximum number of active devices for that member (16). Revoke a device first"). The server accepts five device-add requests per hour and keeps at most 32 rows in your device registry.
+
+## See your devices
+
+```sh
+maruhi device list
+maruhi device list --project <id>
+```
+
+For each project, the CLI syncs and verifies the chain and lists your active devices with their cap, the entry that added them (`added by <fingerprint>`, or `your first key on the chain`) and whether the adding device is still active. Three sources appear on a line, and they are not the same thing:
+
+- **What the chain holds** — the fingerprint, cap and sequence number. This is verified.
+- **The registry label**, marked "(server-reported)" — the display name from `--label`, and the API token the registry associates with the device. The registry is advisory: it helps you tell devices apart and is never used to decide anything.
+- **This machine's record**, "recorded here as reserve / approved / observed" — how this machine came to know the key: it sealed it as the reserve key, it approved it, or it saw it on a verified chain. A device you did not approve from this machine is announced the first time it is observed ("observed your device … It was not approved from this machine; compare it with `maruhi device list` and, if you do not recognise it, revoke it").
+
+`maruhi member list` and `maruhi project verify` show everyone's device count and fingerprints (`devices=2 fp=…`), with a cap in parentheses when a device is bounded. Your own row also warns while no reserve key is registered.
+
+## Revoke a lost or retired device
+
+Do this from another device of yours (or, for another member's device, as an admin or owner with `--user <id>`):
+
+```sh
+maruhi device revoke "MacBook"                  # your own device, by registry label
+maruhi device revoke 3f9a1c2d                   # any device, by fingerprint prefix (8+ hex characters)
+maruhi device revoke 3f9a1c2d --user bob        # another member's device (fingerprint only)
+```
+
+A reference is a fingerprint prefix of at least 8 hex characters or, for your own devices, the registry label; several can be given. Because a label is server-reported, the CLI resolves it to a fingerprint and shows a **confirmation table** per project — the fingerprint and cap of every device to revoke, and the devices that remain — before asking for `yes`. Check the fingerprint against `maruhi device list`; the revocation is decided by the fingerprint, not the label. `--yes` skips the prompt (revoking is not a ceremony: no key material is shown), and `--project <id>` limits it to one project.
+
+The table also warns about what remains: no remaining device with an owner cap, no remaining device that could open some environment in your scope, no remaining reserve key recorded on this machine, or that you are revoking the device you are running on. A member's last device cannot be revoked ("last-device-protected"); to take someone out entirely, `maruhi member remove` is the command.
+
+After `yes`, the CLI appends `revoke_device` to each project, and then **rotates every environment the device could open** — its effective scope — exactly as `maruhi member remove` does for a removed member. The rotation is not optional: the lost machine still holds the keys of the epochs it received, so every value in those environments is treated as read. The output says which environments were rotated. Environments your current device cannot rotate (they are outside its cap, or you are a reader) are left as a pending mandate, listed by `maruhi project verify` and `maruhi rotation list` ("member (device revoked)"), until any device of a member whose scope covers them runs `maruhi env rotate <environment> --new-epoch --reason <text>`. Then rotate the upstream credentials `maruhi rotation list` points at.
+
+**Revoking a device does not revoke its API token.** The lost machine can still call the API until its token is gone — it cannot decrypt anything new, but the token is a credential of its own. `maruhi device revoke` ends by listing the tokens the registry associates with the revoked devices ("The revoked devices' API tokens are still valid (the match is server-reported)") and asks whether to revoke them; pass `--revoke-token` to do it in the same run without a prompt. Or do it separately:
+
+```sh
+maruhi token list                       # ids, names, scopes, expiry
+maruhi token revoke <token-id>
+```
+
+The dashboard's **API tokens** and **Devices** pages revoke tokens too — that is the one thing you can do there when no CLI is at hand.
+
+If your machines still share one copied key from an install before device keys, they are one device with one fingerprint, and revoking it would revoke your last device. Separate them first ([below](#installs-from-before-device-keys)); if the only machine that holds the key is the lost one, follow [Recover your key](/docs/recover-your-key) — it registers the machine you are on as a new device, and then you can revoke the old key from it.
+
+## The reserve key
+
+`maruhi key generate` creates two keys the first time: this device's key, and the reserve key, which it seals with a recovery code right away and never stores on the machine. The reserve key is registered on each of your projects at the next sync, as a device with your full access, so that `maruhi key recover` on a new machine can use it to register that machine. `maruhi key show` prints its fingerprint ("reserve key fingerprint: …", or "not recorded on this machine"). Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key with the code or a passkey; only someone who can open the ledger can change it.
+
+If you suspect the recovery code or the reserve key was exposed — for example, the machine you recovered on later turns out to have been compromised — replace it:
+
+```sh
+maruhi key reserve rotate               # asks for the current code (or --passkey)
+```
+
+It opens the ledger, creates a new reserve key, seals it with a **new** recovery code, registers it on every project and revokes the previous reserve key, with the same rotation as any device revocation. Passkey wraps and guardian groups sealed the old key, so they are deleted and the command tells you to seal the new key again (`maruhi key seal passkey`, `maruhi guardian add`). When the code itself is lost, `maruhi key recovery --replace` does the same without opening the ledger.
+
+One limit: the previous reserve keys to revoke are the ones **recorded on the machine you run it on**. On a machine that never recorded them, the rotate cannot know about an older reserve key, and it stays registered on your projects. After a rotate or a `--replace`, run `maruhi device list` and compare the devices "recorded here as reserve" with those "recorded here as observed" that have your full cap (`owner/all`): a reserve device you do not recognise is revoked like any other, `maruhi device revoke <fingerprint>`.
+
+## Installs from before device keys
+
+If you set maruhi up before device keys existed, one key pair was copied to every machine, and the recovery ledger holds a copy of that same key. The chain is unchanged — that key is your first device — but two things need doing once, on any project:
+
+1. **Separate the reserve key.** On the machine that holds the key, `maruhi key recovery`. Every keyed command warns until you do ("no reserve key is registered for you on this project (only this device's key)"). The command sees that the ledger holds a copy of this device's key, creates a separate reserve key, seals it with a new recovery code and registers it on each project at the next sync; this machine keeps its key as its own device key.
+2. **Give the other machines their own key.** On each other machine that holds a copy, `maruhi device add --replace`: it removes the copy from that keychain, generates a new key and prints a fingerprint; approve it from the first machine with `maruhi device approve <fingerprint>`. `maruhi device list` shows the result per project.
+
+Do not pass `--replace` on a machine that is your only device — there is nothing to replace, and the key would be gone. Until step 1 is done, `maruhi key recover` on a new machine restores the copied key instead of a reserve key; it asks whether the opened key is your reserve key, and the answer is no.
+
+## In the dashboard
+
+The dashboard shows devices in two places, both **as reported by the server** and read-only — the project chains are the source of truth, and `maruhi device list` verifies them:
+
+- **Members** (on a project) has a **Devices** column: each member's device count and one chip per device, with the fingerprint's first characters and, when the device is bounded, its cap in the same form the CLI uses (`member/dev, staging`). A chip that says **"fingerprint not reported"** is a device whose fingerprint the reported entries do not bind — a device that has not signed anything yet, or a reserve key, which never signs. The count is exact either way. The dashboard folds only the entries it can read; if some device entries in the reported chain could not be read, a line under the table says how many were left out, and the device sets may not match what those entries would have produced — verify with `maruhi project verify`.
+- **Devices** (your account) is the device registry: labels, fingerprints, registration times and the API token linked to each row, with a **Revoke token** action. This is advisory information you registered from the CLI; it holds no verification. The **Lost a device?** note there gives the order: revoke the key from another device with `maruhi device revoke <fingerprint>`, then revoke its token here.
+
+A revocation's rotation flag appears under **Rotation** as `device revoked: <user>` — it names the person, as `maruhi rotation list` does ("member (device revoked)"); the device's fingerprint is in the **Audit** tab's `chain.device_revoked` event. The dashboard never revokes a device key: that is a chain entry, and the dashboard holds no key.
+
+## What revoking a device does not do
+
+- **It does not undo what the lost device did before you revoked it.** A device with your full cap can add devices; one added by the lost device stays registered until you revoke it too. `maruhi device list` shows `added by <fingerprint>` for every device, and marks the adder as revoked — revoke everything that was added by the lost device in the same `maruhi device revoke` run. A bounded device cannot create a wider one, so a stolen `dev`-only device cannot register a device that reads production.
+- **It does not verify labels.** Registry labels are server-reported and can be changed by whoever controls the server or your account. The revocation is decided by the fingerprint, which is why the confirmation table shows it; compare it with `maruhi device list` before typing `yes`.
+- **It does not protect the reserve key from a compromised recovery.** If the machine you ran `maruhi key recover` on was compromised at the time, the reserve key was in its memory. Revoke the device that machine registered, and replace the reserve key with `maruhi key reserve rotate`.
+- **It does not revoke API tokens.** See [above](#revoke-a-lost-or-retired-device): `maruhi token revoke`, or the dashboard.
+
+## What can go wrong
+
+- **`This machine already has a device key (…). If it is a copy of another device's key from an install before device keys, re-run with --replace …`** on `maruhi device add`. The machine holds a key that has no pending request and is not in your registry — a copied key, or a key whose request expired. `--replace` generates a new one; on your only device, recover from the ledger instead.
+- **`The device reference must be the full 32-character fingerprint or its 12 words …`** on `maruhi device approve`. Approval takes the whole fingerprint, never a prefix.
+- **`No pending device-add request matches that fingerprint. Requests expire 15 minutes after maruhi device add …`**. Re-run `maruhi device add --replace` on the new machine and approve the fingerprint it prints now.
+- **`That request carries this machine's own key; approve it from another device`**. A device cannot approve itself.
+- **`this machine's key is not one of your registered devices here (approve this machine first from a device that is)`**. The device you are on is not on this project's chain — it was approved with `--project` for other projects, or the approval skipped this one. Re-run `maruhi device approve` for it from a registered device.
+- **`the requested cap … exceeds this device's own cap …`** (`device-cap-exceeded`). Approve from a device with a wider cap; a device cannot register a device stronger than itself.
+- **`it would revoke the last device (last-device-protected — CRYPTO_SPEC §6.2). To remove the person, use maruhi member remove`**. A member always keeps one device. Add another first, or remove the member.
+- **`Only an admin or owner can revoke another member's device …`**, or `Only an owner can revoke a device of an owner`. Revoking someone else's device follows the same rule as removing them.
+- **`no reserve key is registered for you on this project (only this device's key) …`** on any keyed command. Run `maruhi key recovery` once — see [Installs from before device keys](#installs-from-before-device-keys) or, on a new install where key generation ran in an AI agent environment, run it on a human terminal.
+- **`… device key(s) recorded on this machine (…) are not registered on project … yet. Registering a device key adds a signer … done only when a person runs maruhi at an interactive terminal`**. The reserve key (or a device you approved elsewhere) is waiting to be registered on a project this machine synced from a pipe or an agent. Run any keyed command in a terminal to register it.
+- **`This server does not accept device operations (…). It predates the device-key server release …`** (HTTP 422 `DeviceOpsNotAccepted`). The server is older than the CLI. Update the server first — see [Updates in the self-hosting guide](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md#updates-version-upgrades); until then the account can use one device per project and no reserve key.
