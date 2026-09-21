@@ -7,7 +7,7 @@
       "devDependencies": {
         "@hpke/core": "1.9.0",
         "@hpke/dhkem-x25519": "1.8.0",
-        "hpke": "1.1.4",
+        "hpke": "1.1.7",
       },
     },
   },
@@ -18,6 +18,6 @@
 
     "@hpke/dhkem-x25519": ["@hpke/dhkem-x25519@1.8.0", "", { "dependencies": { "@hpke/common": "^1.10.0" } }, "sha512-S1MWWkAfu+TFxySgv5+2P3O4Mx/jk7BsoplzQaA1s3sfUJVJ2UsZsSzSsMc+FXJumLXncoJFlO6mK6mDGspfmA=="],
 
-    "hpke": ["hpke@1.1.4", "", {}, "sha512-cPzmFEsiyNnD7281X5WeZ461mbH+3P+rjWMSNrLO5rks7dAJvFXAyMwCmorB61pxt+jBnd0GQ6CY43TqOxmhCQ=="],
+    "hpke": ["hpke@1.1.7", "", {}, "sha512-wQGOBpFBFlP2h7euuLuey8yJGUtJ+c8D/ohPxtTQqpICItFtHDpbXk2B29xfUpIFPn0miS9TJVObFGAeEZzDJA=="],
   }
 }
