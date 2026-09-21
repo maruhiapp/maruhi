@@ -1014,6 +1014,7 @@ describe("maruhi device add", () => {
     // cap が覆う端末の次の鍵付きコマンド(「承認側の再実行」「まだ作業中」とは言わない)
     const missingNote = env.errors.find((line) => line.includes("not registered yet on"));
     expect(missingNote).toContain(`not registered yet on ${built.projectId}`);
+    expect(missingNote).toContain("skipped or failed on them");
     expect(missingNote).toContain("The request is used up");
     expect(missingNote).toContain("on its next keyed command run at a terminal");
     expect(missingNote).not.toContain("may still be working");

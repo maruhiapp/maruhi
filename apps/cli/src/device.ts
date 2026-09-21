@@ -220,9 +220,10 @@ export function deviceAddOp(input: {
       // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
       // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
       // 「cap がそこを覆う端末」の次の鍵付きコマンド(`device-sync.ts` — cap 起因の skip は
-      // 承認側の再同期では直らない: K6-V 補 2 / K7-2)
+      // 承認側の再同期では直らない: K6-V 補 2 / K7-2)。`approveOnProject` は失敗を
+      // `failed` に畳むので、一部成功の合図の後には failed のプロジェクトも混じる(K7-15)
       yield* logNote(
-        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped them (its output says why: its cap does not cover them, you are not a member there, or it approved with --project). The request is used up. A device of yours whose cap covers them registers this key there on its next keyed command run at a terminal — the approving device itself if its cap was not the cause, another device otherwise (it learns the key from a project that did register). \`maruhi device list\` shows where this key is registered`,
+        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key there on its next keyed command run at a terminal — the approving device itself if its cap was not the cause, another device otherwise (it learns the key from a project that did register). \`maruhi device list\` shows where this key is registered`,
       );
     }
   });

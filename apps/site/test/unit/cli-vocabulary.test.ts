@@ -302,6 +302,9 @@ const LIMITS: readonly Limit[] = [
     mentions: [
       { page: "devices.mdx", phrase: "The request lives 15 minutes" },
       { page: "devices.mdx", phrase: "Requests expire 15 minutes after" },
+      // K7-15: 待機の途中の案内(TTL / 3)は TTL の写しでもある。TTL が変われば
+      // 「five minutes」も動く(定数の右辺が記号のままでは、この釘だけが留める)
+      { page: "devices.mdx", phrase: "five minutes after the request" },
     ],
   },
   {
