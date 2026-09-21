@@ -715,14 +715,15 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByText("Not available to your role").first().waitFor();
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)。端末失効の変種は
-    // "device revoked: <userId>"(K5-5)、trigger の無い旧行は従来の推定のまま
+    // "device revoked: <userId> (chain seq N)"(K5-5 — seq で Audit のミラー行へ辿れる)、
+    // trigger の無い旧行は従来の推定のまま
     await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
-    await expect(page.getByText("device revoked: user_e2e", { exact: true }).count()).resolves.toBe(
-      1,
-    );
     await expect(
-      page.getByText("member removed: user_colleague", { exact: true }).count(),
+      page.getByText("device revoked: user_e2e (chain seq 5)", { exact: true }).count(),
+    ).resolves.toBe(1);
+    await expect(
+      page.getByText("member removed: user_colleague (chain seq 3)", { exact: true }).count(),
     ).resolves.toBe(1);
     await expect(page.getByTestId("rotation-note").textContent()).resolves.toContain(
       "maruhi rotation dismiss",

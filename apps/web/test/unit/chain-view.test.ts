@@ -752,8 +752,8 @@ describe("deriveReportedView — device keys (DK K5)", () => {
         scopeEnvironmentIds: [],
       },
     });
-    // 在籍 1: K1 に FP_X が束縛される(署名)→ 除名 → 在籍 2: 別の鍵 K2、同じ FP_X で署名 → K2 に束縛
-    // → K1 を add_device: 学習済み FP_X は K2 が持っている → FP なしで加える(同じ FP の 2 行を作らない)
+    // 在籍 1: K1 に FP_X が束縛される(署名)→ 除名 → 在籍 2: 別の鍵 K2、同じ FP_X で署名 → FP_X は
+    // K1 のものなので K2 には結ばれない(表の set-once — K5-16)→ K1 を add_device: FP_X を復元
     const entries = [
       genesis,
       memberWith(KEYS_B1),
@@ -769,7 +769,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     ];
     const view = deriveReportedView(entries);
     const b = devicesOf(view, "user_b");
-    expect(b?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP_X, null, null]);
+    expect(b?.devices.map((d) => d.keyFingerprintHex)).toEqual([null, null, FP_X]);
     // FP_X の失効はちょうど 1 行を外す
     const revoked = deriveReportedView([
       ...entries,
@@ -779,6 +779,35 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     expect(devicesOf(revoked, "user_b")?.devices.every((d) => d.keyFingerprintHex === null)).toBe(
       true,
     );
+  });
+
+  it("never binds another member's fingerprint, and ignores a revoke that names a fingerprint owned elsewhere (K5-16)", () => {
+    // owner の FP で user_a が署名した行(他人の FP の流用)→ user_a の未束縛端末には結ばれない
+    const add = addMember("user_a", "member");
+    const stolen = addDevice("user_a", FP, KEYS_D2);
+    const view = deriveReportedView([genesis, add, stolen]);
+    expect(devicesOf(view, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
+      null,
+      null,
+    ]);
+    expect(devicesOf(view, "user_owner")?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP]);
+    // user_a の失効に owner の FP を並べた行 → 未束縛端末を算術で削らず、行ごと無視
+    const bogus = revokeDevice("user_owner", FP, "user_a", [FP]);
+    expect(
+      reportedDeviceCount(devicesOf(deriveReportedView([genesis, add, stolen, bogus]), "user_a")!),
+    ).toBe(2);
+    // 既に失効した端末の FP をもう一度失効させる行 → 同じく無視(未束縛端末を巻き込まない)
+    const owner2 = addDevice("user_owner", FP, KEYS_D3);
+    const revokeFirst = revokeDevice("user_owner", FP, "user_owner", [FP]);
+    const twice = revokeDevice("user_owner", FP, "user_owner", [FP]);
+    const again = deriveReportedView([
+      genesis,
+      addDevice("user_owner", FP, KEYS_R),
+      owner2,
+      revokeFirst,
+      twice,
+    ]);
+    expect(reportedDeviceCount(devicesOf(again, "user_owner")!)).toBe(2);
   });
 
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {

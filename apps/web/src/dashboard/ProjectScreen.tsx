@@ -729,16 +729,18 @@ function userTriggerLabel(trigger: string | undefined): string {
  * トリガー(削除 / 降格・縮小された主体 / 失効された端末の持ち主 / 失効されたサーバー鍵)
  * の表示形。`trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES、`revoke_device` は 2026-09-19 DK)が
  * あればそれを使い、無ければ従来どおり target の有無から推定する(旧サーバーの応答)。
- * `revoke_device` の行は端末 FP を運ばない(人だけ — K5-5)。
+ * 末尾に契機のチェーン seq(`triggerChainSeq` — 応答が運ぶ)を添える: `revoke_device` の行は
+ * 端末 FP を運ばないので、seq で Audit タブのミラー行(`chain.device_revoked` — FP 入り)を
+ * 辿れるようにする(K5-5 再探索)。
  */
 function flagTrigger(flag: RotationFlag): string {
-  if (flag.targetUserId !== undefined) {
-    return `${userTriggerLabel(flag.trigger)}: ${flag.targetUserId}`;
-  }
-  if (flag.targetServerKeyFingerprintHex !== undefined) {
-    return `server revoked: ${flag.targetServerKeyFingerprintHex}`;
-  }
-  return "";
+  const subject =
+    flag.targetUserId !== undefined
+      ? `${userTriggerLabel(flag.trigger)}: ${flag.targetUserId}`
+      : flag.targetServerKeyFingerprintHex !== undefined
+        ? `server revoked: ${flag.targetServerKeyFingerprintHex}`
+        : "";
+  return subject === "" ? "" : `${subject} (chain seq ${flag.triggerChainSeq})`;
 }
 
 function toFlagRow(flag: RotationFlag): FlagRow {

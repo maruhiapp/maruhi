@@ -23,9 +23,12 @@
 // 運び **FP を運ばない**(FP = SHA-256 の導出値)ので、端末は公開鍵対で同定し、FP は
 // 「申告のバイト列から機械的に写せる範囲」でだけ束縛する: genesis の actor FP は最初の鍵、
 // メンバーが署名したエントリの actor FP は「FP 未束縛の端末がちょうど 1 つ」のときだけ
-// その端末に束縛する(hash は計算しない — K6-J)。`revoke_device` の FP は束縛済み端末に
-// 一致すればその端末を外し、一致しない FP は未束縛端末の数だけ算術で外す(端末数は常に
-// 正確、どれかは「unresolved」として正直に示す)。四眼の票は端末語彙で数える(§6.2)。
+// その端末に束縛する(hash は計算しない — K6-J)。束縛は「鍵 ↔ FP」の学習済み対応表
+// (`FingerprintTable` — 単射・set-once。K5-16)に記録し、一度どれかの鍵のものになった FP は
+// 別の鍵に結ばれない(失効した端末の FP・在籍をまたいだ再束縛・他人の FP を構造で排除)。
+// `revoke_device` の FP は束縛済み端末に一致すればその端末を外し、一致しない未申告の FP は
+// 未束縛端末の数だけ算術で外す(端末数は常に正確、どれかは「unresolved」として正直に示す)。
+// 四眼の票は端末語彙で数える(§6.2)。
 import type { ChainEntry } from "./types.ts";
 
 /**
@@ -154,12 +157,38 @@ interface MutableMember {
    * 票の判定(K5-2)にだけ使い、失効で未束縛端末が減るたびに捨てる(fail-closed)。
    */
   unboundSignerFps: Set<string>;
-  /**
-   * この在籍で失効した束縛済み端末の FP(K5-13)。失効後に申告される同じ FP の署名は、
-   * 別の未束縛端末へ束縛しない(FP は端末を指す — 失効した端末の署名は無効)。同じ鍵の
-   * 再追加(学習済み FP の復元)で外す。
-   */
-  revokedFingerprints: Set<string>;
+}
+
+/**
+ * 鍵 ↔ FP の学習済み対応表(K5-16 — 構造で保つ不変条件)。鍵は (user_id, 公開鍵対)、FP は
+ * 申告された actor FP。対応は**単射かつ set-once**: 一度 (鍵, FP) を学べば、その鍵にも
+ * その FP にも別の相手を結ばない。帰結: (1) 同じ鍵は失効後の再追加・再在籍でも同じ FP を
+ * 引き継ぐ(同じ鍵 ⇒ 同じ FP — K6-J の一般化)。(2) 失効した端末の FP・他人の端末の FP は
+ * 「既に誰かの鍵のもの」なので別の端末へ結ばれない(stale actor・在籍またぎの再束縛・
+ * 他人の FP の流用を簿記でなく表の性質で排除)。(3) 1 人の端末集合に同じ FP の 2 行は
+ * 作れない(鍵が違えば FP も違う)。
+ */
+class FingerprintTable {
+  private readonly fingerprintByKey = new Map<string, string>();
+  private readonly ownerByFingerprint = new Map<string, { userId: string; keyId: string }>();
+
+  /** 鍵の学習済み FP(無ければ null)。 */
+  fingerprintOf(keyId: string): string | null {
+    return this.fingerprintByKey.get(keyId) ?? null;
+  }
+
+  /** FP を既に持っている鍵(無ければ undefined)。 */
+  ownerOf(fp: string): { userId: string; keyId: string } | undefined {
+    return this.ownerByFingerprint.get(fp);
+  }
+
+  /** 双方が未学習のときだけ結ぶ(set-once)。結べたら true。 */
+  claim(userId: string, keyId: string, fp: string): boolean {
+    if (this.fingerprintByKey.has(keyId) || this.ownerByFingerprint.has(fp)) return false;
+    this.fingerprintByKey.set(keyId, fp);
+    this.ownerByFingerprint.set(fp, { userId, keyId });
+    return true;
+  }
 }
 
 interface FoldState {
@@ -167,18 +196,17 @@ interface FoldState {
   servers: Map<string, ReportedServer>;
   policy: ReportedPolicy | null;
   pending: Map<string, PendingFold>;
-  /**
-   * 学習済みの (user_id, 公開鍵対) → FP。一度束縛した鍵は失効後の再追加・再在籍でも同じ
-   * FP を引き継ぐ(同じ鍵 ⇒ 同じ FP — K6-J の一般化)。user_id で区切るのは、鍵の同一性を
-   * 人をまたいで推定しないため。
-   */
-  knownFingerprints: Map<string, string>;
+  fingerprints: FingerprintTable;
 }
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
 
 function keyIdOf(userId: string, encPubHex: string, sigPubHex: string): string {
   return `${userId}:${encPubHex}:${sigPubHex}`;
+}
+
+function keyIdOfDevice(userId: string, device: MutableDevice): string {
+  return keyIdOf(userId, device.encPubHex, device.sigPubHex);
 }
 
 /** 新しい端末レコード(学習済みなら FP を引き継ぐ)。 */
@@ -190,8 +218,9 @@ function newDevice(
   addedSeq: number,
 ): MutableDevice {
   return {
-    keyFingerprintHex:
-      state.knownFingerprints.get(keyIdOf(userId, keys.encPubHex, keys.sigPubHex)) ?? null,
+    keyFingerprintHex: state.fingerprints.fingerprintOf(
+      keyIdOf(userId, keys.encPubHex, keys.sigPubHex),
+    ),
     encPubHex: keys.encPubHex,
     sigPubHex: keys.sigPubHex,
     roleCap: cap.roleCap,
@@ -223,21 +252,21 @@ function startTenure(
     devices: [newDevice(state, userId, keys, FIRST_DEVICE_CAP, seq)],
     unresolvedRevocations: 0,
     unboundSignerFps: new Set(),
-    revokedFingerprints: new Set(),
   };
   state.members.set(userId, member);
   return member;
 }
 
-/** FP を端末に束縛して学習する。 */
+/** FP を端末に束縛して学習する(表が受け付けたときだけ — set-once)。 */
 function bindFingerprint(
   state: FoldState,
   userId: string,
   device: MutableDevice,
   fp: string,
 ): void {
-  device.keyFingerprintHex = fp;
-  state.knownFingerprints.set(keyIdOf(userId, device.encPubHex, device.sigPubHex), fp);
+  if (state.fingerprints.claim(userId, keyIdOfDevice(userId, device), fp)) {
+    device.keyFingerprintHex = fp;
+  }
 }
 
 /** FP 未束縛の端末。 */
@@ -245,20 +274,23 @@ function unboundDevicesOf(member: MutableMember): MutableDevice[] {
   return member.devices.filter((d) => d.keyFingerprintHex === null);
 }
 
-/** 署名者のレコード(不在・FP が束縛済み・または失効済み端末の FP なら undefined = 結ぶものがない)。 */
+/**
+ * 署名者のレコード(不在、または FP が既にどれかの鍵のものなら undefined = 結ぶものがない)。
+ * 表に載っている FP は、この人の現在の端末のものか、失効した端末・前在籍・他人の鍵のもの
+ * かのいずれかで、どの場合も未束縛端末の候補にならない(K5-16)。
+ */
 function signerNeedingBinding(
   state: FoldState,
   userId: string,
   fp: string,
 ): MutableMember | undefined {
   const member = state.members.get(userId);
-  // 失効した端末の FP は別の端末へ結ばない(K5-13 — 1 人の端末集合の中で FP は単射)
-  if (member === undefined || member.revokedFingerprints.has(fp)) return undefined;
-  return member.devices.some((d) => d.keyFingerprintHex === fp) ? undefined : member;
+  if (member === undefined || state.fingerprints.ownerOf(fp) !== undefined) return undefined;
+  return member;
 }
 
 /**
- * 署名した本人の actor FP をその人の端末へ結ぶ(K5-1): 既に束縛済みなら何もしない。
+ * 署名した本人の actor FP をその人の端末へ結ぶ(K5-1): 既に誰かの鍵のものなら何もしない。
  * 未束縛の端末がちょうど 1 つならそれに束縛、2 つ以上なら同定せず「未束縛署名 FP」に
  * 入れる(票の判定にだけ使う — K5-2)。0 なら申告が読めない(無視)。
  */
@@ -528,18 +560,11 @@ function keyAvailable(state: FoldState, encPubHex: string, sigPubHex: string): b
 }
 
 /**
- * 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)ので
- * 失効済みから外す。ただし同じ FP を既に別の端末が持っているなら(在籍をまたいだ再束縛 —
- * K5-15)、2 つの鍵対が主張する FP は何も正当化しないので FP なしで加える: 1 人の端末集合の
- * 中で FP は単射(構造で保証)。
+ * 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)。
+ * 同じ FP の 2 行はここでは検査しない: 鍵が違えば FP も違う(表の単射)、同じ鍵の 2 行は
+ * `keyAvailable` が先に退ける — 不変条件は表と鍵の一意性から従う(K5-16)。
  */
 function pushDevice(member: MutableMember, device: MutableDevice): void {
-  const fp = device.keyFingerprintHex;
-  if (fp !== null && member.devices.some((d) => d.keyFingerprintHex === fp)) {
-    member.devices.push({ ...device, keyFingerprintHex: null });
-    return;
-  }
-  if (fp !== null) member.revokedFingerprints.delete(fp);
   member.devices.push(device);
 }
 
@@ -572,15 +597,21 @@ interface RevocationPlan {
   readable: boolean;
 }
 
-function planRevocation(member: MutableMember, fps: ReadonlySet<string>): RevocationPlan {
+function planRevocation(
+  state: FoldState,
+  member: MutableMember,
+  fps: ReadonlySet<string>,
+): RevocationPlan {
   const matched = new Set(
     member.devices.filter((d) => d.keyFingerprintHex !== null && fps.has(d.keyFingerprintHex)),
   );
-  // 一致しない FP の数は「どの端末にも無い FP」を数える(行数の差にしない — 単射が破れた
-  // 申告でも負にならない。K5-13)
-  const unmatched = [...fps].filter(
+  const unmatchedFps = [...fps].filter(
     (fp) => !member.devices.some((d) => d.keyFingerprintHex === fp),
-  ).length;
+  );
+  // 一致しない FP が「既に誰かの鍵のもの」(失効済み端末・他人の端末)なら、この人の未束縛
+  // 端末の失効ではありえない(§6.2 `unknown-device`)— 行は読めない(K5-16)
+  const foreign = unmatchedFps.some((fp) => state.fingerprints.ownerOf(fp) !== undefined);
+  const unmatched = unmatchedFps.length;
   const unboundRemaining = unboundDevicesOf(member).length - member.unresolvedRevocations;
   const countAfter =
     member.devices.length - member.unresolvedRevocations - matched.size - unmatched;
@@ -588,7 +619,7 @@ function planRevocation(member: MutableMember, fps: ReadonlySet<string>): Revoca
     matched,
     unmatched,
     unboundRemaining,
-    readable: unmatched <= unboundRemaining && countAfter > 0,
+    readable: !foreign && unmatched <= unboundRemaining && countAfter > 0,
   };
 }
 
@@ -600,11 +631,8 @@ function revocationTarget(
   return readableRevokeDevice(payload) ? state.members.get(payload.targetUserId) : undefined;
 }
 
-/** 一致した束縛済み端末を外し、その FP を失効済みとして覚える(K5-13 — 別の端末へ再束縛しない)。 */
+/** 一致した束縛済み端末を外す(FP は表に残る = 以後、別の端末へ結ばれない — K5-16)。 */
 function revokeMatched(member: MutableMember, plan: RevocationPlan): void {
-  for (const device of plan.matched) {
-    if (device.keyFingerprintHex !== null) member.revokedFingerprints.add(device.keyFingerprintHex);
-  }
   member.devices = member.devices.filter((d) => !plan.matched.has(d));
 }
 
@@ -628,7 +656,7 @@ function revokeUnbound(member: MutableMember, plan: RevocationPlan): void {
 function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): void {
   const member = revocationTarget(state, entry.payload);
   if (member === undefined) return;
-  const plan = planRevocation(member, new Set(entry.payload.deviceFingerprintsHex));
+  const plan = planRevocation(state, member, new Set(entry.payload.deviceFingerprintsHex));
   if (!plan.readable) return;
   revokeMatched(member, plan);
   if (plan.unmatched > 0) revokeUnbound(member, plan);
@@ -715,7 +743,7 @@ export function deriveReportedView(
     servers: new Map(),
     policy: null,
     pending: new Map(),
-    knownFingerprints: new Map(),
+    fingerprints: new FingerprintTable(),
   };
   entries.forEach((entry, index) => {
     // 署名した本人の actor FP はそのメンバーの端末の 1 つ(受理面が検証済み — as reported)
