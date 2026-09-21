@@ -52,7 +52,7 @@ Guardians are project teammates you designate in advance. Each guardian gets an 
 
 ### Designating guardians
 
-Guardians must be members of a project you share, because their public keys come from that project's verified membership chain — maruhi has no global key directory. The share is sealed to each guardian's device keys, so a guardian can approve from any of their devices. Pick the mode:
+Guardians must be members of a project you share, because their public keys come from that project's verified membership chain — maruhi has no global key directory. A share is sealed to each of a guardian's devices **as they are at that moment**: a device they add later holds no copy of it and cannot approve with it, and a device they revoke keeps one until you re-create the group. Pick the mode:
 
 - `any` — one approval from any guardian is enough. Convenient, and each guardian alone could approve a request they believe is yours.
 - `all` — every guardian in the group must approve. Nobody can act alone; losing contact with one guardian makes the group unusable.
@@ -63,7 +63,7 @@ maruhi guardian add --project <project-id> --mode any <user-id> [<user-id> …]
 
 The command opens the ledger with your recovery code first. Then, for each device of each guardian, it shows the device key fingerprint as 12 words. Confirm it with them out of band (a call, or in person) and type the last word — the same ceremony as adding a member. If you have verified this person's key before, the CLI remembers it and asks for a plain `yes` instead. The ceremony cannot be skipped with a flag; it runs only on a human interactive terminal and is refused in AI agent environments.
 
-`maruhi guardian list` shows your groups; with `--project <id>` it also checks every guardian's key against the project's current membership and marks a guardian who left, or whose key changed, as `STALE`. A stale guardian cannot open their share, so remove that group and add it again. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
+`maruhi guardian list` shows your groups and how many devices each share is sealed to; with `--project <id>` it also checks those devices against the project's current membership. A guardian is marked `STALE` when none of them is left — they are no longer a member, or every sealed device has been revoked — and their share cannot be opened at all, so remove that group and add it again. When only some of the sealed devices are gone, the share still opens on the rest and the CLI suggests re-creating the group so the revoked device's copy is retired. `maruhi guardian remove <group-id>` deletes a group; `maruhi guardian wards` lists the people who chose you as a guardian.
 
 ### Recovering with guardians
 

@@ -227,3 +227,66 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     },
   );
 });
+
+// K6-Y: docs が書く上限・レート制限・TTL を、定義側の定数に釘で留める。値が変われば
+// この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの —
+// K7-A。ES K7 では目視で写していた)。
+const LIMITS = [
+  ["apps/server/src/policy.ts", "MAX_DEVICES_PER_MEMBER", "16", "devices.mdx", "16 active devices"],
+  [
+    "packages/api-schema/src/devices-api.ts",
+    "MAX_DEVICE_ADD_REQUESTS_PER_HOUR",
+    "5",
+    "devices.mdx",
+    "five device-add requests per hour",
+  ],
+  [
+    "packages/api-schema/src/devices-api.ts",
+    "MAX_DEVICE_REGISTRY_ROWS_PER_USER",
+    "32",
+    "devices.mdx",
+    "32 rows",
+  ],
+  [
+    "packages/api-schema/src/devices-api.ts",
+    "DEVICE_ADD_REQUEST_TTL_MS",
+    "15 * 60 * 1000",
+    "devices.mdx",
+    "15 minutes",
+  ],
+  [
+    "apps/server/src/db.package/key-wraps.ts",
+    "HANDOFF_REQUEST_LIMIT",
+    "5",
+    "recover-your-key.mdx",
+    "five per user per hour",
+  ],
+  [
+    "apps/server/src/db.package/key-wraps.ts",
+    "APPROVAL_LIMIT",
+    "20",
+    "recover-your-key.mdx",
+    "20 per user per hour",
+  ],
+  [
+    "apps/server/src/db.package/key-wraps.ts",
+    "KEY_BLOB_FETCH_LIMIT",
+    "5",
+    "recover-your-key.mdx",
+    "five fetches",
+  ],
+] as const;
+
+/** `export const NAME = <rhs>;` の右辺(そのままの字面)。 */
+function constantOf(source: string, name: string): string | undefined {
+  const match = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(source);
+  return match?.[1]?.trim();
+}
+
+describe("the documented limits match the constants that enforce them", () => {
+  it.each(LIMITS)("%s %s is %s and %s says %s", (file, name, value, page, phrase) => {
+    const source = readFileSync(join(repoRoot, ...file.split("/")), "utf8");
+    expect(constantOf(source, name)).toBe(value);
+    expect(pageText(page)).toContain(phrase);
+  });
+});
