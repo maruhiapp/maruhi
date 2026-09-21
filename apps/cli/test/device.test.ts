@@ -41,6 +41,7 @@ import {
   ownDevicesPathOf,
 } from "../src/own-devices.ts";
 import { formatRecoveryCode } from "../src/recovery-code.ts";
+import { rotationMandates } from "../src/rotation-sweep.ts";
 import type { VerifiedProject } from "../src/sync.ts";
 import {
   addScopedMemberOp,
@@ -503,6 +504,24 @@ describe("maruhi device approve", () => {
       "must be the full 32-character fingerprint or its 12 words",
     );
   });
+  it("全プロジェクトが skipped でも(この端末が未登録など)終了コードは 1 で、要求は残す", async () => {
+    // session は member(チェーンに居ない)→ 唯一のプロジェクトで skipped
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+    });
+    const env = await startEnv(server.origin, built.projectId, member);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("skipped — you are not a member of this project");
+    expect(errors).toContain("the device was not registered on any project");
+    expect(state.appended).toEqual([]);
+    expect(state.registryPuts).toEqual([]);
+    expect(state.requestCancels).toEqual([]);
+  });
+
   it("同じ鍵の要求が複数あれば黙って選ばず、ラベルを示して止まる", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
@@ -691,6 +710,43 @@ describe("ラップ完全集合の期待数(サーバーと同じ述語 — R(E)
     expect(expectedWrapRecipientCount(view, "env-a")).toBe(2);
     // env-b: owner の 1 台目 + 2 台目 = 2。member は scope 外
     expect(expectedWrapRecipientCount(view, "env-b")).toBe(2);
+  });
+});
+
+describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", () => {
+  it("失効直前(seq−1)の端末の実効 scope を義務にする(seq 時点では端末が消えているので ALL に倒れない)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("env-a", dek) },
+      { actor: owner, operation: createEnvironmentOp("env-b", dek) },
+      {
+        actor: owner,
+        operation: addDeviceOp(dev2, { roleCap: "owner", environmentIds: ["env-a"] }),
+      },
+      { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
+    ]);
+    const verified = await verifyChainWithHistory(built.entries);
+    if (!verified.ok) throw new Error("chain");
+    const view = {
+      state: verified.value.state,
+      history: verified.value.history,
+      applied: built.entries.map((entry, index) => ({
+        seq: index + 1,
+        operation: { op: entry.op, payload: entry.payload },
+        actorUserId: entry.actor.userId,
+        viaProposalSeq: null,
+      })),
+    } as unknown as VerifiedProject;
+    const mandates = rotationMandates(view);
+    expect(mandates).toEqual([
+      {
+        kind: "device-revoked",
+        target: owner.userId,
+        seq: 5,
+        environmentIds: ["env-a"],
+        deviceFingerprintsHex: [dev2.fingerprintHex],
+      },
+    ]);
   });
 });
 
@@ -967,8 +1023,8 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     });
     const added = state.appended.find((entry) => entry.op === "add_device");
     expect(added).toBeDefined();
-    expect(env.logs.join("\n")).toMatch(
-      /revoking the previous reserve keys [0-9a-f]{32}, [0-9a-f]{32} on every project/,
+    expect(env.logs.join("\n")).toContain(
+      `revoking the previous reserve key ${reserve.fingerprintHex} (and 1 earlier reserve key still recorded on this machine, if any is still active) on every project`,
     );
     // ローカル記録: O と N1 は失効、新鍵だけが有効な予備鍵
     const recorded = await readOwnDevices(env, server.origin);

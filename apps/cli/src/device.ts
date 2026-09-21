@@ -614,7 +614,11 @@ export function reportApproveOutcomes(
   outcomes: readonly ProjectApproveOutcome[],
 ): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
-    let exitCode = 0;
+    // どこにも載らなかった(全部 skipped / failed — 記録も要求の取消も行っていない)
+    // 承認は失敗として終える(skipped だけでも 0 にしない)
+    let exitCode = outcomes.some((item) => item.state === "registered" || item.state === "already")
+      ? 0
+      : 1;
     for (const item of outcomes) {
       if ((yield* reportApproveOutcome(item)) !== 0) {
         exitCode = 1;

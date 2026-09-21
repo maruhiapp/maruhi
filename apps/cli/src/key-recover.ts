@@ -643,7 +643,7 @@ export function keyReserveRotateOp(input: {
     yield* recordReserveLocally(input.session, next);
     yield* store.markRevoked(input.session.origin, input.session.userId, retiring, Date.now());
     yield* io.log(
-      `Sealed the new reserve key ${next.fingerprintHex}; registering it and revoking the previous reserve key${retiring.length === 1 ? "" : "s"} ${retiring.join(", ")} on every project`,
+      `Sealed the new reserve key ${next.fingerprintHex}; registering it and revoking the previous reserve key ${old.fingerprintHex}${retiring.length === 1 ? "" : ` (and ${countNoun(retiring.length - 1, "earlier reserve key")} still recorded on this machine, if any is still active)`} on every project`,
     );
     const projects = yield* fetchProjectMemberships(input.client);
     let exitCode = 0;
