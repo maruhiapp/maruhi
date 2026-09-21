@@ -109,6 +109,14 @@ export interface ReportedChainView {
   servers: ReportedServer[];
   policy: ReportedPolicy | null;
   proposals: ReportedProposal[];
+  /**
+   * Device entries (`add_device` / `revoke_device`) the fold could not read and left out
+   * (K5-17): unknown actor / target, a key already held, a fingerprint that is not the
+   * target's, a revocation that would leave no device, or a malformed payload. The
+   * displayed device sets are then a superset of what such rows would have produced —
+   * shown, never silently absorbed. Ops the fold does not model at all are not counted.
+   */
+  unreadableDeviceEntries: number;
 }
 
 /** 投票の記録(user_id と署名時の鍵 FP — 原則 2 の S の要素)。 */
@@ -197,6 +205,8 @@ interface FoldState {
   policy: ReportedPolicy | null;
   pending: Map<string, PendingFold>;
   fingerprints: FingerprintTable;
+  /** 読めずに落とした端末 op の行数(K5-17 — 黙って吸収しない)。 */
+  unreadableDeviceEntries: number;
 }
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
@@ -568,12 +578,18 @@ function pushDevice(member: MutableMember, device: MutableDevice): void {
   member.devices.push(device);
 }
 
-/** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。 */
+/** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。読めなければ数える。 */
 function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
   const member = state.members.get(entry.actor.userId);
   const payload = entry.payload;
-  if (member === undefined || !readableAddDevice(payload)) return;
-  if (!keyAvailable(state, payload.encPubHex, payload.sigPubHex)) return;
+  if (
+    member === undefined ||
+    !readableAddDevice(payload) ||
+    !keyAvailable(state, payload.encPubHex, payload.sigPubHex)
+  ) {
+    state.unreadableDeviceEntries += 1;
+    return;
+  }
   pushDevice(member, newDevice(state, member.userId, payload, payload, entry.seq));
 }
 
@@ -623,12 +639,20 @@ function planRevocation(
   };
 }
 
-/** 失効の対象メンバー(payload が読めない・対象が現メンバーでないなら undefined)。 */
-function revocationTarget(
+/**
+ * 読める失効の計画(対象メンバー + 算術)。payload が読めない・対象が現メンバーでない・
+ * 算術が成り立たない行は undefined(= 読めない行)。
+ */
+function readableRevocation(
   state: FoldState,
   payload: EntryOf<"revoke_device">["payload"],
-): MutableMember | undefined {
-  return readableRevokeDevice(payload) ? state.members.get(payload.targetUserId) : undefined;
+): { member: MutableMember; plan: RevocationPlan } | undefined {
+  const member = readableRevokeDevice(payload)
+    ? state.members.get(payload.targetUserId)
+    : undefined;
+  if (member === undefined) return undefined;
+  const plan = planRevocation(state, member, new Set(payload.deviceFingerprintsHex));
+  return plan.readable ? { member, plan } : undefined;
 }
 
 /** 一致した束縛済み端末を外す(FP は表に残る = 以後、別の端末へ結ばれない — K5-16)。 */
@@ -654,10 +678,12 @@ function revokeUnbound(member: MutableMember, plan: RevocationPlan): void {
  * unresolved に数える(端末数は正確・どれかは不明)。多い / 失効後 0 台 / 対象不明は無視。
  */
 function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): void {
-  const member = revocationTarget(state, entry.payload);
-  if (member === undefined) return;
-  const plan = planRevocation(state, member, new Set(entry.payload.deviceFingerprintsHex));
-  if (!plan.readable) return;
+  const readable = readableRevocation(state, entry.payload);
+  if (readable === undefined) {
+    state.unreadableDeviceEntries += 1;
+    return;
+  }
+  const { member, plan } = readable;
   revokeMatched(member, plan);
   if (plan.unmatched > 0) revokeUnbound(member, plan);
 }
@@ -744,6 +770,7 @@ export function deriveReportedView(
     policy: null,
     pending: new Map(),
     fingerprints: new FingerprintTable(),
+    unreadableDeviceEntries: 0,
   };
   entries.forEach((entry, index) => {
     // 署名した本人の actor FP はそのメンバーの端末の 1 つ(受理面が検証済み — as reported)
@@ -772,5 +799,6 @@ export function deriveReportedView(
     servers: [...state.servers.values()],
     policy: state.policy,
     proposals,
+    unreadableDeviceEntries: state.unreadableDeviceEntries,
   };
 }

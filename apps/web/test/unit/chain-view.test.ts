@@ -58,6 +58,7 @@ describe("deriveReportedView", () => {
       servers: [],
       policy: null,
       proposals: [],
+      unreadableDeviceEntries: 0,
     });
   });
 
@@ -808,6 +809,26 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       twice,
     ]);
     expect(reportedDeviceCount(devicesOf(again, "user_owner")!)).toBe(2);
+  });
+
+  it("counts the device entries it could not read instead of absorbing them silently (K5-17)", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const readable = deriveReportedView([
+      genesis,
+      addD2,
+      revokeDevice("user_owner", FP, "user_owner", [FP]),
+    ]);
+    expect(readable.unreadableDeviceEntries).toBe(0);
+    const view = deriveReportedView([
+      genesis,
+      addD2,
+      addDevice("user_ghost", FP_D2, KEYS_D3), // 非メンバー
+      addDevice("user_owner", FP, KEYS_D2), // 重複鍵
+      revokeDevice("user_owner", FP, "user_ghost", [FP]), // 対象不明
+      revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2]), // 失効後 0 台
+    ]);
+    expect(view.unreadableDeviceEntries).toBe(4);
+    expect(reportedDeviceCount(devicesOf(view, "user_owner")!)).toBe(2);
   });
 
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {

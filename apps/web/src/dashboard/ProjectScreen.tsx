@@ -396,6 +396,21 @@ function ApprovalsView({
   );
 }
 
+/**
+ * 読めずに落とした端末 op は黙って吸収しない(K5-17): 表示は落とした行が作ったはずの集合の
+ * 上位集合になりうる。0 なら描かない。検証は CLI
+ */
+function UnreadableDeviceEntriesNote({ count }: { count: number }): ReactNode {
+  if (count === 0) return null;
+  const rows = count === 1 ? "1 device entry" : `${count} device entries`;
+  const verb = count === 1 ? "was" : "were";
+  return (
+    <Text type="supporting" size="sm" data-testid="unreadable-device-entries">
+      {`${rows} in the reported chain could not be read and ${verb} left out; the device sets above may include devices those entries would have removed. Verify with maruhi project verify.`}
+    </Text>
+  );
+}
+
 function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   const view = deriveReportedView(snapshot.entries ?? [], snapshot.headHashHex);
   const memberRows: MemberRow[] = view.members.map((m) => ({
@@ -423,6 +438,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
           dividers="rows"
           data-testid="member-table"
         />
+        <UnreadableDeviceEntriesNote count={view.unreadableDeviceEntries} />
       </SectionBlock>
       <ServersList servers={view.servers} />
       <ApprovalsView policy={view.policy} proposals={view.proposals} />
