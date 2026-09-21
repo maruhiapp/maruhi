@@ -450,6 +450,15 @@ describe("maruhi key recovery(発行・再発行)", () => {
       putHandler((body) => {
         put = body;
       }),
+      noProjectsHandler(),
+      onRequest("GET", "/auth/key-wraps", () => ({
+        status: 200,
+        json: {
+          recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
+          passkeys: [],
+          guardianGroups: [],
+        },
+      })),
     ]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -457,7 +466,12 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(await runCli(["key", "recovery", "--replace"], env.layer)).toBe(0);
     expect(fetched).toBe(false);
     expect(put).not.toBeNull();
-    expect(env.errors.join("\n")).toContain("replacing the recovery ledger without opening it");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("replacing the recovery ledger without opening it");
+    // 記録に旧予備鍵が無ければ失効できない旨を警告する(失効は記録に依る — K4-38)
+    expect(errors).toContain(
+      "no previous reserve key is recorded on this machine, so none was revoked",
+    );
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
   });
 

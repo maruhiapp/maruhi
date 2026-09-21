@@ -354,21 +354,17 @@ export function keyRecoveryOp(input: {
   readonly client: MaruhiClient;
   readonly via: LedgerOpenVia;
   readonly replace: boolean;
-}): Effect.Effect<void, CliError, CliServices> {
+}): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const registered = yield* recoveryRegistered(input.client);
     if (!registered) {
       yield* io.log("No reserve key is sealed yet — creating one");
       yield* sealNewReserve({ session: input.session, client: input.client });
-      return;
+      return 0;
     }
     if (input.replace) {
-      yield* logWarning(
-        "replacing the recovery ledger without opening it: if a reserve key was sealed there before, it stays registered on your projects as a device nobody can use — revoke it with `maruhi device revoke <fingerprint>` (`maruhi device list` shows your devices)",
-      );
-      yield* sealNewReserve({ session: input.session, client: input.client });
-      return;
+      return yield* replaceReserveWithoutOpening(input);
     }
     const opened = yield* openLedgerReserve({
       session: input.session,
@@ -389,7 +385,7 @@ export function keyRecoveryOp(input: {
       yield* logNote(
         "this device keeps its key as its own device key. Other machines that hold a copy of the same key should register their own device key: run `maruhi device add --replace` there and approve it from this machine with `maruhi device approve`",
       );
-      return;
+      return 0;
     }
     // 予備鍵の再封印(同じ B・新しいコード)+ 記録の復元
     yield* issueRecoveryCodeOp({
@@ -401,6 +397,78 @@ export function keyRecoveryOp(input: {
     yield* logNote(
       `reissued the recovery code for your reserve key (fingerprint ${opened.fingerprintHex}); the previous code no longer works`,
     );
+    return 0;
+  });
+}
+
+/**
+ * `key recovery --replace`(コード紛失 / 漏洩の逃げ道): 台帳を開かずに新しい予備鍵を
+ * 封印し、この端末の記録にある旧予備鍵をすべてのプロジェクトで失効させる(K4-38)。
+ * 旧 B は開けないので、失効の署名はこの端末鍵で行う(rotate と同じ経路)。記録に
+ * 無い旧予備鍵は失効できないので、その旨を警告する。
+ */
+function replaceReserveWithoutOpening(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+}): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    yield* logWarning(
+      "replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project. A previous reserve key that is not recorded here stays registered until you revoke it with `maruhi device revoke <fingerprint>` (`maruhi device list` shows your devices)",
+    );
+    const next = yield* generateReserveKeys();
+    yield* issueRecoveryCodeOp({
+      session: input.session,
+      client: input.client,
+      record: next.record,
+    });
+    const retiring = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
+    if (retiring.length === 0) {
+      yield* logWarning(
+        "no previous reserve key is recorded on this machine, so none was revoked. Check `maruhi device list` and revoke any reserve device you do not recognise with `maruhi device revoke <fingerprint>`",
+      );
+    }
+    return yield* registerReserveAndRetire({ ...input, next, retiring });
+  });
+}
+
+/**
+ * 新予備鍵の記録 → 旧予備鍵の記録上の失効 → 各プロジェクトで add_device / revoke_device /
+ * sweep → 旧 B を封印していた台帳の行の削除(rotate と `--replace` で共通の後段)。
+ */
+function registerReserveAndRetire(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly next: ReserveKeys;
+  readonly retiring: readonly string[];
+}): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const store = yield* OwnDeviceStore;
+    yield* recordReserveLocally(input.session, input.next);
+    yield* store.markRevoked(
+      input.session.origin,
+      input.session.userId,
+      input.retiring,
+      Date.now(),
+    );
+    yield* io.log(
+      `Sealed the new reserve key ${input.next.fingerprintHex}; registering it${input.retiring.length === 0 ? "" : ` and revoking the previous reserve ${input.retiring.length === 1 ? "key" : "keys"} ${input.retiring.join(", ")}`} on every project`,
+    );
+    const projects = yield* fetchProjectMemberships(input.client);
+    let exitCode = 0;
+    for (const project of projects) {
+      const outcome = yield* rotateReserveOnProject({
+        session: input.session,
+        projectId: project.projectId,
+        newReserve: input.next,
+        oldFingerprintsHex: input.retiring,
+      });
+      if ((yield* reportReserveRotateOutcome(outcome)) !== 0) {
+        exitCode = 1;
+      }
+    }
+    yield* retireOldLedgerRows(input.client);
+    return exitCode;
   });
 }
 
@@ -561,7 +629,7 @@ function reportReserveSweep(
  */
 function staleReserveFingerprints(
   session: CliSession,
-  openedFingerprintHex: string,
+  openedFingerprintHex: string | null,
   nextFingerprintHex: string,
 ): Effect.Effect<readonly string[], CliError, OwnDeviceStore> {
   return Effect.gen(function* () {
@@ -573,7 +641,9 @@ function staleReserveFingerprints(
             .filter((entry) => entry.source === "reserve")
             .map((entry) => entry.keyFingerprintHex)
         : [];
-    return [...new Set([openedFingerprintHex, ...recorded])]
+    return [
+      ...new Set([...(openedFingerprintHex === null ? [] : [openedFingerprintHex]), ...recorded]),
+    ]
       .filter((fingerprintHex) => fingerprintHex !== nextFingerprintHex)
       .toSorted();
   });
@@ -615,7 +685,6 @@ export function keyReserveRotateOp(input: {
   readonly via: LedgerOpenVia;
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const masterKeys = yield* loadMasterKeys(input.session);
     const old = yield* openLedgerReserveForChange({
       session: input.session,
@@ -630,7 +699,6 @@ export function keyReserveRotateOp(input: {
       client: input.client,
       record: next.record,
     });
-    const store = yield* OwnDeviceStore;
     // 失効対象 = 開封した B + ローカル記録上の予備鍵(失効済みの印を含む)のうち新鍵以外。
     // 中断した前回の実行が台帳だけ差し替えて終わっていた場合、B は前回の新鍵で、
     // 元の予備鍵は記録に revoked として残るがチェーンにはまだ載っている(Bugbot 指摘)。
@@ -640,25 +708,6 @@ export function keyReserveRotateOp(input: {
       old.fingerprintHex,
       next.fingerprintHex,
     );
-    yield* recordReserveLocally(input.session, next);
-    yield* store.markRevoked(input.session.origin, input.session.userId, retiring, Date.now());
-    yield* io.log(
-      `Sealed the new reserve key ${next.fingerprintHex}; registering it and revoking the previous reserve key ${old.fingerprintHex}${retiring.length === 1 ? "" : ` (and ${countNoun(retiring.length - 1, "earlier reserve key")} still recorded on this machine, if any is still active)`} on every project`,
-    );
-    const projects = yield* fetchProjectMemberships(input.client);
-    let exitCode = 0;
-    for (const project of projects) {
-      const outcome = yield* rotateReserveOnProject({
-        session: input.session,
-        projectId: project.projectId,
-        newReserve: next,
-        oldFingerprintsHex: retiring,
-      });
-      if ((yield* reportReserveRotateOutcome(outcome)) !== 0) {
-        exitCode = 1;
-      }
-    }
-    yield* retireOldLedgerRows(input.client);
-    return exitCode;
+    return yield* registerReserveAndRetire({ ...input, next, retiring });
   });
 }

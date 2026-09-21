@@ -695,7 +695,7 @@ const keyRecoveryConfig = {
   ),
   replace: singleFlag(
     "replace",
-    "Replace the reserve key with a new one (when the current recovery code may be compromised); the old reserve key is revoked on every project",
+    "Replace the reserve key with a new one without opening the ledger (when the recovery code is lost or may be compromised); the reserve keys recorded on this machine are revoked on every project",
   ),
 };
 const keyReserveRotateConfig = {
@@ -3842,12 +3842,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      yield* keyRecoveryOp({
-        session: context.session,
-        client: context.client,
-        via: values.passkey ? "passkey" : "code",
-        replace: values.replace,
-      });
+      onExitCode(
+        yield* keyRecoveryOp({
+          session: context.session,
+          client: context.client,
+          via: values.passkey ? "passkey" : "code",
+          replace: values.replace,
+        }),
+      );
     }),
   ).pipe(
     Command.withDescription(

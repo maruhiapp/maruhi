@@ -18,8 +18,9 @@
 // 登録簿(`GET /auth/devices`)はここでは読まない・書かない(K4-3 反例 2 — テストで固定)。
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, type Stdio } from "effect";
 
+import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import type { ProjectContext } from "./context.ts";
 import {
   capWithinSignerCap,
@@ -29,7 +30,7 @@ import {
   findOwnDevice,
 } from "./device-key.ts";
 import { appendAddDevice, backfillToDevice } from "./device-ops.ts";
-import { displayText } from "./display.ts";
+import { countNoun, displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
@@ -49,7 +50,7 @@ import type { VerifiedProject } from "./sync.ts";
  */
 export function syncOwnDevices(
   context: ProjectContext,
-): Effect.Effect<ProjectContext, never, OwnDeviceStore | CliIo> {
+): Effect.Effect<ProjectContext, never, OwnDeviceStore | CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const store = yield* OwnDeviceStore;
     const { session } = context;
@@ -75,8 +76,15 @@ export function syncOwnDevices(
       return context;
     }
     let current = context;
-    for (const candidate of registrationCandidates(context.verified, self, records)) {
-      current = yield* registerRecorded({ context: current, self, own, candidate });
+    const candidates = registrationCandidates(context.verified, self, records);
+    // 登録は署名を伴う(add_device + DEK のラップ)ので、`device approve` と同じ儀式ゲート
+    // (既知エージェント → stdin / stdout が端末か)を通る人のセッションでだけ行う。
+    // ローカル記録は署名されていないファイルで、エージェント環境で行を仕込めば
+    // このゲート抜きに署名者を足せてしまう(K4-37 — セキュリティレビュー指摘)
+    if (candidates.length > 0 && (yield* registrationAllowed(context.projectId, candidates))) {
+      for (const candidate of candidates) {
+        current = yield* registerRecorded({ context: current, self, own, candidate });
+      }
     }
     // (d): 予備鍵の不在(K4-9)
     yield* warnReserveMissing({
@@ -86,6 +94,27 @@ export function syncOwnDevices(
     });
     return current;
   });
+}
+
+/**
+ * (c) の儀式ゲート(K4-37): 通らなければ Note を出して false(コマンド本体は止めない —
+ * 登録は SHOULD の付随)。材料は `ensureDeviceApproveAllowed` と同じ 2 層。
+ */
+function registrationAllowed(
+  projectId: string,
+  candidates: readonly OwnDeviceEntry[],
+): Effect.Effect<boolean, never, CliIo | Stdio.Stdio> {
+  return ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) => `an AI agent environment was detected${detected}`,
+    terminalRefusal: (reason) => reason,
+  }).pipe(
+    Effect.as(true),
+    Effect.catch((error) =>
+      logNote(
+        `${countNoun(candidates.length, "device key")} recorded on this machine (${candidates.map((candidate) => candidate.keyFingerprintHex).join(", ")}) ${candidates.length === 1 ? "is" : "are"} not registered on project ${displayText(projectId)} yet. Registering a device key adds a signer and wraps DEKs to it, so it is done only when a person runs maruhi at an interactive terminal — skipped here because ${error.message}. Run any keyed maruhi command (for example \`maruhi pull\`) yourself in a terminal to register ${candidates.length === 1 ? "it" : "them"}, or remove the record if you do not recognise it (\`maruhi device list\`)`,
+      ).pipe(Effect.as(false)),
+    ),
+  );
 }
 
 /** (c) の候補: 失効しておらず、このチェーンに無く、このチェーンで失効してもいない記録。 */

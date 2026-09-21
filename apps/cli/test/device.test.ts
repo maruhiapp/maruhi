@@ -619,6 +619,38 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     });
   }
 
+  it("エージェント環境・非端末では記録からの登録を行わない(儀式ゲート — K4-37)", async () => {
+    for (const mode of ["agent", "non-tty"] as const) {
+      const built = await chainWithEnvironment();
+      const { server, state } = await makeServer({
+        built,
+        withEnvironment: true,
+        extra: [inviteHandler(built)],
+      });
+      const env = await startEnv(server.origin, built.projectId, owner);
+      // 仕込まれた行(署名されていないファイル)— 出所は approved を装う
+      await recordOwnDevice(env, server.origin, dev2, "approved");
+      if (mode === "agent") {
+        env.setAgent({ isAgent: true, name: "test-agent" });
+      } else {
+        env.setTerminal({ stdin: false });
+      }
+      // 鍵ありの前段(初回同期)は走るが、登録は飛ばす
+      await runCli(["invite", "create", "--role", "member"], env.layer);
+      expect(state.appended).toEqual([]);
+      expect(state.registered).toEqual([]);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain(
+        `1 device key recorded on this machine (${dev2.fingerprintHex}) is not registered on project`,
+      );
+      expect(errors).toContain(
+        mode === "agent"
+          ? "an AI agent environment was detected (test-agent)"
+          : "stdin is not an interactive terminal",
+      );
+    }
+  });
+
   it("失効と記録した端末は足さず、登録簿にしか無い端末も足さない(negative)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
@@ -1144,7 +1176,7 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     const added = state.appended.find((entry) => entry.op === "add_device");
     expect(added).toBeDefined();
     expect(env.logs.join("\n")).toContain(
-      `revoking the previous reserve key ${reserve.fingerprintHex} (and 1 earlier reserve key still recorded on this machine, if any is still active) on every project`,
+      `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on every project`,
     );
     // ローカル記録: O と N1 は失効、新鍵だけが有効な予備鍵
     const recorded = await readOwnDevices(env, server.origin);
@@ -1153,6 +1185,72 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     expect([dev2.fingerprintHex, reserve.fingerprintHex]).not.toContain(
       active[0]?.keyFingerprintHex,
     );
+    // 予備鍵の秘密はキーチェーンに残らない
+    const keychain = [...env.keychain.values()].join("\n");
+    expect(keychain).not.toContain(reserve.encSkHex);
+    expect(keychain).toContain(owner.encPubHex);
+  });
+});
+
+describe("maruhi key recovery --replace(台帳を開かずに置換 — K4-38)", () => {
+  it("記録にある旧予備鍵を各プロジェクトで失効させ、新予備鍵を登録する", async () => {
+    // チェーン: owner の端末 + 旧予備鍵(reserve)。台帳は開けない(コード紛失)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const ledgerPuts: unknown[] = [];
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      extra: [
+        onRequest("GET", "/auth/recovery/status", () => ({
+          status: 200,
+          json: { registered: true, updatedAtMs: 1754006400000 },
+        })),
+        onRequest("PUT", "/auth/recovery", (request) => {
+          ledgerPuts.push(request.body);
+          return { status: 204 };
+        }),
+        onRequest("GET", "/auth/key-wraps", () => ({
+          status: 200,
+          json: {
+            recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
+            passkeys: [],
+            guardianGroups: [],
+          },
+        })),
+      ],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    await recordOwnDevice(env, server.origin, reserve, "reserve");
+    env.setPromptResponses([
+      () => {
+        const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+        const groups = (line ?? "").trim().split("-");
+        return groups[groups.length - 1] ?? "";
+      },
+    ]);
+    expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
+      0,
+    );
+    // 台帳は読まずに差し替える
+    expect(state.paths()).not.toContain("GET /auth/recovery");
+    expect(ledgerPuts).toHaveLength(1);
+    // 新予備鍵の add_device と旧予備鍵の revoke_device
+    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device", "revoke_device"]);
+    expect(state.appended[1]?.payload).toEqual({
+      targetUserId: owner.userId,
+      deviceFingerprintsHex: [reserve.fingerprintHex],
+    });
+    // 記録: 旧予備鍵は失効、新予備鍵だけが有効
+    const recorded = await readOwnDevices(env, server.origin);
+    expect(
+      recorded.find((row) => row.keyFingerprintHex === reserve.fingerprintHex)?.revokedAtMs,
+    ).not.toBeNull();
+    const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
+    expect(active).toHaveLength(1);
+    expect(active[0]?.keyFingerprintHex).not.toBe(reserve.fingerprintHex);
     // 予備鍵の秘密はキーチェーンに残らない
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
