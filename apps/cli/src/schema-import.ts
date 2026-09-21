@@ -28,7 +28,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
-import { AgentProfileRef, describeNonTerminal } from "./agent-gate.ts";
+import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, displayText, escapeText, logWarnings } from "./display.ts";
@@ -66,29 +66,13 @@ const MAX_DESCRIPTION_LENGTH = 1024;
  * リダイレクトしても新しい露出は生じない。値そのものはどのチャネルにも
  * 出さない(観察のみ — env-file.ts)。
  */
-export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.Stdio> = Effect.gen(
-  function* () {
-    const agent = yield* AgentProfileRef;
-    if (agent.isAgent) {
-      const detected = agent.name === undefined ? "" : ` (${agent.name})`;
-      return yield* Effect.fail(
-        cliError(
-          `Refused to run schema import: an AI agent environment was detected${detected}. The per-variable approval is the core of this ceremony, so a person must run it in a terminal (agents can read the resulting schema with \`maruhi schema\`)`,
-        ),
-      );
-    }
-    const stdio = yield* Stdio.Stdio;
-    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (!stdinIsTerminal || !stdoutIsTerminal) {
-      return yield* Effect.fail(
-        cliError(
-          `Refused to run schema import: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal`,
-        ),
-      );
-    }
-  },
-);
+export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.Stdio> =
+  ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) =>
+      `Refused to run schema import: an AI agent environment was detected${detected}. The per-variable approval is the core of this ceremony, so a person must run it in a terminal (agents can read the resulting schema with \`maruhi schema\`)`,
+    terminalRefusal: (reason) =>
+      `Refused to run schema import: ${reason} (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal`,
+  });
 
 /** import の入力(effect-cli.ts が EnvironmentContext から組む)。 */
 export interface SchemaImportInput {

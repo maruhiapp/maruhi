@@ -24,21 +24,25 @@ import { CliIo } from "./io.ts";
 const MAX_LIST_PAGES = 100;
 
 /** 一覧の 1 行(api-schema の ProjectMembershipSchema の受信形)。 */
-interface MembershipRow {
+export interface MembershipRow {
   readonly projectId: string;
   readonly role: "owner" | "admin" | "member" | "reader";
 }
 
-/** 全ページを取得して 1 行 1 プロジェクトで表示する(stdout はデータのみ)。 */
-export function projectListOp(input: {
-  readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo> {
+/**
+ * Fetches every page of the caller's project memberships (server-reported —
+ * discovery only; verified state comes from syncing each chain). `maruhi
+ * project list` と、全プロジェクトを走査する端末系コマンド(device.ts / key-recover.ts)
+ * が共有する。
+ */
+export function fetchProjectMemberships(
+  client: MaruhiClient,
+): Effect.Effect<readonly MembershipRow[], CliError> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const rows: MembershipRow[] = [];
     let after: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const response = yield* input.client.membership
+      const response = yield* client.membership
         .list({ query: after === undefined ? {} : { after } })
         .pipe(Effect.mapError(toCliError));
       rows.push(...response.projects);
@@ -54,6 +58,17 @@ export function projectListOp(input: {
         ),
       );
     }
+    return rows;
+  });
+}
+
+/** 全ページを取得して 1 行 1 プロジェクトで表示する(stdout はデータのみ)。 */
+export function projectListOp(input: {
+  readonly client: MaruhiClient;
+}): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const rows = yield* fetchProjectMemberships(input.client);
     if (rows.length === 0) {
       yield* io.log("No projects");
       yield* io.logError(

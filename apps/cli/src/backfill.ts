@@ -37,6 +37,46 @@ export interface BackfillEnvironmentOutcome {
   readonly repaired: number;
 }
 
+/** 複数環境のバックフィルの集計(1 環境の失敗で残りを止めない — §7)。 */
+export interface BackfillAggregate {
+  readonly registered: number;
+  readonly alreadyRegistered: number;
+  readonly repaired: number;
+  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
+}
+
+/**
+ * 環境ごとにバックフィルを走らせて集計する(member add / change-role の拡大分 /
+ * 端末追加が共有する集計の形)。失敗は環境ごとに集めて続行する。
+ */
+export function backfillEachEnvironment<R>(
+  environments: readonly string[],
+  run: (environmentId: string) => Effect.Effect<BackfillEnvironmentOutcome, CliError, R>,
+): Effect.Effect<BackfillAggregate, never, R> {
+  return Effect.gen(function* () {
+    let registered = 0;
+    let alreadyRegistered = 0;
+    let repaired = 0;
+    const failed: { readonly environmentId: string; readonly message: string }[] = [];
+    for (const environmentId of environments) {
+      const result = yield* run(environmentId).pipe(
+        Effect.map((outcome) => ({ kind: "ok", outcome }) as const),
+        Effect.catch((error) =>
+          Effect.succeed({ kind: "failed", message: error.message } as const),
+        ),
+      );
+      if (result.kind === "ok") {
+        registered += result.outcome.registered;
+        alreadyRegistered += result.outcome.alreadyRegistered;
+        repaired += result.outcome.repaired;
+      } else {
+        failed.push({ environmentId, message: result.message });
+      }
+    }
+    return { registered, alreadyRegistered, repaired, failed };
+  });
+}
+
 /**
  * 1 環境の全エポックの DEK を対象受信者へラップして登録する。自分宛ラップの
  * 検証・開封(§5.1 + §5.2)→ 再ラップ + 登録署名(§5.1)→ 一括登録 → 409 なら

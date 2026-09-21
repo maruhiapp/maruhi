@@ -77,7 +77,6 @@ export interface HandoffApprovalInput {
   readonly approverKeyFingerprintHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
-  readonly blob: MasterKeyWrapBlob | null;
 }
 
 export interface KeyWrapRepoShape {
@@ -741,14 +740,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           approverKeyFingerprintHex: row.approverKeyFingerprintHex,
           encHex: row.encHex,
           ciphertextHex: row.ciphertextHex,
-          blob:
-            row.blobSuite !== null && row.blobNonceHex !== null && row.blobCiphertextHex !== null
-              ? {
-                  suite: row.blobSuite,
-                  nonceHex: row.blobNonceHex,
-                  ciphertextHex: row.blobCiphertextHex,
-                }
-              : null,
           createdAtMs: row.createdAt,
         }));
       }),
@@ -800,14 +791,13 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   };
 }
 
-/** 承認の挿入行(blob は device のみ — 3 列まとめて NULL か非 NULL)。 */
+/** 承認の挿入行(保護者の分片だけ — 旧端末経路の blob 列は DK K4 で撤去)。 */
 function approvalRow(
   requestId: string,
   approverUserId: string,
   approval: HandoffApprovalInput,
   nowMs: number,
 ) {
-  const blob = approval.blob;
   return {
     requestId,
     source: approval.source,
@@ -816,9 +806,6 @@ function approvalRow(
     approverKeyFingerprintHex: approval.approverKeyFingerprintHex,
     encHex: approval.encHex,
     ciphertextHex: approval.ciphertextHex,
-    blobSuite: blob === null ? null : blob.suite,
-    blobNonceHex: blob === null ? null : blob.nonceHex,
-    blobCiphertextHex: blob === null ? null : blob.ciphertextHex,
     createdAt: nowMs,
   };
 }

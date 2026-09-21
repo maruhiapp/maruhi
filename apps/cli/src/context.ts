@@ -19,6 +19,8 @@ import {
 import type { CliConfig } from "./config.ts";
 import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
+import { ownDeviceOrFail } from "./device-key.ts";
+import { syncOwnDevices } from "./device-sync.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
@@ -33,6 +35,7 @@ import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import type { FingerprintBook } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
+import type { OwnDeviceStore } from "./own-devices.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
@@ -63,7 +66,8 @@ export type CliServices =
   | CliIo
   | ProcessRunner
   | Stdio.Stdio
-  | HttpClient.HttpClient;
+  | HttpClient.HttpClient
+  | OwnDeviceStore;
 
 /** データ系コマンド共通のフラグ(サーバー / プロジェクト / 環境の上書き)。 */
 export interface CommonFlags {
@@ -568,7 +572,8 @@ function openProjectWith(
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    return { ...base, masterKeys, recipient };
+    // 端末集合の観測と初回同期の登録(DK K4-3 — 鍵ありの前段だけ。冪等・非失敗)
+    return yield* syncOwnDevices({ ...base, masterKeys, recipient });
   });
 }
 
@@ -663,11 +668,19 @@ export function openEnvironment(
     const config = yield* store.load;
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
     const context = yield* openProjectWith(config, flags, options);
+    // 判定は**この端末の実効 scope**(人 ∩ 端末 — DK K4-17)。手元の鍵がチェーンに無い
+    // (未登録 / 失効)ならここで `device approve` を案内する(値の取得より前)
+    const self = context.verified.state.members.get(context.session.userId);
+    const device =
+      self === undefined
+        ? undefined
+        : yield* ownDeviceOrFail(self, { encPubHex: context.masterKeys.record.encPubHex });
     yield* requireEnvironmentInScope({
       verified: context.verified,
       userId: context.session.userId,
       environmentId,
       operation: "operate on",
+      device,
     });
     const floorHandle = yield* floorHandleFor(context, environmentId);
     return { ...context, environmentId, floorHandle };

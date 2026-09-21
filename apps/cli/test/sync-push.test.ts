@@ -333,7 +333,10 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
       target: "web",
       variables: { ALPHA: 4, BETA: 1 },
     });
-    expect(fixture.env.errors.join("\n")).not.toContain("Warning");
+    // 同期についての警告は無い(予備鍵の不在の警告は鍵ありの同期そのものの警告 — DK K4-9)
+    expect(fixture.env.errors.join("\n")).not.toMatch(
+      /sync config|synced|Warning: (?!no reserve key)/,
+    );
   });
 
   it("cwd の既定パス(maruhi.sync.json)を黙って読む(`project` が一致するとき)", async () => {
@@ -449,7 +452,9 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.env.execCalls).toEqual([]);
     expect(receiptsRequests(fixture)).toBe(0);
     // 同期についての note / 警告は無い(床・checkpoint の既存 note は push 自身のもの)
-    expect(fixture.env.errors.join("\n")).not.toMatch(/sync config|synced|Warning/);
+    expect(fixture.env.errors.join("\n")).not.toMatch(
+      /sync config|synced|Warning: (?!no reserve key)/,
+    );
   });
 
   it("明示した --config が別プロジェクトのものなら書き方の誤り(2)で、push は送られない", async () => {
@@ -522,7 +527,9 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
     process.chdir(quiet.configDir);
     expect(await push(quiet, NEW_VALUE)).toBe(0);
-    expect(quiet.env.errors.join("\n")).not.toMatch(/sync config|synced|Warning/);
+    expect(quiet.env.errors.join("\n")).not.toMatch(
+      /sync config|synced|Warning: (?!no reserve key)/,
+    );
   });
 
   it("production ターゲットは onPush のままでは push されない(設定の段階で apply を拒む)", async () => {

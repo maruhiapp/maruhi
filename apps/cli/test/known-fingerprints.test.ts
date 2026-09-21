@@ -34,8 +34,8 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
 
     const hit = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
     if (hit.state !== "hit") throw new Error(`expected hit, got ${hit.state}`);
-    expect(hit.entry.fingerprintHex).toBe(FP_A);
-    expect(hit.entry.verifiedAtMs).toBeGreaterThan(0);
+    expect(hit.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_A]);
+    expect(hit.entries[0]?.verifiedAtMs).toBeGreaterThan(0);
 
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_B))).state).toBe("miss");
     expect((await Effect.runPromise(book.lookup("https://other.example", USER_A))).state).toBe(
@@ -48,21 +48,45 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
   });
 
-  it("同一キーへの record は上書きし、他エントリは保持する(read-merge-write)", async () => {
+  it("同じ人への record は指紋の集合に足し、他エントリは保持する(read-merge-write — DK の端末集合)", async () => {
     const { book, path } = await makeBook();
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));
     await Effect.runPromise(book.record(ORIGIN, USER_B, FP_B));
-    // USER_A の正当な鍵更新(儀式の再成功)を上書きで反映する
+    // USER_A の 2 台目の端末(儀式の再成功)は集合に足す(1 台目を消さない)
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
 
     const a = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
     const b = await Effect.runPromise(book.lookup(ORIGIN, USER_B));
     if (a.state !== "hit" || b.state !== "hit") throw new Error("expected both hits");
-    expect(a.entry.fingerprintHex).toBe(FP_B);
-    expect(b.entry.fingerprintHex).toBe(FP_B);
-    // ファイルは可読 JSON(利用者がエントリを削除して儀式を強制できる導線)
+    expect(a.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
+      [FP_A, FP_B].toSorted(),
+    );
+    expect(b.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_B]);
+    // ファイルは可読 JSON(利用者がエントリを削除して儀式を強制できる導線)。v2 = 集合
     const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
-    expect(stored.v).toBe(1);
+    expect(stored.v).toBe(2);
+  });
+
+  it("v1 の帳(1 人 1 指紋)は 1 要素の集合として読み、次の record で v2 になる", async () => {
+    const { book, path } = await makeBook();
+    await writeFile(
+      path,
+      JSON.stringify({
+        v: 1,
+        known: { [ORIGIN]: { [USER_A]: { fingerprintHex: FP_A, verifiedAtMs: 1 } } },
+      }),
+    );
+    const before = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
+    if (before.state !== "hit") throw new Error("expected hit");
+    expect(before.entries).toEqual([{ fingerprintHex: FP_A, verifiedAtMs: 1 }]);
+    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
+    const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
+    expect(stored.v).toBe(2);
+    const after = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
+    if (after.state !== "hit") throw new Error("expected hit");
+    expect(after.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
+      [FP_A, FP_B].toSorted(),
+    );
   });
 
   it("破損ファイルは corrupt(miss と区別)で、record は破損を上書きしない", async () => {

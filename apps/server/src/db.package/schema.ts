@@ -398,18 +398,13 @@ export const keyHandoffApprovals = sqliteTable(
     requestId: text("request_id")
       .notNull()
       .references(() => keyHandoffRequests.id, { onDelete: "cascade" }),
-    /** 'device' | group_id */
+    /** group_id(保護者グループ。旧端末経路 'device' は 2026-09-19 DK K4 で撤去) */
     source: text("source").notNull(),
-    /** device = 0 */
     shareIndex: integer("share_index").notNull(),
     approverUserId: text("approver_user_id").notNull(),
     approverKeyFingerprintHex: text("approver_key_fingerprint_hex").notNull(),
     encHex: text("enc_hex").notNull(),
     ciphertextHex: text("ciphertext_hex").notNull(),
-    /** source = 'device' のみ(KEK_h による B のラップ) */
-    blobSuite: text("blob_suite"),
-    blobNonceHex: text("blob_nonce_hex"),
-    blobCiphertextHex: text("blob_ciphertext_hex"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.requestId, t.source, t.shareIndex] })],

@@ -42,7 +42,7 @@ import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { issueCheckpoint } from "./checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
-import { soleDeviceOrFail } from "./device-key.ts";
+import { ownDeviceBySigningKey } from "./device-key.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import { CliError, cliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
@@ -249,13 +249,15 @@ function ensureRotatable(
   verified: VerifiedProject,
   environmentId: string,
   signerUserId: string,
+  signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // メンバー性 + role(member 以上)は env create と共有
-    const member = yield* requireWritingMember({
+    // メンバー性 + 端末の実効 role(member 以上)/ scope は env create と共有
+    const { member } = yield* requireWritingMember({
       verified,
       environmentId,
       signerUserId,
+      signingKeyPair,
       operation: "rotate the epoch",
       forbidden:
         "A reader cannot rotate the epoch (rotate_epoch and value pushes require the member role or above — CRYPTO_SPEC §6.2)",
@@ -276,7 +278,7 @@ function signRotateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
   return Effect.gen(function* () {
-    const device = yield* soleDeviceOrFail(input.member);
+    const device = yield* ownDeviceBySigningKey(input.member, input.signingKeyPair);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({
@@ -608,6 +610,7 @@ function appendRotation(
                 manifestSigHashHex: manifest.manifestSigHashHex,
                 values: input.checkpointValues,
                 member: state.member,
+                deviceFingerprintHex: entry.actor.keyFingerprintHex,
                 signingKey: input.signingKeyPair.privateKey,
               });
               const sent: AcceptedRotation = {
@@ -667,6 +670,7 @@ function appendRotation(
                 resynced,
                 input.environmentId,
                 input.signerUserId,
+                input.signingKeyPair,
               );
               const environment = yield* requireChainEnvironment(resynced, input.environmentId);
               if (environment.currentEpoch + 1 !== input.newEpoch) {
@@ -680,11 +684,7 @@ function appendRotation(
                   ),
                 );
               }
-              const deks = (yield* sameWrapRecipientSet(
-                state.verified,
-                resynced,
-                input.environmentId,
-              ))
+              const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
                 ? state.deks
                 : yield* buildWraps(resynced);
               return { verified: resynced, member, deks };
@@ -1481,7 +1481,7 @@ function asOutcome<A, R>(
 /** RotateInput + エポック固有の材料から再暗号化の文脈を組む。 */
 function reencryptContext(
   input: RotateInput,
-  /** The writer's signing device (K2: the member's sole device — device-key.ts). */
+  /** The writer's signing device (the device holding this machine's key — device-key.ts). */
   writerDevice: ChainDevice,
   epochMaterial: {
     readonly epoch: number;
@@ -2020,6 +2020,7 @@ function resumeReencryption(input: {
       input.pulled.verified,
       environmentId,
       input.input.signerUserId,
+      input.input.signingKeyPair,
     );
     const dek = input.keys.deksByEpoch.get(currentEpoch);
     if (dek === undefined) {
@@ -2073,11 +2074,15 @@ function resumeReencryption(input: {
             written: [],
           }
         : yield* reencryptCurrentValues({
-            context: reencryptContext(input.input, yield* soleDeviceOrFail(member), {
-              epoch: currentEpoch,
-              dek,
-              deksByEpoch: input.keys.deksByEpoch,
-            }),
+            context: reencryptContext(
+              input.input,
+              yield* ownDeviceBySigningKey(member, input.input.signingKeyPair),
+              {
+                epoch: currentEpoch,
+                dek,
+                deksByEpoch: input.keys.deksByEpoch,
+              },
+            ),
             view: input.pulled.verified,
             targets,
             sink: warnings,
@@ -2228,7 +2233,12 @@ function rotateWithWarnings(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const reason = yield* checkReasonLength(input.reason);
-    yield* ensureRotatable(input.verified, input.environmentId, input.signerUserId);
+    yield* ensureRotatable(
+      input.verified,
+      input.environmentId,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     // --new-epoch は再開経路を通らない = 必ずエントリを署名する。理由の必須検査を
     // 署名直前まで遅らせる理由(再開では reason が記録されない)がここには無いので、
     // pull より前に落とす — 満たしようのない引数検査のために全変数の暗号文を
@@ -2317,7 +2327,12 @@ function rotateWithWarnings(
     // 理由が必須になるのはここから(チェーンエントリを実際に署名する経路)
     const entryReason = yield* requireReason(reason);
     const newEpoch = currentEpoch + 1;
-    const member = yield* ensureRotatable(pulled.verified, input.environmentId, input.signerUserId);
+    const member = yield* ensureRotatable(
+      pulled.verified,
+      input.environmentId,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     // 再暗号化に要する平文は**エポックを進める前に**手元へ揃える: 復号できない
     // 値があるなら、エポックだけが進んで再暗号化が永久に完了しない状態を作らない。
     // 未完了の再暗号化(旧エポックの値)がある状態で --new-epoch が指定された
@@ -2370,11 +2385,15 @@ function rotateWithWarnings(
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
       // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
-      context: reencryptContext(input, yield* soleDeviceOrFail(rotated.member), {
-        epoch: newEpoch,
-        dek,
-        deksByEpoch,
-      }),
+      context: reencryptContext(
+        input,
+        yield* ownDeviceBySigningKey(rotated.member, input.signingKeyPair),
+        {
+          epoch: newEpoch,
+          dek,
+          deksByEpoch,
+        },
+      ),
       view: rotated.view,
       targets,
       sink: warnings,

@@ -234,6 +234,7 @@ export type VoteEligibility =
       readonly ok: false;
       readonly reason:
         | "not-a-member"
+        | "device-not-registered"
         | "insufficient-role"
         | "duplicate-approval"
         | "approval-not-required"
@@ -241,9 +242,16 @@ export type VoteEligibility =
       readonly message: string;
     };
 
+/**
+ * 自分の票の判定は**署名する端末**(手元の鍵の FP)の実効 role で行う(DK K4 — 予告
+ * `eligibleApprovers` は他人がどの端末で票を入れるか知りえないので「owner 実効の端末を
+ * 1 つでも持つ人」のまま)。手元の鍵がその人の有効な端末でなければ票は数えられない
+ * (集計 `countedVoters` と同じ述語)。
+ */
 export function voteEligibility(
   verified: VerifiedProject,
   userId: string,
+  signingDeviceFingerprintHex: string,
   view: ProposalView,
 ): VoteEligibility {
   const member = verified.state.members.get(userId);
@@ -254,11 +262,20 @@ export function voteEligibility(
       message: "you are not a chain-derived member of this project",
     };
   }
-  if (!ownerOnAnyDevice(member)) {
+  const device = member.devices.get(signingDeviceFingerprintHex);
+  if (device === undefined) {
+    return {
+      ok: false,
+      reason: "device-not-registered",
+      message:
+        "the key on this machine is not one of your active device keys on this project's chain (register it with `maruhi device add` and approve it from a registered device with `maruhi device approve`)",
+    };
+  }
+  if (effectivePermissionOf(member, device).role !== "owner") {
     return {
       ok: false,
       reason: "insufficient-role",
-      message: `only an owner can approve (your role: ${member.role}${member.role === "owner" ? ", but none of your device keys carries an owner cap" : ""} — CRYPTO_SPEC §6.2)`,
+      message: `only an owner can approve (your role: ${member.role}${member.role === "owner" ? `, but this device's key is capped at ${device.roleCap}` : ""} — CRYPTO_SPEC §6.2)`,
     };
   }
   if (hasVoted(verified.state.members, view.proposal, member)) {

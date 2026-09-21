@@ -16,6 +16,7 @@ import type { RecipientDek } from "@maruhi/api-schema";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
+  effectivePermissionOf,
   importSigningPublicKey,
   scopeIncludesEnvironment,
   SUITE_ID,
@@ -26,10 +27,11 @@ import {
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { describeScope } from "./scope.ts";
+import { describeScope, outOfScopeMessage } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
@@ -174,7 +176,15 @@ function verifyAndUnwrapDeks(input: {
     const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
     const chainEpoch = environment.currentEpoch;
     const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
-    for (const wrap of input.deks) {
+    // 自分の端末宛の行だけを開く(AUTH_SPEC §12-6 の端末軸 — 同じ人の全端末分が 1 応答で
+    // 届く。DK K4-16: 読む → 署名検証 → 開封。他端末宛の行は毒ラップではない)。
+    // `recipientEncPubHex` を運ばない旧サーバー(K3 前 = 端末 1 つ)の行は全部自分宛
+    const mine = input.deks.filter(
+      (wrap) =>
+        wrap.recipientEncPubHex === undefined ||
+        wrap.recipientEncPubHex === input.recipient.encPubHex,
+    );
+    for (const wrap of mine) {
       if (wrap.suite !== SUITE_ID) {
         // Schema の Literal ピンで現状は到達しないが、検証座標に申告 suite を
         // 使う以上、CLI 側でも明示的に固定する(将来の union 化への防衛)
@@ -271,10 +281,21 @@ export function environmentKeysFor(input: {
         cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
       );
     }
-    if (!scopeIncludesEnvironment(self.scope, input.environmentId)) {
+    // 開封する端末 = 手元の enc 鍵と一致する自分の有効な端末(DK K4-16)。実効 scope
+    // (人 ∩ 端末 — K4-17)の外の環境の DEK は、宛てられていても使わない
+    const device = yield* ownDeviceOrFail(self, { encPubHex: input.recipient.encPubHex });
+    const permission = effectivePermissionOf(self, device);
+    if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
       return yield* Effect.fail(
         cliError(
-          `Environment ${displayText(input.environmentId)} is outside your environment scope (your scope: ${describeScope(self.scope)}), so a DEK wrap addressed to you for it is not used (CRYPTO_SPEC §6.3 — such a wrap would mean the server is not enforcing AUTH_SPEC §12-6). Your local chain view may be stale — re-run to resync, or ask an admin to widen your scope`,
+          scopeIncludesEnvironment(self.scope, input.environmentId)
+            ? outOfScopeMessage({
+                member: self,
+                device,
+                environmentId: input.environmentId,
+                operation: "open the DEKs of",
+              })
+            : `Environment ${displayText(input.environmentId)} is outside your environment scope (your scope: ${describeScope(self.scope)}), so a DEK wrap addressed to you for it is not used (CRYPTO_SPEC §6.3 — such a wrap would mean the server is not enforcing AUTH_SPEC §12-6). Your local chain view may be stale — re-run to resync, or ask an admin to widen your scope`,
         ),
       );
     }

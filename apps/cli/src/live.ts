@@ -34,6 +34,7 @@ import {
   makeFileFingerprintBook,
 } from "./known-fingerprints.ts";
 import { shouldUseColor } from "./notice.ts";
+import { makeFileOwnDeviceStore, OwnDeviceStore, ownDevicesPathOf } from "./own-devices.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import {
   buildChildEnvironment,
@@ -563,6 +564,7 @@ export function liveLayer(): Layer.Layer<CliServices> {
     Layer.succeed(PinStore, makeFilePinStore(pinsDirOf(configPath))),
     // 検証済み指紋帳(KF)も同系(<config dir>/known-fingerprints.json)
     Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
+    Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

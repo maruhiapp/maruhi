@@ -1,13 +1,14 @@
 // パスキー PRF 経路(CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5)。
 //
-// 登録 `maruhi key seal passkey`: CLI が配る localhost ページ(passkey-page.ts /
-// passkey-listener.ts)でパスキーを作り、その PRF 出力から KEK を導き、master 鍵ブロブ B
-// をラップして台帳へ登録する。台帳への書き込みは全材料が揃った**最後の 1 回**だけ
-// (途中失敗で半端な行を残さない — 補足 20 裁定 I)。
+// 登録 `maruhi key seal passkey`: 呼び出し側が台帳を開封して得た**予備鍵**のレコード B
+// (2026-09-19 DK — ledger-open.ts)を、CLI が配る localhost ページ(passkey-page.ts /
+// passkey-listener.ts)で作ったパスキーの PRF 出力から導いた KEK でラップして台帳へ
+// 登録する。台帳への書き込みは全材料が揃った**最後の 1 回**だけ(途中失敗で半端な行を
+// 残さない — 補足 20 裁定 I)。
 //
-// 復元 `maruhi key recover --passkey`: 台帳のラップを取り、同じパスキーの PRF で KEK を
-// 再導出して B を復号し、自己検証を通してキーチェーン(`maruhi agent` の中なら agent の
-// メモリ)へ保存する。
+// 開封 `maruhi key recover --passkey` / 台帳変更の `--passkey`: 台帳のラップを取り、同じ
+// パスキーの PRF で KEK を再導出して B を復号し、レコードを返す(保存しない — 予備鍵は
+// 端末鍵の発行にだけ用いる。復元の後段は key-recover.ts)。
 //
 // 儀式(登録・復元・削除)は人間の対話端末でのみ行い、AI エージェント環境では拒否する
 // (ADR-0016 決定 7 の既存ゲート)。リスナーはゲートの後でしか立たない。PRF 出力・KEK・B の
@@ -30,18 +31,13 @@ import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
-import { Keychain, parseStoredMasterKey, serializeStoredMasterKey } from "./keychain.ts";
-import { newLedgerId, wrapOwnBlob } from "./master-ops.ts";
+import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
+import { newLedgerId, wrapReserveBlob } from "./master-ops.ts";
 import { logNote } from "./notice.ts";
 import { type PrfListener, type PrfListenerOutcome, startPrfListener } from "./passkey-listener.ts";
 import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";
-import {
-  type CliSession,
-  ensureNoStoredMasterKey,
-  importMasterKeys,
-  loadMasterKeys,
-  storeMasterKeyAndReport,
-} from "./session.ts";
+import type { ReserveKeys } from "./reserve.ts";
+import type { CliSession } from "./session.ts";
 
 /** 儀式の待ち時間の上限(ブラウザ起動 + 生体認証に十分。放置端末で聞き続けない)。 */
 const CEREMONY_TIMEOUT = Duration.minutes(5);
@@ -77,9 +73,9 @@ function ensurePasskeyCeremonyAllowed(
 ): Effect.Effect<void, CliError, Stdio.Stdio> {
   const agentError =
     action === "recover"
-      ? "Refused to restore the master key with a passkey because an AI agent environment was detected (the restored key would land in the agent's session; run this yourself on a human interactive terminal)"
+      ? "Refused to open the reserve key with a passkey because an AI agent environment was detected (the opened key would land in the agent's session; run this yourself on a human interactive terminal)"
       : action === "register"
-        ? "Refused to seal the master key to a passkey because an AI agent environment was detected (sealing is a key ceremony; run this yourself on a human interactive terminal)"
+        ? "Refused to seal the reserve key to a passkey because an AI agent environment was detected (sealing is a key ceremony; run this yourself on a human interactive terminal)"
         : "Refused to remove a passkey wrap because an AI agent environment was detected (this changes how your key can be recovered; run this yourself on a human interactive terminal)";
   const noun =
     action === "recover"
@@ -258,16 +254,20 @@ function describeRow(row: PasskeyRow): string {
   return `${row.wrapId}  ${label}  credential ${row.credentialIdHex.slice(0, 16)}…  ${formatUtcMinutes(row.updatedAtMs)}`;
 }
 
-/** `maruhi key seal passkey [--label]`: seal the master key to a new passkey. */
+/**
+ * `maruhi key seal passkey [--label]`: seal the reserve key to a new passkey.
+ * `reserve` は呼び出し側が台帳を開封して得た予備鍵(ledger-open.ts — 開封は
+ * 台帳変更の資格。K4-2)。
+ */
 export function sealPasskeyOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
+  readonly reserve: ReserveKeys;
   readonly label?: string | undefined;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* ensurePasskeyCeremonyAllowed(io, "register");
-    const masterKeys = yield* loadMasterKeys(input.session);
     const rows = yield* fetchPasskeyRows(input.client);
     if (rows.length >= MAX_PASSKEY_WRAPS_PER_USER) {
       return yield* Effect.fail(
@@ -292,8 +292,8 @@ export function sealPasskeyOp(input: {
       "register",
     );
     const kek = yield* deriveKek(outcome.prf);
-    const wrapped = yield* wrapOwnBlob({
-      masterKeys,
+    const wrapped = yield* wrapReserveBlob({
+      record: input.reserve.record,
       kek,
       context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
     });
@@ -326,16 +326,16 @@ export function sealPasskeyOp(input: {
         ),
         Effect.mapError(toCliError),
       );
-    yield* io.log(`Sealed the master key to a passkey (wrap ${wrapId})`);
-    yield* io.log(`key fingerprint: ${masterKeys.fingerprintHex}`);
+    yield* io.log(`Sealed the reserve key to a passkey (wrap ${wrapId})`);
+    yield* io.log(`reserve key fingerprint: ${input.reserve.fingerprintHex}`);
     yield* logNote(
-      "restore it on another device with `maruhi key recover --passkey`. If you delete the passkey from your authenticator, remove this wrap with `maruhi key seal remove` too",
+      "a machine with no device key can restore the reserve key with `maruhi key recover --passkey` and register itself as a new device. If you delete the passkey from your authenticator, remove this wrap with `maruhi key seal remove` too",
     );
   });
 }
 
 const NO_PASSKEY_REGISTERED =
-  "No passkey is registered for your account. Run `maruhi key seal passkey` on a device that still has the master key, or restore with `maruhi key recover` (recovery code) or `maruhi key recover --handoff`";
+  "No passkey is registered for your account. Seal the reserve key to one with `maruhi key seal passkey` (on a registered device), or open it with the recovery code instead (`maruhi key recover` / omit --passkey)";
 
 /** 儀式で選ばれた行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
 function fetchWrap(
@@ -422,18 +422,17 @@ function recoverCeremonyFirst(
   });
 }
 
-/** 復号 → 自己検証 → 保存(PRF 出力・KEK・B はこの関数のローカルにだけ存在する)。 */
-function unwrapAndStore(input: {
+/** 復号 → レコードの解釈(PRF 出力・KEK はこの関数のローカルにだけ存在する)。 */
+function unwrapReserveRecord(input: {
   readonly session: CliSession;
-  readonly entryName: string;
   readonly material: RecoveryMaterial;
-}): Effect.Effect<void, CliError, Keychain | CliIo> {
+}): Effect.Effect<StoredMasterKey, CliError> {
   return Effect.gen(function* () {
     const { wrap, outcome, wrapId } = input.material;
     if (outcome.credentialIdHex !== wrap.credentialIdHex) {
       return yield* Effect.fail(
         cliError(
-          "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the key cannot be restored. Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey on a device that still has the key",
+          "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the reserve key cannot be opened. Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey",
         ),
       );
     }
@@ -445,12 +444,12 @@ function unwrapAndStore(input: {
           wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
           context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
         }),
-      catch: () => cliError("Failed to decrypt the wrapped master key (crypto error)"),
+      catch: () => cliError("Failed to decrypt the wrapped reserve key (crypto error)"),
     });
     if (!unwrapped.ok) {
       return yield* Effect.fail(
         cliError(
-          "Cannot decrypt the wrapped master key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
+          "Cannot decrypt the wrapped reserve key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
         ),
       );
     }
@@ -458,44 +457,32 @@ function unwrapAndStore(input: {
     if (record === null) {
       return yield* Effect.fail(
         cliError(
-          "The decrypted blob is not a master-key record. The device that registered this passkey holds a broken key record, or a newer maruhi wrote it — update maruhi, or restore another way",
+          "The decrypted blob is not a key record. The device that registered this passkey wrote a broken record, or a newer maruhi wrote it — update maruhi, or open the reserve key another way",
         ),
       );
     }
-    const validated = yield* importMasterKeys(record).pipe(
-      Effect.mapError(() =>
-        cliError(
-          "The decrypted master-key record cannot be loaded (unknown suite or corrupt). Update maruhi, or restore another way",
-        ),
-      ),
-    );
-    yield* storeMasterKeyAndReport({
-      entryName: input.entryName,
-      serialized: serializeStoredMasterKey(record),
-      action: "Restored the master key via passkey",
-      fingerprintHex: validated.fingerprintHex,
-    });
+    return record;
   });
 }
 
-/** `maruhi key recover --passkey`: restore the master key with a registered passkey. */
-export function recoverWithPasskeyOp(input: {
+/**
+ * Opens the reserve key with a registered passkey and returns its record
+ * (memory only — nothing is stored). `maruhi key recover --passkey` の前段と、
+ * 台帳変更の `--passkey` 開封(ledger-open.ts)が共有する。
+ */
+export function openReserveWithPasskey(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* ensurePasskeyCeremonyAllowed(io, "recover");
-    const entryName = yield* ensureNoStoredMasterKey(
-      input.session,
-      "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
-    );
     const rows = yield* fetchPasskeyRows(input.client);
     if (rows.length === 0) {
       return yield* Effect.fail(cliError(NO_PASSKEY_REGISTERED));
     }
     const material = yield* recoverCeremonyFirst(input.client, rows);
-    yield* unwrapAndStore({ session: input.session, entryName, material });
+    return yield* unwrapReserveRecord({ session: input.session, material });
   });
 }
 

@@ -1,8 +1,10 @@
 // 検証済み指紋帳(KF — ROADMAP / integration-options.md §3 補足 17 第 A 巡)。
 //
-// maruhi の鍵は**ユーザー単位**(1 人 1 master 鍵)なので、一度 12 語の儀式で
-// 帯域外確認した相手の指紋は、その鍵が変わらない限り有効であり続ける。CLI が
-// 「自分が確認した (origin, user_id) → 指紋」を非機密設定として保持すれば
+// 鍵は**端末に属し、権限は人に属する**(CRYPTO_SPEC §3 — 2026-09-19 DK)ので、一度
+// 12 語の儀式で帯域外確認した相手の端末鍵の指紋は、その鍵が失効しない限り有効で
+// あり続ける。相手は端末鍵の**集合**を持つため、帳の 1 人分は指紋の集合(設計録
+// dk-design.md §9 K4 — (origin, user_id) → { FP → 確認時刻 })。CLI が
+// 「自分が確認した (origin, user_id) → 指紋集合」を非機密設定として保持すれば
 // (SSH の known_hosts と同じ発想)、同じ相手が関わる次の儀式では 12 語の
 // 帯域外読み上げの**再実施**を免除できる。ただし帳の一致は「以前この鍵を
 // 確認した」ことしか意味せず、**この受諾・付与への人間の同意を代替しない**:
@@ -44,15 +46,24 @@ export interface KnownFingerprint {
   readonly verifiedAtMs: number;
 }
 
-/** ファイル全体(known-fingerprints.json)。キーは origin → user_id。 */
+/** 1 人分: 確認済み指紋の集合(FP → 確認時刻)。 */
+interface KnownUser {
+  readonly fingerprints: Readonly<Record<string, { readonly verifiedAtMs: number }>>;
+}
+
+/**
+ * ファイル全体(known-fingerprints.json)。キーは origin → user_id → 指紋集合(v2 —
+ * DK)。v1(1 人 1 指紋 `{ fingerprintHex, verifiedAtMs }`)は読み込み時に 1 要素の
+ * 集合へ昇格し、次の書き込みで v2 になる。
+ */
 interface FingerprintBookFile {
-  readonly v: 1;
-  readonly known: Readonly<Record<string, Readonly<Record<string, KnownFingerprint>>>>;
+  readonly v: 2;
+  readonly known: Readonly<Record<string, Readonly<Record<string, KnownUser>>>>;
 }
 
 /** 参照結果。corrupt は miss と区別する(呼び出し側が警告を出す)。 */
 export type FingerprintLookup =
-  | { readonly state: "hit"; readonly entry: KnownFingerprint }
+  | { readonly state: "hit"; readonly entries: readonly KnownFingerprint[] }
   | { readonly state: "miss" }
   | { readonly state: "corrupt" };
 
@@ -61,7 +72,7 @@ export interface FingerprintBookShape {
   /** 表示用のファイルパス(エントリ削除で儀式を強制再実行できる導線)。 */
   readonly filePath: string;
   readonly lookup: (origin: string, userId: string) => Effect.Effect<FingerprintLookup, CliError>;
-  /** read-merge-write の追記(同一キーは上書き — 正当な鍵更新の反映)。 */
+  /** read-merge-write の追記(同じ人の集合に指紋を足す。同じ指紋は確認時刻を更新)。 */
   readonly record: (
     origin: string,
     userId: string,
@@ -123,16 +134,20 @@ export function consultFingerprintBook(input: {
         `the verified-fingerprint book is corrupt and was ignored: ${book.filePath} — inspect it, and delete it if the change was not intentional`,
       );
     }
+    const matched =
+      looked.state === "hit"
+        ? looked.entries.find((entry) => entry.fingerprintHex === input.fingerprintHex)
+        : undefined;
     const warnIfChanged =
-      looked.state === "hit" && looked.entry.fingerprintHex !== input.fingerprintHex
+      looked.state === "hit" && matched === undefined
         ? logWarning(
-            `this fingerprint differs from the one verified for ${displayText(input.userId)} on this machine on ${formatUtcMinutes(looked.entry.verifiedAtMs)}. The person may have legitimately rebuilt their key (\`maruhi key generate\`), or this is not their key — the out-of-band check is required again`,
+            `this fingerprint is not among the ${looked.entries.length === 1 ? "one" : String(looked.entries.length)} verified for ${displayText(input.userId)} on this machine (${looked.entries.map((entry) => `${entry.fingerprintHex} on ${formatUtcMinutes(entry.verifiedAtMs)}`).join(", ")}). The person may have added a device (\`maruhi device approve\`) or rebuilt their key, or this is not their key — the out-of-band check is required again`,
           )
         : Effect.void;
     const record = book.record(input.origin, input.userId, input.fingerprintHex).pipe(
       Effect.flatMap(() =>
         logNote(
-          `recorded the verified fingerprint for ${displayText(input.userId)} — future ceremonies with this person skip the 12-word read-out while their key is unchanged (delete the entry in ${book.filePath} to force the full ceremony again)`,
+          `recorded the verified fingerprint for ${displayText(input.userId)} — future ceremonies with this person's key skip the 12-word read-out (a new device of theirs needs its own read-out; delete the entry in ${book.filePath} to force the full ceremony again)`,
         ),
       ),
       Effect.catch((error) =>
@@ -141,10 +156,7 @@ export function consultFingerprintBook(input: {
         ),
       ),
     );
-    const hit =
-      looked.state === "hit" && looked.entry.fingerprintHex === input.fingerprintHex
-        ? looked.entry
-        : null;
+    const hit = matched ?? null;
     return { hit, filePath: book.filePath, warnIfChanged, record };
   });
 }
@@ -223,7 +235,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function decodeEntry(value: unknown): KnownFingerprint | null {
+function validTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** v1 の 1 人分(`{ fingerprintHex, verifiedAtMs }`)→ 1 要素の集合。 */
+function decodeUserV1(value: unknown): KnownUser | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -232,23 +249,36 @@ function decodeEntry(value: unknown): KnownFingerprint | null {
   if (
     typeof fingerprintHex !== "string" ||
     !HEX_32.test(fingerprintHex) ||
-    typeof verifiedAtMs !== "number" ||
-    !Number.isSafeInteger(verifiedAtMs) ||
-    verifiedAtMs <= 0
+    !validTimestamp(verifiedAtMs)
   ) {
     return null;
   }
-  return { fingerprintHex, verifiedAtMs };
+  return { fingerprints: { [fingerprintHex]: { verifiedAtMs } } };
 }
 
-/** 1 origin 分(user_id → エントリ)のデコード(1 件でも不正なら全体拒否)。 */
-function decodeUsers(value: unknown): Record<string, KnownFingerprint> | null {
+/** v2 の 1 人分(`{ fingerprints: { FP: { verifiedAtMs } } }`)。 */
+function decodeUserV2(value: unknown): KnownUser | null {
+  if (!isRecord(value) || !isRecord(value["fingerprints"])) {
+    return null;
+  }
+  const fingerprints: Record<string, { readonly verifiedAtMs: number }> = {};
+  for (const [fingerprintHex, raw] of Object.entries(value["fingerprints"])) {
+    if (!HEX_32.test(fingerprintHex) || !isRecord(raw) || !validTimestamp(raw["verifiedAtMs"])) {
+      return null;
+    }
+    fingerprints[fingerprintHex] = { verifiedAtMs: raw["verifiedAtMs"] };
+  }
+  return { fingerprints };
+}
+
+/** 1 origin 分(user_id → 集合)のデコード(1 件でも不正なら全体拒否)。 */
+function decodeUsers(value: unknown, version: 1 | 2): Record<string, KnownUser> | null {
   if (!isRecord(value)) {
     return null;
   }
-  const users: Record<string, KnownFingerprint> = {};
+  const users: Record<string, KnownUser> = {};
   for (const [userId, raw] of Object.entries(value)) {
-    const entry = decodeEntry(raw);
+    const entry = version === 1 ? decodeUserV1(raw) : decodeUserV2(raw);
     if (entry === null || !BOOK_KEY.test(userId)) {
       return null;
     }
@@ -257,7 +287,7 @@ function decodeUsers(value: unknown): Record<string, KnownFingerprint> | null {
   return users;
 }
 
-/** 厳格デコード。1 件でも不正なら全体を破損扱い(部分読みしない — pins と同じ)。 */
+/** 厳格デコード(v1 / v2)。1 件でも不正なら全体を破損扱い(部分読みしない — pins と同じ)。 */
 function decodeBook(json: string): FingerprintBookFile | null {
   let value: unknown;
   try {
@@ -265,18 +295,29 @@ function decodeBook(json: string): FingerprintBookFile | null {
   } catch {
     return null;
   }
-  if (!isRecord(value) || value["v"] !== 1 || !isRecord(value["known"])) {
+  if (!isRecord(value) || !isRecord(value["known"])) {
     return null;
   }
-  const known: Record<string, Record<string, KnownFingerprint>> = {};
+  const version = value["v"];
+  if (version !== 1 && version !== 2) {
+    return null;
+  }
+  const known: Record<string, Record<string, KnownUser>> = {};
   for (const [origin, rawUsers] of Object.entries(value["known"])) {
-    const users = BOOK_KEY.test(origin) ? decodeUsers(rawUsers) : null;
+    const users = BOOK_KEY.test(origin) ? decodeUsers(rawUsers, version) : null;
     if (users === null) {
       return null;
     }
     known[origin] = users;
   }
-  return { v: 1, known };
+  return { v: 2, known };
+}
+
+/** 集合 → 参照結果のエントリ列(FP 昇順)。 */
+function entriesOf(user: KnownUser): readonly KnownFingerprint[] {
+  return Object.entries(user.fingerprints)
+    .map(([fingerprintHex, { verifiedAtMs }]) => ({ fingerprintHex, verifiedAtMs }))
+    .toSorted((a, b) => (a.fingerprintHex < b.fingerprintHex ? -1 : 1));
 }
 
 /** File-backed fingerprint book at `path` (used by both production and tests). */
@@ -317,8 +358,9 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
           }
           // own-property 参照(floor.ts の規律 — prototype 経由の値を拾わない)
           const users = floorRecordGet(loaded.book.known, origin);
-          const entry = users === undefined ? undefined : floorRecordGet(users, userId);
-          return entry === undefined ? { state: "miss" } : { state: "hit", entry };
+          const user = users === undefined ? undefined : floorRecordGet(users, userId);
+          const entries = user === undefined ? [] : entriesOf(user);
+          return entries.length === 0 ? { state: "miss" } : { state: "hit", entries };
         },
         catch: () => cliError(`Cannot read the verified-fingerprint book: ${path}`),
       }),
@@ -337,13 +379,22 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
             throw new Error("corrupt");
           }
           const base: FingerprintBookFile =
-            loaded.state === "missing" ? { v: 1, known: {} } : loaded.book;
+            loaded.state === "missing" ? { v: 2, known: {} } : loaded.book;
           const users = floorRecordGet(base.known, origin) ?? {};
+          const user = floorRecordGet(users, userId) ?? { fingerprints: {} };
           await write({
-            v: 1,
+            v: 2,
             known: {
               ...base.known,
-              [origin]: { ...users, [userId]: { fingerprintHex, verifiedAtMs: Date.now() } },
+              [origin]: {
+                ...users,
+                [userId]: {
+                  fingerprints: {
+                    ...user.fingerprints,
+                    [fingerprintHex]: { verifiedAtMs: Date.now() },
+                  },
+                },
+              },
             },
           });
         },

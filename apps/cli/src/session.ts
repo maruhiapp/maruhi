@@ -189,7 +189,7 @@ function warnNearExpiry(
     }
     const days = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
     yield* logWarning(
-      `the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
+      `the API token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
     );
   });
 }

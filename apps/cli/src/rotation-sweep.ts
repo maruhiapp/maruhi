@@ -9,7 +9,8 @@
 //
 // **義務の環境集合(2026-09-15 ES K4 — 設計録 K4-J)**: remove = 対象の現 scope(削除
 // 直前)、降格 = 対象の新 scope、縮小 = 旧 scope \ 新 scope、revoke_server = 全環境
-// (不変 — 設計録 §6)。`all` は義務 seq 時点で存在した環境集合に具体化する(後に
+// (不変 — 設計録 §6)、端末失効(2026-09-19 DK — 設計録 dk-design.md §9 K4-8)=
+// 失効した各端末の**実効 scope**(人 ∩ 端末、失効直前 seq−1)の和集合。`all` は義務 seq 時点で存在した環境集合に具体化する(後に
 // 作成された環境の DEK を対象は持ちえない)。1 対象に複数の義務(縮小の後の remove)が
 // あれば、環境ごとに最大の基準 seq を採る。
 //
@@ -22,6 +23,8 @@ import {
   type MemberScope,
   memberScopeOf,
   type ProposableOperation,
+  type RevokeDevicePayload,
+  scopeIncludesEnvironment,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -83,13 +86,52 @@ export function baselinesOf(mandates: readonly RotationMandate[]): EnvironmentBa
   return baselines;
 }
 
+/** sweep の対象と持ち越し(actor の履行範囲で分けた結果 — member 系と端末失効が共有)。 */
+export interface SweepPartition {
+  /** actor が履行できる義務環境 → 基準 seq。 */
+  readonly baselines: EnvironmentBaselines;
+  /** actor の(実効)scope 外で未削除・未収束の義務環境(注記 — 他の履行者に委ねる)。 */
+  readonly outOfScope: readonly string[];
+  /** 対象のうち検証済み削除で飛ばす環境。 */
+  readonly skippedDeleted: readonly string[];
+}
+
+/**
+ * 義務の環境集合を「actor が履行できる範囲」で分ける(CRYPTO_SPEC §7 — 実行者も scope
+ * 外なら rotate できない。独立レビュー S2 / S7): 注記は「scope 外 ∧ 未削除 ∧ 未収束」に
+ * 限る(常時警告と同じ判定)。`actorScope` は署名端末の実効 scope(DK K4-17)。
+ */
+export function partitionSweepBaselines(input: {
+  readonly verified: VerifiedProject;
+  readonly all: EnvironmentBaselines;
+  readonly actorScope: MemberScope;
+  readonly deletedVerified: ReadonlySet<string>;
+}): SweepPartition {
+  const inScope = (environmentId: string) =>
+    scopeIncludesEnvironment(input.actorScope, environmentId);
+  const outOfScope = [...input.all]
+    .filter(
+      ([environmentId, baselineSeq]) =>
+        !inScope(environmentId) &&
+        !input.deletedVerified.has(environmentId) &&
+        isPendingAt(input.verified, environmentId, baselineSeq),
+    )
+    .map(([environmentId]) => environmentId)
+    .toSorted(compareCodePoints);
+  const baselines = new Map([...input.all].filter(([environmentId]) => inScope(environmentId)));
+  const skippedDeleted = [...baselines.keys()]
+    .filter((environmentId) => input.deletedVerified.has(environmentId))
+    .toSorted(compareCodePoints);
+  return { baselines, outOfScope, skippedDeleted };
+}
+
 /**
  * 環境 E が基準 seq について未収束か: E の現エポックの開始 seq が基準より前 = E の
  * 現 DEK は基準イベント(失効・削除・降格・縮小)の前に配られたまま。開始 seq が
  * 導出できない環境は fail-closed で未収束に含める(環境が黙って対象から外れる形に
  * しない)。
  */
-export function isPendingAt(
+function isPendingAt(
   verified: VerifiedProject,
   environmentId: string,
   baselineSeq: number,
@@ -107,17 +149,28 @@ export function isPendingAt(
 // 「誰も見ない verify 限定の警告は検出にならない」。§9 の開示常時明示と同じ規律)
 // ---------------------------------------------------------------------------
 
-/** §7 のローテーション義務エントリ(全 4 種 — 2026-09-15 ES K4 で `scope-narrowed` を追加)。 */
+/** §7 のローテーション義務の種別(全 5 種 — DK K4 で `device-revoked` を追加)。 */
+export type RotationMandateKind =
+  | "member-removed"
+  | "role-demoted"
+  | "scope-narrowed"
+  | "server-revoked"
+  | "device-revoked";
+
+/** §7 のローテーション義務エントリ(全 5 種 — 2026-09-15 ES K4 で `scope-narrowed`、DK K4 で `device-revoked` を追加)。 */
 export interface RotationMandate {
-  readonly kind: "member-removed" | "role-demoted" | "scope-narrowed" | "server-revoked";
-  /** member 系 = 対象 user_id / server-revoked = サーバー鍵 FP。 */
+  readonly kind: RotationMandateKind;
+  /** member 系・device-revoked = 対象 user_id / server-revoked = サーバー鍵 FP。 */
   readonly target: string;
   readonly seq: number;
   /**
    * 義務の環境集合(CRYPTO_SPEC §7 — seq 時点のチェーン導出環境集合に具体化。昇順)。
-   * remove = 対象の現 scope、降格 = 対象の新 scope、縮小 = 旧 \ 新、revoke = 全環境。
+   * remove = 対象の現 scope、降格 = 対象の新 scope、縮小 = 旧 \ 新、revoke = 全環境、
+   * device-revoked = 失効端末の実効 scope の和集合(K4-8)。
    */
   readonly environmentIds: readonly string[];
+  /** `device-revoked` のみ: 失効した端末の FP(昇順 — 表示・再登録判定用)。 */
+  readonly deviceFingerprintsHex?: readonly string[];
 }
 
 /**
@@ -163,7 +216,39 @@ function mandatesOfApplied(
       },
     ];
   }
+  if (operation.op === "revoke_device") {
+    return [revokeDeviceMandate(verified, seq, operation.payload)];
+  }
   return operation.op === "change_role" ? changeRoleMandates(verified, seq, operation) : [];
+}
+
+/**
+ * 端末失効の義務(CRYPTO_SPEC §7「端末の失効」— 設計録 K4-8): 失効した各端末の
+ * **実効 scope**(人の scope ∩ 端末の scope — 失効直前 seq−1 の `deviceStateAt`)を
+ * seq 時点の環境集合に具体化し、和集合を採る。導出できない端末(履歴に無い FP)は
+ * fail-closed で全環境(黙って縮めない — remove の分岐と同じ規律)。scope が空の端末
+ * (票だけの端末)の失効は空集合 = 義務を伴わない(正本の字面)。
+ */
+function revokeDeviceMandate(
+  verified: VerifiedProject,
+  seq: number,
+  payload: RevokeDevicePayload,
+): RotationMandate {
+  const environmentIds = new Set<string>();
+  for (const fingerprintHex of payload.deviceFingerprintsHex) {
+    const before = verified.history.deviceStateAt(payload.targetUserId, fingerprintHex, seq - 1);
+    const scope: MemberScope = before?.permission.scope ?? ALL_SCOPE;
+    for (const environmentId of environmentsOfScopeAt(verified, scope, seq)) {
+      environmentIds.add(environmentId);
+    }
+  }
+  return {
+    kind: "device-revoked",
+    target: payload.targetUserId,
+    seq,
+    environmentIds: [...environmentIds].toSorted(compareCodePoints),
+    deviceFingerprintsHex: [...payload.deviceFingerprintsHex].toSorted(compareCodePoints),
+  };
 }
 
 /** change_role の義務: 降格(新 scope の全環境)と縮小(旧 \ 新)— 同時なら 2 個。 */
@@ -259,7 +344,26 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
       return verified.state.serverGrants.has(mandate.target)
         ? reversedAdvice("the target server key has been re-granted")
         : "re-running `maruhi server revoke` converges the mandate";
+    case "device-revoked":
+      return deviceRevocationAdvice(verified.state.members.get(mandate.target), mandate);
   }
+}
+
+/**
+ * 端末失効の義務の案内(K4-8 第 2 巡): 失効は再実行できる操作ではないので、常に
+ * 非破壊の env rotate へ誘導する。失効端末が再登録されていれば言い分ける。
+ */
+function deviceRevocationAdvice(
+  member: ChainMember | undefined,
+  mandate: UnconvergedMandate,
+): string {
+  const readded = (mandate.deviceFingerprintsHex ?? []).filter(
+    (fingerprintHex) => member?.devices.has(fingerprintHex) === true,
+  );
+  if (readded.length > 0) {
+    return reversedAdvice(`the revoked device ${readded.join(", ")} has been re-added`);
+  }
+  return `the device revocation itself is complete (revoked: ${(mandate.deviceFingerprintsHex ?? []).join(", ")}); rotating each listed environment with \`maruhi env rotate <environment> --new-epoch --reason <text>\` converges the mandate (any device of a member whose effective scope covers the environment can run it)`;
 }
 
 function demotionAdvice(member: ChainMember | undefined, mandate: UnconvergedMandate): string {

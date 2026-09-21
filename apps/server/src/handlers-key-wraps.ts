@@ -166,8 +166,10 @@ function guardianPolicyViolation(input: {
 }
 
 /**
- * 要求の照会・承認で呼び出し主体が取れる役割(§13-7): ward 本人 = device、
- * ward の保護者 = 自分の分片。どちらでもなければ null(一様 404)。
+ * 要求の照会・承認で呼び出し主体が取れる役割(§13-7 — 2026-09-19 DK K4): ward
+ * 本人は要求を照会できるが承認の役割を持たない(空 — 旧端末経路は撤去。予備鍵の
+ * 復元は保護者の承認だけ)、ward の保護者 = 自分の分片。どちらでもなければ null
+ * (一様 404)。
  */
 function rolesFor(
   repo: KeyWrapRepoShape,
@@ -175,7 +177,7 @@ function rolesFor(
   principalUserId: string,
 ): Effect.Effect<readonly HandoffRole[] | null> {
   if (request.userId === principalUserId) {
-    return Effect.succeed(["device"] as const);
+    return Effect.succeed([] as const);
   }
   return repo.sharesOfGuardian(principalUserId, request.userId).pipe(
     Effect.map((shares) =>
@@ -187,9 +189,11 @@ function rolesFor(
   );
 }
 
-type HandoffRole =
-  | "device"
-  | { readonly groupId: string; readonly mode: "any" | "all"; readonly shareIndex: number };
+type HandoffRole = {
+  readonly groupId: string;
+  readonly mode: "any" | "all";
+  readonly shareIndex: number;
+};
 
 /** 端末行の列 → 論理分片ごとの役割(同じ (group, share_index) は 1 つ)。 */
 function logicalShareRoles(
@@ -212,28 +216,17 @@ function logicalShareRoles(
 }
 
 /**
- * 役割と承認 payload の整合(§13-7): device は ward 本人・share_index 0・blob 必須。
- * 保護者は自分の (group, share_index)・blob なし。照合は保存行(roles)から行い、
- * payload の申告値で認可しない。
+ * 役割と承認 payload の整合(§13-7): 保護者は自分の (group, share_index) だけを
+ * 承認できる。照合は保存行(roles)から行い、payload の申告値で認可しない。ward
+ * 本人の役割は空なので、自分の要求は承認できない(旧端末経路の撤去 — DK K4)。
  */
 function approvalPermitted(
   roles: readonly HandoffRole[],
-  payload: {
-    readonly source: string;
-    readonly shareIndex: number;
-    readonly blob?: unknown;
-  },
+  payload: { readonly source: string; readonly shareIndex: number },
 ): boolean {
-  if (payload.source === "device") {
-    return roles.includes("device") && payload.shareIndex === 0 && payload.blob !== undefined;
-  }
-  const ownShare = roles.some(
-    (role) =>
-      role !== "device" &&
-      role.groupId === payload.source &&
-      role.shareIndex === payload.shareIndex,
+  return roles.some(
+    (role) => role.groupId === payload.source && role.shareIndex === payload.shareIndex,
   );
-  return ownShare && payload.blob === undefined;
 }
 
 /** 削除系の共通応答: 消せたら 204、対象が無ければ 404。 */
@@ -649,7 +642,6 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             approverKeyFingerprintHex: payload.approverKeyFingerprintHex,
             encHex: payload.encHex,
             ciphertextHex: payload.ciphertextHex,
-            blob: payload.blob ?? null,
           },
           limit: MAX_HANDOFF_APPROVALS_PER_REQUEST,
           nowMs,
@@ -693,14 +685,6 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             approverKeyFingerprintHex: a.approverKeyFingerprintHex,
             encHex: a.encHex,
             ciphertextHex: a.ciphertextHex,
-            blob:
-              a.blob === null
-                ? null
-                : {
-                    suite: "maruhi/v1" as const,
-                    nonceHex: a.blob.nonceHex,
-                    ciphertextHex: a.blob.ciphertextHex,
-                  },
             createdAtMs: a.createdAtMs,
           })),
         };

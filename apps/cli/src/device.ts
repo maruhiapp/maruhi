@@ -1,0 +1,1439 @@
+// `maruhi device` グループ(CRYPTO_SPEC §3 / §6.2「端末鍵」、AUTH_SPEC §13-11 — 2026-09-19
+// DK。設計録 dk-design.md §9 K4-5 / K4-6 / K4-7 / K4-13 / K4-18)。
+//
+// - `device add [--label] [--replace]`(新端末側): 端末鍵を生成して要求を出し、FP(hex +
+//   12 語)を表示して待つ。待機の合図は登録簿(advisory)、完了の確認は各プロジェクトの
+//   検証済みチェーン(K4-5)。ゲートなし(DK-D — 要求側は何も足さない)
+// - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
+//   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
+//   → 各プロジェクトへ `add_device` → バックフィル → ローカル記録(approved)→ 登録簿へ
+//   PUT(合図)→ 要求の取消
+// - `device list [--project]`: チェーン(真実)・登録簿(server-reported)・ローカル記録
+//   (出所)を突き合わせて表示する。値ゼロ・鍵不要・ゲートなし
+// - `device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`: 参照は FP の
+//   接頭辞(8 文字以上・一意)か登録簿の表示名(自分のみ — FP を併記して確認)。確認表 →
+//   yes → 各プロジェクトへ `revoke_device` → sweep 第 5 種(K4-8)→ ローカル記録に revoked
+//   → 登録簿の行を削除 → トークン失効の提案(K4-13 — `--revoke-token` の明示のみ自動)
+//
+// 登録簿は表示・合図にしか使わない: 承認する鍵は要求行の公開鍵から再計算した FP が
+// 人の運んだ FP と一致するものだけ、失効する端末はチェーン上の端末だけ、ローカル記録は
+// 封印・承認・観測の 3 経路だけが書く(K4-3)。
+
+import {
+  DEVICE_ADD_REQUEST_TTL_MS,
+  DeviceRegistryConflictError,
+  DeviceRegistryLimitError,
+  ForbiddenError,
+  MAX_DEVICE_REGISTRY_ROWS_PER_USER,
+  TokenNotFoundError,
+} from "@maruhi/api-schema";
+import type { ChainDevice, ChainMember, DeviceCap, MemberScope, Role } from "@maruhi/crypto";
+import {
+  computeUserKeyFingerprint,
+  decodeHex,
+  effectivePermissionOf,
+  encodeHex,
+  scopeIncludesEnvironment,
+} from "@maruhi/crypto";
+import { Duration, Effect } from "effect";
+
+import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
+import type { MaruhiClient } from "./api.ts";
+import {
+  type CliServices,
+  openMetadataProject,
+  openProject,
+  type ProjectContext,
+  type ProjectContextBase,
+} from "./context.ts";
+import { ROLE_RANK } from "./dek-wrap.ts";
+import {
+  capWithinSignerCap,
+  describeCap,
+  describeDevice,
+  deviceProvenanceOf,
+  devicesOf,
+  findOwnDevice,
+} from "./device-key.ts";
+import {
+  appendAddDevice,
+  appendRevokeDevice,
+  backfillToDevice,
+  DEVICE_REVOKED_ROTATION_REASON,
+  type DeviceBackfillOutcome,
+  type DeviceSweepOutcome,
+  sweepAfterDeviceRevoke,
+} from "./device-ops.ts";
+import { countNoun, displayText, formatUtcMinutes } from "./display.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
+import { fingerprintWords, formatWordList } from "./fp-words.ts";
+import { CliIo } from "./io.ts";
+import { generateKeyRecord } from "./key-record.ts";
+import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keychain.ts";
+import { logNote, logWarning } from "./notice.ts";
+import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
+import { fetchProjectMemberships } from "./project-list.ts";
+import { compareCodePoints, requireScopeEnvironmentsExist } from "./scope.ts";
+import {
+  type CliSession,
+  importMasterKeys,
+  loadMasterKeys,
+  type MasterKeys,
+  storeMasterKeyAndReport,
+} from "./session.ts";
+import { sweepRotateFor } from "./sweep-rotate.ts";
+import { resyncExtended, type VerifiedProject } from "./sync.ts";
+
+/** 登録簿 1 行(server-reported)。 */
+interface RegistryRow {
+  readonly keyFingerprintHex: string;
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  readonly label: string;
+  readonly tokenId?: string | undefined;
+  readonly createdAtMs: number;
+}
+
+const FULL_FINGERPRINT = /^[0-9a-f]{32}$/;
+const FINGERPRINT_PREFIX = /^[0-9a-f]{8,32}$/;
+const WORD_COUNT = 12;
+
+/** 公開鍵から FP を再計算する(登録簿・要求行の申告 FP を信用しない — §13-11)。 */
+function recomputeFingerprint(
+  encPubHex: string,
+  sigPubHex: string,
+): Effect.Effect<string | null, CliError> {
+  const enc = decodeHex(encPubHex);
+  const sig = decodeHex(sigPubHex);
+  if (enc === null || sig === null) {
+    return Effect.succeed(null);
+  }
+  return Effect.tryPromise({
+    try: () => computeUserKeyFingerprint(enc, sig),
+    catch: () => cliError("Failed to compute a key fingerprint (crypto error)"),
+  }).pipe(Effect.map((result) => (result.ok ? encodeHex(result.value) : null)));
+}
+
+/** 登録簿の取得(読めない場合は null — 表示・合図にしか使わないので失敗させない)。 */
+function fetchRegistry(client: MaruhiClient): Effect.Effect<readonly RegistryRow[] | null, never> {
+  return client.devices.list({}).pipe(
+    Effect.map((response) => response.devices as readonly RegistryRow[]),
+    Effect.catch(() => Effect.succeed(null)),
+  );
+}
+
+/** プロジェクト集合の解決: `--project` があればそれだけ、無ければ所属一覧(申告 = 発見用)。 */
+function resolveProjectIds(
+  client: MaruhiClient,
+  project: string | undefined,
+): Effect.Effect<readonly string[], CliError> {
+  return project === undefined
+    ? fetchProjectMemberships(client).pipe(
+        Effect.map((rows) => rows.map((row) => row.projectId).toSorted(compareCodePoints)),
+      )
+    : Effect.succeed([project]);
+}
+
+// ---------------------------------------------------------------------------
+// device add
+// ---------------------------------------------------------------------------
+
+/** 待機の間隔(登録簿のポーリング — K4-5。テストは短縮する)。 */
+const DEVICE_ADD_POLL_INTERVAL_MS = 3_000;
+
+/** `maruhi device add [--label <name>] [--replace]`(新端末側)。 */
+export function deviceAddOp(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly label: string;
+  readonly replace: boolean;
+  readonly pollIntervalMs?: number | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const keys = yield* deviceKeyForRequest(input);
+    const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
+    const request = yield* createOrResumeRequest(input, keys);
+    yield* io.log(`This device's key fingerprint: ${keys.fingerprintHex}`);
+    yield* io.log(`fp words: ${formatWordList(words)}`);
+    if (request.kind === "already-registered") {
+      // 要求行は無い(登録簿の行が合図)— approve の案内は出さず、チェーンの確認へ
+      yield* io.log(
+        "This key is already in your device registry (no pending request); verifying it on each project's chain",
+      );
+    } else {
+      yield* io.log(
+        `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(request.expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting or creates a new request`,
+      );
+      yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
+    }
+    const signalled = yield* waitForRegistryRow({
+      client: input.client,
+      fingerprintHex: keys.fingerprintHex,
+      // 登録簿に載っている鍵は 1 巡目で合図を拾う(期限は形式上 TTL ぶん先)
+      expiresAtMs:
+        request.kind === "pending" ? request.expiresAtMs : Date.now() + DEVICE_ADD_REQUEST_TTL_MS,
+      intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
+    });
+    if (!signalled) {
+      return yield* Effect.fail(
+        cliError(
+          `The device-add request expired before it was approved (requests live 15 minutes). Re-run \`maruhi device add\` on this machine — it reuses this key (${keys.fingerprintHex}) and creates a new request — then approve it from a registered device with \`maruhi device approve\``,
+        ),
+      );
+    }
+    // 真実はチェーン: 合図(登録簿の行)の後に各プロジェクトを同期して自分の端末を数える
+    const projects = yield* fetchProjectMemberships(input.client);
+    let registered = 0;
+    const missing: string[] = [];
+    for (const project of projects) {
+      const present = yield* deviceOnProjectChain({
+        session: input.session,
+        projectId: project.projectId,
+        fingerprintHex: keys.fingerprintHex,
+      });
+      if (present) {
+        registered += 1;
+      } else {
+        missing.push(project.projectId);
+      }
+    }
+    yield* io.log(
+      `Approved: this device is registered on ${countNoun(registered, "project")} (verified on each project's chain)`,
+    );
+    if (missing.length > 0) {
+      yield* logNote(
+        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device may still be working, or skipped them (its device cap does not cover them, or you are not a member there). Re-run \`maruhi device approve\` there once it finishes, or sync later: the next \`maruhi pull\` reports it`,
+      );
+    }
+  });
+}
+
+/**
+ * 要求に使う鍵: 無ければ生成、あれば「同じ鍵の要求がある(待機の再開 — K4-5)」か
+ * 「pre-DK の複製(`--replace` で作り直す — K4-18)」かを分ける。
+ */
+function deviceKeyForRequest(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly replace: boolean;
+}): Effect.Effect<MasterKeys, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const keychain = yield* Keychain;
+    const entryName = masterKeyEntryName(input.session.origin, input.session.userId);
+    const existing = yield* keychain.get(entryName);
+    if (existing !== null && !input.replace) {
+      const keys = yield* loadMasterKeys(input.session);
+      const pending = yield* input.client.devices
+        .requestGet({ params: { fp: keys.fingerprintHex } })
+        .pipe(
+          Effect.map(() => true),
+          Effect.catchTag("DeviceNotFound", () => Effect.succeed(false)),
+          Effect.mapError(toCliError),
+        );
+      const registered = yield* fetchRegistry(input.client).pipe(
+        Effect.map(
+          (rows) => rows?.some((row) => row.keyFingerprintHex === keys.fingerprintHex) === true,
+        ),
+      );
+      if (pending) {
+        yield* logNote(
+          `this machine already has device key ${keys.fingerprintHex} with a device-add request — resuming the wait for its approval`,
+        );
+        return keys;
+      }
+      if (registered) {
+        yield* logNote(
+          `this machine already has device key ${keys.fingerprintHex} and it is in your device registry — verifying it on each project's chain`,
+        );
+        return keys;
+      }
+      return yield* Effect.fail(
+        cliError(
+          `This machine already has a device key (${keys.fingerprintHex}). If it is a copy of another device's key from an install before device keys, re-run with --replace: it generates a new key for this machine and removes the copy from this keychain (the original device keeps its key). Do not pass --replace if this is your only device — recover from the ledger with \`maruhi key recover\` instead if you ever need to`,
+        ),
+      );
+    }
+    if (existing !== null) {
+      yield* keychain.remove(entryName);
+      yield* logNote("removed the copied key from this machine's keychain (--replace)");
+    }
+    const record = yield* generateKeyRecord();
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.mapError(() =>
+        cliError(
+          "Could not load the generated device key back (nothing was stored in the keychain). Report this as a maruhi bug",
+        ),
+      ),
+    );
+    yield* storeMasterKeyAndReport({
+      entryName,
+      serialized: serializeStoredMasterKey(record),
+      action: "Generated this device's key",
+      fingerprintHex: validated.fingerprintHex,
+    });
+    return validated;
+  });
+}
+
+/** 要求の作成の結果: 待機中の要求(期限つき)か、登録簿に既に載っている鍵か。 */
+type RequestState =
+  | { readonly kind: "pending"; readonly expiresAtMs: number }
+  | { readonly kind: "already-registered" };
+
+/** 要求の作成(409 は再開 — request-exists / device-registered)。 */
+function createOrResumeRequest(
+  input: { readonly client: MaruhiClient; readonly label: string },
+  keys: MasterKeys,
+): Effect.Effect<RequestState, CliError> {
+  return input.client.devices
+    .requestCreate({
+      payload: {
+        encPubHex: keys.record.encPubHex,
+        sigPubHex: keys.record.sigPubHex,
+        label: input.label,
+      },
+    })
+    .pipe(
+      Effect.map((response): RequestState => ({
+        kind: "pending",
+        expiresAtMs: response.expiresAtMs,
+      })),
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          if (error instanceof DeviceRegistryConflictError) {
+            const conflict: DeviceRegistryConflictError = error;
+            if (conflict.reason === "device-registered") {
+              // 登録簿に既に自分の行がある = 合図は立っている(要求行は無い)
+              return { kind: "already-registered" } satisfies RequestState;
+            }
+            // 同じ鍵の要求が生きている = 待機の再開(K4-5 第 2 巡)。照会の失敗は
+            // 握り潰さず伝える(「失効した」と誤って案内しない — 409 は生存の証)
+            const request = yield* input.client.devices
+              .requestGet({ params: { fp: keys.fingerprintHex } })
+              .pipe(Effect.mapError(toCliError));
+            return { kind: "pending", expiresAtMs: request.expiresAtMs } satisfies RequestState;
+          }
+          if (error instanceof DeviceRegistryLimitError) {
+            const limit: DeviceRegistryLimitError = error;
+            return yield* Effect.fail(
+              cliError(
+                limit.reason === "add-requests"
+                  ? `Too many device-add requests in the last hour (limit ${limit.limit}). Wait${limit.retryAfterSeconds === undefined ? "" : ` about ${Math.ceil(limit.retryAfterSeconds / 60)} minutes`} and re-run`
+                  : `Your device registry is full (${limit.limit} rows). On a registered device, remove old rows with \`maruhi device list\` / \`maruhi device revoke\`, then re-run`,
+              ),
+            );
+          }
+          return yield* Effect.fail(toCliError(error));
+        }),
+      ),
+    );
+}
+
+/** 登録簿に自分の FP の行が現れるまで待つ(TTL まで)。true = 現れた。 */
+function waitForRegistryRow(input: {
+  readonly client: MaruhiClient;
+  readonly fingerprintHex: string;
+  readonly expiresAtMs: number;
+  readonly intervalMs: number;
+}): Effect.Effect<boolean, never> {
+  return Effect.gen(function* () {
+    for (;;) {
+      const rows = yield* fetchRegistry(input.client);
+      if (rows?.some((row) => row.keyFingerprintHex === input.fingerprintHex) === true) {
+        return true;
+      }
+      if (Date.now() >= input.expiresAtMs) {
+        return false;
+      }
+      yield* Effect.sleep(Duration.millis(input.intervalMs));
+    }
+  });
+}
+
+/** 1 プロジェクトの検証済みチェーンに自分の端末 FP があるか(同期できなければ false)。 */
+function deviceOnProjectChain(input: {
+  readonly session: CliSession;
+  readonly projectId: string;
+  readonly fingerprintHex: string;
+}): Effect.Effect<boolean, never, CliServices> {
+  return openMetadataProject({ server: input.session.origin, project: input.projectId }).pipe(
+    Effect.map(
+      (context) =>
+        context.verified.state.members
+          .get(input.session.userId)
+          ?.devices.has(input.fingerprintHex) === true,
+    ),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// device approve
+// ---------------------------------------------------------------------------
+
+/** `<fp-or-words>` の解釈(K4-6: hex 32 文字の全長、または 12 語。接頭辞は受けない)。 */
+export type ApproveRef =
+  | { readonly kind: "hex"; readonly fingerprintHex: string }
+  | { readonly kind: "words"; readonly words: readonly string[] };
+
+export function parseApproveRef(raw: string): Effect.Effect<ApproveRef, CliError> {
+  const trimmed = raw.trim().toLowerCase();
+  if (FULL_FINGERPRINT.test(trimmed)) {
+    return Effect.succeed({ kind: "hex", fingerprintHex: trimmed });
+  }
+  const words = trimmed.split(/[\s,]+/).filter((word) => word.length > 0);
+  if (words.length === WORD_COUNT && words.every((word) => /^[a-z]+$/.test(word))) {
+    return Effect.succeed({ kind: "words", words });
+  }
+  return Effect.fail(
+    usageError(
+      "The device reference must be the full 32-character fingerprint or its 12 words (separated by spaces or commas) as shown by `maruhi device add` — fingerprints are never truncated for approval",
+    ),
+  );
+}
+
+/** 要求 1 行(承認候補 — FP は再計算済み)。 */
+interface ApprovableRequest {
+  readonly fingerprintHex: string;
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  readonly label: string;
+  readonly expiresAtMs: number;
+}
+
+/** 要求一覧から人の運んだ参照に一致する行を選ぶ(応答の FP は使わず再計算する)。 */
+function matchRequest(
+  client: MaruhiClient,
+  ref: ApproveRef,
+): Effect.Effect<ApprovableRequest, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const { requests } = yield* client.devices.requestList({}).pipe(Effect.mapError(toCliError));
+    const matches: ApprovableRequest[] = [];
+    for (const row of requests) {
+      const fingerprintHex = yield* recomputeFingerprint(row.encPubHex, row.sigPubHex);
+      if (fingerprintHex === null) {
+        continue;
+      }
+      if (fingerprintHex !== row.keyFingerprintHex) {
+        yield* logWarning(
+          `a device-add request claims fingerprint ${row.keyFingerprintHex} but its public keys compute to ${fingerprintHex} — ignored (the server's row does not match its own keys)`,
+        );
+        continue;
+      }
+      const hit =
+        ref.kind === "hex"
+          ? fingerprintHex === ref.fingerprintHex
+          : (yield* fingerprintWords(fingerprintHex, "The key fingerprint is malformed")).join(
+              " ",
+            ) === ref.words.join(" ");
+      if (hit) {
+        matches.push({
+          fingerprintHex,
+          encPubHex: row.encPubHex,
+          sigPubHex: row.sigPubHex,
+          label: row.label,
+          expiresAtMs: row.expiresAtMs,
+        });
+      }
+    }
+    const match = matches[0];
+    if (match === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "No pending device-add request matches that fingerprint. Requests expire 15 minutes after `maruhi device add`; re-run it on the new device and compare the fingerprint it prints (full hex or the 12 words) with what you typed",
+        ),
+      );
+    }
+    if (matches.length > 1) {
+      // 同じ鍵の要求が複数(サーバーは FP で一意にするはず)。どれかを黙って選んで
+      // チェーン権限を与えるより、止めて示す
+      return yield* Effect.fail(
+        cliError(
+          `${countNoun(matches.length, "pending device-add request")} carry the same key fingerprint ${match.fingerprintHex} (labels: ${matches.map((item) => displayText(item.label)).join(", ")}). The server should hold at most one request per fingerprint, so refusing to pick one. Wait for them to expire (15 minutes), re-run \`maruhi device add\` on the new device and approve the single new request`,
+        ),
+      );
+    }
+    return match;
+  });
+}
+
+/** 1 プロジェクトでの承認の結果。 */
+export interface ProjectApproveOutcome {
+  readonly projectId: string;
+  readonly state: "registered" | "already" | "skipped" | "failed";
+  readonly backfill: DeviceBackfillOutcome | null;
+  readonly message: string | null;
+}
+
+/** `maruhi device approve <fp|words> [--cap <role>] [--env …|--all-envs|--no-envs] [--project]`。 */
+export function deviceApproveOp(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly ref: ApproveRef;
+  readonly cap: DeviceCap;
+  readonly project: string | undefined;
+}): Effect.Effect<readonly ProjectApproveOutcome[], CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 儀式ゲートは要求一覧の取得より前(K4-6 反例 3)
+    yield* ensureDeviceApproveAllowed;
+    const request = yield* matchRequest(input.client, input.ref);
+    const masterKeys = yield* loadMasterKeys(input.session);
+    if (request.fingerprintHex === masterKeys.fingerprintHex) {
+      return yield* Effect.fail(
+        cliError("That request carries this machine's own key; approve it from another device"),
+      );
+    }
+    const words = yield* fingerprintWords(
+      request.fingerprintHex,
+      "The key fingerprint is malformed",
+    );
+    yield* io.log(
+      `Approving device ${request.fingerprintHex} (label "${displayText(request.label)}", cap ${describeCap(input.cap)})`,
+    );
+    yield* io.log(`fp words: ${formatWordList(words)}`);
+    const projectIds = yield* resolveProjectIds(input.client, input.project);
+    const outcomes: ProjectApproveOutcome[] = [];
+    for (const projectId of projectIds) {
+      outcomes.push(
+        yield* approveOnProject({
+          session: input.session,
+          projectId,
+          request,
+          cap: input.cap,
+          masterKeys,
+        }),
+      );
+    }
+    // どのプロジェクトにも載らなかった(全部 failed / skipped)なら、後段(記録・登録簿・
+    // 要求の取消)を行わない: 記録すると初回同期が同じ失敗を繰り返し、登録簿の行は
+    // 要求側に偽の合図を送り、要求の取消は再実行の材料を消す(Bugbot 指摘)
+    if (!outcomes.some((item) => item.state === "registered" || item.state === "already")) {
+      yield* logWarning(
+        "the device was not registered on any project, so nothing was recorded and the request was left in place. Fix the cause reported above and re-run `maruhi device approve` with the same fingerprint (the request stays valid until it expires)",
+      );
+      return outcomes;
+    }
+    // ローカル記録(approved — K4-3 の書き手 (2))。承認者の端末 FP を出所として残す
+    const store = yield* OwnDeviceStore;
+    const entry: OwnDeviceEntry = {
+      keyFingerprintHex: request.fingerprintHex,
+      encPubHex: request.encPubHex,
+      sigPubHex: request.sigPubHex,
+      roleCap: input.cap.roleCap,
+      scope: input.cap.scope,
+      source: "approved",
+      label: request.label,
+      addedByFingerprintHex: masterKeys.fingerprintHex,
+      observedProjectId: null,
+      recordedAtMs: Date.now(),
+      revokedAtMs: null,
+    };
+    yield* store.record(input.session.origin, input.session.userId, entry);
+    // 登録簿へ PUT(合図 — 最後に行う。429 は Note)
+    yield* input.client.devices
+      .register({
+        params: { fp: request.fingerprintHex },
+        payload: {
+          encPubHex: request.encPubHex,
+          sigPubHex: request.sigPubHex,
+          label: request.label,
+        },
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.catch((error) =>
+          logNote(
+            error instanceof DeviceRegistryLimitError
+              ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. Remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`maruhi device approve\` to list it`
+              : `could not update the device registry (${toCliError(error).message}); the device is registered on the chains above regardless`,
+          ),
+        ),
+      );
+    yield* input.client.devices.requestCancel({ params: { fp: request.fingerprintHex } }).pipe(
+      Effect.asVoid,
+      Effect.catch(() => Effect.void),
+    );
+    return outcomes;
+  });
+}
+
+/** 1 プロジェクトへの `add_device` + バックフィル(失敗は結果に畳む — 1 つの失敗で止めない)。 */
+function approveOnProject(input: {
+  readonly session: CliSession;
+  readonly projectId: string;
+  readonly request: ApprovableRequest;
+  readonly cap: DeviceCap;
+  readonly masterKeys: MasterKeys;
+}): Effect.Effect<ProjectApproveOutcome, never, CliServices> {
+  const outcome = (
+    state: ProjectApproveOutcome["state"],
+    message: string | null,
+    backfill: DeviceBackfillOutcome | null = null,
+  ): ProjectApproveOutcome => ({ projectId: input.projectId, state, backfill, message });
+  return Effect.gen(function* () {
+    const context = yield* openProject({ server: input.session.origin, project: input.projectId });
+    const self = context.verified.state.members.get(input.session.userId);
+    if (self === undefined) {
+      return outcome("skipped", "you are not a member of this project");
+    }
+    const signer = findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
+    if (signer === undefined) {
+      return outcome(
+        "skipped",
+        "this machine's key is not one of your registered devices here (approve this machine first from a device that is)",
+      );
+    }
+    if (self.devices.has(input.request.fingerprintHex)) {
+      return outcome("already", null);
+    }
+    // 通信前判定(K4-3 反例 3 / 4): 単調性と `listed` の環境の存在
+    if (!capWithinSignerCap(input.cap, signer)) {
+      return outcome(
+        "skipped",
+        `the requested cap ${describeCap(input.cap)} exceeds this device's own cap ${describeCap(signer)} (a device may only register devices bounded by its own cap — CRYPTO_SPEC §6.2); approve from a device with a wider cap`,
+      );
+    }
+    yield* requireScopeEnvironmentsExist(context.verified, input.cap.scope);
+    const appended = yield* appendAddDevice({
+      client: context.client,
+      verified: context.verified,
+      resync: context.resync,
+      signer: { userId: input.session.userId, signingKeyPair: input.masterKeys.sigKeyPair },
+      candidate: {
+        encPubHex: input.request.encPubHex,
+        sigPubHex: input.request.sigPubHex,
+        cap: input.cap,
+      },
+    });
+    const verified = yield* context.resync;
+    const current = verified.state.members.get(input.session.userId);
+    const targetDevice = current?.devices.get(input.request.fingerprintHex);
+    if (current === undefined || targetDevice === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "The resync after add_device was accepted does not show the device on the chain (the server's response contradicts the chain). Investigate the served chain",
+        ),
+      );
+    }
+    const backfill = yield* backfillToDevice({
+      client: context.client,
+      verified,
+      recipient: context.recipient,
+      targetMember: current,
+      targetDevice,
+      signerUserId: input.session.userId,
+      signingKeyPair: input.masterKeys.sigKeyPair,
+    });
+    return outcome(appended.appended ? "registered" : "already", null, backfill);
+  }).pipe(Effect.catch((error) => Effect.succeed(outcome("failed", error.message))));
+}
+
+/** 承認結果の報告(effect-cli が呼ぶ)。 */
+export function reportApproveOutcomes(
+  outcomes: readonly ProjectApproveOutcome[],
+): Effect.Effect<number, never, CliIo> {
+  return Effect.gen(function* () {
+    // どこにも載らなかった(全部 skipped / failed — 記録も要求の取消も行っていない)
+    // 承認は失敗として終える(skipped だけでも 0 にしない)
+    let exitCode = outcomes.some((item) => item.state === "registered" || item.state === "already")
+      ? 0
+      : 1;
+    for (const item of outcomes) {
+      if ((yield* reportApproveOutcome(item)) !== 0) {
+        exitCode = 1;
+      }
+    }
+    return exitCode;
+  });
+}
+
+/** バックフィルの要約(括弧書き。null = バックフィルなし)。 */
+export function describeBackfill(backfill: DeviceBackfillOutcome | null): string {
+  return backfill === null
+    ? ""
+    : ` (backfilled ${countNoun(backfill.registered, "DEK wrap")}, ${backfill.alreadyRegistered} already present, ${countNoun(backfill.environments, "environment")})`;
+}
+
+/** 1 プロジェクトの承認結果(終了コード: バックフィル失敗・失敗は 1)。 */
+function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number, never, CliIo> {
+  const label = displayText(item.projectId);
+  switch (item.state) {
+    case "registered":
+    case "already":
+      return reportRegisteredDevice({
+        label,
+        action:
+          item.state === "registered"
+            ? "registered the device"
+            : "the device was already registered",
+        backfill: item.backfill,
+        rerun: "Re-run `maruhi device approve` for this device to complete it",
+      });
+    case "skipped":
+      return logNote(`${label}: skipped — ${item.message ?? ""}`).pipe(Effect.as(0));
+    case "failed":
+      return logWarning(`${label}: failed — ${item.message ?? ""}`).pipe(Effect.as(1));
+  }
+}
+
+/** 登録(済み)行 + バックフィル失敗の警告(承認と復元で共有 — 失敗があれば 1)。 */
+export function reportRegisteredDevice(input: {
+  readonly label: string;
+  readonly action: string;
+  readonly backfill: DeviceBackfillOutcome | null;
+  readonly rerun: string;
+}): Effect.Effect<number, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* io.log(`${input.label}: ${input.action}${describeBackfill(input.backfill)}`);
+    const failed = input.backfill?.failed ?? [];
+    for (const failure of failed) {
+      yield* logWarning(
+        `${input.label}: backfill of environment ${displayText(failure.environmentId)} failed (${failure.message}). ${input.rerun}`,
+      );
+    }
+    return failed.length > 0 ? 1 : 0;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// device list
+// ---------------------------------------------------------------------------
+
+/** 表示行の材料: FP → チェーン上の出現(プロジェクトごとの 1 行)。 */
+type ListRows = Map<string, { readonly projectId: string; readonly line: string }[]>;
+
+/** 各プロジェクトのチェーンから自分の端末を集める(同期できないプロジェクトは Note)。 */
+function collectChainRows(input: {
+  readonly session: CliSession;
+  readonly projectIds: readonly string[];
+}): Effect.Effect<ListRows, never, CliServices> {
+  return Effect.gen(function* () {
+    const rows: ListRows = new Map();
+    for (const projectId of input.projectIds) {
+      const context = yield* openMetadataProject({
+        server: input.session.origin,
+        project: projectId,
+      }).pipe(Effect.catch(() => Effect.succeed<ProjectContextBase | null>(null)));
+      if (context === null) {
+        yield* logNote(
+          `${displayText(projectId)}: could not sync this project; its devices are not shown`,
+        );
+        continue;
+      }
+      const self = context.verified.state.members.get(input.session.userId);
+      for (const device of self === undefined ? [] : devicesOf(self)) {
+        const provenance = deviceProvenanceOf(context.verified, input.session.userId, device);
+        const adder =
+          provenance.addedByFingerprintHex === null
+            ? "first key"
+            : `added by ${provenance.addedByFingerprintHex}${provenance.adderStillActive ? "" : " (that device is now revoked)"}`;
+        const lines = rows.get(device.keyFingerprintHex) ?? [];
+        lines.push({
+          projectId,
+          line: `${displayText(projectId)}: cap=${describeCap(device)} seq=${device.addedSeq} ${adder}`,
+        });
+        rows.set(device.keyFingerprintHex, lines);
+      }
+    }
+    return rows;
+  });
+}
+
+/** 1 端末の見出し(登録簿の表示名・トークン id は server-reported、ローカル記録は出所)。 */
+function describeListRow(input: {
+  readonly fingerprintHex: string;
+  readonly ownFingerprintHex: string | null;
+  readonly registryRow: RegistryRow | undefined;
+  readonly record: OwnDeviceEntry | undefined;
+}): string {
+  const tags: string[] = [];
+  if (input.ownFingerprintHex === input.fingerprintHex) {
+    tags.push("this machine");
+  }
+  if (input.registryRow !== undefined) {
+    tags.push(`label "${displayText(input.registryRow.label)}" (server-reported)`);
+    if (input.registryRow.tokenId !== undefined) {
+      tags.push(`token ${displayText(input.registryRow.tokenId)} (server-reported)`);
+    }
+  }
+  if (input.record !== undefined) {
+    tags.push(
+      input.record.revokedAtMs === null
+        ? `recorded here as ${input.record.source}`
+        : "recorded here as revoked",
+    );
+  }
+  return `${input.fingerprintHex}${tags.length === 0 ? "" : `\t${tags.join(", ")}`}`;
+}
+
+/** `maruhi device list [--project]`(値ゼロ・鍵不要・ゲートなし)。 */
+export function deviceListOp(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly project: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const store = yield* OwnDeviceStore;
+    const registry = yield* fetchRegistry(input.client);
+    const lookup = yield* store.load(input.session.origin, input.session.userId);
+    const local = lookup.state === "loaded" ? lookup.devices : [];
+    const projectIds = yield* resolveProjectIds(input.client, input.project);
+    const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
+      Effect.succeed<MasterKeys | null>(null),
+    );
+    // FP → 表示行(チェーンが真実。登録簿とローカル記録は注記として並べる)
+    const rows = yield* collectChainRows({ session: input.session, projectIds });
+    const active = local.filter((entry) => entry.revokedAtMs === null);
+    const fingerprints = [
+      ...new Set([
+        ...rows.keys(),
+        ...(registry ?? []).map((row) => row.keyFingerprintHex),
+        ...active.map((entry) => entry.keyFingerprintHex),
+      ]),
+    ].toSorted(compareCodePoints);
+    if (fingerprints.length === 0) {
+      yield* io.log(
+        "No devices found (no project chain lists a device of yours, and the registry is empty)",
+      );
+      return;
+    }
+    if (registry === null) {
+      yield* logNote(
+        "the device registry could not be read (labels are server-reported and advisory anyway)",
+      );
+    }
+    for (const fingerprintHex of fingerprints) {
+      yield* io.log(
+        describeListRow({
+          fingerprintHex,
+          ownFingerprintHex: localKeys?.fingerprintHex ?? null,
+          registryRow: registry?.find((row) => row.keyFingerprintHex === fingerprintHex),
+          record: local.find((entry) => entry.keyFingerprintHex === fingerprintHex),
+        }),
+      );
+      yield* printChainLines(rows.get(fingerprintHex) ?? []);
+    }
+  });
+}
+
+/** 1 端末のチェーン上の出現(無ければその旨)。 */
+function printChainLines(
+  lines: readonly { readonly line: string }[],
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (lines.length === 0) {
+      yield* io.log("  (not on any synced project chain)");
+    }
+    for (const project of lines) {
+      yield* io.log(`  ${project.line}`);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// device revoke
+// ---------------------------------------------------------------------------
+
+/** 参照の解釈(K4-7: FP の接頭辞 8 文字以上、または登録簿の表示名 — 自分のみ)。 */
+function resolveRevokeRefs(input: {
+  readonly refs: readonly string[];
+  readonly registry: readonly RegistryRow[] | null;
+  readonly self: boolean;
+}): Effect.Effect<readonly RevokeRef[], CliError> {
+  return Effect.gen(function* () {
+    const resolved: RevokeRef[] = [];
+    for (const ref of input.refs) {
+      const lowered = ref.trim().toLowerCase();
+      if (FINGERPRINT_PREFIX.test(lowered)) {
+        resolved.push({ ref, prefix: lowered, viaLabel: false });
+        continue;
+      }
+      if (!input.self) {
+        return yield* Effect.fail(
+          usageError(
+            `"${displayText(ref)}" is not a fingerprint prefix (at least 8 hex characters). Another member's devices are named by fingerprint only (see \`maruhi member list\`)`,
+          ),
+        );
+      }
+      const byLabel = (input.registry ?? []).filter((row) => row.label === ref.trim());
+      if (byLabel.length !== 1) {
+        return yield* Effect.fail(
+          usageError(
+            byLabel.length === 0
+              ? `"${displayText(ref)}" matches neither a fingerprint prefix (at least 8 hex characters) nor a label in your device registry (\`maruhi device list\`)`
+              : `label "${displayText(ref)}" names ${byLabel.length} registry rows; use the fingerprint instead`,
+          ),
+        );
+      }
+      resolved.push({ ref, prefix: byLabel[0]!.keyFingerprintHex, viaLabel: true });
+    }
+    return resolved;
+  });
+}
+
+/** 1 プロジェクトの失効計画(確認表の 1 段)。 */
+interface ProjectRevokePlan {
+  readonly context: ProjectContext;
+  readonly target: ChainMember;
+  readonly revoking: readonly ChainDevice[];
+  readonly remaining: readonly ChainDevice[];
+  readonly warnings: readonly string[];
+}
+
+/** 1 プロジェクトでの失効結果(effect-cli が報告する)。 */
+export interface ProjectRevokeOutcome {
+  readonly projectId: string;
+  readonly revoked: readonly string[];
+  readonly sweep: DeviceSweepOutcome | null;
+  readonly skipped: string | null;
+  /** `revoke_device` の追記が失敗した(何も失効していない)。 */
+  readonly failed: string | null;
+  /** 追記は受理されたが、受理後の再同期か sweep が失敗した(失効は載っている)。 */
+  readonly sweepFailed: string | null;
+}
+
+/** `device revoke` 全体の結果。 */
+export interface DeviceRevokeSummary {
+  readonly projects: readonly ProjectRevokeOutcome[];
+  /** 提案したが失効していないトークン(名前・期限 — K4-13)。 */
+  readonly tokenProposal: readonly string[];
+}
+
+/** 参照の解決結果(表示名経由かどうかを確認表に載せる)。 */
+type RevokeRef = { readonly ref: string; readonly prefix: string; readonly viaLabel: boolean };
+
+/** 確認表(K4-7): プロジェクトごとの失効 FP(全長)と残る端末、導いた警告。 */
+function printRevokePlans(input: {
+  readonly targetUserId: string;
+  readonly plans: readonly ProjectRevokePlan[];
+  readonly refs: readonly RevokeRef[];
+}): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* io.log(`Revoking devices of ${displayText(input.targetUserId)}:`);
+    for (const plan of input.plans) {
+      yield* io.log(`  ${displayText(plan.context.projectId)}:`);
+      for (const device of plan.revoking) {
+        const via = input.refs.find((ref) => device.keyFingerprintHex.startsWith(ref.prefix));
+        yield* io.log(
+          `    revoke  ${device.keyFingerprintHex} (cap ${describeCap(device)})${via?.viaLabel === true ? ` — matched registry label "${displayText(via.ref)}"; check the fingerprint against \`maruhi device list\`` : ""}`,
+        );
+      }
+      yield* io.log(`    remain  ${plan.remaining.map(describeDevice).join(", ")}`);
+      for (const warning of plan.warnings) {
+        yield* io.log(`    warning ${warning}`);
+      }
+    }
+  });
+}
+
+/** 自分の端末を失効させた後始末: ローカル記録に revoked、登録簿の行を削除(advisory)。 */
+function finishOwnRevocation(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly revoked: readonly string[];
+}): Effect.Effect<void, CliError, OwnDeviceStore> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    // ローカル記録に revoked(再登録を防ぐ — K4-3 反例 1)
+    yield* store.markRevoked(input.session.origin, input.session.userId, input.revoked, Date.now());
+    for (const fp of input.revoked) {
+      yield* input.client.devices.remove({ params: { fp } }).pipe(
+        Effect.asVoid,
+        Effect.catch(() => Effect.void),
+      );
+    }
+  });
+}
+
+/** `maruhi device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`。 */
+export function deviceRevokeOp(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly refs: readonly string[];
+  readonly user: string | undefined;
+  readonly project: string | undefined;
+  readonly yes: boolean;
+  readonly revokeToken: boolean;
+}): Effect.Effect<DeviceRevokeSummary, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const targetUserId = input.user ?? input.session.userId;
+    const self = targetUserId === input.session.userId;
+    const masterKeys = yield* loadMasterKeys(input.session);
+    const { registry, refs, reserveFps } = yield* prepareRevokeRefs({
+      session: input.session,
+      client: input.client,
+      refs: input.refs,
+      self,
+    });
+    const projectIds = yield* resolveProjectIds(input.client, input.project);
+    const { plans, outcomes } = yield* planRevokeAll({
+      session: input.session,
+      projectIds,
+      targetUserId,
+      refs,
+      reserveFps,
+      ownFingerprintHex: masterKeys.fingerprintHex,
+    });
+    if (plans.length === 0) {
+      yield* io.log("Nothing to revoke: no synced project lists a matching active device");
+    } else {
+      yield* printRevokePlans({ targetUserId, plans, refs });
+    }
+    for (const outcome of outcomes) {
+      yield* logNote(`${displayText(outcome.projectId)}: ${outcome.skipped ?? ""}`);
+    }
+    if (plans.length === 0) {
+      return { projects: outcomes, tokenProposal: [] };
+    }
+    yield* confirmRevoke(input.yes);
+    const revoked = yield* executeRevokeAll({
+      session: input.session,
+      plans,
+      targetUserId,
+      masterKeys,
+      outcomes,
+    });
+    if (!self) {
+      return { projects: outcomes, tokenProposal: [] };
+    }
+    if (revoked.length > 0) {
+      yield* finishOwnRevocation({ session: input.session, client: input.client, revoked });
+    }
+    const tokenProposal = yield* proposeTokenRevocation({
+      client: input.client,
+      registry,
+      revoked,
+      revokeToken: input.revokeToken,
+      interactive: !input.yes,
+    });
+    return { projects: outcomes, tokenProposal };
+  });
+}
+
+/** 参照の解決に要る材料(自分の端末なら登録簿と予備鍵の記録、他人なら FP だけ)。 */
+function prepareRevokeRefs(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly refs: readonly string[];
+  readonly self: boolean;
+}): Effect.Effect<
+  {
+    readonly registry: readonly RegistryRow[] | null;
+    readonly refs: readonly RevokeRef[];
+    readonly reserveFps: ReadonlySet<string>;
+  },
+  CliError,
+  OwnDeviceStore
+> {
+  return Effect.gen(function* () {
+    const registry = input.self ? yield* fetchRegistry(input.client) : null;
+    const refs = yield* resolveRevokeRefs({ refs: input.refs, registry, self: input.self });
+    const reserveFps = input.self
+      ? yield* recordedReserveFingerprints(input.session)
+      : new Set<string>();
+    return { registry, refs, reserveFps };
+  });
+}
+
+/** 各プロジェクトで失効を実行し、結果を積む。戻り値 = 失効した FP の和集合。 */
+function executeRevokeAll(input: {
+  readonly session: CliSession;
+  readonly plans: readonly ProjectRevokePlan[];
+  readonly targetUserId: string;
+  readonly masterKeys: MasterKeys;
+  readonly outcomes: ProjectRevokeOutcome[];
+}): Effect.Effect<readonly string[], never, CliServices> {
+  return Effect.gen(function* () {
+    const revokedAll = new Set<string>();
+    for (const plan of input.plans) {
+      const outcome = yield* executeRevoke({
+        session: input.session,
+        plan,
+        targetUserId: input.targetUserId,
+        masterKeys: input.masterKeys,
+      });
+      for (const fp of outcome.revoked) {
+        revokedAll.add(fp);
+      }
+      input.outcomes.push(outcome);
+    }
+    return [...revokedAll];
+  });
+}
+
+/** 各プロジェクトの失効計画(飛ばしたプロジェクトは結果に skipped として先に積む)。 */
+function planRevokeAll(input: {
+  readonly session: CliSession;
+  readonly projectIds: readonly string[];
+  readonly targetUserId: string;
+  readonly refs: readonly RevokeRef[];
+  readonly reserveFps: ReadonlySet<string>;
+  readonly ownFingerprintHex: string;
+}): Effect.Effect<
+  { readonly plans: ProjectRevokePlan[]; readonly outcomes: ProjectRevokeOutcome[] },
+  CliError,
+  CliServices
+> {
+  return Effect.gen(function* () {
+    const plans: ProjectRevokePlan[] = [];
+    const outcomes: ProjectRevokeOutcome[] = [];
+    for (const projectId of input.projectIds) {
+      const planned = yield* planRevoke({ ...input, projectId });
+      if (typeof planned === "string") {
+        outcomes.push({
+          projectId,
+          revoked: [],
+          sweep: null,
+          skipped: planned,
+          failed: null,
+          sweepFailed: null,
+        });
+      } else {
+        plans.push(planned);
+      }
+    }
+    return { plans, outcomes };
+  });
+}
+
+/** yes の確認(`--yes` で省略 — 失効は儀式ではない。K4-7)。 */
+function confirmRevoke(yes: boolean): Effect.Effect<void, CliError, CliIo> {
+  if (yes) {
+    return Effect.void;
+  }
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const answer = yield* io.promptLine({ prompt: "Type yes to revoke: " });
+    if (answer.trim().toLowerCase() !== "yes") {
+      return yield* Effect.fail(cliError("Cancelled: nothing was revoked"));
+    }
+  });
+}
+
+/** ローカル記録の予備鍵(失効していないもの)の FP 集合(確認表の警告材料 — K4-7)。 */
+function recordedReserveFingerprints(
+  session: CliSession,
+): Effect.Effect<ReadonlySet<string>, CliError, OwnDeviceStore> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    const lookup = yield* store.load(session.origin, session.userId);
+    return new Set(
+      (lookup.state === "loaded" ? lookup.devices : [])
+        .filter((entry) => entry.source === "reserve" && entry.revokedAtMs === null)
+        .map((entry) => entry.keyFingerprintHex),
+    );
+  });
+}
+
+/** 参照に一致する現端末(接頭辞は一意でなければ usage エラー)。 */
+function matchRevokeTargets(input: {
+  readonly projectId: string;
+  readonly devices: readonly ChainDevice[];
+  readonly refs: readonly { readonly prefix: string }[];
+}): Effect.Effect<readonly ChainDevice[], CliError> {
+  return Effect.gen(function* () {
+    const revoking: ChainDevice[] = [];
+    for (const ref of input.refs) {
+      const hits = input.devices.filter((device) =>
+        device.keyFingerprintHex.startsWith(ref.prefix),
+      );
+      if (hits.length > 1) {
+        return yield* Effect.fail(
+          usageError(
+            `fingerprint prefix ${ref.prefix} matches ${hits.length} devices on ${displayText(input.projectId)}; use a longer prefix`,
+          ),
+        );
+      }
+      const hit = hits[0];
+      if (hit !== undefined && !revoking.includes(hit)) {
+        revoking.push(hit);
+      }
+    }
+    return revoking;
+  });
+}
+
+/** 残る端末の cap から導く警告(K4-7 / K4-8 / §2-bis)。 */
+function revokeWarnings(input: {
+  readonly verified: VerifiedProject;
+  readonly target: ChainMember;
+  readonly remaining: readonly ChainDevice[];
+  readonly revokingFps: ReadonlySet<string>;
+  readonly self: boolean;
+  readonly reserveFps: ReadonlySet<string>;
+  readonly ownFingerprintHex: string;
+}): readonly string[] {
+  const { target, remaining } = input;
+  const warnings: string[] = [];
+  if (
+    target.role === "owner" &&
+    remaining.every((device) => ROLE_RANK[device.roleCap] < ROLE_RANK.owner)
+  ) {
+    warnings.push(
+      "no remaining device carries an owner cap — the owner could no longer act as owner (approve proposals, change roles) from any device until a device without the cap is added",
+    );
+  }
+  const uncovered = uncoveredEnvironments(input.verified, target, remaining);
+  if (uncovered.length > 0) {
+    warnings.push(
+      `no remaining device's cap covers ${uncovered.map(displayText).join(", ")} — the person keeps those environments in scope but no device could open them`,
+    );
+  }
+  if (input.self && !remaining.some((device) => input.reserveFps.has(device.keyFingerprintHex))) {
+    warnings.push(
+      "no remaining device is recorded as your reserve key on this machine — if the reserve key is among the revoked ones, create a new one afterwards with `maruhi key recovery --replace`",
+    );
+  }
+  if (input.revokingFps.has(input.ownFingerprintHex)) {
+    warnings.push(
+      "this revokes the device you are running on: after the entry lands this machine can no longer sign here, and the rotation sweep cannot be fulfilled from it (another of your devices, or a member whose scope covers the environments, must rotate)",
+    );
+  }
+  if (ROLE_RANK[target.role] < ROLE_RANK.member) {
+    warnings.push(
+      "the person is a reader, so the rotation the revocation mandates cannot be run by them — a member whose scope covers the environments converges it",
+    );
+  }
+  return warnings;
+}
+
+/** 確認表の材料を 1 プロジェクトぶん組み立てる(string = 飛ばす理由)。 */
+function planRevoke(input: {
+  readonly session: CliSession;
+  readonly projectId: string;
+  readonly targetUserId: string;
+  readonly refs: readonly { readonly prefix: string }[];
+  readonly reserveFps: ReadonlySet<string>;
+  readonly ownFingerprintHex: string;
+}): Effect.Effect<ProjectRevokePlan | string, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const context = yield* openProject({ server: input.session.origin, project: input.projectId });
+    const target = context.verified.state.members.get(input.targetUserId);
+    if (target === undefined) {
+      return `${displayText(input.targetUserId)} is not a member of this project`;
+    }
+    const self = context.verified.state.members.get(input.session.userId);
+    if (
+      self === undefined ||
+      findOwnDevice(self, { keyFingerprintHex: input.ownFingerprintHex }) === undefined
+    ) {
+      return "this machine's key is not one of your registered devices here (revoke from a device that is)";
+    }
+    const devices = devicesOf(target);
+    const revoking = yield* matchRevokeTargets({
+      projectId: input.projectId,
+      devices,
+      refs: input.refs,
+    });
+    if (revoking.length === 0) {
+      return "no active device matches the reference (already revoked, or never registered here)";
+    }
+    const revokingFps = new Set(revoking.map((device) => device.keyFingerprintHex));
+    const remaining = devices.filter((device) => !revokingFps.has(device.keyFingerprintHex));
+    if (remaining.length === 0) {
+      return "it would revoke the last device (last-device-protected — CRYPTO_SPEC §6.2). To remove the person, use `maruhi member remove`";
+    }
+    const warnings = revokeWarnings({
+      verified: context.verified,
+      target,
+      remaining,
+      revokingFps,
+      self: input.targetUserId === input.session.userId,
+      reserveFps: input.reserveFps,
+      ownFingerprintHex: input.ownFingerprintHex,
+    });
+    return { context, target, revoking, remaining, warnings };
+  });
+}
+
+/** 対象の scope 内で、残る端末のどれも実効 scope に含まない環境(K4-7 の警告材料)。 */
+function uncoveredEnvironments(
+  verified: VerifiedProject,
+  target: ChainMember,
+  remaining: readonly ChainDevice[],
+): readonly string[] {
+  const covered = remaining.map((device) => effectivePermissionOf(target, device).scope);
+  return [...verified.state.environments.keys()]
+    .filter(
+      (environmentId) =>
+        scopeIncludesEnvironment(target.scope, environmentId) &&
+        !covered.some((scope: MemberScope) => scopeIncludesEnvironment(scope, environmentId)),
+    )
+    .toSorted(compareCodePoints);
+}
+
+/** 1 プロジェクトで `revoke_device` → sweep(失敗は結果に畳む)。 */
+function executeRevoke(input: {
+  readonly session: CliSession;
+  readonly plan: ProjectRevokePlan;
+  readonly targetUserId: string;
+  readonly masterKeys: MasterKeys;
+}): Effect.Effect<ProjectRevokeOutcome, never, CliServices> {
+  const { context } = input.plan;
+  const base = {
+    projectId: context.projectId,
+    revoked: [] as readonly string[],
+    sweep: null,
+    skipped: null,
+    failed: null,
+    sweepFailed: null,
+  } satisfies ProjectRevokeOutcome;
+  return Effect.gen(function* () {
+    const appended = yield* appendRevokeDevice({
+      client: context.client,
+      verified: context.verified,
+      resync: context.resync,
+      signer: { userId: input.session.userId, signingKeyPair: input.masterKeys.sigKeyPair },
+      targetUserId: input.targetUserId,
+      fingerprintsHex: input.plan.revoking.map((device) => device.keyFingerprintHex),
+    });
+    const { revoked } = appended;
+    // 追記の受理後は失効が載っている: 再同期・sweep の失敗は「失効の失敗」に畳まず、
+    // 失効は残したまま sweep の失敗として報告する(ローカル記録・登録簿の後段を飛ばさない)
+    return yield* sweepAfterRevoke({ ...input, appended }).pipe(
+      Effect.map((sweep) => ({ ...base, revoked, sweep })),
+      Effect.catch((error) =>
+        Effect.succeed({
+          ...base,
+          revoked,
+          sweepFailed: error.message,
+        } satisfies ProjectRevokeOutcome),
+      ),
+    );
+  }).pipe(Effect.catch((error) => Effect.succeed({ ...base, failed: error.message })));
+}
+
+/** 受理後の再同期と sweep(失敗はそのまま返す — 呼び出し側が sweepFailed に畳む)。 */
+function sweepAfterRevoke(input: {
+  readonly session: CliSession;
+  readonly plan: ProjectRevokePlan;
+  readonly targetUserId: string;
+  readonly masterKeys: MasterKeys;
+  readonly appended: { readonly verified: VerifiedProject; readonly revoked: readonly string[] };
+}): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {
+  const { context } = input.plan;
+  return Effect.gen(function* () {
+    // 受理後の再同期(追記前のビューには失効の義務が無い — sweep は掲載を確認した
+    // ビューで導出する。member remove と同じ規律: サーバー申告を真実源にしない)
+    const verified =
+      input.appended.revoked.length === 0
+        ? input.appended.verified
+        : yield* resyncExtended(context.resync, input.appended.verified);
+    const self = verified.state.members.get(input.session.userId);
+    const actorDevice =
+      self === undefined
+        ? undefined
+        : findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
+    // 自分の端末自身を失効させた場合、sweep はこの端末では履行できない(K4-7 反例 5)
+    return actorDevice === undefined
+      ? null
+      : yield* sweepAfterDeviceRevoke({
+          client: context.client,
+          verified,
+          targetUserId: input.targetUserId,
+          actorUserId: input.session.userId,
+          actorDevice,
+          rotate: sweepRotateFor({ ...context, verified }, DEVICE_REVOKED_ROTATION_REASON),
+        });
+  });
+}
+
+/**
+ * トークン失効の提案(K4-13): 候補 = 登録簿の `tokenId`、無ければ名前 `cli:<label>`。
+ * `--revoke-token` なら失効、対話なら yes を聞き、非対話(`--yes`)では提案だけ返す。
+ * 一覧が 403(admin でないトークン)なら事実だけ伝える。
+ */
+function proposeTokenRevocation(input: {
+  readonly client: MaruhiClient;
+  readonly registry: readonly RegistryRow[] | null;
+  readonly revoked: readonly string[];
+  readonly revokeToken: boolean;
+  readonly interactive: boolean;
+}): Effect.Effect<readonly string[], CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (input.revoked.length === 0) {
+      return [];
+    }
+    const listed = yield* input.client.auth.listTokens({}).pipe(
+      Effect.map((response) => response.tokens),
+      Effect.catch((error) =>
+        error instanceof ForbiddenError ? Effect.succeed(null) : Effect.fail(toCliError(error)),
+      ),
+    );
+    if (listed === null) {
+      yield* logNote(
+        "revoking a device does not revoke its API token (AUTH_SPEC §6). This token cannot list tokens; revoke the lost device's token from the web dashboard or with an admin token (`maruhi token revoke <id>`)",
+      );
+      return [];
+    }
+    const rows = (input.registry ?? []).filter((row) =>
+      input.revoked.includes(row.keyFingerprintHex),
+    );
+    const candidates = listed.filter((token) =>
+      rows.some((row) =>
+        row.tokenId === undefined ? token.name === `cli:${row.label}` : row.tokenId === token.id,
+      ),
+    );
+    if (candidates.length === 0) {
+      yield* logNote(
+        "revoking a device does not revoke its API token (AUTH_SPEC §6). No token could be matched to the revoked devices (the registry row carries no token id and no token is named after its label) — check `maruhi token list`",
+      );
+      return [];
+    }
+    const describe = describeToken;
+    yield* io.log(
+      `The revoked devices' API tokens are still valid (the match is server-reported): ${candidates.map(describe).join("; ")}`,
+    );
+    let revoke = input.revokeToken;
+    if (!revoke && input.interactive) {
+      const answer = yield* io.promptLine({ prompt: "Revoke these tokens too? Type yes: " });
+      revoke = answer.trim().toLowerCase() === "yes";
+    }
+    if (!revoke) {
+      yield* logNote(
+        "tokens were left as they are — revoke them later with `maruhi token revoke <id>` (pass --revoke-token to do it in the same run)",
+      );
+      return candidates.map(describe);
+    }
+    for (const token of candidates) {
+      yield* input.client.auth.revokeTokenById({ params: { tokenId: token.id } }).pipe(
+        Effect.asVoid,
+        Effect.catch((error) =>
+          error instanceof TokenNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
+        ),
+      );
+      yield* io.log(`Revoked token ${describe(token)}`);
+    }
+    return [];
+  });
+}
+
+/** トークン候補の 1 行(id・名前・期限 — K4-13 の提案表示)。 */
+function describeToken(token: {
+  readonly id: string;
+  readonly name: string;
+  readonly expiresAtMs: number | null;
+}): string {
+  return `${displayText(token.id)} (${displayText(token.name)}, expires ${token.expiresAtMs === null ? "never" : formatUtcMinutes(token.expiresAtMs)})`;
+}
+
+/** cap の組み立て(`--cap <role>` + scope フラグ)。 */
+export function parseCapRole(raw: string | undefined): Effect.Effect<Role, CliError> {
+  if (raw === undefined) {
+    return Effect.succeed("owner");
+  }
+  const roles: readonly Role[] = ["owner", "admin", "member", "reader"];
+  const role = roles.find((candidate) => candidate === raw);
+  return role === undefined
+    ? Effect.fail(usageError(`--cap must be one of ${roles.join(", ")}`))
+    : Effect.succeed(role);
+}

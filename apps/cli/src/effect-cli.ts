@@ -149,6 +149,17 @@ import {
   resolveProjectId,
 } from "./context.ts";
 import {
+  deviceAddOp,
+  deviceApproveOp,
+  deviceListOp,
+  deviceRevokeOp,
+  type DeviceRevokeSummary,
+  parseApproveRef,
+  type ProjectRevokeOutcome,
+  parseCapRole,
+  reportApproveOutcomes,
+} from "./device.ts";
+import {
   countNoun,
   displayText,
   formatPulledLine,
@@ -163,8 +174,13 @@ import { CliError, cliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import type { FloorHandle } from "./floor-check.ts";
-import { guardianAddOp, guardianListOp, guardianRemoveOp, guardianWardsOp } from "./guardian.ts";
-import { approveHandoffOp, requestHandoffOp } from "./handoff.ts";
+import {
+  guardianAddOp,
+  guardianApproveOp,
+  guardianListOp,
+  guardianRemoveOp,
+  guardianWardsOp,
+} from "./guardian.ts";
 import {
   GITHUB_LOGIN,
   type InviteInputRejection,
@@ -175,8 +191,10 @@ import {
 import { inviteAcceptOp, inviteCreateOp, inviteListOp, inviteRevokeOp } from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyPublishOp } from "./key-publish.ts";
+import { keyRecoverOp, keyRecoveryOp, keyReserveRotateOp } from "./key-recover.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
+import { openLedgerReserveForChange } from "./ledger-open.ts";
 import { loginOp, logoutOp } from "./login.ts";
 import {
   type ChangeRoleRequest,
@@ -191,13 +209,12 @@ import {
   type RoleChangeFulfilment,
 } from "./member.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
-import { listPasskeysOp, recoverWithPasskeyOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
+import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
-import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
@@ -242,6 +259,7 @@ import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
 import { decidePushSync, loadPushSyncConfig, syncAfterPush } from "./sync-push.ts";
 import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "./sync-rotate.ts";
 import { syncProject } from "./sync.ts";
+import { tokenListOp, tokenRevokeOp } from "./token.ts";
 import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
 
@@ -612,7 +630,13 @@ const loginConfig = {
 
 const logoutConfig = serverOnlyFlags();
 
-const keyGenerateConfig = serverOnlyFlags();
+const keyGenerateConfig = {
+  ...serverOnlyFlags(),
+  "new-identity": singleFlag(
+    "new-identity",
+    "Create a new identity even though your account already has a reserve key in the recovery ledger (only when every device and every recovery path is lost)",
+  ),
+};
 const keyShowConfig = serverOnlyFlags();
 const keyPublishConfig = {
   ...serverOnlyFlags(),
@@ -625,11 +649,15 @@ const keyRecoverConfig = {
   ...serverOnlyFlags(),
   handoff: singleFlag(
     "handoff",
-    "Restore by approval from another device of yours or from your guardians instead of a recovery code",
+    "Open the reserve key by approval from your guardians instead of a recovery code",
   ),
   passkey: singleFlag(
     "passkey",
-    "Restore with a passkey registered by `maruhi key seal passkey` instead of a recovery code",
+    "Open the reserve key with a passkey registered by `maruhi key seal passkey` instead of a recovery code",
+  ),
+  resume: singleFlag(
+    "resume",
+    "Keep the device key already on this machine and only register it on the projects where it is still missing (re-run after an interrupted recovery)",
   ),
 };
 /** passkey のラベル(台帳の表示名 — api-schema の受理形を宣言側で先に検査する)。 */
@@ -638,6 +666,10 @@ const PasskeyLabel = Schema.String.check(
 );
 const keySealPasskeyConfig = {
   ...serverOnlyFlags(),
+  passkey: singleFlag(
+    "passkey",
+    "Open the ledger with an already registered passkey instead of the recovery code",
+  ),
   label: Flag.string("label").pipe(
     Flag.withDescription(
       "Display name for this passkey in `maruhi key seal list` (1 to 64 characters)",
@@ -655,13 +687,102 @@ const keySealRemoveConfig = {
     Argument.withSchema(NonBlank),
   ),
 };
-const keyRecoveryConfig = serverOnlyFlags();
-const keyApproveConfig = {
+const keyRecoveryConfig = {
+  ...serverOnlyFlags(),
+  passkey: singleFlag(
+    "passkey",
+    "Open the existing ledger with a passkey instead of the current recovery code",
+  ),
+  replace: singleFlag(
+    "replace",
+    "Replace the reserve key with a new one without opening the ledger (when the recovery code is lost or may be compromised); the reserve keys recorded on this machine are revoked on every project",
+  ),
+};
+const keyReserveRotateConfig = {
+  ...serverOnlyFlags(),
+  passkey: singleFlag(
+    "passkey",
+    "Open the current ledger with a passkey instead of the recovery code",
+  ),
+};
+const guardianApproveConfig = {
   ...serverOnlyFlags(),
   code: Argument.string("code").pipe(
     Argument.withDescription(
       "Handoff code shown by `maruhi key recover --handoff` on the requesting device",
     ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+const deviceAddConfig = {
+  ...serverOnlyFlags(),
+  label: singleValued(
+    "label",
+    "Display name for this device in the device registry (default: the hostname)",
+  ),
+  replace: singleFlag(
+    "replace",
+    "Generate a new key even though this machine already has one (removes a copied key from this keychain — only for installs from before device keys)",
+  ),
+};
+const deviceApproveConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued(
+    "project",
+    "Register the device on this project only (default: every project you belong to)",
+  ),
+  cap: singleValued(
+    "cap",
+    "Role cap for the new device: owner (default, no bound), admin, member or reader",
+  ),
+  env: scopeEnvFlag(
+    "Environment the device may hold keys for (repeatable; default: all environments)",
+  ),
+  "all-envs": singleFlag("all-envs", "Let the device hold keys for every environment (default)"),
+  "no-envs": singleFlag("no-envs", "Let the device hold no environment keys (a vote-only device)"),
+  ref: Argument.string("fp-or-words").pipe(
+    Argument.withDescription(
+      "The new device's full 32-character fingerprint, or its 12 words, as shown by `maruhi device add`",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+const deviceListConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued(
+    "project",
+    "Show only this project's chain (default: every project you belong to)",
+  ),
+};
+const deviceRevokeConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued(
+    "project",
+    "Revoke on this project only (default: every project you belong to)",
+  ),
+  user: singleValued(
+    "user",
+    "Revoke another member's device (admin/owner; devices are named by fingerprint)",
+  ),
+  yes: singleFlag("yes", "Skip the confirmation prompt"),
+  "revoke-token": singleFlag(
+    "revoke-token",
+    "Also revoke the API tokens the registry associates with the revoked devices",
+  ),
+  ref: Argument.string("ref").pipe(
+    Argument.withDescription(
+      "Fingerprint prefix (at least 8 hex characters) or, for your own devices, the registry label (repeatable)",
+    ),
+    Argument.withSchema(NonBlank),
+    Argument.atLeast(1),
+  ),
+};
+const tokenListConfig = serverOnlyFlags();
+const tokenRevokeConfig = {
+  ...serverOnlyFlags(),
+  "token-id": Argument.string("token-id").pipe(
+    Argument.withDescription("Token id as shown by `maruhi token list`"),
     Argument.withSchema(NonBlank),
   ),
 };
@@ -1197,15 +1318,23 @@ const GROUP_CONFIGS: Readonly<
     publish: keyPublishConfig,
     recover: keyRecoverConfig,
     recovery: keyRecoveryConfig,
-    approve: keyApproveConfig,
   },
   "key seal": {
     passkey: keySealPasskeyConfig,
     list: keySealListConfig,
     remove: keySealRemoveConfig,
   },
+  "key reserve": { rotate: keyReserveRotateConfig },
+  device: {
+    add: deviceAddConfig,
+    approve: deviceApproveConfig,
+    list: deviceListConfig,
+    revoke: deviceRevokeConfig,
+  },
+  token: { list: tokenListConfig, revoke: tokenRevokeConfig },
   guardian: {
     add: guardianAddConfig,
+    approve: guardianApproveConfig,
     list: guardianListConfig,
     remove: guardianRemoveConfig,
     wards: guardianWardsConfig,
@@ -2239,6 +2368,7 @@ function inviteAcceptCommand(flags: {
         session: context.session,
         client: context.client,
         identityBacking,
+        newIdentity: false,
       }),
     });
   });
@@ -2259,6 +2389,57 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
     // 署名検証失敗・ピン不一致は「読み取りの成功」ではなく証拠の検出 — 0 に
     // しない(スクリプトが健全性チェックとして使える)
     return summary.integrityFailures > 0 ? 1 : 0;
+  });
+}
+
+/** `maruhi device revoke` の報告(プロジェクトごとの失効 FP と sweep — K4-7 / K4-8)。 */
+function reportDeviceRevoke(
+  summary: DeviceRevokeSummary,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    let exitCode = 0;
+    for (const project of summary.projects) {
+      if (project.skipped === null && (yield* reportRevokedProject(project)) !== 0) {
+        exitCode = 1;
+      }
+    }
+    return exitCode;
+  });
+}
+
+/** 1 プロジェクトの失効結果の報告(終了コード: 追記失敗・sweep 失敗・rotate 失敗は 1)。 */
+function reportRevokedProject(
+  project: ProjectRevokeOutcome,
+): Effect.Effect<number, CliError, CliServices> {
+  const label = displayText(project.projectId);
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (project.failed !== null) {
+      yield* logWarning(`${label}: revocation failed — ${project.failed}`);
+      return 1;
+    }
+    yield* io.log(
+      `${label}: revoked ${project.revoked.length === 0 ? "nothing (already revoked)" : project.revoked.join(", ")}`,
+    );
+    if (project.sweepFailed !== null) {
+      // 失効は載っている。義務の履行だけが残る(常時警告が引き続き表示する)
+      yield* logWarning(
+        `${label}: the rotation sweep after the revocation failed — ${project.sweepFailed}. The revocation itself is on the chain; the mandate stays listed as unconverged until \`maruhi env rotate <environment> --new-epoch --reason <text>\` is run for the affected environments`,
+      );
+      return 1;
+    }
+    if (project.sweep === null) {
+      if (project.revoked.length > 0) {
+        yield* logNote(
+          `${label}: the rotation mandated by the revocation was not run from this device (it cannot sign here any more, or nothing is mandated). It stays listed as an unconverged mandate until another device rotates`,
+        );
+      }
+      return 0;
+    }
+    return yield* reportSweepOutcome(project.sweep, {
+      rerunCommand: "`maruhi env rotate <environment> --new-epoch --reason <text>`",
+      alreadyRotatedBasis: "the revocation",
+    });
   });
 }
 
@@ -2762,7 +2943,19 @@ function approvalShowCommand(
         yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
       }
     }
-    yield* io.log(eligibilityLine(context.verified, context.session.userId, view));
+    // 票の資格は署名する端末の実効 role(DK K4)。鍵なし実行(MARUHI_TOKEN)では端末が
+    // 定まらないので、その旨だけ告げる(show は鍵を要求しないコマンドのまま)
+    const localKeys = yield* loadMasterKeys(context.session).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    yield* io.log(
+      eligibilityLine(
+        context.verified,
+        context.session.userId,
+        localKeys === null ? null : localKeys.fingerprintHex,
+        view,
+      ),
+    );
     const note = readyNote(view);
     if (note !== null) {
       yield* logNote(note);
@@ -2803,9 +2996,13 @@ function proposalDetailLines(view: ProposalView): readonly string[] {
 function eligibilityLine(
   verified: Parameters<typeof voteEligibility>[0],
   userId: string,
+  deviceFingerprintHex: string | null,
   view: ProposalView,
 ): string {
-  const eligibility = voteEligibility(verified, userId, view);
+  if (deviceFingerprintHex === null) {
+    return "  you:             cannot tell — no device key is loaded on this machine (approving needs the key of one of your registered devices)";
+  }
+  const eligibility = voteEligibility(verified, userId, deviceFingerprintHex, view);
   if (!eligibility.ok) {
     return `  you:             cannot approve — ${eligibility.message}`;
   }
@@ -2922,6 +3119,7 @@ function approvalApproveCommand(
       verified: context.verified,
       ref: flags.ref,
       signerUserId: context.session.userId,
+      signerFingerprintHex: context.masterKeys.fingerprintHex,
       signingKeyPair: context.masterKeys.sigKeyPair,
       recipient: context.recipient,
       resync: context.resync,
@@ -3525,11 +3723,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         session: context.session,
         client: context.client,
         identityBacking: identityBackingOf(context.config),
+        newIdentity: values["new-identity"],
       });
     }),
   ).pipe(
     Command.withDescription(
-      "Generate your master key and store it in the OS keychain (or in the current `maruhi agent` session)",
+      "Generate this device's key and store it in the OS keychain (or in the current `maruhi agent` session); the first time, also create the reserve key and seal it with a recovery code",
     ),
   );
 
@@ -3538,7 +3737,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* keyShowOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Print the public keys and fingerprint (never the private keys)"));
+  ).pipe(
+    Command.withDescription(
+      "Print this device's public keys and fingerprint, and the reserve key fingerprint (never the private keys)",
+    ),
+  );
 
   const keyPublish = Command.make("publish", keyPublishConfig, (values) =>
     Effect.gen(function* () {
@@ -3558,34 +3761,40 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
       }
       const context = yield* openSession(values.server);
-      if (values.handoff) {
-        yield* requestHandoffOp({ session: context.session, client: context.client });
-        return;
-      }
-      if (values.passkey) {
-        yield* recoverWithPasskeyOp({ session: context.session, client: context.client });
-        return;
-      }
-      yield* recoverMasterKeyOp({ session: context.session, client: context.client });
+      yield* keyRecoverOp({
+        session: context.session,
+        client: context.client,
+        via: values.handoff ? "handoff" : values.passkey ? "passkey" : "code",
+        resume: values.resume,
+      });
     }),
   ).pipe(
     Command.withDescription(
-      "Restore the master key from a recovery code, with --passkey, or with --handoff from another device or your guardians",
+      "Recover on a new machine: open the reserve key (recovery code, --passkey, or --handoff via your guardians), then register a new device key for this machine with it",
     ),
   );
 
   const keySealPasskey = Command.make("passkey", keySealPasskeyConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
+      const masterKeys = yield* loadMasterKeys(context.session);
+      const reserve = yield* openLedgerReserveForChange({
+        session: context.session,
+        client: context.client,
+        via: values.passkey ? "passkey" : "code",
+        masterKeys,
+        command: "maruhi key seal passkey",
+      });
       yield* sealPasskeyOp({
         session: context.session,
         client: context.client,
+        reserve,
         ...(values.label === undefined ? {} : { label: values.label }),
       });
     }),
   ).pipe(
     Command.withDescription(
-      "Seal the master key to a new passkey via a page served on localhost (register it for recovery)",
+      "Seal the reserve key to a new passkey via a page served on localhost (opens the ledger first with the recovery code or --passkey)",
     ),
   );
 
@@ -3594,7 +3803,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* listPasskeysOp({ client: context.client });
     }),
-  ).pipe(Command.withDescription("List the passkeys your master key is sealed to"));
+  ).pipe(Command.withDescription("List the passkeys your reserve key is sealed to"));
 
   const keySealRemove = Command.make("remove", keySealRemoveConfig, (values) =>
     Effect.gen(function* () {
@@ -3604,40 +3813,53 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   ).pipe(Command.withDescription("Remove a passkey wrap from the recovery ledger"));
 
   const keySeal = Command.make("seal").pipe(
-    Command.withDescription("Seal the master key to a passkey (passkey / list / remove)"),
+    Command.withDescription("Seal the reserve key to a passkey (passkey / list / remove)"),
     Command.withSubcommands([keySealPasskey, keySealList, keySealRemove]),
   );
 
-  const keyApprove = Command.make("approve", keyApproveConfig, (values) =>
+  const keyReserveRotate = Command.make("rotate", keyReserveRotateConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      yield* approveHandoffOp({
-        session: context.session,
-        client: context.client,
-        code: values.code,
-      });
+      onExitCode(
+        yield* keyReserveRotateOp({
+          session: context.session,
+          client: context.client,
+          via: values.passkey ? "passkey" : "code",
+        }),
+      );
     }),
   ).pipe(
     Command.withDescription(
-      "Approve a master-key handoff request (as your other device, or as a guardian)",
+      "Replace the reserve key: create a new one, seal it with a new recovery code, register it on every project and revoke the old one",
     ),
+  );
+
+  const keyReserve = Command.make("reserve").pipe(
+    Command.withDescription("Manage the reserve key (rotate)"),
+    Command.withSubcommands([keyReserveRotate]),
   );
 
   const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      const masterKeys = yield* loadMasterKeys(context.session);
-      yield* issueRecoveryCodeOp({
-        session: context.session,
-        client: context.client,
-        masterKeys,
-      });
+      onExitCode(
+        yield* keyRecoveryOp({
+          session: context.session,
+          client: context.client,
+          via: values.passkey ? "passkey" : "code",
+          replace: values.replace,
+        }),
+      );
     }),
-  ).pipe(Command.withDescription("Issue (or reissue) the recovery code"));
+  ).pipe(
+    Command.withDescription(
+      "Create the reserve key and its recovery code (first time), separate it from this device's key on an install from before device keys, or reissue the recovery code",
+    ),
+  );
 
   const key = Command.make("key").pipe(
     Command.withDescription(
-      "Manage your master key (generate / show / publish / recover / recovery / approve / seal)",
+      "Manage this device's key and your reserve key (generate / show / publish / recover / recovery / seal / reserve)",
     ),
     Command.withSubcommands([
       keyGenerate,
@@ -3645,8 +3867,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       keyPublish,
       keyRecover,
       keyRecovery,
-      keyApprove,
       keySeal,
+      keyReserve,
     ]),
   );
 
@@ -3655,11 +3877,40 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       if (!isGuardianMode(values.mode)) {
         return yield* Effect.fail(usageError(`Specify --mode (${GUARDIAN_MODES.join(" | ")})`));
       }
-      yield* guardianAddOp({ flags: values, mode: values.mode, userIds: values["user-id"] });
+      yield* guardianAddOp({
+        flags: values,
+        mode: values.mode,
+        userIds: values["user-id"],
+        openReserve: (session, client) =>
+          Effect.flatMap(loadMasterKeys(session), (masterKeys) =>
+            openLedgerReserveForChange({
+              session,
+              client,
+              via: "code",
+              masterKeys,
+              command: "maruhi guardian add …",
+            }),
+          ),
+      });
     }),
   ).pipe(
     Command.withDescription(
-      "Designate project members as guardians who can approve restoring your master key",
+      "Designate project members as guardians who can approve restoring your reserve key (opens the ledger with the recovery code first)",
+    ),
+  );
+
+  const guardianApprove = Command.make("approve", guardianApproveConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* guardianApproveOp({
+        session: context.session,
+        client: context.client,
+        code: values.code,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Approve a reserve-key handoff request as one of the requester's guardians (the code comes from `maruhi key recover --handoff` on the requesting device)",
     ),
   );
 
@@ -3691,9 +3942,116 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const guardian = Command.make("guardian").pipe(
     Command.withDescription(
-      "Manage guardians for master-key recovery (add / list / remove / wards)",
+      "Manage guardians for reserve-key recovery (add / approve / list / remove / wards)",
     ),
-    Command.withSubcommands([guardianAdd, guardianList, guardianRemove, guardianWards]),
+    Command.withSubcommands([
+      guardianAdd,
+      guardianApprove,
+      guardianList,
+      guardianRemove,
+      guardianWards,
+    ]),
+  );
+
+  const deviceAdd = Command.make("add", deviceAddConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* deviceAddOp({
+        session: context.session,
+        client: context.client,
+        label: values.label ?? hostname(),
+        replace: values.replace,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Register this machine as a new device: generate its key, print the fingerprint to approve from a registered device, and wait for the approval",
+    ),
+  );
+
+  const deviceApprove = Command.make("approve", deviceApproveConfig, (values) =>
+    Effect.gen(function* () {
+      const ref = yield* parseApproveRef(values.ref);
+      const roleCap = yield* parseCapRole(values.cap);
+      const scope =
+        (yield* scopeFromFlags({
+          env: values.env,
+          allEnvs: values["all-envs"],
+          noEnvs: values["no-envs"],
+        })) ?? ALL_SCOPE;
+      const context = yield* openSession(values.server);
+      const outcomes = yield* deviceApproveOp({
+        session: context.session,
+        client: context.client,
+        ref,
+        cap: { roleCap, scope },
+        project: values.project,
+      });
+      onExitCode(yield* reportApproveOutcomes(outcomes));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Approve a device-add request from this (registered) device: adds the device key to your projects' chains and backfills its DEK wraps",
+    ),
+  );
+
+  const deviceList = Command.make("list", deviceListConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* deviceListOp({
+        session: context.session,
+        client: context.client,
+        project: values.project,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "List your device keys: what each project's chain holds, with registry labels (server-reported) and this machine's records",
+    ),
+  );
+
+  const deviceRevoke = Command.make("revoke", deviceRevokeConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      const summary = yield* deviceRevokeOp({
+        session: context.session,
+        client: context.client,
+        refs: values.ref,
+        user: values.user,
+        project: values.project,
+        yes: values.yes,
+        revokeToken: values["revoke-token"],
+      });
+      onExitCode(yield* reportDeviceRevoke(summary));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Revoke device keys (a lost or retired device) on every project and rotate the environments they could open",
+    ),
+  );
+
+  const device = Command.make("device").pipe(
+    Command.withDescription("Manage your device keys (add / approve / list / revoke)"),
+    Command.withSubcommands([deviceAdd, deviceApprove, deviceList, deviceRevoke]),
+  );
+
+  const tokenList = Command.make("list", tokenListConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* tokenListOp({ client: context.client });
+    }),
+  ).pipe(Command.withDescription("List your API tokens (ids, names, scopes, expiry)"));
+
+  const tokenRevoke = Command.make("revoke", tokenRevokeConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* tokenRevokeOp({ client: context.client, tokenId: values["token-id"] });
+    }),
+  ).pipe(Command.withDescription("Revoke one of your API tokens by id"));
+
+  const token = Command.make("token").pipe(
+    Command.withDescription("Manage your API tokens (list / revoke)"),
+    Command.withSubcommands([tokenList, tokenRevoke]),
   );
 
   const projectInit = Command.make("init", projectInitConfig, (values) =>
@@ -4477,6 +4835,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       member,
       approval,
       key,
+      device,
+      token,
       guardian,
       project,
       rotation,

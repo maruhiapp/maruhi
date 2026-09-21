@@ -21,7 +21,7 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { soleDeviceOrFail } from "./device-key.ts";
+import { ownDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 
 /**
@@ -39,6 +39,8 @@ export function signBoundaryCheckpoint(input: {
   readonly manifestSigHashHex: string;
   readonly values: readonly EnvValuesDigestEntry[];
   readonly member: ChainMember;
+  /** 署名する端末の FP(手元の鍵 — 複合エントリと同じ端末)。 */
+  readonly deviceFingerprintHex: string;
   readonly signingKey: CryptoKey;
 }): Effect.Effect<ChainEntry & { readonly op: "checkpoint" }, CliError> {
   return Effect.gen(function* () {
@@ -53,7 +55,9 @@ export function signBoundaryCheckpoint(input: {
       try: () => computeChainEntryHash(input.compositeEntry),
       catch: () => cliError("Failed to sign the boundary checkpoint entry"),
     });
-    const device = yield* soleDeviceOrFail(input.member);
+    const device = yield* ownDeviceOrFail(input.member, {
+      keyFingerprintHex: input.deviceFingerprintHex,
+    });
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({

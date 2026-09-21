@@ -855,11 +855,11 @@ describe("maruhi invite accept", () => {
     expect(env.prompts).toHaveLength(1);
     const json = await readFile(env.fingerprintBookPath, "utf8");
     const stored = JSON.parse(json) as {
-      known: Record<string, Record<string, { fingerprintHex: string }>>;
+      known: Record<string, Record<string, { fingerprints: Record<string, unknown> }>>;
     };
-    expect(stored.known[server.origin]?.[inviter.userId]?.fingerprintHex).toBe(
+    expect(Object.keys(stored.known[server.origin]?.[inviter.userId]?.fingerprints ?? {})).toEqual([
       inviter.fingerprintHex,
-    );
+    ]);
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
     // 2 回目(同じ招待者からの別招待に相当): 帳のヒットで 12 語の読み上げ
@@ -931,7 +931,7 @@ describe("maruhi invite accept", () => {
     if (body === undefined) throw new Error("no accept body");
     // 生成された鍵での自己束縛署名が検証に通る(宣言鍵 = 検証鍵)
     await verifyBody(body, issued.linkPubHex);
-    expect(env.logs.join("\n")).toContain("Generated your master key");
+    expect(env.logs.join("\n")).toContain("Generated this device's key");
   });
 
   it("鍵未生成ガード: リカバリー登録済みなら生成せず key recover へ誘導する", async () => {
