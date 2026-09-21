@@ -285,7 +285,7 @@ const LIMITS: readonly Limit[] = [
     file: KEY_WRAPS,
     name: "HANDOFF_REQUEST_LIMIT",
     value: "5",
-    mentions: [["recover-your-key.mdx", "five per user per hour"]],
+    mentions: [["recover-your-key.mdx", "Guardian handoff requests: five per user per hour"]],
   },
   {
     file: KEY_WRAPS,
@@ -299,6 +299,8 @@ const LIMITS: readonly Limit[] = [
     value: "5",
     mentions: [
       ["recover-your-key.mdx", "five fetches of the sealed reserve key per user per hour"],
+      // 同じページのまとめの節にある 2 つ目の写し(括弧が保護者の要求の節と見分ける)
+      ["recover-your-key.mdx", "guardian groups together): five per user per hour"],
       ["linux-keychain.mdx", "five fetches per hour"],
     ],
   },
