@@ -230,52 +230,79 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
 
 // K6-Y: docs が書く上限・レート制限・TTL を、定義側の定数に釘で留める。値が変われば
 // この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの —
-// K7-A。ES K7 では目視で写していた)。
-const LIMITS = [
-  ["apps/server/src/policy.ts", "MAX_DEVICES_PER_MEMBER", "16", "devices.mdx", "16 active devices"],
-  [
-    "packages/api-schema/src/devices-api.ts",
-    "MAX_DEVICE_ADD_REQUESTS_PER_HOUR",
-    "5",
-    "devices.mdx",
-    "five device-add requests per hour",
-  ],
-  [
-    "packages/api-schema/src/devices-api.ts",
-    "MAX_DEVICE_REGISTRY_ROWS_PER_USER",
-    "32",
-    "devices.mdx",
-    "32 rows",
-  ],
-  [
-    "packages/api-schema/src/devices-api.ts",
-    "DEVICE_ADD_REQUEST_TTL_MS",
-    "15 * 60 * 1000",
-    "devices.mdx",
-    "15 minutes",
-  ],
-  [
-    "apps/server/src/db.package/key-wraps.ts",
-    "HANDOFF_REQUEST_LIMIT",
-    "5",
-    "recover-your-key.mdx",
-    "five per user per hour",
-  ],
-  [
-    "apps/server/src/db.package/key-wraps.ts",
-    "APPROVAL_LIMIT",
-    "20",
-    "recover-your-key.mdx",
-    "20 per user per hour",
-  ],
-  [
-    "apps/server/src/db.package/key-wraps.ts",
-    "KEY_BLOB_FETCH_LIMIT",
-    "5",
-    "recover-your-key.mdx",
-    "five fetches",
-  ],
-] as const;
+// K7-A。ES K7 では目視で写していた)。同じ数値を複数ページが写すので、釘は
+// (定数, ページ × 語句) の対で持つ(1 ページだけ留めると他ページの写しが野放しになる)。
+interface Limit {
+  readonly file: string;
+  readonly name: string;
+  /** `export const <name> = <rhs>;` の右辺の字面(`15 * 60 * 1000` を「15 分」と読めるまま留める)。 */
+  readonly value: string;
+  readonly mentions: ReadonlyArray<readonly [page: string, phrase: string]>;
+}
+
+const DEVICES_API = "packages/api-schema/src/devices-api.ts";
+const KEY_WRAPS = "apps/server/src/db.package/key-wraps.ts";
+const FIFTEEN_MINUTES = "15 * 60 * 1000";
+
+const LIMITS: readonly Limit[] = [
+  {
+    file: "apps/server/src/policy.ts",
+    name: "MAX_DEVICES_PER_MEMBER",
+    value: "16",
+    mentions: [["devices.mdx", "16 active devices"]],
+  },
+  {
+    file: DEVICES_API,
+    name: "MAX_DEVICE_ADD_REQUESTS_PER_HOUR",
+    value: "5",
+    mentions: [
+      ["devices.mdx", "five device-add requests per hour"],
+      ["linux-keychain.mdx", "five device-add requests per user per hour"],
+    ],
+  },
+  {
+    file: DEVICES_API,
+    name: "MAX_DEVICE_REGISTRY_ROWS_PER_USER",
+    value: "32",
+    mentions: [["devices.mdx", "32 rows"]],
+  },
+  {
+    file: DEVICES_API,
+    name: "DEVICE_ADD_REQUEST_TTL_MS",
+    value: FIFTEEN_MINUTES,
+    mentions: [
+      ["devices.mdx", "The request lives 15 minutes"],
+      ["devices.mdx", "Requests expire 15 minutes after"],
+    ],
+  },
+  {
+    file: "packages/api-schema/src/key-wraps-api.ts",
+    name: "HANDOFF_REQUEST_TTL_MS",
+    value: FIFTEEN_MINUTES,
+    mentions: [["recover-your-key.mdx", "Requests expire after 15 minutes"]],
+  },
+  {
+    file: KEY_WRAPS,
+    name: "HANDOFF_REQUEST_LIMIT",
+    value: "5",
+    mentions: [["recover-your-key.mdx", "five per user per hour"]],
+  },
+  {
+    file: KEY_WRAPS,
+    name: "APPROVAL_LIMIT",
+    value: "20",
+    mentions: [["recover-your-key.mdx", "20 per user per hour"]],
+  },
+  {
+    file: KEY_WRAPS,
+    name: "KEY_BLOB_FETCH_LIMIT",
+    value: "5",
+    mentions: [
+      ["recover-your-key.mdx", "five fetches of the sealed reserve key per user per hour"],
+      ["linux-keychain.mdx", "five fetches per hour"],
+    ],
+  },
+];
 
 /** `export const NAME = <rhs>;` の右辺(そのままの字面)。 */
 function constantOf(source: string, name: string): string | undefined {
@@ -284,9 +311,10 @@ function constantOf(source: string, name: string): string | undefined {
 }
 
 describe("the documented limits match the constants that enforce them", () => {
-  it.each(LIMITS)("%s %s is %s and %s says %s", (file, name, value, page, phrase) => {
-    const source = readFileSync(join(repoRoot, ...file.split("/")), "utf8");
-    expect(constantOf(source, name)).toBe(value);
-    expect(pageText(page)).toContain(phrase);
+  it.each(LIMITS.map((limit) => [limit.name, limit] as const))("%s", (_name, limit) => {
+    const source = readFileSync(join(repoRoot, ...limit.file.split("/")), "utf8");
+    expect(constantOf(source, limit.name)).toBe(limit.value);
+    const missing = limit.mentions.filter(([page, phrase]) => !pageText(page).includes(phrase));
+    expect(missing).toEqual([]);
   });
 });
