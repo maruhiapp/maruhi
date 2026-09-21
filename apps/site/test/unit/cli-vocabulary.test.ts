@@ -229,15 +229,23 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
 });
 
 // K6-Y: docs が書く上限・レート制限・TTL を、定義側の定数に釘で留める。値が変われば
-// この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの —
-// K7-A。ES K7 では目視で写していた)。同じ数値を複数ページが写すので、釘は
-// (定数, ページ × 語句) の対で持つ(1 ページだけ留めると他ページの写しが野放しになる)。
+// この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの — K7-A)。
+// 釘は語句の**出現回数**で留める(存在検査だと複製された文は最初の 1 つで満たされ、
+// 2 つ目以降を編集しても緑のまま通る — K6-Y 補 3)。回数が変われば、写しを増やした側も
+// 減らした側も落ちるので、将来の複製は黙って生まれない。
+interface Mention {
+  readonly page: string;
+  readonly phrase: string;
+  /** そのページでこの語句が現れる回数(既定 1)。 */
+  readonly times?: number;
+}
+
 interface Limit {
   readonly file: string;
   readonly name: string;
   /** `export const <name> = <rhs>;` の右辺の字面(`15 * 60 * 1000` を「15 分」と読めるまま留める)。 */
   readonly value: string;
-  readonly mentions: ReadonlyArray<readonly [page: string, phrase: string]>;
+  readonly mentions: readonly Mention[];
 }
 
 const DEVICES_API = "packages/api-schema/src/devices-api.ts";
@@ -249,59 +257,72 @@ const LIMITS: readonly Limit[] = [
     file: "apps/server/src/policy.ts",
     name: "MAX_DEVICES_PER_MEMBER",
     value: "16",
-    mentions: [["devices.mdx", "16 active devices"]],
+    mentions: [
+      { page: "devices.mdx", phrase: "16 active devices" },
+      // `failure.ts` が `${e.limit}` で埋める CLI の文言の引用(同じ定数の 2 つ目の写し)
+      { page: "devices.mdx", phrase: "for that member (16)" },
+    ],
   },
   {
     file: DEVICES_API,
     name: "MAX_DEVICE_ADD_REQUESTS_PER_HOUR",
     value: "5",
     mentions: [
-      ["devices.mdx", "five device-add requests per hour"],
-      ["linux-keychain.mdx", "five device-add requests per user per hour"],
+      { page: "devices.mdx", phrase: "five device-add requests per hour" },
+      {
+        page: "linux-keychain.mdx",
+        phrase: "five device-add requests per user per hour",
+        times: 2,
+      },
     ],
   },
   {
     file: DEVICES_API,
     name: "MAX_DEVICE_REGISTRY_ROWS_PER_USER",
     value: "32",
-    mentions: [["devices.mdx", "32 rows"]],
+    mentions: [{ page: "devices.mdx", phrase: "32 rows" }],
   },
   {
     file: DEVICES_API,
     name: "DEVICE_ADD_REQUEST_TTL_MS",
     value: FIFTEEN_MINUTES,
     mentions: [
-      ["devices.mdx", "The request lives 15 minutes"],
-      ["devices.mdx", "Requests expire 15 minutes after"],
+      { page: "devices.mdx", phrase: "The request lives 15 minutes" },
+      { page: "devices.mdx", phrase: "Requests expire 15 minutes after" },
     ],
   },
   {
     file: "packages/api-schema/src/key-wraps-api.ts",
     name: "HANDOFF_REQUEST_TTL_MS",
     value: FIFTEEN_MINUTES,
-    mentions: [["recover-your-key.mdx", "Requests expire after 15 minutes"]],
+    mentions: [{ page: "recover-your-key.mdx", phrase: "Requests expire after 15 minutes" }],
   },
   {
     file: KEY_WRAPS,
     name: "HANDOFF_REQUEST_LIMIT",
     value: "5",
-    mentions: [["recover-your-key.mdx", "Guardian handoff requests: five per user per hour"]],
+    mentions: [
+      { page: "recover-your-key.mdx", phrase: "Guardian handoff requests: five per user per hour" },
+    ],
   },
   {
     file: KEY_WRAPS,
     name: "APPROVAL_LIMIT",
     value: "20",
-    mentions: [["recover-your-key.mdx", "20 per user per hour"]],
+    mentions: [{ page: "recover-your-key.mdx", phrase: "20 per user per hour" }],
   },
   {
     file: KEY_WRAPS,
     name: "KEY_BLOB_FETCH_LIMIT",
     value: "5",
     mentions: [
-      ["recover-your-key.mdx", "five fetches of the sealed reserve key per user per hour"],
-      // 同じページのまとめの節にある 2 つ目の写し(括弧が保護者の要求の節と見分ける)
-      ["recover-your-key.mdx", "guardian groups together): five per user per hour"],
-      ["linux-keychain.mdx", "five fetches per hour"],
+      {
+        page: "recover-your-key.mdx",
+        phrase: "five fetches of the sealed reserve key per user per hour",
+      },
+      // 同じページのまとめの節(括弧が保護者の要求の節と見分ける)
+      { page: "recover-your-key.mdx", phrase: "guardian groups together): five per user per hour" },
+      { page: "linux-keychain.mdx", phrase: "five fetches per hour", times: 2 },
     ],
   },
 ];
@@ -312,11 +333,27 @@ function constantOf(source: string, name: string): string | undefined {
   return match?.[1]?.trim();
 }
 
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+/** 語句と、実際の出現回数(期待と違えば差分に出る)。 */
+function countedMention(mention: Mention): { where: string; times: number } {
+  return {
+    where: `${mention.page}: ${mention.phrase}`,
+    times: occurrences(pageText(mention.page), mention.phrase),
+  };
+}
+
 describe("the documented limits match the constants that enforce them", () => {
   it.each(LIMITS.map((limit) => [limit.name, limit] as const))("%s", (_name, limit) => {
     const source = readFileSync(join(repoRoot, ...limit.file.split("/")), "utf8");
     expect(constantOf(source, limit.name)).toBe(limit.value);
-    const missing = limit.mentions.filter(([page, phrase]) => !pageText(page).includes(phrase));
-    expect(missing).toEqual([]);
+    expect(limit.mentions.map(countedMention)).toEqual(
+      limit.mentions.map((mention) => ({
+        where: `${mention.page}: ${mention.phrase}`,
+        times: mention.times ?? 1,
+      })),
+    );
   });
 });
