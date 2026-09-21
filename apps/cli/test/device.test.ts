@@ -17,7 +17,11 @@
 
 import { readFile } from "node:fs/promises";
 
-import { HandoffApprovalSchema, HandoffLookupSchema } from "@maruhi/api-schema";
+import {
+  DEVICE_ADD_REQUEST_TTL_MS,
+  HandoffApprovalSchema,
+  HandoffLookupSchema,
+} from "@maruhi/api-schema";
 import {
   type ChainEntry,
   type ChainOperation,
@@ -33,6 +37,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { expectedWrapRecipientCount } from "../src/dek-wrap.ts";
+import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device.ts";
 import { masterKeyEntryName, serializeStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
 import {
   makeFileOwnDeviceStore,
@@ -459,7 +464,16 @@ describe("maruhi device approve", () => {
     expect(paths.indexOf(`PUT /auth/devices/${dev2.fingerprintHex}`)).toBeGreaterThan(
       paths.lastIndexOf(`POST /projects/${built.projectId}/chain/entries`),
     );
-    expect(env.logs.join("\n")).toContain("registered the device (backfilled 1 DEK wrap");
+    const approveLogs = env.logs.join("\n");
+    expect(approveLogs).toContain("registered the device (backfilled 1 DEK wrap");
+    // FP の出所の規律(K7-7): label / 12 語の直後に、追加する機械の画面と見比べよと 1 文
+    // (要求を置けるのはアカウント全域の admin トークン — `ensureKeyMaterialAccess`)
+    expect(approveLogs).toContain(
+      "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours",
+    );
+    expect(approveLogs.indexOf("fp words:")).toBeLessThan(
+      approveLogs.indexOf("Compare them with the screen"),
+    );
   });
 
   it("12 語でも照合でき、`--cap` / `--env` は端末の cap になる(K4-6)", async () => {
@@ -996,7 +1010,14 @@ describe("maruhi device add", () => {
     expect(logs).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain)",
     );
-    expect(env.errors.join("\n")).toContain(`not registered yet on ${built.projectId}`);
+    // 不足分の案内(K7-2): 承認側の作業は終わっている・要求は使い切り・登録するのは
+    // cap が覆う端末の次の鍵付きコマンド(「承認側の再実行」「まだ作業中」とは言わない)
+    const missingNote = env.errors.find((line) => line.includes("not registered yet on"));
+    expect(missingNote).toContain(`not registered yet on ${built.projectId}`);
+    expect(missingNote).toContain("The request is used up");
+    expect(missingNote).toContain("on its next keyed command run at a terminal");
+    expect(missingNote).not.toContain("may still be working");
+    expect(missingNote).not.toContain("Re-run `maruhi device approve`");
   });
 
   it("409 request-exists の再開で要求の照会に失敗したら、その失敗を伝える(「失効」と誤案内しない)", async () => {
@@ -1075,6 +1096,77 @@ describe("maruhi device add", () => {
     );
   });
 
+  it("要求の作成から TTL の 1/3 が経っても合図が無ければ、承認側の出力を確認せよと 1 度だけ出す(K7-3)", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    // 要求は 6 分前に作られたことにする(期限 = 作成 + 15 分)。合図はまだ無い
+    const requestedAtMs = Date.now() - DEVICE_ADD_WAIT_HINT_AFTER_MS - 60 * 1000;
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      requestCreate: { expiresAtMs: requestedAtMs + DEVICE_ADD_REQUEST_TTL_MS, signal: false },
+    });
+    const env = await makeTestEnv();
+    env.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
+    );
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    // 1 巡目(合図なし → 案内)の後、承認側の PUT に相当する行を置く: 2 巡目で合図を拾う
+    const run = runCli(["device", "add", "--label", "phone"], env.layer);
+    const rowPlaced = new Promise<void>((resolve) => {
+      const tick = (): void => {
+        const stored = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
+        const hinted = env.errors.some((line) => line.includes("still waiting ("));
+        if (stored !== undefined && hinted) {
+          const record = JSON.parse(stored) as { encPubHex: string; sigPubHex: string };
+          void computeUserKeyFingerprint(
+            hexBytes(record.encPubHex),
+            hexBytes(record.sigPubHex),
+          ).then((fp) => {
+            if (!fp.ok) throw new Error("fp");
+            state.registry.push({
+              keyFingerprintHex: encodeHex(fp.value),
+              encPubHex: record.encPubHex,
+              sigPubHex: record.sigPubHex,
+              label: "phone",
+              createdAtMs: Date.now(),
+            });
+            resolve();
+          });
+          return;
+        }
+        setTimeout(tick, 20);
+      };
+      tick();
+    });
+    await rowPlaced;
+    expect(await run, env.errors.join("\n")).toBe(0);
+    const hints = env.errors.filter((line) => line.includes("still waiting ("));
+    expect(hints).toHaveLength(1);
+    // 経過は実測(再開した待機では閾値より大きい)— ここでは閾値 + 1 分
+    expect(hints[0]).toContain("6 minutes since the request");
+    expect(hints[0]).toContain("this key is not in your device registry yet");
+    expect(hints[0]).toContain("failed on every project, the cause is in its output");
+    expect(env.logs.join("\n")).toContain("Approved: this device is registered on 0 projects");
+  }, 15_000);
+
+  it("登録簿の行が合図の待機(要求なし)では途中の案内を出さない(K7-3 の条件)", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: true, conflict: "device-registered" },
+    });
+    const env = await makeTestEnv();
+    env.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
+    );
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.errors.join("\n")).not.toContain("still waiting (");
+  });
+
   it("要求が失効していれば TTL の案内で終わる(合図なし)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
@@ -1089,10 +1181,15 @@ describe("maruhi device add", () => {
     );
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
+    const expired = env.errors.join("\n");
+    expect(expired).toContain(
       "The device-add request expired before it was approved (requests live 15 minutes)",
     );
-    // 鍵は生成済み(再実行は同じ鍵で要求を作り直す)
+    // 案内は実装どおり(K7-1): 再実行は拒否される(K4-21)ので `--replace` を、承認側が
+    // 何も登録していないことを条件に案内する。「同じ鍵で作り直す」とは言わない
+    expect(expired).toContain("if it registered nothing, run `maruhi device add --replace`");
+    expect(expired).not.toContain("it reuses this key");
+    // 鍵は生成済みのまま(捨てるのは人が `--replace` を打ったとき)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeDefined();
   });
 });

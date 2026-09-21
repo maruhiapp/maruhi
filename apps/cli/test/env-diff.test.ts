@@ -540,7 +540,7 @@ describe("maruhi env diff", () => {
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     expect(env.logs).toContain("  ONLY_DEV");
-    expect(env.errors.some((line) => line.includes("No master key"))).toBe(false);
+    expect(env.errors.some((line) => line.includes("No device key"))).toBe(false);
   });
 
   describe("スキーマ考慮(S4 — 設計文書 §1-5 の required 軸)", () => {

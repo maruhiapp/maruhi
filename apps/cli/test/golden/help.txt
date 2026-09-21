@@ -15,7 +15,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
-  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
+  agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -51,7 +51,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
-  agent       Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
+  agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
@@ -1168,7 +1168,7 @@ GLOBAL FLAGS
 
 $ maruhi agent --help
 DESCRIPTION
-  Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
+  Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
 
 USAGE
   maruhi agent [subcommand] [flags] -- <command...>
@@ -1177,7 +1177,7 @@ ARGUMENTS
   command... string    The command to run inside the agent session, written after `--` (usually a shell)
 
 FLAGS
-  --key-ttl string    Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits
+  --key-ttl string    Forget this device's key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits
 
 GLOBAL FLAGS
   --help, -h       Show help information

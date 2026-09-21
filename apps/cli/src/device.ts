@@ -142,6 +142,15 @@ function resolveProjectIds(
 /** 待機の間隔(登録簿のポーリング — K4-5。テストは短縮する)。 */
 const DEVICE_ADD_POLL_INTERVAL_MS = 3_000;
 
+/**
+ * 待機の途中で 1 度だけ出す案内の閾値(K7-3): 要求の作成からこの時間が経っても合図が
+ * 無ければ「承認側の出力を確認せよ」を出す。承認が全プロジェクトで失敗すると合図は
+ * 来ない(K4-31)ので、15 分黙って待たせない。経過は要求の期限から逆算する
+ * (再開した待機でも要求の年齢で判定)。docs(`devices.mdx`)が「five minutes」と
+ * 写しているので、値は `cli-vocabulary.test.ts` の釘で留める。
+ */
+export const DEVICE_ADD_WAIT_HINT_AFTER_MS = DEVICE_ADD_REQUEST_TTL_MS / 3;
+
 /** `maruhi device add [--label <name>] [--replace]`(新端末側)。 */
 export function deviceAddOp(input: {
   readonly session: CliSession;
@@ -164,7 +173,7 @@ export function deviceAddOp(input: {
       );
     } else {
       yield* io.log(
-        `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(request.expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting or creates a new request`,
+        `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(request.expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting while the request is valid`,
       );
       yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
     }
@@ -175,11 +184,16 @@ export function deviceAddOp(input: {
       expiresAtMs:
         request.kind === "pending" ? request.expiresAtMs : Date.now() + DEVICE_ADD_REQUEST_TTL_MS,
       intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
+      // 途中の案内は要求があるときだけ(登録簿の行が合図の待機では「承認側の出力」が無い)
+      hintAfterMs: request.kind === "pending" ? DEVICE_ADD_WAIT_HINT_AFTER_MS : null,
     });
     if (!signalled) {
+      // 期限切れ後の再実行は拒否される(鍵あり + 要求なし + 登録簿なし — K4-21)ので、
+      // 先へ進む手は `--replace` だけ。ただし承認側の登録簿 PUT が落ちた一部成功では
+      // 鍵はチェーンに載っている(合図だけが無い)ので、承認側の出力を条件にする(K7-1)
       return yield* Effect.fail(
         cliError(
-          `The device-add request expired before it was approved (requests live 15 minutes). Re-run \`maruhi device add\` on this machine — it reuses this key (${keys.fingerprintHex}) and creates a new request — then approve it from a registered device with \`maruhi device approve\``,
+          `The device-add request expired before it was approved (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\``,
         ),
       );
     }
@@ -203,8 +217,12 @@ export function deviceAddOp(input: {
       `Approved: this device is registered on ${countNoun(registered, "project")} (verified on each project's chain)`,
     );
     if (missing.length > 0) {
+      // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
+      // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
+      // 「cap がそこを覆う端末」の次の鍵付きコマンド(`device-sync.ts` — cap 起因の skip は
+      // 承認側の再同期では直らない: K6-V 補 2 / K7-2)
       yield* logNote(
-        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device may still be working, or skipped them (its device cap does not cover them, or you are not a member there). Re-run \`maruhi device approve\` there once it finishes, or sync later: the next \`maruhi pull\` reports it`,
+        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped them (its output says why: its cap does not cover them, you are not a member there, or it approved with --project). The request is used up. A device of yours whose cap covers them registers this key there on its next keyed command run at a terminal — the approving device itself if its cap was not the cause, another device otherwise (it learns the key from a project that did register). \`maruhi device list\` shows where this key is registered`,
       );
     }
   });
@@ -331,14 +349,21 @@ function createOrResumeRequest(
     );
 }
 
-/** 登録簿に自分の FP の行が現れるまで待つ(TTL まで)。true = 現れた。 */
+/**
+ * 登録簿に自分の FP の行が現れるまで待つ(TTL まで)。true = 現れた。
+ * `hintAfterMs` があれば、要求の作成(= 期限 − TTL)からその時間が経った最初の巡で
+ * 1 度だけ「承認側の出力を確認せよ」を出す(K7-3 — 合図が無いという事実だけを言い、
+ * 原因は承認側の画面に委ねる)。
+ */
 function waitForRegistryRow(input: {
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
   readonly expiresAtMs: number;
   readonly intervalMs: number;
-}): Effect.Effect<boolean, never> {
+  readonly hintAfterMs: number | null;
+}): Effect.Effect<boolean, never, CliIo> {
   return Effect.gen(function* () {
+    let hinted = false;
     for (;;) {
       const rows = yield* fetchRegistry(input.client);
       if (rows?.some((row) => row.keyFingerprintHex === input.fingerprintHex) === true) {
@@ -346,6 +371,17 @@ function waitForRegistryRow(input: {
       }
       if (Date.now() >= input.expiresAtMs) {
         return false;
+      }
+      const requestedAtMs = input.expiresAtMs - DEVICE_ADD_REQUEST_TTL_MS;
+      if (
+        !hinted &&
+        input.hintAfterMs !== null &&
+        Date.now() - requestedAtMs >= input.hintAfterMs
+      ) {
+        hinted = true;
+        yield* logNote(
+          `still waiting (${Math.round((Date.now() - requestedAtMs) / 60_000)} minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, the cause is in its output and this request stays valid until ${formatUtcMinutes(input.expiresAtMs)} — fix it there and re-run it. Otherwise nothing is needed here`,
+        );
       }
       yield* Effect.sleep(Duration.millis(input.intervalMs));
     }
@@ -494,6 +530,12 @@ export function deviceApproveOp(input: {
       `Approving device ${request.fingerprintHex} (label "${displayText(request.label)}", cap ${describeCap(input.cap)})`,
     );
     yield* io.log(`fp words: ${formatWordList(words)}`);
+    // FP の出所の規律(K7-7 — docs `devices.mdx` と同じ主張): 要求を置けるのは
+    // `ensureKeyMaterialAccess`(`*` × admin のトークン)なので、盗んだトークンで要求を
+    // 置き FP を送って承認させる経路は、yes ではなく「追加する機械の画面から読む」で止まる
+    yield* io.log(
+      "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours, and approving it adds their key to your projects",
+    );
     const projectIds = yield* resolveProjectIds(input.client, input.project);
     const outcomes: ProjectApproveOutcome[] = [];
     for (const projectId of projectIds) {

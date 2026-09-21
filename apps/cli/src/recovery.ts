@@ -223,7 +223,7 @@ export function unwrapRecoveryBlobWithCode(input: {
 
 /** 再登録の手順そのもの(どの原因でも同じ)。 */
 const reRegisterAction =
-  "re-register by running `maruhi key recovery` on another device that still has the master key.";
+  "seal a new reserve key by running `maruhi key recovery --replace` on a device of yours that is registered (it does not open the ledger; the reserve keys recorded on that machine are revoked).";
 
 /**
  * ブロブが使えないときの共通の出口(このデバイスでは直せない)。
@@ -378,7 +378,7 @@ function unwrapWithPromptedCode(input: {
                 // できない(このデバイスには鍵が無い)ので、その断りを落とさない
                 parsed.classification === "foreign"
                 ? foreignRecoveryBlobMessage(parsed.declaredSuite)
-                : `Cannot interpret the decrypted blob as a master-key record. ${reRegisterGuidance}`,
+                : `Cannot interpret the decrypted blob as a key record. ${reRegisterGuidance}`,
           ),
         );
       }

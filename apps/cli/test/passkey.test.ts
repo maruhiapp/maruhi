@@ -54,7 +54,7 @@ const RECOVERY_CODE_TERMINAL_REFUSAL =
 const DEVICE_KEY_EXISTS_REFUSAL =
   "A device key already exists on this machine, so there is nothing to recover here. To add this machine as another device of yours, run `maruhi device add` and approve it from a registered device; if an earlier `maruhi key recover` was interrupted before every project registered this device, re-run with --resume";
 const NO_DEVICE_KEY_REFUSAL =
-  "No master key on this device. Restore it with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approval from another device or a guardian), or generate one with `maruhi key generate` if this is your first key";
+  "No device key on this machine. If you still have a device of yours, add this machine as a device: `maruhi device add` here, then `maruhi device approve` there. If no device is left, open the reserve key with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approvals from your guardians). If this is your first key, generate one with `maruhi key generate`";
 const LEDGER_HOLDS_DEVICE_KEY_REFUSAL =
   "The recovery ledger holds a copy of this device's key (an install from before device keys), not a separate reserve key. Run `maruhi key recovery` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run `maruhi key seal passkey`";
 

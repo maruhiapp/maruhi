@@ -193,11 +193,23 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     expect(devices).toContain(phrase);
   });
 
-  // K6-H: 端末鍵以後の語彙。`master key` が残ってよいのは、CLI の `maruhi agent` の
-  // help がまだその語を使っていることを断る 1 か所だけ(help が改まったらここも直す)
-  it.each(pages)("%s does not fall back to the pre-device-key vocabulary", (page) => {
-    const hits = [...pageText(page).matchAll(/master key/gi)].length;
-    expect(hits).toBe(page === "linux-keychain.mdx" ? 1 : 0);
+  // K6-H / K7-5: 端末鍵以後の語彙。docs にも CLI の help にも `master key` は残らない
+  // (K7 で `maruhi agent` / `--key-ttl` の help を改めたので、K6 の「注記 1 か所」も消えた)
+  it.each([...pages, "apps/cli/test/golden/help.txt"])(
+    "%s does not fall back to the pre-device-key vocabulary",
+    (page) => {
+      const text = page.endsWith(".mdx") ? pageText(page) : help;
+      expect([...text.matchAll(/master key/gi)].length).toBe(0);
+    },
+  );
+
+  // K7-7: FP の出所の規律(要求を置けるのはアカウント全域の admin トークン —
+  // `ensureKeyMaterialAccess`)は docs と `device approve` の出力の両方が自分の言葉で述べる
+  // 消せない複製なので、述語から写した語句を両方に釘で留める
+  it("states who can place a device-add request with the same words as `device approve`", () => {
+    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
+    expect(source).toContain("account-wide admin API token");
+    expect(devices).toContain("account-wide admin API token");
   });
 
   // K6-U: 台帳を変えるコマンドの列挙(`designating guardians` を含む文)は、開封の材料を
@@ -249,6 +261,7 @@ interface Limit {
 }
 
 const DEVICES_API = "packages/api-schema/src/devices-api.ts";
+const DEVICE_CLI = "apps/cli/src/device.ts";
 const KEY_WRAPS = "apps/server/src/db.package/key-wraps.ts";
 const FIFTEEN_MINUTES = "15 * 60 * 1000";
 
@@ -290,6 +303,13 @@ const LIMITS: readonly Limit[] = [
       { page: "devices.mdx", phrase: "The request lives 15 minutes" },
       { page: "devices.mdx", phrase: "Requests expire 15 minutes after" },
     ],
+  },
+  {
+    // K7-3: 待機の途中の案内(TTL の 1/3 = 5 分)。docs は「five minutes」と写す
+    file: DEVICE_CLI,
+    name: "DEVICE_ADD_WAIT_HINT_AFTER_MS",
+    value: "DEVICE_ADD_REQUEST_TTL_MS / 3",
+    mentions: [{ page: "devices.mdx", phrase: "five minutes after the request" }],
   },
   {
     file: "packages/api-schema/src/key-wraps-api.ts",

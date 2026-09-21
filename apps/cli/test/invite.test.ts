@@ -548,7 +548,7 @@ describe("maruhi invite create", () => {
 
     expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "Your master key on this machine does not match your key on the project chain",
+      "This machine's key is not one of your registered devices on this project's chain",
     );
     expect(issueCalls).toHaveLength(0);
   });
@@ -950,7 +950,7 @@ describe("maruhi invite accept", () => {
 
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "restore it onto this machine with `maruhi key recover` and re-run",
+      "add this machine as a device instead (`maruhi device add` here, `maruhi device approve` on a device you have), or `maruhi key recover` if no device of yours is left, then re-run",
     );
     expect(bodies).toHaveLength(0);
     // 鍵は生成されていない(キーチェーンは token エントリのみ)

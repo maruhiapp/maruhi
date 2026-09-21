@@ -410,7 +410,7 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.errors.join("\n")).toContain("Write --key-ttl as a number followed by s, m, or h");
     expect(await runCli(["agent", "--key-ttl", "2h", "--", "bash"], env.layer)).toBe(0);
     expect(env.sessionCalls).toHaveLength(1);
-    expect(env.errors.join("\n")).toContain("The master key is forgotten 2h after it is stored");
+    expect(env.errors.join("\n")).toContain("This device's key is forgotten 2h after it is stored");
   });
 
   it("`agent -- status` は子コマンドの実行であってサブコマンドではない(`--` を跨がない)", async () => {
@@ -446,8 +446,8 @@ describeSocket("maruhi agent status", () => {
     const output = env.logs.join("\n");
     expect(output).toContain(`socket:      ${server.socketPath}`);
     expect(output).toContain("token:       https://maruhi.test");
-    expect(output).toContain("master key:  https://maruhi.test (user user-0001)");
-    expect(output).toContain("master key:  http://[::1]:8787 (user user-0002)");
+    expect(output).toContain("device key:  https://maruhi.test (user user-0001)");
+    expect(output).toContain("device key:  http://[::1]:8787 (user user-0002)");
     expect(output).not.toContain("secret");
   });
 
@@ -483,7 +483,9 @@ describeSocket("maruhi agent status", () => {
     expect(message).toContain("held by this agent session");
     // 可逆にできないので、順序(抜けずに更新)と条件(コードがあるときだけ抜ける)
     expect(message).toContain("re-run inside this session");
-    expect(message).toContain("only if you have your recovery code");
+    expect(message).toContain(
+      "only if you still have another device of yours or your recovery code",
+    );
     expect(message).toContain("exit the session");
     expect(message).toContain("maruhi agent -- <shell>");
     // OS キーチェーンの手順(実行できない)を案内しない

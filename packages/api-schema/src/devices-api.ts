@@ -79,6 +79,9 @@ export const DeviceAddRequestSummarySchema = Schema.Struct({
   expiresAtMs: Schema.Number,
 });
 
+/** 登録簿の一覧(`GET /auth/devices`)の応答 envelope(K5 申し送り (0) — Web が導出型で読む)。 */
+export const DeviceListSchema = Schema.Struct({ devices: Schema.Array(DeviceSummarySchema) });
+
 const fingerprintParams = { fp: KeyFingerprintHex };
 
 /**
@@ -90,7 +93,7 @@ export const devicesGroup = HttpApiGroup.make("devices")
   .add(
     // 登録簿の読み取り: 認証済み主体すべて(セッション主体も可 — §5 の許可列挙)
     HttpApiEndpoint.get("list", "/auth/devices", {
-      success: Schema.Struct({ devices: Schema.Array(DeviceSummarySchema) }),
+      success: DeviceListSchema,
     }).middleware(AuthMiddleware),
   )
   .add(
