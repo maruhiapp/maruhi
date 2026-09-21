@@ -200,6 +200,15 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     expect(hits).toBe(page === "linux-keychain.mdx" ? 1 : 0);
   });
 
+  // K6-U: 台帳を変えるコマンドの列挙(`designating guardians` を含む文)は、開封の材料を
+  // 名乗らない。`maruhi guardian add` は `--passkey` を受けないので、この列挙に材料を足すと
+  // 必ず嘘になる(同じ誤りが devices / recover の両ページで出た — K6-R の原則の機械化)
+  it.each(pages)("%s does not attribute an opening material to the guardian path", (page) => {
+    const sentences = pageText(page).split(/(?<=[.:])\s+/);
+    const listings = sentences.filter((sentence) => sentence.includes("designating guardians"));
+    expect(listings.filter((sentence) => /with the code|or a passkey/.test(sentence))).toEqual([]);
+  });
+
   // K6-L: `recipes.test.ts` が実行するのは deploy-targets.mdx のブロックだけ。
   // 他のページの ```sh がその形に偶然一致しないこと(一致させるなら検査対象に加える)
   it.each(pages.filter((page) => page !== "deploy-targets.mdx"))(

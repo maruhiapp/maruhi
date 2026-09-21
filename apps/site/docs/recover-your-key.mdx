@@ -17,7 +17,7 @@ This page is for the case where **no device of yours is left**. To put maruhi on
 
 Every path ends in the same state: the machine has a device key of its own, registered on your projects, and `maruhi key show` prints its fingerprint and the reserve key's. All of them run only on a human interactive terminal (stdin, stdout, and stderr must all be terminals; AI agent environments are refused), because key material passes through that machine. The server allows five fetches of the sealed reserve key per user per hour — enough for a lost laptop, not for daily container churn ([keychain page](/docs/linux-keychain#dev-containers-and-codespaces)).
 
-Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key with the code or a passkey; only someone who can open the ledger can change it.
+Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key, so only someone who can open it can change it. Which material each of those commands accepts differs; see [Passkey](#passkey).
 
 ## Recovery code
 
