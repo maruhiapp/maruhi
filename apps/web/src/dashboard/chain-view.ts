@@ -527,10 +527,19 @@ function keyAvailable(state: FoldState, encPubHex: string, sigPubHex: string): b
   return holder === undefined || resolveStaleHolder(holder);
 }
 
-/** 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)ので失効済みから外す。 */
+/**
+ * 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)ので
+ * 失効済みから外す。ただし同じ FP を既に別の端末が持っているなら(在籍をまたいだ再束縛 —
+ * K5-15)、2 つの鍵対が主張する FP は何も正当化しないので FP なしで加える: 1 人の端末集合の
+ * 中で FP は単射(構造で保証)。
+ */
 function pushDevice(member: MutableMember, device: MutableDevice): void {
-  if (device.keyFingerprintHex !== null)
-    member.revokedFingerprints.delete(device.keyFingerprintHex);
+  const fp = device.keyFingerprintHex;
+  if (fp !== null && member.devices.some((d) => d.keyFingerprintHex === fp)) {
+    member.devices.push({ ...device, keyFingerprintHex: null });
+    return;
+  }
+  if (fp !== null) member.revokedFingerprints.delete(fp);
   member.devices.push(device);
 }
 

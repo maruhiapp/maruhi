@@ -737,6 +737,50 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     expect(view.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
   });
 
+  it("never lets one member hold the same fingerprint twice across a re-tenure (K5-15)", () => {
+    const KEYS_B1 = { encPubHex: "c1".repeat(32), sigPubHex: "d1".repeat(32) };
+    const KEYS_B2 = { encPubHex: "c2".repeat(32), sigPubHex: "d2".repeat(32) };
+    const FP_X = "ee".repeat(16);
+    const memberWith = (keys: { encPubHex: string; sigPubHex: string }): ChainEntry => ({
+      ...base(),
+      op: "add_member",
+      payload: {
+        targetUserId: "user_b",
+        ...keys,
+        role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
+    });
+    // 在籍 1: K1 に FP_X が束縛される(署名)→ 除名 → 在籍 2: 別の鍵 K2、同じ FP_X で署名 → K2 に束縛
+    // → K1 を add_device: 学習済み FP_X は K2 が持っている → FP なしで加える(同じ FP の 2 行を作らない)
+    const entries = [
+      genesis,
+      memberWith(KEYS_B1),
+      addDevice("user_b", FP_X, KEYS_D3),
+      {
+        ...signedBy("user_owner", FP),
+        op: "remove_member",
+        payload: { targetUserId: "user_b" },
+      } as ChainEntry,
+      memberWith(KEYS_B2),
+      addDevice("user_b", FP_X, KEYS_R),
+      addDevice("user_b", FP_X, KEYS_B1),
+    ];
+    const view = deriveReportedView(entries);
+    const b = devicesOf(view, "user_b");
+    expect(b?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP_X, null, null]);
+    // FP_X の失効はちょうど 1 行を外す
+    const revoked = deriveReportedView([
+      ...entries,
+      revokeDevice("user_b", FP_X, "user_b", [FP_X]),
+    ]);
+    expect(reportedDeviceCount(devicesOf(revoked, "user_b")!)).toBe(2);
+    expect(devicesOf(revoked, "user_b")?.devices.every((d) => d.keyFingerprintHex === null)).toBe(
+      true,
+    );
+  });
+
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {
     const add = addMember("user_a", "member");
     const before = deriveReportedView([genesis, add]);
