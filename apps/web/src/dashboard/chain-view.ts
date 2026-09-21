@@ -485,14 +485,39 @@ function readableAddDevice(payload: EntryOf<"add_device">["payload"]): boolean {
   return keysReadable && readableScope(payload);
 }
 
-/** 現メンバーの全端末の同種公開鍵と重複するか(`duplicate-member-key` の端末集合 — §6.2)。 */
-function duplicatesCurrentKey(state: FoldState, encPubHex: string, sigPubHex: string): boolean {
+/** 現メンバーの端末のうち同種公開鍵を持つもの(持ち主と端末)。 */
+function currentKeyHolder(
+  state: FoldState,
+  encPubHex: string,
+  sigPubHex: string,
+): { member: MutableMember; device: MutableDevice } | undefined {
   for (const member of state.members.values()) {
-    if (member.devices.some((d) => d.encPubHex === encPubHex || d.sigPubHex === sigPubHex)) {
-      return true;
-    }
+    const device = member.devices.find(
+      (d) => d.encPubHex === encPubHex || d.sigPubHex === sigPubHex,
+    );
+    if (device !== undefined) return { member, device };
   }
-  return false;
+  return undefined;
+}
+
+/**
+ * 同じ鍵が現メンバーの端末に見えるとき、それが曖昧に失効した未束縛端末の残骸かを解く(K5-12):
+ * 受理された `add_device` は「その鍵は現在有効でない」(`duplicate-member-key`)を意味するので、
+ * 持ち主に unresolved があり、その端末が未束縛なら、その端末こそ失効済みと確定して外す。
+ * 解けなければ重複(読めない行)。
+ */
+function resolveStaleHolder(holder: { member: MutableMember; device: MutableDevice }): boolean {
+  const { member, device } = holder;
+  if (device.keyFingerprintHex !== null || member.unresolvedRevocations === 0) return false;
+  member.devices = member.devices.filter((d) => d !== device);
+  member.unresolvedRevocations -= 1;
+  return true;
+}
+
+/** 新端末の鍵が使えるか: 現メンバーの端末と重複しない、または重複が失効の残骸として解ける。 */
+function keyAvailable(state: FoldState, encPubHex: string, sigPubHex: string): boolean {
+  const holder = currentKeyHolder(state, encPubHex, sigPubHex);
+  return holder === undefined || resolveStaleHolder(holder);
 }
 
 /** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。 */
@@ -500,7 +525,7 @@ function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
   const member = state.members.get(entry.actor.userId);
   const payload = entry.payload;
   if (member === undefined || !readableAddDevice(payload)) return;
-  if (duplicatesCurrentKey(state, payload.encPubHex, payload.sigPubHex)) return;
+  if (!keyAvailable(state, payload.encPubHex, payload.sigPubHex)) return;
   member.devices.push(newDevice(state, member.userId, payload, payload, entry.seq));
 }
 

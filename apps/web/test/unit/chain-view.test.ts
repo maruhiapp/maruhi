@@ -648,6 +648,32 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     ]);
   });
 
+  it("re-adds a key after an unresolved revocation by resolving the stale row (the accepted add_device proves that key was inactive — K5-12)", () => {
+    const addD2 = addDevice("user_owner", FP, KEYS_D2);
+    const addR = addDevice("user_owner", FP, KEYS_R);
+    // 未束縛 2 のうち 1 つ(D2)を失効 → どれかは不明(unresolved 1)
+    const revokeD2 = revokeDevice("user_owner", FP, "user_owner", [FP_D2]);
+    // 同じ鍵を再登録 → 受理された以上 D2 の行は失効済みと確定 → 残骸を外して足す
+    const readdD2 = addDevice("user_owner", FP, KEYS_D2, {
+      roleCap: "member",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    });
+    const view = deriveReportedView([genesis, addD2, addR, revokeD2, readdD2]);
+    const owner = devicesOf(view, "user_owner");
+    expect(owner?.unresolvedRevocations).toBe(0);
+    expect(reportedDeviceCount(owner!)).toBe(3);
+    expect(owner?.devices.map((d) => [d.encPubHex, d.roleCap, d.addedSeq])).toEqual([
+      [HEX64, "owner", genesis.seq],
+      [KEYS_R.encPubHex, "owner", addR.seq],
+      [KEYS_D2.encPubHex, "member", readdD2.seq],
+    ]);
+    // 残骸が無い(unresolved 0)なら同じ鍵の再追加は重複 = 無視のまま
+    const dup = deriveReportedView([genesis, addD2, addR, readdD2]);
+    expect(reportedDeviceCount(devicesOf(dup, "user_owner")!)).toBe(3);
+    expect(devicesOf(dup, "user_owner")?.devices[1]?.roleCap).toBe("owner");
+  });
+
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {
     const add = addMember("user_a", "member");
     const before = deriveReportedView([genesis, add]);
