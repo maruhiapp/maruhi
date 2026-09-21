@@ -549,11 +549,16 @@ describe("maruhi key recovery(発行・再発行)", () => {
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     env.setPromptResponses([lastGroupOf(env)]);
-    // 最後の台帳行の削除(同じ一覧)は失敗するので終了コードは 1 だが、封印は済んでいる
-    expect(await runCli(["key", "recovery", "--replace"], env.layer)).toBe(1);
+    // 末尾の台帳行の削除は同じ一覧に依るので飛ばし(Note)、コマンドは成功で終わる
+    expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
+      0,
+    );
     expect(put).not.toBeNull();
     const errors = env.errors.join("\n");
     expect(errors).toContain("could not read the ledger's passkey wraps and guardian groups");
+    expect(errors).toContain(
+      "could not be listed, so any that sealed the previous reserve key were left in place",
+    );
     expect(errors).toContain(
       "any passkey wraps and guardian groups that seal the current reserve key are deleted",
     );

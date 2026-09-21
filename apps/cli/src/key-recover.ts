@@ -449,7 +449,7 @@ function replaceReserveWithoutOpening(input: {
         "no previous reserve key is recorded on this machine, so none was revoked. Check `maruhi device list` and revoke any reserve device you do not recognise with `maruhi device revoke <fingerprint>`",
       );
     }
-    return yield* registerReserveAndRetire({ ...input, next, retiring });
+    return yield* registerReserveAndRetire({ ...input, next, retiring, ledgerRows: status });
   });
 }
 
@@ -488,6 +488,8 @@ function registerReserveAndRetire(input: {
   readonly client: MaruhiClient;
   readonly next: ReserveKeys;
   readonly retiring: readonly string[];
+  /** 事前に読んだ台帳の行(`--replace`)。undefined = 末尾で読む(rotate)。 */
+  readonly ledgerRows?: LedgerRows;
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -515,10 +517,16 @@ function registerReserveAndRetire(input: {
         exitCode = 1;
       }
     }
-    yield* retireOldLedgerRows(input.client);
+    yield* retireOldLedgerRows(input.client, input.ledgerRows);
     return exitCode;
   });
 }
+
+/** 台帳の行の一覧(`GET /auth/key-wraps`)。null = 読めなかった(事前警告で Note 済み)。 */
+type LedgerRows = {
+  readonly passkeys: readonly { readonly wrapId: string }[];
+  readonly guardianGroups: readonly { readonly groupId: string }[];
+} | null;
 
 /** 1 プロジェクトでの予備鍵 rotate の結果。 */
 interface ReserveRotateOutcome {
@@ -697,12 +705,24 @@ function staleReserveFingerprints(
   });
 }
 
-/** 旧 B のパスキー行・保護者グループを削除する(失効した鍵しか復元しない行 — K4-11)。 */
+/**
+ * 旧 B のパスキー行・保護者グループを削除する(失効した鍵しか復元しない行 — K4-11)。
+ * `rows` が undefined なら今読む。null(事前に読めなかった — `--replace`)なら、途中の書き込みは
+ * これらの行に触れないので同じ障害を再び踏まず、削除を飛ばして後で消す手順を Note に出す
+ * (pullfrog 指摘: 書き込みが済んだ後に同じ障害でコマンドを失敗させない)。
+ */
 function retireOldLedgerRows(
   client: MaruhiClient,
+  rows?: LedgerRows,
 ): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    const status = yield* client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
+    if (rows === null) {
+      yield* logNote(
+        "the ledger's passkey wraps and guardian groups could not be listed, so any that sealed the previous reserve key were left in place (they can only restore a revoked key). Remove them later with `maruhi key seal list` / `maruhi key seal remove <wrap-id>` and `maruhi guardian list` / `maruhi guardian remove <group-id>`",
+      );
+      return;
+    }
+    const status = rows ?? (yield* client.keyWraps.status({}).pipe(Effect.mapError(toCliError)));
     for (const passkey of status.passkeys) {
       yield* client.keyWraps.passkeyDelete({ params: { wrapId: passkey.wrapId } }).pipe(
         Effect.catchTag("KeyWrapNotFound", () => Effect.void),
