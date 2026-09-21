@@ -4,8 +4,7 @@
 // (packages/api-schema/src/strict.ts の SECURITY_CRITICAL_PAYLOAD_ENDPOINTS)。
 // 各面で「未知フィールドを含むリクエストが実際に 400 で拒否される」ことを
 // workerd 実環境の受理経路で検証する — 注釈の**存在**をテストしない
-// (docs/notes/session-32.md §2-3: 適用順バグと upstream の parseOptions
-// 読み取り位置変更の両方を、挙動の側から検出するため)。
+// (スキーマ注釈がパーサに読まれなくなった場合も、挙動の側から検出するため)。
 //
 // 各テストは同一 body の 2 送信で構成する:
 // 1. probe = clean body + 未知フィールド → 400

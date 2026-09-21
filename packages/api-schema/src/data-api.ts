@@ -75,7 +75,7 @@ import {
   VersionConflictError,
 } from "./errors/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
-import { strictPayload } from "./strict.ts";
+import { strictEndpoint } from "./strict.ts";
 
 const projectParams = { projectId: ProjectIdSchema };
 const environmentParams = { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema };
@@ -228,11 +228,11 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
  */
 export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
-    HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
-      params: projectParams,
-      // strict 受理(§12-10 (1) — ルート 1 注釈で全ネストへ伝播)
-      payload: strictPayload(
-        Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
+        params: projectParams,
+        // strict 受理(§12-10 (1) — ルート 1 注釈で全ネストへ伝播)
+        payload: Schema.Struct({
           parentHeadHashHex: Sha256Hex,
           entry: CreateEnvironmentEntrySchema,
           statement: CreateEnvironmentMetaStatementSchema,
@@ -245,48 +245,48 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           // マニフェストの signed_bytes ハッシュ・変数空集合の values_digest)
           checkpoint: CheckpointEntrySchema,
         }),
-      ),
-      success: EnvironmentChainResultSchema,
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        EnvironmentConflictError,
-        ChainHeadConflictError,
-        ChainEntryInvalidError,
-        ChainEntryTooLargeError,
-        ChainCapacityExceededError,
-        // 複合内整合検査(§12-4): エントリ payload とステートメント / マニフェストの
-        // environment_id / 宣言ヘッドの不一致
-        PayloadMismatchError,
-        MetaStatementRejectedError,
-        // 同梱マニフェストも通常経路と同一の検証(§12-5 の (1)〜(7))を受ける。
-        // ManifestVersionConflict は宣言しない: 作成はチェーン合意規則
-        // (duplicate-environment)が環境の新規性を保証し、保存済みマニフェストの
-        // ない環境への v1 は CAS 上競合しえない(ワイヤも Literal 1)
-        ManifestRejectedError,
-        NameNotNfcError,
-        DekWrapRejectedError,
-        // ラップ集合検査(§12-6 checkWrapSets)は既存 (エポック, 受信者) との
-        // 重複を 409 で拒否しうる。確立エポック(create = 1)は現行チェーン規則
-        // (duplicate-environment)の下では既存ラップを持ちえないが、規則の変化で
-        // 409 が契約外(500)へ落ちないよう契約として宣言する
-        DekWrapExistsError,
-        // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準。作成は変数空集合の
-        // values_digest との一致)
-        CheckpointStateMismatchError,
-        // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
-        // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
-        // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
-        AuditHeadNotReadyError,
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
+        success: EnvironmentChainResultSchema,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentConflictError,
+          ChainHeadConflictError,
+          ChainEntryInvalidError,
+          ChainEntryTooLargeError,
+          ChainCapacityExceededError,
+          // 複合内整合検査(§12-4): エントリ payload とステートメント / マニフェストの
+          // environment_id / 宣言ヘッドの不一致
+          PayloadMismatchError,
+          MetaStatementRejectedError,
+          // 同梱マニフェストも通常経路と同一の検証(§12-5 の (1)〜(7))を受ける。
+          // ManifestVersionConflict は宣言しない: 作成はチェーン合意規則
+          // (duplicate-environment)が環境の新規性を保証し、保存済みマニフェストの
+          // ない環境への v1 は CAS 上競合しえない(ワイヤも Literal 1)
+          ManifestRejectedError,
+          NameNotNfcError,
+          DekWrapRejectedError,
+          // ラップ集合検査(§12-6 checkWrapSets)は既存 (エポック, 受信者) との
+          // 重複を 409 で拒否しうる。確立エポック(create = 1)は現行チェーン規則
+          // (duplicate-environment)の下では既存ラップを持ちえないが、規則の変化で
+          // 409 が契約外(500)へ落ちないよう契約として宣言する
+          DekWrapExistsError,
+          // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準。作成は変数空集合の
+          // values_digest との一致)
+          CheckpointStateMismatchError,
+          // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
+          // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
+          // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
+          AuditHeadNotReadyError,
+          DataLimitExceededError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
-    HttpApiEndpoint.post("rotate", "/projects/:projectId/environments/:environmentId/rotate", {
-      params: environmentParams,
-      payload: strictPayload(
-        Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.post("rotate", "/projects/:projectId/environments/:environmentId/rotate", {
+        params: environmentParams,
+        payload: Schema.Struct({
           parentHeadHashHex: Sha256Hex,
           entry: RotateEpochEntrySchema,
           deks: Schema.Array(WrappedDekSchema),
@@ -301,39 +301,39 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           // (未再暗号化 = 旧エポックの値 — §12-7 の正当な状態)の values_digest
           checkpoint: CheckpointEntrySchema,
         }),
-      ),
-      success: EnvironmentChainResultSchema,
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
-        // 削除済みを含まない)
-        EnvironmentNotFoundError,
-        // URL の environmentId と entry.payload.environmentId の不一致(複合内整合検査)
-        PayloadMismatchError,
-        ChainHeadConflictError,
-        ChainEntryInvalidError,
-        ChainEntryTooLargeError,
-        ChainCapacityExceededError,
-        // 同梱マニフェストの検証(§12-5 の (1)〜(7)。epoch = 同梱エントリ適用後 =
-        // new_epoch)。409 の再試行ではエントリとマニフェストの両方を再署名する
-        ManifestRejectedError,
-        ManifestVersionConflictError,
-        DekWrapRejectedError,
-        // 確立エポック(rotate = new_epoch)への既存ラップは現行チェーン規則
-        // (エポック単調性)の下では存在しえないが、create と同じ理由で宣言する
-        DekWrapExistsError,
-        // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準)。宣言ヘッド確定後の
-        // 並行 push で values_digest が外れた場合の 422 — クライアントは再 pull の
-        // 上で有界再試行する(§12-4)
-        CheckpointStateMismatchError,
-        // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
-        // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
-        // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
-        AuditHeadNotReadyError,
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
+        success: EnvironmentChainResultSchema,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
+          // 削除済みを含まない)
+          EnvironmentNotFoundError,
+          // URL の environmentId と entry.payload.environmentId の不一致(複合内整合検査)
+          PayloadMismatchError,
+          ChainHeadConflictError,
+          ChainEntryInvalidError,
+          ChainEntryTooLargeError,
+          ChainCapacityExceededError,
+          // 同梱マニフェストの検証(§12-5 の (1)〜(7)。epoch = 同梱エントリ適用後 =
+          // new_epoch)。409 の再試行ではエントリとマニフェストの両方を再署名する
+          ManifestRejectedError,
+          ManifestVersionConflictError,
+          DekWrapRejectedError,
+          // 確立エポック(rotate = new_epoch)への既存ラップは現行チェーン規則
+          // (エポック単調性)の下では存在しえないが、create と同じ理由で宣言する
+          DekWrapExistsError,
+          // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準)。宣言ヘッド確定後の
+          // 並行 push で values_digest が外れた場合の 422 — クライアントは再 pull の
+          // 上で有界再試行する(§12-4)
+          CheckpointStateMismatchError,
+          // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
+          // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
+          // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
+          AuditHeadNotReadyError,
+          DataLimitExceededError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
     HttpApiEndpoint.get("list", "/projects/:projectId/environments", {
@@ -343,54 +343,56 @@ export const environmentsGroup = HttpApiGroup.make("environments")
     }).middleware(AuthMiddleware),
   )
   .add(
-    HttpApiEndpoint.patch("rename", "/projects/:projectId/environments/:environmentId", {
-      params: environmentParams,
-      // 環境の rename はマニフェストも同梱する(manifestVersion + 1 — 新しい
-      // envMetaSigHashHex を写す。§12-4)。metaVersion CAS と manifestVersion CAS は
-      // 同一トランザクションで判定し、409 は両方の再署名で再試行する(§12-5)
-      payload: strictPayload(
-        Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.patch("rename", "/projects/:projectId/environments/:environmentId", {
+        params: environmentParams,
+        // 環境の rename はマニフェストも同梱する(manifestVersion + 1 — 新しい
+        // envMetaSigHashHex を写す。§12-4)。metaVersion CAS と manifestVersion CAS は
+        // 同一トランザクションで判定し、409 は両方の再署名で再試行する(§12-5)
+        payload: Schema.Struct({
           statement: RenameEnvironmentMetaStatementSchema,
           manifest: EnvironmentManifestSchema,
         }),
-      ),
-      success: HttpApiSchema.NoContent,
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        EnvironmentNotFoundError,
-        EnvironmentConflictError,
-        PayloadMismatchError,
-        MetaVersionConflictError,
-        MetaStatementRejectedError,
-        ManifestRejectedError,
-        ManifestVersionConflictError,
-        NameNotNfcError,
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
+        success: HttpApiSchema.NoContent,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          EnvironmentConflictError,
+          PayloadMismatchError,
+          MetaVersionConflictError,
+          MetaStatementRejectedError,
+          ManifestRejectedError,
+          ManifestVersionConflictError,
+          NameNotNfcError,
+          DataLimitExceededError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
-    HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId", {
-      params: environmentParams,
-      // 削除も署名付きステートメント(status deleted。name は直前 active 名 —
-      // CRYPTO_SPEC §4.2)を要する。DELETE + body は deks.remove の先例に倣う
-      payload: strictPayload(Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema })),
-      success: HttpApiSchema.NoContent,
-      // DataLimitExceeded は宣言しない: 削除経路の数量検査は metaVersion 上限のみ
-      // で、削除ステートメント(ワイヤ Schema が status = deleted を固定)は
-      // その対象外(§12-8 — 上限で削除を遮断すると上限到達リソースが恒久的に
-      // 削除不能になる。quotas.ts の metaVersionsExceeded とその固定
-      // テストが根拠)。variables.remove も同じ
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        EnvironmentNotFoundError,
-        PayloadMismatchError,
-        MetaVersionConflictError,
-        MetaStatementRejectedError,
-      ],
-    }).middleware(AuthMiddleware),
+    strictEndpoint(
+      HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId", {
+        params: environmentParams,
+        // 削除も署名付きステートメント(status deleted。name は直前 active 名 —
+        // CRYPTO_SPEC §4.2)を要する。DELETE + body は deks.remove の先例に倣う
+        payload: Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema }),
+        success: HttpApiSchema.NoContent,
+        // DataLimitExceeded は宣言しない: 削除経路の数量検査は metaVersion 上限のみ
+        // で、削除ステートメント(ワイヤ Schema が status = deleted を固定)は
+        // その対象外(§12-8 — 上限で削除を遮断すると上限到達リソースが恒久的に
+        // 削除不能になる。quotas.ts の metaVersionsExceeded とその固定
+        // テストが根拠)。variables.remove も同じ
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          PayloadMismatchError,
+          MetaVersionConflictError,
+          MetaStatementRejectedError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   );
 
 /**
@@ -400,19 +402,19 @@ export const environmentsGroup = HttpApiGroup.make("environments")
  */
 export const variablesGroup = HttpApiGroup.make("variables")
   .add(
-    HttpApiEndpoint.post("create", "/projects/:projectId/environments/:environmentId/variables", {
-      params: environmentParams,
-      // 作成 = version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱
-      // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
-      // 併置しない — 二重運搬の不一致面を作らない)。
-      //
-      // レイアウト v2 で作成は 2 形の Union になる: active(値
-      // 同梱 — statement は v1 / v2 のどちらでもよい)と declared(値なし —
-      // v2 限定の宣言。「値のない変数は存在しない」の唯一の例外)。deleted の
-      // 創出はどちらの形にも存在しない(Schema 400 — §12-5 の遷移規則の
-      // ワイヤ面。strict 注釈は Union を越えて伝播する — §12-10 (1))
-      payload: strictPayload(
-        Schema.Union([
+    strictEndpoint(
+      HttpApiEndpoint.post("create", "/projects/:projectId/environments/:environmentId/variables", {
+        params: environmentParams,
+        // 作成 = version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱
+        // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
+        // 併置しない — 二重運搬の不一致面を作らない)。
+        //
+        // レイアウト v2 で作成は 2 形の Union になる: active(値
+        // 同梱 — statement は v1 / v2 のどちらでもよい)と declared(値なし —
+        // v2 限定の宣言。「値のない変数は存在しない」の唯一の例外)。deleted の
+        // 創出はどちらの形にも存在しない(Schema 400 — §12-5 の遷移規則の
+        // ワイヤ面。HttpApi.ParseOptions は Union を越えて伝播する — §12-10 (1))
+        payload: Schema.Union([
           Schema.Struct({
             statement: Schema.Union([
               CreateVariableMetaStatementSchema,
@@ -428,194 +430,194 @@ export const variablesGroup = HttpApiGroup.make("variables")
             manifest: EnvironmentManifestSchema,
           }),
         ]),
-      ),
-      success: VariableVersionSchema,
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        EnvironmentNotFoundError,
-        VariableConflictError,
-        PayloadMismatchError,
-        VersionConflictError,
-        EpochConflictError,
-        // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名
-        // 検証を受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)。
-        // MetaVersionConflict はワイヤ Schema(metaVersion = 1 固定)の下では
-        // 実質到達しないが、CAS の契約として宣言する(クライアントは名前から
-        // 再解決してリトライする — 並行 rename との競合の受け皿)
-        ValueSignatureRejectedError,
-        MetaStatementRejectedError,
-        MetaVersionConflictError,
-        // 同梱マニフェストの検証と manifestVersion CAS(§12-5 (6) — 並行メタ
-        // 操作は環境単位の manifestVersion で直列化される。一括投入は逐次実行)
-        ManifestRejectedError,
-        ManifestVersionConflictError,
-        NameNotNfcError,
-        // スキーマポリシー(§12-11): disabled 下の v2 新規採用は
-        // schema-policy-disabled、locked 下の varType なし作成は schema-required
-        SchemaPolicyRejectedError,
-        // description の上限・文字種(§12-8 の受理検査 — 422)
-        SchemaDescriptionRejectedError,
-        ValueTooLargeError,
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
-  )
-  .add(
-    HttpApiEndpoint.post(
-      "push",
-      "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
-      {
-        params: variableParams,
-        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5)。
-        // 「直前バージョンと同一平文の新エポックへの再暗号化(CRYPTO_SPEC §7)」の
-        // writer 自己申告で、受理判定・値署名には影響しない。要ローテーション
-        // 検出の解消導出(AUDIT_SPEC §4.1-5)だけがこれを読む
-        payload: strictPayload(
-          Schema.Struct({
-            value: EncryptedPayloadSchema,
-            reencryption: Schema.optionalKey(Schema.Boolean),
-          }),
-        ),
         success: VariableVersionSchema,
         error: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentNotFoundError,
-          VariableNotFoundError,
+          VariableConflictError,
           PayloadMismatchError,
           VersionConflictError,
           EpochConflictError,
-          ValueSignatureRejectedError,
-          // declared 変数への通常 push は activation 複合を要求する(§12-5)
-          ActivationRequiredError,
-          ValueTooLargeError,
-          DataLimitExceededError,
-        ],
-      },
-    ).middleware(AuthMiddleware),
-  )
-  .add(
-    // activation(declared → active — §12-5。レイアウト v2):
-    // declared 変数への最初の値 push を「値 version 1 + status active の v2
-    // ステートメント(metaVersion + 1)+ マニフェスト」の複合として受理する。
-    // メタ状態が変わるためマニフェスト再発行を伴う(「値の push はマニフェストに
-    // 触れない」不変条件の対象は通常 push — CRYPTO_SPEC §4.3)。
-    // **declared → active 専用**であり「値 push + メタ再発行」の汎用複合では
-    // ない: 対象が declared でない・name が宣言時の名から変わる形は 422
-    // payload-mismatch(status / name)で拒否する(改名は rename 経路が
-    // var.renamed の監査と共に担う。この限定が §12-11 のポリシー免除 —
-    // 直前は必ず v2 — の前提を成立させる)
-    HttpApiEndpoint.post(
-      "activate",
-      "/projects/:projectId/environments/:environmentId/variables/:variableId/activate",
-      {
-        params: variableParams,
-        payload: strictPayload(
-          Schema.Struct({
-            value: EncryptedPayloadSchema,
-            statement: ActivateVariableMetaStatementSchema,
-            manifest: EnvironmentManifestSchema,
-          }),
-        ),
-        success: VariableVersionSchema,
-        error: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-          PayloadMismatchError,
-          // declared の latest は常に 0 なので、CAS が値 version 1 を強制する
-          VersionConflictError,
-          EpochConflictError,
+          // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名
+          // 検証を受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)。
+          // MetaVersionConflict はワイヤ Schema(metaVersion = 1 固定)の下では
+          // 実質到達しないが、CAS の契約として宣言する(クライアントは名前から
+          // 再解決してリトライする — 並行 rename との競合の受け皿)
           ValueSignatureRejectedError,
           MetaStatementRejectedError,
           MetaVersionConflictError,
+          // 同梱マニフェストの検証と manifestVersion CAS(§12-5 (6) — 並行メタ
+          // 操作は環境単位の manifestVersion で直列化される。一括投入は逐次実行)
           ManifestRejectedError,
           ManifestVersionConflictError,
+          NameNotNfcError,
+          // スキーマポリシー(§12-11): disabled 下の v2 新規採用は
+          // schema-policy-disabled、locked 下の varType なし作成は schema-required
+          SchemaPolicyRejectedError,
+          // description の上限・文字種(§12-8 の受理検査 — 422)
           SchemaDescriptionRejectedError,
           ValueTooLargeError,
           DataLimitExceededError,
         ],
-      },
-    ).middleware(AuthMiddleware),
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
-    HttpApiEndpoint.patch(
-      "rename",
-      "/projects/:projectId/environments/:environmentId/variables/:variableId",
-      {
-        params: variableParams,
-        // v2 形は rename とスキーマ再発行(スキーマ欄のみの変更)を兼ねる —
-        // 受理規則は同一(§12-5)。status は現状態を保持する(遷移はこの形では
-        // 起こせない — 不一致は 422 payload-mismatch)
-        payload: strictPayload(
-          Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.post(
+        "push",
+        "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
+        {
+          params: variableParams,
+          // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5)。
+          // 「直前バージョンと同一平文の新エポックへの再暗号化(CRYPTO_SPEC §7)」の
+          // writer 自己申告で、受理判定・値署名には影響しない。要ローテーション
+          // 検出の解消導出(AUDIT_SPEC §4.1-5)だけがこれを読む
+          payload: Schema.Struct({
+            value: EncryptedPayloadSchema,
+            reencryption: Schema.optionalKey(Schema.Boolean),
+          }),
+          success: VariableVersionSchema,
+          error: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            PayloadMismatchError,
+            VersionConflictError,
+            EpochConflictError,
+            ValueSignatureRejectedError,
+            // declared 変数への通常 push は activation 複合を要求する(§12-5)
+            ActivationRequiredError,
+            ValueTooLargeError,
+            DataLimitExceededError,
+          ],
+        },
+      ).middleware(AuthMiddleware),
+    ),
+  )
+  .add(
+    strictEndpoint(
+      // activation(declared → active — §12-5。レイアウト v2):
+      // declared 変数への最初の値 push を「値 version 1 + status active の v2
+      // ステートメント(metaVersion + 1)+ マニフェスト」の複合として受理する。
+      // メタ状態が変わるためマニフェスト再発行を伴う(「値の push はマニフェストに
+      // 触れない」不変条件の対象は通常 push — CRYPTO_SPEC §4.3)。
+      // **declared → active 専用**であり「値 push + メタ再発行」の汎用複合では
+      // ない: 対象が declared でない・name が宣言時の名から変わる形は 422
+      // payload-mismatch(status / name)で拒否する(改名は rename 経路が
+      // var.renamed の監査と共に担う。この限定が §12-11 のポリシー免除 —
+      // 直前は必ず v2 — の前提を成立させる)
+      HttpApiEndpoint.post(
+        "activate",
+        "/projects/:projectId/environments/:environmentId/variables/:variableId/activate",
+        {
+          params: variableParams,
+          payload: Schema.Struct({
+            value: EncryptedPayloadSchema,
+            statement: ActivateVariableMetaStatementSchema,
+            manifest: EnvironmentManifestSchema,
+          }),
+          success: VariableVersionSchema,
+          error: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            PayloadMismatchError,
+            // declared の latest は常に 0 なので、CAS が値 version 1 を強制する
+            VersionConflictError,
+            EpochConflictError,
+            ValueSignatureRejectedError,
+            MetaStatementRejectedError,
+            MetaVersionConflictError,
+            ManifestRejectedError,
+            ManifestVersionConflictError,
+            SchemaDescriptionRejectedError,
+            ValueTooLargeError,
+            DataLimitExceededError,
+          ],
+        },
+      ).middleware(AuthMiddleware),
+    ),
+  )
+  .add(
+    strictEndpoint(
+      HttpApiEndpoint.patch(
+        "rename",
+        "/projects/:projectId/environments/:environmentId/variables/:variableId",
+        {
+          params: variableParams,
+          // v2 形は rename とスキーマ再発行(スキーマ欄のみの変更)を兼ねる —
+          // 受理規則は同一(§12-5)。status は現状態を保持する(遷移はこの形では
+          // 起こせない — 不一致は 422 payload-mismatch)
+          payload: Schema.Struct({
             statement: Schema.Union([
               RenameVariableMetaStatementSchema,
               RenameVariableMetaStatementV2Schema,
             ]),
             manifest: EnvironmentManifestSchema,
           }),
-        ),
-        success: HttpApiSchema.NoContent,
-        error: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-          VariableConflictError,
-          PayloadMismatchError,
-          MetaVersionConflictError,
-          MetaStatementRejectedError,
-          ManifestRejectedError,
-          ManifestVersionConflictError,
-          NameNotNfcError,
-          // disabled 下の v1 変数への v2 再発行は schema-policy-disabled(§12-11。
-          // 既に v2 の変数の継続ステートメントはポリシーに依らず受理される)
-          SchemaPolicyRejectedError,
-          SchemaDescriptionRejectedError,
-          DataLimitExceededError,
-        ],
-      },
-    ).middleware(AuthMiddleware),
+          success: HttpApiSchema.NoContent,
+          error: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            VariableConflictError,
+            PayloadMismatchError,
+            MetaVersionConflictError,
+            MetaStatementRejectedError,
+            ManifestRejectedError,
+            ManifestVersionConflictError,
+            NameNotNfcError,
+            // disabled 下の v1 変数への v2 再発行は schema-policy-disabled(§12-11。
+            // 既に v2 の変数の継続ステートメントはポリシーに依らず受理される)
+            SchemaPolicyRejectedError,
+            SchemaDescriptionRejectedError,
+            DataLimitExceededError,
+          ],
+        },
+      ).middleware(AuthMiddleware),
+    ),
   )
   .add(
-    HttpApiEndpoint.delete(
-      "remove",
-      "/projects/:projectId/environments/:environmentId/variables/:variableId",
-      {
-        params: variableParams,
-        // 削除も署名付きステートメント(status deleted。name は直前 active 名)+
-        // tombstone を含む集合を反映したマニフェスト(§12-5 — マニフェストは
-        // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)。
-        // v2 変数の削除は v2 形(スキーマ欄・レイアウトの直前一致 — §12-5。
-        // 継続ステートメントとしてポリシーに依らず受理される — §12-11 の可逆性)
-        payload: strictPayload(
-          Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.delete(
+        "remove",
+        "/projects/:projectId/environments/:environmentId/variables/:variableId",
+        {
+          params: variableParams,
+          // 削除も署名付きステートメント(status deleted。name は直前 active 名)+
+          // tombstone を含む集合を反映したマニフェスト(§12-5 — マニフェストは
+          // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)。
+          // v2 変数の削除は v2 形(スキーマ欄・レイアウトの直前一致 — §12-5。
+          // 継続ステートメントとしてポリシーに依らず受理される — §12-11 の可逆性)
+          payload: Schema.Struct({
             statement: Schema.Union([
               DeleteVariableMetaStatementSchema,
               DeleteVariableMetaStatementV2Schema,
             ]),
             manifest: EnvironmentManifestSchema,
           }),
-        ),
-        success: HttpApiSchema.NoContent,
-        // DataLimitExceeded を宣言しない理由は environments.remove と同じ
-        // (deleted は metaVersion 上限の対象外 — §12-8)
-        error: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-          PayloadMismatchError,
-          MetaVersionConflictError,
-          MetaStatementRejectedError,
-          ManifestRejectedError,
-          ManifestVersionConflictError,
-        ],
-      },
-    ).middleware(AuthMiddleware),
+          success: HttpApiSchema.NoContent,
+          // DataLimitExceeded を宣言しない理由は environments.remove と同じ
+          // (deleted は metaVersion 上限の対象外 — §12-8)
+          error: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            PayloadMismatchError,
+            MetaVersionConflictError,
+            MetaStatementRejectedError,
+            ManifestRejectedError,
+            ManifestVersionConflictError,
+          ],
+        },
+      ).middleware(AuthMiddleware),
+    ),
   )
   .add(
     HttpApiEndpoint.get("pull", "/projects/:projectId/environments/:environmentId/pull", {
@@ -649,24 +651,26 @@ export const variablesGroup = HttpApiGroup.make("variables")
  */
 export const deksGroup = HttpApiGroup.make("deks")
   .add(
-    HttpApiEndpoint.post("register", "/projects/:projectId/environments/:environmentId/deks", {
-      params: environmentParams,
-      // 空の deks は 400(§12-6。削除側の空 wraps と同じ「黙って成功させない」
-      // 規律)。環境作成の deks は対象外
-      // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
-      payload: strictPayload(
-        Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
-      ),
-      success: HttpApiSchema.NoContent,
-      error: [
-        ProjectNotFoundError,
-        ForbiddenError,
-        EnvironmentNotFoundError,
-        DekWrapRejectedError,
-        DekWrapExistsError,
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
+    strictEndpoint(
+      HttpApiEndpoint.post("register", "/projects/:projectId/environments/:environmentId/deks", {
+        params: environmentParams,
+        // 空の deks は 400(§12-6。削除側の空 wraps と同じ「黙って成功させない」
+        // 規律)。環境作成の deks は対象外
+        // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
+        payload: Schema.Struct({
+          deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)),
+        }),
+        success: HttpApiSchema.NoContent,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          DekWrapRejectedError,
+          DekWrapExistsError,
+          DataLimitExceededError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
     HttpApiEndpoint.get("listMine", "/projects/:projectId/environments/:environmentId/deks", {

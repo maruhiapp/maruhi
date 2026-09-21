@@ -1,27 +1,38 @@
-// security-critical 受理スキーマの strict 化(AUTH_SPEC §12-10 (1))。
+// security-critical 受理の strict 化(AUTH_SPEC §12-10 (1))。
 //
-// Effect v4 の AST 注釈 `parseOptions` は parse 時に呼び出し側 ParseOptions と
-// 合成され AST 側が勝つ(SchemaParser.makeParser — docs/notes/session-32.md §2 で
-// 実証)。よって payload ルートへの 1 注釈で、HttpApiBuilder が options なしで
-// decode する実経路でも strict(未知フィールド = 400)が効き、ネストと Union を
-// 越えて伝播する。
+// Effect v4 rc.113 以降、スキーマ AST 注釈 `parseOptions` はパーサに読まれない
+// (SchemaAST.ParseOptions の説明: options はパース全体に適用され、スキーマ注釈は
+// それを上書きしない)。rc.112 までの `strictPayload` = スキーマ注釈は、呼び出し側が
+// options なしで decode すると未知フィールドを黙って落とす。
 //
-// 既知の罠(session-32 §2-3): SchemaParser は AST に checks があると
-// `parseOptions` を**最後の check の annotations** から読む。`SchemaAST.annotate`
-// も checks があると最後の check へ注釈を付けるため、**注釈の後に `.check(...)` を
-// 合成すると strict が無警告で失効する**。防衛は 2 層(session-32 §5-2):
+// 代わりに security-critical エンドポイントへ `HttpApi.ParseOptions`
+// (`onExcessProperty: "error"`)を付ける。HttpApiBuilder と HttpApiClient は
+// エンドポイント > グループ > API の順で合成した注釈を読み、payload の復号・符号化、
+// 成功・エラーの符号化、path params に同じ options を渡す。options はネストと
+// Union を越えてパース全体に効く。
 //
-// 1. `strictPayload(...)` は注釈直後に有効位置を assert する(ラップ時 fail-loud)
-// 2. `assertSecurityCriticalPayloadsStrict(...)` が HttpApi 定義に登録された
-//    payload ルートをロード時に走査する(ラップ後の再合成も捕捉する)
+// API 全体には付けない。ヘッダ codec は受信ヘッダ全体を見るため、
+// `onExcessProperty: "error"` は未宣言ヘッダ(`content-type` 等)を 400 にする。
+// グループ単位も付けない。除外エンドポイント(署名済み構造・暗号文・鍵材料を
+// 運ばない mutation)まで strict になる。
 //
-// 加えて実効性(実際に 400 で拒否される)は受理経路の固定テスト
-// (apps/server/test/strict-payload.test.ts)が保証する — 注釈の存在でなく
-// 拒否の挙動をテストする(適用順バグと upstream の読み取り位置変更の両方を検出)。
+// 共有スキーマ自体には注釈しない。同じスキーマを返す他エンドポイントの応答へ
+// strict を波及させない。このエンドポイントの成功・エラー符号化は同じ options に
+// なる(余分なキーは黙って落とさず符号化に失敗する — fail-closed)。
+//
+// ロード時スイープはエンドポイント注釈を、HttpApiBuilder と同じ
+// `Context.getOrUndefined(..., HttpApi.ParseOptions)` で読む。実効性(実際に 400)
+// は受理経路の固定テスト(apps/server/test/strict-payload.test.ts)が保証する。
 
-import type { Schema, SchemaAST } from "effect";
+import { Context, type Schema, type SchemaAST } from "effect";
+import { HttpApi } from "effect/unstable/httpapi";
 
 import { forEachEndpoint, requireRegisteredEndpoint } from "./sweep.ts";
+
+/** Builder とクライアントが payload に渡す strict options。 */
+const STRICT_PARSE_OPTIONS = {
+  onExcessProperty: "error",
+} as const satisfies SchemaAST.ParseOptions;
 
 /**
  * The structural slice of an `HttpApi` the sweep walks (the concrete
@@ -33,6 +44,7 @@ interface SweepableApi {
     readonly [group: string]: {
       readonly endpoints: {
         readonly [endpoint: string]: {
+          readonly annotations: Context.Context<never>;
           readonly payload: ReadonlyMap<
             string,
             { readonly schemas: readonly [Schema.Top, ...Array<Schema.Top>] }
@@ -44,55 +56,25 @@ interface SweepableApi {
 }
 
 /**
- * The parser-effective `parseOptions` of a schema AST, read through the same
- * path `SchemaParser.makeParser` uses: the last check's annotations when the
- * AST has checks, the AST's own annotations otherwise.
- */
-function effectiveParseOptions(ast: SchemaAST.AST): SchemaAST.ParseOptions | undefined {
-  const checks = ast.checks;
-  const annotations =
-    checks === undefined ? ast.annotations : checks[checks.length - 1]?.annotations;
-  return annotations?.["parseOptions"] as SchemaAST.ParseOptions | undefined;
-}
-
-/**
- * Asserts that a payload root schema carries `onExcessProperty: "error"` in
- * the position the parser actually reads (AUTH_SPEC §12-10 (1)). Throws on
- * failure — composing `.check(...)` after the strict annotation silently
- * disables it, so this turns that silent failure into a load-time crash.
- */
-export function assertStrictPayloadRoot(schema: Schema.Top, label: string): void {
-  const options = effectiveParseOptions(schema.ast);
-  if (options?.onExcessProperty !== "error") {
-    throw new Error(
-      `strict payload annotation is not parser-effective for ${label}: ` +
-        `apply strictPayload(...) last, after every .check(...) composition ` +
-        `(AUTH_SPEC §12-10 (1))`,
-    );
-  }
-}
-
-/**
- * Marks a security-critical mutation payload root as strict: unknown fields
- * are rejected with a schema error (HTTP 400) instead of being silently
- * dropped (AUTH_SPEC §12-10 (1)). The annotation propagates to every nested
- * field and across unions, so a single application at the payload root covers
- * the whole request body.
+ * Marks a security-critical endpoint as strict: unknown payload fields are
+ * rejected with a schema error (HTTP 400) instead of being silently dropped
+ * (AUTH_SPEC §12-10 (1)).
  *
- * The annotation is symmetric: the derived `HttpApiClient` encodes payloads
- * through this same schema, so excess properties fail at **client encode
- * time** too. TypeScript's excess-property check only fires on fresh object
- * literals, so build payloads as exact literals — spreading a wider object
- * into a payload fails at runtime without a compile-time warning.
+ * The annotation is what `HttpApiBuilder` and `HttpApiClient` read. It applies
+ * to the whole payload parse, including nested structs and unions, and also to
+ * path params and to success / error codecs of this endpoint. Do not put it on
+ * the API or on a group — header codecs see every incoming header, and exempt
+ * sibling endpoints must stay permissive.
  *
- * Apply this **last**, to a schema whose `.check(...)` compositions are all
- * done — a later `.check(...)` would silently disable the annotation
- * (the load-time asserts and the acceptance-path tests both guard this).
+ * Shared payload schemas stay unannotated. Other endpoints that reuse the same
+ * schema without this annotation keep the default (strip unknown fields).
  */
-export function strictPayload<S extends Schema.Top>(schema: S): S["Rebuild"] {
-  const annotated = schema.annotate({ parseOptions: { onExcessProperty: "error" } });
-  assertStrictPayloadRoot(annotated, "strictPayload(...)");
-  return annotated;
+export function strictEndpoint<
+  E extends {
+    annotate(key: typeof HttpApi.ParseOptions, value: SchemaAST.ParseOptions): E;
+  },
+>(endpoint: E): E {
+  return endpoint.annotate(HttpApi.ParseOptions, STRICT_PARSE_OPTIONS);
 }
 
 /**
@@ -170,22 +152,41 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
 ];
 
 /**
+ * Asserts that an endpoint carries `HttpApi.ParseOptions` with
+ * `onExcessProperty: "error"` — the annotation `HttpApiBuilder` actually
+ * reads (AUTH_SPEC §12-10 (1)). Throws on failure.
+ */
+function assertEndpointParseOptionsStrict(
+  annotations: Context.Context<never>,
+  label: string,
+): void {
+  const options = Context.getOrUndefined(annotations, HttpApi.ParseOptions);
+  if (options?.onExcessProperty !== "error") {
+    throw new Error(
+      `strict payload annotation is not parser-effective for ${label}: ` +
+        `annotate the endpoint with HttpApi.ParseOptions { onExcessProperty: "error" } ` +
+        `(AUTH_SPEC §12-10 (1))`,
+    );
+  }
+}
+
+/**
  * Load-time sweep (AUTH_SPEC §12-10 (1)): asserts that every registered
- * security-critical payload root carries the strict annotation in the
- * parser-effective position (catching recompositions that happened after
- * `strictPayload(...)` was applied — the wrapper's own assert runs only once,
- * at wrap time), and that every payload-bearing endpoint of the API is
- * classified in exactly one of `SECURITY_CRITICAL_PAYLOAD_ENDPOINTS` /
+ * security-critical endpoint carries `HttpApi.ParseOptions` with
+ * `onExcessProperty: "error"`, and that every payload-bearing endpoint of the
+ * API is classified in exactly one of `SECURITY_CRITICAL_PAYLOAD_ENDPOINTS` /
  * `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`. An endpoint in neither list throws, so
  * for **body payloads** the §12-10 (1) rule "classify new and revised
  * endpoints against this standard" is machine-enforced instead of remaining a
- * process obligation. The sweep inspects only `endpoint.payload` — an unknown
- * field arriving via `query` or `headers` is outside its view (path `params`
- * are template-extracted and structurally cannot carry an excess field).
- * Today that blind spot holds the `audit` reads and `auth.githubCallback`
- * (a state-changing GET — it exchanges the OAuth code and issues a session);
- * a future mutation modelling request data as `query` / `headers` must be
- * classified by review.
+ * process obligation. The sweep inspects the endpoint annotation, which the
+ * builder applies to the payload and, on the same endpoint, to path params and
+ * success / error codecs. An unknown field arriving via `query` or `headers`
+ * on an endpoint that does not declare those schemas is outside its view
+ * (today that blind spot holds the `audit` reads and `auth.githubCallback`,
+ * a state-changing GET). A future mutation modelling request data as `query`
+ * or `headers` must be classified by review — and must not receive this
+ * annotation if it declares headers, because header codecs see every incoming
+ * header.
  */
 export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   const strict = new Set(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
@@ -197,7 +198,7 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
       );
     }
   }
-  // 1. 列挙面の実在 + strict 注釈の有効位置(リネーム・注釈の失効を捕捉)
+  // 1. 列挙面の実在 + エンドポイント注釈(リネーム・注釈の欠落を捕捉)
   for (const [groupName, endpointName] of SECURITY_CRITICAL_PAYLOAD_ENDPOINTS) {
     assertRegisteredPayloadStrict(api, groupName, endpointName);
   }
@@ -210,18 +211,14 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   assertEveryPayloadClassified(api, strict, exempt);
 }
 
-/** 列挙面 1 件: 実在検査 + 全 payload スキーマの strict 注釈検査(スイープの 1.)。 */
+/** 列挙面 1 件: 実在検査 + ParseOptions 注釈検査(スイープの 1.)。 */
 function assertRegisteredPayloadStrict(
   api: SweepableApi,
   groupName: string,
   endpointName: string,
 ): void {
   const endpoint = requirePayloadEndpoint(api, groupName, endpointName);
-  for (const [mediaType, { schemas }] of endpoint.payload) {
-    for (const schema of schemas) {
-      assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
-    }
-  }
+  assertEndpointParseOptionsStrict(endpoint.annotations, `${groupName}.${endpointName}`);
 }
 
 /**

@@ -232,7 +232,7 @@ export function parseInviteAcceptInput(raw: Redacted.Redacted<string>):
       readonly reason: InviteInputRejection;
     } {
   // 剥がす理由: リンクの構文解釈にはバイト列そのものが要る。入力は引数層
-  // (`Argument.redacted` — ADR-0016)から Redacted のまま届き、生値はこの関数の
+  // (`Argument.Redacted` — ADR-0016)から Redacted のまま届き、生値はこの関数の
   // 外へ出ない — 種は再び Redacted で包んで返し、他のパラメータは公開値である
   const trimmed = Redacted.value(raw).trim();
   const hashIndex = trimmed.indexOf("#");

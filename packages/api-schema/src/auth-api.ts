@@ -25,7 +25,7 @@ import {
   TokenNotFoundError,
 } from "./errors/index.ts";
 import { hexString } from "./hex.ts";
-import { strictPayload } from "./strict.ts";
+import { strictEndpoint } from "./strict.ts";
 
 /**
  * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
@@ -310,14 +310,17 @@ export const authGroup = HttpApiGroup.make("auth")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
-    HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
-      // strict 受理(§12-10 (1))。共有部品の RecoveryWrapSchema 自体には注釈せず、
-      // payload ルートの使用点でのみ被せる(応答スキーマと共有されうる部品の規律)
-      payload: strictPayload(RecoveryWrapSchema),
-      success: HttpApiSchema.NoContent,
-      error: [ForbiddenError],
-    }).middleware(AuthMiddleware),
+    strictEndpoint(
+      // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
+      HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
+        // strict 受理(§12-10 (1))。共有の RecoveryWrapSchema 自体には注釈しない
+        // (他エンドポイントの応答へ波及させない)。strict はこのエンドポイントの
+        // HttpApi.ParseOptions で、payload とこの成功応答の両方に効く。
+        payload: RecoveryWrapSchema,
+        success: HttpApiSchema.NoContent,
+        error: [ForbiddenError],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
     HttpApiEndpoint.get("recoveryGet", "/auth/recovery", {

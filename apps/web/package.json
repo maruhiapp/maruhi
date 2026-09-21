@@ -36,7 +36,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.0.0-rc.117",
     "playwright": "1.63.0",
     "react-doctor": "0.9.14",
     "vite": "8.3.0",

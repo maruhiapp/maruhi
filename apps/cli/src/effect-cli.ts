@@ -53,7 +53,6 @@ import {
   Exit,
   FileSystem,
   Layer,
-  Option,
   Path,
   Redacted,
   Schema,
@@ -68,7 +67,6 @@ import {
   Flag,
   GlobalFlag,
   Param,
-  Primitive,
 } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -290,7 +288,7 @@ const NonBlank = Schema.String.check(Schema.isPattern(/\S/, { message: NON_BLANK
  * context.ts の {@link CommonFlags} とそのまま噛み合う(Option へ変換しない)。
  */
 function singleValued(name: string, description: string) {
-  return Flag.string(name).pipe(
+  return Flag.String(name).pipe(
     Flag.withDescription(description),
     Flag.withSchema(NonBlank),
     Flag.atMost(1),
@@ -301,13 +299,13 @@ function singleValued(name: string, description: string) {
 /**
  * boolean オプション 1 つ。
  *
- * **boolean にも `atMost(1)` が要る**: 素の `Flag.boolean` は重複を沈黙で解決し、
+ * **boolean にも `atMost(1)` が要る**: 素の `Flag.Boolean` は重複を沈黙で解決し、
  * **打った順で結果が変わる**(実測: `--show --no-show` は first-wins で `true`、
  * `--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の `$FLAGS` に
  * `--show` が混ざる形(ef7cba1)は順序に依存させてはいけない。
  */
 function singleFlag(name: string, description: string) {
-  return Flag.boolean(name).pipe(
+  return Flag.Boolean(name).pipe(
     Flag.withDescription(description),
     Flag.atMost(1),
     Flag.map((values) => values[0] ?? false),
@@ -317,23 +315,13 @@ function singleFlag(name: string, description: string) {
 /**
  * テスト用の隠しフラグ(値 1 つ)。ヘルプにも打ち間違いの候補にも出さない。
  *
- * `Flag` には hidden コンビネータが**無い**が、`Param.Single` は
- * `hidden: boolean` を持ち `Param.makeSingle` が受ける(実測: ヘルプの描画と
- * 上流の typo 候補の両方が hidden を除外する)。診断の一覧(specOf)からも
- * 除外する — 内部向けの綴りを広めない。
+ * `Flag.withHidden` がヘルプと補完から外す(rc.113+)。診断の一覧(specOf)も
+ * 葉の `hidden` を辿って除外する — 内部向けの綴りを広めない。
  */
-function hiddenSingle<A>(name: string, description: string, primitive: Primitive.Primitive<A>) {
-  return Param.makeSingle({
-    kind: Param.flagKind,
-    name,
-    primitiveType: primitive,
-    description: Option.some(description),
-    hidden: true,
-  });
-}
-
 function hiddenIntegerValued(name: string, description: string) {
-  return hiddenSingle(name, description, Primitive.integer).pipe(
+  return Flag.Int(name).pipe(
+    Flag.withDescription(description),
+    Flag.withHidden,
     Flag.atMost(1),
     Flag.map((values) => values[0]),
   );
@@ -406,7 +394,7 @@ const runCommandArgument = () =>
   // 「実行対象のない実行」を、`filter` が「実行対象が空文字列」
   // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
   // 2 つ目以降の空文字列は**子プロセスの引数として保つ**
-  Argument.string("command").pipe(
+  Argument.String("command").pipe(
     Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
     Argument.filter(
@@ -430,7 +418,7 @@ const agentConfig = {
     "key-ttl",
     "Forget this device's key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits",
   ),
-  command: Argument.string("command").pipe(
+  command: Argument.String("command").pipe(
     Argument.withDescription(
       "The command to run inside the agent session, written after `--` (usually a shell)",
     ),
@@ -484,7 +472,7 @@ const ciSyncConfig = {
     "yes",
     "Write to a production target (without it, a production target only shows the plan)",
   ),
-  target: Argument.string("target").pipe(
+  target: Argument.String("target").pipe(
     Argument.withDescription("Target name from the sync config (a key under `targets`)"),
     Argument.withSchema(NonBlank),
   ),
@@ -510,7 +498,7 @@ const pushConfig = {
     "no-sync",
     "Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)",
   ),
-  name: Argument.string("name").pipe(
+  name: Argument.String("name").pipe(
     Argument.withDescription(
       "Variable name (the display name; becomes the environment variable name)",
     ),
@@ -520,7 +508,7 @@ const pushConfig = {
 
 /** 設定キーの位置引数(config のサブコマンド共通)。 */
 const configKeyArgument = () =>
-  Argument.string("key").pipe(
+  Argument.String("key").pipe(
     Argument.withDescription(`Config key (${CONFIG_KEYS.join(" | ")})`),
     Argument.withSchema(NonBlank),
   );
@@ -533,7 +521,7 @@ const configSetConfig = {
   key: configKeyArgument(),
   // 空 / 空白だけの値は宣言(NonBlank)で拒否する: `config set defaultProject
   // "$PROJ"` の未設定形が既存の設定を空で上書きして成功を報告する事故を塞ぐ
-  value: Argument.string("value").pipe(
+  value: Argument.String("value").pipe(
     Argument.withDescription("Value to set"),
     Argument.withSchema(NonBlank),
   ),
@@ -549,7 +537,7 @@ const rotationDismissConfig = {
   ),
   all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
   // --all の実行では取らない。atMost(1) が「--all なら省略」を宣言で表す
-  variable: Argument.string("variable").pipe(
+  variable: Argument.String("variable").pipe(
     Argument.withDescription("Variable ID to dismiss (omit with --all)"),
     Argument.withSchema(NonBlank),
     Argument.atMost(1),
@@ -559,7 +547,7 @@ const rotationDismissConfig = {
 
 /** audit のページ指定フラグ(list / invites / self 共通)。 */
 const auditPageFlags = () => ({
-  limit: Flag.integer("limit").pipe(
+  limit: Flag.Int("limit").pipe(
     Flag.withDescription(
       `Page size (1-${MAX_AUDIT_EVENTS_PAGE_LIMIT}; default ${DEFAULT_AUDIT_EVENTS_PAGE_LIMIT})`,
     ),
@@ -611,7 +599,7 @@ const loginConfig = {
     "token-name",
     "Token name (signing in again with the same name rotates the token; default: cli:<hostname>)",
   ),
-  "token-ttl-days": Flag.integer("token-ttl-days").pipe(
+  "token-ttl-days": Flag.Int("token-ttl-days").pipe(
     Flag.withDescription(
       `Token lifetime in days (1-${MAX_TOKEN_TTL_DAYS}; default ${DEFAULT_TOKEN_TTL_DAYS}). For unattended use on runtimes without lease support`,
     ),
@@ -670,7 +658,7 @@ const keySealPasskeyConfig = {
     "passkey",
     "Open the ledger with an already registered passkey instead of the recovery code",
   ),
-  label: Flag.string("label").pipe(
+  label: Flag.String("label").pipe(
     Flag.withDescription(
       "Display name for this passkey in `maruhi key seal list` (1 to 64 characters)",
     ),
@@ -682,7 +670,7 @@ const keySealPasskeyConfig = {
 const keySealListConfig = serverOnlyFlags();
 const keySealRemoveConfig = {
   ...serverOnlyFlags(),
-  "wrap-id": Argument.string("wrap-id").pipe(
+  "wrap-id": Argument.String("wrap-id").pipe(
     Argument.withDescription("Passkey wrap ID (see `maruhi key seal list`)"),
     Argument.withSchema(NonBlank),
   ),
@@ -707,7 +695,7 @@ const keyReserveRotateConfig = {
 };
 const guardianApproveConfig = {
   ...serverOnlyFlags(),
-  code: Argument.string("code").pipe(
+  code: Argument.String("code").pipe(
     Argument.withDescription(
       "Handoff code shown by `maruhi key recover --handoff` on the requesting device",
     ),
@@ -741,7 +729,7 @@ const deviceApproveConfig = {
   ),
   "all-envs": singleFlag("all-envs", "Let the device hold keys for every environment (default)"),
   "no-envs": singleFlag("no-envs", "Let the device hold no environment keys (a vote-only device)"),
-  ref: Argument.string("fp-or-words").pipe(
+  ref: Argument.String("fp-or-words").pipe(
     Argument.withDescription(
       "The new device's full 32-character fingerprint, or its 12 words, as shown by `maruhi device add`",
     ),
@@ -770,7 +758,7 @@ const deviceRevokeConfig = {
     "revoke-token",
     "Also revoke the API tokens the registry associates with the revoked devices",
   ),
-  ref: Argument.string("ref").pipe(
+  ref: Argument.String("ref").pipe(
     Argument.withDescription(
       "Fingerprint prefix (at least 8 hex characters) or, for your own devices, the registry label (repeatable)",
     ),
@@ -781,7 +769,7 @@ const deviceRevokeConfig = {
 const tokenListConfig = serverOnlyFlags();
 const tokenRevokeConfig = {
   ...serverOnlyFlags(),
-  "token-id": Argument.string("token-id").pipe(
+  "token-id": Argument.String("token-id").pipe(
     Argument.withDescription("Token id as shown by `maruhi token list`"),
     Argument.withSchema(NonBlank),
   ),
@@ -800,7 +788,7 @@ const guardianAddConfig = {
     "mode",
     "Approval mode: any (one guardian is enough) or all (every guardian must approve)",
   ),
-  "user-id": Argument.string("user-id").pipe(
+  "user-id": Argument.String("user-id").pipe(
     Argument.withDescription("User ID of a guardian (a member of the project; repeatable)"),
     Argument.withSchema(NonBlank),
     Argument.atLeast(1),
@@ -809,7 +797,7 @@ const guardianAddConfig = {
 const guardianListConfig = { ...projectFlags() };
 const guardianRemoveConfig = {
   ...serverOnlyFlags(),
-  "group-id": Argument.string("group-id").pipe(
+  "group-id": Argument.String("group-id").pipe(
     Argument.withDescription("Guardian group ID (see `maruhi guardian list`)"),
     Argument.withSchema(NonBlank),
   ),
@@ -843,7 +831,7 @@ const projectCheckpointConfig = {
 
 /** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
 const environmentIdArgument = (name: string, description: string) =>
-  Argument.string(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
+  Argument.String(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
 
 const envCreateConfig = {
   ...projectFlags(),
@@ -934,7 +922,7 @@ function isInviteRole(value: string | undefined): value is InviteRole {
 
 /** `--env <id>`(反復可)— 招待 / change-role の scope(CRYPTO_SPEC §6.2 — 2026-09-15 ES K4)。 */
 function scopeEnvFlag(description: string) {
-  return Flag.string("env").pipe(
+  return Flag.String("env").pipe(
     Flag.withDescription(description),
     Flag.withSchema(NonBlank),
     // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
@@ -969,10 +957,10 @@ const inviteAcceptConfig = {
     "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
   ),
   // 招待リンクはリンク鍵の種を内包する = ただの表示可能文字列ではない。
-  // `Argument.redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
+  // `Argument.Redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
   // 渡す(剥がすのは既存の境界だけ)。プロジェクト ID はリンクが運ぶ(v2 —
   // 生トークン経路は廃止)ので --project は持たない
-  target: Argument.redacted("target").pipe(
+  target: Argument.Redacted("target").pipe(
     Argument.withDescription("Invite link (quote the link so the shell does not interpret it)"),
   ),
 };
@@ -981,7 +969,7 @@ const inviteListConfig = { ...projectFlags() };
 
 const inviteRevokeConfig = {
   ...projectFlags(),
-  "invite-id": Argument.string("invite-id").pipe(
+  "invite-id": Argument.String("invite-id").pipe(
     Argument.withDescription("Invite ID to revoke (see `maruhi invite list`)"),
     Argument.withSchema(NonBlank),
   ),
@@ -1006,7 +994,7 @@ const memberAddConfig = {
     "Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
   ),
   // add 専用の宣言なので「受諾済みが 1 件なら省略可」を atMost(1) で表す
-  "invite-id": Argument.string("invite-id").pipe(
+  "invite-id": Argument.String("invite-id").pipe(
     Argument.withDescription(
       "Invite ID to add (may be omitted when exactly one invite is accepted)",
     ),
@@ -1018,7 +1006,7 @@ const memberAddConfig = {
 
 /** remove / change-role の対象 user_id(必須・非空)。 */
 const memberTargetArgument = () =>
-  Argument.string("user-id").pipe(
+  Argument.String("user-id").pipe(
     Argument.withDescription("Target user ID (see `maruhi member list`)"),
     Argument.withSchema(NonBlank),
   );
@@ -1057,7 +1045,7 @@ const memberListConfig = {
 
 /** 提案 id の位置引数(`maruhi approval show / approve / withdraw` — 承認項目 23)。 */
 const proposalIdArgument = () =>
-  Argument.string("proposal-id").pipe(
+  Argument.String("proposal-id").pipe(
     Argument.withDescription(
       "Proposal id (the propose entry's hash; a unique prefix of at least 8 hex digits, or #<seq> of the propose entry — see `maruhi approval list`)",
     ),
@@ -1124,7 +1112,7 @@ const schemaSetConfig = {
     "allow-high-entropy",
     "Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)",
   ),
-  name: Argument.string("name").pipe(
+  name: Argument.String("name").pipe(
     Argument.withDescription(
       "Variable name (created as a declared variable when it does not exist)",
     ),
@@ -1135,7 +1123,7 @@ const schemaSetConfig = {
 /** `maruhi schema import <file>`(ブートストラップ — 設計文書 §1-3)。 */
 const schemaImportConfig = {
   ...commonFlags(),
-  file: Argument.string("file").pipe(
+  file: Argument.String("file").pipe(
     Argument.withDescription(
       "Path to a .env or .env.example file to read locally (values are observed for type inference only; never sent unless you explicitly choose to push one)",
     ),
@@ -1149,7 +1137,7 @@ const schemaExportConfig = { ...commonFlags() };
 /** `maruhi schema verify-snapshot <file>`(CI の乖離検査 — 設計文書 §1-6)。 */
 const schemaVerifySnapshotConfig = {
   ...commonFlags(),
-  file: Argument.string("file").pipe(
+  file: Argument.String("file").pipe(
     Argument.withDescription(
       "Path to the committed snapshot file (generate with `maruhi schema export`)",
     ),
@@ -1160,7 +1148,7 @@ const schemaVerifySnapshotConfig = {
 /** `maruhi schema lint [paths...]`(コード契約の突合 — 設計文書 §1-7)。 */
 const schemaLintConfig = {
   ...commonFlags(),
-  ignore: Flag.string("ignore").pipe(
+  ignore: Flag.String("ignore").pipe(
     Flag.withDescription(
       "Environment-variable name to exclude from the undeclared check (repeatable; for runtime variables not managed by maruhi, e.g. NODE_ENV)",
     ),
@@ -1168,7 +1156,7 @@ const schemaLintConfig = {
     // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
     Flag.atLeast(0),
   ),
-  paths: Argument.string("path").pipe(
+  paths: Argument.String("path").pipe(
     Argument.withDescription("File or directory to scan for environment-variable references"),
     Argument.atLeast(1),
   ),
@@ -1181,7 +1169,7 @@ const varRmConfig = {
     "force",
     "Skip the interactive confirmation (the only non-interactive path; deletion is permanent)",
   ),
-  name: Argument.string("name").pipe(
+  name: Argument.String("name").pipe(
     Argument.withDescription("Variable name to delete (declared or active)"),
     Argument.withSchema(NonBlank),
   ),
@@ -1193,7 +1181,7 @@ const varRmConfig = {
  * `--project` はあるが、設定に `project` があればそれと照合する。
  */
 const syncTargetArgument = () =>
-  Argument.string("target").pipe(
+  Argument.String("target").pipe(
     Argument.withDescription("Target name from the sync config (a key under `targets`)"),
     Argument.withSchema(NonBlank),
   );
@@ -1272,7 +1260,7 @@ const syncInitConfig = {
     "workflow",
     "With --on-push workflow: the workflow file that runs `maruhi ci sync` (for example maruhi-sync.yml)",
   ),
-  option: Flag.string("option").pipe(
+  option: Flag.String("option").pipe(
     Flag.withDescription(
       "Preset option as key=value (repeatable; for example environment=production, name=my-worker)",
     ),

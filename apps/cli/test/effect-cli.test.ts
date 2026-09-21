@@ -92,7 +92,7 @@ describe("パーサの落とし穴 12 形が引数層で落ちる", () => {
 
   it("boolean の重複も落とす(順序に依存させない)", async () => {
     // `maruhi pull --no-show $FLAGS`($FLAGS に --show)= 全シークレットの表示。
-    // 素の Flag.boolean は重複を沈黙で解決し、**打った順で結果が変わる**
+    // 素の Flag.Boolean は重複を沈黙で解決し、**打った順で結果が変わる**
     for (const argv of [
       ["pull", "--show", "--no-show"],
       ["pull", "--no-show", "--show"],
@@ -805,7 +805,7 @@ describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(missing.server.requests).toHaveLength(0);
 
     // リンクでもトークンでもない入力(平文の値でありうる)は診断に出さない。
-    // 対象は Argument.redacted で受けている(トークン生値を内包しうるため)
+    // 対象は Argument.Redacted で受けている(トークン生値を内包しうるため)
     const garbage = await startEnv();
     const typed = "sk-live-hunter2-plaintext";
     expect(await runCli(["invite", "accept", typed], garbage.env.layer)).toBe(2);

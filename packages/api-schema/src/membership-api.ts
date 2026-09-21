@@ -42,7 +42,7 @@ import { keyWrapsGroup } from "./key-wraps-api.ts";
 import { leaseGroup } from "./lease-api.ts";
 import { rotationGroup } from "./rotation-api.ts";
 import { assertSessionCapabilityClassified } from "./session-capability.ts";
-import { assertSecurityCriticalPayloadsStrict, strictPayload } from "./strict.ts";
+import { assertSecurityCriticalPayloadsStrict, strictEndpoint } from "./strict.ts";
 
 /** Chain head after a successful initialization or append. */
 export const ChainHeadSchema = Schema.Struct({
@@ -141,21 +141,23 @@ export const ProjectListSchema = Schema.Struct({
  */
 export const membershipGroup = HttpApiGroup.make("membership")
   .add(
-    HttpApiEndpoint.post("init", "/projects", {
-      // strict 受理(§12-10 (1) — genesis を運ぶチェーン追記面)
-      payload: strictPayload(Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema })),
-      success: ChainHeadSchema,
-      error: [
-        ProjectAlreadyInitializedError,
-        ChainEntryInvalidError,
-        ChainEntryTooLargeError,
-        ForbiddenError,
-        // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3)。新規
-        // genesis のみ。判定は org 権限確認(403)の後 = org 外の主体に上限
-        // 到達の有無を返さない
-        ProjectLimitError,
-      ],
-    }).middleware(AuthMiddleware),
+    strictEndpoint(
+      HttpApiEndpoint.post("init", "/projects", {
+        // strict 受理(§12-10 (1) — genesis を運ぶチェーン追記面)
+        payload: Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema }),
+        success: ChainHeadSchema,
+        error: [
+          ProjectAlreadyInitializedError,
+          ChainEntryInvalidError,
+          ChainEntryTooLargeError,
+          ForbiddenError,
+          // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3)。新規
+          // genesis のみ。判定は org 権限確認(403)の後 = org 外の主体に上限
+          // 到達の有無を返さない
+          ProjectLimitError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
     // プロジェクト一覧(AUTH_SPEC §11-5)。本人がチェーン
@@ -176,67 +178,69 @@ export const membershipGroup = HttpApiGroup.make("membership")
     }).middleware(AuthMiddleware),
   )
   .add(
-    HttpApiEndpoint.post("append", "/projects/:projectId/chain/entries", {
-      params: { projectId: ProjectIdSchema },
-      payload: strictPayload(
-        Schema.Struct({
+    strictEndpoint(
+      HttpApiEndpoint.post("append", "/projects/:projectId/chain/entries", {
+        params: { projectId: ProjectIdSchema },
+        payload: Schema.Struct({
           // CAS の親ヘッド。不正形式は schema 境界の 400 で落とす(意図的な受理変更)
           parentHeadHashHex: Sha256Hex,
           entry: ChainEntrySchema,
         }),
-      ),
-      success: ChainHeadSchema,
-      error: [
-        ProjectNotFoundError,
-        ChainHeadConflictError,
-        ChainEntryInvalidError,
-        ChainEntryTooLargeError,
-        ChainCapacityExceededError,
-        CheckpointStateMismatchError,
-        // 非空 audit_head_hash の受理検査の前段: 監査ヘッド派生列の有界伸長が
-        // 未完了(AUDIT_SPEC §5.1)。retryable 503 — 古い列で
-        // audit-head-unknown / stale を判定しない(fail-closed)
-        AuditHeadNotReadyError,
-        CompositeRequiredError,
-        // 四眼の 4 op(PF1): K5 以降のサーバーは受理する。ApprovalNotAccepted は
-        // K5 より前のサーバーが返す型(errors/chain.ts — ワイヤ互換のため宣言を残す)。
-        // ProposalLimit は propose の受理ポリシー(AUTH_SPEC §12-8 — pending 32 件・
-        // expires_at_ms の上界 30 日。合意規則ではない)
-        ApprovalNotAcceptedError,
-        ProposalLimitError,
-        // 端末鍵の 2 op(2026-09-19 DK): K3(2026-09-20)以降のサーバーは受理する。
-        // DeviceOpsNotAccepted は K3 より前のサーバーが返す型(errors/chain.ts —
-        // ワイヤ互換のため宣言を残す)。DeviceLimit は add_device の受理ポリシー
-        // (AUTH_SPEC §12-8 — 有効な端末 16 / メンバー / プロジェクト。合意規則ではない)
-        DeviceOpsNotAcceptedError,
-        DeviceLimitError,
-        ForbiddenError,
-        // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
-        // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
-        // `project-storage-bytes` で拒否する。remove_member / revoke_server /
-        // change_role / checkpoint は拒否下でも受理される(同節の明示列挙)
-        DataLimitExceededError,
-      ],
-    }).middleware(AuthMiddleware),
+        success: ChainHeadSchema,
+        error: [
+          ProjectNotFoundError,
+          ChainHeadConflictError,
+          ChainEntryInvalidError,
+          ChainEntryTooLargeError,
+          ChainCapacityExceededError,
+          CheckpointStateMismatchError,
+          // 非空 audit_head_hash の受理検査の前段: 監査ヘッド派生列の有界伸長が
+          // 未完了(AUDIT_SPEC §5.1)。retryable 503 — 古い列で
+          // audit-head-unknown / stale を判定しない(fail-closed)
+          AuditHeadNotReadyError,
+          CompositeRequiredError,
+          // 四眼の 4 op(PF1): K5 以降のサーバーは受理する。ApprovalNotAccepted は
+          // K5 より前のサーバーが返す型(errors/chain.ts — ワイヤ互換のため宣言を残す)。
+          // ProposalLimit は propose の受理ポリシー(AUTH_SPEC §12-8 — pending 32 件・
+          // expires_at_ms の上界 30 日。合意規則ではない)
+          ApprovalNotAcceptedError,
+          ProposalLimitError,
+          // 端末鍵の 2 op(2026-09-19 DK): K3(2026-09-20)以降のサーバーは受理する。
+          // DeviceOpsNotAccepted は K3 より前のサーバーが返す型(errors/chain.ts —
+          // ワイヤ互換のため宣言を残す)。DeviceLimit は add_device の受理ポリシー
+          // (AUTH_SPEC §12-8 — 有効な端末 16 / メンバー / プロジェクト。合意規則ではない)
+          DeviceOpsNotAcceptedError,
+          DeviceLimitError,
+          ForbiddenError,
+          // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
+          // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
+          // `project-storage-bytes` で拒否する。remove_member / revoke_server /
+          // change_role / checkpoint は拒否下でも受理される(同節の明示列挙)
+          DataLimitExceededError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   )
   .add(
-    // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。
-    // 認可はトークンスコープ read × チェーン role reader 以上(申告は読み取り
-    // 同期の付随で、書けるのは自分の署名済み申告 1 行のみ — §16-1)。受理検証
-    // (署名・ヘッド実在・seq 単調前進)は §6.4。後退 = 409(保存済み seq を
-    // 返す — 黙って成功させない)、同一 seq 再提出 = 冪等 204。
-    HttpApiEndpoint.put("attest", "/projects/:projectId/head-attestation", {
-      params: { projectId: ProjectIdSchema },
-      // strict 受理(§12-10 (1) — 署名済み構造を運ぶ mutation)
-      payload: strictPayload(HeadAttestationSubmissionSchema),
-      success: HttpApiSchema.NoContent,
-      error: [
-        ProjectNotFoundError,
-        AttestationRegressionError,
-        AttestationRejectedError,
-        AttestationRateLimitedError,
-      ],
-    }).middleware(AuthMiddleware),
+    strictEndpoint(
+      // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。
+      // 認可はトークンスコープ read × チェーン role reader 以上(申告は読み取り
+      // 同期の付随で、書けるのは自分の署名済み申告 1 行のみ — §16-1)。受理検証
+      // (署名・ヘッド実在・seq 単調前進)は §6.4。後退 = 409(保存済み seq を
+      // 返す — 黙って成功させない)、同一 seq 再提出 = 冪等 204。
+      HttpApiEndpoint.put("attest", "/projects/:projectId/head-attestation", {
+        params: { projectId: ProjectIdSchema },
+        // strict 受理(§12-10 (1) — 署名済み構造を運ぶ mutation)
+        payload: HeadAttestationSubmissionSchema,
+        success: HttpApiSchema.NoContent,
+        error: [
+          ProjectNotFoundError,
+          AttestationRegressionError,
+          AttestationRejectedError,
+          AttestationRateLimitedError,
+        ],
+      }).middleware(AuthMiddleware),
+    ),
   );
 
 /** The maruhi HTTP API. */
@@ -262,10 +266,10 @@ export const maruhiApi = HttpApi.make("maruhi")
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
   .add(leaseGroup);
 
-// ロード時スイープ(AUTH_SPEC §12-10 (1) / session-32 §5-2): 登録済みの全
-// security-critical payload ルートで strict 注釈が parser の読む位置にあることを
-// import 時に検査する。strictPayload 適用後の .check() 再合成(wrapper 内 assert は
-// ラップ時 1 回きりで捕捉できない)をモジュールロードの fail-loud に格上げする。
+// ロード時スイープ(AUTH_SPEC §12-10 (1)): 登録済みの全 security-critical
+// エンドポイントが HttpApi.ParseOptions { onExcessProperty: "error" } を
+// 持つことを import 時に検査する。スキーマ AST の parseOptions は rc.113 以降
+// パーサに読まれないため、検査対象はエンドポイント注釈だけである。
 assertSecurityCriticalPayloadsStrict(maruhiApi);
 
 // ロード時スイープ(AUTH_SPEC §5 — W2b): セッション能力制限の宣言
