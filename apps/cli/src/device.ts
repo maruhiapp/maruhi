@@ -237,9 +237,15 @@ function deviceKeyForRequest(input: {
           (rows) => rows?.some((row) => row.keyFingerprintHex === keys.fingerprintHex) === true,
         ),
       );
-      if (pending || registered) {
+      if (pending) {
         yield* logNote(
           `this machine already has device key ${keys.fingerprintHex} with a device-add request — resuming the wait for its approval`,
+        );
+        return keys;
+      }
+      if (registered) {
+        yield* logNote(
+          `this machine already has device key ${keys.fingerprintHex} and it is in your device registry — verifying it on each project's chain`,
         );
         return keys;
       }

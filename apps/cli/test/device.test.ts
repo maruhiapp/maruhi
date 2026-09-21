@@ -952,6 +952,34 @@ describe("maruhi device add", () => {
     ).toBe(false);
   });
 
+  it("鍵があり登録簿に載っている端末の再実行は「要求を待つ」とは言わず、登録簿の旨だけを出す", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      registryRows: [
+        {
+          keyFingerprintHex: owner.fingerprintHex,
+          encPubHex: owner.encPubHex,
+          sigPubHex: owner.sigPubHex,
+          label: "laptop",
+          createdAtMs: Date.now(),
+        },
+      ],
+      requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: false, conflict: "device-registered" },
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "and it is in your device registry — verifying it on each project's chain",
+    );
+    expect(errors).not.toContain("resuming the wait for its approval");
+    expect(env.logs.join("\n")).toContain(
+      "This key is already in your device registry (no pending request)",
+    );
+  });
+
   it("要求が失効していれば TTL の案内で終わる(合図なし)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
