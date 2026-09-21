@@ -45,7 +45,7 @@ On a **registered** device of yours:
 maruhi device approve <32-hex-fingerprint>      # or the 12 words, quoted
 ```
 
-Type the full fingerprint or all 12 words as shown by `maruhi device add` — fingerprints are never truncated for approval, because the approval is what stops a server from slipping in a key of its own. The CLI prints the request's label, fingerprint and 12 words again, then appends the device to every project you belong to and distributes the keys of every environment in the device's cap, every epoch, so the new device can read history too. `--project <id>` limits it to one project.
+Type the full fingerprint or all 12 words as shown by `maruhi device add` — fingerprints are never truncated for approval, because the approval is what stops a server from slipping in a key of its own. **Read the fingerprint off the screen of the machine you are adding, not from a message.** A request is created with an API token, so anyone holding a token of yours could put one on your account and send you its fingerprint; approving it would add their key to every project you belong to. Comparing against the new machine's own screen is the only thing that tells the two apart. The CLI prints the request's label, fingerprint and 12 words again, then appends the device to every project you belong to and distributes the keys of every environment in the device's cap, every epoch, so the new device can read history too. `--project <id>` limits it to one project.
 
 The cap is set at approval time and cannot be changed later (revoke and re-add instead):
 
