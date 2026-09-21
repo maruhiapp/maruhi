@@ -112,9 +112,10 @@ export interface ReportedChainView {
   /**
    * Device entries (`add_device` / `revoke_device`) the fold could not read and left out
    * (K5-17): unknown actor / target, a key already held, a fingerprint that is not the
-   * target's, a revocation that would leave no device, or a malformed payload. The
-   * displayed device sets are then a superset of what such rows would have produced —
-   * shown, never silently absorbed. Ops the fold does not model at all are not counted.
+   * target's, a revocation that would leave no device, or a malformed payload. A dropped
+   * `add_device` leaves a device out; a dropped `revoke_device` leaves one in — so the
+   * displayed sets may be smaller or larger than what those rows would have produced.
+   * Shown, never silently absorbed. Ops the fold does not model at all are not counted.
    */
   unreadableDeviceEntries: number;
 }

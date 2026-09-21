@@ -125,6 +125,25 @@ export const chainFixture: ChainSnapshot = {
   attestations: [],
 };
 
+// 読めない端末 op を 1 行含むチェーン(K5-17 の注記の描画用): 現メンバーでない対象の失効
+export const chainWithUnreadableEntry: ChainSnapshot = {
+  ...chainFixture,
+  headSeq: 6,
+  entries: [
+    ...chainFixture.entries,
+    {
+      suite: "maruhi/v1",
+      seq: 6,
+      prevHashHex: HEX64,
+      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      timestampMs: 1_756_000_500_000,
+      signatureHex: SIG,
+      op: "revoke_device",
+      payload: { targetUserId: "user_ghost", deviceFingerprintsHex: [FP_D2] },
+    },
+  ],
+};
+
 const environmentStatement = {
   suite: "maruhi/v1",
   environmentId: "production",

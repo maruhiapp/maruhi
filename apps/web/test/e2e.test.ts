@@ -35,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   chainFixture,
+  chainWithUnreadableEntry,
   devicesFixture,
   environmentsFixture,
   FP_D2,
@@ -503,6 +504,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       Schema.decodeUnknownSync(ProjectListSchema)(page);
     }
     Schema.decodeUnknownSync(ChainSnapshotSchema)(chainFixture);
+    Schema.decodeUnknownSync(ChainSnapshotSchema)(chainWithUnreadableEntry);
     for (const env of environmentsFixture.environments) {
       Schema.decodeUnknownSync(EnvironmentSummarySchema)(env);
     }
@@ -1133,6 +1135,35 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("You are signed out.").count()).resolves.toBe(1);
     await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
     expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("notes how many device entries the fold could not read, without changing the readable sets (K5-17)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/chain`,
+      (route) => fulfillJson(route, 200, chainWithUnreadableEntry),
+    );
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/environments`,
+      (route) => fulfillJson(route, 200, environmentsFixture),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.getByTestId("member-table").waitFor();
+    const note = page.getByTestId("unreadable-device-entries");
+    await expect(note.textContent()).resolves.toContain(
+      "1 device entry in the reported chain could not be read and was left out",
+    );
+    await expect(note.textContent()).resolves.toContain("maruhi project verify");
+    // 読めた行から導いた集合は変わらない(user_e2e = 2 台)
+    const e2eRow = page
+      .getByTestId("member-table")
+      .getByRole("row")
+      .filter({ hasText: "user_e2e" });
+    await expect(e2eRow.getByText("2", { exact: true }).count()).resolves.toBe(1);
     expect(violations).toEqual([]);
     await page.close();
   });

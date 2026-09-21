@@ -397,8 +397,9 @@ function ApprovalsView({
 }
 
 /**
- * 読めずに落とした端末 op は黙って吸収しない(K5-17): 表示は落とした行が作ったはずの集合の
- * 上位集合になりうる。0 なら描かない。検証は CLI
+ * 読めずに落とした端末 op は黙って吸収しない(K5-17): 落とした `add_device` は端末を欠かせ、
+ * 落とした `revoke_device` は端末を残すので、表示はどちらの向きにもずれうる(片方向を言わない —
+ * K5-18)。0 なら描かない。検証は CLI
  */
 function UnreadableDeviceEntriesNote({ count }: { count: number }): ReactNode {
   if (count === 0) return null;
@@ -406,7 +407,7 @@ function UnreadableDeviceEntriesNote({ count }: { count: number }): ReactNode {
   const verb = count === 1 ? "was" : "were";
   return (
     <Text type="supporting" size="sm" data-testid="unreadable-device-entries">
-      {`${rows} in the reported chain could not be read and ${verb} left out; the device sets above may include devices those entries would have removed. Verify with maruhi project verify.`}
+      {`${rows} in the reported chain could not be read and ${verb} left out; the device sets above may not match what those entries would have produced. Verify with maruhi project verify.`}
     </Text>
   );
 }
@@ -427,7 +428,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
       <ChainSummary snapshot={snapshot} />
       <SectionBlock
         title="Members"
-        description="Chain-derived members, roles, environment scopes and device keys, as reported by the server. A device's fingerprint appears once the reported entries bind it; the device count is exact either way. Verify with maruhi member list."
+        description="Chain-derived members, roles, environment scopes and device keys, as reported by the server. A device's fingerprint appears once the reported entries bind it; an unbound fingerprint does not change the count. Verify with maruhi member list."
       >
         <Table
           data={memberRows}
