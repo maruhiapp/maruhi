@@ -25,7 +25,7 @@ import {
   ForbiddenError,
 } from "./errors/index.ts";
 import { EncPubHex, KeyFingerprintHex, PublicKeyHex } from "./hex.ts";
-import { strictEndpoint } from "./strict.ts";
+import { strictPayload } from "./strict.ts";
 
 /** 端末登録簿の受理ポリシー(AUTH_SPEC §13-11 — 合意規則ではない)。 */
 export const MAX_DEVICE_REGISTRY_ROWS_PER_USER = 32;
@@ -97,17 +97,15 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }).middleware(AuthMiddleware),
   )
   .add(
-    strictEndpoint(
-      // 登録簿の登録・表示名の更新(upsert)。`fp` は body の公開鍵から再計算した値と
-      // 一致すること(400)。行は user あたり 32 まで(429 — 更新は上限に数えない)
-      HttpApiEndpoint.put("register", "/auth/devices/:fp", {
-        params: fingerprintParams,
-        // strict 受理(§12-10 (1) — 公開鍵の登録 = 鍵宣言クラス。未知フィールドを黙って落とさない)
-        payload: DeviceRegistrationSchema,
-        success: HttpApiSchema.NoContent,
-        error: [ForbiddenError, DeviceFingerprintMismatchError, DeviceRegistryLimitError],
-      }).middleware(AuthMiddleware),
-    ),
+    // 登録簿の登録・表示名の更新(upsert)。`fp` は body の公開鍵から再計算した値と
+    // 一致すること(400)。行は user あたり 32 まで(429 — 更新は上限に数えない)
+    HttpApiEndpoint.put("register", "/auth/devices/:fp", {
+      params: fingerprintParams,
+      // strict 受理(§12-10 (1) — 公開鍵の登録 = 鍵宣言クラス。未知フィールドを黙って落とさない)
+      payload: strictPayload(DeviceRegistrationSchema),
+      success: HttpApiSchema.NoContent,
+      error: [ForbiddenError, DeviceFingerprintMismatchError, DeviceRegistryLimitError],
+    }).middleware(AuthMiddleware),
   )
   .add(
     // 登録簿からの削除(advisory の削除 — チェーンの失効とは独立)。無ければ 404
@@ -118,15 +116,13 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }).middleware(AuthMiddleware),
   )
   .add(
-    strictEndpoint(
-      // 追加要求の作成(新端末自身 — 先に §4 でログインしている)。作成系の成功は
-      // HttpApi の既定 200(§13-7 と同じ)。同じ FP の要求・登録簿の既存行との衝突は 409
-      HttpApiEndpoint.post("requestCreate", "/auth/devices/requests", {
-        payload: DeviceAddRequestSchema,
-        success: Schema.Struct({ expiresAtMs: Schema.Number }),
-        error: [ForbiddenError, DeviceRegistryConflictError, DeviceRegistryLimitError],
-      }).middleware(AuthMiddleware),
-    ),
+    // 追加要求の作成(新端末自身 — 先に §4 でログインしている)。作成系の成功は
+    // HttpApi の既定 200(§13-7 と同じ)。同じ FP の要求・登録簿の既存行との衝突は 409
+    HttpApiEndpoint.post("requestCreate", "/auth/devices/requests", {
+      payload: strictPayload(DeviceAddRequestSchema),
+      success: Schema.Struct({ expiresAtMs: Schema.Number }),
+      error: [ForbiddenError, DeviceRegistryConflictError, DeviceRegistryLimitError],
+    }).middleware(AuthMiddleware),
   )
   .add(
     // 追加要求の一覧(承認する端末 — 本人のみ)。失効行は含めない

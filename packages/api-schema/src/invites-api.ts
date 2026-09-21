@@ -38,7 +38,7 @@ import {
   PublicKeyHex,
   Sha256Hex,
 } from "./hex.ts";
-import { strictEndpoint } from "./strict.ts";
+import { strictPayload } from "./strict.ts";
 
 /** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
 export const InviteRoleSchema = Schema.Literals(["reader", "member", "admin"]);
@@ -175,36 +175,34 @@ export const InviteAcceptResultSchema = Schema.Struct({
  */
 export const invitesGroup = HttpApiGroup.make("invites")
   .add(
-    strictEndpoint(
-      HttpApiEndpoint.post("issue", "/projects/:projectId/invites", {
-        params: { projectId: ProjectIdSchema },
-        // strict 受理(§12-10 (1) — 招待の作成・受諾は §15-2 の鍵宣言クラス)
-        payload: InviteIssuePayloadSchema,
-        success: InviteIssueResultSchema,
-        error: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          InviteConflictError,
-          InvitePendingLimitError,
-          InviteRateLimitedError,
-        ],
-      }).middleware(AuthMiddleware),
-    ),
+    HttpApiEndpoint.post("issue", "/projects/:projectId/invites", {
+      params: { projectId: ProjectIdSchema },
+      // strict 受理(§12-10 (1) — 招待の作成・受諾は §15-2 の鍵宣言クラス)
+      payload: strictPayload(InviteIssuePayloadSchema),
+      success: InviteIssueResultSchema,
+      error: [
+        ProjectNotFoundError,
+        ForbiddenError,
+        InviteConflictError,
+        InvitePendingLimitError,
+        InviteRateLimitedError,
+      ],
+    }).middleware(AuthMiddleware),
   )
   .add(
-    strictEndpoint(
-      HttpApiEndpoint.post("accept", "/invites/accept", {
-        payload: Schema.Struct({
+    HttpApiEndpoint.post("accept", "/invites/accept", {
+      payload: strictPayload(
+        Schema.Struct({
           linkPubHex: PublicKeyHex,
           encPubHex: EncPubHex,
           sigPubHex: PublicKeyHex,
           acceptSignatureHex: InviteAcceptSignatureHex,
           linkSignatureHex: InviteLinkSignatureHex,
         }),
-        success: InviteAcceptResultSchema,
-        error: [InviteNotFoundError, InviteGoneError, InviteSignatureInvalidError, ForbiddenError],
-      }).middleware(AuthMiddleware),
-    ),
+      ),
+      success: InviteAcceptResultSchema,
+      error: [InviteNotFoundError, InviteGoneError, InviteSignatureInvalidError, ForbiddenError],
+    }).middleware(AuthMiddleware),
   )
   .add(
     HttpApiEndpoint.get("list", "/projects/:projectId/invites", {

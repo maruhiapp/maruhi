@@ -29,7 +29,7 @@ import {
   ProjectNotFoundError,
 } from "./errors/index.ts";
 import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
-import { strictEndpoint } from "./strict.ts";
+import { strictPayload } from "./strict.ts";
 
 /**
  * 受理ポリシー(§14-3): oidcToken は 16 KiB 以下。値と違い専用の検証層を
@@ -121,26 +121,24 @@ export const LeaseResponseSchema = Schema.Struct({
  * 存在秘匿と両立する(errors/lease.ts の LeaseUnauthorizedReasonSchema)。
  */
 export const leaseGroup = HttpApiGroup.make("lease").add(
-  strictEndpoint(
-    HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
-      params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
-      // strict 受理(§12-10 (1))。共有の LeaseRequestSchema 自体には注釈しない
-      // (他エンドポイントの応答へ波及させない)。strict はこのエンドポイントの
-      // HttpApi.ParseOptions で、payload とこの成功応答の両方に効く。
-      payload: LeaseRequestSchema,
-      success: LeaseResponseSchema,
-      error: [
-        LeaseUnauthorizedError,
-        // 未知プロジェクト・grant なし・ポリシー不一致・スコープ外・環境なしは
-        // **すべてこの 1 種**へ畳む(§14-1 の存在秘匿)。EnvironmentNotFound を
-        // 別に宣言しないのは、認可を通過した呼び出し元にだけ環境の不在を明かす
-        // 形が、リース経路では価値がない(ワークロードは環境 ID を設定として
-        // 持っており、不在は設定ミスとして 404 で十分)一方、契約に二つの 404 が
-        // 並ぶと実装がどちらを返すかの選択を持ってしまうため
-        ProjectNotFoundError,
-        LeaseRateLimitedError,
-        LeaseUnavailableError,
-      ],
-    }),
-  ),
+  HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
+    params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
+    // strict 受理(§12-10 (1))。共有の LeaseRequestSchema 自体は包まない
+    // (他エンドポイントの応答へ波及させない)。strict はこの payload の
+    // decode / encode だけで、成功・エラーの符号化には及ばない。
+    payload: strictPayload(LeaseRequestSchema),
+    success: LeaseResponseSchema,
+    error: [
+      LeaseUnauthorizedError,
+      // 未知プロジェクト・grant なし・ポリシー不一致・スコープ外・環境なしは
+      // **すべてこの 1 種**へ畳む(§14-1 の存在秘匿)。EnvironmentNotFound を
+      // 別に宣言しないのは、認可を通過した呼び出し元にだけ環境の不在を明かす
+      // 形が、リース経路では価値がない(ワークロードは環境 ID を設定として
+      // 持っており、不在は設定ミスとして 404 で十分)一方、契約に二つの 404 が
+      // 並ぶと実装がどちらを返すかの選択を持ってしまうため
+      ProjectNotFoundError,
+      LeaseRateLimitedError,
+      LeaseUnavailableError,
+    ],
+  }),
 );

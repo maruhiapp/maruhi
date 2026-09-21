@@ -1,12 +1,12 @@
 // strict 受理(AUTH_SPEC §12-10 (1))のユニットテスト。
 //
 // Effect rc.113 以降、スキーマ AST の parseOptions はパーサに読まれない。
-// strict はエンドポイントの HttpApi.ParseOptions であり、HttpApiBuilder は
-// その options を Schema.Union([payload]) の decode に渡す。
+// strict は payload スキーマのラッパーであり、HttpApiBuilder は options なしで
+// Schema.Union([payload]) を decode する。エンドポイントの HttpApi.ParseOptions
+// は使わない(エラー応答の strict encode が HTTP 500 になる)。
 // 受理経路(workerd 実環境)での 400 拒否は apps/server/test/strict-payload.test.ts
 
-import { Context, Effect, Result, Schema, type SchemaAST } from "effect";
-import { HttpApi, HttpApiEndpoint } from "effect/unstable/httpapi";
+import { Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,58 +14,59 @@ import {
   maruhiApi,
   SECURITY_CRITICAL_PAYLOAD_ENDPOINTS,
   STRICT_EXEMPT_PAYLOAD_ENDPOINTS,
-  strictEndpoint,
+  strictPayload,
 } from "../src/index.ts";
 
 const payload = Schema.Struct({ nested: Schema.Struct({ a: Schema.String }) });
 
-/** HttpApiBuilder が payload デコーダを組み立てる形(エンドポイントの ParseOptions)。 */
-const decodeAsBuilder = (input: unknown, options?: SchemaAST.ParseOptions) => {
-  const decode = Schema.decodeUnknownEffect(Schema.Union([payload]), options);
-  return Effect.runSync(Effect.result(decode(input) as Effect.Effect<unknown, unknown, never>));
-};
+/** HttpApiBuilder が payload デコーダを組み立てる形(options なしの Union)。 */
+const decodeAsBuilder = (schema: Schema.Top, input: unknown) =>
+  Schema.decodeUnknownResult(
+    Schema.Union([schema]) as unknown as Schema.ConstraintDecoder<unknown>,
+  )(input);
 
-describe("strictEndpoint", () => {
-  const endpoint = strictEndpoint(HttpApiEndpoint.post("demo", "/demo", { payload }));
-  const options = Context.getOrUndefined(endpoint.annotations, HttpApi.ParseOptions);
-
-  it("publishes the options the builder reads", () => {
-    expect(options).toEqual({ onExcessProperty: "error" });
-  });
+describe("strictPayload", () => {
+  const strict = strictPayload(payload);
 
   it("accepts a clean payload through the builder assembly", () => {
-    expect(Result.isSuccess(decodeAsBuilder({ nested: { a: "x" } }, options))).toBe(true);
+    expect(Result.isSuccess(decodeAsBuilder(strict, { nested: { a: "x" } }))).toBe(true);
   });
 
   it("rejects a root-level unknown field", () => {
-    expect(Result.isFailure(decodeAsBuilder({ nested: { a: "x" }, extra: 1 }, options))).toBe(true);
+    expect(Result.isFailure(decodeAsBuilder(strict, { nested: { a: "x" }, extra: 1 }))).toBe(true);
   });
 
-  it("rejects a nested unknown field (options apply throughout the parse)", () => {
-    expect(Result.isFailure(decodeAsBuilder({ nested: { a: "x", extra: 1 } }, options))).toBe(true);
+  it("rejects a nested unknown field", () => {
+    expect(Result.isFailure(decodeAsBuilder(strict, { nested: { a: "x", extra: 1 } }))).toBe(true);
   });
 
   it("rejects an unknown field inside a union member", () => {
     const member = Schema.Struct({ a: Schema.String });
-    const union = Schema.Union([member, Schema.Struct({ b: Schema.Number })]);
-    const strict = strictEndpoint(HttpApiEndpoint.post("union", "/union", { payload: union }));
-    const unionOptions = Context.getOrUndefined(strict.annotations, HttpApi.ParseOptions);
-    const decode = Schema.decodeUnknownEffect(Schema.Union([union]), unionOptions);
-    const result = Effect.runSync(
-      Effect.result(decode({ a: "x", extra: 1 }) as Effect.Effect<unknown, unknown, never>),
+    const union = strictPayload(Schema.Union([member, Schema.Struct({ b: Schema.Number })]));
+    expect(Result.isFailure(decodeAsBuilder(union, { a: "x", extra: 1 }))).toBe(true);
+  });
+
+  it("rejects an unknown field when encoding", () => {
+    const encode = Schema.encodeUnknownResult(strict);
+    const extra = encode({ nested: { a: "x" }, extra: 1 });
+    const clean = encode({ nested: { a: "x" } });
+    expect(Result.isFailure(extra)).toBe(true);
+    expect(Result.isSuccess(clean)).toBe(true);
+  });
+
+  it("keeps rejecting unknown fields when a check is composed after the wrapper", () => {
+    const checked = strictPayload(Schema.Struct({ a: Schema.String })).check(
+      Schema.makeFilter(() => undefined),
     );
-    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.isSuccess(decodeAsBuilder(checked, { a: "x" }))).toBe(true);
+    expect(Result.isFailure(decodeAsBuilder(checked, { a: "x", extra: 1 }))).toBe(true);
   });
 
   it("ignores a schema AST parseOptions annotation (Effect rc.113+)", () => {
     const annotated = Schema.Struct({ a: Schema.String }).annotate({
       parseOptions: { onExcessProperty: "error" },
     });
-    const decode = Schema.decodeUnknownEffect(annotated);
-    const result = Effect.runSync(
-      Effect.result(decode({ a: "x", extra: 1 }) as Effect.Effect<unknown, unknown, never>),
-    );
-    expect(Result.isSuccess(result)).toBe(true);
+    expect(Result.isSuccess(decodeAsBuilder(annotated, { a: "x", extra: 1 }))).toBe(true);
   });
 });
 
@@ -121,9 +122,13 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     ]);
   });
 
-  it("throws when a registered endpoint lost its strict annotation", () => {
+  it("throws when a registered payload is not wrapped", () => {
     const fakeApi = fakeApiFromRegistry(false);
     expect(() => assertSecurityCriticalPayloadsStrict(fakeApi)).toThrow(/not parser-effective/);
+  });
+
+  it("accepts a registry whose payloads are wrapped", () => {
+    expect(() => assertSecurityCriticalPayloadsStrict(fakeApiFromRegistry(true))).not.toThrow();
   });
 
   it("throws for a payload-bearing endpoint in neither list (fail-closed)", () => {
@@ -134,7 +139,6 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       throw new Error("fake api is missing the membership group");
     }
     membership.endpoints["newMutation"] = {
-      annotations: Context.empty(),
       payload: new Map([
         ["application/json", { schemas: [Schema.Struct({ a: Schema.String })] as [Schema.Top] }],
       ]),
@@ -164,7 +168,6 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
 });
 
 type FakeEndpoint = {
-  annotations: Context.Context<never>;
   payload: Map<string, { schemas: [Schema.Top, ...Array<Schema.Top>] }>;
 };
 
@@ -173,12 +176,11 @@ type FakeApi = {
 };
 
 /**
- * 列挙面(strict)に指定注釈、除外面に空の注釈を置いたフェイク API
- * (スイープの負例用 — 実在検査を通すため両リストの座標を揃える)。
+ * 列挙面を strictPayload(または素の Struct)、除外面を素の Struct にした
+ * フェイク API(スイープの正例・負例 — 実在検査を通すため両リストの座標を揃える)。
  */
 function fakeApiFromRegistry(strict: boolean): FakeApi {
   const schema = Schema.Struct({ a: Schema.String });
-  const strictAnnotations = Context.make(HttpApi.ParseOptions, { onExcessProperty: "error" });
   const entries: readonly (readonly [string, string, boolean])[] = [
     ...SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, strict] as const),
     ...STRICT_EXEMPT_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, false] as const),
@@ -187,8 +189,12 @@ function fakeApiFromRegistry(strict: boolean): FakeApi {
   for (const [group, endpoint, isStrict] of entries) {
     groups[group] ??= { endpoints: {} };
     groups[group].endpoints[endpoint] = {
-      annotations: isStrict ? strictAnnotations : Context.empty(),
-      payload: new Map([["application/json", { schemas: [schema] as [Schema.Top] }]]),
+      payload: new Map([
+        [
+          "application/json",
+          { schemas: [isStrict ? strictPayload(schema) : schema] as [Schema.Top] },
+        ],
+      ]),
     };
   }
   return { groups };
