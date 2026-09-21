@@ -554,7 +554,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("Cannot read the keychain master-key record");
+    expect(dump).toContain("Cannot read the keychain device-key record");
     expect(dump).toContain("by hand");
     expect(dump).not.toContain("master 鍵は既に存在します");
   });

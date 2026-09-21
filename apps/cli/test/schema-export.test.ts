@@ -249,7 +249,7 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.keychain.delete(masterKeyEntryName(env.origin, owner.userId));
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
-    expect(env.errors.some((line) => line.includes("No master key"))).toBe(false);
+    expect(env.errors.some((line) => line.includes("No device key"))).toBe(false);
   });
 });
 

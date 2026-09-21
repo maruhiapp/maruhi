@@ -10,6 +10,7 @@ import type {
   AuditEventSchema,
   ChainEntrySchema,
   ChainSnapshotSchema,
+  DeviceListSchema,
   DeviceSummarySchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
@@ -72,6 +73,4 @@ export type TokenList = typeof TokenListSchema.Type;
 export type DeviceSummary = typeof DeviceSummarySchema.Type;
 
 /** `{ devices }` shape of the device registry listing (AUTH_SPEC §13-11). */
-export interface DeviceList {
-  readonly devices: ReadonlyArray<DeviceSummary>;
-}
+export type DeviceList = typeof DeviceListSchema.Type;

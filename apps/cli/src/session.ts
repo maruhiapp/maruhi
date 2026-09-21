@@ -417,7 +417,7 @@ async function probeCryptoRoundTrip(): Promise<boolean> {
  * 存在しない物を指した診断になる。
  */
 export const unsupportedCryptoCause =
-  "This environment's WebCrypto does not support the algorithms the master key needs (Ed25519 / HPKE), so the key cannot be loaded" as const;
+  "This environment's WebCrypto does not support the algorithms maruhi's keys need (Ed25519 / HPKE), so the key cannot be loaded" as const;
 
 /** 環境側が原因のときの次の一手(どの経路でも同じ)。 */
 export const retryOnSupportedRuntime = "Re-run on a supported runtime (a newer Bun / OS)" as const;
@@ -555,7 +555,7 @@ export function storeMasterKeyGuarded(
  * 不要で、やることは「1 つずつ実行し直す」だけ。
  */
 const concurrentMasterKeyWrite =
-  "Another master key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
+  "Another device key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
 
 /**
  * {@link storeMasterKeyGuarded} + 成功の 2 行(保存先の名指しと FP)。
@@ -587,7 +587,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     if (stored === null) {
       return yield* Effect.fail(
         cliError(
-          "No master key on this device. Restore it with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approval from another device or a guardian), or generate one with `maruhi key generate` if this is your first key",
+          "No device key on this machine. If you still have a device of yours, add this machine as a device: `maruhi device add` here, then `maruhi device approve` there. If no device is left, open the reserve key with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approvals from your guardians). If this is your first key, generate one with `maruhi key generate`",
         ),
       );
     }

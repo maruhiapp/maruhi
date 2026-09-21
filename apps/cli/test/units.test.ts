@@ -807,7 +807,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     // key show は session 解決 + master 鍵を要求する。master 鍵がないため
     // エラーになるが、セッション解決(/auth/me)自体は通ることを検証する
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("No master key");
+    expect(env.errors.join("\n")).toContain("No device key on this machine");
   });
 
   it("期限が 14 日以内なら stderr へ事前警告する(裁定 CL — 環境変数経路は /auth/me の自己開示から)", async () => {

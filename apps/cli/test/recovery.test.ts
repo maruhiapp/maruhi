@@ -710,7 +710,7 @@ describe("maruhi key recover(復元)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("maruhi/v2");
     expect(errors).toContain("update maruhi to the latest");
-    expect(errors).toContain("`maruhi key recovery`");
+    expect(errors).toContain("`maruhi key recovery --replace`");
     // 未知スイートは「このコードでは復元できません」ではない(更新すれば
     // そのまま使える)。破損用の文言を混ぜると、使えるコードを捨てさせる
     expect(errors).not.toContain("This code cannot restore");
@@ -731,7 +731,7 @@ describe("maruhi key recover(復元)", () => {
           sigPubHex: "",
           sigSkSeedHex: "",
         }),
-        expected: "another device that still has the master key",
+        expected: "seal a new reserve key by running `maruhi key recovery --replace`",
         notExpected: "update maruhi to the latest",
       },
       {

@@ -680,7 +680,7 @@ export function auditSelfOp(
     // 要監視イベント(AUDIT_SPEC §3.1)の含意はここで一度だけ添える
     if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
       yield* logNote(
-        "auth.recovery_blob_fetched (a fetch of the wrapped master private key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
+        "auth.recovery_blob_fetched (a fetch of the sealed reserve key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
       );
     }
     return rendered.integrityFailures > 0 ? 1 : 0;

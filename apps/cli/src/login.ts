@@ -416,8 +416,8 @@ function nextStepHint(
     if (master === null) {
       yield* logNote(
         status.registered
-          ? "no master key on this device. Restore it with your recovery code: `maruhi key recover`"
-          : "no master key yet. Generate one with `maruhi key generate`",
+          ? "no device key on this machine. Add it as a device (`maruhi device add` here, `maruhi device approve` on a device you have) or, if no device is left, restore with your recovery code: `maruhi key recover`"
+          : "no device key yet. Generate one with `maruhi key generate`",
       );
     } else if (!status.registered) {
       yield* logNote(

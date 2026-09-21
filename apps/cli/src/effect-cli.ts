@@ -428,7 +428,7 @@ const runConfig = {
 const agentConfig = {
   "key-ttl": singleValued(
     "key-ttl",
-    "Forget the master key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits",
+    "Forget this device's key this long after it is stored (e.g. 30m, 2h); the token stays. Default: keep it until the command exits",
   ),
   command: Argument.string("command").pipe(
     Argument.withDescription(
@@ -3444,7 +3444,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Hold the token and master key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds",
+      "Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds",
     ),
     Command.withSubcommands([agentStatus]),
   );

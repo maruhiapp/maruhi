@@ -96,6 +96,7 @@ export {
   DeviceAddRequestSchema,
   DeviceAddRequestSummarySchema,
   DeviceLabelSchema,
+  DeviceListSchema,
   DeviceRegistrationSchema,
   devicesGroup,
   DeviceSummarySchema,

@@ -34,6 +34,26 @@
       "rules": {
         "eslint-js/no-restricted-syntax": "off"
       }
+    },
+    {
+      // 端末鍵分離以後の語彙(DK K7-5 / K7-13)。利用者に見える文言(文字列・テンプレート)は
+      // "device key" / "reserve key" と言い、"master key" は永続化された名前(`master::` /
+      // `MasterKeys` — K4-12)とコメントにだけ残る。help golden と docs は
+      // apps/site/test/unit/cli-vocabulary.test.ts が留め、実行時文言はこの規則が留める
+      "files": ["apps/cli/src/**/*.ts"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "Literal[value=/master[ -]key|master private key/i]",
+            "message": "利用者に見える文言では \"master key\" と言わない。この端末の鍵は \"device key\"、台帳の鍵は \"reserve key\"(DK K7-5)"
+          },
+          {
+            "selector": "TemplateElement[value.raw=/master[ -]key|master private key/i]",
+            "message": "利用者に見える文言では \"master key\" と言わない。この端末の鍵は \"device key\"、台帳の鍵は \"reserve key\"(DK K7-5)"
+          }
+        ]
+      }
     }
   ]
 }

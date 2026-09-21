@@ -361,7 +361,7 @@ function ensureCanIssue(input: {
     ) {
       return yield* Effect.fail(
         cliError(
-          "Your master key on this machine does not match your key on the project chain, so an issue signature made here would not verify. Restore the chain key (`maruhi key recover`) or have an owner re-add you",
+          "This machine's key is not one of your registered devices on this project's chain, so an issue signature made here would not verify. Issue the invite from a device that is registered here (`maruhi device list` shows them) or have an owner re-add you",
         ),
       );
     }
@@ -784,7 +784,7 @@ function ensureMasterKeysForAccept(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "No master key is present. Key generation is not performed in AI agent environments (issuing and storing the recovery code needs a human interactive terminal). Accept on a human terminal, or restore an existing key with `maruhi key recover` and re-run",
+          "No device key is present. Key generation is not performed in AI agent environments (issuing and storing the recovery code needs a human interactive terminal). Accept on a human terminal, or give this machine a key first — `maruhi device add` (approved from a device you have) or, if no device is left, `maruhi key recover` — and re-run",
         ),
       );
     }
@@ -792,15 +792,15 @@ function ensureMasterKeysForAccept(input: {
     if (status.registered) {
       return yield* Effect.fail(
         cliError(
-          "This machine has no master key, but a recovery registration already exists (a key was generated on another device). Creating a new key would diverge from the existing one — restore it onto this machine with `maruhi key recover` and re-run (only if both the key and the recovery code are lost, explicitly rebuild with `maruhi key generate`)",
+          "This machine has no device key, but your account already has a recovery ledger (a key was generated on another device). Creating a new key would start a second identity — add this machine as a device instead (`maruhi device add` here, `maruhi device approve` on a device you have), or `maruhi key recover` if no device of yours is left, then re-run (only if every device and every way to open the ledger are lost, rebuild with `maruhi key generate --new-identity`)",
         ),
       );
     }
     yield* io.log(
-      "This machine has no master key. A new key (= a new cryptographic identity) will be generated before proceeding to accept",
+      "This machine has no device key. A new key (= a new cryptographic identity) will be generated before proceeding to accept",
     );
     yield* io.log(
-      "If you already use maruhi on another device, stop here: run `maruhi key recovery` on the old device to issue a recovery code, then run `maruhi key recover` on this machine",
+      "If you already use maruhi on another device, stop here: add this machine as a device instead (`maruhi device add` here, then `maruhi device approve` on the other device) and re-run",
     );
     const answer = yield* io.promptLine({
       prompt: "Type yes to generate a new key: ",

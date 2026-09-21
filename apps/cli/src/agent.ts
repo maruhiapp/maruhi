@@ -648,7 +648,7 @@ export function agentOp(input: {
           );
           if (input.keyTtl !== undefined) {
             yield* io.logError(
-              `The master key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. Recover the key again with \`maruhi key recover\` (or \`--passkey\` / \`--handoff\`) when a command reports it is missing`,
+              `This device's key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. When a command reports it is missing, register this shell again with \`maruhi device add\` (approve it from a device you have) and revoke the forgotten key with \`maruhi device revoke\``,
             );
           }
           return yield* runner.runSession({
@@ -706,7 +706,7 @@ function describeEntryName(name: string): string {
   // userId はサーバー発行の識別子で `::` を含まない)
   const master = /^master::(.+)::(.+)$/.exec(name);
   if (master !== null) {
-    return `master key:  ${displayText(master[1] ?? "")} (user ${displayText(master[2] ?? "")})`;
+    return `device key:  ${displayText(master[1] ?? "")} (user ${displayText(master[2] ?? "")})`;
   }
   return `entry:       ${displayText(name)}`;
 }
