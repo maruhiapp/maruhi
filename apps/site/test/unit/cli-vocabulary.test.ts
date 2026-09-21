@@ -202,10 +202,16 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
 
   // K6-U: 台帳を変えるコマンドの列挙(`designating guardians` を含む文)は、開封の材料を
   // 名乗らない。`maruhi guardian add` は `--passkey` を受けないので、この列挙に材料を足すと
-  // 必ず嘘になる(同じ誤りが devices / recover の両ページで出た — K6-R の原則の機械化)
-  it.each(pages)("%s does not attribute an opening material to the guardian path", (page) => {
-    const sentences = pageText(page).split(/(?<=[.:])\s+/);
-    const listings = sentences.filter((sentence) => sentence.includes("designating guardians"));
+  // 必ず嘘になる(同じ誤りが devices / recover の両ページで出た — K6-R の原則の機械化)。
+  // 列挙の文が 1 つも無ければ検査は空虚になるので、存在も固定する(言い回しを変えるなら
+  // この pin も一緒に直す — 無関係な編集で静かに失われないように)
+  it("keeps the ledger-changing enumeration free of an opening material", () => {
+    const listings = pages.flatMap((page) =>
+      pageText(page)
+        .split(/(?<=[.:])\s+/)
+        .filter((sentence) => sentence.includes("designating guardians")),
+    );
+    expect(listings.length).toBeGreaterThan(0);
     expect(listings.filter((sentence) => /with the code|or a passkey/.test(sentence))).toEqual([]);
   });
 
