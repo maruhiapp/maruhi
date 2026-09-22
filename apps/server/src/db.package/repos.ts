@@ -448,8 +448,18 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
     nowMs: number,
     signupInviteTokenHash: string | null,
     attempt = 0,
-  ): Effect.Effect<SignupGateResult> =>
-    Effect.flatMap(lookupLinkedUser(db, identity), (existing) => {
+  ): Effect.Effect<SignupGateResult> => {
+    const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult> =>
+      createUserBatch(db, identity, nowMs, gate).pipe(
+        Effect.map((userId): SignupGateResult => ({ userId, created: true })),
+        Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
+        Effect.catchTag("SignupGateLost", () =>
+          attempt >= 2
+            ? Effect.die(new Error("signup gate kept losing against concurrent policy changes"))
+            : getOrCreateUser(identity, nowMs, signupInviteTokenHash, attempt + 1),
+        ),
+      );
+    return Effect.flatMap(lookupLinkedUser(db, identity), (existing) => {
       if (existing !== null) {
         // 既存ユーザーはゲート非通過(AUTH_SPEC §3 — 新規作成だけを塞ぐ)。
         // 提示されたコードは消費されない
@@ -458,16 +468,6 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
           created: false,
         } satisfies ResolvedUser);
       }
-      const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult> =>
-        createUserBatch(db, identity, nowMs, gate).pipe(
-          Effect.map((userId): SignupGateResult => ({ userId, created: true })),
-          Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
-          Effect.catchTag("SignupGateLost", () =>
-            attempt >= 2
-              ? Effect.die(new Error("signup gate kept losing against concurrent policy changes"))
-              : getOrCreateUser(identity, nowMs, signupInviteTokenHash, attempt + 1),
-          ),
-        );
       return Effect.flatMap(
         run(() => readSignupPolicy(db)),
         (policy) => {
@@ -490,6 +490,7 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
         },
       );
     });
+  };
   return {
     getOrCreateUser: (identity, nowMs, signupInviteTokenHash) =>
       getOrCreateUser(identity, nowMs, signupInviteTokenHash),

@@ -143,13 +143,15 @@ describe("ヘッド申告の提出(§16-1)", () => {
       bearer(token(OWNER)),
     );
     // ゼロ署名の control は Schema を通過して受理検証の 422(signature-invalid)
-    // に落ちる = 非 400(decode 通過の証明には十分)
-    await expectStrictReject(send, {
+    // に落ちる。非 400 だけではエラー符号化の 500 化を見逃すので、宣言どおりの
+    // status まで固定する。
+    const status = await expectStrictReject(send, {
       suite: "maruhi/v1",
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),
     });
+    expect(status).toBe(422);
   });
 });
 

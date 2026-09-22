@@ -236,6 +236,16 @@ const ESCAPE = "\u001b";
 // CSI 等のエスケープ列の終端(英字と ~)。矢印キー等の断片を入力に混ぜない
 const ESCAPE_END = /[A-Za-z~]/;
 
+function endOutcome(ch: string): "done" | "interrupted" | null {
+  if (ENTER_CHARS.has(ch)) {
+    return "done";
+  }
+  if (ch === CTRL_C || ch === CTRL_D) {
+    return "interrupted";
+  }
+  return null;
+}
+
 /**
  * TTY での非エコー入力(リカバリーコード等の秘密の 1 行)。raw mode で 1 文字
  * ずつ読み、端末には何も表示しない。Backspace は末尾削除、Ctrl+C / Ctrl+D は
@@ -267,15 +277,6 @@ export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
       } else {
         reject(new Error(outcome));
       }
-    };
-    const endOutcome = (ch: string): "done" | "interrupted" | null => {
-      if (ENTER_CHARS.has(ch)) {
-        return "done";
-      }
-      if (ch === CTRL_C || ch === CTRL_D) {
-        return "interrupted";
-      }
-      return null;
     };
     // 消去は末尾 1 文字、その他の制御文字(タブ等)は無視、印字可能文字のみ追加
     const applyChar = (ch: string) => {
