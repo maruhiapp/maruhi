@@ -28,9 +28,9 @@
     "vitest": "4.1.11"
   },
   "overrides": {
+    "@scalar/json-magic>undici": "7.29.1",
     "@types/node": "26.6.2",
-    "lodash-es": "4.18.1",
-    "@scalar/json-magic>undici": "7.29.1"
+    "lodash-es": "4.18.1"
   },
   "engines": {
     "bun": "1.4.2"
