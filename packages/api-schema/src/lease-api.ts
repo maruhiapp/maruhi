@@ -123,8 +123,9 @@ export const LeaseResponseSchema = Schema.Struct({
 export const leaseGroup = HttpApiGroup.make("lease").add(
   HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
     params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
-    // strict 受理(§12-10 (1))。共有部品の LeaseRequestSchema 自体には注釈せず、
-    // payload ルートの使用点でのみ被せる(応答側へ strict を波及させない規律)
+    // strict 受理(§12-10 (1))。共有の LeaseRequestSchema 自体は包まない
+    // (他エンドポイントの応答へ波及させない)。strict はこの payload の
+    // decode / encode だけで、成功・エラーの符号化には及ばない。
     payload: strictPayload(LeaseRequestSchema),
     success: LeaseResponseSchema,
     error: [

@@ -12,7 +12,7 @@ import { defineConfig, type Plugin } from "vite";
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
 // FunStack は Vite 環境を rsc / client / ssr に分ける。ssr は JS のみで
-// CSS を出さない。@astryxdesign/build 0.5.2 の astryx-build-layer-split は
+// CSS を出さない。@astryxdesign/build 0.6.2 の astryx-build-layer-split は
 // StyleX 規則があるのに対象 CSS が無いと hard error するため、CSS を出す
 // 環境だけに適用する。加えて client の writeBundle(linkOrphanStylesheets)が
 // publicDir コピーの HTML へ SPA CSS を <link> 注入するので、検査対象アセットは
@@ -20,10 +20,10 @@ const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 // (docs/notes/spike-a.md — プリビルド CSS 消費。src alias は使わない)。
 //
 // これは vendor プラグインへの局所パッチ(ADR-0013 ⑤ の upstream 解決待ち)。
-// 0.5.2 の AstryxVitePluginOptions には環境スコープも publicDir 除外も無い。
-// 対象プラグインが見つからない・形が変わった場合は黙って素通しせず落とす:
-// 片方の回避だけ外れて ssr が hard error に戻る / invite.html が汚れる、を
-// 次のアップグレードで無言に起こさないため。
+// 0.6.2 の AstryxVitePluginOptions にも環境スコープも publicDir 除外も無い
+// (0.5.2 から再確認)。対象プラグインが見つからない・形が変わった場合は
+// 黙って素通しせず落とす: 片方の回避だけ外れて ssr が hard error に戻る /
+// invite.html が汚れる、を次のアップグレードで無言に起こさないため。
 const LAYER_SPLIT_PLUGIN = "astryx-build-layer-split";
 
 function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {

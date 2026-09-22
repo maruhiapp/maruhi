@@ -4,8 +4,10 @@
 // (packages/api-schema/src/strict.ts の SECURITY_CRITICAL_PAYLOAD_ENDPOINTS)。
 // 各面で「未知フィールドを含むリクエストが実際に 400 で拒否される」ことを
 // workerd 実環境の受理経路で検証する — 注釈の**存在**をテストしない
-// (docs/notes/session-32.md §2-3: 適用順バグと upstream の parseOptions
-// 読み取り位置変更の両方を、挙動の側から検出するため)。
+// (スキーマ注釈がパーサに読まれなくなった場合も、挙動の側から検出するため)。
+// 強制は payload スキーマのラッパー(`strictPayload`)だけ。エンドポイントの
+// `HttpApi.ParseOptions` は成功・エラーの符号化にも同じ options を渡すため、
+// TaggedError のスタックメタデータが HTTP 500 になる。ここでは使わない。
 //
 // 各テストは同一 body の 2 送信で構成する:
 // 1. probe = clean body + 未知フィールド → 400
@@ -141,13 +143,15 @@ describe("ヘッド申告の提出(§16-1)", () => {
       bearer(token(OWNER)),
     );
     // ゼロ署名の control は Schema を通過して受理検証の 422(signature-invalid)
-    // に落ちる = 非 400(decode 通過の証明には十分)
-    await expectStrictReject(send, {
+    // に落ちる。非 400 だけではエラー符号化の 500 化を見逃すので、宣言どおりの
+    // status まで固定する。
+    const status = await expectStrictReject(send, {
       suite: "maruhi/v1",
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),
     });
+    expect(status).toBe(422);
   });
 });
 

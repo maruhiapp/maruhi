@@ -15,12 +15,12 @@
     "validate": "bunx --bun blume validate --strict"
   },
   "dependencies": {
-    "blume": "1.5.3"
+    "blume": "1.7.3"
   },
   "devDependencies": {
-    "@types/node": "26.4.1",
-    "playwright": "1.62.1",
+    "@types/node": "26.6.2",
+    "playwright": "1.63.0",
     "vitest": "4.1.11",
-    "wrangler": "4.128.0"
+    "wrangler": "4.136.1"
   }
 }

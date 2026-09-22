@@ -1,93 +1,72 @@
 // strict 受理(AUTH_SPEC §12-10 (1))のユニットテスト。
 //
-// - 拒否の実効性は HttpApiBuilder と同一の組み立て(decodeUnknownEffect +
-//   Schema.Union、options なし — docs/notes/session-32.md §2-2)で検証する
-// - 負例: 注釈の後に .check(...) を合成すると SchemaParser の読む位置(最後の
-//   check の annotations)から注釈が外れて strict が無警告で失効する
-//   (session-32 §2-3)。assert 関数がこれを throw に格上げすることを固定する
-// - 受理経路(workerd 実環境)での 400 拒否は apps/server/test/strict-payload.test.ts
+// Effect rc.113 以降、スキーマ AST の parseOptions はパーサに読まれない。
+// strict は payload スキーマのラッパーであり、HttpApiBuilder は options なしで
+// Schema.Union([payload]) を decode する。エンドポイントの HttpApi.ParseOptions
+// は使わない(エラー応答の strict encode が HTTP 500 になる)。
+// 受理経路(workerd 実環境)での 400 拒否は apps/server/test/strict-payload.test.ts
 
-import { Effect, Result, Schema } from "effect";
+import { Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   assertSecurityCriticalPayloadsStrict,
-  assertStrictPayloadRoot,
   maruhiApi,
   SECURITY_CRITICAL_PAYLOAD_ENDPOINTS,
   STRICT_EXEMPT_PAYLOAD_ENDPOINTS,
   strictPayload,
 } from "../src/index.ts";
 
-const anyValueFilter = Schema.makeFilter(() => true);
+const payload = Schema.Struct({ nested: Schema.Struct({ a: Schema.String }) });
 
-/** HttpApiBuilder が payload デコーダを組み立てる形(options なし)。 */
-const decodeAsBuilder = (schema: Schema.Top) => {
-  const decode = Schema.decodeUnknownEffect(Schema.Union([schema]));
-  return (input: unknown) =>
-    Effect.runSync(Effect.result(decode(input) as Effect.Effect<unknown, unknown, never>));
-};
+/** HttpApiBuilder が payload デコーダを組み立てる形(options なしの Union)。 */
+const decodeAsBuilder = (schema: Schema.Top, input: unknown) =>
+  Schema.decodeUnknownResult(
+    Schema.Union([schema]) as unknown as Schema.ConstraintDecoder<unknown>,
+  )(input);
 
 describe("strictPayload", () => {
-  const schema = strictPayload(Schema.Struct({ nested: Schema.Struct({ a: Schema.String }) }));
+  const strict = strictPayload(payload);
 
   it("accepts a clean payload through the builder assembly", () => {
-    const result = decodeAsBuilder(schema)({ nested: { a: "x" } });
-    expect(Result.isSuccess(result)).toBe(true);
+    expect(Result.isSuccess(decodeAsBuilder(strict, { nested: { a: "x" } }))).toBe(true);
   });
 
   it("rejects a root-level unknown field", () => {
-    const result = decodeAsBuilder(schema)({ nested: { a: "x" }, extra: 1 });
-    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.isFailure(decodeAsBuilder(strict, { nested: { a: "x" }, extra: 1 }))).toBe(true);
   });
 
-  it("rejects a nested unknown field (annotation propagates)", () => {
-    const result = decodeAsBuilder(schema)({ nested: { a: "x", extra: 1 } });
-    expect(Result.isFailure(result)).toBe(true);
+  it("rejects a nested unknown field", () => {
+    expect(Result.isFailure(decodeAsBuilder(strict, { nested: { a: "x", extra: 1 } }))).toBe(true);
   });
 
-  it("wins over a permissive caller-side ParseOptions", () => {
-    const decode = Schema.decodeUnknownEffect(Schema.Union([schema]), {
-      onExcessProperty: "ignore",
+  it("rejects an unknown field inside a union member", () => {
+    const member = Schema.Struct({ a: Schema.String });
+    const union = strictPayload(Schema.Union([member, Schema.Struct({ b: Schema.Number })]));
+    expect(Result.isFailure(decodeAsBuilder(union, { a: "x", extra: 1 }))).toBe(true);
+  });
+
+  it("rejects an unknown field when encoding", () => {
+    const encode = Schema.encodeUnknownResult(strict);
+    const extra = encode({ nested: { a: "x" }, extra: 1 });
+    const clean = encode({ nested: { a: "x" } });
+    expect(Result.isFailure(extra)).toBe(true);
+    expect(Result.isSuccess(clean)).toBe(true);
+  });
+
+  it("keeps rejecting unknown fields when a check is composed after the wrapper", () => {
+    const checked = strictPayload(Schema.Struct({ a: Schema.String })).check(
+      Schema.makeFilter(() => undefined),
+    );
+    expect(Result.isSuccess(decodeAsBuilder(checked, { a: "x" }))).toBe(true);
+    expect(Result.isFailure(decodeAsBuilder(checked, { a: "x", extra: 1 }))).toBe(true);
+  });
+
+  it("ignores a schema AST parseOptions annotation (Effect rc.113+)", () => {
+    const annotated = Schema.Struct({ a: Schema.String }).annotate({
+      parseOptions: { onExcessProperty: "error" },
     });
-    const result = Effect.runSync(
-      Effect.result(
-        decode({ nested: { a: "x" }, extra: 1 }) as Effect.Effect<unknown, unknown, never>,
-      ),
-    );
-    expect(Result.isFailure(result)).toBe(true);
-  });
-
-  it("stays parser-effective when applied after .check(...)", () => {
-    const checked = strictPayload(Schema.Struct({ a: Schema.String }).check(anyValueFilter));
-    expect(() => assertStrictPayloadRoot(checked, "checked")).not.toThrow();
-    expect(Result.isFailure(decodeAsBuilder(checked)({ a: "x", extra: 1 }))).toBe(true);
-  });
-});
-
-describe("assertStrictPayloadRoot", () => {
-  it("throws for a schema without the strict annotation", () => {
-    expect(() => assertStrictPayloadRoot(Schema.Struct({ a: Schema.String }), "plain")).toThrow(
-      /not parser-effective/,
-    );
-  });
-
-  it("throws when .check(...) is composed after the annotation (silent-disable trap)", () => {
-    // annotate → check の順: SchemaAST.annotate は checks があると最後の check へ
-    // 注釈を付け、SchemaParser も最後の check から読む。よってこの順では注釈が
-    // AST 本体に残り、parser の読む位置から外れる — strict は無警告で失効する
-    const broken = Schema.Struct({ a: Schema.String })
-      .annotate({ parseOptions: { onExcessProperty: "error" } })
-      .check(anyValueFilter);
-    expect(() => assertStrictPayloadRoot(broken, "broken")).toThrow(/not parser-effective/);
-    // 前提の再確認: この壊れた形は builder 経路で実際に受理してしまう
-    // (assert がなければ気づけない — session-32 §2-3 の実測の固定)
-    expect(Result.isSuccess(decodeAsBuilder(broken)({ a: "x", extra: 1 }))).toBe(true);
-  });
-
-  it("throws when strictPayload(...) is recomposed with .check(...) afterwards", () => {
-    const recomposed = strictPayload(Schema.Struct({ a: Schema.String })).check(anyValueFilter);
-    expect(() => assertStrictPayloadRoot(recomposed, "recomposed")).toThrow(/not parser-effective/);
+    expect(Result.isSuccess(decodeAsBuilder(annotated, { a: "x", extra: 1 }))).toBe(true);
   });
 });
 
@@ -143,14 +122,18 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     ]);
   });
 
-  it("throws when a registered payload root lost its strict annotation", () => {
-    const fakeApi = fakeApiFromRegistry(Schema.Struct({ a: Schema.String }));
+  it("throws when a registered payload is not wrapped", () => {
+    const fakeApi = fakeApiFromRegistry(false);
     expect(() => assertSecurityCriticalPayloadsStrict(fakeApi)).toThrow(/not parser-effective/);
+  });
+
+  it("accepts a registry whose payloads are wrapped", () => {
+    expect(() => assertSecurityCriticalPayloadsStrict(fakeApiFromRegistry(true))).not.toThrow();
   });
 
   it("throws for a payload-bearing endpoint in neither list (fail-closed)", () => {
     // 新設エンドポイントの分類漏れは黙って非 strict にならずロード時に落ちる
-    const fakeApi = fakeApiFromRegistry(strictPayload(Schema.Struct({ a: Schema.String })));
+    const fakeApi = fakeApiFromRegistry(true);
     const membership = fakeApi.groups["membership"];
     if (membership === undefined) {
       throw new Error("fake api is missing the membership group");
@@ -168,7 +151,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   it("throws for a stale exempt entry (endpoint no longer exists)", () => {
     // 消えた・リネームされた面の除外指定が残ると、同名の security-critical 面の
     // 再利用時に「意識的除外」へ化けるため、除外側にも実在検査を課す
-    const fakeApi = fakeApiFromRegistry(strictPayload(Schema.Struct({ a: Schema.String })));
+    const fakeApi = fakeApiFromRegistry(true);
     const rotation = fakeApi.groups["rotation"];
     if (rotation === undefined) {
       throw new Error("fake api is missing the rotation group");
@@ -184,34 +167,34 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 });
 
+type FakeEndpoint = {
+  payload: Map<string, { schemas: [Schema.Top, ...Array<Schema.Top>] }>;
+};
+
 type FakeApi = {
-  groups: Record<
-    string,
-    {
-      endpoints: Record<
-        string,
-        { payload: Map<string, { schemas: [Schema.Top, ...Array<Schema.Top>] }> }
-      >;
-    }
-  >;
+  groups: Record<string, { endpoints: Record<string, FakeEndpoint> }>;
 };
 
 /**
- * 列挙面(strict)に指定スキーマ、除外面に素のスキーマを置いたフェイク API
- * (スイープの負例用 — 実在検査を通すため両リストの座標を揃える)。
+ * 列挙面を strictPayload(または素の Struct)、除外面を素の Struct にした
+ * フェイク API(スイープの正例・負例 — 実在検査を通すため両リストの座標を揃える)。
  */
-function fakeApiFromRegistry(schema: Schema.Top): FakeApi {
-  const entries: readonly (readonly [string, string, Schema.Top])[] = [
-    ...SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, schema] as const),
-    ...STRICT_EXEMPT_PAYLOAD_ENDPOINTS.map(
-      ([g, e]) => [g, e, Schema.Struct({ a: Schema.String })] as const,
-    ),
+function fakeApiFromRegistry(strict: boolean): FakeApi {
+  const schema = Schema.Struct({ a: Schema.String });
+  const entries: readonly (readonly [string, string, boolean])[] = [
+    ...SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, strict] as const),
+    ...STRICT_EXEMPT_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, false] as const),
   ];
   const groups: FakeApi["groups"] = {};
-  for (const [group, endpoint, endpointSchema] of entries) {
+  for (const [group, endpoint, isStrict] of entries) {
     groups[group] ??= { endpoints: {} };
     groups[group].endpoints[endpoint] = {
-      payload: new Map([["application/json", { schemas: [endpointSchema] as [Schema.Top] }]]),
+      payload: new Map([
+        [
+          "application/json",
+          { schemas: [isStrict ? strictPayload(schema) : schema] as [Schema.Top] },
+        ],
+      ]),
     };
   }
   return { groups };

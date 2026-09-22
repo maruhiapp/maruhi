@@ -149,7 +149,7 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
   });
 
   it("解釈したリンクの種(k=)も包まれている", () => {
-    // 引数層(Argument.redacted)から届く形をそのまま使う(剥がさない)
+    // 引数層(Argument.Redacted)から届く形をそのまま使う(剥がさない)
     const raw = buildInviteLink({ origin: "https://maruhi.example", link: sampleLinkData() });
     const parsed = parseInviteAcceptInput(raw);
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);

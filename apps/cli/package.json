@@ -19,14 +19,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.112",
+    "@effect/platform-bun": "4.0.0-rc.117",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.0.0-rc.117",
     "std-env": "4.2.0"
   },
   "devDependencies": {
-    "@types/bun": "1.4.0"
+    "@types/bun": "1.4.2"
   }
 }

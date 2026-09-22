@@ -262,10 +262,11 @@ export const maruhiApi = HttpApi.make("maruhi")
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
   .add(leaseGroup);
 
-// ロード時スイープ(AUTH_SPEC §12-10 (1) / session-32 §5-2): 登録済みの全
-// security-critical payload ルートで strict 注釈が parser の読む位置にあることを
-// import 時に検査する。strictPayload 適用後の .check() 再合成(wrapper 内 assert は
-// ラップ時 1 回きりで捕捉できない)をモジュールロードの fail-loud に格上げする。
+// ロード時スイープ(AUTH_SPEC §12-10 (1)): 登録済みの全 security-critical
+// エンドポイントの payload が、options なしの decode でも未知フィールドを
+// 拒否することを import 時に検査する。スキーマ AST の parseOptions は rc.113
+// 以降パーサに読まれない。成功・エラーの符号化は strict にしない
+// (TaggedError のスタックメタデータが strict encode で HTTP 500 になる)。
 assertSecurityCriticalPayloadsStrict(maruhiApi);
 
 // ロード時スイープ(AUTH_SPEC §5 — W2b): セッション能力制限の宣言

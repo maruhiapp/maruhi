@@ -92,7 +92,7 @@ describe("パーサの落とし穴 12 形が引数層で落ちる", () => {
 
   it("boolean の重複も落とす(順序に依存させない)", async () => {
     // `maruhi pull --no-show $FLAGS`($FLAGS に --show)= 全シークレットの表示。
-    // 素の Flag.boolean は重複を沈黙で解決し、**打った順で結果が変わる**
+    // 素の Flag.Boolean は重複を沈黙で解決し、**打った順で結果が変わる**
     for (const argv of [
       ["pull", "--show", "--no-show"],
       ["pull", "--no-show", "--show"],
@@ -387,6 +387,23 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
     );
     expect(message).toBe("Unacceptable value for flag --env");
     expect(message).not.toContain("SUPER_SECRET_VALUE");
+  });
+
+  it("run の command が 0 個の MissingArgument は実行対象の文面になる", () => {
+    // rc.117 は `Argument.atLeast(1)` の 0 個を InvalidValue("at least")ではなく
+    // MissingArgument にする。他の欠落引数の文面は変えない
+    const missing = describeError(
+      new EffectCliError.MissingArgument({ argument: "command" }),
+      "run",
+      { run: { flags: [], positionals: ["command"] } },
+    );
+    expect(missing).toContain("Specify the command to run after `--`");
+    const other = describeError(
+      new EffectCliError.MissingArgument({ argument: "environment-id" }),
+      "run",
+      { run: { flags: [], positionals: ["environment-id"] } },
+    );
+    expect(other).toBe("Missing positional argument environment-id");
   });
 
   it("UnexpectedArgument は個数だけを出す", () => {
@@ -805,7 +822,7 @@ describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(missing.server.requests).toHaveLength(0);
 
     // リンクでもトークンでもない入力(平文の値でありうる)は診断に出さない。
-    // 対象は Argument.redacted で受けている(トークン生値を内包しうるため)
+    // 対象は Argument.Redacted で受けている(トークン生値を内包しうるため)
     const garbage = await startEnv();
     const typed = "sk-live-hunter2-plaintext";
     expect(await runCli(["invite", "accept", typed], garbage.env.layer)).toBe(2);

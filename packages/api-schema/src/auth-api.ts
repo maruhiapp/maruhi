@@ -312,8 +312,9 @@ export const authGroup = HttpApiGroup.make("auth")
   .add(
     // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
     HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
-      // strict 受理(§12-10 (1))。共有部品の RecoveryWrapSchema 自体には注釈せず、
-      // payload ルートの使用点でのみ被せる(応答スキーマと共有されうる部品の規律)
+      // strict 受理(§12-10 (1))。共有の RecoveryWrapSchema 自体は包まない
+      // (他エンドポイントの応答へ波及させない)。strict はこの payload の
+      // decode / encode だけで、成功・エラーの符号化には及ばない。
       payload: strictPayload(RecoveryWrapSchema),
       success: HttpApiSchema.NoContent,
       error: [ForbiddenError],

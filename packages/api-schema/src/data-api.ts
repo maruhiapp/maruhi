@@ -230,7 +230,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
       params: projectParams,
-      // strict 受理(§12-10 (1) — ルート 1 注釈で全ネストへ伝播)
+      // strict 受理(§12-10 (1) — payload ラッパーがネストへ onExcessProperty: "error" を渡す)
       payload: strictPayload(
         Schema.Struct({
           parentHeadHashHex: Sha256Hex,
@@ -410,7 +410,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
       // 同梱 — statement は v1 / v2 のどちらでもよい)と declared(値なし —
       // v2 限定の宣言。「値のない変数は存在しない」の唯一の例外)。deleted の
       // 創出はどちらの形にも存在しない(Schema 400 — §12-5 の遷移規則の
-      // ワイヤ面。strict 注釈は Union を越えて伝播する — §12-10 (1))
+      // ワイヤ面。strictPayload は Union の内側も未知フィールドを拒否する — §12-10 (1))
       payload: strictPayload(
         Schema.Union([
           Schema.Struct({
@@ -655,7 +655,9 @@ export const deksGroup = HttpApiGroup.make("deks")
       // 規律)。環境作成の deks は対象外
       // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
       payload: strictPayload(
-        Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
+        Schema.Struct({
+          deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)),
+        }),
       ),
       success: HttpApiSchema.NoContent,
       error: [

@@ -4,7 +4,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 
 ## Development setup
 
-- The runtime is Bun, pinned exactly by `.bun-version` (currently 1.4.0, the 1.4 series decided in ADR-0004)
+- The runtime is Bun, pinned exactly by `.bun-version` (currently 1.4.2, the 1.4 series decided in ADR-0004)
 - Install dependencies with `bun install`
 - Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → ImportLint → fallow → React Doctor → tests)
 

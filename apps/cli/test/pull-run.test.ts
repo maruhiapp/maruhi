@@ -378,7 +378,7 @@ describe("maruhi pull", () => {
   });
 
   it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
-    // 重複を黙って解決すると(素の Flag.boolean は first-wins で沈黙する)、明示した
+    // 重複を黙って解決すると(素の Flag.Boolean は first-wins で沈黙する)、明示した
     // `--no-show` が捨てられて全シークレットが端末へ出うる(`maruhi pull --no-show
     // $FLAGS` の形)。どの規則でも**打った順で結果が変わる**ので、Flag.atMost(1) が
     // 順序に依らず落とす
