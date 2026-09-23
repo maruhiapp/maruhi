@@ -410,10 +410,7 @@ const OPERATION_FOLDERS: {
       state.unreadableEntries += 1;
       return;
     }
-    state.policy =
-      requiredApprovals === 0
-        ? null
-        : { requiredApprovals, ops: [...new Set(ops)] };
+    state.policy = requiredApprovals === 0 ? null : { requiredApprovals, ops: [...new Set(ops)] };
   },
 };
 
@@ -473,10 +470,7 @@ function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string 
   if (hash === undefined) return;
   const inner = entry.payload.inner;
   const innerOp = typeof inner === "object" && inner !== null ? inner.op : undefined;
-  if (
-    typeof innerOp !== "string" ||
-    typeof entry.payload.expiresAtMs !== "number"
-  ) {
+  if (typeof innerOp !== "string" || typeof entry.payload.expiresAtMs !== "number") {
     state.unreadableEntries += 1;
     return;
   }
@@ -544,10 +538,7 @@ function summarizeInner(operation: ProposableEntry): string {
 }
 
 function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
-  if (
-    typeof entry.payload.encPubHex !== "string" ||
-    typeof entry.payload.sigPubHex !== "string"
-  ) {
+  if (typeof entry.payload.encPubHex !== "string" || typeof entry.payload.sigPubHex !== "string") {
     state.unreadableEntries += 1;
     return;
   }

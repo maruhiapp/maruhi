@@ -143,9 +143,7 @@ for (const [file, html] of rewritten) {
 // ---- 2. inline ハッシュの収集と機械検査 ----
 // JSON のデータブロック(型が JS でない script)は実行されないので CSP の対象外
 const isJavaScriptType = (attrs: string): boolean => {
-  const m = new RegExp(
-    String.raw`\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
-  ).exec(attrs);
+  const m = new RegExp(String.raw`\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(attrs);
   const type = m === null ? undefined : (m[1] ?? m[2] ?? m[3] ?? "");
   return type === undefined || type === "module" || /javascript/i.test(type);
 };
@@ -164,9 +162,9 @@ for (const [file, html] of rewritten) {
   for (const m of html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)) {
     const attrs = m[1] ?? "";
     const body = m[2] ?? "";
-    const scriptSrc = new RegExp(
-      String.raw`\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
-    ).exec(attrs);
+    const scriptSrc = new RegExp(String.raw`\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(
+      attrs,
+    );
     if (scriptSrc !== null) {
       const src = scriptSrc[1] ?? scriptSrc[2] ?? scriptSrc[3] ?? "";
       if (!src.startsWith("/") || src.startsWith("//"))

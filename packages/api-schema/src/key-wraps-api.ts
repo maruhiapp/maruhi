@@ -80,10 +80,7 @@ const ShareIndexSchema = Schema.Int.check(
  * 禁止クラスは TOKEN_NAME_FORBIDDEN_CLASS と共有し、§13-9 の「トークン名と
  * 同じ受理規律」を漂移させない。
  */
-export const PASSKEY_LABEL_PATTERN = new RegExp(
-  `^[^${TOKEN_NAME_FORBIDDEN_CLASS}]{1,64}$`,
-  "u",
-);
+export const PASSKEY_LABEL_PATTERN = new RegExp(`^[^${TOKEN_NAME_FORBIDDEN_CLASS}]{1,64}$`, "u");
 
 export const PasskeyLabelSchema = Schema.String.check(
   Schema.isPattern(PASSKEY_LABEL_PATTERN, {

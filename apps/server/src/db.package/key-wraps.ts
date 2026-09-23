@@ -27,11 +27,7 @@ import type {
   PasskeyWrapRecord,
   WardShareRecord,
 } from "../key-wrap-domain.ts";
-import {
-  type D1AuditActor,
-  type D1AuditEventInput,
-  guardedAuditSelectColumns,
-} from "./audit.ts";
+import { type D1AuditActor, type D1AuditEventInput, guardedAuditSelectColumns } from "./audit.ts";
 import {
   guardianGroups,
   guardianShares,
@@ -572,14 +568,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             actor,
             payload: { kind: "guardian", groupId },
           },
-          ...logicalShares(group.shares).map(
-            (share): D1AuditEventInput => ({
-              event: "auth.guardian_released",
-              actor,
-              targetUserId: share.guardianUserId,
-              payload: { groupId, mode: group.mode, shareIndex: share.shareIndex },
-            }),
-          ),
+          ...logicalShares(group.shares).map((share): D1AuditEventInput => ({
+            event: "auth.guardian_released",
+            actor,
+            targetUserId: share.guardianUserId,
+            payload: { groupId, mode: group.mode, shareIndex: share.shareIndex },
+          })),
         ];
         const results = await db.batch([
           db.delete(guardianShares).where(eq(guardianShares.groupId, groupId)),

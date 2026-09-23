@@ -19,7 +19,6 @@ import type {
   SigningKeyPair,
 } from "@maruhi/crypto";
 import { computeChainEntryHash, effectivePermissionOf } from "@maruhi/crypto";
-import { ownDeviceBySigningKey } from "./device-key.ts";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -33,6 +32,7 @@ import {
 } from "./approval-rules.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { proposalIndexOf } from "./chain-applied.ts";
+import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import { sameScope } from "./scope.ts";
@@ -419,7 +419,8 @@ export function setApprovalPolicyOp(input: {
         input,
         operation,
         proposeRecheck(
-          (view) => ensurePolicySettable(view, input.request, input.signerUserId, input.signingKeyPair),
+          (view) =>
+            ensurePolicySettable(view, input.request, input.signerUserId, input.signingKeyPair),
           (checked) => checked.unchanged,
           "A concurrent run already set the same policy — nothing to propose (check with `maruhi project policy approvals`)",
         ),
