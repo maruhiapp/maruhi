@@ -31,7 +31,6 @@ import {
   type D1AuditActor,
   type D1AuditEventInput,
   guardedAuditSelectColumns,
-  userAuditInsert,
 } from "./audit.ts";
 import {
   guardianGroups,
@@ -563,24 +562,49 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         if (group === null) {
           return false;
         }
-        await db.batch([
-          db.delete(guardianShares).where(eq(guardianShares.groupId, groupId)),
-          db.delete(guardianGroups).where(eq(guardianGroups.id, groupId)),
-          userAuditInsert(db, nowMs, {
+        // findGroup と batch の間に他者が削除しうるため、監査行は「グループ行が
+        // 消えた(changes() = 1)」ときだけ INSERT…SELECT で入れる(passkeyDelete と
+        // 同じ形)。負けた方の delete は 0 行で、監査も 0 行 = 1:1 の事件記録。
+        const deleted = sql`changes() = 1`;
+        const auditEvents: D1AuditEventInput[] = [
+          {
             event: "auth.key_wrap_removed",
             actor,
             payload: { kind: "guardian", groupId },
-          }),
-          ...logicalShares(group.shares).map((share) =>
-            userAuditInsert(db, nowMs, {
+          },
+          ...logicalShares(group.shares).map(
+            (share): D1AuditEventInput => ({
               event: "auth.guardian_released",
               actor,
               targetUserId: share.guardianUserId,
               payload: { groupId, mode: group.mode, shareIndex: share.shareIndex },
             }),
           ),
+        ];
+        const results = await db.batch([
+          db.delete(guardianShares).where(eq(guardianShares.groupId, groupId)),
+          db
+            .delete(guardianGroups)
+            .where(eq(guardianGroups.id, groupId))
+            .returning({ id: guardianGroups.id }),
+          ...auditEvents.map((event) =>
+            db.insert(userAuditEvents).select(
+              db
+                .select(
+                  guardedAuditSelectColumns({
+                    event: event.event,
+                    actor: event.actor,
+                    nowMs,
+                    targetUserId: event.targetUserId ?? null,
+                    ...(event.payload === undefined ? {} : { payload: event.payload }),
+                  }),
+                )
+                .from(sql`(select 1)`)
+                .where(deleted),
+            ),
+          ),
         ]);
-        return true;
+        return results[1].length === 1;
       }),
     sharesOfGuardian: (guardianUserId, wardUserId) =>
       run(async () => {

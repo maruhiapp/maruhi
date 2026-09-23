@@ -116,17 +116,26 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
 ];
 
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
-  const rows = page.projects.map((p) => ({ id: p.projectId, role: p.role }));
+  // 敵対的・壊れたサーバーが同一 projectId を繰り返しても行と React key を
+  // 増やさないよう、追加分は既出行で除重する
+  const seen = new Set((current?.rows ?? []).map((row) => row.id));
+  const rows = page.projects
+    .filter((p) => !seen.has(p.projectId))
+    .map((p) => ({ id: p.projectId, role: p.role }));
   return { rows: [...(current?.rows ?? []), ...rows], nextAfter: page.nextAfter };
 }
+
+/** 空ページの自動追跡の上限 — 毎回新しいカーソルを返すサーバーへの資源上限。超えると「load more」に委ねる */
+const MAX_EMPTY_PAGE_HOPS = 10;
 
 /**
  * 空ページはリストの終端ではない(AUTH_SPEC §11-5): 候補ページは ghost 除外・
  * 確認失敗の省略で `{ projects: [], nextAfter }` になりうる。行が増えるか
  * nextAfter が尽きるまでカーソルを進める(深さは候補ページ数で有界)。既出
  * カーソルの再出現(壊れた・敵対的なサーバー — 交互カーソルを含む)は終端
- * 扱いにして追跡を打ち切る: 追跡回数は相異なるカーソル数で全域有界
- * (クライアントのサーバー不信の姿勢の均一化)。
+ * 扱いにして追跡を打ち切る。追跡回数は相異なるカーソル数「と」固定上限
+ * (MAX_EMPTY_PAGE_HOPS)の小さい方で有界 — 毎回新規カーソルを出すサーバー
+ * があっても GET と Set の増大に天井を張る(超過時は手動の load more)
  */
 function shouldFollowCursor(
   page: ProjectList,
@@ -136,6 +145,7 @@ function shouldFollowCursor(
   if (page.projects.length > 0) return false;
   if (next.nextAfter === undefined) return false;
   if (visitedCursors.has(next.nextAfter)) return false;
+  if (visitedCursors.size >= MAX_EMPTY_PAGE_HOPS) return false;
   visitedCursors.add(next.nextAfter);
   return true;
 }

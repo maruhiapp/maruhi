@@ -58,7 +58,7 @@ describe("deriveReportedView", () => {
       servers: [],
       policy: null,
       proposals: [],
-      unreadableDeviceEntries: 0,
+      unreadableEntries: 0,
     });
   });
 
@@ -818,7 +818,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       addD2,
       revokeDevice("user_owner", FP, "user_owner", [FP]),
     ]);
-    expect(readable.unreadableDeviceEntries).toBe(0);
+    expect(readable.unreadableEntries).toBe(0);
     const view = deriveReportedView([
       genesis,
       addD2,
@@ -827,8 +827,49 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       revokeDevice("user_owner", FP, "user_ghost", [FP]), // 対象不明
       revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2]), // 失効後 0 台
     ]);
-    expect(view.unreadableDeviceEntries).toBe(4);
+    expect(view.unreadableEntries).toBe(4);
     expect(reportedDeviceCount(devicesOf(view, "user_owner")!)).toBe(2);
+  });
+
+  it("drops malformed envelopes and payloads instead of throwing (敵対サーバー対策)", () => {
+    const malformed = [
+      null,
+      "entry",
+      { ...base(), op: "add_member", actor: null }, // actor 欠落
+      { ...base(), op: "add_member", payload: null }, // payload 欠落
+      {
+        ...base(),
+        op: "add_member",
+        payload: { targetUserId: 42, role: "member", encPubHex: HEX64, sigPubHex: HEX64 },
+      }, // id が文字列でない
+    ];
+    const view = deriveReportedView([genesis, ...(malformed as unknown[] as ChainEntry[])]);
+    expect(view.unreadableEntries).toBe(5);
+    expect(view.members.map((m) => m.userId)).toEqual(["user_owner"]);
+  });
+
+  it("folds an unreadable member/server scope as not-reported instead of crashing the render", () => {
+    const badScope = {
+      ...base(),
+      op: "add_member",
+      payload: {
+        targetUserId: "user_b",
+        role: "member",
+        encPubHex: "ab".repeat(32),
+        sigPubHex: "cd".repeat(64),
+        scopeKind: "listed",
+        scopeEnvironmentIds: "env-1", // 配列でない
+      },
+    } as unknown as ChainEntry;
+    const badServerScope = {
+      ...base(),
+      op: "grant_server",
+      payload: { serverKeyFingerprintHex: FP, scopeEnvironmentIds: { length: 3 } },
+    } as unknown as ChainEntry;
+    const view = deriveReportedView([genesis, badScope, badServerScope]);
+    expect(view.unreadableEntries).toBe(0);
+    expect(devicesOf(view, "user_b")!.scopeEnvironmentIds).toEqual([]);
+    expect(view.servers[0]!.scopeEnvironmentIds).toEqual([]);
   });
 
   it("treats the first key of an add_member'd member as one device, bound once that member signs", () => {

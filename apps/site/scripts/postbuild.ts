@@ -37,13 +37,22 @@ const shortHash = (body: string): string =>
 
 // ---- 1. style 属性の外部化 ----
 // script / style の本文(文字列として `style="` を含みうる)を避け、要素タグの中だけを書き換える
+// 属性値の実体参照を戻す。&amp; は最後に畳む(&#39; 等の前半を先に変えないため)
 const decodeAttr = (value: string): string =>
   value
+    .replace(/&#(x[0-9a-fA-F]+|[0-9]+);/g, (_m, code: string) =>
+      String.fromCodePoint(
+        code.startsWith("x") ? Number.parseInt(code.slice(1), 16) : Number.parseInt(code, 10),
+      ),
+    )
     .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
+    .replaceAll("&apos;", "'")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
+
+// 属性値の 3 形(二重引用符・単一引用符・引用符なし) — 生成器が " 以外を出しても検査漏れしない
+const ATTR_VALUE_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^\s>]+)`;
 
 const styleRules = new Map<string, string>(); // class → declarations
 
@@ -55,27 +64,41 @@ function externalizeStyleAttributes(html: string): string {
     .map((segment, i) => {
       if (i % 2 === 1) return segment; // script / style ブロックはそのまま
       return segment.replace(
-        /<([a-zA-Z][\w:-]*)((?:\s+[^\s=>/]+(?:="[^"]*")?)*)\s*(\/?)>/g,
+        new RegExp(
+          `<([a-zA-Z][\\w:-]*)((?:\\s+[^\\s=>/]+(?:=${ATTR_VALUE_PATTERN})?)*)\\s*(\\/?)>`,
+          "g",
+        ),
         (tag, name: string, attrs: string, selfClose: string) => {
-          if (!/\sstyle="/.test(attrs)) return tag;
+          const styleAttr = new RegExp(
+            String.raw`\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
+            "g",
+          );
+          if (!styleAttr.test(attrs)) return tag;
+          styleAttr.lastIndex = 0;
           let className: string | undefined;
-          let rest = attrs.replace(/\sstyle="([^"]*)"/g, (_m, value: string) => {
-            const declarations = decodeAttr(value).trim().replace(/;$/, "");
-            if (declarations === "") return "";
-            className = `sa-${shortHash(declarations)}`;
-            const previous = styleRules.get(className);
-            if (previous !== undefined && previous !== declarations) {
-              throw new Error(`style attribute hash collision: ${className}`);
-            }
-            styleRules.set(className, declarations);
-            return "";
-          });
+          let rest = attrs.replace(
+            styleAttr,
+            (_m, dq: string | undefined, sq: string | undefined, uq: string | undefined) => {
+              const declarations = decodeAttr(dq ?? sq ?? uq ?? "")
+                .trim()
+                .replace(/;$/, "");
+              if (declarations === "") return "";
+              className = `sa-${shortHash(declarations)}`;
+              const previous = styleRules.get(className);
+              if (previous !== undefined && previous !== declarations) {
+                throw new Error(`style attribute hash collision: ${className}`);
+              }
+              styleRules.set(className, declarations);
+              return "";
+            },
+          );
           if (className === undefined) return `<${name}${rest}${selfClose}>`;
-          if (/\sclass="/.test(rest)) {
-            rest = rest.replace(
-              /\sclass="([^"]*)"/,
-              (_m, classes: string) => ` class="${classes} ${className}"`,
-            );
+          const classAttr = new RegExp(
+            String.raw`\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
+          ).exec(rest);
+          if (classAttr !== null) {
+            const classes = classAttr[1] ?? classAttr[2] ?? classAttr[3] ?? "";
+            rest = rest.replace(classAttr[0], ` class="${classes} ${className}"`);
           } else {
             rest = `${rest} class="${className}"`;
           }
@@ -108,7 +131,7 @@ if (styleRules.size > 0) {
 }
 for (const [file, html] of rewritten) {
   if (
-    /\sstyle="/.test(
+    new RegExp(String.raw`\sstyle\s*=\s*${ATTR_VALUE_PATTERN}`).test(
       html.replace(/<script\b[^>]*>[\s\S]*?<\/script>|<style\b[^>]*>[\s\S]*?<\/style>/g, ""),
     )
   ) {
@@ -120,7 +143,10 @@ for (const [file, html] of rewritten) {
 // ---- 2. inline ハッシュの収集と機械検査 ----
 // JSON のデータブロック(型が JS でない script)は実行されないので CSP の対象外
 const isJavaScriptType = (attrs: string): boolean => {
-  const type = /\btype="([^"]*)"/.exec(attrs)?.[1];
+  const m = new RegExp(
+    String.raw`\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
+  ).exec(attrs);
+  const type = m === null ? undefined : (m[1] ?? m[2] ?? m[3] ?? "");
   return type === undefined || type === "module" || /javascript/i.test(type);
 };
 
@@ -138,8 +164,11 @@ for (const [file, html] of rewritten) {
   for (const m of html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)) {
     const attrs = m[1] ?? "";
     const body = m[2] ?? "";
-    if (/\bsrc="/.test(attrs)) {
-      const src = /\bsrc="([^"]*)"/.exec(attrs)?.[1] ?? "";
+    const scriptSrc = new RegExp(
+      String.raw`\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
+    ).exec(attrs);
+    if (scriptSrc !== null) {
+      const src = scriptSrc[1] ?? scriptSrc[2] ?? scriptSrc[3] ?? "";
       if (!src.startsWith("/") || src.startsWith("//"))
         externalRefs.push(`${relative(distDir, file)}: <script src="${src}">`);
       continue;
@@ -153,15 +182,17 @@ for (const [file, html] of rewritten) {
     if (body.length > 0) styleHashes.add(sha256base64(body));
   }
   // インラインイベントハンドラ・javascript: URL は CSP で弾かれる = 機能欠落なのでビルド時に検知する
-  if (/\son[a-z]+\s*=\s*["']/i.test(html))
+  if (/\son[a-z]+\s*=\s*(?:"|'|[^\s>])/i.test(html))
     throw new Error(`${file}: inline event handler attribute`);
   if (/javascript:/i.test(html)) throw new Error(`${file}: javascript: URL`);
   // 外部リソース参照の検査(コメントは除く — ロゴ SVG の由来コメントに URL がある)。href は
   // ナビゲーションなので自リポジトリの GitHub と製品オリジンのみ許可、読み込み系は同一オリジン限定
   const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
-  for (const m of withoutComments.matchAll(/\b(src|href|srcset|poster|data|action)="([^"]*)"/g)) {
+  for (const m of withoutComments.matchAll(
+    /\b(src|href|srcset|poster|data|action)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g,
+  )) {
     const attr = m[1]!;
-    const url = m[2]!;
+    const url = m[2] ?? m[3] ?? m[4] ?? "";
     const isLocal =
       (url.startsWith("/") && !url.startsWith("//")) ||
       url.startsWith("#") ||

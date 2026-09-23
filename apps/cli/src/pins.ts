@@ -307,8 +307,15 @@ export function makeFilePinStore(dir: string): PinStoreShape {
     let json: string;
     try {
       json = await readFile(pathOf(projectId), "utf8");
-    } catch {
-      return { pins: null, state: "missing" };
+    } catch (error) {
+      // 未作成(ENOENT)**だけ**を「なし」に畳む。EACCES / EISDIR 等は「既存の
+      // ピンを読めなかった」失敗で、「なし」に畳むと merge が既存ファイルを
+      // 空から再構築し、検証済みアンカーと発行ピンを黙って失わせる
+      // (config.ts の読み込みと同じ規律)
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { pins: null, state: "missing" };
+      }
+      throw error;
     }
     const pins = decodeInvitePins(json);
     return pins === null ? { pins: null, state: "corrupt" } : { pins, state: "loaded" };

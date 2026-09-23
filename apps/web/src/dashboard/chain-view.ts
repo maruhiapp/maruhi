@@ -110,14 +110,15 @@ export interface ReportedChainView {
   policy: ReportedPolicy | null;
   proposals: ReportedProposal[];
   /**
-   * Device entries (`add_device` / `revoke_device`) the fold could not read and left out
-   * (K5-17): unknown actor / target, a key already held, a fingerprint that is not the
-   * target's, a revocation that would leave no device, or a malformed payload. A dropped
-   * `add_device` leaves a device out; a dropped `revoke_device` leaves one in — so the
-   * displayed sets may be smaller or larger than what those rows would have produced.
-   * Shown, never silently absorbed. Ops the fold does not model at all are not counted.
+   * Entries the fold could not read and left out (K5-17 般化): unknown actor / target,
+   * a key already held, a fingerprint that is not the target's, a revocation that would
+   * leave no device, a malformed payload, or a malformed envelope (non-record entry,
+   * actor without a string id/fingerprint, non-record payload). A dropped `add_device`
+   * leaves a device out; a dropped `revoke_device` leaves one in — so the displayed sets
+   * may be smaller or larger than what those rows would have produced. Shown, never
+   * silently absorbed. Ops the fold does not model at all are not counted.
    */
-  unreadableDeviceEntries: number;
+  unreadableEntries: number;
 }
 
 /** 投票の記録(user_id と署名時の鍵 FP — 原則 2 の S の要素)。 */
@@ -206,8 +207,8 @@ interface FoldState {
   policy: ReportedPolicy | null;
   pending: Map<string, PendingFold>;
   fingerprints: FingerprintTable;
-  /** 読めずに落とした端末 op の行数(K5-17 — 黙って吸収しない)。 */
-  unreadableDeviceEntries: number;
+  /** 読めずに落としたエントリの行数(K5-17 — 黙って吸収しない)。 */
+  unreadableEntries: number;
 }
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
@@ -322,12 +323,17 @@ function applyChangeRole(
   seq: number,
   payload: EntryOf<"change_role">["payload"],
 ): void {
+  if (typeof payload.targetUserId !== "string" || typeof payload.newRole !== "string") {
+    state.unreadableEntries += 1;
+    return;
+  }
   const existing = state.members.get(payload.targetUserId);
   if (existing !== undefined) {
     // 新 (role, scope) の全置換(§6.2 — 2026-09-15 ES K4 で scope も写す)。端末集合は不変
+    const scope = reportedScope(payload);
     existing.role = payload.newRole;
-    existing.scopeKind = payload.scopeKind;
-    existing.scopeEnvironmentIds = payload.scopeEnvironmentIds;
+    existing.scopeKind = scope.scopeKind;
+    existing.scopeEnvironmentIds = scope.scopeEnvironmentIds;
     existing.sinceSeq = seq;
   }
 }
@@ -337,9 +343,15 @@ function applyGrantServer(
   seq: number,
   payload: EntryOf<"grant_server">["payload"],
 ): void {
+  if (typeof payload.serverKeyFingerprintHex !== "string") {
+    state.unreadableEntries += 1;
+    return;
+  }
   state.servers.set(payload.serverKeyFingerprintHex, {
     keyFingerprintHex: payload.serverKeyFingerprintHex,
-    scopeEnvironmentIds: payload.scopeEnvironmentIds,
+    scopeEnvironmentIds: isStringArray(payload.scopeEnvironmentIds)
+      ? payload.scopeEnvironmentIds
+      : [],
     sinceSeq: seq,
   });
 }
@@ -350,7 +362,16 @@ function applyAddMember(
   seq: number,
   payload: EntryOf<"add_member">["payload"],
 ): void {
-  startTenure(state, payload.targetUserId, payload.role, payload, payload, seq);
+  if (
+    typeof payload.targetUserId !== "string" ||
+    typeof payload.role !== "string" ||
+    typeof payload.encPubHex !== "string" ||
+    typeof payload.sigPubHex !== "string"
+  ) {
+    state.unreadableEntries += 1;
+    return;
+  }
+  startTenure(state, payload.targetUserId, payload.role, reportedScope(payload), payload, seq);
 }
 
 type OperationOf<Op extends ProposableEntry["op"]> = Extract<ProposableEntry, { op: Op }>;
@@ -367,20 +388,32 @@ const OPERATION_FOLDERS: {
   ) => void;
 } = {
   add_member: (state, seq, operation) => applyAddMember(state, seq, operation.payload),
-  remove_member: (state, _seq, operation) =>
-    void state.members.delete(operation.payload.targetUserId),
+  remove_member: (state, _seq, operation) => {
+    if (typeof operation.payload.targetUserId === "string") {
+      state.members.delete(operation.payload.targetUserId);
+    } else {
+      state.unreadableEntries += 1;
+    }
+  },
   change_role: (state, seq, operation) => applyChangeRole(state, seq, operation.payload),
   grant_server: (state, seq, operation) => applyGrantServer(state, seq, operation.payload),
-  revoke_server: (state, _seq, operation) =>
-    void state.servers.delete(operation.payload.serverKeyFingerprintHex),
+  revoke_server: (state, _seq, operation) => {
+    if (typeof operation.payload.serverKeyFingerprintHex === "string") {
+      state.servers.delete(operation.payload.serverKeyFingerprintHex);
+    } else {
+      state.unreadableEntries += 1;
+    }
+  },
   set_approval_policy: (state, _seq, operation) => {
+    const { requiredApprovals, ops } = operation.payload;
+    if (typeof requiredApprovals !== "number" || !isStringArray(ops)) {
+      state.unreadableEntries += 1;
+      return;
+    }
     state.policy =
-      operation.payload.requiredApprovals === 0
+      requiredApprovals === 0
         ? null
-        : {
-            requiredApprovals: operation.payload.requiredApprovals,
-            ops: [...new Set(operation.payload.ops)],
-          };
+        : { requiredApprovals, ops: [...new Set(ops)] };
   },
 };
 
@@ -438,12 +471,21 @@ function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): string[]
 
 function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string | undefined): void {
   if (hash === undefined) return;
+  const inner = entry.payload.inner;
+  const innerOp = typeof inner === "object" && inner !== null ? inner.op : undefined;
+  if (
+    typeof innerOp !== "string" ||
+    typeof entry.payload.expiresAtMs !== "number"
+  ) {
+    state.unreadableEntries += 1;
+    return;
+  }
   state.pending.set(hash, {
     seq: entry.seq,
     proposerUserId: entry.actor.userId,
     proposerKeyFingerprintHex: entry.actor.keyFingerprintHex,
     proposerRoleAtProposal: state.members.get(entry.actor.userId)?.role ?? "unknown",
-    inner: entry.payload.inner,
+    inner,
     expiresAtMs: entry.payload.expiresAtMs,
     approvals: [],
   });
@@ -455,6 +497,10 @@ function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string 
  * 合意規則を通っている(無効なものは載らない)ので、ここでは票の算術だけを写す。
  */
 function applyApprove(state: FoldState, entry: EntryOf<"approve">): void {
+  if (typeof entry.payload.proposalHashHex !== "string") {
+    state.unreadableEntries += 1;
+    return;
+  }
   const pending = state.pending.get(entry.payload.proposalHashHex);
   if (pending === undefined) return;
   const vote: Vote = {
@@ -498,6 +544,13 @@ function summarizeInner(operation: ProposableEntry): string {
 }
 
 function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
+  if (
+    typeof entry.payload.encPubHex !== "string" ||
+    typeof entry.payload.sigPubHex !== "string"
+  ) {
+    state.unreadableEntries += 1;
+    return;
+  }
   const member = startTenure(
     state,
     entry.actor.userId,
@@ -525,6 +578,15 @@ function readableScope(payload: Scope): boolean {
     (payload.scopeKind === "all" || payload.scopeKind === "listed") &&
     isStringArray(payload.scopeEnvironmentIds)
   );
+}
+
+/**
+ * 申告された scope を読める形に畳む(敵対サーバー対策): 読めない形は "listed" + 空に
+ * 畳んで「未申告」として出す。メンバーレコード自体は落とさない(add_member の
+ * scope が読めなくても在籍は在籍)
+ */
+function reportedScope(payload: Scope): Scope {
+  return readableScope(payload) ? payload : { scopeKind: "listed", scopeEnvironmentIds: [] };
 }
 
 /** add_device の payload が読める形か(公開鍵・cap・scope)。 */
@@ -588,7 +650,7 @@ function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
     !readableAddDevice(payload) ||
     !keyAvailable(state, payload.encPubHex, payload.sigPubHex)
   ) {
-    state.unreadableDeviceEntries += 1;
+    state.unreadableEntries += 1;
     return;
   }
   pushDevice(member, newDevice(state, member.userId, payload, payload, entry.seq));
@@ -681,7 +743,7 @@ function revokeUnbound(member: MutableMember, plan: RevocationPlan): void {
 function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): void {
   const readable = readableRevocation(state, entry.payload);
   if (readable === undefined) {
-    state.unreadableDeviceEntries += 1;
+    state.unreadableEntries += 1;
     return;
   }
   const { member, plan } = readable;
@@ -703,7 +765,13 @@ const ENTRY_FOLDERS: {
   genesis: applyGenesis,
   propose: applyPropose,
   approve: (state, entry) => applyApprove(state, entry),
-  withdraw: (state, entry) => void state.pending.delete(entry.payload.proposalHashHex),
+  withdraw: (state, entry) => {
+    if (typeof entry.payload.proposalHashHex === "string") {
+      state.pending.delete(entry.payload.proposalHashHex);
+    } else {
+      state.unreadableEntries += 1;
+    }
+  },
   add_device: applyAddDevice,
   revoke_device: applyRevokeDevice,
 };
@@ -713,6 +781,11 @@ function foldEntry(state: FoldState, entry: ChainEntry, hash: string | undefined
   // Object.hasOwn: 敵対的サーバーの op(例: "__proto__")がプロトタイプ鎖の
   // 値に当たって throw で描画を落とさないための自衛
   if (!Object.hasOwn(ENTRY_KINDS, entry.op)) return;
+  // 各フォルダが payload のフィールドを読むので、レコードでない payload は畳めない
+  if (typeof entry.payload !== "object" || entry.payload === null) {
+    state.unreadableEntries += 1;
+    return;
+  }
   const fold = Object.hasOwn(ENTRY_FOLDERS, entry.op)
     ? (ENTRY_FOLDERS[entry.op] as
         | ((s: FoldState, e: ChainEntry, h: string | undefined) => void)
@@ -757,6 +830,19 @@ function reportedMemberOf(member: MutableMember): ReportedMember {
   };
 }
 
+/** 外枠が読めるエントリか(型は信じず形だけ見る): レコードで・seq が数で・actor が文字列 id / FP を持つ。 */
+function readableEnvelope(entry: unknown): entry is ChainEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const { actor, seq } = entry as { actor?: unknown; seq?: unknown };
+  return (
+    typeof seq === "number" &&
+    typeof actor === "object" &&
+    actor !== null &&
+    typeof (actor as { userId?: unknown }).userId === "string" &&
+    typeof (actor as { keyFingerprintHex?: unknown }).keyFingerprintHex === "string"
+  );
+}
+
 /**
  * 返された順のエントリ列を表示用のメンバー / サーバー集合・方針・pending 提案へ畳み込む。
  * `headHashHex` は末尾エントリの hash(応答の headHashHex — サーバー申告)。
@@ -771,9 +857,15 @@ export function deriveReportedView(
     policy: null,
     pending: new Map(),
     fingerprints: new FingerprintTable(),
-    unreadableDeviceEntries: 0,
+    unreadableEntries: 0,
   };
   entries.forEach((entry, index) => {
+    // 外枠が読めない行(非レコード・actor 欠落・seq 欠落)は畳めない
+    // — 読めない行として数える(敵対サーバーが送る形 — K5-17 と同じ規律)
+    if (!readableEnvelope(entry)) {
+      state.unreadableEntries += 1;
+      return;
+    }
     // 署名した本人の actor FP はそのメンバーの端末の 1 つ(受理面が検証済み — as reported)
     bindActor(state, entry.actor.userId, entry.actor.keyFingerprintHex);
     // エントリ i の hash = エントリ i + 1 の prevHashHex、末尾は headHashHex
@@ -800,6 +892,6 @@ export function deriveReportedView(
     servers: [...state.servers.values()],
     policy: state.policy,
     proposals,
-    unreadableDeviceEntries: state.unreadableDeviceEntries,
+    unreadableEntries: state.unreadableEntries,
   };
 }

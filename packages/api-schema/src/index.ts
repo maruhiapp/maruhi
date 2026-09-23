@@ -25,6 +25,7 @@ export {
   type SignupPolicy,
   SignupPolicySchema,
   TOKEN_NAME_FORBIDDEN_CHARS,
+  TOKEN_NAME_FORBIDDEN_CLASS,
   TokenListSchema,
   TokenNameSchema,
   TokenSummarySchema,

@@ -24,7 +24,7 @@ import {
   SetupIncompleteError,
   TokenNotFoundError,
 } from "./errors/index.ts";
-import { hexString } from "./hex.ts";
+import { EncPubHex, hexString, KeyFingerprintHex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /**
@@ -50,7 +50,7 @@ export const MAX_TOKEN_NAME_LENGTH = 128;
 // 呼び出し側由来のテキストとして描画されるため、表示面共通の保護を受理時に
 // 置く(§4-2 の「承認文言のなりすまし」緩和)。**非遡及** — 旧 Schema 下で
 // 保存済みの名前は掃除しない。
-const TOKEN_NAME_FORBIDDEN_CLASS =
+export const TOKEN_NAME_FORBIDDEN_CLASS =
   "\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069";
 
 /**
@@ -128,8 +128,8 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
-  serverKeyFingerprintHex: Schema.optionalKey(Schema.String),
-  serverEncPubHex: Schema.optionalKey(Schema.String),
+  serverKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
+  serverEncPubHex: Schema.optionalKey(EncPubHex),
   signupPolicy: Schema.optionalKey(SignupPolicySchema),
 });
 
