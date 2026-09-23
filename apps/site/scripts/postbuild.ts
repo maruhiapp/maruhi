@@ -54,7 +54,61 @@ const decodeAttr = (value: string): string =>
 // 属性値の 3 形(二重引用符・単一引用符・引用符なし) — 生成器が " 以外を出しても検査漏れしない
 const ATTR_VALUE_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^\s>]+)`;
 
+/** 3 形のどれかに一致した最初のグループ(取りこぼしは "")。 */
+const firstDefined = (...values: readonly (string | undefined)[]): string =>
+  values.find((v) => v !== undefined) ?? "";
+
+/** `name="..."` 属性の値(3 形対応)。無ければ undefined。 */
+const attrValueOf = (attrs: string, name: string): string | undefined => {
+  const m = new RegExp(String.raw`\b${name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(attrs);
+  return m === null ? undefined : firstDefined(m[1], m[2], m[3]);
+};
+
 const styleRules = new Map<string, string>(); // class → declarations
+
+/** 宣言列をクラス名へ写像する(ハッシュ衝突はビルド失敗)。空の style 属性は undefined。 */
+const registerStyle = (declarations: string): string | undefined => {
+  if (declarations === "") return undefined;
+  const className = `sa-${shortHash(declarations)}`;
+  const previous = styleRules.get(className);
+  if (previous !== undefined && previous !== declarations) {
+    throw new Error(`style attribute hash collision: ${className}`);
+  }
+  styleRules.set(className, declarations);
+  return className;
+};
+
+/** className を既存 class 属性に併記(無ければ末尾に追加)。className が無ければそのまま。 */
+const mergeClass = (rest: string, className: string | undefined): string => {
+  if (className === undefined) return rest;
+  const classAttr = new RegExp(String.raw`\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(
+    rest,
+  );
+  if (classAttr === null) return `${rest} class="${className}"`;
+  return rest.replace(
+    classAttr[0],
+    ` class="${firstDefined(classAttr[1], classAttr[2], classAttr[3])} ${className}"`,
+  );
+};
+
+/** タグの属性列を書き換える(style 属性の外部化 + class 差し込み)。style が無ければ undefined。 */
+const externalizeAttrs = (attrs: string): string | undefined => {
+  const styleAttr = new RegExp(String.raw`\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`, "g");
+  let className: string | undefined;
+  const rest = attrs.replace(
+    styleAttr,
+    (_m, dq: string | undefined, sq: string | undefined, uq: string | undefined) => {
+      className = registerStyle(
+        decodeAttr(firstDefined(dq, sq, uq))
+          .trim()
+          .replace(/;$/, ""),
+      );
+      return "";
+    },
+  );
+  if (rest === attrs) return undefined; // style 属性なし(置換は起きなかった)
+  return mergeClass(rest, className);
+};
 
 function externalizeStyleAttributes(html: string): string {
   const segments = html.split(
@@ -69,40 +123,8 @@ function externalizeStyleAttributes(html: string): string {
           "g",
         ),
         (tag, name: string, attrs: string, selfClose: string) => {
-          const styleAttr = new RegExp(
-            String.raw`\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
-            "g",
-          );
-          if (!styleAttr.test(attrs)) return tag;
-          styleAttr.lastIndex = 0;
-          let className: string | undefined;
-          let rest = attrs.replace(
-            styleAttr,
-            (_m, dq: string | undefined, sq: string | undefined, uq: string | undefined) => {
-              const declarations = decodeAttr(dq ?? sq ?? uq ?? "")
-                .trim()
-                .replace(/;$/, "");
-              if (declarations === "") return "";
-              className = `sa-${shortHash(declarations)}`;
-              const previous = styleRules.get(className);
-              if (previous !== undefined && previous !== declarations) {
-                throw new Error(`style attribute hash collision: ${className}`);
-              }
-              styleRules.set(className, declarations);
-              return "";
-            },
-          );
-          if (className === undefined) return `<${name}${rest}${selfClose}>`;
-          const classAttr = new RegExp(
-            String.raw`\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`,
-          ).exec(rest);
-          if (classAttr !== null) {
-            const classes = classAttr[1] ?? classAttr[2] ?? classAttr[3] ?? "";
-            rest = rest.replace(classAttr[0], ` class="${classes} ${className}"`);
-          } else {
-            rest = `${rest} class="${className}"`;
-          }
-          return `<${name}${rest}${selfClose}>`;
+          const next = externalizeAttrs(attrs);
+          return `<${name}${next ?? attrs}${selfClose}>`;
         },
       );
     })
@@ -143,8 +165,7 @@ for (const [file, html] of rewritten) {
 // ---- 2. inline ハッシュの収集と機械検査 ----
 // JSON のデータブロック(型が JS でない script)は実行されないので CSP の対象外
 const isJavaScriptType = (attrs: string): boolean => {
-  const m = new RegExp(String.raw`\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(attrs);
-  const type = m === null ? undefined : (m[1] ?? m[2] ?? m[3] ?? "");
+  const type = attrValueOf(attrs, "type");
   return type === undefined || type === "module" || /javascript/i.test(type);
 };
 
@@ -162,13 +183,10 @@ for (const [file, html] of rewritten) {
   for (const m of html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)) {
     const attrs = m[1] ?? "";
     const body = m[2] ?? "";
-    const scriptSrc = new RegExp(String.raw`\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`).exec(
-      attrs,
-    );
-    if (scriptSrc !== null) {
-      const src = scriptSrc[1] ?? scriptSrc[2] ?? scriptSrc[3] ?? "";
-      if (!src.startsWith("/") || src.startsWith("//"))
-        externalRefs.push(`${relative(distDir, file)}: <script src="${src}">`);
+    const scriptSrc = attrValueOf(attrs, "src");
+    if (scriptSrc !== undefined) {
+      if (!scriptSrc.startsWith("/") || scriptSrc.startsWith("//"))
+        externalRefs.push(`${relative(distDir, file)}: <script src="${scriptSrc}">`);
       continue;
     }
     if (body.length === 0 || !isJavaScriptType(attrs)) continue;
@@ -190,7 +208,7 @@ for (const [file, html] of rewritten) {
     /\b(src|href|srcset|poster|data|action)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g,
   )) {
     const attr = m[1]!;
-    const url = m[2] ?? m[3] ?? m[4] ?? "";
+    const url = firstDefined(m[2], m[3], m[4]);
     const isLocal =
       (url.startsWith("/") && !url.startsWith("//")) ||
       url.startsWith("#") ||

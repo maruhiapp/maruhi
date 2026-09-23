@@ -97,10 +97,15 @@ const DESTRUCTURE_PATTERN = new RegExp(
 /** 分割代入のブレース内から env 名を取り出す(rename の左辺・default の左辺)。 */
 function destructuredNames(inner: string): string[] {
   const names: string[] = [];
-  // 文字列リテラルは先に `""` に潰す — default 値にカンマがあっても
+  // 値側の文字列リテラルは `""` に潰す — default 値にカンマがあっても
   // (`{ LIST = "a,b" }`)分割位置として扱わない(幻影の識別子が undeclared に
-  // 混入して lint を誤失敗させるのを防ぐ)
-  const blanked = inner.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+  // 混入して lint を誤失敗させるのを防ぐ)。直後に `:` が続く引用符はキー
+  // (`"QUOTED_VAR": q`)なので残す
+  const blanked = inner.replace(
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
+    (m: string, offset: number, s: string) =>
+      s[offset + m.length]?.trimStart().startsWith(":") ? m : '""',
+  );
   for (const entry of blanked.split(",")) {
     // `Y: alias` は左辺(プロパティ名 = env 名)、`Z = "d"` も左辺。
     // 引用符付きキー(`"X": v`)は引用符を剥がして識別子形のみ受ける

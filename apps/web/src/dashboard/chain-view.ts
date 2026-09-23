@@ -213,6 +213,21 @@ interface FoldState {
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
 
+/** レコードか(null・配列は除く)。申告は型を信じず形だけ見る。 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 指定フィールドがすべて文字列か。 */
+function hasStrings(value: unknown, fields: ReadonlyArray<string>): boolean {
+  return isRecord(value) && fields.every((f) => typeof value[f] === "string");
+}
+
+/** own-property の値(プロトタイプ鎖の値に当たらない — 敵対的サーバーの "__proto__" 対策)。 */
+function ownProp<K extends string, V>(obj: { readonly [P in K]?: V }, key: string): V | undefined {
+  return Object.hasOwn(obj, key) ? obj[key as K] : undefined;
+}
+
 function keyIdOf(userId: string, encPubHex: string, sigPubHex: string): string {
   return `${userId}:${encPubHex}:${sigPubHex}`;
 }
@@ -323,7 +338,7 @@ function applyChangeRole(
   seq: number,
   payload: EntryOf<"change_role">["payload"],
 ): void {
-  if (typeof payload.targetUserId !== "string" || typeof payload.newRole !== "string") {
+  if (!hasStrings(payload, ["targetUserId", "newRole"])) {
     state.unreadableEntries += 1;
     return;
   }
@@ -362,12 +377,7 @@ function applyAddMember(
   seq: number,
   payload: EntryOf<"add_member">["payload"],
 ): void {
-  if (
-    typeof payload.targetUserId !== "string" ||
-    typeof payload.role !== "string" ||
-    typeof payload.encPubHex !== "string" ||
-    typeof payload.sigPubHex !== "string"
-  ) {
+  if (!hasStrings(payload, ["targetUserId", "role", "encPubHex", "sigPubHex"])) {
     state.unreadableEntries += 1;
     return;
   }
@@ -415,11 +425,7 @@ const OPERATION_FOLDERS: {
 };
 
 function applyOperation(state: FoldState, seq: number, operation: ProposableEntry): void {
-  const fold = Object.hasOwn(OPERATION_FOLDERS, operation.op)
-    ? (OPERATION_FOLDERS[operation.op] as
-        | ((s: FoldState, q: number, o: ProposableEntry) => void)
-        | undefined)
-    : undefined;
+  const fold = ownProp(OPERATION_FOLDERS, operation.op) as OperationFolder | undefined;
   fold?.(state, seq, operation);
 }
 
@@ -466,11 +472,20 @@ function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): string[]
   return [...new Set(counted.map((signer) => signer.userId))];
 }
 
+/** 提案者の現 role(メンバーでなければ "unknown")。 */
+function proposerRoleOf(state: FoldState, userId: string): string {
+  return state.members.get(userId)?.role ?? "unknown";
+}
+
+/** 提案の内側 op が読める形か(op 名が文字列のレコード)。 */
+function readableInner(inner: unknown): inner is ProposableEntry {
+  return hasStrings(inner, ["op"]);
+}
+
 function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string | undefined): void {
   if (hash === undefined) return;
   const inner = entry.payload.inner;
-  const innerOp = typeof inner === "object" && inner !== null ? inner.op : undefined;
-  if (typeof innerOp !== "string" || typeof entry.payload.expiresAtMs !== "number") {
+  if (!readableInner(inner) || typeof entry.payload.expiresAtMs !== "number") {
     state.unreadableEntries += 1;
     return;
   }
@@ -478,7 +493,7 @@ function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string 
     seq: entry.seq,
     proposerUserId: entry.actor.userId,
     proposerKeyFingerprintHex: entry.actor.keyFingerprintHex,
-    proposerRoleAtProposal: state.members.get(entry.actor.userId)?.role ?? "unknown",
+    proposerRoleAtProposal: proposerRoleOf(state, entry.actor.userId),
     inner,
     expiresAtMs: entry.payload.expiresAtMs,
     approvals: [],
@@ -531,14 +546,14 @@ const INNER_SUMMARIES: {
 };
 
 function summarizeInner(operation: ProposableEntry): string {
-  const summarize = Object.hasOwn(INNER_SUMMARIES, operation.op)
-    ? (INNER_SUMMARIES[operation.op] as ((o: ProposableEntry) => string) | undefined)
-    : undefined;
-  return summarize === undefined ? operation.op : summarize(operation);
+  return (
+    (ownProp(INNER_SUMMARIES, operation.op) as InnerSummarizer | undefined)?.(operation) ??
+    operation.op
+  );
 }
 
 function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
-  if (typeof entry.payload.encPubHex !== "string" || typeof entry.payload.sigPubHex !== "string") {
+  if (!hasStrings(entry.payload, ["encPubHex", "sigPubHex"])) {
     state.unreadableEntries += 1;
     return;
   }
@@ -773,26 +788,28 @@ function foldEntry(state: FoldState, entry: ChainEntry, hash: string | undefined
   // 値に当たって throw で描画を落とさないための自衛
   if (!Object.hasOwn(ENTRY_KINDS, entry.op)) return;
   // 各フォルダが payload のフィールドを読むので、レコードでない payload は畳めない
-  if (typeof entry.payload !== "object" || entry.payload === null) {
+  if (!isRecord(entry.payload)) {
     state.unreadableEntries += 1;
     return;
   }
-  const fold = Object.hasOwn(ENTRY_FOLDERS, entry.op)
-    ? (ENTRY_FOLDERS[entry.op] as
-        | ((s: FoldState, e: ChainEntry, h: string | undefined) => void)
-        | undefined)
-    : undefined;
-  if (fold !== undefined) {
-    fold(state, entry, hash);
+  const fold = ownProp(ENTRY_FOLDERS, entry.op) as EntryFolder | undefined;
+  if (fold === undefined) {
+    applyOperation(state, entry.seq, entry as ProposableEntry);
     return;
   }
-  applyOperation(state, entry.seq, entry as ProposableEntry);
+  fold(state, entry, hash);
 }
 
 // 畳み込みに載せる op の閉集合(own-property 判定用)。create_environment / rotate_epoch /
 // checkpoint はメンバー・サーバー集合に影響しないため載せない。scope(add_member /
 // change_role の末尾 2 フィールド)は K4(2026-09-15 ES — 設計録 K4-D)で、四眼の 4 op は
 // K6(設計録 K6-J)で、端末の 2 op は DK K5(設計録 dk-design.md §10)で写す
+// 分岐表の 1 分岐が引く引数はその op のエントリに狭いので、検索側は総称へ戻して呼ぶ
+// (構造検査を通った行だけが来ることは各フォルダの前提 — 表の型は呼び出しの記録用)
+type EntryFolder = (state: FoldState, entry: ChainEntry, hash: string | undefined) => void;
+type OperationFolder = (state: FoldState, seq: number, op: ProposableEntry) => void;
+type InnerSummarizer = (op: ProposableEntry) => string;
+
 const ENTRY_KINDS: { readonly [Op in ChainEntry["op"]]?: true } = {
   genesis: true,
   add_member: true,
@@ -823,14 +840,10 @@ function reportedMemberOf(member: MutableMember): ReportedMember {
 
 /** 外枠が読めるエントリか(型は信じず形だけ見る): レコードで・seq が数で・actor が文字列 id / FP を持つ。 */
 function readableEnvelope(entry: unknown): entry is ChainEntry {
-  if (typeof entry !== "object" || entry === null) return false;
-  const { actor, seq } = entry as { actor?: unknown; seq?: unknown };
   return (
-    typeof seq === "number" &&
-    typeof actor === "object" &&
-    actor !== null &&
-    typeof (actor as { userId?: unknown }).userId === "string" &&
-    typeof (actor as { keyFingerprintHex?: unknown }).keyFingerprintHex === "string"
+    isRecord(entry) &&
+    typeof entry.seq === "number" &&
+    hasStrings(entry.actor, ["userId", "keyFingerprintHex"])
   );
 }
 

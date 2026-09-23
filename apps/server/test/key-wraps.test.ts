@@ -495,7 +495,7 @@ describe("handoff(クラス H — §13-7)", () => {
     expect((await get(`/auth/handoff/${requestId}/approvals`, a)).status).toBe(404);
     const approve = await post(`/auth/handoff/${requestId}/approvals`, a, {
       source: ledgerId(),
-      shareIndex: 0,
+      shareIndex: 1,
       approverKeyFingerprintHex: FP,
       encHex: HPKE_ENC,
       ciphertextHex: SHARE_CT,

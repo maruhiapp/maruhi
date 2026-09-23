@@ -118,11 +118,14 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
   // 敵対的・壊れたサーバーが同一 projectId を繰り返しても行と React key を
   // 増やさないよう、追加分は既出行で除重する
-  const seen = new Set((current?.rows ?? []).map((row) => row.id));
-  const rows = page.projects
-    .filter((p) => !seen.has(p.projectId))
-    .map((p) => ({ id: p.projectId, role: p.role }));
-  return { rows: [...(current?.rows ?? []), ...rows], nextAfter: page.nextAfter };
+  const rows = current === undefined ? [] : [...current.rows];
+  const seen = new Set(rows.map((row) => row.id));
+  for (const project of page.projects) {
+    if (seen.has(project.projectId)) continue;
+    seen.add(project.projectId);
+    rows.push({ id: project.projectId, role: project.role });
+  }
+  return { rows, nextAfter: page.nextAfter };
 }
 
 /** 空ページの自動追跡の上限 — 毎回新しいカーソルを返すサーバーへの資源上限。超えると「load more」に委ねる */
@@ -142,11 +145,17 @@ function shouldFollowCursor(
   next: ProjectsState,
   visitedCursors: Set<string>,
 ): boolean {
-  if (page.projects.length > 0) return false;
-  if (next.nextAfter === undefined) return false;
-  if (visitedCursors.has(next.nextAfter)) return false;
-  if (visitedCursors.size >= MAX_EMPTY_PAGE_HOPS) return false;
-  visitedCursors.add(next.nextAfter);
+  return (
+    page.projects.length === 0 &&
+    next.nextAfter !== undefined &&
+    consumeCursor(visitedCursors, next.nextAfter)
+  );
+}
+
+/** カーソルを追跡可能なら記録して true(既出・上限超過なら false)。 */
+function consumeCursor(visitedCursors: Set<string>, cursor: string): boolean {
+  if (visitedCursors.has(cursor) || visitedCursors.size >= MAX_EMPTY_PAGE_HOPS) return false;
+  visitedCursors.add(cursor);
   return true;
 }
 
