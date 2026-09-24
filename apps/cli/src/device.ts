@@ -599,7 +599,7 @@ export function deviceApproveOp(input: {
       yield* logNote(
         listed.failure instanceof DeviceRegistryLimitError
           ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`maruhi device approve\` before then to list it. ${afterwards}`
-          : `could not update the device registry (${toCliError(listed.failure).message}), so \`maruhi device add\` on the new device will not see the completion signal; the device is registered on the chains above regardless. ${retry} re-run \`maruhi device approve\` before then to list it. ${afterwards}`,
+          : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`maruhi device approve\` before then to list it. ${afterwards}`,
       );
       return outcomes;
     }

@@ -621,8 +621,10 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([]);
     const note = env.errors.join("\n");
     expect(note).toContain("the device registry is full (32 rows)");
-    expect(note).toContain("will not see the completion signal");
-    expect(note).toContain("The request is left in place until");
+    // docs(`devices.mdx`)が引用する 2 文は、両方の分岐で隣り合う(PR #196 pullfrog)
+    expect(note).toContain(
+      "will not see the completion signal. The request is left in place until",
+    );
     expect(note).toContain("re-run `maruhi device approve` before then to list it");
     expect(note).toContain("unlisted in your device registry");
     // 承認側が rows を消して再実行: 全プロジェクト already(追記なし)→ PUT → 取消
@@ -657,7 +659,9 @@ describe("maruhi device approve", () => {
     const note = env.errors.join("\n");
     expect(note).toContain("could not update the device registry (");
     expect(note).toContain("the device is registered on the chains above regardless");
-    expect(note).toContain("The request is left in place until");
+    expect(note).toContain(
+      "will not see the completion signal. The request is left in place until",
+    );
     expect(note).toContain("re-run `maruhi device approve` before then to list it");
     expect(note).not.toContain("registry is full");
   });
