@@ -617,6 +617,37 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([]);
   });
 
+  it("この端末がチェーンに居ないプロジェクトは skipped で、要求なしの承認でなく同期の経路を案内する(DK K10-5)", async () => {
+    // dev2 は owner と同じ人の端末鍵だが、このプロジェクトのチェーンには居ない
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(reserve)],
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(await runCli(["device", "approve", reserve.fingerprintHex], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `skipped — this machine's key is not one of your registered devices here, so it cannot register devices here. A device of yours that is registered here adds the new device (and this machine) when it runs a keyed command on this project at a terminal (\`maruhi pull --project ${built.projectId}\`, for instance)`,
+    );
+    // 従えない手順(要求なしの承認)を案内しない
+    expect(errors).not.toContain("approve this machine first");
+    expect(state.appendedTo).toEqual([]);
+  });
+
+  it("手元の鍵がチェーンに無いときの案内は、待機中の要求の承認と同期の経路を分けて言う(DK K10-5)", async () => {
+    const built = await chainWithEnvironment();
+    const { server } = await makeServer({ built, withEnvironment: true });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(await runCli(["pull", "--env", ENV_ID], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "If `maruhi device add` is still waiting on this machine, approve it from a registered device with `maruhi device approve`. If this device is registered on other projects of yours, a device of yours that is registered here adds it when it runs a keyed command on this project at a terminal",
+    );
+    expect(errors).not.toContain("run `maruhi device approve` for this machine");
+  });
+
   it("同じ鍵の要求が複数あれば黙って選ばず、ラベルを示して止まる", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
@@ -965,6 +996,8 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
           ? "an AI agent environment was detected (test-agent)"
           : "stdin is not an interactive terminal",
       );
+      // 前段は 1 コマンド 1 プロジェクトなので、このプロジェクトを対象にしたコマンドを出す(DK K10-5)
+      expect(errors).toContain(`for example \`maruhi pull --project ${built.projectId}\``);
     }
   });
 
@@ -996,6 +1029,34 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(env.errors.join("\n")).toContain(
       "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery`",
     );
+  });
+
+  it("失効と記録した端末がチェーンで有効なら、従えない『承認し直せ』でなく失効か足し直しを案内する(DK K10-5)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      extra: [inviteHandler(built)],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    await recordOwnDevice(env, server.origin, dev2, "approved", 1_700_000_000_000);
+    expect(
+      await runCli(["invite", "create", "--role", "member"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `device ${dev2.fingerprintHex} was revoked from this machine's records but is active on project ${built.projectId}`,
+    );
+    expect(errors).toContain(
+      "It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with",
+    );
+    expect(errors).toContain("revoke it and re-add it as a new device");
+    expect(errors).not.toContain("approve it explicitly");
+    expect(state.appendedTo).toEqual([]);
   });
 
   it("チェーンで観測した端末は出所(誰の端末が seq いくつで足したか)つきで記録し、失効の観測は記録に写す", async () => {
@@ -1319,7 +1380,10 @@ describe("maruhi device add", () => {
     expect(missingNote).toContain(`not registered yet on ${built.projectId}`);
     expect(missingNote).toContain("skipped or failed on them");
     expect(missingNote).toContain("The request is used up");
-    expect(missingNote).toContain("on its next keyed command run at a terminal");
+    // 前段は 1 コマンド 1 プロジェクトなので「そのプロジェクトを対象にした」鍵付きコマンド(DK K10-5)
+    expect(missingNote).toContain(
+      "when it runs a keyed command on that project at a terminal (`maruhi pull --project <id>`, for instance)",
+    );
     expect(missingNote).not.toContain("may still be working");
     expect(missingNote).not.toContain("Re-run `maruhi device approve`");
   });

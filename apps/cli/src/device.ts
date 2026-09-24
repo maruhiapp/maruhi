@@ -222,11 +222,12 @@ export function deviceAddOp(input: {
     if (missing.length > 0) {
       // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
       // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
-      // 「cap がそこを覆う端末」の次の鍵付きコマンド(`device-sync.ts` — cap 起因の skip は
-      // 承認側の再同期では直らない: K6-V 補 2 / K7-2)。`approveOnProject` は失敗を
-      // `failed` に畳むので、一部成功の合図の後には failed のプロジェクトも混じる(K7-15)
+      // 「cap がそこを覆う端末」が**そのプロジェクトを対象に**打つ鍵付きコマンド(`device-sync.ts`
+      // — 前段は 1 コマンド 1 プロジェクト: DK K10-5。cap 起因の skip は承認側の再同期では
+      // 直らない: K6-V 補 2 / K7-2)。承認は失敗を `failed` に畳むので、一部成功の合図の後には
+      // failed のプロジェクトも混じる(K7-15)
       yield* logNote(
-        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key there on its next keyed command run at a terminal — the approving device itself if its cap was not the cause, another device otherwise (it learns the key from a project that did register). \`maruhi device list\` shows where this key is registered`,
+        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
       );
     }
   });
@@ -679,9 +680,12 @@ function planApproveOnProject(input: {
       present === undefined ? null : { roleCap: present.roleCap, scope: present.scope };
     const signer = findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
     if (signer === undefined) {
+      // 要求なしに承認し直す経路は無い(登録済みの鍵は要求を作り直せない — DK K10-5)。
+      // 登録するのは、このプロジェクトに載っている自分の端末の同期(`device-sync.ts` の
+      // 観測 → 登録)で、前段はこのプロジェクトを対象にした鍵付きコマンドだけが開く
       return settled(
         "skipped",
-        "this machine's key is not one of your registered devices here (approve this machine first from a device that is)",
+        `this machine's key is not one of your registered devices here, so it cannot register devices here. A device of yours that is registered here adds the new device (and this machine) when it runs a keyed command on this project at a terminal (\`maruhi pull --project ${displayText(input.projectId)}\`, for instance), if its cap covers them and it has synced a project that has them`,
         chainCap,
       );
     }

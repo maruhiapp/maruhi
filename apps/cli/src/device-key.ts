@@ -43,9 +43,13 @@ export function findOwnDevice(member: ChainMember, ref: OwnKeyRef): ChainDevice 
   return undefined;
 }
 
-/** 手元の鍵がこのプロジェクトのチェーンに無いときの文言(未登録 / 失効済みの両方)。 */
+/**
+ * 手元の鍵がこのプロジェクトのチェーンに無いときの文言(未登録 / 失効済みの両方)。
+ * `device approve` が効くのは待機中の要求があるときだけ(登録済みの鍵は要求を作り直せない)。
+ * 他のプロジェクトに載っている端末は、ここに載っている自分の端末の同期が足す(DK K10-5)。
+ */
 function deviceNotOnChainMessage(userId: string): string {
-  return `The key on this machine is not one of your active device keys on this project's chain (member ${displayText(userId)}). Either this device has not been registered here yet, or it was revoked. From a device that is registered, run \`maruhi device approve\` for this machine (or \`maruhi device list\` to see the registered devices)`;
+  return `The key on this machine is not one of your active device keys on this project's chain (member ${displayText(userId)}). Either this device has not been registered here yet, or it was revoked. If \`maruhi device add\` is still waiting on this machine, approve it from a registered device with \`maruhi device approve\`. If this device is registered on other projects of yours, a device of yours that is registered here adds it when it runs a keyed command on this project at a terminal, if its cap covers this device's and it has synced a project that has it (\`maruhi device list\` shows where each device is registered)`;
 }
 
 /**

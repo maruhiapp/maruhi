@@ -111,7 +111,7 @@ function registrationAllowed(
     Effect.as(true),
     Effect.catch((error) =>
       logNote(
-        `${countNoun(candidates.length, "device key")} recorded on this machine (${candidates.map((candidate) => candidate.keyFingerprintHex).join(", ")}) ${candidates.length === 1 ? "is" : "are"} not registered on project ${displayText(projectId)} yet. Registering a device key adds a signer and wraps DEKs to it, so it is done only when a person runs maruhi at an interactive terminal — skipped here because ${error.message}. Run any keyed maruhi command (for example \`maruhi pull\`) yourself in a terminal to register ${candidates.length === 1 ? "it" : "them"}, or remove the record if you do not recognise it (\`maruhi device list\`)`,
+        `${countNoun(candidates.length, "device key")} recorded on this machine (${candidates.map((candidate) => candidate.keyFingerprintHex).join(", ")}) ${candidates.length === 1 ? "is" : "are"} not registered on project ${displayText(projectId)} yet. Registering a device key adds a signer and wraps DEKs to it, so it is done only when a person runs maruhi at an interactive terminal — skipped here because ${error.message}. Run a keyed maruhi command on this project yourself in a terminal (for example \`maruhi pull --project ${displayText(projectId)}\`) to register ${candidates.length === 1 ? "it" : "them"}, or remove the record if you do not recognise it (\`maruhi device list\`)`,
       ).pipe(Effect.as(false)),
     ),
   );
@@ -203,8 +203,10 @@ function observeDevices(input: {
           yield* logNote(describeObservation(context.projectId, device, provenance));
         }
       } else if (known.revokedAtMs !== null) {
+        // 失効の印を消すのは再承認だけで、登録済みの鍵は要求を作り直せない(DK K10-5)ので、
+        // 「承認し直せ」とは言わない(従えない手順)。他のプロジェクトにも要るなら新しい鍵で
         yield* logNote(
-          `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here; if it should be active again, approve it explicitly with \`maruhi device approve\`, otherwise revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\``,
+          `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it and re-add it as a new device`,
         );
       }
     }
