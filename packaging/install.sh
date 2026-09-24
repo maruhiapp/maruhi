@@ -296,7 +296,8 @@ install_binary() {
 
   # 同一ディレクトリ内へ置いてから rename する: 途中状態の実行ファイルを
   # 見せず、実行中バイナリの上書き(ETXTBSY)も避ける
-  PARTIAL_FILE="${INSTALL_DIR}/.maruhi.install.$$"
+  PARTIAL_FILE="$(mktemp "${INSTALL_DIR}/.maruhi.install.XXXXXX")" ||
+    die "could not create a staging file in the install directory: ${INSTALL_DIR}"
   cp "${BINARY}" "${PARTIAL_FILE}" || die "could not copy to the install directory: ${INSTALL_DIR}"
   chmod 755 "${PARTIAL_FILE}"
   mv -f "${PARTIAL_FILE}" "${INSTALL_DIR}/maruhi" || die "failed to install: ${INSTALL_DIR}/maruhi"

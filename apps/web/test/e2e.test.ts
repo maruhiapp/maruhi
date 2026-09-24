@@ -1153,9 +1153,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
     await page.getByTestId("member-table").waitFor();
-    const note = page.getByTestId("unreadable-device-entries");
+    const note = page.getByTestId("unreadable-entries");
     await expect(note.textContent()).resolves.toContain(
-      "1 device entry in the reported chain could not be read and was left out",
+      "1 entry in the reported chain could not be read and was left out",
     );
     await expect(note.textContent()).resolves.toContain("maruhi project verify");
     // 読めた行から導いた集合は変わらない(user_e2e = 2 台)

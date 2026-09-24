@@ -196,10 +196,13 @@ async function capRequestBody(request: Request): Promise<Request | null> {
   if (body === null) {
     return null;
   }
+  // GET / HEAD は Request コンストラクタが body 非 null を拒む(Fetch 仕様)。
+  // 読み取り自体は行った上で、後段が参照しないボディは再構築時に捨てる。
+  const allowsBody = request.method !== "GET" && request.method !== "HEAD";
   return new Request(request.url, {
     method: request.method,
     headers: request.headers,
-    body: body.buffer as ArrayBuffer,
+    body: allowsBody ? (body.buffer as ArrayBuffer) : null,
   });
 }
 

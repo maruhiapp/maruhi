@@ -52,7 +52,15 @@ const ValueCiphertextHex = Schema.String.check(
  * 表現不能にしうる。chain.ts 側は意図的に bound しない(§6.1 — verifyChain が
  * 上限を検査する)。
  */
-const BoundedUserId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024));
+const BoundedUserId = Schema.String.check(
+  Schema.isMinLength(1),
+  // 上限は UTF-8 バイト数(isMaxLength は UTF-16 コードユニットを数える)。
+  Schema.makeFilter((s: string) =>
+    new TextEncoder().encode(s).length <= 1024
+      ? undefined
+      : { path: [], issue: "at most 1024 UTF-8 bytes" },
+  ),
+);
 
 /** Declared AAD components of a variable ciphertext (CRYPTO_SPEC §4). */
 export const VariableAadSchema = Schema.Struct({

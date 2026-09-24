@@ -87,6 +87,17 @@ export function memberHasKeys(member: ChainMember, encPubHex: string, sigPubHex:
   );
 }
 
+/** memberHasKeys の端末版: (enc, sig) が一致する在籍端末(実効権限の導出用)。 */
+export function ownDeviceByKeys(
+  member: ChainMember,
+  encPubHex: string,
+  sigPubHex: string,
+): ChainDevice | undefined {
+  return [...member.devices.values()].find(
+    (device) => device.encPubHex === encPubHex && device.sigPubHex === sigPubHex,
+  );
+}
+
 /** The member's devices in fingerprint order (deterministic recipient / display order). */
 export function devicesOf(member: ChainMember): readonly ChainDevice[] {
   return [...member.devices.values()].toSorted((a, b) =>

@@ -138,8 +138,10 @@ export function loadReceipt(input: {
   readonly preset: PresetId;
 }): Effect.Effect<LoadedReceipt, CliError> {
   return Effect.gen(function* () {
-    const pulled = yield* pullVariables(input);
     const name = receiptVariableName(input.target);
+    // レシート変数だけを復号する(レシート環境にユーザーの秘密があっても
+    // 平文をメモリに作らない — pull.ts の select 契約)
+    const pulled = yield* pullVariables({ ...input, select: (n) => n === name });
     const variable = pulled.variables.find((entry) => entry.name === name);
     if (variable === undefined) {
       // 有界再同期で前進したビューを返す(後続の pull / push が引き継ぐ)

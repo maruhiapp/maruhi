@@ -31,6 +31,7 @@ import {
   computeUserKeyFingerprint,
   decodeHex,
   deriveInviteLinkKeyPair,
+  effectivePermissionOf,
   encodeHex,
   generateInviteLinkSeed,
   type InviteAcceptSignatureContext,
@@ -54,7 +55,7 @@ import type { MaruhiClient } from "./api.ts";
 import type { IdentityBacking } from "./config.ts";
 import type { CliServices } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
-import { devicesOf, memberHasKeys } from "./device-key.ts";
+import { devicesOf, ownDeviceByKeys } from "./device-key.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -329,12 +330,34 @@ function ensureCanIssue(input: {
 }): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
     const inviter = input.verified.state.members.get(input.sessionUserId);
-    if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
+    if (inviter === undefined) {
       return yield* Effect.fail(
         cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
       );
     }
-    if (input.role === "admin" && inviter.role !== "owner") {
+    // 手元の鍵が招待者の端末鍵の 1 つであること(2026-09-19 DK — 署名者は端末単位)。
+    // 端末が引けて初めて実効権限(人 ∩ 端末 cap — §6.2)が定まるため、権限の検査は
+    // この後で行う(cap が絞られた端末からの発行は、受諾後の add_member が合意で
+    // 落ちる罠を儀式の両側に作る — 発行しない)
+    const device = ownDeviceByKeys(
+      inviter,
+      input.masterKeys.record.encPubHex,
+      input.masterKeys.record.sigPubHex,
+    );
+    if (device === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "This machine's key is not one of your registered devices on this project's chain, so an issue signature made here would not verify. Issue the invite from a device that is registered here (`maruhi device list` shows them) or have an owner re-add you",
+        ),
+      );
+    }
+    const permission = effectivePermissionOf(inviter, device);
+    if (ROLE_RANK[permission.role] < ROLE_RANK.admin) {
+      return yield* Effect.fail(
+        cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
+      );
+    }
+    if (input.role === "admin" && permission.role !== "owner") {
       return yield* Effect.fail(
         cliError(
           "Only an owner can issue a role=admin invite (same level as the add_member permission table in CRYPTO_SPEC §6.2)",
@@ -342,26 +365,16 @@ function ensureCanIssue(input: {
       );
     }
     // scope(2026-09-15 ES K4 — 設計録 K4-G): `--env` の各 id はチェーン上に存在し
-    // (`unknown-environment`)、自分の scope が招待 scope を包含する
+    // (`unknown-environment`)、実効 scope が招待 scope を包含する
     // (`scope-not-contained` — 原則 1: add_member の権限変化の環境集合 = 新 scope)
     // ことを通信前に検査する。サーバーは検査しない(AUTH_SPEC §15-2)が、通っても
     // 受諾後の add_member が合意規則で落ちる = 受諾者を無駄に儀式へ進ませる罠なので
     // 発行しない(逃げ道は置かない — scope = all の admin / owner に頼めばよい)
     yield* requireScopeEnvironmentsExist(input.verified, input.scope);
-    if (!scopeContains(inviter.scope, input.scope)) {
+    if (!scopeContains(permission.scope, input.scope)) {
       return yield* Effect.fail(
         cliError(
-          `Your environment scope (${describeScope(inviter.scope)}) does not contain the invite's scope (${describeScope(input.scope)}), so the add_member after acceptance would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Invite only environments in your own scope, or ask an owner / all-scope admin to issue this invite`,
-        ),
-      );
-    }
-    // 手元の鍵が招待者の端末鍵の 1 つであること(2026-09-19 DK — 署名者は端末単位)
-    if (
-      !memberHasKeys(inviter, input.masterKeys.record.encPubHex, input.masterKeys.record.sigPubHex)
-    ) {
-      return yield* Effect.fail(
-        cliError(
-          "This machine's key is not one of your registered devices on this project's chain, so an issue signature made here would not verify. Issue the invite from a device that is registered here (`maruhi device list` shows them) or have an owner re-add you",
+          `Your environment scope (${describeScope(permission.scope)}) does not contain the invite's scope (${describeScope(input.scope)}), so the add_member after acceptance would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Invite only environments in your own scope, or ask an owner / all-scope admin to issue this invite`,
         ),
       );
     }
@@ -1249,6 +1262,13 @@ function listRowChecks(input: {
       failures += 1;
       yield* logWarning(
         `the server's claim for invite ${displayText(row.id)} (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,
+      );
+    }
+    // 「照合して成功」と「照合材料なし」を同じ見た目にしない(S12 — §6.5 の
+    // 追加材料が欠ける行は発行署名だけが固定する)
+    if (pin === "missing") {
+      yield* io.log(
+        "  issuance pin: none on this machine (this invite may have been issued on another device) — the link key / role / scope cross-check was not performed",
       );
     }
     if (row.acceptance !== null) {

@@ -21,6 +21,7 @@ import {
   type ChainEntry,
   type ChainMember,
   effectivePermissionOf,
+  type EffectivePermission,
   type MemberScope,
   memberScopeOf,
   type ProposableOperation,
@@ -326,9 +327,29 @@ function resolveActorAndTarget(
   return Effect.succeed({ actor, target: verified.state.members.get(targetUserId) });
 }
 
+/**
+ * pre-flight が見る実行者の権限材料。合意は実効権限(人 ∩ 端末の cap — §6.2
+ * `effectivePermissionOf`)で判定するので、手前判定もこれに合わせる(署名端末の
+ * cap が人より狭ければ、実効側で検査しないと append 時の拒否まで進む)。
+ */
+type ActorAuthority = { readonly role: Role; readonly scope: MemberScope };
+
+/**
+ * 署名端末を引き、その実効権限を返す。端末がチェーンに無い鍵(未登録・失効済み)
+ * には型付きの失敗が人の権限の文言の前に出る(device-ops.ts と同じ順序)。
+ */
+function actorAuthority(
+  actor: ChainMember,
+  signingKeyPair: SigningKeyPair,
+): Effect.Effect<EffectivePermission, CliError> {
+  return Effect.map(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+    effectivePermissionOf(actor, device),
+  );
+}
+
 /** remove / change_role の対象規則(§6.2)の CLI 早期検査(文言のための手前判定)。 */
 function targetedOpRejection(input: {
-  readonly actor: ChainMember;
+  readonly actor: ActorAuthority;
   readonly target: ChainMember;
   readonly operation: string;
 }): string | null {
@@ -683,7 +704,7 @@ function warnKeyReuse(
 }
 
 /** add_member の実行者 role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
-function addActorRejection(actor: ChainMember | undefined, role: Role): string | null {
+function addActorRejection(actor: ActorAuthority | undefined, role: Role): string | null {
   if (actor === undefined || ROLE_RANK[actor.role] < ROLE_RANK.admin) {
     return "Only admins and above can run add_member (CRYPTO_SPEC §6.2)";
   }
@@ -719,12 +740,19 @@ function ensureAddable(input: {
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
   readonly scope: ScopePayloadFields;
+  readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<{ readonly alreadyAdded: boolean }, CliError> {
   return Effect.gen(function* () {
     const actor = input.verified.state.members.get(input.signerUserId);
-    const actorRejection = addActorRejection(actor, input.role);
-    if (actorRejection !== null || actor === undefined) {
-      return yield* Effect.fail(cliError(actorRejection ?? "You are not a member"));
+    if (actor === undefined) {
+      return yield* Effect.fail(
+        cliError("Only admins and above can run add_member (CRYPTO_SPEC §6.2)"),
+      );
+    }
+    const permission = yield* actorAuthority(actor, input.signingKeyPair);
+    const actorRejection = addActorRejection(permission, input.role);
+    if (actorRejection !== null) {
+      return yield* Effect.fail(cliError(actorRejection));
     }
     const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
     if (existing !== undefined) {
@@ -753,10 +781,10 @@ function ensureAddable(input: {
     // 別人・別時点でありうる(独立レビュー S1)。儀式の前に落とす。追記済みの再開(上)は
     // remove / change-role と同じく包含を問わない(残るのはバックフィルだけ)
     const invited = memberScopeOf(input.scope);
-    if (!scopeContains(actor.scope, invited)) {
+    if (!scopeContains(permission.scope, invited)) {
       return yield* Effect.fail(
         cliError(
-          `Your environment scope (${describeScope(actor.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
+          `Your environment scope (${describeScope(permission.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
         ),
       );
     }
@@ -935,6 +963,7 @@ function prepareMemberAdd(input: {
   readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
   readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
   readonly origin: string;
 }): Effect.Effect<
   {
@@ -995,6 +1024,7 @@ function prepareMemberAdd(input: {
       acceptance: row.acceptance,
       role: row.role,
       scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
+      signingKeyPair: input.signingKeyPair,
     });
     if (!first.alreadyAdded) {
       yield* warnKeyReuse(input.verified, row.acceptance);
@@ -1150,6 +1180,7 @@ export function memberAddOp(input: {
         acceptance: row.acceptance,
         role: row.role,
         scope,
+        signingKeyPair: input.signingKeyPair,
       });
 
     // 四眼(K6-A / K6-D): 方針が add_member を対象にしていれば提案して終わる。儀式
@@ -1251,6 +1282,7 @@ function ensureRemovable(input: {
   readonly signerUserId: string;
   readonly targetUserId: string;
   readonly proposing: boolean;
+  readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<{ readonly alreadyRemoved: boolean }, CliError> {
   return Effect.gen(function* () {
     if (input.targetUserId === input.signerUserId && !input.proposing) {
@@ -1265,13 +1297,14 @@ function ensureRemovable(input: {
       input.signerUserId,
       input.targetUserId,
     );
+    const permission = yield* actorAuthority(actor, input.signingKeyPair);
     if (target === undefined) {
-      const resumable = removalResumeRejection(input.verified, actor, input.targetUserId);
+      const resumable = removalResumeRejection(input.verified, permission, input.targetUserId);
       return resumable === null
         ? { alreadyRemoved: true }
         : yield* Effect.fail(cliError(resumable));
     }
-    const rejection = removeRuleRejection(input.verified, actor, target);
+    const rejection = removeRuleRejection(input.verified, permission, target);
     return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
   });
 }
@@ -1283,7 +1316,7 @@ function ensureRemovable(input: {
  */
 function removalResumeRejection(
   verified: VerifiedProject,
-  actor: ChainMember,
+  actor: ActorAuthority,
   targetUserId: string,
 ): string | null {
   const removedBefore = verified.applied.some(
@@ -1301,7 +1334,7 @@ function removalResumeRejection(
 /** remove_member の §6.2 規則(role → scope-not-contained → last-owner)の手前判定。 */
 function removeRuleRejection(
   verified: VerifiedProject,
-  actor: ChainMember,
+  actor: ActorAuthority,
   target: ChainMember,
 ): string | null {
   const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
@@ -1356,6 +1389,7 @@ export function memberRemoveOp<R>(input: {
         signerUserId: input.signerUserId,
         targetUserId: input.targetUserId,
         proposing,
+        signingKeyPair: input.signingKeyPair,
       });
     const first = yield* recheck(input.verified);
 
@@ -1488,7 +1522,7 @@ function resolveRoleChange(
 /** change_role の role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
 function changeRoleRuleRejection(input: {
   readonly verified: VerifiedProject;
-  readonly actor: ChainMember;
+  readonly actor: ActorAuthority;
   readonly target: ChainMember;
   readonly newRole: Role;
 }): string | null {
@@ -1519,7 +1553,7 @@ function changeRoleRuleRejection(input: {
  * なるため all の actor しか行えない(集合代数 — 設計録 K4-I の導出)。
  */
 function scopeContainmentRejection(input: {
-  readonly actor: ChainMember;
+  readonly actor: ActorAuthority;
   readonly target: ChainMember;
   readonly newRole: Role;
   readonly newScope: MemberScope;
@@ -1537,7 +1571,7 @@ function scopeContainmentRejection(input: {
 
 /** scope だけの置換で actor が対称差(旧 △ 新)を包含するか。 */
 function actorMayReplaceScope(input: {
-  readonly actor: ChainMember;
+  readonly actor: ActorAuthority;
   readonly target: ChainMember;
   readonly newScope: MemberScope;
 }): boolean {
@@ -1615,6 +1649,7 @@ function ensureRoleChangeable(input: {
   readonly targetUserId: string;
   readonly request: ChangeRoleRequest;
   readonly proposing: boolean;
+  readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<
   { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
   CliError
@@ -1625,6 +1660,7 @@ function ensureRoleChangeable(input: {
       input.signerUserId,
       input.targetUserId,
     );
+    const permission = yield* actorAuthority(actor, input.signingKeyPair);
     if (target === undefined) {
       return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
     }
@@ -1636,7 +1672,7 @@ function ensureRoleChangeable(input: {
       // 追記済み(前回実行の中断・並行実行)または no-op。降格 / 縮小の中断復旧
       // (エントリは載ったが義務が未了)をここから再開できる形にする。再開(rotate /
       // バックフィル)は member 以上(remove の再開と同じガード — 独立レビュー N11)
-      if (ROLE_RANK[actor.role] < ROLE_RANK.member) {
+      if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
         return yield* Effect.fail(
           cliError(
             "Resuming the rotation / backfill requires the member role or above (CRYPTO_SPEC §6.2)",
@@ -1649,7 +1685,7 @@ function ensureRoleChangeable(input: {
     // scope-not-contained(独立レビュー N2)
     const rejection = changeRoleRuleRejection({
       verified: input.verified,
-      actor,
+      actor: permission,
       target,
       newRole: next.role,
     });
@@ -1658,7 +1694,7 @@ function ensureRoleChangeable(input: {
     }
     yield* requireScopeEnvironmentsExist(input.verified, next.scope);
     const containment = scopeContainmentRejection({
-      actor,
+      actor: permission,
       target,
       newRole: next.role,
       newScope: next.scope,
@@ -2036,6 +2072,7 @@ export function memberChangeRoleOp<R>(input: {
         targetUserId: input.targetUserId,
         request: input.request,
         proposing,
+        signingKeyPair: input.signingKeyPair,
       });
     const first = yield* recheck(input.verified);
 

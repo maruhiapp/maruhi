@@ -12,7 +12,9 @@
 // - ラップ・分片はサーバーから見て不透明であり、このファイルは中身を解釈しない
 
 import { and, count, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
+import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { Context, Effect } from "effect";
 
 import type {
@@ -27,12 +29,7 @@ import type {
   PasskeyWrapRecord,
   WardShareRecord,
 } from "../key-wrap-domain.ts";
-import {
-  type D1AuditActor,
-  type D1AuditEventInput,
-  guardedAuditSelectColumns,
-  userAuditInsert,
-} from "./audit.ts";
+import { type D1AuditActor, type D1AuditEventInput, guardedAuditSelectColumns } from "./audit.ts";
 import {
   guardianGroups,
   guardianShares,
@@ -223,6 +220,29 @@ function toShare(row: {
 }
 
 export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
+  // 監査行の条件付き INSERT…SELECT(guardianCreate は「グループ行が入った」とき、
+  // guardianDelete は「グループ行が消えた」とき = changes() の連鎖で 1:1 に同梱)
+  const guardedAuditInsert = (
+    event: D1AuditEventInput,
+    nowMs: number,
+    source: SQLiteTable | SQL,
+    condition: SQL | undefined,
+  ) =>
+    db.insert(userAuditEvents).select(
+      db
+        .select(
+          guardedAuditSelectColumns({
+            event: event.event,
+            actor: event.actor,
+            nowMs,
+            targetUserId: event.targetUserId ?? null,
+            ...(event.payload === undefined ? {} : { payload: event.payload }),
+          }),
+        )
+        .from(source)
+        .where(condition),
+    );
+
   const loginQuery = (userId: string) =>
     db
       .select({ login: linkedIdentities.providerLogin })
@@ -521,20 +541,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           })),
         ];
         const auditInserts = auditEvents.map((event) =>
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: event.event,
-                  actor: event.actor,
-                  nowMs,
-                  targetUserId: event.targetUserId ?? null,
-                  ...(event.payload === undefined ? {} : { payload: event.payload }),
-                }),
-              )
-              .from(guardianGroups)
-              .where(audited),
-          ),
+          guardedAuditInsert(event, nowMs, guardianGroups, audited),
         );
         const results = await db.batch([groupInsert, ...shareInserts, ...auditInserts]);
         if (results[0].length !== 1) {
@@ -563,24 +570,32 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         if (group === null) {
           return false;
         }
-        await db.batch([
-          db.delete(guardianShares).where(eq(guardianShares.groupId, groupId)),
-          db.delete(guardianGroups).where(eq(guardianGroups.id, groupId)),
-          userAuditInsert(db, nowMs, {
+        // findGroup と batch の間に他者が削除しうるため、監査行は「グループ行が
+        // 消えた(changes() = 1)」ときだけ INSERT…SELECT で入れる(passkeyDelete と
+        // 同じ形)。負けた方の delete は 0 行で、監査も 0 行 = 1:1 の事件記録。
+        const deleted = sql`changes() = 1`;
+        const auditEvents: D1AuditEventInput[] = [
+          {
             event: "auth.key_wrap_removed",
             actor,
             payload: { kind: "guardian", groupId },
-          }),
-          ...logicalShares(group.shares).map((share) =>
-            userAuditInsert(db, nowMs, {
-              event: "auth.guardian_released",
-              actor,
-              targetUserId: share.guardianUserId,
-              payload: { groupId, mode: group.mode, shareIndex: share.shareIndex },
-            }),
-          ),
+          },
+          ...logicalShares(group.shares).map((share): D1AuditEventInput => ({
+            event: "auth.guardian_released",
+            actor,
+            targetUserId: share.guardianUserId,
+            payload: { groupId, mode: group.mode, shareIndex: share.shareIndex },
+          })),
+        ];
+        const results = await db.batch([
+          db.delete(guardianShares).where(eq(guardianShares.groupId, groupId)),
+          db
+            .delete(guardianGroups)
+            .where(eq(guardianGroups.id, groupId))
+            .returning({ id: guardianGroups.id }),
+          ...auditEvents.map((event) => guardedAuditInsert(event, nowMs, sql`(select 1)`, deleted)),
         ]);
-        return true;
+        return results[1].length === 1;
       }),
     sharesOfGuardian: (guardianUserId, wardUserId) =>
       run(async () => {

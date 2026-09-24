@@ -15,9 +15,10 @@ import type {
   ApprovalTargetOp,
   ChainEntry,
   ProposableOperation,
+  Role,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import { computeChainEntryHash } from "@maruhi/crypto";
+import { computeChainEntryHash, effectivePermissionOf } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -31,6 +32,7 @@ import {
 } from "./approval-rules.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { proposalIndexOf } from "./chain-applied.ts";
+import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import { sameScope } from "./scope.ts";
@@ -219,6 +221,7 @@ function ensureWithdrawable(
   verified: VerifiedProject,
   ref: string,
   signerUserId: string,
+  signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ProposalView["proposal"], CliError> {
   const resolution = resolveProposalRef(verified, ref);
   if (resolution.kind !== "pending") {
@@ -228,14 +231,17 @@ function ensureWithdrawable(
   if (actor === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  if (actor.role !== "owner" && resolution.proposal.proposerUserId !== signerUserId) {
-    return Effect.fail(
-      cliError(
-        "Only the proposer or an owner can withdraw a proposal (CRYPTO_SPEC §6.2). Ask the proposer or an owner to withdraw it",
-      ),
-    );
-  }
-  return Effect.succeed(resolution.proposal);
+  // 合意は実効権限(人 ∩ 端末 cap — §6.2 effectivePermissionOf)で判定する
+  return Effect.flatMap(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+    effectivePermissionOf(actor, device).role !== "owner" &&
+    resolution.proposal.proposerUserId !== signerUserId
+      ? Effect.fail(
+          cliError(
+            "Only the proposer or an owner can withdraw a proposal (CRYPTO_SPEC §6.2). Ask the proposer or an owner to withdraw it",
+          ),
+        )
+      : Effect.succeed(resolution.proposal),
+  );
 }
 
 export function withdrawProposalOp(input: {
@@ -247,7 +253,12 @@ export function withdrawProposalOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.Effect<WithdrawSummary, CliError> {
   return Effect.gen(function* () {
-    const first = yield* ensureWithdrawable(input.verified, input.ref, input.signerUserId);
+    const first = yield* ensureWithdrawable(
+      input.verified,
+      input.ref,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     const outcome = yield* retryOnConflict<VerifiedProject, VerifiedProject, "head-conflict">(
       input.verified,
       {
@@ -269,7 +280,12 @@ export function withdrawProposalOp(input: {
           Effect.gen(function* () {
             const resynced = yield* resyncExtended(input.resync, view);
             // 並行して完成 / 撤回されていればここで型付きに止まる(unknown-proposal を送らない)
-            yield* ensureWithdrawable(resynced, first.proposalHashHex, input.signerUserId);
+            yield* ensureWithdrawable(
+              resynced,
+              first.proposalHashHex,
+              input.signerUserId,
+              input.signingKeyPair,
+            );
             return resynced;
           }),
         exhaustedMessage: `withdraw's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
@@ -330,9 +346,26 @@ function ensurePolicySettable(
   verified: VerifiedProject,
   request: PolicyRequest,
   signerUserId: string,
+  signingKeyPair: SigningKeyPair,
 ): Effect.Effect<{ readonly unchanged: boolean }, CliError> {
   const actor = verified.state.members.get(signerUserId);
-  if (actor === undefined || actor.role !== "owner") {
+  if (actor === undefined) {
+    return Effect.fail(
+      cliError("Only an owner can change the four-eyes approval policy (CRYPTO_SPEC §6.2)"),
+    );
+  }
+  return Effect.flatMap(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+    ensurePolicySettableWith(verified, request, effectivePermissionOf(actor, device)),
+  );
+}
+
+/** 実効権限での方針検査の内側(owner 以外の規則は変わらない)。 */
+function ensurePolicySettableWith(
+  verified: VerifiedProject,
+  request: PolicyRequest,
+  permission: { readonly role: Role },
+): Effect.Effect<{ readonly unchanged: boolean }, CliError> {
+  if (permission.role !== "owner") {
     return Effect.fail(
       cliError("Only an owner can change the four-eyes approval policy (CRYPTO_SPEC §6.2)"),
     );
@@ -369,7 +402,12 @@ export function setApprovalPolicyOp(input: {
   readonly proposal: ProposalInput;
 }): Effect.Effect<PolicyOutcome, CliError> {
   return Effect.gen(function* () {
-    const first = yield* ensurePolicySettable(input.verified, input.request, input.signerUserId);
+    const first = yield* ensurePolicySettable(
+      input.verified,
+      input.request,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     if (first.unchanged) {
       return { kind: "unchanged" };
     }
@@ -381,7 +419,8 @@ export function setApprovalPolicyOp(input: {
         input,
         operation,
         proposeRecheck(
-          (view) => ensurePolicySettable(view, input.request, input.signerUserId),
+          (view) =>
+            ensurePolicySettable(view, input.request, input.signerUserId, input.signingKeyPair),
           (checked) => checked.unchanged,
           "A concurrent run already set the same policy — nothing to propose (check with `maruhi project policy approvals`)",
         ),
@@ -413,6 +452,7 @@ export function setApprovalPolicyOp(input: {
               resynced,
               input.request,
               input.signerUserId,
+              input.signingKeyPair,
             );
             if (rechecked.unchanged) {
               return yield* Effect.fail(
@@ -427,7 +467,12 @@ export function setApprovalPolicyOp(input: {
       },
     );
     const verified = yield* resyncExtended(input.resync, appended);
-    const rechecked = yield* ensurePolicySettable(verified, input.request, input.signerUserId);
+    const rechecked = yield* ensurePolicySettable(
+      verified,
+      input.request,
+      input.signerUserId,
+      input.signingKeyPair,
+    );
     if (!rechecked.unchanged) {
       return yield* Effect.fail(
         cliError(

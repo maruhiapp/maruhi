@@ -59,7 +59,7 @@ import {
   type SyncReceipt,
 } from "./sync-receipt.ts";
 import type { VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironment } from "./values.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 
 /** One line of a plan. `blocked` = apply would refuse it (reason names only the variable). */
 export type PlanEntry =
@@ -120,6 +120,19 @@ export function sourceVariablesOf(
     // 同じ値になるが、apply は実際に送るバイト列で判定する
     byteLength: Redacted.value(variable.value).byteLength,
     required: variable.required,
+  }));
+}
+
+/** 検証済みメタデータ → plan の材料。暗号文 = ct || tag(16 バイト)から
+ * 平文長だけを出す(復号しない — plan / apply 共通)。 */
+function sourceFromVerified(
+  variables: VerifiedEnvironmentPull["variables"],
+): readonly SourceVariable[] {
+  return variables.map((variable) => ({
+    name: variable.name,
+    version: variable.version,
+    byteLength: Math.max(0, variable.ciphertextHex.length / 2 - GCM_TAG_BYTES),
+    required: variable.schema?.required ?? false,
   }));
 }
 
@@ -426,13 +439,7 @@ export function syncPlanOp(input: SyncContextInput): Effect.Effect<void, CliErro
       floor: input.sourceFloor,
     });
     yield* logWarnings(pulled.warnings);
-    const source: SourceVariable[] = pulled.variables.map((variable) => ({
-      name: variable.name,
-      version: variable.version,
-      // 暗号文 = ct || tag(16 バイト)。復号せずに平文長だけを知る
-      byteLength: Math.max(0, variable.ciphertextHex.length / 2 - GCM_TAG_BYTES),
-      required: variable.schema?.required ?? false,
-    }));
+    const source = sourceFromVerified(pulled.variables);
     const plan = yield* computePlan({
       target: input.target,
       source,
@@ -952,22 +959,20 @@ export function syncApplyOp(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const loaded = yield* loadTargetReceipt(input);
-    // apply は復号する(run と同じ経路 — pull.ts)。平文は Redacted のまま
-    // ドライバの本文 / stdin の組み立てまで運ぶ
-    const pulled = yield* pullVariables({
+    // plan はメタデータだけから組む(復号しない — sync plan と同じ経路)。
+    // 選択から外れた変数・required 警告の対象外の平文をメモリに作らないため、
+    // 値は「実際に送る add / update だけ」に select で絞った 2 段目の pull で取る
+    const meta = yield* pullVerifiedEnvironment({
       client: input.client,
       verified: loaded.verified,
       environmentId: input.target.environment as EnvironmentId,
-      recipient: input.recipient,
       resync: input.resync,
       floor: input.sourceFloor,
     });
-    yield* logWarnings(pulled.warnings);
     const plan = yield* computePlan({
       target: input.target,
-      source: sourceVariablesOf(pulled.variables),
-      // pull.ts はすでに declared を材料形へ写している
-      declared: pulled.declared,
+      source: sourceFromVerified(meta.variables),
+      declared: toDeclaredVariables(meta.declared),
       receipt: loaded.receipt,
     });
     yield* reviewPlan(
@@ -976,6 +981,23 @@ export function syncApplyOp(
       { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
       input.display ?? FULL_PLAN,
     );
+    // apply は復号する(run と同じ経路 — pull.ts)。平文は Redacted のまま
+    // ドライバの本文 / stdin の組み立てまで運ぶ
+    const writeNames = new Set(
+      plan.entries
+        .filter((entry) => entry.action === "add" || entry.action === "update")
+        .map((entry) => entry.name),
+    );
+    const pulled = yield* pullVariables({
+      client: input.client,
+      verified: meta.verified,
+      environmentId: input.target.environment as EnvironmentId,
+      recipient: input.recipient,
+      resync: input.resync,
+      floor: input.sourceFloor,
+      select: (name) => writeNames.has(name),
+    });
+    yield* logWarnings(pulled.warnings);
     const work = yield* prepareWork(input.target, plan, writesOf(pulled.variables));
     if (work.writes.length === 0 && work.deletes.length === 0) {
       yield* io.log(

@@ -119,8 +119,14 @@ export function readWatermarks(sql: SqlStorage): DoWatermarks {
 
 /** chain_entries が空か(復元の受理条件 — 上書き経路を作らない)。 */
 function isProjectDoEmpty(sql: SqlStorage): boolean {
-  return sql.exec("SELECT 1 FROM chain_entries LIMIT 1").toArray().length === 0;
+  return sql.exec(`SELECT 1 FROM ${CHAIN_TABLE} LIMIT 1`).toArray().length === 0;
 }
+
+const CHAIN_TABLE = "chain_entries";
+/** chain_entries の復元ステージング表。`tables` に含まれないため退避物には出ず、
+ * 残骸は次回の復元開始時 / 完了時 / 失敗時に DROP される。
+ */
+const CHAIN_STAGING_TABLE = "chain_entries_restore";
 
 // ---------------------------------------------------------------------------
 // 退避(書き出し)
@@ -128,7 +134,7 @@ function isProjectDoEmpty(sql: SqlStorage): boolean {
 
 /** 退避物の表の順序: chain_entries を**最後**に(復元の「チェーンが最後」規則の根拠)。 */
 function snapshotTableOrder(tables: readonly string[]): readonly string[] {
-  return [...tables.filter((t) => t !== "chain_entries"), "chain_entries"];
+  return [...tables.filter((t) => t !== CHAIN_TABLE), CHAIN_TABLE];
 }
 
 function encodeScalar(value: unknown): SnapshotScalar {
@@ -498,6 +504,9 @@ class RestoreReader {
   trailer: SnapshotTrailer | null = null;
   readonly rows: Record<string, number> = {};
   #inserter: RowInserter | null = null;
+  /** accept 中の論理表名。挿入先とは別物(chain_entries はステージングへ回す)。 */
+  #table: string | null = null;
+  #chainColumns: readonly string[] | null = null;
 
   constructor(
     private readonly storage: DurableObjectStorage,
@@ -529,7 +538,7 @@ class RestoreReader {
     }
   }
 
-  /** 全表の行数がトレーラと一致することを検査して結果を返す。 */
+  /** 全表の行数がトレーラと一致することを検査し、チェーンを本表へ移して結果を返す。 */
   verify(tables: readonly string[]): RestoreSnapshotResult {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
@@ -540,6 +549,7 @@ class RestoreReader {
         throw new RestoreRefusedError("row-count-mismatch");
       }
     }
+    this.#promoteChainStaging();
     return { header, trailer, rows: this.rows };
   }
 
@@ -548,13 +558,44 @@ class RestoreReader {
       throw new RestoreRefusedError("unknown-table");
     }
     this.#flush();
-    this.#inserter = new RowInserter(this.storage, line.table, line.columns);
+    // chain_entries はステージング表へ書き、verify で本表へ移す。RowInserter は
+    // バッチごとにコミットするため、プロセスが chain 表の途中で死ぬと「有効だが
+    // 打ち切られた連鎖」が残り、isProjectDoEmpty の拒否で二度と復元できない。
+    // ステージングを経ると、中断は常に「chain_entries 空」(= 未初期化)に倒れる。
+    const target = line.table === CHAIN_TABLE ? this.#beginChainStaging(line.columns) : line.table;
+    this.#inserter = new RowInserter(this.storage, target, line.columns);
+    this.#table = line.table;
     this.rows[line.table] = 0;
+  }
+
+  /** チェーンの列名を覚えてステージング表を作り、その表名を返す。 */
+  #beginChainStaging(columns: readonly string[]): string {
+    const columnList = columns.join(", ");
+    this.storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
+    this.storage.sql.exec(`CREATE TABLE ${CHAIN_STAGING_TABLE} (${columnList})`);
+    this.#chainColumns = columns;
+    return CHAIN_STAGING_TABLE;
+  }
+
+  /** 検証済みのステージング行を 1 トランザクションで chain_entries へ移す。 */
+  #promoteChainStaging(): void {
+    const columns = this.#chainColumns;
+    if (columns === null) {
+      return; // 退避物に chain_entries 表がなかった(空プロジェクト)
+    }
+    const columnList = columns.join(", ");
+    this.storage.transactionSync(() => {
+      this.storage.sql.exec(
+        `INSERT INTO ${CHAIN_TABLE} (${columnList}) SELECT ${columnList} FROM ${CHAIN_STAGING_TABLE}`,
+      );
+      this.storage.sql.exec(`DROP TABLE ${CHAIN_STAGING_TABLE}`);
+    });
+    this.#chainColumns = null;
   }
 
   #acceptRow(line: SnapshotRowLine): void {
     const inserter = this.#inserter;
-    if (inserter === null || line.table !== inserter.table) {
+    if (inserter === null || line.table !== this.#table) {
       throw new RestoreRefusedError("malformed");
     }
     inserter.push(line.values);
@@ -570,8 +611,9 @@ class RestoreReader {
 /**
  * 退避物を空の DO へ書き戻す(呼び出し側が permit を保持していること)。
  * バッチごとに transactionSync で原子コミットし、途中失敗(例外・トレーラ欠落・
- * 行数不一致)は全表を消して空へ戻してから投げる(チェーンが最後の表なので、
- * 消し損ねても「未初期化」側に倒れる)。
+ * 行数不一致)は全表を消して空へ戻してから投げる。chain_entries の行は
+ * ステージング表に書き、検証を通ってから 1 トランザクションで本表へ移す —
+ * プロセスがどこで死んでも「未初期化」側に倒れ、復元は再試行できる。
  */
 export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<RestoreSnapshotResult> {
   const { storage, tables } = input;
@@ -580,6 +622,7 @@ export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<Rest
   }
   // 前回の部分復元(非チェーン表の残骸)を消してから始める
   wipeTables(storage.sql, tables);
+  storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
   const reader = new RestoreReader(storage, new Set(tables), input.schemaVersion);
   try {
     for await (const text of lines(input.body)) {
@@ -590,6 +633,7 @@ export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<Rest
     return reader.verify(tables);
   } catch (error) {
     wipeTables(storage.sql, tables);
+    storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
     throw error;
   }
 }

@@ -200,7 +200,14 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
 ];
 
 function attestationSummary(snapshot: ChainSnapshot): string {
-  const attestations = snapshot.attestations ?? [];
+  // 申告の形だけ見る(敵対サーバー対策 — 読めない行は数えずに落とす)
+  const attestations = (snapshot.attestations ?? []).filter(
+    (a) =>
+      typeof a === "object" &&
+      a !== null &&
+      typeof a.attesterUserId === "string" &&
+      typeof a.chainHeadSeq === "number",
+  );
   if (attestations.length === 0) return "None reported";
   const parts = attestations.map((a) => `${a.attesterUserId} at seq ${a.chainHeadSeq}`);
   return `${attestations.length} reported: ${parts.join(" · ")}`;
@@ -397,17 +404,17 @@ function ApprovalsView({
 }
 
 /**
- * 読めずに落とした端末 op は黙って吸収しない(K5-17): 落とした `add_device` は端末を欠かせ、
+ * 読めずに落としたエントリは黙って吸収しない(K5-17): 落とした `add_device` は端末を欠かせ、
  * 落とした `revoke_device` は端末を残すので、表示はどちらの向きにもずれうる(片方向を言わない —
  * K5-18)。0 なら描かない。検証は CLI
  */
-function UnreadableDeviceEntriesNote({ count }: { count: number }): ReactNode {
+function UnreadableEntriesNote({ count }: { count: number }): ReactNode {
   if (count === 0) return null;
-  const rows = count === 1 ? "1 device entry" : `${count} device entries`;
+  const rows = count === 1 ? "1 entry" : `${count} entries`;
   const verb = count === 1 ? "was" : "were";
   return (
-    <Text type="supporting" size="sm" data-testid="unreadable-device-entries">
-      {`${rows} in the reported chain could not be read and ${verb} left out; the device sets above may not match what those entries would have produced. Verify with maruhi project verify.`}
+    <Text type="supporting" size="sm" data-testid="unreadable-entries">
+      {`${rows} in the reported chain could not be read and ${verb} left out; the view above may not match what those entries would have produced. Verify with maruhi project verify.`}
     </Text>
   );
 }
@@ -439,7 +446,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
           dividers="rows"
           data-testid="member-table"
         />
-        <UnreadableDeviceEntriesNote count={view.unreadableDeviceEntries} />
+        <UnreadableEntriesNote count={view.unreadableEntries} />
       </SectionBlock>
       <ServersList servers={view.servers} />
       <ApprovalsView policy={view.policy} proposals={view.proposals} />
