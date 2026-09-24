@@ -212,6 +212,18 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     expect(devices).toContain("account-wide admin API token");
   });
 
+  // DK K9-3: 登録簿に載せられなかったとき要求を残す(K9-1)ことは、`device approve` の
+  // Note と docs の両方が述べる消せない複製なので、docs が引用する Note の語句を両方に
+  // 留める(Note 側を言い換えると docs の引用が偽になる)
+  it("quotes the note that a failed registry write leaves the request in place", () => {
+    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
+    expect(source).toContain("The request is left in place until");
+    expect(source).toContain("will not see the completion signal");
+    expect(devices).toContain(
+      "… will not see the completion signal. The request is left in place until …",
+    );
+  });
+
   // K6-U: 台帳を変えるコマンドの列挙(`designating guardians` を含む文)は、開封の材料を
   // 名乗らない。`maruhi guardian add` は `--passkey` を受けないので、この列挙に材料を足すと
   // 必ず嘘になる(同じ誤りが devices / recover の両ページで出た — K6-R の原則の機械化)。
