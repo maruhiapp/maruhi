@@ -6,7 +6,8 @@
 //   検証済みチェーン(K4-5)。ゲートなし(DK-D — 要求側は何も足さない)
 // - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
 //   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
-//   → 各プロジェクトへ `add_device` → バックフィル → ローカル記録(approved)→ 登録簿へ
+//   → 各プロジェクトを開いて判定(既に載っている鍵の cap が今回の cap と違えば何も書かずに
+//   止まる — K10-1)→ 各プロジェクトへ `add_device` → バックフィル → ローカル記録(approved)→ 登録簿へ
 //   PUT(合図)→ 要求の取消(PUT が成功したときだけ — 失敗なら要求を残す: K9-1)
 // - `device list [--project]`: チェーン(真実)・登録簿(server-reported)・ローカル記録
 //   (出所)を突き合わせて表示する。値ゼロ・鍵不要・ゲートなし
@@ -74,7 +75,7 @@ import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keycha
 import { logNote, logWarning } from "./notice.ts";
 import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
-import { compareCodePoints, requireScopeEnvironmentsExist } from "./scope.ts";
+import { compareCodePoints, requireScopeEnvironmentsExist, sameScope } from "./scope.ts";
 import {
   type CliSession,
   importMasterKeys,
@@ -540,16 +541,34 @@ export function deviceApproveOp(input: {
       "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours, and approving it adds their key to your projects",
     );
     const projectIds = yield* resolveProjectIds(input.client, input.project);
-    const outcomes: ProjectApproveOutcome[] = [];
+    // 2 相(DK K10-4): 先に全プロジェクトを開いて決着と「既に載っている cap」を集め、
+    // cap の食い違いがあれば**どこにも追記せずに**止まる(追記しながら判定すると、
+    // 未登録のプロジェクトへ今回の cap で足した後で気づく)。開いた文脈は第 2 相で使う
+    const plans: ProjectApprovePlan[] = [];
     for (const projectId of projectIds) {
-      outcomes.push(
-        yield* approveOnProject({
+      plans.push(
+        yield* planApproveOnProject({
           session: input.session,
           projectId,
           request,
           cap: input.cap,
           masterKeys,
         }),
+      );
+    }
+    yield* refuseCapMismatch({ plans, request, cap: input.cap, project: input.project });
+    const outcomes: ProjectApproveOutcome[] = [];
+    for (const plan of plans) {
+      outcomes.push(
+        plan.kind === "settled"
+          ? plan.outcome
+          : yield* appendOnProject({
+              session: input.session,
+              plan,
+              request,
+              cap: input.cap,
+              masterKeys,
+            }),
       );
     }
     // どのプロジェクトにも載らなかった(全部 failed / skipped)なら、後段(記録・登録簿・
@@ -594,12 +613,15 @@ export function deviceApproveOp(input: {
       // 要求は残す(期限まで)。再実行は全プロジェクト already(失敗していた分は再試行)→
       // PUT → 取消で収束する。期限を過ぎると登録簿の行を書く経路が無い(K9-3 の T3)
       const retry = `The request is left in place until ${formatUtcMinutes(request.expiresAtMs)}:`;
+      // 打ち直しは同じ cap で(K10-1 — 違う cap は拒否される。フラグなしの再実行は既定の
+      // owner / all になるので、コマンドをそのまま出す)
+      const rerun = approveCommandOf(request.fingerprintHex, input.cap, input.project);
       const afterwards =
         "After that the device stays registered on the chains above but unlisted in your device registry";
       yield* logNote(
         listed.failure instanceof DeviceRegistryLimitError
-          ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`maruhi device approve\` before then to list it. ${afterwards}`
-          : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`maruhi device approve\` before then to list it. ${afterwards}`,
+          ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`${rerun}\` before then to list it. ${afterwards}`
+          : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`${rerun}\` before then to list it. ${afterwards}`,
       );
       return outcomes;
     }
@@ -611,43 +633,150 @@ export function deviceApproveOp(input: {
   });
 }
 
-/** 1 プロジェクトへの `add_device` + バックフィル(失敗は結果に畳む — 1 つの失敗で止めない)。 */
-function approveOnProject(input: {
+/**
+ * 第 1 相の結果(DK K10-4): 決着済み(skipped / already / failed)か、第 2 相で追記する
+ * プロジェクトの文脈か。`chainCap` はこの鍵がこのチェーンに既に載っていればその cap
+ * (署名する端末の有無と関係なくチェーンの事実 — K10-2 第 3 巡)。
+ */
+type ProjectApprovePlan =
+  | {
+      readonly kind: "settled";
+      readonly outcome: ProjectApproveOutcome;
+      readonly chainCap: DeviceCap | null;
+    }
+  | {
+      readonly kind: "append";
+      readonly projectId: string;
+      readonly context: ProjectContext;
+      readonly chainCap: null;
+    };
+
+/** 1 プロジェクトを開いて決着を判定する(失敗は結果に畳む — 1 つの失敗で止めない)。 */
+function planApproveOnProject(input: {
   readonly session: CliSession;
   readonly projectId: string;
   readonly request: ApprovableRequest;
   readonly cap: DeviceCap;
   readonly masterKeys: MasterKeys;
-}): Effect.Effect<ProjectApproveOutcome, never, CliServices> {
-  const outcome = (
+}): Effect.Effect<ProjectApprovePlan, never, CliServices> {
+  const settled = (
     state: ProjectApproveOutcome["state"],
     message: string | null,
-    backfill: DeviceBackfillOutcome | null = null,
-  ): ProjectApproveOutcome => ({ projectId: input.projectId, state, backfill, message });
+    chainCap: DeviceCap | null = null,
+  ): ProjectApprovePlan => ({
+    kind: "settled",
+    outcome: { projectId: input.projectId, state, backfill: null, message },
+    chainCap,
+  });
   return Effect.gen(function* () {
     const context = yield* openProject({ server: input.session.origin, project: input.projectId });
     const self = context.verified.state.members.get(input.session.userId);
     if (self === undefined) {
-      return outcome("skipped", "you are not a member of this project");
+      return settled("skipped", "you are not a member of this project");
     }
+    const present = self.devices.get(input.request.fingerprintHex);
+    const chainCap: DeviceCap | null =
+      present === undefined ? null : { roleCap: present.roleCap, scope: present.scope };
     const signer = findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
     if (signer === undefined) {
-      return outcome(
+      return settled(
         "skipped",
         "this machine's key is not one of your registered devices here (approve this machine first from a device that is)",
+        chainCap,
       );
     }
-    if (self.devices.has(input.request.fingerprintHex)) {
-      return outcome("already", null);
+    if (present !== undefined) {
+      return settled("already", null, chainCap);
     }
     // 通信前判定(K4-3 反例 3 / 4): 単調性と `listed` の環境の存在
     if (!capWithinSignerCap(input.cap, signer)) {
-      return outcome(
+      return settled(
         "skipped",
         `the requested cap ${describeCap(input.cap)} exceeds this device's own cap ${describeCap(signer)} (a device may only register devices bounded by its own cap — CRYPTO_SPEC §6.2); approve from a device with a wider cap`,
       );
     }
     yield* requireScopeEnvironmentsExist(context.verified, input.cap.scope);
+    return { kind: "append", projectId: input.projectId, context, chainCap: null } as const;
+  }).pipe(Effect.catch((error) => Effect.succeed(settled("failed", error.message))));
+}
+
+/** cap の一致(role と scope — scope は集合として比べる)。 */
+function sameCap(a: DeviceCap, b: DeviceCap): boolean {
+  return a.roleCap === b.roleCap && sameScope(a.scope, b.scope);
+}
+
+/**
+ * `device approve` を同じ cap で打ち直すコマンド(DK K10-1)。フラグの字面は help golden
+ * (`--cap` / `--env` / `--all-envs` / `--no-envs` / `--project`)から写す。
+ */
+function approveCommandOf(
+  fingerprintHex: string,
+  cap: DeviceCap,
+  project: string | undefined,
+): string {
+  const scope =
+    cap.scope.kind === "all"
+      ? ["--all-envs"]
+      : cap.scope.environmentIds.length === 0
+        ? ["--no-envs"]
+        : cap.scope.environmentIds.map((id) => `--env ${displayText(id)}`);
+  const target = project === undefined ? [] : [`--project ${displayText(project)}`];
+  return ["maruhi device approve", fingerprintHex, "--cap", cap.roleCap, ...scope, ...target].join(
+    " ",
+  );
+}
+
+/**
+ * 再実行の cap の規律(DK K10-1 / K10-2): 訪れるプロジェクトのどれかのチェーンにこの鍵が
+ * 既に載っていて、その cap が今回の cap と違えば、何も追記・記録せず要求を残して止まる。
+ * 端末の cap は最初の承認で決まり変えられないので、再実行(PUT の失敗後・中断後)は最初の
+ * 承認の続きでしかない。比べる相手はチェーン(真実)だけで、ローカル記録は読まない(K4-5)。
+ */
+function refuseCapMismatch(input: {
+  readonly plans: readonly ProjectApprovePlan[];
+  readonly request: ApprovableRequest;
+  readonly cap: DeviceCap;
+  readonly project: string | undefined;
+}): Effect.Effect<void, CliError> {
+  const present = input.plans.flatMap((plan) =>
+    plan.chainCap === null ? [] : [{ projectId: plan.outcome.projectId, cap: plan.chainCap }],
+  );
+  if (present.every((item) => sameCap(item.cap, input.cap))) {
+    return Effect.void;
+  }
+  const listed = present
+    .map((item) => `${describeCap(item.cap)} on ${displayText(item.projectId)}`)
+    .join(", ");
+  const distinct = present.filter(
+    (item, index) => present.findIndex((other) => sameCap(other.cap, item.cap)) === index,
+  );
+  const only = distinct.length === 1 ? distinct[0] : undefined;
+  const rerun =
+    only === undefined
+      ? "Its cap differs between those projects, so re-run it once per project with `--project <id>` and the cap shown for that project."
+      : `Re-run it with that cap: \`${approveCommandOf(input.request.fingerprintHex, only.cap, input.project)}\`.`;
+  return Effect.fail(
+    cliError(
+      `Device ${input.request.fingerprintHex} is already registered with cap ${listed}, and this approval asks for ${describeCap(input.cap)}: a device's cap is set when it is first approved and cannot be changed later, so this approval appended nothing, recorded nothing and left the request in place. ${rerun} To give the device another cap, revoke it and re-add it instead`,
+    ),
+  );
+}
+
+/** 第 2 相: 第 1 相で開いた文脈で `add_device` + バックフィル(失敗は結果に畳む)。 */
+function appendOnProject(input: {
+  readonly session: CliSession;
+  readonly plan: Extract<ProjectApprovePlan, { readonly kind: "append" }>;
+  readonly request: ApprovableRequest;
+  readonly cap: DeviceCap;
+  readonly masterKeys: MasterKeys;
+}): Effect.Effect<ProjectApproveOutcome, never, CliServices> {
+  const { context, projectId } = input.plan;
+  const outcome = (
+    state: ProjectApproveOutcome["state"],
+    message: string | null,
+    backfill: DeviceBackfillOutcome | null = null,
+  ): ProjectApproveOutcome => ({ projectId, state, backfill, message });
+  return Effect.gen(function* () {
     const appended = yield* appendAddDevice({
       client: context.client,
       verified: context.verified,

@@ -300,8 +300,10 @@ function registerRecorded(input: {
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
     });
+    // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3 —
+    // K10 以前の CLI が上書きした記録の cap がチェーンと食い違っていても、ここで見える)
     yield* logNote(
-      `${appended ? "registered" : "found"} your device ${label} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `; ${backfill.failed.length} environment(s) failed and are retried on the next sync`}`,
+      `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `; ${backfill.failed.length} environment(s) failed and are retried on the next sync`}`,
     );
     return { ...context, verified };
   }).pipe(
