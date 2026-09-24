@@ -152,6 +152,11 @@ async function makeServer(input: {
   /** 環境一覧 GET の応答コード(既定 200。500 = 受理後の sweep を失敗させる)。 */
   readonly environmentsStatus?: number;
   /**
+   * 登録簿 PUT の応答コードを呼び出し順に(429 = 行の上限、500 = 一時的な失敗)。
+   * 尽きたら 204(DK K9-1: 失敗した回の後の再実行を成功させる)。
+   */
+  readonly registryPutStatuses?: readonly number[];
+  /**
    * `POST /auth/devices/requests` の応答: 期限と、合図(登録簿の行)を即座に立てるか。
    * `conflict` を置くと(合図を立てた後に)409 を返す。
    */
@@ -170,6 +175,7 @@ async function makeServer(input: {
   const registryPuts: ServerState["registryPuts"] = [];
   const registryDeletes: string[] = [];
   const requestCancels: string[] = [];
+  const registryPutStatuses = [...(input.registryPutStatuses ?? [])];
   const ownWrap: WireRecipientDek | null = input.withEnvironment
     ? await wrapDekFor({
         projectId,
@@ -248,6 +254,16 @@ async function makeServer(input: {
       const fp = match[1] ?? "";
       if (request.method === "PUT") {
         registryPuts.push({ fp, body: request.body as Record<string, unknown> });
+        const status = registryPutStatuses.shift() ?? 204;
+        if (status === 429) {
+          return {
+            status,
+            json: { _tag: "DeviceRegistryLimit", reason: "device-rows", limit: 32 },
+          };
+        }
+        if (status !== 204) {
+          return { status, json: { _tag: "Internal" } };
+        }
         const body = request.body as { encPubHex: string; sigPubHex: string; label: string };
         registry.push({ keyFingerprintHex: fp, ...body, createdAtMs: Date.now() });
         return { status: 204 };
@@ -583,6 +599,71 @@ describe("maruhi device approve", () => {
     ]);
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
+  });
+
+  it("登録簿 PUT が 429 なら要求を取り消さず(DK K9-1)、rows を消した後の再実行が already → PUT → 取消で収束する", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+      registryPutStatuses: [429],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    // チェーンには載ったので失敗ではない(終了コード 0 — K8-5 第 3 巡)
+    expect(
+      await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.appended).toHaveLength(1);
+    expect(state.registryPuts).toHaveLength(1);
+    // 合図を出せなかったので、合図を出し直す材料(要求)は残す
+    expect(state.requestCancels).toEqual([]);
+    const note = env.errors.join("\n");
+    expect(note).toContain("the device registry is full (32 rows)");
+    // docs(`devices.mdx`)が引用する 2 文は、両方の分岐で隣り合う(PR #196 pullfrog)
+    expect(note).toContain(
+      "will not see the completion signal. The request is left in place until",
+    );
+    expect(note).toContain("re-run `maruhi device approve` before then to list it");
+    expect(note).toContain("unlisted in your device registry");
+    // 承認側が rows を消して再実行: 全プロジェクト already(追記なし)→ PUT → 取消
+    expect(
+      await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.appended).toHaveLength(1);
+    expect(state.registryPuts.map((put) => put.fp)).toEqual([
+      dev2.fingerprintHex,
+      dev2.fingerprintHex,
+    ]);
+    expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
+    expect(env.logs.join("\n")).toContain("already registered");
+  });
+
+  it("429 以外の PUT 失敗(一時的な 500)でも要求を残し、同じ再実行の案内を出す(DK K9-2)", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+      registryPutStatuses: [500],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(
+      await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.appended).toHaveLength(1);
+    expect(state.requestCancels).toEqual([]);
+    const note = env.errors.join("\n");
+    expect(note).toContain("could not update the device registry (");
+    expect(note).toContain("the device is registered on the chains above regardless");
+    expect(note).toContain(
+      "will not see the completion signal. The request is left in place until",
+    );
+    expect(note).toContain("re-run `maruhi device approve` before then to list it");
+    expect(note).not.toContain("registry is full");
   });
 });
 
@@ -1037,7 +1118,7 @@ describe("maruhi device add", () => {
     // 既定のモックは GET /auth/devices/requests/:fp に 404 を返す
     expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).not.toContain("expired before it was approved");
+    expect(errors).not.toContain("expired before this machine saw the completion signal");
     expect(errors).toContain("DeviceNotFound");
   });
 
@@ -1147,7 +1228,9 @@ describe("maruhi device add", () => {
     // 経過は実測(再開した待機では閾値より大きい)— ここでは閾値 + 1 分
     expect(hints[0]).toContain("6 minutes since the request");
     expect(hints[0]).toContain("this key is not in your device registry yet");
-    expect(hints[0]).toContain("failed on every project, the cause is in its output");
+    expect(hints[0]).toContain(
+      "failed on every project, or could not list this device in your device registry, the cause is in its output",
+    );
     expect(env.logs.join("\n")).toContain("Approved: this device is registered on 0 projects");
   }, 15_000);
 
@@ -1184,12 +1267,17 @@ describe("maruhi device add", () => {
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
     const expired = env.errors.join("\n");
     expect(expired).toContain(
-      "The device-add request expired before it was approved (requests live 15 minutes)",
+      "The device-add request expired before this machine saw the completion signal (requests live 15 minutes)",
     );
     // 案内は実装どおり(K7-1): 再実行は拒否される(K4-21)ので `--replace` を、承認側が
     // 何も登録していないことを条件に案内する。「同じ鍵で作り直す」とは言わない
     expect(expired).toContain("if it registered nothing, run `maruhi device add --replace`");
     expect(expired).not.toContain("it reuses this key");
+    // K9-3 の T3: 承認側が登録したが登録簿に載せられず、期限までに再実行しなかったとき、
+    // 鍵はチェーンに載っている — `--replace` で捨てさせない分岐を持つ
+    expect(expired).toContain(
+      "If it registered this device but could not list it in your device registry, keep this key",
+    );
     // 鍵は生成済みのまま(捨てるのは人が `--replace` を打ったとき)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeDefined();
   });

@@ -7,7 +7,7 @@
 // - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
 //   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
 //   → 各プロジェクトへ `add_device` → バックフィル → ローカル記録(approved)→ 登録簿へ
-//   PUT(合図)→ 要求の取消
+//   PUT(合図)→ 要求の取消(PUT が成功したときだけ — 失敗なら要求を残す: K9-1)
 // - `device list [--project]`: チェーン(真実)・登録簿(server-reported)・ローカル記録
 //   (出所)を突き合わせて表示する。値ゼロ・鍵不要・ゲートなし
 // - `device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`: 参照は FP の
@@ -35,7 +35,7 @@ import {
   encodeHex,
   scopeIncludesEnvironment,
 } from "@maruhi/crypto";
-import { Duration, Effect } from "effect";
+import { Duration, Effect, Result } from "effect";
 
 import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
@@ -189,11 +189,13 @@ export function deviceAddOp(input: {
     });
     if (!signalled) {
       // 期限切れ後の再実行は拒否される(鍵あり + 要求なし + 登録簿なし — K4-21)ので、
-      // 先へ進む手は `--replace` だけ。ただし承認側の登録簿 PUT が落ちた一部成功では
-      // 鍵はチェーンに載っている(合図だけが無い)ので、承認側の出力を条件にする(K7-1)
+      // 先へ進む手は `--replace` だけ。ただし承認側の登録簿 PUT が落ち、承認側が期限までに
+      // 再実行しなかったときは、鍵はチェーンに載っている(合図だけが無い — K9-3 の T3)。
+      // `--replace` はその鍵を捨ててチェーンに孤児を残すので、承認側の出力を条件に分ける
+      // (K7-1 / K9-3)。第 1 文も「承認前に」とは言わない(T3 では承認は済んでいる)
       return yield* Effect.fail(
         cliError(
-          `The device-add request expired before it was approved (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\``,
+          `The device-add request expired before this machine saw the completion signal (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\`. If it registered this device but could not list it in your device registry, keep this key: it is already registered on the projects that output lists (\`maruhi device list\` on this machine shows where), and only its row in your device registry is missing`,
         ),
       );
     }
@@ -381,7 +383,7 @@ function waitForRegistryRow(input: {
       ) {
         hinted = true;
         yield* logNote(
-          `still waiting (${Math.round((Date.now() - requestedAtMs) / 60_000)} minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, the cause is in its output and this request stays valid until ${formatUtcMinutes(input.expiresAtMs)} — fix it there and re-run it. Otherwise nothing is needed here`,
+          `still waiting (${Math.round((Date.now() - requestedAtMs) / 60_000)} minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, or could not list this device in your device registry, the cause is in its output and this request stays valid until ${formatUtcMinutes(input.expiresAtMs)} — fix it there and re-run it. Otherwise nothing is needed here`,
         );
       }
       yield* Effect.sleep(Duration.millis(input.intervalMs));
@@ -575,26 +577,32 @@ export function deviceApproveOp(input: {
       revokedAtMs: null,
     };
     yield* store.record(input.session.origin, input.session.userId, entry);
-    // 登録簿へ PUT(合図 — 最後に行う。429 は Note)
-    yield* input.client.devices
-      .register({
+    // 登録簿へ PUT(合図 — 最後に行う)。成否は値で取り出し、取消の条件にする(DK K9-1):
+    // 合図を出せなかったのに要求を消すと、承認側の再実行が要求を見つけられず、合図を
+    // 出し直す手が無くなる。失敗の種類は問わない(K9-2 — 種類は文言だけが見る)
+    const listed = yield* Effect.result(
+      input.client.devices.register({
         params: { fp: request.fingerprintHex },
         payload: {
           encPubHex: request.encPubHex,
           sigPubHex: request.sigPubHex,
           label: request.label,
         },
-      })
-      .pipe(
-        Effect.asVoid,
-        Effect.catch((error) =>
-          logNote(
-            error instanceof DeviceRegistryLimitError
-              ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. Remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`maruhi device approve\` to list it`
-              : `could not update the device registry (${toCliError(error).message}); the device is registered on the chains above regardless`,
-          ),
-        ),
+      }),
+    );
+    if (Result.isFailure(listed)) {
+      // 要求は残す(期限まで)。再実行は全プロジェクト already(失敗していた分は再試行)→
+      // PUT → 取消で収束する。期限を過ぎると登録簿の行を書く経路が無い(K9-3 の T3)
+      const retry = `The request is left in place until ${formatUtcMinutes(request.expiresAtMs)}:`;
+      const afterwards =
+        "After that the device stays registered on the chains above but unlisted in your device registry";
+      yield* logNote(
+        listed.failure instanceof DeviceRegistryLimitError
+          ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`maruhi device approve\` before then to list it. ${afterwards}`
+          : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`maruhi device approve\` before then to list it. ${afterwards}`,
       );
+      return outcomes;
+    }
     yield* input.client.devices.requestCancel({ params: { fp: request.fingerprintHex } }).pipe(
       Effect.asVoid,
       Effect.catch(() => Effect.void),

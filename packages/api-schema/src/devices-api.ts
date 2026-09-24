@@ -82,6 +82,18 @@ export const DeviceAddRequestSummarySchema = Schema.Struct({
 /** 登録簿の一覧(`GET /auth/devices`)の応答 envelope(K5 申し送り (0) — Web が導出型で読む)。 */
 export const DeviceListSchema = Schema.Struct({ devices: Schema.Array(DeviceSummarySchema) });
 
+/**
+ * 追加要求の作成(`POST /auth/devices/requests`)の応答: 要求の期限
+ * (`DEVICE_ADD_REQUEST_TTL_MS` 後)。保護者ハンドオフの `HandoffCreateResultSchema` とは
+ * 期限の意味が違うので共有しない(DK K9-4)。
+ */
+export const DeviceAddRequestCreateResultSchema = Schema.Struct({ expiresAtMs: Schema.Number });
+
+/** 追加要求の一覧(`GET /auth/devices/requests` — 本人の未失効の要求)の応答 envelope。 */
+export const DeviceAddRequestListSchema = Schema.Struct({
+  requests: Schema.Array(DeviceAddRequestSummarySchema),
+});
+
 const fingerprintParams = { fp: KeyFingerprintHex };
 
 /**
@@ -120,14 +132,14 @@ export const devicesGroup = HttpApiGroup.make("devices")
     // HttpApi の既定 200(§13-7 と同じ)。同じ FP の要求・登録簿の既存行との衝突は 409
     HttpApiEndpoint.post("requestCreate", "/auth/devices/requests", {
       payload: strictPayload(DeviceAddRequestSchema),
-      success: Schema.Struct({ expiresAtMs: Schema.Number }),
+      success: DeviceAddRequestCreateResultSchema,
       error: [ForbiddenError, DeviceRegistryConflictError, DeviceRegistryLimitError],
     }).middleware(AuthMiddleware),
   )
   .add(
     // 追加要求の一覧(承認する端末 — 本人のみ)。失効行は含めない
     HttpApiEndpoint.get("requestList", "/auth/devices/requests", {
-      success: Schema.Struct({ requests: Schema.Array(DeviceAddRequestSummarySchema) }),
+      success: DeviceAddRequestListSchema,
       error: [ForbiddenError],
     }).middleware(AuthMiddleware),
   )
