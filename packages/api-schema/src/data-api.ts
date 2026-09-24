@@ -639,6 +639,12 @@ export const variablesGroup = HttpApiGroup.make("variables")
   );
 
 /**
+ * GET /projects/:projectId/environments/:environmentId/deks: the DEK wraps
+ * addressed to the caller (AUTH_SPEC §12-6 — distribution is caller-only).
+ */
+export const RecipientDekListSchema = Schema.Struct({ deks: Schema.Array(RecipientDekSchema) });
+
+/**
  * DEK wrap registration, distribution and repair (AUTH_SPEC §12-6).
  * Registration covers both the full-set path (environment creation /
  * post-rotation) and the backfill path (wrapping historical epochs for a
@@ -673,7 +679,7 @@ export const deksGroup = HttpApiGroup.make("deks")
   .add(
     HttpApiEndpoint.get("listMine", "/projects/:projectId/environments/:environmentId/deks", {
       params: environmentParams,
-      success: Schema.Struct({ deks: Schema.Array(RecipientDekSchema) }),
+      success: RecipientDekListSchema,
       error: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
     }).middleware(AuthMiddleware),
   )
@@ -698,6 +704,9 @@ export const deksGroup = HttpApiGroup.make("deks")
     }).middleware(AuthMiddleware),
   );
 
+/** GET /projects/:projectId/schema-policy: the project's schema policy (AUTH_SPEC §12-11). */
+export const SchemaPolicyResultSchema = Schema.Struct({ schemaPolicy: SchemaPolicySchema });
+
 /**
  * Project schema-policy setting (AUTH_SPEC §12-11 — 有効化ゲートと
  * schema-locked)。
@@ -715,7 +724,7 @@ export const schemaPolicyGroup = HttpApiGroup.make("schemaPolicy")
   .add(
     HttpApiEndpoint.get("get", "/projects/:projectId/schema-policy", {
       params: projectParams,
-      success: Schema.Struct({ schemaPolicy: SchemaPolicySchema }),
+      success: SchemaPolicyResultSchema,
       error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   )

@@ -94,6 +94,8 @@ export {
 } from "./data.ts";
 export {
   DEVICE_ADD_REQUEST_TTL_MS,
+  DeviceAddRequestCreateResultSchema,
+  DeviceAddRequestListSchema,
   DeviceAddRequestSchema,
   DeviceAddRequestSummarySchema,
   DeviceLabelSchema,
@@ -113,7 +115,9 @@ export {
   environmentsGroup,
   EnvironmentSummarySchema,
   PulledVariableSchema,
+  RecipientDekListSchema,
   schemaPolicyGroup,
+  SchemaPolicyResultSchema,
   variablesGroup,
   VariableVersionSchema,
 } from "./data-api.ts";
@@ -132,14 +136,17 @@ export {
 } from "./invites-api.ts";
 export {
   GuardianDeviceShareSchema,
+  GuardianGroupCreateResultSchema,
   GuardianGroupRegistrationSchema,
   GuardianGroupResultSchema,
   GuardianModeSchema,
   GuardianShareResultSchema,
   GuardianShareSchema,
   HANDOFF_REQUEST_TTL_MS,
+  HandoffApprovalListSchema,
   HandoffApprovalResultSchema,
   HandoffApprovalSchema,
+  HandoffCreateResultSchema,
   HandoffLookupSchema,
   HandoffRequestIdSchema,
   HandoffSourceSchema,
@@ -152,9 +159,11 @@ export {
   MAX_HANDOFF_APPROVALS_PER_REQUEST,
   MAX_PASSKEY_WRAPS_PER_USER,
   PasskeyLabelSchema,
+  PasskeyWrapRegisterResultSchema,
   PasskeyWrapRegistrationSchema,
   PASSKEY_LABEL_PATTERN,
   PasskeyWrapResultSchema,
+  WardListSchema,
   WardSummarySchema,
 } from "./key-wraps-api.ts";
 export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api.ts";

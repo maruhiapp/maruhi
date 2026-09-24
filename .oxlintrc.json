@@ -61,6 +61,23 @@
           }
         ]
       }
+    },
+    {
+      // HttpApi の応答 envelope は名前を持つ(DK K9-4 / K9-5 / K9-7)。`HttpApiEndpoint.*(…)` の
+      // options の `success` の値の中に inline の `Schema.Struct` を書かない — 包んだ形
+      // (`.annotate` / `.pipe` / `Schema.Array(...)`)も子孫結合で落とす。`payload` / `params` /
+      // `error` の Struct、`HttpApiSchema.NoContent`、データ Schema の `success` という名の
+      // フィールドは対象外。エンドポイントを定義するのはこのパッケージだけ(apps は型を参照するのみ)
+      "files": ["packages/api-schema/src/**/*.ts"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "CallExpression[callee.object.name='HttpApiEndpoint'] > ObjectExpression > Property:matches([key.name='success'], [key.value='success']) CallExpression[callee.object.name='Schema'][callee.property.name='Struct']",
+            "message": "success に inline の Schema.Struct を書かない。Web / CLI が導出型を取れるよう、行の型の後に名前付きの export const(一覧 = 行の語幹 + List、取得 = 資源 + Result、作成 = 資源 + 動詞 + Result)を置いて index.ts から export する(DK K9-4)"
+          }
+        ]
+      }
     }
   ]
 }

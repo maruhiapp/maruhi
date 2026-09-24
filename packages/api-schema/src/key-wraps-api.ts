@@ -262,6 +262,27 @@ export const HandoffApprovalResultSchema = Schema.Struct({
   createdAtMs: Schema.Number,
 });
 
+/** passkey ラップの登録(`POST /auth/key-wraps/passkey`)の応答: 採番されたラップ id。 */
+export const PasskeyWrapRegisterResultSchema = Schema.Struct({ wrapId: LedgerIdSchema });
+
+/** 保護者グループの作成(`POST /auth/key-wraps/guardians`)の応答: 採番されたグループ id。 */
+export const GuardianGroupCreateResultSchema = Schema.Struct({ groupId: LedgerIdSchema });
+
+/** 自分が保護者である ward の一覧(`GET /auth/guardian/wards`)の応答 envelope。 */
+export const WardListSchema = Schema.Struct({ wards: Schema.Array(WardSummarySchema) });
+
+/**
+ * ハンドオフ要求の作成(`POST /auth/handoff`)の応答: 要求の期限(`HANDOFF_REQUEST_TTL_MS`
+ * 後)。端末追加要求の `DeviceAddRequestCreateResultSchema` とは期限の意味が違うので
+ * 共有しない(DK K9-4)。
+ */
+export const HandoffCreateResultSchema = Schema.Struct({ expiresAtMs: Schema.Number });
+
+/** ハンドオフ要求への承認の一覧(`GET /auth/handoff/:requestId/approvals`)の応答 envelope。 */
+export const HandoffApprovalListSchema = Schema.Struct({
+  approvals: Schema.Array(HandoffApprovalResultSchema),
+});
+
 /**
  * Master-key wrap ledger endpoints (AUTH_SPEC §13-7). All are token-only
  * (`*` × admin — §13-2) except `status`, which any authenticated principal
@@ -277,7 +298,7 @@ export const keyWrapsGroup = HttpApiGroup.make("keyWraps")
     HttpApiEndpoint.post("passkeyRegister", "/auth/key-wraps/passkey", {
       // strict 受理(§12-10 (1) — ラップ = 鍵素材の登録)
       payload: strictPayload(PasskeyWrapRegistrationSchema),
-      success: Schema.Struct({ wrapId: LedgerIdSchema }),
+      success: PasskeyWrapRegisterResultSchema,
       error: [ForbiddenError, KeyWrapPolicyError],
     }).middleware(AuthMiddleware),
   )
@@ -298,7 +319,7 @@ export const keyWrapsGroup = HttpApiGroup.make("keyWraps")
   .add(
     HttpApiEndpoint.post("guardianCreate", "/auth/key-wraps/guardians", {
       payload: strictPayload(GuardianGroupRegistrationSchema),
-      success: Schema.Struct({ groupId: LedgerIdSchema }),
+      success: GuardianGroupCreateResultSchema,
       error: [ForbiddenError, KeyWrapPolicyError],
     }).middleware(AuthMiddleware),
   )
@@ -318,7 +339,7 @@ export const keyWrapsGroup = HttpApiGroup.make("keyWraps")
   )
   .add(
     HttpApiEndpoint.get("wards", "/auth/guardian/wards", {
-      success: Schema.Struct({ wards: Schema.Array(WardSummarySchema) }),
+      success: WardListSchema,
       error: [ForbiddenError],
     }).middleware(AuthMiddleware),
   )
@@ -334,7 +355,7 @@ export const keyWrapsGroup = HttpApiGroup.make("keyWraps")
       // 運ぶのは request_id(E.pub の導出値)だけ — 署名済み構造・暗号文・鍵素材を
       // 含まないため strict 対象外(STRICT_EXEMPT_PAYLOAD_ENDPOINTS)
       payload: Schema.Struct({ requestId: HandoffRequestIdSchema }),
-      success: Schema.Struct({ expiresAtMs: Schema.Number }),
+      success: HandoffCreateResultSchema,
       error: [ForbiddenError, HandoffConflictError, KeyWrapRateLimitedError],
     }).middleware(AuthMiddleware),
   )
@@ -363,7 +384,7 @@ export const keyWrapsGroup = HttpApiGroup.make("keyWraps")
   .add(
     HttpApiEndpoint.get("handoffApprovals", "/auth/handoff/:requestId/approvals", {
       params: { requestId: HandoffRequestIdSchema },
-      success: Schema.Struct({ approvals: Schema.Array(HandoffApprovalResultSchema) }),
+      success: HandoffApprovalListSchema,
       error: [ForbiddenError, HandoffNotFoundError],
     }).middleware(AuthMiddleware),
   )
