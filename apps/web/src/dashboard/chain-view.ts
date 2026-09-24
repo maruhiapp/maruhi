@@ -426,7 +426,14 @@ const OPERATION_FOLDERS: {
 
 function applyOperation(state: FoldState, seq: number, operation: ProposableEntry): void {
   const fold = ownProp(OPERATION_FOLDERS, operation.op) as OperationFolder | undefined;
-  fold?.(state, seq, operation);
+  // 未モデルの内側 op は無視(K5-4)。畳む側は payload のフィールドを読むので、
+  // レコードでない payload はここで読めない行として数える(K5-17 と同じ規律)
+  if (fold === undefined) return;
+  if (!isRecord(operation.payload)) {
+    state.unreadableEntries += 1;
+    return;
+  }
+  fold(state, seq, operation);
 }
 
 /** 原則 2 の S = {owner として提案した提案者} ∪ approvals。 */
@@ -546,6 +553,8 @@ const INNER_SUMMARIES: {
 };
 
 function summarizeInner(operation: ProposableEntry): string {
+  // 要約は内側 payload のフィールドを読む — レコードでないものは op 名に倒す
+  if (!isRecord(operation.payload)) return operation.op;
   return (
     (ownProp(INNER_SUMMARIES, operation.op) as InnerSummarizer | undefined)?.(operation) ??
     operation.op

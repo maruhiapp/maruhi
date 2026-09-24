@@ -480,6 +480,51 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     expect(view.proposals).toEqual([]);
     expect(view.members.map((m) => m.userId)).toContain("user_m");
   });
+
+  it("summarizes a proposed op whose inner payload is not a record as its op name instead of throwing", () => {
+    const proposal = {
+      ...signedBy("user_owner", FP),
+      op: "propose",
+      payload: {
+        inner: { op: "remove_member", payload: null },
+        expiresAtMs: 4_000_000_000_000,
+      },
+    } as unknown as ChainEntry;
+    const view = deriveReportedView(
+      [genesis, addMember("user_a", "owner"), policyEntry(2, ["remove_member"]), proposal],
+      HASH_P,
+    );
+    expect(view.proposals.map((p) => p.innerSummary)).toEqual(["remove_member"]);
+    expect(view.unreadableEntries).toBe(0);
+  });
+
+  it("counts an approved op whose inner payload is not a record as unreadable instead of throwing", () => {
+    const proposal = {
+      ...signedBy("user_owner", FP),
+      op: "propose",
+      payload: {
+        inner: { op: "remove_member", payload: null },
+        expiresAtMs: 4_000_000_000_000,
+      },
+    } as unknown as ChainEntry;
+    const approval = approve("user_a", FP_A, HASH_P);
+    const entries = linked(
+      [
+        genesis,
+        addMember("user_a", "owner"),
+        addMember("user_m", "member"),
+        policyEntry(2, ["remove_member"]),
+        proposal,
+        approval,
+      ],
+      4,
+      HASH_P,
+    );
+    const view = deriveReportedView(entries, "99".repeat(32));
+    expect(view.proposals).toEqual([]);
+    expect(view.members.map((m) => m.userId)).toEqual(["user_owner", "user_a", "user_m"]);
+    expect(view.unreadableEntries).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
