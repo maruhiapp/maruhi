@@ -9,7 +9,7 @@
 
 import { DekWrapExistsError, type WrappedDek } from "@maruhi/api-schema";
 import type { SigningKeyPair } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { wrapAndSignFor, type WrapRecipient } from "./dek-wrap.ts";
@@ -105,6 +105,13 @@ export function backfillEnvironmentFor(input: {
     wrap: WrappedDek,
     storedRecipientEncPubHex: string | null,
   ) => Effect.Effect<SlotConflictResolution, CliError>;
+  /**
+   * 包むエポック(省略 = 1〜現エポックの全部)。端末の欠けの補完(device-gaps.ts —
+   * DK K11-1)が、欠けたエポックのうち自分が開けたものだけを渡す。
+   */
+  readonly epochs?: readonly number[];
+  /** このセッションで検証・開封済みの自分宛 DEK(`environmentKeysFor` の `cached`)。 */
+  readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
 }): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
   return Effect.gen(function* () {
     const keys = yield* environmentKeysFor({
@@ -112,9 +119,10 @@ export function backfillEnvironmentFor(input: {
       verified: input.verified,
       environmentId: input.environmentId,
       recipient: input.recipient,
+      cached: input.cached,
     });
     const wraps: WrappedDek[] = [];
-    for (let epoch = 1; epoch <= keys.currentEpoch; epoch += 1) {
+    for (const epoch of epochsToWrap(input.epochs, keys.currentEpoch)) {
       const dek = keys.deksByEpoch.get(epoch);
       if (dek === undefined) {
         // §7: 全メンバーは全エポックの DEK を受け取る。欠けは毒ラップ・欠落の
@@ -177,6 +185,14 @@ export function backfillEnvironmentFor(input: {
     }
     return { registered, alreadyRegistered, repaired };
   });
+}
+
+/** 包むエポック: 指定があればそれ、無ければ 1〜現エポック(バックフィルの既定)。 */
+function epochsToWrap(
+  epochs: readonly number[] | undefined,
+  currentEpoch: number,
+): readonly number[] {
+  return epochs ?? Array.from({ length: currentEpoch }, (_, index) => index + 1);
 }
 
 /**

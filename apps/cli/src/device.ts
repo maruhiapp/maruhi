@@ -48,6 +48,7 @@ import {
   type ProjectContextBase,
 } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
+import { describeGapFillRoute } from "./device-gaps.ts";
 import {
   capWithinSignerCap,
   describeCap,
@@ -854,7 +855,9 @@ function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number
             ? "registered the device"
             : "the device was already registered",
         backfill: item.backfill,
-        rerun: "Re-run `maruhi device approve` for this device to complete it",
+        // `already` はバックフィルしないので、承認の再実行は欠けを補わない(DK K11 — 補うのは
+        // 兄弟端末の pull。K10-12 の cap の拒否にも当たらない)
+        rerun: (environmentId) => describeGapFillRoute(item.projectId, environmentId),
       });
     case "skipped":
       return logNote(`${label}: skipped — ${item.message ?? ""}`).pipe(Effect.as(0));
@@ -868,7 +871,8 @@ export function reportRegisteredDevice(input: {
   readonly label: string;
   readonly action: string;
   readonly backfill: DeviceBackfillOutcome | null;
-  readonly rerun: string;
+  /** 失敗した環境を補う経路の案内(DK K11-5 — 字面は device-gaps.ts が作る)。 */
+  readonly rerun: (environmentId: string) => string;
 }): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -876,7 +880,7 @@ export function reportRegisteredDevice(input: {
     const failed = input.backfill?.failed ?? [];
     for (const failure of failed) {
       yield* logWarning(
-        `${input.label}: backfill of environment ${displayText(failure.environmentId)} failed (${failure.message}). ${input.rerun}`,
+        `${input.label}: backfill of environment ${displayText(failure.environmentId)} failed (${failure.message}). ${input.rerun(failure.environmentId)}`,
       );
     }
     return failed.length > 0 ? 1 : 0;

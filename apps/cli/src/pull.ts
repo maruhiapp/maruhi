@@ -12,12 +12,13 @@
 // 注入直前 = run.ts、表示ゲートの後ろ = display.ts、暗号境界 = push.ts のみ)。
 
 import type { EnvironmentId } from "@maruhi/core";
-import type { MetaVarType } from "@maruhi/crypto";
+import type { MetaVarType, SigningKeyPair } from "@maruhi/crypto";
 import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
+import { describeGapFillRoute, fillOwnDeviceGaps, type OwnDeviceGapFill } from "./device-gaps.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
@@ -64,6 +65,8 @@ export interface PulledVariables {
   /** 検証済み declared(値なし — 注入対象外。presence 検査は呼び出し側)。 */
   readonly declared: readonly DeclaredVariable[];
   readonly warnings: readonly string[];
+  /** 同じ人の他の端末の欠けたエポックの補完(`fillOwnDeviceGaps` を渡したときだけ — DK K11)。 */
+  readonly ownDeviceGapFills: readonly OwnDeviceGapFill[];
 }
 
 /**
@@ -199,6 +202,12 @@ export function pullVariables(input: {
    * 対して変わらず行う。省略 = 全 active 変数を復号する。
    */
   readonly select?: (name: string) => boolean;
+  /**
+   * 同じ人の他の端末の欠けたエポックを、同梱の行から導いて補う(DK K11-1 / K11-4 —
+   * `maruhi pull` だけが渡す。署名はこの端末の鍵)。省略 = 補わない。DEK はこの関数の
+   * 外に出さない(補完はここで行い、結果は事実として返す)。
+   */
+  readonly fillOwnDeviceGaps?: { readonly signingKeyPair: SigningKeyPair };
 }): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
     // (0) 対象環境 ∈ 自分の scope(CRYPTO_SPEC §6.3 — サーバーの 403 を待たない。
@@ -245,7 +254,7 @@ export function pullVariables(input: {
         ? pulled.warnings
         : [
             ...pulled.warnings,
-            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device recently, re-run \`maruhi device approve\` for it from a device that is already registered — that backfills the missing epochs`,
+            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device, the backfill to it may not have completed instead. ${describeGapFillRoute(verified.projectId, input.environmentId)}`,
           ];
 
     const results: DecryptedVariable[] = [];
@@ -269,11 +278,24 @@ export function pullVariables(input: {
         value: plaintext,
       });
     }
+    // 兄弟端末の欠けの補完(DK K11): 復号まで済んでから(pull が失敗すれば補わない)。
+    // 失敗は結果に畳まれ、pull の成否を変えない
+    const ownDeviceGapFills = yield* fillOwnDeviceGaps({
+      client: input.client,
+      verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      signer: input.fillOwnDeviceGaps,
+      currentEpoch: keys.currentEpoch,
+      deksByEpoch,
+      rows: pulled.deks,
+    });
     return {
       verified,
       variables: results,
       declared: toDeclaredVariables(pulled.declared),
       warnings,
+      ownDeviceGapFills,
     };
   });
 }

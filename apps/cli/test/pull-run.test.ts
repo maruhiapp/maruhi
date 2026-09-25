@@ -324,6 +324,11 @@ describe("maruhi pull", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("no DEK wraps for you exist at epochs 1");
     expect(errors).toContain("re-run `maruhi member add`");
+    // 端末の場面は承認の再実行でなく兄弟端末の pull(DK K11-5)
+    expect(errors).toContain(
+      `fills the missing epochs when it runs \`maruhi pull --project ${fixture.built.projectId} --env ${ENV_ID}\``,
+    );
+    expect(errors).not.toContain("maruhi device approve");
 
     // 全エポックが揃っていれば警告しない(誤検知なし)
     const complete = await startEnv([chainHandler(), pullHandler()]);

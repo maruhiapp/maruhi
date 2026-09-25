@@ -30,6 +30,7 @@ import {
   type ProjectContext,
 } from "./context.ts";
 import type { DekRecipient } from "./deks.ts";
+import { describeGapFillRoute } from "./device-gaps.ts";
 import { findOwnDevice } from "./device-key.ts";
 import {
   appendAddDevice,
@@ -279,8 +280,10 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
             ? "registered this device"
             : "this device was already registered",
         backfill: outcome.backfill,
-        rerun:
-          "Re-run `maruhi key recover --resume` or have a registered device run `maruhi device approve` for this machine",
+        // `--resume` は既登録でもバックフィルする(予備鍵で — 他に端末が無い復元の場面の
+        // 唯一の経路)。登録済みの鍵は要求を作れないので `device approve` は名指さない(DK K11-5)
+        rerun: (environmentId) =>
+          `Re-run \`maruhi key recover --resume\`. ${describeGapFillRoute(outcome.projectId, environmentId)}`,
       }).pipe(Effect.asVoid);
     case "reserve-missing":
       return logWarning(
@@ -648,7 +651,18 @@ function reportReserveRotateOutcome(
     yield* io.log(
       `${label}: new reserve key ${outcome.added ? "registered" : "already registered"}${describeBackfill(outcome.backfill)}; previous reserve key ${outcome.revoked.length > 0 ? "revoked" : "already revoked"}`,
     );
-    return outcome.sweep === null ? 0 : yield* reportReserveSweep(label, outcome.sweep);
+    // 新しい予備鍵へのバックフィルの失敗は、以前は件数に畳まれて見えなかった(DK K11 の G9 —
+    // 復元時に予備鍵が開けない環境が黙って残る)。承認・復元のバックフィル失敗と同じく
+    // 終了コード 1(K11-14 — 所有者裁定: 揃える。旧予備鍵は直後に失効するので、スクリプトが
+    // 新しい予備鍵の欠けを検出できなければならない)
+    const failed = outcome.backfill?.failed ?? [];
+    for (const failure of failed) {
+      yield* logWarning(
+        `${label}: backfill of environment ${displayText(failure.environmentId)} to the new reserve key failed (${failure.message}). ${describeGapFillRoute(outcome.projectId, failure.environmentId)}`,
+      );
+    }
+    const sweepCode = outcome.sweep === null ? 0 : yield* reportReserveSweep(label, outcome.sweep);
+    return failed.length > 0 ? 1 : sweepCode;
   });
 }
 
