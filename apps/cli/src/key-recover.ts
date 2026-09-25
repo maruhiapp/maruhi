@@ -30,6 +30,7 @@ import {
   type ProjectContext,
 } from "./context.ts";
 import type { DekRecipient } from "./deks.ts";
+import { describeGapFillRoute } from "./device-gaps.ts";
 import { findOwnDevice } from "./device-key.ts";
 import {
   appendAddDevice,
@@ -279,8 +280,10 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
             ? "registered this device"
             : "this device was already registered",
         backfill: outcome.backfill,
-        rerun:
-          "Re-run `maruhi key recover --resume` or have a registered device run `maruhi device approve` for this machine",
+        // `--resume` は既登録でもバックフィルする(予備鍵で — 他に端末が無い復元の場面の
+        // 唯一の経路)。登録済みの鍵は要求を作れないので `device approve` は名指さない(DK K11-5)
+        rerun: (environmentId) =>
+          `Re-run \`maruhi key recover --resume\`. ${describeGapFillRoute(outcome.projectId, environmentId)}`,
       }).pipe(Effect.asVoid);
     case "reserve-missing":
       return logWarning(
@@ -648,6 +651,13 @@ function reportReserveRotateOutcome(
     yield* io.log(
       `${label}: new reserve key ${outcome.added ? "registered" : "already registered"}${describeBackfill(outcome.backfill)}; previous reserve key ${outcome.revoked.length > 0 ? "revoked" : "already revoked"}`,
     );
+    // 新しい予備鍵へのバックフィルの失敗は、以前は件数に畳まれて見えなかった(DK K11 の G9 —
+    // 復元時に予備鍵が開けない環境が黙って残る)。終了コードは変えない(K11-7 の限界 (5))
+    for (const failure of outcome.backfill?.failed ?? []) {
+      yield* logWarning(
+        `${label}: backfill of environment ${displayText(failure.environmentId)} to the new reserve key failed (${failure.message}). ${describeGapFillRoute(outcome.projectId, failure.environmentId)}`,
+      );
+    }
     return outcome.sweep === null ? 0 : yield* reportReserveSweep(label, outcome.sweep);
   });
 }

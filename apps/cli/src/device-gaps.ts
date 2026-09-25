@@ -164,12 +164,12 @@ export function fillOwnDeviceGaps(input: {
  * 欠けたエポックを補うコマンド(DK K11-5 — 案内の字面はここだけで作る)。`--env` と
  * `--project` は常に明示する(既定の環境に頼ると別の環境を pull する)。
  */
-function gapFillCommandOf(projectId: string, environmentId: string): string {
+export function gapFillCommandOf(projectId: string, environmentId: string): string {
   return `maruhi pull --project ${displayText(projectId)} --env ${displayText(environmentId)}`;
 }
 
 /** 補完の経路の 1 文(承認・復元・同期のバックフィル失敗と、欠けた端末の警告が共有する)。 */
-function describeGapFillRoute(projectId: string, environmentId: string): string {
+export function describeGapFillRoute(projectId: string, environmentId: string): string {
   return `A registered device of yours whose cap covers environment ${displayText(environmentId)} and that holds its keys fills the missing epochs when it runs \`${gapFillCommandOf(projectId, environmentId)}\``;
 }
 

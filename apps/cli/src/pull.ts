@@ -18,7 +18,7 @@ import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
-import { fillOwnDeviceGaps, type OwnDeviceGapFill } from "./device-gaps.ts";
+import { describeGapFillRoute, fillOwnDeviceGaps, type OwnDeviceGapFill } from "./device-gaps.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
@@ -254,7 +254,7 @@ export function pullVariables(input: {
         ? pulled.warnings
         : [
             ...pulled.warnings,
-            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device recently, re-run \`maruhi device approve\` for it from a device that is already registered — that backfills the missing epochs`,
+            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device, the backfill to it may not have completed instead. ${describeGapFillRoute(verified.projectId, input.environmentId)}`,
           ];
 
     const results: DecryptedVariable[] = [];

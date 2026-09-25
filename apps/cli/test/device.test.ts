@@ -169,6 +169,8 @@ async function makeServer(input: {
   };
   /** 同じ人が属する他のプロジェクト(チェーンの GET / 追記と空の環境一覧だけを配る — DK K10)。 */
   readonly extraProjects?: readonly BuiltChain[];
+  /** DEK ラップ登録(POST)の応答コード(既定 204。500 = バックフィルの失敗 — DK K11)。 */
+  readonly dekRegisterStatus?: number;
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -241,6 +243,9 @@ async function makeServer(input: {
         return { status: 200, json: { deks: ownWrap === null ? [] : [ownWrap] } };
       }
       if (request.method === "POST") {
+        if (input.dekRegisterStatus !== undefined) {
+          return { status: input.dekRegisterStatus, json: { _tag: "Internal" } };
+        }
         const body = request.body as { readonly deks: readonly Record<string, unknown>[] };
         registered.push({ environmentId: ENV_ID, deks: body.deks });
         return { status: 204 };
@@ -461,6 +466,27 @@ async function chainWithEnvironment(): Promise<BuiltChain> {
 }
 
 describe("maruhi device approve", () => {
+  it("バックフィルの失敗は、承認の再実行でなく兄弟端末の pull を案内する(DK K11-5)", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+      dekRegisterStatus: 500,
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
+    // 端末はチェーンに載り、後段(記録・登録簿・取消)は走る — 欠けは pull が補う
+    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
+    expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(`${built.projectId}: backfill of environment ${ENV_ID} failed (`);
+    expect(errors).toContain(
+      `A registered device of yours whose cap covers environment ${ENV_ID} and that holds its keys fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
+    );
+    expect(errors).not.toContain("Re-run `maruhi device approve`");
+  });
+
   it("儀式ゲート: エージェント環境・非端末では要求一覧を取る前に拒否する(K4-6 反例 3)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
@@ -966,6 +992,25 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       expect(env.errors.join("\n")).not.toContain("no reserve key is registered");
     });
   }
+
+  it("登録した端末のバックフィルの失敗は、次の同期でなく pull を案内する(DK K11-5)", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      extra: [inviteHandler(built)],
+      dekRegisterStatus: 500,
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    await recordOwnDevice(env, server.origin, dev2, "approved");
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
+    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `; the backfill failed for 1 environment (${ENV_ID}) — a registered device of yours whose cap covers it fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env <environment>\``,
+    );
+    expect(errors).not.toContain("retried on the next sync");
+  });
 
   it("エージェント環境・非端末では記録からの登録を行わない(儀式ゲート — K4-37)", async () => {
     for (const mode of ["agent", "non-tty"] as const) {
@@ -1569,74 +1614,100 @@ describe("maruhi device add", () => {
   });
 });
 
+/**
+ * 予備鍵 rotate の足場: 前回が台帳の差し替えで中断した状態(台帳は N1 = reserve、元の予備鍵
+ * O = dev2 は記録に revoked の印、チェーンには O も N1 も載っている)。
+ */
+async function reserveRotateFixture(options: {
+  readonly withEnvironment: boolean;
+  readonly dekRegisterStatus?: number;
+}): Promise<{
+  readonly env: TestEnv;
+  readonly state: ServerState;
+  readonly origin: string;
+  readonly ledgerPuts: unknown[];
+  readonly built: BuiltChain;
+}> {
+  const built = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    ...(options.withEnvironment
+      ? [{ actor: owner, operation: createEnvironmentOp(ENV_ID, dek) }]
+      : []),
+    { actor: owner, operation: addDeviceOp(dev2) },
+    { actor: owner, operation: addDeviceOp(reserve) },
+  ]);
+  const secret = crypto.getRandomValues(new Uint8Array(32));
+  const wrapped = await wrapMasterSecret({
+    recoverySecret: secret,
+    userId: owner.userId,
+    masterSecretBlob: new TextEncoder().encode(
+      serializeStoredMasterKey({
+        suite: "maruhi/v1",
+        encPubHex: reserve.encPubHex,
+        encSkHex: Redacted.make(reserve.encSkHex),
+        sigPubHex: reserve.sigPubHex,
+        sigSkSeedHex: Redacted.make(reserve.sigSkSeedHex),
+      }),
+    ),
+  });
+  if (!wrapped.ok) throw new Error("wrap");
+  const ledgerPuts: unknown[] = [];
+  const { server, state } = await makeServer({
+    built,
+    withEnvironment: options.withEnvironment,
+    ...(options.dekRegisterStatus === undefined
+      ? {}
+      : { dekRegisterStatus: options.dekRegisterStatus }),
+    extra: [
+      onRequest("GET", "/auth/recovery", () => ({
+        status: 200,
+        json: {
+          suite: "maruhi/v1",
+          nonceHex: encodeHex(wrapped.value.nonce),
+          ciphertextHex: encodeHex(wrapped.value.ciphertext),
+          updatedAtMs: 1754006400000,
+        },
+      })),
+      onRequest("GET", "/auth/recovery/status", () => ({
+        status: 200,
+        json: { registered: true, updatedAtMs: 1754006400000 },
+      })),
+      onRequest("PUT", "/auth/recovery", (request) => {
+        ledgerPuts.push(request.body);
+        return { status: 204 };
+      }),
+      onRequest("GET", "/auth/key-wraps", () => ({
+        status: 200,
+        json: {
+          recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
+          passkeys: [],
+          guardianGroups: [],
+        },
+      })),
+    ],
+  });
+  const env = await startEnv(server.origin, built.projectId, owner);
+  await recordOwnDevice(env, server.origin, dev2, "reserve", 1_700_000_001_000);
+  await recordOwnDevice(env, server.origin, reserve, "reserve");
+  env.setPromptResponses([
+    Redacted.value(formatRecoveryCode(Redacted.make(secret))),
+    () => {
+      const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+      const groups = (line ?? "").trim().split("-");
+      return groups[groups.length - 1] ?? "";
+    },
+  ]);
+  return { env, state, origin: server.origin, ledgerPuts, built };
+}
+
 describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
   it("前回が台帳の差し替えで中断していても、記録上の旧予備鍵をまとめて失効させる", async () => {
     // 前回の中断: 台帳は N1(= reserve)に差し替わり、元の予備鍵 O(= dev2)は記録に
     // revoked の印が付いたが、チェーンにはまだ O も N1 も載っている(環境は無し —
     // 失効後の掃除〔rotate〕はここでは見ない)
-    const built = await buildChain([
-      { actor: owner, operation: genesisOp(owner) },
-      { actor: owner, operation: addDeviceOp(dev2) },
-      { actor: owner, operation: addDeviceOp(reserve) },
-    ]);
-    const secret = crypto.getRandomValues(new Uint8Array(32));
-    const wrapped = await wrapMasterSecret({
-      recoverySecret: secret,
-      userId: owner.userId,
-      masterSecretBlob: new TextEncoder().encode(
-        serializeStoredMasterKey({
-          suite: "maruhi/v1",
-          encPubHex: reserve.encPubHex,
-          encSkHex: Redacted.make(reserve.encSkHex),
-          sigPubHex: reserve.sigPubHex,
-          sigSkSeedHex: Redacted.make(reserve.sigSkSeedHex),
-        }),
-      ),
-    });
-    if (!wrapped.ok) throw new Error("wrap");
-    const ledgerPuts: unknown[] = [];
-    const { server, state } = await makeServer({
-      built,
+    const { env, state, origin, ledgerPuts } = await reserveRotateFixture({
       withEnvironment: false,
-      extra: [
-        onRequest("GET", "/auth/recovery", () => ({
-          status: 200,
-          json: {
-            suite: "maruhi/v1",
-            nonceHex: encodeHex(wrapped.value.nonce),
-            ciphertextHex: encodeHex(wrapped.value.ciphertext),
-            updatedAtMs: 1754006400000,
-          },
-        })),
-        onRequest("GET", "/auth/recovery/status", () => ({
-          status: 200,
-          json: { registered: true, updatedAtMs: 1754006400000 },
-        })),
-        onRequest("PUT", "/auth/recovery", (request) => {
-          ledgerPuts.push(request.body);
-          return { status: 204 };
-        }),
-        onRequest("GET", "/auth/key-wraps", () => ({
-          status: 200,
-          json: {
-            recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
-            passkeys: [],
-            guardianGroups: [],
-          },
-        })),
-      ],
     });
-    const env = await startEnv(server.origin, built.projectId, owner);
-    await recordOwnDevice(env, server.origin, dev2, "reserve", 1_700_000_001_000);
-    await recordOwnDevice(env, server.origin, reserve, "reserve");
-    env.setPromptResponses([
-      Redacted.value(formatRecoveryCode(Redacted.make(secret))),
-      () => {
-        const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
-        const groups = (line ?? "").trim().split("-");
-        return groups[groups.length - 1] ?? "";
-      },
-    ]);
     expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
     expect(ledgerPuts).toHaveLength(1);
     // revoke_device は O と N1 の両方を対象にする(N1 だけではない)
@@ -1651,7 +1722,7 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
       `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on every project`,
     );
     // ローカル記録: O と N1 は失効、新鍵だけが有効な予備鍵
-    const recorded = await readOwnDevices(env, server.origin);
+    const recorded = await readOwnDevices(env, origin);
     const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
     expect(active).toHaveLength(1);
     expect([dev2.fingerprintHex, reserve.fingerprintHex]).not.toContain(
@@ -1661,6 +1732,22 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
     expect(keychain).toContain(owner.encPubHex);
+  });
+
+  it("新しい予備鍵へのバックフィルの失敗を報告し、pull の経路を名指す(DK K11 の G9)", async () => {
+    const { env, built } = await reserveRotateFixture({
+      withEnvironment: true,
+      dekRegisterStatus: 500,
+    });
+    // 失効後の掃除(rotate)もこのモックでは失敗しうるので、終了コードはここでは見ない
+    await runCli(["key", "reserve", "rotate"], env.layer);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `${built.projectId}: backfill of environment ${ENV_ID} to the new reserve key failed (`,
+    );
+    expect(errors).toContain(
+      `fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
+    );
   });
 });
 

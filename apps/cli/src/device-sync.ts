@@ -22,6 +22,7 @@ import { Effect, type Stdio } from "effect";
 
 import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import type { ProjectContext } from "./context.ts";
+import { gapFillCommandOf } from "./device-gaps.ts";
 import {
   capWithinSignerCap,
   describeCap,
@@ -289,7 +290,7 @@ function registerRecorded(input: {
     const targetDevice = current?.devices.get(candidate.keyFingerprintHex);
     if (current === undefined || targetDevice === undefined) {
       yield* logNote(
-        `registered your device ${label} on project ${displayText(context.projectId)}, but the resync does not show it yet — the backfill runs on the next sync`,
+        `registered your device ${label} on project ${displayText(context.projectId)}, but the resync does not show it yet, so its keys were not distributed. Once it appears there, \`${gapFillCommandOf(context.projectId, "<environment>")}\` on a registered device of yours whose cap covers the environment fills its keys, for each environment it should read`,
       );
       return { ...context, verified };
     }
@@ -305,7 +306,7 @@ function registerRecorded(input: {
     // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3 —
     // K10 以前の CLI が上書きした記録の cap がチェーンと食い違っていても、ここで見える)
     yield* logNote(
-      `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `; ${backfill.failed.length} environment(s) failed and are retried on the next sync`}`,
+      `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${describeFailedBackfill(context.projectId, backfill.failed)}`,
     );
     return { ...context, verified };
   }).pipe(
@@ -316,6 +317,21 @@ function registerRecorded(input: {
       }),
     ),
   );
+}
+
+/**
+ * 登録した端末のバックフィルの失敗(DK K11-5): 同期の候補はチェーンに無い記録だけなので、
+ * 次の同期は補わない。補うのは cap が覆う端末の pull(`device-gaps.ts`)。
+ */
+function describeFailedBackfill(
+  projectId: string,
+  failed: readonly { readonly environmentId: string }[],
+): string {
+  if (failed.length === 0) {
+    return "";
+  }
+  const environments = failed.map((failure) => displayText(failure.environmentId)).join(", ");
+  return `; the backfill failed for ${countNoun(failed.length, "environment")} (${environments}) — a registered device of yours whose cap covers ${failed.length === 1 ? "it" : "them"} fills the missing epochs when it runs \`${gapFillCommandOf(projectId, "<environment>")}\`${failed.length === 1 ? "" : " for each"}`;
 }
 
 function describeRegistrationFailure(projectId: string, label: string, error: CliError): string {
