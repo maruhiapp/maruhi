@@ -112,6 +112,18 @@ The dashboard's **API tokens** and **Devices** pages revoke tokens too — that 
 
 If your machines still share one copied key from an install before device keys, they are one device with one fingerprint, and revoking it would revoke your last device. Separate them first ([below](#installs-from-before-device-keys)); if the only machine that holds the key is the lost one, follow [Recover your key](/docs/recover-your-key) — it registers the machine you are on as a new device, and then you can revoke the old key from it.
 
+### Add a revoked machine again
+
+maruhi never registers a revoked key again, so a revoked machine comes back as a new device with a new key. On that machine:
+
+```sh
+maruhi device add --replace
+```
+
+`--replace` removes the revoked key from the machine's keychain, generates a new one and prints its fingerprint; approve it from a registered device with `maruhi device approve <fingerprint>`, choosing the cap again (`--cap`, `--env`). Without `--replace`, `maruhi device add` refuses because the machine already holds a key. If the revocation also revoked the machine's API token, sign in on it again first (`maruhi login`). This is also how a device gets a different cap: revoke it, then add it again.
+
+If the key was revoked on some projects only (`--project`), it stays registered on the others, and after `--replace` no machine holds it any more: once the new key is approved, revoke the old one there too (`maruhi device list` shows where it is). If the revocation left the machine's row in your device registry (an admin revoked it, or removing the row failed), `maruhi device add` without `--replace` ends its wait at once and says which projects revoked the key ("this key was revoked on …"), with the same steps.
+
 ## The reserve key
 
 `maruhi key generate` creates two keys the first time: this device's key, and the reserve key, which it seals with a recovery code right away and never stores on the machine. The reserve key is registered on each of your projects at the next sync, as a device with your full access, so that `maruhi key recover` on a new machine can use it to register that machine. `maruhi key show` prints its fingerprint ("reserve key fingerprint: …", or "not recorded on this machine"). Changing the ledger — reissuing the code, sealing to a passkey, designating guardians, rotating the reserve key — first opens the reserve key, so only someone who can open it can change it (the one exception is `maruhi key recovery --replace`, for when the code is lost). Which material each of those commands accepts is on [Recover your key](/docs/recover-your-key#passkey).
@@ -125,18 +137,6 @@ maruhi key reserve rotate               # asks for the current code (or --passke
 It opens the ledger, creates a new reserve key, seals it with a **new** recovery code, registers it on every project and revokes the previous reserve key, with the same rotation as any device revocation. Passkey wraps and guardian groups sealed the old key, so they are deleted and the command tells you to seal the new key again (`maruhi key seal passkey`, `maruhi guardian add`). When the code itself is lost, `maruhi key recovery --replace` does the same without opening the ledger.
 
 One limit: the previous reserve keys to revoke are the ones **recorded on the machine you run it on**. On a machine that never recorded them, the rotate cannot know about an older reserve key, and it stays registered on your projects. After a rotate or a `--replace`, run `maruhi device list` and compare the devices "recorded here as reserve" with those "recorded here as observed" that have your full cap (`owner/all`): a reserve device you do not recognise is revoked like any other, `maruhi device revoke <fingerprint>`.
-
-### Add a revoked machine again
-
-maruhi never registers a revoked key again, so a revoked machine comes back as a new device with a new key. On that machine:
-
-```sh
-maruhi device add --replace
-```
-
-`--replace` removes the revoked key from the machine's keychain, generates a new one and prints its fingerprint; approve it from a registered device with `maruhi device approve <fingerprint>`, choosing the cap again (`--cap`, `--env`). Without `--replace`, `maruhi device add` refuses because the machine already holds a key. If the revocation also revoked the machine's API token, sign in on it again first (`maruhi login`). This is also how a device gets a different cap: revoke it, then add it again.
-
-If the key was revoked on some projects only (`--project`), it stays registered on the others, and after `--replace` no machine holds it any more: once the new key is approved, revoke the old one there too (`maruhi device list` shows where it is). If the revocation left the machine's row in your device registry (an admin revoked it, or removing the row failed), `maruhi device add` without `--replace` ends its wait at once and says which projects revoked the key ("this key was revoked on …"), with the same steps.
 
 ## Installs from before device keys
 

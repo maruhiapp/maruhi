@@ -1808,7 +1808,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
       `Note: this key was revoked on ${built.projectId}, so it is not registered there again. To put this machine back there, run \`maruhi device add --replace\` on this machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device`,
     );
     // 載っているプロジェクトが無いので、残りの失効の手順は言わない
-    expect(errors).not.toContain("so revoke it on the projects above");
+    expect(errors).not.toContain("This keychain then no longer holds this key");
     expect(errors).not.toContain("not registered yet");
     expect(errors).not.toContain("the approving device skipped or failed");
   });
@@ -1839,7 +1839,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     const errors = env.errors.join("\n");
     expect(errors).toContain(`Note: this key was revoked on ${built.projectId},`);
     expect(errors).toContain(
-      `. This keychain then no longer holds this key, so revoke it on the projects above that still list it (\`maruhi device revoke ${dev2.fingerprintHex}\` from a registered device)`,
+      `. This keychain then no longer holds this key, so revoke it on ${other.projectId}, where it is still registered (\`maruhi device revoke ${dev2.fingerprintHex}\` from a registered device)`,
     );
     expect(errors).not.toContain("not registered yet");
   });

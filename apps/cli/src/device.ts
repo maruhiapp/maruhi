@@ -216,7 +216,9 @@ export function deviceAddOp(input: {
     yield* io.log(
       `Approved: this device is registered on ${countNoun(confirmation.registered.length, "project")} (verified on each project's chain)`,
     );
-    yield* reportConfirmation(confirmation, keys.fingerprintHex);
+    // 完了の文は立場が分かった時点で出し、鍵の到達の確認(環境ごとの取得)はその後に回す
+    // (pullfrog 指摘 — K12-14。出力の順序は K12-3 のまま)
+    yield* reportConfirmation(confirmation, keys);
   });
 }
 
@@ -245,11 +247,11 @@ type KeyReachIssue =
       readonly message: string;
     };
 
-/** 合図の後のチェーンでの確認の結果(プロジェクトごとの立場と、載っている所の鍵の到達)。 */
+/** 合図の後のチェーンでの確認の結果(プロジェクトごとの立場。載っている所は文脈つき)。 */
 interface ChainConfirmation {
   readonly registered: readonly {
     readonly projectId: string;
-    readonly issues: readonly KeyReachIssue[];
+    readonly standing: Extract<KeyStanding, { readonly kind: "present" }>;
   }[];
   readonly revoked: readonly string[];
   readonly missing: readonly string[];
@@ -272,10 +274,7 @@ function confirmOnChains(input: {
         fingerprintHex: input.keys.fingerprintHex,
       });
       if (standing.kind === "present") {
-        registered.push({
-          projectId: project.projectId,
-          issues: yield* checkKeyReach({ ...standing, keys: input.keys }),
-        });
+        registered.push({ projectId: project.projectId, standing });
       } else {
         (standing.kind === "revoked" ? revoked : missing).push(project.projectId);
       }
@@ -357,14 +356,15 @@ function checkKeyReach(input: {
   });
 }
 
-/** 合図の後の確認の報告(完了の文の後に — 鍵の欠け → 失効 → 未登録の順。K12-3)。 */
+/** 合図の後の確認の報告(完了の文の後に — 鍵の到達を確かめて欠け → 失効 → 未登録の順。K12-3)。 */
 function reportConfirmation(
   confirmation: ChainConfirmation,
-  fingerprintHex: string,
+  keys: MasterKeys,
 ): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     for (const project of confirmation.registered) {
-      for (const issue of project.issues) {
+      const issues = yield* checkKeyReach({ ...project.standing, keys });
+      for (const issue of issues) {
         yield* reportKeyReachIssue(project.projectId, issue);
       }
     }
@@ -372,7 +372,7 @@ function reportConfirmation(
       // 承認は起きていない(登録簿の行が残った失効端末 — DK K12-6)。承認側の筋書きでなく、
       // このチェーンに載った失効の事実と足し直しの手順を言う
       yield* logNote(
-        `this key was revoked on ${confirmation.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${confirmation.registered.length > 0 ? `. This keychain then no longer holds this key, so revoke it on the projects above that still list it (\`maruhi device revoke ${fingerprintHex}\` from a registered device)` : ""}`,
+        `this key was revoked on ${confirmation.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${confirmation.registered.length > 0 ? `. This keychain then no longer holds this key, so revoke it on ${confirmation.registered.map((project) => displayText(project.projectId)).join(", ")}, where it is still registered (\`maruhi device revoke ${keys.fingerprintHex}\` from a registered device)` : ""}`,
       );
     }
     if (confirmation.missing.length > 0) {
