@@ -1261,6 +1261,34 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     );
   });
 
+  it("cap がこの端末の cap を越える端末の印は包まずに消し、載せた端末の再試行と足し直しを案内する(DK K11-8)", async () => {
+    // この機械の端末 dev2 は (member, [env-app])。wide は競合で別の端末(owner)が
+    // (owner, all) で載せた — dev2 の cap では覆えない
+    const wide = await makeTestUser(owner.userId);
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+      {
+        actor: owner,
+        operation: addDeviceOp(dev2, { roleCap: "member", environmentIds: [ENV_ID] }),
+      },
+      { actor: owner, operation: addDeviceOp(wide) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      extra: [inviteHandler(built)],
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    await markPendingBackfill(env, server.origin, built.projectId, wide);
+    await runCli(["invite", "create", "--role", "member"], env.layer);
+    expect(state.registered).toEqual([]);
+    expect(env.errors.join("\n")).toContain(
+      `the backfill of DEK wraps to your device ${wide.fingerprintHex} (cap owner/all) on project ${built.projectId} is unfinished, and this device's cap member/${ENV_ID} does not cover it, so this machine stops retrying it. The device that added it (\`maruhi device list\` shows which) always has a cap that covers it`,
+    );
+    expect(await readPendingBackfills(env, server.origin)).toEqual([]);
+  });
+
   it("同期の登録のバックフィルが失敗しても、偽の「次の同期」でなく印で再試行する(DK K11 事実確認 5)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({

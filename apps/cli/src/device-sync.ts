@@ -210,8 +210,10 @@ function selectRetryTargets(input: {
         // 二度と現れない
         yield* clearPending(session, item);
       } else if (target !== undefined && !capWithinSignerCap(target, own)) {
+        // ここに来るのは競合で負けた端末だけ(`appended: false` — 載せたのは別の端末)。
+        // 載せた端末は単調性(原則 D2)で必ず覆い、自分の印を持つ(DK K11-8)
         yield* logNote(
-          `the backfill of DEK wraps to your device ${target.keyFingerprintHex} (cap ${describeCap(target)}) on project ${displayText(projectId)} is unfinished, and this device's cap ${describeCap(own)} does not cover it, so this machine stops retrying it. A device whose cap covers it can finish it only by revoking and re-adding the device`,
+          `the backfill of DEK wraps to your device ${target.keyFingerprintHex} (cap ${describeCap(target)}) on project ${displayText(projectId)} is unfinished, and this device's cap ${describeCap(own)} does not cover it, so this machine stops retrying it. The device that added it (\`maruhi device list\` shows which) always has a cap that covers it and retries its own unfinished backfill; if that device is gone, revoke this device and add it again`,
         );
         yield* clearPending(session, item);
       } else if (target !== undefined) {
