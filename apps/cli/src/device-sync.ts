@@ -17,7 +17,8 @@
 //   (e) やり残しのバックフィルの再試行(K11-1 / K11-3): この端末が自分の他の端末へ始めて
 //       終えていないバックフィル(own-devices.json の印)のうち、このプロジェクトの分を、
 //       (c) と同じ儀式ゲートの内側で再試行する。宛先は検証済みチェーン上の自分の現端末から
-//       引き、印は失敗 0 か宛先の消滅(失効・この端末自身・cap 超過)で消す
+//       引き、印は失敗 0 か宛先の消滅(失効・この端末自身・cap 超過)で消す。チェーンに
+//       まだ見えない鍵の印は残す(受理後の再同期が端末を示さなかった場合)
 //
 // 登録簿(`GET /auth/devices`)はここでは読まない・書かない(K4-3 反例 2 — テストで固定)。
 
@@ -185,6 +186,46 @@ function clearPending(
 }
 
 /**
+ * (e) の対象を選ぶ(K11-3 / K11-7)。宛先が二度と現れない印(この端末自身・このチェーンで
+ * 失効した鍵)と cap が覆わない印は消し、まだチェーンに見えない鍵の印は残す。
+ */
+function selectRetryTargets(input: {
+  readonly context: ProjectContext;
+  readonly own: ChainDevice;
+  readonly pending: readonly PendingBackfill[];
+}): Effect.Effect<readonly ChainDevice[], never, OwnDeviceStore | CliIo> {
+  return Effect.gen(function* () {
+    const { context, own } = input;
+    const { session, projectId } = context;
+    const member = context.verified.state.members.get(session.userId);
+    const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
+    const targets: ChainDevice[] = [];
+    for (const item of input.pending) {
+      const target = member?.devices.get(item.keyFingerprintHex);
+      if (
+        item.keyFingerprintHex === context.masterKeys.fingerprintHex ||
+        revokedHere.has(item.keyFingerprintHex)
+      ) {
+        // この端末自身(自分宛は自分で包めない)か、このチェーンで失効した鍵: 包む宛先が
+        // 二度と現れない
+        yield* clearPending(session, item);
+      } else if (target !== undefined && !capWithinSignerCap(target, own)) {
+        yield* logNote(
+          `the backfill of DEK wraps to your device ${target.keyFingerprintHex} (cap ${describeCap(target)}) on project ${displayText(projectId)} is unfinished, and this device's cap ${describeCap(own)} does not cover it, so this machine stops retrying it. A device whose cap covers it can finish it only by revoking and re-adding the device`,
+        );
+        yield* clearPending(session, item);
+      } else if (target !== undefined) {
+        targets.push(target);
+      }
+      // target === undefined(失効でもない): まだチェーンに見えない(受理された
+      // `add_device` を再同期が示さなかった — PR #199 Bugbot 指摘)。印を残し、載った後の
+      // 同期で包む
+    }
+    return targets;
+  });
+}
+
+/**
  * (e) やり残しのバックフィルの再試行(K11-1 / K11-3)。宛先は検証済みチェーン上の自分の
  * 現端末からだけ引く(印は署名されていないファイル — 仕込まれても、チェーンが載せて
  * いない鍵へは包まない)。失敗はすべて Note(同期を止めない)。
@@ -198,24 +239,7 @@ function retryPendingBackfills(input: {
     const { context, own } = input;
     const { session, projectId } = context;
     const member = context.verified.state.members.get(session.userId);
-    const targets: ChainDevice[] = [];
-    for (const item of input.pending) {
-      const target = member?.devices.get(item.keyFingerprintHex);
-      if (item.keyFingerprintHex === context.masterKeys.fingerprintHex || target === undefined) {
-        // この端末自身(自分宛は自分で包めない)か、このチェーンの現端末でない(失効・
-        // 未登録 — 未登録の鍵は (c) の登録の経路が扱う): 包む宛先が無い
-        yield* clearPending(session, item);
-        continue;
-      }
-      if (!capWithinSignerCap(target, own)) {
-        yield* logNote(
-          `the backfill of DEK wraps to your device ${target.keyFingerprintHex} (cap ${describeCap(target)}) on project ${displayText(projectId)} is unfinished, and this device's cap ${describeCap(own)} does not cover it, so this machine stops retrying it. A device whose cap covers it can finish it only by revoking and re-adding the device`,
-        );
-        yield* clearPending(session, item);
-        continue;
-      }
-      targets.push(target);
-    }
+    const targets = yield* selectRetryTargets({ context, own, pending: input.pending });
     if (targets.length === 0) {
       return;
     }

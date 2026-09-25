@@ -1206,12 +1206,16 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     // 失効した端末は再登録されない
     expect(state.appended).toEqual([]);
   });
-  it("やり残しの印は登録と同じ儀式ゲートの内側でだけ再試行し、宛先がチェーンの現端末でなければ包まずに消す(DK K11-3)", async () => {
-    // dev2 はチェーンに載っている。reserve は載っていない(失効・未登録と同じく宛先が無い)
+  it("やり残しの印は登録と同じ儀式ゲートの内側でだけ再試行し、失効した鍵と自分の鍵の印は包まずに消し、まだ見えない鍵の印は残す(DK K11-3 / K11-7)", async () => {
+    // dev2 はチェーンに載っている。reserve は載った後に失効した(宛先が二度と現れない)。
+    // pendingDevice は載っていない(受理後の再同期が示さなかった — 印は残す)
+    const pendingDevice = await makeTestUser(owner.userId);
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+      { actor: owner, operation: revokeDeviceOp(owner, [reserve]) },
     ]);
     const { server, state } = await makeServer({
       built,
@@ -1219,7 +1223,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       extra: [inviteHandler(built)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    for (const device of [dev2, reserve, owner]) {
+    for (const device of [dev2, reserve, owner, pendingDevice]) {
       await markPendingBackfill(env, server.origin, built.projectId, device);
     }
     // 他のプロジェクトの印は、このプロジェクトの同期では触らない
@@ -1230,11 +1234,20 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(env.errors.join("\n")).toContain(
       `the backfill of DEK wraps to your device ${dev2.fingerprintHex} on project ${built.projectId} is unfinished. Wrapping DEKs to a device is done only when a person runs maruhi at an interactive terminal — skipped here because an AI agent environment was detected (test-agent)`,
     );
-    // 宛先の無い印(チェーンに無い鍵・この端末自身)はゲートの前に消え、dev2 の印は残る
-    expect(await readPendingBackfills(env, server.origin)).toEqual([
-      { projectId: built.projectId, keyFingerprintHex: dev2.fingerprintHex },
-      { projectId: "proj-other", keyFingerprintHex: dev2.fingerprintHex },
-    ]);
+    // 宛先が二度と現れない印(失効した鍵・この端末自身)はゲートの前に消え、dev2 の印と
+    // まだ見えない鍵の印は残る
+    const stillPending = (fps: readonly string[]) =>
+      [
+        ...fps.map((keyFingerprintHex) => ({ projectId: built.projectId, keyFingerprintHex })),
+        { projectId: "proj-other", keyFingerprintHex: dev2.fingerprintHex },
+      ].toSorted((a, b) =>
+        `${a.projectId} ${a.keyFingerprintHex}`.localeCompare(
+          `${b.projectId} ${b.keyFingerprintHex}`,
+        ),
+      );
+    expect(await readPendingBackfills(env, server.origin)).toEqual(
+      stillPending([dev2.fingerprintHex, pendingDevice.fingerprintHex]),
+    );
 
     // 人の端末のセッションでは再試行し、完了で印を消す
     env.setAgent({ isAgent: false });
@@ -1243,9 +1256,9 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       env.errors.join("\n"),
     ).toBe(0);
     expect(wrapTargetsOf(state)).toEqual([[[dev2.encPubHex, 1]]]);
-    expect(await readPendingBackfills(env, server.origin)).toEqual([
-      { projectId: "proj-other", keyFingerprintHex: dev2.fingerprintHex },
-    ]);
+    expect(await readPendingBackfills(env, server.origin)).toEqual(
+      stillPending([pendingDevice.fingerprintHex]),
+    );
   });
 
   it("同期の登録のバックフィルが失敗しても、偽の「次の同期」でなく印で再試行する(DK K11 事実確認 5)", async () => {
