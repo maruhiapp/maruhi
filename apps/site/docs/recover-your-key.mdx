@@ -32,7 +32,7 @@ The CLI opens the reserve key, asks one question — whether the opened key was 
 
 `maruhi key recovery` reissues the code (the old one stops working) if you suspect it was seen by someone else; it opens the ledger with the current code, or with `--passkey`. When the code is lost, `maruhi key recovery --replace` creates a new reserve key sealed with a new code without opening the ledger, and revokes the reserve keys recorded on that machine on every project — see [The reserve key](/docs/devices#the-reserve-key) for the check to run afterwards.
 
-If the recovery was interrupted before every project registered the new device, `maruhi key recover --resume` keeps the device key already on the machine and only registers it where it is still missing.
+If the recovery was interrupted before every project registered the new device, `maruhi key recover --resume` keeps the device key already on the machine and only registers it where it is still missing; on each project where the device is registered, it also distributes the keys again, completing a distribution that failed there.
 
 ## Passkey
 
