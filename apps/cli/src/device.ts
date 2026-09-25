@@ -65,6 +65,7 @@ import {
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
 } from "./device-ops.ts";
+import { backfillRetryPath, markBackfillPending, settleBackfillPending } from "./device-sync.ts";
 import { countNoun, displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -792,6 +793,10 @@ function appendOnProject(input: {
         cap: input.cap,
       },
     });
+    // やり残しの印(DK K11-2 — 受理の後・バックフィルの前)。バックフィルが失敗・中断しても、
+    // この端末の次の同期(このプロジェクトを対象にした鍵付きコマンド)が再試行する
+    const pending = { projectId, keyFingerprintHex: input.request.fingerprintHex };
+    yield* markBackfillPending(input.session, pending);
     const verified = yield* context.resync;
     const current = verified.state.members.get(input.session.userId);
     const targetDevice = current?.devices.get(input.request.fingerprintHex);
@@ -811,6 +816,7 @@ function appendOnProject(input: {
       signerUserId: input.session.userId,
       signingKeyPair: input.masterKeys.sigKeyPair,
     });
+    yield* settleBackfillPending(input.session, pending, backfill);
     return outcome(appended.appended ? "registered" : "already", null, backfill);
   }).pipe(Effect.catch((error) => Effect.succeed(outcome("failed", error.message))));
 }
@@ -854,7 +860,9 @@ function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number
             ? "registered the device"
             : "the device was already registered",
         backfill: item.backfill,
-        rerun: "Re-run `maruhi device approve` for this device to complete it",
+        // 再実行の approve は既登録の鍵を包み直さず、要求も取消済みでありうる(DK K11 事実確認
+        // 1〜3)。完了させるのは、印を持つこの端末の同期(K11-1)
+        rerun: `It is retried ${backfillRetryPath(item.projectId)}`,
       });
     case "skipped":
       return logNote(`${label}: skipped — ${item.message ?? ""}`).pipe(Effect.as(0));

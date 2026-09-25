@@ -279,8 +279,9 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
             ? "registered this device"
             : "this device was already registered",
         backfill: outcome.backfill,
-        rerun:
-          "Re-run `maruhi key recover --resume` or have a registered device run `maruhi device approve` for this machine",
+        // 宛先はこの端末自身で、欠けた DEK はこの端末に無い。包み直せるのは予備鍵を開き直す
+        // `--resume` だけ(`device approve` は既登録の鍵を包み直さない — DK K11 事実確認 1〜4)
+        rerun: "Re-run `maruhi key recover --resume` to complete it",
       }).pipe(Effect.asVoid);
     case "reserve-missing":
       return logWarning(

@@ -324,6 +324,13 @@ describe("maruhi pull", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("no DEK wraps for you exist at epochs 1");
     expect(errors).toContain("re-run `maruhi member add`");
+    // 端末として足された場合の案内は、従える経路(足した端末の同期 / `key recover --resume`)
+    // だけを名指す — 既登録の鍵には要求が無く、approve は包み直さない(DK K11)
+    expect(errors).toContain(
+      "the device that added it to this project (`maruhi device list` shows which) retries the wraps it could not register",
+    );
+    expect(errors).toContain("re-run `maruhi key recover --resume` here");
+    expect(errors).not.toContain("maruhi device approve");
 
     // 全エポックが揃っていれば警告しない(誤検知なし)
     const complete = await startEnv([chainHandler(), pullHandler()]);

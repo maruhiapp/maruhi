@@ -16,6 +16,12 @@
 // 四眼の票の復活 — CRYPTO_SPEC §6.2 — を初回同期が引き起こさないため)。再承認
 // (`device approve`)だけが行を上書きしてフラグを消す(明示操作)。
 //
+// やり残しのバックフィルの印(`pendingBackfills` — 設計録 K11-2): 自分の他の端末へ
+// バックフィルを始める経路が、`add_device` の受理の後・バックフィルの前に
+// (プロジェクト, 端末 FP) を書き、失敗 0 で消す。同期(device-sync.ts)はその
+// プロジェクトの印だけを再試行する。値は FP だけで、宛先の鍵と cap は検証済み
+// チェーンから引く(印は「試すか」だけを決める — K4-5)。
+//
 // 置き場は指紋帳と同系(<config dir>/own-devices.json — ユーザー単位・プロジェクト
 // 横断)。fail-open: 不在 = 記録なし、破損 = 記録なし + 区別可能な警告。破損への
 // 上書きは拒否する(pins / 指紋帳と同じ規律)。
@@ -57,9 +63,19 @@ export interface OwnDeviceEntry extends OwnDeviceRecord {
   readonly keyFingerprintHex: string;
 }
 
+/** A backfill to one of the user's own devices that this machine started and has not completed. */
+export interface PendingBackfill {
+  readonly projectId: string;
+  readonly keyFingerprintHex: string;
+}
+
 /** Load result (fail-open: `corrupt` is distinguishable from `missing`). */
 export type OwnDevicesLookup =
-  | { readonly state: "loaded"; readonly devices: readonly OwnDeviceEntry[] }
+  | {
+      readonly state: "loaded";
+      readonly devices: readonly OwnDeviceEntry[];
+      readonly pendingBackfills: readonly PendingBackfill[];
+    }
   | { readonly state: "missing" }
   | { readonly state: "corrupt" };
 
@@ -80,6 +96,18 @@ export interface OwnDeviceStoreShape {
     fingerprintsHex: readonly string[],
     nowMs: number,
   ) => Effect.Effect<void, CliError>;
+  /** Records that a backfill to `pending.keyFingerprintHex` on `pending.projectId` has started (write-ahead). */
+  readonly markBackfillPending: (
+    origin: string,
+    userId: string,
+    pending: PendingBackfill,
+  ) => Effect.Effect<void, CliError>;
+  /** Removes the mark (the backfill completed, or there is nothing left to backfill). */
+  readonly clearBackfillPending: (
+    origin: string,
+    userId: string,
+    pending: PendingBackfill,
+  ) => Effect.Effect<void, CliError>;
 }
 
 export class OwnDeviceStore extends Context.Service<OwnDeviceStore, OwnDeviceStoreShape>()(
@@ -96,11 +124,20 @@ export function capOfRecord(record: OwnDeviceRecord): DeviceCap {
   return { roleCap: record.roleCap, scope: record.scope };
 }
 
+/** origin → user → FP → record. */
+type KnownDevices = Readonly<
+  Record<string, Readonly<Record<string, Readonly<Record<string, OwnDeviceRecord>>>>>
+>;
+
+/** origin → user → project → FPs whose backfill is pending (K11-2). */
+type PendingBackfills = Readonly<
+  Record<string, Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>>
+>;
+
 interface OwnDevicesFile {
   readonly v: 1;
-  readonly known: Readonly<
-    Record<string, Readonly<Record<string, Readonly<Record<string, OwnDeviceRecord>>>>>
-  >;
+  readonly known: KnownDevices;
+  readonly pendingBackfills: PendingBackfills;
 }
 
 const HEX_32 = /^[0-9a-f]{32}$/;
@@ -260,18 +297,55 @@ function decodeFile(json: string): OwnDevicesFile | null {
   } catch {
     return null;
   }
-  if (!isRecord(value) || value["v"] !== 1 || !isRecord(value["known"])) {
+  if (!isRecord(value) || value["v"] !== 1) {
     return null;
   }
-  const known: Record<string, Record<string, Record<string, OwnDeviceRecord>>> = {};
-  for (const [origin, rawUsers] of Object.entries(value["known"])) {
-    const users = BOOK_KEY.test(origin) ? decodeUsers(rawUsers) : null;
-    if (users === null) {
+  const known = decodeNested(value["known"], decodeUsers);
+  // K11 以前のファイルは節を持たない(= 印なし)
+  const pendingBackfills =
+    value["pendingBackfills"] === undefined ? {} : decodePending(value["pendingBackfills"]);
+  return known === null || pendingBackfills === null ? null : { v: 1, known, pendingBackfills };
+}
+
+/** 印の節のデコード(origin → user → project → FP の集合。1 か所でも不正なら全体拒否)。 */
+function decodePending(value: unknown): PendingBackfills | null {
+  return decodeNested(value, (users) =>
+    decodeNested(users, (projects) => decodeNested(projects, decodePendingFps)),
+  );
+}
+
+/** 1 プロジェクトの印(FP の集合 — 重複も不正)。 */
+function decodePendingFps(raw: unknown): readonly string[] | null {
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  const fps: string[] = [];
+  for (const fp of raw) {
+    if (typeof fp !== "string" || !HEX_32.test(fp) || fps.includes(fp)) {
       return null;
     }
-    known[origin] = users;
+    fps.push(fp);
   }
-  return { v: 1, known };
+  return fps;
+}
+
+/** `BOOK_KEY` のキーを持つ入れ子の記録の 1 段(値は `decode` — null なら全体拒否)。 */
+function decodeNested<T>(
+  value: unknown,
+  decode: (raw: unknown) => T | null,
+): Record<string, T> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const decoded: Record<string, T> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const item = BOOK_KEY.test(key) ? decode(raw) : null;
+    if (item === null) {
+      return null;
+    }
+    decoded[key] = item;
+  }
+  return decoded;
 }
 
 /** File-backed own-devices store at `path` (used by both production and tests). */
@@ -309,15 +383,17 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
           ),
         ]),
       ),
+      pendingBackfills: file.pendingBackfills,
     };
     await writeFile(temp, `${JSON.stringify(encoded, null, 2)}\n`, { mode: 0o600 });
     await rename(temp, path);
   };
 
-  const merge = (
+  /** read-modify-write(破損ファイルへの上書きは拒否 — pins / 指紋帳と同じ規律)。 */
+  const mutate = (
     origin: string,
     userId: string,
-    apply: (devices: Readonly<Record<string, OwnDeviceRecord>>) => Record<string, OwnDeviceRecord>,
+    apply: (file: OwnDevicesFile) => OwnDevicesFile,
   ): Effect.Effect<void, CliError> =>
     Effect.tryPromise({
       try: async () => {
@@ -326,22 +402,67 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
         }
         const loaded = await loadRaw();
         if (loaded.state === "corrupt") {
-          // 破損ファイルへの上書きは拒否(pins / 指紋帳と同じ規律)
           throw new Error("corrupt");
         }
-        const base: OwnDevicesFile = loaded.state === "missing" ? { v: 1, known: {} } : loaded.file;
-        const users = floorRecordGet(base.known, origin) ?? {};
-        const devices = floorRecordGet(users, userId) ?? {};
-        await write({
-          v: 1,
-          known: { ...base.known, [origin]: { ...users, [userId]: apply(devices) } },
-        });
+        await write(
+          apply(
+            loaded.state === "missing" ? { v: 1, known: {}, pendingBackfills: {} } : loaded.file,
+          ),
+        );
       },
       catch: () =>
         cliError(
           `Cannot write the own-devices record (corrupt or an I/O failure): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
         ),
     });
+
+  const merge = (
+    origin: string,
+    userId: string,
+    apply: (devices: Readonly<Record<string, OwnDeviceRecord>>) => Record<string, OwnDeviceRecord>,
+  ): Effect.Effect<void, CliError> =>
+    mutate(origin, userId, (base) => {
+      const users = floorRecordGet(base.known, origin) ?? {};
+      const devices = floorRecordGet(users, userId) ?? {};
+      return {
+        ...base,
+        known: { ...base.known, [origin]: { ...users, [userId]: apply(devices) } },
+      };
+    });
+
+  /** 1 つの (プロジェクト, FP) の印を足す / 消す(空になった段は落とす)。 */
+  const setPending = (
+    origin: string,
+    userId: string,
+    pending: PendingBackfill,
+    present: boolean,
+  ): Effect.Effect<void, CliError> => {
+    if (!BOOK_KEY.test(pending.projectId) || !HEX_32.test(pending.keyFingerprintHex)) {
+      return Effect.fail(cliError("Cannot record the pending backfill: malformed project or key"));
+    }
+    return mutate(origin, userId, (base) => {
+      const users = floorRecordGet(base.pendingBackfills, origin) ?? {};
+      const projects = floorRecordGet(users, userId) ?? {};
+      const others = (floorRecordGet(projects, pending.projectId) ?? []).filter(
+        (fp) => fp !== pending.keyFingerprintHex,
+      );
+      const fps = present ? [...others, pending.keyFingerprintHex] : others;
+      const nextProjects = withKey(projects, pending.projectId, fps.length === 0 ? null : fps);
+      const nextUsers = withKey(
+        users,
+        userId,
+        Object.keys(nextProjects).length === 0 ? null : nextProjects,
+      );
+      return {
+        ...base,
+        pendingBackfills: withKey(
+          base.pendingBackfills,
+          origin,
+          Object.keys(nextUsers).length === 0 ? null : nextUsers,
+        ),
+      };
+    });
+  };
 
   return {
     filePath: path,
@@ -357,12 +478,18 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
           }
           const users = floorRecordGet(loaded.file.known, origin);
           const devices = users === undefined ? undefined : floorRecordGet(users, userId);
+          const pendingUsers = floorRecordGet(loaded.file.pendingBackfills, origin);
+          const projects =
+            pendingUsers === undefined ? undefined : floorRecordGet(pendingUsers, userId);
           return {
             state: "loaded",
             devices: Object.entries(devices ?? {}).map(([keyFingerprintHex, record]) => ({
               keyFingerprintHex,
               ...record,
             })),
+            pendingBackfills: Object.entries(projects ?? {}).flatMap(([projectId, fps]) =>
+              fps.map((keyFingerprintHex) => ({ projectId, keyFingerprintHex })),
+            ),
           };
         },
         catch: () => cliError(`Cannot read the own-devices record: ${path}`),
@@ -387,5 +514,17 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
         }
         return next;
       }),
+    markBackfillPending: (origin, userId, pending) => setPending(origin, userId, pending, true),
+    clearBackfillPending: (origin, userId, pending) => setPending(origin, userId, pending, false),
   };
+}
+
+/** `key` を `value` に置き換えた写し(null = キーを落とす)。 */
+function withKey<T>(
+  record: Readonly<Record<string, T>>,
+  key: string,
+  value: T | null,
+): Record<string, T> {
+  const next = Object.fromEntries(Object.entries(record).filter(([other]) => other !== key));
+  return value === null ? next : { ...next, [key]: value };
 }

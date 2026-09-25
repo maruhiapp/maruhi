@@ -15,7 +15,7 @@
 //     登録簿、完了の確認はチェーン(K4-5)
 //  6. 旧端末経路の承認(`source: "device"`)はワイヤ型が受け付けない(撤去の固定)
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 import {
   DEVICE_ADD_REQUEST_TTL_MS,
@@ -44,6 +44,7 @@ import {
   type OwnDeviceEntry,
   type OwnDeviceSource,
   ownDevicesPathOf,
+  type PendingBackfill,
 } from "../src/own-devices.ts";
 import { formatRecoveryCode } from "../src/recovery-code.ts";
 import { rotationMandates } from "../src/rotation-sweep.ts";
@@ -169,6 +170,11 @@ async function makeServer(input: {
   };
   /** 同じ人が属する他のプロジェクト(チェーンの GET / 追記と空の環境一覧だけを配る — DK K10)。 */
   readonly extraProjects?: readonly BuiltChain[];
+  /**
+   * DEK ラップ登録 POST の応答コードを呼び出し順に(500 = バックフィルの失敗)。尽きたら 204
+   * (DK K11: 失敗した回の後の再試行を成功させる)。失敗した POST は `registered` に載らない。
+   */
+  readonly dekPostStatuses?: readonly number[];
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -181,6 +187,7 @@ async function makeServer(input: {
   const registryDeletes: string[] = [];
   const requestCancels: string[] = [];
   const registryPutStatuses = [...(input.registryPutStatuses ?? [])];
+  const dekPostStatuses = [...(input.dekPostStatuses ?? [])];
   const ownWrap: WireRecipientDek | null = input.withEnvironment
     ? await wrapDekFor({
         projectId,
@@ -241,6 +248,10 @@ async function makeServer(input: {
         return { status: 200, json: { deks: ownWrap === null ? [] : [ownWrap] } };
       }
       if (request.method === "POST") {
+        const status = dekPostStatuses.shift() ?? 204;
+        if (status !== 204) {
+          return { status, json: { _tag: "Internal" } };
+        }
         const body = request.body as { readonly deks: readonly Record<string, unknown>[] };
         registered.push({ environmentId: ENV_ID, deks: body.deks });
         return { status: 204 };
@@ -442,6 +453,41 @@ async function recordOwnDevice(
       recordedAtMs: 1_700_000_000_000,
       revokedAtMs,
     }),
+  );
+}
+
+/** やり残しのバックフィルの印(DK K11-2)。 */
+async function readPendingBackfills(
+  env: TestEnv,
+  origin: string,
+): Promise<readonly PendingBackfill[]> {
+  const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
+  const loaded = await Effect.runPromise(store.load(origin, owner.userId));
+  // 順序はファイルのキーの並び(書き換えで変わる)なので、比べやすいように並べる
+  return (loaded.state === "loaded" ? loaded.pendingBackfills : []).toSorted((a, b) =>
+    `${a.projectId} ${a.keyFingerprintHex}`.localeCompare(`${b.projectId} ${b.keyFingerprintHex}`),
+  );
+}
+
+async function markPendingBackfill(
+  env: TestEnv,
+  origin: string,
+  projectId: string,
+  device: TestUser,
+): Promise<void> {
+  const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
+  await Effect.runPromise(
+    store.markBackfillPending(origin, owner.userId, {
+      projectId,
+      keyFingerprintHex: device.fingerprintHex,
+    }),
+  );
+}
+
+/** DEK ラップ登録の宛先(enc 公開鍵とエポック)を POST ごとに。 */
+function wrapTargetsOf(state: ServerState): unknown[][][] {
+  return state.registered.map((post) =>
+    post.deks.map((wrap) => [wrap["recipientEncPubHex"], wrap["epoch"]]),
   );
 }
 
@@ -916,6 +962,62 @@ describe("maruhi device approve", () => {
     expect(addsOf(state, dev2)).toEqual([]);
     expect(state.requestCancels).toEqual([]);
   });
+  it("バックフィルが失敗した環境は、従えない approve の再実行でなく、この端末の次の同期が再試行する(DK K11)", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+      extra: [inviteHandler(built)],
+      dekPostStatuses: [500],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
+    // 端末はチェーンに載り、合図(PUT)と要求の取消まで進む — 要求はもう無いので、
+    // approve の再実行は `matchRequest` で落ちる(旧文言の案内は従えなかった — K11 事実確認 2)
+    expect(addsOf(state, dev2)).toEqual([{ projectId: built.projectId, roleCap: "owner" }]);
+    expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
+    expect(state.registered).toEqual([]);
+    const approveErrors = env.errors.join("\n");
+    expect(approveErrors).toContain(
+      `${built.projectId}: backfill of environment ${ENV_ID} failed (`,
+    );
+    expect(approveErrors).toContain(
+      `It is retried the next time this machine runs a keyed command on project ${built.projectId} at a terminal (\`maruhi pull --project ${built.projectId}\`, for instance)`,
+    );
+    expect(approveErrors).not.toContain("Re-run `maruhi device approve`");
+    // やり残しの印(K11-2 — 受理の後・バックフィルの前に書き、失敗が残ったので消えない)
+    expect(await readPendingBackfills(env, server.origin)).toEqual([
+      { projectId: built.projectId, keyFingerprintHex: dev2.fingerprintHex },
+    ]);
+
+    // 案内どおり、このプロジェクトを対象にした鍵付きコマンドを端末で打つと、同期が再試行する
+    const before = env.errors.length;
+    expect(
+      await runCli(["invite", "create", "--role", "member"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(wrapTargetsOf(state)).toEqual([[[dev2.encPubHex, 1]]]);
+    expect(env.errors.slice(before).join("\n")).toContain(
+      `finished the unfinished backfill to your device ${dev2.fingerprintHex} on project ${built.projectId}: 1 DEK wrap registered (0 already present)`,
+    );
+    expect(await readPendingBackfills(env, server.origin)).toEqual([]);
+    // 印が消えた後の鍵付きコマンドは何も包まない(費用は印があるときだけ — K11-1 の 1-b-1 の反例)
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
+    expect(state.registered).toHaveLength(1);
+  });
+
+  it("バックフィルが完了した承認は印を残さない(DK K11-2)", async () => {
+    const built = await chainWithEnvironment();
+    const { server } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(0);
+    expect(await readPendingBackfills(env, server.origin)).toEqual([]);
+  });
 });
 
 describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () => {
@@ -1103,6 +1205,116 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(errors).not.toContain(`observed your device ${owner.fingerprintHex}`);
     // 失効した端末は再登録されない
     expect(state.appended).toEqual([]);
+  });
+  it("やり残しの印は登録と同じ儀式ゲートの内側でだけ再試行し、宛先がチェーンの現端末でなければ包まずに消す(DK K11-3)", async () => {
+    // dev2 はチェーンに載っている。reserve は載っていない(失効・未登録と同じく宛先が無い)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      extra: [inviteHandler(built)],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    for (const device of [dev2, reserve, owner]) {
+      await markPendingBackfill(env, server.origin, built.projectId, device);
+    }
+    // 他のプロジェクトの印は、このプロジェクトの同期では触らない
+    await markPendingBackfill(env, server.origin, "proj-other", dev2);
+    env.setAgent({ isAgent: true, name: "test-agent" });
+    await runCli(["invite", "create", "--role", "member"], env.layer);
+    expect(state.registered).toEqual([]);
+    expect(env.errors.join("\n")).toContain(
+      `the backfill of DEK wraps to your device ${dev2.fingerprintHex} on project ${built.projectId} is unfinished. Wrapping DEKs to a device is done only when a person runs maruhi at an interactive terminal — skipped here because an AI agent environment was detected (test-agent)`,
+    );
+    // 宛先の無い印(チェーンに無い鍵・この端末自身)はゲートの前に消え、dev2 の印は残る
+    expect(await readPendingBackfills(env, server.origin)).toEqual([
+      { projectId: built.projectId, keyFingerprintHex: dev2.fingerprintHex },
+      { projectId: "proj-other", keyFingerprintHex: dev2.fingerprintHex },
+    ]);
+
+    // 人の端末のセッションでは再試行し、完了で印を消す
+    env.setAgent({ isAgent: false });
+    expect(
+      await runCli(["invite", "create", "--role", "member"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(wrapTargetsOf(state)).toEqual([[[dev2.encPubHex, 1]]]);
+    expect(await readPendingBackfills(env, server.origin)).toEqual([
+      { projectId: "proj-other", keyFingerprintHex: dev2.fingerprintHex },
+    ]);
+  });
+
+  it("同期の登録のバックフィルが失敗しても、偽の「次の同期」でなく印で再試行する(DK K11 事実確認 5)", async () => {
+    const built = await chainWithEnvironment();
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      extra: [inviteHandler(built)],
+      dekPostStatuses: [500],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    await recordOwnDevice(env, server.origin, dev2, "approved");
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
+    expect(addsOf(state, dev2)).toHaveLength(1);
+    expect(state.registered).toEqual([]);
+    expect(env.errors.join("\n")).toContain(
+      `1 environment failed and is retried the next time this machine runs a keyed command on project ${built.projectId} at a terminal`,
+    );
+    expect(await readPendingBackfills(env, server.origin)).toEqual([
+      { projectId: built.projectId, keyFingerprintHex: dev2.fingerprintHex },
+    ]);
+    // 次の同期: dev2 はもう登録の候補ではない(チェーンに載った)が、印が再試行させる
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
+    expect(addsOf(state, dev2)).toHaveLength(1);
+    expect(wrapTargetsOf(state)).toEqual([[[dev2.encPubHex, 1]]]);
+    expect(await readPendingBackfills(env, server.origin)).toEqual([]);
+  });
+
+  it("印の節は厳格にデコードし、端末の行と独立に足し引きする(DK K11-2)", async () => {
+    const env = await makeTestEnv();
+    const origin = "https://maruhi.example";
+    await recordOwnDevice(env, origin, dev2, "approved");
+    await markPendingBackfill(env, origin, "proj-a", dev2);
+    await markPendingBackfill(env, origin, "proj-a", dev2);
+    await markPendingBackfill(env, origin, "proj-b", reserve);
+    expect(await readPendingBackfills(env, origin)).toEqual([
+      { projectId: "proj-a", keyFingerprintHex: dev2.fingerprintHex },
+      { projectId: "proj-b", keyFingerprintHex: reserve.fingerprintHex },
+    ]);
+    // 端末の行(approve の記録 — 行の置換)は印を消さない
+    await recordOwnDevice(env, origin, dev2, "approved");
+    expect(await readPendingBackfills(env, origin)).toHaveLength(2);
+    const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
+    await Effect.runPromise(
+      store.clearBackfillPending(origin, owner.userId, {
+        projectId: "proj-a",
+        keyFingerprintHex: dev2.fingerprintHex,
+      }),
+    );
+    expect(await readPendingBackfills(env, origin)).toEqual([
+      { projectId: "proj-b", keyFingerprintHex: reserve.fingerprintHex },
+    ]);
+    expect((await readOwnDevices(env, origin)).map((row) => row.keyFingerprintHex)).toEqual([
+      dev2.fingerprintHex,
+    ]);
+    // K11 以前のファイル(節なし)は印なしとして読め、不正な節は全体を破損扱いにする
+    const path = ownDevicesPathOf(env.configPath);
+    const file = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    await writeFile(path, JSON.stringify({ v: 1, known: file["known"] }));
+    expect(await readPendingBackfills(env, origin)).toEqual([]);
+    expect(await readOwnDevices(env, origin)).toHaveLength(1);
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...file,
+        pendingBackfills: { [origin]: { [owner.userId]: { "proj-a": ["not-a-fingerprint"] } } },
+      }),
+    );
+    expect((await Effect.runPromise(store.load(origin, owner.userId))).state).toBe("corrupt");
   });
 });
 

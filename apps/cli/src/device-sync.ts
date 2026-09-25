@@ -14,6 +14,10 @@
 //       行と、サーバーの受理ポリシー(DeviceLimit)・旧サーバー(DeviceOpsNotAccepted —
 //       K4-14)は Note にして続ける。コマンド本体の成否を変えない(SHOULD の付随)
 //   (d) 予備鍵の不在の警告(K4-9): 自分の端末がこの端末だけで、記録にも予備鍵が無い
+//   (e) やり残しのバックフィルの再試行(K11-1 / K11-3): この端末が自分の他の端末へ始めて
+//       終えていないバックフィル(own-devices.json の印)のうち、このプロジェクトの分を、
+//       (c) と同じ儀式ゲートの内側で再試行する。宛先は検証済みチェーン上の自分の現端末から
+//       引き、印は失敗 0 か宛先の消滅(失効・この端末自身・cap 超過)で消す
 //
 // 登録簿(`GET /auth/devices`)はここでは読まない・書かない(K4-3 反例 2 — テストで固定)。
 
@@ -29,7 +33,7 @@ import {
   devicesOf,
   findOwnDevice,
 } from "./device-key.ts";
-import { appendAddDevice, backfillToDevice } from "./device-ops.ts";
+import { appendAddDevice, backfillToDevice, type DeviceBackfillOutcome } from "./device-ops.ts";
 import { countNoun, displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
@@ -38,7 +42,9 @@ import {
   capOfRecord,
   type OwnDeviceEntry,
   OwnDeviceStore,
+  type OwnDevicesLookup,
   type OwnDeviceStoreShape,
+  type PendingBackfill,
 } from "./own-devices.ts";
 import { requireScopeEnvironmentsExist } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -86,6 +92,12 @@ export function syncOwnDevices(
         current = yield* registerRecorded({ context: current, self, own, candidate });
       }
     }
+    // (e): やり残しのバックフィル(K11)
+    yield* retryPendingBackfills({
+      context: current,
+      own,
+      pending: pendingOf(context.projectId, lookup, candidates),
+    });
     // (d): 予備鍵の不在(K4-9)
     yield* warnReserveMissing({
       self: current.verified.state.members.get(session.userId) ?? self,
@@ -104,16 +116,159 @@ function registrationAllowed(
   projectId: string,
   candidates: readonly OwnDeviceEntry[],
 ): Effect.Effect<boolean, never, CliIo | Stdio.Stdio> {
+  return humanSessionAllowed(
+    (reason) =>
+      `${countNoun(candidates.length, "device key")} recorded on this machine (${candidates.map((candidate) => candidate.keyFingerprintHex).join(", ")}) ${candidates.length === 1 ? "is" : "are"} not registered on project ${displayText(projectId)} yet. Registering a device key adds a signer and wraps DEKs to it, so it is done only when a person runs maruhi at an interactive terminal — skipped here because ${reason}. Run a keyed maruhi command on this project yourself in a terminal (for example \`maruhi pull --project ${displayText(projectId)}\`) to register ${candidates.length === 1 ? "it" : "them"}, or remove the record if you do not recognise it (\`maruhi device list\`)`,
+  );
+}
+
+/**
+ * 同期の付随の署名(登録 (c) と再試行 (e))の儀式ゲート(K4-37 / K11-3 — 1 つのゲート)。
+ * 通らなければ `describeSkip(理由)` を Note にして false。
+ */
+function humanSessionAllowed(
+  describeSkip: (reason: string) => string,
+): Effect.Effect<boolean, never, CliIo | Stdio.Stdio> {
   return ensureHumanCeremonyAllowed({
     agentRefusal: (detected) => `an AI agent environment was detected${detected}`,
     terminalRefusal: (reason) => reason,
   }).pipe(
     Effect.as(true),
-    Effect.catch((error) =>
-      logNote(
-        `${countNoun(candidates.length, "device key")} recorded on this machine (${candidates.map((candidate) => candidate.keyFingerprintHex).join(", ")}) ${candidates.length === 1 ? "is" : "are"} not registered on project ${displayText(projectId)} yet. Registering a device key adds a signer and wraps DEKs to it, so it is done only when a person runs maruhi at an interactive terminal — skipped here because ${error.message}. Run a keyed maruhi command on this project yourself in a terminal (for example \`maruhi pull --project ${displayText(projectId)}\`) to register ${candidates.length === 1 ? "it" : "them"}, or remove the record if you do not recognise it (\`maruhi device list\`)`,
-      ).pipe(Effect.as(false)),
-    ),
+    Effect.catch((error) => logNote(describeSkip(error.message)).pipe(Effect.as(false))),
+  );
+}
+
+/**
+ * The path that finishes an interrupted or failed backfill to one of your devices
+ * (K11-1): this machine retries it when it next runs a keyed command on the project
+ * at a terminal. Shared by `device approve`, the sync registration and the retry.
+ */
+export function backfillRetryPath(projectId: string): string {
+  return `the next time this machine runs a keyed command on project ${displayText(projectId)} at a terminal (\`maruhi pull --project ${displayText(projectId)}\`, for instance)`;
+}
+
+/**
+ * やり残しの印を書く(K11-2 — `add_device` の受理の後・バックフィルの前)。書けなければ
+ * Note を出して続ける(バックフィル自体は止めない — 印は再試行の材料でしかない)。
+ */
+export function markBackfillPending(
+  session: { readonly origin: string; readonly userId: string },
+  pending: PendingBackfill,
+): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    yield* store
+      .markBackfillPending(session.origin, session.userId, pending)
+      .pipe(Effect.catch((error) => noteWriteFailure(error)));
+  });
+}
+
+/** バックフィルの結果で印を片づける(失敗 0 = 完了なら消す。失敗が残れば印を残す)。 */
+export function settleBackfillPending(
+  session: { readonly origin: string; readonly userId: string },
+  pending: PendingBackfill,
+  backfill: DeviceBackfillOutcome,
+): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
+  return backfill.failed.length > 0 ? Effect.void : clearPending(session, pending);
+}
+
+function clearPending(
+  session: { readonly origin: string; readonly userId: string },
+  pending: PendingBackfill,
+): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    yield* store
+      .clearBackfillPending(session.origin, session.userId, pending)
+      .pipe(Effect.catch((error) => noteWriteFailure(error)));
+  });
+}
+
+/**
+ * (e) やり残しのバックフィルの再試行(K11-1 / K11-3)。宛先は検証済みチェーン上の自分の
+ * 現端末からだけ引く(印は署名されていないファイル — 仕込まれても、チェーンが載せて
+ * いない鍵へは包まない)。失敗はすべて Note(同期を止めない)。
+ */
+function retryPendingBackfills(input: {
+  readonly context: ProjectContext;
+  readonly own: ChainDevice;
+  readonly pending: readonly PendingBackfill[];
+}): Effect.Effect<void, never, OwnDeviceStore | CliIo | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const { context, own } = input;
+    const { session, projectId } = context;
+    const member = context.verified.state.members.get(session.userId);
+    const targets: ChainDevice[] = [];
+    for (const item of input.pending) {
+      const target = member?.devices.get(item.keyFingerprintHex);
+      if (item.keyFingerprintHex === context.masterKeys.fingerprintHex || target === undefined) {
+        // この端末自身(自分宛は自分で包めない)か、このチェーンの現端末でない(失効・
+        // 未登録 — 未登録の鍵は (c) の登録の経路が扱う): 包む宛先が無い
+        yield* clearPending(session, item);
+        continue;
+      }
+      if (!capWithinSignerCap(target, own)) {
+        yield* logNote(
+          `the backfill of DEK wraps to your device ${target.keyFingerprintHex} (cap ${describeCap(target)}) on project ${displayText(projectId)} is unfinished, and this device's cap ${describeCap(own)} does not cover it, so this machine stops retrying it. A device whose cap covers it can finish it only by revoking and re-adding the device`,
+        );
+        yield* clearPending(session, item);
+        continue;
+      }
+      targets.push(target);
+    }
+    if (targets.length === 0) {
+      return;
+    }
+    const fps = targets.map((target) => target.keyFingerprintHex).join(", ");
+    const allowed = yield* humanSessionAllowed(
+      (reason) =>
+        `the backfill of DEK wraps to your ${targets.length === 1 ? "device" : "devices"} ${fps} on project ${displayText(projectId)} is unfinished. Wrapping DEKs to a device is done only when a person runs maruhi at an interactive terminal — skipped here because ${reason}. Run a keyed maruhi command on this project yourself in a terminal (for example \`maruhi pull --project ${displayText(projectId)}\`) to finish it`,
+    );
+    if (!allowed || member === undefined) {
+      return;
+    }
+    for (const target of targets) {
+      const pending = { projectId, keyFingerprintHex: target.keyFingerprintHex };
+      yield* backfillToDevice({
+        client: context.client,
+        verified: context.verified,
+        recipient: context.recipient,
+        targetMember: member,
+        targetDevice: target,
+        signerUserId: session.userId,
+        signingKeyPair: context.masterKeys.sigKeyPair,
+      }).pipe(
+        Effect.flatMap((backfill) =>
+          settleBackfillPending(session, pending, backfill).pipe(
+            Effect.andThen(
+              logNote(
+                `finished the unfinished backfill to your device ${target.keyFingerprintHex} on project ${displayText(projectId)}: ${countNoun(backfill.registered, "DEK wrap")} registered (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `, but ${countNoun(backfill.failed.length, "environment")} failed again (${backfill.failed.map((failure) => `${displayText(failure.environmentId)}: ${failure.message}`).join("; ")}); ${backfill.failed.length === 1 ? "it is" : "they are"} retried ${backfillRetryPath(projectId)}`}`,
+              ),
+            ),
+          ),
+        ),
+        Effect.catch((error) =>
+          logNote(
+            `could not retry the unfinished backfill to your device ${target.keyFingerprintHex} on project ${displayText(projectId)} (${error.message}); it is retried ${backfillRetryPath(projectId)}`,
+          ),
+        ),
+      );
+    }
+  });
+}
+
+/** (e) の対象: このプロジェクトの印のうち、(c) が今扱った鍵(印を書き直した)を除いたもの。 */
+function pendingOf(
+  projectId: string,
+  lookup: OwnDevicesLookup,
+  candidates: readonly OwnDeviceEntry[],
+): readonly PendingBackfill[] {
+  if (lookup.state !== "loaded") {
+    return [];
+  }
+  const handled = new Set(candidates.map((candidate) => candidate.keyFingerprintHex));
+  return lookup.pendingBackfills.filter(
+    (item) => item.projectId === projectId && !handled.has(item.keyFingerprintHex),
   );
 }
 
@@ -265,7 +420,7 @@ function registerRecorded(input: {
   readonly self: ChainMember;
   readonly own: ChainDevice;
   readonly candidate: OwnDeviceEntry;
-}): Effect.Effect<ProjectContext, never, CliIo> {
+}): Effect.Effect<ProjectContext, never, OwnDeviceStore | CliIo> {
   const { context, candidate, own } = input;
   const label = `${candidate.keyFingerprintHex} (${candidate.source}${candidate.label === null ? "" : `, "${displayText(candidate.label)}"`})`;
   const cap = capOfRecord(candidate);
@@ -284,12 +439,18 @@ function registerRecorded(input: {
       signer: { userId: context.session.userId, signingKeyPair: context.masterKeys.sigKeyPair },
       candidate: { encPubHex: candidate.encPubHex, sigPubHex: candidate.sigPubHex, cap },
     });
+    // やり残しの印(K11-2 — 受理の後・バックフィルの前。以後の失敗・中断は (e) が拾う)
+    const pending = {
+      projectId: context.projectId,
+      keyFingerprintHex: candidate.keyFingerprintHex,
+    };
+    yield* markBackfillPending(context.session, pending);
     const verified = yield* context.resync;
     const current = verified.state.members.get(context.session.userId);
     const targetDevice = current?.devices.get(candidate.keyFingerprintHex);
     if (current === undefined || targetDevice === undefined) {
       yield* logNote(
-        `registered your device ${label} on project ${displayText(context.projectId)}, but the resync does not show it yet — the backfill runs on the next sync`,
+        `registered your device ${label} on project ${displayText(context.projectId)}, but the resync does not show it yet — the backfill runs ${backfillRetryPath(context.projectId)}`,
       );
       return { ...context, verified };
     }
@@ -302,10 +463,11 @@ function registerRecorded(input: {
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
     });
+    yield* settleBackfillPending(context.session, pending, backfill);
     // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3 —
     // K10 以前の CLI が上書きした記録の cap がチェーンと食い違っていても、ここで見える)
     yield* logNote(
-      `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `; ${backfill.failed.length} environment(s) failed and are retried on the next sync`}`,
+      `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${backfill.failed.length === 0 ? "" : `; ${countNoun(backfill.failed.length, "environment")} failed and ${backfill.failed.length === 1 ? "is" : "are"} retried ${backfillRetryPath(context.projectId)}`}`,
     );
     return { ...context, verified };
   }).pipe(
