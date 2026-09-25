@@ -1621,6 +1621,8 @@ describe("maruhi device add", () => {
 async function reserveRotateFixture(options: {
   readonly withEnvironment: boolean;
   readonly dekRegisterStatus?: number;
+  /** 旧予備鍵(dev2 / reserve)をチェーンに載せるか(既定 true。false = 失効も掃除も起きない)。 */
+  readonly retiringOnChain?: boolean;
 }): Promise<{
   readonly env: TestEnv;
   readonly state: ServerState;
@@ -1633,8 +1635,12 @@ async function reserveRotateFixture(options: {
     ...(options.withEnvironment
       ? [{ actor: owner, operation: createEnvironmentOp(ENV_ID, dek) }]
       : []),
-    { actor: owner, operation: addDeviceOp(dev2) },
-    { actor: owner, operation: addDeviceOp(reserve) },
+    ...(options.retiringOnChain === false
+      ? []
+      : [
+          { actor: owner, operation: addDeviceOp(dev2) },
+          { actor: owner, operation: addDeviceOp(reserve) },
+        ]),
   ]);
   const secret = crypto.getRandomValues(new Uint8Array(32));
   const wrapped = await wrapMasterSecret({
@@ -1735,12 +1741,14 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
   });
 
   it("新しい予備鍵へのバックフィルの失敗を報告し、pull の経路を名指す(DK K11 の G9)", async () => {
+    // 旧予備鍵をチェーンに載せない = 失効も失効後の掃除(rotate)も起きない。終了コードは
+    // バックフィルの失敗だけで決まる(承認・復元と同じく 1 — K11-14 の所有者裁定)
     const { env, built } = await reserveRotateFixture({
       withEnvironment: true,
       dekRegisterStatus: 500,
+      retiringOnChain: false,
     });
-    // 失効後の掃除(rotate)もこのモックでは失敗しうるので、終了コードはここでは見ない
-    await runCli(["key", "reserve", "rotate"], env.layer);
+    expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain(
       `${built.projectId}: backfill of environment ${ENV_ID} to the new reserve key failed (`,

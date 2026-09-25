@@ -652,13 +652,17 @@ function reportReserveRotateOutcome(
       `${label}: new reserve key ${outcome.added ? "registered" : "already registered"}${describeBackfill(outcome.backfill)}; previous reserve key ${outcome.revoked.length > 0 ? "revoked" : "already revoked"}`,
     );
     // 新しい予備鍵へのバックフィルの失敗は、以前は件数に畳まれて見えなかった(DK K11 の G9 —
-    // 復元時に予備鍵が開けない環境が黙って残る)。終了コードは変えない(K11-7 の限界 (5))
-    for (const failure of outcome.backfill?.failed ?? []) {
+    // 復元時に予備鍵が開けない環境が黙って残る)。承認・復元のバックフィル失敗と同じく
+    // 終了コード 1(K11-14 — 所有者裁定: 揃える。旧予備鍵は直後に失効するので、スクリプトが
+    // 新しい予備鍵の欠けを検出できなければならない)
+    const failed = outcome.backfill?.failed ?? [];
+    for (const failure of failed) {
       yield* logWarning(
         `${label}: backfill of environment ${displayText(failure.environmentId)} to the new reserve key failed (${failure.message}). ${describeGapFillRoute(outcome.projectId, failure.environmentId)}`,
       );
     }
-    return outcome.sweep === null ? 0 : yield* reportReserveSweep(label, outcome.sweep);
+    const sweepCode = outcome.sweep === null ? 0 : yield* reportReserveSweep(label, outcome.sweep);
+    return failed.length > 0 ? 1 : sweepCode;
   });
 }
 
