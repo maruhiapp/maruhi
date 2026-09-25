@@ -173,6 +173,18 @@ export function describeGapFillRoute(projectId: string, environmentId: string): 
   return `A registered device of yours whose cap covers environment ${displayText(environmentId)} and that holds its keys fills the missing epochs when it runs \`${gapFillCommandOf(projectId, environmentId)}\``;
 }
 
+/**
+ * 自分宛の DEK が欠けたエポックの警告(値付き pull と `device add` の到達の確認が共有する —
+ * DK K12-3。原因は member 側のバックフィルと端末のバックフィルの両方を並べる)。
+ */
+export function describeMissingOwnEpochs(
+  projectId: string,
+  environmentId: string,
+  missingEpochs: readonly number[],
+): string {
+  return `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device, the backfill to it may not have completed instead. ${describeGapFillRoute(projectId, environmentId)}`;
+}
+
 function epochList(epochs: readonly number[]): string {
   return `epoch${epochs.length === 1 ? "" : "s"} ${epochs.join(", ")}`;
 }

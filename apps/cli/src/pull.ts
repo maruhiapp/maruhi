@@ -17,8 +17,12 @@ import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, environmentKeysFor } from "./deks.ts";
-import { describeGapFillRoute, fillOwnDeviceGaps, type OwnDeviceGapFill } from "./device-gaps.ts";
+import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "./deks.ts";
+import {
+  describeMissingOwnEpochs,
+  fillOwnDeviceGaps,
+  type OwnDeviceGapFill,
+} from "./device-gaps.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
@@ -243,18 +247,13 @@ export function pullVariables(input: {
     // 復号に必要なエポックの欠けは decryptVerifiedValue が硬い失敗として止める
     // ので、ここは履歴エポックの静かな欠け(現在値だけでは永遠に顕在化しない)を
     // SHOULD 警告として拾う
-    const missingEpochs: number[] = [];
-    for (let epoch = 1; epoch <= keys.currentEpoch; epoch += 1) {
-      if (!deksByEpoch.has(epoch)) {
-        missingEpochs.push(epoch);
-      }
-    }
+    const missingEpochs = missingEpochsOf(keys);
     const warnings =
       missingEpochs.length === 0
         ? pulled.warnings
         : [
             ...pulled.warnings,
-            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device, the backfill to it may not have completed instead. ${describeGapFillRoute(verified.projectId, input.environmentId)}`,
+            describeMissingOwnEpochs(verified.projectId, input.environmentId, missingEpochs),
           ];
 
     const results: DecryptedVariable[] = [];

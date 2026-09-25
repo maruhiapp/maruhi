@@ -338,6 +338,29 @@ export interface DeviceBackfillOutcome {
 }
 
 /**
+ * 端末が受け取るべき環境: 検証済みで削除されていない環境のうち、その端末の実効 scope に
+ * 含まれるもの(コード点順)。バックフィルの対象と、新端末の `device add` が鍵の到達を
+ * 確かめる対象(DK K12-1)が同じ関数で決まる — 配ったはずの集合と確かめる集合を構造で一致させる。
+ */
+export function deviceEnvironmentsOf(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly targetMember: ChainMember;
+  readonly targetDevice: ChainDevice;
+}): Effect.Effect<readonly string[], CliError> {
+  return Effect.gen(function* () {
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
+    return [...input.verified.state.environments.keys()]
+      .filter(
+        (environmentId) =>
+          !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
+      )
+      .toSorted(compareCodePoints);
+  });
+}
+
+/**
  * Backfills every epoch of every environment in the target device's effective
  * scope to that device (CRYPTO_SPEC §7「端末追加のバックフィル」). `recipient`
  * is the caller's own key that opens the DEKs (this device, or the reserve key
@@ -353,14 +376,7 @@ export function backfillToDevice(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<DeviceBackfillOutcome, CliError> {
   return Effect.gen(function* () {
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
-    const environments = [...input.verified.state.environments.keys()]
-      .filter(
-        (environmentId) =>
-          !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
-      )
-      .toSorted(compareCodePoints);
+    const environments = yield* deviceEnvironmentsOf(input);
     const aggregate = yield* backfillEachEnvironment(environments, (environmentId) =>
       backfillEnvironmentFor({
         client: input.client,

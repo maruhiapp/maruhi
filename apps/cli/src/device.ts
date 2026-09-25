@@ -3,7 +3,8 @@
 //
 // - `device add [--label] [--replace]`(新端末側): 端末鍵を生成して要求を出し、FP(hex +
 //   12 語)を表示して待つ。待機の合図は登録簿(advisory)、完了の確認は各プロジェクトの
-//   検証済みチェーン(K4-5)。ゲートなし(DK-D — 要求側は何も足さない)
+//   検証済みチェーン(K4-5)。同じビューで、載ったプロジェクトの鍵の到達(自分宛の DEK が
+//   全エポックにあるか — DK K12)と失効した鍵を確かめて報告する。ゲートなし(DK-D — 要求側は何も足さない)
 // - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
 //   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
 //   → 各プロジェクトを開いて判定(既に載っている鍵の cap が今回の cap と違えば何も書かずに
@@ -48,7 +49,8 @@ import {
   type ProjectContextBase,
 } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
-import { describeGapFillRoute } from "./device-gaps.ts";
+import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "./deks.ts";
+import { describeGapFillRoute, describeMissingOwnEpochs, gapFillCommandOf } from "./device-gaps.ts";
 import {
   capWithinSignerCap,
   describeCap,
@@ -56,6 +58,8 @@ import {
   deviceProvenanceOf,
   devicesOf,
   findOwnDevice,
+  reAddDeviceRoute,
+  revokedFingerprintsOf,
 } from "./device-key.ts";
 import {
   appendAddDevice,
@@ -63,6 +67,7 @@ import {
   backfillToDevice,
   DEVICE_REVOKED_ROTATION_REASON,
   type DeviceBackfillOutcome,
+  deviceEnvironmentsOf,
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
 } from "./device-ops.ts";
@@ -201,42 +206,210 @@ export function deviceAddOp(input: {
         ),
       );
     }
-    // 真実はチェーン: 合図(登録簿の行)の後に各プロジェクトを同期して自分の端末を数える
+    // 真実はチェーン: 合図(登録簿の行)の後に各プロジェクトを同期して自分の端末を数え、
+    // 載っているプロジェクトでは同じビューで鍵の到達を確かめる(DK K12-1)
+    const confirmation = yield* confirmOnChains({
+      session: input.session,
+      client: input.client,
+      keys,
+    });
+    yield* io.log(
+      `Approved: this device is registered on ${countNoun(confirmation.registered.length, "project")} (verified on each project's chain)`,
+    );
+    yield* reportConfirmation(confirmation, keys.fingerprintHex);
+  });
+}
+
+/** 1 プロジェクトのチェーン上のこの鍵の立場(DK K12-6 — 同期できなければ absent)。 */
+type KeyStanding =
+  | {
+      readonly kind: "present";
+      readonly context: ProjectContextBase;
+      readonly member: ChainMember;
+      readonly device: ChainDevice;
+    }
+  | { readonly kind: "revoked" }
+  | { readonly kind: "absent" };
+
+/** 1 環境の鍵の到達の確認で報告する事実(DK K12-3 — 届いていれば何も運ばない)。 */
+type KeyReachIssue =
+  | {
+      readonly kind: "missing";
+      readonly environmentId: string;
+      readonly epochs: readonly number[];
+    }
+  | {
+      readonly kind: "unchecked";
+      /** null = 環境の列挙そのものに失敗した。 */
+      readonly environmentId: string | null;
+      readonly message: string;
+    };
+
+/** 合図の後のチェーンでの確認の結果(プロジェクトごとの立場と、載っている所の鍵の到達)。 */
+interface ChainConfirmation {
+  readonly registered: readonly {
+    readonly projectId: string;
+    readonly issues: readonly KeyReachIssue[];
+  }[];
+  readonly revoked: readonly string[];
+  readonly missing: readonly string[];
+}
+
+function confirmOnChains(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly keys: MasterKeys;
+}): Effect.Effect<ChainConfirmation, CliError, CliServices> {
+  return Effect.gen(function* () {
     const projects = yield* fetchProjectMemberships(input.client);
-    let registered = 0;
+    const registered: ChainConfirmation["registered"][number][] = [];
+    const revoked: string[] = [];
     const missing: string[] = [];
     for (const project of projects) {
-      const present = yield* deviceOnProjectChain({
+      const standing = yield* keyStandingOnProject({
         session: input.session,
         projectId: project.projectId,
-        fingerprintHex: keys.fingerprintHex,
+        fingerprintHex: input.keys.fingerprintHex,
       });
-      if (present) {
-        registered += 1;
+      if (standing.kind === "present") {
+        registered.push({
+          projectId: project.projectId,
+          issues: yield* checkKeyReach({ ...standing, keys: input.keys }),
+        });
       } else {
-        missing.push(project.projectId);
+        (standing.kind === "revoked" ? revoked : missing).push(project.projectId);
       }
     }
-    yield* io.log(
-      `Approved: this device is registered on ${countNoun(registered, "project")} (verified on each project's chain)`,
+    return { registered, revoked, missing };
+  });
+}
+
+/**
+ * 1 プロジェクトの検証済みチェーンでのこの鍵の立場: 有効な端末(文脈つき — 鍵の到達の
+ * 確認が同じビューを使う)、自分宛の `revoke_device` で失効した鍵、どちらでもない。
+ */
+function keyStandingOnProject(input: {
+  readonly session: CliSession;
+  readonly projectId: string;
+  readonly fingerprintHex: string;
+}): Effect.Effect<KeyStanding, never, CliServices> {
+  return openMetadataProject({ server: input.session.origin, project: input.projectId }).pipe(
+    Effect.map((context): KeyStanding => {
+      const member = context.verified.state.members.get(input.session.userId);
+      const device = member?.devices.get(input.fingerprintHex);
+      if (member !== undefined && device !== undefined) {
+        return { kind: "present", context, member, device };
+      }
+      return revokedFingerprintsOf(context.verified, input.session.userId).has(input.fingerprintHex)
+        ? { kind: "revoked" }
+        : { kind: "absent" };
+    }),
+    Effect.catch(() => Effect.succeed<KeyStanding>({ kind: "absent" })),
+  );
+}
+
+/**
+ * この端末宛の DEK が、承認側が配ったはずの各環境(`deviceEnvironmentsOf` — バックフィルと
+ * 同じ集合)の全エポックに届いているか(DK K12-2): 値付き pull と同じ取得口
+ * (`environmentKeysFor` — §5.1 / §5.2 の検証と開封)と同じ欠けの判定(`missingEpochsOf`)。
+ * 開いた DEK は判定にだけ使い、ここから出さない。失敗は事実に畳む(`device add` の成否を
+ * 変えない — K12-4)。
+ */
+function checkKeyReach(input: {
+  readonly context: ProjectContextBase;
+  readonly member: ChainMember;
+  readonly device: ChainDevice;
+  readonly keys: MasterKeys;
+}): Effect.Effect<readonly KeyReachIssue[]> {
+  return Effect.gen(function* () {
+    const { client, verified } = input.context;
+    const environments = yield* Effect.result(
+      deviceEnvironmentsOf({
+        client,
+        verified,
+        targetMember: input.member,
+        targetDevice: input.device,
+      }),
     );
-    if (missing.length > 0) {
+    if (Result.isFailure(environments)) {
+      return [{ kind: "unchecked", environmentId: null, message: environments.failure.message }];
+    }
+    const recipient: DekRecipient = {
+      userId: input.context.session.userId,
+      encPubHex: input.keys.record.encPubHex,
+      encKeyPair: input.keys.encKeyPair,
+    };
+    const issues: KeyReachIssue[] = [];
+    for (const environmentId of environments.success) {
+      const opened = yield* Effect.result(
+        environmentKeysFor({ client, verified, environmentId, recipient }),
+      );
+      if (Result.isFailure(opened)) {
+        issues.push({ kind: "unchecked", environmentId, message: opened.failure.message });
+        continue;
+      }
+      const epochs = missingEpochsOf(opened.success);
+      if (epochs.length > 0) {
+        issues.push({ kind: "missing", environmentId, epochs });
+      }
+    }
+    return issues;
+  });
+}
+
+/** 合図の後の確認の報告(完了の文の後に — 鍵の欠け → 失効 → 未登録の順。K12-3)。 */
+function reportConfirmation(
+  confirmation: ChainConfirmation,
+  fingerprintHex: string,
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    for (const project of confirmation.registered) {
+      for (const issue of project.issues) {
+        yield* reportKeyReachIssue(project.projectId, issue);
+      }
+    }
+    if (confirmation.revoked.length > 0) {
+      // 承認は起きていない(登録簿の行が残った失効端末 — DK K12-6)。承認側の筋書きでなく、
+      // このチェーンに載った失効の事実と足し直しの手順を言う
+      yield* logNote(
+        `this key was revoked on ${confirmation.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${confirmation.registered.length > 0 ? `. This keychain then no longer holds this key, so revoke it on the projects above that still list it (\`maruhi device revoke ${fingerprintHex}\` from a registered device)` : ""}`,
+      );
+    }
+    if (confirmation.missing.length > 0) {
       // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
       // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
       // 「cap がそこを覆う端末」が**そのプロジェクトを対象に**打つ鍵付きコマンド(`device-sync.ts`
       // — 前段は 1 コマンド 1 プロジェクト: DK K10-5。cap 起因の skip は承認側の再同期では
       // 直らない: K6-V 補 2 / K7-2)。承認は失敗を `failed` に畳むので、一部成功の合図の後には
-      // failed のプロジェクトも混じる(K7-15)
+      // failed のプロジェクトも混じる(K7-15)。失効したプロジェクトはここに入れない(K12-6)
       yield* logNote(
-        `not registered yet on ${missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
+        `not registered yet on ${confirmation.missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
       );
     }
   });
 }
 
+/** 鍵の到達の確認の 1 件(欠けは pull と同じ警告の文言 — K12-3。確認の失敗は Note)。 */
+function reportKeyReachIssue(
+  projectId: string,
+  issue: KeyReachIssue,
+): Effect.Effect<void, never, CliIo> {
+  const project = displayText(projectId);
+  if (issue.kind === "missing") {
+    return logWarning(
+      `${project}: environment ${displayText(issue.environmentId)}: ${describeMissingOwnEpochs(projectId, issue.environmentId, issue.epochs)}`,
+    );
+  }
+  return logNote(
+    issue.environmentId === null
+      ? `${project}: could not list its environments to check that their keys reached this device (${issue.message}); \`maruhi pull --project ${project} --env <environment>\` on this machine reports any missing epochs`
+      : `${project}: could not check that the keys of environment ${displayText(issue.environmentId)} reached this device (${issue.message}); \`${gapFillCommandOf(projectId, issue.environmentId)}\` on this machine reports any missing epochs`,
+  );
+}
+
 /**
  * 要求に使う鍵: 無ければ生成、あれば「同じ鍵の要求がある(待機の再開 — K4-5)」か
- * 「pre-DK の複製(`--replace` で作り直す — K4-18)」かを分ける。
+ * 「pre-DK の複製・失効した端末(`--replace` で作り直す — K4-18 / DK K12-5)」かを分ける。
  */
 function deviceKeyForRequest(input: {
   readonly session: CliSession;
@@ -275,13 +448,13 @@ function deviceKeyForRequest(input: {
       }
       return yield* Effect.fail(
         cliError(
-          `This machine already has a device key (${keys.fingerprintHex}). If it is a copy of another device's key from an install before device keys, re-run with --replace: it generates a new key for this machine and removes the copy from this keychain (the original device keeps its key). Do not pass --replace if this is your only device — recover from the ledger with \`maruhi key recover\` instead if you ever need to`,
+          `This machine already has a device key (${keys.fingerprintHex}) with no pending device-add request, and it is not in your device registry. If this device was revoked, or its key is a copy of another device's key from an install before device keys, re-run with --replace: it removes this key from this keychain and generates a new one, whose fingerprint you then approve from a registered device (a revoked key is never registered again; the device a copy came from keeps its key). Do not pass --replace if this is your only device — recover from the ledger with \`maruhi key recover\` instead if you ever need to`,
         ),
       );
     }
     if (existing !== null) {
       yield* keychain.remove(entryName);
-      yield* logNote("removed the copied key from this machine's keychain (--replace)");
+      yield* logNote("removed the previous key from this machine's keychain (--replace)");
     }
     const record = yield* generateKeyRecord();
     const validated = yield* importMasterKeys(record).pipe(
@@ -392,23 +565,6 @@ function waitForRegistryRow(input: {
       yield* Effect.sleep(Duration.millis(input.intervalMs));
     }
   });
-}
-
-/** 1 プロジェクトの検証済みチェーンに自分の端末 FP があるか(同期できなければ false)。 */
-function deviceOnProjectChain(input: {
-  readonly session: CliSession;
-  readonly projectId: string;
-  readonly fingerprintHex: string;
-}): Effect.Effect<boolean, never, CliServices> {
-  return openMetadataProject({ server: input.session.origin, project: input.projectId }).pipe(
-    Effect.map(
-      (context) =>
-        context.verified.state.members
-          .get(input.session.userId)
-          ?.devices.has(input.fingerprintHex) === true,
-    ),
-    Effect.catch(() => Effect.succeed(false)),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +918,7 @@ function refuseCapMismatch(input: {
       : `Re-run it with that cap: \`${approveCommandOf(input.request.fingerprintHex, only.cap, input.project)}\`.`;
   return Effect.fail(
     cliError(
-      `Device ${input.request.fingerprintHex} is already registered with cap ${listed}, and this approval asks for ${describeCap(input.cap)}: a device's cap is set when it is first approved and cannot be changed later, so this approval appended nothing, recorded nothing and left the request in place. ${rerun} To give the device another cap, revoke it and re-add it instead`,
+      `Device ${input.request.fingerprintHex} is already registered with cap ${listed}, and this approval asks for ${describeCap(input.cap)}: a device's cap is set when it is first approved and cannot be changed later, so this approval appended nothing, recorded nothing and left the request in place. ${rerun} To give the device another cap, revoke it, then ${reAddDeviceRoute("that machine")} with the cap you want`,
     ),
   );
 }

@@ -772,7 +772,7 @@ USAGE
 FLAGS
   --server string    Server URL (defaults to config server)
   --label string     Display name for this device in the device registry (default: the hostname)
-  --replace          Generate a new key even though this machine already has one (removes a copied key from this keychain — only for installs from before device keys)
+  --replace          Generate a new key even though this machine already has one, removing the old key from this keychain (for a device that was revoked, or a copy of another device's key from an install before device keys)
 
 GLOBAL FLAGS
   --help, -h       Show help information
