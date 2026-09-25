@@ -669,7 +669,8 @@ export function openEnvironment(
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
     const context = yield* openProjectWith(config, flags, options);
     // 判定は**この端末の実効 scope**(人 ∩ 端末 — DK K4-17)。手元の鍵がチェーンに無い
-    // (未登録 / 失効)ならここで `device approve` を案内する(値の取得より前)
+    // (未登録 / 失効)ならここで登録の経路(待機中の要求の承認か、ここに載っている端末の
+    // 同期 — DK K10-5)を案内する(値の取得より前)
     const self = context.verified.state.members.get(context.session.userId);
     const device =
       self === undefined

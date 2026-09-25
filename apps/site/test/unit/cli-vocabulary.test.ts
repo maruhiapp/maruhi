@@ -252,6 +252,69 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   );
 });
 
+// DK K10-6: `devices.mdx` の What can go wrong は CLI の文言を `- **\`…\`**` の形で引用する。
+// 引用を `…` で切った各断片(12 文字以上)が CLI の文言(`apps/cli/src/*.ts` — バッククォートを
+// 除いた字面)に実在することを、写しごとの釘でなく引用の形そのものに網をかけて留める
+// (文言を変えた PR が引用を置き去りにしない — K9-9 の型)。空虚さ(引用が集まらない)と
+// 偶然の一致(短い断片)は同じ検査の中で否定する(K8-2)。値を埋めた例示の引用を持つ他の
+// ページ(environment-scopes / four-eyes)は対象にしない。
+describe("devices.mdx quotes CLI messages as the CLI prints them", () => {
+  const cliDir = join(repoRoot, "apps", "cli", "src");
+  const cliSource = readdirSync(cliDir)
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => readFileSync(join(cliDir, name), "utf8"))
+    .join("\n")
+    .replaceAll("\\`", "")
+    .replaceAll("`", "");
+  const MIN_FRAGMENT = 12;
+
+  interface Quote {
+    readonly quote: string;
+    readonly fragments: readonly string[];
+  }
+
+  /** `- **\`…\`**` の引用と、`…` で切った断片(短い断片は偶然当たるので数えない)。 */
+  function quotesOf(markdown: string): Quote[] {
+    return [...markdown.matchAll(/^- \*\*`([^`]+)`\*\*/gm)].map((match) => {
+      const quote = match[1] ?? "";
+      const fragments = quote
+        .split("…")
+        .map((fragment) => fragment.trim())
+        .filter((fragment) => fragment.length >= MIN_FRAGMENT);
+      return { quote, fragments };
+    });
+  }
+
+  function unquotable(quotes: readonly Quote[]): string[] {
+    return quotes.flatMap(({ quote, fragments }) =>
+      fragments.length === 0
+        ? [`${quote} (no fragment of ${MIN_FRAGMENT}+ characters)`]
+        : fragments
+            .filter((fragment) => !cliSource.includes(fragment))
+            .map((f) => `${quote}: ${f}`),
+    );
+  }
+
+  const quotes = quotesOf(pageText("devices.mdx"));
+
+  it("collects the quoted messages", () => {
+    expect(quotes.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("finds every quoted fragment in the CLI source", () => {
+    expect(unquotable(quotes)).toEqual([]);
+  });
+
+  it("catches a paraphrased quote and a quote too short to check", () => {
+    expect(unquotable(quotesOf("- **`No pending request matches that fingerprint …`**."))).toEqual([
+      "No pending request matches that fingerprint …: No pending request matches that fingerprint",
+    ]);
+    expect(unquotable(quotesOf("- **`… on …`**."))).toEqual([
+      "… on … (no fragment of 12+ characters)",
+    ]);
+  });
+});
+
 // K6-Y: docs が書く上限・レート制限・TTL を、定義側の定数に釘で留める。値が変われば
 // この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの — K7-A)。
 // 釘は語句の**出現回数**で留める(存在検査だと複製された文は最初の 1 つで満たされ、
