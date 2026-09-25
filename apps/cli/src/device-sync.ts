@@ -331,7 +331,12 @@ function describeFailedBackfill(
     return "";
   }
   const environments = failed.map((failure) => displayText(failure.environmentId)).join(", ");
-  return `; the backfill failed for ${countNoun(failed.length, "environment")} (${environments}) — a registered device of yours whose cap covers ${failed.length === 1 ? "it" : "them"} fills the missing epochs when it runs \`${gapFillCommandOf(projectId, "<environment>")}\`${failed.length === 1 ? "" : " for each"}`;
+  // 失敗した環境は分かっているので、コマンドは環境ごとに実 id で出す(写して打てる形 —
+  // Cursor Bugbot 指摘。`<environment>` の置き場所は環境が分からない場面だけ)
+  const commands = failed
+    .map((failure) => `\`${gapFillCommandOf(projectId, failure.environmentId)}\``)
+    .join(", ");
+  return `; the backfill failed for ${countNoun(failed.length, "environment")} (${environments}) — a registered device of yours whose cap covers ${failed.length === 1 ? "it" : "them"} fills the missing epochs when it runs ${commands}`;
 }
 
 function describeRegistrationFailure(projectId: string, label: string, error: CliError): string {

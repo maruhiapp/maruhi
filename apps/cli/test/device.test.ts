@@ -1007,7 +1007,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
     const errors = env.errors.join("\n");
     expect(errors).toContain(
-      `; the backfill failed for 1 environment (${ENV_ID}) — a registered device of yours whose cap covers it fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env <environment>\``,
+      `; the backfill failed for 1 environment (${ENV_ID}) — a registered device of yours whose cap covers it fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
     );
     expect(errors).not.toContain("retried on the next sync");
   });

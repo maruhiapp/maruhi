@@ -274,7 +274,22 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
       `your device ${sibling.fingerprintHex} has no keys for epoch 1 of environment ${ENV_ID} (its backfill did not complete), and filling them from this device failed (`,
     );
     expect(failing.env.errors.join("\n")).toContain(
-      `the next \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\` tries again`,
+      `once the cause is fixed, the next \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\` tries again`,
+    );
+
+    // 一部だけ補える欠け(この端末は epoch 2 だけ、兄弟は両方欠け)で登録が失敗したとき:
+    // 失敗の文は包もうとしたエポック(2)だけを言い、この端末も持たないエポック(1)の文も出す
+    const partial = await start({
+      rows: [await rowFor(owner, 2)],
+      registerStatus: 500,
+    });
+    expect(await runCli(["pull"], partial.env.layer)).toBe(0);
+    const partialErrors = partial.env.errors.join("\n");
+    expect(partialErrors).toContain(
+      `your device ${sibling.fingerprintHex} has no keys for epoch 2 of environment ${ENV_ID} (its backfill did not complete), and filling them from this device failed (`,
+    );
+    expect(partialErrors).toContain(
+      `your device ${sibling.fingerprintHex} has no keys for epoch 1 of environment ${ENV_ID}, and this device has none for them either`,
     );
   });
 });

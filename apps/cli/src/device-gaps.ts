@@ -187,16 +187,20 @@ export function reportOwnDeviceGapFills(input: {
     const environment = displayText(input.environmentId);
     for (const fill of input.fills) {
       const device = `your device ${fill.deviceFingerprintHex}`;
+      // 包もうとしたエポック(この端末が開けたもの)。失敗の文も成功の文もこの集合だけを言い、
+      // この端末も持たないエポックの文は失敗のときも出す(pullfrog 指摘 — 失敗の文が全部の
+      // 欠けを「次の pull で再試行」と言うと、この端末からは決して補えないエポックまで含む)
+      const attempted = fill.missingEpochs.filter(
+        (epoch) => !fill.unavailableEpochs.includes(epoch),
+      );
       if (fill.failure !== null) {
+        // 再試行が効くのは原因を除いた後だけ(read スコープのトークンの 403 など — K11-7 の限界 (3))
         yield* logNote(
-          `${device} has no keys for ${epochList(fill.missingEpochs)} of environment ${environment} (its backfill did not complete), and filling them from this device failed (${fill.failure}); the next \`${gapFillCommandOf(input.projectId, input.environmentId)}\` tries again`,
+          `${device} has no keys for ${epochList(attempted)} of environment ${environment} (its backfill did not complete), and filling them from this device failed (${fill.failure}); once the cause is fixed, the next \`${gapFillCommandOf(input.projectId, input.environmentId)}\` tries again`,
         );
-        continue;
-      }
-      const filled = fill.missingEpochs.length - fill.unavailableEpochs.length;
-      if (filled > 0) {
+      } else if (attempted.length > 0) {
         yield* logNote(
-          `${device} had no keys for ${epochList(fill.missingEpochs.filter((epoch) => !fill.unavailableEpochs.includes(epoch)))} of environment ${environment} (its backfill did not complete); wrapped them to it from this device (${fill.registered} registered, ${fill.alreadyPresent} already present)`,
+          `${device} had no keys for ${epochList(attempted)} of environment ${environment} (its backfill did not complete); wrapped them to it from this device (${fill.registered} registered, ${fill.alreadyPresent} already present)`,
         );
       }
       if (fill.unavailableEpochs.length > 0) {
