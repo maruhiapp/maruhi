@@ -204,10 +204,11 @@ function selectRetryTargets(input: {
       const target = member?.devices.get(item.keyFingerprintHex);
       if (
         item.keyFingerprintHex === context.masterKeys.fingerprintHex ||
-        revokedHere.has(item.keyFingerprintHex)
+        (target === undefined && revokedHere.has(item.keyFingerprintHex))
       ) {
-        // この端末自身(自分宛は自分で包めない)か、このチェーンで失効した鍵: 包む宛先が
-        // 二度と現れない
+        // この端末自身(自分宛は自分で包めない)か、このチェーンで失効して今も載っていない鍵。
+        // 失効の履歴だけでは消さない: 同じ鍵の足し直しは合意規則上受理される(ベクター
+        // `readd-revoked-device-same-key` — PR #199 pullfrog 指摘)ので、載っていれば包む
         yield* clearPending(session, item);
       } else if (target !== undefined && !capWithinSignerCap(target, own)) {
         // ここに来るのは競合で負けた端末だけ(`appended: false` — 載せたのは別の端末)。
