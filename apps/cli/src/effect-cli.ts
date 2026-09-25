@@ -146,6 +146,7 @@ import {
   reconcileGossip,
   resolveProjectId,
 } from "./context.ts";
+import { reportOwnDeviceGapFills } from "./device-gaps.ts";
 import {
   deviceAddOp,
   deviceApproveOp,
@@ -3360,8 +3361,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         recipient: context.recipient,
         resync: context.resync,
         floor: context.floorHandle,
+        // 同じ人の他の端末の欠けたエポックを補う(DK K11-4 — pull だけ)
+        fillOwnDeviceGaps: { signingKeyPair: context.masterKeys.sigKeyPair },
       });
       yield* logWarnings(pulled.warnings);
+      yield* reportOwnDeviceGapFills({
+        projectId: context.projectId,
+        environmentId: context.environmentId,
+        fills: pulled.ownDeviceGapFills,
+      });
       yield* io.log(
         `Sync and verification OK: ${countNoun(pulled.variables.length, "variable")} (environment ${context.environmentId})`,
       );
