@@ -2092,6 +2092,29 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(env2.errors.join("\n")).toContain("Note: your projects could not be listed (");
   });
 
+  it("合図の後に全プロジェクトが同期できなければ、0 を事実として数えず、確かめられなかった件数を添える(K13-16)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { server } = await makeServer({
+      built: await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]),
+      withEnvironment: false,
+      registryRows: [registryRowOf(dev2)],
+      pendingRequests: [requestRowOf(dev2)],
+      brokenProjects: [{ built, mode: "unavailable" }],
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    // 一覧の 1 件目(genesis が reserve)は同期でき dev2 は無い、2 件目は同期できない
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      "Approved: this device is registered on 0 projects (verified on each project's chain), and 1 project could not be checked",
+    );
+    expect(env.errors.join("\n")).toContain(
+      `Note: ${built.projectId}: could not sync this project (`,
+    );
+  });
+
   it("期限切れには、承認側の出力の条件を保ったまま、この時点のチェーンの事実を足す(K13-4)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -2294,6 +2317,31 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     expect(env.logs.join("\n")).toContain(
       `${dev2.fingerprintHex}\tthis machine\n  (not on the chain of project ${built.projectId}, the only project shown)`,
     );
+  });
+
+  it("device list は同期できなかったプロジェクトについて「無い」と言わない(K13-16)", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const down = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      brokenProjects: [{ built: down, mode: "unavailable" }],
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(await runCli(["device", "list"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      `${dev2.fingerprintHex}\tthis machine\n  (not on any synced project chain; 1 project could not be synced)`,
+    );
+    env.logs.length = 0;
+    expect(
+      await runCli(["device", "list", "--project", down.projectId], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain(
+      `${dev2.fingerprintHex}\tthis machine\n  (project ${down.projectId} could not be synced, so whether this key is on its chain is unknown)`,
+    );
+    expect(logs).not.toContain("the only project shown");
   });
 
   it("device list はプロジェクト一覧が取れなくても落ちず、登録簿と記録を出す", async () => {

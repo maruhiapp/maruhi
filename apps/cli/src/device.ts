@@ -277,7 +277,7 @@ function awaitApproval(
     }
     const groups = groupStandings(standings);
     yield* io.log(
-      `Approved: this device is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)`,
+      `Approved: this device is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
     );
     // 完了の文は立場が分かった時点で出し、鍵の到達の確認(環境ごとの取得)はその後に回す
     // (K12-14。出力の順序は K12-3 のまま)
@@ -303,6 +303,16 @@ function describeChainsNow(standings: KeyStandings): string {
       ? ""
       : `; it is revoked on ${groups.revoked.map(displayText).join(", ")}`;
   return `On the project chains right now, this key is on ${describeListed(standings.projects.length)}${unchecked}${revoked}. If the approving device is still working, re-running \`maruhi device add\` on this machine later shows whether it registered this key, without a new request`;
+}
+
+/**
+ * 数の文の範囲(Bugbot 指摘 — K13-16): 同期できなかったプロジェクトがあれば、数は確かめた
+ * 分だけの下限なので、その件数を添える(全部が同期できなければ「0」は事実でない)。
+ */
+function describeUnchecked(groups: StandingGroups): string {
+  return groups.unsynced.length === 0
+    ? ""
+    : `, and ${countNoun(groups.unsynced.length, "project")} could not be checked`;
 }
 
 /** プロジェクト id の並び(文言用)。 */
@@ -354,7 +364,7 @@ function reportActiveKey(
     }
     yield* io.log(`This device's key fingerprint: ${fingerprintHex}`);
     yield* io.log(
-      `This key is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)`,
+      `This key is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
     );
     const registry = yield* fetchRegistry(client);
     if (registry !== null && !registry.some((row) => row.keyFingerprintHex === fingerprintHex)) {
@@ -1386,32 +1396,45 @@ export function deviceListOp(input: {
           record: local.find((entry) => entry.keyFingerprintHex === fingerprintHex),
         }),
       );
-      yield* printChainLines(
-        chainLinesOf({ listed, userId: input.session.userId, fingerprintHex }),
-        input.project,
-      );
+      yield* printChainLines({
+        lines: chainLinesOf({ listed, userId: input.session.userId, fingerprintHex }),
+        project: input.project,
+        unsynced: projectIds.length - listed.chains.length,
+      });
     }
   });
 }
 
-/** 1 端末のチェーン上の出現(無ければ、表示した範囲を言ってその旨 — DK K13-6)。 */
-function printChainLines(
-  lines: readonly string[],
-  project: string | undefined,
-): Effect.Effect<void, never, CliIo> {
+/**
+ * 1 端末のチェーン上の出現(無ければ、表示した範囲を言ってその旨 — DK K13-6)。同期できな
+ * かったプロジェクトについては「無い」と言わない(Bugbot 指摘 — K13-16)。
+ */
+function printChainLines(input: {
+  readonly lines: readonly string[];
+  readonly project: string | undefined;
+  /** 同期できなかったプロジェクトの数(`collectChainRows` が Note を出したもの)。 */
+  readonly unsynced: number;
+}): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    if (lines.length === 0) {
-      yield* io.log(
-        project === undefined
-          ? "  (not on any synced project chain)"
-          : `  (not on the chain of project ${displayText(project)}, the only project shown)`,
-      );
+    if (input.lines.length === 0) {
+      yield* io.log(describeNoChainLines(input.project, input.unsynced));
     }
-    for (const line of lines) {
+    for (const line of input.lines) {
       yield* io.log(`  ${line}`);
     }
   });
+}
+
+function describeNoChainLines(project: string | undefined, unsynced: number): string {
+  if (project !== undefined) {
+    return unsynced > 0
+      ? `  (project ${displayText(project)} could not be synced, so whether this key is on its chain is unknown)`
+      : `  (not on the chain of project ${displayText(project)}, the only project shown)`;
+  }
+  return unsynced > 0
+    ? `  (not on any synced project chain; ${countNoun(unsynced, "project")} could not be synced)`
+    : "  (not on any synced project chain)";
 }
 
 // ---------------------------------------------------------------------------
