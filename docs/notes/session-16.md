@@ -221,7 +221,7 @@ direction).
    signature) is **not detected even with the floor** (§14.3-5). **The meta floor is
    rollback-detection only**. This implementation places no check or wording that could be
    mistaken for "detected", and includes a test that explicitly pins the non-detection
-   (floor-detection.test.ts's "forward injection of meta is not detected even by the floor").
+   (`floor-detection.test.ts`'s "forward injection of meta is not detected even by the floor").
    Closure is the responsibility of Phase 2's environment manifest / checkpoint (undecided
    #12) and head gossip
 2. **First-sync clients**: distributing an "internally consistent old view" to a client with
