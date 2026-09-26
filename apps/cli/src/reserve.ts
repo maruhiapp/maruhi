@@ -145,11 +145,18 @@ export function retractReserveRecord(input: {
       );
       return;
     }
+    if (input.verdict.kind !== "first-key") {
+      return;
+    }
+    // 観測の行の材料は、有効な立場(最初の鍵のプロジェクトを優先)。最初の鍵だったプロジェクトで
+    // 既に失効し、どこにも有効でなければ、失効の印を付ける(K14-18)
     const first =
-      input.verdict.kind === "first-key"
-        ? input.groups.active.find((entry) => entry.standing.firstKey)
-        : undefined;
+      input.groups.active.find((entry) => entry.standing.firstKey) ?? input.groups.active[0];
     if (first === undefined) {
+      yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
+      yield* logNote(
+        `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")} and is registered nowhere now, so the record now says it is revoked`,
+      );
       return;
     }
     const { device, context } = first.standing;
@@ -168,7 +175,7 @@ export function retractReserveRecord(input: {
       revokedAtMs: null,
     });
     yield* logNote(
-      `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${displayText(first.projectId)}, so the record now lists it as an observed device key (it is no longer revoked by \`maruhi key reserve rotate\` or \`maruhi key recovery --replace\`)`,
+      `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")}, so the record now lists it as an observed device key (it is no longer revoked by \`maruhi key reserve rotate\` or \`maruhi key recovery --replace\`)`,
     );
   }).pipe(
     Effect.catch((error) =>

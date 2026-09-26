@@ -35,8 +35,16 @@ export type ChainKeyStanding =
        */
       readonly firstKey: boolean;
     }
-  | { readonly kind: "revoked" }
-  | { readonly kind: "absent" };
+  | {
+      readonly kind: "revoked";
+      /** 失効の前に、このチェーンでその人の最初の鍵だったことがある(DK K14-18)。 */
+      readonly firstKey: boolean;
+    }
+  | {
+      readonly kind: "absent";
+      /** 以前の在籍で、このチェーンでその人の最初の鍵だったことがある(DK K14-18)。 */
+      readonly firstKey: boolean;
+    };
 
 /**
  * The standing of `fingerprintHex` for `userId` on one verified chain. A key that
@@ -56,9 +64,14 @@ export function keyStandingIn(
       provenance.addedByFingerprintHex === null || wasFirstKeyOf(verified, userId, device);
     return { kind: "active", member, device, firstKey };
   }
+  // 失効した鍵・以前の在籍の鍵も、公開鍵は束縛の履歴(keyHistory)に残る(DK K14-18)
+  const bound = (verified.keyHistory.get(userId) ?? []).find(
+    (binding) => binding.keyFingerprintHex === fingerprintHex,
+  );
+  const firstKey = bound !== undefined && wasFirstKeyOf(verified, userId, bound);
   return revokedFingerprintsOf(verified, userId).has(fingerprintHex)
-    ? { kind: "revoked" }
-    : { kind: "absent" };
+    ? { kind: "revoked", firstKey }
+    : { kind: "absent", firstKey };
 }
 
 /**
@@ -66,7 +79,11 @@ export function keyStandingIn(
  * (an applied genesis or `add_member` carrying them). Applied operations outlive
  * the tenure, so a key re-added with `add_device` after a re-invite still counts.
  */
-function wasFirstKeyOf(verified: VerifiedProject, userId: string, device: ChainDevice): boolean {
+function wasFirstKeyOf(
+  verified: VerifiedProject,
+  userId: string,
+  device: { readonly encPubHex: string; readonly sigPubHex: string },
+): boolean {
   const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
     keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
   return verified.applied.some(({ operation, actorUserId }) => {
@@ -188,6 +205,11 @@ export interface StandingGroups {
   }[];
   readonly revoked: readonly string[];
   readonly absent: readonly string[];
+  /**
+   * どの立場であれ(有効・失効・無い)、この鍵がその人の最初の鍵だった(ことがある)プロジェクト
+   * (DK K14-18 — 台帳の鍵の判定が読む。`device add` の 2 択は有効な立場の `firstKey` だけを読む)。
+   */
+  readonly firstKeyProjects: readonly string[];
   readonly unsynced: readonly {
     readonly projectId: string;
     readonly message: string;
@@ -200,9 +222,13 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
     active: [] as StandingGroups["active"][number][],
     revoked: [] as string[],
     absent: [] as string[],
+    firstKeyProjects: [] as string[],
     unsynced: [] as StandingGroups["unsynced"][number][],
   };
   for (const { projectId, standing } of standings.projects) {
+    if (standing.kind !== "unsynced" && standing.firstKey) {
+      groups.firstKeyProjects.push(projectId);
+    }
     if (standing.kind === "active") {
       groups.active.push({ projectId, standing });
     } else if (standing.kind === "unsynced") {
@@ -217,7 +243,8 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
 /**
  * 台帳から開いた鍵が予備鍵として働くかの判定(DK K14-2 — 設計録 §19)。予備鍵は必ず
  * `add_device` で載り(K4-30)、DK 以前の端末鍵の複製はその人の最初の鍵(genesis /
- * `add_member`)になる。上から順に最初に当たるもの: どこか 1 つでも最初の鍵 → `first-key`
+ * `add_member`)になる。上から順に最初に当たるもの: どこか 1 つでも最初の鍵(失効・無いの立場の
+ * 以前の最初の鍵を含む — K14-18)→ `first-key`
  * (同期できないプロジェクトがあっても — 正の事実 1 つで足りる)/ どこかで失効 → `revoked` /
  * 同期できないプロジェクトがある・一覧が取れない → `unchecked` / どこにも有効でない →
  * `nowhere` / 有効な所がすべて `add_device` 出所 → `added`(予備鍵と記録してよいのは
@@ -244,9 +271,8 @@ export function reserveVerdictOf(
   groups: StandingGroups,
   listFailure: string | null,
 ): ReserveVerdict {
-  const firstKey = groups.active.filter((entry) => entry.standing.firstKey);
-  if (firstKey.length > 0) {
-    return { kind: "first-key", projectIds: firstKey.map((entry) => entry.projectId) };
+  if (groups.firstKeyProjects.length > 0) {
+    return { kind: "first-key", projectIds: groups.firstKeyProjects };
   }
   const activeProjectIds = groups.active.map((entry) => entry.projectId);
   if (groups.revoked.length > 0) {
