@@ -484,6 +484,27 @@ class RowInserter {
   }
 }
 
+/**
+ * 退避物の表行の列名を検証して返す。配列・全要素が文字列・生きた表の列名と
+ * 順序ごと完全一致、のいずれかを欠けば "malformed"(列名は SQL の識別子へ
+ * 埋め込まれるため、ここを通った値だけを使う)。
+ */
+function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
+  if (!Array.isArray(columns) || !columns.every((column) => typeof column === "string")) {
+    throw new RestoreRefusedError("malformed");
+  }
+  // table は既知表の集合で検査済み(識別子として埋め込んでよい値)
+  const live = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
+  if (
+    columns.length === 0 ||
+    columns.length !== live.length ||
+    columns.some((column, index) => column !== live[index])
+  ) {
+    throw new RestoreRefusedError("malformed");
+  }
+  return live;
+}
+
 function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
   if (
     line.kind !== "header" ||
@@ -558,12 +579,17 @@ class RestoreReader {
       throw new RestoreRefusedError("unknown-table");
     }
     this.#flush();
+    // 列名は退避物の行から来る値で、下の INSERT / CREATE TABLE へ識別子として
+    // 埋め込まれる。スキーマ版は header で一致済みなので、書き手(writeSnapshot)と
+    // 同じ取り方の「生きた表の列名」と順序ごと完全一致しなければ破損として拒否する
+    // (識別子を退避物から SQL へ無検証で流さない)。
+    const columns = acceptColumns(this.storage.sql, line.table, line.columns);
     // chain_entries はステージング表へ書き、verify で本表へ移す。RowInserter は
     // バッチごとにコミットするため、プロセスが chain 表の途中で死ぬと「有効だが
     // 打ち切られた連鎖」が残り、isProjectDoEmpty の拒否で二度と復元できない。
     // ステージングを経ると、中断は常に「chain_entries 空」(= 未初期化)に倒れる。
-    const target = line.table === CHAIN_TABLE ? this.#beginChainStaging(line.columns) : line.table;
-    this.#inserter = new RowInserter(this.storage, target, line.columns);
+    const target = line.table === CHAIN_TABLE ? this.#beginChainStaging(columns) : line.table;
+    this.#inserter = new RowInserter(this.storage, target, columns);
     this.#table = line.table;
     this.rows[line.table] = 0;
   }

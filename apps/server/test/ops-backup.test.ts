@@ -179,6 +179,80 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries")).toEqual([]);
   });
 
+  it("refuses snapshot column lists that do not match the live table (injected / reordered / unknown / non-string)", async () => {
+    const schemaVersion = Number(
+      (await queryProjectDo(projectId, "SELECT version FROM schema_meta WHERE id = 1"))[0]?.[
+        "version"
+      ],
+    );
+    await resetProjectDo(projectId);
+    const header = {
+      kind: "header",
+      format: SNAPSHOT_FORMAT,
+      version: SNAPSHOT_FORMAT_VERSION,
+      schemaVersion,
+      takenAtMs: 1,
+      doIdHex: doIdHex(),
+    };
+    const envColumns = [
+      "environment_id",
+      "name",
+      "latest_meta_version",
+      "created_at",
+      "deleted_at",
+    ];
+    const chainColumns = (
+      await queryProjectDo(
+        projectId,
+        "SELECT name FROM pragma_table_info('chain_entries') ORDER BY cid",
+      )
+    ).map((row) => String(row["name"]));
+    expect(chainColumns.length).toBeGreaterThan(1);
+    const cases: { name: string; table: string; columns: unknown }[] = [
+      {
+        name: "injected",
+        table: "environments",
+        columns: [...envColumns.slice(0, 4), "a); DROP TABLE chain_entries; --"],
+      },
+      {
+        name: "injected-chain",
+        table: "chain_entries",
+        columns: [...chainColumns.slice(0, -1), "a); DROP TABLE chain_entries; --"],
+      },
+      { name: "reordered", table: "environments", columns: envColumns.toReversed() },
+      {
+        name: "reordered-chain",
+        table: "chain_entries",
+        columns: [...chainColumns.slice(1), chainColumns[0]],
+      },
+      { name: "unknown", table: "environments", columns: [...envColumns.slice(0, 4), "bogus"] },
+      { name: "extra", table: "environments", columns: [...envColumns, "bogus"] },
+      { name: "non-string", table: "environments", columns: [...envColumns.slice(0, 4), 1] },
+      { name: "not-array", table: "environments", columns: "environment_id" },
+    ];
+    for (const { name, table, columns } of cases) {
+      const key = `do/test/columns-${name}.ndjson.gz`;
+      await bucket.put(
+        key,
+        await gzipLines([
+          JSON.stringify(header),
+          JSON.stringify({ kind: "table", table, columns }),
+          JSON.stringify({ kind: "trailer", rows: {} }),
+        ]),
+      );
+      expect(await restore(key), name).toEqual({ kind: "refused", code: "malformed" });
+      // 表は壊れず(DROP されず)、DO は空のまま・ステージング表も残らない
+      expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries"), name).toEqual([]);
+      expect(
+        await queryProjectDo(
+          projectId,
+          "SELECT name FROM sqlite_master WHERE name = 'chain_entries_restore'",
+        ),
+        name,
+      ).toEqual([]);
+    }
+  });
+
   it("skips when the audit / chain watermarks are unchanged, and uploads again after a pull wrote var.read", async () => {
     await seedProjectActivity();
     const first = await backup();
