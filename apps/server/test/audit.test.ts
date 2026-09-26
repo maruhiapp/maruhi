@@ -1,9 +1,11 @@
-// 監査ログ(AUDIT_SPEC §3.3 データ系 / §3.4 チェーンミラー / §5.1 スキーマ)の統合テスト。
+// Integration tests for the audit log (AUDIT_SPEC §3.3 data events / §3.4
+// chain mirror / §5.1 schema).
 //
-// - seq は単調・無欠番(§5.1 / §6)
-// - チェーンミラーは actor(user_id + 鍵 FP)・chain_seq・クライアント / サーバー
-//   両時刻を持つ(§3.4)
-// - アイデンティティ規則(§1-2): プロバイダ情報・メールが 1 行にも現れないこと
+// - seq is monotonic and gapless (§5.1 / §6)
+// - The chain mirror carries actor (user_id + key FP), chain_seq, and both
+//   client / server timestamps (§3.4)
+// - Identity rule (§1-2): provider info and emails must not appear in any
+//   row
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
@@ -99,7 +101,7 @@ async function createVariableOk(dek: Uint8Array, variableId: string, name: strin
   fixture.manifests.set(ENV, state);
 }
 
-/** 変数のメタ操作(rename / 削除)に同梱するマニフェスト(§12-5)を署名し、記録を進める。 */
+/** Sign the manifest bundled with a variable meta op (rename / delete) (§12-5) and advance the record. */
 async function manifestForNext(
   statement: WireVariableMetaStatement,
   issuerUserId: string,
@@ -118,7 +120,7 @@ async function manifestForNext(
   return manifest;
 }
 
-/** 変数の次ステートメント(rename / 削除)を記録済み最新から署名する。 */
+/** Sign a variable's next statement (rename / delete) from the latest recorded one. */
 async function nextVariableStatement(input: {
   readonly variableId: string;
   readonly name: string;
@@ -143,10 +145,11 @@ async function nextVariableStatement(input: {
 }
 
 /**
- * ライフサイクル末尾 5 行(env.renamed → var.renamed → var.deleted →
- * カスケード var.deleted → env.deleted)の author 鍵 FP の検査(AUDIT_SPEC §3.3):
- * メタステートメントを伴う操作は author の鍵 FP を写し、環境削除のカスケード
- * var.deleted は env 削除ステートメントの author FP を写す。
+ * Check the author key FPs of the last 5 lifecycle rows (env.renamed →
+ * var.renamed → var.deleted → cascade var.deleted → env.deleted)
+ * (AUDIT_SPEC §3.3): ops accompanied by a meta statement copy the author's
+ * key FP, and the environment-deletion cascade var.deleted copies the
+ * author FP of the env deletion statement.
  */
 function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]): void {
   const tail = events.slice(-5);
@@ -163,11 +166,11 @@ function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]
   expect(JSON.parse(String(tail[1]?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
 }
 
-/** 採番リセット検査用の最小イベント(audit-store.ts の失敗時リセットのテスト入力)。 */
+/** Minimal event for the numbering-reset check (test input for audit-store.ts's reset-on-failure). */
 const seqTestEvent = (name: string) =>
   ({ event: name, serverTs: 1, actorType: "user", actorUserId: OWNER }) as const;
 
-describe("チェーンミラー(§3.4)", () => {
+describe("chain mirror (§3.4)", () => {
   it("mirrors accepted chain entries with actor identity, chain_seq and both timestamps", async () => {
     const events = await readAuditEvents(projectId);
     expect(events.map((event) => event["event"])).toEqual([
@@ -183,7 +186,7 @@ describe("チェーンミラー(§3.4)", () => {
     expect(genesis["actor_type"]).toBe("user");
     expect(genesis["actor_user_id"]).toBe(OWNER);
     expect(genesis["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-    // §3.4: genesis の target には作成者を入れる(在籍区間の開始点)
+    // §3.4: genesis's target is the creator (the start of the membership interval)
     expect(genesis["target_user_id"]).toBe(OWNER);
     expect(genesis["client_ts"]).toBeTypeOf("number");
     expect(genesis["server_ts"]).toBeTypeOf("number");
@@ -191,7 +194,7 @@ describe("チェーンミラー(§3.4)", () => {
     const addMember = events[1];
     if (addMember === undefined) throw new Error("missing add_member mirror");
     expect(addMember["target_user_id"]).toBe(MEMBER);
-    // scope も写す(AUDIT_SPEC §3.4 — 2026-09-14 ES)
+    // scope is also copied (AUDIT_SPEC §3.4 — 2026-09-14 ES)
     expect(JSON.parse(String(addMember["payload"]))).toEqual({
       role: "member",
       scopeKind: "all",
@@ -200,9 +203,11 @@ describe("チェーンミラー(§3.4)", () => {
   });
 
   it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4)", async () => {
-    // 作成・ローテーションとも複合リクエスト(§12-4)経由でチェーンに載る。
-    // ミラー payload のコミットメントは同梱 DEK の §5.2 実計算値と一致する
-    // (形式だけでなく値まで固定: 別エポックの値や定数を写す変異を落とす)
+    // Both creation and rotation land on the chain via composite requests
+    // (§12-4). The commitment in the mirror payload matches the §5.2
+    // computed value of the bundled DEK (pinning the value, not just the
+    // shape: rejects mutants that copy a different epoch's value or a
+    // constant)
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
@@ -217,22 +222,23 @@ describe("チェーンミラー(§3.4)", () => {
     expect(created["chain_seq"]).toBe(4);
     expect(created["actor_user_id"]).toBe(OWNER);
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-    // dek_commitment は payload に写す(AUDIT_SPEC §3.4)
+    // dek_commitment is copied into the payload (AUDIT_SPEC §3.4)
     expect(JSON.parse(String(created["payload"]))).toEqual({ dekCommitmentHex: commitment1 });
 
     expect(rotated["event"]).toBe("chain.epoch_rotated");
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
-    // 複合は create / rotate(H+1)に続けて境界 checkpoint(H+2)を追記する
-    // (§12-4)ため、rotate のチェーン seq は 6
+    // The composite appends a boundary checkpoint (H+2) right after create /
+    // rotate (H+1) (§12-4), so the rotate's chain seq is 6
     expect(rotated["chain_seq"]).toBe(6);
     expect(JSON.parse(String(rotated["payload"]))).toEqual({
       reason: "scheduled",
       dekCommitmentHex: commitment2,
     });
 
-    // 境界 checkpoint のミラー(chain.checkpointed — AUDIT_SPEC §3.4)は H+2 の
-    // seq(作成 = 5、rotate = 7)で記録され、payload に環境タプルを写す
+    // The boundary checkpoint mirror (chain.checkpointed — AUDIT_SPEC §3.4)
+    // is recorded at the H+2 seq (creation = 5, rotate = 7) and copies the
+    // environment tuple into the payload
     const checkpoints = events.filter((event) => event["event"] === "chain.checkpointed");
     expect(checkpoints.map((event) => event["chain_seq"])).toEqual([5, 7]);
     const rotateCheckpoint = JSON.parse(String(checkpoints[1]?.["payload"])) as {
@@ -246,7 +252,7 @@ describe("チェーンミラー(§3.4)", () => {
     });
   });
 
-  it("mirrors change_role / remove_member with the target user id (§4.1 Q1 の入力)", async () => {
+  it("mirrors change_role / remove_member with the target user id (the §4.1 Q1 input)", async () => {
     await appendOperation(fixture, OWNER, {
       op: "change_role",
       payload: {
@@ -277,8 +283,8 @@ describe("チェーンミラー(§3.4)", () => {
     expect(removed["chain_seq"]).toBe(5);
   });
 
-  it("mirrors grant_server / revoke_server with the server key fingerprint (§4.1 Q6 の入力)", async () => {
-    // FP = SHA-256(enc 公開鍵)[:16](CRYPTO_SPEC §9)。チェーン検証が整合を要求する
+  it("mirrors grant_server / revoke_server with the server key fingerprint (the §4.1 Q6 input)", async () => {
+    // FP = SHA-256(enc public key)[:16] (CRYPTO_SPEC §9). Chain verification requires them to match
     const serverEncPubHex = "ab".repeat(32);
     const fpResult = await computeServerKeyFingerprint(hexBytes(serverEncPubHex));
     if (!fpResult.ok) throw new Error("fingerprint failed");
@@ -309,7 +315,7 @@ describe("チェーンミラー(§3.4)", () => {
   });
 });
 
-describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
+describe("data events (§3.3) and gapless seq (§5.1)", () => {
   it("records the full lifecycle with gapless seq and one aggregated var.read row per value pull", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "API_KEY");
@@ -318,9 +324,11 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
 
-    // メタデータのみモード(AUTH_SPEC §12-7)は値を配布しないため、var.read を
-    // 含む一切の監査行を追加しない(「読んでいないものを読んだと記録しない」—
-    // §3.3。下の期待イベント列に本リクエスト由来の行が現れないことが検査)
+    // Metadata-only mode (AUTH_SPEC §12-7) does not distribute values, so
+    // it adds no audit rows at all, including var.read ("do not record
+    // reading what was not read" — §3.3; the check is that no row
+    // originating from this request appears in the expected event list
+    // below)
     const metadataPull = await requestJson(
       "GET",
       `/environments/${ENV}/pull/metadata`,
@@ -352,7 +360,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       await (async () => {
         const statement = await nextVariableStatement({
           variableId: VAR,
-          // deleted の name は直前 active 名を保持する(§4.2)
+          // A deleted statement's name keeps the immediately preceding active name (§4.2)
           name: "API_KEY_V2",
           status: "deleted",
           authorUserId: MEMBER,
@@ -365,15 +373,16 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(removedEnv.status).toBe(204);
 
     const events = await readAuditEvents(projectId);
-    // seq は 1 始まりの無欠番(欠番 = 削除の痕跡 — §6)
+    // seq is gapless starting at 1 (a gap = a trace of deletion — §6)
     expect(events.map((event) => event["seq"])).toEqual(events.map((_e, index) => index + 1));
     expect(events.map((event) => event["event"])).toEqual([
       "chain.genesis",
       "chain.member_added",
       "chain.member_added",
-      // 複合の環境作成(§12-4)はチェーンミラー(create + 境界 checkpoint の
-      // 2 エントリ)+ env.created + 同梱ラップの dek.registered
-      // (1 受信者 1 行 — §3.3)を原子的に書く
+      // A composite environment creation (§12-4) atomically writes the
+      // chain mirror (2 entries: create + boundary checkpoint) +
+      // env.created + the bundled wraps' dek.registered (one row per
+      // recipient — §3.3)
       "chain.environment_created",
       "chain.checkpointed",
       "env.created",
@@ -384,13 +393,14 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "var.version_pushed",
       "var.created",
       "var.version_pushed",
-      // 値付き一括 pull は環境単位 1 行(集約形 — §3.3)。返した変数の列挙は
-      // payload が持つ
+      // A bulk pull with values is one row per environment (aggregated
+      // form — §3.3). The enumeration of returned variables is carried by
+      // the payload
       "var.read",
       "env.renamed",
       "var.renamed",
       "var.deleted",
-      // 環境削除は残存変数の var.deleted を伴う(§12-4)
+      // Environment deletion is accompanied by var.deleted for the remaining variables (§12-4)
       "var.deleted",
       "env.deleted",
     ]);
@@ -410,17 +420,20 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(created["variable_id"]).toBe(VAR);
     expect(created["environment_id"]).toBe(ENV);
     expect(JSON.parse(String(created["payload"]))).toEqual({ name: "API_KEY" });
-    // var.created / var.version_pushed は署名(CRYPTO_SPEC §4.1 / §4.2)を伴う
-    // 操作なので、受理時点の chain-derived 鍵 FP を写す(AUDIT_SPEC §3.3。
-    // 署名・signed bytes・hash・nonce・暗号文は監査に載せない)。作成では
-    // 同梱 v1 の writer FP = ステートメントの author FP(同一主体 — §12-5)
+    // var.created / var.version_pushed are ops accompanied by signatures
+    // (CRYPTO_SPEC §4.1 / §4.2), so they copy the chain-derived key FP at
+    // acceptance time (AUDIT_SPEC §3.3 — signatures, signed bytes, hashes,
+    // nonces, and ciphertexts are not put on the audit log). On creation,
+    // the bundled v1's writer FP = the statement's author FP (same subject
+    // — §12-5)
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(pushed["epoch"]).toBe(1);
     expect(pushed["version"]).toBe(1);
     expect(pushed["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(read["actor_user_id"]).toBe(READER);
-    // 集約形(§3.3): 環境単位の行で変数粒度の列は NULL、返した変数の列挙
-    // (variableId 昇順・epoch / version 付き)を payload に持つ
+    // Aggregated form (§3.3): a per-environment row where variable-grained
+    // columns are NULL, and the payload holds the enumeration of returned
+    // variables (ascending variableId, with epoch / version)
     expect(read["environment_id"]).toBe(ENV);
     expect(read["variable_id"]).toBeNull();
     expect(read["epoch"]).toBeNull();
@@ -431,14 +444,14 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
         { variableId: "var-second", epoch: 1, version: 1 },
       ],
     });
-    // var.read は署名を伴わないため FP を持たない(§3.3 の意味論)
+    // var.read is not accompanied by a signature, so it has no FP (the §3.3 semantics)
     expect(read["actor_key_fingerprint"]).toBeNull();
     expect(envRenamedRow["event"]).toBe("env.renamed");
 
     expectMetaAuthorFingerprints(events);
   });
 
-  it("挿入失敗時は採番キャッシュを破棄し、次の追記は MAX(seq) の再読込から続く", async () => {
+  it("discards the numbering cache on insert failure, and the next append continues from a MAX(seq) re-read", async () => {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
     await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
@@ -446,7 +459,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       const baseRow = sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0];
       const base = Number(baseRow?.["m"] ?? 0);
       store.appendSync(seqTestEvent("test.one"));
-      // チャンク 2(7 行目以降)の途中 seq に衝突行を直接挿入して失敗を誘発する
+      // Trigger the failure by directly inserting a colliding row at a seq in the middle of chunk 2 (row 7 onwards)
       sql.exec(
         "INSERT INTO audit_events (seq, server_ts, event, actor_type) VALUES (?, ?, ?, ?)",
         base + 9,
@@ -459,10 +472,11 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
           Array.from({ length: 12 }, (_e, index) => seqTestEvent(`test.b${index}`)),
         ),
       ).toThrow();
-      // 失敗で採番キャッシュは破棄され、次の追記は現 DB の MAX(seq)+1 から続く
-      // (前進したままなら base+14 で採番され、ロールバック後の DB に対して
-      // 欠番を作る)。注: 実運用ではタスク失敗がチャンク 1 も含めて
-      // ロールバックする — ここは採番キャッシュの挙動のみを固定する
+      // The failure discards the numbering cache, and the next append
+      // continues from the live DB's MAX(seq)+1 (if it had kept advancing,
+      // it would number at base+14 and produce a gap against the
+      // post-rollback DB). Note: in production the task failure rolls back
+      // chunk 1 too — here only the numbering cache's behavior is pinned
       store.appendSync(seqTestEvent("test.after"));
       const last = sql
         .exec("SELECT seq, event FROM audit_events ORDER BY seq DESC LIMIT 1")
@@ -470,11 +484,11 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(last?.["event"]).toBe("test.after");
       expect(last?.["seq"]).toBe(base + 10);
     });
-    // 直接挿入した行がこのテスト後に残らないよう DO を初期状態へ戻す
+    // Restore the DO to its initial state so the directly-inserted row does not survive past this test
     await evictDurableObject(stub);
   });
 
-  it("chain_seq は chain.* 以外へ追記できず、一括追記も全件を採番前に拒否する", async () => {
+  it("chain_seq cannot be appended to non-chain.* events, and a bulk append rejects all rows before numbering", async () => {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
     await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
@@ -485,8 +499,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       const invalid = { ...seqTestEvent("var.read"), chainSeq: 1 };
 
       expect(() => store.appendSync(invalid)).toThrow("chain_seq is reserved for chain.* events");
-      // 後半に違反があっても、前半の正当な行を部分追記しない
-      // (APPEND_CHUNK_ROWS=5 の境界をまたぎ、違反を第2チャンクに置く)
+      // Even with a violation in the back half, the valid front-half rows
+      // are not partially appended (crossing the APPEND_CHUNK_ROWS=5
+      // boundary, with the violation placed in the second chunk)
       expect(() =>
         store.appendManySync([
           ...Array.from({ length: 6 }, (_e, index) => seqTestEvent(`test.before-invalid${index}`)),
@@ -501,12 +516,14 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     });
   });
 
-  it("チャンク分割される一括 append と DO 再起動をまたいでも seq は無欠番(§5.1)", async () => {
+  it("seq stays gapless across a chunk-split bulk append and a DO restart (§5.1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // multi-row INSERT の 1 文あたり行数(audit-store.ts の 5 行)を越える
-    // 8 変数を作り、環境削除のカスケード(var.deleted 8 行 + env.deleted —
-    // §12-4)が複数チャンクに割れて追記される(値付き pull は集約形の 1 行
-    // — §3.3 — なので一括追記の経路は削除カスケードで踏む)
+    // Create 8 variables — more than the per-statement row count of a
+    // multi-row INSERT (5 rows in audit-store.ts) — so that the
+    // environment-deletion cascade (8 var.deleted rows + env.deleted —
+    // §12-4) is appended split across multiple chunks (a pull with values
+    // is a single aggregated row — §3.3 — so the bulk-append path is
+    // exercised via the deletion cascade)
     for (let index = 0; index < 8; index += 1) {
       await createVariableOk(dek, `var-batch-${index}`, `BATCH_${index}`);
     }
@@ -515,8 +532,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
 
-    // DO 再起動相当: インスタンスメモリの next seq を破棄し、次の追記が
-    // MAX(seq) の再読込から続き番号で採番することを確認する
+    // Equivalent to a DO restart: discard the in-instance-memory next seq
+    // and confirm the next append numbers continuing from a MAX(seq)
+    // re-read
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
     await evictDurableObject(stub);
     await createEnvironmentOk(fixture, "env-after-restart", "Other");
@@ -540,13 +558,14 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     if (envCreated === undefined) throw new Error("missing env.created");
     expect(envCreated["actor_user_id"]).toBe(OWNER);
     expect(envCreated["actor_api_token_id"]).toBeTypeOf("string");
-    // env.created はメタステートメント(CRYPTO_SPEC §4.2)を伴う操作なので
-    // author の鍵 FP を写す(AUDIT_SPEC §3.3)
+    // env.created is an op accompanied by a meta statement (CRYPTO_SPEC
+    // §4.2), so it copies the author's key FP (AUDIT_SPEC §3.3)
     expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // セッション経由のデータ mutation は §5 の能力制限で 403 になり、
-    // 監査行を残さない(D1 側の auth.* / invite.* イベントのセッション actor
-    // 帰属は audit-d1 / invites のテストが担う)
+    // A data mutation via session auth is rejected with 403 by the §5
+    // capability restriction and leaves no audit row (the session-actor
+    // attribution of the D1-side auth.* / invite.* events is covered by the
+    // audit-d1 / invites tests)
     const session = await loginSession(9002);
     const dek = makeDek();
     const deks = await wrapDekForAll({
@@ -587,7 +606,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
-    // 境界 checkpoint(H+2 — §12-4 の必須同梱)
+    // Boundary checkpoint (H+2 — the mandatory bundled item of §12-4)
     const { entry: sessionCheckpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
@@ -624,7 +643,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
 
   it("records dek.registered / dek.deleted per recipient with actor, epoch and target (§3.3)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // 環境作成時のエポック 1 の同梱分: 受信者ごとに 1 行(1 行 1 target)
+    // The bundled epoch-1 wraps at environment creation: one row per recipient (one row, one target)
     const initial = await readAuditEvents(projectId);
     const epoch1 = initial.filter((event) => event["event"] === "dek.registered");
     expect(epoch1.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
@@ -632,17 +651,17 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(event["environment_id"]).toBe(ENV);
       expect(event["epoch"]).toBe(1);
       expect(event["actor_user_id"]).toBe(OWNER);
-      // 登録署名(CRYPTO_SPEC §5.1)の署名者 FP を写す(§3.3 — 突合用)
+      // Copies the signer FP of the registration signature (CRYPTO_SPEC §5.1) (§3.3 — for reconciliation)
       expect(event["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-      // PAT 経由の登録なのでトークン id を持つ(§2 のアクター帰属)
+      // Registered via a PAT, so it carries the token id (§2 actor attribution)
       expect(event["actor_api_token_id"]).toBeTypeOf("string");
       expect(event["variable_id"]).toBeNull();
     }
 
-    // 複合ローテーション(§12-4)の同梱分も同じ形で記録される
+    // The bundled wraps of a composite rotation (§12-4) are recorded in the same shape
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
 
-    // 削除(§12-6 の修復経路)は dek.deleted を受信者ごとに記録する
+    // Deletion (the §12-6 repair path) records dek.deleted per recipient
     const removed = await requestJson(
       "DELETE",
       `/environments/${ENV}/deks`,
@@ -653,7 +672,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     );
     expect(removed.status).toBe(204);
 
-    // 修復再登録(登録 API に残る経路 — §12-6)も同じ形で記録される
+    // Repair re-registration (the path remaining on the registration API — §12-6) is also recorded in the same shape
     const removedEpoch1 = await requestJson(
       "DELETE",
       `/environments/${ENV}/deks`,
@@ -701,24 +720,25 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(deletion["epoch"]).toBe(2);
     expect(deletion["target_user_id"]).toBe(READER);
     expect(deletion["actor_user_id"]).toBe(OWNER);
-    // 削除は署名を伴わないため FP を持たない(AUDIT_SPEC §3.3)
+    // Deletion is not accompanied by a signature, so it has no FP (AUDIT_SPEC §3.3)
     expect(deletion["actor_key_fingerprint"]).toBeNull();
   });
 
   it("never records provider identifiers or emails (§1-2)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const events = await readAuditEvents(projectId);
-    // シードした GitHub の数値 ID(provider_user_id)・login・メール形式が
-    // どの列・payload にも部分文字列としても現れない(タイムスタンプ列は数値の
-    // 偶然一致を避けて除外)
+    // The seeded GitHub numeric IDs (provider_user_id), logins, and email
+    // forms must not appear as substrings in any column or payload
+    // (timestamp columns are excluded to avoid accidental numeric matches)
     for (const event of events) {
       for (const [column, value] of Object.entries(event)) {
         if (column === "server_ts" || column === "client_ts" || value === null) {
           continue;
         }
-        // ランダム hex(DEK コミットメント・鍵 FP 等)は "9001" 等の数字列を偶然
-        // 含み得るため、長い hex 連続は走査前に除去する(provider ID の実漏洩は
-        // 短い独立値として現れるので検出力は落ちない)
+        // Random hex (DEK commitments, key FPs, etc.) can coincidentally
+        // contain digit runs like "9001", so long hex runs are removed
+        // before scanning (a real provider-ID leak would appear as a short
+        // standalone value, so detection power is not lost)
         const text = String(value).replace(/[0-9a-f]{16,}/g, "");
         for (const forbidden of ["9001", "9002", "9003", "9009", "user900", "@"]) {
           expect(text).not.toContain(forbidden);

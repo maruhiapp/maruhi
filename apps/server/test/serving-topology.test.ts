@@ -1,21 +1,25 @@
-// 配信トポロジ(W2 裁定 BM — docs/notes/session-43.md)の被覆スイープ。
+// Coverage sweep for the serving topology (W2 ruling BM —
+// docs/notes/session-43.md).
 //
-// maruhi-server は web アセットを同一 Worker から配信し、API のパス空間を
-// wrangler.jsonc の `assets.run_worker_first` で Worker 側へ固定する。この列挙は
-// api-schema のパス空間の手書き複製であり、ドリフトは**無音で壊れる**:
-// compatibility_date 2026-07-01 では navigation リクエストがアセット配信を優先
-// (assets_navigation_prefers_asset_serving)するため、列挙漏れのエンドポイントは
-// SPA シェルの 200 に飲まれてエラーにも記録にも現れない(session-43 §9)。
+// maruhi-server serves web assets from the same Worker and pins the
+// API path space to the Worker side via `assets.run_worker_first` in
+// wrangler.jsonc. That list is a hand-maintained copy of api-schema's
+// path space, and drift **breaks silently**: under compatibility_date
+// 2026-07-01 navigation requests prefer asset serving
+// (assets_navigation_prefers_asset_serving), so an endpoint missed by
+// the list is swallowed by the SPA shell's 200 without appearing in
+// errors or logs (session-43 §9).
 //
-// そこで session-capability.ts のスイープと同じ型で、登録済み HttpApi の全
-// エンドポイントパスが run_worker_first のいずれかのルールに被覆されることを
-// テスト時に検査する。新設エンドポイントが新しい前置を導入したら、この
-// テストが落ちて wrangler.jsonc への追加を強制する(fail-loud)。
+// So, in the same shape as session-capability.ts's sweep, we check at
+// test time that every registered HttpApi endpoint path is covered by
+// some run_worker_first rule. If a new endpoint introduces a new
+// prefix, this test fails and forces the addition to wrangler.jsonc
+// (fail-loud).
 import { maruhiApi } from "@maruhi/api-schema";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-/** 検査対象の構造スライス(session-capability.ts の SweepableApi と同じ理由の構造型)。 */
+/** The structural slice under inspection (a structural type for the same reason as session-capability.ts's SweepableApi). */
 interface PathedApi {
   readonly groups: {
     readonly [group: string]: {
@@ -26,7 +30,7 @@ interface PathedApi {
   };
 }
 
-/** 登録済み全エンドポイントの (識別子, パス) を列挙する。 */
+/** Enumerate (identifier, path) for every registered endpoint. */
 function listEndpointPaths(api: PathedApi): Array<{ key: string; path: string }> {
   return Object.entries(api.groups).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).map(([endpointName, endpoint]) => ({
@@ -37,51 +41,53 @@ function listEndpointPaths(api: PathedApi): Array<{ key: string; path: string }>
 }
 
 /**
- * run_worker_first の 1 ルールがパスを被覆するか。Workers Static Assets の
- * ルールは glob(`*` = 任意の続き)で、本リポジトリでは「完全一致」と
- * 「前置 + `*`」だけを使う。それ以外の形(中間 `*`・負のルール)が現れたら
- * 検査を保守的に落とし、このテストの改訂を強制する。
+ * Does one run_worker_first rule cover a path? Workers Static
+ * Assets rules are globs (`*` = any continuation); this repository
+ * uses only "exact match" and "prefix + `*`". If any other shape (a
+ * mid-rule `*`, a negated rule) appears, fail the check
+ * conservatively and force this test's revision.
  */
 function ruleCovers(rule: string, path: string): boolean {
   if (rule.startsWith("!")) {
     throw new Error(
-      `run_worker_first に負のルールがある: ${rule} — 被覆スイープの意味論を再裁定すること`,
+      `run_worker_first has a negated rule: ${rule} — re-rule the coverage sweep's semantics`,
     );
   }
   const starIndex = rule.indexOf("*");
   if (starIndex === -1) return rule === path;
   if (starIndex !== rule.length - 1) {
     throw new Error(
-      `run_worker_first に中間ワイルドカードがある: ${rule} — 被覆スイープの意味論を再裁定すること`,
+      `run_worker_first has a mid-rule wildcard: ${rule} — re-rule the coverage sweep's semantics`,
     );
   }
   return path.startsWith(rule.slice(0, -1));
 }
 
-describe("serving topology (W2 裁定 BM): run_worker_first covers the whole API path space", () => {
+describe("serving topology (W2 ruling BM): run_worker_first covers the whole API path space", () => {
   it("routes every registered HttpApi endpoint to the worker, never the asset layer", () => {
     const rules = env.TEST_RUN_WORKER_FIRST;
-    // 列挙形のみを正とする: true(全 Worker)は /invite ほか全アセットの配信を
-    // 壊し、欠落は API 全面が SPA フォールバックへ落ちる — どちらも不成立
-    expect(Array.isArray(rules), "assets.run_worker_first は文字列列挙でなければならない").toBe(
-      true,
-    );
+    // Only the list form is valid: `true` (all Worker) would break
+    // /invite and all asset serving, while an omission would drop the
+    // whole API onto the SPA fallback — neither is viable
+    expect(Array.isArray(rules), "assets.run_worker_first must be a string list").toBe(true);
     const ruleList = rules as string[];
     const uncovered = listEndpointPaths(maruhiApi as unknown as PathedApi).filter(
       ({ path }) => !ruleList.some((rule) => ruleCovers(rule, path)),
     );
     expect(
       uncovered,
-      "api-schema のエンドポイントが run_worker_first に被覆されていない — " +
-        "navigation リクエストが SPA シェルの 200 に無音で飲まれる(session-43 §9)。" +
-        "apps/server/wrangler.jsonc の assets.run_worker_first へ前置を追加すること",
+      "an api-schema endpoint is not covered by run_worker_first — " +
+        "navigation requests are silently swallowed by the SPA shell's 200 (session-43 §9). " +
+        "Add the prefix to assets.run_worker_first in apps/server/wrangler.jsonc",
     ).toEqual([]);
   });
 
   it("keeps the static / SPA route space outside the worker-first rules (regression guard)", () => {
-    // /invite(静的案内ページ — AUTH_SPEC §15-3)と SPA のルート空間(/dashboard
-    // 前置 — 裁定 BO)がアセット層のまま配信されること: run_worker_first が
-    // 過剰前置(例: /inv*・/*)でこれらを飲む形を将来の編集から守る
+    // Pin that /invite (a static guidance page — AUTH_SPEC §15-3)
+    // and the SPA route space (the /dashboard prefix — ruling BO) stay
+    // served by the asset layer: guard against a future edit making
+    // run_worker_first swallow them with an over-broad prefix (e.g.
+    // /inv* or /*)
     const rules = env.TEST_RUN_WORKER_FIRST;
     expect(Array.isArray(rules)).toBe(true);
     const ruleList = rules as string[];

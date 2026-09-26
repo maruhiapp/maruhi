@@ -1,8 +1,8 @@
-// データプレーン統合テストの共通フィクスチャ(workerd 内で実行)。
+// Shared fixture for data-plane integration tests (run inside workerd).
 //
-// ベース構成: テスト時署名の 3 エントリチェーン(owner / member / reader)を
-// API 経由で再生し、各ユーザーの実 PAT を取得する。チェーンの延長
-// (rotate_epoch / add_member)もすべて API 経由で行う。
+// Base setup: a test-time-signed 3-entry chain (owner / member / reader) is
+// replayed through the API and each user's real PAT is obtained. Chain
+// extensions (rotate_epoch / add_member) are all done through the API too.
 
 import type { ChainEntry, ChainOperation, EnvValuesDigestEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -45,9 +45,10 @@ import { evictProjectDo, queryProjectDo, resetProjectDo } from "./project-do.ts"
 
 export const OWNER = "user-owner-0001";
 export const MEMBER = "user-member-0002";
-// reader ロールのメンバー。署名鍵は 3 本目のベクター鍵(user-admin-0003)を
-// 借用する(data-crypto.ts の VECTOR_KEY_ALIASES — 鍵とユーザー ID の束縛は
-// チェーンの add_member が行うため、鍵集合の名義とは独立でよい)
+// A member with the reader role. Its signing key borrows the third vector key
+// (user-admin-0003) (VECTOR_KEY_ALIASES in data-crypto.ts — binding between a
+// key and a user ID is done by the chain's add_member, so the key may be
+// independent of the key set's nominal owner)
 export const READER = "user-reader-0003";
 export const STRANGER = "user-stranger-0009";
 const DATA_ORG = "org-data-0001";
@@ -59,7 +60,7 @@ const GITHUB_IDS: Record<string, number> = {
   [STRANGER]: 9009,
 };
 
-/** ベースチェーン: genesis(owner)→ add_member(member)→ add_member(reader)。 */
+/** Base chain: genesis(owner) → add_member(member) → add_member(reader). */
 const baseChain = await buildChain([
   { actorUserId: OWNER, operation: genesisOperation(OWNER) },
   { actorUserId: OWNER, operation: addMemberOperation(MEMBER, "member") },
@@ -68,12 +69,13 @@ const baseChain = await buildChain([
 
 export const projectId = baseChain.projectId;
 
-/** 全メンバー(DEK ラップの完全集合の既定受信者)。 */
+/** All members (the default recipients of a complete DEK wrap set). */
 export const ALL_MEMBERS = [OWNER, MEMBER, READER] as const;
 
 /**
- * 環境ごとのマニフェスト追跡(§4.3 の prev 連鎖・CAS・ダイジェスト集合の材料 —
- * 受理成功時に helper が進める)。entries は tombstone 込みの全変数の最新形。
+ * Per-environment manifest tracking (material for the §4.3 prev chain, CAS,
+ * and digest sets — advanced by the helpers on acceptance). entries is the
+ * latest form of every variable, tombstones included.
  */
 export interface EnvManifestState {
   manifest: WireEnvironmentManifest;
@@ -84,21 +86,21 @@ export interface EnvManifestState {
 
 export interface DataFixture {
   readonly tokens: Record<string, string>;
-  /** チェーンの現ヘッド(appendOperation が進める)。 */
+  /** The chain's current head (advanced by appendOperation). */
   head: { seq: number; hashHex: string };
   /**
-   * 環境ごとの最新ステートメント + author(rename / 削除の prev 連鎖の材料 —
-   * 受理成功時に helper が進める)。
+   * Latest statement + author per environment (material for the prev chain
+   * of renames / deletions — advanced by the helpers on acceptance).
    */
   readonly envStatements: Map<
     string,
     { statement: WireEnvironmentMetaStatement; authorUserId: string }
   >;
-  /** 環境ごとの最新マニフェスト(prev 連鎖・CAS・ダイジェスト集合の材料)。 */
+  /** Latest manifest per environment (material for the prev chain, CAS, and digest sets). */
   readonly manifests: Map<string, EnvManifestState>;
 }
 
-/** DO / D1 のリセット + ユーザー・PAT のシード + ベースチェーンの API 再生。 */
+/** Reset DO / D1 + seed users and PATs + replay the base chain through the API. */
 export async function setupDataProject(): Promise<DataFixture> {
   await resetProjectDo(projectId);
   await resetAuthDb();
@@ -135,9 +137,10 @@ export async function setupDataProject(): Promise<DataFixture> {
 }
 
 /**
- * ベースチェーン外のユーザーを D1 にシードして PAT を取る(scope 系テストの
- * listed メンバー — user-devmember-0010 等のベクター鍵ユーザー)。同じ user_id の
- * 再シードは D1 の主キーで失敗するため、1 テスト内で 1 回だけ呼ぶ。
+ * Seed a user outside the base chain into D1 and get a PAT (a listed member
+ * in scope tests — a vector-key user such as user-devmember-0010). Re-seeding
+ * the same user_id fails on a D1 primary key, so call this only once per
+ * test.
  */
 export async function seedMemberToken(
   fixture: DataFixture,
@@ -156,7 +159,7 @@ export function tokenOf(tokens: Record<string, string>, userId: string): string 
   return token;
 }
 
-/** チェーンへ 1 エントリをテスト時署名 + API 追記で足し、fixture のヘッドを進める。 */
+/** Append one entry to the chain via a test-time signature + API append, and advance the fixture head. */
 export async function appendOperation(
   fixture: DataFixture,
   actorUserId: string,
@@ -178,7 +181,7 @@ export async function appendOperation(
 }
 
 // ---------------------------------------------------------------------------
-// データプレーン API の小さなラッパ
+// Small wrappers for the data-plane API
 // ---------------------------------------------------------------------------
 
 export const dataUrl = (path: string): string => `${BASE}/projects/${projectId}${path}`;
@@ -196,14 +199,15 @@ export function requestJson(
   });
 }
 
-/** 複合結果(§12-4)からヘッドを進める。 */
+/** Advance the head from a composite result (§12-4). */
 function advanceHead(fixture: DataFixture, body: { headSeq: number; headHashHex: string }): void {
   fixture.head = { seq: body.headSeq, hashHex: body.headHashHex };
 }
 
 /**
- * 環境作成の複合同梱ステートメント(metaVersion 1)をテスト時署名で作る。
- * 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
+ * Build the environment-creation composite bundled statement (metaVersion 1)
+ * with a test-time signature. The declared head is the current head before
+ * the append (= the bundled entry's prev — §12-4).
  */
 export async function createEnvironmentStatement(input: {
   readonly authorUserId: string;
@@ -224,10 +228,11 @@ export async function createEnvironmentStatement(input: {
 }
 
 /**
- * 次のマニフェスト(§4.3)をテスト時署名で作る: manifestVersion = 記録済み
- * 最新 + 1(未記録 = 1)、prev = 記録済み最新の signed_bytes ハッシュ、
- * ダイジェスト = entries の正規形。宣言ヘッドは呼び出し側指定(複合 = 追記前の
- * 現ヘッド、メタ操作 = 現ヘッド)。
+ * Build the next manifest (§4.3) with a test-time signature:
+ * manifestVersion = latest recorded + 1 (unrecorded = 1), prev = the
+ * signed_bytes hash of the latest recorded manifest, digest = the canonical
+ * form of entries. The declared head is caller-specified (composite = the
+ * current head before the append, meta op = the current head).
  */
 export async function nextEnvironmentManifest(
   fixture: DataFixture,
@@ -259,7 +264,7 @@ export async function nextEnvironmentManifest(
   });
 }
 
-/** 記録済みの環境メタステートメントの最新形(マニフェストの envMeta 期待値)。 */
+/** The latest form of the recorded environment meta statement (the manifest's expected envMeta). */
 export async function envMetaOf(
   fixture: DataFixture,
   environmentId: string,
@@ -275,9 +280,9 @@ export async function envMetaOf(
 }
 
 /**
- * 変数のメタ操作(作成・rename・削除)に同梱するマニフェストを署名する:
- * 記録済みのダイジェスト集合に当該変数のエントリを適用した形。成功時に
- * 記録を進めるための EnvManifestState も返す。
+ * Sign the manifest bundled with a variable meta op (create / rename /
+ * delete): the recorded digest set with the variable's entry applied. Also
+ * returns the EnvManifestState needed to advance the record on success.
  */
 export async function manifestForVariableOp(
   fixture: DataFixture,
@@ -310,13 +315,16 @@ export async function manifestForVariableOp(
 }
 
 /**
- * チェーン末尾の境界 checkpoint エントリと当該環境のスナップショット行を取り除き、
- * checkpoint タプルを持たない旧世代(境界 checkpoint 導入前)チェーンの形を再現する
- * (マニフェスト移行経路テスト用)。実運用の移行対象はマニフェスト・checkpoint
- * 導入前に作られた環境で、そのチェーンにはタプルが存在しない — 現 API は複合で
- * 必ず checkpoint を挿入するため、テストでは append-only の不変条件の外で直接
- * 取り除く(membership の canonical_bytes 改変と同じ扱い)。改変後は DO を退去
- * させてフルロードへ戻し、fixture のヘッドを新しい末尾へ巻き戻す。
+ * Remove the boundary checkpoint entry at the chain tail and the
+ * environment's snapshot rows, reproducing the shape of an old-generation
+ * chain with no checkpoint tuples (pre-boundary-checkpoint) — for manifest
+ * migration-path tests. The real migration targets are environments created
+ * before manifests / checkpoints were introduced, whose chains have no
+ * tuples — the current API always inserts a checkpoint in the composite, so
+ * the test removes it directly, outside the append-only invariant (same
+ * handling as membership's canonical_bytes modification). After the
+ * modification, evict the DO back to a full load and rewind the fixture head
+ * to the new tail.
  */
 export async function stripTrailingCheckpoint(
   fixture: DataFixture,
@@ -354,9 +362,11 @@ export async function stripTrailingCheckpoint(
 }
 
 /**
- * 保存済みの値レベル最新形(active 変数の latest_version + 値署名 signed_bytes
- * ハッシュ — §6.2 の values_digest 列挙)を DO の SQLite から直接読む。サーバーの
- * checkpointValueEntries と同じ問い合わせ(rotate の境界 checkpoint 突合基準)。
+ * Read the stored value-level latest form (each active variable's
+ * latest_version + value-signature signed_bytes hash — the §6.2
+ * values_digest enumeration) directly from the DO's SQLite. The same query
+ * as the server's checkpointValueEntries (the reference for comparing a
+ * rotate's boundary checkpoint).
  */
 export async function storedCheckpointValues(
   environmentId: string,
@@ -381,9 +391,10 @@ export async function storedCheckpointValues(
 }
 
 /**
- * 境界 checkpoint(H+2 — §12-4)をテスト時署名で作る: prev = H+1 複合エントリの
- * ハッシュ、タプル = 同梱マニフェストの座標 + signed_bytes ハッシュ(issuer =
- * actor — §12-5 (1))+ values のダイジェスト。
+ * Build a boundary checkpoint (H+2 — §12-4) with a test-time signature:
+ * prev = the hash of the H+1 composite entry, tuple = the bundled manifest's
+ * coordinates + signed_bytes hash (issuer = actor — §12-5 (1)) + the values
+ * digest.
  */
 async function signBoundaryCheckpointEntry(input: {
   readonly actorUserId: string;
@@ -393,7 +404,7 @@ async function signBoundaryCheckpointEntry(input: {
   readonly compositeSeq: number;
   readonly compositeHashHex: string;
   readonly values: readonly EnvValuesDigestEntry[];
-  /** 監査ヘッドの公証(§16-2 — 既定は空 = 公証なし)。 */
+  /** Notarization of the audit head (§16-2 — default is empty = no notarization). */
   readonly auditHeadHashHex?: string;
 }): Promise<ChainEntry> {
   const { entry } = await signEntryAt({
@@ -417,11 +428,12 @@ async function signBoundaryCheckpointEntry(input: {
 }
 
 /**
- * 複合の環境作成リクエスト(§12-4)を組み立てて送る: create_environment
- * エントリ(コミットメント込み)+ EnvironmentMetaStatement(metaVersion 1。
- * 宣言ヘッド = 追記前の現ヘッド)+ EnvironmentManifest(manifestVersion 1・
- * 変数空集合・epoch 1)+ 境界 checkpoint(H+2)をテスト時署名し、親ヘッド CAS
- * 付きでラップ集合と同時に POST する。200 ならフィクスチャのヘッドを進める。
+ * Assemble and send a composite environment-creation request (§12-4):
+ * create_environment entry (with commitment) + EnvironmentMetaStatement
+ * (metaVersion 1; declared head = the current head before the append) +
+ * EnvironmentManifest (manifestVersion 1, empty variable set, epoch 1) +
+ * boundary checkpoint (H+2), all test-time-signed and POSTed together with
+ * the wrap set and a parent-head CAS. On 200, advances the fixture's head.
  */
 export async function createEnvironmentComposite(
   fixture: DataFixture,
@@ -431,13 +443,13 @@ export async function createEnvironmentComposite(
     readonly deks: readonly WireWrappedDek[];
     readonly dekCommitmentHex: string;
     readonly actorUserId?: string;
-    /** CAS 失敗テスト用の親ヘッド上書き。 */
+    /** Parent-head override for CAS-failure tests. */
     readonly parentHeadHashHex?: string;
-    /** 複合内整合の negative 用のステートメント上書き。 */
+    /** Statement override for composite-consistency negatives. */
     readonly statement?: WireEnvironmentMetaStatement;
-    /** 複合内整合の negative 用のマニフェスト上書き。 */
+    /** Manifest override for composite-consistency negatives. */
     readonly manifest?: WireEnvironmentManifest;
-    /** 複合内整合の negative 用の境界 checkpoint 上書き。 */
+    /** Boundary checkpoint override for composite-consistency negatives. */
     readonly checkpoint?: ChainEntry;
   },
 ): Promise<Response> {
@@ -459,7 +471,7 @@ export async function createEnvironmentComposite(
         hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       },
     }));
-  // manifestVersion 1(変数空集合・epoch 1)。envMeta は同梱ステートメント自身
+  // manifestVersion 1 (empty variable set, epoch 1). envMeta is the bundled statement itself
   const manifest =
     input.manifest ??
     (await signEnvManifestAs(actorUserId, projectId, {
@@ -474,7 +486,7 @@ export async function createEnvironmentComposite(
       chainHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     }));
-  // 境界 checkpoint(H+2 — §12-4): 作成 = 変数空集合の values_digest
+  // Boundary checkpoint (H+2 — §12-4): creation = values_digest of the empty variable set
   const checkpoint =
     input.checkpoint ??
     (await signBoundaryCheckpointEntry({
@@ -516,9 +528,9 @@ export async function createEnvironmentComposite(
 }
 
 /**
- * 環境の次ステートメント(rename / 削除)をテスト時署名で作る: prev = 記録済み
- * 最新ステートメントの signed_bytes ハッシュ、metaVersion = 最新 + 1、宣言
- * ヘッド = 現ヘッド。
+ * Build the environment's next statement (rename / delete) with a test-time
+ * signature: prev = the signed_bytes hash of the latest recorded statement,
+ * metaVersion = latest + 1, declared head = the current head.
  */
 async function nextEnvironmentStatement(
   fixture: DataFixture,
@@ -550,7 +562,7 @@ async function nextEnvironmentStatement(
   });
 }
 
-/** 環境 rename(ステートメント + マニフェスト付き PATCH)。204 なら記録を進める。 */
+/** Environment rename (PATCH with statement + manifest). On 204, advances the record. */
 export async function renameEnvironmentRequest(
   fixture: DataFixture,
   environmentId: string,
@@ -563,7 +575,7 @@ export async function renameEnvironmentRequest(
     status: "active",
     authorUserId: actorUserId,
   });
-  // 環境 rename のマニフェストは新しい envMetaSigHashHex を写す(§12-4)
+  // An environment rename's manifest copies the new envMetaSigHashHex (§12-4)
   const last = fixture.manifests.get(environmentId);
   if (last === undefined) {
     throw new Error(`no recorded manifest for environment ${environmentId}`);
@@ -597,7 +609,7 @@ export async function renameEnvironmentRequest(
   return response;
 }
 
-/** 環境削除(status deleted のステートメント付き DELETE)。204 なら記録を進める。 */
+/** Environment deletion (DELETE with a status-deleted statement). On 204, advances the record. */
 export async function deleteEnvironmentRequest(
   fixture: DataFixture,
   environmentId: string,
@@ -607,7 +619,7 @@ export async function deleteEnvironmentRequest(
   if (last === undefined) {
     throw new Error(`no recorded statement for environment ${environmentId}`);
   }
-  // deleted の name は直前 active 名を保持する(§4.2)
+  // A deleted statement's name keeps the immediately preceding active name (§4.2)
   const statement = await nextEnvironmentStatement(fixture, {
     environmentId,
     name: last.statement.name,
@@ -626,7 +638,7 @@ export async function deleteEnvironmentRequest(
   return response;
 }
 
-/** 環境作成(エポック 1 の完全ラップ集合を実 crypto で同梱)。DEK を返す。 */
+/** Environment creation (bundles the epoch-1 complete wrap set via real crypto). Returns the DEK. */
 export async function createEnvironmentOk(
   fixture: DataFixture,
   environmentId: string,
@@ -652,12 +664,15 @@ export async function createEnvironmentOk(
 }
 
 /**
- * 環境作成リクエストを任意のラップ集合で送る。dekCommitmentHex 省略時は
- * 使い捨て DEK から計算する(negative テスト用 — 内容はサーバー検証不能で、
- * §5.2 の照合は受信者の責務であり受理判定に影響しない)。**受理(200)まで
- * 進める正例は、ラップした DEK 自身のコミットメントを渡すこと**(使い捨て
- * コミットメントの正例は「配布 DEK がチェーンのコミットメントと一致せず peer CLI
- * が拒否する形」をテストに固定してしまう)。
+ * Send an environment-creation request with an arbitrary wrap set. When
+ * dekCommitmentHex is omitted it is computed from a throwaway DEK (for
+ * negative tests — the contents cannot be verified by the server, and the
+ * §5.2 check is the recipient's responsibility and does not affect
+ * acceptance). **Positive cases that proceed to acceptance (200) must pass
+ * the commitment of the wrapped DEK itself** (a positive case with a
+ * throwaway commitment would freeze into the test suite a shape where the
+ * distributed DEK does not match the chain commitment and peer CLIs reject
+ * it).
  */
 export async function createEnvironmentWith(
   fixture: DataFixture,
@@ -676,8 +691,9 @@ export async function createEnvironmentWith(
 }
 
 /**
- * 複合のローテーションリクエスト(§12-4)を組み立てて送る: rotate_epoch
- * エントリ(新エポックのコミットメント込み)+ ラップ集合。200 ならヘッドを進める。
+ * Assemble and send a composite rotation request (§12-4): rotate_epoch
+ * entry (with the new epoch's commitment) + wrap set. On 200, advances the
+ * head.
  */
 export async function rotateEnvironmentComposite(
   fixture: DataFixture,
@@ -688,18 +704,19 @@ export async function rotateEnvironmentComposite(
     readonly dekCommitmentHex: string;
     readonly actorUserId?: string;
     readonly parentHeadHashHex?: string;
-    /** URL とエントリ payload の不一致テスト用(既定はエントリと同じ環境)。 */
+    /** For URL-vs-entry-payload mismatch tests (default is the same environment as the entry). */
     readonly urlEnvironmentId?: string;
-    /** 複合内整合の negative 用のマニフェスト上書き。 */
+    /** Manifest override for composite-consistency negatives. */
     readonly manifest?: WireEnvironmentManifest;
-    /** 複合内整合の negative 用の境界 checkpoint 上書き。 */
+    /** Boundary checkpoint override for composite-consistency negatives. */
     readonly checkpoint?: ChainEntry;
     /**
-     * values_digest の材料上書き(既定 = DO 保存行の実列挙。並行 push の不一致
-     * negative 等で使う)。
+     * Override of the values_digest material (default = the actual
+     * enumeration of the rows stored in the DO; used by concurrent-push
+     * mismatch negatives etc.).
      */
     readonly checkpointValues?: readonly EnvValuesDigestEntry[];
-    /** 境界 checkpoint の監査ヘッド公証(§16-2 — 既定は空 = 公証なし)。 */
+    /** Audit-head notarization for the boundary checkpoint (§16-2 — default is empty = no notarization). */
     readonly checkpointAuditHeadHashHex?: string;
   },
 ): Promise<Response> {
@@ -710,16 +727,19 @@ export async function rotateEnvironmentComposite(
     actorUserId,
     operation: rotateEpochOperation(input.environmentId, input.newEpoch, input.dekCommitmentHex),
   });
-  // 新エポックを焼き込んだマニフェスト(メタ集合は不変 — §4.3)。宣言ヘッドは
-  // 追記前の現ヘッド(§12-4)。未記録の環境(negative テストの未作成環境等)は
-  // 空集合 + ダミー envMeta で形だけ満たす(受理段の先行検査で落ちる前提)
+  // A manifest with the new epoch baked in (the meta set is unchanged — §4.3).
+  // The declared head is the current head before the append (§12-4). An
+  // unrecorded environment (e.g. the never-created environment in a negative
+  // test) is given only the shape, with an empty set + dummy envMeta (it is
+  // expected to fail at an earlier check in the acceptance stage)
   const last = fixture.manifests.get(input.environmentId);
   const manifest =
     input.manifest ??
     (await nextEnvironmentManifest(fixture, {
-      // URL とエントリの不一致 negative では worker のマニフェスト座標検査
-      // (manifestEnvironmentId)より先に DO の entry-vs-URL 検査へ到達させる
-      // ため、マニフェストは URL 側の座標で署名する
+      // In a URL-vs-entry mismatch negative, the DO's entry-vs-URL check
+      // must be reached before the worker's manifest-coordinate check
+      // (manifestEnvironmentId), so the manifest is signed with the URL-side
+      // coordinates
       environmentId: input.urlEnvironmentId ?? input.environmentId,
       epoch: input.newEpoch,
       entries: last?.entries ?? [],
@@ -732,8 +752,9 @@ export async function rotateEnvironmentComposite(
         hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       },
     }));
-  // 境界 checkpoint(H+2 — §12-4): rotate = 保存済みの値レベル最新形の列挙
-  // (未再暗号化 = 旧エポックの現在値 — §12-7 の正当な状態)
+  // Boundary checkpoint (H+2 — §12-4): rotate = the enumeration of stored
+  // value-level latest forms (not re-encrypted = the old epoch's current
+  // values — the legitimate state of §12-7)
   const checkpoint =
     input.checkpoint ??
     (await signBoundaryCheckpointEntry({
@@ -775,7 +796,7 @@ export async function rotateEnvironmentComposite(
   return response;
 }
 
-/** ローテーション(新エポックの完全ラップ集合込み)。新エポックの DEK を返す。 */
+/** Rotation (with the new epoch's complete wrap set). Returns the new epoch's DEK. */
 export async function rotateEnvironmentOk(
   fixture: DataFixture,
   actorUserId: string,

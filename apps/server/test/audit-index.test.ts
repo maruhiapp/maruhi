@@ -1,19 +1,24 @@
-// audit_events の対象・鍵 FP 索引の部分索引化(src/do-schema.ts — 監査ログの
-// 成長密度対策 ①)のテスト。
+// Tests for the partial indexing of audit_events' target / key-FP indexes
+// (src/do-schema.ts — audit-log growth-density countermeasure ①).
 //
-// workerd 実環境の SqlStorage で 3 点を固定する:
-// (a) マイグレーション適用後のスキーマが `WHERE <列> IS NOT NULL` の部分索引を持つ
-// (b) 既存の読み手(要ローテーション検出の Q1 / Q6 と §7 の target_user_id
-//     フィルタ)が EXPLAIN QUERY PLAN で新索引を選択する — SQLite は WHERE 句が
-//     索引述語を含意するときだけ部分索引を使うため、「等値条件は IS NOT NULL を
-//     含意する」を実証で固定する(含意されなくなる書き換えは fail-open ではなく
-//     フルスキャンだが、監査表は最大 10 GB — 性能退行として検出したい)
-// (c) 効果の実測: 10,000 行の var.read(対象・鍵 FP が全て NULL)で、素の索引と
-//     部分索引の databaseSize 差を測る
+// Three things are pinned on workerd's real SqlStorage:
+// (a) the post-migration schema has `WHERE <column> IS NOT NULL` partial
+//     indexes
+// (b) the existing readers (Q1 / Q6 for rotation-needed detection and the
+//     §7 target_user_id filter) choose the new indexes in EXPLAIN QUERY
+//     PLAN — SQLite only uses a partial index when the WHERE clause
+//     implies the index predicate, so we empirically pin that "an equality
+//     condition implies IS NOT NULL" (a rewrite that stops implying it is
+//     not fail-open, just a full scan — but the audit table can reach 10
+//     GB, so we want to catch it as a performance regression)
+// (c) the measured effect: the databaseSize difference between a plain
+//     index and a partial index over 10,000 var.read rows (whose target
+//     and key FP are all NULL)
 //
-// このファイルは専用の DO 名を使い、他のテストのプロジェクト DO と storage を
-// 共有しない。audit-store のクエリ文は SqlStorage を薄く包んで捕捉し、同じ文を
-// EXPLAIN に流す(文の複製による検証器ドリフトを避ける)。
+// This file uses its own DO name and shares no storage with other tests'
+// project DOs. The audit-store query text is captured by thinly wrapping
+// SqlStorage, and the same text is fed to EXPLAIN (avoiding verifier drift
+// from duplicating the statements).
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -21,7 +26,7 @@ import { describe, expect, it } from "vitest";
 import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";
 
-/** このファイル専用 DO の storage 上で body を実行する。 */
+/** Run body on the storage of this file's dedicated DO. */
 async function withSql<T>(body: (sql: SqlStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-partial-index-test"));
   return await runInDurableObject(stub, (_instance, state) => body(state.storage.sql));
@@ -33,7 +38,7 @@ const PARTIAL_INDEXES = {
   ae_actor_fp: "actor_key_fingerprint",
 } as const;
 
-/** sqlite_master の索引定義(名前 → CREATE 文)。 */
+/** Index definitions in sqlite_master (name → CREATE statement). */
 function indexDefinitions(sql: SqlStorage): ReadonlyMap<string, string> {
   return new Map(
     sql
@@ -51,8 +56,9 @@ interface CapturedQuery {
 }
 
 /**
- * 実行された SQL を捕捉する SqlStorage の包み。exec 以外は実体へ委譲する
- * (databaseSize 等の native getter は receiver を実体にして呼ぶ)。
+ * A SqlStorage wrapper that captures the SQL executed. Everything but
+ * exec is delegated to the real object (native getters like databaseSize
+ * are called with the real object as receiver).
  */
 function capturing(sql: SqlStorage): {
   readonly sql: SqlStorage;
@@ -73,7 +79,7 @@ function capturing(sql: SqlStorage): {
   return { sql: proxy, captured };
 }
 
-/** EXPLAIN QUERY PLAN の detail 列を 1 文字列に畳む。 */
+/** Fold the EXPLAIN QUERY PLAN detail column into a single string. */
 function planOf(sql: SqlStorage, captured: CapturedQuery): string {
   return sql
     .exec(`EXPLAIN QUERY PLAN ${captured.query}`, ...(captured.bindings as (string | number)[]))
@@ -82,7 +88,7 @@ function planOf(sql: SqlStorage, captured: CapturedQuery): string {
     .join("\n");
 }
 
-/** var.read 1 行(対象・鍵 FP が全て NULL — 支配的な行種の形)。 */
+/** One var.read row (target / key FP all NULL — the dominant row shape). */
 function readEvent(index: number): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000 + index,
@@ -96,8 +102,8 @@ function readEvent(index: number): AuditEventInput {
   };
 }
 
-describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)", () => {
-  it("マイグレーション適用後の ae_target / ae_target_fp / ae_actor_fp は IS NOT NULL の部分索引", async () => {
+describe("audit_events partial indexes (do-schema.ts — growth-density countermeasure ①)", () => {
+  it("after migration, ae_target / ae_target_fp / ae_actor_fp are IS NOT NULL partial indexes", async () => {
     await withSql((sql) => {
       const definitions = indexDefinitions(sql);
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
@@ -106,14 +112,14 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
         expect(definition, name).toContain(`(${column}, seq)`);
         expect(definition, name).toContain(`WHERE ${column} IS NOT NULL`);
       }
-      // var.read が引く索引は素のまま(述語なし)
+      // The indexes var.read uses stay plain (no predicate)
       for (const name of ["ae_var", "ae_actor", "ae_event"]) {
         expect(definitions.get(name), name).not.toContain("WHERE");
       }
     });
   });
 
-  it("既存の読み手は等値条件で新しい部分索引を選択する(EXPLAIN QUERY PLAN)", async () => {
+  it("existing readers choose the new partial indexes via equality conditions (EXPLAIN QUERY PLAN)", async () => {
     await withSql((sql) => {
       const { sql: wrapped, captured } = capturing(sql);
       const store = makeAuditStore(wrapped);
@@ -189,12 +195,12 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
     });
   });
 
-  it("Q3 variableReadsBy の seq 範囲は ae_actor の範囲走査になり、開区間の外の行を返さない", async () => {
+  it("Q3 variableReadsBy's seq range becomes an ae_actor range scan and returns no rows outside the open interval", async () => {
     await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");
       const { sql: wrapped, captured } = capturing(sql);
       const store = makeAuditStore(wrapped);
-      // seq 1..10 の var.read(全て同じ actor)
+      // var.read at seq 1..10 (all the same actor)
       store.appendManySync(Array.from({ length: 10 }, (_row, index) => readEvent(index)));
       captured.length = 0;
       const bounded = store.readRotationSync.variableReadsBy("user-reader-0001", {
@@ -204,11 +210,11 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
       expect(bounded.map((row) => row.seq)).toEqual([4, 5, 6]);
       const query = captured.at(-1);
       if (query === undefined) throw new Error("no query captured");
-      // 索引の seq 成分で範囲を切る(actor の全行を読んでから捨てるのではない)
+      // The range is cut on the index's seq component (not reading all of the actor's rows then discarding)
       expect(planOf(sql, query)).toMatch(
         /USING INDEX ae_actor \(actor_user_id=\? AND seq>\? AND seq<\?\)/,
       );
-      // 省略・非有限の端は無制限(従来の全 seq)
+      // Omitted / non-finite ends are unbounded (the traditional all-seq)
       expect(store.readRotationSync.variableReadsBy("user-reader-0001").length).toBe(10);
       expect(
         store.readRotationSync
@@ -222,21 +228,22 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
     });
   });
 
-  it("10,000 行の var.read で、部分索引は素の索引より小さい(databaseSize の実測)", async () => {
+  it("with 10,000 var.read rows, the partial indexes are smaller than plain ones (measured via databaseSize)", async () => {
     const ROWS = 10_000;
     const measured = await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");
       const store = makeAuditStore(sql);
       store.appendManySync(Array.from({ length: ROWS }, (_row, index) => readEvent(index)));
       const partial = sql.databaseSize;
-      // 素の索引(述語なし)で再構築 — NULL 行にも索引エントリが積まれる
+      // Rebuild as plain indexes (no predicate) — index entries accumulate for NULL rows too
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
         sql.exec(`DROP INDEX ${name}`);
         sql.exec(`CREATE INDEX ${name} ON audit_events (${column}, seq)`);
       }
       const full = sql.databaseSize;
-      // 実スキーマ(部分索引)へ戻す = マイグレーションステップと同じ DROP → CREATE。
-      // 所要時間は行数比例(既存 DO への適用時間の見積もりの出所)
+      // Restore the real schema (partial indexes) = the same DROP → CREATE
+      // as the migration step. The elapsed time is proportional to the row
+      // count (the source of the estimate for applying it to an existing DO)
       const startedAt = Date.now();
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
         sql.exec(`DROP INDEX ${name}`);
@@ -245,23 +252,25 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
         );
       }
       const rebuildMs = Date.now() - startedAt;
-      // 既存 DO が実際に通る向き(素の索引 → 部分索引)の後の実測。解放された
-      // ページが databaseSize(容量ガードが読む指標)に戻るかを固定する
+      // The measurement after the direction an existing DO actually takes
+      // (plain index → partial index). Pins whether the freed pages return
+      // to databaseSize (the metric the capacity guard reads)
       const rebuilt = sql.databaseSize;
       sql.exec("DELETE FROM audit_events");
       return { partial, full, rebuildMs, rebuilt };
     });
-    // 部分索引は NULL 行を持たないので、3 索引 × 10,000 エントリ分だけ小さい
+    // The partial indexes hold no NULL rows, so they are smaller by 3 indexes × 10,000 entries
     expect(measured.full).toBeGreaterThan(measured.partial);
     const perRow = (measured.full - measured.partial) / ROWS;
     console.log(
       `audit_events partial index: ${ROWS} var.read rows — full ${measured.full} B / partial ${measured.partial} B / delta ${measured.full - measured.partial} B (${perRow.toFixed(1)} B per row, ${(measured.partial / ROWS).toFixed(1)} B per row remaining); partial-index rebuild of ${ROWS} rows took ${measured.rebuildMs} ms and left databaseSize at ${measured.rebuilt} B`,
     );
-    // migrate-in-place の向き(素の索引を DROP → 部分索引で再構築)でも使用量は
-    // 戻る: 解放ページが freelist に残るなら full のまま、戻るなら partial と同等
+    // The usage also returns in the migrate-in-place direction (DROP the
+    // plain indexes → rebuild as partial): if the freed pages stayed on the
+    // freelist it would equal full; if returned, it equals partial
     expect(measured.rebuilt).toBeLessThan(measured.full);
     expect(measured.rebuilt).toBeLessThanOrEqual(measured.partial);
-    // 3 索引 × (NULL キー + seq)のエントリは 1 行あたり数十バイト以上
+    // The 3 indexes × (NULL key + seq) entries are at least tens of bytes per row
     expect(perRow).toBeGreaterThan(10);
   });
 });

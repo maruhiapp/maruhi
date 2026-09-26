@@ -1,6 +1,7 @@
-// レイアウト v2(値なしスキーマ)のサーバー受理面の統合テスト —
-// 遷移とレイアウト単調性・削除ステートメントの直前一致・スキーマ再発行と可逆性
-// (AUTH_SPEC §12-5 / §12-11)。
+// Layout v2 (valueless schema) — integration tests of the server-side
+// acceptance surface — transitions and layout monotonicity, the
+// just-before match of delete statements, and schema re-issuance and
+// reversibility (AUTH_SPEC §12-5 / §12-11).
 
 import { describe, expect, it } from "vitest";
 
@@ -35,7 +36,7 @@ import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
 
 registerDataScenario();
 
-/** rename 経路の監査行(イベント名 × variable_id — 分岐の検査用)。 */
+/** Audit rows of the rename path (event name × variable_id — for checking the branch). */
 async function reissueAuditRows(
   event: "var.renamed" | "var.schema_reissued",
 ): Promise<readonly Record<string, unknown>[]> {
@@ -46,8 +47,8 @@ async function reissueAuditRows(
   );
 }
 
-describe("遷移とレイアウト単調性(§12-5)", () => {
-  it("active → declared(rename 形)は 422 payload-mismatch(status 不変の受理検査)", async () => {
+describe("transitions and layout monotonicity (§12-5)", () => {
+  it("active → declared (rename form) is 422 payload-mismatch (the acceptance check of an unchanged status)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -77,7 +78,7 @@ describe("遷移とレイアウト単調性(§12-5)", () => {
     });
   });
 
-  it("declared → declared のスキーマ再発行・rename は 204(宣言のまま更新できる)", async () => {
+  it("declared → declared schema re-issuance and rename are 204 (updatable while still a declaration)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
@@ -100,7 +101,7 @@ describe("遷移とレイアウト単調性(§12-5)", () => {
     record();
   });
 
-  it("v2 変数への v1 後続(rename)は 422 layout-regression(レイアウト単調性)", async () => {
+  it("a v1 successor (rename) on a v2 variable is 422 layout-regression (layout monotonicity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -109,7 +110,7 @@ describe("遷移とレイアウト単調性(§12-5)", () => {
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
-    // v1 レイアウトの rename(スキーマ欄なし — 黙った消失の形)
+    // A v1-layout rename (no schema field — the shape of a silent disappearance)
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -130,7 +131,7 @@ describe("遷移とレイアウト単調性(§12-5)", () => {
     });
   });
 
-  it("削除済み ID での declared 再作成は 409 retired(ID 再利用禁止 — §12-1)", async () => {
+  it("declared re-creation with a deleted ID is 409 retired (no ID reuse — §12-1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -148,7 +149,7 @@ describe("遷移とレイアウト単調性(§12-5)", () => {
   });
 });
 
-/** v2 変数(スキーマ欄固定)を作成して記録する。 */
+/** Create and record a v2 variable (schema field pinned). */
 async function seedV2Variable(dek: Uint8Array): Promise<void> {
   await setSchemaPolicyOk("enabled", OWNER);
   const response = await createVariableV2Request({
@@ -161,8 +162,8 @@ async function seedV2Variable(dek: Uint8Array): Promise<void> {
   expect(response.status).toBe(200);
 }
 
-describe("削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5)", () => {
-  it("スキーマ欄・レイアウトを保持した v2 削除は 204(declared の削除も同型)", async () => {
+describe("the just-before match of a delete statement's schema field and layout (§12-5)", () => {
+  it("a v2 deletion preserving the schema field and layout is 204 (declared deletions share the shape)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
     const statement = await nextVariableStatement({
@@ -181,7 +182,7 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     );
     expect(response.status).toBe(204);
     record();
-    // declared の削除(declared → deleted は可 — CRYPTO_SPEC §4.2)
+    // A declared deletion (declared → deleted is allowed — CRYPTO_SPEC §4.2)
     await declareVariableOk({ variableId: "var-declared-del", name: "PENDING_KEY" });
     const declared = varStatements.get("var-declared-del");
     expect(declared).toBeDefined();
@@ -202,7 +203,7 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     expect(declaredResponse.status).toBe(204);
   });
 
-  it("スキーマ欄を改変した削除は 422 payload-mismatch(有効署名でも受理しない — 改変削除の遮断)", async () => {
+  it("a deletion that alters the schema field is 422 payload-mismatch (not accepted even with a valid signature — tampered-deletion blocking)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
     const cases: readonly (readonly [Partial<Parameters<typeof v2Fields>[0]>, string])[] = [
@@ -230,11 +231,13 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     }
   });
 
-  it("削除の description は受理ポリシーの対象外(改変は直前一致の 422 — 契約外の 500 に落ちない)", async () => {
-    // 削除の規則は保存済み値の byte-exact 保持であり、description の受理
-    // ポリシー(§12-8)は適用しない — 適用するとセルフホストの上限引き下げ後に
-    // 既存 v2 変数が削除不能になる(「上限で削除を遮断しない」原則)。
-    // 上限超過の description を持つ改変削除は preservation の payload-mismatch が捕捉する。
+  it("a deletion's description is outside the acceptance policy (an alteration is a just-before-match 422 — it does not fall to an out-of-contract 500)", async () => {
+    // Deletion's rule is byte-exact preservation of the stored value,
+    // and the description acceptance policy (§12-8) does not apply —
+    // applying it would leave existing v2 variables undeletable after a
+    // self-host lowers the cap (the "no blocking deletions via the cap"
+    // principle). A tampered deletion carrying an over-cap description
+    // is caught by preservation's payload-mismatch.
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
     const statement = await nextVariableStatement({
@@ -262,7 +265,7 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     });
   });
 
-  it("v2 変数への v1 形の削除は 422 payload-mismatch(layoutVersion — レイアウトも直前一致)", async () => {
+  it("a v1-shaped deletion on a v2 variable is 422 payload-mismatch (layoutVersion — the layout is also just-before-matched)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
     const statement = await nextVariableStatement({
@@ -286,8 +289,8 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
   });
 });
 
-describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
-  it("v2 変数のスキーマ欄のみの変更は改名と同一規則で受理され、配布に反映される", async () => {
+describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
+  it("a schema-field-only change on a v2 variable is accepted under the same rules as a rename and reflected in distribution", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -322,9 +325,11 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
       description: "connection string",
       metaVersion: 2,
     });
-    // 監査は var.schema_reissued(名前不変の再発行 — AUDIT_SPEC §3.3。
-    // 改名していない操作を var.renamed と記録しない)。author 鍵 FP を写し、
-    // payload は名前スナップショットのみ(スキーマ欄の内容は載せない)
+    // The audit is var.schema_reissued (a name-unchanged re-issuance —
+    // AUDIT_SPEC §3.3. An operation that did not rename is not recorded
+    // as var.renamed). It copies the author's key FP, and the payload
+    // holds only the name snapshot (the schema field's content is not
+    // carried)
     expect(await reissueAuditRows("var.renamed")).toHaveLength(0);
     const reissued = await reissueAuditRows("var.schema_reissued");
     expect(reissued).toHaveLength(1);
@@ -338,7 +343,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     expect(payload).not.toHaveProperty("description");
   });
 
-  it("名前とスキーマ欄を同時に変える再発行は var.renamed 1 行(名前変更が主事象 — 1 操作 1 行)", async () => {
+  it("a re-issuance changing both name and schema field is a single var.renamed row (the rename is the primary event — one operation, one row)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -373,7 +378,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     });
   });
 
-  it("v1 変数への v2 再発行は enabled で受理される(自然な機会での移行)", async () => {
+  it("a v2 re-issuance on a v1 variable is accepted under enabled (migration at a natural opportunity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await setSchemaPolicyOk("enabled", OWNER);
@@ -394,13 +399,14 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     expect(response.status).toBe(204);
     varStatements.set(VAR, { statement, authorUserId: MEMBER });
     record();
-    // 名前不変の移行再発行も var.schema_reissued(分岐は名前の byte 比較のみ —
-    // 直前レイアウトに依存しない)
+    // A name-unchanged migration re-issuance is also
+    // var.schema_reissued (the branch is a byte comparison of names
+    // only — independent of the previous layout)
     expect(await reissueAuditRows("var.renamed")).toHaveLength(0);
     expect(await reissueAuditRows("var.schema_reissued")).toHaveLength(1);
   });
 
-  it("disabled への降格後も既に v2 の変数の継続(rename・削除)は受理され、新規採用だけが止まる(可逆性)", async () => {
+  it("after downgrading to disabled, continuing an already-v2 variable (rename, delete) is still accepted and only new adoption stops (reversibility)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -410,7 +416,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
       dek,
     }).then((response) => expect(response.status).toBe(200));
     await setSchemaPolicyOk("disabled", OWNER);
-    // 継続 1: v2 rename は通る
+    // Continuation 1: a v2 rename passes
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -428,7 +434,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     expect(renamed.status).toBe(204);
     varStatements.set(VAR, { statement: rename, authorUserId: MEMBER });
     renameBundle.record();
-    // 継続 2: v2 削除も通る(降格が既存 v2 変数のライフサイクルを凍結しない)
+    // Continuation 2: a v2 deletion also passes (the downgrade does not freeze existing v2 variables' lifecycle)
     const remove = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -445,7 +451,7 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     );
     expect(removed.status).toBe(204);
     removeBundle.record();
-    // 新規採用は止まる
+    // New adoption stops
     const declared = await declareVariableRequest({
       variableId: "var-new-decl",
       name: "NEW_KEY",

@@ -1,16 +1,26 @@
-// ES K3 — 環境対象 op の scope 認可(AUTH_SPEC §9-2 / §12-3 / §12-7 = CRYPTO_SPEC §6.2
-// の検証状態が導出した scope の受理面。設計録 docs/notes/es-design.md §9 K3-A / K3-B /
-// K3-C / K3-G)。@cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi を検証する。
+// ES K3 — scope authorization for environment-targeted ops
+// (AUTH_SPEC §9-2 / §12-3 / §12-7 = the acceptance surface of the
+// scope derived by CRYPTO_SPEC §6.2's verification state. Design
+// record docs/notes/es-design.md §9 K3-A / K3-B / K3-C / K3-G).
+// Verifies the HttpApi via SELF on @cloudflare/vitest-plugin (real
+// workerd environment).
 //
-// 固定する規則(§12-3 の表の各行を 1 つずつ):
-//   1. 値付き pull・自分宛 DEK 取得 = 環境 ∈ scope(403 insufficient-scope)
-//   2. メタのみ pull・環境一覧 = 不問(全環境。advisory の scope 欄は載せない — §12-7)
-//   3. 変数の作成 / push / 改名 / 削除・環境の改名・DEK ラップ登録 = 環境 ∈ scope
-//   4. 環境の作成 = scope = all
-//   5. 環境の削除・DEK ラップの削除 = 環境 ∈ scope(admin)
-//   - 判定順: role 403 → scope 403 → 存在 404(listed の主体には未存在環境も 403)
-//   - rotate / checkpoint の 403 は合意規則 environment-out-of-scope(422)より先
-//   - 認可時点の二重判定の scope 軸(3′)は chain-head-state-mismatch に畳む(K3-B)
+// Rules pinned (each row of the §12-3 table, one at a time):
+//   1. pull with values / fetch DEKs addressed to self = environment ∈
+//      scope (403 insufficient-scope)
+//   2. metadata-only pull / environment list = unrestricted (all
+//      environments; no advisory scope field is returned — §12-7)
+//   3. variable create / push / rename / delete, environment rename,
+//      DEK-wrap registration = environment ∈ scope
+//   4. environment creation = scope = all
+//   5. environment deletion / DEK-wrap deletion = environment ∈ scope
+//      (admin)
+//   - judgment order: role 403 → scope 403 → existence 404 (for a
+//     listed principal a nonexistent environment is also 403)
+//   - rotate / checkpoint 403s precede the consensus rule
+//     environment-out-of-scope (422)
+//   - the scope axis (3′) of the dual judgment at authorization time
+//     folds into chain-head-state-mismatch (K3-B)
 
 import type { ChainOperation } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -68,7 +78,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** listed メンバー(ベクター鍵 — data-crypto.ts の vectorKeyOf)。 */
+/** A listed member (vector key — vectorKeyOf in data-crypto.ts). */
 const DEV = "user-devmember-0010";
 const DEVADMIN = "user-devadmin-0011";
 const OTHER = "env-other-0002";
@@ -83,9 +93,11 @@ const expectScopeForbidden = (response: Response): Promise<void> =>
   expectForbidden(response, "insufficient-scope");
 
 /**
- * 2 環境(ENV / OTHER)を作り、DEV を member・listed{ENV} で追加する。listed の
- * scope は作成済み環境しか列挙できない(合意規則 unknown-environment)ため、環境
- * 作成が先。既存環境のラップ完全集合は追加前の R(E)(= ALL_MEMBERS)のまま。
+ * Create two environments (ENV / OTHER) and add DEV as member,
+ * listed{ENV}. Since a listed scope can only enumerate created
+ * environments (the consensus rule unknown-environment), environment
+ * creation comes first. The existing environments' wrap-complete set
+ * stays the pre-addition R(E) (= ALL_MEMBERS).
  */
 async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array }> {
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
@@ -95,7 +107,7 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
   return { envDek, otherDek };
 }
 
-/** 任意の主体が任意環境に変数を作る(値 v1 + ステートメント + マニフェスト)。 */
+/** Any principal creates a variable in any environment (value v1 + statement + manifest). */
 async function createVariableAs(input: {
   readonly writer: string;
   readonly environmentId: string;
@@ -144,7 +156,7 @@ async function createVariableAs(input: {
   return { value, statement };
 }
 
-/** 汎用 append を生で叩く(appendOperation は 200 を assert するため negative 用)。 */
+/** Call generic append raw (appendOperation asserts 200, so this is for negatives). */
 async function appendRaw(actorUserId: string, operation: ChainOperation): Promise<Response> {
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
@@ -159,7 +171,7 @@ async function appendRaw(actorUserId: string, operation: ChainOperation): Promis
   });
 }
 
-/** 当該環境の現状態(保存済みマニフェスト + 値列挙)を公証する standalone checkpoint。 */
+/** A standalone checkpoint notarizing the environment's current state (recorded manifest + value enumeration). */
 async function checkpointFor(environmentId: string, epoch: number): Promise<ChainOperation> {
   const last = fixture.manifests.get(environmentId);
   if (last === undefined) {
@@ -178,7 +190,7 @@ async function checkpointFor(environmentId: string, epoch: number): Promise<Chai
   });
 }
 
-/** 環境メタステートメント(未署名のダミー — 403 は署名検証より前に確定する)。 */
+/** An environment meta-statement (unsigned dummy — the 403 settles before signature verification). */
 function unsignedEnvStatement(environmentId: string, name: string, status: "active" | "deleted") {
   return {
     suite: "maruhi/v1",
@@ -193,15 +205,16 @@ function unsignedEnvStatement(environmentId: string, name: string, status: "acti
   };
 }
 
-describe("scope 認可 — 読み取り系(§12-3 の 1〜2 行目 / §12-7)", () => {
-  it("値付き pull と自分宛 DEK 取得は環境 ∈ scope: scope 内 200、scope 外 403 insufficient-scope(var.read も残さない)", async () => {
+describe("scope authorization — reads (§12-3 rows 1-2 / §12-7)", () => {
+  it("pull with values and fetching DEKs addressed to self require environment ∈ scope: 200 inside, 403 insufficient-scope outside (and no var.read recorded)", async () => {
     await setupListed();
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(DEV))).status).toBe(200);
     await expectScopeForbidden(await requestJson("GET", `/environments/${OTHER}/pull`, token(DEV)));
     expect((await requestJson("GET", `/environments/${ENV}/deks`, token(DEV))).status).toBe(200);
     await expectScopeForbidden(await requestJson("GET", `/environments/${OTHER}/deks`, token(DEV)));
-    // fail-closed: 拒否した pull は var.read を記録しない(§12-7 の記録条件 =
-    // 暗号文を返したこと。scope 外は返していない)
+    // fail-closed: a rejected pull records no var.read (§12-7's
+    // recording condition = having returned ciphertext; outside scope
+    // returns nothing)
     const reads = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read' AND actor_user_id = ? AND environment_id = ?",
@@ -211,7 +224,7 @@ describe("scope 認可 — 読み取り系(§12-3 の 1〜2 行目 / §12-7)", (
     expect(reads[0]?.["n"]).toBe(0);
   });
 
-  it("メタのみ pull と環境一覧は scope 不問で、応答に advisory の scope 欄を載せない(§12-7)", async () => {
+  it("metadata-only pull and the environment list ignore scope and return no advisory scope field (§12-7)", async () => {
     await setupListed();
     const metadata = await requestJson("GET", `/environments/${OTHER}/pull/metadata`, token(DEV));
     expect(metadata.status).toBe(200);
@@ -222,8 +235,9 @@ describe("scope 認可 — 読み取り系(§12-3 の 1〜2 行目 / §12-7)", (
       [ENV, OTHER].toSorted(),
     );
     for (const environment of body.environments) {
-      // クライアントは検証済みチェーンから自分の scope を導出する — サーバー申告の
-      // 「scope 内か」を検証規則の入力にしない(§12-7)
+      // The client derives its own scope from the verified chain —
+      // the server-declared "inside scope" is not an input to the
+      // verification rules (§12-7)
       expect(Object.keys(environment).toSorted()).toEqual(
         ["currentEpoch", "environmentId", "statement"].toSorted(),
       );
@@ -231,12 +245,12 @@ describe("scope 認可 — 読み取り系(§12-3 の 1〜2 行目 / §12-7)", (
   });
 });
 
-describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
-  it("変数の作成 / push / 改名 / 削除・環境の改名・DEK ラップ登録は環境 ∈ scope(scope 外は 403、scope 内は受理)", async () => {
+describe("scope authorization — writes (§12-3 rows 3-5)", () => {
+  it("variable create / push / rename / delete, environment rename, and DEK-wrap registration require environment ∈ scope (403 outside, accepted inside)", async () => {
     const { envDek } = await setupListed();
     const otherAad = (version: number, variableId = VAR) =>
       aadFor(1, version, { environmentId: OTHER, variableId });
-    // 作成(declared / active を問わず同じ経路)
+    // Create (same path whether declared / active)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/variables`, token(DEV), {
         statement: { ...unsignedVariableStatement("var-x", "X"), environmentId: OTHER },
@@ -244,13 +258,13 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // push(変数の存在に依らず scope が先)
+    // push (scope precedes regardless of the variable's existence)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/variables/${VAR}/versions`, token(DEV), {
         value: unsignedPayload(otherAad(2)),
       }),
     );
-    // 改名 / スキーマ再発行
+    // Rename / schema re-issuance
     await expectScopeForbidden(
       await requestJson("PATCH", `/environments/${OTHER}/variables/${VAR}`, token(DEV), {
         statement: {
@@ -262,7 +276,7 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // 削除
+    // Delete
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/variables/${VAR}`, token(DEV), {
         statement: {
@@ -275,15 +289,16 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // 環境の改名
+    // Environment rename
     await expectScopeForbidden(
       await requestJson("PATCH", `/environments/${OTHER}`, token(DEV), {
         statement: unsignedEnvStatement(OTHER, "Renamed", "active"),
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // DEK ラップ登録(登録者 = 署名者 = 呼び出し主体の scope — §12-6 末尾 =
-    // §12-3 と同一判定 → 403。受信者軸の 422 より先)
+    // DEK-wrap registration (registrar = signer = the calling
+    // principal's scope — §12-6's end = the same judgment as §12-3 →
+    // 403. Before the recipient-axis 422)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/deks`, token(DEV), {
         deks: [
@@ -298,7 +313,7 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
         ],
       }),
     );
-    // scope 内の書き込みは受理される(listed member の正例)
+    // A write inside scope is accepted (the listed member's positive case)
     await createVariableAs({
       writer: DEV,
       environmentId: ENV,
@@ -308,7 +323,7 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
     });
   });
 
-  it("環境の削除と DEK ラップの削除は admin × 環境 ∈ scope(listed admin の scope 外は 403)", async () => {
+  it("environment deletion and DEK-wrap deletion require admin × environment ∈ scope (403 outside for a listed admin)", async () => {
     await setupListed();
     await seedMemberToken(fixture, DEVADMIN, 9011);
     await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [ENV]));
@@ -322,20 +337,20 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
         wraps: [{ epoch: 1, recipientUserId: OWNER }],
       }),
     );
-    // scope 内の環境削除は受理される(admin の正例)
+    // Environment deletion inside scope is accepted (the admin's positive case)
     expect((await deleteEnvironmentRequest(fixture, ENV, DEVADMIN)).status).toBe(204);
   });
 
-  it("判定順: role 403 → scope 403 → 存在 404(listed の主体には未存在環境も 403、all の主体は 404)", async () => {
+  it("judgment order: role 403 → scope 403 → existence 404 (a nonexistent environment is also 403 for a listed principal; 404 for an `all` principal)", async () => {
     await setupListed();
-    // role が先: member の DEV が admin 操作(環境削除)を scope 外に対して行う
+    // role first: member DEV performs an admin operation (environment deletion) on something out of scope
     await expectForbidden(
       await requestJson("DELETE", `/environments/${OTHER}`, token(DEV), {
         statement: unsignedEnvStatement(OTHER, "Other", "deleted"),
       }),
       "insufficient-role",
     );
-    // scope が存在より先: 未作成の環境 id は listed の scope に含まれえない
+    // scope precedes existence: an uncreated environment id cannot be in a listed scope
     await expectScopeForbidden(await requestJson("GET", `/environments/${GHOST}/pull`, token(DEV)));
     const ghostRotate = await rotateEnvironmentComposite(fixture, {
       environmentId: GHOST,
@@ -345,15 +360,15 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
       actorUserId: DEV,
     });
     await expectScopeForbidden(ghostRotate);
-    // all の主体は従来どおり存在 404(K3 単独デプロイでの不変性)
+    // An `all` principal still gets existence 404 (invariance on a K3-only deployment)
     expect((await requestJson("GET", `/environments/${GHOST}/pull`, token(MEMBER))).status).toBe(
       404,
     );
   });
 });
 
-describe("scope 認可 — チェーン op を伴う経路(§9-2 / §12-3 の 4 行目。403 が合意規則 422 より先 — K3-G)", () => {
-  it("環境の作成は scope = all(listed の member / admin は 403)、rotate は環境 ∈ scope", async () => {
+describe("scope authorization — paths involving a chain op (§9-2 / §12-3 row 4; the 403 precedes the consensus-rule 422 — K3-G)", () => {
+  it("environment creation requires scope = all (listed member / admin get 403); rotate requires environment ∈ scope", async () => {
     await setupListed();
     const creation = await createEnvironmentComposite(fixture, {
       environmentId: "env-new-0003",
@@ -378,7 +393,7 @@ describe("scope 認可 — チェーン op を伴う経路(§9-2 / §12-3 の 4 
       actorUserId: DEV,
     });
     await expectScopeForbidden(otherRotate);
-    // scope 内の rotate は受理される。完全集合は R(ENV) = 全 all メンバー + DEV
+    // A rotate inside scope is accepted. The complete set is R(ENV) = all `all`-scope members + DEV
     const dek = makeDek();
     const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -397,15 +412,15 @@ describe("scope 認可 — チェーン op を伴う経路(§9-2 / §12-3 の 4 
     expect(rotated.status).toBe(200);
   });
 
-  it("standalone checkpoint は全タプルの環境 ∈ scope(scope 外タプルは 403、scope 内のみなら受理)", async () => {
+  it("a standalone checkpoint requires every tuple's environment ∈ scope (a tuple outside scope is 403; all-inside is accepted)", async () => {
     await setupListed();
     await expectScopeForbidden(await appendRaw(DEV, await checkpointFor(OTHER, 1)));
     await appendOperation(fixture, DEV, await checkpointFor(ENV, 1));
   });
 });
 
-describe("認可時点の二重判定の scope 軸(§12-3 / CRYPTO_SPEC §6.3 の 3′ — K3-B)", () => {
-  it("受理時点は scope 内・宣言ヘッド時点は scope 外の値 / メタ / マニフェストは 422 chain-head-state-mismatch(役割軸と同じ畳み込み)", async () => {
+describe("the scope axis of the dual judgment at authorization time (§12-3 / CRYPTO_SPEC §6.3's 3′ — K3-B)", () => {
+  it("a value / meta / manifest that is inside scope at acceptance time but outside scope at the declared head is 422 chain-head-state-mismatch (same fold as the role axis)", async () => {
     const { otherDek } = await setupListed();
     const created = await createVariableAs({
       writer: OWNER,
@@ -414,12 +429,13 @@ describe("認可時点の二重判定の scope 軸(§12-3 / CRYPTO_SPEC §6.3 �
       variableId: "var-o",
       name: "OTHER_SECRET",
     });
-    // 拡大前のヘッド(DEV の scope は {ENV})
+    // The head before the widening (DEV's scope is {ENV})
     const oldHead = { ...fixture.head };
     await appendOperation(fixture, OWNER, changeRoleOperation(DEV, "member", [ENV, OTHER]));
 
-    // 値: 受理時点(現ヘッド)では OTHER ∈ scope なので 403 は通り、宣言ヘッド
-    // 時点(拡大前)で scope 外 → 3′ の拒否
+    // Value: at acceptance time (the current head) OTHER ∈ scope so
+    // it passes the 403, but at the declared head (pre-widening) it is
+    // outside scope → rejected by 3′
     const stale = await encryptValue(
       otherDek,
       { projectId, environmentId: OTHER, epoch: 1, variableId: "var-o", version: 2 },
@@ -441,7 +457,7 @@ describe("認可時点の二重判定の scope 軸(§12-3 / CRYPTO_SPEC §6.3 �
       "chain-head-state-mismatch",
     );
 
-    // メタ: 改名ステートメントの宣言ヘッドが拡大前
+    // Meta: the rename statement's declared head is pre-widening
     const staleStatement = await signMetaStatementAs(DEV, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: OTHER,
@@ -474,7 +490,7 @@ describe("認可時点の二重判定の scope 軸(§12-3 / CRYPTO_SPEC §6.3 �
       "chain-head-state-mismatch",
     );
 
-    // マニフェスト: ステートメントは現ヘッド、マニフェストだけ拡大前のヘッド
+    // Manifest: the statement is at the current head while only the manifest declares the pre-widening head
     const freshStatement = await signMetaStatementAs(DEV, projectId, {
       ...staleStatement,
       chainHeadHashHex: fixture.head.hashHex,
@@ -507,8 +523,9 @@ describe("認可時点の二重判定の scope 軸(§12-3 / CRYPTO_SPEC §6.3 �
       "chain-head-state-mismatch",
     );
 
-    // 現ヘッドを宣言した同じ書き込みは受理される(受理時点・宣言ヘッド時点とも
-    // scope 内 — 3′ だけが落としていたことの確認)
+    // The same write declaring the current head is accepted (inside
+    // scope both at acceptance and at the declared head — confirming
+    // that only 3′ was dropping it)
     const fresh = await encryptValue(
       otherDek,
       { projectId, environmentId: OTHER, epoch: 1, variableId: "var-o", version: 2 },

@@ -1,17 +1,24 @@
-// DO ストレージ総量ガード(AUTH_SPEC §12-8)のテスト。
+// Tests for the DO total-storage guard (AUTH_SPEC §12-8).
 //
-// 8〜9 GB の実生成は非現実的なため 2 層で固定する:
-// 1. 判定の純関数(storageGuardDecision — 閾値の境界)
-// 2. 受理経路の結線: 実プロジェクト DO の SqlStorage(fixture が API 経由で作った
-//    チェーン・環境・変数)に対し、実測量だけを固定値に差し替えた StorageMeter で
-//    **実プログラム**を走らせ、「拒否が効く面」が limit-exceeded(project-storage-
-//    bytes)で止まり、「拒否下でも受理し続ける面」(読み取り・削除・失効・
-//    ローテーション・申告・checkpoint・設定)がガードを通過する(= 別の理由で
-//    拒否されるか成功する)ことを固定する。ガードは各プログラムの先頭(メンバー
-//    シップの直後・意味論的検査の前)に置かれているため、「limit-exceeded 以外の
-//    結果」はガードが呼ばれていない(または admit した)ことの証拠になる。
+// Generating a real 8-9 GB is impractical, so this is pinned in two
+// layers:
+// 1. the decision's pure function (storageGuardDecision — the
+//    threshold boundaries)
+// 2. the acceptance paths' wiring: against a real project DO's
+//    SqlStorage (chains, environments, variables the fixture created
+//    via the API), run the **real programs** under a StorageMeter
+//    whose measured size alone is swapped for a fixed value, and pin
+//    that the "surfaces rejection must stop" halt with
+//    limit-exceeded (project-storage-bytes) while the "surfaces that
+//    must stay open under rejection" (reads, deletes, revocations,
+//    rotation, attestation, checkpoint, settings) pass the guard (=
+//    are rejected for another reason or succeed). Since the guard
+//    sits at each program's head (right after membership, before
+//    semantic checks), any result other than limit-exceeded is
+//    evidence the guard was not called (or admitted).
 //
-// 警告(8 GB)の運用ログは静的メッセージ・DO インスタンス(= meter)ごと 1 回。
+// The warning (8 GB) operations log is a static message, once per DO
+// instance (= per meter).
 
 import {
   auditGroup,
@@ -97,14 +104,15 @@ registerDataScenario();
 
 const actor = (userId: string): DataActor => ({ userId });
 
-/** DO 内プログラムが要求するサービス(chain-do.ts の DoServices からリース専用の ServerKey を除いたもの)。 */
+/** The services in-DO programs require (chain-do.ts's DoServices minus the lease-only ServerKey). */
 type DoProgram<A, E> = Effect.Effect<A, E, ChainStore | DataStore | AuditStore | StorageMeter>;
 type Runner = <A, E>(program: DoProgram<A, E>) => Promise<Exit.Exit<A, E>>;
 
 /**
- * 実測量を固定した meter の下で、実プロジェクト DO の SqlStorage に対して
- * プログラムを走らせる(chain-do.ts のコンストラクタと同じ layer 構成 + meter の
- * 差し替え)。StateCache は呼び出しごとに空 = 保存行からのフルロード。
+ * Under a meter with a fixed measured size, run programs against the
+ * real project DO's SqlStorage (the same layer composition as
+ * chain-do.ts's constructor, with the meter swapped). StateCache is
+ * empty per call = a full load from the stored rows.
  */
 async function runInProject<A>(
   databaseSizeBytes: number,
@@ -125,7 +133,7 @@ async function runInProject<A>(
   });
 }
 
-/** Exit → 拒否理由(成功・defect は null)。 */
+/** Exit → rejection reason (success / defect is null). */
 function rejectionOf(exit: Exit.Exit<unknown, unknown>): DataRejection | null {
   if (Exit.isSuccess(exit)) {
     return null;
@@ -140,8 +148,9 @@ const STORAGE_REJECTION: DataRejection = {
   limit: DO_STORAGE_REJECT_BYTES,
 };
 
-// ワイヤ形のダミー(support の wire 型は suite を string で持つ)→ DO 入力へ。
-// ガードは署名検証より前に立つため、内容はゼロ署名のダミーで足りる
+// Wire-shape dummies (the support wire types carry suite as string) →
+// DO inputs. Since the guard stands before signature verification,
+// zero-signature dummies suffice
 const dummyValueInput = (version: number) =>
   toValueInput({ ...unsignedPayload(aadFor(1, version)), suite: "maruhi/v1" });
 const dummyVariableStatement = (variableId: string, name: string) =>
@@ -176,7 +185,7 @@ const signedEntry = (operation: Parameters<typeof signEntryAt>[0]["operation"]) 
     operation,
   });
 
-describe("storageGuardDecision(純関数 — §12-8 の 2 段閾値)", () => {
+describe("storageGuardDecision (pure function — §12-8's two thresholds)", () => {
   it("admits below the warning threshold, warns from it, rejects from the rejection threshold", () => {
     expect(storageGuardDecision(0)).toBe("admit");
     expect(storageGuardDecision(DO_STORAGE_WARN_BYTES - 1)).toBe("admit");
@@ -187,7 +196,8 @@ describe("storageGuardDecision(純関数 — §12-8 の 2 段閾値)", () => {
   });
 
   it("keeps the rejection threshold under the 10 GB platform floor in either unit", () => {
-    // 10 GB(10 進)/ 10 GiB(2 進)のどちらの解釈でも拒否閾値は床の下(§12-8)
+    // Under either interpretation — 10 GB (decimal) / 10 GiB (binary) —
+    // the rejection threshold sits below the floor (§12-8)
     expect(DO_STORAGE_REJECT_BYTES).toBeLessThan(10_000_000_000);
     expect(DO_STORAGE_REJECT_BYTES).toBeLessThan(10 * 1024 ** 3);
     expect(DO_STORAGE_WARN_BYTES).toBeLessThan(DO_STORAGE_REJECT_BYTES);
@@ -199,7 +209,7 @@ describe("storageGuardDecision(純関数 — §12-8 の 2 段閾値)", () => {
   });
 });
 
-describe("エラー契約 — 拒否が効く面の全エンドポイントが 422 DataLimitExceeded を宣言している", () => {
+describe("error contract — every endpoint on a rejection-effective surface declares 422 DataLimitExceeded", () => {
   it("maps project-storage-bytes within the contract (never a 500) on every guarded surface", () => {
     const guarded = {
       "variables.create": variablesGroup.endpoints.create,
@@ -209,12 +219,13 @@ describe("エラー契約 — 拒否が効く面の全エンドポイントが 4
       "environments.create": environmentsGroup.endpoints.create,
       "environments.rename": environmentsGroup.endpoints.rename,
       "deks.register": deksGroup.endpoints.register,
-      // add_member / grant_server の拒否面
+      // the add_member / grant_server rejection surface
       "membership.append": membershipGroup.endpoints.append,
-      // schemaPolicy 変更
+      // schemaPolicy change
       "schemaPolicy.set": schemaPolicyGroup.endpoints.set,
-      // 監査ヘッド派生列の実体化を要する読み取りと、非空公証の境界 checkpoint を
-      // 同梱しうる rotate
+      // reads that require materializing the audit-head derived
+      // column, and rotate, which can bundle a non-empty notarizing
+      // boundary checkpoint
       "audit.auditHead": auditGroup.endpoints.auditHead,
       "environments.rotate": environmentsGroup.endpoints.rotate,
     };
@@ -237,11 +248,11 @@ describe("エラー契約 — 拒否が効く面の全エンドポイントが 4
   });
 });
 
-describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
+describe("acceptance-path wiring — a DO at or above the rejection threshold (§12-8)", () => {
   it("rejects every content-growth surface with limit-exceeded project-storage-bytes", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 対象の鍵はダミーでよい(ガードは verifyChain より前に立つ)
+    // The target keys may be dummies (the guard stands before verifyChain)
     const addMember = await signedEntry({
       op: "add_member",
       payload: {
@@ -373,7 +384,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           grantServer: rejectionOf(
             await run(appendProgram(fixture.head.hashHex, grantServer.entry, OWNER, cache)),
           ),
-          // 成長面ではないが、退出・解放・是正に要らず監査行を積む設定変更
+          // not a growth surface, but a settings change that piles up audit rows without helping exit / release / remediation
           setSchemaPolicy: rejectionOf(
             await run(setSchemaPolicyProgram(actor(OWNER), "enabled", cache)),
           ),
@@ -382,7 +393,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           expect(rejection, surface).toEqual(STORAGE_REJECTION);
         }
       });
-      // 拒否域の運用ログは静的メッセージで meter ごと 1 回(12 回の拒否で 1 行)
+      // The rejection-band operations log is a static message once per meter (1 line for 12 rejections)
       expect(errorSpy).toHaveBeenCalledTimes(1);
       const [message] = errorSpy.mock.calls[0] ?? [];
       expect(typeof message).toBe("string");
@@ -391,7 +402,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
     } finally {
       errorSpy.mockRestore();
     }
-    // 何も書いていない: 変数は 1 つ・version は 1 のまま・チェーンは不変
+    // Nothing was written: still 1 variable, version still 1, the chain unchanged
     const versions = await runInProject(0, async (run) => {
       const pulled = await run(
         pullEnvironmentProgram(actor(READER), ENV, { current: null, chain: null }),
@@ -402,8 +413,9 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
   });
 
   it("guards the four-eyes path at the entry that first carries the growth intent (propose / approve of add_member or grant_server) and leaves remove / withdraw open", async () => {
-    // 四眼の有効化(owner 2 名 + 方針)と pending の add_member 提案は通常の meter で
-    // HTTP 経由に作る(設計録 es-design.md §11 K5-D)
+    // Four-eyes enablement (2 owners + the policy) and a pending
+    // add_member proposal are created over HTTP under the normal
+    // meter (design record es-design.md §11 K5-D)
     await seedMemberToken(fixture, "user-owner-0014", 9014);
     await appendOperation(fixture, OWNER, addMemberOperation("user-owner-0014", "owner"));
     await appendOperation(fixture, OWNER, {
@@ -461,7 +473,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
     });
     await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
       const cache: StateCache = { current: null, chain: null };
-      // 拒否される面(ヘッドは動かない)
+      // Surfaces that are rejected (the head does not move)
       const rejected = {
         proposeAddMember: rejectionOf(
           await run(appendProgram(fixture.head.hashHex, proposeAdd.entry, OWNER, cache)),
@@ -476,7 +488,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
       for (const [surface, rejection] of Object.entries(rejected)) {
         expect(rejection, surface).toEqual(STORAGE_REJECTION);
       }
-      // 受理される面(是正の提案・提案の解放)
+      // Surfaces that are accepted (a remediation proposal / releasing a proposal)
       const removeProposed = await run(
         appendProgram(fixture.head.hashHex, proposeRemove.entry, OWNER, cache),
       );
@@ -499,8 +511,9 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
   it("keeps reads, deletions, revocations, rotation, attestation, checkpoint and settings open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 親ヘッド不一致の失効系エントリ: ガードが呼ばれていれば limit-exceeded、
-    // 呼ばれていなければ chain-head-conflict(ガードは ensureParentHead の前)
+    // Revocation-kind entries with a mismatched parent head:
+    // limit-exceeded if the guard was called, chain-head-conflict if
+    // not (the guard precedes ensureParentHead)
     const staleParent = "00".repeat(32);
     const removeMember = await signedEntry({
       op: "remove_member",
@@ -534,7 +547,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
     });
     await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
       const cache: StateCache = { current: null, chain: null };
-      // (a) 読み取り — 成功する(値付き pull は var.read の監査追記を伴うが受理)
+      // (a) reads — succeed (a value pull carries a var.read audit append but is accepted)
       const pulled = await run(pullEnvironmentProgram(actor(READER), ENV, cache));
       expect(Exit.isSuccess(pulled)).toBe(true);
       expect(
@@ -545,7 +558,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
       expect(Exit.isSuccess(await run(listMyDekWrapsProgram(actor(READER), ENV, cache)))).toBe(
         true,
       );
-      // (b) 削除系 — ガードを通過し、別の理由(ダミー入力)で拒否される
+      // (b) deletions — pass the guard and are rejected for another reason (dummy input)
       expect(
         rejectionOf(
           await run(
@@ -584,7 +597,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           ),
         ),
       ).toEqual({ kind: "dek-wrap-not-found", epoch: 7, recipientUserId: STRANGER });
-      // (c) 失効・権限縮小系 + (g) checkpoint — ガード非通過(chain-head-conflict)
+      // (c) revocations / permission narrowing + (g) checkpoint — do not pass the guard (chain-head-conflict)
       for (const entry of [
         removeMember.entry,
         changeRole.entry,
@@ -594,7 +607,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
         const rejection = rejectionOf(await run(appendProgram(staleParent, entry, OWNER, cache)));
         expect(rejection?.kind, entry.op).toBe("chain-head-conflict");
       }
-      // (d) ローテーション複合 — 複合内整合検査(environmentId 不一致)まで進む
+      // (d) the rotation composite — proceeds to the in-composite consistency check (environmentId mismatch)
       expect(
         rejectionOf(
           await run(
@@ -613,7 +626,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           ),
         ),
       ).toEqual({ kind: "payload-mismatch", field: "environmentId" });
-      // (f) ヘッド申告 — 署名検証まで進む(ダミー署名は attestation-rejected)
+      // (f) head attestation — proceeds to signature verification (the dummy signature is attestation-rejected)
       expect(
         rejectionOf(
           await run(
@@ -630,13 +643,14 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           ),
         )?.kind,
       ).toBe("attestation-rejected");
-      // (h) 取り下げ — 成功する(フラグ数に有界な監査行)。schemaPolicy の変更は
-      // 拒否対象(上の成長面テスト)、取得は読み取りで通る
+      // (h) dismissal — succeeds (audit rows bounded by the flag
+      // count). Changing schemaPolicy is a rejection target (the
+      // growth-surface test above); reading it is a read and passes
       expect(Exit.isSuccess(await run(dismissRotationFlagsProgram(actor(OWNER), [], cache)))).toBe(
         true,
       );
       expect(Exit.isSuccess(await run(getSchemaPolicyProgram(actor(READER), cache)))).toBe(true);
-      // (c) の実受理: 正しい親ヘッドの remove_member は拒否閾値以上でも受理される
+      // Actual acceptance of (c): a remove_member with the correct parent head is accepted even at/above the rejection threshold
       const removed = await run(
         appendProgram(fixture.head.hashHex, removeMember.entry, OWNER, cache),
       );
@@ -647,22 +661,27 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
   });
 });
 
-describe("監査ヘッド派生列の実体化(§12-8 (a) の例外 — AUDIT_SPEC §5.1 の遅延実体化)", () => {
+describe("materializing the audit-head derived column (the §12-8 (a) exception — AUDIT_SPEC §5.1's lazy materialization)", () => {
   it("rejects the audit-head read only while the derived column lags behind the audit log", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      // 監査行はあるが派生列は未実体化(まだ誰も監査ヘッドを読んでいない)→
-      // 実体化 = 監査行数比例の書き込みを要するため、拒否閾値以上では拒否
+      // Audit rows exist but the derived column is not yet
+      // materialized (nobody has read the audit head yet) →
+      // materialization requires a write proportional to the audit
+      // row count, so it is rejected at/above the rejection
+      // threshold
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(rejectionOf(await run(auditHeadProgram(actor(OWNER), cache)))).toEqual(
           STORAGE_REJECTION,
         );
-        // 非空公証の standalone checkpoint も同じ入力で止まる(親ヘッド不一致より
-        // 前 = requireRole(admin) の後に立つ)。空公証(CLI の既定)は通る —
-        // 上のテストの chain-head-conflict がそれ
+        // A standalone checkpoint of a non-empty attestation stops on
+        // the same input (placed before the parent-head check = after
+        // requireRole(admin)). An empty attestation (the CLI default)
+        // passes — that is the chain-head-conflict in the test
+        // above
         const notarizing = await signedEntry({
           op: "checkpoint",
           payload: { environments: [], auditHeadHashHex: "ab".repeat(32) },
@@ -673,18 +692,20 @@ describe("監査ヘッド派生列の実体化(§12-8 (a) の例外 — AUDIT_SP
           ),
         ).toEqual(STORAGE_REJECTION);
       });
-      // 閾値未満で一度読む = 実体化される
+      // One read below the threshold = it is materialized
       const materialized = await runInProject(0, async (run) =>
         Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
       );
       expect(materialized).toBe(true);
-      // 列が最新なら拒否閾値以上でも読み取りのみ = 通る
+      // With the column current, it passes as a read-only call even at/above the rejection threshold
       const current = await runInProject(DO_STORAGE_REJECT_BYTES, async (run) =>
         Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
       );
       expect(current).toBe(true);
-      // 監査行が増える(値付き pull の var.read — 拒否下でも受理される読み取り)と
-      // 列が再び遅れ、次の監査ヘッド読みは実体化を要するため再び拒否される
+      // When audit rows grow (a value pull's var.read — a read that is
+      // accepted even under rejection) the column lags again, and the
+      // next audit-head read requires materialization and is rejected
+      // again
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
@@ -700,7 +721,7 @@ describe("監査ヘッド派生列の実体化(§12-8 (a) の例外 — AUDIT_SP
   });
 });
 
-describe("警告閾値(§12-8 — 運用ログ)", () => {
+describe("the warning threshold (§12-8 — operations log)", () => {
   it("admits growth writes in the warning band and logs one static line per meter", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -709,7 +730,7 @@ describe("警告閾値(§12-8 — 運用ログ)", () => {
     try {
       await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        // ガードは admit 相当で通過し、ダミー値は後段(値署名)で落ちる
+        // The guard passes with an admit verdict; the dummies fall later (at value-signature verification)
         for (let i = 0; i < 3; i += 1) {
           const rejection = rejectionOf(
             await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), false, cache)),
@@ -729,9 +750,11 @@ describe("警告閾値(§12-8 — 運用ログ)", () => {
   });
 
   it("warns from the value pull path too (pull-only projects cross the band without growth writes)", async () => {
-    // 支配的な成長項が var.read のプロジェクトは
-    // 成長面の書き込みなしに 8 GB → 9 GB を通過する。観測点が成長面だけだと
-    // 警告帯が「運営の対応時間を買う」設計が pull 主体で成立しない
+    // A project whose dominant growth term is var.read crosses
+    // 8 GB → 9 GB with no growth-surface writes. If the observation
+    // points covered only the growth surface, the warning band's
+    // design of "buying the operators response time" would not hold
+    // for pull-dominant projects
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -739,20 +762,20 @@ describe("警告閾値(§12-8 — 運用ログ)", () => {
     try {
       await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        // 観測のみ — pull は受理される(var.read も記録される)
+        // Observation only — the pull is accepted (a var.read is also recorded)
         for (let i = 0; i < 3; i += 1) {
           expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
             true,
           );
         }
-        // メタデータのみ pull は監査行を書かない読み取り = 観測点を持たない
+        // A metadata-only pull is a read that writes no audit row = it has no observation point
         expect(
           Exit.isSuccess(await run(pullEnvironmentMetadataProgram(actor(READER), ENV, cache))),
         ).toBe(true);
       });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(errorSpy).not.toHaveBeenCalled();
-      // 拒否帯でも pull は通り、拒否域のログが 1 回出る(拒否は起きない)
+      // Pulls also pass in the rejection band; the rejection-band log fires once (no rejection actually happens)
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(

@@ -1,7 +1,9 @@
-// メンバーシップログのチェーン API 認可(AUTH_SPEC §11)+ GET /chain +
-// CAS(CRYPTO_SPEC §6.4 楽観ロック)の統合テスト。
-// 共有 fixture・ベクター再生ヘルパは support/membership-scenario.ts(分割の
-// 動機はシナリオモジュール冒頭を参照)。
+// Integration tests for the membership log's chain-API authorization
+// (AUTH_SPEC §11) + GET /chain + CAS (the CRYPTO_SPEC §6.4 optimistic
+// lock).
+// The shared fixture and vector-replay helpers live in
+// support/membership-scenario.ts (for the split's motivation see the
+// top of the scenario module).
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -36,7 +38,7 @@ import {
 
 registerMembershipScenario();
 
-describe("チェーン API の認可(AUTH_SPEC §11)", () => {
+describe("chain-API authorization (AUTH_SPEC §11)", () => {
   it("rejects unauthenticated requests with 401", async () => {
     const genesis = vectorEntries[0];
     const entry2 = vectorEntries[1];
@@ -57,7 +59,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     const get = await getChain(vectorProjectId, bearer(strangerToken));
     expect(get.status).toBe(404);
 
-    // 署名は検証されるより先にメンバーシップで拒否される(現ヘッド情報も返さない)
+    // Signatures are rejected at membership before verification (no current-head info is returned either)
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const forged: ChainEntry = {
@@ -79,9 +81,10 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(append.status).toBe(404);
   });
 
-  it("removed members are concealed too: the §11-2 mapping of actor-not-member(複合経由)", async () => {
-    // seq 5 で user-member-0002 は削除される。以降の書き込み(rotate は複合経由)は
-    // チェーン検証(422)ではなく、メンバーシップ判定の 404 で拒否される(存在秘匿)
+  it("removed members are concealed too: the §11-2 mapping of actor-not-member (via composite)", async () => {
+    // user-member-0002 is removed at seq 5. Later writes (rotate goes
+    // through the composite) are rejected not by chain verification
+    // (422) but by the membership judgment's 404 (existence hiding)
     const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
     if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
     const { head } = await replayVectorChain(nonmember.entry.seq - 1);
@@ -95,8 +98,8 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     await replayVectorChain(4);
     const entry5 = vectorEntries[4];
     if (entry5 === undefined) throw new Error("missing vector entry 5");
-    // entry5(remove_member)の actor は user-owner-0001。member のトークンで
-    // 送ると一致しない
+    // entry5 (remove_member)'s actor is user-owner-0001. Sending it
+    // under a member token does not match
     const response = await appendEntry(
       vectorProjectId,
       entry5.prev_hash_hex,
@@ -144,11 +147,13 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(response.status).toBe(404);
   });
 
-  it("distinguishes write from admin ops (§6 の op→必要権限表)", async () => {
-    // seq 3(create_environment)・seq 4(rotate_epoch)は複合エンドポイント経由の
-    // write 要求で、write スコープのトークンで通る。同じ write スコープでは
-    // remove_member(admin 要求。汎用 append)が 403 になる — 全 op を
-    // write(または admin)に潰す退行をここで判別する
+  it("distinguishes write from admin ops (the §6 op→required-permission table)", async () => {
+    // seq 3 (create_environment) and seq 4 (rotate_epoch) are write
+    // requirements via the composite endpoint and pass under a
+    // write-scope token. Under the same write scope, remove_member (an
+    // admin requirement, via generic append) is a 403 — this test
+    // distinguishes a regression that would crush every op to write
+    // (or admin)
     await replayVectorChain(2);
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const memberWrite = await cliToken(9002, writeScope);
@@ -165,8 +170,9 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
       ...bearer(memberWrite),
     });
     expect(created.status).toBe(200);
-    // 作成複合の境界 checkpoint(H+2)がヘッドを進めるため、rotate は実ヘッドで
-    // 再署名する(op / payload / actor はベクターのまま)
+    // Since the creation composite's boundary checkpoint (H+2)
+    // advances the head, the rotate is re-signed at the real head (op
+    // / payload / actor stay the vector's)
     const createdHead = (await created.json()) as { headSeq: number; headHashHex: string };
     const { entry: entry4 } = await resignEntryAt(
       toWireEntry(vector4),
@@ -182,7 +188,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     });
     expect(rotated.status).toBe(200);
 
-    // seq 5 は remove_member(admin 要求)、actor は user-owner-0001
+    // seq 5 is remove_member (admin required), actor user-owner-0001
     const ownerWrite = await cliToken(9001, writeScope);
     const entry5 = vectorEntries[4];
     if (entry5 === undefined) throw new Error("missing vector entry 5");
@@ -197,7 +203,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(body.reason).toBe("insufficient-permission");
   });
 
-  it("requires admin scope for init (genesis = プロジェクト作成)", async () => {
+  it("requires admin scope for init (genesis = project creation)", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
@@ -208,13 +214,14 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(body.reason).toBe("insufficient-permission");
   });
 
-  it("rejects session-principal init even with the CSRF header (§5 能力制限)", async () => {
+  it("rejects session-principal init even with the CSRF header (the §5 capability restriction)", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const session = await loginSession(9001);
 
-    // チェーン追記・init は §5 の明示拒否面: CSRF ヘッダーの有無によらず
-    // 一様に 403 session-not-allowed(能力判定は CSRF 検査に先行する)
+    // Chain appends and init are §5's explicit rejection surface:
+    // uniformly 403 session-not-allowed regardless of the CSRF header
+    // (the capability judgment precedes the CSRF check)
     const headers = sessionHeaders(session);
     const withoutCsrf: Record<string, string> = { cookie: headers["cookie"] ?? "" };
     const rejected = await initChain(toWireEntry(genesis), {
@@ -229,7 +236,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
 
-    // 同一 body はトークン主体では受理される(拒否がセッション主体起因の証明)
+    // The same body is accepted under a token principal (proving the rejection was due to the session principal)
     const accepted = await initChain(toWireEntry(genesis), {
       headers: { ...JSON_HEADERS, ...bearer(await cliToken(9001)) },
     });
@@ -250,14 +257,14 @@ describe("GET /projects/:projectId/chain", () => {
 
   it("allows every chain-derived member including reader to fetch (§6.2)", async () => {
     await replayVectorChain(6);
-    // seq 5 で user-admin-0003 が reader として追加され、seq 6 で change_role される。
-    // どの時点でもチェーン導出メンバーであれば取得できる
+    // At seq 5 user-admin-0003 is added as a reader and change_role'd
+    // at seq 6. At any point, a chain-derived member can fetch
     const response = await getChain(vectorProjectId, bearer(tokenFor("user-admin-0003")));
     expect(response.status).toBe(200);
   });
 });
 
-describe("CAS(§6.4 楽観ロック)", () => {
+describe("CAS (the §6.4 optimistic lock)", () => {
   it("rejects an append whose parent head is stale and reports the current head", async () => {
     await replayVectorChain(2);
     const entry2 = vectorEntries[1];
@@ -265,8 +272,9 @@ describe("CAS(§6.4 楽観ロック)", () => {
     if (entry2 === undefined || genesis === undefined) {
       throw new Error("missing vector entries");
     }
-    // テスト時署名の remove_member(seq 3。汎用 append の対象 op)で CAS を検査する
-    // (ベクター seq 3 は create_environment で複合経由 — data.test.ts が担う)
+    // CAS is checked with a test-time-signed remove_member (seq 3, an
+    // op subject to generic append) (vector seq 3 is create_environment
+    // and goes through the composite — covered by data tests)
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
@@ -274,19 +282,19 @@ describe("CAS(§6.4 楽観ロック)", () => {
       operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
     });
 
-    // 親を genesis ハッシュ(1 つ古いヘッド)にすると拒否され、現ヘッドが返る
+    // Setting the parent to the genesis hash (a head one step stale) is rejected and returns the current head
     const stale = await appendEntry(vectorProjectId, genesis.entry_hash_hex, entry);
     expect(stale.status).toBe(409);
     const body = (await stale.json()) as { currentHeadSeq: number; currentHeadHashHex: string };
     expect(body.currentHeadSeq).toBe(2);
     expect(body.currentHeadHashHex).toBe(entry2.entry_hash_hex);
 
-    // 正しい親で再試行すると受理される(クライアントの再同期・再試行の流れ)
+    // Retrying with the correct parent is accepted (the client's re-sync/retry flow)
     const retried = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);
     expect(retried.status).toBe(200);
   });
 
-  it("rejects a malformed parentHeadHashHex with 400 (schema — CAS 意味論より前)", async () => {
+  it("rejects a malformed parentHeadHashHex with 400 (schema — before CAS semantics)", async () => {
     await replayVectorChain(2);
     const entry2 = vectorEntries[1];
     if (entry2 === undefined) throw new Error("missing vector entries");
@@ -296,8 +304,9 @@ describe("CAS(§6.4 楽観ロック)", () => {
       actorUserId: "user-owner-0001",
       operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
     });
-    // CAS の比較対象の形式は Sha256Hex(64 文字小文字 hex)で固定する:
-    // 不正形式は 409(現ヘッド情報付き)へ到達せず schema 境界の 400
+    // The format of the CAS comparison target is pinned as Sha256Hex
+    // (64 lowercase hex chars): a malformed one never reaches the 409
+    // (with current-head info) and falls at the schema boundary's 400
     for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
       const response = await appendEntry(vectorProjectId, bad, entry);
       expect(response.status).toBe(400);

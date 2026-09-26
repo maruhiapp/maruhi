@@ -1,11 +1,14 @@
-// master 鍵ラップ台帳 API の統合テスト(AUTH_SPEC §13-6〜13-10 — KL3。
-// CRYPTO_SPEC §8 のクラス S / G / H のサーバー面)。@cloudflare/vitest-plugin
-// (workerd 実環境)で SELF 経由の実経路を検証する。
+// Integration tests for the master-key wrap ledger API (AUTH_SPEC
+// §13-6–13-10 — KL3; the server side of CRYPTO_SPEC §8's classes S /
+// G / H). Verifies the real path via SELF on
+// @cloudflare/vitest-plugin (real workerd environment).
 //
-// ラップ・分片・承認はサーバーから見て不透明な暗号文なので、内容は形式だけ
-// 合った hex フィクスチャでよい(復号可能性は packages/crypto のベクターと
-// CLI 側のテストが担う)。ここで固定するのは認可・受理ポリシー・固定窓・
-// 存在秘匿・監査の 1:1。
+// Wraps, shares, and approvals are opaque ciphertext to the server,
+// so hex fixtures that merely have the right format suffice
+// (decryptability is covered by packages/crypto's vectors and the
+// CLI-side tests). What is pinned here is authorization, the
+// acceptance policy, the fixed windows, existence hiding, and the
+// 1:1 with audit.
 
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -36,7 +39,7 @@ const HPKE_ENC = "33".repeat(32);
 const SHARE_CT = "44".repeat(48);
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/** クライアント採番の台帳 id(ULID 形 — 26 文字)。 */
+/** A client-assigned ledger id (ULID shape — 26 characters). */
 const ledgerId = () =>
   Array.from(
     crypto.getRandomValues(new Uint8Array(26)),
@@ -53,7 +56,7 @@ const passkeyBody = (label?: string) =>
     ...(label === undefined ? {} : { label }),
   });
 
-/** グループ作成の body(groupId はクライアント採番)。 */
+/** The group-creation body (groupId is client-assigned). */
 const guardianBody = (mode: "any" | "all", shares: readonly unknown[], groupId = ledgerId()) => ({
   groupId,
   mode,
@@ -100,7 +103,7 @@ async function auditCount(event: string): Promise<number> {
 
 const requestIdOf = (seed: number) => seed.toString(16).padStart(2, "0").repeat(32);
 
-/** ward(A)と保護者(B, C)を作り、A の all グループを 1 つ登録する。 */
+/** Create a ward (A) and guardians (B, C), and register one `all` group for A. */
 async function guardianFixture() {
   const a = await cliToken(701);
   const b = await cliToken(702);
@@ -110,7 +113,7 @@ async function guardianFixture() {
   const created = await post("/auth/key-wraps/guardians", a, body);
   expect(created.status).toBe(200);
   const { groupId } = await json<{ groupId: string }>(created);
-  // サーバーはクライアント採番の id をそのまま使う
+  // The server uses the client-assigned id as-is
   expect(groupId).toBe(body.groupId);
   return { a, b, c, aId, bId, cId, groupId };
 }
@@ -132,7 +135,7 @@ describe("GET /auth/key-wraps(§13-7 status)", () => {
     expect(viaSession.status).toBe(200);
   });
 
-  it("rejects a session principal for every mutation / fetch face (§5 — status のみ許可)", async () => {
+  it("rejects a session principal for every mutation / fetch face (§5 — only status is allowed)", async () => {
     const session = await loginSession(602);
     const register = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
       method: "POST",
@@ -148,7 +151,7 @@ describe("GET /auth/key-wraps(§13-7 status)", () => {
   });
 });
 
-describe("passkey-prf wraps(クラス S — §13-7)", () => {
+describe("passkey-prf wraps (class S — §13-7)", () => {
   it("registers, fetches (with params) and deletes a passkey wrap, recording audit 1:1", async () => {
     const token = await cliToken(611);
     const registered = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
@@ -168,7 +171,8 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
         wrapId,
         label: "MacBook Touch ID",
         credentialIdHex: "55".repeat(16),
-        // 公開パラメータ(§13-7 2026-09-13 改訂): 復元クライアントが儀式の前に読む
+        // Public parameters (the §13-7 2026-09-13 revision): the
+        // restoring client reads them before the ceremony
         prfSaltHex: "66".repeat(32),
       }),
     ]);
@@ -190,7 +194,7 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
     expect(await auditCount("auth.key_wrap_removed")).toBe(1);
   });
 
-  it("rejects a project-scoped token (§13-2 の鍵素材条件)and unknown fields (strict)", async () => {
+  it("rejects a project-scoped token (§13-2's key-material condition) and unknown fields (strict)", async () => {
     const scoped = await cliToken(612, [{ project: "f0".repeat(32), permission: "admin" }]);
     const forbidden = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
       method: "POST",
@@ -226,7 +230,7 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
     expect(await auditCount("auth.key_wrap_registered")).toBe(5);
   });
 
-  it("shares one blob-fetch window with the recovery-code blob (§13-8 合算窓)", async () => {
+  it("shares one blob-fetch window with the recovery-code blob (the §13-8 combined window)", async () => {
     const token = await cliToken(615);
     expect(
       (
@@ -243,7 +247,7 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
       body: passkeyBody(),
     });
     const { wrapId } = await json<{ wrapId: string }>(registered);
-    // recovery 2 回 + passkey 3 回 = 上限 5。6 回目はどちらの経路でも 429
+    // recovery ×2 + passkey ×3 = the limit of 5. The 6th is 429 on either path
     expect((await get("/auth/recovery", token)).status).toBe(200);
     expect((await get("/auth/recovery", token)).status).toBe(200);
     for (let i = 2; i < KEY_BLOB_FETCH_LIMIT; i += 1) {
@@ -255,13 +259,13 @@ describe("passkey-prf wraps(クラス S — §13-7)", () => {
     expect(body["_tag"]).toBe("KeyWrapRateLimited");
     expect(body["window"]).toBe("blob-fetch");
     expect((await get("/auth/recovery", token)).status).toBe(429);
-    // 監査は許可された取得と 1:1
+    // Audit is 1:1 with permitted fetches
     expect(await auditCount("auth.recovery_blob_fetched")).toBe(2);
     expect(await auditCount("auth.key_wrap_fetched")).toBe(3);
   });
 });
 
-describe("guardian groups(クラス G — §13-7)", () => {
+describe("guardian groups (class G — §13-7)", () => {
   it("creates a group, lists it for the guardians, serves the share and the blob, and deletes it", async () => {
     const { a, b, aId, bId, cId, groupId } = await guardianFixture();
 
@@ -297,13 +301,13 @@ describe("guardian groups(クラス G — §13-7)", () => {
         ciphertextHex: SHARE_CT,
       }),
     );
-    // 分片は当該保護者以外(ward 本人を含む)には 404
+    // The share is 404 to anyone but that guardian (the ward included)
     expect((await get(`/auth/guardian/shares/${groupId}`, a)).status).toBe(404);
 
     const blob = await get(`/auth/key-wraps/guardians/${groupId}`, a);
     expect(blob.status).toBe(200);
     expect((await json(blob))["wrap"]).toEqual(WRAP);
-    // グループのブロブは ward 以外には 404(保護者にも)
+    // The group's blob is 404 to anyone but the ward (guardians included)
     expect((await get(`/auth/key-wraps/guardians/${groupId}`, b)).status).toBe(404);
 
     expect(await auditCount("auth.key_wrap_registered")).toBe(1);
@@ -340,7 +344,7 @@ describe("guardian groups(クラス G — §13-7)", () => {
       expect(response.status, reason).toBe(422);
       expect((await json(response))["reason"]).toBe(reason);
     }
-    // 拒否は監査を書かない
+    // Rejections write no audit
     expect(await auditCount("auth.key_wrap_registered")).toBe(0);
     expect(await auditCount("auth.guardian_designated")).toBe(0);
   });
@@ -351,12 +355,14 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const bId = await userIdOf(b);
     const first = guardianBody("any", [share(1, bId)]);
     expect((await post("/auth/key-wraps/guardians", a, first)).status).toBe(200);
-    // 同じ id の再登録は 422 duplicate-id(上限より先に判定される)
+    // Re-registering the same id is 422 duplicate-id (judged before the limit)
     const duplicate = await post("/auth/key-wraps/guardians", a, first);
     expect(duplicate.status).toBe(422);
     expect((await json(duplicate))["reason"]).toBe("duplicate-id");
-    // DB まで到達する拒否(衝突)も監査を書かない: 監査行は batch の末尾で
-    // `changes() = 1` の連鎖に条件付けられている(受理 1 件ぶんだけが残る)
+    // Rejections that reach the DB (collisions) also write no audit:
+    // the audit rows are conditioned on a chain of `changes() = 1`
+    // checks at the batch's end (only the one accepted registration
+    // remains)
     expect(await auditCount("auth.key_wrap_registered")).toBe(1);
     expect(await auditCount("auth.guardian_designated")).toBe(1);
     for (let i = 1; i < 5; i += 1) {
@@ -366,7 +372,8 @@ describe("guardian groups(クラス G — §13-7)", () => {
     const sixth = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
     expect(sixth.status).toBe(422);
     expect((await json(sixth))["reason"]).toBe("too-many-groups");
-    // 上限拒否も同じ: 受理した 5 群ぶん(1 + 分片数 = 各 1 行)だけが残る
+    // Same for the limit rejection: only the 5 accepted groups' worth
+    // (1 + share count = one row each) remains
     expect(await auditCount("auth.key_wrap_registered")).toBe(5);
     expect(await auditCount("auth.guardian_designated")).toBe(5);
   });
@@ -383,7 +390,7 @@ describe("guardian groups(クラス G — §13-7)", () => {
   });
 });
 
-describe("handoff(クラス H — §13-7)", () => {
+describe("handoff (class H — §13-7)", () => {
   it("runs the guardian approval flow end to end with uniform 404 for strangers (the ward has no approval role — DK K4)", async () => {
     const { a, b, aId, groupId } = await guardianFixture();
     const stranger = await cliToken(704);
@@ -396,7 +403,8 @@ describe("handoff(クラス H — §13-7)", () => {
     expect(duplicate.status).toBe(409);
     expect((await json(duplicate))["reason"]).toBe("request-exists");
 
-    // 照会: ward = 役割なし(照会はできる)、保護者 = 自分の分片、部外者 = 一様 404
+    // Lookup: the ward = no roles (but can look up), a guardian =
+    // their own share, a stranger = uniform 404
     const byWard = await json<{ roles: unknown[]; wardUserId: string; wardLogin: string }>(
       await get(`/auth/handoff/${requestId}`, a),
     );
@@ -408,7 +416,8 @@ describe("handoff(クラス H — §13-7)", () => {
     expect((await get(`/auth/handoff/${requestId}`, stranger)).status).toBe(404);
     expect((await get(`/auth/handoff/${requestIdOf(0xa2)}`, a)).status).toBe(404);
 
-    // 保護者の承認(自分の分片のみ)。別 share_index・他人のグループ名は 422
+    // A guardian's approval (only their own share). A different
+    // share_index or another's group id is 422
     const guardianApproval = {
       source: groupId,
       shareIndex: 1,
@@ -428,13 +437,15 @@ describe("handoff(クラス H — §13-7)", () => {
     });
     expect(wrongIndex.status).toBe(422);
     expect((await json(wrongIndex))["reason"]).toBe("source-mismatch");
-    // 部外者の承認は一様 404
+    // A stranger's approval is a uniform 404
     expect(
       (await post(`/auth/handoff/${requestId}/approvals`, stranger, guardianApproval)).status,
     ).toBe(404);
 
-    // ward 本人は自分の要求を承認できない(旧端末経路の撤去): 自分のグループ名でも 422、
-    // 旧ワイヤの `source: "device"` + `blob` は strict 受理で 400
+    // The ward themself cannot approve their own request (the legacy
+    // device path was removed): 422 even with their own group id; the
+    // old wire's `source: "device"` + `blob` is a strict-acceptance
+    // 400
     const byWardApproval = await post(`/auth/handoff/${requestId}/approvals`, a, guardianApproval);
     expect(byWardApproval.status).toBe(422);
     expect((await json(byWardApproval))["reason"]).toBe("source-mismatch");
@@ -448,7 +459,8 @@ describe("handoff(クラス H — §13-7)", () => {
     });
     expect(legacyDevice.status).toBe(400);
 
-    // 取得は ward のみ。保護者の 1 件が届き(blob 列は無い)、collected は 1 回だけ記録される
+    // Only the ward fetches. One approval from the guardian arrives
+    // (no blob column) and collected is recorded exactly once
     expect((await get(`/auth/handoff/${requestId}/approvals`, b)).status).toBe(404);
     const first = await json<{ approvals: Record<string, unknown>[] }>(
       await get(`/auth/handoff/${requestId}/approvals`, a),
@@ -464,7 +476,7 @@ describe("handoff(クラス H — §13-7)", () => {
     ).all<{ target_user_id: string }>();
     expect(approvedTargets.results.every((r) => r.target_user_id === aId)).toBe(true);
 
-    // 取消(ward のみ)後は一様 404
+    // After cancellation (ward only) everything is a uniform 404
     expect((await del(`/auth/handoff/${requestId}`, b)).status).toBe(404);
     expect((await del(`/auth/handoff/${requestId}`, a)).status).toBe(204);
     expect((await get(`/auth/handoff/${requestId}`, a)).status).toBe(404);
@@ -484,7 +496,7 @@ describe("handoff(クラス H — §13-7)", () => {
     expect(await auditCount("auth.key_handoff_requested")).toBe(HANDOFF_REQUEST_LIMIT);
   });
 
-  it("treats an expired request as absent (§13-8: TTL 15 分)", async () => {
+  it("treats an expired request as absent (§13-8: TTL 15 minutes)", async () => {
     const a = await cliToken(751);
     const requestId = requestIdOf(0xb1);
     expect((await post("/auth/handoff", a, { requestId })).status).toBe(200);

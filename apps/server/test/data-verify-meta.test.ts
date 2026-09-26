@@ -1,6 +1,9 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — メタステートメントの受理検証(AUTH_SPEC §12-5 のメタ規則 = CRYPTO_SPEC §4.2)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
+// Integration tests for the data-plane API (AUTH_SPEC §12) —
+// acceptance verification of meta statements (the §12-5 meta rules =
+// CRYPTO_SPEC §4.2).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// The shared fixture and helpers live in support/data-scenario.ts.
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
@@ -46,7 +49,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** 拒否時の無副作用: ステートメント行・変数名キャッシュ・監査が変わらない。 */
+/** Side-effect-freeness on rejection: statement rows, the variable-name cache, and audits do not change. */
 async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]): Promise<void> {
   const rows = await queryProjectDo(
     projectId,
@@ -55,9 +58,11 @@ async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]):
     VAR,
   );
   expect(rows.map((row) => row["meta_version"])).toEqual([...expectedMetaVersions]);
-  // 受理されたメタ操作数との不変条件(rename 経路は名前の変更有無で
-  // var.renamed / var.schema_reissued に分岐する — AUDIT_SPEC §3.3。
-  // 名前不変の受理ケースを将来足しても不変条件が黙って割れないよう両方数える)
+  // The invariant against the count of accepted meta ops (the rename
+  // path branches into var.renamed / var.schema_reissued on whether the
+  // name changed — AUDIT_SPEC §3.3. Count both so the invariant does
+  // not silently break if a name-unchanged acceptance case is added
+  // later)
   const renamedAudits = await queryProjectDo(
     projectId,
     "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.renamed', 'var.schema_reissued', 'var.deleted')",
@@ -65,17 +70,17 @@ async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]):
   expect(renamedAudits[0]?.["n"]).toBe(Math.max(0, expectedMetaVersions.length - 1));
 }
 
-describe("メタステートメントの受理検証(§12-5 のメタ規則 = CRYPTO_SPEC §4.2)", () => {
+describe("acceptance verification of meta statements (the §12-5 meta rules = CRYPTO_SPEC §4.2)", () => {
   it("accepts the create → rename → delete statement chain and keeps distributing the tombstone", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 作成ステートメント(metaVersion 1)を rename が上書きする前に控える
+    // Snapshot the creation statement (metaVersion 1) before the rename overwrites it
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
     const renamed = await renameVariableRequest(VAR, "DB_URL", MEMBER);
     expect(renamed.status).toBe(204);
 
-    // rename 後の pull は metaVersion 2 のステートメント + author を配布する
+    // A pull after the rename distributes the metaVersion-2 statement + author
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     const body = (await pull.json()) as {
       variables: {
@@ -97,8 +102,9 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     });
     expect(body.deletedVariables).toEqual([]);
 
-    // 削除: tombstone + 全バージョン削除。deleted ステートメント(name は直前
-    // active 名を保持)は保存・配布し続ける(§12-5)
+    // Deletion: tombstone + all versions deleted. The deleted
+    // statement (name keeps the just-prior active name) keeps being
+    // stored and distributed (§12-5)
     const removed = await deleteVariableRequest(VAR, MEMBER);
     expect(removed.status).toBe(204);
     const afterDelete = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
@@ -125,8 +131,8 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       }),
     ]);
 
-    // ステートメント行(§12-5 の保存行): metaVersion ごとに author・宣言ヘッド・
-    // prev・サーバー再計算ハッシュを保持する
+    // Statement rows (the §12-5 stored rows): per metaVersion they
+    // keep the author, declared head, prev, and server-recomputed hash
     const rows = await queryProjectDo(
       projectId,
       `SELECT meta_version, name, status, prev_meta_sig_hash_hex, signed_bytes_hash_hex, author_user_id, author_key_fingerprint
@@ -150,8 +156,9 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
-    // 申告 metaVersion 3(最新は 1)→ 409 currentMetaVersion 1。勝者の
-    // signed_bytes ハッシュは載せない(§12-5 の 409 規律)
+    // Attesting metaVersion 3 (latest is 1) → 409 currentMetaVersion
+    // 1. The winner's signed_bytes hash is not carried (the §12-5 409
+    // discipline)
     const stale = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -178,11 +185,11 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
 
   it("rejects non-NFC names with 422 NameNotNfc on every statement path (§12-1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // NFD(結合文字)の名前 — サーバーは正規化せず検査のみ(byte-exact 署名との両立)
+    // An NFD (combining-character) name — the server only inspects, never normalizes (compatible with byte-exact signatures)
     const nfdName = "CAFE\u0301_URL";
     expect(nfdName.normalize("NFC")).not.toBe(nfdName);
 
-    // 変数作成
+    // Variable creation
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, nfdName),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -194,7 +201,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     });
     await expectNoMetaSideEffects([]);
 
-    // 変数 rename
+    // Variable rename
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const renamed = await requestJson(
       "PATCH",
@@ -213,7 +220,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     expect(renamed.status).toBe(422);
     await expectNoMetaSideEffects([1]);
 
-    // 複合の環境作成(同梱ステートメント)— チェーンエントリも追記されない(原子性)
+    // Composite environment creation (bundled statement) — the chain entry is not appended either (atomicity)
     const headBefore = fixture.head;
     const response = await createEnvironmentWith(
       fixture,
@@ -243,7 +250,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     );
     expect(response.status).toBe(422);
     expect(((await response.json()) as { field: string }).field).toBe("name");
-    // 変数は削除されていない
+    // The variable was not deleted
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(((await pull.json()) as { variables: unknown[] }).variables.length).toBe(1);
     await expectNoMetaSideEffects([1]);
@@ -252,8 +259,9 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
   it("rejects a statement signed by someone other than the caller (422 signature-invalid)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // OWNER が署名した rename を MEMBER が持ち込む → 検証鍵は呼び出し主体
-    // (MEMBER)の受理時点チェーン鍵なので失敗(他人の署名の持ち込み拒否)
+    // MEMBER carries in a rename signed by OWNER → the verification
+    // key is the calling principal's (MEMBER's) acceptance-time chain
+    // key, so it fails (refusing to carry someone else's signature)
     const ownerSigned = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -271,16 +279,18 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     await expectNoMetaSideEffects([1]);
   });
 
-  it("rejects statements whose declared head predates the author's membership or is unknown (§12-5 の 2〜3)", async () => {
+  it("rejects statements whose declared head predates the author's membership or is unknown (§12-5 items 2-3)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
     const prevHash = await metaSignedBytesHashOf(projectId, created.statement, MEMBER);
 
-    // (a) 宣言ヘッド = genesis(seq 1)。MEMBER の add_member は seq 2 なので
-    // ヘッド時点で非在籍 → chain-head-state-mismatch。メタは環境の存在を検査
-    // しない(§12-4 の非対称)ため、拒否理由は在籍のみに帰着する
+    // (a) Declared head = genesis (seq 1). Since MEMBER's add_member
+    // is seq 2, they were not a member at that head →
+    // chain-head-state-mismatch. Meta does not check the environment's
+    // existence (the §12-4 asymmetry), so the rejection reason reduces
+    // to membership only
     const beforeMembership = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -303,7 +313,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "chain-head-state-mismatch",
     );
 
-    // (b) 実在 seq × 不一致 hash → chain-head-unknown
+    // (b) An existent seq × mismatched hash → chain-head-unknown
     const unknownHead = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -324,7 +334,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     expect(mismatch.status).toBe(422);
     expect(((await mismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    // (c) prev の不一致(署名は有効)→ chain-head-state-mismatch
+    // (c) A prev mismatch (signature valid) → chain-head-state-mismatch
     const wrongPrev = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -349,7 +359,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     await expectNoMetaSideEffects([1]);
   });
 
-  it("distributes a removed author's statement, verifiable at its in-tenure head (§6.3 のクライアント検証)", async () => {
+  it("distributes a removed author's statement, verifiable at its in-tenure head (the §6.3 client-side verification)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await appendOperation(fixture, OWNER, {
@@ -376,11 +386,12 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     };
     const pulled = body.variables[0];
     if (pulled === undefined) throw new Error("missing pulled variable");
-    // author 情報は受理時点のまま配布される(現メンバー集合から再導出しない)
+    // The author info is distributed as of acceptance time (not re-derived from the current member set)
     expect(pulled.statement.authorUserId).toBe(MEMBER);
 
-    // クライアント検証(§6.3): 削除後の全チェーンでも、宣言ヘッドが在籍区間内
-    // なので当時の鍵で検証できる
+    // Client-side verification (§6.3): even on the full chain after
+    // removal, the declared head lies within the membership interval so
+    // it verifies under the key of that time
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -406,7 +417,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     expect(result.ok).toBe(true);
   });
 
-  it("lists deleted environments with their tombstone statement (§12-4 の配布継続)", async () => {
+  it("lists deleted environments with their tombstone statement (§12-4's continued distribution)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, "env-app-0002", "Staging");
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
@@ -426,13 +437,13 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       metaVersion: 2,
       authorUserId: OWNER,
     });
-    // 削除済み環境への pull は従来どおり 404(tombstone)
+    // A pull on a deleted environment is a 404 as before (tombstone)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(404);
   });
 
   it("requires the composite statement to declare the pre-append head (§12-4)", async () => {
-    // 先に 1 つ環境を作ってヘッドを進め、「古い実在ヘッド」を作る
+    // Create one environment first to advance the head and produce a "stale existent head"
     await createEnvironmentOk(fixture, ENV, "App");
     const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
     const deks = await wrapsFor("env-app-0002", ALL_MEMBERS);
@@ -452,7 +463,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { field: string }).field).toBe("statementChainHead");
-    // 原子性: チェーンにも環境行にも痕跡を残さない
+    // Atomicity: no trace is left on the chain or the environment row
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
   });
@@ -464,13 +475,14 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       name: "App",
       deks,
       dekCommitmentHex: "ab".repeat(32),
-      parentHeadHashHex: projectId, // genesis ハッシュ = 古いヘッド
+      parentHeadHashHex: projectId, // the genesis hash = a stale head
     });
-    // CAS が先に落ちる(ステートメントの宣言ヘッドも古いが、409 で再試行を促す)
+    // The CAS drops it first (the statement's declared head is stale too, but the 409 prompts a retry)
     expect(stale.status).toBe(409);
     const headBefore = { ...fixture.head };
-    // 再試行はエントリ(prev 変更)とステートメント(宣言ヘッド変更)の両方を
-    // 再署名する(fixture helper が両方作り直す — §12-4)
+    // The retry re-signs both the entry (changed prev) and the
+    // statement (changed declared head) (the fixture helper rebuilds
+    // both — §12-4)
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -478,7 +490,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       dekCommitmentHex: "ab".repeat(32),
     });
     expect(retried.status).toBe(200);
-    // 保存されたステートメントの宣言ヘッドは追記前の現ヘッド(= 再署名済み)
+    // The stored statement's declared head is the pre-append current head (= re-signed)
     const rows = await queryProjectDo(
       projectId,
       "SELECT chain_head_seq, chain_head_hash_hex FROM environment_meta_statements WHERE environment_id = ?",
@@ -490,13 +502,14 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     });
   });
 
-  it("caps meta versions per variable (422 meta-versions — 仮裁定の §12-8 適用)", async () => {
+  it("caps meta versions per variable (422 meta-versions — §12-8 applied per the provisional ruling)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 実 rename 1,000 回は非現実的なので latest_meta_version を直接引き上げ、
-    // 上限直前のステートメント行(prev 検査の predecessor)をシードする
-    // (latest_meta_version の行は必ず存在する、という保存不変条件 —
-    // findVariable の status JOIN の前提 — をシードでも保つ)
+    // Since 1,000 real renames are unrealistic, raise
+    // latest_meta_version directly and seed a statement row just below
+    // the cap (the predecessor the prev check needs) (the seeded state
+    // also preserves the storage invariant that a latest_meta_version
+    // row always exists — the premise of findVariable's status JOIN)
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
@@ -537,19 +550,21 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     });
   });
 
-  it("accepts the delete statement even at the meta version cap (deleted は上限対象外)", async () => {
-    // 上限で削除まで遮断すると、rename 連打で上限到達したリソースがどの role
-    // でも恒久的に削除不能になる。tombstone は連鎖の終端で追加行は高々 1 行
-    // なので上限の対象外とする
+  it("accepts the delete statement even at the meta version cap (deleted is outside the cap)", async () => {
+    // If the cap also blocked deletions, a resource that hit the cap
+    // via rename spam would become permanently undeletable under any
+    // role. A tombstone is the chain's terminus and adds at most one
+    // row, so it is outside the cap
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 実 rename 1,000 回は非現実的なので、latest と最新ステートメント行の
-    // meta_version を直接引き上げて上限到達状態をシードする(prev は保存済みの
-    // サーバー再計算ハッシュを流用)
+    // Since 1,000 real renames are unrealistic, raise latest and the
+    // latest statement row's meta_version directly to seed the
+    // cap-reached state (prev reuses the stored server-recomputed
+    // hash)
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
@@ -578,7 +593,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
-      // deleted の name は直前 active 名を保持する(§4.2)
+      // A deleted's name keeps the just-prior active name (§4.2)
       name: "DATABASE_URL",
       status: "deleted" as const,
       metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
@@ -586,8 +601,9 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
-    // 上限到達でも同梱マニフェスト(tombstone 込みダイジェスト)は通常どおり
-    // 要る(マニフェスト自体は行数上限の対象外 — §12-8: 保持は最新 1 通)
+    // Even at the cap, the bundled manifest (tombstone-including
+    // digest) is required as usual (the manifest itself is outside the
+    // row-count cap — §12-8: retention is the latest copy only)
     const { manifest } = await manifestForStatement(deleteStatement, MEMBER);
     const removed = await requestJson(
       "DELETE",
@@ -596,7 +612,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       { statement: deleteStatement, manifest },
     );
     expect(removed.status).toBe(204);
-    // tombstone ステートメントは保存・配布され続ける(§12-5)
+    // The tombstone statement keeps being stored and distributed (§12-5)
     const tombstones = await queryProjectDo(
       projectId,
       "SELECT status, meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? AND status = 'deleted'",

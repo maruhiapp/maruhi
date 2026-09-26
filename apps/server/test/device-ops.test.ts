@@ -1,19 +1,30 @@
-// 端末鍵 2 op(`add_device` / `revoke_device`)の受理副作用と R(E) の端末展開
-// (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-6 / AUDIT_SPEC §3.4・§4.1 — 2026-09-19 DK K3)の
-// 統合テスト(@cloudflare/vitest-plugin — workerd 実環境)。
+// Integration tests for the device-key ops (`add_device` /
+// `revoke_device`): their acceptance side effects and the device
+// expansion of R(E) (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-6 /
+// AUDIT_SPEC §3.4, §4.1 — 2026-09-19 DK K3)
+// (@cloudflare/vitest-plugin — real workerd environment).
 //
-// 検証項:
-// - 受理ガード解除: 2 op が汎用 append で受理され、ミラー行(§3.4)が端末 FP を運ぶ
-// - R(E) の端末展開: ラップの完全集合は (人, 端末) 単位。応答は自分の全端末分を運び
-//   `recipientEncPubHex` で端末を識別する
-// - 2 段認可(設計録 §8 K3-1): 署名鍵から端末を解き、端末の実効権限で第 2 段を判定する
-// - `revoke_device` の副作用: 申告行の削除・要ローテーション検出(trigger `revoke_device`)・
-//   失効鍵宛のラップ拒否・失効端末の署名拒否・既存ラップは掃除しない
-// - DeviceLimit(16 / member / project — 受理ポリシー、422)
-// - トークン水準(add_device = write、他人の revoke_device = admin)
-// - reader の自己バックフィル(自分の端末宛のみ)
-// - 端末軸の削除参照(`recipientEncPubHex` 省略時は唯一スロットのみ)
-// - バージョン skew: 端末 1 つ(K2 以前のクライアント相当入力)の経路は不変
+// Items verified:
+// - acceptance-guard removal: the 2 ops are accepted via generic
+//   append, and the mirror rows (§3.4) carry the device fingerprint
+// - R(E)'s device expansion: the wrap-complete set is per (person,
+//   device); the response carries all of one's own devices, each
+//   identified by `recipientEncPubHex`
+// - two-stage authorization (design record §8 K3-1): resolve the
+//   device from the signing key, then judge stage 2 by the device's
+//   effective permissions
+// - `revoke_device` side effects: dropping the attestation rows,
+//   rotation-needed detection (trigger `revoke_device`), rejecting
+//   wraps addressed to the revoked key, rejecting signatures by the
+//   revoked device, and NOT sweeping existing wraps
+// - DeviceLimit (16 / member / project — an acceptance policy, 422)
+// - the token level (add_device = write; another's revoke_device =
+//   admin)
+// - a reader's self-backfill (only addressed to its own device)
+// - device-axis delete references (an omitted `recipientEncPubHex`
+//   addresses the unique slot only)
+// - version skew: the single-device path (input equivalent to a
+//   pre-K2 client) is unchanged
 
 import {
   computeUserKeyFingerprint,
@@ -70,7 +81,7 @@ registerDataScenario();
 
 const OTHER = "env-other-0002";
 
-/** ベクターの端末鍵(名義はベクターのもの — 束縛はチェーンの add_device が行う)。 */
+/** A vector device key (the names are the vectors' — the binding is done by the chain's add_device). */
 const PHONE = "user-owner-0001@phone";
 const SECOND = "user-owner-0014@second";
 const READER_CAP = "user-owner-0015@reader-cap";
@@ -91,7 +102,7 @@ function vectorDevice(name: string): DevicePublic {
   };
 }
 
-/** 使い捨ての端末公開鍵(DeviceLimit 用 — 署名には使わない)。 */
+/** A throwaway device public key (for DeviceLimit — never used for signing). */
 async function freshDevice(): Promise<DevicePublic> {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -114,7 +125,7 @@ type Cap = {
   readonly scopeEnvironmentIds?: readonly string[];
 };
 
-/** `add_device`(actor 自身の端末)をチェーンへ追記する。 */
+/** Append `add_device` (the actor's own device) to the chain. */
 async function addDevice(
   actorUserId: string,
   device: DevicePublic,
@@ -133,7 +144,7 @@ async function addDevice(
   return fixture.head.seq;
 }
 
-/** `revoke_device` をチェーンへ追記する。 */
+/** Append `revoke_device` to the chain. */
 async function revokeDevice(
   actorUserId: string,
   targetUserId: string,
@@ -146,7 +157,7 @@ async function revokeDevice(
   return fixture.head.seq;
 }
 
-/** 汎用 append を任意のトークンで送る(受理されなくてよい経路)。 */
+/** Send generic append under an arbitrary token (a path that need not be accepted). */
 async function appendWith(
   actorUserId: string,
   rawToken: string,
@@ -170,7 +181,7 @@ interface Slot {
   readonly encPubHex: string;
 }
 
-/** (人, 端末) スロットごとのラップ集合(署名者 = 登録主体)。 */
+/** The wrap set for each (person, device) slot (signer = registrar). */
 async function wrapSlots(
   environmentId: string,
   epoch: number,
@@ -195,11 +206,11 @@ async function wrapSlots(
   return wraps;
 }
 
-/** 3 メンバーの第 1 鍵スロット(ベースチェーンの端末 1 つずつ)。 */
+/** The three members' primary-key slots (one base-chain device each). */
 const baseSlots = (): Slot[] =>
   ALL_MEMBERS.map((userId) => ({ userId, encPubHex: vectorKeyOf(userId).enc_pub_hex }));
 
-/** 環境作成(任意のスロット集合)。 */
+/** Environment creation (with an arbitrary slot set). */
 async function createEnvironmentWithSlots(
   environmentId: string,
   slots: readonly Slot[],
@@ -228,7 +239,7 @@ async function listMyDeks(userId: string): Promise<readonly WireRecipientDek[]> 
   return ((await response.json()) as { deks: readonly WireRecipientDek[] }).deks;
 }
 
-/** 値 push(署名者の現在の鍵 — useDeviceKey で端末を切り替えられる)。 */
+/** A value push (signed with the signer's current key — the device is switchable via useDeviceKey). */
 async function pushValue(
   dek: Uint8Array,
   writerUserId: string,
@@ -247,7 +258,7 @@ async function pushValue(
   });
 }
 
-/** ヘッド申告の提出(署名者の現在の鍵)。 */
+/** Submit a head attestation (with the signer's current key). */
 async function attest(userId: string): Promise<Response> {
   const keys = vectorKeyOf(userId);
   const pair = await importSigningKeyPair({
@@ -316,7 +327,7 @@ async function readFlags(): Promise<readonly WireRotationFlag[]> {
   return ((await response.json()) as { flags: readonly WireRotationFlag[] }).flags;
 }
 
-describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)", () => {
+describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)", () => {
   it("accepts add_device through the generic append and mirrors chain.device_added with the device fingerprint", async () => {
     const phone = vectorDevice(PHONE);
     const seq = await addDevice(OWNER, phone, { roleCap: "admin" });
@@ -327,7 +338,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
     expect(mirror?.["chain_seq"]).toBe(seq);
     expect(mirror?.["actor_type"]).toBe("user");
     expect(mirror?.["actor_user_id"]).toBe(OWNER);
-    // アクターは追記に署名した端末(第 1 鍵)、target は本人(自分の端末しか足せない)
+    // The actor is the device that signed the append (the primary key); the target is self (only one's own devices can be added)
     expect(mirror?.["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
     expect(mirror?.["target_user_id"]).toBe(OWNER);
     expect(JSON.parse(String(mirror?.["payload"]))).toEqual({
@@ -336,7 +347,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
-    // ミラー行は GitHub 等のプロバイダ情報を運ばない(内部 user_id と FP のみ)
+    // The mirror row carries no provider info such as GitHub (internal user_id and FP only)
     expect(JSON.stringify(mirror)).not.toContain("github");
   });
 
@@ -344,7 +355,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
     const phone = vectorDevice(PHONE);
     await addDevice(OWNER, phone);
 
-    // 端末 1 つ分(3 行)では完全集合にならない
+    // One device's worth (3 rows) does not form the complete set
     const short = await createEnvironmentWithSlots(ENV, baseSlots());
     expect(short.response.status).toBe(422);
     expect(await errorBody(short.response)).toMatchObject({
@@ -352,7 +363,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
       reason: "recipient-missing",
     });
 
-    // (人, 端末) の 4 行で受理
+    // Accepted with the 4 (person, device) rows
     const full = await createEnvironmentWithSlots(ENV, [
       ...baseSlots(),
       { userId: OWNER, encPubHex: phone.encPubHex },
@@ -369,13 +380,13 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
       ].toSorted((a, b) => `${a[0]}:${a[1]}`.localeCompare(`${b[0]}:${b[1]}`)),
     );
 
-    // 応答は自分の全端末分を運び、端末は recipientEncPubHex で識別する
+    // The response carries all of one's own devices; the device is identified by recipientEncPubHex
     const mine = await listMyDeks(OWNER);
     expect(mine).toHaveLength(2);
     expect(mine.map((row) => row.recipientEncPubHex).toSorted()).toEqual(
       [vectorKeyOf(OWNER).enc_pub_hex, phone.encPubHex].toSorted(),
     );
-    // 他人の端末分は混ざらない
+    // No other member's devices are mixed in
     expect((await listMyDeks(MEMBER)).map((row) => row.recipientEncPubHex)).toEqual([
       vectorKeyOf(MEMBER).enc_pub_hex,
     ]);
@@ -417,7 +428,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
         [OWNER, phone.fp],
       ].toSorted((a, b) => `${a[1]}`.localeCompare(`${b[1]}`)),
     );
-    // 配布(GET /chain)も端末ごとの行を運ぶ
+    // The distribution (GET /chain) also carries per-device rows
     const chain = await SELF.fetch(`${BASE}/projects/${projectId}/chain`, {
       headers: bearer(token(MEMBER)),
     });
@@ -453,7 +464,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
       _tag: "DeviceLimit",
       limit: MAX_DEVICES_PER_MEMBER,
     });
-    // 失効して枠が空けば再び足せる(有効端末数で数える)
+    // Revoking one frees a slot and another can be added again (counted by active devices)
     const first = devices[0];
     if (first === undefined) {
       throw new Error("no device");
@@ -492,7 +503,8 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
     const body = (await accepted.json()) as { headSeq: number; headHashHex: string };
     fixture.head = { seq: body.headSeq, hashHex: body.headHashHex };
 
-    // MEMBER に 2 台目を足し、OWNER が write トークンで他人の端末を失効 → 403(admin 要)
+    // Add a second device to MEMBER, then OWNER revokes another's
+    // device under a write token → 403 (admin required)
     const ciBox = vectorDevice(CI_BOX);
     await addDevice(MEMBER, ciBox, { roleCap: "member" });
     const asWrite = await appendWith(OWNER, writeToken, {
@@ -500,7 +512,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
       payload: { targetUserId: MEMBER, deviceFingerprintsHex: [ciBox.fp] },
     });
     expect(asWrite.status).toBe(403);
-    // 自分の端末の失効は write で足りる
+    // Revoking one's own device suffices with write
     const own = await appendWith(OWNER, writeToken, {
       op: "revoke_device",
       payload: { targetUserId: OWNER, deviceFingerprintsHex: [phone.fp] },
@@ -509,7 +521,7 @@ describe("add_device の受理とミラー(CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4)
   });
 });
 
-describe("revoke_device の受理副作用(AUDIT_SPEC §3.4 / §4.1)", () => {
+describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () => {
   it("mirrors chain.device_revoked, drops the device's attestation, flags rotation and rejects the revoked key afterwards", async () => {
     const phone = vectorDevice(PHONE);
     await addDevice(OWNER, phone);
@@ -519,10 +531,11 @@ describe("revoke_device の受理副作用(AUDIT_SPEC §3.4 / §4.1)", () => {
     ]);
     expect(created.response.status).toBe(200);
     const v1 = await createVariableOk(created.dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 端末が pull で値を読む(var.read — 検出 (a) の材料)、申告も出す
+    // The device reads the value via pull (var.read — material for
+    // detection (a)) and files an attestation
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(OWNER));
     expect(pull.status).toBe(200);
-    // 読んでいない候補を 1 本(readable)
+    // One unread candidate (readable)
     await createVariableOk(created.dek, "var-api-key", "API_KEY", "sk-alpha");
     useDeviceKey(OWNER, PHONE);
     expect((await attest(OWNER)).status).toBe(204);
@@ -532,20 +545,20 @@ describe("revoke_device の受理副作用(AUDIT_SPEC §3.4 / §4.1)", () => {
 
     const revokeSeq = await revokeDevice(OWNER, OWNER, [phone.fp]);
 
-    // ミラー行 ★(payload = 失効 FP 列、target = 対象)
+    // The mirror row ★ (payload = the revoked FP list, target = the target)
     const events = await readAuditEvents(projectId);
     const mirror = events.find((event) => event["event"] === "chain.device_revoked");
     expect(mirror?.["chain_seq"]).toBe(revokeSeq);
     expect(mirror?.["target_user_id"]).toBe(OWNER);
     expect(JSON.parse(String(mirror?.["payload"]))).toEqual({ deviceKeyFingerprints: [phone.fp] });
 
-    // 申告行は失効端末の分だけ消える
+    // The attestation rows for the revoked device alone disappear
     const rows = await attestationRows();
     expect(rows.map((row) => row["attester_key_fingerprint"])).toEqual([
       vectorKeyOf(OWNER).key_fingerprint_hex,
     ]);
 
-    // 要ローテーション検出: ミラー直後に 1 対 1 行、trigger = revoke_device
+    // Rotation-needed detection: one row per pair right after the mirror, trigger = revoke_device
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
     expect(recommended).toHaveLength(2);
     expect(Math.min(...recommended.map((event) => Number(event["seq"])))).toBe(
@@ -572,10 +585,10 @@ describe("revoke_device の受理副作用(AUDIT_SPEC §3.4 / §4.1)", () => {
       trigger: "revoke_device",
     });
 
-    // 既存ラップは掃除しない(掃除規則不変 — 次のローテーションで置き換わる)
+    // Existing wraps are not swept (the sweep rule is unchanged — replaced on the next rotation)
     expect(await wrapRows()).toHaveLength(4);
 
-    // 失効鍵宛の新しいラップは受理しない
+    // A new wrap addressed to the revoked key is not accepted
     const toRevoked = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -591,25 +604,25 @@ describe("revoke_device の受理副作用(AUDIT_SPEC §3.4 / §4.1)", () => {
     expect(rejected.status).toBe(422);
     expect(await errorBody(rejected)).toMatchObject({ reason: "recipient-key-mismatch" });
 
-    // 失効端末の署名は無効(署名鍵から端末を解けない = signature-invalid)
+    // A signature by the revoked device is invalid (the device cannot be resolved from the signing key = signature-invalid)
     useDeviceKey(OWNER, PHONE);
     const push = await pushValue(created.dek, OWNER, 2, await valueSignedBytesHashOf(v1, MEMBER));
     expect(push.status).toBe(422);
     expect(await errorBody(push)).toMatchObject({ reason: "signature-invalid" });
-    // 失効端末の申告も受け付けない
+    // An attestation by the revoked device is also not accepted
     const stale = await attest(OWNER);
     expect(stale.status).not.toBe(204);
     resetDeviceKeys();
   });
 });
 
-describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC §6.2 原則 D1)", () => {
+describe("two-stage authorization — a device's effective permissions (design record §8 K3-1 / CRYPTO_SPEC §6.2 principle D1)", () => {
   it("lets a reader backfill wraps to its own new device but not to another member", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const second = vectorDevice(SECOND);
     await addDevice(READER, second, { roleCap: "reader" });
 
-    // 自分の端末宛のみ = role 段は reader で足りる(自己バックフィル)
+    // Only to one's own device = the role stage suffices with reader (self-backfill)
     const own = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -627,7 +640,7 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
       [vectorKeyOf(READER).enc_pub_hex, second.encPubHex].toSorted(),
     );
 
-    // 他人宛は member 以上(reader は 403)
+    // Addressing another member requires member or above (reader is 403)
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: MEMBER }],
     });
@@ -645,7 +658,7 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
     });
     expect(denied.status).toBe(403);
     expect(await errorBody(denied)).toMatchObject({ reason: "insufficient-role" });
-    // 自分の端末宛と他人宛の混在も同様に 403(集合全体で判定)
+    // A mix of own-device and other-member recipients is likewise 403 (judged on the whole set)
     const mixed = await requestJson("POST", `/environments/${ENV}/deks`, token(READER), {
       deks: [other, own],
     });
@@ -653,11 +666,15 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
   });
 
   it("applies the device cap to value pushes: a reader-cap device and an out-of-scope device are rejected at the declared head (§6.3 — 422)", async () => {
-    // 値・メタ・マニフェストは CRYPTO_SPEC §6.3 の「宣言ヘッド時点の認可」(K2 で端末の
-    // 実効権限に置き換わった — deviceStateAt)が署名検証の一部として先に走るため、
-    // 端末 cap の不足は 422 chain-head-state-mismatch で確定する。サーバーの第 2 段
-    // (ensureDevicePermission — 403)は複合・checkpoint・DEK 登録で観測される
-    // (membership-negatives-composite の 3 件 / 本ファイルの reader バックフィル)
+    // For a value / meta / manifest, CRYPTO_SPEC §6.3's
+    // "authorization at the declared head" (replaced by the device's
+    // effective permissions in K2 — deviceStateAt) runs first as part
+    // of signature verification, so insufficient device cap settles as
+    // 422 chain-head-state-mismatch. The server's stage 2
+    // (ensureDevicePermission — 403) is observed on composites,
+    // checkpoints, and DEK registration (3 cases in
+    // membership-negatives-composite / the reader backfill in this
+    // file)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -685,7 +702,7 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
     });
     resetDeviceKeys();
 
-    // 第 1 鍵(cap なし)なら通る — 人の (role, scope) は変わっていない
+    // The primary key (no cap) passes — the person's (role, scope) has not changed
     const primary = await pushValue(dek, OWNER, 2, prev);
     expect(primary.status).toBe(200);
   });
@@ -713,13 +730,13 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
     expect(
       (await wrapRows()).map((row) => [row["recipient_user_id"], row["recipient_enc_pub_hex"]]),
     ).not.toContainEqual([OWNER, phone.encPubHex]);
-    // 端末 1 つに戻れば省略形は唯一スロットを指す
+    // Back down to one device and the shorthand addresses the unique slot
     const sole = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: OWNER }],
     });
     expect(sole.status).toBe(204);
     expect((await wrapRows()).map((row) => row["recipient_user_id"])).toEqual([MEMBER, READER]);
-    // 無い参照は 404(端末指定でも同じ)
+    // A nonexistent reference is 404 (same with a device specified)
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: OWNER, recipientEncPubHex: phone.encPubHex }],
     });
@@ -727,9 +744,9 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
   });
 });
 
-describe("バージョン skew — 端末 1 つのチェーン(K2 以前のクライアント相当入力)は不変", () => {
+describe("version skew — a single-device chain (input equivalent to a pre-K2 client) is unchanged", () => {
   it("accepts single-device wrap sets, device-less references, attestations and pushes exactly as before", async () => {
-    // 環境作成: 3 メンバー × 端末 1 つ = 3 ラップ(K2 以前の CLI が送る形)
+    // Environment creation: 3 members × 1 device each = 3 wraps (the shape a pre-K2 CLI sends)
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -746,17 +763,17 @@ describe("バージョン skew — 端末 1 つのチェーン(K2 以前のク�
       dekCommitmentHex: await commitmentOf(projectId, ENV, 1, dek),
     });
     expect(created.status).toBe(200);
-    // 応答は端末軸の主キーでも 1 行(recipientEncPubHex は自分の唯一の鍵)
+    // The response is 1 row even on the device-axis key (recipientEncPubHex = one's only key)
     const mine = await listMyDeks(READER);
     expect(mine).toHaveLength(1);
     expect(mine[0]?.recipientEncPubHex).toBe(vectorKeyOf(READER).enc_pub_hex);
 
-    // 端末を指定しない削除参照 → 唯一スロット
+    // A delete reference without a device → the unique slot
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
     });
     expect(removed.status).toBe(204);
-    // 端末を指定しないバックフィル(K2 以前の追記経路)→ 204
+    // A device-less backfill (the pre-K2 append path) → 204
     const reWrap = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -771,7 +788,7 @@ describe("バージョン skew — 端末 1 つのチェーン(K2 以前のク�
     expect(backfilled.status).toBe(204);
     expect(await listMyDeks(READER)).toHaveLength(1);
 
-    // 申告・値 push は第 1 鍵で従来どおり
+    // Attestations and value pushes work as before under the primary key
     expect((await attest(OWNER)).status).toBe(204);
     expect(await attestationRows()).toEqual([
       {
