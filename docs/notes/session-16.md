@@ -1,411 +1,458 @@
-# セッション 16 メモ(ローカル床の実装 — セッション 12 仕様の実装 PR-4)
+# Session 16 notes (implementing the local floor — implementation PR-4 of the session-12 spec)
 
-- 日付: 2026-08-04
-- 対象: 承認済み CRYPTO_SPEC §6.3「ローカル床」(SHOULD・規範)の CLI 実装
-  (session-12 §9 の実装 PR-4 — 巻き戻し・欠落・前進注入〔値のみ〕の永続検出 +
-  fork 証拠の報告 UX)
-- 前提裁定: session-12 §10-4(CLI ローカル床の導入 = SHOULD どおり。
-  session-11 §2-3「CLI はチェーンをキャッシュしない」の方針変更を含む)は
-  PR #27 マージで確定済み
-- スコープ: CLI のみ。wire・server・crypto パッケージは非変更(新規暗号なし =
-  テストベクター追加なし)。値署名・メタ検証(PR-2 / PR-3)は不変
-- **PR #33 は 2026-08-04 マージ済み**(squash merge `74ce574`。§2 の裁定は所有者
-  承認済み。§6 の ROADMAP 同期と §6.3 仕様同期 3 点はマージ後の
-  セッション 16.5 で反映済み)
+- Date: 2026-08-04
+- Target: the CLI implementation of the approved CRYPTO_SPEC §6.3 "local floor" (SHOULD,
+  normative) (implementation PR-4 of session-12 §9 — persistent detection of rollback,
+  omission, and forward injection [values only] + the UX for reporting fork evidence)
+- Premise ruling: session-12 §10-4 (introducing the CLI local floor = as the SHOULD says.
+  Includes the policy change to session-11 §2-3's "the CLI never caches the chain") was
+  finalized by the PR #27 merge
+- Scope: the CLI only. wire / server / the crypto package are unchanged (no new cryptography =
+  no test vectors added). Value signatures and meta verification (PR-2 / PR-3) are unchanged
+- **PR #33 was merged on 2026-08-04** (squash merge `74ce574`. The §2 rulings are
+  owner-approved. §6's ROADMAP sync and the three §6.3 spec-sync items were reflected in the
+  post-merge session 16.5)
 
-## 1. やったこと
+## 1. What was done
 
-1. **床ストア**(`apps/cli/src/floor.ts`): 非機密永続化層。
-   `<config dir>/floor/<projectId>.json` に §6.3 列挙の非機密ダイジェストのみを
-   保存する — チェーンヘッド(hash + seq)/ 変数ごとの最新 version・
-   **その version の epoch**・metaVersion・value / meta の signed bytes ハッシュ
-   (deleted は tombstone の metaVersion + ハッシュのみ)/ 環境ごとの
-   「最後に成功した pull(検証込み)時点のチェーン導出現エポック」(規則 (c) の
-   基準 `pullEpoch`)。**平文値・鍵素材・変数名・環境名は書かない**(キーは
-   すべて ID — ディスクレス不変条件)。temp + rename の原子更新、厳格デコード
-   (スキーマ不一致は全体を破損扱い — 部分読みしない)、fail-open の読み込み
-   (missing = 初回 / corrupt = 破損を区別して返す)
-2. **床検査の結線**(`floor-check.ts` + values / pull / push / cli):
-   - チェーン床(規則 (a) のチェーン部分): `openProject` / `project verify` の
-     同期検査後に、短縮(headSeq 後退)と床 seq 位置のハッシュ不一致(分岐の
-     即時証拠 — prev_hash 連鎖により床 seq 一致は床以下の全エントリ一致を意味
-     する)を拒否。通過後に検証済みヘッドを床へ前進(`commitHead` — 規則 (c)
-     基準は動かさない)
-   - 環境床(規則 (a)(b)(c)): `pullVerifiedEnvironment` の §6.3 検証成功後に
-     検査 — 欠落(床にある変数・tombstone が応答にない)/ version・metaVersion・
-     エポックの後退 / 同一 version・metaVersion の signed bytes 相違 / 削除の
-     無断取り消し / 規則 (c)(床の version より新しい version の epoch が
-     `pullEpoch` 基準未満)。検査を通過したら、新しい環境床(変数床 + 基準の
-     前進 = 今回のチェーン導出現エポック)を **1 ファイル書き込みで原子的に**
-     コミット(§6.3 の更新順序の規範)
-   - push: 受理後に自分の書き込み(自計算の signed bytes ハッシュ — サーバー
-     echo 不使用)で変数床を前進(`commitPush` — `pullEpoch` 不変)。push の
-     解決 pull・409 再取得 pull にも床検査・床コミットが掛かる(`FloorHandle` が
-     プロセス内で基準を持ち回る)
-   - 床検査の失敗は pull / push / run とも**拒否 + 非ゼロ終了**(§6.3 の
-     「拒否・警告」の強い側 — 検査対象はすべて署名検証済みデータ同士の比較
-     なので、不一致は否認不能な証拠であり誤検出の懸念がない)
-3. **fork 証拠の報告 UX**(`floor-evidence.ts`): 拒否メッセージに座標
-   (project / environment / variable — すべて ID)・床側と配布側の双方の
-   signed bytes ハッシュ・配布側の宣言ヘッド・種別を、第三者へ提示可能な
-   複数行テキストで同梱(§14.2-5 の否認不能な証拠)。平文値・鍵素材・名前は
-   含めない(名前自体が係争対象になりうるため)
-4. テスト(§7)と本メモ
+1. **The floor store** (`apps/cli/src/floor.ts`): the non-secret persistence layer. Writes only
+   the non-secret digests enumerated in §6.3 to `<config dir>/floor/<projectId>.json` — the
+   chain head (hash + seq) / each variable's latest version · **that version's epoch** ·
+   metaVersion · the signed-bytes hashes of value and meta (deleted keeps only the tombstone's
+   metaVersion + hash) / per environment "the chain-derived current epoch at the last
+   successful pull (verification included)" (rule (c)'s reference `pullEpoch`). **No plaintext
+   values, key material, variable names, or environment names are written** (all keys are IDs —
+   the diskless invariant). Atomic update via temp + rename, strict decoding (a schema mismatch
+   treats the whole file as corrupt — no partial reads), fail-open reads (missing = first sync /
+   corrupt = distinguished and returned)
+2. **Wiring the floor check** (`floor-check.ts` + values / pull / push / cli):
+   - The chain floor (the chain part of rule (a)): after the sync check of `openProject` /
+     `project verify`, reject shortening (headSeq regression) and hash mismatch at the floor's
+     seq position (immediate evidence of a fork — via the prev_hash chain, matching at the
+     floor seq means all entries below the floor match). After passing, advance the verified
+     head into the floor (`commitHead` — rule (c)'s reference is not moved)
+   - The environment floor (rules (a)(b)(c)): checked after `pullVerifiedEnvironment`'s §6.3
+     verification succeeds — omission (a variable or tombstone in the floor is absent from the
+     response) / regression of version, metaVersion, or epoch / differing signed bytes at the
+     same version or metaVersion / unauthorized un-deletion / rule (c) (a version newer than
+     the floor's whose epoch is below the `pullEpoch` reference). On passing, the new
+     environment floor (variable floor + the reference's advance = this round's chain-derived
+     current epoch) is committed **atomically in a single file write** (§6.3's update-order
+     norm)
+   - push: after acceptance, advance the variable floor with one's own write (the self-computed
+     signed-bytes hash — the server echo is not used) (`commitPush` — `pullEpoch` unchanged).
+     The resolving pull and the 409 re-fetch pull inside push also get the floor check and
+     floor commit (`FloorHandle` carries the reference within the process)
+   - A floor-check failure is **rejection + non-zero exit** for pull / push / run alike (the
+     strong side of §6.3's "reject, warn" — everything compared is verified-signed data, so a
+     mismatch is non-repudiable evidence with no false-positive concern)
+3. **The fork-evidence reporting UX** (`floor-evidence.ts`): the rejection message bundles the
+   coordinates (project / environment / variable — all IDs), the floor side's and the
+   distributed side's signed-bytes hashes, the distributed side's declared head, and the kind —
+   as multi-line text presentable to a third party (§14.2-5's non-repudiable evidence). No
+   plaintext values, key material, or names are included (a name itself may be the contested
+   object)
+4. Tests (§7) and this memo
 
-## 2. 裁定の細部(複数案比較 → 採用。採らなかった案と理由)
+## 2. Ruling details (multiple candidates compared → adopted. Options not taken and why)
 
-### 2-1. 置き場 = `<config dir>/floor/<projectId>.json`(設定と同系)
+### 2-1. Location = `<config dir>/floor/<projectId>.json` (same family as config)
 
-- **採用**: config.json と同じ解決規則(`MARUHI_CONFIG_DIR` →
-  `XDG_CONFIG_HOME/maruhi` → `~/.config/maruhi`)の `floor/` サブディレクトリ、
-  プロジェクトごとに 1 ファイル。projectId = genesis ハッシュはグローバル一意
-  なのでサーバー origin をキーに含めない(タスク指定)。ファイル名に使う前に
-  hex 64 形式を強制(信頼できない文字列のパス混入防止)
-- 採らなかった案:
-  - **XDG_STATE_HOME**(`~/.local/state/maruhi`): 意味論的には「状態」だが、
-    XDG 仕様の state はログ・履歴等の「なくても困らないもの」向き。床は
-    セキュリティ検出材料であり、設定と一緒にバックアップ・同期される config
-    側の方が保全されやすい。テスト・上級者オーバーライドも `MARUHI_CONFIG_DIR`
-    1 本で済む
-  - **OS キーチェーン**: 床は非機密(ハッシュと連番のみ)でキーチェーンの保護
-    が不要。容量・可用性制約があり、headless Linux では Bun.secrets の応答なし
-    ブロックを実測済み(live.ts)。CLI が永続化してよい 3 分類のうち「非機密の
-    設定」系に該当する
-  - **全プロジェクト単一ファイル**: 原子更新の粒度が粗くなり、並行 CLI
-    (別プロジェクト操作)の書き込み衝突半径が広がる
+- **Adopted**: a `floor/` subdirectory under the same resolution rules as config.json
+  (`MARUHI_CONFIG_DIR` → `XDG_CONFIG_HOME/maruhi` → `~/.config/maruhi`), one file per project.
+  projectId = genesis hash is globally unique, so the server origin is not part of the key
+  (task-specified). The hex-64 form is enforced before using it as a filename (prevents
+  untrusted strings entering the path)
+- Options not taken:
+  - **XDG_STATE_HOME** (`~/.local/state/maruhi`): semantically it is "state", but XDG's state
+    is aimed at logs and history — "things you can do without". The floor is security-detection
+    material and is better preserved alongside config, which gets backed up and synced. Tests
+    and advanced-user overrides also stay on the single `MARUHI_CONFIG_DIR`
+  - **OS keychain**: the floor is non-secret (hashes and sequence numbers only) and needs no
+    keychain protection. It has capacity/availability constraints, and on headless Linux
+    Bun.secrets' no-response blocking has been measured (live.ts). It falls under "non-secret
+    configuration" of the three categories the CLI may persist
+  - **A single file for all projects**: the atomic-update granularity becomes coarse, and the
+    write-collision radius for concurrent CLIs (operating on different projects) widens
 
-### 2-2. 形式 = JSON + スキーマバージョン(`v: 1`)+ 厳格デコード
+### 2-2. Format = JSON + schema version (`v: 1`) + strict decoding
 
-- **採用**: config.ts と同系の JSON 1 ファイル。デコードはフィールド単位で
-  厳格(正整数・hex 64)にし、**一部でも壊れていたら全体を破損扱い**にする —
-  半端な床は「検査した」と「していない」の区別を曖昧にする
-- 採らなかった案: 行指向 append ログ(追記自体は原子的だが「規則 (c) 基準と
-  変数床の同一トランザクション」規範に合わず、コンパクションも要る)、
-  SQLite / KV ライブラリ(新規依存 — フロント同様、供給網を小さく保つ)
+- **Adopted**: one JSON file, same family as config.ts. Decoding is strict per field (positive
+  integer, hex 64), and **any breakage treats the whole file as corrupt** — a half-valid floor
+  blurs the distinction between "checked" and "not checked"
+- Options not taken: a line-oriented append log (appends are atomic, but it does not meet the
+  "rule-(c) reference and variable floor in one transaction" norm, and needs compaction),
+  SQLite / KV libraries (a new dependency — keep the supply chain small, same as the frontend)
 
-### 2-3. 原子性と並行性 = temp + rename の read-merge-write(ロックなし・**単調マージ**)
+### 2-3. Atomicity and concurrency = read-merge-write with temp + rename (no lock · **monotonic merge**)
 
-- **採用**: 書き込み直前に最新ファイルへマージして temp + rename。マージ規則は
-  **単調**(レビュー②の major 指摘で当初の「環境床は pull コミットが置き換える」
-  から改訂): チェーンヘッドは seq の大きい側 / `pullEpoch` は max / 環境メタは
-  metaVersion の大きい側 / 変数床は値側(version)とメタ側(metaVersion)を独立に
-  単調マージ / deleted は終端状態として active で上書きしない / 変数キーは union
-  (正当な床のキーは消えない — 削除も tombstone レコードとして残るため)
-- 当初の全置換マージは、read-merge-write の窓で古いコミットが後に着地すると
-  ディスク上の床が**後退**し、悪意サーバーが応答遅延で着地順を制御して
-  「並行プロセスが確立した検出材料の巻き戻し」を維持できた(誤拒否は生まないが
-  誤**受理**の窓が残る)。単調マージはこれを閉じる — どちらの入力も §6.3 検証を
-  通過した床レコードなので、per-field の max 合成は健全
-- ファイルロックは導入しない: 単調マージの下で並行 CLI が失いうるものはなく
-  (どのコミットも床を強くする方向にしか動かない)、flock はプラットフォーム差・
-  スタック時の解除という別の複雑さを持ち込む
-- `commitPush` は環境床がない場合(並行破損等)に環境レコードを**作らない**:
-  規則 (c) 基準(pullEpoch)は pull でしか確定できず、ここで捏造すると
-  「チェーン同期単独で基準を前進させない」規範に反する(ヘッド前進のみ反映)
+- **Adopted**: merge into the latest file just before writing, then temp + rename. The merge
+  rule is **monotonic** (revised from the original "the pull commit replaces the environment
+  floor" after review ②'s major finding): the chain head takes the side with the larger seq /
+  `pullEpoch` takes max / environment meta takes the side with the larger metaVersion / the
+  variable floor monotonically merges the value side (version) and the meta side (metaVersion)
+  independently / deleted is terminal and is not overwritten by active / variable keys are
+  unioned (keys of a legitimate floor never disappear — deletion also persists as a tombstone
+  record)
+- The original full-replacement merge let a floor on disk **regress** when a stale commit
+  landed later inside the read-merge-write window, and a malicious server controlling landing
+  order via response delays could keep "rolling back detection material that a concurrent
+  process had established" alive (it creates no wrongful rejections, but leaves a window of
+  wrongful **acceptance**). Monotonic merge closes this — both inputs are floor records that
+  passed §6.3 verification, so per-field max composition is sound
+- No file locking: under monotonic merge a concurrent CLI has nothing to lose (every commit
+  only moves the floor in the stronger direction), and flock would import the separate
+  complications of platform differences and release-on-stall
+- `commitPush` does **not** create an environment record when the environment floor is absent
+  (e.g. concurrent corruption): rule (c)'s reference (pullEpoch) can only be settled by a pull,
+  and fabricating it here would violate the norm "chain sync alone does not advance the
+  reference" (only the head advance is reflected)
 
-### 2-4. fail-open の線引き
+### 2-4. The fail-open line
 
-- 読み込み: ファイル不在(初回)と破損はどちらも「床なし」で続行 + 区別された
-  メッセージ(初回 = 「注意: … 初回同期」/ 破損 = 「警告: … 破損。床なしとして
-  続行」)。ローカル状態を消せる攻撃者はそもそも床の外(§14.3-3 の非保証に
-  帰着)なので、ここで fail-closed にしても保証は増えない
-- **missing は ENOENT のみ**(レビュー②の major 指摘で改訂): EACCES / EIO 等の
-  一時的な読み取り失敗を「初回」と同一視すると、(a) load 側で「初回同期」という
-  誤った案内になり、(b) 書き込み経路の read-merge-write が空からの作り直しで
-  床を**無警告で全消去**する(検出機構の不可視な無効化 — 本節自身の原則への
-  反例)。ENOENT 以外の読み取り失敗はエラーとして中断する
-- **破損床は退避してから作り直す**: 破損ファイルは次のコミット前に
-  `<path>.corrupt-<timestamp>` へ rename する(床ファイルは証拠の半分であり、
-  破損の形自体もフォレンジック材料 — レビュー①③の指摘)
-- **書き込み失敗は fail-open にしない**(エラーで中断): 書けない床は検出機構の
-  無効化であり、無言で続行すると「床がある」という誤った安心を与える。設定
-  ファイルの書き込み失敗と同じ扱い。push 受理後の床書き込み失敗のみ、
-  「push は受理されましたが…」を前置して push 自体の失敗と誤認させない
+- Reads: a missing file (first sync) and corruption both continue as "no floor" + a
+  distinguished message (first sync = "note: … first sync" / corrupt = "warning: … corrupt.
+  Continuing with no floor"). An attacker who can erase local state is outside the floor to
+  begin with (it reduces to §14.3-3's non-guarantee), so going fail-closed here adds no
+  guarantee
+- **missing is ENOENT only** (revised after review ②'s major finding): treating transient read
+  failures like EACCES / EIO as "first sync" would (a) make the load side emit the wrong
+  "first sync" guidance, and (b) make the write path's read-merge-write rebuild from empty and
+  **erase the entire floor without warning** (invisibly disabling the detection mechanism — a
+  counterexample to this section's own principle). Read failures other than ENOENT abort as
+  errors
+- **A corrupt floor is quarantined before rebuilding**: a corrupt file is renamed to
+  `<path>.corrupt-<timestamp>` before the next commit (the floor file is half of the evidence,
+  and the corruption shape itself is forensic material — reviews ①③'s point)
+- **Write failures are not fail-open** (abort with an error): an unwritable floor disables the
+  detection mechanism, and silently continuing would give a false sense of "the floor exists".
+  Same treatment as a config-file write failure. Only a floor-write failure after push
+  acceptance is prefixed with "the push was accepted, but …" so it is not mistaken for the
+  push itself failing
 
-### 2-5. deleted は終端状態 — 床との厳密一致を要求
+### 2-5. deleted is terminal — the floor demands exact match
 
-- 床が deleted を記録した変数は、active 配布 = 削除の無断取り消しとして拒否、
-  tombstone は床と **metaVersion・ハッシュの厳密一致**を要求(前進も拒否)。
-  根拠: 削除は終端状態で正当な後続ステートメントが存在しない(§4.2 の
-  「deleted 後の再 active 化禁止」+ session-15 §2-2 の「predecessor が deleted
-  なら後続は全拒否」)。latest-only の pull では predecessor 検査ができないが、
-  床が deleted を知っていれば同じ意味論を配布時にも強制できる
-- 対して床が active の変数への metaVersion 前進 tombstone は正当な削除として
-  受理し、床を deleted へ進める
+- A variable whose floor recorded deleted rejects an active distribution as an unauthorized
+  un-deletion, and a tombstone must **exactly match** the floor in metaVersion and hash
+  (advancing is rejected too). Rationale: deletion is terminal and no legitimate follow-up
+  statement exists (§4.2's "no re-activation after deleted" + session-15 §2-2's "if the
+  predecessor is deleted, reject every successor"). A latest-only pull cannot check the
+  predecessor, but a floor that knows deleted can enforce the same semantics at distribution
+  time
+- Conversely, a tombstone advancing metaVersion on a variable whose floor is active is
+  accepted as a legitimate deletion and the floor advances to deleted
 
-### 2-6. 規則 (c) は床にない新規変数にも適用(version 0 相当)
+### 2-6. Rule (c) also applies to new variables absent from the floor (version-0 equivalent)
 
-- 床の存在する環境で、床にない変数の配布が `pullEpoch` 基準未満の epoch を
-  持つ場合も拒否する。論証: 前回 pull 時点に存在した変数は bulk pull で床に
-  載っている。よって床にない変数は前回 pull 以降の作成であり、正当な作成
-  (サーバーは現エポックのみ受理 — §12-5)の epoch は作成時点の現エポック ≥
-  基準。基準未満の「新規」は旧エポック鍵による backdated 作成の形
-- 誤拒否の両縁は §6.3 の規範どおり: 基準は前回成功 pull の値(チェーン同期
-  単独で前進させない)、基準**以上**は受理(ローテーション直後・再暗号化
-  完了前の正当な旧エポック最新値 — §12-7)。基準の前進は検証成功後に変数床と
-  原子的にコミット
+- In an environment where a floor exists, a distribution of a variable absent from the floor
+  is also rejected when it carries an epoch below the `pullEpoch` reference. The argument: a
+  variable that existed at the previous pull is on the floor via the bulk pull. So a variable
+  absent from the floor was created after the previous pull, and a legitimate creation (the
+  server accepts the current epoch only — §12-5) has an epoch ≥ the reference's. A "new" below
+  the reference is the shape of a backdated creation under an old-epoch key
+- The two edges of wrongful rejection follow §6.3's norm: the reference is the value of the
+  last successful pull (chain sync alone does not advance it), and **at or above** the
+  reference is accepted (the legitimate old-epoch latest value right after rotation, before
+  re-encryption completes — §12-7). The reference's advance commits atomically with the
+  variable floor after verification succeeds
 
-### 2-7. チェーンヘッド床は同期成功時にも前進する(短縮疑いは有界再同期)
+### 2-7. The chain-head floor also advances on successful syncs (suspected shortening → bounded re-sync)
 
-- `commitHead` は openProject / project verify の同期検査 + チェーン床検査の
-  通過後に走る(pull の成否と独立)。§6.3 の保存項目は「最後に**検証した**
-  チェーンヘッド」であり、規則 (c) 基準と違って誤拒否の両縁を持たない
-  (正直サーバーのヘッドは単調で、ヘッド床の検査は延長性のみを要求する)
-- **床ヘッドが自ビューより先(headSeq の後退)は即時証拠にしない**(レビュー②の
-  major 指摘で改訂): チェーンの取得(sync)→ 床ロードの順であるため、この間に
-  兄弟プロセスがより新しいヘッドを床へコミットすると、全員正直でも
-  「自ビュー < 床ヘッド」が成立する(seq 比較は 2 つの署名済み成果物の矛盾では
-  なくローカルの取得順序に依存する)。§6.3-2b と同型の**有界再同期(1 回)**で
-  解決を試み、再同期後も短いままなら短縮の証拠として拒否する。床 seq 位置の
-  ハッシュ不一致は 2 つの検証済み成果物の矛盾(硬い証拠)なので即時拒否のまま
+- `commitHead` runs after openProject / project verify's sync check + the chain-floor check
+  pass (independent of whether a pull succeeded). §6.3's stored item is "the last **verified**
+  chain head", and unlike rule (c)'s reference it has no wrongful-rejection edges (an honest
+  server's head is monotonic, and the head-floor check requires only extendability)
+- **A floor head ahead of one's own view (headSeq regression) is not immediate evidence**
+  (revised after review ②'s major finding): the order is chain fetch (sync) → floor load, so
+  if a sibling process commits a newer head into the floor in that gap, "own view < floor
+  head" holds even when everyone is honest (the seq comparison depends on local fetch order,
+  not on a contradiction between two signed artifacts). Resolution is attempted with a
+  **bounded re-sync (once)**, the same shape as §6.3-2b, and if it is still short afterward it
+  is rejected as shortening evidence. A hash mismatch at the floor's seq position stays an
+  immediate rejection — it is a contradiction between two verified artifacts (hard evidence)
 
-### 2-9. 規則 (c) 基準は「応答取得前のビュー」から導出する(再同期経路の過前進防止)
+### 2-9. Rule (c)'s reference is derived from "the view before the response was fetched" (preventing over-advance on the re-sync path)
 
-- **レビュー②の major 指摘で改訂**: future head の有界再同期経路では、pull
-  応答の生成(T₁)より**後**に取得したチェーン(T₂)で再検証する。当初実装は
-  基準の前進値も T₂ のビューから導出しており、T₁ と T₂ の間に rotate が挟まると
-  基準が「応答が知り得たエポック」を超えて前進し(過前進)、以後
-  「ローテーション後・再暗号化完了前」の正当な旧エポック最新値(§12-7)を
-  規則 (c) が誤拒否し続ける(再暗号化完了までのロックアウト + 誤った
-  equivocation 告発)。これは §6.3 の「チェーン同期単独で基準を前進させない」
-  規範の再同期経路への適用漏れだった
-- 修正: `enforceFloor` は検証ビュー(commitView)と基準導出ビュー
-  (baselineView = **応答取得前に検証したビュー**)を分離する。基準 ≤ 応答生成
-  時点のエポックなら、以後に受理される正規 push のエポックは常に基準以上で
-  誤拒否がない(非再同期経路は従来から同じ性質を満たす)。基準導出ビューに
-  当該環境がない稀なレース(応答と再同期の間に環境が作られた形)では床コミットを
-  見送る(次回 pull で確立 — 過前進よりも一周遅れを選ぶ)
+- **Revised after review ②'s major finding**: on the bounded re-sync path for future heads,
+  re-verification runs against a chain fetched **after** the pull response was generated (T₂
+  vs T₁). The original implementation also derived the reference's advanced value from the T₂
+  view, so a rotate landing between T₁ and T₂ advanced the reference beyond "the epoch the
+  response could have known" (over-advancement), after which rule (c) would keep wrongly
+  rejecting the legitimate old-epoch latest value of "after rotation, before re-encryption
+  completes" (§12-7) (a lockout until re-encryption completes + a false equivocation
+  accusation). This was a missed application of §6.3's "chain sync alone does not advance the
+  reference" norm to the re-sync path
+- The fix: `enforceFloor` separates the verification view (commitView) from the
+  reference-derivation view (baselineView = **the view verified before the response was
+  fetched**). As long as the reference ≤ the epoch at response-generation time, the epoch of
+  any legitimate push accepted afterward is always ≥ the reference, so no wrongful rejection
+  occurs (the non-re-sync path has always satisfied this property). In the rare race where the
+  reference-derivation view lacks the environment (the environment was created between the
+  response and the re-sync), the floor commit is skipped (established on the next pull —
+  choosing one round late over over-advancement)
 
-### 2-8. 証拠の出力形式 = stderr の複数行テキスト(署名・帰属込み)
+### 2-8. Evidence output format = multi-line text on stderr (with signature and attribution)
 
-- 種別ラベル + 座標(ID のみ)+ 床側の記録 + 配布側(signed bytes ハッシュ・
-  宣言ヘッド・**署名値と帰属** = writer / author の user_id と鍵 FP —
-  レビュー①の指摘で追加)+ 保全の案内。採らなかった案: JSON 出力(現行 CLI に
-  `--json` の前例がなく、機械可読形式は CLI 全体の出力設計と一緒にやるべき —
-  申し送り)、証拠ファイルの自動保存(非機密とはいえ「CLI が書くファイル」を
-  増やす判断は慎重にすべき。床ファイル自体が証拠の半分を保持している)
-- 完全な自己完結(署名対象原像の同梱)はしない: 値は nonce / ciphertext hex が
-  巨大になりうる。メタは原像に name を含み「証拠に名前を含めない」判断と衝突
-  する。原像の保全・エクスポートは機械可読出力と同時に設計する(申し送り)
+- A kind label + coordinates (IDs only) + the floor side's record + the distributed side
+  (signed-bytes hash, declared head, **the signature value and attribution** = the writer /
+  author user_id and key FP — added after review ①'s finding) + preservation guidance. Options
+  not taken: JSON output (the current CLI has no `--json` precedent, and a machine-readable
+  format should be designed together with the CLI's overall output design — handoff),
+  auto-saving an evidence file (non-secret or not, the decision to add "a file the CLI writes"
+  should be made carefully. The floor file itself already holds half the evidence)
+- Not fully self-contained (no bundled signed-subject preimage): for values, the nonce /
+  ciphertext hex can be huge. For meta, the preimage includes the name, colliding with the
+  "no names in evidence" decision. Preimage preservation/export is designed together with
+  machine-readable output (handoff)
 
-## 3. 保証範囲の正直な記録(本 PR が閉じるもの / 閉じないもの)
+## 3. An honest record of the guarantee range (what this PR closes / does not close)
 
-**閉じる**(返却クライアント = 床を持つクライアントに対して):
-チェーン短縮・床 seq 位置の分岐 / 変数・tombstone の欠落 / version・
-metaVersion・エポックの後退 / 同一 version・metaVersion の signed bytes 相違
-(equivocation の証拠化)/ 削除の無断取り消し・tombstone 差し替え / 規則 (c) =
-前進 version への旧エポック注入(§14.3-5 の前進方向のうち値)。
+**Closes** (for a returning client = one holding a floor): chain shortening / forks at the
+floor's seq position / omission of variables and tombstones / regression of version,
+metaVersion, and epoch / differing signed bytes at the same version or metaVersion
+(equivocation evidence-preservation) / unauthorized un-deletion and tombstone substitution /
+rule (c) = old-epoch injection into a forward version (the value part of §14.3-5's forward
+direction).
 
-**閉じない(3 残余)**:
+**Does not close (3 residuals)**:
 
-1. **メタステートメントの前進注入(最重要)**: メタはエポックアンカーを
-   持たない(§4.2)ため、実最新の次の metaVersion の偽ステートメント(帰属付き
-   有効署名)は**床を導入しても検出されない**(§14.3-5)。**メタの床は巻き戻し
-   検出のみ**である。本実装は「検出済み」と誤認させる検査・文言を置いておらず、
-   非検出を明示的に固定するテスト(`floor-detection.test.ts` の「メタの前進
-   注入は床でも検出されない」)を含む。閉包は Phase 2 の環境マニフェスト /
-   チェックポイント(未決 #12)・ヘッドゴシップの責務
-2. **初回同期クライアント**: 床を持たないクライアントへの「内部整合する古い
-   ビュー」の配布(§14.3-3)。床ファイルを消せる攻撃者も同じクラスに帰着する
+1. **Forward injection of meta statements (the most important)**: meta carries no epoch anchor
+   (§4.2), so a fake statement claiming the real latest's next metaVersion (a valid attributed
+   signature) is **not detected even with the floor** (§14.3-5). **The meta floor is
+   rollback-detection only**. This implementation places no check or wording that could be
+   mistaken for "detected", and includes a test that explicitly pins the non-detection
+   (floor-detection.test.ts's "forward injection of meta is not detected even by the floor").
+   Closure is the responsibility of Phase 2's environment manifest / checkpoint (undecided
+   #12) and head gossip
+2. **First-sync clients**: distributing an "internally consistent old view" to a client with
+   no floor (§14.3-3). An attacker who can erase the floor file reduces to the same class
    (fail-open — §2-4)
-3. **rotate 窓と残余 (iii)**: remove / 降格から全環境 rotate 完了までの窓
-   (§7 の運用義務で短いが機構保証ではない)、および当該環境のエポック床が
-   攻撃者の在籍区間より古い返却クライアント(§14.3-5 (iii) — 規則 (c) の基準が
-   攻撃座標のエポック以下のため発火しない)
+3. **The rotate window and residual (iii)**: the window from remove / demotion until the
+   all-environment rotate completes (short under §7's operational obligation but not a
+   mechanism guarantee), and a returning client whose epoch floor for that environment is
+   older than the attacker's membership interval (§14.3-5 (iii) — rule (c)'s reference is
+   at-or-below the attack coordinate's epoch, so it does not fire)
 
-補足(レビュー③で明文化):
+Notes (written up in review ③):
 
-- **環境削除の無断取り消しは床の検出対象外**: 削除済み環境のステートメント配布は
-  床より前の検証(`verifyEnvironmentStatement` — deleted 環境の pull 配布は
-  常時拒否)で落ちるため、床が環境の deleted を学習する経路がなく、§6.3 の保存
-  列挙にも環境の削除状態はない(検出材料は環境一覧側の deleted ステートメント —
-  session-15 §2-4)
-- **メタ前進注入による床の「毒化」**: 偽 tombstone(前進 metaVersion)が
-  「正当な削除」として床に受理されると、以後の真正な active 配布は「削除の無断
-  取り消し」として拒否され続ける。この拒否自体は正しい(偽 tombstone と真正
-  active は矛盾する 2 つの有効署名 = 真の equivocation 証拠で、正直サーバーでは
-  発生しない)が、利用側の回復経路は床ファイルの退避・削除(= 初回同期への降格)
-  になる。運用ドキュメント化は公開前ドキュメント整備の際に(申し送り)
+- **Unauthorized un-deletion of an environment is outside the floor's detection**: a deleted
+  environment's statement distribution is rejected earlier than the floor
+  (`verifyEnvironmentStatement` — distributing a deleted environment on pull is always
+  rejected), so the floor has no path to learn an environment's deleted state, and §6.3's
+  stored enumeration has no environment-deletion entry either (the detection material is the
+  deleted statement on the environment-list side — session-15 §2-4)
+- **Floor "poisoning" via meta forward injection**: once a fake tombstone (a forward
+  metaVersion) is accepted into the floor as a "legitimate deletion", every subsequent genuine
+  active distribution keeps being rejected as "unauthorized un-deletion". The rejection itself
+  is correct (a fake tombstone and a genuine active are two contradictory valid signatures =
+  true equivocation evidence, which cannot occur under an honest server), but the user's
+  recovery path is quarantining/deleting the floor file (= degrading to a first sync). Writing
+  this up in operational documentation goes into the pre-publication documentation work
+  (handoff)
 
-## 4. 既存コードへの影響
+## 4. Impact on existing code
 
-- `VerifiedPulledValue` に宣言ヘッド 4 フィールド(値・メタ)を追加(証拠材料)。
-  `verifyAll` は環境ステートメント・tombstone の検証済みダイジェストも返す形に
-- push の 409 再試行系テスト 3 件の期待メッセージを更新: 初回 pull がコミット
-  した床が、再取得 pull の時点で同じ攻撃(巻き戻し・欠落・エポック後退)を
-  **winner 検査より先に**検出するようになったため。`winnerValueRegression` /
-  `winnerMetaRegression` は削除せず防衛層として残す(床が使えない場合 +
-  409 申告 currentVersion との突き合わせ・隣接 prev 検査は床が持たない検査)
-- session-15 §8 の申し送り「`reresolveTarget` が検証済み floor を無比較で破棄
-  する経路」は、床が全 pull(再解決 pull 込み)に掛かることで実質閉じた —
-  再解決後の巻き戻し配布はプロセス内床(FloorHandle)が検出する
+- `VerifiedPulledValue` gains the declared-head 4 fields (value and meta) (evidence material).
+  `verifyAll` now also returns the verified digests of environment statements and tombstones
+- Updated the expected messages of push's 3 409-retry tests: the floor that the first pull
+  committed now detects the same attack (rollback, omission, epoch regression) at the re-fetch
+  pull **before the winner check**. `winnerValueRegression` / `winnerMetaRegression` are not
+  removed — kept as a defensive layer (for when the floor is unavailable + cross-checking
+  against the 409-declared currentVersion and the adjacent prev check — checks the floor does
+  not have)
+- session-15 §8's handoff "the path where `reresolveTarget` discards a verified floor without
+  comparison" is effectively closed — every pull including re-resolution pulls goes through
+  the floor, so a post-re-resolution rollback distribution is detected by the in-process floor
+  (FloorHandle)
 
-## 5. ハマったこと・環境知見
+## 5. Where we got stuck and environment findings
 
-- **テストの決定的チェーン延長**: `buildChain` は timestamp 固定 + Ed25519
-  (決定的署名)なので、同じ steps の前置を持つ 2 つのチェーンは前置部分が
-  byte-identical になる。`chain1`(epoch 1)と `chain2`(+rotate)を別ビルドで
-  作っても厳密延長になり、床の「セッションを跨ぐ rotate」フィクスチャが素直に
-  書けた(逆に同一 genesis の分岐 `chainB` は create の DEK を変えるだけで作れる)
-- **fallow complexity ゲート**: 証拠整形の単一 switch(11 ケース)が
-  cyclomatic 13 で audit に落ちる。チェーン系 / 変数系に分割して解消。
-  `fallow audit` はブランチ upstream との merge-base 比較なので、push 済み
-  ブランチではローカル未コミット分しか見ない — CI と同じ判定を得るには
-  `--base main` を明示する
-- **警告文言の区別可能性**: 破損警告の本文に「初回同期として扱います」と
-  書くと、テストで初回メッセージと機械的に区別できなくなる。破損側は
-  「床なしとして続行します」に統一
-- 既存テストへの床の影響は「初回同期」注意行が stderr に増えるのみ
-  (`toContain` ベースの既存断言は無傷)。runCli を 2 回呼ぶテストがないため
-  床の発火もない
+- **Deterministic chain extension in tests**: `buildChain` uses a fixed timestamp + Ed25519
+  (deterministic signatures), so two chains sharing the same steps prefix are byte-identical
+  on the shared prefix. `chain1` (epoch 1) and `chain2` (+rotate) built separately still form
+  an exact extension, so the floor's "rotate across sessions" fixture could be written
+  straightforwardly (conversely, a fork `chainB` of the same genesis is made just by changing
+  the create DEK)
+- **The fallow complexity gate**: a single evidence-formatting switch (11 cases) lands on the
+  audit at cyclomatic 13. Resolved by splitting into chain-family / variable-family switches.
+  `fallow audit` compares against the merge-base with the branch's upstream, so on an already-
+  pushed branch it only sees the local uncommitted portion — pass `--base main` explicitly to
+  get the same judgment as CI
+- **Distinguishability of warning wording**: if the corrupt warning's body says "treating as
+  first sync", tests can no longer mechanically distinguish it from the first-sync message.
+  The corrupt side was unified to "continuing with no floor"
+- The floor's effect on existing tests is only that a "first sync" notice line appears on
+  stderr (existing `toContain`-based assertions are unharmed). No test calls runCli twice, so
+  the floor never fires there
 
-## 6. 申し送り
+## 6. Handoffs
 
-- **ROADMAP の同期**: Phase 1 の CLI / 真正性の項に PR-4(本 PR)完了を追記
-  する仕様同期はマージ後に(セッション 15.5 と同じ運用)(→ セッション 16.5 で
-  反映済み)
-- **§6.3 への仕様同期(実装が仕様より厳格な 3 点 — レビュー③)**: (i) 規則 (c)
-  の「床にない変数 = version 0 相当」適用(§2-6)、(ii) 環境メタステートメントの
-  床(§6.3 の列挙は変数の meta_version のみ)、(iii) メタ signed bytes ハッシュの
-  保存(規則 (b) のメタ適用に必要)。いずれも検出を強める方向だが、仕様が受理する
-  配布を実装が拒否する形なので、マージ後の仕様同期 PR で §6.3 に追記する
-  (または「実装は仕様より厳格でよい」の明示)ことを人間に提案する(→ セッション
-  16.5 で §6.3 へ規範追記として反映済み。「実装は仕様より厳格でよい」の明示は
-  採らず、検出規則の実装間食い違いを避けるため列挙側を実装に揃えた)
-- **床の毒化からの回復手順の運用ドキュメント化**(§3 補足): 床ファイルの退避 →
-  初回同期への降格という手順と、その際に失う保証の説明。公開前ドキュメントで
-- **証拠の機械可読出力**: 現行は stderr の複数行テキストのみ。`--json` 等の
-  機械可読形式・証拠のエクスポートは CLI 全体の出力設計と一緒に検討する(§2-8)
-- **床の並行排他**: ロックなし read-merge-write(§2-3)。並行 CLI の激しい
-  運用で lost update が観測されたら flock 導入を検討(検出の正しさには影響
-  しない — 薄くなるだけ)
-- **`project verify` の床サマリー表示**: 現在はチェーン床検査 + ヘッド前進のみ。
-  床の内容(環境ごとの基準・変数数)の表示は UX 改善候補
-- **メタ前進注入の閉包**は引き続き Phase 2(環境マニフェスト / チェック
-  ポイント = CRYPTO_SPEC 未決 #12、ヘッドゴシップ)。本 PR で状況は変わらない
-- session-11 §5 の残り(公開設定エンドポイント / テスト支援共有抽出 / pull
-  メタデータのみモード)・チェーン追記系コマンド + remove_member の全環境
-  rotate(session-12 §10-7 の複合化検討込み)は未着手のまま有効
+- **ROADMAP sync**: the spec sync that records PR-4 (this PR) completion in Phase 1's CLI /
+  authenticity items happens after merge (the same practice as session 15.5) (→ reflected in
+  session 16.5)
+- **Spec sync into §6.3 (three points where the implementation is stricter than the spec —
+  review ③)**: (i) rule (c)'s "a variable absent from the floor = version-0 equivalent"
+  application (§2-6), (ii) the floor for environment meta statements (§6.3's enumeration
+  covers only variables' meta_version), (iii) storing meta signed-bytes hashes (needed for
+  rule (b)'s meta application). All strengthen detection, but take the shape of the
+  implementation rejecting distributions the spec accepts, so a proposal is made to a human to
+  append them to §6.3 in a post-merge spec-sync PR (or to state explicitly "the implementation
+  may be stricter than the spec") (→ reflected in session 16.5 as a normative addition to
+  §6.3. The explicit "the implementation may be stricter" was not taken — the enumeration side
+  was aligned with the implementation to avoid detection-rule divergence across
+  implementations)
+- **Operational documentation of recovery from floor poisoning** (§3 note): the procedure of
+  quarantining the floor file → degrading to a first sync, and an explanation of which
+  guarantees are lost. In the pre-publication documentation
+- **Machine-readable evidence output**: currently only multi-line stderr text. A
+  machine-readable form like `--json` and evidence export are considered together with the
+  CLI's overall output design (§2-8)
+- **Floor concurrency exclusion**: lock-free read-merge-write (§2-3). If lost updates are
+  observed under heavy concurrent-CLI operation, consider introducing flock (does not affect
+  detection correctness — the floor only thins)
+- **A floor summary in `project verify`**: currently it is just the chain-floor check + head
+  advancement. Displaying the floor's contents (per-environment reference, variable count) is
+  a UX-improvement candidate
+- **Closing meta forward injection** stays with Phase 2 (environment manifest / checkpoint =
+  CRYPTO_SPEC undecided #12, head gossip). This PR does not change the situation
+- session-11 §5's remainders (the public-settings endpoint / extracting shared test support /
+  the pull metadata-only mode) and the chain-append command family + remove_member's
+  all-environment rotate (including session-12 §10-7's compoundization review) remain valid
+  and unstarted
 
-## 7. テスト結果
+## 7. Test results
 
-- CLI: **186 tests green**(既存 128 + 床ストア単体 27 + 床検出の結線 31)。
-  session-12 §8-5 の床項目を充足: 欠落(変数・tombstone・pull/run/push の
-  3 経路)/ 巻き戻し(version / metaVersion / 環境 metaVersion / epoch /
-  チェーン長)/ 規則 (c) の両縁(rotate 直後の正当な旧エポック新版の受理 +
-  基準前進後の旧エポック前進 version の拒否 + 床にない新規変数への適用)/
-  同一 version・metaVersion の signed bytes 相違の証拠化(値・変数メタ・環境
-  メタ。両ハッシュの出力検証込み)/ 分岐 2 種の区別(床 seq 以下の不一致 =
-  即時証拠、床より先 = 有界再同期 → 延長なら受理・解決しなければ証拠)+
-  床ヘッド先行レースの有界再同期 / 床なし・破損の fail-open + 区別された警告 +
-  破損床の隔離退避 / ENOENT 以外の読み取りエラーの fail-closed / 拒否された
-  pull が床を前進させないこと(更新順序)/ push 受理後の床前進 / 単調マージ
-  (床の後退禁止・deleted 終端・union)/ 削除の無断取り消し(metaVersion
-  3 通り)/ commitHead のみの床からの環境床確立 / メタ前進注入の非検出の固定
-  (変数・環境の両方)/ `constructor` / `prototype` キーの正当 ID 扱い /
-  コミット返り値のマージ済み床とハンドルのキャッシュ同期
-- `bun run check`(fmt / lint / typecheck / importlint / fallow audit / doctor /
-  test)green — 全体 867 tests。`fallow audit --base main`(CI 相当)も
-  no issues。crypto パッケージ非変更のため 4 実行環境テストは対象外
+- CLI: **186 tests green** (existing 128 + 27 floor-store unit + 31 floor-detection wiring).
+  Covers session-12 §8-5's floor items: omission (variables · tombstones · the 3 paths of
+  pull / run / push) / rollback (version / metaVersion / environment metaVersion / epoch /
+  chain length) / both edges of rule (c) (accepting the legitimate old-epoch new version right
+  after rotate + rejecting an old-epoch forward version after the reference advanced +
+  applying it to a new variable absent from the floor) / evidence-preservation of differing
+  signed bytes at the same version · metaVersion (value, variable meta, environment meta.
+  Including output verification of both hashes) / the two-way fork distinction (mismatch at or
+  below the floor seq = immediate evidence, beyond the floor = bounded re-sync → accept on
+  extension, evidence if unresolved) + bounded re-sync of the floor-head-ahead race / fail-open
+  for missing and corrupt + the distinguished warnings / quarantining a corrupt floor /
+  fail-closed on non-ENOENT read errors / a rejected pull not advancing the floor (update
+  order) / floor advancement after push acceptance / monotonic merge (no floor regression ·
+  deleted terminal · union) / unauthorized un-deletion (3 metaVersion cases) / establishing an
+  environment floor from a commitHead-only floor / pinning the non-detection of meta forward
+  injection (both variable and environment) / `constructor` / `prototype` keys treated as
+  legitimate IDs / syncing the handle's cache with the commit return's merged floor
+- `bun run check` (fmt / lint / typecheck / importlint / fallow audit / doctor / test) green —
+  867 tests total. `fallow audit --base main` (CI-equivalent) also reports no issues. The
+  4-runtime tests are out of scope because the crypto package is unchanged
 
-## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
+## 8. Review → fix loops (in-PR. Parallel review by 3 viewpoints → fixes)
 
-実装完了後、独立の 3 観点レビュー(① セキュリティ・暗号 ② 正しさ・並行性
-③ 仕様適合・テスト網羅)を並行実施した。blocking なし。major 4 件(①② が
-一部同一指摘)をコードで修正し、minor の安価なものも同時に対応、残りは記録・
-申し送りで決着した。
+After implementation completed, an independent parallel 3-viewpoint review (①
+security/crypto ② correctness/concurrency ③ spec-conformance/test coverage) was run. No
+blockers. 4 majors (① and ② partially reporting the same finding) were fixed in code, cheap
+minors were handled at the same time, and the rest was settled by record or handoff.
 
-### 修正した指摘
+### Findings that were fixed
 
-- **[major / ①②] 床マージの非単調性(TOCTOU)**: `applyPull` の環境床全置換 +
-  `applyPush` の不十分なガードにより、read-merge-write の窓で古いコミットが
-  後に着地するとディスク上の床が後退し、悪意サーバーが応答遅延で着地順を制御
-  して検出材料の巻き戻しを維持できた。→ 単調マージへ改訂(§2-3。pullEpoch =
-  max・変数床の per-field 単調・deleted 終端・union)。単体テストで固定
-- **[major / ②] future-head 再同期経路の規則 (c) 基準の過前進**: 再同期後の
-  ビューから基準を導出すると、応答生成と再同期の間の rotate で基準が過前進し、
-  正当な旧エポック最新値を再暗号化完了まで誤拒否し続ける(誤った equivocation
-  告発つき)。→ `enforceFloor` を baselineView(応答取得前のビュー)/
-  commitView(検証ビュー)に分離(§2-9)。テストの期待値も規範側へ修正
-- **[major / ②] チェーン床「短縮」の並行 CLI 誤発火**: sync → 床ロードの順の
-  ギャップで兄弟プロセスが床ヘッドを前進させると、全員正直でも「短縮」と誤告発
-  していた。→ §6.3-2b と同型の有界再同期(1 回)を追加(§2-7)。レースの解決と
-  真の短縮の拒否を両方テストで固定
-- **[major / ②] read エラーの missing 誤分類**: readFile の全例外を「初回」と
-  同一視しており、EACCES / EIO 等で床が無警告で全消去され得た(load 側は
-  「初回同期」の誤案内、write 側は空からの作り直し)。→ missing = ENOENT のみ
-  (§2-4)。EISDIR での fail-closed をテストで固定
-- **[minor / ①③] deleted 終端のマージ保護**: major 1 件目の修正に同梱
-  (deleted は active で上書きしない)
-- **[minor / ①] 証拠の自己完結性**: 配布側の署名値と帰属(user_id + 鍵 FP)を
-  証拠出力に追加(§2-8)。原像の同梱はしない(理由も §2-8)
-- **[minor / ①②③] 破損床の隔離退避**: 作り直し前に `.corrupt-<ts>` へ rename
-  (§2-4)。テストで固定
-- **[minor / ③] テストの抜け**: 環境メタの equivocation / 環境メタの前進注入の
-  非検出 / 削除の無断取り消しの metaVersion 3 通り / commitHead のみの床 →
-  後続 pull を追加
+- **[major / ①②] non-monotonic floor merge (TOCTOU)**: `applyPull`'s full replacement of the
+  environment floor + `applyPush`'s insufficient guard meant that inside the read-merge-write
+  window a stale commit landing later would regress the floor on disk, and a malicious server
+  controlling landing order via response delays could keep detection material rolled back. →
+  Revised to monotonic merge (§2-3. pullEpoch = max · per-field monotonicity of the variable
+  floor · deleted terminal · union). Pinned by unit tests
+- **[major / ②] over-advancement of rule (c)'s reference on the future-head re-sync path**:
+  deriving the reference from the post-re-sync view let a rotate between response generation
+  and re-sync over-advance the reference, so the legitimate old-epoch latest value would keep
+  being wrongly rejected until re-encryption completes (with a false equivocation
+  accusation). → `enforceFloor` was split into baselineView (the pre-response-fetch view) /
+  commitView (the verification view) (§2-9). The test expectations were also corrected toward
+  the norm
+- **[major / ②] false firing of the chain floor's "shortening" under concurrent CLIs**: in the
+  gap between sync → floor load, a sibling process advancing the floor head produced a false
+  "shortening" accusation even when everyone was honest. → Added a bounded re-sync (once) of
+  the same shape as §6.3-2b (§2-7). Both resolving the race and rejecting a true shortening
+  are pinned by tests
+- **[major / ②] misclassifying read errors as missing**: every readFile exception was treated
+  as "first sync", so EACCES / EIO etc. could erase the entire floor without warning (the load
+  side's wrong "first sync" guidance; the write side rebuilding from empty). → missing =
+  ENOENT only (§2-4). Fail-closed on EISDIR is pinned by a test
+- **[minor / ①③] merge protection for the deleted terminal**: bundled with the first major's
+  fix (deleted is not overwritten by active)
+- **[minor / ①] evidence self-containedness**: added the distributed side's signature value
+  and attribution (user_id + key FP) to the evidence output (§2-8). The preimage is not
+  bundled (the reasons are also in §2-8)
+- **[minor / ①②③] quarantining a corrupt floor**: renamed to `.corrupt-<ts>` before
+  rebuilding (§2-4). Pinned by a test
+- **[minor / ③] test gaps**: added equivocation of environment meta / non-detection of
+  environment-meta forward injection / the 3 metaVersion cases of unauthorized un-deletion /
+  a floor with only commitHead → a subsequent pull
 
-### 記録で決着した指摘(コード変更なし)
+### Findings settled by record (no code change)
 
-- [minor / ③] 実装が仕様より厳格な 3 点の仕様同期 → §6 申し送り
-- [minor / ③ nit] push 受理後の床書き込み失敗の「push は受理されましたが…」
-  前置の e2e テスト: 実ファイルストアの部分的な書き込み失敗の注入が要るため
-  単体(write の fail-closed)までに留めた。経路は mapError 1 段
-- [情報 / ①②] 床コミット点 = §6.3 検証成功(ラップ検証・復号の失敗で巻き
-  戻さない)の解釈 → `enforceFloor` の JSDoc に明記
-- [情報 / ①] メタ前進注入による床の毒化と回復経路 → §3 補足 + §6 申し送り
-- [情報 / ③] 環境削除の無断取り消しは床の対象外 → §3 補足
-- [nit / ①②] `.tmp` のクラッシュ残置・スキーマ前方互換(旧 CLI が v2 を破損
-  扱い → 退避して作り直す挙動になる)は現時点で実害なし — 記録のみ
+- [minor / ③] the 3 points where the implementation is stricter than the spec → §6 handoff
+- [minor / ③ nit] an e2e test of the "push was accepted, but …" prefix on post-push-acceptance
+  floor-write failure: injecting a partial write failure into the real file store would be
+  needed, so it was kept at unit level (write is fail-closed). The path is one mapError stage
+- [info / ①②] the floor-commit point = §6.3 verification succeeding (wrap verification /
+  decryption failures do not roll it back) — the interpretation is now written in
+  `enforceFloor`'s JSDoc
+- [info / ①] floor poisoning via meta forward injection and the recovery path → §3 note + §6
+  handoff
+- [info / ③] environment unauthorized un-deletion is outside the floor's scope → §3 note
+- [nit / ①②] `.tmp` crash leftovers and schema forward compatibility (an old CLI treats v2 as
+  corrupt → quarantines and rebuilds) — no real harm at present; record only
 
-### 再レビュー(ループ 2)
+### Re-review (loop 2)
 
-修正差分の再レビューを 3 観点に依頼。②③ は収束、① がループ 1 修正の同梱分
-(`__proto__` 系キーの防衛)に**新規 [major] 1 件**を検出した:
+The fix diff was sent back to the 3 viewpoints for re-review. ② and ③ converged; ① detected
+**1 new [major]** in the part bundled with the loop-1 fix (the `__proto__`-family key
+defense):
 
-- **[major / ①] `constructor` / `prototype` を危険キー扱いした誤り**: ループ 1 で
-  入れた decode のキー拒否集合(`__proto__` / `constructor` / `prototype`)の
-  うち後者 2 つは **§12-1 の正当な ID 形式**(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-  に一致する。variableId `constructor` を一度 pull すると床が自己破損扱いになり、
-  「破損警告 + 退避 + 再構築 → 次の pull で再混入」の恒久ループで床検出が
-  無効化される(member 権限で誘発可能)。さらに素のブラケット参照
-  (`record[variableId]`)は「レコードにない `constructor`」を Object.prototype
-  の継承プロパティ(関数)へ解決し、誤検査・床の自壊を招く。→ (1) decode の
-  キー検証を「§12-1 形式に一致しないキー = 破損」へ変更(`__proto__` は先頭 `_`
-  で形式外なので構造的に排除される。`constructor` / `prototype` は受理)、
-  (2) 床レコードの動的キー参照を全箇所 `floorRecordGet`(own-property 参照)へ
-  統一(floor.ts のマージ・floor-check.ts の規則 (c)・cli.ts のハンドル初期化)。
-  decode の受理・拒否と、variableId `constructor` での床確立 + 巻き戻し検出の
-  e2e をテストで固定
-- **[minor / ②] チェーン床の有界再同期に延長検査がない**: 短縮疑いの再同期を
-  素の `syncProject` で行うと、初回ビュー自体が分岐していた場合(短縮 + 分岐の
-  複合)にその証拠を取り逃す。→ `resyncExtended`(延長検査付き)へ変更。正直な
-  stale ビューは常に再同期ビューの接頭辞なので誤発火はない
+- **[major / ①] the mistake of treating `constructor` / `prototype` as dangerous keys**: of the
+  key-rejection set added in loop 1's decode (`__proto__` / `constructor` / `prototype`), the
+  latter two **match §12-1's legitimate ID format**
+  (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`). Pulling a variableId `constructor` even once makes the
+  floor treat itself as corrupt, and the permanent loop of "corrupt warning + quarantine +
+  rebuild → re-ingested on the next pull" disables floor detection (triggerable with member
+  authority). Furthermore, a bare bracket reference (`record[variableId]`) resolves a
+  `constructor` absent from the record to Object.prototype's inherited property (a function),
+  inviting mis-checks and floor self-destruction. → (1) decode's key validation changed to
+  "a key not matching §12-1's format = corrupt" (`__proto__` is excluded structurally — its
+  leading `_` fails the format. `constructor` / `prototype` are accepted), (2) all dynamic-key
+  reads of floor records were unified to `floorRecordGet` (an own-property read) (floor.ts's
+  merge, floor-check.ts's rule (c), cli.ts's handle initialization). Acceptance and rejection
+  in decode plus e2e of floor establishment + rollback detection under variableId
+  `constructor` are pinned by tests
+- **[minor / ②] the chain floor's bounded re-sync lacked an extension check**: doing the
+  suspected-shortening re-sync with a bare `syncProject` would miss the evidence when the
+  first view itself was forked (shortening + fork combined). → Changed to `resyncExtended`
+  (with the extension check). An honest stale view is always a prefix of the re-synced view,
+  so there is no false firing
 
-### 再レビュー(ループ 3)
+### Re-review (loop 3)
 
-ループ 2 の修正(キー検証の是正・own-property 参照・延長検査)を①に再確認依頼
-し、収束を確認。修正はいずれも受理範囲の是正(正当な ID の誤拒否の除去)と
-検査の強化のみで、床の検出規則・更新順序は不変。全品質ゲート再実行 green。
-blocking / 新規重大指摘ゼロで収束した。
+The loop-2 fixes (correcting the key validation, own-property reads, the extension check) were
+re-confirmed with ①, and convergence was confirmed. Every fix is either a correction of the
+acceptance range (removing wrongful rejection of legitimate IDs) or a strengthening of checks;
+the floor's detection rules and update order are unchanged. All quality gates re-run green.
+Converged with zero blocking / new major findings.
 
-### PR 公開後の自動レビュー対応(Cursor Bugbot — 2026-08-04)
+### Automated-review handling after the PR went public (Cursor Bugbot — 2026-08-04)
 
-Bugbot が High Severity 2 件(同根)を指摘: `FloorHandle` のプロセス内キャッシュ
-がコミット後に**送信スナップショット**(pull の環境床 / push の 1 変数)で更新
-され、ストアが read-merge-write でディスクへ書いた**マージ済み床**と食い違う —
-並行 CLI がディスクに確立した検出材料(union の変数・deleted 終端・より新しい
-version / pullEpoch)を、同一コマンド内の後続検査(push の再試行ループ等)が
-取りこぼす。
+Bugbot flagged 2 High Severity findings (same root): `FloorHandle`'s in-process cache is
+updated after a commit with the **pre-send snapshot** (pull's environment floor / push's single
+variable) and disagrees with the **merged floor** the store wrote to disk via read-merge-write
+— subsequent checks in the same command (push's retry loop etc.) miss the detection material a
+concurrent CLI established on disk (unioned variables, a deleted terminal, newer version /
+pullEpoch).
 
-- 指摘のうち「規則 (c) が誤発火する」は成立しない(メモリ側の pullEpoch は常に
-  低い側 = 許容側にしかずれない)が、「兄弟プロセスの検出材料の取りこぼし」は
-  実在する(検出喪失の窓 — 誤拒否ではない)
-- 修正: `commitPull` / `commitPush` が**ディスクへ書いたマージ済み環境床を返す**
-  形に変え、ハンドルのキャッシュはそれを採用する(commitPush で環境レコードが
-  ない稀な形のみ従来どおりプロセス内知識を前進)。ディスクの床は自 CLI が §6.3
-  検証済みレコードしか書かないため、マージ結果の採用は検査基準として健全
-  (ローカル状態を書ける攻撃者は床の外 — fail-open の線引きと同じ)
-- ストアの返り値(union / null)とハンドルのキャッシュ同期をテストで固定。
-  コミット前(openProject 時スナップショット)の窓は残るが、それは床ロード
-  時点の知識そのものであり §2-3 の一世代残余に帰着する
+- Of the findings, "rule (c) can fire wrongly" does not hold (the memory side's pullEpoch only
+  ever errs to the lower = permissive side), but "missing a sibling process's detection
+  material" is real (a detection-loss window — not a wrongful rejection)
+- The fix: `commitPull` / `commitPush` were changed to **return the merged environment floor
+  written to disk**, and the handle's cache adopts it (only in the rare shape where commitPush
+  has no environment record does the in-process knowledge advance as before). Since the
+  on-disk floor is written only with §6.3-verified records by this CLI, adopting the merged
+  result is sound as a check basis (an attacker who can write local state is outside the floor
+  — same line as fail-open)
+- The store's return value (union / null) and the handle's cache sync are pinned by tests. The
+  pre-commit window (the snapshot at openProject time) remains, but that is the knowledge at
+  floor-load time itself and reduces to §2-3's one-generation residual

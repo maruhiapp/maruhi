@@ -1,467 +1,610 @@
-# hosted-ops — H3: 運用基盤(監視・アラート / バックアップ / リストア演習)の設計
+# hosted-ops — H3: design of the operations foundation (monitoring/alerts / backup / restore drill)
 
-Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**2026-09-03 リストア演習(§5-3 / O7)を実機で実施 — 突合一致で H3 完了**(実施記録は §5-3、実測値は §4-2 / §1、人間タスクの完了日は §7)。hosted-design.md §5(裁定 DC)を「実装できる形」へ落とした
-内部文書。**運営側のみ**の段であり、製品のワイヤ・受理面(AUTH_SPEC / AUDIT_SPEC)は無変更。
-設計探索(候補・上位互換探索・棄却案・一次情報の確認)の記録は本文書に置く(独立の session ノートは作らない)。
+Status: drafted 2026-09-02 (bundled with the H3 implementation PR #137). **The restore drill (§5-3 / O7) was performed on the real system on 2026-09-03 — matching cross-checks complete H3** (the drill record is §5-3, measured values are in §4-2 / §1, and human-task completion dates are in §7). Lowers hosted-design.md §5 (ruling DC) into "implementable form".
+Internal document. **An operator-side-only** stage; the product's wire and acceptance surfaces (AUTH_SPEC / AUDIT_SPEC) are unchanged.
+The record of design exploration (candidates, superior-alternative search, rejected options, primary-source verification) lives in this document (no separate session note is created).
 
-前提(確定事実 — hosted-design.md §5-1 / session-47 裁定 DC):
+Premises (established facts — hosted-design.md §5-1 / session-47 ruling DC):
 
-- テレメトリ禁止(CLAUDE.md「言わざる」)は**クライアント → 外部**の送信の禁止。運営のサーバーが自分の観測を
-  運営自身の受け口へ送ることは対象外(DC-1)。ただし送る内容に**リクエスト由来の識別子**(プロジェクト ID = capability
-  〔AUTH_SPEC §11-2〕・ユーザー ID・トークン・鍵素材・平文)を含めない — 静的メッセージ + 集計値のみ(DC-2)
-- 監査ログ(製品機能)に運用イベントを書かない(DC-3)。運営向け管理 API・管理画面を作らない。専用 health
-  エンドポイントを作らない(DC-6 — 外形監視は `GET /auth/config`)。DO 退避のテナント向け API 化は棄却案のまま
-- DO の内容は暗号文・チェーン・監査・ラップ済み DEK・メタ・マニフェスト・チェックポイント(`PROJECT_DO_TABLES` の
-  全表)で平文の秘密は存在しない(E2EE)。退避先に置いても運営が読める情報は増えない
+- The telemetry ban (CLAUDE.md "unspoken") prohibits **client → external** transmission. The
+  operator's servers sending their own observation to the operator's own endpoint is out of
+  scope (DC-1). However, the content sent must contain no **request-derived identifiers**
+  (project ID = capability [AUTH_SPEC §11-2], user IDs, tokens, key material, plaintext) —
+  static messages + aggregate values only (DC-2)
+- Do not write operational events into the audit log (a product feature) (DC-3). No
+  operator-facing admin API or admin UI is built. No dedicated health endpoint is built
+  (DC-6 — external monitoring uses `GET /auth/config`). A tenant-facing API for DO backup
+  stays a rejected option
+- DO contents are ciphertext, chains, audit, wrapped DEKs, meta statements, manifests, and
+  checkpoints (all tables of `PROJECT_DO_TABLES`) — no plaintext secrets exist (E2EE). Placing
+  them in a backup destination increases what the operator can read by nothing
 
-## 1. 一次情報の確認(2026-09-02 — Cloudflare 公式 docs。起草値と区別する)
+## 1. Primary-source verification (2026-09-02 — official Cloudflare docs. Distinguished from draft values)
 
-| 項目 | 一次情報(2026-09-02 確認) | 本設計での使い方 |
+| item | primary source (verified 2026-09-02) | use in this design |
 |---|---|---|
-| R2: 1 オブジェクト上限 | 単一 PUT 4.995 GiB / multipart 4.995 TiB・パート最小 5 MiB(最終パート除く)・最大 10,000 パート・キー長 1,024 バイト・メタデータ 8 KiB。同一オブジェクトへの同時書き込み 1/秒(超過 429)(r2/platform/limits — 2026-06-08 版) | DO スナップショットは 16 MiB 未満なら単一 `put`、以上は multipart(パート 16 MiB 起草値 → 10 GB でも 640 パート) |
-| R2: 料金 / 無料枠 | Standard: $0.015/GB-月・Class A $4.50/百万・Class B $0.36/百万・egress 無料。無料枠 10 GB-月・Class A 100 万/月・Class B 1,000 万/月(r2/pricing)。ライフサイクル規則(削除 / IA 遷移 / 未完了 multipart の中止)は wrangler `r2 bucket lifecycle add --expire-days / --abort-multipart-days`(r2/buckets/object-lifecycles) | 保持は**バケットのライフサイクル規則**で行う(アプリは削除しない — §4-2)。R2 の有効化には運営アカウントで R2 の契約(支払い方法の登録)が要る = 人間タスク(§7)。**実機(wrangler 4.128)**: `lifecycle add` は規則名が必須の位置引数(`lifecycle add <bucket> <name> --expire-days …`)。バケットには既定の "Default Multipart Abort Rule"(7 日)が付いてくる |
-| Workers: cron の CPU / 実行時間 | Paid: cron 間隔 ≥ 1 時間なら CPU 15 分 / < 1 時間なら 30 秒、壁時計 15 分。Free: CPU 10 ms。メモリ 128 MB / isolate。サブリクエスト Paid 10,000 / 呼び出し(Free 50)。cron 数 Paid 250 / アカウント(Free 5)(workers/platform/limits) | 退避スイープは**毎時 cron**で走らせるが 1 回の予算は壁時計 10 分(起草値)で打ち切り、カーソルで継続する。Free プランでは退避バインディングが無く no-op(CPU 10 ms 内 — D1 読み 1 本) |
-| DO: 上限 | SQLite 10 GB / オブジェクト(Paid)。行 / 文字列 / BLOB 2 MB。文 100 KB・束縛パラメータ 100 / クエリ・列 100 / 表。CPU 30 秒 / リクエスト(`limits.cpu_ms` で 5 分まで)。alarm 壁時計 15 分。Free は SQLite DO のみ・5 GB / アカウント(durable-objects/platform/limits — 2026-06-01 版) | 復元の INSERT は 1 文あたり `floor(100 / 列数)` 行(最大 16 列 → 6 行)。巨大 DO の退避 CPU は `limits.cpu_ms`(hosted 環境のみ 300,000)で緩和 — 上界の議論は §4-2 |
-| DO: SQL cursor | `await` を挟んで再開した cursor は「作成後に挿入・更新・削除された行を観測しうる」(storage-api docs)。`.raw()` で列順配列、`.columnNames` で列名 | 退避の行読みは **rowid キーセット + LIMIT で 1 文ずつ同期に `toArray()`** し、cursor を await 越しに持たない(全表が rowid を持つ — `WITHOUT ROWID` なし) |
-| Workers RPC | 直列化した RPC メッセージ上限 32 MiB。大きなデータは byte stream で(rpc docs) | DO 退避は DO 自身が R2 へ書き、RPC の戻り値は集計値のみ(§2-D) |
-| D1: Time Travel | Paid 30 日 / Free 7 日。`wrangler d1 time-travel info <db> [--timestamp]` でブックマーク、`restore <db> --timestamp|--bookmark` は**その場・破壊的**(上書き。進行中クエリは中断。復元しても以前のブックマークは消えない)。追加費用なし(d1/reference/time-travel) | 誤削除・論理破壊の第一手段。運営 runbook §5-1 |
-| D1: export / import | `wrangler d1 export <db> --remote --output=<file> [--table] [--no-schema] [--no-data]`。SQL ダンプ(CREATE + INSERT)。**export 中は他のリクエストをブロック**。仮想表は不可。import は `wrangler d1 execute <db> --remote --file=<sql>`(5 GiB 上限・`BEGIN/COMMIT` は除去)(d1/best-practices/import-export-data) | 定期 export は低トラフィック時刻(02:41 UTC 起草値)に GitHub Actions cron で実行(§4-1)。**実測(2026-09-03・D1 295 KB)**: export ステップ 3 秒(ブロックは 1〜2 秒以内)。import は**ダンプの文順を並べ替えないと失敗する**(export は表ごとに CREATE → INSERT を並べ、`PRAGMA defer_foreign_keys` は import 経路で効かない — `scripts/reorder-d1-dump.ts`、§5-1 (3))。API トークンは **D1: Edit** が要る(Read では export が `Authentication error [10000]`) |
-| D1: サイズの観測 | `wrangler d1 info <db> --json`(JSON に **`database_size`** バイト — API の `file_size` を wrangler 4.124 が出力前に改名する。旧版は `file_size`。PR #137 レビューで訂正) | D1 総量トリップワイヤ(5 GB)は export ワークフロー内で判定(§3 行 1) |
-| Workers Logs | wrangler `observability.enabled` で有効化。保持 Paid 7 日 / Free 3 日。1 エントリ 256 KB。Paid 月 2,000 万イベント込み・超過 $0.60/百万。`head_sampling_rate` で頭部サンプリング。組み込みのアラート機構は docs に記載なし(workers/observability/logs/workers-logs) | hosted 環境で有効化(`head_sampling_rate` 1)。ただし **`observability.logs.invocation_logs: false` を必須**にする — 既定の Fetch invocation log はリクエスト URL(パス + クエリ)を本文に含み、`/projects/:id`(capability)や `/auth/github/callback?code=…` が保持期間中ログストアに残る(PR #137 Cursor セキュリティレビューで発見。CI 8c が検査)。残るのは console の静的行のみで、per-request 識別子を含まないため全量でも capability の集積にならない。**リクエストログを含む Logpush も有効化しない** — §5-1。**2026-09-03 演習で追加発見**: Effect `HttpRouter.toWebHandler` の既定 HTTP ロガーが console 経路で `"Sent HTTP response" {"http.url":"/projects/<id>"}` を出しており、invocation log を切っても capability がログストアに残っていた。`disableLogger: true` で止めた(index.ts)。修正後は正常経路のログが 0 行になることを Workers Logs の実データで確認 |
-| Workers Analytics Engine | binding `analytics_engine_datasets`・`writeDataPoint`(呼び出しあたり 250 点・blob 合計 16 KB)・保持 3 か月・読み出しは SQL API(`/accounts/{id}/analytics_engine/sql` + Account Analytics Read トークン)(analytics-engine/get-started, /limits) | **不採用**(§2-A — 読み出しに API トークンを要し、閾値判定を worker 内で閉じられない) |
-| Cloudflare Notifications | Workers / DO / D1 / R2 向けの通知種別は一覧に**無い**(Health Checks は Pro 以上)(notifications/notification-available — 2026-04-24 版) | プラットフォーム通知に依存しない。運営の webhook へ自前送信(§2-B) |
-| wrangler: 名前付き環境 | `durable_objects` / `d1_databases` / `r2_buckets` / `ratelimits` / `vars` は**非継承**(環境ごとに再宣言)。`triggers` / `assets` / `migrations` / `limits` / `observability` は継承(wrangler config-schema の記述 + configuration docs)。DO binding の `script_name` で他 Worker 定義の DO 名前空間へ束縛可 | hosted 固有バインディングは `env.hosted` に置く(§2-F)。復元 worker は `script_name` で本番名前空間へ束縛(§2-E) |
-| GitHub: token 請求 | 2,000 回/時/App(secondary。残量観測 API なし — session-48 §1) | 自前計数(§3 行 3)。閾値 1,600/時(80%)起草値 |
+| R2: single-object cap | single PUT 4.995 GiB / multipart 4.995 TiB · min part 5 MiB (except the last) · max 10,000 parts · key length 1,024 bytes · metadata 8 KiB. Concurrent writes to the same object 1/second (429 on excess) (r2/platform/limits — 2026-06-08 edition) | DO snapshots use a single `put` below 16 MiB, multipart otherwise (16 MiB parts, draft value → 640 parts even at 10 GB) |
+| R2: pricing / free tier | Standard: $0.015/GB-month · Class A $4.50/million · Class B $0.36/million · egress free. Free tier 10 GB-month · Class A 1 million/month · Class B 10 million/month (r2/pricing). Lifecycle rules (delete / IA transition / abort incomplete multipart) via wrangler `r2 bucket lifecycle add --expire-days / --abort-multipart-days` (r2/buckets/object-lifecycles) | Retention is done by **bucket lifecycle rules** (the app never deletes — §4-2). Enabling R2 requires contracting R2 on the operator account (registering a payment method) = a human task (§7). **On the real system (wrangler 4.128)**: `lifecycle add` requires the rule name as a positional argument (`lifecycle add <bucket> <name> --expire-days …`). Buckets come with a default "Default Multipart Abort Rule" (7 days) |
+| Workers: cron CPU / duration | Paid: CPU 15 min for cron interval ≥ 1 hour / 30 s below that, wall clock 15 min. Free: CPU 10 ms. Memory 128 MB / isolate. Subrequests Paid 10,000 / invocation (Free 50). cron count Paid 250 / account (Free 5) (workers/platform/limits) | The backup sweep runs on an **hourly cron**, but each run is cut off at a wall-clock budget of 10 min (draft value) and continues via cursor. On the Free plan the backup binding is absent → no-op (within CPU 10 ms — a single D1 read) |
+| DO: limits | SQLite 10 GB / object (Paid). Row / string / BLOB 2 MB. Statement 100 KB · bound parameters 100 / query · columns 100 / table. CPU 30 s / request (up to 5 min via `limits.cpu_ms`). alarm wall clock 15 min. Free is SQLite DOs only · 5 GB / account (durable-objects/platform/limits — 2026-06-01 edition) | Restore INSERTs do `floor(100 / column count)` rows per statement (max 16 columns → 6 rows). Backup CPU for large DOs is relaxed via `limits.cpu_ms` (hosted only, 300,000) — the upper-bound discussion is §4-2 |
+| DO: SQL cursor | a cursor resumed across an `await` "may observe rows inserted, updated, or deleted after creation" (storage-api docs). `.raw()` for column-ordered arrays, `.columnNames` for names | Backup row reads use **rowid keyset + LIMIT, synchronously `toArray()` one statement at a time** — no cursor survives an await (every table has a rowid — no `WITHOUT ROWID`) |
+| Workers RPC | serialized RPC message cap 32 MiB. Large data goes over byte streams (rpc docs) | For DO backup the DO itself writes to R2; RPC return values are aggregates only (§2-D) |
+| D1: Time Travel | Paid 30 days / Free 7 days. `wrangler d1 time-travel info <db> [--timestamp]` yields a bookmark; `restore <db> --timestamp\|--bookmark` is **in-place and destructive** (overwrites. In-flight queries are interrupted. Prior bookmarks survive a restore). No extra cost (d1/reference/time-travel) | First resort for accidental deletion / logical corruption. Ops runbook §5-1 |
+| D1: export / import | `wrangler d1 export <db> --remote --output=<file> [--table] [--no-schema] [--no-data]`. SQL dump (CREATE + INSERT). **Other requests are blocked during export**. Virtual tables unsupported. Import is `wrangler d1 execute <db> --remote --file=<sql>` (5 GiB cap, `BEGIN/COMMIT` stripped) (d1/best-practices/import-export-data) | Periodic export runs on a GitHub Actions cron at a low-traffic time (02:41 UTC, draft value) (§4-1). **Measured (2026-09-03 · D1 295 KB)**: export step 3 s (blocking ≤ 1–2 s). Import **fails unless the dump's statement order is rearranged** (export lists CREATE → INSERT per table, and `PRAGMA defer_foreign_keys` does not work on the import path — `scripts/reorder-d1-dump.ts`, §5-1 (3)). The API token needs **D1: Edit** (with Read, export fails with `Authentication error [10000]`) |
+| D1: size observation | `wrangler d1 info <db> --json` (JSON carries **`database_size`** bytes — wrangler 4.124 renamed the API's `file_size` on output. Older versions say `file_size`. Corrected in the PR #137 review) | The D1-total tripwire (5 GB) is evaluated inside the export workflow (§3 row 1) |
+| Workers Logs | enabled via wrangler `observability.enabled`. Retention Paid 7 days / Free 3 days. 256 KB per entry. Paid includes 20M events/month, excess $0.60/million. `head_sampling_rate` for head sampling. No built-in alerting mechanism is documented (workers/observability/logs/workers-logs) | Enabled in the hosted environment (`head_sampling_rate` 1). However **`observability.logs.invocation_logs: false` is mandatory** — the default Fetch invocation log embeds the request URL (path + query), so `/projects/:id` (a capability) and `/auth/github/callback?code=…` would sit in the log store for the retention period (found in the PR #137 Cursor security review. CI 8c checks this). What remains is console static lines only, which carry no per-request identifiers, so even full volume does not accumulate capabilities. **Logpush containing request logs is also not enabled** — §5-1. **Additional finding in the 2026-09-03 drill**: Effect `HttpRouter.toWebHandler`'s default HTTP logger emits `"Sent HTTP response" {"http.url":"/projects/<id>"}` on the console path — even with invocation logs off, capabilities were still reaching the log store. Stopped with `disableLogger: true` (index.ts). After the fix, real Workers Logs data confirmed zero log lines on the normal path |
+| Workers Analytics Engine | binding `analytics_engine_datasets` · `writeDataPoint` (250 points per call · blob total 16 KB) · retention 3 months · reads via SQL API (`/accounts/{id}/analytics_engine/sql` + Account Analytics Read token) (analytics-engine/get-started, /limits) | **Not adopted** (§2-A — reads require an API token, so threshold evaluation cannot close inside the worker) |
+| Cloudflare Notifications | the notification-type list has **no** Workers / DO / D1 / R2 entries (Health Checks requires Pro or above) (notifications/notification-available — 2026-04-24 edition) | Do not depend on platform notifications. Send to an operator webhook ourselves (§2-B) |
+| wrangler: named environments | `durable_objects` / `d1_databases` / `r2_buckets` / `ratelimits` / `vars` are **non-inherited** (re-declared per environment). `triggers` / `assets` / `migrations` / `limits` / `observability` are inherited (wrangler config-schema description + configuration docs). A DO binding's `script_name` can bind to another Worker's DO namespace | Hosted-specific bindings live under `env.hosted` (§2-F). The restore worker binds to the production namespace via `script_name` (§2-E) |
+| GitHub: token requests | 2,000/hour/App (secondary. No remaining-observation API — session-48 §1) | Self-counting (§3 row 3). Threshold 1,600/hour (80%), draft value |
 
-## 2. 裁定(候補の列挙 → 上位互換 / 銀の弾丸の探索 → 選定)
+## 2. Rulings (enumerate candidates → search for superior alternatives / silver bullets → select)
 
-### 2-A. 計数の出所(GitHub token 請求・ログインフロー行の作成上限到達・サインアップ拒否)
+### 2-A. Source of counting (GitHub token requests / login-flow row creation cap reached / signup denials)
 
-候補:
+Candidates:
 
-- (a) Workers Analytics Engine への `writeDataPoint`
-- (b) 既存の静的ログ行 + Workers Logs / Logpush 側のクエリ
-- (c) D1 の自前カウンタ行(固定窓。前例: `login_failed_windows` / DO の `lease_windows`)
-- (d) プラットフォーム標準メトリクス(GraphQL / ダッシュボード)
-- (e) 既存の監査行(`auth.login_succeeded` + `auth.login_failed`)からの推定
+- (a) `writeDataPoint` to Workers Analytics Engine
+- (b) existing static log lines + queries on the Workers Logs / Logpush side
+- (c) self-built counter rows in D1 (fixed windows. Precedents: `login_failed_windows` / the DO's `lease_windows`)
+- (d) platform-standard metrics (GraphQL / dashboard)
+- (e) estimation from existing audit rows (`auth.login_succeeded` + `auth.login_failed`)
 
-探索: (a) は書き込み側の規律(識別子を書かない)は守れるが、**読み出しに Account Analytics Read の API トークンを
-worker が持つ**ことになり、閾値判定を worker 内で閉じられない(トークン = 新しい秘密 + 外部呼び出し)。(b) も同じ
-(Logs のクエリ API)。(d) は token 請求(GitHub 側の枠)を観測できない(§3-4 追記 — 自前計数が唯一の観測手段)。
-(e) は `auth.login_failed` が固定窓上限(100/時/バケット)で切り詰められるため洪水時ほど不正確で、抑制マーカーの
-10 の冪からの復元は近似にすぎない。**(c) が上位互換**: 書き込み(1 UPSERT)も読み出し(1 SELECT)も D1 内で閉じ、
-新しい秘密・外部呼び出し・バインディングを要さず、セルフホストでも無設定で動く。同じ信号を 2 経路に書かない規律から
-(a)(b) は併用しない。
+Exploration: (a) can honor write-side discipline (no identifiers), but **reads would give the
+worker an Account Analytics Read API token**, so threshold evaluation cannot close inside the
+worker (token = a new secret + an external call). (b) is the same (Logs' query API). (d) cannot
+observe token requests (a GitHub-side quota) (§3-4 addendum — self-counting is the only means of
+observation). (e) is least accurate exactly during floods because `auth.login_failed` is
+truncated at a fixed-window cap (100/hour/bucket), and reconstruction from the suppression
+markers' powers of 10 is only an approximation. **(c) is the superior alternative**: both write
+(1 UPSERT) and read (1 SELECT) close inside D1, it needs no new secret, external call, or
+binding, and it works unconfigured on self-host. From the discipline of not writing the same
+signal on two paths, (a)(b) are not used alongside.
 
-**採用 (c)**: D1 表 `ops_counters(metric, window_start, count)` — 1 時間の固定窓、`INSERT … ON CONFLICT DO UPDATE SET
-count = count + 1`。書き込み点は 2 つ:
+**Adopt (c)**: D1 table `ops_counters(metric, window_start, count)` — one-hour fixed windows,
+`INSERT … ON CONFLICT DO UPDATE SET count = count + 1`. Two write points:
 
-- `github_token_requests`: `GitHubApi.exchangeCode` の**呼び出し点を装飾**(`countingGitHubApi` — index.ts の
-  buildServices で 1 か所)。web OAuth callback と CLI ハンドオフの両経路が同じ実装を通るため、ハンドラを触らない。
-  成否を問わず 1 計上(GitHub は請求を数える)。**受理面の挙動(拒否・遅延)は変えない** — 計数のみ
-- `cli_flow_capacity`: `CliFlowRepo.createOrMatch` が `"capacity"` を返した点(handlers-auth-cli.ts — 一様エラー
-  ページの直前)。正規運用で起きない事象の検知(AUTH_SPEC §4-1 (4) (iii))
+- `github_token_requests`: **decorates the call site** of `GitHubApi.exchangeCode`
+  (`countingGitHubApi` — one place in index.ts's buildServices). Both the web OAuth callback
+  and the CLI handoff go through the same implementation, so handlers are untouched. Counts 1
+  regardless of success (GitHub counts requests). **Does not change acceptance-surface behavior
+  (rejection, delay)** — counting only
+- `cli_flow_capacity`: the point where `CliFlowRepo.createOrMatch` returns `"capacity"`
+  (handlers-auth-cli.ts — just before the uniform error page). Detection of an event that does
+  not occur in normal operation (AUTH_SPEC §4-1 (4) (iii))
 
-サインアップ拒否の計数は**新しいカウンタを作らない**: AUDIT_SPEC §3.1 が「H3 のトリップワイヤはこの行を数える」と
-規定する `auth.signup_denied` 行(+ `auth.signup_denied_suppressed` マーカー)を D1 `user_audit_events` から窓で数える
-(索引 `uae_event(event, seq)`)。同じく `auth.login_failed_suppressed` マーカーを認証面の洪水の信号にする。
-これらは既に D1 にある記録の読み取りであり、新しい書き込み経路を増やさない(監査に運用の関心を書かない — DC-3)。
+Signup-denial counting **builds no new counter**: the `auth.signup_denied` row (+ the
+`auth.signup_denied_suppressed` marker) that AUDIT_SPEC §3.1 prescribes with "H3's tripwires
+count this row" is counted by window from D1 `user_audit_events` (index `uae_event(event,
+seq)`). Likewise the `auth.login_failed_suppressed` marker becomes the signal for auth-surface
+floods. These are reads of records already in D1 and add no new write path (do not write
+operational concerns into audit — DC-3).
 
-カウンタの増分失敗は握り潰さない: 静的 1 行(`console.warn`)を残して受理処理を続ける(計数は観測であり、
-ログイン経路の可用性に優先しない)。
+Counter-increment failures are not swallowed: a static one-liner (`console.warn`) is left and
+acceptance processing continues (counting is observation and does not take priority over
+availability of the login path).
 
-### 2-B. 閾値判定と通知経路
+### 2-B. Threshold evaluation and the notification path
 
-候補:
+Candidates:
 
-- (a) worker の `scheduled`(毎時 cron)で判定し、運営の webhook(Workers Secret `OPS_ALERT_WEBHOOK_URL`)へ POST
-- (b) GitHub Actions cron が `wrangler d1 execute` で D1 を読み判定(通知 = ワークフロー失敗の GitHub 通知)
-- (c) Cloudflare Notifications(プラットフォーム通知)
-- (d) Analytics Engine / Logs のダッシュボード(人が見る)
+- (a) evaluate in the worker's `scheduled` (hourly cron) and POST to an operator webhook
+  (Workers Secret `OPS_ALERT_WEBHOOK_URL`)
+- (b) a GitHub Actions cron reads D1 via `wrangler d1 execute` and evaluates (notification =
+  the GitHub notification of a workflow failure)
+- (c) Cloudflare Notifications (platform notifications)
+- (d) Analytics Engine / Logs dashboards (a human looks)
 
-探索: (c) は一次情報で Workers 系の通知種別が無く脱落。(d) は通知にならない。(b) は「D1 export ワークフローが
-既に API トークンを持つ」ことを利用でき、worker に秘密を足さない点で魅力 — **銀の弾丸候補**として検討した。しかし
-(1) 判定入力の主部(退避の状況・DO 総量の census — §2-C)は worker 内にしか無く、外へ出すには追加の読み出し経路が要る、
-(2) GitHub Actions cron の実行は数分〜数十分遅れ・欠落しうる(Actions の既知挙動)、(3) ワークフロー失敗通知は
-「失敗」1 種で解消通知を持たない、(4) セルフホスト運営者には使えない。(a) は worker 内で判定が閉じ、通知先が
-webhook 1 本(Slack / Discord / PagerDuty / メール中継のいずれも受け口を持つ)で汎用。**採用 (a)**。ただし D1 総量
-だけは worker 内から実測できない(`file_size` は wrangler / REST API)ため、export ワークフローが `wrangler d1 info` で
-判定する(b の限定適用 — 同じ信号を 2 経路に書かない: worker 側では D1 総量を扱わない)。
+Exploration: (c) drops out — the primary source lists no Workers-family notification types.
+(d) produces no notifications. (b) was attractive in that "the D1 export workflow already holds
+an API token" and adds no secret to the worker — examined as a **silver-bullet candidate**. But
+(1) the bulk of evaluation inputs (backup status, the DO-total census — §2-C) exists only
+inside the worker, and getting it out would require an additional read path, (2) GitHub Actions
+cron runs can be delayed minutes to tens of minutes or dropped (known Actions behavior), (3)
+workflow-failure notification has only the single "failure" kind and no resolved notification,
+(4) it does not work for self-host operators. (a) closes evaluation inside the worker, and a
+single webhook destination (Slack / Discord / PagerDuty / email relays all offer endpoints) is
+general. **Adopt (a)**. However, only D1 total cannot be measured from inside the worker
+(`file_size` is wrangler / REST API), so the export workflow evaluates it via `wrangler d1 info`
+(a limited application of b — same signal on a single path: the worker side does not handle D1
+total).
 
-通知の形: `OPS_ALERT_WEBHOOK_URL`(未設定 = 送信しない。**既定は無効**)へ JSON を POST。本文は**静的な信号名 +
-集計値 + 閾値 + 状態(firing / resolved)**のみ。識別子は載らない。判定状態は D1 `ops_state` に保持し、**遷移時
-(inactive → active / active → inactive)に通知**、active が続く間は 24 時間ごとの再通知(起草値)。webhook 未設定でも
-active な信号は静的 1 行を Workers Logs に残す(セルフホストの hook)。送信失敗は握り潰さず静的 1 行 + 次回再試行
-(状態は更新しない = 次の評価で再送)。
+Notification form: POST JSON to `OPS_ALERT_WEBHOOK_URL` (unset = nothing is sent. **Disabled by
+default**). The body carries **a static signal name + aggregate value + threshold + state
+(firing / resolved)** only. No identifiers ride. Evaluation state is kept in D1 `ops_state`, and
+**notification fires on transition (inactive → active / active → inactive)**; while a signal
+stays active it is re-notified every 24 hours (draft value). Even with no webhook configured,
+an active signal leaves a static line in Workers Logs (the self-host hook). Send failures are
+not swallowed: a static line + retry next time (state is not updated = resent at the next
+evaluation).
 
-### 2-C. H2 の警告行(storage-guard.ts)を信号に接続する
+### 2-C. Connecting H2's warning lines (storage-guard.ts) to a signal
 
-候補:
+Candidates:
 
-- (a) 警告行の発火時に DO から D1 へフラグ行を書く(DO は `env.DB` を持つ)
-- (b) Workers Logs をクエリして「出た DO id」を数える
-- (c) 退避スイープが各 DO を訪ねるとき、同じ meter(`StorageMeter.databaseSizeBytes`)と同じ純関数
-  (`storageGuardDecision`)で判定を返してもらい、**警告域 / 拒否域のプロジェクト数を census として集計**する
+- (a) on warning-line firing, write a flag row from the DO to D1 (the DO holds `env.DB`)
+- (b) query Workers Logs and count "which DO ids emitted it"
+- (c) when the backup sweep visits each DO, have it evaluate with the same meter
+  (`StorageMeter.databaseSizeBytes`) and the same pure function (`storageGuardDecision`), and
+  **aggregate the counts of projects in the warning / rejection bands as a census**
 
-探索: (a) は受理経路のホットパスに D1 書き込みを足し、失敗時の意味論(受理を止めるのか)を増やす。「DO インスタンス
-生存中 1 回」の規律から件数の意味も弱い(再起動で再発)。(b) は API トークンを要する(§2-A と同じ理由で棄却)。
-(c) は**新しい書き込み経路を作らず**、hosted-design §5-2 の信号「警告閾値到達プロジェクト数」をそのまま gauge として
-出せる。スイープは毎時走るがプロジェクトごとの訪問間隔は最大 24 時間(§2-D の skip 規則でも size は毎回読む) —
-即時性は既存の警告行(Workers Logs で「出たか」)が担い、census が件数を担う。**採用 (c)**。storage-guard.ts の文言・
-1 回規律は無変更(接続点は meter と判定関数の共有のみ)。
+Exploration: (a) adds a D1 write to the hot path of the acceptance route and adds failure
+semantics (does it stop acceptance?). The "once per DO instance lifetime" discipline also
+weakens what the count means (restarts re-fire). (b) needs an API token (rejected for the same
+reason as §2-A). (c) **builds no new write path** and can emit hosted-design §5-2's "number of
+projects at warning threshold" signal directly as a gauge. The sweep runs hourly but each
+project's visit interval is up to 24 hours (under §2-D's skip rule, size is still read every
+time) — immediacy is carried by the existing warning line ("did it fire", in Workers Logs) and
+the census carries the count. **Adopt (c)**. storage-guard.ts's wording and once-discipline are
+unchanged (the only connection point is sharing the meter and the decision function).
 
-### 2-D. DO → R2 退避の単位・完全 / 増分・トリガー・命名・保持・所要時間
+### 2-D. DO → R2 backup: unit, full/incremental, trigger, naming, retention, duration
 
-候補(転送の主体):
+Candidates (transfer principal):
 
-- (a) worker が DO から RPC でチャンクを引き R2 へ書く
-- (b) **DO 自身が permit 下で自分の SQLite を読み、R2 バインディングへストリーム(multipart)する**
-- (c) DO alarm による自己スケジュール退避(各 DO が自分で毎日起きる)
+- (a) the worker pulls chunks from the DO over RPC and writes to R2
+- (b) **the DO itself, under permit, reads its own SQLite and streams (multipart) to the R2
+  binding**
+- (c) self-scheduled backup via DO alarms (each DO wakes itself daily)
 
-候補(単位): 完全スナップショット / 監査 seq・チェーン seq のウォーターマークによる増分。
+Candidates (unit): full snapshot / incremental by watermarks on audit seq and chain seq.
 
-探索: (a) は RPC 32 MiB 上限と「チャンク間の一貫性」(permit を RPC 越しに保持できない)で脱落。(c) は D1 の
-`projects` 列挙・スイープの予算管理が不要になる**上位互換候補**だったが、(1) 全 DO(非アクティブ含む)が毎日起きて
-DO 請求が発生、(2) 退避の成否・census を集約する場所(D1)へ各 DO が書き戻す経路が要る、(3) alarm の設定は DO 生成時
-(init)の受理経路に入り「製品の受理面に変更なし」に触れる — で見送り。(b) は permit の中で読み出しと書き込みが
-一貫し(同一タスクの直列化 — chain-do.ts 冒頭の不変条件)、データは DO → R2 へ直行する。**採用 (b)**。
+Exploration: (a) drops out on the RPC 32 MiB cap and on "consistency across chunks" (a permit
+cannot be held across RPC). (c) was a **superior-alternative candidate** because it removes the
+need to enumerate D1 `projects` and manage the sweep's budget, but was declined because (1)
+every DO (including inactive ones) would wake daily and incur DO billing, (2) a path for each
+DO to write back backup success/census to an aggregation point (D1) would be needed, (3) alarm
+setup enters the acceptance path of DO creation (init) and touches "no change to the product's
+acceptance surface". With (b), reads and writes are consistent inside the permit (same-task
+serialization — the invariant at the top of chain-do.ts), and data goes straight DO → R2.
+**Adopt (b)**.
 
-増分は**採らない**: 削除(環境削除カスケード・ラップ削除・tombstone)の追跡が要り、復元の正しさの検証面が増える。
-代わりに **skip 規則**で費用を抑える — `(auditMaxSeq, chainHeadSeq, attestationMark)` が前回成功時と同じ**かつ**前回成功から
-7 日以内なら退避しない(全変更が監査行 / チェーン行を伴う。例外はヘッド申告の upsert — チェーン行も監査行も書かない
-〔AUTH_SPEC §16-1〕ため第三成分 `head_attestations` の `MAX(accepted_at)` を加える〔PR #137 レビュー〕。残る例外は
-リース窓 / 束縛の可変行で、再生成可能な運用状態 — §4-2 の非可搬項)。7 日で必ず再退避するのは、ライフ
-サイクル削除(35 日)により「不変のまま退避物が消える」を防ぐため。
+Incremental is **not taken**: tracking deletions (environment-delete cascades, wrap deletions,
+tombstones) would be needed and the verification surface for restore correctness grows. Instead
+a **skip rule** keeps cost down — skip the backup when `(auditMaxSeq, chainHeadSeq,
+attestationMark)` equal their last-success values **and** the last success was within 7 days
+(every change is accompanied by an audit row / chain row. The exception is the head-declaration
+upsert, which writes neither a chain row nor an audit row [AUTH_SPEC §16-1], so the third
+component `head_attestations`' `MAX(accepted_at)` was added [PR #137 review]. The remaining
+exception is mutable lease-window / binding rows — reproducible operational state, the
+non-portable items of §4-2). Re-backing-up at least every 7 days prevents "unchanged content
+whose backup vanishes" via lifecycle deletion (35 days).
 
-一貫性の対価 = permit 保持時間: 退避中は当該プロジェクトのリクエストが待たされる。所要時間はサイズ比例で、
-ベータ規模(KB〜MB)ではミリ秒〜秒。上界(9 GB)は §4-2 のとおり 1 回の cron 内に収まらず、`OPS_BACKUP_MAX_BYTES`
-(起草値 2 GB)を超える DO は**退避せず `oversize` として信号に載せる**(黙って落とさない。人間が閾値を上げるか
-プラットフォーム耐久性に依拠するかを決める)。
+The cost of consistency = permit hold time: requests to the project in question wait during the
+backup. Duration scales with size; at beta scale (KB–MB) it is milliseconds to seconds. The
+upper bound (9 GB) does not fit in one cron run per §4-2, so DOs exceeding
+`OPS_BACKUP_MAX_BYTES` (draft value 2 GB) are **not backed up and are surfaced on the signal as
+`oversize`** (never silently dropped. A human decides whether to raise the threshold or rely on
+platform durability).
 
-トリガー: 既存の `scheduled` ハンドラ(wrangler.jsonc `triggers.crons`)に**毎時 cron を 1 本追加**し、`controller.cron`
-で分岐する。スイープは D1 `projects` を id 昇順で列挙し、`ops_state` のカーソルから再開・壁時計 10 分(起草値)で
-打ち切る。
+Trigger: **add one hourly cron** to the existing `scheduled` handler (wrangler.jsonc
+`triggers.crons`) and branch on `controller.cron`. The sweep enumerates D1 `projects` in
+ascending id order, resumes from the `ops_state` cursor, and is cut off at a 10-minute wall
+clock (draft value).
 
-オブジェクト命名: `do/<doIdHex>/<takenAt ISO>.ndjson.gz` — `doIdHex` は `ctx.id.toString()`(`idFromName(projectId)` の像 —
-一方向。AUTH_SPEC §12-8 の運営側特定手段と同じ識別子)。**キー・メタデータ・マニフェストにプロジェクト ID を載せない**。
-内容(NDJSON gzip): 先頭にヘッダ(format / schemaVersion / takenAt / doIdHex)、表ごとに列名行 + 行、末尾にトレーラ
-(表ごとの行数・chainHeadSeq・auditMaxSeq・監査ヘッド hex〔列が最新のときのみ — 実体化の書き込みはしない〕・
-databaseSize)。トレーラ欠落 = 途中失敗の退避物として復元側が拒否する。
+Object naming: `do/<doIdHex>/<takenAt ISO>.ndjson.gz` — `doIdHex` is `ctx.id.toString()` (the
+image of `idFromName(projectId)` — one-way. The same identifier as AUTH_SPEC §12-8's
+operator-side identification means). **Project IDs are not placed in keys, metadata, or the
+manifest**. Contents (NDJSON gzip): a header first (format / schemaVersion / takenAt /
+doIdHex), then a column-name row + rows per table, and a trailer at the end (per-table row
+counts · chainHeadSeq · auditMaxSeq · audit-head hex [only when the column is current — no
+materialization write is done] · databaseSize). A missing trailer = a partial-failure backup
+that the restore side rejects.
 
-保持: バケットのライフサイクル規則(`--expire-days 35`〔起草値〕・`--abort-multipart-days 1`)。アプリ側で削除しない
-(削除権限を worker に持たせない設計 — R2 binding は put/get のみ使う)。
+Retention: bucket lifecycle rules (`--expire-days 35` [draft value] · `--abort-multipart-days
+1`). The app side never deletes (a design that does not give the worker delete permission — the
+R2 binding uses only put/get).
 
-暗号化: R2 は保存時暗号化を既定で行う。**アプリ層で追加の暗号化(運営鍵で AES-GCM 等)は行わない** — CLAUDE.md
-「仕様にない暗号操作を実装しない」(CRYPTO_SPEC が唯一の正)に抵触するため。内容は E2EE 暗号文 + 公開メタで、DO に
-置いてある形と同一(運営が読める情報は増えない)。バケットは非公開・専用 API トークンのみ。追加層の要否は §7 O8 —
-**2026-09-03 所有者裁定: 不要・恒久**(R2 に到達できる攻撃者は DO 本体にも到達でき、退避物だけを守っても防御線に
-ならない)。R2 のアクセス経路が増えるときに再訪する。
+Encryption: R2 performs encryption at rest by default. **No additional app-layer encryption
+(e.g. AES-GCM under an operator key) is applied** — it would run afoul of CLAUDE.md "do not
+implement cryptographic operations absent from the spec" (CRYPTO_SPEC is the single source of
+truth). The content is E2EE ciphertext + public metadata, identical in form to what sits in the
+DO (the operator can read nothing more). The bucket is private, accessible by the dedicated API
+token only. Whether an extra layer is needed is §7 O8 — **2026-09-03 owner ruling: unnecessary,
+permanently** (an attacker who can reach R2 can reach the DO itself, so protecting only the
+backups adds no defensive line). Revisit when R2 access paths grow.
 
-### 2-E. 復元経路(運営専用・非 HTTP・非常設)
+### 2-E. Restore path (operator-only, non-HTTP, non-permanent)
 
-候補:
+Candidates:
 
-- (a) 別クラス名の DO へ復元する専用の worker エントリ(HTTP を持たない)
-- (b) `wrangler` からの一回性スクリプト
-- (c) 復元専用の環境(別 worker 名)へのデプロイ
-- (d) 本番 worker に運営向け復元エンドポイント(認証付き HTTP)
+- (a) a dedicated worker entry that restores into a DO of a different class name (no HTTP)
+- (b) a one-off script from `wrangler`
+- (c) deploy to a restore-dedicated environment (a separate worker name)
+- (d) an operator-facing restore endpoint (authenticated HTTP) on the production worker
 
-探索: (d) は裁定 DC の棄却案(運営向け管理 API)そのもので除外。(b) は DO へ到達する手段が wrangler に無い(DO に
-触れるのは worker の fetch / cron / alarm / RPC のみ)。(a) と (c) は同じ方向で、問題は「HTTP を持たない worker を
-どう起動するか」— **cron + R2 のジョブファイル**が解: 復元 worker は毎分の cron で `restore/jobs/` を列挙し、ジョブ
-(退避オブジェクトのキーと target)を実行して `restore/results/` に結果を書く。運営は `wrangler r2 object put` でジョブを
-置き、`get` で結果を読む。HTTP 面ゼロ・起動は R2 への書き込み権限(= 運営)のみ・復元 worker は作業のときだけ
-`wrangler deploy -c wrangler.restore.jsonc` し、終わったら `wrangler delete`(非常設)。**採用 (a)+(c) の合成**。
+Exploration: (d) is ruling DC's rejected option (an operator-facing admin API) itself — excluded.
+(b) has no means of reaching a DO from wrangler (only a worker's fetch / cron / alarm / RPC can
+touch a DO). (a) and (c) point the same way; the problem is "how to start a worker that has no
+HTTP" — **cron + R2 job files** is the answer: the restore worker enumerates `restore/jobs/` on
+a per-minute cron, executes the job (the backup object's key and target), and writes the result
+to `restore/results/`. The operator places jobs with `wrangler r2 object put` and reads results
+with `get`. Zero HTTP surface, startup requires only write permission to R2 (= the operator),
+and the restore worker exists only while work runs (`wrangler deploy -c wrangler.restore.jsonc`,
+then `wrangler delete` when done — non-permanent). **Adopt the composition of (a)+(c)**.
 
-復元の受け側は本番 DO クラスの RPC `opsRestore(objectKey)`(worker 内部 RPC — HTTP ハンドラから呼ばれない)で、
-**空の DO(chain_entries が空)にのみ書く**。既存内容を上書きする経路は存在しない(空でなければ `not-empty` で拒否)。
-部分復元(途中クラッシュ)は「chain_entries を最後に書く」規則で検出でき、再実行時は非チェーン表を消してやり直す
-(チェーンが無い DO は製品から見て未初期化)。スキーマ版は退避時と一致を要求する(不一致は `schema-mismatch` — 運営が
-該当版をデプロイしてから復元する)。
+The restore receiver is the production DO class's RPC `opsRestore(objectKey)` (an
+internal-worker RPC — not called from HTTP handlers), and **writes only to an empty DO
+(chain_entries empty)**. No path exists that overwrites existing content (non-empty is rejected
+with `not-empty`). A partial restore (a mid-way crash) is detectable via the rule "chain_entries
+is written last", and on re-run the non-chain tables are cleared first and the restore is
+restarted (a DO with no chain is uninitialized from the product's perspective). The schema
+version is required to match the backup's (a mismatch is `schema-mismatch` — the operator
+deploys the matching version, then restores).
 
-復元 worker は `script_name: maruhi-server-hosted`(wrangler の名前付き環境は `<name>-<env>` の別 Worker を公開する —
-`wrangler deploy --env hosted` の実体。CI 8c が env.hosted の実効 name と突合)で本番名前空間へ束縛する(target `production`)ほか、自分の DO クラス
-`RestoreDrillDO`(ProjectChainDO を継承、名前空間は復元 worker 側)を持ち、**演習(drill)は本番名前空間に触れず**
-drill 名前空間へ復元して検証する(target `drill`)。DO 名は退避物のチェーン genesis(seq 1 の `entry_hash_hex` =
-プロジェクト ID)から導出するため、ジョブファイルにもプロジェクト ID を書かない。
+The restore worker binds to the production namespace via `script_name: maruhi-server-hosted`
+(wrangler named environments publish a separate Worker `<name>-<env>` — the substance of
+`wrangler deploy --env hosted`. CI 8c cross-checks env.hosted's effective name) (target
+`production`), and additionally holds its own DO class `RestoreDrillDO` (extends ProjectChainDO;
+the namespace lives on the restore worker's side), so **drills do not touch the production
+namespace** — they restore into the drill namespace and verify there (target `drill`). The DO
+name is derived from the backup's chain genesis (seq 1's `entry_hash_hex` = project ID), so job
+files carry no project ID either.
 
-検証: 復元 RPC は `{ chainHeadSeq, chainHeadHashHex, auditMaxSeq, auditHeadHashHex, rowCounts }` を返し、結果ファイルに
-写す。運営は退避物のトレーラと突合する(自動テストは同じ突合を実 DO で固定する — §6)。
+Verification: the restore RPC returns `{ chainHeadSeq, chainHeadHashHex, auditMaxSeq,
+auditHeadHashHex, rowCounts }`, which is copied to the result file. The operator cross-checks it
+against the backup's trailer (an automated test pins the same cross-check against a real DO — §6).
 
-### 2-F. バインディングの optional 化(セルフホスト経路を壊さない)
+### 2-F. Making bindings optional (without breaking the self-host path)
 
-候補:
+Candidates:
 
-- (a) 最上位の wrangler.jsonc に R2 binding を足す(wrangler の自動プロビジョニングに任せる)
-- (b) `env.hosted` 名前付き環境に hosted 固有バインディングを置き、`wrangler deploy --env hosted` で運営がデプロイ
-- (c) 別ファイル `wrangler.hosted.jsonc`(全複製)
-- (d) 生成スクリプトで base + overlay から設定を合成
-- (e) バインディング無しで R2 の S3 API を Secret(アクセスキー)で叩く
+- (a) add the R2 binding to the top-level wrangler.jsonc (leave it to wrangler's automatic
+  provisioning)
+- (b) put hosted-specific bindings under a `env.hosted` named environment; the operator deploys
+  with `wrangler deploy --env hosted`
+- (c) a separate file `wrangler.hosted.jsonc` (full duplication)
+- (d) synthesize the config from base + overlay with a generation script
+- (e) hit R2's S3 API with a Secret (access key) and no binding
 
-探索: (a) は R2 の契約(支払い方法の登録)が無いアカウントで `wrangler deploy` 一発が**壊れる**(Deploy ボタン経路も
-同じ)ため脱落。(e) は SigV4 署名を worker に実装する = 仕様外の暗号操作に近づき、長期資格情報を worker に持たせる
-(binding は資格情報を持たない)。(c) は全複製で drift が起きる。(d) は自前ツール。(b) は wrangler の標準機構で、非継承
-キー(`durable_objects` / `d1_databases` / `ratelimits` / `r2_buckets`)の再宣言 = 部分複製が対価。**採用 (b)**。drift は
-`scripts/check-hosted-config.ts`(hosted 環境のバインディングが最上位を包含することを検査)を CI 8c(dry-run)と同時に
-走らせて塞ぐ。実行時は `env.OPS_BACKUP_BUCKET` / `env.OPS_ALERT_WEBHOOK_URL` の**不在 = 無効**(fail-open ではなく
-「機能なし」— 無言にはせず、スイープは静的 1 行で「バインディング無しのため退避しない」を残す〔isolate ごと 1 回〕)。
-Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy 側の宣言に移る。
+Exploration: (a) drops out because a single `wrangler deploy` on an account without an R2
+contract (payment-method registration) **breaks** (the Deploy-button path is identical). (e)
+means implementing SigV4 signing in the worker = approaching off-spec cryptography, and gives
+the worker long-lived credentials (bindings carry no credentials). (c) duplicates everything
+and drifts. (d) is a self-built tool. (b) is wrangler's standard mechanism, where re-declaring
+the non-inherited keys (`durable_objects` / `d1_databases` / `ratelimits` / `r2_buckets`) =
+partial duplication is the price. **Adopt (b)**. Drift is blocked by running
+`scripts/check-hosted-config.ts` (verifies that the hosted environment's bindings include the
+top level) alongside CI 8c (dry-run). At runtime, **absence of `env.OPS_BACKUP_BUCKET` /
+`env.OPS_ALERT_WEBHOOK_URL` = disabled** (not fail-open but "feature absent" — not silent; the
+sweep leaves a static line "no binding, not backing up" [once per isolate]). When Alchemy v2
+(gap 10) happens, the `env.hosted` contents move as-is into Alchemy declarations.
 
-### 2-G. D1 定期 export の実行主体・暗号化・保管
+### 2-G. Periodic D1 export: principal, encryption, storage
 
-候補: (a) GitHub Actions cron + `wrangler d1 export`、(b) 運営端末の手動手順、(c) worker から D1 を読んで R2 へ書く。
+Candidates: (a) GitHub Actions cron + `wrangler d1 export`, (b) a manual procedure on the
+operator's terminal, (c) a worker reads D1 and writes to R2.
 
-探索: (c) は D1 の全表を worker で走査する自前ダンプ(Time Travel と `wrangler d1 export` が既にある機能の再実装)。
-(b) は忘れる。(a) は `wrangler` が CI で使える(Deploy dry-run の前例)。**採用 (a)** — `.github/workflows/ops-backup.yml`
-(毎日 02:41 UTC 起草値 + 手動起動)。成果物は `age` 公開鍵(GitHub Variables に受信者、秘密鍵は運営端末のみ)で暗号化
-し、同じ R2 バケットの `d1/<timestamp>.sql.age` へ `wrangler r2 object put`。GitHub Actions の artifact には**置かない**
-(公開後のリポジトリでは artifact が第三者に取得されうる)。ワークフローは `vars.OPS_BACKUP_ENABLED == 'true'` の
-ときだけ実行(フォークで無駄に失敗しない)。同ワークフローが `wrangler d1 info --json` の `file_size` を 5 GB と比較して
-失敗させる(D1 総量トリップワイヤ — §2-B)。`age` の秘密鍵・API トークン・成果物はリポジトリに置かない。
+Exploration: (c) is a self-built dump iterating every D1 table inside the worker
+(re-implementing what Time Travel and `wrangler d1 export` already do). (b) gets forgotten.
+(a) can use `wrangler` in CI (the Deploy dry-run precedent). **Adopt (a)** —
+`.github/workflows/ops-backup.yml` (daily 02:41 UTC, draft value + manual dispatch). Artifacts
+are encrypted to an `age` public key (recipient in GitHub Variables; the secret key lives only
+on the operator's terminal) and put to `d1/<timestamp>.sql.age` in the same R2 bucket via
+`wrangler r2 object put`. Artifacts are **not** placed in GitHub Actions artifacts (on a public
+repository, artifacts can be fetched by third parties). The workflow runs only when
+`vars.OPS_BACKUP_ENABLED == 'true'` (so forks do not fail needlessly). The same workflow
+compares `wrangler d1 info --json`'s `file_size` against 5 GB and fails (the D1-total
+tripwire — §2-B). The `age` secret key, the API token, and artifacts are not placed in the
+repository.
 
-API トークンの権限(**2026-09-03 実測で訂正** — 起草は「D1 Read + R2 Write」): **D1: Edit** と **Workers R2 Storage: Edit**
-(いずれも Account スコープ)。`d1 export` は Read では `Authentication error [10000]`(export ジョブの作成が書き込み扱い)、
-`r2 object put` はバケット限定の "Workers R2 Storage Bucket Item: Edit" では 403(wrangler の REST 経路はアカウント
-レベルの権限を要求する。バケット限定スコープは S3 互換 API 向け)。運営の CI 用には**ユーザーに紐づかない Account API
-token** を使う(発行者の離脱・権限変更に影響されない)。権限変更の反映には数分かかることがある(編集直後の 403 は待つ)。
+API-token permissions (**corrected by measurement on 2026-09-03** — the draft was "D1 Read +
+R2 Write"): **D1: Edit** and **Workers R2 Storage: Edit** (both account-scoped). `d1 export`
+with Read yields `Authentication error [10000]` (creating the export job counts as a write),
+and `r2 object put` with bucket-scoped "Workers R2 Storage Bucket Item: Edit" yields 403
+(wrangler's REST path requires account-level permission. Bucket-scoped permissions are for the
+S3-compatible API). For operator CI use an **Account API token not tied to a user** (unaffected
+by the issuer leaving or permission changes). Permission changes can take a few minutes to
+propagate (a 403 right after editing means wait).
 
-## 3. 監視信号の一覧(hosted-design §5-2 の実装形)
+## 3. Monitoring-signal catalog (the implementation form of hosted-design §5-2)
 
-| # | 対象 | 信号(出所) | 収集経路 | 閾値(起草値) | 通知 | 誤検知と対応(runbook 1 行) |
+| # | target | signal (source) | collection path | threshold (draft) | notification | false positives and response (1-line runbook) |
 |---|---|---|---|---|---|---|
-| 1 | D1 総量(gap 4) | `wrangler d1 info --json` の `file_size` | ops-backup ワークフロー(毎日) | ≥ 5 GB でジョブ失敗 | GitHub の失敗通知(メール) | 誤検知なし(実測)。対応: `user_audit_events` の支配項を確認 → 監査専用 D1 への分離(§3-3 予約 — スキーマ同型のため機械的。手順: 新 DB 作成 → `D1_AUDIT` binding 追加 → D1AuditRepo の書き込み先切替の PR)|
-| 2 | DO 総量ガード | 退避スイープの census(`storageGuardDecision` を各 DO で評価) | 毎時 cron → D1 `ops_backups.storage_level` → 評価 | warn ≥ 1 件 / reject ≥ 1 件 | webhook | 誤検知なし。対応: Workers Logs の警告行の DO id と `ops_backups.do_id_hex` を突合 → テナントへ削除の案内(SELF_HOSTING の説明) |
-| 3 | GitHub token 請求 | `ops_counters.github_token_requests`(exchangeCode 呼び出し点) | 毎時評価(直前の完了窓 + 進行中窓) | ≥ 1,600/時(2,000 の 80%) | webhook | サインアップ集中(招待コード配布直後)で正当に上がる。対応: 招待コード発行ペースを落とす(hosted-design §3-4 (1))。スロットリングは gap 9 の領分(本タスク外) |
-| 4 | ログインフロー行の作成上限到達 | `ops_counters.cli_flow_capacity`(createOrMatch = capacity) | 同上 | ≥ 1 | webhook | 正規運用で起きない(AUTH_SPEC §4-1 (4) (iii))。対応: `cli_login_flows` の未消費行を D1 で確認 → 異常な併走なら WAF で発信元を絞る |
-| 5 | サインアップ拒否 | `user_audit_events` の `auth.signup_denied`(+ `_suppressed`) | 毎時評価 | ≥ 20/時、または suppressed ≥ 1 | webhook | invite 制での善意の無駄打ちで上がる。対応: 拒否理由の分布(reason)を D1 で見る → 案内文言 / 招待配布の見直し |
-| 6 | 認証面の洪水 | `auth.login_failed_suppressed` マーカー(AUDIT_SPEC §3.1) | 毎時評価 | ≥ 1 | webhook | 対応: 429 率(ダッシュボード)と併読 → WAF レート制限(SELF_HOSTING 推奨値)を強める |
-| 7 | 退避の遅れ | `ops_backups`: 最終成功から **再退避間隔(7 日)+ 1 日** を超えたプロジェクト数・連続失敗 ≥ 3 のプロジェクト数・`oversize` | 毎時評価 | いずれも ≥ 1 | webhook | 遅れの閾値は再退避間隔から導出する(独立に置くと skip され続ける休眠プロジェクトが恒常に遅れに見える — PR #137 レビュー)。連続失敗: Workers Logs の静的行(failure code)を見る。oversize: 閾値引き上げの判断(§4-2) |
-| 8 | 可用性 | 外形監視(`GET /auth/config` の 200 — 既存の未認証・状態なし面) | 外部サービス(人間タスク) | 連続 3 回失敗で page | 外部サービスの通知 | 専用 health エンドポイントは作らない(DC-6) |
-| 9 | エラー率 | Workers ダッシュボードの 5xx 率・DO エラー(プラットフォーム標準メトリクス) | 人が見る(ベータ規模) | ベースライン逸脱 | — | 自前収集しない(同じ信号を 2 経路に書かない) |
+| 1 | D1 total (gap 4) | `wrangler d1 info --json`'s `file_size` | ops-backup workflow (daily) | job fails at ≥ 5 GB | GitHub failure notification (email) | no false positives (measured). Response: check the dominant terms of `user_audit_events` → separate into a dedicated audit D1 (§3-3 reservation — schema-identical so mechanical. Procedure: create a new DB → add a `D1_AUDIT` binding → a PR switching D1AuditRepo's write target) |
+| 2 | DO total guard | the backup sweep's census (`storageGuardDecision` evaluated on each DO) | hourly cron → D1 `ops_backups.storage_level` → evaluation | warn ≥ 1 / reject ≥ 1 | webhook | no false positives. Response: cross-check the DO id in the Workers Logs warning line against `ops_backups.do_id_hex` → guide the tenant toward deletion (the SELF_HOSTING explanation) |
+| 3 | GitHub token requests | `ops_counters.github_token_requests` (the exchangeCode call site) | hourly evaluation (last completed window + in-flight window) | ≥ 1,600/hour (80% of 2,000) | webhook | legitimately rises on signup concentration (right after invitation-code distribution). Response: slow the invitation-code issuance pace (hosted-design §3-4 (1)). Throttling is gap 9's territory (out of this task) |
+| 4 | login-flow row creation cap reached | `ops_counters.cli_flow_capacity` (createOrMatch = capacity) | same | ≥ 1 | webhook | does not occur in normal operation (AUTH_SPEC §4-1 (4) (iii)). Response: check `cli_login_flows` unconsumed rows in D1 → if abnormal parallelism, narrow the source with the WAF |
+| 5 | signup denials | `auth.signup_denied` (+ `_suppressed`) rows in `user_audit_events` | hourly evaluation | ≥ 20/hour, or suppressed ≥ 1 | webhook | rises on good-faith wasted attempts under invite-gating. Response: look at the distribution of denial reasons in D1 → revisit guidance wording / invitation distribution |
+| 6 | auth-surface flood | `auth.login_failed_suppressed` markers (AUDIT_SPEC §3.1) | hourly evaluation | ≥ 1 | webhook | Response: read alongside the 429 rate (dashboard) → strengthen WAF rate limits (SELF_HOSTING recommended values) |
+| 7 | backup lag | `ops_backups`: number of projects exceeding **re-backup interval (7 days) + 1 day** since last success · number of projects with ≥ 3 consecutive failures · `oversize` | hourly evaluation | each ≥ 1 | webhook | the lag threshold is derived from the re-backup interval (placed independently, dormant projects that keep being skipped would look permanently late — PR #137 review). Consecutive failures: read the static line (failure code) in Workers Logs. oversize: the decision to raise the threshold (§4-2) |
+| 8 | availability | external monitoring (`GET /auth/config` returning 200 — an existing unauthenticated, stateless surface) | external service (human task) | page on 3 consecutive failures | the external service's notification | no dedicated health endpoint is built (DC-6) |
+| 9 | error rate | 5xx rate on the Workers dashboard · DO errors (platform-standard metrics) | a human looks (beta scale) | baseline deviation | — | no self-collection (same signal on a single path) |
 
-通知は webhook 1 本(§2-B)。すべての信号は「静的な信号名 + 集計値」で、識別子を含まない。
+Notifications go over a single webhook (§2-B). Every signal is "a static signal name + aggregate
+value" and carries no identifiers.
 
-## 4. バックアップ設計
+## 4. Backup design
 
 ### 4-1. D1
 
-- **Time Travel**(Paid 30 日 PITR — 常時有効・追加費用なし)が第一の復旧手段(誤操作・論理破壊)
-- **定期 export**(§2-G): 毎日 1 回、`age` 暗号化、R2 `d1/`、ライフサイクルで 35 日保持(起草値)。export 中は D1 が
-  他リクエストをブロックする(一次情報)ため低トラフィック時刻に置く。含まれるのは D1 の内容そのもの(ユーザー・
-  セッション / トークンの**ハッシュ**・監査 — 生値秘密は元より無い)
-- 鍵の所在: `age` 受信者(公開鍵)= GitHub Variables、秘密鍵 = 運営端末(OS キーチェーン等)。API トークン
-  (D1: Edit + Workers R2 Storage: Edit — §2-G の実測訂正)= GitHub Secrets
-- 実測(2026-09-03 手動起動 — D1 295 KB・219 行): ジョブ全体 25 秒(依存インストール 10 秒・`age` インストール
-  10〜24 秒・**export 3 秒**・暗号化 < 1 秒・R2 upload 2 秒・trip-wire 2 秒)。成果物 16.6 KB。02:41 UTC の起草時刻は
-  この規模では意味を持たない(ブロックが観測できない)ため据え置き — ユーザー基盤の時間帯分布が分かったら改める
+- **Time Travel** (Paid 30-day PITR — always on, no extra cost) is the first recovery resort
+  (mis-operation, logical corruption)
+- **Periodic export** (§2-G): once daily, `age`-encrypted, to R2 `d1/`, kept 35 days by
+  lifecycle (draft value). Since D1 blocks other requests during export (primary source), it is
+  placed at a low-traffic time. What is included is D1's own contents (users, session/token
+  **hashes**, audit — no raw secret values ever existed)
+- Key locations: `age` recipient (public key) = GitHub Variables; secret key = operator
+  terminal (OS keychain etc.). The API token (D1: Edit + Workers R2 Storage: Edit — §2-G's
+  measured correction) = GitHub Secrets
+- Measured (manual dispatch on 2026-09-03 — D1 295 KB · 219 rows): whole job 25 s (dependency
+  install 10 s · `age` install 10–24 s · **export 3 s** · encryption < 1 s · R2 upload 2 s ·
+  tripwire 2 s). Artifact 16.6 KB. The 02:41 UTC draft time carries no meaning at this scale
+  (the blocking is unobservable), so it is kept as-is — revisit once the user base's time-zone
+  distribution is known
 
 ### 4-2. DO → R2
 
-- 単位 = プロジェクト DO 1 つ = 1 オブジェクト(完全スナップショット。§2-D の skip 規則)
-- 対象 = `PROJECT_DO_TABLES` 全表(`schema_meta` は除外し、版はヘッダに写す)
-- 読み出し = permit 下・rowid キーセット・1 文ずつ同期(cursor を await 越しに持たない)
-- 書き込み = NDJSON → gzip(`CompressionStream`)→ 16 MiB パートの multipart(16 MiB 未満は単一 put)
-- 費用見積もり(起草値。R2 料金は §1): プロジェクト 1,000 件・平均 1 MB・毎日変更ありの上界で、書き込み 1,000 Class A/日
-  = 3 万/月(無料枠 100 万の 3%)、保存 35 GB(月 $0.5)。skip 規則で実効はこの数分の一
-- 所要時間の上界(9 GB DO): JSON 化 + gzip を 50〜100 MB/s(起草の見立て — 実測は演習で)とすると 90〜180 秒の
-  CPU、アップロードは 16 MiB × 563 パート。DO の CPU 上限(既定 30 秒 → hosted は `limits.cpu_ms` 300,000)と cron の
-  壁時計 15 分の内側だが、permit 保持 = テナント待ちが同じ時間になる。よって `OPS_BACKUP_MAX_BYTES`(起草値 2 GB)を
-  超える DO は退避せず `oversize` を信号にする(§3 行 7)
-- **演習の実測(2026-09-03 — §5-3)**: ドッグフーディング DO(`databaseSize` 188 KB・17 表 47 行)の退避物 5,293 バイト
-  (gzip 後。単一 `put`)。スイープは毎時 `:23` の cron に対し `last_success_at` / カーソル更新が毎回 `:23:56.3〜.9`
-  (4 回連続)= **cron の起動遅延 ≈ 56 秒、スイープ本体 < 1 秒**。skip 規則は seq 不変の 2 回(03:23 / 04:23)で退避せず、
-  seq が進んだ回(02:23)で再退避したことを R2 のオブジェクト数(2)と `last_attempt_at` ≠ `last_success_at` で確認。
-  **9 GB 上界・multipart・DO のサブリクエスト計上はこの規模では観測できない**(§8 (a) の未確認は未確認のまま)。
-  `OPS_BACKUP_MAX_BYTES` 2 GB を改める根拠は得られず**据え置き**。改めるべき時: 実テナントで `databaseSize` が数百 MB
-  級に達したとき、その DO の退避所要(permit 保持時間)を Workers Logs / `last_attempt_at` 差分で測ってから
-- 部分適用の窓: (i) multipart 途中のクラッシュ → 未完了 upload はライフサイクル(1 日)で中止・`ops_backups` は
-  失敗として記録(次回再試行)、(ii) 古い退避と新しい退避の混在 → オブジェクトはタイムスタンプ付きで**上書きしない**
-  (最新の成功キーは `ops_backups.last_object_key`)、(iii) ロールバックデプロイ → 退避物のヘッダの schemaVersion と
-  復元先の版を一致検査(§2-E)、(iv) 退避中の DO 退去(eviction)→ RPC が失敗し失敗として記録
-- 非可搬 / 再生成可能な行(復元後にテナント側で自然に回復する): `head_attestations`(次回同期で再提出)、
-  `lease_windows` / `lease_bindings`(窓は時間で回復、束縛は期限で失効。復元は**古い束縛を復活させる**が期限内の
-  トークン再提示を拒む側〔安全側〕にしか働かない)、`attestation_windows`(同上)。`audit_head_hashes` は導出値だが
-  退避に含める(復元後の `ensureHeadCurrent` は列が最新なら読み取りのみ)
+- Unit = one project DO = one object (full snapshot. §2-D's skip rule)
+- Coverage = all `PROJECT_DO_TABLES` tables (`schema_meta` excluded; the version is written to
+  the header)
+- Reads = under permit, rowid keyset, one statement at a time, synchronous (no cursor survives
+  an await)
+- Writes = NDJSON → gzip (`CompressionStream`) → multipart with 16 MiB parts (single put below
+  16 MiB)
+- Cost estimate (draft values. R2 pricing in §1): at the upper bound of 1,000 projects · 1 MB
+  average · changed daily: 1,000 Class A writes/day = 30k/month (3% of the 1M free tier),
+  storage 35 GB ($0.5/month). With the skip rule, the effective figure is a fraction of this
+- Duration upper bound (a 9 GB DO): if JSON encoding + gzip runs at 50–100 MB/s (draft estimate
+  — measured in the drill), that is 90–180 s of CPU; upload is 16 MiB × 563 parts. Inside the
+  DO CPU cap (default 30 s → hosted raises it via `limits.cpu_ms` 300,000) and cron's 15-minute
+  wall clock, but the permit hold = the tenant wait lasts the same duration. Hence DOs
+  exceeding `OPS_BACKUP_MAX_BYTES` (draft value 2 GB) are not backed up and surface `oversize`
+  on the signal (§3 row 7)
+- **Drill measurements (2026-09-03 — §5-3)**: the dogfooding DO (`databaseSize` 188 KB · 17
+  tables 47 rows) produced a 5,293-byte backup (after gzip. Single `put`). For the hourly `:23`
+  cron, `last_success_at` / cursor updates landed at `:23:56.3–.9` every time (4 consecutive) =
+  **cron start delay ≈ 56 s, sweep body < 1 s**. The skip rule did not back up on the two rounds
+  with unchanged seq (03:23 / 04:23), and re-backed up on the round where seq advanced (02:23)
+  — confirmed by R2 object count (2) and `last_attempt_at` ≠ `last_success_at`. **The 9 GB
+  upper bound, multipart, and DO subrequest accounting are not observable at this scale** (the
+  unconfirmed item of §8 (a) stays unconfirmed). No basis was obtained for changing
+  `OPS_BACKUP_MAX_BYTES` 2 GB, so it is **kept as-is**. When to revisit: when a real tenant's
+  `databaseSize` reaches the hundreds-of-MB range — measure that DO's backup duration (permit
+  hold) from Workers Logs / the `last_attempt_at` delta first
+- Partial-application windows: (i) a crash mid-multipart → the incomplete upload is aborted by
+  the lifecycle (1 day) and `ops_backups` records a failure (retried next round), (ii) mixing of
+  old and new backups → objects are timestamped and **never overwritten** (the latest success
+  key is `ops_backups.last_object_key`), (iii) a rollback deploy → match-check the backup
+  header's schemaVersion against the restore target's version (§2-E), (iv) DO eviction
+  mid-backup → the RPC fails and is recorded as a failure
+- Non-portable / regenerable rows (recover naturally on the tenant side after restore):
+  `head_attestations` (re-submitted on next sync), `lease_windows` / `lease_bindings` (windows
+  recover with time; bindings expire at deadline. A restore **revives old bindings** but only
+  ever acts on the side of rejecting in-window token re-presentation [the safe side]),
+  `attestation_windows` (same). `audit_head_hashes` is a derived value but is included in the
+  backup (the post-restore `ensureHeadCurrent` is read-only if the column is current)
 
-### 4-3. 退避と census が消費する共有資源の有界化(歩査 (a))
+### 4-3. Bounding the shared resources the backup and census consume (walkthrough (a))
 
-| 資源 | 有界化 |
+| resource | bounding |
 |---|---|
-| cron の壁時計 / CPU | 1 回 10 分(起草値)で打ち切り・カーソル継続。1 回の訪問プロジェクト数上限 2,000(サブリクエスト 10,000 の内側) |
-| DO の permit | 退避 1 回 = 1 permit 保持(サイズ比例)。`OPS_BACKUP_MAX_BYTES` で上界 |
-| D1 読み書き | プロジェクトごと `ops_backups` の 1 行 upsert + 列挙 1 ページ 100 行。`ops_counters` はログイン 1 回 1 UPSERT |
-| R2 | put / multipart のみ(list / delete 権限を使わない)。保持はライフサイクル |
-| GitHub クォータ | 触れない(計数のみ) |
+| cron wall clock / CPU | cut off at 10 min per run (draft value) · cursor continuation. At most 2,000 projects visited per run (inside the 10,000 subrequests) |
+| DO permit | one backup = one permit hold (size-proportional). Bounded above by `OPS_BACKUP_MAX_BYTES` |
+| D1 reads/writes | one `ops_backups` upsert per project + enumeration pages of 100 rows. `ops_counters` is one UPSERT per login |
+| R2 | put / multipart only (list / delete permissions unused). Retention via lifecycle |
+| GitHub quota | untouched (counted only) |
 
-## 5. リストア設計と演習手順(runbook — 実機での実施は人間タスク)
+## 5. Restore design and drill procedure (runbook — execution on the real system is a human task)
 
 ### 5-1. D1
 
-1. 影響範囲の確定(いつから壊れたか)。`wrangler d1 time-travel info maruhi --env hosted --timestamp=<RFC3339>` で
-   ブックマークを得る
-2. `wrangler d1 time-travel restore maruhi --env hosted --bookmark=<bookmark>`(その場・破壊的。進行中クエリは中断)
-3. Time Travel の範囲外(30 日超)/ D1 自体の喪失: 新 DB を `wrangler d1 create`、`age -d -i <keyfile>` で export を
-   復号し、**`bun scripts/reorder-d1-dump.ts <in.sql> <out.sql>` で文順を並べ替えてから**
-   `wrangler d1 execute <db> --remote --file=<out.sql> -y`(5 GiB 超は分割)。並べ替えが要る理由(2026-09-03 実測):
-   export は表ごとに CREATE TABLE → INSERT の塊で並び、外部キーの親表(`users`)より先に子表(`api_tokens` 等)の
-   INSERT が来る。先頭の `PRAGMA defer_foreign_keys=TRUE` は import 経路で効かず、そのままだと `no such table:
-   main.users`、CREATE を前に出すだけだと `FOREIGN KEY constraint failed` で止まる。スクリプトは CREATE TABLE 全部 →
-   INSERT を外部キー依存の親→子順 → CREATE INDEX に並べ、BEGIN/COMMIT を落とす。復号済み SQL は作業後に削除する。
-   その後 `env.hosted` の `database_id` を差し替えて再デプロイ。行数の突合は `select count(*)` を表ごとに(D1 の
-   compound SELECT は項数上限が小さく、全表を 1 文の UNION ALL にすると `too many terms` で失敗する — 4 表ずつ)
+1. Determine the blast radius (from when it broke). Get a bookmark with
+   `wrangler d1 time-travel info maruhi --env hosted --timestamp=<RFC3339>`
+2. `wrangler d1 time-travel restore maruhi --env hosted --bookmark=<bookmark>` (in-place,
+   destructive. In-flight queries are interrupted)
+3. Outside Time Travel's range (over 30 days) / loss of D1 itself: create a new DB with
+   `wrangler d1 create`, decrypt the export with `age -d -i <keyfile>`, then **reorder the
+   statement order with `bun scripts/reorder-d1-dump.ts <in.sql> <out.sql>`** and run
+   `wrangler d1 execute <db> --remote --file=<out.sql> -y` (split above 5 GiB). Why reordering
+   is needed (measured 2026-09-03): the export lists a CREATE TABLE → INSERT block per table,
+   so INSERTs for child tables (`api_tokens` etc.) come before the parent table (`users`). The
+   leading `PRAGMA defer_foreign_keys=TRUE` does not work on the import path — as-is it stops
+   at `no such table: main.users`, and merely moving CREATEs forward stops at `FOREIGN KEY
+   constraint failed`. The script orders all CREATE TABLEs → INSERTs in parent→child foreign-key
+   dependency order → CREATE INDEXes, dropping BEGIN/COMMIT. Delete the decrypted SQL after the
+   work. Then swap `env.hosted`'s `database_id` and redeploy. Row-count cross-checks use
+   `select count(*)` per table (D1's compound SELECT has a small term cap — putting every table
+   in a single UNION ALL fails with `too many terms` — do 4 tables at a time)
 
 ### 5-2. DO
 
-1. 復元対象のプロジェクト ID から `idFromName` の像(hex)を得る(`ops_backups.do_id_hex` — D1)。最新成功キーは
-   `ops_backups.last_object_key`
-2. 復元 worker をデプロイ: `wrangler deploy -c wrangler.restore.jsonc`(本番名前空間へ `script_name` で束縛)
-3. ジョブファイルを置く: `wrangler r2 object put <bucket>/restore/jobs/<name>.json --file job.json --remote`、
-   `job.json` = `{ "objectKey": "do/<hex>/<ts>.ndjson.gz", "target": "production" }`(演習は `"drill"`)
-4. 1 分以内に cron が拾い(実行前に `restore/running/<name>.json` へ移して claim — 毎分の cron が同じジョブを
-   二重実行しない)、`restore/results/<name>.json` に結果(`ok` + 検証値、または failure code)を書いて running/ を消す。
-   `wrangler r2 object get <bucket>/restore/results/<name>.json --pipe --remote`。結果が無く `restore/running/` に
-   ジョブが残っていれば worker が実行中に落ちた = 対象 DO の状態(空か・チェーンが入ったか)を確かめてから再投入する
-5. 検証: 結果の `chainHeadSeq / chainHeadHashHex / auditMaxSeq / auditHeadHashHex / rows` を退避物のトレーラ
-   (`wrangler r2 object get … --pipe | gunzip | tail -1`)と突合。トレーラの `auditHeadHashHex` は退避時点で累積
-   ハッシュ列が最新のときだけ非 null(退避は実体化の書き込みをしない)。null の場合は復元側が列を伸ばして返した値を
-   記録し、テナント側の `GET /audit-head` と突合する。本番復元ではさらにテナント側で `maruhi project verify`
-   / `audit verify` を依頼(復元は「公証時点以降」の改竄検出の起点を作り直さない — 退避物にヘッド列を含むため)
-6. 片付け: `wrangler delete -c wrangler.restore.jsonc`(復元 worker を残さない)。drill 名前空間の DO は復元 worker の
-   削除でクラスごと消える
+1. From the restore target's project ID, get the `idFromName` image (hex)
+   (`ops_backups.do_id_hex` — D1). The latest success key is `ops_backups.last_object_key`
+2. Deploy the restore worker: `wrangler deploy -c wrangler.restore.jsonc` (binds to the
+   production namespace via `script_name`)
+3. Place a job file: `wrangler r2 object put <bucket>/restore/jobs/<name>.json --file job.json
+   --remote`; `job.json` = `{ "objectKey": "do/<hex>/<ts>.ndjson.gz", "target": "production" }`
+   (drills use `"drill"`)
+4. Within a minute the cron picks it up (before execution it is moved to
+   `restore/running/<name>.json` as a claim — so the per-minute cron does not run the same job
+   twice), writes the result (`ok` + verification values, or a failure code) to
+   `restore/results/<name>.json`, and clears running/. Read it with `wrangler r2 object get
+   <bucket>/restore/results/<name>.json --pipe --remote`. If there is no result and the job
+   remains in `restore/running/`, the worker crashed mid-run = check the target DO's state
+   (empty, or a chain entered) before resubmitting
+5. Verify: cross-check the result's `chainHeadSeq / chainHeadHashHex / auditMaxSeq /
+   auditHeadHashHex / rows` against the backup's trailer (`wrangler r2 object get … --pipe |
+   gunzip | tail -1`). The trailer's `auditHeadHashHex` is non-null only when the cumulative
+   hash column was current at backup time (backup performs no materialization write). On null,
+   record the value the restore side returned after extending the column, and cross-check it
+   against the tenant-side `GET /audit-head`. On a production restore, additionally ask the
+   tenant to run `maruhi project verify` / `audit verify` (restore does not recreate the
+   starting point of "since the attestation" tamper detection — the backup carries the head
+   column)
+6. Clean up: `wrangler delete -c wrangler.restore.jsonc` (do not leave the restore worker). DOs
+   in the drill namespace disappear along with the class when the restore worker is deleted
 
-### 5-3. 演習(招待制ベータ前に 1 回 = H3 の完了条件)
+### 5-3. Drill (once before invite-only beta = H3's completion condition)
 
-1. hosted 環境で退避スイープが 1 周した(`ops_backups` に全プロジェクトの成功行)ことを確認
-2. 運営自身のドッグフーディングプロジェクトを `target: "drill"` で復元し、§5-2 (5) の突合が一致する
-3. D1: 直近 export を復号し**別の**新規 D1 へ import(本番に触れない)し、`sqlite3` 相当で行数を本番の
-   `wrangler d1 execute --command "select count(*) …"` と突合
-4. 所要時間(export のブロック時間・9 GB 上界の見立て)を実測し、本文書の起草値(`OPS_BACKUP_MAX_BYTES`・時刻)を改める
-5. hosted-design.md §9 H3 行に実施日と結果を追記
+1. Confirm the backup sweep completed one round in the hosted environment (`ops_backups` has a
+   success row for every project)
+2. Restore the operator's own dogfooding project with `target: "drill"` and confirm the §5-2
+   (5) cross-checks match
+3. D1: decrypt the latest export and import it into a **different** new D1 (production
+   untouched), then cross-check row counts via `sqlite3`-equivalent queries against
+   production's `wrangler d1 execute --command "select count(*) …"`
+4. Measure durations (export blocking time, the 9 GB upper-bound estimate) and update this
+   document's draft values (`OPS_BACKUP_MAX_BYTES`, the time of day)
+5. Append the execution date and results to the hosted-design.md §9 H3 row
 
-#### 実施記録(2026-09-03 — 運営アカウント `maruhi`・hosted origin `https://my.maruhi.app`)
+#### Execution record (2026-09-03 — operator account `maruhi` · hosted origin `https://my.maruhi.app`)
 
-対象: 運営のドッグフーディングプロジェクト(env `dev`・変数 5 本・値はダミー。DO id の像 `1fe4a507…`)。
-演習は Claude(Cursor)が運営端末で wrangler を実行し、所有者がブラウザ操作(GitHub OAuth・CLI 承認)と各種
-トークン発行を担当した(伴走セッション)。順序: hosted デプロイ(`signupPolicy` 既定 `open`)→ 運営アカウントの
-サインアップ → **`signup_policy` を `invite` へ反転**(SELF_HOSTING.md の UPSERT SQL — `updated_at` 必須)→ CLI ログイン
-→ プロジェクト作成。以後 `https://my.maruhi.app` は招待制(`/auth/config` で確認済み)。
+Target: the operator's dogfooding project (env `dev` · 5 variables · dummy values. DO id image
+`1fe4a507…`). The drill had Claude (Cursor) execute wrangler on the operator's terminal while
+the owner handled browser operations (GitHub OAuth, CLI approvals) and token issuance (an
+accompanied session). Order: hosted deploy (`signupPolicy` default `open`) → operator-account
+signup → **flip `signup_policy` to `invite`** (the UPSERT SQL in SELF_HOSTING.md — `updated_at`
+required) → CLI login → create the project. From then on `https://my.maruhi.app` is
+invite-gated (confirmed via `/auth/config`).
 
-| 手順 | 結果 | 所要 / 実測 |
+| step | result | duration / measurement |
 |---|---|---|
-| (1) スイープ 1 周 | `ops_backups` 1 行(全プロジェクト)・`storage_level=admit`・失敗 0・カーソル終端。01:23Z(init 直後・1,453 B)と 02:23Z(push 後・5,293 B)の 2 世代、03:23Z / 04:23Z は skip | cron 起動 +56 秒・本体 < 1 秒 |
-| (2) DO drill 復元 | `wrangler deploy -c wrangler.restore.jsonc` → `restore/jobs/drill-2026-09-03.json`(`target: "drill"`)→ `restore/results/` に `status: "ok"`。**全 17 表の行数・chainHeadSeq 3・chainHeadHashHex `17274a51…`・auditMaxSeq 17 がトレーラと一致**。トレーラの `auditHeadHashHex` は null(§5-2 (5) のケース)→ 復元側の `5522999b…` を、テナント側で監査行から再計算した h_17 と本番 `GET /audit-head` の申告値と突合し **三者一致**。`running/` 取り残しなし。`wrangler delete` で片付け | ジョブ投入 03:45:13Z → 結果 03:46:14Z 以前(cron 1 分 + 数秒) |
-| (3) D1 復元 | `ops-backup` 手動起動の export(`d1/2026-09-03T03-16-06Z.sql.age`・16.6 KB)を `age -d` で復号 → `maruhi-drill` を新規作成 → **素の import は 2 回失敗**(`no such table: main.users` → CREATE 先出しで `FOREIGN KEY constraint failed`)→ `scripts/reorder-d1-dump.ts` で親→子順に並べ替えて成功(90 文・219 行)。**全 21 表の `count(*)` が本番と一致**。`wrangler d1 delete maruhi-drill` で片付け | import 3 秒 |
-| (4) 実測値 | §4-1 / §4-2 / §1 に反映。起草値の変更なし(根拠不足 — 9 GB 上界はこの規模で観測不能) | — |
-| (5) 記録 | hosted-design.md §9 H3 行・ROADMAP.md H3 行を更新(本 PR) | — |
+| (1) one sweep round | `ops_backups` 1 row (all projects) · `storage_level=admit` · 0 failures · cursor at end. Two generations — 01:23Z (right after init · 1,453 B) and 02:23Z (after push · 5,293 B); 03:23Z / 04:23Z skipped | cron start +56 s · body < 1 s |
+| (2) DO drill restore | `wrangler deploy -c wrangler.restore.jsonc` → `restore/jobs/drill-2026-09-03.json` (`target: "drill"`) → `status: "ok"` in `restore/results/`. **All 17 tables' row counts · chainHeadSeq 3 · chainHeadHashHex `17274a51…` · auditMaxSeq 17 matched the trailer**. The trailer's `auditHeadHashHex` was null (the §5-2 (5) case) → the restore side's `5522999b…` was cross-checked three ways against h_17 recomputed tenant-side from audit rows and production `GET /audit-head`'s declared value — **all three matched**. No `running/` leftovers. Cleaned up with `wrangler delete` | job submitted 03:45:13Z → result by 03:46:14Z (cron 1 min + a few seconds) |
+| (3) D1 restore | decrypted the manually dispatched ops-backup export (`d1/2026-09-03T03-16-06Z.sql.age` · 16.6 KB) with `age -d` → created a fresh `maruhi-drill` → **plain import failed twice** (`no such table: main.users` → CREATEs-first then `FOREIGN KEY constraint failed`) → reordered parent→child with `scripts/reorder-d1-dump.ts` and succeeded (90 statements · 219 rows). **All 21 tables' `count(*)` matched production**. Cleaned up with `wrangler d1 delete maruhi-drill` | import 3 s |
+| (4) measurements | reflected into §4-1 / §4-2 / §1. No draft values changed (insufficient evidence — the 9 GB upper bound is unobservable at this scale) | — |
+| (5) records | updated the hosted-design.md §9 H3 row and the ROADMAP.md H3 row (this PR) | — |
 
-演習で見つかった欠陥・食い違い(本 PR で修正):
+Defects and discrepancies found by the drill (fixed in this PR):
 
-- **Effect HTTP ロガーによる capability のログ残留**(§1 Workers Logs 行)— `disableLogger: true`
-- `r2 bucket lifecycle add` に規則名が必須(§1 R2 行・SELF_HOSTING.md)
-- Actions 用トークンの権限は D1: Edit + Workers R2 Storage: Edit(§2-G・ops-backup.yml・SELF_HOSTING.md)
-- D1 import の文順(§5-1 (3)・SELF_HOSTING.md・新規 `scripts/reorder-d1-dump.ts` — 純関数部 `.lib.ts` を
-  `test/reorder-d1-dump.test.ts` で固定)
-- PR #139 pullfrog レビューで追加: 単一オリジン不変条件(`workers_dev: false` + `routes`)を CI 8c の検査に、
-  capability がログに出ないことの回帰テスト(`test/log-hygiene.test.ts` — Effect ロガーを戻すと落ちる)、
-  `disableLogger` で消える失敗系ログの代わりに 500 のときだけ静的 1 行(index.ts)
-- `deployment_settings` への直 INSERT は `updated_at` NOT NULL — SELF_HOSTING.md の SQL が正(runbook 化)
-- GitHub OAuth App の登録フォームが変更されている(Redirect URIs 複数・"Expire user access tokens")— SELF_HOSTING.md §4
+- **Effect HTTP logger leaving capabilities in logs** (§1 Workers Logs row) — `disableLogger:
+  true`
+- `r2 bucket lifecycle add` requires a rule name (§1 R2 row · SELF_HOSTING.md)
+- Actions-token permissions are D1: Edit + Workers R2 Storage: Edit (§2-G · ops-backup.yml ·
+  SELF_HOSTING.md)
+- D1 import statement order (§5-1 (3) · SELF_HOSTING.md · new `scripts/reorder-d1-dump.ts` —
+  the pure-function part `.lib.ts` pinned by `test/reorder-d1-dump.test.ts`)
+- Added in the PR #139 pullfrog review: the single-origin invariant (`workers_dev: false` +
+  `routes`) added to CI 8c's checks, a regression test that capabilities do not appear in logs
+  (`test/log-hygiene.test.ts` — fails if the Effect logger is restored), and a static one-liner
+  emitted only on 500s to replace the failure-kind logs `disableLogger` removes (index.ts)
+- Direct INSERTs into `deployment_settings` need `updated_at` NOT NULL — the SELF_HOSTING.md
+  SQL is correct (made a runbook)
+- GitHub's OAuth App registration form changed (multiple Redirect URIs, "Expire user access
+  tokens") — SELF_HOSTING.md §4
 
-運用上の所見(変更はしない — 提案):
+Operational observations (no changes — proposals):
 
-- 正常経路の毎時ジョブは Workers Logs に 1 行も出さない(記録は D1 のみ)。「スイープ 1 周・n 件・skip m 件」の
-  静的 1 行があると外形からの健全性確認が楽になる(識別子を含まないので DC-2 に抵触しない)
-- `maruhi login` のフロー期限(10 分)は伴走(人が別チャネルで URL を受け取る)には短い — 単独運用では問題ない
-- CLI の `key generate` は Cursor 端末を AI エージェント環境と判定し recovery code をスキップした(ADR-0016 決定 7
-  の想定どおり)。演習用鍵なので問題ないが、運営の本鍵は人間の端末で作ること
+- The normal-path hourly job emits not a single line to Workers Logs (records live only in D1).
+  A static one-liner "sweep 1 round · n items · m skips" would make health checks from outside
+  easier (it carries no identifiers, so it does not violate DC-2)
+- `maruhi login`'s flow deadline (10 min) is short for accompanied operation (a person receives
+  the URL over a separate channel) — no problem for solo operation
+- The CLI's `key generate` judged the Cursor terminal an AI-agent environment and skipped the
+  recovery code (as ADR-0016 decision 7 intends). Fine for drill keys, but the operator's real
+  key must be made on a human's terminal
 
-## 6. 実装の写像
+## 6. Mapping to implementation
 
-| 層 | 変更 |
+| layer | change |
 |---|---|
-| D1 スキーマ(drizzle) | `ops_counters(metric, window_start, count)` / `ops_backups(project_id, do_id_hex, last_success_at, last_object_key, last_bytes, last_audit_seq, last_chain_seq, storage_level, last_attempt_at, consecutive_failures, last_failure_code)` / `ops_state(key, value, updated_at)`(スイープカーソル・アラート状態) |
-| db.package | `OpsRepo`(カウンタ増分 / 窓集計・退避記録 / 遅れ集計・状態 kv・`auth.*` 行の窓集計・`projects` の全列挙) |
-| ops-policy.ts | 閾値・予算の起草値(受理ポリシーではない — セルフホストでの変更は自由) |
-| ops-signals.ts | `countingGitHubApi`(exchangeCode の装飾)・`noteCliFlowCapacity` |
-| ops-alerts.ts | 毎時評価 + webhook + 状態遷移 |
-| do-snapshot.ts | DO 側: 表の列挙・NDJSON gzip ストリーム・multipart・復元パーサ・空判定 |
-| chain-do.ts | RPC `opsBackup(input)` / `opsRestore(objectKey)`(permit 下・HTTP から呼ばれない)。`Env` に `OPS_BACKUP_BUCKET?` / `OPS_ALERT_WEBHOOK_URL?` |
-| ops-backup.ts | スイープ(列挙・skip 判定・census・記録・予算) |
-| index.ts | `scheduled` を cron で分岐(日次 = セッション掃除、毎時 = 評価 + スイープ) |
-| restore-worker.ts + wrangler.restore.jsonc | 復元 worker(cron + R2 ジョブ。`RestoreDrillDO`) |
-| wrangler.jsonc | 毎時 cron の追加、`env.hosted`(R2 / observability / limits + 非継承キーの再宣言) |
-| scripts/check-hosted-config.ts | `env.hosted` の drift 検査(CI 8c) |
-| .github/workflows/ops-backup.yml | D1 export + age + R2 + D1 総量判定 |
-| docs | SELF_HOSTING.md(英語: Backups / Optional operations bindings)、hosted-design §8 gap 4・5 / §9 H3、ROADMAP |
-| テスト | `ops-backup.test.ts`(実 DO: fixture → 退避 → 空 DO へ復元 → ヘッド・監査ヘッド〔`ensureHeadCurrent`〕・行一致・seq 無欠番。skip 規則。census。not-empty 拒否。トレーラ欠落の拒否)、`ops-alerts.test.ts`(カウンタ・評価・遷移・webhook 本文に識別子が無いこと)、`ops-restore.test.ts`(ジョブ処理) |
+| D1 schema (drizzle) | `ops_counters(metric, window_start, count)` / `ops_backups(project_id, do_id_hex, last_success_at, last_object_key, last_bytes, last_audit_seq, last_chain_seq, storage_level, last_attempt_at, consecutive_failures, last_failure_code)` / `ops_state(key, value, updated_at)` (sweep cursor · alert state) |
+| db.package | `OpsRepo` (counter increments / window aggregation · backup records / lag aggregation · state kv · window aggregation of `auth.*` rows · full enumeration of `projects`) |
+| ops-policy.ts | draft values for thresholds and budgets (not an acceptance policy — self-host changes them freely) |
+| ops-signals.ts | `countingGitHubApi` (the exchangeCode decoration) · `noteCliFlowCapacity` |
+| ops-alerts.ts | hourly evaluation + webhook + state transitions |
+| do-snapshot.ts | DO side: table enumeration · NDJSON gzip stream · multipart · restore parser · emptiness check |
+| chain-do.ts | RPC `opsBackup(input)` / `opsRestore(objectKey)` (under permit, not callable from HTTP). `Env` gains `OPS_BACKUP_BUCKET?` / `OPS_ALERT_WEBHOOK_URL?` |
+| ops-backup.ts | the sweep (enumeration · skip decision · census · recording · budget) |
+| index.ts | `scheduled` branches by cron (daily = session cleanup, hourly = evaluation + sweep) |
+| restore-worker.ts + wrangler.restore.jsonc | the restore worker (cron + R2 jobs. `RestoreDrillDO`) |
+| wrangler.jsonc | the hourly cron added, `env.hosted` (R2 / observability / limits + re-declaration of non-inherited keys) |
+| scripts/check-hosted-config.ts | drift check of `env.hosted` (CI 8c) |
+| .github/workflows/ops-backup.yml | D1 export + age + R2 + D1-total evaluation |
+| docs | SELF_HOSTING.md (English: Backups / Optional operations bindings), hosted-design §8 gaps 4·5 / §9 H3, ROADMAP |
+| tests | `ops-backup.test.ts` (real DO: fixture → backup → restore into an empty DO → head / audit-head [`ensureHeadCurrent`] / row match / no seq gaps. Skip rules. Census. not-empty rejection. Missing-trailer rejection), `ops-alerts.test.ts` (counters · evaluation · transitions · no identifiers in the webhook body), `ops-restore.test.ts` (job processing) |
 
-## 7. 人間タスク(実行しない — 列挙。完了日は 2026-09-03 の伴走セッションで記入)
+## 7. Human tasks (not executed — enumeration. Completion dates filled in during the 2026-09-03 accompanied session)
 
-| # | タスク | 段 | 状態 |
+| # | task | stage | status |
 |---|---|---|---|
-| O1 | Workers Paid の運用アカウント整備(L6)— cron CPU 15 分・DO 10 GB・Time Travel 30 日は Paid 前提 | H3 デプロイ前 | **済 2026-09-03**(運営アカウント `maruhi`。既存の `maruhi-server`〔2026-08-10 試験デプロイ・D1 0 行・DO 0 件〕はデータ無しと確認し、hosted 名で新規運用) |
-| O2 | R2 の有効化(支払い方法の登録)とバケット作成: `wrangler r2 bucket create maruhi-ops-backup`、ライフサイクル `lifecycle add maruhi-ops-backup retain-35d --expire-days 35 --abort-multipart-days 1`(**規則名は必須の位置引数**)。公開アクセスなし(`dev-url get` が disabled・custom domain なし) | 同上 | **済 2026-09-03** |
-| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー)。**デプロイ直後に 1 回**、Workers Logs で invocation log が実際に止まっていること(ダッシュボードの Logs 設定で Invocation logs が OFF、または数分後のログに `http.url` を含む行が無い)を目視確認する — CI 8c は設定ファイルの値しか見ない。**提供ドメイン**(所有者裁定 2026-09-03): 製品オリジン = `my.maruhi.app`(`routes` + `custom_domain`、hosted では `workers_dev: false`)、apex `maruhi.app` = LP + docs〔`/docs` — L1 改訂 2026-09-03。当初の「`maruhi.dev` = docs」は撤回し `maruhi.dev` は 301〕。ダッシュボードのオリジンは TCB なので LP と分ける。初回ユーザー(運営)のサインアップ後に `deployment_settings.signup_policy` を `invite` へ(SELF_HOSTING.md の SQL) | 同上 | **済 2026-09-03**(Secrets: GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / SERVER_ENC_KEY_IKM / OPS_ALERT_WEBHOOK_URL〔Slack〕。運営アカウントのサインアップ〔00:4x UTC・`open` 下〕直後の 00:49 UTC に `signup_policy` を **`invite` へ反転**し `GET /auth/config` の `signupPolicy=invite` で確認〔open だった時間は約 1 時間・作成されたユーザーは運営の 1 件のみ = `users` 1 行〕。Logs 目視で **Effect HTTP ロガーの漏れを発見・修正** — §1) |
-| O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN`(**Account API token — D1: Edit + Workers R2 Storage: Edit**。起草の「D1 Read + R2 Write」は実機で不足 — §2-G)/ `CLOUDFLARE_ACCOUNT_ID`、Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`。`age-keygen` の秘密鍵は運営端末のキーチェーンへ。`workflow_dispatch` で 1 回手動実行して成功を確認 | 同上 | **済 2026-09-03**(手動実行 3 回目で成功 — 権限不足 2 回の実測が §2-G) |
-| O5 | 外形監視サービスの契約(`GET /auth/config` を最短間隔・連続失敗で通知)— Better Stack Uptime を採用。専用 health エンドポイントは作らない | 招待制ベータ前 | **済 2026-09-03**(Better Stack Uptime モニター: `GET https://my.maruhi.app/auth/config`・**30 秒間隔**〔プランの最短。無料枠へ落とすと 180 秒〕・期待 200・確認期間 180 秒〔= 連続失敗約 6 回・runbook の「1 分 × 3 回」と同じ 3 分で通知〕・回復期間 180 秒・4 リージョン〔eu/us/as/au〕・通知はメール。TLS 期限 7 日前・ドメイン期限 14 日前の通知を追加。負荷は ≈ 8 req/分で D1 点読み 1 本・レート制限対象外。Sentry 等の APM は**入れない** — クライアント側は「言わざる」、Worker 側はリクエスト由来識別子が第三者に渡る〔DC-2 違反〕ため。エラー率は Workers ダッシュボード〔§3 行 9〕) |
-| O6 | 運用 GitHub OAuth App(L7 — 本番コールバック URL)。「Enable Device Flow」は無効のまま。**2026-09 のフォーム**では Redirect URIs(複数可・wildcard 設定制)と "Expire user access tokens" が追加されている — Redirect URI は 1 本(`https://my.maruhi.app/auth/github/callback`)・wildcard オフ、Expire はオンで可(サーバーは access_token を即時使用して捨て、refresh_token を読まない) | H3 デプロイ前 | **済 2026-09-03**(組織 `maruhiapp` 配下) |
-| O7 | リストア演習(§5-3)の実施と実測値の反映。**H3 の完了条件** | 招待制ベータ前 | **済 2026-09-03**(§5-3 実施記録 — DO / D1 とも突合一致) |
-| O8 | 退避物へのアプリ層暗号化(運営鍵)の要否の裁定 — 要るなら CRYPTO_SPEC の改訂として提示(§2-D)。**判断材料(2026-09-03 整理)**: (a) 退避物の内容は DO と同一の E2EE 暗号文 + 公開メタで、運営が読める情報は増えない。(b) R2 は保存時暗号化 + 非公開バケット + アカウントレベル権限のみ。(c) 追加層を入れると鍵管理(運営鍵の保管・ローテーション・復元 worker への配布)が増え、CRYPTO_SPEC 外の暗号操作になる。(d) 脅威は「R2 バケットの権限漏洩で暗号文 + チェーン + 監査(メタデータ)が第三者に渡る」— 平文は渡らないがメンバー構成・変数名・操作履歴は渡る。(e) D1 export は `age` で運営鍵暗号化済みなので非対称(D1 は GitHub Actions ランナー = 第三者環境を経由するため。DO 退避は Cloudflare 内で完結)。**所有者裁定 2026-09-03: 不要 — 今後も追加しない**。R2 に到達できる攻撃者は DO 本体にも到達でき、退避物だけを守っても防御線にならない。R2 のアクセス経路が増える(外部連携・別アカウントへの複製等)ときに再訪 | 任意 | **裁定済 2026-09-03(不要・恒久)** |
-| O9 | Alchemy v2 化(ADR-0012 / gap 10)— `env.hosted` の内容と apex サイト(O10 の `maruhi-site`)を Alchemy 宣言へ移す独立 PR | DP 系列の後(web-design-pass.md §1-6) | 未 |
-| O10 | **apex サイトの初回デプロイ(DP2)**。**順序**: DP2 の PR は `apps/web` のトップ(`my.maruhi.app/`)と README から `https://maruhi.app` へリンクするため、**マージ後・次回の製品 Worker デプロイ(`wrangler deploy --env hosted`)より前**に実施する(それまで製品側のリンク先は未配信 = 404 でなく DNS 未解決。秘匿への影響なし)。手順: リポジトリのルートで `bun install && bun run --filter @maruhi/site deploy`(= `blume build` + `scripts/postbuild.ts` + `wrangler deploy` — `apps/site/wrangler.jsonc`、Worker 名 `maruhi-site`、Static Assets のみ・Worker コードなし)。`routes` の `custom_domain: true` により wrangler が `maruhi.app` の DNS レコードと証明書を自動で作る(ゾーンは運営 CF アカウント。apex に既存の A / AAAA / CNAME があれば先に消す)。デプロイ後の目視: `curl -sI https://maruhi.app/` に `content-security-policy`(`script-src 'self' 'sha256-…'`・`style-src 'self' 'sha256-…'`)と `strict-transport-security` があること、`/docs` が開くこと、`/fonts/OFL-Archivo.txt` が読めること、ブラウザ DevTools の Network で外部オリジンへの要求がゼロであること。preview URL は無効(`workers_dev: false` / `preview_urls: false`)なので、事前確認は `bun run --filter @maruhi/site build && bun run --filter @maruhi/site preview`(ローカル wrangler dev、`http://localhost:8789`)で行う | DP2 マージ後 | 未 |
-| O11 | **`maruhi.dev` → `maruhi.app` の 301**(ゾーンのリダイレクトルール — Worker は置かない): `maruhi.dev` ゾーンで Rules → Redirect Rules → Create rule。式 = `(http.host eq "maruhi.dev") or (http.host eq "www.maruhi.dev")`、Type = Dynamic、Expression = `concat("https://maruhi.app", http.request.uri.path)`、Status = 301、Preserve query string = on。リダイレクトルールはプロキシされた DNS レコードを要するため、`maruhi.dev`(apex)と `www` に **プロキシ(オレンジ雲)の A レコード `192.0.2.1`**(ダミー)を置く。確認: `curl -sI https://maruhi.dev/docs` が `301` + `location: https://maruhi.app/docs` | O10 の後 | 未 |
-| O12 | **訪問数の集計はサーバー側のみ**(web-design-pass.md §1-5 — スクリプト注入なし): `maruhi.app` ゾーンの Analytics & Logs → Traffic(HTTP リクエスト集計)を使う。Web Analytics を有効化する場合は「Automatic setup」(beacon の自動注入)を **選ばず**、JS スニペットも置かない(`_headers` の CSP `script-src 'self' + ハッシュ` が外部ビーコンを弾く — 弾かれるのが設計どおり)。Workers Static Assets の応答にはビーコンが注入されないため、Web Analytics の数字は増えない = 想定内 | O10 の後(任意) | 未 |
+| O1 | Set up the Workers Paid operator account (L6) — cron CPU 15 min · DO 10 GB · Time Travel 30 days all assume Paid | before H3 deploy | **Done 2026-09-03** (operator account `maruhi`. The existing `maruhi-server` [2026-08-10 trial deploy · D1 0 rows · 0 DOs] was confirmed empty and operations started fresh under the hosted name) |
+| O2 | Enable R2 (register a payment method) and create the bucket: `wrangler r2 bucket create maruhi-ops-backup`, lifecycle `lifecycle add maruhi-ops-backup retain-35d --expire-days 35 --abort-multipart-days 1` (**the rule name is a required positional argument**). No public access (`dev-url get` shows disabled · no custom domain) | same | **Done 2026-09-03** |
+| O3 | Fill `env.hosted`'s `database_id` and bucket name with real values, `wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted` (the webhook endpoint = a chat / email-relay contract). `wrangler deploy --env hosted`. **Caution**: a named environment creates a separate Worker `maruhi-server-hosted` (= a separate DO namespace). If project DOs are already running under the top-level name `maruhi-server` on the operator account, switching to hosted does not carry their data (migrate them via backup → the restore worker, or operate under the hosted name from the start). Check whether an existing deploy exists before the first deploy (PR #137 review). **Once, right after deploying**, visually confirm in Workers Logs that invocation logs have actually stopped (Invocation logs OFF in the dashboard's Logs settings, or no line containing `http.url` appears in the logs after a few minutes) — CI 8c only sees the config file's values. **Serving domains** (owner ruling 2026-09-03): product origin = `my.maruhi.app` (`routes` + `custom_domain`; `workers_dev: false` on hosted), apex `maruhi.app` = LP + docs [`/docs` — L1 revision 2026-09-03. The original "`maruhi.dev` = docs" was retracted; `maruhi.dev` 301s]. The dashboard's origin is the TCB, so it is separated from the LP. After the first user (the operator) signs up, flip `deployment_settings.signup_policy` to `invite` (the SELF_HOSTING.md SQL) | same | **Done 2026-09-03** (Secrets: GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / SERVER_ENC_KEY_IKM / OPS_ALERT_WEBHOOK_URL [Slack]. Right after the operator account's signup [00:4x UTC · under `open`], at 00:49 UTC `signup_policy` was **flipped to `invite`** and confirmed via `GET /auth/config` showing `signupPolicy=invite` [the window it was open was about 1 hour · the only user created is the operator's 1 = `users` 1 row]. Visual Logs inspection **found and fixed the Effect HTTP logger leak** — §1) |
+| O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN` (**an Account API token — D1: Edit + Workers R2 Storage: Edit**. The draft's "D1 Read + R2 Write" proved insufficient on the real system — §2-G) / `CLOUDFLARE_ACCOUNT_ID`, Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`. The `age-keygen` secret key goes to the operator terminal's keychain. Run once manually via `workflow_dispatch` and confirm success | same | **Done 2026-09-03** (succeeded on the 3rd manual run — the two permission-insufficiency measurements are in §2-G) |
+| O5 | Contract an external monitoring service (monitor `GET /auth/config` at the shortest interval, notify on consecutive failures) — Better Stack Uptime adopted. No dedicated health endpoint is built | before invite-only beta | **Done 2026-09-03** (Better Stack Uptime monitor: `GET https://my.maruhi.app/auth/config` · **30 s interval** [the plan's shortest. Dropping to free makes it 180 s] · expects 200 · confirmation period 180 s [= ~6 consecutive failures · notifies in the same 3 minutes as the runbook's "1 min × 3"] · recovery period 180 s · 4 regions [eu/us/as/au] · notification by email. Added TLS-expiry 7-days-before and domain-expiry 14-days-before notifications. Load ≈ 8 req/min, a single point D1 read, outside rate limits. No APM like Sentry is **installed** — the client side is "unspoken", and on the Worker side request-derived identifiers would reach a third party [violates DC-2]. Error rate is the Workers dashboard [§3 row 9]) |
+| O6 | The operations GitHub OAuth App (L7 — the production callback URL). "Enable Device Flow" stays disabled. In the **2026-09 form** Redirect URIs (multiple allowed · wildcard restriction) and "Expire user access tokens" were added — Redirect URI is the single `https://my.maruhi.app/auth/github/callback` · wildcard off; Expire may be on (the server uses the access_token immediately and discards it, never reading the refresh_token) | before H3 deploy | **Done 2026-09-03** (under the org `maruhiapp`) |
+| O7 | Perform the restore drill (§5-3) and reflect measured values. **H3's completion condition** | before invite-only beta | **Done 2026-09-03** (the §5-3 execution record — DO and D1 both cross-check-matched) |
+| O8 | Ruling on whether app-layer encryption of backups (operator key) is needed — if yes, present it as a CRYPTO_SPEC revision (§2-D). **Decision materials (organized 2026-09-03)**: (a) the backup's contents are the same E2EE ciphertext + public metadata as the DO — the operator can read nothing more. (b) R2 has at-rest encryption + a private bucket + account-level permissions only. (c) Adding a layer adds key management (storage, rotation, distribution to the restore worker of the operator key) and becomes a cryptographic operation outside CRYPTO_SPEC. (d) The threat is "an R2-bucket permission leak hands ciphertext + chain + audit (metadata) to a third party" — plaintext never escapes but member composition, variable names, and operation history do. (e) The D1 export is already `age`-encrypted under the operator key, making it asymmetric (because D1 transits GitHub Actions runners = a third-party environment. DO backup completes entirely inside Cloudflare). **Owner ruling 2026-09-03: unnecessary — not to be added in the future**. An attacker who can reach R2 can reach the DO itself, so protecting only the backups adds no defensive line. Revisit when R2 access paths grow (external integrations, replication to other accounts, etc.) | optional | **Ruled 2026-09-03 (unnecessary · permanent)** |
+| O9 | Alchemy v2 (ADR-0012 / gap 10) — an independent PR that moves the `env.hosted` contents and the apex site (O10's `maruhi-site`) into Alchemy declarations | after the DP series (web-design-pass.md §1-6) | open |
+| O10 | **First deploy of the apex site (DP2)**. **Order**: because DP2's PR links `apps/web`'s top (`my.maruhi.app/`) and the README to `https://maruhi.app`, execute it **after the merge and before the next production Worker deploy (`wrangler deploy --env hosted`)** (until then the product side's link target is undelivered = not a 404 but DNS-unresolved. No impact on secrecy). Procedure: at the repository root `bun install && bun run --filter @maruhi/site deploy` (= `blume build` + `scripts/postbuild.ts` + `wrangler deploy` — `apps/site/wrangler.jsonc`, Worker name `maruhi-site`, Static Assets only, no Worker code). With `routes`' `custom_domain: true`, wrangler automatically creates `maruhi.app`'s DNS records and certificate (the zone lives in the operator's CF account. Remove any existing apex A / AAAA / CNAME first). Post-deploy visual checks: `curl -sI https://maruhi.app/` shows `content-security-policy` (`script-src 'self' 'sha256-…'` · `style-src 'self' 'sha256-…'`) and `strict-transport-security`; `/docs` opens; `/fonts/OFL-Archivo.txt` is readable; browser DevTools' Network shows zero requests to external origins. Preview URLs are disabled (`workers_dev: false` / `preview_urls: false`), so pre-verification uses `bun run --filter @maruhi/site build && bun run --filter @maruhi/site preview` (local wrangler dev, `http://localhost:8789`) | after DP2 merges | open |
+| O11 | **`maruhi.dev` → `maruhi.app` 301** (a zone redirect rule — no Worker is placed): in the `maruhi.dev` zone, Rules → Redirect Rules → Create rule. Expression = `(http.host eq "maruhi.dev") or (http.host eq "www.maruhi.dev")`, Type = Dynamic, Expression = `concat("https://maruhi.app", http.request.uri.path)`, Status = 301, Preserve query string = on. Redirect rules need proxied DNS records, so place **proxied (orange-cloud) A records `192.0.2.1`** (dummy) on `maruhi.dev` (apex) and `www`. Verify: `curl -sI https://maruhi.dev/docs` returns `301` + `location: https://maruhi.app/docs` | after O10 | open |
+| O12 | **Visit counting is server-side only** (web-design-pass.md §1-5 — no script injection): use the `maruhi.app` zone's Analytics & Logs → Traffic (HTTP request aggregation). If enabling Web Analytics, do **not** choose "Automatic setup" (automatic beacon injection) and do not place the JS snippet either (`_headers`' CSP `script-src 'self' + hashes` would reject the external beacon — being rejected is as designed). Workers Static Assets responses get no beacon injected, so Web Analytics numbers will not grow = expected | after O10 (optional) | open |
 
-## 8. 実装後の第 2 次ゼロベース探索(歩査 — 収束記録。2026-09-02)
+## 8. Post-implementation second-round zero-based exploration (walkthrough — convergence record. 2026-09-02)
 
-(a) **共有資源**: §4-3 の表。追加で確認・修正した点 —
-- `ops_counters` の行は窓ごとに増えるため、評価時に 7 日超の行を削除(有界)。`ops_state` は固定キーのみ。webhook
-  送信は評価 1 回あたり 1 POST(信号ごとに送らない)
-- R2 multipart は**最終パート以外を同一サイズ**に要求する(一次情報)。圧縮ストリームの出力を「溜まったら送る」形は
-  パート長が揺れて complete が失敗するため、ちょうど partBytes ずつ切り出す形に改めた(実 R2 互換の miniflare で
-  5 MiB パート 2 個の multipart を固定)
-- DO 内の R2 呼び出しが DO のサブリクエスト上限に数えられるかは一次情報に記載がなく**未確認**(10 GB でも 640 パート —
-  Workers Paid の 10,000 の内側)。2026-09-03 の演習は 188 KB の DO(単一 put・1 サブリクエスト)で multipart を通らず、
-  **未確認のまま**。実テナントの DO が 16 MiB を超えて初めて multipart 経路が実機で走る — その回の
-  `ops_backups.last_failure_code`(`upload-failed` / `rpc-failed`)と Workers Logs の静的行で確認する
-- Free プランの cron は CPU 10 ms: 毎時ジョブはバインディング無しなら D1 を数本読むだけ(I/O 待ちは CPU に数えない)。
-  それでも超過する環境があれば `triggers.crons` の 2 本目を外せばよい(SELF_HOSTING に明記 — 退避と評価は消える)
+(a) **Shared resources**: the §4-3 table. Points additionally verified / corrected —
+- `ops_counters` rows accumulate per window, so rows older than 7 days are deleted at evaluation
+  time (bounded). `ops_state` has fixed keys only. Webhook sends are 1 POST per evaluation (not
+  one per signal)
+- R2 multipart **requires all parts except the last to be the same size** (primary source). A
+  "send when accumulated" shape over the compression stream's output would produce varying part
+  lengths and fail on complete, so it was changed to cut out exactly partBytes at a time (a
+  2-part multipart of 5 MiB parts is pinned in miniflare, the real-R2-compatible runner)
+- Whether R2 calls inside a DO count against the DO's subrequest cap is **unconfirmed** — the
+  primary sources do not say (640 parts even at 10 GB — inside Workers Paid's 10,000). The
+  2026-09-03 drill used a 188 KB DO (single put, 1 subrequest) and never passed through
+  multipart, so it stays **unconfirmed**. The multipart path first runs for real when a real
+  tenant's DO exceeds 16 MiB — confirm it via that round's `ops_backups.last_failure_code`
+  (`upload-failed` / `rpc-failed`) and the static Workers Logs lines
+- Free-plan cron has CPU 10 ms: the hourly job without bindings only reads a few D1 rows (I/O
+  waits do not count as CPU). If an environment still exceeds it, removing the second
+  `triggers.crons` entry suffices (stated in SELF_HOSTING — backup and evaluation disappear)
 
-(b) **成立し続けるべき読み手**: 既存の日次 cron(セッション掃除)は cron 文字列で分岐し従来どおり(既定の cron 文字列
-が来ない実行環境 — テストの `createScheduledController()` は cron が空 — では**日次処理**を選ぶ = 既存テストの契約を
-維持)。DO の受理経路は permit を共有するだけで判定順・拒否語彙は不変(storage-guard.test.ts が固定)。セルフホストの
-deploy は最上位設定が無変更(cron 1 本追加のみ)、CI 8b の dry-run は従来どおり + 8c で hosted / restore の dry-run と
-drift 検査。`GitHubApi` の装飾は index.ts の 1 か所で、ハンドラ(web callback / CLI callback)は exchangeCode の呼び出し
-形を変えない。
+(b) **Readings that must keep holding**: the existing daily cron (session cleanup) branches by
+cron string, unchanged (execution environments where the expected cron string never arrives —
+tests' `createScheduledController()` passes an empty cron — **choose the daily processing** =
+preserving the existing test contract). The DO's acceptance path only shares the permit;
+decision order and rejection vocabulary are unchanged (pinned by storage-guard.test.ts).
+Self-host deploys keep the top-level config unchanged (only one cron added); CI 8b's dry-run is
+as before, plus 8c's hosted / restore dry-run and drift check. The `GitHubApi` decoration is a
+single place in index.ts; the handlers (web callback / CLI callback) do not change how they
+call exchangeCode.
 
-(c) **部分適用の窓**: §4-2。加えて —
-- 「復元途中で製品 init が同じ名前に届く」= 同一 genesis を持つ正当な所有者の再初期化で、復元完了前にチェーン 1 行が
-  入ると復元は `not-empty` で拒否される(上書きしない側に倒れる — 運営が init 済みの DO を消す手段は無いため、テナントと
-  調整して再初期化を待ってもらうか、復元を諦めて再初期化を採る)
-- 退避は **at-least-once**: DO の upload 完了後・D1 の記録前に cron が落ちると、次回は記録が無いので再退避する
-  (オブジェクトはタイムスタンプ付きで重複しても上書きしないだけ — ライフサイクルが消す)
-- 復元は途中失敗で全表を消して空へ戻す。消し損ね(DO 退去)でも chain_entries は最後の表なので「未初期化」側に倒れ、
-  再実行が非チェーン表の残骸を消してからやり直す(テストで trailer 欠落・schema 不一致の両方を固定)
-- 退避物のトレーラの監査ヘッドは「列が最新のときのみ非 null」。復元後の突合はその前提で行う(§5-2 (5))。当初は
-  退避側で列を伸ばす案も考えたが、退避は読み取りのみ(9 GB 級 DO で実体化の書き込みを退避が誘発しない)を優先した
+(c) **Partial-application windows**: §4-2. Additionally —
+- "The product's init arrives at the same name mid-restore" = re-initialization by a legitimate
+  owner holding the same genesis; if a chain row lands before the restore completes, the
+  restore is rejected `not-empty` (falls on the do-not-overwrite side — since the operator has
+  no means of deleting an initialized DO, coordinate with the tenant to wait for
+  re-initialization, or abandon the restore and take re-initialization)
+- Backup is **at-least-once**: if the cron dies after the DO's upload completes but before the
+  D1 record lands, the next round sees no record and re-backs up (objects are timestamped —
+  duplicates are simply never overwritten, and the lifecycle deletes them)
+- A restore that fails mid-way clears all tables back to empty. Even if the clear is lost (DO
+  eviction), chain_entries is the last table so it falls to the "uninitialized" side, and a
+  re-run clears the non-chain remnants before restarting (both trailer-missing and schema-
+  mismatch are pinned by tests)
+- The backup trailer's audit head is "non-null only when the column is current". Post-restore
+  cross-checks assume that premise (§5-2 (5)). An earlier idea had the backup side extend the
+  column, but the backup staying read-only (a backup must not trigger a materialization write
+  on a 9 GB-scale DO) won out
 
-(d) **成長様式ごとの信号の成立**: pull 主体(var.read のみ増える)— 監査 seq が進むため skip されず再退避・census が
-size を読む(テストで「pull 後は skip されない」を固定)。失効主体(remove / rotation.recommended)— 同上。サインアップ
-主体(D1 のみ増える)— DO は不変で skip、D1 総量はワークフローが見る、拒否計数は `user_audit_events` から(テストで
-signup_denied 行の窓集計を固定)。休眠プロジェクト — 7 日ごとに再退避され、ライフサイクル削除(35 日)に先行する。
+(d) **Signal validity per growth pattern**: pull-dominated (only var.read grows) — the audit
+seq advances, so it is not skipped; it is re-backed up and the census reads size (a test pins
+"not skipped after pulls"). Revocation-dominated (remove / rotation.recommended) — same.
+Signup-dominated (only D1 grows) — the DO is unchanged and skipped; D1 total is watched by the
+workflow; the denial count comes from `user_audit_events` (a test pins window aggregation of
+signup_denied rows). Dormant projects — re-backed up every 7 days, ahead of lifecycle deletion
+(35 days).
 
-第 2 周(生成規則を変えて): 「信号が出ない形」を探した — (i) webhook の受け口が落ちている間の遷移は状態を進めない
-ため次回再送される(テストで固定)。(ii) 評価は毎時で、firing → resolved が 1 時間の内側で往復した場合は観測されない
-(トリップワイヤの粒度として受容 — 短命の洪水は抑制マーカー行が残す)。(iii) スイープが予算切れで終端に達しない日が
-続くと後半のプロジェクトが `backup_stale_projects` に現れ、それ自体が「規模に対して予算が足りない」の信号になる。
+Second round (changing the generation rule): searched for "shapes that emit no signal" — (i)
+transitions while the webhook endpoint is down do not advance state, so they are resent next
+time (pinned by test). (ii) Evaluation is hourly, so a firing → resolved round trip inside an
+hour is never observed (accepted as the tripwire's granularity — short-lived floods are left by
+the suppression-marker rows). (iii) If days pass where the sweep runs out of budget before
+reaching the end, late-list projects show up in `backup_stale_projects`, which itself becomes
+the signal "the budget is insufficient for the scale".
 
-新規案が出なくなった時点で収束(実装 PR 本文に要約)。
+Converged when no new proposals emerged (summarized in the implementation PR body).
 
-## 9. スコープ外・申し送り
+## 9. Out of scope and handoffs
 
-- Alchemy v2 化(O9)・インシデント / ステータスページ(H4 / H5)・SECURITY.md・脅威モデル
-- GitHub token 請求のスロットリング(gap 9 のオープンベータ開放条件)
-- テナント向けエクスポート(hosted-design §10)— 退避物の形式(NDJSON gzip)はテナント向け輸送の形と**独立**であり、
-  再利用を前提にしない(目的も認可も異なる — DC の棄却案)
-- 監査専用 D1 の分離(gap 4)は監視閾値到達時の手順として §3 行 1 に予約
-- CI の web e2e S9 のフレーク(PR #135)は別 PR
+- Alchemy v2 (O9) · incidents / the status page (H4 / H5) · SECURITY.md · the threat model
+- Throttling of GitHub token requests (gap 9's open-beta opening condition)
+- Tenant-facing export (hosted-design §10) — the backup format (NDJSON gzip) is **independent**
+  of the tenant-facing transport form; do not assume reuse (purpose and authorization differ —
+  DC's rejected option)
+- Separating the dedicated audit D1 (gap 4) is reserved in §3 row 1 as the procedure for when
+  the monitoring threshold is reached
+- The CI web e2e S9 flake (PR #135) is a separate PR

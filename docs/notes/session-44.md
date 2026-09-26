@@ -1,502 +1,544 @@
-# セッション 44: W3a — トークン管理 API + 既定 TTL の実装裁定(CE〜CH)
-
-日付: 2026-08-30。対象 PR: PR-W3a(設計文書 §7 の 5 — server → api-schema →
-CLI、web 変更なし)。様式は従来どおり「複数案 → 上位互換探索 → 3 周比較 →
-自律選択」(session-27 §14 の様式。記号は session-43 の CD から継続)。
-仕様の正は AUTH_SPEC §6(W0 = PR #103 で承認済みの改訂)。本ノートの裁定は
-同 PR の AUTH_SPEC 0.15-draft 改訂として起草し、マージをもって承認とする。
-SECURITY_REVIEW 2026-08-14 L-2(トークン無期限)の解消 PR である。
-
-## 1. 裁定 CE: 既存無期限トークンへの遡及の要否・移行規則(§6 申し送り (a))
-
-### 第 1 周(複数案)
-
-- **CE-a(非遡及)**: 既存の `expires_at IS NULL` 行はローテーションまで
-  無期限のまま。設計文書 §7 の当初記述が示唆していた形。利点 = 稼働中の
-  無人利用を一切壊さない。欠点 = **L-2(漏洩に気づかない限り漏洩トークンが
-  永続する)が既存行に恒久温存される** — 本 PR は L-2 の解消 PR であり、
-  「新規発行のみ有界」は解消と呼べない
-- **CE-b(発行時起点の遡及)**: 移行で `expires_at = created_at + 90 日` を
-  焼き込む。意味論は一様だが、**90 日より古い既存トークンは移行適用と同時に
-  即死**する — 利用者への予告手段がない段階での静かな一斉停止
-- **CE-c(適用時点の再アンカー)**: 移行で NULL 行へ
-  `expires_at = 適用時点 + 90 日` を焼き込む。全既存トークンの寿命が有界に
-  なり(L-2 解消)、かつ 90 日の再ログイン猶予が残る。期限は同 PR の一覧
-  API・CLI のログイン時表示で可視になる
-
-### 第 2 周(上位互換探索)
-
-- CE-c の弱点は「移行を適用せず新コードだけをデプロイした self-host」で
-  NULL 行が無期限のまま残ること(移行はコードと別の適用物)。上位互換:
-  **CE-c′ = CE-c + 検証側の NULL fail-closed** — `isExpired` が NULL を
-  期限切れとして扱う。移行が先なら NULL は検証に到達せず(挙動差ゼロ)、
-  移行漏れの場合も無期限は復活せず、401 → 再ログイン(同名ローテーション)が
-  expires_at 付きの行を発行して**自己回復**する。失敗方向は「使えない」側
-  のみ(安全側)
-- `created_at + 90d` と `適用時点 + 90d` の min を取る変種は検討の上棄却:
-  CE-b の即死問題を部分的に再導入するだけで得るものがない
-
-### 第 3 周(再点検)
-
-- CE-c′ の残余: 移行 SQL(`unixepoch()` 起点)は既定 TTL の 90 日を SQL
-  リテラル(7776000000 ms)として持ち、api-schema の `DEFAULT_TOKEN_TTL_DAYS`
-  と束縛できない(SQL ファイルは定数を import できない)。ただし移行は
-  一回性の処理であり、適用後に定数を変えても遡って矛盾しない — 両側の
-  コメントでペアを明示して受容(worker-env.ts の period 注記と同じ形)
-- 期限切れ行の掃除はしない(セッションの resolve 時削除と意図的に非対称):
-  行は一覧の棚卸し対象として残り、ユーザー上限 100 本にも数え続ける。掃除は
-  指定失効・同名ローテーションが担う — 自動削除は「期限切れに気づく」導線
-  (一覧での可視化)を消す方向で棄却
-- **採用: CE-c′**。実装 = migration `token_ttl_reanchor`(適用時点 + 90 日)
-  + `token.ts` の `isExpired`(NULL = 期限切れ)。移行 SQL はテストが
-  `TEST_MIGRATIONS` から実物を取り出して検証する(SQL の複製を持たない)。
-  設計文書 §7 の当初記述(非遡及の示唆)は本裁定に合わせて改訂済み
-
-## 2. 裁定 CF: リース非対応実行環境の無人 PAT と TTL の衝突(§6 申し送り (b))
-
-前提(動かさない): 無期限の既定へ戻す選択肢は採らない(L-2 の再導入 —
-PR #103 レビュー申し送り)。
-
-### 第 1 周(複数案)
-
-- **CF-a(何もしない)**: GitLab CI / k8s / cron 等では 90 日ごとの再ログイン
-  (人間の介在)を受容する。申し送りを再度先送りするだけで、解消にならない
-- **CF-b(発行時の明示 TTL 指定〔上限つき〕)**: `POST /auth/device/exchange`
-  に `expiresInDays`(1..365)を追加。発行は device flow = 人間の承認つき
-  経路のみなので、「人間が明示して初めて長くできる・それでも 1 年で有界」
-  という形になる
-- **CF-c(対応 issuer の拡張)**: GitLab 等の OIDC issuer をリース(§14)に
-  追加し、PAT 自体を不要にする。原理的には最良だが issuer ごとの検証実装 +
-  仕様改訂を要する大きな独立ワークで、k8s / cron(OIDC を持たない環境)は
-  それでも救えない
-
-### 第 2 周(上位互換探索)
-
-- CF-b と CF-c は排他でない: CF-b は今日の全環境(OIDC なしの cron 含む)を
-  上限つきで救い、CF-c は対応環境から PAT 自体を消していく長期経路。CF-b を
-  採っても CF-c の価値は減らない(リースは値の非経由・短命性で常に優位)。
-  よって「CF-b 今 + CF-c 将来(§14 の拡張として別途)」が両案の上位互換
-- CF-b の上限値: 365 日(起草値)。90 日既定 × 明示時のみ延長・secret
-  scanning 対応プレフィックス・実効権限 min(スコープ, チェーン role) という
-  既存の緩和と合わせ、L-2 の本質(無際限)を再導入しない範囲で運用負荷を
-  下げる。上限はワイヤ Schema(1..365 の整数)で強制し、サーバー内の既定
-  分岐に依存させない
-
-### 第 3 周(再点検)
-
-- 「明示 TTL はスコープ限定トークンにも許すか」を再点検 — 許す(制限しない)。
-  TTL はトークンの寿命であって権限ではなく、長寿命 × 狭スコープはむしろ
-  推奨形(CI 用トークンはプロジェクト限定スコープ + 長め TTL が定石)
-- CLI 引数名は `--token-ttl-days`(`--token-name` と対)。範囲検査は
-  api-schema の共有定数(`MAX_TOKEN_TTL_DAYS`)を見て**どの通信よりも前**に
-  落とす(MAX_TOKEN_NAME_LENGTH と同じ規律)
-- **採用: CF-b(+ CF-c を排他でない将来経路として記録)**
-
-## 3. 裁定 CG: 期限切れ 401・認可 403・一様 404 の判定順(§6 申し送り (c))
-
-### 第 1 周
-
-トークン管理面(一覧・指定失効)は user 単位のリソースであり、§12-3 の
-プロジェクト面(スコープ外 = 404)と異なり「スコープが対象を覆うか」という
-段が存在しない。並べ替え候補は「主体条件 403 と対象解決 404 のどちらが先か」
-のみ:
-
-- **CG-a(404 先行)**: 対象の実在・所有を先に見る。スコープ限定トークンでの
-  探索に対し、応答が対象の実在で揺れる(実在 = 403、不在 = 404)—
-  **403/404 の差分が token id の存在オラクル**になり §12-6 の一様応答の
-  規律に反する
-- **CG-b(403 先行)**: 主体条件(セッション or `*` × admin)を先に見る。
-  この判定は**呼び出し主体の資格情報のみから計算され、対象の情報を運ばない**
-  (§5 のセッション能力制限・§12-3 の認可先行例外と同じ「リクエスト内容のみ
-  から計算できる」論法)。資格を満たす主体だけが対象解決(一様 404)に到達する
-
-### 第 2 周(上位互換探索)
-
-- 期限切れの位置: 期限切れトークンは検証(§6)で失効・不明と**一様に匿名へ
-  畳まれる** = 全エンドポイントで 401。「期限切れです」をワイヤで区別する案は
-  棄却 — 攻撃者(トークン窃取者)への追加情報になる一方、正規ユーザーには
-  CLI の 401 案内(expired or revoked + 再ログイン)と発行時の期限表示・
-  一覧 API で足りる
-- セッションの CSRF・能力制限はミドルウェア(W2b の単一実装点)が 403 を
-  返す既存順序のまま(能力制限 → CSRF — 拒否理由が自分で付けられるヘッダーの
-  有無で揺れない、の既存裁定を踏襲)
-
-### 第 3 周(再点検)
-
-- CG-b の 403 は「`*` × admin を持たないトークンがトークン管理面を呼んだ」
-  ことしか言わず、一様 404 は本人所有でない・存在しないを区別しない。
-  変異検証: スコープ限定トークンで実在 id / 不在 id の両方へ DELETE →
-  応答(403)が完全一致することをテストで固定。セッションでの他人 id /
-  不在 id → 404 の本文一致も固定
-- **採用: CG-b** — 401(検証で一様に匿名)→ 能力制限・CSRF(セッション —
-  ミドルウェア)→ 主体条件 403(資格のみから計算)→ 一様 404(存在秘匿)
-
-## 4. 裁定 CH: 一覧 `GET /auth/tokens` のトークン主体条件(仕様の空白の充填)
-
-§6 は指定失効の主体条件(セッション or `*` × admin)を定めるが、一覧は
-未規定だった。
-
-- **CH-a(全トークン主体に許す)**: 一覧は読み取りであり破壊がない。しかし
-  応答はアカウント全域のトークン目録(名前・プレフィックス・スコープ・
-  最終使用)= **偵察材料**であり、CI 等に置かれるスコープ限定トークンの窃取で
-  「他にどんなトークンがどのスコープで生きているか」を列挙できてしまう
-- **CH-b(指定失効と同条件: セッション or `*` × admin)**: 本人軸監査
-  (`GET /auth/audit/events` — ensureSelfAuditAccess)と同じ規範「アカウント
-  全域の自己情報は、露出しやすいスコープ限定トークンに読ませない」に揃える
-- 3 周目の確認: W3b(S9 画面)の消費主体はセッションであり CH-b で影響なし。
-  CLI の将来の `maruhi token list` も既定トークン(`*` × admin)で動く。
-  失うのはスコープ限定トークンからの自己列挙のみで、正当な導線がない
-- **採用: CH-b**(実装 = `ensureTokenManagementAccess`。ensureSelfAuditAccess
-  への委譲で単一実装点 — 規範が同一であることをコメントで明示)
-
-## 5. 申し送りの確認(session-43 §14)
-
-- **CSRF ヘッダー名の api-schema 定数化**(session-43 §14 の W3 引き継ぎ):
-  **解消** — `CSRF_HEADER_NAME` を api-schema(auth-middleware.ts)に export
-  し、server の middleware.ts が参照する形に束縛した。AUTH_SPEC §11-4 にも
-  真実源を明記。**web 側(dashboard/api.ts のリテラル)の束縛は本 PR では
-  行わない** — 本 PR は「web 変更なし」(設計文書 §7 の 5)であり、web の
-  リテラルは e2e がヘッダー実送信を検査済み。W3b(web を触る次 PR)で
-  定数 import へ置換する(申し送り)
-- session-43 §14 のその他の棄却(目録への method 追加・ランタイム応答検証)は
-  web 領分であり本 PR に該当なし
-
-## 6. 実施記録
-
-- **api-schema**: `auth.listTokens`(GET /auth/tokens)/ `auth.revokeTokenById`
-  (DELETE /auth/tokens/:tokenId)を追加。`TokenSummarySchema` は生値・
-  token_hash の列を構造ごと持たない。`TokenNotFoundError`(404 — フィールド
-  なしの一様応答)。deviceExchange payload に `expiresInDays`(1..365)、
-  応答に `expiresAtMs`。`DEFAULT_TOKEN_TTL_DAYS` / `MAX_TOKEN_TTL_DAYS` /
-  `CSRF_HEADER_NAME` を export。`SESSION_ALLOWED_ENDPOINTS` に両面を追加
-  (AUTH_SPEC §5 の許可列挙は W0 改訂で追加済み — 実装追随)
-- **server**: `issueToken` が ttlMs を必須で受け expires_at を発行時固定
-  (省略不能 — 呼び出し忘れが型で割れる)。`isExpired` の NULL fail-closed 化
-  (CE-c′)。`TokenRepo.listForUser`(token_hash を選択列に含めない)/
-  `revokeById` の actor 引数化 + boolean 化(false = 一様 404 の導出。所有
-  条件は repo 境界 — deepsec S8 の防御が指定失効の導入で実効化した形)。
-  ハンドラは `ensureTokenManagementAccess`(CG-b / CH-b)
-- **migration**: `token_ttl_reanchor` — NULL 行へ `unixepoch()*1000 + 90 日`
-  (CE-c′)
-- **CLI**: `--token-ttl-days`(1..365 — 通信前検査)、ログイン成功時の期限
-  表示(`The token expires on YYYY-MM-DD (UTC)`)、401 案内を
-  「expired or revoked」に更新(期限切れは失効と同じ 401 に畳まれるため
-  両方の可能性を言う)。文言はすべて英語(ADR-0017)
-- **AUDIT_SPEC 1.1-draft**: `auth.token_revoked` の actor = 実行主体(対象 id
-  は payload.tokenId)の明確化。新イベントは追加しない(既存体系で足りる)
-- **テスト**: server 13 本追加(tokens.test.ts — TTL 発行・expiresInDays
-  境界と 400・NULL fail-closed + 再ログイン自己回復・移行 SQL の実物再実行・
-  一覧のフィールド固定〔キー集合の完全一致 = 生値・ハッシュ不在の構造検査〕・
-  期限切れ行の一覧可視・CH の 403・指定失効の認可マトリクス・一様 404 の
-  本文一致・監査 actor)+ 既存スイープ追随(session-capability の
-  `:tokenId` 具現化 — 未知パラメータ fail-loud が設計どおり追記を強制した)。
-  CLI 4 本追加(TTL フラグの通信前検査・payload 透過・期限表示・401 文言)。
-  全体 2197 件通過
-- スコープ外の確認: web / packages/crypto / docs サイトに変更なし。追加
-  発行 UI / API・名前変更 API は作っていない(v1 線引きのまま)
-
-## 7. 実装後の上位互換探索(1 周 — 新設面の不変条件の連鎖歩査)
-
-session-43 §14 の要領で、新設面の各不変条件を定義 → 消費 → ワイヤ →
-サーバーの全リンクで歩査した:
-
-- **「生値・token_hash を返さない」**: repo の選択列(listForUser は
-  token_hash を SELECT しない)→ ドメイン型(ApiTokenSummary に列がない)→
-  ワイヤ Schema(TokenSummarySchema に列がない)→ テスト(応答キー集合の
-  完全一致)。4 リンクとも構造的で規約頼みなし
-- **「TTL 発行時固定」**: issueToken の ttlMs は必須引数・NewApiToken の
-  expiresAtMs は必須フィールド — 省略がコンパイルエラーで割れる。発行経路は
-  repo の条件付き INSERT 1 箇所
-- **「セッション許可列挙」**: ロード時スイープ + 機械導出マトリクスが既設で、
-  新設面は自動的に被覆された(concreteUrl の未知パラメータ fail-loud も
-  設計どおり作動)
-- **規約頼みとして受容した残余(記録)**: (1) 移行 SQL の 90 日リテラルと
-  `DEFAULT_TOKEN_TTL_DAYS` の非束縛(CE 第 3 周 — 一回性の処理。両側
-  コメントでペア明示)。(2) `expiresInDays` の上限はワイヤ Schema の単一点
-  (§12-10 (1) の受理ポリシー単一実装点の型どおりで、二重化はしない)。
-  (3) web の CSRF ヘッダー名リテラル(§5 のとおり W3b へ申し送り)
-- 追加の発見は出なかった(新設面が既設のスイープ機構〔session-capability /
-  serving-topology〕の被覆内に収まる設計を最初から選んだことの帰結)
-
-## 8. レビュー反映(PR #108)
-
-- **pullfrog(2 件 — 両方正当として修正)**:
-  (1) **期限表示の total フォーマッタ迂回** — login.ts の新規行が
-  `new Date(ms).toISOString().slice(0, 10)` を直に呼んでいた。`expiresAtMs` は
-  ワイヤの無制限 number であり、Date 範囲外で RangeError の defect(クラッシュ)、
-  拡張年形式で slice 位置ずれ — display.ts のヘッダーコメント(deepsec
-  B1/B4/B5)がまさに `expiresAtMs` を名指しで挙げる規律の迂回だった。
-  `formatUtcDate` へ置換し、範囲外値(9.9e15)での明示劣化をテストで変異検証。
-  (2) **`expiresAtMs` 必須化のバージョンスキュー** — 応答の必須フィールド化は
-  「新 CLI × 旧サーバー」で `maruhi login`(fail-closed な期限切れからの唯一の
-  回復コマンド)を応答 decode で壊し、発行済みトークンを孤児化させる。ボットは
-  「optionalKey 化 or 運用手順書への hard break 記録」の二択を提示したが、
-  **両方の上位互換 = optionalKey 化 + 欠落時の注記表示 + SELF_HOSTING
-  "Updates" の両方向スキュー記述**を採用: 欠落は旧サーバーの検出材料になり
-  (`--token-ttl-days` が無効である旨まで利用者に言える)、リポジトリの先例
-  (head attestations の両方向 graceful degradation 記述)にも揃う。旧サーバー
-  相手のログイン成功 + 注記をテストで固定
-
-## 9. 申し送り(W3b へ)
-
-- web の `x-maruhi-csrf` リテラルを `CSRF_HEADER_NAME` の type-only でない
-  定数 import へ置換(裁定 CD の import 規律と整合する形で — 値 import に
-  なるため BR/CD のトリップワイヤ側の扱いを W3b で裁定する)
-- S9 トークン管理画面は `auth.listTokens` / `auth.revokeTokenById` を消費
-  (DASHBOARD_ENDPOINTS 目録への追加を忘れない — スイープが強制する)。
-  期限切れトークンは一覧に現れる(expiresAtMs が過去)— 表示は「Expired」
-  ラベル等のサーバー申告表示で(表示規律 §4)
-
-## 10. 第 2 次上位互換探索(オーナー依頼 — 2026-08-30)
-
-依頼: 「銀の弾丸や上位互換となるような新しい案がないか模索」。CE〜CH の各
-裁定について、棄却済み案の再点検に加え、**裁定が置いた解が生む新しい残余**
-(裁定の帰結の側)を標的に探索した。
-
-### 裁定 CI: 提示トークンの期限の `/auth/me` 自己開示(採用)
-
-- **標的にした残余**: CF(明示 TTL)は無人 PAT の 90 日問題を「上限つきで
-  延ばせる」ことで解いたが、**期限はどの主体からも自己観測できず**、期限切れは
-  常に「突然の 401」として現れる。一覧(裁定 CH)は `*` × admin 限定なので、
-  まさに CF が救った先(CI 等に置かれるスコープ限定トークン)ほど自分の期限を
-  知る経路がない — CF と CH の合成が作った盲点
-- **採用形**: `GET /auth/me` がトークン主体へ `tokenExpiresAtMs` を返す。
-  §16-2 の `tokenScopes` と同じ「自分が提示した資格情報の属性」類型で、
-  新しい情報を一切開示しない(セッション主体は欠落 = トークン未提示)。
-  実装は主体型(core の AuthenticatedPrincipal)への焼き込み — 検証(期限
-  切れ = 匿名)を通過した主体は常に非 null の期限を持つため、型も非 null。
-  GitHub が PAT の期限を応答ヘッダーで自己開示するのと同じ発想
-- CH-b′(スコープ限定トークンに「自分 1 行だけの一覧」を返す)は棄却:
-  主体クラスで応答集合が変わる条件付き可視性は AUDIT_SPEC §7 が監査で払って
-  いる複雑さで、自己属性 1 個のためにトークン管理面へ持ち込む対価がない。
-  /auth/me への配置は「一覧 = アカウント在庫(特権)/ me = 自己属性(全主体)」
-  という factoring を保つ
-
-### 検討の上で棄却(第 2 次)
-
-- **スライディング TTL(使用で延命)**: L-2 の推奨対応にも現れる形だが、
-  「発行時固定・セッションと意図的に非対称」は W0(PR #103)で所有者承認済みの
-  決定であり蒸し返さない。実質でも劣後: 窃取されたトークンを攻撃者が使い
-  続ける限り死なない = 定期再認証の強制(固定 TTL の目的)が消える
-- **lazy 再アンカー(検証時に NULL 行へ now + 90 日を焼いて受理)**: §11-5 の
-  lazy backfill と同型に見えるが逆行 — 漏洩したまま未使用の旧トークン(L-2 の
-  本丸)が初回使用まで永続し、しかも攻撃者の初回使用が 90 日を新規付与する。
-  移行時の一括アンカー(CE)は「全行を固定時点で有界化する」点で厳密に優位
-- **expires_at の NOT NULL 化(今回の PR で)**: 移行適用済み・旧コード稼働中の
-  デプロイ間隙に旧コードの発行(NULL を書く)が INSERT 失敗で壊れる。
-  AUDIT_SPEC §5.1 の row_id と同じ「全デプロイ安定後の追随マイグレーション」
-  として申し送りへ(下記)
-- **期限切れ行を 100 本上限から除外 / 自動掃除**: 上限の趣旨は api_tokens の
-  肥大 DoS の有界化(§6)であり、除外は有界性を壊す。自動掃除は在庫可視化
-  (CE 第 3 周)を消す。同名ローテーションが CI の常用形で蓄積を防ぎ、異名の
-  蓄積は一覧 + 指定失効で利用者が解ける — 維持
-
-### 申し送り(第 2 次から)(→ §11 末尾に統合分あり)
-
-- **expires_at の NOT NULL 追随マイグレーション**: W3a コードが全デプロイに
-  行き渡った後、NULL 再アンカー(冪等)+ NOT NULL 制約の追随マイグレーションで
-  「無期限行は存在しない」を DB 制約に昇格し、検証側の fail-closed 分岐を
-  防御的残置(dead code)にする(row_id の先例と同形)
-- ~~**CLI の期限接近警告**: `tokenExpiresAtMs`(裁定 CI)で材料が揃ったため、
-  keychain への期限保存や /auth/me 照会による「期限 7 日前の警告」はワイヤ
-  変更なしの独立 CLI PR でいつでも入れられる。本 PR には積まない(ログイン時の
-  期限表示で最小限は足りている)~~ **第 4 次探索(§13 — 裁定 CL)で撤回・
-  実装**: 繰り延べの根拠だった「追加照会が要る」が CI の帰結で消えていた
-  (env 経路は /auth/me を毎回呼んでいる)ことに §13 の歩査で気づいた
-
-## 11. 第 3 次上位互換探索(オーナー依頼 — 2026-08-30)
-
-依頼: 「もう一度だけ模索」。生成規則を更新した — 第 1 次は新設面の不変条件の
-連鎖歩査、第 2 次は「裁定の合成が作る盲点」。第 3 次は**新不変条件(全トークン
-は有限寿命)を既存の全消費経路へ逆流させる歩査**: 「トークンが死ぬ」という
-事実を観測・報告する側の経路(401 の描画・認証失敗の案内・監査・掃除)を
-すべて列挙し、W3a 以前の前提(トークンは失効しない限り生きる)で書かれた
-まま残っていないかを見た。
-
-### 裁定 CJ: MARUHI_TOKEN 経路の 401 案内の期限切れ対応(採用)
-
-- **標的**: CLI の 401 描画は 2 経路ある — failure.ts の汎用 401(キーチェーン
-  トークン向け。第 1 陣で expired or revoked へ更新済み)と、**session.ts の
-  MARUHI_TOKEN 認証失敗**(「check revocation, scope, and the target server」)。
-  後者が旧前提のまま残っていた。MARUHI_TOKEN はまさに裁定 CF が対象とした
-  無人実行環境(CI / cron)の経路であり、W3a 後はこの 401 の最有力原因が
-  **期限切れ**になる(全トークンが最長 365 日で死ぬ)のに、文言が原因として
-  挙げず、直し先(作業端末で再発行 → 環境変数の差し替え)も言わなかった —
-  `maruhi login` 単独の案内(キーチェーン向け)では環境変数利用者に不正確
-- **採用形**: 文言を「expired or revoked, or the scope or target server may
-  not match」+ 「`maruhi login --token-name <name>` で再発行して MARUHI_TOKEN
-  を差し替える」へ更新。units.test.ts が期限切れ言及と env 差し替え案内を
-  ピン留め。旧文言を参照していたコメント・否定アサーション(redacted.test /
-  units.test)も現行文言へ追随(第 2 次レビューで pullfrog が突いた「宙に
-  浮いた参照」類の予防)
-- ci-run(OIDC リース経路 — PAT 不使用)は対象外であることを確認
-
-### 検討の上で採らなかった(第 3 次)
-
-- **CLI のトークン管理コマンド(`maruhi token list` / `revoke`)**: W2a の
-  「CLI = 同 API の第一消費者」パターンに沿う案だが、本 PR のタスク境界
-  (CLI 範囲 = 期限切れ 401 案内)の外であり、消費面としては W3b(S9)が
-  設計済みの正。裁定の残余を埋めるものでもない — 需要(self-host 運用者の
-  CLI 棚卸し)が実測されたら独立 PR で(申し送り)
-- **短命アクセストークン + リフレッシュトークン構造**: 盗難トークンの露出を
-  時間単位へ縮める根本strengthening だが、§6 が既に「エージェント用の短命
-  リーストークン(Phase 3)」としてロードマップに持つ領域であり、W0 承認の
-  発行経路(device flow のみ)の全面改訂を要する。W3a の上位互換ではなく
-  Phase 3 の設計課題(既定路線の確認のみ — 新規の申し送りは積まない)
-- **デプロイ間隙(移行適用済み・旧 worker 稼働中)に発行される NULL 行**:
-  旧コードの発行が NULL を書き、移行(適用済み)には拾われない。新コードの
-  fail-closed が 401 にし、再ログインで自己回復する — 既存の CE の残余記述に
-  包含される数秒〜数分の窓であり、追加の機構は対価に届かない(記録のみ)
-
-### 収束の見立て
-
-3 つの生成規則(連鎖歩査 / 裁定合成の盲点 / 新不変条件の既存経路への逆流)を
-使い切り、第 3 次の発見は「W3a 以前の前提で書かれた文言」1 件へ縮んだ。
-残る規約頼み・意図的受容は §7・§10 の記録どおりで、次の発見があるとすれば
-レビューボット・実運用(ドッグフーディングでの期限切れ初観測)からと見る。
-
-## 12. 裁定 CK: MARUHI_TOKEN の供給経路 — `--show-token`(PR #108 レビュー起点)
-
-pullfrog の第 4 レビューが裁定 CJ の文言の欠陥を突いた: 案内した回復手順
-(再発行 → MARUHI_TOKEN 差し替え)は、**発行した PAT の生値を表示するコマンドが
-存在しない**ため完遂できない。掘ると 2 段の先行ギャップが顕在化した:
-
-- **仕様実装乖離(W3a 以前から)**: AUTH_SPEC §6(W0 承認)は生値の出現場所を
-  「発行時の端末表示 1 箇所」と定義するが、CLI の loginOp はキーチェーン保存
-  のみで端末表示を実装していなかった — 乖離に最初に依存したのが CJ の文言
-- **CF の残余**: リース非対応環境の無人 PAT(裁定 CF の対象)は、そもそも
-  トークンを環境へ**供給する経路**が文書化・実装ともに存在しなかった。
-  供給経路がなければ明示 TTL(CF)は成立しない — CF の完結に必要な最後の環
-
-### 採用形
-
-- `maruhi login --show-token`(明示オプトイン)が発行した生値を 1 度だけ端末へ
-  表示する(キーチェーン保存は従来どおり — 表示は追加の 1 箇所であって代替で
-  ない)。§6 の「発行時の端末表示 1 箇所」の実装形の具体化であり仕様変更では
-  ない
-- **ゲートは値表示と同じ fail-closed 2 層**(ADR-0016 決定 7 の
-  `ensureValueDisplayAllowed` — 対話端末 × 非エージェント): PAT は全シーク
-  レットへの資格情報であり、エージェントのトランスクリプト・CI ログへ流さない
-  規律は値と同水準。deny-list(invite 類)でなく allow-list 側に置く
-- **判定はどの通信よりも前**: 拒否される環境でブラウザ承認を完走させると、
-  同名ローテーションで旧トークンだけ失効し新しい生値は得られない(置き換え
-  対象の CI トークンを壊すだけの最悪の失敗形)— --token-name の長さ検査と
-  同じ「書き方・環境の誤りは通信より前」の規律
-- CJ の 401 文言は `--show-token` 込みの実在手順へ更新。SELF_HOSTING に
-  MARUHI_TOKEN の供給手順(+ リース優先の注意)を初文書化。redacted.test の
-  剥がし箇所棚卸し表に login.ts の表示点を登録(理由コメント込み)
-
-### レビュー第 2 波の反映(pullfrog)
-
-- **表示の中和**: token はワイヤ上無制約の Schema.String(サーバーが全バイトを
-  選べる)なのに表示が無中和だった — コピーする値なので displayText(U+FFFD
-  への破壊的置換 = 値が壊れる)でなく **escapeText**(allow-list — 正直な
-  Base62 値は素通し、注入は可視の \u{hex} 列)を通す形へ修正。敵対的
-  サーバーの ANSI + 偽の追加行(なりすまし供給指示)が生で届かないことを
-  変異検証。ワイヤ Schema 側の形式制約(prefix + charset)は将来の形式変更で
-  旧 CLI の login を decode 段で壊す方向のため採らず、表示点の中和で閉じた
-
-### 棄却
-
-- **常時表示(フラグなし)**: 生値が全ログインの端末スクロールバック・CI ログへ
-  routine に残る — 「1 箇所に固定」は場所の規律であって常時表示の義務ではない
-- **文言の軟化だけ(原因列挙に留め、手順は文書へ)**: 操作者は 401 の瞬間に
-  行き止まる(pullfrog の指摘どおり「最も出口が要る瞬間に道がない」)。供給
-  経路自体が CF の完結に必要で、遅延させる理由がない
-- **キーチェーンからの手動読み出し案内**(OS ツールでの抽出): OS ごとに手順が
-  異なり、maruhi の管理外の面を正規手順に昇格させることになる — 発行時表示が
-  仕様の予定地であり、そちらを実装する
-
-## 13. 第 4 次上位互換探索(オーナー依頼 — 2026-08-30)
-
-生成規則を更新した: 第 4 次は**ライフサイクル遷移の観測者歩査** — 新設
-オブジェクト(有限寿命トークン)の全状態遷移(発行 → 使用 → 期限接近 →
-期限切れ → 再発行/失効 → 掃除)を列挙し、各遷移に「操作者・観測者・回復手順」
-が揃っているかを見た。発行(login + 表示 + keychain)・使用(自己観測 =
-裁定 CI)・期限切れ(401 + 実在手順の案内 = CJ/CK)・再発行(ローテーション)・
-掃除(指定失効 + 一覧)は揃っている。**期限接近だけが、無人環境では 401 が
-落ちるまで誰にも観測されない** — CF〜CK の弧は「死んだ後の回復」を完備したが
-「死ぬ前の予告」が欠けていた。
-
-### 裁定 CL: 期限接近の事前警告(採用 — §10 繰り延べの撤回)
-
-- **繰り延べの根拠が消えていた**: 第 2 次(§10)は CLI 警告を「独立 PR で」と
-  繰り延べたが、その根拠「追加照会が要る」は裁定 CI 自身の帰結で消えていた —
-  **MARUHI_TOKEN 経路は /auth/me を毎コマンド呼んでおり、tokenExpiresAtMs は
-  追加リクエストなしで手元にある**。キーチェーン経路もログイン応答の期限を
-  レコードへ保存すれば無通信のローカル判定で足りる。裁定が自分の繰り延べの
-  前提を無効化していた形(第 2 次の盲点規則の自己適用)
-- **採用形**: 残り 14 日(起草値)から全コマンドが stderr へ 1 行警告
-  (期限日 = total フォーマッタ + 残日数 + 経路別の再発行手順)。stderr は
-  stdout の機械可読性(値・JSON の pipe)を守るため。期限不明(旧サーバー /
-  旧レコード)と既にローカル過去(401 側が言う — 二重に言わない)は沈黙。
-  キーチェーンレコードへ expiresAtMs を optional 追加(旧レコードは欠落 =
-  従来どおり動き、再ログインで付く — 後方互換)。CI ではこの警告がジョブ
-  ログに残り、operator が 401 の前に再発行を仕込める
-- **検証**: env 経路の窓内警告(--show-token 手順込み)・窓外の沈黙・
-  キーチェーン経路の**無通信**判定(サーバーへ 0 リクエストを固定)・
-  旧レコードの後方互換をテストで固定
-- 棄却: 警告を stdout に出す(pipe 破壊)/ 警告時に自動再発行(ブラウザ承認
-  なしの発行経路は存在しない — device flow の設計どおり)/ サーバー側の
-  期限接近通知(通知インフラ不在 + テレメトリ最小の方針と衝突する新設面)
-
-### 収束の見立て(再更新)
-
-§11 で「次の発見はレビューボットか実運用から」と見立てたが、実際の第 4 次の
-発見は**裁定 CI が自分より前の繰り延べ判断を無効化していた**ことから出た —
-採用した裁定のたびに、過去の裁定・繰り延べの前提を再評価する必要がある
-(裁定は独立でなく、後の裁定が前の判断の根拠を書き換える)。CL 後、
-ライフサイクルの全遷移に観測者と回復手順が揃い、トークンの生涯で「無言の
-状態変化」は残っていない。
-
-## 14. 第 5 次上位互換探索(オーナー依頼 — 2026-08-30・最終回)
-
-生成規則を更新した: 第 5 次は**推奨手順の実演走査(credential custody walk)**
-— 本 PR が文書化した推奨手順(CK の MARUHI_TOKEN 供給)を端から端まで実演し、
-各ステップの後に「どの資格情報が・どこに・何通存在するか」を追跡した。CK は
-手順の**実行可能性**(行き止まりがないか)を検証したが、手順が**実行された後の
-世界**(資格情報の所在の健全性)は未検証だった。
-
-### 裁定 CM: 供給ログインの身元スワップの可視化(採用)
-
-- **発見**: キーチェーンのトークンスロットは **origin 単位で 1 つ**
-  (`token::${origin}` — 名前成分を持たない)。CK の供給手順
-  `maruhi login --token-name ci --show-token` を作業端末で実行すると、発行
-  された CI 用トークンが**その端末のアクティブトークンも置き換える**。帰結:
-  (1) 同一トークン値が作業端末と CI の 2 環境に存在し、**actor_api_token_id
-  が両環境で同一** — AUDIT_SPEC のアクター帰属(どの環境からの操作か)が
-  構造的に濁る。(2) 「CI の分だけ」のつもりの指定失効(W3a の新設面!)が
-  作業端末の CLI も殺す(逆も同様)。(3) 回復は実は 1 コマンド — 素の
-  `maruhi login`(既定名の同名ローテーション)で端末は自分のトークンへ戻り、
-  CI 用トークンは無傷 — だが、**誰もそれを知らされない**
-- **採用形(最小)**: --show-token の出力末尾に注記 1 行(「このトークンは
-  この端末のアクティブトークンにもなった。別環境向けなら素の再ログインで
-  端末に自分のトークンを」+ 共有の害 2 点)。SELF_HOSTING の供給手順に
-  最終ステップ(plain login をもう一度)を追加。テストで注記をピン留め
-- **棄却**: (a) キーチェーンのスロットをトークン名単位へ — セッション解決が
-  「どの名前で認証するか」の選択を要する形になり、キーイングの全面変更 +
-  解決経路の曖昧化。棚卸しの対価に届かない。(b) `--show-token` 時は
-  キーチェーンへ保存しない / `--no-keychain` フラグ — 「自分のトークンを
-  表示したいだけ」の用途で保存されない驚きと、新フラグの表面増。案内で
-  十分に閉じる(手順は 2 コマンドになるが、どちらも既存コマンド)
-
-### レビュー反映(Bugbot — 裁定 CM の注記の欠陥)
-
-- **既定名供給での誤案内**: CM の注記は無条件に「素の再ログイン」を勧めて
-  いたが、**既定名(`cli:<hostname>`)で供給した場合**は素の再ログイン =
-  同名ローテーションが**いま表示したトークン自体を失効させ**、貼り付け先の
-  環境を切断する(Bugbot 指摘 — Medium)。注記を発行名で分岐: 既定名なら
-  「別名で発行し直す」、別名なら「素の再ログインで端末に自分のトークンを」。
-  判定は解決後の実名比較(明示的に既定名を渡した場合も既定名扱い — 事実で
-  分岐する)。両ケースをテストでピン留めし、SELF_HOSTING にも
-  「供給ステップの --token-name を省くな」を明記
-
-### 収束の見立て(最終)
-
-5 つの生成規則(連鎖歩査 / 裁定合成の盲点 / 新不変条件の逆流 / ライフサイクル
-観測者 / 推奨手順の実演走査)を尽くした。CM は「手順の文書化(CK)が新しい
-実演対象を作った」ことから出ており、第 4 次までと同じ構造 — 各裁定が次の
-探索対象を生む — が続いたが、CM の採用形は案内 1 行 + 手順 1 行であり、
-発見の規模は回を追って縮んでいる(CI: ワイヤ面 → CL: 挙動 → CM: 案内)。
-資格情報のライフサイクル(発行・供給・所在・観測・死・回復・掃除)の全面が
-仕様・実装・文書・テストの 4 層で覆われた状態に達したと判断する。
+# Session 44: W3a — token-management API + default-TTL implementation rulings (CE–CH)
+
+Date: 2026-08-30. Target PR: PR-W3a (design document §7's 5 — server → api-schema →
+CLI, no web changes). The format is the usual "multiple candidates → superior-alternative
+search → 3-round comparison → autonomous selection" (session-27 §14's format. The codes
+continue from session-43's CD). The spec's source of truth is AUTH_SPEC §6 (the W0 =
+PR #103-approved revision). This note's rulings are drafted as the same PR's AUTH_SPEC
+0.15-draft revision, and merge constitutes approval. This is the PR that resolves
+SECURITY_REVIEW 2026-08-14 L-2 (tokens with no expiry).
+
+## 1. Ruling CE: whether to apply retroactively to existing no-expiry tokens, and the migration rule (§6 handoff (a))
+
+### Round 1 (multiple candidates)
+
+- **CE-a (no retroactivity)**: existing `expires_at IS NULL` rows stay no-expiry until
+  rotation — the form the design document §7's original wording suggested. Advantage = does
+  not break any running unattended use. Downside = **L-2 (a leaked token persists unless the
+  leak is noticed) is preserved permanently on existing rows** — this PR is the L-2-resolution
+  PR, and "only new issuance is bounded" cannot be called a resolution
+- **CE-b (retroactivity anchored at issuance)**: the migration bakes `expires_at =
+  created_at + 90 days` in. Uniform semantics, but **every existing token older than 90 days
+  dies instantly the moment the migration applies** — a silent mass shutdown at a stage with
+  no way to warn users
+- **CE-c (re-anchoring at application time)**: the migration writes `expires_at =
+  application time + 90 days` onto NULL rows. Every existing token's lifetime becomes bounded
+  (L-2 resolved) while keeping a 90-day re-login grace. The deadlines become visible via the
+  same PR's listing API and the CLI's login-time display
+
+### Round 2 (superior-alternative search)
+
+- CE-c's weakness: on a self-host that deploys only the new code without applying the
+  migration, NULL rows stay no-expiry (the migration is an application separate from the
+  code). Superior alternative: **CE-c′ = CE-c + a NULL fail-closed on the verification side**
+  — `isExpired` treats NULL as expired. If the migration lands first, NULL never reaches
+  verification (zero behavior difference); if the migration is missed, no-expiry does not
+  come back either, and 401 → re-login (same-name rotation) issues an expires_at-bearing row
+  and **self-heals**. The failure direction is only the "unusable" side (the safe side)
+- A variant taking `min(created_at + 90d, application + 90d)` was considered and dismissed:
+  it partially re-introduces CE-b's instant-death problem for no gain
+
+### Round 3 (re-inspection)
+
+- CE-c′'s residual: the migration SQL (anchored on `unixepoch()`) carries the default TTL's
+  90 days as a SQL literal (7776000000 ms) and cannot be bound to api-schema's
+  `DEFAULT_TOKEN_TTL_DAYS` (a SQL file cannot import a constant). However, a migration is a
+  one-time operation, and changing the constant afterward does not retro-contradict — the
+  pairing is made explicit in comments on both sides and accepted (same shape as
+  worker-env.ts's period note)
+- Expired rows are not swept (deliberately asymmetric with sessions' resolve-time deletion):
+  rows remain as inventory objects in the listing and keep counting toward the user's
+  100-token cap. Sweeping is carried by targeted revocation and same-name rotation —
+  automatic deletion was rejected because it erases the "notice the expiry" path (visibility
+  in the listing)
+- **Adopted: CE-c′**. Implementation = migration `token_ttl_reanchor` (application time +
+  90 days) + `token.ts`'s `isExpired` (NULL = expired). A test pulls the real thing out of
+  `TEST_MIGRATIONS` and verifies the migration SQL (no SQL duplicate is kept). The design
+  document §7's original wording (the no-retroactivity suggestion) has already been revised
+  to match this ruling
+
+## 2. Ruling CF: the collision between unattended PATs on lease-incapable runtimes and the TTL (§6 handoff (b))
+
+Premise (not moved): the option of returning to a no-expiry default is not taken
+(re-introducing L-2 — the PR #103 review handoff).
+
+### Round 1 (multiple candidates)
+
+- **CF-a (do nothing)**: GitLab CI / k8s / cron etc. accept a re-login (human intervention)
+  every 90 days. Only postpones the handoff again — not a resolution
+- **CF-b (explicit TTL designation at issuance [capped])**: add `expiresInDays` (1..365) to
+  `POST /auth/device/exchange`. Issuance is device flow = a path with human approval only, so
+  the shape becomes "only a human's explicit choice can lengthen it, and even then it is
+  bounded at 1 year"
+- **CF-c (extending supported issuers)**: add OIDC issuers like GitLab to leases (§14), making
+  PATs themselves unnecessary. In principle the best, but it is a large independent work
+  needing per-issuer verification implementations + a spec revision, and k8s / cron
+  (environments without OIDC) still cannot be saved
+
+### Round 2 (superior-alternative search)
+
+- CF-b and CF-c are not exclusive: CF-b saves every environment today (including OIDC-less
+  cron) with a cap, and CF-c is the long-term path that erases PATs themselves from supported
+  environments. Taking CF-b does not reduce CF-c's value (leases are always superior in
+  value non-transit and short lifetimes). Therefore "CF-b now + CF-c later (separately, as a
+  §14 extension)" is the superior alternative to both
+- CF-b's cap: 365 days (draft value). Together with the existing mitigations — 90-day
+  default × extension only when explicit · a secret-scanning-compatible prefix · effective
+  authority min(scope, chain role) — it lowers operational load within the range that does
+  not re-introduce L-2's essence (unboundedness). The cap is enforced by the wire Schema
+  (an integer in 1..365), never left to an in-server default branch
+
+### Round 3 (re-inspection)
+
+- Re-checked "should an explicit TTL be allowed for scoped tokens too" — allowed (not
+  restricted). A TTL is the token's lifetime, not its authority; long lifetime × narrow scope
+  is rather the recommended shape (CI tokens conventionally take a project-scoped scope + a
+  longer TTL)
+- The CLI flag name is `--token-ttl-days` (a pair with `--token-name`). The range check looks
+  at api-schema's shared constant (`MAX_TOKEN_TTL_DAYS`) and fails **before any
+  communication** (the same discipline as MAX_TOKEN_NAME_LENGTH)
+- **Adopted: CF-b (+ CF-c recorded as a non-exclusive future path)**
+
+## 3. Ruling CG: the decision order of expiry 401 / authorization 403 / uniform 404 (§6 handoff (c))
+
+### Round 1
+
+The token-management surface (listing · targeted revocation) is a per-user resource, and
+unlike §12-3's project surfaces (out of scope = 404) there is no "does the scope cover the
+target" stage. The only ordering candidate is "which comes first, the principal-condition
+403 or the target-resolution 404":
+
+- **CG-a (404 first)**: look at the target's existence / ownership first. Against probing with
+  a scoped token, the response would differ on the target's existence (exists = 403, absent =
+  404) — **the 403/404 difference becomes an existence oracle for token ids**, violating
+  §12-6's uniform-response discipline
+- **CG-b (403 first)**: look at the principal condition (session or `*` × admin) first. This
+  determination is **computed from the calling principal's credentials alone and carries no
+  information about the target** (the same "computable from the request content alone"
+  argument as §5's session-capability restriction and §12-3's authorization-first exception).
+  Only a principal satisfying the credentials reaches target resolution (uniform 404)
+
+### Round 2 (superior-alternative search)
+
+- The position of expiry: an expired token **folds uniformly into anonymous** — alongside
+  revoked and unknown — at verification (§6) = 401 on every endpoint. The option of
+  distinguishing "it is expired" on the wire is dismissed — it becomes extra information for
+  an attacker (a token thief), while a legitimate user is served by the CLI's 401 guidance
+  (expired or revoked + re-login) and the issuance-time expiry display · listing API
+- Session CSRF / capability restriction stay in the existing order where the middleware
+  (W2b's single implementation point) returns 403 (capability restriction → CSRF —
+  preserving the existing ruling that the rejection reason must not vary with the presence of
+  a header the caller can add themselves)
+
+### Round 3 (re-inspection)
+
+- CG-b's 403 says only "a token without `*` × admin called the token-management surface",
+  and the uniform 404 does not distinguish not-owned-by-self from nonexistent. Mutation
+  verification: DELETE a real id and a nonexistent id with a scoped token → a test pins the
+  responses (403) being byte-identical. Sessions against another's id / a nonexistent id →
+  404 body match is also pinned
+- **Adopted: CG-b** — 401 (verification folds uniformly to anonymous) → capability
+  restriction / CSRF (sessions — middleware) → principal-condition 403 (computed from
+  credentials only) → uniform 404 (existence concealment)
+
+## 4. Ruling CH: the principal condition of the listing `GET /auth/tokens` (filling a spec gap)
+
+§6 defines the principal condition of targeted revocation (session or `*` × admin) but left
+the listing unspecified.
+
+- **CH-a (allow every token principal)**: the listing is a read with no destruction. However,
+  the response is an account-wide token inventory (names, prefixes, scopes, last used) =
+  **reconnaissance material** — stealing a scoped token placed in CI etc. would enumerate
+  "what other tokens are alive with which scopes"
+- **CH-b (same condition as targeted revocation: session or `*` × admin)**: aligns with the
+  same norm as self-axis audit (`GET /auth/audit/events` — ensureSelfAuditAccess):
+  "account-wide self-information is not readable by easily-exposed scoped tokens"
+- Round-3 confirmation: W3b's (S9 screen) consuming principal is the session, so CH-b has no
+  impact. The CLI's future `maruhi token list` also works under the default token (`*` ×
+  admin). The only thing lost is self-enumeration from scoped tokens, for which no
+  legitimate path exists
+- **Adopted: CH-b** (implementation = `ensureTokenManagementAccess`. A single implementation
+  point by delegating to ensureSelfAuditAccess — a comment states that the norms are
+  identical)
+
+## 5. Confirming handoffs (session-43 §14)
+
+- **Making the CSRF header name an api-schema constant** (session-43 §14's W3 handoff):
+  **resolved** — `CSRF_HEADER_NAME` is exported from api-schema (auth-middleware.ts) and the
+  server's middleware.ts references it — bound that way. AUTH_SPEC §11-4 also records the
+  source of truth. **The web side (dashboard/api.ts's literal) is not bound in this PR** —
+  this PR is "no web changes" (design document §7's 5), and the web literal is already
+  covered by the e2e that verifies the header is actually sent. W3b (the next web-touching
+  PR) replaces it with the constant import (handoff)
+- session-43 §14's other rejected items (adding method to the catalog, runtime response
+  verification) are web territory and do not apply to this PR
+
+## 6. Implementation record
+
+- **api-schema**: added `auth.listTokens` (GET /auth/tokens) / `auth.revokeTokenById`
+  (DELETE /auth/tokens/:tokenId). `TokenSummarySchema` structurally has no raw-value or
+  token_hash columns. `TokenNotFoundError` (404 — a uniform response with no fields). The
+  deviceExchange payload gains `expiresInDays` (1..365), the response `expiresAtMs`.
+  `DEFAULT_TOKEN_TTL_DAYS` / `MAX_TOKEN_TTL_DAYS` / `CSRF_HEADER_NAME` are exported. Both
+  surfaces are added to `SESSION_ALLOWED_ENDPOINTS` (AUTH_SPEC §5's permission enumeration
+  was already added in the W0 revision — implementation follow-up)
+- **server**: `issueToken` now takes ttlMs as required and fixes expires_at at issuance
+  (cannot be omitted — a forgotten call fails at the type level). `isExpired` became
+  NULL-fail-closed (CE-c′). `TokenRepo.listForUser` (does not select token_hash) /
+  `revokeById` gained an actor parameter and became boolean (false = the uniform-404
+  derivation. The ownership condition lives at the repo boundary — the form in which deepsec
+  S8's defense became effective with targeted revocation's introduction). Handlers use
+  `ensureTokenManagementAccess` (CG-b / CH-b)
+- **migration**: `token_ttl_reanchor` — `unixepoch()*1000 + 90 days` onto NULL rows (CE-c′)
+- **CLI**: `--token-ttl-days` (1..365 — a pre-communication check), an expiry display on
+  successful login (`The token expires on YYYY-MM-DD (UTC)`), and the 401 guidance updated
+  to "expired or revoked" (since expiry folds into the same 401 as revocation, both
+  possibilities are named). All wording is English (ADR-0017)
+- **AUDIT_SPEC 1.1-draft**: clarified `auth.token_revoked`'s actor = the acting principal
+  (the target id is payload.tokenId). No new events were added (the existing system
+  suffices)
+- **Tests**: 13 new server tests (tokens.test.ts — TTL issuance · expiresInDays boundaries
+  and 400 · NULL fail-closed + re-login self-healing · re-running the real migration SQL ·
+  pinning the listing's fields [exact match of the key set = a structural check that raw
+  values and hashes are absent] · expired rows visible in the listing · CH's 403 · the
+  targeted-revocation authorization matrix · body match of the uniform 404 · the audit
+  actor) + following up an existing sweep (session-capability's `:tokenId` concretization —
+  the unknown-parameter fail-loud worked as designed and forced the addition). 4 new CLI
+  tests (the TTL flag's pre-communication check · payload pass-through · the expiry display ·
+  the 401 wording). 2,197 tests pass overall
+- Out-of-scope confirmation: no changes to web / packages/crypto / the docs site. No
+  additional issuance UI / API or rename API was built (the v1 line stays)
+
+## 7. Post-implementation superior-alternative search (1 round — a chain walk of the new surfaces' invariants)
+
+Following session-43 §14's procedure, each invariant of the new surfaces was walked across
+all links — definition → consumption → wire → server:
+
+- **"Never return raw values / token_hash"**: the repo's select columns (listForUser does not
+  SELECT token_hash) → the domain type (ApiTokenSummary has no such column) → the wire
+  Schema (TokenSummarySchema has no such column) → tests (exact match of the response key
+  set). All 4 links are structural, none convention-reliant
+- **"TTL fixed at issuance"**: issueToken's ttlMs is a required argument, and NewApiToken's
+  expiresAtMs is a required field — omission fails at compile time. The issuance path is a
+  single conditional INSERT in the repo
+- **"The session-permission enumeration"**: the load-time sweep + the mechanically derived
+  matrix already exist, so the new surfaces were covered automatically (concreteUrl's
+  unknown-parameter fail-loud also worked as designed)
+- **Residuals accepted as convention-reliant (recorded)**: (1) the migration SQL's 90-day
+  literal is unbound from `DEFAULT_TOKEN_TTL_DAYS` (CE round 3 — a one-time operation. The
+  pairing is made explicit in comments on both sides). (2) `expiresInDays`' cap lives at the
+  single point of the wire Schema (the same shape as §12-10 (1)'s single implementation
+  point for acceptance policy; not duplicated). (3) the web's CSRF header-name literal
+  (handed to W3b per §5)
+- No additional findings emerged (a consequence of choosing from the start a design whose
+  new surfaces sit inside the coverage of the existing sweep mechanisms [session-capability /
+  serving-topology])
+
+## 8. Review follow-ups (PR #108)
+
+- **pullfrog (2 findings — both legitimate, fixed)**:
+  (1) **the expiry display bypassing the total formatter** — the new line in login.ts called
+  `new Date(ms).toISOString().slice(0, 10)` directly. `expiresAtMs` is an unconstrained
+  number on the wire: out-of-Date-range values defect (crash) with RangeError, and the
+  extended-year format shifts the slice position — a bypass of exactly the discipline that
+  display.ts's header comment (deepsec B1/B4/B5) names `expiresAtMs` for. Replaced with
+  `formatUtcDate`, and explicit degradation on an out-of-range value (9.9e15) is
+  mutation-verified by a test. (2) **version skew from making `expiresAtMs` required** —
+  making the response field required breaks `maruhi login` (the only recovery command from a
+  fail-closed expiry) at response decode under "new CLI × old server" and orphans the issued
+  token. The bot offered "make it optionalKey or record a hard break in the ops runbook",
+  but **the superior alternative to both = optionalKey + a note when absent + a two-way skew
+  description in SELF_HOSTING "Updates"** was adopted: absence becomes detection material
+  for an old server (it can even tell the user that `--token-ttl-days` is inert), and it
+  matches the repository's precedent (head attestations' two-way graceful-degradation
+  description). A successful login against an old server + the note is pinned by a test
+
+## 9. Handoffs (to W3b)
+
+- Replace web's `x-maruhi-csrf` literal with a non-type-only constant import of
+  `CSRF_HEADER_NAME` (in a form consistent with ruling CD's import discipline — because it
+  becomes a value import, how the BR/CD tripwires treat it is ruled in W3b)
+- The S9 token-management screen consumes `auth.listTokens` / `auth.revokeTokenById`
+  (do not forget adding them to the DASHBOARD_ENDPOINTS catalog — the sweep enforces it).
+  Expired tokens appear in the listing (expiresAtMs in the past) — display them as a
+  server-declared label like "Expired" (display discipline §4)
+
+## 10. Second-round superior-alternative search (owner request — 2026-08-30)
+
+Request: "look for new options that could be silver bullets or superior alternatives". Beyond
+re-inspecting the rejected options of rulings CE–CH, the search targeted **the new residuals
+produced by the solutions the rulings placed** (the consequence side of rulings).
+
+### Ruling CI: self-disclosure of the presented token's expiry on `/auth/me` (adopted)
+
+- **The targeted residual**: CF (explicit TTL) solved the unattended-PAT 90-day problem via
+  "can be extended with a cap", but **the expiry is not self-observable from any principal**,
+  so expiry always appears as "a sudden 401". Because the listing (ruling CH) is `*` ×
+  admin-only, the very targets CF saved (scoped tokens placed in CI etc.) have no path to
+  learn their own expiry — a blind spot created by the composition of CF and CH
+- **Adopted form**: `GET /auth/me` returns `tokenExpiresAtMs` to a token principal. It is the
+  same "attribute of the credential you yourself presented" class as §16-2's `tokenScopes`,
+  and discloses no new information (session principals get it absent = no token presented).
+  The implementation bakes it into the principal type (core's AuthenticatedPrincipal) —
+  a principal that passed verification (expired = anonymous) always carries a non-null
+  expiry, so the type is non-null too. Same idea as GitHub self-disclosing a PAT's expiry in
+  a response header
+- CH-b′ (returning a "listing of just your own row" to scoped tokens) is dismissed:
+  conditional visibility where the response set changes by principal class is the complexity
+  AUDIT_SPEC §7 pays for in audit, and it is not worth carrying into the token-management
+  surface for a single self-attribute. Placing it on /auth/me preserves the factoring
+  "listing = account inventory (privileged) / me = self-attributes (every principal)"
+
+### Considered and rejected (round 2)
+
+- **Sliding TTL (extend on use)**: a shape that appears in L-2's recommended responses too,
+  but "fixed at issuance, deliberately asymmetric with sessions" is an owner-approved
+  decision from W0 (PR #103) and is not relitigated. It is also substantively inferior: a
+  stolen token never dies while the attacker keeps using it = the forced periodic
+  re-authentication (fixed TTL's purpose) disappears
+- **Lazy re-anchoring (on verification, bake now + 90 days onto a NULL row and accept)**:
+  looks same-shaped as §11-5's lazy backfill but runs backward — a leaked-and-unused old
+  token (L-2's main target) would persist until first use, and moreover the attacker's first
+  use would grant it 90 fresh days. Anchoring every row at one fixed point in the migration
+  (CE) is strictly superior
+- **Making expires_at NOT NULL (in this PR)**: in the deploy gap where the migration has
+  applied but the old code still runs, the old code's issuance (writing NULL) would break
+  with an INSERT failure. Handed off as "a follow-up migration after all deploys stabilize"
+  — the same shape as AUDIT_SPEC §5.1's row_id (below)
+- **Excluding expired rows from the 100-token cap / auto-sweeping them**: the cap's purpose
+  is bounding api_tokens bloat DoS (§6), and exclusion breaks boundedness. Auto-sweeping
+  erases inventory visibility (CE round 3). Same-name rotation is CI's routine shape and
+  prevents accumulation, and differently-named accumulation is resolved by the user via the
+  listing + targeted revocation — kept
+
+### Handoffs (from round 2) (a merged item is at the end of §11)
+
+- **The expires_at NOT NULL follow-up migration**: once the W3a code has reached every
+  deploy, a follow-up migration of NULL re-anchoring (idempotent) + the NOT NULL constraint
+  promotes "no no-expiry row exists" to a DB constraint and turns the verification side's
+  fail-closed branch into a defensive leftover (dead code) (same shape as row_id's
+  precedent)
+- ~~**CLI approaching-expiry warning**: now that the material exists via `tokenExpiresAtMs`
+  (ruling CI), a "warn 7 days before expiry" via storing the expiry in the keychain or
+  querying /auth/me can be added anytime in an independent CLI PR with no wire change. Not
+  packed into this PR (the login-time expiry display covers the minimum)~~ **Withdrawn and
+  implemented in the fourth-round search (§13 — ruling CL)**: the walk in §13 noticed that
+  "an extra query is needed", the basis for deferral, had already disappeared as a
+  consequence of CI (the env path calls /auth/me on every command)
+
+## 11. Third-round superior-alternative search (owner request — 2026-08-30)
+
+Request: "search once more". The generation rule was updated — round 1 walked the new
+surfaces' invariant chains, round 2 targeted "blind spots the rulings' composition creates".
+Round 3 is **a walk backpropagating the new invariant (every token has a finite lifetime)
+into all existing consumption paths**: every path that observes / reports the fact "a token
+dies" (the rendering of 401s, auth-failure guidance, audit, sweeping) was enumerated and
+checked for leftovers still written under the pre-W3a premise (a token lives unless revoked).
+
+### Ruling CJ: making the MARUHI_TOKEN path's 401 guidance expiry-aware (adopted)
+
+- **Target**: the CLI draws 401s on two paths — failure.ts's generic 401 (for keychain
+  tokens. Updated to "expired or revoked" in the first wave) and **session.ts's MARUHI_TOKEN
+  auth failure** ("check revocation, scope, and the target server"). The latter had been left
+  under the old premise. MARUHI_TOKEN is exactly the unattended-runtime path (CI / cron)
+  ruling CF targeted, and post-W3a the most likely cause of this 401 is **expiry** (every
+  token dies within 365 days at most) — yet the wording neither named the cause nor gave the
+  fix destination (re-issue at a work terminal → replace the env var) — guidance naming only
+  `maruhi login` (keychain-oriented) is inaccurate for env-var users
+- **Adopted form**: the wording is updated to "expired or revoked, or the scope or target
+  server may not match" + "re-issue with `maruhi login --token-name <name>` and replace
+  MARUHI_TOKEN". units.test.ts pins the expiry mention and the env-replacement guidance.
+  Comments and negative assertions that referenced the old wording (redacted.test /
+  units.test) were followed up to the current wording (prevention of the "dangling
+  reference" class that pullfrog hit in the round-2 review)
+- Confirmed that ci-run (the OIDC lease path — no PAT used) is out of scope
+
+### Considered and not taken (round 3)
+
+- **CLI token-management commands (`maruhi token list` / `revoke`)**: follows W2a's "the CLI
+  = the first consumer of the same API" pattern, but it is outside this PR's task boundary
+  (the CLI scope = expiry 401 guidance), and as a consumption surface W3b (S9) is the
+  designed source of truth. It also fills no residual of a ruling — if demand (self-host
+  operators doing CLI inventory) is measured, an independent PR (handoff)
+- **A short-lived access-token + refresh-token structure**: a fundamental strengthening that
+  shrinks a stolen token's exposure to hours, but it is territory §6 already carries on the
+  roadmap as "short-lived lease tokens for agents (Phase 3)" and requires a full revision of
+  the W0-approved issuance path (device flow only). Not W3a's superior alternative — a
+  Phase-3 design task (only the default course is confirmed — no new handoff is filed)
+- **NULL rows issued in the deploy gap (migration applied, old worker still running)**: old
+  code's issuance writes NULL, which the (already-applied) migration does not pick up. New
+  code's fail-closed makes it a 401 and re-login self-heals — a window of seconds-to-minutes
+  already covered by CE's residual description; an additional mechanism does not reach its
+  cost (record only)
+
+### Convergence assessment
+
+The three generation rules (chain walk / blind spots of ruling composition / backpropagating
+the new invariant into existing paths) were exhausted, and round 3's findings shrank to one:
+"wording written under pre-W3a premises". The remaining convention-reliant and deliberately
+accepted items are recorded in §7 and §10, and the next findings, if any, are expected from
+review bots or real operation (the first expiry observation under dogfooding).
+
+## 12. Ruling CK: the supply path of MARUHI_TOKEN — `--show-token` (originating in PR #108 review)
+
+pullfrog's fourth review hit a defect in ruling CJ's wording: the guided recovery procedure
+(re-issue → replace MARUHI_TOKEN) cannot be completed because **no command exists that
+displays an issued PAT's raw value**. Digging surfaced a two-stage pre-existing gap:
+
+- **Spec–implementation divergence (pre-W3a)**: AUTH_SPEC §6 (W0-approved) defines the raw
+  value's place of appearance as "one display on the terminal at issuance", but the CLI's
+  loginOp only saved to the keychain and never implemented the terminal display — CJ's
+  wording was the first thing to depend on the divergence
+- **CF's residual**: for the unattended PAT on lease-incapable runtimes (ruling CF's target),
+  the very **path that supplies** the token into the environment existed in neither
+  documentation nor implementation. Without a supply path, explicit TTL (CF) does not hold —
+  the last link needed for CF to complete
+
+### Adopted form
+
+- `maruhi login --show-token` (an explicit opt-in) displays the issued raw value once on the
+  terminal (keychain storage is unchanged — the display is one additional place, not a
+  replacement). It is a concretization of §6's implementation form "one terminal display at
+  issuance", not a spec change
+- **The gate is the same fail-closed two layers as value display** (ADR-0016 decision 7's
+  `ensureValueDisplayAllowed` — interactive terminal × non-agent): a PAT is a credential to
+  every secret, and the discipline of never flowing it into an agent's transcript or CI logs
+  is the same level as values. Placed on the allow-list side, not the deny-list (invite
+  family)
+- **The check happens before any communication**: letting browser approval complete in an
+  environment that will be rejected means the same-name rotation revokes only the old token
+  while no new raw value is obtained (the worst failure shape — it only breaks the CI token
+  being replaced) — the same "writing and environment mistakes fail before communication"
+  discipline as --token-name's length check
+- CJ's 401 wording was updated to the real procedure including `--show-token`. SELF_HOSTING
+  got the first documentation of the MARUHI_TOKEN supply procedure (+ the lease-preferred
+  note). The login.ts display point was registered in redacted.test's inventory table of
+  stripping locations (with a reason comment)
+
+### Round-2 review follow-up (pullfrog)
+
+- **Neutralizing the display**: token is an unconstrained Schema.String on the wire (the
+  server chooses every byte) yet the display was un-neutralized — since it is a value that
+  gets copied, it now passes through **escapeText** (allow-list — an honest Base62 value
+  passes through, an injection becomes visible \u{hex} sequences) instead of displayText
+  (destructive substitution to U+FFFD = the value would break). Mutation-verified that a
+  hostile server's ANSI + fake extra lines (impersonating supply instructions) do not arrive
+  raw. Format constraints on the wire-Schema side (prefix + charset) were not taken — they
+  would break old CLIs' login at decode on a future format change — so it was closed by
+  neutralizing at the display point
+
+### Rejected
+
+- **Always displaying (no flag)**: the raw value would routinely land in every login's
+  terminal scrollback and CI logs — "fixed to one place" is a discipline of location, not an
+  obligation to always display
+- **Softening the wording only (stop at enumerating causes; procedures go to docs)**: the
+  operator dead-ends at the moment of the 401 (as pullfrog pointed out, "the path is missing
+  at the very moment an exit is most needed"). The supply path itself is needed for CF to
+  complete, and there is no reason to delay it
+- **Guidance to read it out of the keychain manually** (extraction with OS tools): the
+  procedure differs per OS and would promote a surface outside maruhi's control into the
+  sanctioned procedure — display at issuance is the spec's designated place, so that is what
+  was implemented
+
+## 13. Fourth-round superior-alternative search (owner request — 2026-08-30)
+
+The generation rule was updated: round 4 is **a lifecycle-transition observer walk** — every
+state transition of the new object (the finite-lifetime token) was enumerated (issuance →
+use → approaching expiry → expired → re-issue/revoke → sweep), and each transition was
+checked for whether "operator, observer, recovery procedure" are all present. Issuance (login
++ display + keychain), use (self-observation = ruling CI), expiry (401 + a real-procedure
+guidance = CJ/CK), re-issue (rotation), and sweep (targeted revocation + listing) are all
+present. **Only approaching expiry is observed by no one until the 401 lands in unattended
+environments** — the CF–CK arc completed "recovery after death" but lacked "advance notice
+before death".
+
+### Ruling CL: the approaching-expiry early warning (adopted — retracting §10's deferral)
+
+- **The basis for deferral had disappeared**: round 2 (§10) deferred the CLI warning to "an
+  independent PR", but its basis — "an extra query is needed" — had already disappeared as a
+  consequence of ruling CI itself: **the MARUHI_TOKEN path calls /auth/me on every command,
+  so tokenExpiresAtMs is in hand with no added request**. The keychain path also needs only
+  a local, communication-free check if the login response's expiry is saved into the record.
+  The ruling had invalidated the premise of its own deferral (a self-application of round 2's
+  blind-spot rule)
+- **Adopted form**: from 14 days remaining (draft value), every command emits a one-line
+  warning to stderr (the expiry date via the total formatter + days remaining + a per-path
+  re-issuance procedure). stderr to preserve stdout's machine readability (value / JSON
+  pipes). Silent when the expiry is unknown (old server / old record) and when it is already
+  locally past (the 401 side says that — never said twice). `expiresAtMs` is added to the
+  keychain record as optional (old records have it absent = behave as before; it appears on
+  re-login — backward compatible). In CI this warning lands in the job log, letting the
+  operator schedule re-issuance before the 401
+- **Verification**: pinned by tests — the env path's in-window warning (with the --show-token
+  procedure), out-of-window silence, the keychain path's **communication-free** determination
+  (zero requests to the server), and backward compatibility of old records
+- Rejected: emitting the warning on stdout (breaks pipes) / auto re-issuing on warning (no
+  issuance path without browser approval exists — the device flow's design is as intended) /
+  a server-side approaching-expiry notification (no notification infrastructure + a new
+  surface colliding with the telemetry-minimal policy)
+
+### Convergence assessment (re-updated)
+
+§11 estimated "the next findings will come from review bots or real operation", but the
+actual round-4 finding came from **ruling CI having invalidated an earlier deferral
+decision** — every adopted ruling requires re-evaluating the premises of past rulings and
+deferrals (rulings are not independent; a later ruling rewrites the grounds of an earlier
+decision). After CL, every transition of the lifecycle has an observer and a recovery
+procedure aligned, and no "silent state change" remains in a token's lifetime.
+
+## 14. Fifth-round superior-alternative search (owner request — 2026-08-30 · final round)
+
+The generation rule was updated: round 5 is **a live walkthrough of the recommended
+procedure (a credential-custody walk)** — the recommended procedure this PR documented
+(CK's MARUHI_TOKEN supply) was performed end to end, and after each step "which credential
+exists, where, and in how many copies" was tracked. CK had verified the procedure's
+**feasibility** (whether it dead-ends), but the **world after the procedure is executed**
+(the soundness of where credentials sit) was unverified.
+
+### Ruling CM: making the identity swap of a supply login visible (adopted)
+
+- **Finding**: the keychain's token slot is **one per origin** (`token::${origin}` — it has
+  no name component). Running CK's supply procedure `maruhi login --token-name ci
+  --show-token` on a work terminal makes the issued CI token **also replace that terminal's
+  active token**. Consequences: (1) the same token value exists in two environments — the
+  work terminal and CI — and **actor_api_token_id is identical in both** — AUDIT_SPEC's
+  actor attribution (which environment an operation came from) is structurally muddied.
+  (2) A targeted revocation meant to kill "only the CI one" (W3a's new surface!) kills the
+  work terminal's CLI too (and vice versa). (3) The recovery is actually one command — a
+  plain `maruhi login` (same-name rotation under the default name) returns the terminal to
+  its own token, leaving the CI token unharmed — **but nobody is told that**
+- **Adopted form (minimal)**: append a one-line note to the end of --show-token's output
+  ("this token also became this terminal's active token. If it is for another environment,
+  plain re-login returns the terminal's own token" + the 2 harms of sharing). SELF_HOSTING's
+  supply procedure gained a final step (plain login once more). The note is pinned by a test
+- **Rejected**: (a) keying the keychain slot per token name — session resolution would come
+  to need choosing "which name to authenticate as", a wholesale keying change plus ambiguity
+  in the resolution path. Not worth it for inventory. (b) not saving to the keychain when
+  `--show-token` is passed / a `--no-keychain` flag — the surprise of "I just wanted to
+  display my token" not being saved, plus a new flag's surface growth. Guidance closes it
+  well enough (the procedure becomes 2 commands, both existing ones)
+
+### Review follow-up (Bugbot — the defect in ruling CM's note)
+
+- **Wrong guidance when supplying under the default name**: CM's note unconditionally
+  recommended a "plain re-login", but **when the supply ran under the default name
+  (`cli:<hostname>`)**, a plain re-login = same-name rotation **revokes the very token just
+  displayed**, disconnecting the environment it was pasted into (Bugbot finding — Medium).
+  The note now branches on the issued name: for the default name "issue again under a
+  different name"; for a different name "plain re-login returns the terminal's own token".
+  The determination compares resolved actual names (explicitly passing the default name
+  counts as the default name — it branches on fact). Both cases are pinned by tests, and
+  SELF_HOSTING also gained "do not omit --token-name in the supply step"
+
+### Convergence assessment (final)
+
+The five generation rules (chain walk / blind spots of ruling composition / backpropagation
+of the new invariant / lifecycle observers / the recommended-procedure walkthrough) were
+exhausted. CM emerged from "the procedure's documentation (CK) created a new walkthrough
+target" — the same structure as up through round 4 — each ruling generating the next search
+target — but CM's adopted form is one line of guidance + one line of procedure, and the
+scale of findings has shrunk round over round (CI: the wire surface → CL: behavior → CM:
+guidance). I judge that the full credential lifecycle (issuance · supply · custody ·
+observation · death · recovery · sweeping) has reached a state covered across the 4 layers:
+spec, implementation, documentation, and tests.
