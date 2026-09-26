@@ -27,7 +27,11 @@ export type ChainKeyStanding =
       readonly kind: "active";
       readonly member: ChainMember;
       readonly device: ChainDevice;
-      /** その人の最初の鍵(genesis / add_member など — `add_device` で足されていない)。 */
+      /**
+       * このチェーンでその人の最初の鍵(genesis / add_member)だったことがある — 今の出所が
+       * 最初の鍵か、以前の在籍の最初の鍵(`remove_member` の後の再招待で `add_device` として
+       * 戻った鍵を含む — DK K14-1 1-f)。
+       */
       readonly firstKey: boolean;
     }
   | { readonly kind: "revoked" }
@@ -47,11 +51,33 @@ export function keyStandingIn(
   const device = member?.devices.get(fingerprintHex);
   if (member !== undefined && device !== undefined) {
     const provenance = deviceProvenanceOf(verified, userId, device);
-    return { kind: "active", member, device, firstKey: provenance.addedByFingerprintHex === null };
+    const firstKey =
+      provenance.addedByFingerprintHex === null || wasFirstKeyOf(verified, userId, device);
+    return { kind: "active", member, device, firstKey };
   }
   return revokedFingerprintsOf(verified, userId).has(fingerprintHex)
     ? { kind: "revoked" }
     : { kind: "absent" };
+}
+
+/**
+ * The device's keys were the first key of `userId` in some tenure on this chain
+ * (an applied genesis or `add_member` carrying them). Applied operations outlive
+ * the tenure, so a key re-added with `add_device` after a re-invite still counts.
+ */
+function wasFirstKeyOf(verified: VerifiedProject, userId: string, device: ChainDevice): boolean {
+  const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
+    keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
+  return verified.applied.some(({ operation, actorUserId }) => {
+    if (operation.op === "genesis") {
+      return actorUserId === userId && carries(operation.payload);
+    }
+    return (
+      operation.op === "add_member" &&
+      operation.payload.targetUserId === userId &&
+      carries(operation.payload)
+    );
+  });
 }
 
 /** 1 プロジェクトの立場(同期できなければその事実 — 「無い」と混同しない)。 */
@@ -209,4 +235,25 @@ export function reserveVerdictOf(
     return { kind: "nowhere" };
   }
   return { kind: "added", projectIds: activeProjectIds };
+}
+
+/**
+ * 台帳から開いた鍵の判定を、サーバーが一覧に出す全プロジェクトを同期して行う(DK K14-4 4-f —
+ * `key recovery` と台帳の変更の前段〔`openLedgerReserveForChange`〕が共有する入口)。
+ * `key recover` は登録のために開いたチェーンに `reserveVerdictOf` を直接当てる(同期を二重に
+ * しない)。群は誤った記録を直す材料(`retractReserveRecord`)として返す。
+ */
+export function ledgerKeyVerdictOf(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly fingerprintHex: string;
+}): Effect.Effect<
+  { readonly verdict: ReserveVerdict; readonly groups: StandingGroups },
+  never,
+  CliServices
+> {
+  return Effect.map(keyStandingsOf(input), (standings) => {
+    const groups = groupStandings(standings);
+    return { verdict: reserveVerdictOf(groups, standings.listFailure), groups };
+  });
 }

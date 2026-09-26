@@ -517,6 +517,30 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
+  it("別の端末でも、台帳の鍵がチェーン上で最初の鍵(pre-DK の複製)なら封印せず `maruhi key recovery` へ誘導する(DK K14-4)", async () => {
+    // 端末 = owner(DK の端末)。台帳 B = reserve だが、チェーン上ではその人の genesis の鍵
+    const chain = await buildChain([
+      { actor: reserve, operation: genesisOp(reserve) },
+      { actor: reserve, operation: addOwnerDeviceOp(owner) },
+    ]);
+    const { env, server } = await start([
+      statusHandler([]),
+      ledger.handler,
+      registerHandler(() => {}),
+      projectListHandlerOf([chain]),
+      ...appendableProjectHandlers(chain),
+    ]);
+    seedSession(env, server.origin, owner);
+    env.setPromptResponses([ledger.code]);
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
+    expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `The recovery ledger holds key ${reserve.fingerprintHex}, your first key on 1 project (${chain.projectId}) (the key you created or joined that project with): a copy of a device key from an install before device keys, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key seal passkey\``,
+    );
+    expect(env.browserOpens).toEqual([]);
+    expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
+  });
+
   it("エージェント環境・非端末・鍵なしの端末ではリスナーを立てる前に拒否する(まずコード入力のゲート)", async () => {
     const agent = await start([statusHandler([]), ledger.handler]);
     seedDeviceAndLedger(agent.env, agent.server.origin);

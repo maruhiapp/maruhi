@@ -49,12 +49,13 @@ import {
   groupStandings,
   type KeyStanding,
   keyStandingOnProject,
-  keyStandingsOf,
+  ledgerKeyVerdictOf,
   type ReserveVerdict,
   reserveVerdictOf,
+  type StandingGroups,
 } from "./device-standing.ts";
 import { describeBackfill, reportRegisteredDevice } from "./device.ts";
-import { countNoun, displayText } from "./display.ts";
+import { countNoun, describeProjects, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { requestHandoffReserve } from "./handoff.ts";
@@ -71,7 +72,12 @@ import { logNote, logWarning } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { issueRecoveryCodeOp, mapUnloadableRecoveryBlob, sealNewReserve } from "./recovery.ts";
-import { generateReserveKeys, recordReserveLocally, type ReserveKeys } from "./reserve.ts";
+import {
+  generateReserveKeys,
+  recordReserveLocally,
+  type ReserveKeys,
+  retractReserveRecord,
+} from "./reserve.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
@@ -251,11 +257,19 @@ function settleOpenedKey(input: {
   readonly session: CliSession;
   readonly reserve: ReserveKeys;
   readonly verdict: ReserveVerdict;
+  readonly groups: StandingGroups;
 }): Effect.Effect<void, CliError, CliIo | OwnDeviceStore> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fp = input.reserve.fingerprintHex;
     const { verdict } = input;
+    // 予備鍵として働かない鍵を、この端末が以前 reserve と記録していれば直す(K14-4 4-g)
+    yield* retractReserveRecord({
+      session: input.session,
+      fingerprintHex: fp,
+      verdict,
+      groups: input.groups,
+    });
     switch (verdict.kind) {
       case "added": {
         yield* io.log(
@@ -291,11 +305,6 @@ function settleOpenedKey(input: {
         );
     }
   });
-}
-
-/** 判定の事実の文に添えるプロジェクトの列挙(件数 + 名前)。 */
-function describeProjects(projectIds: readonly string[]): string {
-  return `${countNoun(projectIds.length, "project")} (${projectIds.map(displayText).join(", ")})`;
 }
 
 /**
@@ -340,6 +349,7 @@ function finishRecovery(input: {
       session: input.session,
       reserve: input.reserve,
       verdict: reserveVerdictOf(groups, null),
+      groups,
     });
     // B の秘密はここで役目を終える(参照を手放す。保存経路は型で閉じている — reserve.ts)
     yield* logNote(
@@ -519,12 +529,12 @@ function separateUnusableLedgerKey(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fp = input.opened.fingerprintHex;
-    const standings = yield* keyStandingsOf({
+    const { verdict, groups } = yield* ledgerKeyVerdictOf({
       session: input.session,
       client: input.client,
       fingerprintHex: fp,
     });
-    const verdict = reserveVerdictOf(groupStandings(standings), standings.listFailure);
+    yield* retractReserveRecord({ session: input.session, fingerprintHex: fp, verdict, groups });
     switch (verdict.kind) {
       case "first-key":
         yield* io.log(
