@@ -1,6 +1,8 @@
 // 集約形 var.read の表示導出(src/dashboard/audit-read.ts)の unit テスト。
 import { describe, expect, it } from "vitest";
 
+// 正準実装(web はパッケージ依存を持たないため、テストからのみソースを相対参照する)
+import { auditReadVariablesOf } from "../../../../packages/core/src/audit.ts";
 import {
   aggregatedReadVariables,
   listedReadVariableLabel,
@@ -37,20 +39,40 @@ describe("aggregatedReadVariables", () => {
     expect(aggregatedReadVariables({ event: "var.read", payload: { note: "x" } })).toBeNull();
   });
 
-  it("形の崩れた要素は落とし、整形できる項目だけを残す(サーバー申告の防御)", () => {
+  it("core の auditReadVariablesOf と同じく、variableId 文字列 + 整数 epoch / version 以外の要素は落とす", () => {
     expect(
       aggregatedReadVariables({
         event: "var.read",
         payload: {
           variables: [
             "not-an-object",
-            { epoch: 1 },
-            { variableId: "var-a", epoch: "1", version: 3 },
-            [{ variableId: "var-nested" }],
+            null,
+            { epoch: 1, version: 1 },
+            { variableId: "var-str-epoch", epoch: "1", version: 3 },
+            { variableId: "var-no-version", epoch: 1 },
+            { variableId: "var-no-epoch", version: 1 },
+            { variableId: "var-float", epoch: 1.5, version: 2 },
+            { variableId: "var-nan", epoch: 1, version: Number.NaN },
+            [{ variableId: "var-nested", epoch: 1, version: 1 }],
+            { variableId: "var-ok", epoch: 2, version: 3 },
           ],
         },
       }),
-    ).toEqual([{ variableId: "var-a", epoch: undefined, version: 3 }]);
+    ).toEqual([{ variableId: "var-ok", epoch: 2, version: 3 }]);
+  });
+
+  it("受理条件が @maruhi/core の auditReadVariablesOf と一致する", () => {
+    const variables = [
+      "x",
+      { variableId: "a", epoch: 1, version: 1 },
+      { variableId: "b", epoch: 1.5, version: 1 },
+      { variableId: "c", epoch: 1 },
+      { variableId: 3, epoch: 1, version: 1 },
+      { variableId: "d", epoch: 0, version: 7 },
+    ];
+    expect(aggregatedReadVariables({ event: "var.read", payload: { variables } })).toEqual(
+      auditReadVariablesOf({ variables }),
+    );
   });
 });
 
@@ -69,12 +91,9 @@ describe("labels", () => {
     expect(readSummaryLabel(3)).toBe("read 3 variables");
   });
 
-  it("展開行は欠落項目を出さない", () => {
+  it("展開行は variableId · epoch · version を並べる", () => {
     expect(listedReadVariableLabel({ variableId: "var-a", epoch: 2, version: 5 })).toBe(
       "var-a · epoch 2 · v 5",
     );
-    expect(
-      listedReadVariableLabel({ variableId: "var-a", epoch: undefined, version: undefined }),
-    ).toBe("var-a");
   });
 });

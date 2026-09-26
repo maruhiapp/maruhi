@@ -4,37 +4,43 @@
 // サーバー / CLI は @maruhi/core の auditReadVariablesOf を共有するが、Web は
 // api-schema からの type-only import しか持たない(TCB を最小に保つ — types.ts
 // 冒頭)ため、同じ解釈をここに置く。全値はサーバー申告であり検証はしない —
-// 形の崩れは optional アクセスで防御し、整形できる項目だけを表示する。
+// 要素の受理条件は core と同一(variableId が文字列かつ epoch / version が整数)
+// で、それ以外の要素は落とす(両者で件数・表示がずれないように)。
 import type { AuditEvent } from "./types.ts";
 
 /**
  * One variable listed by an aggregated `var.read` row, as reported by the
- * server. epoch / version are `undefined` when the entry did not carry a number.
+ * server. Entries without an integer epoch and version are dropped.
  */
 export interface ListedReadVariable {
   readonly variableId: string;
-  readonly epoch: number | undefined;
-  readonly version: number | undefined;
+  readonly epoch: number;
+  readonly version: number;
 }
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function numberOrUndefined(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
+/**
+ * 列挙の 1 要素の整形。@maruhi/core の auditReadVariablesOf と同じ受理条件
+ * (variableId が文字列かつ epoch / version が整数)を満たさなければ落とす。
+ */
+function listedReadVariableOf(entry: unknown): ListedReadVariable | null {
+  return isJsonRecord(entry) && isListedReadVariable(entry)
+    ? { variableId: entry.variableId, epoch: entry.epoch, version: entry.version }
+    : null;
 }
 
-/** 列挙の 1 要素の整形(variableId が文字列でなければ落とす)。 */
-function listedReadVariableOf(entry: unknown): ListedReadVariable | null {
-  if (!isJsonRecord(entry) || typeof entry["variableId"] !== "string") {
-    return null;
-  }
-  return {
-    variableId: entry["variableId"],
-    epoch: numberOrUndefined(entry["epoch"]),
-    version: numberOrUndefined(entry["version"]),
-  };
+/** 受理条件(variableId が文字列かつ epoch / version が整数 — core と同一)。 */
+function isListedReadVariable(
+  entry: Record<string, unknown>,
+): entry is Record<string, unknown> & ListedReadVariable {
+  return (
+    typeof entry["variableId"] === "string" &&
+    Number.isInteger(entry["epoch"]) &&
+    Number.isInteger(entry["version"])
+  );
 }
 
 /** payload の `variables` 列挙(配列でなければ null = 集約形ではない)。 */
@@ -72,11 +78,7 @@ export function readSummaryLabel(count: number): string {
   return `read ${count} ${count === 1 ? "variable" : "variables"}`;
 }
 
-/** 展開行の表示形: `var-id · epoch 1 · v 2`(欠落項目は出さない)。 */
+/** 展開行の表示形: `var-id · epoch 1 · v 2`。 */
 export function listedReadVariableLabel(variable: ListedReadVariable): string {
-  return [
-    variable.variableId,
-    ...(variable.epoch === undefined ? [] : [`epoch ${variable.epoch}`]),
-    ...(variable.version === undefined ? [] : [`v ${variable.version}`]),
-  ].join(" · ");
+  return `${variable.variableId} · epoch ${variable.epoch} · v ${variable.version}`;
 }
