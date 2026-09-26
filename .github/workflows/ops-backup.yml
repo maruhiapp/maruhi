@@ -20,6 +20,12 @@ on:
     - cron: "41 2 * * *"
   workflow_dispatch:
 
+# cron と手動実行が重なると export が 2 本並走し、D1 を 2 倍の時間塞ぐ(export 中は D1 が
+# 他のリクエストをブロックする)。取り消しはしない(途中の export を捨てない)
+concurrency:
+  group: ops-backup
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
