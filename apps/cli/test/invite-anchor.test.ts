@@ -1,12 +1,17 @@
-// 招待リンクアンカーの機械照合(CRYPTO_SPEC §6.3 帯域外アンカー (a) / §6.5 —
-// context.ts の attachProject / project verify)の統合テスト。
+// Integration tests for the invite-link anchor's machine cross-check
+// (CRYPTO_SPEC §6.3 out-of-band anchor (a) / §6.5 — attachProject /
+// project verify in context.ts).
 //
-// 固定する性質:
-//  1. add_member 後の初回同期で、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
-//     機械照合し、成功時は verifiedAtSeq を永続化する(以後も検査は継続)
-//  2. ヘッド不包含(巻き戻し・fork 配布)・招待者 FP 不一致・招待者 sig 鍵不一致
-//     (偽造リンク / 偽造チェーン)は硬い証拠として拒否する(アンカーは FP と sig 鍵の両方を必ず持つ)
-//  3. ピンファイルの破損は fail-open(警告 + 検査なしで続行 — 床と同じ線引き)
+// Properties pinned down:
+//  1. On the first sync after add_member, the pinned "head inclusion +
+//     inviter-FP membership" is machine-checked; on success verifiedAtSeq
+//     is persisted (the check keeps running afterwards)
+//  2. Head not included (rollback, fork distribution), inviter FP
+//     mismatch, or inviter sig-key mismatch (forged link / forged chain)
+//     are refused as hard evidence (the anchor always carries both the FP
+//     and the sig key)
+//  3. A corrupt pin file is fail-open (warn and continue without the
+//     check — the same line drawn as the floor)
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -51,7 +56,7 @@ function chainHandler(built: BuiltChain): MockHandler {
   }));
 }
 
-/** 受諾済みチェーン(genesis → acceptor の add_member)と受諾者セッション。 */
+/** The accepted chain (genesis → the acceptor's add_member) and the acceptor's session. */
 async function memberEnv(built: BuiltChain): Promise<TestEnv> {
   const server = await MockServer.start([chainHandler(built)]);
   servers.push(server);
@@ -73,8 +78,8 @@ async function seedAnchor(
   );
 }
 
-describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / §6.5)", () => {
-  it("ヘッド包含 + 招待者 FP の在籍が一致すれば照合成功し、verifiedAtSeq を永続化する", async () => {
+describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a) / §6.5)", () => {
+  it("succeeds when head inclusion + inviter-FP membership agree, persisting verifiedAtSeq", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
@@ -97,13 +102,14 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     ) as { anchor: { verifiedAtSeq: number | null } };
     expect(pins.anchor.verifiedAtSeq).toBe(2);
 
-    // 2 回目は成功メッセージを繰り返さない(検査自体は毎回走る)
+    // The second time doesn't repeat the success message (the check
+    // itself runs every time)
     env.logs.length = 0;
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).not.toContain("Invite-link anchor check passed");
   });
 
-  it("ピン留めヘッドを含まないチェーン(巻き戻し・fork 配布)を拒否する", async () => {
+  it("refuses a chain not containing the pinned head (rollback, fork distribution)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
@@ -111,7 +117,8 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     const env = await memberEnv(built);
     await seedAnchor(env, built.projectId, {
       headSeq: 2,
-      // 実際の seq 2 とは異なるハッシュ = 招待者が見ていた履歴が配布に含まれない
+      // A hash differing from the real seq 2 = the history the inviter
+      // saw is not part of the distribution
       headHashHex: "9a".repeat(32),
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
@@ -125,7 +132,7 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     );
   });
 
-  it("招待者 FP がピン留めヘッド時点の在籍と一致しないチェーンを拒否する", async () => {
+  it("refuses a chain where the inviter FP disagrees with the membership at the pinned head", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
@@ -135,7 +142,8 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
       headSeq: 1,
       headHashHex: built.hashes[0],
       inviterUserId: inviter.userId,
-      // リンクの ie= / is= が別の鍵を指していた(偽造リンク / チェーン偽造)形
+      // The shape where the link's ie= / is= point at a different key
+      // (forged link / forged chain)
       inviterKeyFingerprintHex: "7b".repeat(16),
       inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
@@ -145,7 +153,7 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     expect(env.errors.join("\n")).toContain("does not match the chain member at the pinned head");
   });
 
-  it("招待者 sig 鍵(is=)がピン留めヘッド時点の在籍鍵と一致しないチェーンを拒否する", async () => {
+  it("refuses a chain where the inviter's sig key (is=) disagrees with the key enrolled at the pinned head", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
@@ -156,7 +164,8 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
       headHashHex: built.hashes[0],
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
-      // FP は一致するが sig 鍵が別(FP と鍵の両方を照合する — 片方だけの偽装を通さない)
+      // The FP matches but the sig key differs (both FP and key are
+      // cross-checked — a disguise of only one never passes)
       inviterSigPubHex: "7b".repeat(32),
       verifiedAtSeq: null,
     });
@@ -167,7 +176,7 @@ describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / 
     );
   });
 
-  it("ピンファイルの破損は fail-open(警告 + アンカー検査なしで続行)", async () => {
+  it("a corrupt pin file is fail-open (warn + continue without the anchor check)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: addMemberOp(acceptor, "member") },

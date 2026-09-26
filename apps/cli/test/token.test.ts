@@ -1,12 +1,16 @@
-// `maruhi token list` / `maruhi token revoke`(AUTH_SPEC §6 — W3a)のワイヤレベルテスト。
+// Wire-level tests for `maruhi token list` / `maruhi token revoke`
+// (AUTH_SPEC §6 — W3a).
 //
-// 固定するもの:
-// - list: createdAtMs 昇順の整列、スコープの `project:permission` 連結、
-//   null の lastUsed / expires は "never"、空一覧の文言(exit 0)
-// - list: 403 は admin トークン / ブラウザセッションへの案内(exit 1)
-// - revoke: DELETE /auth/tokens/:tokenId を送り、成功を 1 行で報告
-// - revoke: 404(一様 — 存在秘匿)は `maruhi token list` への案内、403 は資格の案内
-// - どちらも想定外のサーバーエラーは型付きエラーで exit 1
+// What they pin down:
+// - list: ascending createdAtMs ordering, scopes joined as
+//   `project:permission`, null lastUsed / expires rendered "never", and
+//   the empty-list wording (exit 0)
+// - list: a 403 guides toward an admin token / browser session (exit 1)
+// - revoke: sends DELETE /auth/tokens/:tokenId and reports success in one
+//   line
+// - revoke: a 404 (uniform — hides existence) guides toward `maruhi token
+//   list`; a 403 is the credential guidance
+// - both: an unexpected server error is a typed error with exit 1
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -24,7 +28,7 @@ afterEach(async () => {
 
 const PROJECT_A = "a".repeat(64);
 
-/** 2026-01-02T03:04:05Z 起点のフィクスチャ時刻。 */
+/** Fixture times starting from 2026-01-02T03:04:05Z. */
 const T0 = Date.UTC(2026, 0, 2, 3, 4, 5);
 const HOUR = 60 * 60 * 1000;
 
@@ -42,12 +46,13 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<{
 }
 
 describe("maruhi token list", () => {
-  it("createdAtMs 昇順に並べ、スコープを連結し、null の時刻は never と表示する", async () => {
+  it("orders ascending by createdAtMs, joins scopes, and renders null times as never", async () => {
     const { env } = await startEnv([
       onRequest("GET", "/auth/tokens", () => ({
         status: 200,
         json: {
-          // サーバー応答順は作成順と逆(CLI 側で整列することを確かめる)
+          // The server's response order is the reverse of creation order
+          // (confirming the CLI sorts)
           tokens: [
             {
               id: "tok_newer",
@@ -83,7 +88,7 @@ describe("maruhi token list", () => {
     ]);
   });
 
-  it("トークンが無ければ No API tokens(exit 0)", async () => {
+  it("no tokens says No API tokens (exit 0)", async () => {
     const { env } = await startEnv([
       onRequest("GET", "/auth/tokens", () => ({ status: 200, json: { tokens: [] } })),
     ]);
@@ -92,7 +97,7 @@ describe("maruhi token list", () => {
     expect(env.logs).toEqual(["No API tokens"]);
   });
 
-  it("403 は admin トークン / ブラウザセッションが要る旨を案内して exit 1", async () => {
+  it("a 403 guides that an admin token / browser session is needed, exit 1", async () => {
     const { env } = await startEnv([
       onRequest("GET", "/auth/tokens", () => ({
         status: 403,
@@ -107,7 +112,7 @@ describe("maruhi token list", () => {
     expect(stderr).toContain("browser session");
   });
 
-  it("想定外のサーバーエラーは exit 1(一覧を出さない)", async () => {
+  it("an unexpected server error is exit 1 (no list emitted)", async () => {
     const { env } = await startEnv([
       onRequest("GET", "/auth/tokens", () => ({ status: 500, json: { _tag: "Internal" } })),
     ]);
@@ -119,7 +124,7 @@ describe("maruhi token list", () => {
 });
 
 describe("maruhi token revoke", () => {
-  it("DELETE /auth/tokens/:tokenId を送り、失効を報告する", async () => {
+  it("sends DELETE /auth/tokens/:tokenId and reports the revocation", async () => {
     const { server, env } = await startEnv([
       onRequest("DELETE", "/auth/tokens/tok_target", () => ({ status: 204 })),
     ]);
@@ -131,7 +136,7 @@ describe("maruhi token revoke", () => {
     ).toEqual(["/auth/tokens/tok_target"]);
   });
 
-  it("404(一様 — 存在秘匿)は token list への案内で exit 1", async () => {
+  it("a 404 (uniform — hides existence) guides toward token list, exit 1", async () => {
     const { env } = await startEnv([
       onRequest("DELETE", "/auth/tokens/tok_missing", () => ({
         status: 404,
@@ -146,7 +151,7 @@ describe("maruhi token revoke", () => {
     expect(stderr).toContain("maruhi token list");
   });
 
-  it("403 は admin トークン / ブラウザセッションが要る旨を案内して exit 1", async () => {
+  it("a 403 guides that an admin token / browser session is needed, exit 1", async () => {
     const { env } = await startEnv([
       onRequest("DELETE", "/auth/tokens/tok_target", () => ({
         status: 403,
@@ -161,7 +166,7 @@ describe("maruhi token revoke", () => {
     );
   });
 
-  it("想定外のサーバーエラーは exit 1(失効を報告しない)", async () => {
+  it("an unexpected server error is exit 1 (no revocation reported)", async () => {
     const { env } = await startEnv([
       onRequest("DELETE", "/auth/tokens/tok_target", () => ({
         status: 500,

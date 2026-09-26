@@ -1,11 +1,14 @@
-// `--help` の整合(DP5 裁定 F): 全コマンド段 + bare `maruhi` + `maruhi --help` の
-// 出力を golden ファイル(test/golden/help.txt)で固定する。
+// `--help` consistency (DP5 ruling F): pin the output of every command
+// level + bare `maruhi` + `maruhi --help` against the golden file
+// (test/golden/help.txt).
 //
-// - 文言を変えたら `UPDATE_GOLDEN=1 bunx vitest run --project cli test/help.test.ts`
-//   で更新し、差分をレビューで読む(usage 行と実際のフラグ・説明文の食い違いを
-//   目で確かめる場所をここ 1 つにする)
-// - 併せて機械検査: 説明文は動詞始まりの 1 行(仕様の § 参照を含まない —
-//   利用者はスペックを読めない)、ヘルプは stderr、色は付かない(テスト環境)
+// - When the wording changes, regenerate with `UPDATE_GOLDEN=1 bunx vitest
+//   run --project cli test/help.test.ts` and read the diff in review (this is
+//   the single place where usage lines vs. actual flags/descriptions are
+//   checked by eye)
+// - Plus a mechanical check: descriptions are one verb-led line (no § spec
+//   references — users can't read the spec), help goes to stderr, and no
+//   color (test environment)
 
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -19,12 +22,12 @@ import { makeTestEnv } from "./support/env.ts";
 const GOLDEN_PATH = join(import.meta.dirname, "golden", "help.txt");
 const ESC = "\u001B";
 
-/** 1 段ぶんのヘルプ(stderr)を採取する。 */
+/** Captures one command level's help (stderr). */
 async function helpOf(argv: readonly string[]): Promise<string> {
   const env = await makeTestEnv();
   const code = await runCli(argv, env.layer);
   expect(code, argv.join(" ")).toBe(0);
-  // ヘルプは stdout を汚さない(ADR-0016 決定 9)
+  // Help does not pollute stdout (ADR-0016 decision 9)
   expect(env.logs, argv.join(" ")).toEqual([]);
   return env.errors.join("\n");
 }
@@ -41,8 +44,8 @@ async function renderAll(): Promise<string> {
   return `${sections.join("\n\n")}\n`;
 }
 
-describe("--help の整合(golden)", () => {
-  it("全コマンドの --help は golden と一致する(更新は UPDATE_GOLDEN=1)", async () => {
+describe("--help consistency (golden)", () => {
+  it("every command's --help matches the golden (regenerate with UPDATE_GOLDEN=1)", async () => {
     const rendered = await renderAll();
     if (process.env["UPDATE_GOLDEN"] === "1") {
       await writeFile(GOLDEN_PATH, rendered);
@@ -51,7 +54,7 @@ describe("--help の整合(golden)", () => {
     expect(rendered).toBe(golden);
   });
 
-  it("色は CliIo の判定に従う: 有効なら見出しが太字、無効(パイプ・NO_COLOR)なら ANSI なし", async () => {
+  it("color follows CliIo's judgement: headings are bold when enabled, no ANSI when disabled (pipe, NO_COLOR)", async () => {
     const colored = await makeTestEnv();
     colored.setColor(true);
     expect(await runCli(["pull", "--help"], colored.layer)).toBe(0);
@@ -63,10 +66,11 @@ describe("--help の整合(golden)", () => {
     expect(plain.errors.join("\n")).not.toContain(ESC);
   });
 
-  it("説明文は動詞始まりの 1 行で、仕様の § 参照を含まない", async () => {
+  it("descriptions are one verb-led line and contain no spec § references", async () => {
     const rendered = await renderAll();
     expect(rendered).not.toContain("§");
-    // DESCRIPTION の直後の行 = 説明文。大文字の動詞で始まる(sentence case)
+    // The line right after DESCRIPTION = the description. It starts with a
+    // capitalized verb (sentence case)
     const lines = rendered.split("\n");
     const descriptions = lines.flatMap((line, index) =>
       line === "DESCRIPTION" ? [lines[index + 1] ?? ""] : [],

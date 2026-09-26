@@ -1,6 +1,7 @@
-// バージョンの単一の出所(apps/cli/package.json)の固定。
-// リリースはタグ ↔ package.json の一致を release workflow が検査する前提なので、
-// 「package.json の版がそのまま `--version` に出る」ことを回帰の砦にする。
+// Pins the version's single source (apps/cli/package.json). Releases are
+// premised on the release workflow checking tag ↔ package.json agreement,
+// so the regression wall is "the package.json version shows up verbatim
+// in `--version`".
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -12,14 +13,15 @@ import { SEMVER_PATTERN } from "../scripts/shared.ts";
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 
-describe("CLI のバージョン(単一の出所 = package.json)", () => {
-  it("version はタグ照合・npm publish の前提となる SemVer である", () => {
+describe("the CLI version (single source = package.json)", () => {
+  it("version is SemVer, the precondition for tag matching and npm publish", () => {
     expect(packageJson.version).toMatch(SEMVER_PATTERN);
   });
 
-  it("SemVer 判定は npm が拒む形(先頭ゼロ等)を通さない", () => {
-    // 緩い判定だと GitHub Release 作成後の npm publish で初めて弾かれ、
-    // Release と npm が食い違う(release.yml の version-check も同型)
+  it("the SemVer check doesn't pass shapes npm rejects (leading zeros etc.)", () => {
+    // A lax check would first get bounced at npm publish — after the
+    // GitHub Release already exists — leaving Release and npm disagreeing
+    // (release.yml's version-check is the same shape)
     for (const bad of ["01.2.3", "1.2", "1.2.3-", "1.2.3-01", "v1.2.3"]) {
       expect(bad).not.toMatch(SEMVER_PATTERN);
     }
@@ -28,12 +30,12 @@ describe("CLI のバージョン(単一の出所 = package.json)", () => {
     }
   });
 
-  it("`maruhi --version` は package.json の version をそのまま出力する", () => {
+  it("`maruhi --version` prints package.json's version verbatim", () => {
     const result = spawnSync("bun", ["src/bin.ts", "--version"], {
       cwd: cliRoot,
       encoding: "utf8",
-      // spawnSync はイベントループを塞ぐため vitest のタイムアウトが効かない。
-      // hang 時は子を殺してテストを失敗させる
+      // spawnSync blocks the event loop, so vitest's timeout can't fire.
+      // On a hang, kill the child and fail the test
       timeout: 10_000,
     });
     expect(result.status).toBe(0);

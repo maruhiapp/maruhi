@@ -1,9 +1,11 @@
-// 値なしスキーマ S3 のテスト(設計文書 §1-1 / §1-2 / §1-4・CRYPTO_SPEC §4.2 /
-// §6.3・AUTH_SPEC §12-7): `maruhi schema`(表示 — agent-gate 許可の固定込み)、
-// `maruhi schema set`(部分更新・宣言作成・locked 事前検査・エントロピー
-// fail-closed)、declared を含む配布の検証(ダイジェスト算入・値配布要求)、
-// run の fail-fast(presence 硬 / type 柔)、push の activation、v3 レイアウトの
-// 誠実な破壊様式(session-46 §8 第 5 周のテスト要件)。
+// Tests for the valueless schema S3 (design doc §1-1 / §1-2 / §1-4,
+// CRYPTO_SPEC §4.2 / §6.3, AUTH_SPEC §12-7): `maruhi schema` (display —
+// including the pinned agent-gate allowance), `maruhi schema set`
+// (partial updates, declaration creation, locked pre-check, entropy
+// fail-closed), verifying a distribution containing declared (digest
+// counting, the value-distribution mandate), run's fail-fast (hard
+// presence / soft type), push's activation, and the v3 layout's honest
+// failure mode (session-46 §8 iteration 5's test requirement).
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -39,17 +41,17 @@ let built: BuiltChain;
 let dek1: Uint8Array;
 let wrap1: WireRecipientDek;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared(required・url 型・description 付き — §4.2 レイアウト v2)。 */
+/** declared (required, url type, with a description — §4.2 layout v2). */
 let declaredRequired: WireDistributedVariableStatement;
-/** declared(required = false・型未指定)。 */
+/** declared (required = false, no type). */
 let declaredOptional: WireDistributedVariableStatement;
-/** v2 の active ステートメント(number 型)と値。 */
+/** The v2 active statement (number type) and its value. */
 let activeV2: {
   variableId: string;
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
 };
-/** v1 の active ステートメントと値(スキーマ欄なし — 従来形)。 */
+/** The v1 active statement and its value (no schema fields — the legacy shape). */
 let activeV1: {
   variableId: string;
   statement: WireDistributedVariableStatement;
@@ -160,7 +162,7 @@ function deksHandler(): MockHandler {
   }));
 }
 
-/** 配布集合(active の entry と declared / deleted の statement)→ digest 入力。 */
+/** The distribution set (active entries and declared / deleted statements) → digest input. */
 function digestStatementsOf(input: {
   readonly variables?: readonly { statement: WireDistributedVariableStatement }[];
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
@@ -173,7 +175,7 @@ function digestStatementsOf(input: {
   ];
 }
 
-/** 値付き pull 応答(declaredVariables 同梱 — §12-7)。 */
+/** A pull response with values (declaredVariables bundled — §12-7). */
 function pullHandler(overrides?: {
   readonly variables?: readonly {
     variableId: string;
@@ -181,7 +183,7 @@ function pullHandler(overrides?: {
     value: WireDistributedValue;
   }[];
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
-  /** ダイジェスト入力の上書き(配布とダイジェストを意図的にずらす negative 用)。 */
+  /** Overrides the digest input (for negatives that deliberately misalign the distribution and the digest). */
   readonly digestStatements?: readonly WireDistributedVariableStatement[];
 }): MockHandler {
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
@@ -217,8 +219,9 @@ interface MetadataOverrides {
   readonly variables?: readonly WireDistributedVariableStatement[];
   readonly schemaPolicy?: "disabled" | "enabled" | "locked";
   /**
-   * 受理済みメタ操作の echo(§12-10 (3) の効果確認の材料): 受理後は
-   * base + 受理ステートメント + 受理マニフェスト(issuer 帰属付き)を配る。
+   * Echo of accepted meta operations (material for §12-10 (3)'s effect
+   * check): after acceptance it serves base + the accepted statement +
+   * the accepted manifest (with issuer attribution).
    */
   readonly echo?: {
     body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
@@ -230,7 +233,7 @@ function metadataPolicyField(overrides?: MetadataOverrides): Record<string, unkn
   return overrides?.schemaPolicy === undefined ? {} : { schemaPolicy: overrides.schemaPolicy };
 }
 
-/** 受理済みメタ操作の配布(base + 受理ステートメント + 受理マニフェスト)。 */
+/** Distribution of an accepted meta operation (base + the accepted statement + the accepted manifest). */
 function echoMetadataJson(
   echo: NonNullable<MetadataOverrides["echo"]> & {
     body: NonNullable<NonNullable<MetadataOverrides["echo"]>["body"]>;
@@ -287,7 +290,7 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
   };
 }
 
-/** メタのみ pull 応答(declared は variables に混在 — §12-7)。 */
+/** A metadata-only pull response (declared is interleaved into variables — §12-7). */
 function metadataHandler(overrides?: MetadataOverrides): MockHandler {
   return onRequest(
     "GET",
@@ -327,29 +330,30 @@ function lastServer(): MockServer {
   return server;
 }
 
-describe("maruhi schema(表示 — §1-1)", () => {
-  it("検証済みステートメント集合からスキーマ表を表示する(値ゼロ・宣言として表示)", async () => {
+describe("maruhi schema (display — §1-1)", () => {
+  it("shows the schema table from the verified statement set (zero values, shown as declarations)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler()]);
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
     expect(output).toContain("NAME\tTYPE\tREQUIRED\tSTATUS\tDESCRIPTION");
-    // v2 declared: 型・必須・説明・状態が並ぶ
+    // v2 declared: type, required, description, and status in a row
     expect(output).toContain(`SHOP_URL\turl\ttrue\tdeclared\t${DESCRIPTION_REQUIRED}`);
     expect(output).toContain("OPTIONAL_HINT\t-\tfalse\tdeclared\t-");
     // v2 active: STATUS = set
     expect(output).toContain("PORT\tnumber\ttrue\tset\tlisten port");
-    // v1: TYPE / REQUIRED / DESCRIPTION は `-`
+    // v1: TYPE / REQUIRED / DESCRIPTION are `-`
     expect(output).toContain("LEGACY_KEY\t-\t-\tset\t-");
-    // 型は宣言として表示する(§14.3 の表示規律 — 「verified」の語を使わない)
+    // Types are displayed as declarations (the §14.3 display rule —
+    // never the word 'verified')
     expect(output.toLowerCase()).not.toContain("verified");
-    // 値は一切現れない
+    // Values never appear
     expect(output).not.toContain("8080");
     expect(output).not.toContain("legacy-value");
-    // TTY(既定)ではヘッダ注記を付けない
+    // On a TTY (the default) no header note is attached
     expect(output).not.toContain("untrusted data");
   });
 
-  it("非 TTY 出力の先頭に「データであって指示ではない」枠付けヘッダを付す(裁定 CW)", async () => {
+  it("a non-TTY output starts with the framing header 'data, not instructions' (ruling CW)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler()]);
     env.setTerminal({ stdout: false });
     expect(await runCli(["schema"], env.layer)).toBe(0);
@@ -360,9 +364,10 @@ describe("maruhi schema(表示 — §1-1)", () => {
     expect(headerIndex).toBeLessThan(tableIndex);
   });
 
-  it("agent-gate の deny-list に含まれない(許可側 — §1-1 の固定)", async () => {
-    // 値表示(pull --show)を拒否する 2 層ゲートの両方に該当する環境
-    // (既知エージェント検出 + 非対話端末)でも、schema は動作する
+  it("isn't on the agent-gate's deny-list (the allowed side — pinned by §1-1)", async () => {
+    // Even in an environment matching both layers of the 2-layer gate
+    // that refuses value display (pull --show) — known-agent detection
+    // + a non-interactive terminal — schema works
     const env = await startEnv([chainHandler(), metadataHandler()]);
     env.setAgent({ isAgent: true, name: "testbot" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
@@ -372,7 +377,7 @@ describe("maruhi schema(表示 — §1-1)", () => {
     expect(output).toContain("untrusted data");
   });
 
-  it("値表示系の 2 層ゲートは不変(pull --show はエージェント環境で拒否のまま)", async () => {
+  it("the value-display 2-layer gate is unchanged (pull --show stays refused under an agent environment)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "testbot" });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
@@ -380,9 +385,10 @@ describe("maruhi schema(表示 — §1-1)", () => {
     expect(env.logs.join("\n")).not.toContain("8080");
   });
 
-  it("description は escapeText で中和される(裁定 CK・CW — 署名済みでも良性とは限らない)", async () => {
-    // 制御文字はサーバー受理(§12-8)が拒否するが、悪意サーバー・悪意署名者の
-    // 配布は拘束されない — 表示側の中和は独立の義務
+  it("description is neutralized by escapeText (rulings CK and CW — signed isn't necessarily benign)", async () => {
+    // Server acceptance (§12-8) refuses control characters, but a
+    // malicious server's or malicious signer's distribution isn't
+    // bound — the display side's neutralization is an independent duty
     const malicious = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -400,17 +406,19 @@ describe("maruhi schema(表示 — §1-1)", () => {
     const env = await startEnv([chainHandler(), metadataHandler({ variables: [malicious] })]);
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    // 生の ESC・生の改行注入は現れない(エスケープ表記に変換される)
+    // Raw ESC / raw newline injections never appear (converted to
+    // escaped notation)
     expect(output).not.toContain("\u001b");
     expect(output).toContain("\\u{001b}");
     expect(output).toContain("\\u{000a}");
   });
 });
 
-describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
-  it("declared を含む値付き pull がダイジェスト一致で成功し、宣言行を表示する", async () => {
-    // S2 の既知ギャップ: declared をダイジェスト再計算へ算入しないと
-    // variables-digest-mismatch で全 pull が落ちる — 成功すること自体が固定
+describe("verifying a distribution containing declared (§6.3 / §12-7)", () => {
+  it("a valued pull containing declared succeeds on a matching digest and shows the declaration row", async () => {
+    // S2's known gap: unless declared is counted into the digest
+    // recomputation, every pull fails on variables-digest-mismatch —
+    // success itself is pinned
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
@@ -418,10 +426,11 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
     expect(output).toContain("PORT");
   });
 
-  it("active の検証済みステートメントが declared 列に現れたら値の欠落として拒否する(§6.3)", async () => {
-    // 値を隠したいサーバーが active ステートメントを declaredVariables へ移す形:
-    // ダイジェストは一致してしまう(ステートメントは無傷)ため、§6.3 の
-    // 値配布要求だけが検出する
+  it("an active verified statement appearing in the declared list is refused as a missing value (§6.3)", async () => {
+    // The shape where a server wanting to hide a value moves the active
+    // statement into declaredVariables: the digest still matches (the
+    // statement is intact), so only §6.3's value-distribution mandate
+    // detects it
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -435,7 +444,7 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
     expect(errors).toContain("value omission");
   });
 
-  it("declared ステートメントに値を併置した配布は拒否する(declared だけが正当な値なし状態)", async () => {
+  it("a distribution that pairs a declared statement with a value is refused (only declared is the legitimate valueless state)", async () => {
     const bogusValue = await encryptValueFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -461,18 +470,21 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
     expect(env.errors.join("\n")).toContain("declared statement together with a value");
   });
 
-  it("layoutVersion v3 は『未対応レイアウト(クライアント更新)』の型付きエラーで割れる(session-46 §8 第 5 周)", async () => {
-    // 配布 decode は Literal ではない(上限を固定しない整数)ため v3 は decode を
-    // 通過し、署名検証より前のサポート範囲検査が誠実な破壊様式で拒否する —
-    // Schema エラー・署名不正(改ざん疑い)に化けない
+  it("layoutVersion v3 trips the typed error 'unsupported layout (client update)' (session-46 §8 iteration 5)", async () => {
+    // Distribution decode isn't a Literal (an integer with no pinned
+    // ceiling), so v3 passes decode and the support-range check before
+    // signature verification refuses it in the honest failure mode —
+    // it doesn't masquerade as a Schema error or a bad signature
+    // (suspected tampering)
     const v3 = { ...activeV2.statement, layoutVersion: 3 };
     const env = await startEnv([
       chainHandler(),
       pullHandler({
         variables: [{ ...activeV2, statement: v3 }, activeV1],
         declaredVariables: [],
-        // ダイジェストは v2 の正規形から計算(クライアントはステートメント段で
-        // 拒否するため、マニフェスト段には到達しない)
+        // The digest is computed from the v2 canonical form (the
+        // client refuses at the statement stage, so it never reaches
+        // the manifest stage)
         digestStatements: [activeV2.statement, activeV1.statement],
       }),
     ]);
@@ -485,7 +497,7 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
     expect(errors).not.toContain("signature");
   });
 
-  it("v2 フィールドの部分的な配布(全欠揃い違反)は拒否する(§12-2)", async () => {
+  it("a partial distribution of v2 fields (an all-or-nothing violation) is refused (§12-2)", async () => {
     const partial: Record<string, unknown> = { ...declaredRequired };
     delete partial["description"];
     const env = await startEnv([
@@ -501,8 +513,8 @@ describe("declared を含む配布の検証(§6.3 / §12-7)", () => {
   });
 });
 
-describe("maruhi run の fail-fast(§1-4 — presence 硬 / type 柔)", () => {
-  it("required = true の declared があれば子プロセスを起動せず型付きエラー(description 非出力)", async () => {
+describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
+  it("a declared with required = true doesn't launch the child process and fails with a typed error (no description output)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "printenv"], env.layer)).toBe(1);
     expect(env.runnerCalls).toHaveLength(0);
@@ -510,11 +522,12 @@ describe("maruhi run の fail-fast(§1-4 — presence 硬 / type 柔)", () => {
     expect(errors).toContain("Required variables are declared but have no value yet");
     expect(errors).toContain("SHOP_URL");
     expect(errors).toContain("The command was not started");
-    // エラー文面に description を含めない(ログ経由の注入面 — session-46 §8 第 3 周)
+    // The error text must not contain the description (an injection
+    // surface via logs — session-46 §8 iteration 3)
     expect(errors).not.toContain(DESCRIPTION_REQUIRED);
   });
 
-  it("required = false の declared は注入せず情報表示のみで実行する", async () => {
+  it("a declared with required = false runs with an informational note and no injection", async () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({ declaredVariables: [declaredOptional] }),
@@ -525,7 +538,7 @@ describe("maruhi run の fail-fast(§1-4 — presence 硬 / type 柔)", () => {
     expect(env.errors.join("\n")).toContain("declared variables without values were not injected");
   });
 
-  it("型不一致は advisory 警告のみで実行は続行する(§14.3-7 — 値は文面に出さない)", async () => {
+  it("a type mismatch is an advisory warning only and the run proceeds (§14.3-7 — the value stays out of the wording)", async () => {
     const badPort = await encryptValueFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -552,14 +565,14 @@ describe("maruhi run の fail-fast(§1-4 — presence 硬 / type 柔)", () => {
     expect(errors).not.toContain("not-a-number");
   });
 
-  it("型一致・v1(型なし)は警告しない", async () => {
+  it("a type match and v1 (no type) don't warn", async () => {
     const env = await startEnv([chainHandler(), pullHandler({ declaredVariables: [] })]);
     expect(await runCli(["run", "--", "printenv"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).not.toContain("declared type");
   });
 });
 
-/** create / rename の受理 body を捕まえて echo(効果確認の配布)へ流す箱。 */
+/** A box that captures create / rename acceptance bodies and feeds them into the echo (the effect-check distribution). */
 interface MutationEcho {
   body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
   readonly base: readonly WireDistributedVariableStatement[];
@@ -600,8 +613,8 @@ function captureRename(echo: MutationEcho, calls: MockRequest[], variableId: str
   );
 }
 
-describe("maruhi schema set(§1-2)", () => {
-  it("未存在の名前は宣言(declared・metaVersion 1)として作成する(既定 required = true)", async () => {
+describe("maruhi schema set (§1-2)", () => {
+  it("a nonexistent name is created as a declaration (declared, metaVersion 1) (default required = true)", async () => {
     const echo: MutationEcho = { body: null, base: [] };
     const createCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -616,13 +629,14 @@ describe("maruhi schema set(§1-2)", () => {
       value?: unknown;
       manifest: Record<string, unknown>;
     };
-    // 値は同梱しない(declared 作成 — §12-5)
+    // No value is bundled (declared creation — §12-5)
     expect(body.value).toBeUndefined();
     expect(body.statement["status"]).toBe("declared");
     expect(body.statement["metaVersion"]).toBe(1);
     expect(body.statement["layoutVersion"]).toBe(2);
     expect(body.statement["varType"]).toBe("url");
-    // 作成既定: required = true(§1-2 — 宣言は環境の契約)・description = ""
+    // Creation defaults: required = true (§1-2 — a declaration is the
+    // environment's contract), description = ""
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe("");
     expect(body.statement["name"]).toBe("DATABASE_URL");
@@ -632,7 +646,7 @@ describe("maruhi schema set(§1-2)", () => {
     expect(output).toContain("maruhi push DATABASE_URL");
   });
 
-  it("既存変数のスキーマ再発行は部分更新(未指定の欄は直前ステートメントを引き継ぐ)", async () => {
+  it("re-issuing an existing variable's schema is a partial update (unspecified fields inherit the previous statement)", async () => {
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     const renameCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -645,11 +659,13 @@ describe("maruhi schema set(§1-2)", () => {
     ).toBe(0);
     expect(renameCalls).toHaveLength(1);
     const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
-    // --description だけの実行で型・必須が黙って落ちない(全置換の禁止 — §1-2)
+    // A run with only --description must not silently drop type and
+    // required (full replacement is forbidden — §1-2)
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe("New words");
-    // 状態・名前は不変(スキーマ再発行 — declared のまま)
+    // Status and name are unchanged (a schema re-issue — stays
+    // declared)
     expect(body.statement["status"]).toBe("declared");
     expect(body.statement["name"]).toBe("SHOP_URL");
     expect(body.statement["metaVersion"]).toBe(2);
@@ -657,7 +673,7 @@ describe("maruhi schema set(§1-2)", () => {
     expect(env.logs.join("\n")).toContain("Updated the schema of SHOP_URL");
   });
 
-  it("--optional / --type none / --clear-description で欄を明示的に下げ・空へ戻せる", async () => {
+  it("--optional / --type none / --clear-description can explicitly lower a field and reset it to empty", async () => {
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     const renameCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -677,10 +693,11 @@ describe("maruhi schema set(§1-2)", () => {
     expect(body.statement["description"]).toBe("");
   });
 
-  it("v1 変数への最初の v2 再発行は required の明示を要求する(署名・送信前のローカル拒否)", async () => {
-    // v1 ステートメントに required の引き継ぎ元はない(§1-2 の部分更新は
-    // 「直前の値」の規則)。作成既定 true を黙って適用すると、ユーザーが
-    // 打っていない presence 契約が署名に載る — 明示必須
+  it("the first v2 re-issue onto a v1 variable requires an explicit required (a local refusal before signing/sending)", async () => {
+    // A v1 statement has nothing to inherit required from (§1-2's
+    // partial update is a 'previous value' rule). Silently applying the
+    // creation default true would put a presence contract the user
+    // never typed onto the signature — explicit is required
     const env = await startEnv([
       chainHandler(),
       metadataHandler({ variables: [activeV1.statement] }),
@@ -696,7 +713,7 @@ describe("maruhi schema set(§1-2)", () => {
     ).toHaveLength(0);
   });
 
-  it("v1 変数の v2 再発行は required 明示で通り、varType / description は未指定の既定('')になる", async () => {
+  it("a v1 variable's v2 re-issue passes with an explicit required, and varType / description take their unspecified defaults ('')", async () => {
     const echo: MutationEcho = { body: null, base: [activeV1.statement] };
     const renameCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -717,7 +734,7 @@ describe("maruhi schema set(§1-2)", () => {
     expect(body.statement["metaVersion"]).toBe(2);
   });
 
-  it("locked の advisory 下では --type 未指定の作成を署名・送信前にローカルで拒否する(§1-2)", async () => {
+  it("under a locked advisory, a creation without --type is refused locally before signing/sending (§1-2)", async () => {
     const env = await startEnv([
       chainHandler(),
       metadataHandler({ variables: [], schemaPolicy: "locked" }),
@@ -726,11 +743,11 @@ describe("maruhi schema set(§1-2)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("schema policy is locked");
     expect(errors).toContain("--type");
-    // 署名・送信は行われていない(POST が 1 件もない)
+    // Nothing was signed or sent (not a single POST)
     expect(lastServer().requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("disabled の advisory は事前案内を出す(SHOULD — 送信は行う: 受理の正はサーバー)", async () => {
+  it("a disabled advisory emits advance guidance (SHOULD — it still sends: the source of truth for acceptance is the server)", async () => {
     const echo: MutationEcho = { body: null, base: [] };
     const createCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -743,26 +760,28 @@ describe("maruhi schema set(§1-2)", () => {
     expect(createCalls).toHaveLength(1);
   });
 
-  it("--required と --optional の併用は usage エラー", async () => {
+  it("--required combined with --optional is a usage error", async () => {
     const env = await startEnv([chainHandler()]);
     expect(await runCli(["schema", "set", "X", "--required", "--optional"], env.layer)).toBe(2);
     expect(lastServer().requests).toHaveLength(0);
   });
 });
 
-describe("エントロピー警告(裁定 CW — fail-closed)", () => {
-  // 実値らしく見えるダミー(実在のシークレットではない)
+describe("the entropy warning (ruling CW — fail-closed)", () => {
+  // A dummy that merely looks like a real value (not an actual secret)
   const FAKE_SECRET = "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA0K11";
 
-  it("検出器: 秘密らしき列を検出し、通常の英文・識別子は通す", () => {
+  it("detector: detects a secret-looking run and lets ordinary English sentences and identifiers through", () => {
     expect(findHighEntropySubstring(FAKE_SECRET)).not.toBeNull();
-    // API キー風の混在トークン(ダミー)は文中でも検出する
+    // An API-key-like mixed token (a dummy) is detected even inside a
+    // sentence
     expect(
       findHighEntropySubstring("token is x7Gh2kQ9pLmA3vB8nC4dE5fJ6hK7iL8m here"),
     ).not.toBeNull();
-    // 反復パターンは高エントロピーではない(検出しない — 実値らしさの根拠は乱雑さ)
+    // A repeating pattern isn't high-entropy (not detected — the
+    // real-value likeness grounds on disorder)
     expect(findHighEntropySubstring(`token is ${"a1B2".repeat(10)}`)).toBeNull();
-    // 64 hex(ダミーの乱数風)も検出する
+    // A 64-hex (a dummy's random look) is detected too
     expect(
       findHighEntropySubstring("0f8e2d1c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0"),
     ).not.toBeNull();
@@ -773,7 +792,7 @@ describe("エントロピー警告(裁定 CW — fail-closed)", () => {
     expect(findHighEntropySubstring("")).toBeNull();
   });
 
-  it("非対話環境では明示フラグなしに型付きエラーで拒否する(通信・署名より前)", async () => {
+  it("in a non-interactive environment it refuses with a typed error absent the explicit flag (before any communication or signing)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler({ variables: [] })]);
     env.setTerminal({ stdout: false });
     expect(
@@ -782,13 +801,15 @@ describe("エントロピー警告(裁定 CW — fail-closed)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("secret-like high-entropy");
     expect(errors).toContain("--allow-high-entropy");
-    // 入力そのものはエラーへ出さない(秘密でありうる)
+    // The input itself isn't put into the error (it could be a
+    // secret)
     expect(errors).not.toContain(FAKE_SECRET);
-    // ネットワークへ一切出ていない(fail-closed は入力時 — 事故の前)
+    // Nothing reached the network (fail-closed at input time — before
+    // the accident)
     expect(lastServer().requests).toHaveLength(0);
   });
 
-  it("対話環境では警告 + 明示確認(拒否の応答で中断する)", async () => {
+  it("in an interactive environment it warns and asks for an explicit confirmation (a refusal aborts)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler({ variables: [] })]);
     env.setPromptResponses(["no"]);
     expect(
@@ -799,7 +820,7 @@ describe("エントロピー警告(裁定 CW — fail-closed)", () => {
     expect(lastServer().requests).toHaveLength(0);
   });
 
-  it("--allow-high-entropy は確認なしで続行する(事実は警告として可視化)", async () => {
+  it("--allow-high-entropy proceeds with no confirmation (the fact is still surfaced as a warning)", async () => {
     const echo: MutationEcho = { body: null, base: [] };
     const createCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -819,8 +840,8 @@ describe("エントロピー警告(裁定 CW — fail-closed)", () => {
   });
 });
 
-describe("maruhi push の activation(declared への最初の値 push — §12-5)", () => {
-  it("declared に解決された push は activation 複合を組む(スキーマ欄・名前を引き継ぐ)", async () => {
+describe("maruhi push's activation (the first value push onto a declared — §12-5)", () => {
+  it("a push resolved to declared builds the activation compound (inheriting the schema fields and the name)", async () => {
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     const activateCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -845,10 +866,11 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
       value: { aad: Record<string, unknown> };
       manifest: Record<string, unknown>;
     };
-    // 値は version 1(declared の latest は常に 0)
+    // The value is version 1 (a declared's latest is always 0)
     expect(body.value.aad["version"]).toBe(1);
-    // activation ステートメント: status active・metaVersion + 1・スキーマ欄と
-    // 名前は宣言時の値を byte-exact に引き継ぐ
+    // The activation statement: status active, metaVersion + 1, and
+    // the schema fields and name carry the declared values
+    // byte-exact
     expect(body.statement["status"]).toBe("active");
     expect(body.statement["metaVersion"]).toBe(2);
     expect(body.statement["name"]).toBe("SHOP_URL");
@@ -860,9 +882,11 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
     expect(env.logs.join("\n")).toContain("Pushed SHOP_URL (version=1, epoch=1)");
   });
 
-  it("並行 declare に負けた create は 409 duplicate-name から activation へ切り替える", async () => {
-    // 1 回目の解決 = 未存在 → create、サーバーは 409(並行 declare が先に着地)、
-    // 再解決 = declared → activation 複合(§12-5 の再試行 = 再取得 → 再署名)
+  it("a create that lost to a concurrent declare switches from 409 duplicate-name to activation", async () => {
+    // The first resolution = nonexistent → create; the server answers
+    // 409 (a concurrent declare landed first); the re-resolution =
+    // declared → the activation compound (§12-5's retry = re-fetch →
+    // re-sign)
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     let metadataCalls = 0;
     const activateCalls: MockRequest[] = [];
@@ -875,8 +899,9 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
       envStatement,
       statements: [],
     });
-    // 再解決の集合(declared が着地した後)は manifestVersion 2 で、prev を
-    // 1 回目のマニフェストへ実際に連鎖させる(隣接版の prev 検証 — M1-A1)
+    // The re-resolved set (after the declared landed) is
+    // manifestVersion 2, and prev is really chained to the first
+    // manifest (adjacent-version prev verification — M1-A1)
     const declaredManifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

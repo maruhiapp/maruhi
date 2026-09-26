@@ -1,11 +1,14 @@
-// 値付きの「正直なインメモリ環境」(テスト用): 値付き pull・メタデータのみ pull・
-// 変数作成(値同梱)・既存変数への新 version push を受理して状態を進める。
-// `maruhi sync` のテストが、同期元環境の pull とレシート環境への push(作成 →
-// 以後は新 version)を、受理のたびに応答を手で組み替えずに検査するためのもの。
+// An "honest in-memory environment" with values (for tests): accepts pulls
+// with values, metadata-only pulls, variable creation (value attached), and
+// new-version pushes to existing variables, advancing the state each time.
+// Lets `maruhi sync` tests exercise the pull from the source environment and
+// the push to the receipt environment (create, then new versions after that)
+// without hand-editing responses per acceptance.
 //
-// meta-server.ts(メタ操作のみ)と同じ姿勢: クライアントが署名したステートメント・
-// 値・マニフェストをそのまま保存し、author / writer / issuer の帰属を付けて配布する。
-// 検証(§6.3)はクライアント側の実装が行う(このモックは wire 形の整合だけを保つ)。
+// Same stance as meta-server.ts (meta ops only): the client-signed statements,
+// values, and manifests are stored verbatim and distributed with author /
+// writer / issuer attribution attached. Verification (§6.3) is done by the
+// client implementation (this mock only keeps the wire shape consistent).
 
 import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import {
@@ -22,20 +25,20 @@ import {
 } from "./crypto.ts";
 import type { MockHandler, MockRequest } from "./server.ts";
 
-/** 配布される 1 変数(ステートメント + 最新 version の値)。 */
+/** One distributed variable (statement + latest version's value). */
 export interface StoredVariable {
   readonly variableId: string;
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
 }
 
-/** モックが進める環境状態(検査用に公開)。 */
+/** The environment state the mock advances (exposed for assertions). */
 export interface ValueEnvironmentState {
   variables: StoredVariable[];
-  /** 値なしの宣言(declared — §12-7 では declaredVariables に分けて配る)。 */
+  /** Valueless declarations (declared — in §12-7 they're distributed separately as declaredVariables). */
   declared: WireDistributedVariableStatement[];
   manifest: WireDistributedManifest | null;
-  /** 受理した書き込み(検査用 — 種別つき)。 */
+  /** Accepted writes (for assertions — with kind). */
   writes: { kind: "create" | "version"; request: MockRequest }[];
 }
 
@@ -44,7 +47,7 @@ export interface ValueEnvironmentServerInput {
   readonly owner: TestUser;
   readonly environmentId: string;
   readonly envStatement: WireDistributedEnvironmentStatement;
-  /** 自分宛 DEK ラップ(epoch 1)。 */
+  /** Self-addressed DEK wrap (epoch 1). */
   readonly wrap: WireRecipientDek;
   readonly initialVariables?: readonly StoredVariable[];
   readonly initialDeclared?: readonly WireDistributedVariableStatement[];

@@ -1,10 +1,14 @@
-// `maruhi ci sync <target>`(SY2 第 2 段 — 裁定 D)のテスト: OIDC リース(ci-lease.ts —
-// `ci run` と同じ前段)→ 復号 → ドライバ(exec / http)。レシートは読まない・書かない
-// (CI は §4.1 の署名鍵を持たない): 選択した変数の全件再適用で、削除は生まれない。
+// Tests for `maruhi ci sync <target>` (SY2 stage 2 — ruling D): OIDC lease
+// (ci-lease.ts — the same pre-phase as `ci run`) → decrypt → driver
+// (exec / http). Receipts are neither read nor written (CI has no §4.1
+// signing key): re-applying the whole set of selected variables never
+// produces a deletion.
 //
-// リースは環境単位。http ドライバのトークンが別の環境にあれば 2 環境を **1 本の
-// OIDC トークン・1 つの一時鍵**でリースする(AUTH_SPEC §14-1)。
-// lease の偽装は ci-run.test.ts と同じ姿勢(実 crypto でリクエストの一時鍵へラップ)。
+// Leases are per-environment. If the http driver's token lives in a different
+// environment, the 2 environments are leased with **a single OIDC token and a
+// single ephemeral key** (AUTH_SPEC §14-1).
+// Lease faking takes the same stance as ci-run.test.ts (wrapping to the
+// request's ephemeral key with real crypto).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -153,7 +157,7 @@ function jwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
-/** GitHub Actions の OIDC 発行エンドポイントの偽装。 */
+/** Fake of the GitHub Actions OIDC issuance endpoint. */
 function oidcHandler(state: { issued: number }): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
@@ -212,7 +216,7 @@ async function leaseWrapFor(
   };
 }
 
-/** 環境ごとの lease ハンドラ(実 crypto でリクエストの一時鍵へラップ)。 */
+/** Per-environment lease handler (wraps to the request's ephemeral key with real crypto). */
 function leaseHandler(environment: string, leased: { keys: string[] }): MockHandler {
   return async (request) => {
     if (
@@ -259,7 +263,7 @@ interface CiFixture {
   readonly oidc: { issued: number };
 }
 
-/** CI 環境: ログインも config もシードしない(CI モードの非依存はこの構成が固定する)。 */
+/** CI environment: neither login nor config is seeded (CI mode's independence is pinned by this setup). */
 async function startCi(input: {
   readonly targets: Record<string, unknown>;
   readonly environments: readonly string[];
@@ -321,7 +325,7 @@ function expectNoSecretLeak(env: TestEnv, requests: readonly MockRequest[] = [])
 }
 
 describe("maruhi ci sync", () => {
-  it("http(Workers): 同期元とトークン環境を 1 本のトークン・1 つの一時鍵でリースし、全件を書き、レシートは書かない・消さない", async () => {
+  it("http (Workers): leases the source and token environments with one token and one ephemeral key, writes everything, and neither writes nor deletes receipts", async () => {
     const cf = makeFakeCloudflare({ token: CF_TOKEN, scripts: [`${CF_ACCOUNT}/my-worker`] });
     const fixture = await startCi({
       environments: [SOURCE_ENV, TOKENS_ENV],
@@ -338,7 +342,8 @@ describe("maruhi ci sync", () => {
       vendorHandlers: cf.handlers,
     });
     expect(await ciSync(fixture, "worker", "--yes"), fixture.env.errors.join("\n")).toBe(0);
-    // 2 環境のリース = 同じ一時鍵、OIDC トークンの発行は 1 回
+    // Leasing 2 environments = the same ephemeral key, and the OIDC token is
+    // issued once
     expect(fixture.leased.keys).toHaveLength(2);
     expect(new Set(fixture.leased.keys).size).toBe(1);
     expect(fixture.oidc.issued).toBe(1);
@@ -354,7 +359,7 @@ describe("maruhi ci sync", () => {
     expect(out).toContain(
       "Applied to target worker: 2 variables written (no receipt is kept in CI, and nothing is deleted)",
     );
-    // maruhi サーバーへの書き込み(レシート)は一切無い。読み取りも lease だけ
+    // No writes (receipts) to the maruhi server at all. Reads are lease only
     const maruhiWrites = fixture.server.requests.filter(
       (request) =>
         request.method !== "GET" &&
@@ -366,7 +371,7 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env, cf.requests);
   });
 
-  it("http(Netlify): 一覧で有無を引き、無い名前は POST・ある名前は PATCH を 1 変数ずつ。レシートは書かない・消さない", async () => {
+  it("http (Netlify): checks existence via list, POSTs missing names and PATCHes existing ones, one variable at a time. Receipts are neither written nor deleted", async () => {
     const netlify = makeFakeNetlify({
       token: CF_TOKEN,
       accountId: "my-team",
@@ -416,7 +421,7 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env, netlify.requests);
   });
 
-  it("exec: リースした値をベンダー CLI の stdin に渡す(wrangler が CI に導入済みの形)", async () => {
+  it("exec: passes the leased values to the vendor CLI's stdin (the shape where wrangler is already installed in CI)", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       targets: {
@@ -444,7 +449,7 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("exec(GitHub Actions): リースした値を `gh secret set` の stdin に渡す(ランナー同梱の gh。認証は step の GH_TOKEN が gh に届く形)", async () => {
+  it("exec (GitHub Actions): passes the leased values to `gh secret set`'s stdin (runner-bundled gh; auth reaches gh via the step's GH_TOKEN)", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       targets: {
@@ -468,8 +473,9 @@ describe("maruhi ci sync", () => {
       "staging",
     ]);
     expect(new TextDecoder().decode(fixture.env.execCalls[0]?.stdin)).toBe(ALPHA_VALUE);
-    // 子に足すのはテレメトリ off だけ(GH_TOKEN は step の env から継承 — live.ts の
-    // buildChildEnvironment が MARUHI_* 以外を通す)
+    // The only extra env for the child is telemetry off (GH_TOKEN is
+    // inherited from the step's env — live.ts's buildChildEnvironment passes
+    // everything but MARUHI_*)
     expect(fixture.env.execCalls[0]?.extraEnv).toEqual({
       GH_TELEMETRY: "false",
       DO_NOT_TRACK: "1",
@@ -482,7 +488,7 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("exec: 2 つ目の起動失敗はその呼び出しの失敗として届いた分を報告し、re-run を案内する(レシートは元々無い)", async () => {
+  it("exec: a second spawn failure reports the delivered portion as that call's failure and guides a re-run (there were never receipts)", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       targets: {
@@ -509,7 +515,7 @@ describe("maruhi ci sync", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("production ターゲットは --yes が無ければ plan だけを出して何も送らない", async () => {
+  it("a production target prints only the plan and sends nothing without --yes", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       targets: {
@@ -523,7 +529,7 @@ describe("maruhi ci sync", () => {
     expect(fixture.env.execCalls).toEqual([]);
   });
 
-  it("フラグの欠落・設定の project との食い違いは書き方の誤り(2)で、ネットワークに行かない", async () => {
+  it("missing flags and a project mismatch with config are usage errors (2) and never hit the network", async () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       targets: {
@@ -557,9 +563,10 @@ describe("maruhi ci sync", () => {
     expect(fixture.server.requests).toEqual([]);
   });
 
-  it("トークン環境がリースポリシーの外(404 一様応答)なら lease の案内で止め、何も送らない", async () => {
+  it("a token environment outside the lease policy (uniform 404) stops with lease guidance and sends nothing", async () => {
     const fixture = await startCi({
-      // tokens 環境の lease は一様な 404(AUTH_SPEC §14-1 の存在秘匿の形)
+      // The tokens environment's lease is a uniform 404 (the existence-
+      // hiding shape of AUTH_SPEC §14-1)
       environments: [SOURCE_ENV],
       vendorHandlers: [
         (request) =>

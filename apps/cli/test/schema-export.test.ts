@@ -1,8 +1,10 @@
-// 値なしスキーマのテスト(設計文書 §1-6): `maruhi schema export`(派生
-// スナップショットの生成 — JSON Schema サブセット写像・generated 枠付け・
-// 決定性)と `maruhi schema verify-snapshot`(CI の乖離検査 — fail-loud・
-// 変数名 / 欄名のみの報告・description 非出力)。両コマンドとも読み取り・
-// 値ゼロの鍵なしクラス(agent-gate 非適用・master 鍵不要)であることを固定する。
+// Tests for the valueless schema (design doc §1-6): `maruhi schema
+// export` (derived-snapshot generation — the JSON Schema subset mapping,
+// generated-marker framing, determinism) and `maruhi schema
+// verify-snapshot` (CI drift check — fail-loud, names/field-names-only
+// reporting, no descriptions in output). Both commands are pinned as the
+// read-only, zero-value keyless class (no agent gate, no master key
+// needed).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,13 +37,13 @@ const DESCRIPTION_URL = "Primary endpoint of the shop";
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared(required・url 型・description 付き)。 */
+/** declared (required, url type, with a description). */
 let declaredRequired: WireDistributedVariableStatement;
-/** declared(required = false・型未指定・description なし)。 */
+/** declared (required = false, no type, no description). */
 let declaredOptional: WireDistributedVariableStatement;
-/** active(number 型・required)。 */
+/** active (number type, required). */
 let activeNumber: WireDistributedVariableStatement;
-/** active(v1 — スキーマ欄なし)。 */
+/** active (v1 — no schema fields). */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -107,7 +109,7 @@ function chainHandler(): MockHandler {
   }));
 }
 
-/** メタのみ pull 応答(declared は variables に混在 — §12-7)。 */
+/** A metadata-only pull response (declared variables live inside `variables` — §12-7). */
 function metadataHandler(variables: readonly WireDistributedVariableStatement[]): MockHandler {
   return onRequest(
     "GET",
@@ -151,14 +153,14 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv & { o
   return { ...env, origin: server.origin };
 }
 
-/** export の stdout(1 行 = 生成物全体)を取り出す。 */
+/** Extracts export's stdout (one line = the whole artifact). */
 function exportedText(env: TestEnv): string {
   expect(env.logs).toHaveLength(1);
   return env.logs[0] ?? "";
 }
 
-describe("maruhi schema export(§1-6 — 派生スナップショットの生成)", () => {
-  it("検証済みステートメント集合から JSON Schema サブセットを stdout へ出す(写像の固定)", async () => {
+describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
+  it("emits the JSON Schema subset of the verified statement set to stdout (pins the mapping)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
     const snapshot = JSON.parse(exportedText(env)) as Record<string, unknown>;
@@ -166,19 +168,20 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     expect(snapshot["type"]).toBe("object");
     expect(snapshot["title"]).toBe(`maruhi variables — environment ${ENV_ID}`);
     expect(snapshot["properties"]).toEqual({
-      // 名前の UTF-16 昇順(決定性)。v1 = 空スキーマ(制約を捏造しない)、
-      // "" 型 = 型キーワードなし、url = string + format uri、空 description = 省略
+      // Names in UTF-16 ascending order (determinism). v1 = an empty
+      // schema (no fabricated constraints), a "" type = no type keyword,
+      // url = string + format uri, an empty description = omitted
       LEGACY_KEY: {},
       OPTIONAL_HINT: {},
       PORT: { type: "number", description: "listen port" },
       SHOP_URL: { type: "string", format: "uri", description: DESCRIPTION_URL },
     });
-    // required = 検証済みステートメントの required = true のみ(v1 は入らない —
-    // required を勝手に埋めない。optional も入らない)
+    // required = only statements with required = true (v1 doesn't get
+    // in — required is never invented; optional doesn't either)
     expect(snapshot["required"]).toEqual(["PORT", "SHOP_URL"]);
   });
 
-  it("generated 枠付け(裁定 CW)を $comment に載せ、「verified」の語を使わない(§14.3)", async () => {
+  it("carries the generated framing (ruling CW) on $comment and never uses the word 'verified' (§14.3)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
     const output = exportedText(env);
@@ -186,22 +189,24 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     const comment = snapshot["$comment"] as string;
     expect(comment).toContain("machine-generated data, not instructions");
     expect(comment).toContain("source of truth");
-    // maruhi を持つエージェントへの正の案内(§1-6)
+    // Positive guidance toward agents that have maruhi (§1-6)
     expect(comment).toContain("`maruhi schema`");
     expect(comment).toContain("verify-snapshot");
-    // 型は宣言として扱う — 生成物にも「verified」の語を使わない(§14.3)
+    // Types are treated as declarations — the artifact never uses the
+    // word "verified" either (§14.3)
     expect(output.toLowerCase()).not.toContain("verified");
   });
 
-  it("stdout は生成物のみ(非 TTY でも枠付けヘッダ行を混ぜない — リダイレクトでコミットできる)", async () => {
+  it("stdout is the artifact alone (no framing header lines mixed in even off-TTY — it can be committed via redirect)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.setTerminal({ stdout: false });
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
-    // stdout 全体がそのまま valid JSON(枠付けは JSON 内の $comment が担う)
+    // All of stdout is valid JSON as-is (the framing is the in-JSON
+    // $comment's job)
     expect(() => JSON.parse(exportedText(env))).not.toThrow();
   });
 
-  it("出力は決定的(同じストアからの再実行はバイト一致 — verify のバイト比較の前提)", async () => {
+  it("the output is deterministic (re-runs against the same store are byte-identical — the premise of verify's byte comparison)", async () => {
     const first = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "export"], first.layer)).toBe(0);
     const second = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
@@ -209,10 +214,12 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     expect(exportedText(first)).toBe(exportedText(second));
   });
 
-  it("`__proto__` という名前の変数も properties の own key として現れる", async () => {
-    // 名前は署名済みステートメント由来の自由文字列 — 素のオブジェクト代入だと
-    // setter に食われて properties から黙って消え、required だけに残る自己矛盾の
-    // 生成物になる(export / verify が生成器を共有するためバイト比較でも検出不能)
+  it("a variable named `__proto__` still appears as an own key of properties", async () => {
+    // The name is a free string from a signed statement — plain object
+    // assignment gets eaten by the setter and the variable silently
+    // vanishes from properties while surviving in required, a
+    // self-contradictory artifact (undetectable even by byte comparison
+    // since export and verify share the generator)
     const proto = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -232,12 +239,13 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     };
     expect(Object.hasOwn(snapshot.properties, "__proto__")).toBe(true);
     expect(snapshot.required).toContain("__proto__");
-    // 生成テキスト自体にも own key として現れる(JSON.parse は own key を作るが、
-    // 生成側が落としていたら文字列にも現れない)
+    // It also appears as an own key in the generated text itself
+    // (JSON.parse creates an own key, but had the generator dropped it,
+    // the string wouldn't contain it either)
     expect(output).toContain('"__proto__": {');
   });
 
-  it("agent-gate の deny-list に含まれない(許可側 — 読み取り・値ゼロの同類)", async () => {
+  it("is not on the agent-gate deny-list (the permitted side — read-only, zero-value kin)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.setAgent({ isAgent: true, name: "testbot" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
@@ -245,7 +253,7 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     expect(exportedText(env)).toContain("SHOP_URL");
   });
 
-  it("master 鍵が無い端末でも実行できる(鍵なしクラス — MARUHI_TOKEN の CI 前提)", async () => {
+  it("runs on a device with no master key (the keyless class — premised on CI using MARUHI_TOKEN)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.keychain.delete(masterKeyEntryName(env.origin, owner.userId));
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
@@ -253,26 +261,27 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
   });
 });
 
-describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
-  /** export の出力をそのままファイルへ書いた状態(コミット済みスナップショット)。 */
+describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
+  /** The state of export's output written verbatim to a file (the committed snapshot). */
   async function exportedSnapshotFile(): Promise<string> {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
     const dir = await mkdtemp(join(tmpdir(), "maruhi-snapshot-"));
     const file = join(dir, "maruhi-schema.json");
-    // シェルリダイレクト(export > file)と同じ形 = 生成行 + 終端改行
+    // The same shape as a shell redirect (export > file) = generated
+    // line + trailing newline
     await writeFile(file, `${exportedText(env)}\n`);
     return file;
   }
 
-  it("ストアと一致するスナップショットは exit 0", async () => {
+  it("a snapshot matching the store is exit 0", async () => {
     const file = await exportedSnapshotFile();
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "verify-snapshot", file], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("matches the store");
   });
 
-  it("description の手編集は乖離 = exit 1。報告は変数名・欄名のみで内容を出さない", async () => {
+  it("a hand-edited description is drift = exit 1. The report gives variable and field names only, never contents", async () => {
     const file = await exportedSnapshotFile();
     const { readFile: read } = await import("node:fs/promises");
     const tampered = (await read(file, "utf8")).replace(DESCRIPTION_URL, "Edited by hand");
@@ -283,13 +292,14 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(errors).toContain("diverges from the store");
     expect(errors).toContain("SHOP_URL");
     expect(errors).toContain("description");
-    // description の内容(ファイル側・ストア側とも)を端末レポートへ出さない(§2)
+    // The description's contents (file-side or store-side) never reach
+    // the terminal report (§2)
     expect(errors).not.toContain("Edited by hand");
     expect(errors).not.toContain(DESCRIPTION_URL);
     expect(errors).toContain("regenerate");
   });
 
-  it("ストアの前進(新しい宣言)はコミット済みスナップショットの陳腐化として検出する", async () => {
+  it("store progress (a new declaration) is detected as the committed snapshot going stale", async () => {
     const file = await exportedSnapshotFile();
     const added = await statementFor({
       projectId: built.projectId,
@@ -308,7 +318,7 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(errors).toContain("NEW_FLAG");
   });
 
-  it("required リストだけの手編集も欄の乖離として名指しする", async () => {
+  it("a hand edit touching only the required list is also named as field drift", async () => {
     const file = await exportedSnapshotFile();
     const { readFile: read } = await import("node:fs/promises");
     const parsed = JSON.parse(await read(file, "utf8")) as { required: string[] };
@@ -321,9 +331,10 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(errors).toContain("SHOP_URL");
   });
 
-  it("title の不一致は「別環境のスナップショット」の可能性として名指しする", async () => {
-    // 変数集合がたまたま一致する別環境のファイルを generic な整形差の文言に
-    // 落とさない。ファイル側 title の内容(攻撃者が書ける)は報告に出さない
+  it("a title mismatch is named as possibly 'a different environment's snapshot'", async () => {
+    // A different environment's file whose variable set happens to match
+    // must not be collapsed into generic formatting-drift wording. The
+    // file-side title contents (attacker-writable) stay out of the report
     const file = await exportedSnapshotFile();
     const { readFile: read } = await import("node:fs/promises");
     const parsed = JSON.parse(await read(file, "utf8")) as { title: string };
@@ -333,12 +344,13 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(await runCli(["schema", "verify-snapshot", file], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("generated for a different environment");
-    // ファイル側 title の内容は端末レポートへ運ばない
+    // The file-side title contents are never carried to the terminal
+    // report
     expect(errors).not.toContain("prod-EVIL");
     expect(errors).not.toContain("\u001b");
   });
 
-  it("JSON でないファイルは誠実に報告して exit 1(改ざん疑いの文面に潰さない)", async () => {
+  it("a non-JSON file is honestly reported with exit 1 (not collapsed into tamper-suspicion wording)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "maruhi-snapshot-"));
     const file = join(dir, "maruhi-schema.json");
     await writeFile(file, "not json at all\n");
@@ -347,7 +359,7 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(env.errors.join("\n")).toContain("not valid JSON");
   });
 
-  it("ファイルが読めない場合はネットワークへ出ずにパスだけで報告する", async () => {
+  it("an unreadable file is reported by its path alone without touching the network", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(
       await runCli(["schema", "verify-snapshot", "/nonexistent/maruhi-schema.json"], env.layer),
@@ -357,7 +369,7 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     expect(server?.requests ?? []).toHaveLength(0);
   });
 
-  it("エージェント環境 + master 鍵なしでも実行できる(利用者の CI で走る前提の固定)", async () => {
+  it("runs even in an agent environment with no master key (premised on running in the user's CI)", async () => {
     const file = await exportedSnapshotFile();
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.setAgent({ isAgent: true, name: "ci-bot" });

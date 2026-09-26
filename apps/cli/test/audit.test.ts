@@ -1,18 +1,22 @@
-// `maruhi audit`(AUDIT_SPEC §6 / §7 — Phase 2 C1)の統合テスト。
+// Integration tests for `maruhi audit` (AUDIT_SPEC §6 / §7 — Phase 2 C1).
 //
-// 固定する性質:
-//  1. list は監査行を表示し、変数の表示名は検証済みステートメントからのみ解決
-//     する。payload の名前スナップショット(サーバー申告)は「記録」として
-//     区別表示され、表示名の位置に昇格しない(TCB 規律 — AUDIT_SPEC §7)
-//  2. chain.* ミラー行は検証済みチェーンと突合され(共有写像 chainMirrorEvent)、
-//     一致は 突合=OK、不一致は警告 + 終了コード 1。chain.* 外で chain_seq を
-//     名乗る行も無ラベル表示せず整合性違反にする(改竄の証拠 — §6)
-//  3. verify はミラーの全単射検証(§1-5): 欠落(削除の隠蔽)・改変・重複の
-//     いずれも検出して終了コード 1
-//  4. invites / self は D1 側の行を表示し、self は要監視イベント
-//     (auth.recovery_blob_fetched — §3.1)の含意を添える
-//  5. 引数の書き方の誤り(self への --project・limit の範囲外・不明な操作)は
-//     通信より前に usage エラー(2)
+// Properties pinned down:
+//  1. list displays audit rows, and a variable's display name resolves only
+//     from verified statements. The payload's name snapshot (a server claim)
+//     is shown distinctly as the "record" and never promoted to the display
+//     name position (TCB discipline — AUDIT_SPEC §7)
+//  2. chain.* mirror rows are cross-checked against the verified chain (the
+//     shared mapping chainMirrorEvent): a match is mirror=OK, a mismatch is a
+//     warning + exit code 1. A row outside chain.* claiming a chain_seq is
+//     likewise shown with a label and counts as an integrity violation
+//     (evidence of tampering — §6)
+//  3. verify checks the mirror bijection (§1-5): omission (concealed
+//     deletion), alteration, and duplication are each detected with exit
+//     code 1
+//  4. invites / self display the D1-side rows; self annotates the implication
+//     of watch-worthy events (auth.recovery_blob_fetched — §3.1)
+//  5. Argument-shape errors (--project on self, out-of-range limit, unknown
+//     operation) are usage errors (2) before any communication
 
 import type { ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
@@ -56,7 +60,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** ベースチェーン(genesis → 環境作成 → メンバー追加。未収束義務なし)。 */
+/** Base chain (genesis → environment creation → member add; no pending obligations). */
 async function baseChain(): Promise<BuiltChain> {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -67,12 +71,12 @@ async function baseChain(): Promise<BuiltChain> {
 
 type WireRow = Record<string, unknown>;
 
-/** 決定的な 32 桁 hex 行 id(テスト用 — 実サーバーはランダム採番)。 */
+/** Deterministic 32-digit hex row id (test-only — the real server assigns randomly). */
 function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
 }
 
-/** undefined の項目を落として割り当てる(ワイヤの optionalKey と同型)。 */
+/** Assigns entries while dropping undefined ones (same shape as the wire's optionalKey). */
 function assignPresent(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined) {
@@ -81,7 +85,7 @@ function assignPresent(target: Record<string, unknown>, source: Record<string, u
   }
 }
 
-/** 検証済みチェーンの提案索引(サーバーと同じ core の導出 — 四眼の行の入力)。 */
+/** Proposal index of the verified chain (the same core derivation as the server's — input to the four-eyes rows). */
 async function proposalIndexOf(built: BuiltChain): Promise<ProposalIndex> {
   const verified = await verifyChainWithHistory(built.entries);
   if (!verified.ok) {
@@ -94,7 +98,7 @@ async function proposalIndexOf(built: BuiltChain): Promise<ProposalIndex> {
   );
 }
 
-/** 検証済みエントリ → ワイヤのミラー行(サーバーと同じ共有写像から構成)。 */
+/** Verified entry → wire mirror rows (built from the same shared mapping as the server's). */
 function wireMirrorRows(entry: ChainEntry, firstSeq: number, index: ProposalIndex): WireRow[] {
   return chainMirrorEvents(entry, BASE_TS + firstSeq, index).map((record, offset) => {
     const seq = firstSeq + offset;
@@ -124,8 +128,9 @@ function wireMirrorRows(entry: ChainEntry, firstSeq: number, index: ProposalInde
 }
 
 /**
- * チェーン全エントリのミラー行(監査 seq は 1 から連番。完成した approve は 2 行 —
- * AUDIT_SPEC §3.4 — なので四眼を含むチェーンでは監査 seq ≠ chain seq になる)。
+ * Mirror rows for every chain entry (audit seq runs from 1; a completed
+ * approve produces 2 rows — AUDIT_SPEC §3.4 — so on a chain containing
+ * four-eyes, audit seq ≠ chain seq).
  */
 async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
   const index = await proposalIndexOf(built);
@@ -137,9 +142,10 @@ async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
 }
 
 /**
- * 監査イベントエンドポイントのモック: event / eventPrefix / before / limit を
- * サーバーと同じ意味論(seq 降順・row id カーソルの解決、不明な id は空ページ)で
- * 適用する。eventPrefix は前置一致(AUDIT_SPEC §7)。
+ * Mock of the audit-events endpoint: applies event / eventPrefix / before /
+ * limit with the server's semantics (seq-descending, row-id cursor
+ * resolution, unknown id → empty page). eventPrefix is a prefix match
+ * (AUDIT_SPEC §7).
  */
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
   return (request) => {
@@ -175,7 +181,7 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
 interface AuditServerInput {
   readonly built: BuiltChain;
   readonly rows: readonly WireRow[];
-  /** メタデータ pull の可否(false = 404 — 名前解決の劣化経路)。 */
+  /** Whether the metadata pull succeeds (false = 404 — the degradation path for name resolution). */
   readonly metadataAvailable?: boolean;
 }
 
@@ -246,7 +252,7 @@ async function startEnv(handlers: readonly MockHandler[], projectId?: string): P
   return env;
 }
 
-/** var.version_pushed の行(名前解決・payload 表示の検査用)。 */
+/** A var.version_pushed row (for checking name resolution and payload display). */
 function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   return {
     id: idOf(seq),
@@ -262,7 +268,7 @@ function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   };
 }
 
-/** 集約形 var.read の行(AUDIT_SPEC §3.3 — 値付き pull ごとに環境単位 1 行)。 */
+/** An aggregated var.read row (AUDIT_SPEC §3.3 — one row per environment per valued pull). */
 function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = {}): WireRow {
   return {
     id: idOf(seq),
@@ -281,10 +287,10 @@ function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = 
   };
 }
 
-describe("maruhi audit(list)", () => {
-  it("集約形 var.read は件数の要約で出し、--expand-reads で 1 変数 1 行に展開する", async () => {
+describe("maruhi audit (list)", () => {
+  it("an aggregated var.read shows a count summary; --expand-reads expands it to one line per variable", async () => {
     const built = await baseChain();
-    // seq=5 は変数の列挙以外の payload(authMethod)を持つ
+    // seq=5 carries a payload (authMethod) other than the variable list
     const rows = [
       ...(await mirrorRowsOf(built)),
       aggregatedReadRow(4),
@@ -296,14 +302,17 @@ describe("maruhi audit(list)", () => {
     const summary = env.logs.join("\n");
     const readLine = env.logs.find((line) => line.startsWith("seq=4\t"));
     expect(readLine).toContain("read=2 variables");
-    // 列挙(payload)は recorded= として 1 行に流し込まない・展開もしない
+    // The listing (payload) is neither folded into the single line as
+    // recorded= nor expanded
     expect(readLine).not.toContain("recorded=");
-    // 列挙以外の payload は引き続き recorded= に出る(列挙は除く)
+    // A payload other than the listing still shows under recorded=
+    // (listing excluded)
     const withMethod = env.logs.find((line) => line.startsWith("seq=5\t"));
     expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
     expect(withMethod).not.toContain('"variables"');
     expect(summary).not.toContain("var=ALPHA");
-    // 集約形の案内は Note(stderr)— 一覧(stdout)には混ぜない
+    // The aggregated-form guidance is a Note (stderr) — not mixed into the
+    // list (stdout)
     expect(env.errors.join("\n")).toContain("--expand-reads");
 
     const expanded = await makeTestEnv();
@@ -315,12 +324,14 @@ describe("maruhi audit(list)", () => {
     expect(await runCli(["audit", "--expand-reads"], expanded.layer)).toBe(0);
     const logs = expanded.logs.join("\n");
     expect(logs).toContain("read=2 variables");
-    // 展開行: 表示名は検証済みステートメント由来(va = ALPHA)、無い変数は id のみ
+    // Expansion lines: display names come from verified statements (va =
+    // ALPHA); an absent variable shows only its id
     expect(logs).toContain("- var=ALPHA (va)\tepoch=1\tversion=2");
     expect(logs).toContain("- var=vb\tepoch=1\tversion=1");
     expect(expanded.errors.join("\n")).not.toContain("--expand-reads");
 
-    // --var 指定時は一致した変数の項目を行内に添える(展開はしない)
+    // With --var, the matching variable's entries are attached inline (no
+    // expansion)
     const filtered = await makeTestEnv();
     seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
     await seedConfig(filtered, {
@@ -333,31 +344,32 @@ describe("maruhi audit(list)", () => {
     expect(filtered.logs.join("\n")).not.toContain("- var=vb");
   });
 
-  it("行を表示し、名前は検証済みステートメントから解決、ミラー行は突合 OK", async () => {
+  it("displays rows, resolves names from verified statements, and cross-checks mirror rows OK", async () => {
     const built = await baseChain();
-    // payload の名前スナップショットはサーバー申告 — 表示名の位置に昇格しない
+    // The payload's name snapshot is a server claim — never promoted to the
+    // display-name position
     const rows = [...(await mirrorRowsOf(built)), pushRow(4, { name: "EVIL_NAME" })];
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
 
     expect(await runCli(["audit"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    // 新しい順(seq 降順)
+    // Newest first (seq descending)
     const positions = [4, 3, 2, 1].map((seq) => logs.indexOf(`seq=${seq}\t`));
     expect(positions.every((index) => index >= 0)).toBe(true);
     expect(positions).toEqual([...positions].toSorted((a, b) => a - b));
-    // ミラー行の突合(共有写像どおりの行は OK)
+    // Mirror cross-check (rows matching the shared mapping are OK)
     expect(logs).toContain("chain.genesis");
     expect(logs).toContain("chain.member_added");
     expect(logs).toContain("mirror=OK");
-    // 表示名は検証済みステートメント由来のみ。payload のスナップショットは
-    // 「記録=」の中にだけ現れる
+    // Display names come only from verified statements. The payload's
+    // snapshot appears only inside "recorded="
     expect(logs).toContain("var=ALPHA (va)");
     expect(logs).not.toContain("var=EVIL_NAME");
     expect(logs).toContain("EVIL_NAME");
     expect(env.errors.join("\n")).not.toContain("does not match the verified chain");
   });
 
-  it("メタデータを取得できない環境は識別子表示へ劣化する(一覧は止めない)", async () => {
+  it("an environment whose metadata cannot be fetched degrades to identifier display (the list is not stopped)", async () => {
     const built = await baseChain();
     const rows = [...(await mirrorRowsOf(built)), pushRow(4)];
     const env = await startEnv(
@@ -370,7 +382,7 @@ describe("maruhi audit(list)", () => {
     expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
   });
 
-  it("改竄されたミラー行(actor の差し替え)は警告 + 終了コード 1", async () => {
+  it("a tampered mirror row (actor swapped) is a warning + exit code 1", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const tampered = rows[2];
@@ -386,7 +398,7 @@ describe("maruhi audit(list)", () => {
     expect(errors).toContain("actor.user_id");
   });
 
-  it("chain.* 外で chain_seq を名乗る行は明示的な不信ラベル + 終了コード 1", async () => {
+  it("a row outside chain.* claiming a chain_seq gets an explicit distrust label + exit code 1", async () => {
     const built = await baseChain();
     const forged = {
       ...pushRow(4),
@@ -409,9 +421,10 @@ describe("maruhi audit(list)", () => {
     expect(errors).toContain("only chain.* mirror rows may carry chain provenance");
   });
 
-  it("--event と --before / --limit をそのままクエリへ写す", async () => {
+  it("passes --event and --before / --limit through to the query unchanged", async () => {
     const built = await baseChain();
-    // seq=9 の行を置き、そこから前(seq < 9)を row id カーソルで要求する
+    // Plant a row at seq=9 and request earlier rows (seq < 9) via the row-id
+    // cursor
     const rows = [...(await mirrorRowsOf(built)), pushRow(4), pushRow(9)];
     const handlers = await makeAuditServer({ built, rows });
     const server = await MockServer.start([...handlers]);
@@ -433,7 +446,7 @@ describe("maruhi audit(list)", () => {
       before: idOf(9),
     });
     const logs = env.logs.join("\n");
-    // カーソル行(seq=9)自身は含まれず、seq=4 の行だけが返る
+    // The cursor row itself (seq=9) is excluded; only the seq=4 row returns
     expect(logs).toContain("seq=4\t");
     expect(logs).not.toContain("seq=9\t");
     expect(logs).toContain("var.version_pushed");
@@ -441,8 +454,8 @@ describe("maruhi audit(list)", () => {
   });
 });
 
-describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => {
-  it("全単射 + 全フィールド一致なら OK(終了コード 0)", async () => {
+describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
+  it("bijection + all-fields match is OK (exit code 0)", async () => {
     const built = await baseChain();
     const env = await startEnv(
       await makeAuditServer({ built, rows: await mirrorRowsOf(built) }),
@@ -452,9 +465,10 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).toContain("Mirror bijection verification OK");
   });
 
-  it("ミラー行の欠落(削除の隠蔽)を検出する", async () => {
+  it("detects an omitted mirror row (concealed deletion)", async () => {
     const built = await baseChain();
-    // seq=3(add_member)のミラーを落とす — per-row 突合では原理的に見えない欠落
+    // Drop the mirror of seq=3 (add_member) — an omission invisible in
+    // principle to per-row cross-checking
     const rows = (await mirrorRowsOf(built)).filter((row) => row["seq"] !== 3);
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -463,7 +477,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(errors).toContain("chain_seq=3");
   });
 
-  it("ミラー行の改変(鍵 FP の差し替え)を検出する", async () => {
+  it("detects an altered mirror row (key FP swapped)", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const genesis = rows[0];
@@ -482,7 +496,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.errors.join("\n")).toContain("actor.key_fingerprint");
   });
 
-  it("同一 chain_seq への重複ミラー行を検出する", async () => {
+  it("detects duplicate mirror rows for the same chain_seq", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const duplicated = rows[2];
@@ -495,7 +509,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.errors.join("\n")).toContain("duplicates");
   });
 
-  it("偽のトークン経由表示(actor.api_token_id の付与)を検出する", async () => {
+  it("detects a forged token-attribution display (actor.api_token_id added)", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const tampered = rows[2];
@@ -511,14 +525,15 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.errors.join("\n")).toContain("actor.api_token_id");
   });
 
-  it("到達し得ない chain_seq を名乗る偽造行は連続性違反として検出する(恒久すり抜けの遮断)", async () => {
+  it("detects as a continuity violation a forged row claiming an unreachable chain_seq (blocks a permanent slip-through)", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // head(3)の遠く先を名乗る偽造行 — 「未検証」に数えて OK と言ってはならない
+    // A forged row claiming a point far beyond head (3) — must not be
+    // counted as "unverified" and reported OK
     rows.push({ ...template, id: idOf(50), seq: 50, chainSeq: 50000 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -527,15 +542,16 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
-  it("写像に無い chain.* 名を名乗る偽造行を検出する", async () => {
+  it("detects a forged row claiming a chain.* name absent from the mapping", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // 既知のミラー名の完全一致だけで引くと、この行は取得されず(欠落も重複も
-    // 起きない)OK に見えてしまう — 前置一致で取得して未知の op として落とす
+    // Fetching by exact match of known mirror names would never retrieve
+    // this row (no omission, no duplication) and it would look OK — fetch by
+    // prefix match and drop it as an unknown op
     rows.push({ ...template, id: idOf(9), seq: 9, event: "chain.role_granted" });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -545,7 +561,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
-  it("chain.* 外で chain_seq を名乗る偽造行も presence filter で取得して検出する", async () => {
+  it("a forged row outside chain.* claiming a chain_seq is also fetched via the presence filter and detected", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const forged = {
@@ -573,14 +589,15 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     ).toBe(true);
   });
 
-  it("head 直後から連続する新しい行は偽造断定しないが、OK とも言わない(exit 1 + 再実行案内)", async () => {
+  it("new rows continuing right after head are not condemned as forged, but not called OK either (exit 1 + re-run guidance)", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // 同期直後にチェーンが 1 エントリ伸びた形(chain_seq = head + 1)
+    // The shape where the chain grew one entry right after syncing
+    // (chain_seq = head + 1)
     rows.push({ ...template, id: idOf(4), seq: 4, chainSeq: 4 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -608,12 +625,13 @@ const approveOp = (proposalHashHex: string): ChainOperation => ({
   payload: { proposalHashHex },
 });
 
-describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", () => {
+describe("maruhi audit verify — four-eyes application rows (AUDIT_SPEC §3.4 — K5)", () => {
   /**
-   * 方針(required)の下で owner が member の remove を提案し、承認者が approve を
-   * 重ねたチェーン。required = 2 なら 2 番目の owner の 1 票で完成、required = 3 なら
-   * pending のまま(未完成の approve)。propose の hash は 1 度組んでから参照する
-   * (署名は決定的なので同じ前段は同じ hash になる)。
+   * A chain where, under a policy (required), an owner proposes removing a
+   * member and an approver stacks an approve. With required = 2 the second
+   * owner's single vote completes it; with required = 3 it stays pending (an
+   * uncompleted approve). The propose hash is referenced after building once
+   * (signing is deterministic, so the same prefix yields the same hash).
    */
   async function fourEyesChain(requiredApprovals: 2 | 3): Promise<BuiltChain> {
     const owner2 = await makeTestUser("user-owner-3333");
@@ -635,10 +653,11 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     return buildChain([...prefix, { actor: owner2, operation: approveOp(proposalHash) }]);
   }
 
-  it("完成した approve の 2 行(chain.approved + 適用行)を含めて全単射 OK", async () => {
+  it("bijection OK including the completed approve's 2 rows (chain.approved + application row)", async () => {
     const built = await fourEyesChain(2);
     const rows = await mirrorRowsOf(built);
-    // 8 エントリ ↔ 9 行(seq 8 の approve が chain.approved + chain.member_removed)
+    // 8 entries ↔ 9 rows (the seq-8 approve yields chain.approved +
+    // chain.member_removed)
     expect(rows).toHaveLength(built.entries.length + 1);
     expect(rows.filter((row) => row["chainSeq"] === 8).map((row) => row["event"])).toEqual([
       "chain.approved",
@@ -649,7 +668,7 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     expect(env.logs.join("\n")).toContain("Mirror bijection verification OK");
   });
 
-  it("適用行の欠落を検出する", async () => {
+  it("detects an omitted application row", async () => {
     const built = await fourEyesChain(2);
     const rows = (await mirrorRowsOf(built)).filter(
       (row) => row["event"] !== "chain.member_removed",
@@ -661,7 +680,7 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     expect(errors).toContain("no corresponding chain.member_removed mirror row");
   });
 
-  it("適用行の viaProposalSeq / actor の改変と completed の偽装を検出する", async () => {
+  it("detects altered viaProposalSeq / actor on the application row and a faked completed", async () => {
     const built = await fourEyesChain(2);
     const rows = await mirrorRowsOf(built);
     const applied = rows.findIndex((row) => row["event"] === "chain.member_removed");
@@ -681,10 +700,11 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     expect(errors).toContain('"completed":true');
   });
 
-  it("未完成の approve に付いた適用行を過剰な行として検出する", async () => {
+  it("detects an application row attached to an uncompleted approve as an extra row", async () => {
     const built = await fourEyesChain(3);
     const rows = await mirrorRowsOf(built);
-    // required = 3 で 1 票: chain.approved(completed = false)のみが正
+    // 1 vote under required = 3: only chain.approved (completed = false) is
+    // correct
     expect(rows).toHaveLength(built.entries.length);
     const approved = rows.find((row) => row["event"] === "chain.approved");
     if (approved === undefined) {
@@ -706,7 +726,7 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
     expect(errors).toContain("chain.member_removed");
   });
 
-  it("list は同じ chain_seq の 2 行をどちらも突合 OK と表示する", async () => {
+  it("list displays both rows of the same chain_seq as cross-check OK", async () => {
     const built = await fourEyesChain(2);
     const env = await startEnv(
       await makeAuditServer({ built, rows: await mirrorRowsOf(built) }),
@@ -721,15 +741,16 @@ describe("maruhi audit verify — 四眼の適用行(AUDIT_SPEC §3.4 — K5)", 
   });
 });
 
-describe("maruhi audit verify — head より先の行の連続性(同一 chain_seq は 2 行まで)", () => {
-  it("3 行以上を名乗る head 先の chain_seq は偽造行として検出する", async () => {
+describe("maruhi audit verify — continuity of rows beyond head (a chain_seq caps at 2 rows)", () => {
+  it("detects a chain_seq beyond head claiming 3+ rows as forged", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const template = rows[2];
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // chain_seq = head + 1 に 3 行(完成 approve でも 2 行が上限 — AUDIT_SPEC §3.4)
+    // 3 rows at chain_seq = head + 1 (even a completed approve caps at 2
+    // rows — AUDIT_SPEC §3.4)
     for (const seq of [4, 5, 6]) {
       rows.push({ ...template, id: idOf(seq), seq, chainSeq: 4 });
     }
@@ -741,7 +762,7 @@ describe("maruhi audit verify — head より先の行の連続性(同一 chain_
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
-  it("head 先の 2 行(完成 approve の形)は連続性違反にしない", async () => {
+  it("2 rows beyond head (the completed-approve shape) are not a continuity violation", async () => {
     const built = await baseChain();
     const rows = await mirrorRowsOf(built);
     const template = rows[2];
@@ -760,14 +781,15 @@ describe("maruhi audit verify — head より先の行の連続性(同一 chain_
 });
 
 describe("maruhi audit invites / self", () => {
-  it("invites は D1 側の invite.* 行を表示する", async () => {
+  it("invites displays the D1-side invite.* rows", async () => {
     const built = await baseChain();
     const handlers = [
       ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
       onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
         status: 200,
         json: {
-          // D1 応答は seq を運ばない(AUDIT_SPEC §7 — グローバル連番の非開示)
+          // D1 responses carry no seq (AUDIT_SPEC §7 — the global counter
+          // is not disclosed)
           events: [
             {
               id: idOf(12),
@@ -788,7 +810,7 @@ describe("maruhi audit invites / self", () => {
     expect(logs).toContain("inv-0001");
   });
 
-  it("D1 経路の chain_seq も無ラベル表示せず整合性違反にする", async () => {
+  it("a chain_seq arriving via the D1 path is also not shown unlabeled — it is an integrity violation", async () => {
     const built = await baseChain();
     const handlers = [
       ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
@@ -816,12 +838,12 @@ describe("maruhi audit invites / self", () => {
     expect(env.errors.join("\n")).toContain("this endpoint does not store chain provenance");
   });
 
-  it("self はアカウント系イベントを表示し、要監視イベントの含意を添える", async () => {
+  it("self displays account events and annotates the implications of watch-worthy events", async () => {
     const handlers = [
       onRequest("GET", "/auth/audit/events", () => ({
         status: 200,
         json: {
-          // D1 応答は seq を運ばない(AUDIT_SPEC §7)
+          // D1 responses carry no seq (AUDIT_SPEC §7)
           events: [
             {
               id: idOf(2),
@@ -845,19 +867,19 @@ describe("maruhi audit invites / self", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("auth.recovery_blob_fetched");
     expect(logs).toContain("auth.token_created");
-    // 要監視イベントの含意は Note(stderr)
+    // The watch-worthy event's implication is a Note (stderr)
     expect(env.errors.join("\n")).toContain("reissue your recovery code");
   });
 });
 
-describe("引数の書き方の検査(通信より前)", () => {
-  it("audit self への --project は操作専用オプションとして拒否する(exit 2)", async () => {
+describe("argument-shape checks (before any communication)", () => {
+  it("rejects --project on audit self as an operation-only option (exit 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["audit", "self", "--project", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown flag");
   });
 
-  it("limit の範囲外・不明な操作は usage エラー(exit 2)", async () => {
+  it("out-of-range limit and unknown operations are usage errors (exit 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["audit", "--limit", "0"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--limit must be an integer between 1 and 200");

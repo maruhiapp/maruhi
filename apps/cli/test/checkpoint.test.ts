@@ -1,18 +1,19 @@
-// 周期チェックポイントの発行(`maruhi project checkpoint` — CRYPTO_SPEC §6.3 /
-// AUTH_SPEC §16-2)のテスト。
+// Tests for periodic checkpoint issuance (`maruhi project checkpoint` —
+// CRYPTO_SPEC §6.3 / AUTH_SPEC §16-2).
 //
-// 検証の柱:
-//  1. 構築: 検証済みビュー(検証済み pull)からタプルを組み立てる — 環境 ID の
-//     バイト昇順、マニフェスト参照 = 検証済みマニフェストの自計算ハッシュ、
-//     values_digest = 検証済み値の自計算ハッシュ(サーバー申告値を署名しない)
-//  2. 監査ヘッドの公証: 実効権限 admin(チェーン role × /auth/me の tokenScopes)
-//     の事前判定 — admin 未満・write スコープでは GET /audit-head を**呼ばない**
-//     (403 を踏まない — §16-2)
-//  3. 再試行: 422(CheckpointStateMismatch)はビューの再取得 + 申告の取り直しで
-//     有界再試行し、使い切ったら安定部分集合で 1 回だけ発行(§6.3 の退避)。
-//     409(CAS)は再同期 + 再署名
-//  4. 受理後照合(§12-10 (3)): 2xx でもチェーン同期で自エントリを確認できなければ
-//     成功と報告しない
+// Pillars verified:
+//  1. Construction: the tuple is assembled from the verified view (verified
+//     pull) — environment IDs in byte order, manifest ref = the self-computed
+//     hash of the verified manifest, values_digest = the self-computed hash
+//     of the verified values (never signing the server's claimed values)
+//  2. Audit-head notarization: effective-permission admin (chain role ×
+//     /auth/me tokenScopes) is judged up front — below admin / write-scope
+//     tokens do NOT call GET /audit-head (never step on a 403 — §16-2)
+//  3. Retries: 422 (CheckpointStateMismatch) retries bounded by refetching
+//     the view and re-attesting; once exhausted, issues exactly once against
+//     the stable subset (§6.3 fallback). 409 (CAS) = resync + re-sign
+//  4. Post-acceptance check (§12-10 (3)): even on 2xx, if the synced chain
+//     doesn't show our own entry, do not report success
 
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -53,7 +54,7 @@ import {
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
 
-// バイト昇順の判別対(alpha < dev)
+// Byte-order discrimination pair (alpha < dev)
 const ENV_A = "alpha";
 const ENV_B = "dev";
 
@@ -80,7 +81,7 @@ interface MockEnvironment {
     readonly statement: WireDistributedVariableStatement;
     value: WireDistributedValue;
   }[];
-  /** pull ごとに value を差し替える(部分集合退避テストの「忙しい環境」)。 */
+  /** Swap the value on each pull (the "busy environment" of the subset-fallback test). */
   nextValues?: WireDistributedValue[];
 }
 
@@ -89,11 +90,11 @@ interface CheckpointServerOptions {
   readonly environments: MockEnvironment[];
   readonly me: { readonly userId: string; readonly tokenScopes?: readonly unknown[] };
   readonly auditHeadHashHex?: string;
-  /** audit-head 呼び出しごとの差し込み(undefined = 200 で申告を返す)。 */
+  /** Per-call override for audit-head (undefined = return the attestation with 200). */
   readonly onAuditHead?: (call: number) => MockResponse | undefined;
-  /** append 呼び出しごとの差し込み(undefined = 受理して追記)。 */
+  /** Per-call override for append (undefined = accept and append). */
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
-  /** 受理してもチェーンへ追記しない(虚偽 2xx サーバー — §12-10 (3) の検査)。 */
+  /** Accept without appending to the chain (a lying 2xx server — the §12-10 (3) check). */
   readonly acceptWithoutAppending?: boolean;
 }
 
@@ -109,7 +110,7 @@ interface CheckpointServerState {
   readonly entries: ChainEntry[];
 }
 
-/** 発行フローに要る全エンドポイントを持つモック(受理エントリはチェーンへ反映)。 */
+/** Mock with every endpoint the issuance flow needs (accepted entries are reflected onto the chain). */
 function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServerState {
   const projectId = options.built.projectId;
   const entries: ChainEntry[] = [...options.built.entries];
@@ -168,7 +169,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
         json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
       };
     },
-    // 環境ごとの pull(値付き — §12-7)
+    // Per-environment pull (valued — §12-7)
     ...options.environments.map((environment): MockHandler => (request) => {
       if (
         request.method !== "GET" ||
@@ -201,7 +202,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   return { handlers, appends, auditHeadCalls: () => auditHeadCalls, entries };
 }
 
-/** 1 環境ぶんのフィクスチャ(変数 1 本 + マニフェスト)。 */
+/** Fixture for one environment (one variable + manifest). */
 async function makeEnvironment(input: {
   readonly built: BuiltChain;
   readonly environmentId: string;
@@ -277,8 +278,8 @@ async function expectedValuesDigest(environment: MockEnvironment): Promise<strin
   return digest.value;
 }
 
-describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPEC §16-2)", () => {
-  it("検証済みビューからタプルを構築し、バイト昇順の全環境カバー + 監査ヘッド公証で発行する", async () => {
+describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_SPEC §16-2)", () => {
+  it("builds the tuple from the verified view and issues with byte-ordered full-environment coverage + audit-head notarization", async () => {
     const dekA = crypto.getRandomValues(new Uint8Array(32));
     const dekB = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -288,7 +289,8 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     ]);
     const head = "ab".repeat(32);
     const environments = [
-      // 意図的に降順で並べる(発行側の昇順正規化を判別する)
+      // Deliberately listed in descending order (to discriminate the
+      // issuer-side ascending normalization)
       await makeEnvironment({
         built,
         environmentId: ENV_B,
@@ -323,7 +325,8 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(state.appends.length).toBe(1);
     const entry = state.appends[0]!.entry;
     expect(entry.op).toBe("checkpoint");
-    // バイト昇順(alpha < dev)・タプルは検証済みビューの自計算値
+    // Byte-ascending (alpha < dev); the tuple is self-computed from the
+    // verified view
     expect(entry.payload.environments.map((tuple) => tuple.environmentId)).toEqual([ENV_A, ENV_B]);
     const tupleA = entry.payload.environments[0]!;
     expect(tupleA.epoch).toBe(1);
@@ -332,14 +335,15 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
       await manifestHashOf(built.projectId, environments[1]!.manifest),
     );
     expect(tupleA.valuesDigestHex).toBe(await expectedValuesDigest(environments[1]!));
-    // 実効権限 admin: CAS 親確定後に取得した申告の公証
+    // Effective permission admin: notarize the attestation fetched after the
+    // CAS parent was fixed
     expect(entry.payload.auditHeadHashHex).toBe(head);
     expect(state.auditHeadCalls()).toBe(1);
     expect(env.logs.join("\n")).toContain("Checkpoint accepted at chain seq 4");
     expect(env.logs.join("\n")).toContain("audit head attested");
   });
 
-  it("member role は監査ヘッドを取得せず(403 を踏まない)、空文字列で発行する", async () => {
+  it("member role does not fetch the audit head (never steps on a 403) and issues with an empty string", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -369,7 +373,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(state.auditHeadCalls()).toBe(0);
   });
 
-  it("listed scope の発行者は scope 内の環境だけをカバーし、scope 外は SHOULD 警告に載せる(ES K4 — §6.2 / §6.3 (i))", async () => {
+  it("a listed-scope issuer covers only in-scope environments and lists the rest in the SHOULD warning (ES K4 — §6.2 / §6.3 (i))", async () => {
     const dekA = crypto.getRandomValues(new Uint8Array(32));
     const dekB = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -409,7 +413,8 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     const entry = state.appends[0]!.entry;
     expect(entry.payload.environments.map((tuple) => tuple.environmentId)).toEqual([ENV_A]);
-    // scope 外の環境は値付き pull を試みない(var.read を刻まない・403 を踏まない)
+    // Out-of-scope environments get no valued pull (no var.read recorded,
+    // no 403 stepped on)
     expect(
       server.requests.filter((request) => request.path.includes(`/environments/${ENV_B}/pull`)),
     ).toHaveLength(0);
@@ -418,7 +423,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     );
   });
 
-  it("admin role でも write スコープのトークンは公証しない(実効権限の min — §9-2)", async () => {
+  it("even an admin role does not notarize with a write-scope token (effective permission is the min — §9-2)", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -450,7 +455,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(state.auditHeadCalls()).toBe(0);
   });
 
-  it("422(CheckpointStateMismatch)はビューと申告を取り直して有界再試行する(§16-2)", async () => {
+  it("422 (CheckpointStateMismatch) retries bounded by refetching the view and re-attesting (§16-2)", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -486,11 +491,11 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
 
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     expect(state.appends.length).toBe(2);
-    // 監査ヘッド申告は試行ごとに取り直す(§16-2 の再試行)
+    // The audit-head attestation is re-fetched per attempt (§16-2 retries)
     expect(state.auditHeadCalls()).toBe(2);
   });
 
-  /** AuditHeadNotReady 再試行テストの共通フィクスチャ(admin の 1 環境発行)。 */
+  /** Shared fixture for the AuditHeadNotReady retry tests (a single-environment issuance by admin). */
   async function makeNotReadyFixture(input: {
     readonly onAuditHead?: (call: number) => MockResponse | undefined;
     readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
@@ -527,32 +532,34 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
 
   const NOT_READY: MockResponse = { status: 503, json: { _tag: "AuditHeadNotReady" } };
 
-  it("申告取得の AuditHeadNotReady(503)は有界再試行で吸収する(進捗はサーバー側に保存)", async () => {
+  it("absorbs AuditHeadNotReady (503) on attestation fetch with bounded retries (progress is server-side)", async () => {
     const { state, env } = await makeNotReadyFixture({
       onAuditHead: (call) => (call < 2 ? NOT_READY : undefined),
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
-    // 2 回の 503 を吸収して 3 回目の申告で発行(発行は 1 回)
+    // Absorbs two 503s and issues on the third attestation (issuance happens
+    // once)
     expect(state.auditHeadCalls()).toBe(3);
     expect(state.appends.length).toBe(1);
     expect(state.appends[0]!.entry.payload).toMatchObject({ auditHeadHashHex: "cd".repeat(32) });
     expect(env.logs.join("\n")).toContain("materializing the audit-head hash column");
   });
 
-  it("受理段の AuditHeadNotReady(503)は申告を取り直して再送する", async () => {
+  it("AuditHeadNotReady (503) at the acceptance stage re-fetches the attestation and resends", async () => {
     const { state, env } = await makeNotReadyFixture({
       onAppend: (call) => (call === 0 ? NOT_READY : undefined),
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     expect(state.appends.length).toBe(2);
-    // 再送では申告も取り直す(サーバーの伸長は前進済み — AUDIT_SPEC §5.1)
+    // Resending also re-fetches the attestation (the server's extension has
+    // already advanced — AUDIT_SPEC §5.1)
     expect(state.auditHeadCalls()).toBe(2);
   });
 
-  it("AuditHeadNotReady が枯渇したら、発生条件と再実行での解消を案内して失敗する", async () => {
+  it("when AuditHeadNotReady is exhausted, fails with guidance on the trigger condition and the fix by re-running", async () => {
     const { state, env } = await makeNotReadyFixture({ onAuditHead: () => NOT_READY });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
-    // 予算 10 回で打ち切り、発行には進まない
+    // Stops at the 10-attempt budget without reaching issuance
     expect(state.auditHeadCalls()).toBe(10);
     expect(state.appends.length).toBe(0);
     const output = env.errors.join("\n");
@@ -560,7 +567,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(output).toContain("re-run the command to continue where it left off");
   });
 
-  it("再試行を使い切ったら、直近 2 回の構築で不変だった環境の部分集合で発行する(§6.3 の退避)", async () => {
+  it("once retries are exhausted, issues against the subset of environments unchanged across the last 2 builds (§6.3 fallback)", async () => {
     const dekA = crypto.getRandomValues(new Uint8Array(32));
     const dekB = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -584,8 +591,9 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
       issuer: owner,
       variableId: "var-b",
     });
-    // ENV_B は pull のたびに version が前進する(並行 push のモデル化)。
-    // prev は直前 version の自計算ハッシュへ連鎖させる(§4.1)
+    // ENV_B's version advances on every pull (models a concurrent push).
+    // prev chains to the self-computed hash of the immediately preceding
+    // version (§4.1)
     const head = headOf(built, 3);
     const nextValues: WireDistributedValue[] = [];
     let previous = busy.variables[0]!.value;
@@ -614,7 +622,8 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
         tokenScopes: [{ project: built.projectId, permission: "admin" }],
       },
       auditHeadHashHex: "ab".repeat(32),
-      // ENV_B を含む発行は常に 422(受理時点一致が収束しない忙しい環境)
+      // Any issuance including ENV_B always 422s (a busy environment where
+      // the at-acceptance match never converges)
       onAppend: (_call, body) =>
         body.entry.payload.environments.some((tuple) => tuple.environmentId === ENV_B)
           ? {
@@ -637,11 +646,12 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(output).toContain(ENV_B);
   });
 
-  it("契機 (iii) の提案(checkpointProposal): 基準の有無・鮮度・実効権限別の基準で分岐する", async () => {
+  it("the trigger-(iii) proposal (checkpointProposal): branches on baseline presence / freshness / effective permission", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
-    // buildChain の timestamp は決定的な過去時刻 — チェーン上の checkpoint は
-    // すべて「7 日超経過」側に落ちる。新しい基準は手署名の checkpoint
-    // (timestampMs = now)を積んで作る
+    // buildChain's timestamps are deterministic past times — every
+    // checkpoint on the chain lands on the "older than 7 days" side. A fresh
+    // baseline is built by appending a hand-signed checkpoint
+    // (timestampMs = now)
     const base = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
@@ -679,7 +689,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
         hashes: [...built.hashes, await computeChainEntryHash(signed.value)],
       };
     };
-    // /auth/me だけを持つモック(admin の実効権限判定に使う)
+    // A mock with only /auth/me (used to judge admin's effective permission)
     const state = makeCheckpointServer({
       built: base,
       environments: [],
@@ -697,11 +707,13 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
         ),
       );
 
-    // member: 基準なし → 提案 / 新しい基準(公証なしで足りる)→ 提案なし
+    // member: no baseline → propose / a fresh baseline (notarization not
+    // required) → no proposal
     expect(await propose(base, member.userId)).toContain("maruhi project checkpoint");
-    // 未発行は「基準 = genesis」として数える(DP5 裁定 C): genesis から 7 日以内
-    // なら提案しない(作成当日から push ごとに出る形を作らない)、7 日を越えたら
-    // 提案する。admin(公証あり基準)も同じ節目
+    // Never-issued counts as "baseline = genesis" (DP5 ruling C): within 7
+    // days of genesis, no proposal (avoids proposing on every push from day
+    // one); past 7 days, propose. admin (notarized baseline) uses the same
+    // threshold
     const genesisMs = base.entries[0]?.timestampMs ?? 0;
     const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
       verifiedOf(built).then((verified) =>
@@ -721,10 +733,11 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
       auditHeadHashHex: "",
     });
     expect(await propose(freshPlain, member.userId)).toBeNull();
-    // 実効権限 admin: 公証なしの新しい基準では満たされない(公証あり基準 —
-    // member の発行が admin の契機を潰さない)
+    // Effective permission admin: a fresh un-notarized baseline doesn't
+    // satisfy it (a notarized baseline — a member's issuance must not kill
+    // admin's trigger)
     expect(await propose(freshPlain, owner.userId)).toContain("notarized audit prefix");
-    // 新しい公証あり基準 → 提案なし
+    // A fresh notarized baseline → no proposal
     const freshAttested = await appendCheckpoint(base, {
       timestampMs: Date.now(),
       auditHeadHashHex: "ab".repeat(32),
@@ -732,7 +745,7 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(await propose(freshAttested, owner.userId)).toBeNull();
   });
 
-  it("2xx でも再同期したチェーンに自エントリが無ければ成功と報告しない(§12-10 (3))", async () => {
+  it("does not report success on 2xx when the resynced chain lacks our entry (§12-10 (3))", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

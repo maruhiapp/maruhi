@@ -1,20 +1,28 @@
-// パスキー PRF 経路(CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5、2026-09-19 DK K4)の
-// 統合テスト: `maruhi key seal passkey` / `maruhi key recover --passkey` /
-// `maruhi key seal list|remove`。ラップ・復号は実 crypto、サーバーはワイヤレベル
-// モック、ブラウザは `setBrowserOpenHandler` でテストが務める(ページの代わりに
-// PRF を POST する — integration-options.md 補足 20 裁定 J)。
+// Integration tests for the passkey PRF path (CRYPTO_SPEC §8.2 /
+// AUTH_SPEC §13-7 — KL3 K5, 2026-09-19 DK K4): `maruhi key seal passkey` /
+// `maruhi key recover --passkey` / `maruhi key seal list|remove`. Wraps
+// and decryptions are real crypto, the server is a wire-level mock, and
+// the test plays the browser via `setBrowserOpenHandler` (POSTing the PRF
+// in place of the page — integration-options.md supplement 20 ruling J).
 //
-// 固定する性質:
-//  1. 封印は「台帳の開封(コード / --passkey)→ PRF → KEK → ラップ → 最後に POST」で、
-//     台帳の行はテストベクターと同じ `derivePasskeyKek` + master-wrap AAD(user_id /
-//     passkey-prf / wrap_id)で開け、中身は**予備鍵**のレコード(端末鍵ではない)
-//  2. 復元は台帳のラップを 1 件取り、同じ PRF で予備鍵を復号し、**新しい端末鍵**を
-//     生成してキーチェーンへ保存する(予備鍵は保存しない — K4-1)。ブロブ取得は儀式の
-//     前に 1 回だけ(複数登録は番号で選ぶ)
-//  3. ゲート: エージェント環境・非端末・既存鍵あり・登録なし・上限はリスナーを立てる
-//     前に拒否する(封印はまずリカバリーコードのゲートに当たる)
-//  4. ページの理由コードは英語の案内に写り、台帳には何も書かれない
-//  5. pre-DK の台帳(端末鍵の複製)には封印せず、`maruhi key recovery` へ誘導する
+// Properties pinned down:
+//  1. Sealing runs "unseal the ledger (code / --passkey) → PRF → KEK →
+//     wrap → POST last"; the ledger row opens with the same
+//     `derivePasskeyKek` + master-wrap AAD (user_id / passkey-prf /
+//     wrap_id) as the test vectors, and its contents are a **reserve-key**
+//     record (not a device key)
+//  2. Recovery fetches one ledger wrap, decrypts the reserve key with the
+//     same PRF, generates a **new device key**, and stores it in the
+//     keychain (the reserve key is never stored — K4-1). The blob fetch
+//     happens exactly once before the ceremony (multiple registrations are
+//     chosen by number)
+//  3. Gates: agent environments, non-terminals, an existing key, no
+//     registration, and the cap are all refused before the listener is
+//     stood up (sealing hits the recovery-code gate first)
+//  4. The page's reason codes map onto English guidance, and nothing is
+//     written to the ledger
+//  5. A pre-DK ledger (a device-key duplicate) is never sealed to — it
+//     guides toward `maruhi key recovery`
 
 import { decodeHex, derivePasskeyKek, unwrapMasterBlob, wrapMasterSecret } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -41,11 +49,11 @@ import {
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-/** この端末の端末鍵(キーチェーンに seed する側)。 */
+/** This device's device key (the side seeded into the keychain). */
 let owner: TestUser;
-/** 台帳に封印されている予備鍵(キーチェーンには決して入らない側)。 */
+/** The reserve key sealed in the ledger (the side that never enters the keychain). */
 let reserve: TestUser;
-/** 予備鍵をリカバリーコードでラップした台帳(GET /auth/recovery)とそのコード。 */
+/** The ledger — the reserve key wrapped with the recovery code (GET /auth/recovery) — and that code. */
 let ledger: Ledger;
 const servers: MockServer[] = [];
 
@@ -114,7 +122,7 @@ function statusHandler(passkeys: readonly PasskeyRow[]): MockHandler {
   }));
 }
 
-/** 復元の後段(finishRecovery)が走査するプロジェクト一覧(§11-5)— 空。 */
+/** The project list the recovery tail (finishRecovery) scans (§11-5) — empty. */
 const noMembershipsHandler: MockHandler = onRequest("GET", "/projects", () => ({
   status: 200,
   json: { projects: [] },
@@ -148,7 +156,7 @@ function wrapHandler(wrapId: string, registration: RegistrationBody): MockHandle
   }));
 }
 
-/** 端末(stderr)に表示された最新の確認コード(儀式が 2 回続くときは後の方 — 開封 → 登録)。 */
+/** The latest confirmation code shown on the terminal (stderr) — when two ceremonies run back to back it's the later one (unseal → register). */
 function displayedCode(env: TestEnv): string {
   const line = env.errors.findLast((entry) =>
     entry.startsWith("Confirmation code (type it into the page): "),
@@ -160,7 +168,7 @@ function displayedCode(env: TestEnv): string {
   return `${match[1]}${match[2]}`;
 }
 
-/** ブラウザ役: config.json を読み、端末のコードを添えて 1 POST を返す。 */
+/** Plays the browser: reads config.json and returns one POST carrying the terminal's code. */
 function browserPosting(
   env: TestEnv,
   respond: (config: unknown) => PrfPagePost,
@@ -186,7 +194,7 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-/** 鍵レコードの直列化(seedSession / 台帳と同じ形)。 */
+/** Serialization of a key record (same shape as seedSession / the ledger). */
 function serializedRecordOf(user: TestUser): string {
   return serializeStoredMasterKey({
     suite: "maruhi/v1",
@@ -194,33 +202,36 @@ function serializedRecordOf(user: TestUser): string {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
-    // テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)。それ以外は端末鍵
+    // The test's `reserve` is a CLI-generated reserve key (marked — DK K16).
+    // Everything else is a device key
     ...(user === reserve ? { kind: "reserve" as const } : {}),
   });
 }
 
-/** 台帳に封印された予備鍵レコードの直列化(封印した行の中身はこれでなければならない)。 */
+/** Serialization of the reserve-key record sealed in the ledger (a sealed row's contents must be this). */
 function serializedReserveRecord(): string {
   return serializedRecordOf(reserve);
 }
 
 interface Ledger {
-  /** GET /auth/recovery(リカバリーコードでラップした B)。 */
+  /** GET /auth/recovery (B wrapped with the recovery code). */
   readonly handler: MockHandler;
-  /** 台帳を開けるリカバリーコード(表示形)。 */
+  /** The recovery code that opens the ledger (display form). */
   readonly code: string;
 }
 
 /**
- * `user` のレコードを既知のリカバリーコードでラップし、GET /auth/recovery で配る
- * (recovery.test.ts と同じ組み立て)。AAD の user_id はセッションの利用者 = owner。
+ * Wraps `user`'s record under a known recovery code and serves it at GET
+ * /auth/recovery (same assembly as recovery.test.ts). The AAD's user_id is
+ * the session's user = owner.
  */
 async function ledgerFor(user: TestUser): Promise<Ledger> {
   const secret = crypto.getRandomValues(new Uint8Array(32));
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
     userId: owner.userId,
-    // JSON.stringify は使えない — 秘密側が伏字でラップされる(本番の recovery.ts と同じ罠)
+    // JSON.stringify won't work — the secret side gets wrapped in
+    // redactions (same trap as production recovery.ts)
     masterSecretBlob: new TextEncoder().encode(serializedRecordOf(user)),
   });
   if (!wrapped.ok) {
@@ -238,7 +249,7 @@ async function ledgerFor(user: TestUser): Promise<Ledger> {
   return { handler, code: Redacted.value(formatRecoveryCode(Redacted.make(secret))) };
 }
 
-/** 端末鍵をキーチェーンへ、予備鍵を台帳へ置き、コード入力を 1 回分キューする。 */
+/** Places the device key in the keychain and the reserve key in the ledger, and queues one code entry. */
 function seedDeviceAndLedger(env: TestEnv, origin: string): void {
   seedSession(env, origin, owner);
   env.setPromptResponses([ledger.code]);
@@ -249,7 +260,8 @@ async function registerOnce(label?: string): Promise<{
   readonly env: TestEnv;
   readonly server: MockServer;
 }> {
-  // クロージャで代入する値は TS が狭めるので、器に入れて受ける
+  // A value assigned inside a closure gets narrowed by TS, so receive it
+  // in a box
   const captured: { body: RegistrationBody | null } = { body: null };
   const { env, server } = await start([
     statusHandler([]),
@@ -264,7 +276,8 @@ async function registerOnce(label?: string): Promise<{
   const argv = ["key", "seal", "passkey", ...(label === undefined ? [] : ["--label", label])];
   const code = await runCli(argv, env.layer);
   expect(code, env.errors.join("\n")).toBe(0);
-  // 台帳の開封(コード入力)が儀式の前(ブラウザは開封の後に開く)
+  // Unsealing the ledger (code entry) comes before the ceremony (the
+  // browser opens after unsealing)
   expect(env.prompts).toEqual(["Enter your recovery code: "]);
   expect(seen.config).toMatchObject({
     mode: "register",
@@ -274,20 +287,22 @@ async function registerOnce(label?: string): Promise<{
   });
   const registration = captured.body;
   if (registration === null) throw new Error("registration was not posted");
-  // ページが使った salt と台帳へ送った salt は同じ値(食い違うと復元不能)
+  // The salt the page used and the salt sent to the ledger are the same
+  // value (a disagreement would make recovery impossible)
   expect(seen.config).toMatchObject({ prfSaltHex: registration.prfSaltHex });
   return { registration, env, server };
 }
 
-describe("maruhi key seal passkey(登録)", () => {
-  it("台帳を開封してから PRF で KEK を導き、予備鍵 B をラップして台帳へ登録する(POST は最後)", async () => {
+describe("maruhi key seal passkey (registration)", () => {
+  it("unseals the ledger, derives the KEK from the PRF, wraps reserve key B, and registers it on the ledger (POST comes last)", async () => {
     const { registration, env, server } = await registerOnce("MacBook Touch ID");
     expect(registration.rpId).toBe("localhost");
     expect(registration.credentialIdHex).toBe(CREDENTIAL_HEX);
     expect(registration.prfSaltHex).toMatch(/^[0-9a-f]{64}$/);
     expect(registration.label).toBe("MacBook Touch ID");
     expect(registration.wrap.suite).toBe("maruhi/v1");
-    // 台帳の行は、テストベクターと同じ経路(derivePasskeyKek + master-wrap AAD)で開ける
+    // The ledger row opens via the same path as the test vectors
+    // (derivePasskeyKek + master-wrap AAD)
     const kek = await derivePasskeyKek(hex(PRF_HEX));
     if (!kek.ok) throw new Error("kek");
     const opened = await unwrapMasterBlob({
@@ -299,12 +314,14 @@ describe("maruhi key seal passkey(登録)", () => {
       context: { userId: owner.userId, kind: "passkey-prf", wrapRef: registration.wrapId },
     });
     if (!opened.ok) throw new Error("unwrap failed");
-    // 封印されるのは台帳から開いた**予備鍵**であり、キーチェーンの端末鍵ではない
+    // What gets sealed is the **reserve key** opened from the ledger, not
+    // the device key in the keychain
     const sealed = new TextDecoder().decode(opened.value);
     expect(sealed).toBe(serializedReserveRecord());
     expect(sealed).not.toBe(serializedRecordOf(owner));
     expect(sealed).not.toContain(owner.encSkHex);
-    // 別の wrap_id へ移植すると開けない(AAD の束縛)
+    // Transplanted to a different wrap_id it won't open (the AAD
+    // binding)
     const moved = await unwrapMasterBlob({
       kek: kek.value,
       wrapped: {
@@ -320,8 +337,10 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(stderr).toContain(
       `opened the reserve key (fingerprint ${reserve.fingerprintHex}) for this change`,
     );
-    // プロジェクト一覧が読めない(このサーバーは配らない)= 確かめられないが、開いた鍵には予備鍵の
-    // 印があるので、封印して予備鍵として記録する(DK K16-6 — 印のある鍵は端末鍵になりえない)
+    // The project list can't be read (this server doesn't serve it) =
+    // can't be confirmed, but since the opened key carries the reserve-key
+    // mark, seal it and record it as a reserve key (DK K16-6 — a marked
+    // key can never be a device key)
     expect(stderr).not.toContain("could not list your projects");
     const recorded = await Effect.runPromise(
       makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath)).load(server.origin, owner.userId),
@@ -338,13 +357,14 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(stderr).not.toContain(registration.wrap.ciphertextHex);
     expect(stderr).not.toContain(ledger.code);
     expect(stderr).not.toContain(reserve.encSkHex);
-    // キーチェーンの端末鍵は触らない(予備鍵で置き換えない)
+    // The keychain's device key is left untouched (not replaced by the
+    // reserve key)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBe(
       serializedRecordOf(owner),
     );
   });
 
-  it("--passkey で台帳を開封して封印できる(開封の儀式 → 登録の儀式)", async () => {
+  it("--passkey can unseal the ledger and seal (the unsealing ceremony → the registration ceremony)", async () => {
     const { registration } = await registerOnce();
     const captured: { body: RegistrationBody | null } = { body: null };
     const { env, server } = await start([
@@ -381,7 +401,7 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(env.logs[1]).toBe(`reserve key fingerprint: ${reserve.fingerprintHex}`);
   });
 
-  it("ラベル無しでは label を送らず、--label の受理形違いは usage エラー(exit 2)", async () => {
+  it("with no label, label is not sent; a non-accepted --label form is a usage error (exit 2)", async () => {
     const { registration } = await registerOnce();
     expect(registration.label).toBeUndefined();
 
@@ -396,7 +416,7 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("既存の credential を excludeCredentials として渡し、上限(5 件)ではブラウザを開かずに拒否する", async () => {
+  it("passes existing credentials as excludeCredentials and refuses at the cap (5) without opening the browser", async () => {
     const rows = Array.from({ length: 4 }, (_, i) => ({
       wrapId: `01JMKWRAP0000000000000000${i}`,
       label: null,
@@ -417,7 +437,8 @@ describe("maruhi key seal passkey(登録)", () => {
       excludeCredentialIdsHex: rows.map((r) => r.credentialIdHex),
     });
 
-    // 上限の判定は台帳の開封の後(開封は台帳変更の資格)、リスナーを立てる前
+    // The cap check happens after unsealing the ledger (unsealing is the
+    // qualification for changing it) and before the listener stands up
     const full = await start([
       statusHandler([...rows, { ...rows[0]!, wrapId: WRAP_ID }]),
       ledger.handler,
@@ -431,7 +452,7 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(full.env.browserOpens).toEqual([]);
   });
 
-  it("確認コードが違う POST は受理されず(儀式も消費しない)、打ち直した正しいコードで通る", async () => {
+  it("a POST with a wrong confirmation code isn't accepted (and doesn't consume the ceremony); a retyped correct code passes", async () => {
     const captured: { body: RegistrationBody | null } = { body: null };
     const { env, server } = await start([
       statusHandler([]),
@@ -452,7 +473,8 @@ describe("maruhi key seal passkey(登録)", () => {
         });
         statuses.push(response.status);
       };
-      // 別 UID の利用者がトークンを拾って偽の PRF を送る形 = コードを知らない
+      // The shape where a different-UID user picks up the token and
+      // sends a fake PRF = doesn't know the code
       await send("000000");
       await send(displayedCode(env));
       return true;
@@ -465,7 +487,7 @@ describe("maruhi key seal passkey(登録)", () => {
     );
   });
 
-  it("確認コードの総当たりは儀式ごと失敗し、台帳には何も書かれない", async () => {
+  it("brute-forcing the confirmation code fails the whole ceremony and writes nothing to the ledger", async () => {
     const { env, server } = await start([
       statusHandler([]),
       ledger.handler,
@@ -490,7 +512,7 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("ページの理由コードは案内に写り、台帳には何も書かれない", async () => {
+  it("the page's reason codes map to guidance and nothing is written to the ledger", async () => {
     const cases: readonly [PrfPagePost, string][] = [
       [{ error: "not-allowed" }, "The passkey was not created"],
       [{ error: "already-registered" }, "This authenticator already holds a passkey"],
@@ -514,8 +536,9 @@ describe("maruhi key seal passkey(登録)", () => {
     }
   });
 
-  it("pre-DK の台帳(端末鍵の複製)には封印せず、`maruhi key recovery` へ誘導する", async () => {
-    // 台帳 B = この端末の鍵そのもの → 封印すると端末鍵の複製が増えるだけなので拒否
+  it("never seals to a pre-DK ledger (a device-key duplicate) — guides toward `maruhi key recovery`", async () => {
+    // Ledger B = this device's own key → sealing would only create one
+    // more device-key duplicate, so refuse
     const preDk = await ledgerFor(owner);
     const { env, server } = await start([
       statusHandler([]),
@@ -531,8 +554,9 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("別の端末でも、台帳の鍵がチェーン上で最初の鍵(pre-DK の複製)なら封印せず `maruhi key recovery` へ誘導する(DK K14-4)", async () => {
-    // 端末 = owner(DK の端末)。台帳 B = reserve だが、チェーン上ではその人の genesis の鍵
+  it("on a different device too, when the ledger's key is the chain's first key (a pre-DK duplicate), refuses to seal and guides toward `maruhi key recovery` (DK K14-4)", async () => {
+    // Device = owner (the DK device). Ledger B = reserve, but on the chain
+    // it's that person's genesis key
     const chain = await buildChain([
       { actor: reserve, operation: genesisOp(reserve) },
       { actor: reserve, operation: addOwnerDeviceOp(owner) },
@@ -555,7 +579,7 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("エージェント環境・非端末・鍵なしの端末ではリスナーを立てる前に拒否する(まずコード入力のゲート)", async () => {
+  it("agent environments, non-terminals, and keyless devices are refused before the listener stands up (the code-entry gate first)", async () => {
     const agent = await start([statusHandler([]), ledger.handler]);
     seedDeviceAndLedger(agent.env, agent.server.origin);
     agent.env.setAgent({ isAgent: true, name: "Claude Code" });
@@ -574,7 +598,8 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(piped.env.browserOpens).toEqual([]);
     expect(piped.server.requests).toHaveLength(0);
 
-    // 端末鍵の読み込みが開封より先(鍵の無い端末に封印の資格は無い)
+    // Loading the device key precedes unsealing (a keyless device has no
+    // qualification to seal)
     const noKey = await start([statusHandler([]), ledger.handler]);
     seedTokenOnly(noKey.env, noKey.server.origin);
     noKey.env.setPromptResponses([ledger.code]);
@@ -586,7 +611,7 @@ describe("maruhi key seal passkey(登録)", () => {
   });
 });
 
-/** status の passkey 行(公開パラメータ prfSaltHex を運ぶ)。 */
+/** A status passkey row (carries the public parameter prfSaltHex). */
 function rowOf(registration: RegistrationBody, label: string | null = null): PasskeyRow {
   return {
     wrapId: registration.wrapId,
@@ -602,17 +627,19 @@ const passkeyFetches = (server: MockServer) =>
     (r) => r.method === "GET" && r.path.startsWith("/auth/key-wraps/passkey/"),
   );
 
-describe("maruhi key recover --passkey(復元)", () => {
-  it("全 credential で儀式し、応答の credential の行だけをラップ取得して予備鍵を開き、新しい端末鍵を保存する(取得は儀式の後)", async () => {
+describe("maruhi key recover --passkey (recovery)", () => {
+  it("ceremonies across all credentials, fetches only the row of the answering credential's wrap, opens the reserve key, and stores a new device key (the fetch comes after the ceremony)", async () => {
     const { registration } = await registerOnce();
-    // 行ごとに別の salt(evalByCredential の対応を固定する — 同じ salt だと取り違えを検出できない)
+    // A different salt per row (pins the evalByCredential mapping —
+    // identical salts couldn't detect a mix-up)
     const other = {
       ...registration,
       wrapId: OTHER_WRAP_ID,
       credentialIdHex: "ff".repeat(16),
       prfSaltHex: "77".repeat(32),
     };
-    // 予備鍵は owner の端末が add_device で足した鍵(DK K14 — 判定は台帳の経路と同じ)
+    // The reserve key is a key owner's device added via add_device
+    // (DK K14 — judged along the same path as the ledger)
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addOwnerDeviceOp(reserve) },
@@ -630,7 +657,8 @@ describe("maruhi key recover --passkey(復元)", () => {
     browserPosting(
       env,
       () => {
-        // 儀式の時点ではブロブをまだ取っていない(取り消しが窓を消費しない根拠)
+        // At ceremony time the blob hasn't been fetched yet (the grounds
+        // for an abort not consuming the window)
         seen.fetchesAtCeremony = passkeyFetches(server).length;
         return { credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX };
       },
@@ -647,7 +675,9 @@ describe("maruhi key recover --passkey(復元)", () => {
       ],
     });
     expect(seen.fetchesAtCeremony).toBe(0);
-    // 儀式の後の対話は無い(コード入力は無く、予備鍵の印がある鍵は問わずに記録する — DK K16-3)
+    // No interaction after the ceremony (no code entry, and a key
+    // carrying the reserve-key mark is recorded without asking —
+    // DK K16-3)
     expect(env.prompts).toEqual([]);
     expect(env.errors.join("\n")).toContain(
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
@@ -655,7 +685,8 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(passkeyFetches(server).map((r) => r.path)).toEqual([
       `/auth/key-wraps/passkey/${registration.wrapId}`,
     ]);
-    // 開いた予備鍵は保存されず、この端末の**新しい**端末鍵が生成・保存される(K4-1 / K4-10)
+    // The opened reserve key is not stored; a **new** device key for
+    // this device is generated and stored (K4-1 / K4-10)
     const stored = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
     expect(stored).toBeDefined();
     expect(stored).not.toBe(serializedReserveRecord());
@@ -684,9 +715,10 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(stderr).not.toContain(reserve.encSkHex);
   });
 
-  it("開いた鍵が最初の鍵(pre-DK の複製)なら問わずに記録せず、失効の案内を出す(端末鍵の生成は成立する — DK K14)", async () => {
+  it("when the opened key is the first key (a pre-DK duplicate), records it unasked but emits the revocation notice (the device-key generation itself stands — DK K14)", async () => {
     const { registration } = await registerOnce();
-    // 台帳の鍵がプロジェクトの genesis の鍵 = その人の最初の鍵
+    // The ledger's key is the project's genesis key = that person's
+    // first key
     const chain = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
     const { env, server } = await start([
       statusHandler([rowOf(registration)]),
@@ -706,7 +738,7 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(stored).not.toBe(serializedReserveRecord());
   });
 
-  it("取り消し・未登録の credential・違う PRF・行と食い違うラップでは復元せず、取り消しはブロブを取らない", async () => {
+  it("aborts, unregistered credentials, wrong PRFs, and a wrap disagreeing with the row don't recover; an abort fetches no blob", async () => {
     const { registration } = await registerOnce();
     const cases: readonly [PrfPagePost, string, number][] = [
       [{ error: "not-allowed" }, "The passkey was not used", 0],
@@ -732,13 +764,15 @@ describe("maruhi key recover --passkey(復元)", () => {
       expect(await runCli(["key", "recover", "--passkey"], env.layer), expected).toBe(1);
       expect(env.errors.join("\n"), expected).toContain(expected);
       expect(passkeyFetches(server), expected).toHaveLength(fetches);
-      // 開封に失敗したら端末鍵の生成にも進まない
+      // When unsealing fails it doesn't proceed to device-key
+      // generation
       expect(env.prompts, expected).toEqual([]);
       expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId)), expected).toBe(
         false,
       );
     }
-    // サーバーが行と食い違うラップ(別 credential の登録)を返したら fail-closed
+    // A server returning a wrap disagreeing with the row (another
+    // credential's registration) is fail-closed
     const swapped = { ...registration, credentialIdHex: "ab".repeat(8) };
     const { env, server } = await start([
       statusHandler([rowOf(registration)]),
@@ -755,7 +789,7 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
   });
 
-  it("儀式の後のレート制限は案内になり、キーチェーンには何も残らない", async () => {
+  it("a rate limit after the ceremony becomes guidance and nothing remains in the keychain", async () => {
     const { registration } = await registerOnce();
     const { env, server } = await start([
       statusHandler([rowOf(registration)]),
@@ -774,8 +808,8 @@ describe("maruhi key recover --passkey(復元)", () => {
   });
 });
 
-describe("maruhi key recover --passkey(前提の拒否)", () => {
-  it("登録なし・既存鍵あり・エージェント環境・非端末はリスナーを立てる前に拒否する", async () => {
+describe("maruhi key recover --passkey (precondition refusals)", () => {
+  it("no registration, an existing key, agent environments, and non-terminals are refused before the listener stands up", async () => {
     const none = await start([statusHandler([])]);
     seedTokenOnly(none.env, none.server.origin);
     expect(await runCli(["key", "recover", "--passkey"], none.env.layer)).toBe(1);
@@ -789,7 +823,8 @@ describe("maruhi key recover --passkey(前提の拒否)", () => {
       prfSaltHex: "22".repeat(32),
       updatedAtMs: 1,
     };
-    // 端末鍵のある端末は、儀式にもサーバーにも触れる前に拒否する
+    // A device holding a device key is refused before touching the
+    // ceremony or the server
     const hasKey = await start([statusHandler([row])]);
     seedSession(hasKey.env, hasKey.server.origin, owner);
     expect(await runCli(["key", "recover", "--passkey"], hasKey.env.layer)).toBe(1);
@@ -818,7 +853,7 @@ describe("maruhi key recover --passkey(前提の拒否)", () => {
     );
   });
 
-  it("--handoff と --passkey の同時指定は usage エラー", async () => {
+  it("specifying --handoff and --passkey together is a usage error", async () => {
     const { env, server } = await start([]);
     seedTokenOnly(env, server.origin);
     expect(await runCli(["key", "recover", "--passkey", "--handoff"], env.layer)).toBe(2);
@@ -826,21 +861,22 @@ describe("maruhi key recover --passkey(前提の拒否)", () => {
   });
 });
 
-describe("儀式の 3 チャネル TTY ゲート(ADR-0016 決定 7)", () => {
+describe("the ceremony's 3-channel TTY gate (ADR-0016 decision 7)", () => {
   const CHANNELS = [
     { stdin: false, stdout: true, stderr: true },
     { stdin: true, stdout: false, stderr: true },
     { stdin: true, stdout: true, stderr: false },
   ] as const;
-  // 封印は台帳の開封(コード入力)が最初のゲート(recovery.ts)。復元・削除は
-  // パスキー儀式のゲート(passkey.ts)
+  // Sealing's first gate is unsealing the ledger (code entry)
+  // (recovery.ts). Recovery and removal use the passkey ceremony's gate
+  // (passkey.ts)
   const CEREMONIES = [
     { argv: ["key", "seal", "passkey"], noun: "Recovery-code entry", seed: "key" },
     { argv: ["key", "recover", "--passkey"], noun: "Passkey recovery", seed: "token" },
     { argv: ["key", "seal", "remove", WRAP_ID], noun: "Passkey wrap removal", seed: "token" },
   ] as const;
 
-  it("stdin / stdout / stderr のどれか 1 つでも端末でなければ、サーバーにもブラウザにも触れずに拒否する", async () => {
+  it("if any one of stdin / stdout / stderr isn't a terminal, refuses without touching server or browser", async () => {
     for (const ceremony of CEREMONIES) {
       for (const terminal of CHANNELS) {
         const label = `${ceremony.argv.join(" ")} ${JSON.stringify(terminal)}`;
@@ -880,7 +916,7 @@ describe("儀式の 3 チャネル TTY ゲート(ADR-0016 決定 7)", () => {
 });
 
 describe("maruhi key seal list / remove", () => {
-  it("list は台帳の公開パラメータだけを出し、remove は行を消す(端末ゲートつき)", async () => {
+  it("list prints only the ledger's public parameters and remove deletes the row (with the terminal gate)", async () => {
     const rows = [
       {
         wrapId: WRAP_ID,
@@ -925,13 +961,13 @@ describe("maruhi key seal list / remove", () => {
     expect(env.errors.join("\n")).toContain(
       "Refused to remove a passkey wrap because an AI agent environment was detected",
     );
-    // list はゲートを掛けない(公開情報のみ)
+    // list carries no gate (public information only)
     env.logs.length = 0;
     expect(await runCli(["key", "seal", "list"], env.layer)).toBe(0);
     expect(env.logs).toHaveLength(2);
   });
 
-  it("登録が無ければ list はその旨を 1 行出す", async () => {
+  it("list prints a single line saying so when there is no registration", async () => {
     const { env, server } = await start([statusHandler([])]);
     seedTokenOnly(env, server.origin);
     expect(await runCli(["key", "seal", "list"], env.layer)).toBe(0);

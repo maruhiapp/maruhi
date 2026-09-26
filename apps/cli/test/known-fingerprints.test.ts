@@ -1,11 +1,18 @@
-// 検証済み指紋帳(KF — known-fingerprints.ts)の永続化層の単体テスト。
+// Unit tests for the verified-fingerprint book's (KF —
+// known-fingerprints.ts) persistence layer.
 //
-// 固定する性質:
-//  1. record → lookup がヒットし、別 origin / 別 user_id とは混ざらない
-//  2. 同一キーへの record は上書き(正当な鍵更新の反映)、他エントリは保持
-//  3. 破損ファイルは corrupt(miss と区別)で、record は破損を上書きしない
-//  4. 形式外のキー・指紋は record が手前で拒否する(次回ロードの全体破損を防ぐ)
-//  5. ENOENT 以外の読み込み失敗は miss に畳まず失敗にする(空の帳での上書き・変更警告の黙殺を防ぐ)
+// Properties pinned down:
+//  1. record → lookup hits, and never mixes with another origin / another
+//     user_id
+//  2. A record on the same key overwrites (reflecting a legitimate key
+//     update); other entries are kept
+//  3. A corrupt file reads as corrupt (distinct from miss), and record does
+//     not overwrite corruption
+//  4. record rejects malformed keys/fingerprints before writing (prevents
+//     next-load whole-file corruption)
+//  5. Read failures other than ENOENT fail rather than folding into a miss
+//     (prevents overwriting with an empty book / silently swallowing
+//     change warnings)
 
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,7 +36,7 @@ async function makeBook() {
 }
 
 describe("verified-fingerprint book (known-fingerprints.ts)", () => {
-  it("record → lookup がヒットし、別 origin / 別 user_id とは混ざらない", async () => {
+  it("record → lookup hits, and never mixes with another origin / another user_id", async () => {
     const { book } = await makeBook();
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));
 
@@ -44,16 +51,17 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     );
   });
 
-  it("ファイル不在は miss(fail-open)", async () => {
+  it("a missing file is a miss (fail-open)", async () => {
     const { book } = await makeBook();
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
   });
 
-  it("同じ人への record は指紋の集合に足し、他エントリは保持する(read-merge-write — DK の端末集合)", async () => {
+  it("a record for the same person adds to the fingerprint set, keeping other entries (read-merge-write — the DK device set)", async () => {
     const { book, path } = await makeBook();
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));
     await Effect.runPromise(book.record(ORIGIN, USER_B, FP_B));
-    // USER_A の 2 台目の端末(儀式の再成功)は集合に足す(1 台目を消さない)
+    // USER_A's second device (the ceremony succeeding again) adds to the
+    // set (doesn't erase the first)
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
 
     const a = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
@@ -63,12 +71,13 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       [FP_A, FP_B].toSorted(),
     );
     expect(b.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_B]);
-    // ファイルは可読 JSON(利用者がエントリを削除して儀式を強制できる導線)。v2 = 集合
+    // The file is readable JSON (the path for users to delete an entry and
+    // force a fresh ceremony). v2 = a set
     const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
     expect(stored.v).toBe(2);
   });
 
-  it("v1 の帳(1 人 1 指紋)は 1 要素の集合として読み、次の record で v2 になる", async () => {
+  it("a v1 book (one fingerprint per person) reads as a one-element set and becomes v2 on the next record", async () => {
     const { book, path } = await makeBook();
     await writeFile(
       path,
@@ -90,7 +99,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     );
   });
 
-  it("ENOENT 以外の読み込み失敗(EISDIR 等)は miss に畳まず、lookup / record とも失敗する", async () => {
+  it("read failures other than ENOENT (EISDIR etc.) do not fold into a miss — lookup and record both fail", async () => {
     const { book, path } = await makeBook();
     await mkdir(path);
 
@@ -111,7 +120,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect(recordFailed).toContain("Cannot write the verified-fingerprint book");
   });
 
-  it("破損ファイルは corrupt(miss と区別)で、record は破損を上書きしない", async () => {
+  it("a corrupt file reads as corrupt (distinct from miss), and record does not overwrite corruption", async () => {
     const { book, path } = await makeBook();
     await writeFile(path, "{ not json");
 
@@ -124,11 +133,11 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       ),
     );
     expect(failed).toContain("Cannot write the verified-fingerprint book");
-    // 破損内容がそのまま残る(黙って作り直さない)
+    // The corrupt content stays as-is (never silently rebuilt)
     expect(await readFile(path, "utf8")).toBe("{ not json");
   });
 
-  it("スキーマ不一致(不正な指紋・不正なキー)は全体を corrupt として扱う", async () => {
+  it("schema mismatches (bad fingerprints, bad keys) treat the whole book as corrupt", async () => {
     const { book, path } = await makeBook();
     await writeFile(
       path,
@@ -139,8 +148,9 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     );
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
 
-    // `__proto__` キー(JSON.parse は own property として作る)は先頭 `_` の
-    // 禁止で全体破損として拒否される(prototype 汚染の構造的排除)
+    // The `__proto__` key (JSON.parse creates it as an own property) is
+    // rejected as whole-file corruption by the leading-`_` ban (structural
+    // exclusion of prototype pollution)
     await writeFile(
       path,
       `{"v":1,"known":{"${ORIGIN}":{"__proto__":{"fingerprintHex":"${FP_A}","verifiedAtMs":1}}}}`,
@@ -148,7 +158,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
   });
 
-  it("形式外のキー・指紋は record が手前で拒否する(次回ロードを破損させない)", async () => {
+  it("record rejects malformed keys/fingerprints before writing (won't corrupt the next load)", async () => {
     const { book } = await makeBook();
     for (const [origin, userId, fp] of [
       ["_underscore", USER_A, FP_A],
@@ -163,7 +173,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       );
       expect(failed).toContain("Cannot write the verified-fingerprint book");
     }
-    // 拒否された書き込みはファイルを作らない = 以後のロードは健全
+    // A rejected write creates no file = subsequent loads stay healthy
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
   });
 });

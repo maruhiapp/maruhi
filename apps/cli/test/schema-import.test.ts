@@ -1,18 +1,25 @@
-// `maruhi schema import`(設計文書 §1-3)のテスト。
+// Tests for `maruhi schema import` (design doc §1-3).
 //
-// 固定する不変条件:
-//  1. **儀式系 deny(ADR-0016 決定 7 の類型)**: 既知エージェント検出と非対話
-//     端末は型付きエラーで拒否し、一括 --yes は存在しない。ゲートはファイル
-//     読み取り・通信より前
-//  2. **値を送信しない**: 値は型推論(形の観察)にだけ使い、平文が送信・表示・
-//     ログに現れない。唯一の例外は利用者が変数ごとに明示選択した activation の
-//     値 push(E2EE — 平文はワイヤに現れない)
-//  3. 変数ごとの対話承認(編集可)・既存名の既定スキップ・名前の受理制約に
-//     満たない行の理由つきスキップ
-//  4. エントロピー警告(裁定 CW)は description 候補への検査で、そのまま
-//     承認するには専用の明示確認が要る。警告文面は検出値そのものを運ばない
-//  5. 登録は変数ごとの複合 × マニフェスト CAS の直列(O(N) 往復 — 発見 F′)
-//  6. 完了時の削除提案は既定 no(明示の y でだけ消える)
+// Invariants pinned down:
+//  1. **Ceremony-class deny (the ADR-0016 decision-7 pattern)**: known
+//     agent detection and a non-interactive terminal are refused with a
+//     typed error, and no blanket --yes exists. The gate runs before
+//     any file read or communication
+//  2. **Values are never sent**: values are used only for type
+//     inference (observing the shape); no plaintext appears in sends,
+//     displays, or logs. The single exception is the value push of an
+//     activation the user explicitly chose per variable (E2EE —
+//     plaintext never hits the wire)
+//  3. Per-variable interactive approval (editable), the default skip
+//     of existing names, and skipping rows that fail the name
+//     acceptance constraint with a reason
+//  4. The entropy warning (ruling CW) is a check on the description
+//     candidate, and approving it as-is needs its own explicit
+//     confirmation. The warning text never carries the detected value
+//  5. Registration is serial per-variable compounds × manifest CAS
+//     (O(N) round trips — finding F′)
+//  6. The completion-time deletion offer defaults to no (only an
+//     explicit y deletes)
 
 import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -104,7 +111,7 @@ async function startImportEnv(options?: {
   return { env, state };
 }
 
-/** テスト用の .env ファイルを一時ディレクトリへ書く。 */
+/** Writes a .env file for the test into a temp directory. */
 async function writeEnvFile(content: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "maruhi-import-test-"));
   const path = join(dir, ".env.example");
@@ -120,13 +127,13 @@ function lastServer(): MockServer {
   return server;
 }
 
-/** observeValue の観察だけを検査する短縮形(値は包んで渡す)。 */
+/** Shorthand that inspects only observeValue's observation (the value is passed wrapped). */
 function observe(text: string): ReturnType<typeof observeValue> {
   return observeValue(Redacted.make(text));
 }
 
-describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
-  it("KEY=VALUE・export 接頭辞・引用符・直前コメント → description 候補を解釈する", () => {
+describe("parseEnvFile (the minimal .env parser — env-file.ts)", () => {
+  it("interprets KEY=VALUE, an export prefix, quoting, and a preceding comment into a description candidate", () => {
     const parsed = parseEnvFile(
       [
         "# Primary endpoint",
@@ -141,15 +148,17 @@ describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
     );
     expect(parsed.skipped).toEqual([]);
     expect(parsed.entries.map((entry) => entry.name)).toEqual(["SHOP_URL", "QUOTED", "PLAIN"]);
-    // 連続コメントは結合して候補になり、空行で切れる(離れたコメントは付かない)
+    // Consecutive comments join into a candidate and a blank line
+    // breaks them (a distant comment isn't attached)
     expect(parsed.entries[0]?.descriptionCandidate).toBe("Primary endpoint of the shop");
     expect(parsed.entries[1]?.descriptionCandidate).toBe("");
-    // 値は Redacted(表示・ログの既定経路に平文が現れない)
+    // The value is Redacted (plaintext never appears on the default
+    // display/log paths)
     expect(String(parsed.entries[0]?.value)).not.toContain("shop.example");
     expect(Redacted.value(parsed.entries[1]!.value)).toBe("hello world");
   });
 
-  it("受理できない行は行番号と理由だけでスキップする(内容は運ばない)", () => {
+  it("unacceptable lines are skipped with a line number and a reason only (the content isn't carried)", () => {
     const parsed = parseEnvFile(
       ["just some text", "1BAD=x", "GOOD=1", "GOOD=2", "lower-case=x"].join("\n"),
     );
@@ -162,15 +171,15 @@ describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
     ]);
   });
 
-  it("未引用値のインライン # コメントは値の一部にしない(dotenv / docker --env-file の線)", () => {
+  it("an inline # comment on an unquoted value isn't part of the value (the dotenv / docker --env-file convention)", () => {
     const parsed = parseEnvFile("PORT=8080 # listen port\n");
     expect(Redacted.value(parsed.entries[0]!.value)).toBe("8080");
     expect(parsed.entries[0]?.valueFaithful).toBe(true);
-    // コメントを落とした値で型推論が働く
+    // Type inference works on the comment-stripped value
     expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
   });
 
-  it("忠実に解釈できない値(閉じない引用符・引用値内のエスケープ)は valueFaithful = false", () => {
+  it("values that can't be faithfully parsed (an unclosed quote, an escape inside a quoted value) get valueFaithful = false", () => {
     const parsed = parseEnvFile(
       ['BROKEN="multi', 'ESCAPED="a\\nb"', "SINGLE='it''s'", 'FINE="plain value"'].join("\n"),
     );
@@ -182,12 +191,13 @@ describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
     expect(Redacted.value(byName.get("FINE")!.value)).toBe("plain value");
   });
 
-  it("observeValue は形の観察だけを返す(boolean / number / url / 未指定・実値らしさ)", () => {
+  it("observeValue returns only shape observations (boolean / number / url / unspecified, real-value likeness)", () => {
     expect(observe("true")).toEqual({ varType: "boolean", looksReal: true });
     expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
     expect(observe("https://shop.example")).toEqual({ varType: "url", looksReal: true });
     expect(observe("some-opaque-token")).toEqual({ varType: "", looksReal: true });
-    // 空・プレースホルダ慣用形は実値扱いしない(push の提案自体を出さない)
+    // Empty and placeholder idioms aren't treated as real values (no
+    // push offer is made at all)
     expect(observe("")).toEqual({ varType: "", looksReal: false });
     expect(observe("changeme")).toEqual({ varType: "", looksReal: false });
     expect(observe("<your key here>")).toEqual({ varType: "", looksReal: false });
@@ -196,11 +206,12 @@ describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
   });
 });
 
-describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取り・通信より前)", () => {
-  it("既知エージェント検出時は型付きエラーで拒否する(ファイルにも通信にも触れない)", async () => {
+describe("ceremony-class deny (the ADR-0016 decision-7 pattern — the gate precedes reads and communication)", () => {
+  it("refuses with a typed error on known-agent detection (touches neither the file nor the network)", async () => {
     const { env } = await startImportEnv();
     env.setAgent({ isAgent: true, name: "testbot" });
-    // 実在しないパス: ゲートがファイル読み取りより前なら file エラーは出ない
+    // A nonexistent path: if the gate precedes the file read, no file
+    // error is emitted
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("AI agent environment was detected (testbot)");
@@ -209,7 +220,7 @@ describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取�
     expect(lastServer().requests).toEqual([]);
   });
 
-  it("非対話環境(stdout 非端末)は拒否し、--yes 相当の迂回は存在しない", async () => {
+  it("refuses a non-interactive environment (stdout not a terminal), and no --yes-equivalent bypass exists", async () => {
     const { env } = await startImportEnv();
     env.setTerminal({ stdout: false });
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
@@ -217,7 +228,7 @@ describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取�
     expect(lastServer().requests).toEqual([]);
   });
 
-  it("stdin 非端末(パイプ)も同じく拒否する", async () => {
+  it("likewise refuses stdin being a non-terminal (a pipe)", async () => {
     const { env } = await startImportEnv();
     env.setTerminal({ stdin: false });
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
@@ -225,15 +236,16 @@ describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取�
   });
 });
 
-describe("承認 → declared 登録(値は送信しない)", () => {
-  it("承認分を declared として登録する(型候補・required 既定 true・コメント由来 description)", async () => {
+describe("approval → declared registration (values are never sent)", () => {
+  it("registers the approved ones as declared (type candidate, required defaulting to true, description from the comment)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(
       ["# Primary endpoint of the shop", "SHOP_URL=https://shop.example", "", "PORT=8080"].join(
         "\n",
       ),
     );
-    // SHOP_URL: 承認 → 値 push は断る / PORT: 承認 → 断る / 削除提案: 既定(no)
+    // SHOP_URL: approve → decline the value push / PORT: approve →
+    // decline / deletion offer: default (no)
     env.setPromptResponses(["y", "n", "y", "n", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create", "create"]);
@@ -242,7 +254,8 @@ describe("承認 → declared 登録(値は送信しない)", () => {
       value?: unknown;
       manifest: Record<string, unknown>;
     };
-    // 値は同梱しない(declared 作成 — §12-5)。型は値の形の観察から
+    // No value is bundled (declared creation — §12-5). The type comes
+    // from observing the value's shape
     expect(first.value).toBeUndefined();
     expect(first.statement["status"]).toBe("declared");
     expect(first.statement["metaVersion"]).toBe(1);
@@ -255,7 +268,8 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(second.statement["name"]).toBe("PORT");
     expect(second.statement["varType"]).toBe("number");
     expect(second.statement["description"]).toBe("");
-    // 値そのものはどのリクエストにも現れない(観察のみで送信しない)
+    // The value itself appears in no request (observed only, never
+    // sent)
     expect(JSON.stringify(lastServer().requests)).not.toContain("shop.example");
     const output = env.logs.join("\n");
     expect(output).toContain("Declared SHOP_URL");
@@ -263,12 +277,12 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(output).toContain(
       "Import finished: 2 variables declared (0 with a value pushed), 0 candidates skipped",
     );
-    // 値・値の断片は stdout / stderr にも現れない
+    // Neither the value nor fragments of it appear on stdout / stderr
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("shop.example");
     expect(existsSync(file)).toBe(true);
   });
 
-  it("既存の active / declared と同名の候補は既定でスキップして表示する", async () => {
+  it("candidates named the same as an existing active / declared are skipped and shown by default", async () => {
     const existing = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -293,11 +307,12 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(created.statement["name"]).toBe("NEW_ONE");
   });
 
-  it("編集(e)で名前・型・required・description を変えてから承認できる", async () => {
+  it("can approve after editing (e) the name, type, required, and description", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile("db_url=\n");
-    // db_url は小文字でも POSIX 環境変数名としては valid — e で編集して
-    // 名前 DATABASE_URL・型 url・optional・説明を設定してから承認する
+    // db_url is a valid POSIX env-var name even in lowercase — edit
+    // via e to set the name DATABASE_URL, type url, optional, and a
+    // description, then approve
     env.setPromptResponses([
       "e",
       "DATABASE_URL",
@@ -315,7 +330,7 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(body.statement["description"]).toBe("Postgres connection string");
   });
 
-  it("スキップ(s)は登録せず、q は以降の候補を処理しない(削除提案も出ない)", async () => {
+  it("skip (s) doesn't register, and q processes no further candidates (the deletion offer doesn't appear either)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B=", "C="].join("\n"));
     env.setPromptResponses(["s", "q"]);
@@ -323,16 +338,17 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(state.mutations).toEqual([]);
     const output = env.logs.join("\n");
     expect(output).toContain("stopped before the end");
-    // q の後は C のプロンプトも削除提案も出ない(キューが枯れてもエラーに
-    // ならない = 追加のプロンプトが要求されていない)
+    // After q, neither C's prompt nor the deletion offer appears (a
+    // drained queue isn't an error = no additional prompts are
+    // demanded)
     expect(env.prompts).toHaveLength(2);
     expect(existsSync(file)).toBe(true);
   });
 
-  it("編集(e)の改名は形式・長さをパーサと同じ受理集合で検査する(遅い 400 へ素通りさせない)", async () => {
+  it("a rename via edit (e) is checked for form and length with the same acceptance set as the parser (don't let it fall through to a late 400)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile("SHORT=\n");
-    // 257 文字の改名 → 警告して現状維持 → そのまま承認
+    // A 257-char rename → warns and keeps the current → approve as-is
     env.setPromptResponses(["e", "A".repeat(257), "", "", "", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("at most 256 characters");
@@ -340,11 +356,12 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(body.statement["name"]).toBe("SHORT");
   });
 
-  it("編集(e)の改名はファイル内の未処理の候補とも衝突させない(ローカル衝突の事前警告)", async () => {
+  it("a rename via edit (e) must not collide with unprocessed candidates in the file (an early warning on a local collision)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["ALPHA=", "BETA="].join("\n"));
-    // ALPHA を BETA(後続の候補名)へ改名しようとする → 警告して現状維持 →
-    // そのまま承認。BETA も承認
+    // Trying to rename ALPHA to BETA (a later candidate's name) →
+    // warns and keeps the current → approve as-is. BETA is approved
+    // too
     env.setPromptResponses(["e", "BETA", "", "", "", "y", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("already exists in the environment or in this import");
@@ -355,8 +372,8 @@ describe("承認 → declared 登録(値は送信しない)", () => {
   });
 });
 
-describe("値 push(activation)の明示選択", () => {
-  it("実値らしい値は変数ごとの明示 y でだけ push され、平文はワイヤに現れない", async () => {
+describe("the explicit choice of a value push (activation)", () => {
+  it("a real-looking value is pushed only on a per-variable explicit y, and plaintext never hits the wire", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile("TOKEN=real-secret-value-xyz\n");
     env.setPromptResponses(["y", "y", ""]);
@@ -366,75 +383,79 @@ describe("値 push(activation)の明示選択", () => {
       statement: Record<string, unknown>;
       value: { aad: Record<string, unknown>; ciphertextHex: string };
     };
-    // activation 複合(§12-5): 値 version 1 + status active(metaVersion + 1)
+    // The activation compound (§12-5): value version 1 + status
+    // active (metaVersion + 1)
     expect(activate.value.aad["version"]).toBe(1);
     expect(activate.statement["status"]).toBe("active");
     expect(activate.statement["metaVersion"]).toBe(2);
-    // 平文はどのリクエスト・どの出力にも現れない(E2EE)
+    // Plaintext appears in no request and no output (E2EE)
     expect(JSON.stringify(lastServer().requests)).not.toContain("real-secret-value-xyz");
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("real-secret-value-xyz");
     expect(env.logs.join("\n")).toContain("Pushed the value of TOKEN (version=1, epoch=1)");
   });
 
-  it("空・プレースホルダの値では push の提案自体を出さない(既定は常に送信しない)", async () => {
+  it("empty or placeholder values don't produce a push offer at all (the default is always not to send)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["EMPTY=", "PLACEHOLDER=changeme"].join("\n"));
-    // 承認 2 回 + 削除提案 1 回だけ(push プロンプトは存在しない)
+    // Only 2 approvals + 1 deletion offer (no push prompt exists)
     env.setPromptResponses(["y", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create", "create"]);
     expect(env.prompts).toHaveLength(3);
   });
 
-  it("忠実に解釈できない値では push の提案を出さない(fail-closed — 誤読値を送信しない)", async () => {
+  it("a value that can't be faithfully parsed gets no push offer (fail-closed — never sends a misread value)", async () => {
     const { env, state } = await startImportEnv();
-    // 閉じない引用符(複数行の引用値の 1 行目の形)— 実値ではあるが、この
-    // パーサでは忠実に再構成できたと言えない
+    // An unclosed quote (the shape of line 1 of a multi-line quoted
+    // value) — a real value, but this parser can't claim to have
+    // reconstructed it faithfully
     const file = await writeEnvFile('CERT="-----BEGIN RSA\n');
     env.setPromptResponses(["y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
-    // 宣言はされるが activate は起きない・push プロンプトも出ない
+    // It's declared, but no activation happens and no push prompt
+    // appears
     expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
     expect(env.prompts).toHaveLength(2);
     expect(env.errors.join("\n")).toContain("could not be parsed faithfully");
   });
 });
 
-describe("エントロピー警告(裁定 CW — description 候補への適用)", () => {
-  // 実値らしく見えるダミー(実在のシークレットではない)
+describe("the entropy warning (ruling CW — applied to the description candidate)", () => {
+  // A dummy that merely looks like a real value (not an actual secret)
   const FAKE_TOKEN = "x7Gh2kQ9pLmA3vB8nC4dE5fJ6hK7iL8m";
 
-  it("検出時の承認には専用の明示確認が要り、警告文面は検出値を運ばない", async () => {
+  it("approving a detection needs a dedicated explicit confirmation, and the warning text carries no detected value", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile([`# token ${FAKE_TOKEN} here`, "API_HINT=changeme"].join("\n"));
     env.setPromptResponses([
-      "y", // 承認しようとする → 明示確認へ
-      "no", // 確認を断る → 承認ループへ戻る
-      "e", // 編集で description から実値らしき列を取り除く
-      "", // 名前は維持
-      "", // 型は維持
-      "", // required は維持
-      "API hint only", // description を差し替え
-      "y", // 警告なしで承認
-      "", // 削除提案(既定 no)
+      "y", // tries to approve → routed to the explicit confirmation
+      "no", // declines the confirmation → back to the approval loop
+      "e", // edit strips the real-looking run from the description
+      "", // keep the name
+      "", // keep the type
+      "", // keep required
+      "API hint only", // replaces the description
+      "y", // approves with no warning
+      "", // the deletion offer (default no)
     ]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     const body = state.mutations[0]?.request.body as { statement: Record<string, unknown> };
     expect(body.statement["description"]).toBe("API hint only");
     const warningLines = env.errors.filter((line) => line.includes("secret-like high-entropy"));
     expect(warningLines.length).toBeGreaterThan(0);
-    // 警告そのものは検出値(秘密でありうる)を運ばない — 長さと種別のみ
+    // The warning itself carries no detected value (which could be a
+    // secret) — length and kind only
     for (const line of warningLines) {
       expect(line).not.toContain(FAKE_TOKEN);
       expect(line).toContain("32-character");
     }
-    // 実値らしき列はワイヤに現れない(編集で取り除かれた)
+    // The real-looking run never hits the wire (the edit removed it)
     expect(JSON.stringify(lastServer().requests)).not.toContain(FAKE_TOKEN);
   });
 });
 
-describe("完了時の削除提案(既定は削除しない)", () => {
-  it("既定(空応答)ではファイルを残し、案内を出す", async () => {
+describe("the completion-time deletion offer (default is not to delete)", () => {
+  it("the default (an empty answer) keeps the file and emits guidance", async () => {
     const { env } = await startImportEnv();
     const file = await writeEnvFile("A=\n");
     env.setPromptResponses(["y", ""]);
@@ -443,7 +464,7 @@ describe("完了時の削除提案(既定は削除しない)", () => {
     expect(env.errors.join("\n")).toContain("was kept");
   });
 
-  it("明示の y でだけ元ファイルを削除する", async () => {
+  it("deletes the source file only on an explicit y", async () => {
     const { env } = await startImportEnv();
     const file = await writeEnvFile("A=\n");
     env.setPromptResponses(["y", "y"]);
@@ -452,19 +473,19 @@ describe("完了時の削除提案(既定は削除しない)", () => {
     expect(env.logs.join("\n")).toContain("Deleted");
   });
 
-  it("スキップした候補が残る実行では提案しない(全候補が宣言されたときだけ)", async () => {
+  it("a run with skipped candidates doesn't make the offer (only when every candidate was declared)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B="].join("\n"));
-    // A は宣言・B はスキップ → ファイルの「最後の仕事」は終わっていない
+    // A declared, B skipped → the file's 'last job' isn't finished
     env.setPromptResponses(["y", "s"]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
-    // プロンプトは承認 2 回だけ(削除提案は出ない)
+    // Only 2 approval prompts (no deletion offer)
     expect(env.prompts).toHaveLength(2);
     expect(existsSync(file)).toBe(true);
   });
 
-  it("解釈できなかった行が残るファイルにも提案しない", async () => {
+  it("no offer either for a file that still has unparsed lines", async () => {
     const { env } = await startImportEnv();
     const file = await writeEnvFile(["A=", "not an assignment line"].join("\n"));
     env.setPromptResponses(["y"]);
@@ -474,8 +495,8 @@ describe("完了時の削除提案(既定は削除しない)", () => {
   });
 });
 
-describe("受理面の周辺(advisory・直列 O(N) — 発見 F′)", () => {
-  it("disabled advisory の案内は import 全体で一度だけ出す", async () => {
+describe("around the acceptance surface (advisory, serial O(N) — finding F′)", () => {
+  it("the disabled advisory is shown once across the whole import", async () => {
     const { env } = await startImportEnv({ schemaPolicy: "disabled" });
     const file = await writeEnvFile(["A=", "B="].join("\n"));
     env.setPromptResponses(["y", "y", ""]);
@@ -484,9 +505,10 @@ describe("受理面の周辺(advisory・直列 O(N) — 発見 F′)", () => {
     expect(notices).toHaveLength(1);
   });
 
-  it("登録は変数ごとの複合の直列で、宣言 1 件あたり 3 往復(解決 + 複合 + 効果確認)", async () => {
-    // 発見 F′ の実測の固定形: N 宣言 = 初回解決 1 + N × (解決 1 + create 1 +
-    // 効果確認 1)。一括複合受理は実装しない
+  it("registration is serial per-variable compounds — 3 round trips per declaration (resolve + compound + effect check)", async () => {
+    // The pinned measured shape of finding F′: N declarations = 1
+    // initial resolve + N × (1 resolve + 1 create + 1 effect check). No
+    // bulk compound acceptance
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B=", "C="].join("\n"));
     env.setPromptResponses(["y", "y", "y", ""]);

@@ -1,19 +1,28 @@
-// `maruhi audit reconcile`(AUDIT_SPEC §6 — admin の監査突合)の統合テスト。
+// Integration tests for `maruhi audit reconcile` (AUDIT_SPEC §6 — admin audit
+// cross-check).
 //
-// 固定する性質:
-//  1. 正例: 公証 2 個の前進(所属 (a)・非後退 (b)・位置下限 (c) と申告ヘッドの
-//     所属がすべて成立)で exit 0
-//  2. 所属違反 (a) = 行改竄の証拠として報告(Row-tampering evidence)
-//  3. 位置違反 (b)(c) = 受理ポリシー不執行のサーバーの証拠として報告
-//     (Acceptance-policy violation — 陳腐化リプレイ可能状態)
-//  4. seq 欠番 = 削除の痕跡として報告し、以後の派生誤報を出さずに打ち切る
-//  5. GET /audit-head の申告値も再計算列への所属を検査する(session-38 裁定 AK)
-//  6. AuditHeadNotReady(503)は有界再試行で吸収する
-//  7. 実効 admin 未満(write スコープ)は行取得より前に明確なエラー
+// Properties pinned down:
+//  1. Positive case: advancing 2 notarizations — membership (a), non-regression
+//     (b), position floor (c), and the attested head's membership all hold —
+//     exits 0
+//  2. Membership violation (a) = reported as evidence of row tampering
+//     (Row-tampering evidence)
+//  3. Position violations (b)(c) = reported as evidence of a server not
+//     enforcing the acceptance policy (Acceptance-policy violation — a state
+//     where staleness replay is possible)
+//  4. A missing seq = reported as a trace of deletion; stops before emitting
+//     downstream derived false positives
+//  5. The attested value from GET /audit-head is also checked for membership
+//     in the recomputed sequence (session-38 ruling AK)
+//  6. AuditHeadNotReady (503) is absorbed by bounded retries
+//  7. Below effective admin (write scope) fails with a clear error before
+//     fetching any rows
 //
-// 監査行はテストが構成する「サーバー申告」であり、公証ヘッドは実際の
-// computeAuditRowDigest / computeAuditHeadHash(audit-head.json が固定する
-// 正規実装)で計算する — 突合の合否が本物のハッシュ連鎖に依存することを固定する。
+// The audit rows are the test's constructed "server claims"; the notarized
+// heads are computed with the real computeAuditRowDigest /
+// computeAuditHeadHash (the canonical implementation pinned by
+// audit-head.json) — pins that the check's verdict depends on the real hash
+// chain.
 
 import type { AuditHeadRow, ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
@@ -44,20 +53,20 @@ afterEach(async () => {
   servers = [];
 });
 
-/** 決定的な 32 桁 hex 行 id(テスト用 — 実サーバーはランダム採番)。 */
+/** Deterministic 32-digit hex row id (test-only — the real server assigns randomly). */
 function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
 }
 
 /**
- * モックの並び順の内部キー(seq を落とした negative でも id から復元できる —
- * idOf は seq の 16 進)。
+ * Internal key for the mock's ordering (even a negative that drops seq can be
+ * recovered from the id — idOf is seq in hex).
  */
 function orderOf(row: Record<string, unknown>): number {
   return typeof row["seq"] === "number" ? row["seq"] : Number.parseInt(String(row["id"]), 16);
 }
 
-/** テストが構成する監査行(ワイヤ形と計算入力形の共通材料)。 */
+/** An audit row the test constructs (shared material for the wire form and the computation-input form). */
 interface SeedRow {
   readonly seq: number;
   readonly event: string;
@@ -65,7 +74,7 @@ interface SeedRow {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-/** ワイヤの監査行(admin 可視 — seq を運ぶ)。 */
+/** A wire audit row (admin-visible — carries seq). */
 function wireRowOf(row: SeedRow): Record<string, unknown> {
   return {
     id: idOf(row.seq),
@@ -78,7 +87,7 @@ function wireRowOf(row: SeedRow): Record<string, unknown> {
   };
 }
 
-/** 計算入力形(CLI の再計算と同じ写像 — §5.1 の 17 列)。 */
+/** The computation-input form (same mapping as the CLI's recomputation — the 17 columns of §5.1). */
 function headRowOf(row: SeedRow): AuditHeadRow {
   return {
     seq: row.seq,
@@ -101,7 +110,7 @@ function headRowOf(row: SeedRow): AuditHeadRow {
   };
 }
 
-/** 累積ハッシュ列 h_1..h_N を正規実装で計算する(index 0 = h_1)。 */
+/** Computes the cumulative hash sequence h_1..h_N with the canonical implementation (index 0 = h_1). */
 async function headsOf(rows: readonly SeedRow[]): Promise<readonly string[]> {
   const heads: string[] = [];
   let head = "";
@@ -126,11 +135,11 @@ function checkpointOp(auditHeadHashHex: string): ChainOperation {
 
 interface ReconcileServerInput {
   readonly built: BuiltChain;
-  /** 配布する監査行(ワイヤ形)。既定 = rows の全件。 */
+  /** Audit rows to distribute (wire form). Default = all of rows. */
   readonly served: readonly Record<string, unknown>[];
   readonly declaredHeadHex: string;
   readonly tokenScopes?: readonly unknown[];
-  /** audit-head 呼び出しごとの差し込み(undefined = 200 で申告を返す)。 */
+  /** Per-call override for audit-head (undefined = return the attestation with 200). */
   readonly onAuditHead?: (call: number) => MockResponse | undefined;
 }
 
@@ -140,7 +149,7 @@ interface ReconcileServerState {
   readonly auditHeadCalls: () => number;
 }
 
-/** reconcile が要る全エンドポイント(chain / auth/me / audit-head / audit/events)。 */
+/** Every endpoint reconcile needs (chain / auth/me / audit-head / audit/events). */
 function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState {
   const projectId = input.built.projectId;
   let eventCalls = 0;
@@ -204,14 +213,15 @@ async function seededEnv(server: MockServer, projectId: string): Promise<TestEnv
 }
 
 /**
- * 標準フィクスチャ: チェーン = genesis(1) → checkpoint(2) → checkpoint(3)。
- * 監査行 = ミラー的な行 1..3 + 追加行 4(㊙ payload — 非 ASCII の round-trip
- * まで実計算で通す)。checkpoint 2 は h_1(初回 — (c) は空虚に真)、
- * checkpoint 3 は h_2(floor = checkpoint 2 のミラー行 seq2 ≥、(b) 非後退)を
- * 公証する = 正例。head* の上書きで各違反を構成する。
+ * Standard fixture: chain = genesis (1) → checkpoint (2) → checkpoint (3).
+ * Audit rows = mirror rows 1..3 + extra row 4 (㊙ payload — pushed through the
+ * real computation including the non-ASCII round-trip). checkpoint 2 notarizes
+ * h_1 (first — (c) is vacuously true), checkpoint 3 notarizes h_2 (floor =
+ * checkpoint 2's mirror row seq2 ≥, (b) non-regression) = the positive case.
+ * Each violation is built by overriding head*.
  */
 async function makeFixture(overrides?: {
-  /** 公証ヘッドの上書き(引数 = 再計算列 h_1..h_4 — 違反ケースの構成用)。 */
+  /** Override for the notarized head (arg = recomputed sequence h_1..h_4 — for building violation cases). */
   readonly headAtChain2?: (heads: readonly string[]) => string;
   readonly headAtChain3?: (heads: readonly string[]) => string;
 }): Promise<{ rows: readonly SeedRow[]; heads: readonly string[]; built: BuiltChain }> {
@@ -219,7 +229,7 @@ async function makeFixture(overrides?: {
     { seq: 1, event: "chain.genesis", chainSeq: 1 },
     { seq: 2, event: "chain.checkpointed", chainSeq: 2 },
     { seq: 3, event: "chain.checkpointed", chainSeq: 3 },
-    { seq: 4, event: "var.read", payload: { note: "㊙ / まる ひ", nested: { list: [1, 2] } } },
+    { seq: 4, event: "var.read", payload: { note: "㊙ / まる ひ", nested: { list: [1, 2] } } }, // english-exempt: non-ASCII payload fixture exercising the round-trip
   ];
   const heads = await headsOf(rows);
   const built = await buildChain([
@@ -230,8 +240,8 @@ async function makeFixture(overrides?: {
   return { rows, heads, built };
 }
 
-describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
-  it("正例: 公証 2 個の前進 — 所属 (a)・位置 (b)(c)・申告所属がすべて成立して exit 0", async () => {
+describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
+  it("positive case: advancing 2 notarizations — membership (a), position (b)(c), attestation membership all hold and exit 0", async () => {
     const { rows, heads, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
@@ -247,13 +257,15 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     const output = env.logs.join("\n");
     expect(output).toContain("Audit reconciliation OK");
     expect(output).toContain("4 audit rows recomputed, 2 notarized checkpoints checked");
-    // §6 の明示的な残余(公証済み接頭辞の外は保護対象外)を成功時に一言添える
-    // (Note — stderr。stdout はコマンドの出力だけ)
+    // §6's explicit residual (outside the notarized prefix is unprotected) is
+    // noted in one line on success (Note — stderr; stdout carries only the
+    // command's output)
     expect(env.errors.join("\n")).toContain("not covered until the next attested checkpoint");
   });
 
-  it("公証ゼロの正例は「checks passed」を出さず、空虚に真であることを明示する", async () => {
-    // チェーン = genesis のみ(公証あり checkpoint なし)。監査行はそのミラー 1 行
+  it("the zero-notarization positive case does not print 'checks passed' and states it is vacuously true", async () => {
+    // Chain = genesis only (no notarized checkpoints). Audit rows = its single
+    // mirror row
     const rows: readonly SeedRow[] = [{ seq: 1, event: "chain.genesis", chainSeq: 1 }];
     const heads = await headsOf(rows);
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
@@ -268,13 +280,14 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
 
     expect(await runCli(["audit", "reconcile"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    // 実証したのは欠番なし + 申告所属だけ — (a)(b)(c) の合格を主張しない
+    // What was verified is only no missing seqs + attestation membership —
+    // not claimed: (a)(b)(c) passing
     expect(output).toContain("Audit reconciliation OK (nothing notarized yet)");
     expect(output).toContain("vacuous until an effective admin issues");
     expect(output).not.toContain("checks passed");
   });
 
-  it("所属違反 (a): 公証ヘッドが再計算列に無い = 行改竄の証拠として報告する", async () => {
+  it("membership violation (a): a notarized head absent from the recomputed sequence = reported as row-tampering evidence", async () => {
     const { rows, heads, built } = await makeFixture({ headAtChain3: () => "ab".repeat(32) });
     const state = makeReconcileServer({
       built,
@@ -292,14 +305,16 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
       "checkpoint at chain seq 3 notarizes an audit head that does not appear",
     );
     expect(output).toContain("membership check (a)");
-    // 2 区分の総括文言(§6): 所属違反 = 公証後の行の改変・削除
+    // The two-category summary wording (§6): a membership violation = rows
+    // altered or deleted after notarization
     expect(output).toContain("rows in the notarized prefix were altered or deleted");
   });
 
-  it("位置違反 (c): 非前進ヘッドの連続公証 = 受理ポリシー不執行の証拠として報告する", async () => {
-    // checkpoint 3 が checkpoint 2 と同じ h_1 を公証する(実在する古いヘッドの
-    // 返し続け)。(b) は等号を許すため通り、(c) の位置下限(直前 checkpoint の
-    // ミラー行 seq2)が落とす — 受理検査と同一述語
+  it("position violation (c): consecutive notarizations of a non-advancing head = reported as acceptance-policy non-enforcement evidence", async () => {
+    // checkpoint 3 notarizes the same h_1 as checkpoint 2 (serving an existing
+    // old head forever). (b) passes since it admits equality; (c)'s position
+    // floor (the immediately preceding checkpoint's mirror row seq2) drops it
+    // — the same predicate as the acceptance check
     const { rows, heads, built } = await makeFixture({ headAtChain3: (h) => h[0]! });
     const state = makeReconcileServer({
       built,
@@ -315,11 +330,12 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(output).toContain("[Acceptance-policy violation (stale-replay risk)]");
     expect(output).toContain("position-floor check (c)");
     expect(output).toContain("the server accepted attestations it must reject");
-    // 所属違反ではない(h_1 は実在する)— 区分の混同がないこと
+    // Not a membership violation (h_1 exists) — the categories aren't
+    // conflated
     expect(output).not.toContain("[Row-tampering evidence]");
   });
 
-  it("位置違反 (b): 公証位置の後退も受理ポリシー不執行として報告する", async () => {
+  it("position violation (b): a regression in the notarized position is also reported as acceptance-policy non-enforcement", async () => {
     const { rows, heads, built } = await makeFixture({
       headAtChain2: (h) => h[2]!,
       headAtChain3: (h) => h[0]!,
@@ -339,11 +355,11 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(output).toContain("[Acceptance-policy violation (stale-replay risk)]");
   });
 
-  it("seq 欠番 = 削除の痕跡として報告し、派生の誤報を出さずに打ち切る", async () => {
+  it("a missing seq = reported as a trace of deletion and stops before derived false positives", async () => {
     const { rows, heads, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
-      // seq 3(checkpoint 3 のミラー行)を落とす = 削除の痕跡
+      // Drop seq 3 (checkpoint 3's mirror row) = trace of deletion
       served: rows.filter((row) => row.seq !== 3).map(wireRowOf),
       declaredHeadHex: heads[3]!,
     });
@@ -355,11 +371,12 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     const output = env.errors.join("\n");
     expect(output).toContain("audit seq 3 is missing");
     expect(output).toContain("trace of deleted rows");
-    // 欠番以降の連鎖は全て食い違うため、所属検査には進まない(誤帰属の量産をしない)
+    // The chain past the gap disagrees entirely, so it never reaches the
+    // membership check (doesn't mass-produce false attributions)
     expect(output).not.toContain("membership check (a)");
   });
 
-  it("GET /audit-head の申告値も再計算列への所属を検査する(session-38 裁定 AK)", async () => {
+  it("also checks the GET /audit-head attested value for membership in the recomputed sequence (session-38 ruling AK)", async () => {
     const { rows, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
@@ -376,7 +393,7 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(output).toContain("[Row-tampering evidence]");
   });
 
-  it("AuditHeadNotReady(503)は有界再試行で吸収する", async () => {
+  it("absorbs AuditHeadNotReady (503) with bounded retries", async () => {
     const { rows, heads, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
@@ -394,7 +411,7 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(env.logs.join("\n")).toContain("Audit reconciliation OK");
   });
 
-  it("実効 admin 未満(write スコープ)は行取得より前に明確なエラー", async () => {
+  it("below effective admin (write scope) is a clear error before any row fetch", async () => {
     const { rows, heads, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
@@ -408,12 +425,13 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
 
     expect(await runCli(["audit", "reconcile"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("requires effective admin permission");
-    // 突合を始めない(監査行の取得も申告取得も 0 回)
+    // Never starts the cross-check (zero row fetches and zero attestation
+    // fetches)
     expect(state.eventCalls()).toBe(0);
     expect(state.auditHeadCalls()).toBe(0);
   });
 
-  it("seq の無い行(admin ビューでない応答)は自己矛盾として中止する", async () => {
+  it("a row without seq (a non-admin-view response) aborts as a self-contradiction", async () => {
     const { rows, heads, built } = await makeFixture();
     const noSeq = rows.map(wireRowOf).map((row) => {
       const { seq: _seq, ...rest } = row;

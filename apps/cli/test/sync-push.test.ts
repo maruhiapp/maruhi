@@ -1,12 +1,16 @@
-// `maruhi push` 直後の同期(SY2 第 3 段 — sync-push.ts)のテスト: リポジトリ設定の
-// `onPush` を持つターゲットへ、push の後始末として直接 apply する(値は stdin だけ・
-// レシートが進む)か、`gh workflow run` で CI を起動する(値も変数名も argv に
-// 載らない・レシートは触らない)。
+// Tests for the sync that follows `maruhi push` (SY2 phase 3 —
+// sync-push.ts): for each target carrying `onPush` in the repository
+// config, either apply directly as the push's cleanup (values on stdin
+// only, the receipt advances) or kick off CI via `gh workflow run`
+// (neither values nor variable names on argv; the receipt is untouched).
 //
-// 固定する性質: push の報告が先・後始末の失敗は警告で終了コードは push のまま・
-// 証拠だけは失敗・`--no-sync` は設定を読まない・production は直接 apply されない
-// (設定で拒む)・別プロジェクトの設定(明示 = 2 / 既定パス = 何もしない)・
-// 同期元でない環境 / 運ばない変数の push は何もしない・二重起動なし。
+// Properties pinned down: the push report comes first, a cleanup failure
+// is a warning and the exit code stays push's, only evidence is a
+// failure, `--no-sync` never reads the config, production is never
+// applied directly (the config forbids it), a config for a different
+// project (explicit = 2 / default path = nothing happens), a push from a
+// non-source environment / a variable not carried does nothing, and no
+// double launch.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -174,7 +178,7 @@ interface Fixture {
   readonly server: MockServer;
 }
 
-/** preview ターゲット `web`(直接 apply)。`project` は push 時同期に必須。 */
+/** The preview target `web` (direct apply). `project` is required for push-time sync. */
 function previewTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     preset: "vercel",
@@ -259,7 +263,7 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** 値が stdout / stderr / argv / 環境変数のどこにも出ていない(stdin は検査対象外)。 */
+/** The value appears nowhere on stdout / stderr / argv / environment variables (stdin is out of scope). */
 function expectNoSecretLeak(env: TestEnv): void {
   const shown = [
     allOutput(env),
@@ -274,7 +278,7 @@ function stdinText(call: ExecCall): string {
   return decoder.decode(call.stdin);
 }
 
-/** レシート環境へのリクエスト(後始末が読み書きしたか)。 */
+/** Requests to the receipts environment (did cleanup read/write it). */
 function receiptsRequests(fixture: Fixture): number {
   return fixture.server.requests.filter((request) =>
     request.path.includes(`/environments/${RECEIPTS_ENV}/`),
@@ -302,14 +306,14 @@ async function decryptReceipt(fixture: Fixture, target: string): Promise<Record<
 const PUSHED_LINE = "Pushed ALPHA (version=4, epoch=1)";
 
 describe("maruhi push → direct apply (onPush: apply)", () => {
-  it("push の報告の後に、今 push した変数だけをベンダー CLI の stdin へ書き、レシートを進める(unchanged の行は省く)", async () => {
+  it("after the push report, writes only the just-pushed variables to the vendor CLI's stdin and advances the receipt (unchanged rows are skipped)", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget() }),
       receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
     });
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     const out = fixture.env.logs.join("\n");
-    // 順序: push の報告 → 後始末
+    // Order: the push report → the cleanup
     expect(out.indexOf(PUSHED_LINE)).toBeGreaterThanOrEqual(0);
     expect(out.indexOf("Syncing target web after the push")).toBeGreaterThan(
       out.indexOf(PUSHED_LINE),
@@ -321,7 +325,8 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(out).toContain(
       "Applied to target web: 1 variable written, 0 deleted. Receipt saved as version 2 of sync-receipt:web in environment sync-receipts",
     );
-    // ベンダー CLI は 1 回、値は stdin そのもの、argv は名前とオプションだけ
+    // The vendor CLI ran once, the value is stdin verbatim, and argv is
+    // names and options only
     const calls = fixture.env.execCalls;
     expect(calls.map((call) => call.command)).toEqual([
       ["vercel", "env", "add", "ALPHA", "preview", "--force", "--non-interactive"],
@@ -333,13 +338,14 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
       target: "web",
       variables: { ALPHA: 4, BETA: 1 },
     });
-    // 同期についての警告は無い(予備鍵の不在の警告は鍵ありの同期そのものの警告 — DK K4-9)
+    // No sync-related warning (the reserve-key-absence warning belongs
+    // to syncing itself with keys present — DK K4-9)
     expect(fixture.env.errors.join("\n")).not.toMatch(
       /sync config|synced|Warning: (?!no reserve key)/,
     );
   });
 
-  it("cwd の既定パス(maruhi.sync.json)を黙って読む(`project` が一致するとき)", async () => {
+  it("silently reads cwd's default path (maruhi.sync.json) when `project` matches", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget() }),
       receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
@@ -355,7 +361,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
   });
 
-  it("初回の変数(新規の名前)の push: plan は + で、値は 1 回だけ stdin へ、レシートに version 1 が載る", async () => {
+  it("pushing a first-time variable (a new name): the plan is +, the value hits stdin once, and version 1 lands on the receipt", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget({ variables: ["ALPHA", "BETA", "GAMMA"] }) }),
       receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
@@ -375,29 +381,31 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("--no-sync と --config の併用は書き方の誤り(2)で、push は送られない", async () => {
+  it("--no-sync with --config is a usage error (2) and no push is sent", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     expect(await pushWithConfig(fixture, NEW_VALUE, "--no-sync")).toBe(2);
     expect(fixture.env.errors.join("\n")).toContain("--no-sync and --config cannot be combined");
     expect(fixture.source.writes).toEqual([]);
   });
 
-  it("既定パスの設定が実行体を名指しするターゲット(command / workflow.command)は動かさず note(明示 --config なら動く)", async () => {
+  it("targets naming a runner in the default-path config (command / workflow.command) aren't run, with a note (an explicit --config would run them)", async () => {
     const fixture = await startFixture({
       config: config({
-        // command を名指し = 既定パスからは動かさない
+        // naming a command = don't run it from the default path
         tool: previewTarget({ command: "tools/vercel" }),
-        // 名指し無し = 既定パスでも動く
+        // no naming = runs even from the default path
         web: previewTarget(),
-        // gh の実行体を名指し = 既定パスからは動かさない
+        // naming gh's runner = don't run it from the default path
         ci: previewTarget({
           options: { environment: "production" },
           onPush: "workflow",
           workflow: { file: "maruhi-sync.yml", command: "tools/gh" },
         }),
-        // 既定の綴りを書いても「名指し」(設定が実行体を書いた事実で判定する)
+        // writing the default's own spelling is still 'naming it' (the
+        // check is whether the config wrote a runner)
         spelled: previewTarget({ command: "vercel" }),
-        // 名指し無しの workflow = 既定パスでも PATH 上の gh が動く
+        // an unnamed workflow = the gh on PATH runs even from the
+        // default path
         dispatch: previewTarget({
           options: { environment: "production" },
           onPush: "workflow",
@@ -415,18 +423,20 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain("Note: target ci names the program to run");
     expect(errors).toContain("Note: target spelled names the program to run");
     expect(errors).not.toContain("Note: target dispatch names");
-    // 動いたのは web(PATH 上の vercel)と dispatch(PATH 上の gh)だけ
+    // Only web (the vercel on PATH) and dispatch (the gh on PATH) ran
     expect(fixture.env.execCalls.map((call) => call.command[0])).toEqual(["vercel", "gh"]);
     expect(await decryptReceipt(fixture, "web")).toMatchObject({
       variables: { ALPHA: 4, BETA: 1 },
     });
 
-    // 明示 --config = 利用者がそのファイルを指した: 名指しの実行体も動く
+    // An explicit --config = the user pointed at that file: named
+    // runners run too
     const explicit = await startFixture({
       config: config({ tool: previewTarget({ command: "tools/vercel" }) }),
     });
     expect(await pushWithConfig(explicit, NEW_VALUE)).toBe(0);
-    // レシートが無い初回なので ALPHA と BETA の 2 回、どちらも名指しの実行体
+    // The first run has no receipt, so ALPHA and BETA — 2 calls, both
+    // named runners
     expect(explicit.env.execCalls.map((call) => call.command[0])).toEqual([
       "tools/vercel",
       "tools/vercel",
@@ -434,7 +444,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(explicit.env.errors.join("\n")).not.toContain("names the program to run");
   });
 
-  it("--no-sync: 設定を読まず push だけを行う(ベンダー CLI 0・レシート環境へのリクエスト 0)", async () => {
+  it("--no-sync: reads no config and only pushes (0 vendor CLIs, 0 requests to the receipts environment)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     process.chdir(fixture.configDir);
     expect(await push(fixture, NEW_VALUE, "--no-sync")).toBe(0);
@@ -444,20 +454,21 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(receiptsRequests(fixture)).toBe(0);
   });
 
-  it("設定が cwd に無ければ従来どおりの push(何も読まない・何も言わない)", async () => {
+  it("with no config in cwd it's the traditional push (reads nothing, says nothing)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
-    // cwd は repo ルート(maruhi.sync.json は無い)
+    // cwd is the repo root (no maruhi.sync.json)
     expect(await push(fixture, NEW_VALUE)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
     expect(fixture.env.execCalls).toEqual([]);
     expect(receiptsRequests(fixture)).toBe(0);
-    // 同期についての note / 警告は無い(床・checkpoint の既存 note は push 自身のもの)
+    // No sync-related note / warning (the existing floor/checkpoint
+    // notes are push's own)
     expect(fixture.env.errors.join("\n")).not.toMatch(
       /sync config|synced|Warning: (?!no reserve key)/,
     );
   });
 
-  it("明示した --config が別プロジェクトのものなら書き方の誤り(2)で、push は送られない", async () => {
+  it("an explicit --config belonging to a different project is a usage error (2) and no push is sent", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget() }, { project: OTHER_PROJECT }),
     });
@@ -469,7 +480,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.env.execCalls).toEqual([]);
   });
 
-  it("cwd の既定パスが別プロジェクトのものなら、push はそのまま行い note で何もしない", async () => {
+  it("a default-path config for a different project lets the push proceed and notes it does nothing", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget() }, { project: OTHER_PROJECT }),
     });
@@ -483,18 +494,19 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(receiptsRequests(fixture)).toBe(0);
   });
 
-  it("onPush を 1 つも持たない設定は project を見ない(別プロジェクトでも 2 にならず、何も言わない)", async () => {
+  it("a config with no onPush at all never looks at project (not a 2 for a different project, and silent)", async () => {
     const fixture = await startFixture({
       config: config({ manual: previewTarget({ onPush: undefined }) }, { project: OTHER_PROJECT }),
     });
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
-    // 明示 --config なので「同期する対象が無い」の note は出るが、別プロジェクトの話はしない
+    // The --config is explicit, so the 'no target to sync' note appears,
+    // but it says nothing about the other project
     expect(fixture.env.errors.join("\n")).toContain("no target in the sync config copies");
     expect(fixture.env.errors.join("\n")).not.toContain("different project");
   });
 
-  it("壊れた既定パスの設定は push の前に落とす(黙って飛ばさない)", async () => {
+  it("a broken default-path config fails before the push (not silently skipped)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     await writeFile(fixture.configPath, "{ not json");
     process.chdir(fixture.configDir);
@@ -503,13 +515,14 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.source.writes).toEqual([]);
   });
 
-  it("push 先の環境から運ぶ onPush ターゲットが無ければ何もしない(明示 --config なら note)", async () => {
+  it("no onPush target carrying from the pushed environment does nothing (an explicit --config gets a note)", async () => {
     const fixture = await startFixture({
       config: config({
-        // 別の環境を同期元にするターゲットと、この変数を運ばないターゲット
+        // A target syncing from a different environment, and one not
+        // carrying this variable
         other: previewTarget({ environment: "staging" }),
         beta: previewTarget({ variables: ["BETA"] }),
-        // onPush の無いターゲット(手動のみ)
+        // A target without onPush (manual only)
         manual: previewTarget({ onPush: undefined }),
       }),
     });
@@ -521,7 +534,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.env.execCalls).toEqual([]);
     expect(receiptsRequests(fixture)).toBe(0);
 
-    // 既定パスなら note も出ない
+    // On the default path, no note either
     const quiet = await startFixture({
       config: config({ manual: previewTarget({ onPush: undefined }) }),
     });
@@ -532,7 +545,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     );
   });
 
-  it("production ターゲットは onPush のままでは push されない(設定の段階で apply を拒む)", async () => {
+  it("a production target isn't pushed under onPush as-is (apply is refused at the config stage)", async () => {
     const fixture = await startFixture({
       config: config({
         web: previewTarget({ options: { environment: "production" } }),
@@ -545,7 +558,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.source.writes).toEqual([]);
   });
 
-  it("ベンダー CLI の失敗は警告で、push の終了コードは 0 のまま(レシートは進まない)", async () => {
+  it("a vendor-CLI failure is a warning and push's exit code stays 0 (the receipt doesn't advance)", async () => {
     const fixture = await startFixture({
       config: config({ web: previewTarget() }),
       receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
@@ -560,19 +573,19 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain(
       "The next `maruhi sync plan web` shows the pushed variable as pending; `maruhi sync apply web` or CI delivers it",
     );
-    // ベンダーの出力は伏せてから見せる
+    // The vendor's output is scrubbed before being shown
     expect(errors).toContain("  vercel: nope [redacted]");
     expectNoSecretLeak(fixture.env);
     expect(fixture.receipts.writes).toEqual([]);
 
-    // 印 = レシートの遅れ: 次の plan が pending と示す
+    // The mark = the receipt's lag: the next plan reports pending
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("~ ALPHA\tversion 3 -> 4");
   });
 
-  it("ベンダー CLI が無い(起動失敗)も警告で 0(起動失敗はその呼び出しの失敗 — 文面は failDriver の形)", async () => {
+  it("a missing vendor CLI (launch failure) is also a warning with 0 (a launch failure is that invocation's failure — worded in failDriver's shape)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     fixture.env.setExecHandler(() =>
       cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
@@ -582,13 +595,14 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain(
       "Warning: the push is done, but target web could not be synced (vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
-    // 何も届いていないのでレシートは書かない
+    // Nothing arrived, so no receipt is written
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("運べない値(Vercel の末尾改行)は警告で、値は送られない", async () => {
+  it("an uncarryable value (Vercel's trailing newline) is a warning and the value is never sent", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
-    // push は末尾改行を 1 つ落とすので、届く値は「1 行 + 改行 1 つ」= Vercel が落とす形
+    // push drops one trailing newline, so what arrives is 'a line +
+    // one newline' = the shape Vercel drops
     expect(await pushWithConfig(fixture, `${NEW_VALUE}\n\n`)).toBe(0);
     expect(fixture.env.errors.join("\n")).toContain(
       "Warning: the push is done, but target web could not be synced (Variable ALPHA is a single line ending with a newline",
@@ -597,7 +611,7 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("レシート環境の検証拒否(証拠)は警告に畳まず失敗として通す(push の報告は先に出ている)", async () => {
+  it("a verification refusal of the receipts environment (the evidence) isn't folded into a warning — it surfaces as a failure (the push report already went out)", async () => {
     const newer = await storedReceipt({
       target: "web",
       variables: { ALPHA: 3, BETA: 1 },
@@ -608,7 +622,8 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
       config: config({ web: previewTarget() }),
       receipts: [newer],
     });
-    // 先に plan でレシート環境の床を確立し、サーバーが古い version を配り直す(巻き戻し)
+    // First establish the receipts environment's floor via plan, then
+    // have the server re-serve an older version (a rollback)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -632,7 +647,7 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
       ...overrides,
     });
 
-  it("gh workflow run の argv はターゲット名と workflow だけ(値も変数名も載らない)、stdin は空、テレメトリ off、レシートは触らない", async () => {
+  it("gh workflow run's argv is just the target name and workflow (no values or variable names), stdin is empty, telemetry off, and the receipt is untouched", async () => {
     const fixture = await startFixture({
       config: config({
         web: workflowTarget({ workflow: { file: "maruhi-sync.yml", ref: "main" } }),
@@ -658,12 +673,13 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     expect(out).toContain(
       `Triggered workflow maruhi-sync.yml for target web (\`gh workflow run\` in ${fixture.configDir}). CI applies it with \`maruhi ci sync\` and keeps no receipt, so the next local \`maruhi sync plan web\` still shows the pushed variable as pending`,
     );
-    // 一方通行: レシート環境は読まず書かず、結果も待たない
+    // One-way: the receipts environment is neither read nor written,
+    // and the result isn't awaited
     expect(receiptsRequests(fixture)).toBe(0);
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("--ref 無し(既定 = gh がリポジトリの既定ブランチを選ぶ)と command の上書き", async () => {
+  it("no --ref (default = gh picks the repo's default branch) and the command override", async () => {
     const fixture = await startFixture({
       config: config({
         web: workflowTarget({ workflow: { file: "maruhi-sync.yml", command: "tools/gh" } }),
@@ -675,7 +691,7 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     ]);
   });
 
-  it("gh の終了コード 4 = 未ログインを名指しし、警告で 0", async () => {
+  it("gh's exit code 4 = names 'not logged in' and warns with 0", async () => {
     const fixture = await startFixture({ config: config({ web: workflowTarget() }) });
     fixture.env.setExecHandler(() => ({ exitCode: 4, output: "" }));
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
@@ -684,7 +700,7 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     );
   });
 
-  it("gh の非 0(workflow 不在・dispatch 無し)は出力の末尾を添えて警告で 0", async () => {
+  it("gh's nonzero (workflow missing, no dispatch) warns with 0 and appends the output's tail", async () => {
     const fixture = await startFixture({ config: config({ web: workflowTarget() }) });
     fixture.env.setExecHandler(() => ({
       exitCode: 1,
@@ -699,7 +715,7 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     );
   });
 
-  it("gh が無い(起動失敗)は警告で 0", async () => {
+  it("no gh (launch failure) is a warning with 0", async () => {
     const fixture = await startFixture({ config: config({ web: workflowTarget() }) });
     fixture.env.setExecHandler(() =>
       cliError("Cannot start gh (ENOENT): is it installed and on PATH"),
@@ -710,7 +726,7 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     );
   });
 
-  it("同じ環境の複数ターゲット: 直接 apply と CI 起動が設定の順に 1 回ずつ。1 つの失敗で残りは止まらない", async () => {
+  it("multiple targets of the same environment: direct apply and the CI launch each run once in config order; one failure doesn't stop the rest", async () => {
     const fixture = await startFixture({
       config: config({
         preview: previewTarget(),

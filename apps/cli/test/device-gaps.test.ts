@@ -1,13 +1,19 @@
-// 同じ人の他の端末の欠けたエポックの補完(DK K11 — 設計録 dk-design.md §16)の統合テスト。
-// 端末 op・ラップ・登録署名は実 crypto、サーバーはワイヤレベルモック。
+// Integration tests for filling in missing epochs of your other devices
+// (DK K11 — design note dk-design.md §16). Device ops, wraps, and
+// registration signatures are real crypto; the server is a wire-level mock.
 //
-// 固定する性質(K11-6):
-//  1. `maruhi pull` は同梱のラップの行から、同じ人の他の有効な端末のうちその環境の受信者で
-//     あるものの欠けたエポックを導き、**そのエポックだけ**を兄弟の鍵宛に包み、この端末の
-//     登録署名で登録する(登録された行は兄弟の鍵で開け、§5.1 の署名が通る)
-//  2. 欠けが無い・旧サーバーの行(`recipientEncPubHex` 無し)・受信者でない端末(実効 scope の
-//     外)では登録しない
-//  3. この端末も開けないエポックは包まず報告する。登録の失敗は Note で、pull は 0 のまま
+// Properties pinned down (K11-6):
+//  1. From the bundled wrap rows, `maruhi pull` derives the missing epochs
+//     of your other still-valid devices that are recipients of that
+//     environment, wraps **only those epochs** to the sibling's key, and
+//     registers them with this device's registration signature (the
+//     registered rows open under the sibling's key and pass §5.1 signature
+//     verification)
+//  2. Nothing is registered when there is no gap, for legacy-server rows
+//     (no `recipientEncPubHex`), or for a device that isn't a recipient
+//     (outside the effective scope)
+//  3. An epoch this device also cannot open is not wrapped — it is reported.
+//     A registration failure stays a Note; pull still exits 0
 
 import {
   type ChainOperation,
@@ -41,9 +47,9 @@ const ENV_ID = "env-app";
 const OTHER_ENV_ID = "env-other";
 
 let owner: TestUser;
-/** owner の 2 台目(欠けたエポックを持つ兄弟端末)。 */
+/** owner's second device (the sibling with a missing epoch). */
 let sibling: TestUser;
-/** owner の 3 台目(cap の scope が OTHER_ENV_ID だけ — ENV_ID の受信者ではない)。 */
+/** owner's third device (its cap's scope is only OTHER_ENV_ID — not a recipient of ENV_ID). */
 let narrow: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
@@ -87,7 +93,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** 端末鍵宛の配布行(新サーバーの形 — `recipientEncPubHex` つき)。 */
+/** A distribution row destined to a device key (the new-server shape — carries `recipientEncPubHex`). */
 async function rowFor(
   device: TestUser,
   epoch: number,
@@ -115,7 +121,7 @@ interface Posted {
   readonly signatureHex: string;
 }
 
-/** チェーン + 変数 0 の環境の値付き pull(同梱の行を差し替える)+ ラップ登録。 */
+/** Chain + a valued pull of an environment with 0 variables (swap the bundled rows) + wrap registration. */
 async function start(input: {
   readonly rows: readonly unknown[];
   readonly registerStatus?: number;
@@ -179,9 +185,10 @@ async function start(input: {
   return { env, posted };
 }
 
-describe("maruhi pull が同じ人の他の端末の欠けたエポックを補う(DK K11)", () => {
-  it("兄弟の欠けたエポックだけを、兄弟の鍵宛にこの端末の登録署名で登録する", async () => {
-    // owner は 1・2 を持ち、sibling は 2 だけ(1 が欠け)。narrow は ENV_ID の受信者でない
+describe("maruhi pull fills in the missing epochs of your other devices (DK K11)", () => {
+  it("registers only the sibling's missing epochs, wrapped to the sibling's key with this device's registration signature", async () => {
+    // owner holds epochs 1 and 2; sibling has only 2 (1 is missing). narrow
+    // is not a recipient of ENV_ID
     const { env, posted } = await start({
       rows: [await rowFor(owner, 1), await rowFor(owner, 2), await rowFor(sibling, 2)],
     });
@@ -192,7 +199,8 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     const [wrap] = posted;
     if (wrap === undefined) throw new Error("no wrap");
     expect(wrap.recipientUserId).toBe(owner.userId);
-    // 宛先の取り違えを落とす: 兄弟の鍵で開けて epoch 1 の DEK になり、登録署名が通る
+    // Discriminate the destination: it opens under the sibling's key to
+    // the epoch-1 DEK and the registration signature verifies
     const opened = await unwrapDek({
       recipientKeyPair: sibling.encKeyPair,
       wrapped: {
@@ -230,7 +238,7 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     );
   });
 
-  it("欠けが無い・旧サーバーの行・受信者でない端末の欠けでは登録しない", async () => {
+  it("registers nothing when there is no gap, for legacy-server rows, or for a non-recipient device's gap", async () => {
     const complete = await start({
       rows: [
         await rowFor(owner, 1),
@@ -242,7 +250,8 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     expect(await runCli(["pull"], complete.env.layer)).toBe(0);
     expect(complete.posted).toEqual([]);
 
-    // 旧サーバー(行に `recipientEncPubHex` が無い = 帰属が分からない)は導かない
+    // A legacy server (rows without `recipientEncPubHex` = attribution
+    // unknowable) derives nothing
     const legacy = await start({
       rows: [
         await rowFor(owner, 1, { withRecipientKey: false }),
@@ -254,8 +263,9 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     expect(legacy.env.errors.join("\n")).not.toContain("had no keys for");
   });
 
-  it("この端末も開けないエポックは包まず報告し、登録の失敗は Note に留めて pull は 0", async () => {
-    // owner も epoch 1 を持たない → sibling の epoch 1 は補えない(包まない)
+  it("reports rather than wraps an epoch this device also cannot open; a registration failure stays a Note and pull is 0", async () => {
+    // owner doesn't hold epoch 1 either → sibling's epoch 1 can't be filled
+    // (not wrapped)
     const unavailable = await start({
       rows: [await rowFor(owner, 2), await rowFor(sibling, 2)],
     });
@@ -277,8 +287,10 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
       `once the cause is fixed, the next \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\` tries again`,
     );
 
-    // 一部だけ補える欠け(この端末は epoch 2 だけ、兄弟は両方欠け)で登録が失敗したとき:
-    // 失敗の文は包もうとしたエポック(2)だけを言い、この端末も持たないエポック(1)の文も出す
+    // With a partially fillable gap (this device holds only epoch 2, the
+    // sibling lacks both) when registration fails: the failure message
+    // names only the epoch it tried to wrap (2), and the epoch this device
+    // doesn't hold either (1) is also mentioned
     const partial = await start({
       rows: [await rowFor(owner, 2)],
       registerStatus: 500,

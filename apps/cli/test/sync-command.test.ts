@@ -1,12 +1,15 @@
-// `maruhi sync plan` / `sync apply` のテスト: リポジトリ設定 →
-// レシート環境の読み → 同期元の検証(plan は復号しない)→ ベンダー CLI の駆動
-// (値は stdin だけ)→ レシートの書き込み(§4.1 の署名つき push)。
+// Tests for `maruhi sync plan` / `sync apply`: repository config →
+// reading the receipts environment → verifying the sync source (plan
+// never decrypts) → driving the vendor CLIs (values on stdin only) →
+// writing the receipts (a signed push per §4.1).
 //
-// 固定する性質: 値が argv / stdout / stderr / エラー文面に出ない、stdin の形式
-// (wrangler = JSON 1 つ、Vercel = 値そのもの)、テレメトリ off の環境変数、
-// production の既定 = plan のみ(`--yes`)、レシートの差分だけを書く、失敗時は
-// 届いた分だけレシートに残す、ブロックされる値は何も送らない、設定の検証。
-// ベンダー CLI は偽の ProcessRunner(argv / cwd / env / stdin を記録)。
+// Properties pinned down: values never appear on argv / stdout / stderr
+// / error text, the stdin format (wrangler = a single JSON, Vercel = the
+// value itself), the telemetry-off env vars, production defaults to plan
+// only (`--yes`), only the receipt's diff is written, a failure leaves
+// only what arrived on the receipt, blocked values send nothing, and
+// config validation. The vendor CLIs are fake ProcessRunners (recording
+// argv / cwd / env / stdin).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -100,7 +103,7 @@ afterEach(async () => {
   servers = [];
 });
 
-/** 同期元の 1 変数(ステートメント + 値。version と required を指定)。 */
+/** One variable on the sync source (statement + value; takes version and required). */
 async function sourceVariable(input: {
   readonly variableId: string;
   readonly name: string;
@@ -133,7 +136,7 @@ async function sourceVariable(input: {
   return { variableId: input.variableId, statement, value };
 }
 
-/** レシート環境に置かれた既存レシート(前回の同期の結果)。 */
+/** An existing receipt placed on the receipts environment (the previous sync's result). */
 async function storedReceipt(input: {
   readonly target: string;
   readonly preset: "vercel" | "cloudflare-workers" | "github-actions";
@@ -177,7 +180,7 @@ interface Fixture {
   readonly configPath: string;
 }
 
-/** 既定の設定(Vercel production ターゲット `web` と Workers staging ターゲット `worker`)。 */
+/** The default config (a Vercel production target `web` and a Workers staging target `worker`). */
 function defaultConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
@@ -250,7 +253,7 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** 値(と複数行値の各行)が stdout / stderr / argv のどこにも出ていない。 */
+/** The value (and each line of a multi-line value) appears nowhere on stdout / stderr / argv. */
 function expectNoSecretLeak(env: TestEnv): void {
   const shown = [
     allOutput(env),
@@ -286,7 +289,7 @@ function stdinText(call: ExecCall): string {
 }
 
 describe("maruhi sync plan", () => {
-  it("初回(レシートなし): 全変数を new として名前と version だけ示し、復号もベンダー CLI の起動もしない", async () => {
+  it("first run (no receipt): shows every variable as new with names and versions only, and neither decrypts nor launches a vendor CLI", async () => {
     const fixture = await startFixture({});
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
@@ -297,11 +300,12 @@ describe("maruhi sync plan", () => {
     expect(out).toContain("+ ALPHA\tversion 3 (new)");
     expect(out).toContain("+ BETA\tversion 1 (new)");
     expect(fixture.env.execCalls).toEqual([]);
-    // production の既定 = plan のみ(apply には --yes)を案内する
+    // Guides that production's default is plan only (apply needs --yes)
     expect(fixture.env.errors.join("\n")).toContain("`maruhi sync apply web` needs --yes");
     expectNoSecretLeak(fixture.env);
-    // 変数の書き込み API は一切呼ばない(plan は読むだけ。ヘッド申告の PUT は
-    // 前段の同期の一部で、値・メタには触れない)
+    // Never calls the variable-write API (plan only reads; the
+    // head-declaration PUT is part of the earlier sync and touches
+    // neither values nor metadata)
     const server = servers[0] as MockServer;
     expect(
       server.requests.filter(
@@ -310,7 +314,7 @@ describe("maruhi sync plan", () => {
     ).toEqual([]);
   });
 
-  it("レシートと version を突合し、update / unchanged / delete を示す(同期先は読み戻さない)", async () => {
+  it("cross-checks the receipt and versions and shows update / unchanged / delete (the sync target is never read back)", async () => {
     const fixture = await startFixture({
       receipts: [
         await storedReceipt({
@@ -330,7 +334,7 @@ describe("maruhi sync plan", () => {
     expect(fixture.env.execCalls).toEqual([]);
   });
 
-  it("ブロックされる値(Vercel: 空・16 KiB 超)は ! で示し、exit 1(apply は何も送らない)", async () => {
+  it("blocked values (Vercel: empty, over 16 KiB) are marked !, exit 1 (and apply sends nothing)", async () => {
     const fixture = await startFixture({
       sourceVariables: [
         await sourceVariable({ variableId: "ve", name: "EMPTY", version: 1, plaintext: "" }),
@@ -373,7 +377,7 @@ describe("maruhi sync plan", () => {
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("設定の明示リストに無い名前は何も運ばずに止める", async () => {
+  it("a name absent from the config's explicit list stops without carrying anything", async () => {
     const fixture = await startFixture({
       config: defaultConfig({
         targets: {
@@ -392,7 +396,7 @@ describe("maruhi sync plan", () => {
     );
   });
 
-  it("required の宣言だけで値が無い変数が選択にあれば run と同じ規則で止め、required の active が選択に無ければ警告する", async () => {
+  it("a required declaration with no value in the selection stops by the same rules as run; a required active out of the selection warns", async () => {
     const declared = await statementFor({
       projectId: built.projectId,
       environmentId: SOURCE_ENV,
@@ -433,7 +437,7 @@ describe("maruhi sync plan", () => {
     expect(errors).toContain("required variables are not part of this target: ALPHA");
   });
 
-  it("未知のターゲットは書き方の誤り(2)、壊れた設定・無い設定は実行の失敗(1)", async () => {
+  it("an unknown target is a usage error (2); a broken or missing config is a run failure (1)", async () => {
     const fixture = await startFixture({});
     expect(await sync(fixture, "plan", "nope")).toBe(2);
     expect(fixture.env.errors.join("\n")).toContain(
@@ -450,7 +454,8 @@ describe("maruhi sync plan", () => {
       ),
     ).toBe(1);
     expect(missing.env.errors.join("\n")).toContain("Cannot read the sync config");
-    // 設定の project とフラグの食い違いは書き方の誤り(2)。ネットワークには行かない
+    // A disagreement between the config's project and the flag is a
+    // usage error (2). It never hits the network
     const mismatched = await startFixture({
       config: defaultConfig({ project: "1".repeat(64) }),
     });
@@ -463,7 +468,7 @@ describe("maruhi sync plan", () => {
     expect(mismatched.env.errors.join("\n")).toContain("--project does not match");
   });
 
-  it("レシート変数が version 上限に近づいたら警告する(1,000 version / 変数)", async () => {
+  it("warns when a receipt variable nears the version ceiling (1,000 versions / variable)", async () => {
     const fixture = await startFixture({
       receipts: [
         await storedReceipt({
@@ -482,7 +487,7 @@ describe("maruhi sync plan", () => {
 });
 
 describe("maruhi sync apply", () => {
-  it("production ターゲットは --yes が無ければ plan だけを出して何も送らない", async () => {
+  it("a production target without --yes emits just the plan and sends nothing", async () => {
     const fixture = await startFixture({});
     expect(await sync(fixture, "apply", "web")).toBe(1);
     expect(fixture.env.logs.join("\n")).toContain("+ ALPHA\tversion 3 (new)");
@@ -494,7 +499,7 @@ describe("maruhi sync apply", () => {
     expectNoSecretLeak(fixture.env);
   });
 
-  it("Vercel: 名前ごとに 1 プロセス、値は stdin そのもの、argv は名前とオプションだけ、テレメトリ off、レシートを作成する", async () => {
+  it("Vercel: one process per name, values as stdin verbatim, argv is names and options only, telemetry off, and creates the receipt", async () => {
     const fixture = await startFixture({});
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(0);
     const calls = fixture.env.execCalls;
@@ -505,11 +510,12 @@ describe("maruhi sync apply", () => {
     expect(calls.map(stdinText)).toEqual([ALPHA_VALUE, BETA_VALUE]);
     for (const call of calls) {
       expect(call.extraEnv).toEqual({ VERCEL_TELEMETRY_DISABLED: "1" });
-      // cwd は設定ファイルの置き場(cwd 未指定)
+      // cwd is the config file's location (no cwd specified)
       expect(call.cwd).toBe(fixture.configDir);
     }
     expectNoSecretLeak(fixture.env);
-    // レシート = 名前 → version の写像(値由来のダイジェストなし)。作成 push 1 回
+    // The receipt = the name → version mapping (no value-derived
+    // digest). One creation push
     expect(fixture.receipts.writes.map((write) => write.kind)).toEqual(["create"]);
     const receipt = await decryptReceipt(fixture, "web");
     expect(receipt).toMatchObject({
@@ -524,17 +530,17 @@ describe("maruhi sync apply", () => {
       "Applied to target web: 2 variables written, 0 deleted. Receipt saved as version 1 of sync-receipt:web in environment sync-receipts",
     );
 
-    // 2 回目: 差分なし → 何も送らず、レシートも書かない
+    // Second run: no diff → sends nothing, writes no receipt
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(0);
     expect(fixture.env.execCalls).toHaveLength(2);
     expect(fixture.receipts.writes).toHaveLength(1);
     expect(fixture.env.logs.join("\n")).toContain("Nothing to apply");
-    // plan も全件 unchanged
+    // plan too shows everything unchanged
     expect(await sync(fixture, "plan", "web")).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("= ALPHA\tversion 3 (unchanged)");
   });
 
-  it("Cloudflare Workers: 全変数を JSON 1 つで 1 プロセス、名前付き環境は production 扱いでなく --yes 不要、cwd は設定からの相対", async () => {
+  it("Cloudflare Workers: every variable in one JSON, one process; a named environment doesn't count as production so no --yes needed; cwd is relative to the config", async () => {
     const fixture = await startFixture({});
     expect(await sync(fixture, "apply", "worker")).toBe(0);
     const calls = fixture.env.execCalls;
@@ -561,7 +567,7 @@ describe("maruhi sync apply", () => {
     });
   });
 
-  it("更新と削除: 変わった変数だけを書き、選択から外れた名前を消す(wrangler は null、Vercel は env rm)", async () => {
+  it("updates and deletions: writes only the changed variables and deletes names dropped from the selection (wrangler uses null, Vercel uses env rm)", async () => {
     const vercel = await startFixture({
       receipts: [
         await storedReceipt({
@@ -577,7 +583,7 @@ describe("maruhi sync apply", () => {
       ["vercel", "env", "rm", "OLD_NAME", "production", "--yes", "--non-interactive"],
     ]);
     expect(vercel.env.execCalls.map(stdinText)).toEqual([ALPHA_VALUE, ""]);
-    // 既存レシートへの新 version(作成ではない)
+    // A new version on the existing receipt (not a creation)
     expect(vercel.receipts.writes.map((write) => write.kind)).toEqual(["version"]);
     expect(await decryptReceipt(vercel, "web")).toMatchObject({
       variables: { ALPHA: 3, BETA: 1 },
@@ -601,7 +607,7 @@ describe("maruhi sync apply", () => {
     });
   });
 
-  it('variables: "all" + exclude は除外名を運ばず、除外された既存レシート名を削除にする', async () => {
+  it('variables: "all" + exclude carries none of the excluded names and turns an existing receipt name that got excluded into a delete', async () => {
     const fixture = await startFixture({
       config: defaultConfig({
         targets: {
@@ -626,7 +632,7 @@ describe("maruhi sync apply", () => {
     expect(JSON.parse(stdinText(fixture.env.execCalls[0] as ExecCall))).toEqual({ BETA: null });
   });
 
-  it("ベンダー CLI の失敗: 届いた分だけレシートに残し、出力は値を伏せた末尾だけを見せて exit 1", async () => {
+  it("a vendor-CLI failure leaves only what arrived on the receipt, and shows only the value-scrubbed tail of the output, exit 1", async () => {
     const fixture = await startFixture({});
     fixture.env.setExecHandler((call, index) =>
       index === 0
@@ -645,7 +651,8 @@ describe("maruhi sync apply", () => {
     expect(errors).toContain("  vercel: Error: rejected [redacted] and line [redacted] here");
     expect(errors).toContain("  vercel: second line");
     expectNoSecretLeak(fixture.env);
-    // 成功した ALPHA だけがレシートに載る → 次の plan は BETA だけを示す
+    // Only the successful ALPHA lands on the receipt → the next plan
+    // shows BETA alone
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
@@ -653,7 +660,7 @@ describe("maruhi sync apply", () => {
     expect(out).toContain("+ BETA\tversion 1 (new)");
   });
 
-  it("削除の失敗(同期先で既に消されていた形)はレシートの作り直しを案内し、レシートにその名前を残す", async () => {
+  it("a deletion failure (the shape where the target already deleted it) guides toward rebuilding the receipt and keeps the name on it", async () => {
     const fixture = await startFixture({
       receipts: [
         await storedReceipt({
@@ -674,15 +681,18 @@ describe("maruhi sync apply", () => {
     expect(errors).toContain(
       "reset the receipt with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again",
     );
-    // 最初の削除で止まるので 2 つ目は未試行 — レシートを作り直すと忘れるので名指しする
+    // It stops at the first deletion so the second is never attempted —
+    // rebuilding the receipt would forget it, so it's named
     expect(errors).toContain("remove these at the target yourself first: GONE_TOO");
-    // 未試行の削除は呼ばれていない(1 つ目で止まる)
+    // The unattempted deletion was never invoked (stopped at the
+    // first)
     expect(fixture.env.execCalls.filter((call) => call.command[2] === "rm")).toHaveLength(1);
-    // 消せていない名前はレシートに残す(黙って「消えた」ことにしない)
+    // The unremovable name stays on the receipt (don't silently treat
+    // it as gone)
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("末尾改行 1 つで終わる 1 行の値は Vercel には送れない(送る前に全件検査して止める)", async () => {
+  it("a one-line value ending in a single newline can't be sent to Vercel (every value is checked before sending)", async () => {
     const fixture = await startFixture({
       sourceVariables: [
         await sourceVariable({
@@ -715,7 +725,7 @@ describe("maruhi sync apply", () => {
     );
     expect(fixture.env.execCalls).toEqual([]);
     expect(fixture.receipts.writes).toEqual([]);
-    // 同じ値は wrangler(JSON)へは運べる
+    // The same value can be carried to wrangler (JSON)
     const workers = await startFixture({
       sourceVariables: [
         await sourceVariable({
@@ -732,7 +742,7 @@ describe("maruhi sync apply", () => {
     });
   });
 
-  it("GitHub Actions: 名前ごとに `gh secret set` 1 プロセス、値は stdin だけ、-R / --app は argv、gh のテレメトリ off、リポジトリ secrets は --yes、削除は `gh secret delete`", async () => {
+  it("GitHub Actions: one `gh secret set` process per name, values on stdin only, -R / --app on argv, gh telemetry off, repository secrets need --yes, deletion via `gh secret delete`", async () => {
     const config = defaultConfig({
       targets: {
         actions: {
@@ -744,7 +754,7 @@ describe("maruhi sync apply", () => {
       },
     });
     const fixture = await startFixture({ config });
-    // リポジトリ secrets(Environment なし)は production 扱い
+    // Repository secrets (no Environment) count as production
     expect(await sync(fixture, "apply", "actions")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain(
       "Target actions is a production target, so apply needs an explicit --yes",
@@ -766,7 +776,8 @@ describe("maruhi sync apply", () => {
     expect(calls[0]?.cwd).toBe(fixture.configDir);
     expectNoSecretLeak(fixture.env);
     expect(fixture.env.logs.join("\n")).toContain(`Running gh in ${fixture.configDir}`);
-    // ヘッダー行はプリセットの describeOptions(repo / environment / app)で同期先を名指す
+    // The header line names the sync destination via the preset's
+    // describeOptions (repo / environment / app)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target actions (environment prod -> github-actions acme/app dependabot via exec)",
     );
@@ -775,7 +786,8 @@ describe("maruhi sync apply", () => {
       variables: { ALPHA: 3 },
     });
 
-    // 選択から外れた名前は `gh secret delete`(名前で消す — 一覧は読まない)
+    // Names dropped from the selection go through `gh secret delete`
+    // (deleted by name — never listed)
     const deleting = await startFixture({
       config,
       receipts: [
@@ -794,8 +806,9 @@ describe("maruhi sync apply", () => {
     expect(await decryptReceipt(deleting, "actions")).toMatchObject({ variables: { ALPHA: 3 } });
   });
 
-  it("GitHub Actions: 末尾改行で終わる値(複数行でも)と小文字の名前は送る前に止める(Nothing was sent)", async () => {
-    // 既定の BETA は末尾改行つきの複数行(Vercel には運べ、gh には運べない)
+  it("GitHub Actions: a trailing-newline value (even multi-line) and a lowercase name are stopped before sending (Nothing was sent)", async () => {
+    // The default BETA is multi-line with a trailing newline (carriable
+    // to Vercel but not to gh)
     const fixture = await startFixture({
       config: defaultConfig({
         targets: {
@@ -837,7 +850,8 @@ describe("maruhi sync apply", () => {
         },
       }),
     });
-    // 名前の規則は平文が要らないので plan の段階で ! になる(apply の検査は防衛線)
+    // The name rules need no plaintext, so they become ! at plan time
+    // (apply's check is a defense line)
     expect(await sync(lower, "plan", "actions")).toBe(1);
     expect(lower.env.logs.join("\n")).toContain(
       "! apiKey\tversion 1 (cannot be synced: a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_)",
@@ -849,26 +863,31 @@ describe("maruhi sync apply", () => {
     expect(lower.env.execCalls).toEqual([]);
   });
 
-  it("ベンダー CLI が起動できなければ失敗(取りに行かない)。1 つ目の起動失敗 = 届いた分ゼロならレシートを書かない", async () => {
-    // exit 127 相当(コマンド不在をシェルが返す形)も失敗として扱われる
+  it("a vendor CLI that can't launch is a failure (it doesn't chase it). When the first launch fails = nothing arrived, no receipt is written", async () => {
+    // An exit-127 equivalent (the shape the shell returns for a missing
+    // command) is also treated as a failure
     const fixture = await startFixture({});
     fixture.env.setExecHandler(() => ({ exitCode: 127, output: "vercel: command not found\n" }));
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("vercel exited with code 127");
-    // 何も届いていない初回の失敗では、空のレシートを書かない(version を無駄にしない)
+    // On a first-run failure where nothing arrived, don't write an
+    // empty receipt (don't waste a version)
     expect(fixture.receipts.writes).toEqual([]);
 
-    // 起動そのものの失敗(型付きエラー — live.ts の execStartFailure の形。本番の文面は
-    // live-exec.test.ts で固定)はその呼び出しの失敗になり、同じくレシートを書かない
+    // A launch failure itself (a typed error — the execStartFailure
+    // shape in live.ts; the production wording is pinned in
+    // live-exec.test.ts) becomes that invocation's failure and likewise
+    // writes no receipt
     const missing = await startFixture({});
     missing.env.setExecHandler(() =>
       cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
     );
     expect(await sync(missing, "apply", "web", "--yes")).toBe(1);
     const errors = missing.env.errors.join("\n");
-    // 起動失敗の理由(maruhi 自身の文)は本文の続き。走らなかったプロセスに出力は
-    // 無いので、ベンダー出力の置き場(`  vercel: …`)と「Its output is shown above」
-    // では言わない
+    // The launch-failure reason (maruhi's own sentence) continues the
+    // body. A process that never ran has no output, so it isn't phrased
+    // in the vendor-output slot (`  vercel: …`) or as 'Its output is
+    // shown above'
     expect(errors).toContain(
       "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
@@ -878,7 +897,7 @@ describe("maruhi sync apply", () => {
     expect(missing.receipts.writes).toEqual([]);
   });
 
-  it("2 つ目のベンダー CLI が起動できなくても、先に届いた分はレシートに残る(起動失敗 = その呼び出しの失敗)", async () => {
+  it("even when the second vendor CLI can't launch, what already arrived stays on the receipt (a launch failure = that invocation's failure)", async () => {
     const fixture = await startFixture({});
     fixture.env.setExecHandler((_call, index) =>
       index === 0
@@ -892,7 +911,8 @@ describe("maruhi sync apply", () => {
       "maruhi: vercel could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted). Cannot start vercel (ENOENT)",
     );
     expectNoSecretLeak(fixture.env);
-    // 成功した ALPHA だけがレシートに載る → 次の plan は BETA だけを示す
+    // Only the successful ALPHA lands on the receipt → the next plan
+    // shows BETA alone
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
@@ -900,7 +920,7 @@ describe("maruhi sync apply", () => {
     expect(out).toContain("+ BETA\tversion 1 (new)");
   });
 
-  it("壊れたレシート変数は fail-closed(直し方を添える)", async () => {
+  it("a broken receipt variable is fail-closed (with how to fix it)", async () => {
     const receiptId = "receipt-web";
     const statement = await statementFor({
       projectId: built.projectId,
@@ -928,9 +948,10 @@ describe("maruhi sync apply", () => {
     );
   });
 
-  it("別プリセットが書いたレシートは拒む(preset の切り替え = 届け先が別。作り直しを名指し)", async () => {
-    // vercel 時代のレシートに、gh の規則では不正な名前が「届いた版のまま」残っている
-    // 形: 名前規則のエラーではなくレシートの取り違えとして先に止まる
+  it("a receipt written by a different preset is refused (switching presets = a different destination; names the rebuild)", async () => {
+    // The shape where the vercel-era receipt still has names 'as
+    // delivered' that are illegal under gh's rules: it stops earlier as
+    // a receipt mix-up, not as a name-rule error
     const fixture = await startFixture({
       sourceVariables: [
         await sourceVariable({ variableId: "vl", name: "apiKey", version: 1, plaintext: "k" }),

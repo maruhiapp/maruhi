@@ -1,16 +1,24 @@
-// 予備鍵のハンドオフ(CRYPTO_SPEC §8.4 / AUTH_SPEC §13-7 — KL3、2026-09-19 DK K4)の
-// 統合テスト: `maruhi key recover --handoff`(要求者)と `maruhi guardian approve <code>`
-// (承認者)。一時鍵・分片の封印と復号は実 crypto、サーバーはワイヤレベルモック。
+// Integration tests for the reserve-key handoff (CRYPTO_SPEC §8.4 /
+// AUTH_SPEC §13-7 — KL3, 2026-09-19 DK K4): `maruhi key recover --handoff`
+// (the requester) and `maruhi guardian approve <code>` (the approver).
+// Ephemeral keys and share sealing/decryption are real crypto; the server is
+// a wire-level mock.
 //
-// 固定する性質:
-//  1. 要求者はコード(E.pub のコード化 = 公開情報)を stderr に出し、保護者の承認が
-//     揃うと台帳のグループラップから予備鍵 B を復号し、**保存せず**この端末の新しい
-//     端末鍵を発行する(復元の後段 — key-recover.ts)。E.pub はサーバーへ送らない
-//     (request_id だけ)。旧端末の承認経路(端末移行)は K4 で削除された
-//  2. 承認者(保護者)は自分の端末鍵へ封印された分片行(`deviceShares`)を開いて
-//     E.pub へ再封印する。一時鍵の秘密鍵でだけ開ける。承認に blob 列は無い
-//  3. yes 以外は何も送らない。自分の要求は承認できない。エージェント環境・非端末では
-//     要求も承認も拒否する
+// Properties pinned down:
+//  1. The requester prints the code (the encoding of E.pub = public
+//     information) to stderr; once enough guardian approvals arrive, it
+//     decrypts reserve key B from the ledger's group wrap and — **without
+//     storing it** — issues a fresh device key for this device (the
+//     recovery tail — key-recover.ts). E.pub itself is never sent to the
+//     server (only request_id). The old-device approval path (device
+//     migration) was removed in K4
+//  2. The approver (guardian) opens the share row sealed to their own
+//     device key (`deviceShares`) and re-seals it to E.pub. Only the
+//     ephemeral key's secret key can open it. An approval carries no blob
+//     column
+//  3. Anything but yes sends nothing. You cannot approve your own request.
+//     Agent environments and non-terminals refuse both requesting and
+//     approving
 
 import {
   computeHandoffRequestId,
@@ -51,7 +59,7 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 let ward: TestUser;
-/** ward の予備鍵(台帳が封印する B — 端末鍵とは別の鍵)。 */
+/** ward's reserve key (the B the ledger seals — a different key from the device key). */
 let reserve: TestUser;
 let alice: TestUser;
 
@@ -75,7 +83,7 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-/** 台帳が持つ鍵レコード(seedSession と同じ形)。 */
+/** The key record the ledger holds (same shape as seedSession). */
 function recordOf(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -83,7 +91,8 @@ function recordOf(user: TestUser): StoredMasterKey {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
-    // テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)。それ以外は端末鍵
+    // The test's `reserve` is a CLI-generated reserve key (marked — DK K16).
+    // Everything else is a device key
     ...(user === reserve ? { kind: "reserve" as const } : {}),
   };
 }
@@ -101,7 +110,7 @@ async function start(handlers: readonly MockHandler[]): Promise<Started> {
   return { env, server };
 }
 
-/** 鍵を持たない新端末(トークンだけ)。 */
+/** A new device with no key (token only). */
 function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   env.keychain.set(
     tokenEntryName(origin),
@@ -109,7 +118,7 @@ function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   );
 }
 
-/** 要求者が stderr に出したハンドオフコード(4 文字 × 15 群 = 58 記号 + 区切り)。 */
+/** The handoff code the requester printed to stderr (4 chars × 15 groups = 58 symbols + separators). */
 function displayedCode(env: TestEnv): string {
   const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{2,4}){14}$/.test(entry));
   if (line === undefined) {
@@ -118,7 +127,7 @@ function displayedCode(env: TestEnv): string {
   return line.trim();
 }
 
-/** コードから E.pub と request_id を戻す(承認者側と同じ導出)。 */
+/** Recovers E.pub and request_id from the code (the same derivation as the approver side). */
 async function decodeDisplayed(env: TestEnv): Promise<{
   readonly publicKey: Uint8Array;
   readonly requestId: string;
@@ -130,7 +139,7 @@ async function decodeDisplayed(env: TestEnv): Promise<{
   return { publicKey: decoded.value, requestId: requestId.value };
 }
 
-/** 承認の配布形(HandoffApprovalResult — blob 列は無い)。 */
+/** The approval's distribution form (HandoffApprovalResult — no blob column). */
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
@@ -141,7 +150,7 @@ interface ApprovalWire {
   readonly createdAtMs: number;
 }
 
-/** 台帳のグループラップ(ward の予備鍵 B を KEK でラップ — any: KEK = 唯一の分片)。 */
+/** The ledger's group wrap (ward's reserve key B wrapped under the KEK — any: the KEK is the only share). */
 async function wrappedReserve(kek: Uint8Array): Promise<{
   readonly nonceHex: string;
   readonly ciphertextHex: string;
@@ -159,9 +168,11 @@ async function wrappedReserve(kek: Uint8Array): Promise<{
 }
 
 /**
- * 保護者 `approver` の承認をサーバー側で組む: 分片(= KEK)を要求者の表示から読んだ
- * E.pub へ再封印する(E.pub は人が運ぶ)。`sealedAs` は封印文脈の approver(既定は
- * `approver` 自身 — 別人を入れると文脈不一致の承認になる)。
+ * Builds guardian `approver`'s approval server-side: re-seals the share
+ * (= the KEK) to the E.pub read from the requester's display (E.pub is
+ * carried by the human). `sealedAs` is the approver of the sealing context
+ * (defaults to `approver` itself — a different person produces a
+ * context-mismatched approval).
  */
 async function guardianApprovalFor(
   env: TestEnv,
@@ -206,7 +217,7 @@ function statusHandler(groups: readonly unknown[]): MockHandler {
   }));
 }
 
-/** alice 1 人の any グループ(台帳の状態 — 分片行は端末ごと)。 */
+/** An `any` group of alice alone (ledger state — share rows are per device). */
 function aliceAnyGroup(): unknown {
   return {
     groupId: GROUP_ID,
@@ -222,7 +233,7 @@ function aliceAnyGroup(): unknown {
   };
 }
 
-/** `POST /auth/handoff` — request_id だけを受ける(E.pub は載らない)。 */
+/** `POST /auth/handoff` — receives only request_id (E.pub never rides along). */
 function createHandler(record: (body: { requestId: string }) => void): MockHandler {
   return onRequest("POST", "/auth/handoff", (request) => {
     record(request.body as { requestId: string });
@@ -230,7 +241,7 @@ function createHandler(record: (body: { requestId: string }) => void): MockHandl
   });
 }
 
-/** `GET /auth/handoff/:id/approvals` — path の request_id を問わず組んだ承認を返す。 */
+/** `GET /auth/handoff/:id/approvals` — returns the built approvals regardless of the path's request_id. */
 function approvalsHandler(build: () => Promise<readonly ApprovalWire[]>): MockHandler {
   return (request) =>
     request.method === "GET" && /^\/auth\/handoff\/[0-9a-f]{64}\/approvals$/.test(request.path)
@@ -238,7 +249,7 @@ function approvalsHandler(build: () => Promise<readonly ApprovalWire[]>): MockHa
       : null;
 }
 
-/** `GET /auth/key-wraps/guardians/:groupId` — 台帳のグループラップ(分片は運ばない)。 */
+/** `GET /auth/key-wraps/guardians/:groupId` — the ledger's group wrap (carries no shares). */
 function groupHandler(wrap: {
   readonly nonceHex: string;
   readonly ciphertextHex: string;
@@ -254,7 +265,7 @@ function groupHandler(wrap: {
   }));
 }
 
-/** `GET /projects` — 復元の後段が走査するプロジェクト一覧(空 = 登録先なし)。 */
+/** `GET /projects` — the project list the recovery tail scans (empty = nowhere to register). */
 const noProjectsHandler: MockHandler = onRequest("GET", "/projects", () => ({
   status: 200,
   json: { projects: [] },
@@ -265,9 +276,10 @@ const cancelHandler: MockHandler = (request) =>
     ? { status: 204 }
     : null;
 
-describe("maruhi key recover --handoff(要求者)", () => {
-  it("保護者(any): 分片で台帳のラップを開き、予備鍵は保存せず新しい端末鍵を発行する", async () => {
-    // 台帳: ward の予備鍵 B を KEK でラップ、KEK(= any の分片)を alice へ封印済み
+describe("maruhi key recover --handoff (the requester)", () => {
+  it("guardian (any): opens the ledger wrap with the share, never stores the reserve key, and issues a fresh device key", async () => {
+    // Ledger: ward's reserve key B wrapped under the KEK, and the KEK (= the
+    // `any` share) already sealed to alice
     const kek = generateMasterWrapKek();
     const chain = await buildChain([
       { actor: ward, operation: genesisOp(ward) },
@@ -286,14 +298,17 @@ describe("maruhi key recover --handoff(要求者)", () => {
       cancelHandler,
     ]);
     seedTokenOnly(env, server.origin, ward);
-    // 復元の後段の確認の 1 問(予備鍵は ward の端末が add_device で足した鍵 — DK K14)
+    // The recovery tail's single confirmation question (the reserve key is
+    // a key ward's device added via add_device — DK K14)
     env.setPromptResponses(["yes"]);
     expect(await runCli(["key", "recover", "--handoff"], env.layer)).toBe(0);
-    // request_id はコードの導出値と一致し、E.pub 自体は送られていない
+    // request_id matches the code's derivation, and E.pub itself was never
+    // sent
     const { publicKey, requestId } = await decodeDisplayed(env);
     expect((createBody as { requestId: string } | null)?.requestId).toBe(requestId);
     expect(JSON.stringify(server.requests.map((r) => r.body))).not.toContain(encodeHex(publicKey));
-    // キーチェーンには**新しい端末鍵**が入る。台帳の予備鍵(B)は保存されない
+    // The keychain gets the **new device key**. The ledger's reserve key
+    // (B) is not stored
     const stored = env.keychain.get(masterKeyEntryName(server.origin, ward.userId));
     expect(stored).toBeDefined();
     expect(stored).not.toContain(reserve.encSkHex);
@@ -318,15 +333,17 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(logs).toContain("Generated this device's key");
     expect(logs).toMatch(/key fingerprint: [0-9a-f]{32}/);
     expect(logs).not.toContain(`key fingerprint: ${reserve.fingerprintHex}`);
-    // 予備鍵の印がある鍵は問わずに記録する(DK K16-3 / K16-6)
+    // A key marked as a reserve key is recorded without asking (DK K16-3 /
+    // K16-6)
     expect(env.prompts).toEqual([]);
     expect(errors).toContain(
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
     );
-    // 鍵素材は出力に出ない
+    // No key material appears in the output
     expect(logs).not.toContain(reserve.encSkHex);
     expect(errors).not.toContain(reserve.encSkHex);
-    // 台帳のラップは取りに行き、役目を終えた要求は消す
+    // It fetches the ledger wrap and deletes the request that served its
+    // purpose
     expect(
       server.requests.some(
         (r) => r.method === "GET" && r.path === `/auth/key-wraps/guardians/${GROUP_ID}`,
@@ -335,12 +352,13 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(server.requests.some((r) => r.method === "DELETE")).toBe(true);
   });
 
-  it("要求の文脈と合わない承認は復号に失敗し、鍵を保存しない", async () => {
+  it("an approval mismatched to the request's context fails to decrypt and stores no key", async () => {
     const kek = generateMasterWrapKek();
     const { env, server } = await start([
       createHandler(() => {}),
       statusHandler([aliceAnyGroup()]),
-      // 封印文脈の approver(ward)と申告の approver(alice)が違う → 開けない
+      // The sealing context's approver (ward) differs from the attested
+      // approver (alice) → cannot be opened
       approvalsHandler(async () => [await guardianApprovalFor(env, alice, kek, ward)]),
       groupHandler(await wrappedReserve(kek)),
       noProjectsHandler,
@@ -352,13 +370,13 @@ describe("maruhi key recover --handoff(要求者)", () => {
       `Cannot open the approval from ${alice.userId}: it was not sealed to this request's key, or its context was altered in transit. The handoff was aborted — re-run and hand the new code to the guardians again`,
     );
     expect(env.keychain.get(masterKeyEntryName(server.origin, ward.userId))).toBeUndefined();
-    // 台帳のラップまで進まない
+    // Never reaches the ledger wrap
     expect(server.requests.some((r) => r.path === `/auth/key-wraps/guardians/${GROUP_ID}`)).toBe(
       false,
     );
   });
 
-  it("保護者がいなければ要求を作らず、別の開封手段を案内する", async () => {
+  it("creates no request and suggests another unsealing means when there is no guardian", async () => {
     const { env, server } = await start([createHandler(() => {}), statusHandler([])]);
     seedTokenOnly(env, server.origin, ward);
     expect(await runCli(["key", "recover", "--handoff"], env.layer)).toBe(1);
@@ -368,7 +386,7 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("鍵が既にある端末では要求を拒否する", async () => {
+  it("refuses the request on a device that already has a key", async () => {
     const { env, server } = await start([createHandler(() => {})]);
     seedSession(env, server.origin, ward);
     expect(await runCli(["key", "recover", "--handoff"], env.layer)).toBe(1);
@@ -378,7 +396,7 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("エージェント環境・非端末では要求を拒否する", async () => {
+  it("refuses the request in agent environments and non-terminals", async () => {
     const { env, server } = await start([createHandler(() => {})]);
     seedTokenOnly(env, server.origin, ward);
     env.setAgent({ isAgent: true, name: "test-agent" });
@@ -396,7 +414,7 @@ describe("maruhi key recover --handoff(要求者)", () => {
   });
 });
 
-/** 要求者の一時鍵とコード(テストが要求者役を演じる)。 */
+/** The requester's ephemeral key and code (the test plays the requester). */
 async function makeRequester(): Promise<{
   readonly keyPair: EncryptionKeyPair;
   readonly code: string;
@@ -410,7 +428,7 @@ async function makeRequester(): Promise<{
   return { keyPair, code: code.value, requestId: requestId.value };
 }
 
-/** 承認の payload(HandoffApproval — blob 列は無い)。 */
+/** The approval's payload (HandoffApproval — no blob column). */
 interface ApproveBody {
   readonly source: string;
   readonly shareIndex: number;
@@ -419,7 +437,7 @@ interface ApproveBody {
   readonly ciphertextHex: string;
 }
 
-/** 照会の応答(`roles` は保護者分片の形だけ — 旧 "device" は無い)。 */
+/** The lookup response (`roles` is only the guardian-share shape — the legacy "device" is gone). */
 function lookupOf(wardUser: TestUser, wardLogin: string | null): unknown {
   return {
     wardUserId: wardUser.userId,
@@ -440,7 +458,7 @@ function approveHandler(requestId: string, record: (body: ApproveBody) => void):
   });
 }
 
-/** 台帳の分片(KEK を保護者 `guardian` の端末鍵へ封印したもの)。 */
+/** The ledger's share (the KEK sealed to guardian `guardian`'s device key). */
 async function sealedShareFor(
   guardian: TestUser,
   kek: Uint8Array,
@@ -463,8 +481,9 @@ async function sealedShareFor(
 }
 
 /**
- * `GET /auth/guardian/shares/:groupId`(GuardianShareResult): 先頭行のフィールドと
- * `deviceShares`(自分の全端末行 — K3-10)。`deviceShares` を省くと旧サーバーの形。
+ * `GET /auth/guardian/shares/:groupId` (GuardianShareResult): the leading
+ * row's fields plus `deviceShares` (all of your device rows — K3-10).
+ * Omitting `deviceShares` yields the legacy-server shape.
  */
 function myShareHandler(
   rows: readonly {
@@ -491,11 +510,12 @@ function myShareHandler(
   }));
 }
 
-describe("maruhi guardian approve <code>(承認者)", () => {
-  it("保護者: 自分の端末宛の分片行を開いて E.pub へ再封印する(any)", async () => {
+describe("maruhi guardian approve <code> (the approver)", () => {
+  it("guardian: opens the share row addressed to their device and re-seals to E.pub (any)", async () => {
     const requester = await makeRequester();
     const kek = generateMasterWrapKek();
-    // 台帳の分片行: alice の端末鍵宛の行と、別端末(失効済み等)宛のダミー行
+    // The ledger's share rows: a row for alice's device key and a dummy
+    // row for another (e.g. revoked) device
     const mine = await sealedShareFor(alice, kek);
     const other = await sealedShareFor(ward, kek);
     let approved: ApproveBody | null = null;
@@ -547,13 +567,13 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     expect(env.errors.join("\n")).toContain(
       "the approval was sealed to the requester's one-time key and nothing was stored on this device",
     );
-    // 分片・KEK・秘密鍵は出力に出ない
+    // The share, KEK, and secret key never appear in the output
     expect(logs).not.toContain(encodeHex(kek));
     expect(logs).not.toContain(alice.encSkHex);
     expect(env.errors.join("\n")).not.toContain(alice.encSkHex);
   });
 
-  it("保護者: 旧サーバー(deviceShares 無し)は先頭行をこの端末の分片として開く", async () => {
+  it("guardian: a legacy server (no deviceShares) opens the leading row as this device's share", async () => {
     const requester = await makeRequester();
     const kek = generateMasterWrapKek();
     let approved: ApproveBody | null = null;
@@ -596,12 +616,13 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     );
   });
 
-  it("保護者: この端末宛の分片行が無ければ何も送らない", async () => {
+  it("guardian: sends nothing when no share row is addressed to this device", async () => {
     const requester = await makeRequester();
     const kek = generateMasterWrapKek();
     const { env, server } = await start([
       lookupHandler(requester.requestId, lookupOf(ward, null)),
-      // alice の別端末宛の行だけ(この端末の FP の行が無い)
+      // Only a row addressed to alice's other device (no row with this
+      // device's FP)
       myShareHandler([
         {
           guardianKeyFingerprintHex: "00".repeat(16),
@@ -620,10 +641,11 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("自分の要求は承認できない(端末移行はハンドオフを通らない)", async () => {
+  it("you cannot approve your own request (device migration does not go through the handoff)", async () => {
     const requester = await makeRequester();
     const { env, server } = await start([
-      // サーバーが ward 本人に要求を見せてしまっても、手元で拒む
+      // Even if the server wrongly shows the request to ward themself,
+      // refuse locally
       lookupHandler(requester.requestId, lookupOf(ward, null)),
       approveHandler(requester.requestId, () => {}),
     ]);
@@ -637,7 +659,7 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("yes 以外は何も送らない / 不明な要求は案内する / 不正なコードは拒否する", async () => {
+  it("anything but yes sends nothing / an unknown request is guided / a malformed code is refused", async () => {
     const requester = await makeRequester();
     const { env, server } = await start([
       lookupHandler(requester.requestId, lookupOf(ward, null)),
@@ -668,7 +690,7 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
-  it("エージェント環境・非端末では承認を拒否する", async () => {
+  it("refuses to approve in agent environments and non-terminals", async () => {
     const requester = await makeRequester();
     const { env, server } = await start([approveHandler(requester.requestId, () => {})]);
     seedSession(env, server.origin, alice);

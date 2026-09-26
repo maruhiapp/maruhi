@@ -1,16 +1,22 @@
-// `maruhi sync` の http ドライバのテスト: 宣言的プリセットの
-// 組み立て(値は本文のエントリにしか置けない — sync-http.ts)と、偽ベンダー API
-// (test/support/vendor-api.ts — 状態つき)に対する `sync apply` の通し。
+// Tests for `maruhi sync`'s http driver: the declarative-preset assembly
+// (values may only be placed in body entries — sync-http.ts) and `sync
+// apply` end-to-end against the fake vendor APIs (test/support/
+// vendor-api.ts — stateful).
 //
-// 固定する性質: 値とトークンが URL・ヘッダー(Authorization 以外)・stdout・stderr・
-// エラー文面に出ない、リクエスト本文の形(Workers = merge-patch の secrets /
-// Vercel = 配列 + upsert)、削除の表現(Workers = null / Vercel = 一覧 → DELETE)、
-// 429 / 5xx のリトライ、失敗応答の伏せ字化(値・トークンの echo)、Worker 不在
-// (10007)の案内、部分成功(Vercel の failed)を名前で割ってレシートに残す、
-// 統合トークンは同期先へ運ばない、plan はベンダー API に触れない。
-// Netlify: 一覧で有無を引いて POST(新規)/ PATCH(既存 key の 1 context)を
-// 1 変数ずつ、secret の既定と scopes、削除は value id(最後の値なら key ごと)、
-// 既存 key への POST の失敗は次の apply で PATCH に変わる、部分成功、429 / 5xx。
+// Properties pinned down: values and tokens never appear on the URL,
+// headers (other than Authorization), stdout, stderr, or error text; the
+// request-body shapes (Workers = merge-patch secrets / Vercel = array +
+// upsert); how deletions are expressed (Workers = null / Vercel = list →
+// DELETE); 429 / 5xx retries; scrubbing of failure responses (value /
+// token echoes); the missing-Worker (10007) guidance; partial success
+// (Vercel's failed) split by name and left on the receipt; the
+// integration token never travels to the sync target; plan never
+// touches the vendor API.
+// Netlify: lists to check presence and then POSTs (new) / PATCHes (one
+// context of an existing key) per variable; the secret default and
+// scopes; deletion by value id (the last value deletes the whole key); a
+// failed POST to an existing key turns into a PATCH on the next apply;
+// partial success; 429 / 5xx.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -148,7 +154,8 @@ async function variable(input: {
     version: input.version,
     plaintext: input.plaintext,
     writer: owner,
-    // 全環境が作られた後のヘッド(環境ごとの作成位置 2 / 3 / 4 を跨ぐ)
+    // The head after every environment was created (straddling the
+    // per-environment creation positions 2 / 3 / 4)
     head: headOf(built, built.entries.length),
   });
   return { variableId: input.variableId, statement, value };
@@ -210,7 +217,7 @@ function vercelTarget(overrides: Record<string, unknown> = {}): Record<string, u
 const NETLIFY_ACCOUNT = "my-team";
 const NETLIFY_SITE = "0f1e2d3c-site-id";
 
-/** Netlify ターゲット(`driver` 省略 = http が唯一のドライバ)。 */
+/** A Netlify target (`driver` omitted = http is the only driver). */
 function netlifyTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     preset: "netlify",
@@ -334,7 +341,7 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** 値とトークンが stdout / stderr / URL / ヘッダー(Authorization 以外)に出ない。 */
+/** Values and tokens never appear on stdout / stderr / the URL / headers (other than Authorization). */
 function expectNoSecretLeak(env: TestEnv, requests: readonly MockRequest[]): void {
   const shown = [
     allOutput(env),
@@ -371,7 +378,7 @@ async function decryptReceipt(fixture: Fixture, target: string): Promise<Record<
   return JSON.parse(decoder.decode(result.value)) as Record<string, unknown>;
 }
 
-/** 1 変数の書き込み材料(バッチ分割の検査用)。 */
+/** The write material for one variable (for checking batch splitting). */
 function write(name: string) {
   return {
     name,
@@ -379,7 +386,7 @@ function write(name: string) {
   };
 }
 
-/** 1 ターゲットの設定を厳格なパーサに通す(結果 or 理由)。 */
+/** Runs one target's config through the strict parser (result or reason). */
 function base(target: Record<string, unknown>) {
   return parseSyncConfig(
     JSON.stringify({ version: 1, receipts: { environment: "r" }, targets: { t: target } }),
@@ -387,7 +394,7 @@ function base(target: Record<string, unknown>) {
   );
 }
 
-/** パーサの結果からターゲット t を取り出す(理由の文字列ならテストの前提違い)。 */
+/** Extracts target t from the parser's result (a reason string would violate the test's premise). */
 function targetOf(parsed: ReturnType<typeof base>): SyncTarget {
   if (typeof parsed === "string") {
     throw new Error(parsed);
@@ -395,18 +402,18 @@ function targetOf(parsed: ReturnType<typeof base>): SyncTarget {
   return parsed.targets.get("t") as SyncTarget;
 }
 
-/** 最初の 1 回だけ 429(Retry-After: 0)を返す差し込み。 */
+/** A stub that returns a 429 (Retry-After: 0) only on the first call. */
 const rateLimitedOnce: VendorOverride = (call) =>
   call === 1 ? { status: 429, headers: { "retry-after": "0" } } : undefined;
 
-/** プリセットの書き込みリクエストの宣言(upsert = 1 つ、create-or-update = 2 つ)。 */
+/** The preset's write-request declarations (upsert = one, create-or-update = two). */
 function writeSpecsOf(preset: HttpPreset) {
   return preset.write.kind === "upsert"
     ? [preset.write.request]
     : [preset.write.create, preset.write.update];
 }
 
-/** プリセットの宣言に現れるパス / クエリのトークンすべて(書き込み・一覧・削除)。 */
+/** Every path / query token appearing in the preset's declarations (write, list, delete). */
 function pathTokensOf(preset: HttpPreset): PathToken[] {
   const lists = [
     ...(preset.write.kind === "create-or-update" ? [preset.write.list] : []),
@@ -425,8 +432,8 @@ function pathTokensOf(preset: HttpPreset): PathToken[] {
   ]);
 }
 
-describe("http プリセットの宣言", () => {
-  it("パス・クエリのトークンに値は存在しない(型で禁止 — 宣言を走査して確かめる)。名前は 1 変数リクエストのパスにだけ", () => {
+describe("the http presets' declarations", () => {
+  it("path / query tokens carry no values (banned by type — verified by scanning the declarations). Names appear only on single-variable request paths", () => {
     for (const preset of Object.values(HTTP_PRESETS) as HttpPreset[]) {
       for (const token of pathTokensOf(preset)) {
         if (typeof token === "string") {
@@ -435,7 +442,8 @@ describe("http プリセットの宣言", () => {
           expect(["option", "id", "name"]).toContain(token.kind);
         }
       }
-      // 名前のトークンは 1 変数だけを運ぶリクエスト(`single` の書き込み・項目ごとの削除)にだけ
+      // The name token appears only on requests carrying a single
+      // variable (`single` writes, per-item deletes)
       for (const spec of writeSpecsOf(preset)) {
         if (spec.entries !== "single") {
           expect(
@@ -443,12 +451,12 @@ describe("http プリセットの宣言", () => {
           ).toBe(false);
         }
       }
-      // ホストは固定(設定で差し替えられない)
+      // The host is fixed (not replaceable via config)
       expect(preset.host).toMatch(/^api\.(cloudflare|vercel|netlify)\.com$/);
     }
   });
 
-  it("checkIntegrationToken: 改行・制御文字・ISO-8859-1 の外を型付きエラーで拒み、文面に値を出さない", () => {
+  it("checkIntegrationToken: refuses newlines, control characters, and anything outside ISO-8859-1 with a typed error, and the wording carries no value", () => {
     const encoder = new TextEncoder();
     expect(checkIntegrationToken("T", encoder.encode("abc-123"))).toBe("abc-123");
     for (const bad of ["secret-abc\n", "secret-ab\u0001c", "secret-\u00e9\u3042", ""]) {
@@ -458,7 +466,7 @@ describe("http プリセットの宣言", () => {
     }
   });
 
-  it("buildBatches: Workers は削除を書き込みに同居させて 100 件ごと、Vercel は 25 件ごと + 削除は 1 件ずつ、Netlify は書き込み全部で 1 バッチ + 削除は 1 件ずつ", () => {
+  it("buildBatches: Workers interleaves deletions into writes every 100, Vercel every 25 plus per-item deletes, Netlify all writes in one batch plus per-item deletes", () => {
     const writes = Array.from({ length: 120 }, (_, index) => write(`V${index}`));
     const workers = buildBatches({
       preset: HTTP_PRESETS["cloudflare-workers"],
@@ -490,7 +498,7 @@ describe("http プリセットの宣言", () => {
     ).toHaveLength(1);
   });
 
-  it("設定(Netlify): driver 省略は http、exec は理由つきで拒む、context / siteId / accountId 必須、branch と secret の整合、production の既定", () => {
+  it("config (Netlify): driver omitted = http, exec is refused with a reason, context / siteId / accountId are required, branch and secret consistency, the production default", () => {
     const plain = base(netlifyTarget());
     expect(typeof plain).not.toBe("string");
     expect(targetOf(plain).driver.kind).toBe("http");
@@ -527,7 +535,8 @@ describe("http プリセットの宣言", () => {
         netlifyTarget({ options: { accountId: "a", siteId: "s", context: "dev", secret: true } }),
       ),
     ).toContain("secret cannot be true when context is dev");
-    // production の既定: production / all は production、他は非 production
+    // The production default: production / all count as production,
+    // the rest don't
     for (const [context, production] of [
       ["production", true],
       ["all", true],
@@ -551,7 +560,7 @@ describe("http プリセットの宣言", () => {
     ).toBe(false);
   });
 
-  it("設定: http は token 必須・cwd / command 不可、exec は token 不可。トークン変数は運ばない", () => {
+  it("config: http requires token and forbids cwd / command; exec forbids token. The token variable is never carried", () => {
     expect(base(cloudflareTarget({ token: undefined }))).toContain(
       "targets.t.token is required for the http driver",
     );
@@ -568,7 +577,8 @@ describe("http プリセットの宣言", () => {
     expect(base(vercelTarget({ options: { environment: "preview", project: "x" } }))).toContain(
       "targets.t.options has unknown keys (project)",
     );
-    // 同じ環境のトークンは "all" から黙って除き、明示リストにあれば設定の誤り
+    // A same-environment token is silently dropped from "all"; on an
+    // explicit list it's a config error
     const sameEnvAll = base(
       cloudflareTarget({ token: { environment: SOURCE_ENV, name: "CF_API_TOKEN" } }),
     );
@@ -582,7 +592,7 @@ describe("http プリセットの宣言", () => {
         }),
       ),
     ).toContain("targets.t.variables lists the token variable");
-    // driver 無しの設定はそのまま exec として読める(後方互換)
+    // A driver-less config reads as exec as-is (backward compat)
     const legacy = base({
       preset: "vercel",
       environment: "p",
@@ -595,7 +605,7 @@ describe("http プリセットの宣言", () => {
 });
 
 describe("maruhi sync apply (http, Cloudflare Workers)", () => {
-  it("merge-patch の secrets に値を置き、名前付き環境はスクリプト名に合成し、トークンは Authorization だけに載り、レシートを作る", async () => {
+  it("places values in merge-patch secrets, composes named environments into the script name, puts the token only on Authorization, and creates the receipt", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -623,7 +633,8 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.cloudflare.com with the token from variable CF_API_TOKEN in environment tokens",
     );
-    // ヘッダー行はプリセットの describeOptions(name / environment)で同期先を名指す
+    // The header line names the sync destination via the preset's
+    // describeOptions (name / environment)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target worker (environment prod -> cloudflare-workers my-worker staging via http)",
     );
@@ -639,7 +650,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     });
   });
 
-  it("削除は同じリクエストの null で運び、plan はベンダー API に触れない", async () => {
+  it("deletions ride the same request as nulls, and plan never touches the vendor API", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -672,7 +683,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     });
   });
 
-  it("Worker が無い(10007)なら draft を作らず、デプロイを案内して exit 1。値は伏せる", async () => {
+  it("with no Worker (10007), doesn't create a draft, guides toward a deploy, exits 1 — and the values are scrubbed", async () => {
     const cf = makeFakeCloudflare({ token: CF_TOKEN, scripts: [] });
     const fixture = await startFixture({
       targets: { worker: cloudflareTarget() },
@@ -689,7 +700,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expectNoSecretLeak(fixture.env, cf.requests);
   });
 
-  it("429 は Retry-After で待って再送し、5xx が続けば試行を使い切って exit 1(応答の echo は伏せる)", async () => {
+  it("waits out a 429 via Retry-After and retries; a persistent 5xx exhausts the attempts to exit 1 (response echoes are scrubbed)", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -727,12 +738,13 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(down.requests).toHaveLength(3);
     const errors2 = fixture2.env.errors.join("\n");
     expect(errors2).toContain("the Cloudflare API answered 503 (3 attempts)");
-    // 試行の使い切りは「拒否」ではない — 送信の失敗として言う
+    // Exhausted attempts aren't a 'refusal' — worded as a send
+    // failure
     expect(errors2).toContain("the request to the Cloudflare API failed while writing");
     expectNoSecretLeak(fixture2.env, down.requests);
   });
 
-  it("トークン変数が無い・改行を含むと送らずに止める(文面は変数名だけ)", async () => {
+  it("a missing token variable or one containing a newline stops without sending (the wording names only the variable)", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -768,7 +780,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expectNoSecretLeak(newline.env, cf.requests);
   });
 
-  it("トークンがレシート環境にあれば同じ床ハンドルで読み、レシートも書ける", async () => {
+  it("when the token lives on the receipts environment, it's read by the same floor handle and the receipt can be written too", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -795,13 +807,14 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(await decryptReceipt(fixture, "worker")).toMatchObject({
       variables: { ALPHA: 3, BETA: 1 },
     });
-    // 2 回目: 同じ床でレシート(新 version)を読み、トークンも読める
+    // Second run: reads the receipt (the new version) from the same
+    // floor, and the token reads too
     expect(await sync(fixture, "plan", "worker"), fixture.env.errors.join("\n")).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("2 unchanged");
     expectNoSecretLeak(fixture.env, cf.requests);
   });
 
-  it("トークンが同期元と同じ環境にあっても同期先へ運ばない", async () => {
+  it("a token living on the sync source's environment still isn't carried to the target", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
       scripts: [`${CF_ACCOUNT}/my-worker-staging`],
@@ -840,7 +853,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
 });
 
 describe("maruhi sync apply (http, Vercel)", () => {
-  it("配列 + upsert=true で一括、type は preview = sensitive、teamId はクエリ、削除は一覧 → DELETE", async () => {
+  it("batches as an array with upsert=true, type is sensitive for preview, teamId is a query param, and deletion is list → DELETE", async () => {
     const vercel = makeFakeVercel({
       token: VERCEL_TOKEN,
       projectId: "prj_123",
@@ -870,7 +883,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(list.method).toBe("GET");
     expect(list.query).toEqual({ target: "preview", teamId: "team_9" });
     expect(remove.method).toBe("DELETE");
-    // preview の OLD だけを消す(production の同名は残す)
+    // Deletes only preview's OLD (the production namesake survives)
     expect(remove.path).toBe("/v10/projects/prj_123/env/env_old");
     expect(vercel.envs.map((env) => env.key).toSorted()).toEqual(["ALPHA", "BETA", "OLD"]);
     expect(await decryptReceipt(fixture, "web")).toMatchObject({
@@ -879,7 +892,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expectNoSecretLeak(fixture.env, vercel.requests);
   });
 
-  it("development と sensitive: false は encrypted で送る", async () => {
+  it("development and sensitive: false are sent as encrypted", async () => {
     const vercel = makeFakeVercel({ token: VERCEL_TOKEN, projectId: "prj_123" });
     const fixture = await startFixture({
       targets: {
@@ -902,7 +915,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     ]);
   });
 
-  it("部分成功(failed)は届いた名前だけレシートに残し、失敗応答の値の echo は伏せて exit 1", async () => {
+  it("partial success (failed) leaves only the delivered names on the receipt, scrubs the failure response's value echo, and exits 1", async () => {
     const vercel = makeFakeVercel({
       token: VERCEL_TOKEN,
       projectId: "prj_123",
@@ -923,7 +936,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expectNoSecretLeak(fixture.env, vercel.requests);
   });
 
-  it("同期先で既に消えていた名前の削除は一覧に無ければ消えた扱い(レシートが詰まらない)", async () => {
+  it("deleting a name already gone at the target counts as deleted when absent from the list (the receipt doesn't jam)", async () => {
     const vercel = makeFakeVercel({ token: VERCEL_TOKEN, projectId: "prj_123" });
     const fixture = await startFixture({
       targets: {
@@ -950,7 +963,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
   });
 
-  it("一覧に続きがある(pagination.next)のに名前が無ければ消えたと断じず、レシートに残して exit 1", async () => {
+  it("when the list continues (pagination.next) but the name is absent, it isn't judged gone — kept on the receipt with exit 1", async () => {
     const vercel = makeFakeVercel({ token: VERCEL_TOKEN, projectId: "prj_123", paginated: true });
     const fixture = await startFixture({
       targets: {
@@ -974,11 +987,11 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(fixture.env.errors.join("\n")).toContain(
       "the Vercel API returned a paginated list of variables, so maruhi could not confirm that GONE is gone from the target. It stays in the receipt",
     );
-    // レシートは書かれない(GONE が残る = 次の apply が再び試す)
+    // No receipt is written (GONE remains = the next apply retries)
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("書き込みの 2xx に created が無ければ届いたと読まず、レシートは書かれない", async () => {
+  it("a 2xx write without created isn't read as delivered, and no receipt is written", async () => {
     const vercel = makeFakeVercel({
       token: VERCEL_TOKEN,
       projectId: "prj_123",
@@ -996,7 +1009,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("トークンが拒否されれば(403)何も届かず、レシートは書かれない", async () => {
+  it("a refused token (403) delivers nothing and writes no receipt", async () => {
     const vercel = makeFakeVercel({ token: "another-token", projectId: "prj_123" });
     const fixture = await startFixture({
       targets: { web: vercelTarget({ options: { environment: "preview", projectId: "prj_123" } }) },
@@ -1012,7 +1025,7 @@ describe("maruhi sync apply (http, Vercel)", () => {
 });
 
 describe("maruhi sync apply (http, Netlify)", () => {
-  it("一覧で有無を引き、無い名前は POST(配列 1 件・secret・3 scope)、ある名前は PATCH(1 context)。トークンは Authorization だけ、レシートを作る", async () => {
+  it("lists presence, POSTs absent names (one-element array, secret, 3 scopes), PATCHes present ones (one context). The token is on Authorization only, and the receipt is created", async () => {
     const netlify = netlifyFake({
       initial: [
         {
@@ -1050,7 +1063,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(update.path).toBe(`/api/v1/accounts/${NETLIFY_ACCOUNT}/env/BETA`);
     expect(update.query).toEqual({ site_id: NETLIFY_SITE });
     expect(update.body).toEqual({ context: "deploy-preview", value: BETA_VALUE });
-    // 同期先の状態: ALPHA は新規(secret)、BETA は production の値を残して deploy-preview が足された
+    // The target's state: ALPHA is new (secret), BETA kept its
+    // production value and got a deploy-preview added
     expect(netlify.vars.get("ALPHA")?.is_secret).toBe(true);
     expect(netlify.vars.get("BETA")?.values.map((value) => [value.context, value.value])).toEqual([
       ["production", "keep"],
@@ -1059,7 +1073,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.netlify.com with the token from variable NETLIFY_TOKEN in environment tokens",
     );
-    // ヘッダー行はプリセットの describeOptions(context / branch)で同期先を名指す
+    // The header line names the sync destination via the preset's
+    // describeOptions (context / branch)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target site (environment prod -> netlify deploy-preview via http)",
     );
@@ -1072,7 +1087,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
       preset: "netlify",
       variables: { ALPHA: 3, BETA: 1 },
     });
-    // 2 回目: 一覧に両方あるので PATCH だけ(POST は無い)。plan は API に触れない
+    // Second run: both are in the list, so PATCH only (no POST). plan
+    // never touches the API
     netlify.requests.length = 0;
     expect(await sync(fixture, "plan", "site")).toBe(0);
     expect(netlify.requests).toEqual([]);
@@ -1094,7 +1110,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     ]);
   });
 
-  it("context all / secret false は is_secret: false で scopes を送らず、production と all は --yes が要る。branch は context_parameter に載る", async () => {
+  it("context all / secret false sends is_secret: false without scopes; production and all need --yes. branch rides the context_parameter", async () => {
     const netlify = netlifyFake();
     const fixture = await startFixture({
       targets: {
@@ -1135,7 +1151,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(bodies[0]).toEqual([
       { key: "ALPHA", is_secret: false, values: [{ context: "all", value: ALPHA_VALUE }] },
     ]);
-    // plain: 一覧に ALPHA / BETA がある(everywhere が作った)= PATCH に production の値
+    // plain: ALPHA / BETA are in the list (made by everywhere) = PATCH
+    // gets the production value
     expect(bodies[2]).toEqual({ context: "production", value: ALPHA_VALUE });
     expect(bodies[4]).toEqual({
       context: "branch",
@@ -1150,7 +1167,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, netlify.requests);
   });
 
-  it("削除はこのターゲットの context の値だけを id で消し、他の context の値は残す。最後の値なら key ごと消す。一覧に無ければ消えた扱い", async () => {
+  it("deletion removes by id only this target's context value, keeping other contexts' values; the last value deletes the whole key. Absent from the list counts as deleted", async () => {
     const netlify = netlifyFake({
       initial: [
         {
@@ -1184,7 +1201,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
     const calls = netlify.requests.map((request) => [request.method, request.path]);
-    // GONE(一覧に無い = 消えた扱い。DELETE は送らない)→ OLD(値 1 つ)→ ONLY(key ごと)
+    // GONE (absent from the list = counts as deleted, no DELETE sent)
+    // → OLD (one value) → ONLY (the whole key)
     expect(calls).toEqual([
       ["GET", `/api/v1/accounts/${NETLIFY_ACCOUNT}/env`],
       ["GET", `/api/v1/accounts/${NETLIFY_ACCOUNT}/env`],
@@ -1201,7 +1219,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, netlify.requests);
   });
 
-  it("作成が拒まれれば(422)届いた名前だけレシートに残し、応答の値の echo は伏せて exit 1。同名が先に作られていれば一覧を引き直して PATCH に切り替える", async () => {
+  it("a refused creation (422) leaves only the delivered names on the receipt, scrubs the response's value echo, and exits 1. If the same name was created first, re-list and switch to PATCH", async () => {
     const netlify = netlifyFake({ rejectKeys: ["BETA"] });
     const fixture = await startFixture({
       targets: { site: netlifyTarget() },
@@ -1216,7 +1234,9 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(errors).toContain("error 422: Value for BETA is invalid: [redacted]");
     expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
     expectNoSecretLeak(fixture.env, netlify.requests);
-    // 一覧と送信の間に同名が作られた形(既存 key への POST は同期先の失敗として出る)
+    // The shape where the same name was created between the list and
+    // the send (a POST to an existing key surfaces as the target's
+    // failure)
     const raced = netlifyFake({
       override: (call, request) =>
         call === 1 && request.method === "GET" ? { status: 200, json: [] } : undefined,
@@ -1234,7 +1254,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHandlers: raced.handlers,
       vendorHosts: ["api.netlify.com"],
     });
-    // POST が既存 key で拒まれる(422)→ 一覧を引き直す → ALPHA がある → PATCH。同じ apply で届く
+    // The POST is refused for an existing key (422) → re-list → ALPHA
+    // is there → PATCH. It lands in the same apply
     expect(await sync(fixture2, "apply", "site"), fixture2.env.errors.join("\n")).toBe(0);
     expect(raced.requests.map((request) => request.method)).toEqual([
       "GET",
@@ -1247,7 +1268,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture2.env, raced.requests);
   });
 
-  it("作成の失敗後の引き直しの一覧が落ち続けても、create の失敗として報告し、先に届いた名前はレシートに残る", async () => {
+  it("even if the re-list after a failed create keeps failing, it's reported as a create failure and the already-delivered names stay on the receipt", async () => {
     const flaky = netlifyFake({
       rejectKeys: ["BETA"],
       override: (call, request) =>
@@ -1280,8 +1301,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, flaky.requests);
   });
 
-  it("1 変数の送信が試行を使い切っても、その変数の失敗として報告し、先に届いた名前はレシートに残る", async () => {
-    // ALPHA の POST は通り、BETA の POST が 503 × 3
+  it("even if one variable's send exhausts its attempts, it's reported as that variable's failure and the already-delivered names stay on the receipt", async () => {
+    // ALPHA's POST passes; BETA's POST gets 503 × 3
     let posts = 0;
     const down = netlifyFake({
       override: (_call, request) => {
@@ -1307,7 +1328,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
     ]);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
-    // 試行の使い切りは「拒否」ではない — 送信の失敗として言う
+    // Exhausted attempts aren't a 'refusal' — worded as a send
+    // failure
     expect(errors).toContain(
       "the request to the Netlify API failed while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
@@ -1316,7 +1338,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, down.requests);
   });
 
-  it("削除バッチの一覧が試行を使い切っても、その削除の失敗として報告し、先の書き込みバッチで届いた名前はレシートに残る", async () => {
+  it("even if the delete batch's list exhausts its attempts, it's reported as that deletion's failure and the names the earlier write batch delivered stay on the receipt", async () => {
     let gets = 0;
     const flaky = netlifyFake({
       override: (_call, request) => {
@@ -1340,7 +1362,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site")).toBe(1);
-    // 書き込みバッチ(GET → POST ALPHA)は届き、削除バッチの GET が 503 × 3
+    // The write batch (GET → POST ALPHA) delivered; the delete batch's
+    // GET got 503 × 3
     expect(flaky.requests.map((request) => request.method)).toEqual([
       "GET",
       "POST",
@@ -1359,7 +1382,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, flaky.requests);
   });
 
-  it("作成の応答が失われて再送されると既存 key で拒まれる — 一覧を引き直して PATCH に切り替え、届いたと記録する", async () => {
+  it("when a create response is lost and resent, it's refused for the existing key — re-list, switch to PATCH, and record it as delivered", async () => {
     const lossy = netlifyFake({ loseFirstCreateResponse: true });
     const fixture = await startFixture({
       targets: { site: netlifyTarget() },
@@ -1367,7 +1390,8 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
-    // GET → POST ALPHA(保存されたが 503)→ POST ALPHA(再送 = 422)→ GET → PATCH ALPHA → POST BETA
+    // GET → POST ALPHA (stored but 503) → POST ALPHA (retry = 422) →
+    // GET → PATCH ALPHA → POST BETA
     expect(lossy.requests.map((request) => request.method)).toEqual([
       "GET",
       "POST",
@@ -1384,7 +1408,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, lossy.requests);
   });
 
-  it("非 secret で既にある変数に secret のつもりの値は送らずに止める(届いた分はレシートへ)。secret: false なら書く", async () => {
+  it("stops without sending a would-be secret value to a variable that already exists as non-secret (delivered ones go on the receipt). secret: false writes it", async () => {
     const initial = [
       {
         key: "BETA",
@@ -1404,16 +1428,18 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(errors).toContain(
       "BETA already exists at the target with is_secret off, and the config asks for it on. Netlify cannot turn an existing variable into a secret",
     );
-    // 送っていないものを「拒否された」と言わない
+    // Don't call something that was never sent 'refused'
     expect(errors).toContain(
       "maruhi did not send the request while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
-    // BETA には何も送っていない(値は readable のまま = maruhi の値を置いていない)
+    // Nothing was sent to BETA (its value stays readable = no maruhi
+    // value was placed)
     expect(netlify.requests.map((request) => request.method)).toEqual(["GET", "POST"]);
     expect(netlify.vars.get("BETA")?.values[0]?.value).toBe("readable");
     expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
     expectNoSecretLeak(fixture.env, netlify.requests);
-    // secret: false と言えば非 secret の変数に書く(既定の secret を明示で降ろした形)
+    // With secret: false it writes to the non-secret variable (the
+    // default secret explicitly lowered)
     const plain = netlifyFake({ initial });
     const fixture2 = await startFixture({
       targets: {
@@ -1433,7 +1459,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(plain.vars.get("BETA")?.values[0]?.value).toBe(BETA_VALUE);
   });
 
-  it("429 は Retry-After で待って再送し、5xx が続けば試行を使い切って exit 1(応答の echo は伏せる)。401 では何も届かない", async () => {
+  it("waits out a 429 via Retry-After and retries; a persistent 5xx exhausts the attempts to exit 1 (response echoes are scrubbed). A 401 delivers nothing", async () => {
     const limited = netlifyFake({ override: rateLimitedOnce });
     const fixture = await startFixture({
       targets: { site: netlifyTarget() },
@@ -1441,7 +1467,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
-    // 一覧が 429 → 再送 → POST × 2
+    // The list gets 429 → retry → POST × 2
     expect(limited.requests.map((request) => request.method)).toEqual([
       "GET",
       "GET",
@@ -1476,13 +1502,14 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(await sync(fixture3, "apply", "site")).toBe(1);
     const listingErrors = fixture3.env.errors.join("\n");
     expect(listingErrors).toContain("HTTP 401 while listing variables at the target");
-    // 一覧には応答が返っている: 「送っていない」ではなく一覧の失敗として言う
+    // The list did get a response: word it as a listing failure, not
+    // 'nothing sent'
     expect(listingErrors).toContain("the Netlify API did not list the existing variables");
     expect(fixture3.receipts.writes).toEqual([]);
     expectNoSecretLeak(fixture3.env, wrongToken.requests);
   });
 
-  it("書き込みの 2xx に変数の key が無ければ届いたと読まず、レシートは書かれない。トークンが同期元と同じ環境にあっても運ばない", async () => {
+  it("a 2xx write without the variable's key isn't read as delivered, and no receipt is written. A token living on the sync source's environment isn't carried", async () => {
     const odd = netlifyFake({
       override: (_call, request) =>
         request.method === "POST" ? { status: 201, json: { ok: true } } : undefined,

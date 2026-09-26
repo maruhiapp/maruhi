@@ -1,8 +1,10 @@
-// 環境作成の複合リクエスト(§12-4)のテスト: create_environment エントリ
-// (エポック 1 のコミットメント込み — §5.2/§6.2)の署名・親ヘッド CAS、
-// ラップ集合 = 検証済み現メンバー集合との厳密一致(§6.3 ゴーストメンバー対策の
-// クライアント側)、署名者 = 呼び出し主体(§5.1)、ChainHeadConflict の
-// 再署名リトライ、grant_server 有効時の拒否、チェーン観測済み ID の早期拒否。
+// Tests for the composite environment-creation request (§12-4): signing the
+// create_environment entry (with the epoch-1 commitment — §5.2/§6.2),
+// parent-head CAS, the wrap set matching the verified current-member set
+// exactly (the client side of §6.3's ghost-member defense), signer = the
+// calling principal (§5.1), re-signing retries on ChainHeadConflict, refusal
+// while a grant_server is in force, and early refusal of an environment ID
+// already observed on the chain.
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -36,7 +38,7 @@ import {
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
-/** 複合作成リクエストのボディ(api-schema の environments.create payload)。 */
+/** Body of the composite create request (api-schema's environments.create payload). */
 interface CompositeCreateBody {
   readonly parentHeadHashHex: string;
   readonly entry: ChainEntry & { readonly op: "create_environment" };
@@ -51,7 +53,7 @@ interface CompositeCreateBody {
     readonly signatureHex: string;
   };
   readonly deks: WrappedDek[];
-  /** 同梱マニフェスト(§12-4 — manifestVersion 1・変数空集合・prev 空)。 */
+  /** The bundled manifest (§12-4 — manifestVersion 1, empty variable set, empty prev). */
   readonly manifest: {
     readonly suite: string;
     readonly environmentId: string;
@@ -103,17 +105,18 @@ function chainHandler(
 }
 
 /**
- * 実サーバーの状態遷移を模す最小の複合作成モック: 受理した create_environment
- * エントリをチェーンへ追記し、以後のチェーン取得(受理確認の再同期 —
- * §12-10 (3))へそのまま配る。env-rotate.test.ts の makeServer と同じ理由 —
- * 効果確認がチェーン同期になったため、200 を返すだけのモックでは成功しない。
+ * A minimal composite-create mock mimicking the real server's state
+ * transitions: appends an accepted create_environment entry to the chain and
+ * serves it to later chain fetches (the acceptance-check resync — §12-10
+ * (3)). Same rationale as env-rotate.test.ts's makeServer — since the effect
+ * check is a chain sync, a mock that merely returns 200 can never succeed.
  */
 function acceptingCreateServer(input: {
   readonly projectId: string;
   readonly base: Awaited<ReturnType<typeof buildChain>>;
-  /** create 呼び出しごとの差し込み応答(undefined = 受理)。受理をスキップする。 */
+  /** Per-call override response for create (undefined = accept). Skips acceptance. */
   readonly onCreate?: (call: number, body: CompositeCreateBody) => MockResponse | undefined;
-  /** 受理(チェーン追記)した上で返す応答の差し替え(申告を嘘にする negative 用)。 */
+  /** Override for the response returned after accepting (appending to the chain) — for the lying-attestation negative. */
   readonly acceptedResponse?: (call: number, body: CompositeCreateBody) => MockResponse;
 }): { readonly handlers: readonly MockHandler[]; readonly bodies: CompositeCreateBody[] } {
   const entries: ChainEntry[] = [...input.base.entries];
@@ -163,7 +166,7 @@ function acceptingCreateServer(input: {
   return { handlers, bodies };
 }
 
-/** 1 ラップの §5.1 署名検証(署名者 = owner)と受信者側の unwrap を行い、DEK を返す。 */
+/** Verifies one wrap's §5.1 signature (signer = owner) and unwraps it as the recipient; returns the DEK. */
 async function verifyAndUnwrapWrap(input: {
   readonly wrap: WrappedDek;
   readonly projectId: string;
@@ -217,7 +220,7 @@ async function verifyAndUnwrapWrap(input: {
 }
 
 describe("maruhi env create", () => {
-  it("複合リクエスト: 署名済み create_environment エントリ(コミットメント込み)+ ラップ完全集合を同梱する", async () => {
+  it("composite request: bundles the signed create_environment entry (with commitment) + the complete wrap set", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const member = await makeTestUser("user-member-2222");
     const removed = await makeTestUser("user-removed-3333");
@@ -234,8 +237,9 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging", "--name", "Staging"], env.layer)).toBe(0);
     const body = server.bodies[0];
     if (body === undefined) throw new Error("composite create was not called");
-    // 表示名は EnvironmentMetaStatement(metaVersion 1)が運ぶ(§12-4)。
-    // 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev)
+    // The display name rides on the EnvironmentMetaStatement
+    // (metaVersion 1) (§12-4). The declared head is the pre-append current
+    // head (= the bundled entry's prev)
     expect(body.statement.name).toBe("Staging");
     expect(body.statement.environmentId).toBe("staging");
     expect(body.statement.status).toBe("active");
@@ -244,20 +248,22 @@ describe("maruhi env create", () => {
     expect(body.statement.chainHeadHashHex).toBe(head);
     expect(body.statement.chainHeadSeq).toBe(built.entries.length);
     expect(body.statement.signatureHex).toMatch(/^[0-9a-f]{128}$/);
-    // 親ヘッド CAS + エントリは現ヘッドの直後(seq = head + 1)に actor = 呼び出し
-    // 主体で署名されている
+    // Parent-head CAS + the entry is signed by actor = the calling
+    // principal, placed right after the current head (seq = head + 1)
     expect(body.parentHeadHashHex).toBe(head);
     expect(body.entry.op).toBe("create_environment");
     expect(body.entry.seq).toBe(built.entries.length + 1);
     expect(body.entry.prevHashHex).toBe(head);
     expect(body.entry.actor.userId).toBe(owner.userId);
     expect(body.entry.payload.environmentId).toBe("staging");
-    // ラップ先 = 検証済み現メンバー集合と厳密一致(削除済みメンバー宛はない)
+    // Wrap recipients = exactly the verified current-member set (nothing
+    // addressed to removed members)
     expect(body.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, member.userId].toSorted(),
     );
-    // 各ラップは §5.1 署名(署名者 = 呼び出し主体 = owner)を持ち、受信者が復号できる。
-    // 全受信者が同一の DEK を得る
+    // Each wrap carries a §5.1 signature (signer = the calling principal =
+    // owner) and its recipient can decrypt. Every recipient obtains the same
+    // DEK
     const deks: Uint8Array[] = [];
     for (const wrap of body.deks) {
       deks.push(
@@ -273,8 +279,9 @@ describe("maruhi env create", () => {
     expect(Buffer.from(deks[0] ?? []).toString("hex")).toBe(
       Buffer.from(deks[1] ?? []).toString("hex"),
     );
-    // エントリの dek_commitment_hex は同梱 DEK の §5.2 コミットメント(受信者は
-    // unwrap した DEK をこの値と照合してから使う)
+    // The entry's dek_commitment_hex is the bundled DEK's §5.2 commitment
+    // (recipients check the unwrapped DEK against this value before using
+    // it)
     const dek = deks[0];
     if (dek === undefined) throw new Error("missing dek");
     const matched = await verifyDekCommitment({
@@ -288,9 +295,11 @@ describe("maruhi env create", () => {
       expectedCommitmentHex: body.entry.payload.dekCommitmentHex,
     });
     expect(matched.ok).toBe(true);
-    // 同梱マニフェスト(§12-4): manifestVersion 1・変数空集合の正規ダイジェスト・
-    // prev 空・epoch 1(複合適用後 — §12-5 (4))・宣言ヘッドは追記前の現ヘッド。
-    // envMeta は同梱ステートメントの (metaVersion, signed bytes ハッシュ)
+    // The bundled manifest (§12-4): manifestVersion 1, the canonical digest
+    // of the empty variable set, empty prev, epoch 1 (after the composite
+    // applies — §12-5 (4)), and the declared head is the pre-append current
+    // head. envMeta is the bundled statement's (metaVersion, signed-bytes
+    // hash)
     expect(body.manifest.manifestVersion).toBe(1);
     expect(body.manifest.prevManifestSigHashHex).toBe("");
     expect(body.manifest.environmentId).toBe("staging");
@@ -317,18 +326,19 @@ describe("maruhi env create", () => {
     expect(body.manifest.signatureHex).toMatch(/^[0-9a-f]{128}$/);
   });
 
-  it("ChainHeadConflict(409)は再同期してエントリを再署名し、リトライする(§12-4)", async () => {
+  it("ChainHeadConflict (409) resyncs, re-signs the entry, and retries (§12-4)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const other = await makeTestUser("user-other-4444");
     const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // 並行追記で伸びたチェーン(同一 genesis + add_member)
+    // A chain extended by a concurrent append (same genesis + add_member)
     const chainB = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(other, "reader") },
     ]);
     expect(chainB.projectId).toBe(chainA.projectId);
     const headB = chainB.hashes[chainB.hashes.length - 1] ?? "";
-    // 初回同期は chainA、409 後の再同期からは chainB(+ 受理エントリ)を配る
+    // The first sync serves chainA; post-409 resyncs serve chainB (+ the
+    // accepted entry)
     const entries: ChainEntry[] = [...chainA.entries];
     const hashes: string[] = [...chainA.hashes];
     const bodies: CompositeCreateBody[] = [];
@@ -354,7 +364,8 @@ describe("maruhi env create", () => {
           const body = request.body as CompositeCreateBody;
           bodies.push(body);
           if (bodies.length === 1) {
-            // 送信と並行して他メンバーが追記していた(親ヘッド CAS 失敗)
+            // Another member had appended concurrently with the send
+            // (parent-head CAS failure)
             entries.splice(0, entries.length, ...chainB.entries);
             hashes.splice(0, hashes.length, ...chainB.hashes);
             return {
@@ -386,34 +397,38 @@ describe("maruhi env create", () => {
     expect(bodies).toHaveLength(2);
     const [first, second] = bodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
-    // 再試行は新ヘッドを親にエントリを再署名している(seq / prev / 署名が変わる)
+    // The retry re-signs the entry with the new head as parent (seq / prev /
+    // signature all change)
     expect(first.entry.seq).toBe(2);
     expect(second.entry.seq).toBe(3);
     expect(second.parentHeadHashHex).toBe(headB);
     expect(second.entry.prevHashHex).toBe(headB);
     expect(second.entry.signatureHex).not.toBe(first.entry.signatureHex);
-    // ステートメントも**両方**再署名される(宣言ヘッド = 追記前の新ヘッド — §12-4)
+    // The statement is **also** re-signed (declared head = the new head
+    // before the append — §12-4)
     expect(second.statement.chainHeadHashHex).toBe(headB);
     expect(second.statement.chainHeadSeq).toBe(chainB.entries.length);
     expect(second.statement.signatureHex).not.toBe(first.statement.signatureHex);
-    // コミットメント(= 生成済み DEK)は不変のまま
+    // The commitment (= the already-generated DEK) stays unchanged
     expect(second.entry.payload.dekCommitmentHex).toBe(first.entry.payload.dekCommitmentHex);
-    // メンバー集合が変わった(other が加わった)ため、ラップ集合は作り直されている
+    // The member set changed (other was added), so the wrap set is rebuilt
     expect(first.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
     expect(second.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, other.userId].toSorted(),
     );
-    // 完了報告のメンバー数は**実際に登録したラップ集合**の大きさ(開始時のビューの
-    // 1 名ではない)。作り直した集合と食い違う数を報告しない
+    // The completion report's member count is the size of the wrap set
+    // **actually registered** (not the 1 from the starting view). Don't
+    // report a number disagreeing with the rebuilt set
     expect(env.logs.join("\n")).toContain("DEK wrapped for 2 current members");
   });
 
-  it("ChainHeadConflict の再同期は延長検査付き(短縮・分岐チェーンへ再署名しない)", async () => {
+  it("the ChainHeadConflict resync carries an extension check (no re-signing onto a shortened or forked chain)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const other = await makeTestUser("user-other-4444");
-    // 初回に見えるチェーン(2 エントリ)より、409 後に配られるチェーンが短い =
-    // 巻き戻し。署名としては妥当でも、この状態でエントリを再署名し、巻き戻った
-    // メンバー集合でラップ集合を作り直してはならない(§6.3-2b)
+    // The chain served after the 409 is shorter than the one seen first (2
+    // entries) = a rollback. Even if it verifies as signatures go, the entry
+    // must not be re-signed in this state nor the wrap set rebuilt on the
+    // rolled-back member set (§6.3-2b)
     const long = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(other, "reader") },
@@ -454,16 +469,18 @@ describe("maruhi env create", () => {
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("not an extension of the verified view");
-    // 巻き戻ったビューでの再署名は行われない(送信は初回の 1 度きり)
+    // No re-signing on the rolled-back view (the send happened exactly
+    // once)
     expect(bodies).toHaveLength(1);
   });
 
-  it("ChainHeadConflict リトライでメンバー集合が不変ならラップ集合を再利用する(§12-4)", async () => {
+  it("reuses the wrap set on a ChainHeadConflict retry when the member set is unchanged (§12-4)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // 伸びたチェーンだがメンバー集合(user_id → enc 鍵)は不変(rename 等価の
-    // 代わりに change_role で自分の role を owner のまま……は不可なので、
-    // 「add してすぐ remove」でヘッドだけ進める)
+    // A chain that grew while the member set (user_id → enc key) stayed
+    // unchanged (a rename-equivalent via change_role to keep own role at
+    // owner isn't allowed, so advance only the head via "add then
+    // immediately remove")
     const passerby = await makeTestUser("user-passerby-5555");
     const chainB = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -528,13 +545,14 @@ describe("maruhi env create", () => {
     expect(bodies).toHaveLength(2);
     const [first, second] = bodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
-    // エントリは再署名される(prev が変わる)が、ラップ集合は再構築されない
-    // (HPKE Seal はランダムなので、再ラップしていれば enc / ct / 署名が変わる)
+    // The entry is re-signed (prev changes) but the wrap set is not rebuilt
+    // (HPKE Seal is randomized — a re-wrap would change enc / ct /
+    // signature)
     expect(second.entry.prevHashHex).toBe(headB);
     expect(second.deks).toEqual(first.deks);
   });
 
-  it("環境 ID の positional 未指定はネットワーク前に拒否される(bogus id で create API を呼ばない)", async () => {
+  it("a missing environment-ID positional is refused before the network (never calls the create API with a bogus id)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = await MockServer.start([chainHandler(built.projectId, built)]);
@@ -542,15 +560,16 @@ describe("maruhi env create", () => {
     const env = await makeTestEnv();
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // required positional は引数層が弾く(usage エラー = exit 2)。
-    // ハンドラ内の undefined ガードは、その前段が外れても "undefined" が
-    // RESOURCE_ID_PATTERN を通らないための多層防御。いずれにせよ HTTP は起きない
+    // The args layer rejects the required positional (usage error = exit
+    // 2). The handler's undefined guard is defense in depth so that even if
+    // that pre-phase is bypassed, "undefined" fails RESOURCE_ID_PATTERN.
+    // Either way, no HTTP happens
     const code = await runCli(["env", "create"], env.layer);
     expect(code === 1 || code === 2).toBe(true);
     expect(server.requests).toHaveLength(0);
   });
 
-  it("reader は環境を作成できない(member 以上 — §6.2)。ラップを作る前に拒否する", async () => {
+  it("a reader cannot create environments (member or above — §6.2). Refused before any wraps are built", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const reader = await makeTestUser("user-reader-5555");
     const built = await buildChain([
@@ -563,14 +582,15 @@ describe("maruhi env create", () => {
     seedSession(env, server.origin, reader);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
 
-    // サーバーの汎用 403 を待たない: 待つと DEK 生成 + 全メンバー分の HPKE
-    // ラップ・署名を済ませてから拒否されることになる(env rotate と同じ規律)
+    // Does not wait for the server's generic 403: waiting would mean the
+    // DEK generation + per-member HPKE wraps + signing all run before being
+    // refused (same discipline as env rotate)
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("A reader cannot create environments");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("listed scope のメンバーは環境を作成できない(scope = all のみ — §6.2 / 裁定 E)。ラップを作る前に拒否する", async () => {
+  it("a listed-scope member cannot create environments (scope = all only — §6.2 / ruling E). Refused before any wraps are built", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const dev = await makeTestUser("user-dev-6666");
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -592,11 +612,12 @@ describe("maruhi env create", () => {
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("作成する環境が grant_server の開示スコープに入っていれば、完全集合にサーバー宛ラップを含めて成功する(§12-4)", async () => {
+  it("when the environment being created is inside a grant_server's disclosure scope, the complete set includes the server-destined wrap and it succeeds (§12-4)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
-      // 未作成 ID を先回りで開示したスコープ(スコープの存在検査は合意規則にない)
+      // A scope that pre-disclosed a not-yet-created ID (the consensus
+      // rules have no existence check for scopes)
       { actor: owner, operation: await grantServerOp(["staging"]) },
     ]);
     const grantEntry = built.entries[1];
@@ -611,18 +632,20 @@ describe("maruhi env create", () => {
         recipientEncPubHex: string;
       }[];
     };
-    // 完全集合 = 現メンバー(owner)+ スコープ内 grant のサーバー鍵。
-    // サーバー宛は recipient 位置にサーバー鍵 FP(CRYPTO_SPEC §9)
+    // Complete set = current members (owner) + the server key of the
+    // in-scope grant. The server-destined wrap puts the server-key FP in the
+    // recipient position (CRYPTO_SPEC §9)
     expect(body.deks).toHaveLength(2);
     const serverWrap = body.deks.find((wrap) => wrap.recipientClass === "server");
     expect(serverWrap?.recipientUserId).toBe(grantEntry.payload.serverKeyFingerprintHex);
     expect(serverWrap?.recipientEncPubHex).toBe(grantEntry.payload.serverEncPubHex);
   });
 
-  it("スコープが空の grant_server はどの環境も対象にしない(サーバー宛ラップなしで作成できる)", async () => {
-    // §6.2 は空スコープの意味を定めないが、完全集合の判定(§12-4)は
-    // 「スコープに含まれる環境」なので空 = 対象なし。クライアントとサーバーで
-    // 同じ includes 判定を使う(割れると複合が恒常的に 422 になる)
+  it("a grant_server with an empty scope targets no environment (creation can proceed without a server-destined wrap)", async () => {
+    // §6.2 doesn't define an empty scope's meaning, but the complete-set
+    // check (§12-4) keys on "environments included in the scope", so empty =
+    // nothing targeted. Client and server use the same includes check (a
+    // split would make the composite permanently 422)
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -636,7 +659,7 @@ describe("maruhi env create", () => {
     expect(body.deks.every((wrap) => wrap.recipientClass === undefined)).toBe(true);
   });
 
-  it("別環境だけを開示した grant_server は、他環境の作成を止めない(§6.2 のスコープは部分集合)", async () => {
+  it("a grant_server disclosing only another environment does not stop creating this one (a §6.2 scope is a subset)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -649,17 +672,19 @@ describe("maruhi env create", () => {
     expect(server.bodies).toHaveLength(1);
   });
 
-  it("完了報告のエポックはサーバー申告ではなく構造的な 1 を出す(§12-4)", async () => {
-    // 受理後の事実をサーバーの自己申告から取ると、rotate 側で敷いた
-    // 「申告を真実源にしない」規律が create 側だけ緩む。create_environment が
-    // 確立するエポックは常に 1 なので、申告が何であれ 1 を出す
+  it("the completion report's epoch is the structural 1, not the server's claim (§12-4)", async () => {
+    // Taking the post-acceptance fact from the server's self-assertion would
+    // relax, on the create side alone, the "claims are not the source of
+    // truth" discipline laid down on the rotate side. create_environment
+    // always establishes epoch 1, so report 1 whatever the claim says
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({
       projectId: built.projectId,
       base: built,
-      // 受理(チェーン追記)はするが、申告を嘘にする(実サーバーは 1 を返す —
-      // composite-programs.ts)。効果確認はチェーン導出で行われるため成功する
+      // Accepts (appends to the chain) but lies in the attestation (the
+      // real server returns 1 — composite-programs.ts). The effect check
+      // runs on chain derivation, so this still succeeds
       acceptedResponse: () => ({
         status: 200,
         json: {
@@ -678,7 +703,7 @@ describe("maruhi env create", () => {
     expect(logs).not.toContain("epoch=7");
   });
 
-  it("受理確認後に v1 床(空変数集合 + 自己発行マニフェスト)を確立し、intent を閉じる", async () => {
+  it("establishes the v1 floor (empty variable set + self-issued manifest) after the acceptance check and closes the intent", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });
@@ -687,21 +712,23 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
     const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
     const record = loaded.floor?.environments["staging"];
-    // 空変数集合の環境床: 環境メタ v1・自己発行マニフェスト v1(epoch 1)・
-    // 規則 (c) の基準 = 1(空カバレッジと原子的に確立)
+    // The environment floor of an empty variable set: environment meta v1,
+    // self-issued manifest v1 (epoch 1), and rule (c)'s baseline = 1
+    // (established atomically with the empty coverage)
     expect(record?.manifest).toMatchObject({ manifestVersion: 1, epoch: 1 });
     expect(record?.metaVersion).toBe(1);
     expect(record?.pullEpoch).toBe(1);
     expect(record?.observedEpoch).toBe(1);
     expect(record?.variables).toEqual({});
-    // 効果確認(§12-10 (3))が通過したので intent は閉じている
+    // The intent is closed since the effect check (§12-10 (3)) passed
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("2xx でもチェーンに自エントリがなければ成功と言わず、床も前進させない(§12-10 (3))", async () => {
+  it("does not call 2xx a success when the chain lacks our entry, and does not advance the floor (§12-10 (3))", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // 200 を返すがチェーンへ追記しない = 虚偽 2xx(悪意・バグのあるサーバー)
+    // Returns 200 but never appends to the chain = a lying 2xx (malicious
+    // or buggy server)
     const server = acceptingCreateServer({
       projectId: built.projectId,
       base: built,
@@ -721,9 +748,11 @@ describe("maruhi env create", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("does not show this run's create_environment");
     const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
-    // 床は前進していない(自分の思い込みを床に書かない)
+    // The floor did not advance (don't write your own assumptions onto the
+    // floor)
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
-    // 確認義務の記録(intent)は未解決のまま残る(次の実行の照合対象)
+    // The check-obligation record (intent) remains unresolved (the next
+    // run's reconciliation target)
     expect(loaded.floor?.intents).toHaveLength(1);
     expect(loaded.floor?.intents[0]).toMatchObject({
       op: "create_environment",
@@ -731,11 +760,12 @@ describe("maruhi env create", () => {
     });
   });
 
-  it("受理確認の再同期に失敗した実行の intent は、次の実行の照合(チェーン同期)が解決し床を前進させる", async () => {
+  it("an intent left by a run whose acceptance-check resync failed is resolved by the next run's reconciliation (chain sync), advancing the floor", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // フェーズ 1: 受理(チェーン追記)は起きるが、確認の再同期(2 回目の chain
-    // 取得)が落ちる = acceptance-unknown 相当。エラー終了し intent が残る
+    // Phase 1: acceptance (the chain append) happens, but the check resync
+    // (the second chain fetch) fails = the acceptance-unknown case. It
+    // errors out and the intent remains
     const entries: ChainEntry[] = [...built.entries];
     const hashes: string[] = [...built.hashes];
     let chainCalls = 0;
@@ -786,8 +816,9 @@ describe("maruhi env create", () => {
     expect(loaded.floor?.intents).toHaveLength(1);
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
 
-    // フェーズ 2: 次の実行(別環境の create)の前段が、チェーン同期で intent を
-    // 照合する — 受理済みと確認できたので床(自己発行マニフェスト)が前進する
+    // Phase 2: the next run (creating a different environment) reconciles
+    // the intent in its pre-phase via a chain sync — it confirms acceptance,
+    // so the floor (self-issued manifest) advances
     const phase2 = await MockServer.start(
       acceptingCreateServer({
         projectId: built.projectId,
@@ -801,17 +832,18 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging2"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("confirmed as accepted on the chain");
     loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
-    // 照合が中断した create の自己発行マニフェストを床へ回収している
+    // The reconciliation has recovered the interrupted create's self-issued
+    // manifest onto the floor
     expect(loaded.floor?.environments["staging"]?.manifest).toMatchObject({
       manifestVersion: 1,
       epoch: 1,
     });
-    // staging2 自身の v1 床と intent 解決も通常どおり
+    // staging2's own v1 floor and intent resolution proceed as usual
     expect(loaded.floor?.environments["staging2"]?.manifest).toMatchObject({ manifestVersion: 1 });
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("intent の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+  it("sends no composite when the intent append fails (journal-before-send is fail-closed)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });
@@ -819,12 +851,13 @@ describe("maruhi env create", () => {
     env.failFloorIntentAppends();
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    // Don't fire a security-critical mutation without the check-obligation
+    // record
     expect(server.bodies).toHaveLength(0);
     expect(env.errors.join("\n")).toContain("intent");
   });
 
-  it("チェーン観測済みの環境 ID は HTTP を呼ばず早期拒否する(履歴全体一意 — §6.2)", async () => {
+  it("refuses early, without calling HTTP, an environment ID already observed on the chain (unique across all history — §6.2)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -838,7 +871,7 @@ describe("maruhi env create", () => {
 
     expect(await runCli(["env", "create", "burned"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("already used on the chain");
-    // 環境作成の HTTP 呼び出しは発生していない(チェーン取得のみ)
+    // No environment-creation HTTP call occurred (only the chain fetch)
     expect(
       server.requests.filter((request) => request.method === "POST").map((request) => request.path),
     ).toEqual([]);

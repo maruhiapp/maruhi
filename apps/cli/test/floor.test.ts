@@ -1,12 +1,15 @@
-// ローカル床(CRYPTO_SPEC §6.3 — 追記専用観測ログ + fold)のテスト。
+// Tests for the local floor (CRYPTO_SPEC §6.3 — append-only observation log
+// + fold).
 //
-// 前半: 床ストア(floor-log.ts)の単体 — 追記 + fold の単調 join・typed
-// conflict(同座標・異ハッシュの両証拠保存)・破損末尾レコードの自己回復・
-// スナップショットレコードのコンパクション・intent / resolution・
-// 旧保存形からの移行。並行追記は「2 ストアインスタンスの並行追記で両観測が
-// ログに残り、同版異 hash が両証拠付き typed conflict になり、異なる変数の
-// 並行 commit は union される」形で固定する。後半(結線テスト)は
-// floor-detection.test.ts。
+// First half: the floor store (floor-log.ts) in isolation — append + fold's
+// monotone join, typed conflicts (both pieces of evidence for same-coordinate
+// differing-hash observations are preserved), self-recovery from a torn tail
+// record, snapshot-record compaction, intents / resolutions, and migration
+// from the legacy storage form. Concurrent appends are pinned as: "two store
+// instances appending concurrently leave both observations in the log, a
+// same-version differing-hash pair becomes a both-evidence typed conflict,
+// and concurrent commits of different variables union". The second half
+// (wiring tests) lives in floor-detection.test.ts.
 
 import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,7 +50,7 @@ function envFloor(overrides?: Partial<EnvironmentFloor>): EnvironmentFloor {
   };
 }
 
-describe("makeFileFloorStore(追記専用ログ + fold)", () => {
+describe("makeFileFloorStore (append-only log + fold)", () => {
   let dir: string;
   let store: FloorStoreShape;
 
@@ -59,7 +62,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
   const load = () => Effect.runPromise(store.load(PROJECT_ID));
   const logPath = () => join(dir, `${PROJECT_ID}.jsonl`);
 
-  it("ファイル不在 = missing(初回)、解読可能レコードゼロの非空ファイル = corrupt を区別する", async () => {
+  it("distinguishes missing file = missing (first run) from a non-empty file with zero readable records = corrupt", async () => {
     expect(await load()).toEqual({ floor: null, state: "missing", droppedRecords: 0 });
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
     expect((await load()).state).toBe("loaded");
@@ -67,7 +70,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 2 });
   });
 
-  it("部分的に解読できない行は droppedRecords として数える(呼び出し側の警告材料)", async () => {
+  it("counts partially unreadable lines as droppedRecords (the caller's warning material)", async () => {
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
     await appendFile(logPath(), "\n{torn-line-without-newline");
     const result = await load();
@@ -76,13 +79,14 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(result.floor?.chainHead).toEqual({ seq: 1, hashHex: HASH_A });
   });
 
-  it("droppedRecords はコンパクションで retire する(古い torn 行の警告を恒久的に鳴らさない)", async () => {
+  it("retires droppedRecords on compaction (doesn't warn forever about an old torn line)", async () => {
     const compacting = makeFileFloorStore(dir, { compactionThreshold: 2 });
     await Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
     await appendFile(logPath(), "\n{torn-line-without-newline");
     expect((await load()).droppedRecords).toBe(1);
-    // 閾値を超えてスナップショットが積まれると、torn 行は畳まれた接頭辞に入り
-    // 数えられなくなる(警告の対象は fold 基点以降のみ)
+    // Once enough snapshots accumulate past the threshold, the torn line
+    // enters the folded prefix and is no longer counted (only records past
+    // the fold point are warned about)
     for (let index = 0; index < 4; index += 1) {
       await Effect.runPromise(
         compacting.commitHead(PROJECT_ID, { seq: 2 + index, hashHex: HASH_B }),
@@ -93,14 +97,14 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(result.droppedRecords).toBe(0);
   });
 
-  it("commitHead はヘッドを前進のみさせる(seq 後退の観測は join で負ける)", async () => {
+  it("commitHead only advances the head (a seq-regressing observation loses the join)", async () => {
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 3, hashHex: HASH_B }));
     const result = await load();
     expect(result.floor?.chainHead).toEqual({ seq: 5, hashHex: HASH_A });
   });
 
-  it("commitPull は環境床の join とヘッド前進を 1 レコードの追記で行う", async () => {
+  it("commitPull performs the environment-floor join and head advance in a single appended record", async () => {
     await Effect.runPromise(
       store.commitPull(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -117,12 +121,13 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     );
     const result = await load();
     expect(result.floor?.chainHead).toEqual({ seq: 4, hashHex: HASH_B });
-    // 別環境の床は保持される(環境単位の join)
+    // The other environment's floor is preserved (the join is per-
+    // environment)
     expect(Object.keys(result.floor?.environments ?? {}).toSorted()).toEqual(["dev", "prod"]);
     expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
   });
 
-  it("commitPush は変数床を前進させ、pullEpoch(規則 (c) 基準)は動かさない", async () => {
+  it("commitPush advances the variable floor and does not move pullEpoch (rule (c)'s baseline)", async () => {
     await Effect.runPromise(
       store.commitPull(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -149,11 +154,11 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     const environment = result.floor?.environments["prod"];
     expect(environment?.pullEpoch).toBe(2);
     expect(environment?.variables["va"]).toMatchObject({ version: 4, epoch: 3 });
-    // 他の変数床は保持される
+    // Other variable floors are preserved
     expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
   });
 
-  it("commitPush は環境床がなくても規則 (c) 基準を捏造しない(変数床のみの部分観測)", async () => {
+  it("commitPush without an environment floor does not fabricate the rule (c) baseline (a partial observation of the variable floor only)", async () => {
     await Effect.runPromise(
       store.commitPush(PROJECT_ID, {
         chainHead: { seq: 2, hashHex: HASH_A },
@@ -165,13 +170,14 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     const result = await load();
     const environment = result.floor?.environments["prod"];
     expect(result.floor?.chainHead?.seq).toBe(2);
-    // 各座標は独立な半束: pull 基準・環境メタは bottom のまま、変数床だけが立つ
+    // Each coordinate is an independent semilattice: the pull baseline and
+    // environment meta stay bottom while only the variable floor stands
     expect(environment?.pullEpoch).toBe(0);
     expect(environment?.metaVersion).toBe(0);
     expect(environment?.variables["va"]).toMatchObject({ status: "deleted" });
   });
 
-  it("commitMetadata は環境水準のみ join する(値床を捏造せず pull 基準も動かさない)", async () => {
+  it("commitMetadata joins only the environment level (fabricates no value floor, doesn't move the pull baseline)", async () => {
     await Effect.runPromise(
       store.commitMetadata(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -195,7 +201,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(environment?.variables).toEqual({});
   });
 
-  it("commitManifest はマニフェスト床と環境水準エポック観測(座標 (ii))だけを前進させる", async () => {
+  it("commitManifest advances only the manifest floor and the environment-level epoch observation (coordinate (ii))", async () => {
     await Effect.runPromise(
       store.commitPull(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -217,17 +223,20 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     const result = await load();
     const environment = result.floor?.environments["prod"];
     expect(environment?.manifest).toMatchObject({ manifestVersion: 2, epoch: 3 });
-    // マニフェストの epoch は座標 (ii)(observedEpoch)へも join される
+    // The manifest's epoch also joins into coordinate (ii)
+    // (observedEpoch)
     expect(environment?.observedEpoch).toBe(3);
-    // 規則 (c) の pull 基準は動かない(チェーン同期・受理確認単独で前進させない)
+    // Rule (c)'s pull baseline does not move (a chain sync or acceptance
+    // check alone never advances it)
     expect(environment?.pullEpoch).toBe(2);
-    // 変数床は不変
+    // The variable floor is unchanged
     expect(environment?.variables["va"]).toMatchObject({ version: 3 });
   });
 
-  describe("並行 2 ストアインスタンス(= 2 プロセス相当)の追記", () => {
-    it("異なる変数の並行 commit は union され、どちらの観測も失われない", async () => {
-      // 2 プロセスが同じ古い床から出発して独立に commit する形
+  describe("concurrent appends from 2 store instances (= 2 processes)", () => {
+    it("concurrent commits of different variables union and neither observation is lost", async () => {
+      // The shape where 2 processes depart from the same old floor and
+      // commit independently
       const storeA = makeFileFloorStore(dir);
       const storeB = makeFileFloorStore(dir);
       await Effect.runPromise(
@@ -267,7 +276,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       expect(result.floor?.conflicts).toEqual([]);
     });
 
-    it("同版異 hash の並行 commit は両観測がログに残り、両証拠付きの typed conflict になる", async () => {
+    it("concurrent commits of same-version differing-hash leave both observations in the log and become a both-evidence typed conflict", async () => {
       const storeA = makeFileFloorStore(dir);
       const storeB = makeFileFloorStore(dir);
       const variable = (hash: string) =>
@@ -287,8 +296,9 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
           variable: variable(HASH_C),
         }),
       );
-      // 後から着地した同版異 hash は「後勝ち」にならず typed conflict で失敗する
-      // (証拠の上書きが保存形として表現不能 — 追記のみ)
+      // A later-landing same-version differing-hash does not "win last" — it
+      // fails as a typed conflict (overwriting evidence is not expressible
+      // in the storage form — append only)
       await expect(
         Effect.runPromise(
           storeB.commitPush(PROJECT_ID, {
@@ -299,11 +309,12 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
           }),
         ),
       ).rejects.toThrow("contradict each other");
-      // 両観測はログに残っている(追記専用 — 先の証拠は消えない)
+      // Both observations remain in the log (append-only — the earlier
+      // evidence doesn't disappear)
       const raw = await readFile(logPath(), "utf8");
       expect(raw).toContain(HASH_C);
       expect(raw).toContain(HASH_D);
-      // fold は両証拠付きの typed conflict を表面化する
+      // fold surfaces the both-evidence typed conflict
       const result = await load();
       expect(result.floor?.conflicts).toHaveLength(1);
       const conflict = result.floor?.conflicts[0];
@@ -313,7 +324,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       );
     });
 
-    it("同一 manifestVersion への異なる hash も typed conflict(規則 (b) のマージ意味論)", async () => {
+    it("different hashes at the same manifestVersion are a typed conflict too (rule (b)'s merge semantics)", async () => {
       await Effect.runPromise(
         store.commitManifest(PROJECT_ID, {
           chainHead: { seq: 3, hashHex: HASH_A },
@@ -334,7 +345,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       expect(result.floor?.conflicts[0]).toMatchObject({ kind: "manifest" });
     });
 
-    it("同一 seq への異なるチェーンヘッド hash は分岐の typed conflict", async () => {
+    it("different chain-head hashes at the same seq are a fork typed conflict", async () => {
       await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
       await expect(
         Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_B })),
@@ -343,7 +354,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       expect(result.floor?.conflicts[0]).toMatchObject({ kind: "chain-head" });
     });
 
-    it("deleted(終端)より進んだ metaVersion の active 観測は undeletion の typed conflict", async () => {
+    it("an active observation with a metaVersion beyond deleted (terminal) is an undeletion typed conflict", async () => {
       await Effect.runPromise(
         store.commitPush(PROJECT_ID, {
           chainHead: { seq: 3, hashHex: HASH_A },
@@ -369,15 +380,17 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
           }),
         ),
       ).rejects.toThrow("undeletion");
-      // 代表は deleted のまま(終端状態は active で上書きされない)
+      // The representative stays deleted (the terminal state isn't
+      // overwritten by active)
       const result = await load();
       expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({
         status: "deleted",
       });
     });
 
-    it("古い pull の遅延着地は単調 join で負けるだけで、証拠は何も失われない", async () => {
-      // プロセス B が新世代(pullEpoch 3・va v5)をコミット済み
+    it("a delayed landing of an older pull merely loses the monotone join — no evidence is lost", async () => {
+      // Process B has already committed a newer generation (pullEpoch 3,
+      // va v5)
       await Effect.runPromise(
         store.commitPull(PROJECT_ID, {
           chainHead: { seq: 5, hashHex: HASH_B },
@@ -399,7 +412,8 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
           }),
         }),
       );
-      // プロセス A の古い pull(pullEpoch 2・va v3・vb の tombstone 込み)が後に着地
+      // Process A's older pull (pullEpoch 2, va v3, with vb's tombstone)
+      // lands later
       await Effect.runPromise(
         store.commitPull(PROJECT_ID, {
           chainHead: { seq: 3, hashHex: HASH_A },
@@ -413,14 +427,14 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       expect(environment?.pullEpoch).toBe(3);
       expect(environment?.metaVersion).toBe(2);
       expect(environment?.variables["va"]).toMatchObject({ version: 5, epoch: 3 });
-      // 片側にしかない変数(vb)は union で保持される
+      // A variable present on only one side (vb) is kept by the union
       expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
       expect(result.floor?.conflicts).toEqual([]);
     });
   });
 
-  describe("破損末尾レコードの自己回復", () => {
-    it("torn 行(クラッシュした書きかけ)は fold が無視し、後続の追記を壊さない", async () => {
+  describe("self-recovery from a torn tail record", () => {
+    it("a torn line (a crashed partial write) is ignored by fold and doesn't corrupt later appends", async () => {
       await Effect.runPromise(
         store.commitPull(PROJECT_ID, {
           chainHead: { seq: 3, hashHex: HASH_A },
@@ -428,12 +442,14 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
           environment: envFloor(),
         }),
       );
-      // 並行プロセスが書きかけでクラッシュした形(末尾に改行のない部分行)
+      // The shape of a concurrent process crashing mid-write (a partial
+      // line with no trailing newline)
       await appendFile(logPath(), '{"r":"pull","head":{"seq":9');
       const afterTear = await load();
       expect(afterTear.state).toBe("loaded");
       expect(afterTear.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
-      // 次の追記は改行を前置して torn 行を隔離する — 新しい観測は正しく載る
+      // The next append prepends a newline to isolate the torn line — the
+      // new observation lands correctly
       await Effect.runPromise(
         store.commitPush(PROJECT_ID, {
           chainHead: { seq: 4, hashHex: HASH_B },
@@ -467,7 +483,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       declaredHead: { seq: 3, hashHex: HASH_A },
     };
 
-    it("未解決 intent は fold が「要照合」として表面化し、resolution が閉じる", async () => {
+    it("an unresolved intent is surfaced by fold as 'needs reconciliation' and a resolution closes it", async () => {
       const id = await Effect.runPromise(store.appendIntent(PROJECT_ID, intentInput));
       let result = await load();
       expect(result.floor?.intents).toHaveLength(1);
@@ -483,7 +499,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       expect(result.floor?.intents).toEqual([]);
     });
 
-    it("intent は join の格子に入らない(床の観測座標を一切動かさない)", async () => {
+    it("an intent does not enter the join lattice (moves no floor observation coordinate)", async () => {
       await Effect.runPromise(store.appendIntent(PROJECT_ID, intentInput));
       const result = await load();
       expect(result.floor?.chainHead).toBeNull();
@@ -491,16 +507,18 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     });
   });
 
-  describe("コンパクション(スナップショットレコードの追記 — 書き直さない)", () => {
-    it("閾値超過でスナップショットが追記され、fold 結果は不変・conflict の証拠も畳まれても消えない", async () => {
+  describe("compaction (appending snapshot records — never rewriting)", () => {
+    it("past the threshold a snapshot is appended; the fold result is unchanged and folded conflict evidence isn't lost", async () => {
       const compacting = makeFileFloorStore(dir, { compactionThreshold: 4 });
-      // conflict を 1 件作る(証拠がスナップショットを跨いで残ることの固定)
+      // Create one conflict (pins that the evidence survives across the
+      // snapshot)
       await Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
       await expect(
         Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_B })),
       ).rejects.toThrow("fork");
-      // 閾値(4 レコード)を超えるまで観測を積む(conflict 済みの床への commit は
-      // 失敗し続けるが、追記自体は行われる — 証拠は増える方向にしか動かない)
+      // Stack observations past the threshold (4 records) — commits onto a
+      // conflicted floor keep failing, but the appends themselves still
+      // happen (evidence only ever grows)
       for (let index = 0; index < 5; index += 1) {
         await Effect.runPromise(
           Effect.ignore(compacting.commitHead(PROJECT_ID, { seq: 6 + index, hashHex: HASH_C })),
@@ -508,15 +526,17 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       }
       const raw = await readFile(logPath(), "utf8");
       expect(raw).toContain('"r":"snapshot"');
-      // スナップショット追記後も fold の意味論は不変(conflict は消えない)
+      // After the snapshot lands, fold's semantics are unchanged (the
+      // conflict doesn't disappear)
       const result = await load();
       expect(result.floor?.conflicts.some((conflict) => conflict.kind === "chain-head")).toBe(true);
-      // 物理回収はしない(追記のみ): torn な書き直しが起きていないことの代替検査
-      // として、スナップショット後もログに全レコードが残っていることを見る
+      // No physical collection happens (append-only): as a stand-in check
+      // that no torn rewrite occurred, verify all records still remain in
+      // the log after the snapshot
       expect(raw).toContain(HASH_B);
     });
 
-    it("スナップショット以降だけを fold しても状態が等しい(位置基準 + 冪等な join)", async () => {
+    it("folding only the records after the snapshot yields the same state (positional baseline + idempotent join)", async () => {
       const compacting = makeFileFloorStore(dir, { compactionThreshold: 2 });
       for (let index = 0; index < 4; index += 1) {
         await Effect.runPromise(
@@ -541,7 +561,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     });
   });
 
-  describe("旧保存形(単一 JSON スナップショット)からの移行", () => {
+  describe("migration from the legacy storage form (a single JSON snapshot)", () => {
     const legacy = {
       v: 1,
       chainHead: { seq: 3, hashHex: HASH_A },
@@ -565,7 +585,7 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       },
     };
 
-    it("旧ファイルを互換読みし(observedEpoch は既知の検証済み事実から導出)、最初の追記でログへ移行する", async () => {
+    it("compat-reads the legacy file (observedEpoch derived from known verified facts) and migrates to the log on the first append", async () => {
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
       const loaded = await load();
@@ -575,28 +595,31 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
         observedEpoch: 2,
         metaVersion: 1,
       });
-      // 最初の追記が旧状態をスナップショットレコードとしてログへ移行する
+      // The first append migrates the legacy state into the log as a
+      // snapshot record
       await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 4, hashHex: HASH_B }));
       const raw = await readFile(logPath(), "utf8");
       expect(raw).toContain('"r":"snapshot"');
       const result = await load();
       expect(result.floor?.chainHead).toEqual({ seq: 4, hashHex: HASH_B });
       expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
-      // 旧ファイルはフォレンジック材料として残る(追記専用の規律 — 消さない)
+      // The legacy file remains as forensic material (append-only
+      // discipline — don't delete it)
       const entries = await readdir(dir);
       expect(entries).toContain(`${PROJECT_ID}.json`);
     });
 
-    it("旧ファイルの破損は corrupt として区別する", async () => {
+    it("distinguishes a corrupt legacy file as corrupt", async () => {
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, `${PROJECT_ID}.json`), "{broken");
       expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 0 });
     });
 
-    it("空の .jsonl(open と write の間で落ちた残骸)は有効な旧形式を隠さない", async () => {
-      // open(\"a\") はファイルを即座に作るため、直後のクラッシュで 0 byte の
-      // ログが残りうる。これを missing(初回)へ潰すと、有効な旧床がある run が
-      // 床なし(fail-open)で走り、事実と違う first sync 通知が出る
+    it("an empty .jsonl (a remnant crashed between open and write) does not hide a valid legacy form", async () => {
+      // open("a") creates the file immediately, so a crash right after can
+      // leave a 0-byte log. Collapsing that into missing (first run) would
+      // let a run that does have a valid legacy floor run floorless
+      // (fail-open) and emit a factually wrong first-sync notice
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
       await writeFile(join(dir, `${PROJECT_ID}.jsonl`), "");
@@ -606,24 +629,24 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     });
   });
 
-  it("missing は ENOENT のみ: それ以外の読み取りエラーは初回と同一視しない", async () => {
-    // 床ログのパスにディレクトリを置く(readFile → EISDIR)
+  it("missing means ENOENT only: other read errors are not conflated with first-run", async () => {
+    // Place a directory at the floor log's path (readFile → EISDIR)
     await mkdir(logPath(), { recursive: true });
     await expect(Effect.runPromise(store.load(PROJECT_ID))).rejects.toThrow(
       "Cannot read the local floor log",
     );
-    // 書き込み経路も中断する(床の無警告な機能停止を作らない)
+    // The write path also aborts (don't create a silently dead floor)
     await expect(
       Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A })),
     ).rejects.toThrow("Cannot write the local floor log");
   });
 
-  it("プロジェクト ID の形式(hex 64)をパス組み立て前に強制する", async () => {
+  it("enforces the project ID format (hex 64) before assembling the path", async () => {
     await expect(Effect.runPromise(store.load("../escape"))).rejects.toThrow();
   });
 });
 
-describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () => {
+describe("FloorHandle (in-process cache and the intent front door)", () => {
   let dir: string;
   let store: FloorStoreShape;
 
@@ -632,8 +655,9 @@ describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () =
     store = makeFileFloorStore(dir);
   });
 
-  it("コミットごとに fold 済みの床へ同期する(並行プロセスの検出材料を取りこぼさない)", async () => {
-    // 兄弟プロセスが vb の tombstone を確立済み(自プロセスの openProject 後)
+  it("syncs to the folded floor on every commit (never misses a concurrent process's detection material)", async () => {
+    // The sibling process has already established vb's tombstone (after this
+    // process's openProject)
     await Effect.runPromise(
       store.commitPull(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -641,7 +665,7 @@ describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () =
         environment: envFloor({ pullEpoch: 3, observedEpoch: 3 }),
       }),
     );
-    // 自プロセスのハンドルは古いスナップショット(床なし)から開始
+    // This process's handle starts from the stale snapshot (no floor)
     const handle = makeFloorHandle({
       store,
       projectId: PROJECT_ID,
@@ -667,16 +691,17 @@ describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () =
         { seq: 3, hashHex: HASH_A },
       ),
     );
-    // 送信スナップショット(va v1・pullEpoch 2)でなく fold 済み床が採用される:
-    // 兄弟の tombstone(vb)・より新しい va(v3)・高い方の基準(pullEpoch 3)を
-    // 同一コマンド内の後続検査が引き継ぐ
+    // The folded floor — not the sent snapshot (va v1, pullEpoch 2) — is
+    // adopted: the sibling's tombstone (vb), the newer va (v3), and the
+    // higher baseline (pullEpoch 3) carry over to later checks in the same
+    // command
     const current = handle.current();
     expect(current?.pullEpoch).toBe(3);
     expect(current?.variables["vb"]).toMatchObject({ status: "deleted" });
     expect(current?.variables["va"]).toMatchObject({ version: 3 });
   });
 
-  it("commitManifest はディスク書き込みが失敗してもプロセス内の基準を同じ join で前進させる", async () => {
+  it("commitManifest advances the in-process baseline with the same join even when the disk write fails", async () => {
     const failing: FloorStoreShape = {
       ...store,
       commitManifest: () => Effect.fail(cliError("injected floor write failure")),
@@ -696,11 +721,11 @@ describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () =
       ),
     ).rejects.toThrow();
     expect(handle.current()?.manifest).toMatchObject({ manifestVersion: 2 });
-    // 座標 (ii) も同じ join で前進する
+    // Coordinate (ii) advances under the same join too
     expect(handle.current()?.observedEpoch).toBe(2);
   });
 
-  it("intent は環境スコープで保持され、resolveIntent は冪等に閉じる", async () => {
+  it("intents are held per environment scope and resolveIntent closes idempotently", async () => {
     const handle = makeFloorHandle({
       store,
       projectId: PROJECT_ID,
@@ -722,15 +747,15 @@ describe("FloorHandle(プロセス内キャッシュと intent の窓口)", () =
     expect(handle.unresolvedIntents()).toHaveLength(1);
     await Effect.runPromise(handle.resolveIntent(id, "accepted"));
     expect(handle.unresolvedIntents()).toEqual([]);
-    // 二重 resolution は no-op(ログにも余計な resolution を積まない)
+    // A double resolution is a no-op (no extra resolution is logged)
     await Effect.runPromise(handle.resolveIntent(id, "accepted"));
     const loaded = await Effect.runPromise(store.load(PROJECT_ID));
     expect(loaded.floor?.intents).toEqual([]);
   });
 });
 
-describe("床ログの非機密性(ディスクレス不変条件)", () => {
-  it("ProjectFloor の shape に平文値・名前のフィールドが存在しない(型レベルの固定はここでは値検査)", async () => {
+describe("the floor log's non-sensitivity (the diskless invariant)", () => {
+  it("ProjectFloor's shape contains no plaintext-value or name fields (the type-level pin is a value check here)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "maruhi-floor-shape-test-"));
     const store = makeFileFloorStore(dir);
     await Effect.runPromise(
@@ -741,10 +766,11 @@ describe("床ログの非機密性(ディスクレス不変条件)", () => {
       }),
     );
     const raw = await readFile(join(dir, `${PROJECT_ID}.jsonl`), "utf8");
-    // 追記は隔離用の改行を前置する — 最初の非空行がレコード
+    // An append prepends an isolating newline — the first non-empty line is
+    // the record
     const line = raw.split("\n").find((candidate) => candidate.trim() !== "") as string;
     const record: unknown = JSON.parse(line);
-    // 保存されるのはハッシュ・連番・op 種別のみ(§6.3)
+    // Only hashes, counters, and op kinds are stored (§6.3)
     expect(JSON.stringify(record)).not.toContain("name");
   });
 });

@@ -1,7 +1,9 @@
-// 値なしスキーマのテスト(設計文書 §1-7): `maruhi schema lint` — ソースの
-// env 参照の静的走査とストア側スキーマの突合。best-effort の位置づけ(注意書きの
-// 常時出力)・レポートは変数名のみ(description 非出力)・終了コードの非対称
-// (undeclared = exit 1 / unread のみ = exit 0)・鍵なしクラスを固定する。
+// Tests for the valueless-schema lint (design doc §1-7): `maruhi schema
+// lint` — static scanning of env references in source, cross-checked
+// against the store-side schema. Pins its best-effort positioning
+// (always-on caveat output), name-only reports (no descriptions), the
+// exit-code asymmetry (undeclared = exit 1 / unread only = exit 0), and
+// the keyless class.
 
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,11 +37,11 @@ const SECRET_DESCRIPTION = "Endpoint description that must never reach the lint 
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared(url 型・description 付き)— コードが読む側。 */
+/** declared (url type, with a description) — the side the code reads. */
 let declaredShopUrl: WireDistributedVariableStatement;
-/** active(v1 — スキーマ欄なし)— 名前はストアに存在する。 */
+/** active (v1 — no schema fields) — the name exists in the store. */
 let activeV1: WireDistributedVariableStatement;
-/** declared — コードのどこからも読まれない側。 */
+/** declared — the side no code reads. */
 let declaredUnread: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -140,7 +142,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv & { o
   return { ...env, origin: server.origin };
 }
 
-/** 一時ディレクトリへソースツリーを書く(パス → 内容)。ルートのパスを返す。 */
+/** Writes a source tree (path → contents) under a temp directory. Returns the root path. */
 async function sourceTree(files: Readonly<Record<string, string>>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "maruhi-lint-"));
   for (const [path, content] of Object.entries(files)) {
@@ -151,8 +153,8 @@ async function sourceTree(files: Readonly<Record<string, string>>): Promise<stri
   return root;
 }
 
-describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
-  it("主要ランタイムの静的な逐語 env 参照を拾う", () => {
+describe("scanEnvReferences (the scanner — the verbatim shape of the implementation rulings)", () => {
+  it("picks up the major runtimes' static verbatim env references", () => {
     const found = scanEnvReferences(
       [
         "const a = process.env.SHOP_URL;",
@@ -189,7 +191,7 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     ]);
   });
 
-  it("env オブジェクトの分割代入と optional chaining を拾う", () => {
+  it("picks up destructuring of the env object and optional chaining", () => {
     const found = scanEnvReferences(
       [
         "const { FOO, BAR: renamed, BAZ = 'fallback' } = process.env;",
@@ -216,7 +218,7 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     ]);
   });
 
-  it("分割代入の rest・env でない右辺・識別子形でないキーは拾わない", () => {
+  it("skips destructuring rest, non-env right sides, and non-identifier keys", () => {
     const found = scanEnvReferences(
       [
         "const { ...rest } = process.env;",
@@ -225,11 +227,12 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
         "const { d } = MY_ENV;",
       ].join("\n"),
     );
-    // rest は識別子形に合わず、env 以外の右辺は左境界 + 右辺の固定で一致しない
+    // rest doesn't fit the identifier shape; a non-env right side fails
+    // the left-boundary + right-side pinning
     expect(found.size).toBe(0);
   });
 
-  it("識別子の末尾が形にたまたま一致する参照は拾わない(左境界)", () => {
+  it("doesn't pick up references whose identifier tail happens to match the shape (the left boundary)", () => {
     const found = scanEnvReferences(
       [
         'const a = MY_ENV["FOO"];',
@@ -239,11 +242,12 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
       ].join("\n"),
     );
     expect(found.size).toBe(0);
-    // 素の形は引き続き拾う(境界の追加が正例を落とさない)
+    // The bare shape keeps being picked up (the boundary addition must
+    // not drop the positive case)
     expect([...scanEnvReferences('ENV["RUBY_VAR"]')]).toEqual(["RUBY_VAR"]);
   });
 
-  it("動的アクセスは拾わない(best-effort の線 — 検出できると偽らない)", () => {
+  it("dynamic access is not picked up (the best-effort line — don't pretend it's detectable)", () => {
     const found = scanEnvReferences(
       ["const name = 'DYNAMIC';", "const v = process.env[name];", "const w = os.environ[key]"].join(
         "\n",
@@ -253,8 +257,8 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
   });
 });
 
-describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
-  it("コードが読むがストアに宣言がない名前を検出して exit 1(fail-loud)", async () => {
+describe("maruhi schema lint (§1-7 — the code-contract cross-check)", () => {
+  it("detects names the code reads but the store doesn't declare, exit 1 (fail-loud)", async () => {
     const root = await sourceTree({
       "src/config.ts":
         "export const url = process.env.SHOP_URL;\nconst k = process.env.MISSING_VAR;\n",
@@ -266,14 +270,15 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
       `Read by the scanned code but not declared in environment ${ENV_ID}: 1`,
     );
     expect(output).toContain("MISSING_VAR");
-    // 宣言済みの参照は undeclared に出ない(v1 変数も名前はストアに存在する)
+    // Declared references don't appear under undeclared (a v1 variable's
+    // name still exists in the store)
     expect(output).not.toContain("  SHOP_URL");
     const errors = env.errors.join("\n");
     expect(errors).toContain("not declared in environment");
     expect(errors).toContain("--ignore");
   });
 
-  it("宣言済みだが読まれない名前は報告のみで exit 0(動的アクセス・別リポジトリ消費がありうる)", async () => {
+  it("declared-but-unread names are reported but stay exit 0 (dynamic access / another repo may consume them)", async () => {
     const root = await sourceTree({
       "src/config.ts":
         "export const url = process.env.SHOP_URL;\nconst legacy = process.env.LEGACY_KEY;\n",
@@ -287,7 +292,7 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     expect(output).toContain("UNREAD_FLAG");
   });
 
-  it("レポートは変数名のみ — description をどの行にも出さない(§1-7 / §2)", async () => {
+  it("the report is variable names only — no description on any line (§1-7 / §2)", async () => {
     const root = await sourceTree({
       "src/config.ts": "export const url = process.env.SHOP_URL;\n",
     });
@@ -295,11 +300,12 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     expect(await runCli(["schema", "lint", root], env.layer)).toBe(0);
     const all = [...env.logs, ...env.errors].join("\n");
     expect(all).not.toContain(SECRET_DESCRIPTION);
-    // 型は宣言 — レポートに「verified」の語を使わない(§14.3)
+    // Types are declarations — the report never uses the word
+    // "verified" (§14.3)
     expect(all.toLowerCase()).not.toContain("verified");
   });
 
-  it("best-effort の注意書きを結論に依らず常に stderr へ出す(検査の欠落 ≠ 保証の欠落)", async () => {
+  it("always prints the best-effort caveat to stderr regardless of outcome (a check gap ≠ a guarantee gap)", async () => {
     const clean = await sourceTree({
       "src/config.ts": "export const url = process.env.SHOP_URL;\n",
     });
@@ -309,7 +315,7 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     expect(env.errors.join("\n")).toContain("not a guarantee");
   });
 
-  it("--ignore は undeclared 検査から名前を除外する(maruhi 管理外のランタイム変数)", async () => {
+  it("--ignore excludes names from the undeclared check (runtime variables outside maruhi's management)", async () => {
     const root = await sourceTree({
       "src/config.ts": "const mode = process.env.NODE_ENV;\nconst u = process.env.SHOP_URL;\n",
     });
@@ -320,7 +326,7 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     expect(passing.logs.join("\n")).not.toContain("NODE_ENV");
   });
 
-  it("node_modules・.git など依存/生成物ディレクトリは走査しない", async () => {
+  it("doesn't scan dependency/generated directories like node_modules and .git", async () => {
     const root = await sourceTree({
       "src/app.ts": "const u = process.env.SHOP_URL;\n",
       "node_modules/pkg/index.js": "const x = process.env.DEP_ONLY_VAR;\n",
@@ -333,7 +339,7 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     expect(output).not.toContain("GIT_HOOK_VAR");
   });
 
-  it("件数行は 0 件でも必ず出す(出力の形を実行ごとに変えない)", async () => {
+  it("always prints the count line even at zero (the output shape doesn't vary per run)", async () => {
     const root = await sourceTree({
       "src/app.ts":
         "const a = process.env.SHOP_URL;\nconst b = process.env.LEGACY_KEY;\nconst c = process.env.UNREAD_FLAG;\n",
@@ -349,16 +355,17 @@ describe("maruhi schema lint(§1-7 — コード契約の突合)", () => {
     );
   });
 
-  it("存在しないパスはネットワークの前に走査エラーで報告する", async () => {
+  it("a nonexistent path reports a scan error before any networking", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "lint", "/nonexistent/source-dir"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Could not scan");
-    // 走査の失敗はサーバーへの往復より前(リクエストが 1 件もない)
+    // The scan failure precedes any server round-trip (not a single
+    // request is made)
     const server = servers[servers.length - 1];
     expect(server?.requests ?? []).toHaveLength(0);
   });
 
-  it("エージェント環境 + master 鍵なしでも実行できる(agent-gate 非適用の固定 — CI 前提)", async () => {
+  it("runs even in an agent environment with no master key (pins agent-gate non-application — CI premise)", async () => {
     const root = await sourceTree({
       "src/app.ts": "const u = process.env.SHOP_URL;\n",
     });

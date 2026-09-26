@@ -1,21 +1,23 @@
-// Homebrew formula(tap: maruhiapp/homebrew-maruhi)の組み立て。
+// Assembling the Homebrew formula (tap: maruhiapp/homebrew-maruhi).
 //
-// 入力は Release の checksums.txt(build-binaries.ts が作る sha256sum -c 互換)と
-// 版だけ。対象一覧は shared.ts の TARGETS が単一の出所で、対象の追加・改名は
-// ここへ自動で波及する(未知の形は握り潰さず throw する — 静かに 1 プラット
-// フォーム落ちた formula を publish する方が、生成に失敗するより悪い)。
+// Inputs are the Release's checksums.txt (the sha256sum -c compatible file
+// build-binaries.ts makes) and the version only. shared.ts's TARGETS is the
+// single source of truth for the target list, so added/renamed targets ripple
+// here automatically (unknown shapes are thrown, not swallowed — silently
+// publishing a formula one platform short is worse than failing to generate).
 //
-// CLI 入口は generate-formula.ts、golden は packaging/homebrew/maruhi.example.rb
-// (apps/cli/test/installer.test.ts が一致を固定する)。
+// The CLI entry point is generate-formula.ts; the golden is
+// packaging/homebrew/maruhi.example.rb (apps/cli/test/installer.test.ts pins
+// the match).
 
 import { SEMVER_PATTERN, TARGETS } from "./shared.ts";
 
 const REPO = "maruhiapp/maruhi";
 
-/** checksums.txt の 1 行: hex 64 桁 + スペース 2 個 + ファイル名。 */
+/** One line of checksums.txt: 64-hex + two spaces + filename. */
 const CHECKSUM_LINE = /^([0-9a-f]{64}) {2}(\S+)$/;
 
-/** brew の on_macos / on_linux × on_arm / on_intel のどこに載る対象か。 */
+/** Which of brew's on_macos / on_linux × on_arm / on_intel slots a target lands in. */
 interface Slot {
   readonly os: "macos" | "linux";
   readonly cpu: "arm" | "intel";
@@ -41,32 +43,32 @@ export function parseChecksums(text: string): ReadonlyMap<string, string> {
     const hex = matched?.[1];
     const name = matched?.[2];
     if (hex === undefined || name === undefined) {
-      throw new Error(`checksums.txt の ${index + 1} 行目が sha256sum 形式ではありません: ${line}`);
+      throw new Error(`line ${index + 1} of checksums.txt is not in sha256sum format: ${line}`);
     }
     if (entries.has(name)) {
-      throw new Error(`checksums.txt に ${name} の行が重複しています`);
+      throw new Error(`checksums.txt has a duplicate line for ${name}`);
     }
     entries.set(name, hex);
   }
   if (entries.size === 0) {
-    throw new Error("checksums.txt が空です");
+    throw new Error("checksums.txt is empty");
   }
   return entries;
 }
 
-/** 版(v 有無どちらでも可)を検査して `{ version, tag }` に正規化する。 */
+/** Checks a version (with or without leading v) and normalizes it to `{ version, tag }`. */
 export function normalizeVersion(input: string): {
   readonly version: string;
   readonly tag: string;
 } {
   const version = input.startsWith("v") ? input.slice(1) : input;
   if (!SEMVER_PATTERN.test(version)) {
-    throw new Error(`版が SemVer ではありません: ${input}`);
+    throw new Error(`version is not SemVer: ${input}`);
   }
   return { version, tag: `v${version}` };
 }
 
-/** True for `-rc.N` style prereleases (brew tap は安定版だけを載せる)。 */
+/** True for `-rc.N` style prereleases (the brew tap only carries stable releases). */
 export function isPrerelease(version: string): boolean {
   return version.includes("-");
 }
@@ -77,7 +79,7 @@ function slotOf(targetName: string): Slot {
   const cpu = arch === "arm64" ? "arm" : arch === "x64" ? "intel" : undefined;
   if (os === undefined || cpu === undefined) {
     throw new Error(
-      `対象 ${targetName} を brew の on_<os> / on_<cpu> ブロックへ対応付けられません(scripts/formula.ts を更新してください)`,
+      `cannot map target ${targetName} to a brew on_<os> / on_<cpu> block (update scripts/formula.ts)`,
     );
   }
   return { os, cpu };
@@ -108,7 +110,7 @@ function collectDownloads(
     });
   }
   if (missing.length > 0) {
-    throw new Error(`checksums.txt に次のアーカイブがありません: ${missing.join(", ")}`);
+    throw new Error(`checksums.txt is missing these archives: ${missing.join(", ")}`);
   }
   return downloads;
 }
@@ -118,7 +120,7 @@ function renderPlatform(os: Slot["os"], downloads: ReadonlyMap<string, Download>
   for (const cpu of ["arm", "intel"] as const) {
     const download = downloads.get(`${os}/${cpu}`);
     if (download === undefined) {
-      throw new Error(`対象表(shared.ts TARGETS)に ${os}/${cpu} の対象がありません`);
+      throw new Error(`the target table (shared.ts TARGETS) has no ${os}/${cpu} target`);
     }
     lines.push(
       `    on_${cpu} do`,
@@ -141,9 +143,20 @@ export function renderFormula(input: string, checksums: ReadonlyMap<string, stri
   const { version, tag } = normalizeVersion(input);
   const downloads = collectDownloads(tag, checksums);
 
-  return `# 生成物 — 手で編集しない。
-# apps/cli/scripts/generate-formula.ts が Release の checksums.txt から作る
-# (${REPO})。更新手順は docs/RELEASING.md の「Homebrew tap の更新」。
+  // english-exempt: generated text must byte-match the golden fixture
+  // packaging/homebrew/maruhi.example.rb, owned by another shard — these lines
+  // stay in Japanese until that fixture is translated.
+  const header = [
+    "# 生成物 — 手で編集しない。", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
+    "# apps/cli/scripts/generate-formula.ts が Release の checksums.txt から作る", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
+    `# (${REPO})。更新手順は docs/RELEASING.md の「Homebrew tap の更新」。`, // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
+  ].join("\n");
+  const installComment = [
+    "    # アーカイブにはバイナリ 1 本しか入っていない。`mh` はインストーラ側で", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
+    "    # 張る(ADR-0015 裁定 6/7)", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
+  ].join("\n");
+
+  return `${header}
 class Maruhi < Formula
   desc "Diskless, end-to-end encrypted secrets manager on Cloudflare"
   homepage "https://github.com/${REPO}"
@@ -156,8 +169,7 @@ ${renderPlatform("linux", downloads)}
 
   def install
     bin.install "maruhi"
-    # アーカイブにはバイナリ 1 本しか入っていない。\`mh\` はインストーラ側で
-    # 張る(ADR-0015 裁定 6/7)
+${installComment}
     bin.install_symlink "maruhi" => "mh"
   end
 

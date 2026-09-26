@@ -1,6 +1,7 @@
-// 回復台帳(`GET /auth/recovery` — CRYPTO_SPEC §8)のモック。既知の secret で鍵レコードを
-// ラップして配り、そのリカバリーコードを返す。recovery.test.ts と device.test.ts
-// (DK K14 — 台帳の鍵の判定)が共有する。
+// Mock of the recovery ledger (`GET /auth/recovery` — CRYPTO_SPEC §8). Wraps a
+// key record with a known secret, serves it, and returns the recovery code.
+// Shared by recovery.test.ts and device.test.ts (DK K14 — the reserve-key
+// determination).
 
 import { wrapMasterSecret } from "@maruhi/crypto";
 import { Redacted } from "effect";
@@ -10,7 +11,7 @@ import { formatRecoveryCode } from "../../src/recovery-code.ts";
 import type { TestUser } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
-/** テスト利用者の鍵対をキーチェーン / 台帳のレコードの形にする。 */
+/** Shapes a test user's key pair into the keychain / ledger record form. */
 export function storedMasterRecord(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -21,12 +22,12 @@ export function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
-/** CLI が予備鍵として生成した記録(予備鍵の印つき — CRYPTO_SPEC §8 / DK K16)。 */
+/** A record the CLI generated as a reserve key (carrying the reserve-key mark — CRYPTO_SPEC §8 / DK K16). */
 export function storedReserveRecord(user: TestUser): StoredMasterKey {
   return { ...storedMasterRecord(user), kind: "reserve" };
 }
 
-/** 既知の secret で `record` をラップし、GET /auth/recovery で配るハンドラとそのコード。 */
+/** Wraps `record` with a known secret; returns the handler serving it at GET /auth/recovery and the code. */
 export async function ledgerHandlerFor(
   record: StoredMasterKey,
   userId: string,
@@ -35,8 +36,9 @@ export async function ledgerHandlerFor(
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
     userId,
-    // JSON.stringify(record) は使えない — 秘密側が伏字でラップされ、
-    // 「復号は成功するのに鍵が読めない」ブロブになる(本番の recovery.ts と同じ罠)
+    // JSON.stringify(record) cannot be used — the secret side would be
+    // wrapped redacted, producing a blob that "decrypts fine but the key is
+    // unreadable" (the same trap as production recovery.ts)
     masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(record)),
   });
   if (!wrapped.ok) {
