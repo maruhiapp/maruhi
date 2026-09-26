@@ -263,6 +263,12 @@ function appendPage(
   };
 }
 
+/**
+ * Load more。読込中もボタンを差し替えず(LoadingRow にするとフォーカス中の要素が消えて
+ * body へ落ちる)、Astryx の isLoading でスピナー + aria-busy を出す。isInterruptible は
+ * native disabled を付けない(disabled にしてもフォーカスが外れる)ためで、二重読込は
+ * ハンドラ側のガードで防ぐ。
+ */
 function LoadMoreRow({
   isLoading,
   exhausted,
@@ -272,11 +278,19 @@ function LoadMoreRow({
   exhausted: boolean;
   onLoadMore: () => void;
 }): ReactNode {
-  if (isLoading) return <LoadingRow label="Loading events" />;
-  if (exhausted) return null;
+  if (exhausted && !isLoading) return null;
   return (
     <HStack>
-      <Button label="Load more" variant="secondary" onClick={onLoadMore} />
+      <Button
+        label="Load more"
+        variant="secondary"
+        isLoading={isLoading}
+        isInterruptible
+        onClick={() => {
+          if (!isLoading) onLoadMore();
+        }}
+        data-testid="load-more-events"
+      />
     </HStack>
   );
 }

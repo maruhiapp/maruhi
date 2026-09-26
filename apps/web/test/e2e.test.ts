@@ -643,6 +643,54 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
+  it("keeps the focused Load more button mounted while the next page loads", async () => {
+    // 読込中に Load more を LoadingRow へ差し替えるとフォーカス中の要素が消えて body へ
+    // 落ちる。ボタンは isLoading(aria-busy)のまま残し、二重読込はハンドラで弾く
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let secondPageRequests = 0;
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === "/projects",
+      async (route) => {
+        const after = new URL(route.request().url()).searchParams.get("after");
+        if (after === PROJECT_1) {
+          secondPageRequests += 1;
+          await gate;
+          return fulfillJson(route, 200, {
+            projects: [{ projectId: PROJECT_2, role: "reader" }],
+            nextAfter: PROJECT_2,
+          });
+        }
+        if (after === PROJECT_2) return fulfillJson(route, 200, { projects: [] });
+        return fulfillJson(route, 200, projectsPage1);
+      },
+    );
+    await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await page.getByTestId("project-list").waitFor();
+    const loadMore = page.getByTestId("load-more-projects");
+    await loadMore.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe("true");
+    await expect(loadMore.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
+    await expect(loadMore.isDisabled()).resolves.toBe(false);
+    // 読込中の再押下は新しい読込を始めない
+    await page.keyboard.press("Enter");
+    await loadMore.click();
+    expect(secondPageRequests).toBe(1);
+    release?.();
+    await page.getByText(PROJECT_2).waitFor();
+    await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe(null);
+    await expect(loadMore.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
+    expect(secondPageRequests).toBe(1);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
   it("renders project overview / audit / rotation tabs from server-reported data", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
