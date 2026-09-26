@@ -1,12 +1,15 @@
-// データプレーンのワイヤ表現(AUTH_SPEC §12-2 = CRYPTO_SPEC §10 の具体化)。
+// Wire representation of the data plane (AUTH_SPEC §12-2 = the
+// concretization of CRYPTO_SPEC §10).
 //
-// API 境界の不変条件(CRYPTO_SPEC §10): 変数値は EncryptedPayload としてのみ
-// 表現する。平文値・DEK・秘密鍵を表す型をこのファイルに置かないこと。
+// The API boundary invariant (CRYPTO_SPEC §10): variable values are
+// represented only as EncryptedPayload. Do not put any type representing
+// a plaintext value, DEK, or secret key in this file.
 //
-// サーバーは AAD を暗号学的に検証できない(E2EE)。Schema が検査するのは
-// トランスポート形状(hex 形式・固定長)のみで、申告 AAD と保存先座標の一致は
-// ハンドラ / DO 側の受理検査、文脈束縛の強制は復号失敗(crypto のテストベクター
-// が固定)が担う。
+// The server cannot cryptographically verify AAD (E2EE). The Schema
+// checks only the transport shape (hex format, fixed lengths); matching
+// the declared AAD to the storage coordinates is the handler / DO
+// acceptance check, and enforcing context binding is carried by
+// decryption failure (pinned by the crypto test vectors).
 
 import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -25,21 +28,25 @@ import {
 } from "./hex.ts";
 
 /**
- * スイート識別子(CRYPTO_SPEC §2 設計原則 4: すべての永続データ構造が持つ)。
- * v1 の API は Literal でピン留めする(suite とエポックの結合 = v2 移行の形は
- * v2 設計まで保留 — AUTH_SPEC §12-2)。
+ * Suite identifier (CRYPTO_SPEC §2 design principle 4: every persistent
+ * data structure has one). The v1 API pins it as a Literal (binding
+ * suite and epoch = the shape of a v2 migration is deferred until the
+ * v2 design — AUTH_SPEC §12-2).
  */
 const SuiteSchema = Schema.Literal("maruhi/v1");
 
 const NonceHex = hexString(12);
-// ラップ済み DEK = 32 バイト DEK + GCM タグ 16 バイト(CRYPTO_SPEC §5)
+// Wrapped DEK = 32-byte DEK + 16-byte GCM tag (CRYPTO_SPEC §5)
 const WrappedDekCiphertextHex = hexString(48);
-// prev_value_sig_hash_hex: version 1 は空文字列、以降は 64 文字 hex(§4.1)。
-// version との結合(1 ⇔ 空)は状態に依存しない検証規則としてサーバー / クライアント
-// の署名検証(prev-shape-mismatch)が検査する — Schema はワイヤ形状のみ
+// prev_value_sig_hash_hex: empty string at version 1, 64 hex chars
+// afterwards (§4.1). The binding to version (1 ⇔ empty) is checked by
+// the server / client signature verification (prev-shape-mismatch) as a
+// state-independent verification rule — the Schema covers wire shape
+// only
 const PrevValueSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
 
-// AES-256-GCM の ct || tag: タグ込み 16 バイト以上の hex 小文字(偶数長)
+// AES-256-GCM ct || tag: lowercase hex of 16+ bytes including the tag
+// (even length)
 const ValueCiphertextHex = Schema.String.check(
   Schema.isPattern(/^(?:[0-9a-f]{2}){16,}$/, {
     description: "lowercase hex AES-GCM ciphertext (>= 16 bytes incl. tag)",
@@ -47,14 +54,15 @@ const ValueCiphertextHex = Schema.String.check(
 );
 
 /**
- * 内部 user_id のワイヤ上限: チェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1
- * の 1024 バイト)に揃える。これより狭い上限はチェーン上の正当なメンバーを
- * 表現不能にしうる。chain.ts 側は意図的に bound しない(§6.1 — verifyChain が
- * 上限を検査する)。
+ * Wire limit of the internal user_id: aligned to the chain consensus
+ * rule's free-string limit (CRYPTO_SPEC §6.1's 1024 bytes). A narrower
+ * limit could make a legitimate member on the chain unrepresentable.
+ * The chain.ts side is deliberately unbounded (§6.1 — verifyChain
+ * checks the limit).
  */
 const BoundedUserId = Schema.String.check(
   Schema.isMinLength(1),
-  // 上限は UTF-8 バイト数(isMaxLength は UTF-16 コードユニットを数える)。
+  // The limit counts UTF-8 bytes (isMaxLength counts UTF-16 code units).
   Schema.makeFilter((s: string) =>
     new TextEncoder().encode(s).length <= 1024
       ? undefined
@@ -75,11 +83,13 @@ export const VariableAadSchema = Schema.Struct({
  * An encrypted variable value on the wire (AUTH_SPEC §12-2): the only shape a
  * secret value ever takes across the API boundary (CRYPTO_SPEC §10).
  *
- * 値は(CRYPTO_SPEC §4.1 = セッション 12 仕様の実装 PR-2)writer の書き込み署名
- * ブロックを伴う: prev 連鎖(prevValueSigHashHex)、認可時点のチェーンヘッド束縛
- * (chainHeadHashHex + chainHeadSeq)、Ed25519 署名(signatureHex)。push / create
- * では writer = 呼び出し主体が契約(§12-5)のため、writer の ID / FP /
- * signed-bytes hash はワイヤに載せない。
+ * A value (CRYPTO_SPEC §4.1 = implementation PR-2 of the session-12
+ * spec) carries the writer's write-signature block: the prev chain
+ * (prevValueSigHashHex), the chain-head binding at acceptance
+ * (chainHeadHashHex + chainHeadSeq), and the Ed25519 signature
+ * (signatureHex). For push / create the contract is writer = calling
+ * principal (§12-5), so the writer's ID / FP / signed-bytes hash are
+ * not on the wire.
  */
 export const EncryptedPayloadSchema = Schema.Struct({
   suite: SuiteSchema,
@@ -113,22 +123,27 @@ export const DistributedEncryptedPayloadSchema = Schema.Struct({
 export type DistributedEncryptedPayload = typeof DistributedEncryptedPayloadSchema.Type;
 
 // ---------------------------------------------------------------------------
-// メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。
-// 名前 ↔ ID の対応と active / deleted 状態の真正性を author の Ed25519 署名が
-// 束縛する。name は NFC 正規化済み(§12-1 — 実施主体は署名前のクライアント。
-// サーバーは検査のみで正規化しない)。長さ上限 256 文字は §12-8 の受理ポリシー
-// (値と違い専用の検証層を持たないため Schema で強制 — 旧 ResourceNameSchema)。
+// Metadata statements (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
+// The author's Ed25519 signature binds the name ↔ ID correspondence and
+// the authenticity of the active / deleted state. name is already
+// NFC-normalized (§12-1 — the actor that normalizes is the client
+// before signing; the server only checks, it does not normalize). The
+// 256-character length cap is a §12-8 acceptance policy (unlike values
+// there is no dedicated verification layer, so the Schema enforces it —
+// the former ResourceNameSchema).
 // ---------------------------------------------------------------------------
 
-/** NFC 正規形かどうかは Schema でなくサーバーの 422(NameNotNfc)が検査する。 */
+/** Whether it is in NFC is checked not by the Schema but by the server's 422 (NameNotNfc). */
 const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
-// 変数ステートメントのレイアウト v2 は第 3 の状態 declared を持つ(CRYPTO_SPEC
-// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは従来の 2 値のまま)
+// Layout v2 of variable statements adds a third state, declared
+// (CRYPTO_SPEC §4.2 — declared, value not yet set; environment meta and
+// the v1 layout keep the traditional two values)
 const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
-// metaVersion 1 は作成専用(status active・prev 空)なので、rename / 削除の
-// リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
+// metaVersion 1 is creation-only (status active, empty prev), so the
+// rename / delete request forms are pinned to metaVersion >= 2 (the
+// narrowed structs below)
 const MetaVersionAtLeast2 = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(2));
 const PrevMetaSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
 
@@ -151,9 +166,10 @@ const envMetaBaseFields = {
   signatureHex: MetaSignatureHex,
 };
 
-// ライフサイクル 3 形(作成 = metaVersion 1・active・prev 空 / rename = active /
-// 削除 = deleted)。リクエストのワイヤ形を操作ごとに固定し、「作成なのに
-// deleted」「削除なのに active」をサーバー検査でなく Schema(400)で拒否する
+// The three lifecycle forms (creation = metaVersion 1, active, empty
+// prev / rename = active / deletion = deleted). Pin the request's wire
+// form per operation so "deleted at creation" or "active at deletion"
+// is refused by the Schema (400), not by a server check
 const creationLifecycleFields = {
   status: Schema.Literal("active"),
   metaVersion: Schema.Literal(1),
@@ -169,7 +185,8 @@ const deleteLifecycleFields = {
   metaVersion: MetaVersionAtLeast2,
   prevMetaSigHashHex: Sha256Hex,
 };
-// 配布側は全ライフサイクルを運ぶ(保存済みステートメントの自己記述形)
+// The distribution side carries every lifecycle (the self-describing
+// form of a stored statement)
 const anyLifecycleFields = {
   status: MetaStatementStatusSchema,
   metaVersion: PositiveInt,
@@ -177,34 +194,41 @@ const anyLifecycleFields = {
 };
 
 // ---------------------------------------------------------------------------
-// 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。
-// v1 ステートメントは従来のフィールド構成のまま(layoutVersion・スキーマ欄の
-// 4 フィールドすべて不在 — strict 受理がこれを強制する)、v2 は layoutVersion と
-// スキーマ欄を持つ。環境メタステートメントは対象外(v1 のまま)。
+// Layout v2 of variable meta statements (CRYPTO_SPEC §4.2 / AUTH_SPEC
+// §12-2). A v1 statement keeps the traditional field set (layoutVersion
+// and all 4 schema fields absent — strict acceptance enforces this);
+// v2 carries layoutVersion and the schema fields. Environment meta
+// statements are out of scope (stay v1).
 // ---------------------------------------------------------------------------
 
 /**
- * varType の閉集合(CRYPTO_SPEC §4.2 — `""` = 未指定。検証 DSL・enum・既定値は
- * 導入しない — 裁定 CT)。閉集合の判定は Schema 検証(400 — §12-5)。
+ * The closed set of varType (CRYPTO_SPEC §4.2 — `""` = unspecified; no
+ * validation DSL, enum, or default is introduced — ruling CT).
+ * Closed-set membership is decided by Schema validation (400 — §12-5).
  */
 export const MetaVarTypeSchema = Schema.Literals(["", "string", "number", "boolean", "url"]);
 
 /**
- * ワイヤの layoutVersion(AUTH_SPEC §12-2): **上限を固定しない整数**。v1 は
- * フィールド不在で表す(省略 = 1)ため、明示値は 2 以上。サポート範囲(現行
- * {1, 2})の検査は Schema でなく署名検証より前の受理検査が行い、超過は
- * 「未対応レイアウト」の型付き 422 として現れる(400 の Schema エラー =
- * 改ざんと区別のつかない失敗にしない誠実な破壊様式 — CRYPTO_SPEC §4.2)。
+ * The wire layoutVersion (AUTH_SPEC §12-2): **an integer with no pinned
+ * upper bound**. v1 is expressed by the field being absent (omitted =
+ * 1), so an explicit value is 2 or higher. Checking the supported range
+ * (currently {1, 2}) is done not by the Schema but by the acceptance
+ * check before signature verification; an excess surfaces as a typed
+ * 422 "unsupported layout" (an honest failure mode that does not
+ * conflate it with a Schema 400 = a failure indistinguishable from
+ * tampering — CRYPTO_SPEC §4.2).
  */
 const MetaLayoutVersionSchema = Schema.Number.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(2),
 );
 
-// スキーマ欄(v2 で全フィールド必須 — required の省略時解釈をクライアント実装に
-// 分散させない fail-closed。CRYPTO_SPEC §4.2)。description の上限(1024 コード
-// ポイント)・文字種(制御文字拒否)は §12-8 の受理検査(422)であり Schema では
-// 検査しない(表示名の 400 とは意図的に区分が違う)
+// The schema fields (all required in v2 — fail-closed so the omitted
+// interpretation of required is not dispersed into client
+// implementations; CRYPTO_SPEC §4.2). The description limit (1024 code
+// points) and character class (reject control characters) are a §12-8
+// acceptance check (422), not checked in the Schema (deliberately a
+// different category from the display-name 400)
 const varMetaV2Fields = {
   layoutVersion: MetaLayoutVersionSchema,
   varType: MetaVarTypeSchema,
@@ -212,13 +236,13 @@ const varMetaV2Fields = {
   description: Schema.String,
 };
 
-/** 変数作成に同梱するステートメント(metaVersion 1 — AUTH_SPEC §12-5)。 */
+/** The statement bundled with variable creation (metaVersion 1 — AUTH_SPEC §12-5). */
 export const CreateVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...creationLifecycleFields,
 });
 
-/** レイアウト v2 の値同梱作成ステートメント(status active・スキーマ欄付き)。 */
+/** Layout-v2 value-carrying creation statement (status active, with schema fields). */
 export const CreateVariableMetaStatementV2Schema = Schema.Struct({
   ...varMetaBaseFields,
   ...creationLifecycleFields,
@@ -226,10 +250,12 @@ export const CreateVariableMetaStatementV2Schema = Schema.Struct({
 });
 
 /**
- * 宣言(declared 作成 — §12-5)のステートメント: 値なしの metaVersion 1。
- * 「値のない変数は存在しない」の唯一の例外で、レイアウト v2 限定
- * (CRYPTO_SPEC §4.2 — 裁定 CS)。作成の status は active(値同梱)または
- * declared(値なし)のみ — deleted の創出はワイヤ形が構造的に拒否する。
+ * The statement of a declaration (declared creation — §12-5):
+ * metaVersion 1 with no value. The sole exception to "a variable
+ * without a value does not exist", and layout-v2 only (CRYPTO_SPEC
+ * §4.2 — ruling CS). A creation's status is only active (value bundled)
+ * or declared (no value) — creating a deleted one is structurally
+ * refused by the wire form.
  */
 export const DeclareVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
@@ -239,18 +265,20 @@ export const DeclareVariableMetaStatementSchema = Schema.Struct({
   ...varMetaV2Fields,
 });
 
-/** 変数 rename のステートメント(metaVersion CAS — §12-5)。 */
+/** The statement of a variable rename (metaVersion CAS — §12-5). */
 export const RenameVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...renameLifecycleFields,
 });
 
 /**
- * レイアウト v2 の rename / スキーマ再発行ステートメント(§12-5 — 受理規則は
- * 改名と同一)。status は現在の状態を保持する(active のまま、または declared
- * のままのスキーマ再発行・rename — 状態遷移はこの形では起こせない: status が
- * 直前ステートメントと不一致なら 422 payload-mismatch。declared → active は
- * activation 複合のみ、active → declared は禁止 — CRYPTO_SPEC §4.2)。
+ * Layout-v2 rename / schema-reissuance statement (§12-5 — the
+ * acceptance rule is identical to a rename). status keeps the current
+ * state (a schema reissuance or rename stays active, or stays declared
+ * — a state transition cannot happen in this form: if status does not
+ * match the immediately preceding statement it is 422
+ * payload-mismatch. declared → active goes only through the activation
+ * composite; active → declared is forbidden — CRYPTO_SPEC §4.2).
  */
 export const RenameVariableMetaStatementV2Schema = Schema.Struct({
   ...varMetaBaseFields,
@@ -261,8 +289,9 @@ export const RenameVariableMetaStatementV2Schema = Schema.Struct({
 });
 
 /**
- * activation(declared → active — §12-5)のステートメント: 最初の値 push との
- * 複合に同梱する status active・metaVersion + 1 の v2 ステートメント。
+ * The statement of an activation (declared → active — §12-5): a
+ * status-active, metaVersion + 1 v2 statement bundled into the
+ * composite with the first value push.
  */
 export const ActivateVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
@@ -270,16 +299,17 @@ export const ActivateVariableMetaStatementSchema = Schema.Struct({
   ...varMetaV2Fields,
 });
 
-/** 変数削除のステートメント(status deleted。name は直前 active 名 — §4.2)。 */
+/** The statement of a variable deletion (status deleted; name is the immediately preceding active name — §4.2). */
 export const DeleteVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...deleteLifecycleFields,
 });
 
 /**
- * レイアウト v2 の削除ステートメント(v2 変数の削除は必ず v2 — レイアウト
- * 単調性)。スキーマ欄・レイアウトは直前ステートメントの値をそのまま保持する
- * こと(name と同じ規約 — 不一致は 422 payload-mismatch。§12-5)。
+ * Layout-v2 deletion statement (deleting a v2 variable is always v2 —
+ * layout monotonicity). The schema fields and layout must keep the
+ * immediately preceding statement's values unchanged (same convention
+ * as name — a mismatch is 422 payload-mismatch; §12-5).
  */
 export const DeleteVariableMetaStatementV2Schema = Schema.Struct({
   ...varMetaBaseFields,
@@ -287,19 +317,19 @@ export const DeleteVariableMetaStatementV2Schema = Schema.Struct({
   ...varMetaV2Fields,
 });
 
-/** 環境作成の複合リクエストに同梱するステートメント(§12-4)。 */
+/** The statement bundled in an environment-creation composite request (§12-4). */
 export const CreateEnvironmentMetaStatementSchema = Schema.Struct({
   ...envMetaBaseFields,
   ...creationLifecycleFields,
 });
 
-/** 環境 rename のステートメント(§12-4 → §12-5 のメタ規則)。 */
+/** The statement of an environment rename (§12-4 → the §12-5 meta rules). */
 export const RenameEnvironmentMetaStatementSchema = Schema.Struct({
   ...envMetaBaseFields,
   ...renameLifecycleFields,
 });
 
-/** 環境削除のステートメント(宣言ヘッド時点 admin — §12-3)。 */
+/** The statement of an environment deletion (admin at declared-head time — §12-3). */
 export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
   ...envMetaBaseFields,
   ...deleteLifecycleFields,
@@ -316,13 +346,14 @@ export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
  */
 export const DistributedVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
-  // 変数側の配布は 3 状態(declared はレイアウト v2 のみ — CRYPTO_SPEC §4.2)
+  // The variable-side distribution carries 3 states (declared is layout v2 only — CRYPTO_SPEC §4.2)
   status: VariableMetaStatementStatusSchema,
   metaVersion: PositiveInt,
   prevMetaSigHashHex: PrevMetaSigHashHex,
-  // レイアウト v2 の運搬フィールド(§12-2): v1 ステートメントの配布には
-  // **4 フィールドとも不在**(v1 の配布へ新フィールドを足さない)、v2 では
-  // 4 フィールドとも存在する。存在の結合はサーバーの保存行(受理済み)が保証する
+  // Layout-v2 carriage fields (§12-2): on a v1 statement's distribution
+  // **all 4 fields are absent** (new fields are never added to a v1
+  // distribution); on v2 all 4 fields are present. The server's stored
+  // row (already accepted) guarantees the presence binding
   layoutVersion: Schema.optionalKey(MetaLayoutVersionSchema),
   varType: Schema.optionalKey(MetaVarTypeSchema),
   required: Schema.optionalKey(Schema.Boolean),
@@ -347,10 +378,13 @@ export type DistributedEnvironmentMetaStatement =
   typeof DistributedEnvironmentMetaStatementSchema.Type;
 
 // ---------------------------------------------------------------------------
-// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-2)。
-// 環境のメタ状態の全体像(全変数ステートメント — tombstone 込み — のダイジェスト +
-// 環境メタステートメント)を、メタ状態を変える操作の実行者が発行時点の現エポックを
-// 焼き込んで署名する。メタ層の鮮度アンカー(値の §4.1 エポック整合の対応物)。
+// Environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC §12-2).
+// The actor of an operation that changes meta state signs the full
+// picture of the environment's meta state (the digest of all variable
+// statements — tombstones included — plus the environment meta
+// statement) with the current epoch at issuance baked in. The meta
+// layer's freshness anchor (the counterpart of the values' §4.1 epoch
+// consistency).
 // ---------------------------------------------------------------------------
 
 const PrevManifestSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
@@ -358,9 +392,9 @@ const PrevManifestSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
 const manifestBaseFields = {
   suite: SuiteSchema,
   environmentId: EnvironmentIdSchema,
-  /** 発行時点(宣言ヘッド時点)の現エポック — メタ層の鮮度アンカー(§4.3)。 */
+  /** Current epoch at issuance (at the declared head) — the meta layer's freshness anchor (§4.3). */
   epoch: PositiveInt,
-  /** 全変数ステートメント(tombstone 込み)の正規ダイジェスト(§4.3)。 */
+  /** Canonical digest of all variable statements (tombstones included) (§4.3). */
   variablesDigestHex: Sha256Hex,
   envMetaVersion: PositiveInt,
   envMetaSigHashHex: Sha256Hex,
@@ -370,9 +404,10 @@ const manifestBaseFields = {
 };
 
 /**
- * 環境作成の複合リクエストに同梱するマニフェスト(§12-4): manifestVersion 1・
- * 変数空集合・prev 空をワイヤ形で固定する(新規環境にマニフェスト未初期化状態が
- * 構造的に存在しないことの根拠 — CRYPTO_SPEC §6.3)。
+ * The manifest bundled in an environment-creation composite request
+ * (§12-4): the wire form pins manifestVersion 1, empty variable set,
+ * empty prev (the grounds that a manifest-uninitialized state cannot
+ * structurally exist on a new environment — CRYPTO_SPEC §6.3).
  */
 export const CreateEnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -381,11 +416,13 @@ export const CreateEnvironmentManifestSchema = Schema.Struct({
 });
 
 /**
- * メタ操作(変数の作成・rename・削除、環境の rename)と rotate 複合に同梱する
- * マニフェスト(§12-5 (6) の manifestVersion CAS = 申告 == 最新 + 1)。
- * manifestVersion 1 も受理する: マニフェスト導入前に作成された環境の最初の
- * メタ操作 / rotate は保存済みマニフェストなし(= 最新 0)から v1 を発行する
- * (移行手順 — session-27 §14 PR-M1)。
+ * The manifest bundled into meta operations (variable create / rename /
+ * delete, environment rename) and the rotate composite (the §12-5 (6)
+ * manifestVersion CAS = declared == latest + 1). manifestVersion 1 is
+ * also accepted: the first meta operation / rotate of an environment
+ * created before manifests were introduced issues v1 from no stored
+ * manifest (= latest 0) (the migration procedure — session-27 §14
+ * PR-M1).
  */
 export const EnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -393,7 +430,7 @@ export const EnvironmentManifestSchema = Schema.Struct({
   prevManifestSigHashHex: PrevManifestSigHashHex,
 });
 
-/** 環境マニフェスト(発行形 — issuer は呼び出し主体が契約 §12-5 (1))。 */
+/** An environment manifest (issuance form — the contract is issuer = calling principal §12-5 (1)). */
 export type EnvironmentManifest = typeof EnvironmentManifestSchema.Type;
 
 /**
@@ -401,10 +438,12 @@ export type EnvironmentManifest = typeof EnvironmentManifestSchema.Type;
  * latest manifest plus the verification material — the issuer's user id and
  * key fingerprint at acceptance time. The receiver verifies against its own
  * verified chain history and the distributed statement set (CRYPTO_SPEC
- * §4.3 / §6.3 — ダイジェスト再計算・エポック整合)。**欠落 = 一律拒否**
- * (§6.3 — 「未初期化」の警告格下げ分岐は置かない)。ワイヤ上 optional なのは
- * マニフェスト導入前に作成された環境の移行完了までの過渡状態のみ(サーバーは
- * 保存行があれば必ず同梱する)。
+ * §4.3 / §6.3 — digest recomputation and epoch consistency). **Absence =
+ * unconditional refusal** (§6.3 — there is no warning-downgrade branch
+ * for "uninitialized"). It is optional on the wire only during the
+ * transitional state until environments created before manifests were
+ * introduced finish migrating (the server bundles it whenever a stored
+ * row exists).
  */
 export const DistributedEnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -418,10 +457,12 @@ export const DistributedEnvironmentManifestSchema = Schema.Struct({
 export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
 
 // ---------------------------------------------------------------------------
-// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2 — PR-M3)。
-// checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を値付き応答へ同梱し、
-// クライアントのチェックポイント整合・規則 2(値の非後退 — CRYPTO_SPEC §6.3)の
-// 材料にする。metadata-only pull は対象外(値を運ばない)。
+// Enumeration of the checkpoint-time value snapshots (AUTH_SPEC §12-7 /
+// §14-2 — PR-M3). The enumeration the server atomically stored at
+// checkpoint acceptance (§16-2) is bundled into value-bearing
+// responses, as material for the client's checkpoint consistency and
+// rule 2 (value non-regression — CRYPTO_SPEC §6.3). metadata-only pull
+// is out of scope (it carries no values).
 // ---------------------------------------------------------------------------
 
 /**
@@ -442,7 +483,7 @@ export type CheckpointValueSnapshotEntry = typeof CheckpointValueSnapshotEntrySc
  * The checkpoint-time value snapshot bundled into value-bearing responses
  * (bulk pull §12-7 / lease §14-2): the enumeration the server stored at
  * checkpoint acceptance, plus the checkpoint's chain position. The position
- * is an **advisory locator only** (CRYPTO_SPEC §1 原則 6 — session-36 裁定 S):
+ * is an **advisory locator only** (CRYPTO_SPEC §1 principle 6 — session-36 ruling S):
  * the verification baseline is always the client's own chain-derived latest
  * covering checkpoint (§6.3), and the locator merely routes the §6.3-2-style
  * two-way classification (declared seq beyond the verified head = possibly
@@ -461,11 +502,13 @@ export const CheckpointValueSnapshotSchema = Schema.Struct({
 export type CheckpointValueSnapshot = typeof CheckpointValueSnapshotSchema.Type;
 
 /**
- * プロジェクトのスキーマポリシー(AUTH_SPEC §12-11 — 有効化ゲートと
- * schema-locked。既定 disabled): disabled = レイアウト v2 の新規採用を拒否 /
- * enabled = v2 受理(スキーマ欄は任意)/ locked = enabled + 変数作成に
- * layoutVersion 2 かつ varType 非空を要求。書き込み受理ポリシーであり、
- * チェーンには載せない(検証規則の入力にもしない — 配布は advisory)。
+ * The project's schema policy (AUTH_SPEC §12-11 — the enablement gate
+ * and schema-locked; default disabled): disabled = refuse new
+ * adoption of layout v2 / enabled = accept v2 (schema fields
+ * optional) / locked = enabled + require layoutVersion 2 and non-empty
+ * varType on variable creation. A write acceptance policy; not placed
+ * on the chain (nor an input to verification rules — distribution is
+ * advisory).
  */
 export const SchemaPolicySchema = Schema.Literals(["disabled", "enabled", "locked"]);
 
@@ -473,10 +516,11 @@ export const SchemaPolicySchema = Schema.Literals(["disabled", "enabled", "locke
 export type SchemaPolicy = typeof SchemaPolicySchema.Type;
 
 /**
- * DEK ラップの受信者クラス(AUTH_SPEC §12-6): member = チェーン上の
- * 現メンバー(user_id + enc 公開鍵で同定)、server = 有効な grant_server の
- * サーバー鍵(FP + enc 公開鍵で同定 — user_id を持たない)。省略時は member
- * (受信者クラス導入前のワイヤと同形)。
+ * Recipient class of a DEK wrap (AUTH_SPEC §12-6): member = a current
+ * member on the chain (identified by user_id + enc public key), server
+ * = the server key of a valid grant_server (identified by FP + enc
+ * public key — it has no user_id). Defaults to member (same shape as
+ * the wire before recipient classes were introduced).
  */
 const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
 
@@ -487,14 +531,18 @@ const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
  * `signatureHex` is the per-wrap registration signature (CRYPTO_SPEC §5.1);
  * the signer must be the calling principal, so the wire carries no signer id.
  *
- * 受信者クラス server では recipientUserId 位置に**サーバー鍵 FP
- * (hex 小文字 32 文字)**を運ぶ — HPKE info / §5.1 署名対象の recipient_user_id
- * 位置と同じ置き換え(CRYPTO_SPEC §9)。同定は FP + enc 公開鍵の両方が
- * チェーン導出の有効 grant_server の payload と厳密一致すること。
+ * For recipient class server, the recipientUserId position carries the
+ * **server key FP (32 lowercase hex chars)** — the same substitution as
+ * the recipient_user_id position in HPKE info / the §5.1 signed payload
+ * (CRYPTO_SPEC §9). Identification requires both the FP and the enc
+ * public key to exactly match the chain-derived valid grant_server
+ * payload.
  *
- * recipientUserId の上限はチェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1 の
- * 1024 バイト)に揃える — add_member の対象はここより狭く検証されないため、
- * これより狭い上限はチェーン上の正当なメンバー宛ラップを登録不能にしうる。
+ * The recipientUserId limit is aligned to the chain consensus rule's
+ * free-string limit (CRYPTO_SPEC §6.1's 1024 bytes) — the add_member
+ * target is not validated more narrowly than this, so a narrower limit
+ * could make a wrap for a legitimate member on the chain
+ * unregistrable.
  */
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
@@ -520,8 +568,8 @@ export const RecipientDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
   /**
-   * The recipient device key this wrap was sealed to (AUTH_SPEC §12-6 の端末軸 —
-   * 2026-09-19 DK K3). A member's wraps for all of its devices travel in one
+   * The recipient device key this wrap was sealed to (the AUTH_SPEC §12-6
+   * device axis — 2026-09-19 DK K3). A member's wraps for all of its devices travel in one
    * response, so the recipient opens only the rows sealed to the key it holds
    * (an open failure on another device's row is not a poisoned wrap). Optional
    * on the wire: servers before K3 omit it (one device per member = every row
@@ -541,18 +589,20 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
 /**
  * Reference naming one stored wrap — the unit of the admin-only deletion in
  * the §12-6 repair path (delete a poisoned wrap, then re-register the missing
- * one through the append path). 受信者クラス server の行は recipientUserId
- * 位置にサーバー鍵 FP を運ぶ(WrappedDekSchema と同じ規約)。
+ * one through the append path). A row of recipient class server carries
+ * the server key FP in the recipientUserId position (same convention as
+ * WrappedDekSchema).
  */
 export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
   recipientClass: Schema.optionalKey(DekRecipientClassSchema),
   recipientUserId: BoundedUserId,
   /**
-   * The recipient device key of the slot (AUTH_SPEC §12-6 の端末軸 — 2026-09-19 DK
-   * K3: slots are per device). Optional for backward compatibility: when omitted
-   * the reference must name exactly one stored slot (a member with several
-   * devices makes it ambiguous — 422 `duplicate-recipient`; 設計録 §8 K3-3).
+   * The recipient device key of the slot (the AUTH_SPEC §12-6 device
+   * axis — 2026-09-19 DK K3: slots are per device). Optional for backward
+   * compatibility: when omitted the reference must name exactly one
+   * stored slot (a member with several devices makes it ambiguous — 422
+   * `duplicate-recipient`; design record §8 K3-3).
    */
   recipientEncPubHex: Schema.optionalKey(EncPubHex),
 });

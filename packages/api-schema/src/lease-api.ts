@@ -1,13 +1,17 @@
-// ワークロードリース API の HttpApi 定義(AUTH_SPEC §14 = CRYPTO_SPEC §9.1)。
+// HttpApi definition of the workload-lease API (AUTH_SPEC §14 =
+// CRYPTO_SPEC §9.1).
 //
-// **このグループだけ AuthMiddleware を宣言しない**: 資格情報はリクエスト同梱の
-// OIDC トークン自体であり、maruhi のセッション・API トークンは使わない
-// (§14-1。§12-3 の認可表の外)。長期資格情報を持たないワークロードのための
-// 経路であることの API 面の表明でもある。
+// **This group alone declares no AuthMiddleware**: the credential is the
+// OIDC token bundled in the request itself; maruhi sessions and API
+// tokens are not used (§14-1 — outside §12-3's authorization table). It
+// is also the API-surface statement that this path exists for workloads
+// with no long-lived credential.
 //
-// API 境界の不変条件(CRYPTO_SPEC §10)はリース経路でも不変: 応答に載るのは
-// 暗号文とラップだけで、平文値・DEK・秘密鍵は現れない。リースラップは
-// LeasedDek(登録署名を持たない別型 — data.ts)で運ぶ。
+// The API-boundary invariant (CRYPTO_SPEC §10) is unchanged on the lease
+// path too: responses carry only ciphertexts and wraps — plaintext
+// values, DEKs, and private keys never appear. Lease wraps travel as
+// LeasedDek (a separate type with no registration signature —
+// data.ts).
 
 import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -32,10 +36,12 @@ import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /**
- * 受理ポリシー(§14-3): oidcToken は 16 KiB 以下。値と違い専用の検証層を
- * 持たないため Schema が強制する(表示名の 256 文字上限と同じ規律 — §12-8)。
- * JWT は base64url + `.` のみからなる compact serialization であり、
- * 文字集合もここで絞る(パース前に明らかな異物を落とす)。
+ * Acceptance policy (§14-3): oidcToken is at most 16 KiB. Unlike a
+ * value it has no dedicated verification layer, so the Schema enforces
+ * it (same discipline as the 256-char cap on display names — §12-8). A
+ * JWT is a compact serialization made only of base64url + `.`, and the
+ * character set is narrowed here too (obvious foreign matter is dropped
+ * before parsing).
  */
 const OidcTokenSchema = Schema.String.check(
   Schema.isMaxLength(16 * 1024),
@@ -75,8 +81,9 @@ export const LeaseResponseSchema = Schema.Struct({
   projectId: ProjectIdSchema,
   environmentId: EnvironmentIdSchema,
   currentEpoch: PositiveInt,
-  // チェーン全体(§14-2 の同梱)。ワークロードは genesis を事前固定した上で
-  // §6.3 の検証を自ら行う — サーバー申告のヘッドを信用してはならない
+  // The whole chain (the §14-2 bundle). The workload pre-pins the
+  // genesis and runs the §6.3 verification itself — it must not trust a
+  // server-declared head
   chain: Schema.Array(ChainEntrySchema),
   headSeq: PositiveInt,
   headHashHex: Sha256Hex,
@@ -84,24 +91,28 @@ export const LeaseResponseSchema = Schema.Struct({
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   /**
-   * declared 変数の最新ステートメント(§12-7 の配布規則をリース応答にも適用 —
-   * ステートメントのみ・値なし。ワークロードのマニフェストダイジェスト再計算
-   * 〔§9.1 (5)〕の材料。declared 変数が無い環境では載らない)。
+   * The latest statements of declared variables (the §12-7
+   * distribution rule applied to lease responses too — statements only,
+   * no values. Material for the workload's manifest-digest
+   * recomputation [§9.1 (5)]. Absent in environments with no declared
+   * variables).
    */
   declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   leases: Schema.Array(LeasedDekSchema),
   /**
-   * 最新の環境マニフェスト + issuer 情報(§14-2)。ワークロードの
-   * 検証義務 §9.1 (5)(ダイジェスト再計算・エポック整合)の材料。欠落 = 拒否は
-   * pull と同一(optional は移行完了までの過渡状態のみ)。
+   * The latest environment manifest + issuer info (§14-2). Material for
+   * the workload's verification duty §9.1 (5) (digest recomputation,
+   * epoch consistency). Missing = refuse, same as pull (optional only
+   * as the transient state until migration completes).
    */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
   /**
-   * チェックポイント時点の値スナップショット列挙(§14-2 — §12-7 と同じ材料)。
-   * 同梱チェーン上に当該環境の基準 `checkpoint` が存在する
-   * のに列挙を欠く応答は、ワークロードのチェックポイント整合検証(CRYPTO_SPEC
-   * §6.3 規則 2)が拒否する。基準を持たない環境では載らない(その場合は警告 —
-   * §6.3 SHOULD)。
+   * Enumeration of the checkpoint-time value snapshot (§14-2 — same
+   * material as §12-7). The workload's checkpoint-consistency
+   * verification (CRYPTO_SPEC §6.3 rule 2) refuses a response that
+   * lacks the enumeration while a baseline `checkpoint` for that
+   * environment exists on the bundled chain. Absent in environments
+   * with no baseline (then it is a warning — §6.3 SHOULD).
    */
   checkpointSnapshot: Schema.optionalKey(CheckpointValueSnapshotSchema),
 });
@@ -113,29 +124,36 @@ export const LeaseResponseSchema = Schema.Struct({
  * DEKs re-sealed to that ephemeral key. The server opens only its own
  * server-addressed wraps — it never decrypts a value (§9.1).
  *
- * 判定順(§14-3): OIDC 検証(401)→ lease_policy 一致 + 開示スコープ
- * (不一致は一律 404)→ 先着束縛(同一トークン + 別鍵は 401 `token-replayed` —
- * §14-1)→ 環境の存在(404)→ レート制限(429)→ サーバー宛
- * ラップの存在(503)。レート制限を認可の後ろに置くのは §11-2 の存在秘匿のため
- * (errors/lease.ts)。`token-replayed` は認可通過後にのみ到達する唯一の 401 で、
- * 存在秘匿と両立する(errors/lease.ts の LeaseUnauthorizedReasonSchema)。
+ * Decision order (§14-3): OIDC verification (401) → lease_policy match
+ * + disclosure scope (any mismatch is uniformly 404) → first-come
+ * binding (same token + a different key is 401 `token-replayed` —
+ * §14-1) → environment existence (404) → rate limit (429) → server
+ * wraps exist (503). The rate limit sits behind authorization for
+ * §11-2 existence concealment (errors/lease.ts). `token-replayed` is
+ * the only 401 reachable after authorization passes, and is compatible
+ * with existence concealment (LeaseUnauthorizedReasonSchema in
+ * errors/lease.ts).
  */
 export const leaseGroup = HttpApiGroup.make("lease").add(
   HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
     params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
-    // strict 受理(§12-10 (1))。共有の LeaseRequestSchema 自体は包まない
-    // (他エンドポイントの応答へ波及させない)。strict はこの payload の
-    // decode / encode だけで、成功・エラーの符号化には及ばない。
+    // strict acceptance (§12-10 (1)). The shared LeaseRequestSchema
+    // itself is not wrapped (so it does not propagate into other
+    // endpoints' responses). strict covers only this payload's decode /
+    // encode; it does not reach the success / error encodings.
     payload: strictPayload(LeaseRequestSchema),
     success: LeaseResponseSchema,
     error: [
       LeaseUnauthorizedError,
-      // 未知プロジェクト・grant なし・ポリシー不一致・スコープ外・環境なしは
-      // **すべてこの 1 種**へ畳む(§14-1 の存在秘匿)。EnvironmentNotFound を
-      // 別に宣言しないのは、認可を通過した呼び出し元にだけ環境の不在を明かす
-      // 形が、リース経路では価値がない(ワークロードは環境 ID を設定として
-      // 持っており、不在は設定ミスとして 404 で十分)一方、契約に二つの 404 が
-      // 並ぶと実装がどちらを返すかの選択を持ってしまうため
+      // Unknown project / no grant / policy mismatch / out of scope /
+      // missing environment all fold into **this one kind** (§14-1
+      // existence concealment). EnvironmentNotFound is not declared
+      // separately: a form that reveals an environment's absence only to
+      // callers who passed authorization is worthless on the lease path
+      // (the workload holds the environment ID as configuration, so an
+      // absent one is a configuration mistake and a 404 suffices),
+      // while two 404s side by side in the contract would give the
+      // implementation a choice of which to return
       ProjectNotFoundError,
       LeaseRateLimitedError,
       LeaseUnavailableError,

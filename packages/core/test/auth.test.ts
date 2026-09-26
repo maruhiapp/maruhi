@@ -1,5 +1,6 @@
-// トークンスコープ判定(AUTH_SPEC §6 / §9-2 の min のスコープ半分)のユニットテスト。
-// 結合則(複数エントリ・ワイルドカード併存・空配列)はここで意図を固定する。
+// Unit tests of token-scope judgement (the scope half of AUTH_SPEC §6 /
+// §9-2's min). The combination rules (multiple entries, wildcard
+// coexistence, empty array) pin their intent here.
 
 import { describe, expect, it } from "vitest";
 
@@ -18,7 +19,7 @@ describe("permissionAtLeast(read < write < admin)", () => {
   });
 });
 
-describe("scopePermissionFor(スコープ集合 → プロジェクトへの許可水準)", () => {
+describe("scopePermissionFor (scope set → permission level on a project)", () => {
   it("returns null for an empty scope list (caller conceals the project)", () => {
     expect(scopePermissionFor([], PROJECT)).toBeNull();
   });
@@ -31,9 +32,10 @@ describe("scopePermissionFor(スコープ集合 → プロジェクトへの許�
     expect(scopePermissionFor([{ project: "*", permission: "write" }], PROJECT)).toBe("write");
   });
 
-  it("takes the strongest matching entry(個別指定はワイルドカードを絞れない)", () => {
-    // 意図の固定: エントリは加算的(最強一致)。* × admin がある限り、個別の
-    // read エントリを足しても当該プロジェクトの権限は admin のまま
+  it("takes the strongest matching entry (an individual entry cannot narrow a wildcard)", () => {
+    // Intent being pinned: entries are additive (strongest match). As
+    // long as * × admin exists, adding an individual read entry leaves
+    // the project's permission at admin
     const scopes = [
       { project: "*", permission: "admin" },
       { project: PROJECT, permission: "read" },
@@ -52,7 +54,7 @@ describe("scopePermissionFor(スコープ集合 → プロジェクトへの許�
   });
 });
 
-describe("parseTokenScopes(保存 JSON の復元)", () => {
+describe("parseTokenScopes (restoring a stored JSON)", () => {
   it("round-trips a serialized scope array", () => {
     const scopes = [
       { project: "*", permission: "admin" },

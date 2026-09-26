@@ -1,5 +1,7 @@
-// @maruhi/api-schema — HttpApi 定義(サーバー実装とクライアント導出の共有源)。
-// API 境界の型は EncryptedPayload 系のみ。平文のシークレットを表す型を置かないこと。
+// @maruhi/api-schema — HttpApi definitions (the shared source for the
+// server implementation and the derived client). API-boundary types are
+// the EncryptedPayload family only; no type that represents a plaintext
+// secret belongs here.
 
 export {
   AUDIT_ROW_ID_PATTERN,

@@ -1,7 +1,8 @@
-// プロジェクト識別子のドメイン型。
+// The domain type of project identifiers.
 //
-// CRYPTO_SPEC §6.4: プロジェクト ID = genesis エントリの
-// エントリハッシュ(hex 小文字 64 文字)。チェーンと ID を暗号学的に束縛する。
+// CRYPTO_SPEC §6.4: project ID = the entry hash of the genesis entry
+// (64 lowercase hex chars). Binds the chain and the ID
+// cryptographically.
 
 import { Schema } from "effect";
 
@@ -23,11 +24,12 @@ export function isProjectId(value: string): value is ProjectId {
 }
 
 // ---------------------------------------------------------------------------
-// データプレーンの安定識別子(AUTH_SPEC §12-1)
+// Stable identifiers of the data plane (AUTH_SPEC §12-1)
 //
-// environment_id / variable_id はクライアント採番(AAD / HPKE info に入る値を
-// 暗号化・ラップの前に確定するため — CRYPTO_SPEC §3〜§5)。形式は API 受理
-// ポリシーであり、チェーン有効性の合意規則(CRYPTO_SPEC §6.1)ではない。
+// environment_id / variable_id are client-assigned (the values entering
+// AAD / HPKE info must be fixed before encryption / wrapping —
+// CRYPTO_SPEC §3-§5). The form is an API acceptance policy, not a
+// chain-validity consensus rule (CRYPTO_SPEC §6.1).
 // ---------------------------------------------------------------------------
 
 const RESOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;

@@ -28,8 +28,9 @@ import {
   type WrappedCryptoError,
 } from "../src/index.ts";
 
-// CryptoError の全 kind とマッピング先クラスの対応(判別子は crypto 側 kind →
-// Effect 側タグ付きエラー)
+// Correspondence between every CryptoError kind and its mapped class
+// (the discriminator is the crypto-side kind → the Effect-side tagged
+// error)
 const KIND_TO_CLASS: readonly [
   CryptoError,
   abstract new (...args: never[]) => WrappedCryptoError,
@@ -51,7 +52,7 @@ const KIND_TO_CLASS: readonly [
   [{ kind: "ChainInvalid", seq: 3, reason: "bad-signature" }, ChainInvalidError],
 ];
 
-// 網羅の静的検査: crypto 側に kind が追加されたらここがコンパイルエラーになる
+// Static check of exhaustiveness: if a kind is added on the crypto side, this fails to compile
 type CoveredKind = (typeof KIND_TO_CLASS)[number][0]["kind"];
 type AllKindsCovered = CryptoError["kind"] extends CoveredKind ? true : never;
 const allKindsCovered: AllKindsCovered = true;
@@ -107,7 +108,7 @@ describe("fromCryptoResult", () => {
 
 describe("cryptoEffect", () => {
   it("lifts a real @maruhi/crypto operation into Effect", async () => {
-    // verifyChain([]) は empty-chain を値で返す — ラッパー経由で型付きエラーになる
+    // verifyChain([]) returns empty-chain as a value — it becomes a typed error through the wrapper
     const error = await Effect.runPromise(Effect.flip(cryptoEffect(() => verifyChain([]))));
     expect(error).toBeInstanceOf(ChainInvalidError);
     if (error instanceof ChainInvalidError) {
@@ -129,9 +130,11 @@ describe("isProjectId", () => {
   });
 });
 
-// isEnvironmentId / isVariableId は同一の §12-1 受理形式(AUTH_SPEC)。
-// 床レコードキーの検証にも使うため、`__proto__`(先頭 `_` で形式外)の拒否と
-// `constructor` / `prototype`(正当な ID)の受理という境界を直接固定する
+// isEnvironmentId / isVariableId share the same §12-1 acceptance form
+// (AUTH_SPEC). Because they also validate storage record keys, the
+// boundary — rejecting `__proto__` (out of form via the leading `_`)
+// and accepting `constructor` / `prototype` (legitimate IDs) — is
+// pinned directly
 for (const [name, guard] of [
   ["isEnvironmentId", isEnvironmentId],
   ["isVariableId", isVariableId],
@@ -142,7 +145,7 @@ for (const [name, guard] of [
       expect(guard("a")).toBe(true);
       expect(guard(`a${"b".repeat(63)}`)).toBe(true);
       expect(guard("A1_-x")).toBe(true);
-      // 継承プロパティ名でも形式に合えば正当な ID(参照側が own-property で防御)
+      // An inherited-property name is a legitimate ID if it fits the form (the reading side defends via own-property)
       expect(guard("constructor")).toBe(true);
       expect(guard("prototype")).toBe(true);
     });
@@ -154,7 +157,7 @@ for (const [name, guard] of [
       expect(guard("_dev")).toBe(false);
       expect(guard(`a${"b".repeat(64)}`)).toBe(false);
       expect(guard("dev/prod")).toBe(false);
-      expect(guard("日本語")).toBe(false);
+      expect(guard("日本語")).toBe(false); // english-exempt: non-ASCII input test datum verifying rejection
     });
   });
 }

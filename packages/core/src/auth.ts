@@ -1,18 +1,22 @@
-// 認証・認可のドメイン型と Effect サービス境界(AUTH_SPEC §5〜§6, §8, §11)。
+// Domain types and Effect service boundaries for authentication /
+// authorization (AUTH_SPEC §5-§6, §8, §11).
 //
-// ここに置く理由: HttpApi のミドルウェア契約(@maruhi/api-schema)が RequestAuth を
-// `provides` として参照し、サーバー(apps/server)が実装を結線する。両者から見える
-// 共有境界はドメイン型パッケージである core に置く。
+// Why this lives here: the HttpApi middleware contract
+// (@maruhi/api-schema) references RequestAuth as `provides`, and the
+// server (apps/server) wires the implementation. The shared boundary
+// visible to both lives in core, the domain-types package.
 //
-// 禁止事項(AUTH_SPEC §10): この境界のどの型もセッション / トークンの生値を
-// 永続化・ログ出力する形で運ばない。resolve 系はハッシュ照合の結果だけを返す。
+// Prohibitions (AUTH_SPEC §10): no type on this boundary carries a
+// session's or token's raw value in a form that gets persisted or
+// logged. The resolve functions return only the result of the hash
+// match.
 
 import { Context, Data, Effect, Schema } from "effect";
 
 import { ProjectIdSchema } from "./project.ts";
 
 // ---------------------------------------------------------------------------
-// org ロール(AUTH_SPEC §9-1。プロジェクトアクセスには関与しない)
+// Org roles (AUTH_SPEC §9-1 — not involved in project access)
 // ---------------------------------------------------------------------------
 
 /** Organization role (AUTH_SPEC §9-1). Authorizes org management only. */
@@ -22,7 +26,7 @@ export const OrgRoleSchema = Schema.Literals(["owner", "admin", "member"]);
 export type OrgRole = typeof OrgRoleSchema.Type;
 
 // ---------------------------------------------------------------------------
-// API トークンのスコープ(AUTH_SPEC §6)
+// API token scopes (AUTH_SPEC §6)
 // ---------------------------------------------------------------------------
 
 /** Token permission level (AUTH_SPEC §6): `read` < `write` < `admin`. */
@@ -35,8 +39,8 @@ export type TokenPermission = typeof TokenPermissionSchema.Type;
  * One token scope entry (AUTH_SPEC §6): a project id (or `"*"` for all of the
  * owner's projects) paired with a permission level. Effective permission is
  * always min(scope, chain role) — a token never exceeds its owner's chain role.
- * project はプロジェクト ID 形式(hex 64)か `"*"` のみ(任意文字列による
- * scopes JSON の肥大を API 境界で遮断する)。
+ * `project` is only a project-id form (64 hex) or `"*"` (the API
+ * boundary blocks scopes-JSON bloat via arbitrary strings).
  */
 export const TokenScopeSchema = Schema.Struct({
   project: Schema.Union([ProjectIdSchema, Schema.Literal("*")]),
@@ -79,7 +83,7 @@ export function parseTokenScopes(json: string): readonly TokenScope[] | null {
   try {
     return decodeScopes(JSON.parse(json));
   } catch {
-    // JSON 構文エラーは「不正な保存値」であり呼び出し側が失敗として扱う
+    // A JSON syntax error is "a malformed stored value", which the caller treats as a failure
     return null;
   }
 }
@@ -105,7 +109,7 @@ function isTokenScope(value: unknown): value is TokenScope {
 }
 
 // ---------------------------------------------------------------------------
-// リクエスト主体(AUTH_SPEC §5 / §6 / §11-1)
+// Request principals (AUTH_SPEC §5 / §6 / §11-1)
 // ---------------------------------------------------------------------------
 
 /**
@@ -123,10 +127,12 @@ export type AuthenticatedPrincipal =
       readonly tokenId: string;
       readonly scopes: readonly TokenScope[];
       /**
-       * 提示トークンの有効期限(AUTH_SPEC §6 の既定 TTL — W3a 裁定 CI)。
-       * 検証(期限切れ = 匿名)を通過した主体だけが構築されるため常に非 null。
-       * scopes と同じ「自分が提示した資格情報の属性」であり、/auth/me が
-       * 自己開示する(§16-2 の tokenScopes と同じ類型)。
+       * The presented token's expiry (AUTH_SPEC §6's default TTL —
+       * W3a ruling CI). Always non-null because only a principal that
+       * passed verification (expired = anonymous) is constructed. Same
+       * kind of "an attribute of the credential it presented" as
+       * scopes; /auth/me discloses it (the same category as §16-2's
+       * tokenScopes).
        */
       readonly expiresAtMs: number;
     };
@@ -138,7 +144,7 @@ export type Principal = { readonly kind: "anonymous" } | AuthenticatedPrincipal;
 export const anonymousPrincipal: Principal = { kind: "anonymous" };
 
 // ---------------------------------------------------------------------------
-// Effect サービス境界(AUTH_SPEC §8)
+// Effect service boundaries (AUTH_SPEC §8)
 // ---------------------------------------------------------------------------
 
 /** Result of issuing a session: the raw cookie value is returned exactly once. */
@@ -147,13 +153,13 @@ export interface IssuedSession {
   readonly expiresAtMs: number;
 }
 
-/** AUTH_SPEC §8: セッションの発行・検証・失効(§5)。 */
+/** AUTH_SPEC §8: session issuance, verification, revocation (§5). */
 export interface SessionServiceShape {
-  /** 256-bit セッションを発行する。DB にはハッシュのみ保存し、生値はここでのみ返す。 */
+  /** Issues a 256-bit session. Only the hash is stored in the DB; the raw value is returned only here. */
   readonly issueSession: (userId: string, authMethod: string) => Effect.Effect<IssuedSession>;
-  /** クッキー生値から主体を解決する。失効・不明・期限切れは匿名として扱う。 */
+  /** Resolves a principal from a raw cookie value. Revoked, unknown, and expired are treated as anonymous. */
   readonly resolveSession: (rawValue: string) => Effect.Effect<Principal>;
-  /** クッキー生値のセッションを失効させる(ログアウト)。 */
+  /** Revokes the session of a raw cookie value (logout). */
   readonly revokeSession: (rawValue: string) => Effect.Effect<void>;
 }
 
@@ -163,8 +169,9 @@ export class SessionService extends Context.Service<SessionService, SessionServi
 
 /**
  * Result of issuing an API token: the raw token is returned exactly once.
- * `expiresAtMs` は発行時に固定された有効期限(AUTH_SPEC §6 の既定 TTL — W3a。
- * セッション §5 のスライディング更新と意図的に非対称)。
+ * `expiresAtMs` is the expiry fixed at issuance time (AUTH_SPEC §6's
+ * default TTL — W3a; deliberately asymmetric with the §5 sliding
+ * renewal of sessions).
  */
 export interface IssuedToken {
   readonly rawToken: string;
@@ -172,18 +179,20 @@ export interface IssuedToken {
   readonly expiresAtMs: number;
 }
 
-/** ユーザーあたりのトークン本数上限(AUTH_SPEC §6)に達している。 */
+/** The per-user token-count cap (AUTH_SPEC §6) has been reached. */
 export class TokenLimitReachedError extends Data.TaggedError("TokenLimitReached")<{
   readonly limit: number;
 }> {}
 
-/** AUTH_SPEC §8: API トークンの発行・検証・失効・スコープ判定(§6)。 */
+/** AUTH_SPEC §8: API-token issuance, verification, revocation, scope judgement (§6). */
 export interface TokenServiceShape {
   /**
-   * `maruhi_pat_` トークンを発行する。DB にはハッシュのみ保存し、生値はここでのみ
-   * 返す。同名は既存の失効を伴う再発行(ローテーション)、別名の新規発行は
-   * ユーザーあたり上限まで(§6)。`ttlMs` から expires_at を発行時に固定する
-   * (§6 の既定 TTL — W3a。呼び出し側が既定値・明示指定の解決を済ませて渡す)。
+   * Issues a `maruhi_pat_` token. Only the hash is stored in the DB;
+   * the raw value is returned only here. Reissuing under the same name
+   * revokes the existing one (rotation); issuing under a new name is
+   * allowed up to the per-user cap (§6). expires_at is fixed at
+   * issuance from `ttlMs` (§6's default TTL — W3a; the caller resolves
+   * the default / an explicit value and passes it in).
    */
   readonly issueToken: (
     userId: string,
@@ -191,9 +200,9 @@ export interface TokenServiceShape {
     scopes: readonly TokenScope[],
     ttlMs: number,
   ) => Effect.Effect<IssuedToken, TokenLimitReachedError>;
-  /** `maruhi_pat_…` トークンから主体を解決する。失敗は匿名として扱う。 */
+  /** Resolves a principal from a `maruhi_pat_…` token. Failures are treated as anonymous. */
   readonly resolveApiToken: (rawToken: string) => Effect.Effect<Principal>;
-  /** 提示されたトークン自身を失効させる(AUTH_SPEC §6 の v1 線引き)。 */
+  /** Revokes the presented token itself (AUTH_SPEC §6's v1 line). */
   readonly revokePresentedToken: (rawToken: string) => Effect.Effect<void>;
 }
 
@@ -202,8 +211,9 @@ export class TokenService extends Context.Service<TokenService, TokenServiceShap
 ) {}
 
 /**
- * ハンドラが要求する境界: 認証済みリクエスト主体。認証必須エンドポイントの
- * ミドルウェア(@maruhi/api-schema の AuthMiddleware)だけがこれを提供する。
+ * The boundary handlers require: the authenticated request principal.
+ * Only the middleware of auth-required endpoints (AuthMiddleware in
+ * @maruhi/api-schema) provides it.
  */
 export interface RequestAuthShape {
   readonly principal: Effect.Effect<AuthenticatedPrincipal>;

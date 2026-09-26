@@ -1,14 +1,16 @@
-// 識別子の生成(Web 標準 crypto のみ — Bun 固有 API 不使用。ブラウザ / Bun /
-// workerd で動く)。暗号プロトコルではなく ID のエンコーディングだけを置く。
+// Identifier generation (Web-standard crypto only — no Bun-specific
+// APIs; runs on browsers / Bun / workerd). Only ID encodings live here,
+// no cryptographic protocol.
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /**
- * ULID(48-bit 時刻 + 80-bit 乱数、Crockford Base32、26 文字)。
+ * ULID (48-bit time + 80-bit random, Crockford Base32, 26 chars).
  *
- * サーバーは主体識別子(AUTH_SPEC §2 の内部 user_id 等)に、クライアントは
- * master 鍵ラップ台帳の wrap_id / group_id(AUTH_SPEC §13-9 — AAD が id を
- * 束縛するため暗号化の前にクライアントが採番する)に使う。
+ * The server uses it for principal identifiers (the internal user_id
+ * etc. of AUTH_SPEC §2); the client uses it for the wrap_id / group_id
+ * of the master-key wrap ledger (AUTH_SPEC §13-9 — the AAD binds the
+ * id, so the client assigns it before encrypting).
  */
 export function ulid(nowMs: number = Date.now()): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -20,7 +22,7 @@ export function ulid(nowMs: number = Date.now()): string {
   }
   let rand = "";
   for (let i = 0; i < 16; i += 1) {
-    // 256 は 32 で割り切れるため mod にバイアスはない
+    // 256 is divisible by 32, so the modulo has no bias
     rand += CROCKFORD[(bytes[i] ?? 0) % 32];
   }
   return time + rand;

@@ -1,40 +1,47 @@
-// security-critical 受理の strict 化(AUTH_SPEC §12-10 (1))。
+// strict-ifying security-critical acceptance (AUTH_SPEC §12-10 (1)).
 //
-// Effect v4 rc.113 以降、スキーマ AST 注釈 `parseOptions` はパーサに読まれない
-// (SchemaAST.ParseOptions の説明: options はパース全体に適用され、スキーマ注釈は
-// それを上書きしない)。rc.112 までの `strictPayload` = スキーマ注釈は、呼び出し側が
-// options なしで decode すると未知フィールドを黙って落とす。
+// Since Effect v4 rc.113, the schema AST annotation `parseOptions` is not
+// read by the parser (SchemaAST.ParseOptions's description: options
+// apply to the whole parse; a schema annotation does not override them).
+// The pre-rc.113 `strictPayload` = a schema annotation silently drops
+// unknown fields when the caller decodes with no options.
 //
-// 代わりに payload スキーマをラッパーで包む。decode と encode は内側スキーマへ
-// `{ onExcessProperty: "error" }` を渡すので、ネストと Union を含めて未知フィールドを
-// 拒否する。HttpApiBuilder は payload を `Schema.Union([schema])` で options なしに
-// decode する。ラッパーはその組み立ての中でも拒否する。
+// Instead the payload schema is wrapped in a wrapper. decode and encode
+// pass `{ onExcessProperty: "error" }` to the inner schema, so unknown
+// fields are rejected including through nesting and unions.
+// HttpApiBuilder decodes the payload as `Schema.Union([schema])` with no
+// options. The wrapper rejects inside that assembly too.
 //
-// `HttpApi.ParseOptions` は使わない。同じ options が成功・エラーの符号化と
-// path params・ヘッダにも渡る。`Schema.TaggedError` はスタック由来の非列挙
-// フィールド(`originalLine` 等)を持つため、エラー応答の strict encode は
-// HttpApiSchemaError になり HTTP 500 へ落ちる。ヘッダ codec は受信ヘッダ全体を
-// 見るので、API 全体への `onExcessProperty: "error"` も使わない。
+// `HttpApi.ParseOptions` is not used. The same options would also flow
+// to success / error encoding and to path params / headers.
+// `Schema.TaggedError` carries stack-derived non-enumerable fields
+// (`originalLine`, etc.), so strict-encoding an error response becomes
+// an HttpApiSchemaError and falls to HTTP 500. Because the header codec
+// sees all incoming headers, an API-wide `onExcessProperty: "error"` is
+// not used either.
 //
-// 共有スキーマ自体は包まない。同じスキーマを返す他エンドポイントの応答へ
-// strict を波及させない。このエンドポイントの成功・エラー符号化は従来どおり
-// 未知フィールドを落とす。
+// Shared schemas themselves are not wrapped. strict must not propagate
+// into other endpoints' responses that return the same schema. This
+// endpoint's success / error encoding keeps dropping unknown fields as
+// before.
 //
-// ロード時スイープは注釈を見ない。options なしの decode に未知フィールドを渡し、
-// `UnexpectedKey` が出ることを要求する(`.check()` を後から足しても拒否は残る。
-// AST の `parseOptions` 注釈だけは拒否しない)。実効性(実際に 400)は受理経路の
-// 固定テスト(apps/server/test/strict-payload.test.ts)が保証する。
+// The load-time sweep looks at no annotation: it hands an unknown field
+// to an options-less decode and requires an `UnexpectedKey` (adding
+// `.check()` afterward keeps the rejection; only an AST `parseOptions`
+// annotation does not reject). Effectiveness (an actual 400) is
+// guaranteed by the fixed acceptance-path test
+// (apps/server/test/strict-payload.test.ts).
 
 import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
 
 import { forEachEndpoint, requireRegisteredEndpoint } from "./sweep.ts";
 
-/** 内側スキーマの decode / encode に渡す strict options。 */
+/** The strict options passed to the inner schema's decode / encode. */
 const STRICT = { onExcessProperty: "error" } as const;
 
 /**
- * スイープが「未知フィールド」と見なすプローブキー。
- * 受理経路の固定テスト(`__maruhiStrictProbe`)と同じ名前。
+ * The probe key the sweep treats as an "unknown field". Same name as
+ * the fixed acceptance-path test (`__maruhiStrictProbe`).
  */
 const PROBE_KEY = "__maruhiStrictProbe";
 
@@ -75,10 +82,11 @@ interface SweepableApi {
  * composed after the wrapper do not turn the rejection off.
  */
 export function strictPayload<S extends Schema.Top>(schema: S): S {
-  // `to` を `Schema.toType(schema)` にすると encode の入力から未知キーが
-  // 先に落ち、strict encode が成功してしまう。両側を Unknown にすると
-  // encode が余分なキーを見る。型は内側スキーマのまま(ハンドラとクライアントの
-  // payload 型は `Type` を使う)。
+  // If `to` were `Schema.toType(schema)`, unknown keys would be dropped
+  // from the encode input first and strict encode would succeed. With
+  // Unknown on both sides, encode sees the extra keys. The type stays
+  // the inner schema's (handlers and clients use `Type` for the payload
+  // type).
   return Schema.Unknown.pipe(
     Schema.decodeTo(
       Schema.Unknown,
@@ -124,17 +132,17 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
-  // activation 複合(§12-5 — §12-10 (1) の「値 push・メタ操作」クラスに属する)
+  // the activation composite (§12-5 — belongs to §12-10 (1)'s "value push / meta operations" class)
   ["variables", "activate"],
   ["variables", "rename"],
   ["variables", "remove"],
   ["deks", "register"],
   ["auth", "recoveryPut"],
-  // master 鍵ラップ台帳(§13-7 — KL3): ラップ・分片・再封印値 = 鍵素材の暗号文
+  // master-key wrap ledger (§13-7 — KL3): wraps / segments / re-sealed values = ciphertext of key material
   ["keyWraps", "passkeyRegister"],
   ["keyWraps", "guardianCreate"],
   ["keyWraps", "handoffApprove"],
-  // 端末登録簿(§13-11 — DK K3): 公開鍵の登録 = 鍵宣言クラス(未知フィールドを黙って落とさない)
+  // device registry (§13-11 — DK K3): registering public keys = the key-declaration class (never silently drop unknown fields)
   ["devices", "register"],
   ["devices", "requestCreate"],
   ["lease", "issue"],
@@ -154,21 +162,24 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
 export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   readonly [group: string, endpoint: string]
 > = [
-  // CLI ログイン(AUTH_SPEC §4 — 認証前のハンドオフ面。署名済み構造・暗号文・
-  // 鍵材料を運ばない): start = 発行パラメータのみ、poll = フロー資格情報のみ、
-  // approve = ブラウザの素のフォーム POST(欠落・不一致はハンドラが一様拒否)
+  // CLI login (AUTH_SPEC §4 — the pre-auth handoff surface; carries no
+  // signed structure, ciphertext, or key material): start = issuance
+  // parameters only, poll = the flow credential only, approve = the
+  // browser's raw form POST (the handler uniformly refuses missing /
+  // mismatched values)
   ["authCli", "cliStart"],
   ["authCli", "cliPoll"],
   ["authCli", "cliApprove"],
-  // 削除対象ラップの座標参照のみ(§12-6 修復経路)
+  // only coordinate references to the wrap to delete (the §12-6 repair path)
   ["deks", "remove"],
-  // (environment, variable) 識別子の列挙のみ(AUDIT_SPEC §7)
+  // only an enumeration of (environment, variable) identifiers (AUDIT_SPEC §7)
   ["rotation", "dismiss"],
-  // schemaPolicy の設定(AUTH_SPEC §12-11 — 署名済み構造を運ばない。3 値の
-  // Literal で Schema 検証が閉じる)
+  // schemaPolicy configuration (AUTH_SPEC §12-11 — carries no signed
+  // structure; the 3-value Literal closes Schema validation)
   ["schemaPolicy", "set"],
-  // ハンドオフ要求(§13-7 — KL3): request_id(一時公開鍵の SHA-256)のみ。
-  // 署名済み構造・暗号文・鍵素材を運ばない
+  // handoff request (§13-7 — KL3): only request_id (the SHA-256 of the
+  // ephemeral public key). Carries no signed structure, ciphertext, or
+  // key material
   ["keyWraps", "handoffCreate"],
 ];
 
@@ -188,10 +199,11 @@ function assertPayloadRejectsUnknownField(schema: Schema.Top, label: string): vo
   }
 }
 
-/** options なしの decode が未知フィールドを `UnexpectedKey` で拒否するか。 */
+/** Whether an options-less decode rejects an unknown field with `UnexpectedKey`. */
 function payloadRejectsUnknownField(schema: Schema.Top): boolean {
-  // Schema.Top の DecodingServices は unknown。security-critical payload は
-  // サービスを要求しないので、builder と同じ Union を閉じたデコーダとして扱う。
+  // Schema.Top's DecodingServices is unknown. Security-critical payloads
+  // require no services, so the same Union as the builder is treated as
+  // a closed decoder.
   const decoded = Schema.decodeUnknownResult(
     Schema.Union([schema]) as unknown as Schema.ConstraintDecoder<unknown>,
   )({
@@ -201,7 +213,7 @@ function payloadRejectsUnknownField(schema: Schema.Top): boolean {
 }
 
 function hasUnexpectedKey(issue: SchemaIssue.Issue): boolean {
-  // `_tag` 直読みは oxlint の no-underscore-dangle が禁止する。
+  // Reading `_tag` directly is forbidden by oxlint's no-underscore-dangle.
   if (issue instanceof SchemaIssue.UnexpectedKey) {
     return true;
   }
@@ -242,20 +254,21 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
       );
     }
   }
-  // 1. 列挙面の実在 + 未知フィールド拒否(リネーム・ラッパーの欠落を捕捉)
+  // 1. Listed surfaces exist + reject unknown fields (catches renames and missing wrappers)
   for (const [groupName, endpointName] of SECURITY_CRITICAL_PAYLOAD_ENDPOINTS) {
     assertRegisteredPayloadStrict(api, groupName, endpointName);
   }
-  // 2. 除外面の実在(stale エントリの排除 — 消えた・リネームされた面の除外指定が
-  //    残ると、後で同名の security-critical 面が再利用されたとき「意識的除外」に
-  //    化けるため、strict 側と同じ実在検査を課す)
+  // 2. Exempt surfaces exist (purge stale entries — if an exemption for
+  //     a removed or renamed surface lingered, a later security-critical
+  //     surface reusing that name would masquerade as "deliberately
+  //     exempt", so the same existence check as the strict side applies)
   for (const [groupName, endpointName] of STRICT_EXEMPT_PAYLOAD_ENDPOINTS) {
     requirePayloadEndpoint(api, groupName, endpointName);
   }
   assertEveryPayloadClassified(api, strict, exempt);
 }
 
-/** 列挙面 1 件: 実在検査 + 未知フィールド拒否(スイープの 1.)。 */
+/** One listed surface: existence check + unknown-field rejection (sweep item 1). */
 function assertRegisteredPayloadStrict(
   api: SweepableApi,
   groupName: string,
@@ -271,9 +284,10 @@ function assertRegisteredPayloadStrict(
 }
 
 /**
- * 逆方向の fail-closed 検査(スイープの 3.): payload を持つ全エンドポイントが
- * どちらかのリストに分類されていること — 未分類の新設面は黙って非 strict に
- * ならずここで落ちる。
+ * The reverse-direction fail-closed check (sweep item 3): every
+ * endpoint carrying a payload is classified into one of the two lists —
+ * an unclassified new surface does not silently stay non-strict; it
+ * fails here.
  */
 function assertEveryPayloadClassified(
   api: SweepableApi,
@@ -292,7 +306,7 @@ function assertEveryPayloadClassified(
   });
 }
 
-/** リスト 1 件の実在検査: グループ・エンドポイント・payload の存在を要求する。 */
+/** Existence check for one list entry: requires the group, the endpoint, and a payload. */
 function requirePayloadEndpoint(
   api: SweepableApi,
   groupName: string,

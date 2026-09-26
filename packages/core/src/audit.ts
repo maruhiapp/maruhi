@@ -1,17 +1,20 @@
-// 監査アクターの共有型と写像(AUDIT_SPEC §2)、およびチェーンミラーの写像
-// (§3.4)。
+// The shared audit-actor type and mapping (AUDIT_SPEC §2), plus the
+// chain-mirror mapping (§3.4).
 //
-// アイデンティティ規則(§1-2)の関門: 監査ログ(D1 側)とメンバーシップログの
-// ミラー・データ系イベント(DO 側)のアクターは**内部 user_id と鍵フィンガー
-// プリントのみ**で表す。認証主体 → アクターの写像はここ(auditActorOf)が唯一の
-// 実装であり、GitHub ID・login・メール等のプロバイダ情報をこの型に足さないこと。
-// DO 用(apps/server data-plane.ts の DataActor)/ D1 用(db.package/audit.ts の
-// D1AuditActor)の入力型はこの型から派生する。
+// Gate of the identity rule (§1-2): actors in the audit log (D1 side)
+// and in the membership-log mirror / data events (DO side) are
+// represented by **the internal user_id and key fingerprint only**. The
+// authenticated-principal → actor mapping is implemented solely here
+// (auditActorOf); provider information (GitHub id, login, email, etc.)
+// must never be added to this type. The input types for the DO
+// (DataActor in apps/server data-plane.ts) and for D1 (D1AuditActor in
+// db.package/audit.ts) derive from this type.
 //
-// チェーンミラーの写像(chainMirrorEvent)がここにあるのは、**サーバーの
-// ミラー追記と CLI のミラー検証(`maruhi audit verify` — AUDIT_SPEC §1-5 /
-// §6 の緩和策)が同一実装を共有する**ため。写像が二重管理になると、検証器の
-// ドリフトが改竄の誤検出(または見逃し)になる。
+// The chain-mirror mapping (chainMirrorEvent) lives here because **the
+// server's mirror append and the CLI's mirror verification (`maruhi
+// audit verify` — AUDIT_SPEC §1-5 / §6 mitigation) share one
+// implementation**. If the mapping were maintained in two places,
+// verifier drift would produce false tamper detections (or misses).
 
 import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
@@ -55,13 +58,16 @@ export function auditPayloadWith(
 }
 
 // ---------------------------------------------------------------------------
-// チェーンミラー(AUDIT_SPEC §3.4): 受理済みエントリ → 監査イベント。
-// actor はチェーンエントリの actor(user_id + 鍵 FP)をそのまま写し、
-// クライアント時刻(entry.timestampMs)とサーバー受理時刻の両方を持つ。
-// 四眼(PF1 — 2026-09-16 K5): approve / withdraw の行は参照先の提案エントリの
-// seq を、完成した approve は加えて内側 op の適用行(同じ chain_seq・actor =
-// 提案者・payload に viaProposalSeq)を持つ。どちらもエントリ単独からは写せず、
-// 検証済みチェーンから導いた提案の索引(ProposalIndex)を入力に取る。
+// Chain mirror (AUDIT_SPEC §3.4): accepted entries → audit events.
+// actor copies the chain entry's actor (user_id + key FP) as-is, and
+// carries both the client time (entry.timestampMs) and the server's
+// acceptance time.
+// Four-eyes (PF1 — 2026-09-16 K5): approve / withdraw rows carry the
+// seq of the proposal entry they reference; a completed approve
+// additionally carries an applied-inner-op row (same chain_seq, actor =
+// the proposer, viaProposalSeq in the payload). Neither can be mapped
+// from the entry alone, so they take as input an index of proposals
+// (ProposalIndex) derived from the verified chain.
 // ---------------------------------------------------------------------------
 
 /**
@@ -94,9 +100,11 @@ type MirrorTail = Pick<
 >;
 
 /**
- * op → ミラーイベント名(§3.4)。ChainOp の全域マップ(型で網羅を強制)であり、
- * mirrorTails と CHAIN_MIRROR_EVENTS の両方がここから名前を取る — op が増えた
- * ときに片方だけ更新されて検証器がドリフトする形(誤検出・見逃し)を塞ぐ。
+ * op → mirror event name (§3.4). A whole-domain map over ChainOp (the
+ * type enforces exhaustiveness); both mirrorTails and
+ * CHAIN_MIRROR_EVENTS take their names from it — blocking the shape
+ * where an added op updates only one of them and the verifier drifts
+ * (false detections / misses).
  */
 const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   genesis: "chain.genesis",
@@ -108,12 +116,12 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   grant_server: "chain.server_granted",
   revoke_server: "chain.server_revoked",
   checkpoint: "chain.checkpointed",
-  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)
+  // Four-eyes (AUDIT_SPEC §3.4 — 2026-09-14 PF1)
   set_approval_policy: "chain.approval_policy_changed",
   propose: "chain.proposed",
   approve: "chain.approved",
   withdraw: "chain.proposal_withdrawn",
-  // 端末鍵(AUDIT_SPEC §3.4 — 2026-09-19 DK)。行の生成(受理副作用)は K3
+  // Device keys (AUDIT_SPEC §3.4 — 2026-09-19 DK). Row generation (the acceptance side effect) is K3
   add_device: "chain.device_added",
   revoke_device: "chain.device_revoked",
 };
@@ -177,9 +185,11 @@ export function indexProposals(
   const withdrawn = new Set<string>();
   for (const entry of entries) {
     if (entry.op === "propose") {
-      // entryHashAt は検証済みチェーンの全 seq で定義される(索引は同じチェーンから
-      // 構築される)。undefined は呼び出し側の不整合で、その提案は索引に載らず、参照
-      // する approve / withdraw の写像は referencedProposal で契約違反として現れる
+      // entryHashAt is defined for every seq of the verified chain
+      // (the index is built from the same chain). undefined is a
+      // caller-side inconsistency: that proposal is not indexed, and an
+      // approve / withdraw referencing it surfaces as a contract
+      // violation in referencedProposal
       const hash = entryHashAt(entry.seq);
       if (hash !== undefined) {
         proposals.set(hash, { entry, lastApproveSeq: null });
@@ -222,9 +232,11 @@ export interface ChainMirrorSubject {
   readonly addedDeviceKeyFingerprintHex?: string;
 }
 
-// op ごとの写像(§3.4 の表)。入力は op + payload(+ actor — genesis の target だけが
-// 使う)であり、署名済みエントリにも提案の内側 op にも適用できる。genesis の
-// target は作成者 = actor(在籍区間の開始点を Q1 の索引で引けるようにするため)
+// Per-op mappings (the §3.4 table). The input is op + payload (+ actor
+// — only genesis's target uses it), so it applies both to signed
+// entries and to a proposal's inner op. genesis's target is the creator
+// = actor (so the start of the membership interval can be looked up in
+// Q1's index)
 const mirrorTails: {
   readonly [K in ChainOp]: (
     operation: Extract<ChainOperation, { op: K }> & MirrorSubject,
@@ -234,7 +246,7 @@ const mirrorTails: {
     event: MIRROR_EVENT_NAME.genesis,
     targetUserId: operation.actor.userId,
   }),
-  // scope も写す(AUDIT_SPEC §3.4 — 2026-09-14 ES: §4.1 の環境別アクセス窓の復元材料)
+  // scope is copied too (AUDIT_SPEC §3.4 — 2026-09-14 ES: material to reconstruct §4.1's per-environment access windows)
   add_member: (operation) => ({
     event: MIRROR_EVENT_NAME.add_member,
     targetUserId: operation.payload.targetUserId,
@@ -257,8 +269,8 @@ const mirrorTails: {
       scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
     },
   }),
-  // dek_commitment は payload に写す(AUDIT_SPEC §3.4 — 監査行と
-  // チェーン掲載コミットメントの突合用)
+  // dek_commitment is copied into the payload (AUDIT_SPEC §3.4 — for
+  // matching audit rows against chain-published commitments)
   create_environment: (operation) => ({
     event: MIRROR_EVENT_NAME.create_environment,
     environmentId: operation.payload.environmentId,
@@ -277,20 +289,23 @@ const mirrorTails: {
   grant_server: (operation) => ({
     event: MIRROR_EVENT_NAME.grant_server,
     targetKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
-    // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
-    // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
-    // 持ち込まない。ポリシーの真実源はチェーン(grant payload)で、chain_seq で
-    // 突合できる。スコープ(内部 environment_id 集合)は §3.4 のとおり写す
+    // lease_policy is deliberately not copied (AUDIT_SPEC §1-2 /
+    // AUTH_SPEC §14-4): claim_value can contain external identifiers
+    // such as repository names, so it is not brought into audit rows.
+    // The source of truth for the policy is the chain (grant payload),
+    // matchable via chain_seq. The scope (the internal environment_id
+    // set) is copied per §3.4
     payload: { scopeEnvironmentIds: operation.payload.scopeEnvironmentIds },
   }),
   revoke_server: (operation) => ({
     event: MIRROR_EVENT_NAME.revoke_server,
     targetKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
   }),
-  // 公証対象のダイジェスト(環境ごとの epoch / manifest_version /
-  // manifest_sig_hash / values_digest と audit_head_hash)を payload に写す
-  // (AUDIT_SPEC §3.4。監査 seq・行数は payload にも写さない:
-  // チェーン payload 自体が seq を含まない設計 — CRYPTO_SPEC §6.2)
+  // Copies the notarized digests (per-environment epoch /
+  // manifest_version / manifest_sig_hash / values_digest and
+  // audit_head_hash) into the payload (AUDIT_SPEC §3.4. Audit seq and
+  // row counts are not copied even into the payload: the chain payload
+  // itself is designed not to contain seq — CRYPTO_SPEC §6.2)
   checkpoint: (operation) => ({
     event: MIRROR_EVENT_NAME.checkpoint,
     payload: {
@@ -304,9 +319,11 @@ const mirrorTails: {
       auditHeadHashHex: operation.payload.auditHeadHashHex,
     },
   }),
-  // 四眼(AUDIT_SPEC §3.4 — 2026-09-14 PF1)。内側 payload は写さない(正は
-  // チェーン)。approve / withdraw の参照先(proposalChainSeq)と completed は
-  // 提案の索引を要するため chainMirrorEvents 側で足す(ここは名前だけ)
+  // Four-eyes (AUDIT_SPEC §3.4 — 2026-09-14 PF1). The inner payload is
+  // not copied (the chain is the source of truth). approve / withdraw's
+  // referenced proposal (proposalChainSeq) and completed need the
+  // proposal index, so they are added on the chainMirrorEvents side
+  // (only the name lives here)
   set_approval_policy: (operation) => ({
     event: MIRROR_EVENT_NAME.set_approval_policy,
     payload: {
@@ -320,9 +337,10 @@ const mirrorTails: {
   }),
   approve: () => ({ event: MIRROR_EVENT_NAME.approve }),
   withdraw: () => ({ event: MIRROR_EVENT_NAME.withdraw }),
-  // 端末鍵(AUDIT_SPEC §3.4 — 2026-09-19 DK)。add_device の target = actor(自分の端末しか
-  // 足せない)、payload は端末 FP + cap。revoke_device の target = 対象、payload = 失効 FP 列
-  // (§4.1 の検出契機 ★ — 検出変種は K3)
+  // Device keys (AUDIT_SPEC §3.4 — 2026-09-19 DK). add_device's target
+  // = actor (one can only add one's own device); payload = device FP +
+  // cap. revoke_device's target = the target; payload = the revoked FP
+  // list (§4.1's detection trigger ★ — the detection variant is K3)
   add_device: (operation) => {
     if (operation.addedDeviceKeyFingerprintHex === undefined) {
       throw new Error("chain mirror: add_device requires the added device's key fingerprint");
@@ -356,8 +374,10 @@ function referencedProposal(
 ): IndexedProposal {
   const proposal = index.get(entry.payload.proposalHashHex);
   if (proposal === undefined) {
-    // 検証済みチェーンでは参照先の propose が必ず先行する(unknown-proposal は無効
-    // エントリ)。欠けているのは索引の作り方の誤りであり、写像の入力の契約違反
+    // On a verified chain the referenced propose always precedes
+    // (unknown-proposal is an invalid entry). A missing one is a bug in
+    // how the index was built — a contract violation of the mapping's
+    // input
     throw new Error(
       `chain mirror: entry seq=${entry.seq} (${entry.op}) names a proposal that is not in the proposal index`,
     );
@@ -396,7 +416,7 @@ export function chainMirrorEvents(
     actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
   });
   if (entry.op === "add_device") {
-    // add_device の写像は載せた端末の FP を要する(MirrorSubject — 受理側が計算して渡す)
+    // add_device's mapping needs the added device's FP (MirrorSubject — the accepting side computes it and hands it in)
     return [
       own(
         mirrorTailOf({
@@ -429,9 +449,11 @@ export function chainMirrorEvents(
   if (!completed) {
     return [approved];
   }
-  // 適用行(AUDIT_SPEC §3.4): 内側 op のミラー写像に viaProposalSeq を足し、actor は
-  // 提案者(内側 op の actor)。§4.1 の在籍区間(Q1)・grant 区間(Q6)の入力構造を
-  // 変えないための規律 — 検出は直接追記と同じ行を同じ索引で引く
+  // The applied row (AUDIT_SPEC §3.4): adds viaProposalSeq to the inner
+  // op's mirror mapping; actor is the proposer (the inner op's actor).
+  // The discipline exists so §4.1's membership intervals (Q1) and grant
+  // intervals (Q6) keep the same input structure — detection reads the
+  // same rows via the same index as direct appends
   const inner = proposal.entry.payload.inner;
   const tail = mirrorTailOf({ ...inner, actor: proposal.entry.actor });
   return [
@@ -447,11 +469,13 @@ export function chainMirrorEvents(
 }
 
 // ---------------------------------------------------------------------------
-// `var.read` の集約形(AUDIT_SPEC §3.3): 値付き一括 pull ごとに
-// 環境単位 1 行、返した変数の列挙を payload に持つ。payload の構築(サーバーの
-// pull)と解釈(サーバーの要ローテーション検出・§7 フィルタ、CLI の表示)が
-// 同一実装を共有する — 列挙の形(ソート・キー順)は row_digest(§5.1)の入力
-// バイト列を決めるため、書き手と読み手を 1 箇所に置く。
+// The aggregated form of `var.read` (AUDIT_SPEC §3.3): one row per
+// environment per value-carrying bulk pull, carrying the enumeration of
+// returned variables in its payload. Payload construction (the server's
+// pull) and interpretation (the server's rotation-required detection,
+// the §7 filter, the CLI's display) share one implementation — the
+// enumeration's shape (sort, key order) determines the input bytes of
+// row_digest (§5.1), so writer and reader live in one place.
 // ---------------------------------------------------------------------------
 
 /** The audit event name of a value read (AUDIT_SPEC §3.3). */
