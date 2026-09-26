@@ -128,6 +128,12 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
           run: () => void store.readRotationSync.membershipEventsFor("user-x"),
         },
         {
+          label: "Q3 variableReadsBy (actor_user_id = ? AND seq range)",
+          index: "ae_actor",
+          run: () =>
+            void store.readRotationSync.variableReadsBy("user-x", { afterSeq: 10, beforeSeq: 20 }),
+        },
+        {
           label: "Q6 serverGrantEventsFor (target_key_fingerprint = ?)",
           index: "ae_target_fp",
           run: () => void store.readRotationSync.serverGrantEventsFor("ab".repeat(16)),
@@ -180,6 +186,39 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
         if (query === undefined) throw new Error("no query captured");
         expect(planOf(sql, query), expectation.label).toContain(`USING INDEX ${expectation.index}`);
       }
+    });
+  });
+
+  it("Q3 variableReadsBy の seq 範囲は ae_actor の範囲走査になり、開区間の外の行を返さない", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const { sql: wrapped, captured } = capturing(sql);
+      const store = makeAuditStore(wrapped);
+      // seq 1..10 の var.read(全て同じ actor)
+      store.appendManySync(Array.from({ length: 10 }, (_row, index) => readEvent(index)));
+      captured.length = 0;
+      const bounded = store.readRotationSync.variableReadsBy("user-reader-0001", {
+        afterSeq: 3,
+        beforeSeq: 7,
+      });
+      expect(bounded.map((row) => row.seq)).toEqual([4, 5, 6]);
+      const query = captured.at(-1);
+      if (query === undefined) throw new Error("no query captured");
+      // 索引の seq 成分で範囲を切る(actor の全行を読んでから捨てるのではない)
+      expect(planOf(sql, query)).toMatch(
+        /USING INDEX ae_actor \(actor_user_id=\? AND seq>\? AND seq<\?\)/,
+      );
+      // 省略・非有限の端は無制限(従来の全 seq)
+      expect(store.readRotationSync.variableReadsBy("user-reader-0001").length).toBe(10);
+      expect(
+        store.readRotationSync
+          .variableReadsBy("user-reader-0001", {
+            afterSeq: Number.NEGATIVE_INFINITY,
+            beforeSeq: Number.POSITIVE_INFINITY,
+          })
+          .map((row) => row.seq),
+      ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      sql.exec("DELETE FROM audit_events");
     });
   });
 

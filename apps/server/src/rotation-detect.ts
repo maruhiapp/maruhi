@@ -313,9 +313,19 @@ function detectForMember(input: {
   if (candidates.length === 0) {
     return [];
   }
+  // 読み取りは「選んだ窓のどれかの内部」(within — 開区間)でしか数えないので、
+  // 全窓の包絡 (最小 start, 最大 end) の外の行は下の filter で必ず捨てられる。
+  // 包絡を Q3 に渡して ae_actor の範囲走査にする(結果は絞らない場合と同一)
+  const envelope = [...selected.values()].flat().reduce(
+    (range, window) => ({
+      afterSeq: Math.min(range.afterSeq, window.start),
+      beforeSeq: Math.max(range.beforeSeq, window.end),
+    }),
+    { afterSeq: Number.POSITIVE_INFINITY, beforeSeq: Number.NEGATIVE_INFINITY },
+  );
   const readPairs = new Set(
     input.read
-      .variableReadsBy(input.targetUserId)
+      .variableReadsBy(input.targetUserId, envelope)
       .filter((row) =>
         (selected.get(row.environmentId) ?? []).some((window) => within(row.seq, window)),
       )

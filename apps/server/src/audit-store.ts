@@ -91,6 +91,16 @@ export interface VariableReadRow {
   readonly variableId: string;
 }
 
+/**
+ * Q3 の seq 範囲(両端とも**開区間** — `afterSeq < seq < beforeSeq`)。呼び出し側
+ * (rotation-detect.ts の detectForMember)が検出対象の窓の包絡を渡し、窓の外で
+ * 捨てられる行を読まないための絞り込み。非有限値は「その側は無制限」。
+ */
+export interface SeqRange {
+  readonly afterSeq: number;
+  readonly beforeSeq: number;
+}
+
 /** Q6: サーバー鍵 FP の開示行使(server.lease_issued / value_decrypted〔予約〕)。 */
 export interface ServerAccessRow {
   readonly seq: number;
@@ -118,7 +128,7 @@ export interface AuditRotationRead {
   readonly deviceEventsFor: (targetUserId: string) => readonly DeviceEventRow[];
   readonly serverGrantEventsFor: (fpHex: string) => readonly GrantEventRow[];
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
-  readonly variableReadsBy: (actorUserId: string) => readonly VariableReadRow[];
+  readonly variableReadsBy: (actorUserId: string, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
 }
@@ -1022,14 +1032,25 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   // (variable_id IS NULL・payload の variables 列挙 — §3.3)が同一テーブルに
   // 混在するため、両形を 1 クエリで引いて集約行は列挙を展開する(展開は
   // 防御的 parse — 壊れた行で検出を defect にしない)。同一 pull の変数は同じ
-  // seq を共有する(§4.1 手順 3 の区間判定は seq 単位なので旧形と同値)
-  variableReadsBy: (actorUserId) =>
+  // seq を共有する(§4.1 手順 3 の区間判定は seq 単位なので旧形と同値)。
+  // range は ae_actor の seq 成分での範囲走査になる(省略時は全 seq)。
+  // `+event` は event 列を索引の候補から外す単項 +(SQLite の定石): 統計のない
+  // DO SQLite のプランナは `event = ?` の等値で ae_event (event, seq) を選び、
+  // プロジェクト全員の var.read(支配的な行種)を舐めていた。述語の意味は不変で、
+  // actor で絞る ae_actor が選ばれる(test/audit-index.test.ts が EXPLAIN で固定)
+  variableReadsBy: (actorUserId, range) =>
     sql
       .exec(
         `SELECT seq, environment_id, variable_id, payload FROM audit_events
-         WHERE actor_user_id = ? AND event = ? ORDER BY seq`,
+         WHERE actor_user_id = ? AND +event = ? AND seq > ? AND seq < ? ORDER BY seq`,
         actorUserId,
         VAR_READ_EVENT,
+        range !== undefined && Number.isFinite(range.afterSeq)
+          ? range.afterSeq
+          : Number.MIN_SAFE_INTEGER,
+        range !== undefined && Number.isFinite(range.beforeSeq)
+          ? range.beforeSeq
+          : Number.MAX_SAFE_INTEGER,
       )
       .toArray()
       .flatMap((row): VariableReadRow[] => {

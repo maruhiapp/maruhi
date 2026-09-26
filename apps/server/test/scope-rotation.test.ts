@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { AuditRotationRead } from "../src/audit-store.ts";
+import type { AuditRotationRead, SeqRange } from "../src/audit-store.ts";
 import {
   deriveEffectiveFlags,
   detectMemberRemoval,
@@ -419,6 +419,55 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ variableId: "v", payload: { basis: "readable" } });
+  });
+
+  it("Q3 には選んだ窓の包絡(最小 start 〜 最大 end の開区間)を渡し、結果は絞らない場合と同一", () => {
+    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const reads = [
+      { seq: 1, environmentId: "env-a", variableId: "v" },
+      { seq: 3, environmentId: "env-a", variableId: "v" },
+      { seq: 5, environmentId: "env-a", variableId: "late" },
+      { seq: 12, environmentId: "env-a", variableId: "late" },
+    ];
+    const ranges: (SeqRange | undefined)[] = [];
+    const run = (honourRange: boolean) =>
+      detectMemberRemoval({
+        read: {
+          ...fakeRead({
+            membership: [
+              { seq: 2, event: "chain.member_added", role: "member", scope: listedA },
+              { seq: 4, event: "chain.member_removed", role: null, scope: null },
+              { seq: 6, event: "chain.member_added", role: "member", scope: listedA },
+              { seq: 10, event: "chain.member_removed", role: null, scope: null },
+            ],
+            lifecycles: [
+              { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
+              { seq: 5, event: "var.created", environmentId: "env-a", variableId: "late" },
+            ],
+          }),
+          variableReadsBy: (_actor, range) => {
+            ranges.push(range);
+            return honourRange && range !== undefined
+              ? reads.filter((row) => range.afterSeq < row.seq && row.seq < range.beforeSeq)
+              : reads;
+          },
+        },
+        targetUserId: "u",
+        triggerChainSeq: 9,
+        nowMs: 1,
+      });
+    const bounded = run(true);
+    const unbounded = run(false);
+    // 窓 = (2, 4) と (6, 10) — 包絡は (2, 10)
+    expect(ranges[0]).toEqual({ afterSeq: 2, beforeSeq: 10 });
+    expect(bounded).toEqual(unbounded);
+    // v は窓 (2, 4) 内の seq 3 で read、late は窓の外(5 = 不在の間・12 = 削除後)だけ
+    expect(
+      bounded.map((event) => [event.variableId, (event.payload as { basis: string }).basis]),
+    ).toEqual([
+      ["v", "read"],
+      ["late", "readable"],
+    ]);
   });
 
   it("在籍区間の外に現れた role_changed は open として窓を開く(壊れた入力でも見逃さない側)", () => {
