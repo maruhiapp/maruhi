@@ -1,5 +1,6 @@
-// §7 の全環境走査へ注入する 1 環境ローテーション(server revoke / member
-// remove / change-role で共用)。利用側は effect-cli.ts。
+// The per-environment rotation injected into §7's whole-environment
+// sweep (shared by server revoke / member remove / change-role).
+// The consumer is effect-cli.ts.
 
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -11,7 +12,7 @@ import { envRotateOp } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import type { SweepRotateMode } from "./rotation-sweep.ts";
 
-/** チェーン導出の環境 ID が CLI の形式検査に通らない場合の防衛(通常は到達しない)。 */
+/** A guard for when a chain-derived environment ID fails the CLI's format check (normally unreachable). */
 function cliErrorForInvalidChainEnvironmentId(): CliError {
   return usageError(
     "A chain-derived environment ID fails the CLI's format check (the chain contradicts the server's acceptance policy)",
@@ -19,10 +20,11 @@ function cliErrorForInvalidChainEnvironmentId(): CliError {
 }
 
 /**
- * §7 の全環境走査へ注入する 1 環境ローテーション。義務エントリの追記や先行の
- * rotate でチェーンは前進しているので、各環境は再同期済みビューで開始する。
- * force = §7 の強制(新エポック必須)/ verify = 検証パス(未完了の再暗号化が
- * あれば再開)。
+ * The per-environment rotation injected into §7's whole-environment
+ * sweep. Since obligation-entry appends and earlier rotates have
+ * advanced the chain, each environment starts from a re-synced
+ * view. force = §7's force (new epoch required) / verify = the
+ * verification pass (resumes an unfinished re-encryption if any).
  */
 export function sweepRotateFor(
   context: ProjectContext,
@@ -45,8 +47,9 @@ export function sweepRotateFor(
         recipient: context.recipient,
         reason: mode === "force" ? reason : undefined,
         forceNewEpoch: mode === "force",
-        // 全環境走査は移行操作ではない — マニフェスト欠落の許容は明示の
-        // `maruhi env rotate <env> --init-manifest` に限る(session-27 §14)
+        // A whole-environment sweep is not a migration operation —
+        // tolerating a missing manifest is limited to the explicit
+        // `maruhi env rotate <env> --init-manifest` (session-27 §14)
         initManifest: false,
         signerUserId: context.session.userId,
         signingKeyPair: context.masterKeys.sigKeyPair,

@@ -1,21 +1,27 @@
-// `maruhi server revoke`(CRYPTO_SPEC §7 / §9)。
+// `maruhi server revoke` (CRYPTO_SPEC §7 / §9).
 //
-// revoke_server をチェーンへ追記し、**プロジェクトの全環境**を強制ローテーション
-// する(§7 — 失効の実効性はローテーションが担う。ローテーションなしの revoke は
-// 「開示を止めたつもり」の見せかけになる)。ローテーションは envRotateOp を
-// 環境ごとに再利用する(reason は固定文字列)。
+// Appends revoke_server to the chain and forcibly rotates **every
+// environment of the project** (§7 — the revocation's effectiveness
+// is carried by rotation. A revoke without rotation is the
+// pretense of "having stopped the disclosure"). The rotation
+// reuses envRotateOp per environment (reason is a fixed string).
 //
-// 中断復旧(進捗ファイルなし — 分散状態から導出): revoke がチェーンに載った後で
-// 落ちても、再実行が「最後の revoke_server の seq」を基準に収束する:
-// - 現エポックの開始 seq が revoke より前の環境 = まだ回っていない →
-//   強制ローテーション(forceNewEpoch)
-// - 開始 seq が revoke より後の環境 = エポックは進んだが、**再暗号化が途中で
-//   落ちた可能性が残る**(§12-7 の過渡状態)→ 検証パス(envRotateOp の
-//   forceNewEpoch なし実行 = 未完了があれば再開・なければ確認のみ)で
-//   「エポックが進んだだけの見せかけの完了」を塞ぐ
-// 削除済み環境は、**検証済みの削除ステートメント**がある場合のみスキップする
-// (サーバーの 404 申告だけで黙ってスキップしない — §7。検証できなければ
-// 対象に残り、rotate の失敗として表面化する)。
+// Interruption recovery (no progress file — derived from the
+// distributed state): even if it crashes after the revoke lands on
+// the chain, a re-run converges around "the last revoke_server's
+// seq":
+// - An environment whose current epoch's start seq precedes the
+//   revoke = not yet rotated → forced rotation (forceNewEpoch)
+// - An environment whose start seq is after the revoke = the epoch
+//   advanced, but **a mid-flight re-encryption crash may remain**
+//   (§12-7's transient state) → the verification pass (envRotateOp
+//   without forceNewEpoch = resumes the incomplete, check-only
+//   otherwise) closes the "looks complete because the epoch merely
+//   advanced" pretense
+// A deleted environment is skipped only when a **verified deletion
+// statement** exists (never skipped silently on the server's 404
+// declaration alone — §7. If it cannot be verified it stays a
+// target and surfaces as a rotate failure).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { ChainEntry, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
@@ -45,19 +51,19 @@ import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 
-/** revoke 後の全環境ローテーションでチェーンに記録される理由(§6.2 payload)。 */
+/** The reason recorded on the chain by the post-revoke whole-environment rotation (§6.2 payload). */
 export const REVOKE_ROTATION_REASON = "server-revoked";
 
-/** revoke の結果: 提案(四眼 — K6)か適用。 */
+/** The revoke's result: a proposal (four-eyes — K6) or an application. */
 export type ServerRevokeOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: RevokeSummary };
 
 export interface RevokeSummary extends SweepOutcome {
-  /** チェーンへ追記したか(false = 有効 grant がない・並行 revoke 済みで、失効後の続きから再開)。 */
+  /** Whether it was appended to the chain (false = no valid grant / already revoked by a concurrent revoke — resume from the post-revoke rest). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
-  /** 検証済みの削除ステートメントによりスキップした環境。 */
+  /** Environments skipped due to a verified deletion statement. */
   readonly skippedDeleted: readonly string[];
 }
 
@@ -72,7 +78,7 @@ function requireOwner(
   return Effect.void;
 }
 
-/** 失効対象の grant を選ぶ(複数あるときは --fingerprint で明示)。 */
+/** Selects the grant to revoke (when several exist, disambiguate with --fingerprint). */
 function selectGrant(
   verified: VerifiedProject,
   fingerprintHex: string | null,
@@ -105,7 +111,7 @@ function selectGrant(
     : Effect.succeed({ serverKeyFingerprintHex: only.serverKeyFingerprintHex });
 }
 
-/** revoke_server エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
+/** Signs a revoke_server entry immediately after the current head (the shared core = chain-append.ts). */
 function signRevokeEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -124,7 +130,7 @@ function signRevokeEntry(input: {
   });
 }
 
-/** チェーン上の最後の revoke_server の適用 seq(存在しなければ null。提案経由の適用も含む — K6-C)。 */
+/** The applied seq of the last revoke_server on the chain (null when absent. Includes applications via a proposal — K6-C). */
 function lastRevokeSeq(verified: VerifiedProject): number | null {
   for (let index = verified.applied.length - 1; index >= 0; index -= 1) {
     const applied = verified.applied[index];
@@ -138,13 +144,16 @@ function lastRevokeSeq(verified: VerifiedProject): number | null {
 interface RevokeState {
   readonly verified: VerifiedProject;
   readonly target: string;
-  /** 並行 revoke で既に失効済み — 追記せずローテーションへ進む。 */
+  /** Already revoked by a concurrent revoke — skip the append and proceed to rotation. */
   readonly alreadyRevoked: boolean;
 }
 
 /**
- * revoke 適用後の全環境走査(§7)。直接追記の revoke と、四眼で適用を完成させた承認者の
- * 履行(approval-approve.ts)が共有する。`revokeSeq` = 義務の基準(適用 seq)。
+ * The whole-environment sweep after revoke application (§7).
+ * Shared by the direct-append revoke and the fulfiller of an
+ * approval that completed the application under four-eyes
+ * (approval-approve.ts). `revokeSeq` = the obligation's reference
+ * (the applied seq).
  */
 export function sweepAfterRevoke<R>(input: {
   readonly client: MaruhiClient;
@@ -153,18 +162,22 @@ export function sweepAfterRevoke<R>(input: {
   readonly rotate: SweepRotate<R>;
 }): Effect.Effect<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
   return Effect.gen(function* () {
-    // 検証済みの削除環境をローテーション対象から除外する(削除済み環境は
-    // rotate も pull も 404 で、回すべきラップも残っていない)。除外の根拠は
-    // **署名済み削除ステートメントの検証**のみ — サーバーの 404 申告だけで
-    // 黙ってスキップしない(§7)。検証できなければ対象に残り、失敗として
-    // 表面化する
+    // Excludes verified-deleted environments from the rotation
+    // targets (a deleted environment returns 404 for both rotate
+    // and pull, and no wrap remains to rotate). The only basis for
+    // exclusion is **verification of a signed deletion statement**
+    // — never skipped silently on the server's 404 declaration
+    // alone (§7). If unverifiable it stays a target and surfaces
+    // as a failure
     const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
     const skippedDeleted = [...input.verified.state.environments.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
       .toSorted(compareCodePoints);
 
-    // 義務の環境集合 = revoke 時点の全環境(§7 — revoke_server は不変。後に作成された
-    // 環境の DEK をサーバー鍵は持ちえない)。導出は rotationMandates と共有
+    // The obligation's environment set = every environment at the
+    // revoke's point (§7 — revoke_server is immutable; the server
+    // key cannot hold the DEK of a later-created environment). The
+    // derivation is shared with rotationMandates
     const sweep = yield* sweepRotations({
       rotate: input.rotate,
       verified: input.verified,
@@ -187,10 +200,11 @@ export function serverRevokeOp<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /**
-   * 1 環境のローテーション(envRotateOp を環境ごとの床付きで包んだもの —
-   * cli.ts が注入する)。force = reason 固定 + forceNewEpoch(§7 の強制)、
-   * verify = reason なし + forceNewEpoch なし(未完了の再暗号化があれば再開、
-   * なければ確認のみ — 新エポックは作らない)。
+   * One environment's rotation (envRotateOp wrapped with the
+   * per-environment floor — cli.ts injects it). force = reason
+   * fixed + forceNewEpoch (§7's force), verify = no reason + no
+   * forceNewEpoch (resumes an incomplete re-encryption if any,
+   * check-only otherwise — creates no new epoch).
    */
   readonly rotate: SweepRotate<R>;
   readonly proposal: ProposalInput;
@@ -199,9 +213,10 @@ export function serverRevokeOp<R>(input: {
     yield* requireOwner(input.verified, input.signerUserId);
     const target = yield* selectGrant(input.verified, input.fingerprintHex);
 
-    // 四眼(K6-A): 方針が revoke_server を対象にしていれば提案して終わる(全環境の
-    // rotate は適用を完成させた承認者が行う — 承認項目 22)。再開(有効 grant なし)は
-    // 提案しない
+    // Four-eyes (K6-A): when the policy covers revoke_server,
+    // propose and finish (the whole-environment rotate is done by
+    // the approver who completed the application — approval item
+    // 22). A resume (no valid grant) is not proposed
     if (target !== null) {
       const inner: ProposableOperation = {
         op: "revoke_server",
@@ -261,7 +276,7 @@ export function serverRevokeOp<R>(input: {
                 { op: "revoke_server", payload: { serverKeyFingerprintHex: state.target } },
                 false,
               );
-              // 並行 revoke で既に失効していたら追記せず先へ(ローテーションは行う)
+              // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
               return {
                 verified: resynced,
                 target: state.target,
@@ -273,7 +288,7 @@ export function serverRevokeOp<R>(input: {
       );
       verified = outcome.verified;
       appended = outcome.appended;
-      // 受理後の再同期で失効の掲載を確認(サーバー申告を真実源にしない)
+      // After acceptance, a re-sync confirms the revocation's posting (the server declaration is not the source of truth)
       verified = yield* resyncExtended(input.resync, verified);
       if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
         return yield* Effect.fail(
@@ -284,8 +299,10 @@ export function serverRevokeOp<R>(input: {
       }
     }
 
-    // ローテーション対象の導出: 追記した実行では「最後の revoke の seq」が今回の
-    // 追記そのもの。追記しなかった実行(中断復旧)ではチェーン履歴から取る
+    // Deriving the rotation targets: on a run that appended, "the
+    // last revoke's seq" is this run's append itself; on a run
+    // that did not append (interruption recovery) it is taken
+    // from the chain history
     const revokeSeq = lastRevokeSeq(verified);
     if (revokeSeq === null) {
       return yield* Effect.fail(

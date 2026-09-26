@@ -1,24 +1,35 @@
-// 自分の端末鍵の出所の記録(設計録 dk-design.md §9 K4-3 / K4-4 — DK-D の 3 条件)。
+// Recording the provenance of my device keys (design record
+// dk-design.md §9 K4-3 / K4-4 — DK-D's 3 conditions).
 //
-// 初回同期の端末登録(device-sync.ts)が新しいプロジェクトへ `add_device` してよい鍵は
-// (1) 自分が生成した鍵(予備鍵)、(2) 自分が `device approve` で承認した鍵、
-// (3) 検証済みチェーン上でその人の端末として観測した鍵 — の 3 つに限る
-// (AUTH_SPEC §13-11)。この記録はその 3 つの出所を**非機密**の設定として持つ
-// (公開鍵・FP・cap・出所・時刻だけ。秘密鍵は無い — ディスクレス不変条件と両立)。
+// The keys that first-sync device registration (device-sync.ts) may
+// `add_device` to a new project are limited to 3: (1) a key I
+// generated (the reserve key), (2) a key I approved via `device
+// approve`, (3) a key observed as that person's device on a verified
+// chain (AUTH_SPEC §13-11). This record holds those 3 provenances as
+// **non-secret** configuration (public keys, FP, cap, provenance,
+// time only. No secret key — compatible with the diskless
+// invariant).
 //
-// 書き手は 3 経路(予備鍵の封印・approve・検証済みチェーンの観測)だけであり、端末
-// 登録簿(`GET /auth/devices` — サーバー申告 = advisory)の応答は**読み手にも書き手にも
-// ならない**(登録簿を真実源にすると、サーバーが偽の公開鍵を差し込んで CLI にゴースト
-// 端末を追記させられる — DK-D)。own-devices.test.ts の negative がこれを固定する。
+// The only writers are the 3 paths (sealing a reserve key, approve,
+// observation on a verified chain); the response of the device
+// registry (`GET /auth/devices` — a server declaration = advisory) is
+// **neither a reader nor a writer** (if the registry were a source of
+// truth, the server could insert a fake public key and make the CLI
+// append a ghost device — DK-D). The negative in own-devices.test.ts
+// pins this.
 //
-// 失効の記録(`revokedAtMs`): `device revoke` の実行と、検証済みチェーン上での自分の
-// 端末の `revoke_device` の観測で立てる。立った行は二度と足さない(侵害鍵の復活と
-// 四眼の票の復活 — CRYPTO_SPEC §6.2 — を初回同期が引き起こさないため)。再承認
-// (`device approve`)だけが行を上書きしてフラグを消す(明示操作)。
+// Recording revocation (`revokedAtMs`): set on running `device
+// revoke` and on observing my device's `revoke_device` on a verified
+// chain. A marked row is never re-added (so first sync does not
+// resurrect a compromised key or a four-eyes vote — CRYPTO_SPEC
+// §6.2). Only re-approval (`device approve`) overwrites the row and
+// clears the flag (an explicit operation).
 //
-// 置き場は指紋帳と同系(<config dir>/own-devices.json — ユーザー単位・プロジェクト
-// 横断)。fail-open: 不在 = 記録なし、破損 = 記録なし + 区別可能な警告。破損への
-// 上書きは拒否する(pins / 指紋帳と同じ規律)。
+// Storage is the same family as the fingerprint ledger (<config
+// dir>/own-devices.json — per-user, cross-project). fail-open:
+// absent = no record, corrupt = no record + a distinguishable
+// warning. Overwriting a corrupt file is refused (same discipline as
+// pins / the fingerprint ledger).
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -86,7 +97,7 @@ export class OwnDeviceStore extends Context.Service<OwnDeviceStore, OwnDeviceSto
   "cli/OwnDeviceStore",
 ) {}
 
-/** 記録の置き場所(設定と同系: <config.json の親>/own-devices.json)。 */
+/** The record's location (same family as the config: <config.json's parent>/own-devices.json). */
 export function ownDevicesPathOf(configPath: string): string {
   return join(dirname(configPath), "own-devices.json");
 }
@@ -150,7 +161,7 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
-/** 鍵側(公開鍵・cap・出所)のデコード。 */
+/** Decoding the key side (public keys, cap, provenance). */
 function decodeKeys(
   value: Record<string, unknown>,
 ): Pick<OwnDeviceRecord, "encPubHex" | "sigPubHex" | "roleCap" | "scope" | "source"> | null {
@@ -171,7 +182,7 @@ function decodeKeys(
   return { encPubHex, sigPubHex, roleCap, scope, source };
 }
 
-/** 出所側(表示名・追加者・観測プロジェクト・時刻)のデコード。 */
+/** Decoding the provenance side (display name, adder, observed project, time). */
 function decodeProvenance(
   value: Record<string, unknown>,
 ): Pick<
@@ -221,7 +232,7 @@ function encodeEntry(record: OwnDeviceRecord): Record<string, unknown> {
   };
 }
 
-/** 1 ユーザー分(FP → 記録)のデコード(1 件でも不正なら全体拒否)。 */
+/** Decoding one user's worth (FP → record) (one malformed entry rejects the whole). */
 function decodeDevices(value: unknown): Record<string, OwnDeviceRecord> | null {
   if (!isRecord(value)) {
     return null;
@@ -252,7 +263,7 @@ function decodeUsers(value: unknown): Record<string, Record<string, OwnDeviceRec
   return users;
 }
 
-/** 厳格デコード(部分読みしない — pins / 指紋帳と同じ)。 */
+/** Strict decoding (no partial reads — same as pins / the fingerprint ledger). */
 function decodeFile(json: string): OwnDevicesFile | null {
   let value: unknown;
   try {
@@ -326,7 +337,7 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
         }
         const loaded = await loadRaw();
         if (loaded.state === "corrupt") {
-          // 破損ファイルへの上書きは拒否(pins / 指紋帳と同じ規律)
+          // Refuse overwriting a corrupt file (same discipline as pins / the fingerprint ledger)
           throw new Error("corrupt");
         }
         const base: OwnDevicesFile = loaded.state === "missing" ? { v: 1, known: {} } : loaded.file;

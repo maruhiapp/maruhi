@@ -1,20 +1,26 @@
-// GitHub Actions の OIDC トークン取得と claims 読み出し(AUTH_SPEC §14-1 の
-// クライアント側 — v1 の対応 issuer は GitHub Actions のみ)。
+// Fetching the GitHub Actions OIDC token and reading its claims
+// (the client side of AUTH_SPEC §14-1 — v1's only supported issuer
+// is GitHub Actions).
 //
-// トークンはベアラー資格情報であり、平文値・鍵素材と同じ扱いにする:
-// `Redacted` で包み、ログ・エラー・診断に出さない(CLAUDE.md)。剥がすのは
-// claims 読み出し(本ファイル)と lease リクエストの payload 組み立て
-// (ci-run.ts)の 2 か所のみ(redacted.test.ts の棚卸しに登録)。
+// The token is a bearer credential and is treated like a plaintext
+// value / key material: wrap it in `Redacted` and never put it on
+// logs, errors, or diagnostics (CLAUDE.md). Unwrapping happens in
+// exactly two places: claims reading (this file) and assembling the
+// lease request payload (ci-run.ts) (registered in redacted.test.ts's
+// inventory).
 //
-// claims の読み出しは base64url decode + JSON.parse で足りる: 署名検証は
-// サーバーの仕事(AUTH_SPEC §14-1)で、クライアントは**自分の**トークンから
-// iss / sub / aud を読んで claims_digest(CRYPTO_SPEC §9.1)を独立計算する
-// だけである。JWT ライブラリは足さない(新規依存を増やさない)。
+// Claims reading needs only base64url decode + JSON.parse: signature
+// verification is the server's job (AUTH_SPEC §14-1); the client
+// only reads iss / sub / aud from **its own** token to compute
+// claims_digest (CRYPTO_SPEC §9.1) independently. No JWT library is
+// added (no new dependencies).
 //
-// ランナー供給の環境変数は `CliIo.envVar`(Effect サービス境界)経由で読む —
-// `process.env` を直接読まない(CLAUDE.md。本番実装は live.ts、テストは
-// 差し替え Map)。将来の事前発行型 issuer(GitLab / k8s の projected volume)は
-// このモジュールの差し替えで対応する(検証・開封層は lease-client.ts のまま)。
+// Runner-supplied environment variables are read via `CliIo.envVar`
+// (the Effect service boundary) — `process.env` is never read
+// directly (CLAUDE.md. Production is live.ts; tests substitute a
+// Map). Future pre-issued-style issuers (GitLab / k8s projected
+// volumes) are handled by swapping this module (the verify/open
+// layer stays lease-client.ts).
 
 import type { LeaseClaims } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -23,22 +29,23 @@ import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { isLoopbackHostname } from "./session.ts";
 
-/** GitHub Actions ランナーが供給する OIDC 発行エンドポイントの環境変数。 */
+/** The environment variables of the OIDC issuance endpoint the GitHub Actions runner supplies. */
 export const OIDC_REQUEST_URL_ENV = "ACTIONS_ID_TOKEN_REQUEST_URL";
 export const OIDC_REQUEST_TOKEN_ENV = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
 
-/** OIDC 発行エンドポイントが無い実行への案内(要件をその場で言う)。 */
+/** Guidance for a run without the OIDC issuance endpoint (states the requirement on the spot). */
 const OIDC_ENV_MISSING_MESSAGE =
   "The GitHub Actions OIDC endpoint is not available. Run this inside a GitHub Actions job, and grant the job `permissions: id-token: write` (both ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN must be set)";
 
-/** ランナー供給の発行エンドポイント(欠落・空はどちらも「無い」)。 */
+/** The runner-supplied issuance endpoint (missing or empty both count as "absent"). */
 function readIssuanceEndpoint(io: {
   readonly envVar: (name: string) => string | undefined;
 }): { readonly requestUrl: string; readonly requestToken: string } | null {
   const requestUrl = io.envVar(OIDC_REQUEST_URL_ENV);
-  // ランナートークンもベアラー資格情報だが、このモジュールのローカルにのみ
-  // 存在し直後のヘッダーで消費される(モジュール境界を渡らないため包まない)。
-  // ログ・エラーには出さない
+  // The runner token is also a bearer credential, but it exists only
+  // in this module's locals and is consumed by the header right
+  // after (it does not cross the module boundary, so it is not
+  // wrapped). Never onto logs or errors
   const requestToken = io.envVar(OIDC_REQUEST_TOKEN_ENV);
   if (
     requestUrl === undefined ||
@@ -52,8 +59,9 @@ function readIssuanceEndpoint(io: {
 }
 
 /**
- * 発行エンドポイント URL の検証と audience パラメータの付与。`https:`
- * 以外・埋め込み資格情報・パース不能は null(呼び出し元が型付きエラーにする)。
+ * Validates the issuance endpoint URL and attaches the audience
+ * parameter. Non-`https:`, embedded credentials, and unparseable
+ * are null (the caller turns them into a typed error).
  */
 function validatedIssuanceUrl(requestUrl: string, audience: string): string | null {
   let url: URL;
@@ -62,10 +70,11 @@ function validatedIssuanceUrl(requestUrl: string, audience: string): string | nu
   } catch {
     return null;
   }
-  // `http:` は loopback のみ許す(テスト・ローカルモック用 — 平文がネットワークを
-  // 渡らない)。それ以外は `https:` 必須。loopback 判定は CLI 共通の
-  // isLoopbackHostname(session.ts)— IPv4 リテラル厳密検査で "127.evil.com" の
-  // ような公開 DNS 名は通らない
+  // `http:` is allowed only for loopback (for tests and local
+  // mocks — plaintext never crosses the network). Everything else
+  // requires `https:`. Loopback judgment is the CLI-shared
+  // isLoopbackHostname (session.ts) — strict IPv4-literal checking,
+  // so a public DNS name like "127.evil.com" does not pass
   const schemeOk =
     url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
   if (!schemeOk || url.username !== "" || url.password !== "") {
@@ -75,7 +84,7 @@ function validatedIssuanceUrl(requestUrl: string, audience: string): string | nu
   return url.toString();
 }
 
-/** 発行エンドポイント応答(`{ value }`)からのトークン取り出し。 */
+/** Extracts the token from the issuance endpoint's response (`{ value }`). */
 function tokenOfIssuanceBody(body: unknown): string | null {
   const value =
     typeof body === "object" && body !== null
@@ -87,9 +96,10 @@ function tokenOfIssuanceBody(body: unknown): string | null {
 /**
  * Fetches a fresh GitHub Actions OIDC token for `audience`.
  *
- * トークンは lease 要求の**直前**に発行する(session-24 §8 SHOULD — 先着束縛の
- * 露出窓の最小化)。呼び出しごとに新規発行なので、`token-replayed` の再試行
- * (ci-run.ts)はこの関数をもう一度呼ぶだけでよい。
+ * The token is issued **immediately before** the lease request
+ * (session-24 §8 SHOULD — minimizing the first-come binding's
+ * exposure window). Since each call mints a fresh token, retrying
+ * `token-replayed` (ci-run.ts) is just calling this function again.
  */
 export function fetchGitHubOidcToken(
   audience: string,
@@ -100,11 +110,14 @@ export function fetchGitHubOidcToken(
     if (endpoint === null) {
       return yield* Effect.fail(cliError(OIDC_ENV_MISSING_MESSAGE));
     }
-    // ランナートークン(bearer 資格情報)を送る前に URL を検証する:
-    // `https:` 以外(平文 http・独自スキーム)と埋め込み資格情報を拒否する。
-    // ホストは固定しない — GitHub Hosted Runner のホストは固定名でなく、GHES は
-    // 任意ホストであるため、許可リストは正当な実行を壊すだけで攻撃(環境変数を
-    // 差し替えられる立場 = 既にジョブ定義を書ける立場)を増やさない
+    // Validate the URL before sending the runner token (a bearer
+    // credential): refuse non-`https:` (plaintext http, custom
+    // schemes) and embedded credentials. The host is not pinned —
+    // GitHub-hosted runners do not have a fixed hostname and GHES
+    // can be any host, so an allowlist would only break legitimate
+    // runs without adding attack coverage (the position that can
+    // swap env vars = a position that can already write the job
+    // definition)
     const url = validatedIssuanceUrl(endpoint.requestUrl, audience);
     if (url === null) {
       return yield* Effect.fail(
@@ -115,8 +128,9 @@ export function fetchGitHubOidcToken(
     }
     const body = yield* Effect.tryPromise({
       try: async () => {
-        // redirect は追従しない: 既定の follow は bearer ヘッダー付きの
-        // リクエストをリダイレクト先へ再送しうる。3xx は !ok として失敗に落ちる
+        // Redirects are not followed: the default follow could
+        // re-send the request with the bearer header to the redirect
+        // target. 3xx falls to failure as !ok
         const response = await fetch(url, {
           method: "GET",
           redirect: "manual",
@@ -129,9 +143,11 @@ export function fetchGitHubOidcToken(
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        // JSON.parse の例外はここで飲む(守られたパース):
-        // parse エラーの message は応答本文の断片を含み、この応答の本文は
-        // トークンの運搬路である。素通しにせず「解釈できない」へ畳む
+        // JSON.parse exceptions are swallowed here (guarded parse):
+        // a parse error's message can contain a fragment of the
+        // response body, and this response's body is the token's
+        // transport. Do not pass it through raw — fold into
+        // "uninterpretable"
         const text = await response.text();
         try {
           return JSON.parse(text) as unknown;
@@ -152,13 +168,15 @@ export function fetchGitHubOidcToken(
         cliError("Cannot interpret the OIDC token response from the GitHub Actions runner"),
       );
     }
-    // 環境の外から届いた素の string はここで包む。以降トークンは Redacted と
-    // してしか流れない(剥がすのは claims 読み出しと lease payload の 2 か所)
+    // The bare string that arrived from outside the environment is
+    // wrapped here. From here on the token only flows as Redacted
+    // (unwrapping is the 2 places: claims reading and the lease
+    // payload)
     return Redacted.make(value, { label: "oidc-token" });
   });
 }
 
-/** base64url → bytes(不正なら null。トークン断片を例外文面に載せない)。 */
+/** base64url → bytes (null when malformed. Never put a token fragment onto an exception message). */
 function decodeBase64Url(segment: string): Uint8Array | null {
   const base64 = segment.replaceAll("-", "+").replaceAll("_", "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
@@ -185,7 +203,7 @@ const CLAIM_FAILURE_MESSAGES = {
 
 type ClaimsFailure = keyof typeof CLAIM_FAILURE_MESSAGES;
 
-/** compact JWS の payload セグメント → JSON 値(不正なら null)。 */
+/** A compact JWS's payload segment → JSON value (null when malformed). */
 function decodeTokenPayload(raw: string): unknown | null {
   const segments = raw.split(".");
   const payloadSegment = segments[1];
@@ -204,7 +222,7 @@ function decodeTokenPayload(raw: string): unknown | null {
   }
 }
 
-/** payload → リースが束縛する 3 claim(不正なら理由コード)。 */
+/** payload → the 3 claims the lease binds (a reason code when malformed). */
 function claimsOfPayload(payload: unknown | null): LeaseClaims | ClaimsFailure {
   if (payload === null) {
     return "malformed";
@@ -234,15 +252,17 @@ function claimsOfPayload(payload: unknown | null): LeaseClaims | ClaimsFailure {
  * `computeLeaseClaimsDigest` — never from the raw builder (the builder skips
  * the empty-field guard).
  *
- * `aud` が複数のトークンは拒否する: claims_digest が一意に決まらず、サーバーも
- * 同じ理由で `ambiguous-audience` として拒否する(errors/lease.ts)。往復する
- * 前にクライアント側で同じ判定を出す。
+ * A token with multiple `aud` is refused: claims_digest is not
+ * uniquely determined, and the server refuses it for the same
+ * reason as `ambiguous-audience` (errors/lease.ts). The client
+ * issues the same judgment before making the round trip.
  */
 export function readLeaseClaims(
   token: Redacted.Redacted<string>,
 ): Effect.Effect<LeaseClaims, CliError> {
-  // 剥がす理由: 自トークンの claims 読み出し(payload セグメントの decode)。
-  // 産物は iss / sub / aud の 3 文字列だけで、トークン本体は外へ出ない
+  // Why it is unwrapped: reading the claims of my own token
+  // (decoding the payload segment). The product is only the 3
+  // strings iss / sub / aud — the token body does not leave
   const outcome = claimsOfPayload(decodeTokenPayload(Redacted.value(token)));
   if (typeof outcome === "string") {
     return Effect.fail(cliError(CLAIM_FAILURE_MESSAGES[outcome]));
@@ -250,7 +270,7 @@ export function readLeaseClaims(
   return Effect.succeed(outcome);
 }
 
-/** `aud` claim の単一値の取り出し(単一文字列 | 要素 1 の配列のみ受理)。 */
+/** Extracts a single `aud` claim value (only a single string | a 1-element array is accepted). */
 function singleAudience(value: unknown): string | null | "multiple" {
   if (typeof value === "string") {
     return value.length > 0 ? value : null;

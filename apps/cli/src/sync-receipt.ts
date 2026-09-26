@@ -1,25 +1,33 @@
-// 同期レシート(integration-options.md §3 補足 13 W2 / 補足 15 X3 (a))。
+// The sync receipt (integration-options.md §3 supplement 13 W2 /
+// supplement 15 X3 (a)).
 //
-// 「どの同期先に、どの変数の version まで届いたか」を、設定で指した環境
-// (`receipts.environment`)の**普通の変数**として保存する: E2EE + §4.1 の
-// 書き込み署名(改竄検出つき)で、仕様改訂なし。値由来のダイジェストは持たない
-// (推測可能な値の漏洩経路になる — W2)。version 番号だけで足りる。
+// "Which variable's version reached which sync target" is stored
+// as an **ordinary variable** of the config-pointed environment
+// (`receipts.environment`): E2EE + §4.1's write signature (with
+// tamper detection), no spec revision needed. It carries no
+// value-derived digest (that would be a leakage path for
+// guessable values — W2). The version number alone is enough.
 //
-// 粒度: ターゲットごとに 1 変数(`sync-receipt:<target>`)。同期のたびに新
-// version が積まれるので、変数あたり version 上限(AUTH_SPEC §12-8 — 1,000)に
-// 近づいたら警告する(内容が変わらない apply は書かないので、書くのは
-// 「同期先が実際に変わった回」だけ)。active 変数上限(1,000 / 環境)には
-// ターゲット数ぶんしか当たらない。
+// Granularity: one variable per target (`sync-receipt:<target>`).
+// Since each sync piles on a new version, warn when nearing the
+// per-variable version cap (AUTH_SPEC §12-8 — 1,000) (an apply
+// whose content does not change is never written, so only "times
+// the target actually changed" is written). The active-variable
+// cap (1,000 / environment) only costs one slot per target.
 //
-// 読み = 値付き pull(pull.ts の pullVariables — レシート環境を復号する)、
-// 書き = push.ts の pushVariable(人間の master 鍵で署名する。CI はこの鍵を
-// 持たないので書けない)。
+// Read = a valued pull (pull.ts's pullVariables — decrypts the
+// receipt environment), write = push.ts's pushVariable (signed
+// with the human's master key. CI does not hold this key and
+// cannot write).
 //
-// 名前を `MARUHI_` で始めない理由: `run` は `MARUHI_*` の注入を拒否するので、
-// レシート環境を誤って `run` に使うと失敗する — それ自体は
-// 望ましいが、拒否文が「実行制御名」を言い読者を惑わせる。`:` を含む名前は
-// POSIX 識別子でないため、`run` は「環境変数として注入できない名前」として
-// 変数名だけを添えて止まる(同じ fail-closed で、文面が事実を言う)。
+// Why the name does not start with `MARUHI_`: `run` refuses to
+// inject `MARUHI_*`, so pointing a receipt environment at `run` by
+// mistake would fail — desirable in itself, but the refusal text
+// would say "execution-control name" and confuse the reader.
+// Since a name containing `:` is not a POSIX identifier, `run`
+// stops with just the variable name as "a name that cannot be
+// injected as an environment variable" (the same fail-closed, and
+// the wording states the fact).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
@@ -40,14 +48,14 @@ export interface SyncReceipt {
   readonly version: 1;
   readonly target: string;
   readonly preset: PresetId;
-  /** 最後に書いた時刻(書き手の時計。表示用 — 判定には使わない)。 */
+  /** When it was last written (the writer's clock. Display only — never used for judgment). */
   readonly syncedAt: string;
   readonly variables: Readonly<Record<string, number>>;
 }
 
-/** 変数あたりの version 上限(AUTH_SPEC §12-8 — apps/server/src/policy.ts の値)。 */
+/** The per-variable version cap (AUTH_SPEC §12-8 — apps/server/src/policy.ts's value). */
 const RECEIPT_VERSION_LIMIT = 1_000;
-/** この version から上限接近を警告する(残り 100 回の同期)。 */
+/** Warn about nearing the cap starting from this version (100 syncs remaining). */
 const RECEIPT_VERSION_WARN_AT = 900;
 
 /** The name of the receipt variable for a target. */
@@ -55,7 +63,7 @@ export function receiptVariableName(target: string): string {
   return `sync-receipt:${target}`;
 }
 
-/** レシート JSON の解釈(不正なら理由の文字列。値そのものは含めない)。 */
+/** Interprets a receipt JSON (the reason string when malformed. Never includes the value itself). */
 export function decodeReceipt(text: string, expectedTarget: string): SyncReceipt | string {
   const record = parseJsonRecord(text);
   if (typeof record === "string") {
@@ -79,8 +87,9 @@ export function decodeReceipt(text: string, expectedTarget: string): SyncReceipt
   if (typeof variablesRaw !== "object" || variablesRaw === null || Array.isArray(variablesRaw)) {
     return "variables must be an object of { name: version }";
   }
-  // null プロトタイプ: 変数名は任意の文字列なので、`__proto__` のような名前を
-  // 継承プロパティに解決させない
+  // null prototype: since a variable name is an arbitrary
+  // string, a name like `__proto__` must not resolve to an
+  // inherited property
   const variables: Record<string, number> = Object.create(null) as Record<string, number>;
   for (const [name, version] of Object.entries(variablesRaw)) {
     if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
@@ -91,7 +100,7 @@ export function decodeReceipt(text: string, expectedTarget: string): SyncReceipt
   return { version: 1, target: expectedTarget, preset: preset as PresetId, syncedAt, variables };
 }
 
-/** レシートのファイル表現(決定論的: 名前の昇順 — 同じ内容は同じバイト列)。 */
+/** The receipt's file representation (deterministic: names ascending — the same content is the same bytes). */
 export function encodeReceipt(receipt: SyncReceipt): Uint8Array {
   const variables: Record<string, number> = Object.create(null) as Record<string, number>;
   for (const name of Object.keys(receipt.variables).toSorted()) {
@@ -110,11 +119,11 @@ export function encodeReceipt(receipt: SyncReceipt): Uint8Array {
 
 /** The receipt as last stored, plus the coordinates needed to write the next one. */
 export interface LoadedReceipt {
-  /** null = このターゲットのレシートはまだ無い(初回同期)。 */
+  /** null = this target has no receipt yet (first sync). */
   readonly receipt: SyncReceipt | null;
-  /** レシート変数の現在の version(無ければ 0)。上限接近の警告に使う。 */
+  /** The receipt variable's current version (0 when absent). Used for the nearing-cap warning. */
   readonly variableVersion: number;
-  /** 検証に使ったビュー(有界再同期で前進していることがある)。 */
+  /** The view used for verification (may have advanced via bounded re-sync). */
   readonly verified: VerifiedProject;
   readonly warnings: readonly string[];
 }
@@ -134,17 +143,18 @@ export function loadReceipt(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
   readonly target: string;
-  /** ターゲットの現在の preset(レシートの書き手の preset と突合する)。 */
+  /** The target's current preset (collated against the receipt writer's preset). */
   readonly preset: PresetId;
 }): Effect.Effect<LoadedReceipt, CliError> {
   return Effect.gen(function* () {
     const name = receiptVariableName(input.target);
-    // レシート変数だけを復号する(レシート環境にユーザーの秘密があっても
-    // 平文をメモリに作らない — pull.ts の select 契約)
+    // Decrypts only the receipt variable (even if the receipt
+    // environment holds the user's secrets, no plaintext is
+    // materialized in memory — pull.ts's select contract)
     const pulled = yield* pullVariables({ ...input, select: (n) => n === name });
     const variable = pulled.variables.find((entry) => entry.name === name);
     if (variable === undefined) {
-      // 有界再同期で前進したビューを返す(後続の pull / push が引き継ぐ)
+      // Returns the view advanced by bounded re-sync (later pull / push take it over)
       return {
         receipt: null,
         variableVersion: 0,
@@ -152,8 +162,10 @@ export function loadReceipt(input: {
         warnings: pulled.warnings,
       };
     }
-    // 剥がす理由: レシート JSON の解釈(レシートは名前と version の写像で、秘密
-    // 値ではない。産物は構造体のみで、文面には理由しか出さない)
+    // Why it is unwrapped: interpreting the receipt JSON (a
+    // receipt is a name-to-version mapping, not a secret value.
+    // The product is only a struct, and the message carries only
+    // a reason)
     const text = decodeValueText(Redacted.value(variable.value));
     const decoded = text === null ? "not valid UTF-8" : decodeReceipt(text, input.target);
     if (typeof decoded === "string") {
@@ -163,12 +175,15 @@ export function loadReceipt(input: {
         ),
       );
     }
-    // preset が違うレシートの届け先は別のプラットフォーム: 名前で消す削除も
-    // 「届いた」扱いの version も意味を失う。作り直しを名指しで案内する。
-    // このレシートは旧届け先に何が居るかの唯一の記録なので、消させる前に
-    // 名前の一覧をここで見せる(driverFailureMessage の pendingHint と同型。
-    // maruhi は旧届け先を消しに行かない: 設定が今指していない先に書く・消す
-    // ことはしない)
+    // A receipt with a different preset's destination is a
+    // different platform: deleting by name and the "delivered"
+    // versions both lose their meaning. Guide recreation by name.
+    // Since this receipt is the only record of what is on the old
+    // destination, show the name list here before letting it be
+    // removed (same shape as driverFailureMessage's pendingHint.
+    // maruhi does not go delete the old destination: it never
+    // writes to or deletes from a place the config no longer
+    // points at)
     if (decoded.preset !== input.preset) {
       const delivered = Object.keys(decoded.variables).toSorted();
       const orphanHint =
@@ -190,7 +205,7 @@ export function loadReceipt(input: {
   });
 }
 
-/** 上限接近の警告文(該当しなければ null)。 */
+/** The nearing-cap warning text (null when not applicable). */
 export function receiptVersionWarning(input: {
   readonly target: string;
   readonly environmentId: string;

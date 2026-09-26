@@ -1,23 +1,34 @@
-// 保護者グループ(CRYPTO_SPEC §8.3 / §8.4 / AUTH_SPEC §13-7 — KL3、2026-09-19 DK)。
+// Guardian groups (CRYPTO_SPEC §8.3 / §8.4 / AUTH_SPEC §13-7 — KL3,
+// 2026-09-19 DK).
 //
-// `maruhi guardian add`: 共有プロジェクトのチェーン導出メンバーから保護者を選び、
-// その**現在有効な各端末鍵**の enc 公開鍵(チェーン上の鍵 — §8.3 の端末展開)へ分片を
-// 封印して台帳に登録する。ラップ対象 B は**予備鍵**のレコード(§8.1 — 呼び出し側が
-// 台帳を開封して得る。ledger-open.ts / 設計録 §9 K4-2)。鍵の確認は §6.5 の充足形
-// (12 語の読み上げ儀式 / 検証済み指紋帳のヒット + yes)に従う — グローバルな公開鍵
-// ディレクトリは作らない。`all` は乱数 XOR 分割で全員が要る。`any` は誰か 1 人で足りる。
+// `maruhi guardian add`: picks guardians from the chain-derived
+// members of the shared project and registers to the ledger a segment
+// sealed to the enc public key of each of their **currently valid
+// device keys** (on-chain keys — §8.3's device expansion). The wrapped
+// target B is the **reserve key**'s record (§8.1 — the caller obtains
+// it by opening the ledger. ledger-open.ts / design record §9 K4-2).
+// Key confirmation follows the §6.5 fulfilment form (the 12-word
+// reading ceremony / a verified fingerprint-book hit + yes) — no
+// global public-key directory is built. `all` splits by random XOR
+// and needs everyone. `any` needs any one person.
 //
-// `maruhi guardian approve <code>`(旧 `key approve` — 旧端末経路の削除に伴い改名。K4-15):
-// コードから E.pub と request_id を復元し、要求を照会する。自分宛の分片を**この端末の
-// 端末鍵**で開き(`deviceShares` から手元の FP の行を選ぶ — K3-10)、その場で E.pub へ
-// 再封印する。サーバーは E.pub を中継しない(コードは人が運ぶ)。
+// `maruhi guardian approve <code>` (formerly `key approve` — renamed
+// when the old-device path was removed. K4-15): restores E.pub and
+// the request_id from the code and queries the request. Opens the
+// my-addressed segment with **this device's device key** (selects the
+// row of my FP from `deviceShares` — K3-10) and re-seals it to E.pub
+// on the spot. The server does not relay E.pub (a human carries the
+// code).
 //
-// `list` / `remove` / `wards` は台帳の閲覧・削除・「自分が保護者である ward」の一覧。
-// `list --project` を与えると、台帳の分片行(端末ごと)をチェーン導出の現端末集合と
-// 突合し、開けない行(失効した端末)と、全端末が失効して開けなくなった分片を警告する
-// (`all` では 1 人の不一致でグループ全体が復元不能になる)。
+// `list` / `remove` / `wards`: viewing the ledger, deleting, and
+// listing the wards I am a guardian of. With `list --project`, the
+// ledger's segment rows (per device) are collated against the
+// chain-derived current device set, warning about rows that can no
+// longer be opened (a revoked device) and segments that became
+// unopenable because every device was revoked (under `all`, one
+// person's mismatch makes the whole group unrestorable).
 //
-// 平文の KEK・分片・B はローカル変数にのみ存在する。
+// Plaintext KEK, segments, and B exist only in local variables.
 
 import {
   type ChainDevice,
@@ -64,14 +75,16 @@ import { logNote, logWarning } from "./notice.ts";
 import type { ReserveKeys } from "./reserve.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 
-/** 受理ポリシー(AUTH_SPEC §13-8)と同じ上限(サーバーの 422 を先に案内する)。 */
+/** The same cap as the acceptance policy (AUTH_SPEC §13-8) (guidance ahead of the server's 422). */
 const MAX_GUARDIANS = 5;
 
 /**
- * 指名の儀式はハンドオフの要求 / 承認と同じゲート(ADR-0016 決定 7): 人間の
- * 対話端末でのみ行い、エージェント環境は拒否する。保護者の指名にはフラグ経路を
- * 設けない(鍵素材の封印先を非対話で決めさせない)ので、パイプした stdin で
- * 儀式のプロンプトを埋める形もここで落とす。
+ * The naming ceremony takes the same gate as the handoff request /
+ * approve (ADR-0016 decision 7): only on a human's interactive
+ * terminal; agent environments are refused. Naming a guardian has no
+ * flag route (never let a non-interactive caller decide where key
+ * material is sealed), so the form that fills the ceremony prompt
+ * via piped stdin is dropped here too.
  */
 function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
   return ensureSensitiveTerminalAllowed({
@@ -85,9 +98,11 @@ function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliE
 }
 
 /**
- * 保護者鍵の明示確認(CRYPTO_SPEC §6.5 の充足形を保護者の指名に適用): 帳のヒットは
- * 読み上げの再実施を免除するが、指名単位の yes 確認は残す。確認するのは保護者の
- * **各端末**の FP(分片はその端末へ封印される)。
+ * Explicit confirmation of guardian keys (the §6.5 fulfilment form
+ * applied to guardian naming): a fingerprint-book hit excuses the
+ * re-reading, but a per-naming yes confirmation remains. What is
+ * confirmed is the FP of **each device** of the guardian (the
+ * segment is sealed to that device).
  */
 function confirmGuardianFingerprint(input: {
   readonly origin: string;
@@ -136,7 +151,7 @@ function confirmGuardianFingerprint(input: {
   });
 }
 
-/** 指名の前提検査(サーバーの 422 と同じ規則をここで先に言う)。 */
+/** Preconditions of naming (the same rules as the server's 422, stated here first). */
 function guardianInputRejection(input: {
   readonly selfUserId: string;
   readonly mode: GuardianMode;
@@ -157,13 +172,13 @@ function guardianInputRejection(input: {
   return null;
 }
 
-/** チェーン導出の現メンバー(保護者候補)とその現端末集合。 */
+/** A chain-derived current member (a guardian candidate) and their current device set. */
 interface GuardianMember {
   readonly userId: string;
   readonly devices: readonly ChainDevice[];
 }
 
-/** 分片の登録形(ワイヤ — AUTH_SPEC §13-9 GuardianShare。端末ごとに 1 要素)。 */
+/** The registration form of a segment (wire — AUTH_SPEC §13-9 GuardianShare. One element per device). */
 interface SealedShare {
   readonly shareIndex: number;
   readonly guardianUserId: string;
@@ -173,7 +188,7 @@ interface SealedShare {
   readonly ciphertextHex: string;
 }
 
-/** 保護者候補をチェーンの現メンバーから引く(§8.3 — 公開鍵ディレクトリを作らない)。 */
+/** Resolves guardian candidates from the chain's current members (§8.3 — no public-key directory is built). */
 function resolveGuardians(input: {
   readonly projectId: string;
   readonly members: ReadonlyMap<string, ChainMember>;
@@ -188,12 +203,12 @@ function resolveGuardians(input: {
         ),
       );
     }
-    // 保護者の鍵 = その人の現在有効な全端末鍵(§8.3 — 同じ分片を端末数ぶん封印する)
+    // A guardian's keys = all of the person's currently valid device keys (§8.3 — the same segment is sealed once per device)
     return Effect.succeed({ userId, devices: devicesOf(member) });
   });
 }
 
-/** 1 端末分の分片を保護者のチェーン鍵へ封印する。 */
+/** Seals one device's worth of a segment to the guardian's chain key. */
 function sealShareFor(input: {
   readonly wardUserId: string;
   readonly groupId: string;
@@ -241,7 +256,7 @@ function sealShareFor(input: {
   });
 }
 
-/** B(予備鍵)を乱数 KEK でラップし、KEK を分片へ割って各保護者の各端末へ封印する(§8.3)。 */
+/** Wraps B (the reserve key) with a random KEK and splits the KEK into segments sealed to each guardian's each device (§8.3). */
 function prepareGroup(input: {
   readonly wardUserId: string;
   readonly reserve: ReserveKeys;
@@ -305,8 +320,9 @@ function prepareGroup(input: {
 /**
  * `maruhi guardian add --project <p> --mode any|all <user>...`: register a
  * guardian group whose members can approve restoring your reserve key.
- * `openReserve` は台帳の開封(ledger-open.ts — 台帳変更の資格。K4-2)で、入力検査と
- * 儀式の後・封印の直前に 1 回だけ走らせる。
+ * `openReserve` opens the ledger (ledger-open.ts — the
+ * qualification for changing the ledger. K4-2); run it exactly
+ * once, after input checks and the ceremony, just before sealing.
  */
 export function guardianAddOp(input: {
   readonly flags: CommonFlags;
@@ -343,7 +359,7 @@ export function guardianAddOp(input: {
         });
       }
     }
-    // 台帳の変更は予備鍵の開封を要する(CRYPTO_SPEC §8 改訂 (4))
+    // Changing the ledger requires opening the reserve key (CRYPTO_SPEC §8 revision (4))
     const reserve = yield* input.openReserve(context.session, context.client);
     const groupId = newLedgerId();
     const prepared = yield* prepareGroup({
@@ -382,14 +398,14 @@ export function guardianAddOp(input: {
   });
 }
 
-/** 台帳の保護者 1 行(status の配布形 — 端末ごと)。 */
+/** One guardian row of the ledger (the distribution form of a status — per device). */
 interface GuardianRow {
   readonly shareIndex: number;
   readonly guardianUserId: string;
   readonly guardianKeyFingerprintHex: string;
 }
 
-/** チェーンの現端末集合との突合結果(null = 突合していない / 一致)。 */
+/** Collation result against the chain's current device set (null = not collated / matches). */
 type Staleness = "left" | "device-gone" | null;
 
 function stalenessOf(
@@ -403,7 +419,7 @@ function stalenessOf(
   if (current === undefined) {
     return "left";
   }
-  // 分片を封印した鍵が、いまもその人の有効な端末か(2026-09-19 DK — 端末単位)
+  // Whether the key the segment was sealed to is still a valid device of that person (2026-09-19 DK — per device)
   return current.devices.has(guardian.guardianKeyFingerprintHex) ? null : "device-gone";
 }
 
@@ -432,7 +448,7 @@ function reportGroup(
   });
 }
 
-/** 1 論理分片(保護者 1 人・端末ごとの行)の表示と、開けない / 一部失効の注記。 */
+/** Display of one logical segment (one guardian, per-device rows) and the notes for unopenable / partially revoked. */
 function reportShare(
   mode: GuardianMode,
   shareIndex: number,
@@ -452,7 +468,7 @@ function reportShare(
       const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
       yield* logWarning(staleShareWarning(userId, left, mode));
     } else if (chainMembers !== null && gone.length > 0) {
-      // 一部の端末が失効(K1-13 — SHOULD: 全端末の失効を待たずに再作成を提案する)
+      // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
       yield* logNote(partiallyRevokedNote(userId, gone, live.length));
     }
   });
@@ -491,7 +507,7 @@ export function guardianListOp(input: {
       yield* io.log("No guardian groups. Add one with `maruhi guardian add`");
       return;
     }
-    // --project があれば、台帳の保護者鍵 FP をチェーン導出の現端末集合と突合する
+    // With --project, collate the ledger's guardian-key FPs against the chain-derived current device set
     const chainMembers =
       input.flags.project === undefined
         ? null
@@ -550,7 +566,7 @@ export function guardianWardsOp(input: {
 }
 
 // ---------------------------------------------------------------------------
-// guardian approve(§8.4 — 保護者の承認。旧端末経路は 2026-09-19 DK で削除)
+// guardian approve (§8.4 — guardian approval. The old-device path was removed in 2026-09-19 DK)
 // ---------------------------------------------------------------------------
 
 function ensureApproveCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
@@ -564,7 +580,7 @@ function ensureApproveCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliEr
   });
 }
 
-/** 承認者から見た要求(コードの復号結果 + サーバーの照会)。 */
+/** The request as seen by the approver (the code's decryption result + the server's query). */
 interface ApprovalTarget {
   readonly requestId: string;
   readonly ephemeralPublicKey: EncryptionKey;
@@ -577,7 +593,7 @@ interface ApprovalTarget {
   }[];
 }
 
-/** コードを復号し、要求を照会する。 */
+/** Decrypts the code and queries the request. */
 function resolveApprovalTarget(
   client: MaruhiClient,
   code: string,
@@ -623,7 +639,7 @@ function resolveApprovalTarget(
   });
 }
 
-/** 要求の説明と yes 確認(yes 以外は何も送らない)。 */
+/** Description of the request and a yes confirmation (nothing is sent for anything but yes). */
 function confirmApproval(io: CliIoShape, target: ApprovalTarget): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
     const groups = target.roles.map(
@@ -643,7 +659,7 @@ function confirmApproval(io: CliIoShape, target: ApprovalTarget): Effect.Effect<
   });
 }
 
-/** 承認を送る(封印済みの分片)。 */
+/** Sends the approval (the sealed segment). */
 function sendApproval(input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
@@ -678,7 +694,7 @@ function sendApproval(input: {
     );
 }
 
-/** 自分宛の分片行のうち、この端末の鍵へ封印された行を選ぶ(K3-10 — `deviceShares`)。 */
+/** Among the my-addressed segment rows, selects the row sealed to this device's key (K3-10 — `deviceShares`). */
 function ownDeviceShare(
   share: {
     readonly encHex: string;
@@ -694,7 +710,7 @@ function ownDeviceShare(
   masterKeys: MasterKeys,
 ): { readonly encHex: string; readonly ciphertextHex: string } | null {
   if (share.deviceShares === undefined) {
-    // 旧サーバー(端末 1 つ = 唯一の行)
+    // Old server (one device = the only row)
     return { encHex: share.encHex, ciphertextHex: share.ciphertextHex };
   }
   const mine = share.deviceShares.find(
@@ -703,7 +719,7 @@ function ownDeviceShare(
   return mine === undefined ? null : { encHex: mine.encHex, ciphertextHex: mine.ciphertextHex };
 }
 
-/** 保護者としての承認: 自分宛の分片をこの端末の鍵で開き、その場で E.pub へ再封印する(§8.4)。 */
+/** Approving as a guardian: opens the my-addressed segment with this device's key and re-seals it to E.pub on the spot (§8.4). */
 function approveAsGuardian(input: {
   readonly client: MaruhiClient;
   readonly target: ApprovalTarget;
@@ -766,7 +782,7 @@ function approveAsGuardian(input: {
 
 /**
  * `maruhi guardian approve <code>`: approve a reserve-key handoff request as one
- * of the requester's guardians (旧 `key approve` — K4-15).
+ * of the requester's guardians (formerly `key approve` — K4-15).
  */
 export function guardianApproveOp(input: {
   readonly session: CliSession;
@@ -778,7 +794,7 @@ export function guardianApproveOp(input: {
     yield* ensureApproveCeremonyAllowed(io);
     const target = yield* resolveApprovalTarget(input.client, input.code);
     if (target.wardUserId === input.session.userId) {
-      // サーバーは ward 本人に要求を見せない(§13-7)が、応答を信用せず手元でも拒む
+      // The server never shows the request to the ward themself (§13-7), but do not trust the response — refuse locally too
       return yield* Effect.fail(
         cliError(
           "This handoff request is your own. Only your guardians can approve it (device migration no longer goes through a handoff — register a new device with `maruhi device add` / `maruhi device approve`)",

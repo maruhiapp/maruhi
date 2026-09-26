@@ -1,9 +1,12 @@
-// CAS 競合リトライの共有コンビネータ(AUTH_SPEC §12-4 / §12-5 の再試行手順)。
+// Shared combinator for CAS-conflict retries (the retry procedure of
+// AUTH_SPEC §12-4 / §12-5).
 //
-// 「試行 → 競合分類 → 回復(再同期ビューで再署名の材料づくり)→ 再試行、
-// 最終試行でも回復を走らせて定的エラーを表面化する」の骨格を push.ts /
-// env-create.ts で共有する。ドメイン固有の回復(winner 採用・再解決・
-// ラップ再構築)は呼び出し側の recover に残る。
+// The skeleton "attempt → classify conflict → recover (build re-sign
+// material from a re-synced view) → re-attempt, and run recovery even
+// on the final attempt to surface definite errors" is shared by
+// push.ts / env-create.ts. Domain-specific recovery (adopting the
+// winner, re-resolving, rebuilding wraps) stays in the caller's
+// recover.
 
 import { Effect } from "effect";
 
@@ -12,13 +15,13 @@ import { toCliError } from "./failure.ts";
 
 export interface ConflictRetryOptions<S, A, C> {
   readonly maxAttempts: number;
-  /** 1 試行(現在の状態からの署名・送信まで)。受理値で成功するか、生エラーで失敗する。 */
+  /** One attempt (from the current state through signing and sending). Succeeds with the accepted value or fails with a raw error. */
   readonly attempt: (state: S) => Effect.Effect<A, unknown>;
-  /** 失敗の分類: リトライ可能な競合なら分類値、定的エラーなら null(CliError へ写して伝播)。 */
+  /** Classifies the failure: a classifiable value for a retryable conflict, null for a definite error (mapped to CliError and propagated). */
   readonly classify: (error: unknown) => C | null;
-  /** 競合からの回復。失敗(定的エラー)はそのまま伝播する。 */
+  /** Recovery from a conflict. A failure (definite error) propagates as is. */
   readonly recover: (state: S, conflict: C) => Effect.Effect<S, CliError>;
-  /** 全試行が競合で尽きたときのメッセージ。 */
+  /** Message for when every attempt is exhausted on conflicts. */
   readonly exhaustedMessage: string;
 }
 
@@ -27,10 +30,13 @@ export interface ConflictRetryOptions<S, A, C> {
  * retryable conflicts, `recover` a fresh state (re-sync, re-resolve,
  * re-sign material) and try again, up to `maxAttempts`.
  *
- * 最終試行の競合でも recover を実行する: 再同期・再解決で判明する定的エラー
- * (equivocation の証拠・サーバー応答とチェーンの矛盾・並行作成の duplicate 等)は
- * 汎用の exhausted メッセージより情報量が高い。定的エラーはそのまま伝播し、
- * 再試行可能な状態が返った場合のみ次周回で使う(最終周回では未使用)。
+ * Recovery runs even on the final attempt's conflict: definite
+ * errors that become known through re-sync and re-resolution
+ * (evidence of equivocation, a contradiction between the server's
+ * response and the chain, a concurrent-create duplicate, etc.) are
+ * more informative than a generic exhausted message. A definite
+ * error propagates as is; only a returned retryable state is used on
+ * the next round (unused on the final round).
  */
 export function retryOnConflict<S, A, C>(
   initial: S,

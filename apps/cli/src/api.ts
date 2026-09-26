@@ -1,8 +1,8 @@
-// api-schema からの型付きクライアント導出(ADR-0005 の「スキーマ定義から
-// 型付きクライアントを自動導出」の実装点)。
+// Typed client derivation from api-schema (the implementation point of
+// ADR-0005's "derive the typed client automatically from the schema definition").
 //
-// 認証は Authorization: Bearer ヘッダー(AUTH_SPEC §6)。トークンはリクエスト
-// ヘッダーにのみ乗り、ログ・エラーへは出さない。
+// Auth is the Authorization: Bearer header (AUTH_SPEC §6). The token rides only
+// on the request header and never appears in logs or errors.
 
 import { maruhiApi } from "@maruhi/api-schema";
 import type { Effect, Redacted } from "effect";
@@ -17,10 +17,10 @@ export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;
  * present (authConfig and the CLI login handoff — cliStart / cliPoll — are
  * the only unauthenticated calls the CLI makes).
  *
- * 上流の `bearerToken` は `Redacted` をそのまま受ける(ヘッダー組み立ての
- * 内側で剥がす)ため、CLI 側に剥がす箇所を作らずに済む — 手書きの
- * Authorization ヘッダー(テンプレート展開)は伏字をそのまま送ってしまう形
- * なので使わない。
+ * The upstream `bearerToken` accepts `Redacted` as-is (it unwraps inside
+ * header assembly), so the CLI needs no unwrapping point — a hand-written
+ * Authorization header (template expansion) would send the redacted form
+ * verbatim, so it is not used.
  */
 export function makeApiClient(options: {
   readonly baseUrl: string;

@@ -1,11 +1,13 @@
-// チェーンエントリの署名と追記の共有実装(CRYPTO_SPEC §6.1 / §6.4)。
+// Shared implementation of chain-entry signing and append (CRYPTO_SPEC
+// §6.1 / §6.4).
 //
-// メンバーシップ操作(add_member / remove_member / change_role — member.ts)と
-// サーバー開示操作(grant_server / revoke_server — server-grant / server-revoke)
-// は、いずれも「現ヘッドの直後に署名 → 親ヘッド CAS で追記(409 は
-// ChainHeadConflict として呼び出し側の retryOnConflict へ)」という同じ構造を
-// 持つ。署名の組み立てと追記 POST をここに一本化する(op ごとの事前検査・
-// CAS 競合からの回復はそれぞれの op が持つ)。
+// Membership operations (add_member / remove_member / change_role —
+// member.ts) and server-disclosure operations (grant_server /
+// revoke_server — server-grant / server-revoke) share the same structure:
+// "sign right after the current head → append under the parent-head CAS
+// (a 409 goes to the caller's retryOnConflict as ChainHeadConflict)".
+// The signing assembly and the append POST are unified here (per-op
+// pre-checks and CAS-conflict recovery belong to each op).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { ChainEntry, ChainOperation, SigningKeyPair } from "@maruhi/crypto";
@@ -19,10 +21,11 @@ import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
- * 検証済みビューの現ヘッドの直後に、署名者の鍵で 1 エントリを署名する。
- * actor(user_id + 鍵 FP)は検証済みビューの現メンバー集合から解決する
- * (非メンバーは署名者になれない)。`failureText` は署名失敗時の文言
- * (op 名を含めて呼び出し側が与える)。
+ * Signs one entry with the signer's key right after the verified view's
+ * current head. The actor (user_id + key FP) is resolved from the
+ * verified view's current member set (a non-member cannot sign).
+ * `failureText` is the wording for a signing failure (the caller supplies
+ * it, including the op name).
  */
 export function signEntryAtHead(input: {
   readonly verified: VerifiedProject;
@@ -36,7 +39,7 @@ export function signEntryAtHead(input: {
     if (actor === undefined) {
       return yield* Effect.fail(cliError("Not a chain-derived member"));
     }
-    // 署名する端末 = 手元の署名鍵と一致する、その人の有効な端末(K4-16 — device-key.ts)
+    // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
     const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
     const signed = yield* Effect.tryPromise({
       try: () =>
@@ -61,8 +64,9 @@ export function signEntryAtHead(input: {
 }
 
 /**
- * 親ヘッド CAS つきの追記。ヘッド競合は `ChainHeadConflictError` のまま返す
- * (呼び出し側の retryOnConflict が classify する)。それ以外は CliError へ写す。
+ * Append under the parent-head CAS. A head conflict is returned as
+ * `ChainHeadConflictError` unchanged (the caller's retryOnConflict
+ * classifies it). Anything else is mapped to a CliError.
  */
 export function appendEntry(
   client: MaruhiClient,

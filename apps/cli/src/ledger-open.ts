@@ -1,19 +1,29 @@
-// 台帳の開封(CRYPTO_SPEC §8 改訂 (4) — 2026-09-19 DK。設計録 dk-design.md §9 K4-2)。
+// Opening the ledger (CRYPTO_SPEC §8 revision (4) — 2026-09-19 DK;
+// design record dk-design.md §9 K4-2).
 //
-// 台帳の変更(コード再発行・パスキー封印・保護者の指名・予備鍵の rotate)は、まず
-// コード入力かパスキーで予備鍵 B を開封してから行う(台帳を変えるのは台帳を開ける者
-// だけ)。開封した B は {@link ReserveKeys}(メモリのみ — reserve.ts)として呼び出し側へ
-// 渡し、用が済んだら捨てる。
+// Changing the ledger (re-issuing a code, sealing a passkey, naming
+// guardians, rotating the reserve key) is done only after opening
+// reserve key B via a code entry or a passkey (only one who can open
+// the ledger may change it). The opened B is handed to the caller as
+// {@link ReserveKeys} (memory only — reserve.ts) and discarded when
+// done.
 //
-// pre-DK 台帳の判別: 開封した B の FP が**手元の端末鍵の FP と一致**すれば、台帳は
-// 端末鍵の複製(旧「master 鍵」)を持っている。その分離は `maruhi key recovery` だけが
-// 行い(key-recover.ts)、他の台帳変更は「先に `key recovery` を」と拒む。判別は
-// 暗号的事実(B の中身)で行い、ローカル状態や申告で行わない。一致しなくても、開いた B が
-// 検証済みチェーン上でどこかの最初の鍵(別の端末から見た pre-DK の複製)か失効した鍵なら
-// 同じく止める(DK K14-4 — `key recover` / `key recovery` と同じ判定 `reserveVerdictOf`)。
-// サーバーが一覧から隠したプロジェクトで最初の鍵だった鍵も、この端末の観測の記録にあれば同じく
-// 止める(DK K15 — `recorded-first-key`)。予備鍵として記録して進むのは、台帳の中身に予備鍵の印
-// (`kind: "reserve"` — この CLI が生成したときに書く)があるときだけ(DK K16-6)。
+// Distinguishing a pre-DK ledger: when the opened B's FP **matches
+// the FP of the device key at hand**, the ledger holds a copy of the
+// device key (the old "master key"). Only `maruhi key recovery`
+// performs that separation (key-recover.ts); every other ledger
+// change refuses with "run `key recovery` first". The judgment uses
+// a cryptographic fact (B's content), not local state or
+// declarations. Even without a match, when the opened B is some
+// first key on a verified chain (a pre-DK copy as seen from another
+// device) or a revoked key, it is likewise stopped (DK K14-4 — the
+// same judgment as `key recover` / `key recovery`,
+// `reserveVerdictOf`). A key that was the first key on a project the
+// server hid from the list is likewise stopped when it is in this
+// device's observation record (DK K15 — `recorded-first-key`). The
+// only case that is recorded as a reserve key and proceeds is when
+// the ledger's content carries the reserve mark (`kind: "reserve"` —
+// written when this CLI generated it) (DK K16-6).
 
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -71,14 +81,15 @@ export function openLedgerReserve(input: {
   });
 }
 
-/** 台帳が端末鍵の複製(pre-DK)を持っているときの拒否文言。 */
+/** Refusal wording for when the ledger holds a copy of the device key (pre-DK). */
 function ledgerHoldsDeviceKeyMessage(command: string): string {
   return `The recovery ledger holds a copy of this device's key (an install from before device keys), not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`${command}\``;
 }
 
 /**
- * 台帳の鍵がチェーン上で予備鍵として働かないときの拒否文言(DK K14-4 4-f — FP の一致の
- * 拒否と同じ形: 何が → なぜ → `key recovery` を先に → 再実行)。
+ * Refusal wording for when the ledger's key does not work as a
+ * reserve key on the chain (DK K14-4 4-f — same shape as the
+ * FP-match refusal: what → why → `key recovery` first → re-run).
  */
 function ledgerKeyUnusableMessage(
   fingerprintHex: string,
@@ -99,7 +110,7 @@ function ledgerKeyUnusableMessage(
   }
 }
 
-/** 確かめられなかった範囲(同期できないプロジェクト、または一覧の失敗)の句(K14-13 — 写しを作らない)。 */
+/** The clause for the range that could not be checked (projects that cannot be synced, or a list failure) (K14-13 — do not make copies). */
 export function describeUncheckedLedgerKey(
   key: string,
   verdict: Extract<ReserveVerdict, { readonly kind: "unchecked" }>,
@@ -109,14 +120,14 @@ export function describeUncheckedLedgerKey(
     : `could not list your projects to check ${key} (${verdict.listFailure})`;
 }
 
-/** 台帳を変えるコマンドの入力(開封の手段・比較する端末鍵・拒否文に埋める再実行コマンド)。 */
+/** Input of a ledger-changing command (the opening means, the device key to compare, the re-run command embedded in the refusal). */
 interface LedgerChangeInput {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly via: LedgerOpenVia;
-  /** この端末の端末鍵(pre-DK 判別の比較対象)。 */
+  /** This device's device key (the comparison target of the pre-DK judgment). */
   readonly masterKeys: MasterKeys;
-  /** 拒否文言に埋める再実行コマンド(例: "maruhi guardian add …")。 */
+  /** The re-run command embedded in the refusal wording (e.g. "maruhi guardian add …"). */
   readonly command: string;
 }
 
@@ -124,7 +135,7 @@ interface LedgerChangeInput {
  * Opens the ledger for a change (passkey sealing / guardian designation / reserve
  * rotation): refuses a pre-DK ledger (B = this device's key, or — from the
  * project chains — a first key or a revoked key: DK K14-4) and records the
- * reserve key's public side locally (state restoration — K4-2 の反例 2).
+ * reserve key's public side locally (state restoration — K4-2 counterexample 2).
  */
 export function openLedgerReserveForChange(
   input: LedgerChangeInput,
@@ -142,9 +153,11 @@ export function openLedgerReserveForChange(
 }
 
 /**
- * 台帳を開き、手元の端末鍵の複製(FP の一致)なら拒否する(判定の前半 — チェーンを見る後半は
- * `settleLedgerKeyForChange`)。rotate は開いた鍵と記録の行をまとめて 1 回で確かめるために、
- * 前半と後半を分けて呼ぶ(DK K14-16)。
+ * Opens the ledger and refuses when it is a copy of the device key
+ * at hand (an FP match) (the first half of the judgment — the
+ * second half that looks at the chain is `settleLedgerKeyForChange`).
+ * rotate calls the halves separately so it can check the opened key
+ * and the record's rows together in one pass (DK K14-16).
  */
 export function openLedgerKeyForChange(
   input: LedgerChangeInput,
@@ -159,10 +172,14 @@ export function openLedgerKeyForChange(
 }
 
 /**
- * 開いた台帳の鍵の判定に従う(判定の後半 — DK K16-6): 止める事実(チェーンの最初の鍵・この端末の
- * 証人・失効)があれば記録せずに止め(この端末の誤った reserve の行は直す)、予備鍵の印が無ければ
- * 記録せずに止める(`key recovery` が分離する)。印があれば、確かめられない範囲を問わずに記録する
- * (印のある鍵は端末鍵になりえない — CRYPTO_SPEC §8)。
+ * Follows the judgment of the opened ledger key (the second half —
+ * DK K16-6): when a stopping fact exists (the chain's first key,
+ * this device's witness, revocation), stop without recording (fix
+ * this device's wrong reserve row); when the reserve mark is
+ * absent, stop without recording (`key recovery` separates it).
+ * When the mark is present, record regardless of the range that
+ * could not be checked (a marked key cannot be a device key —
+ * CRYPTO_SPEC §8).
  */
 export function settleLedgerKeyForChange(input: {
   readonly session: CliSession;
@@ -174,9 +191,11 @@ export function settleLedgerKeyForChange(input: {
     const { reserve, check } = input;
     const fingerprintHex = reserve.fingerprintHex;
     const { verdict, groups } = check;
-    // 手元の鍵と一致しなくても、チェーンで予備鍵として働かないと分かる鍵は記録せずに止める
-    // (`key recovery` と同じ判定 — 複製を reserve と記録すると、rotate / --replace が元の
-    // 端末を黙って失効させる入力になる)
+    // Even without matching the key at hand, a key known not to work
+    // as a reserve key on the chain is stopped without recording
+    // (the same judgment as `key recovery` — recording a copy as
+    // reserve makes rotate / --replace an input that silently
+    // revokes the original device)
     if (stopsLedgerKey(verdict)) {
       yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
       return yield* Effect.fail(

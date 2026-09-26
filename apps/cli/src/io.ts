@@ -1,12 +1,14 @@
-// CLI の入出力境界(Effect サービス)。
+// The CLI's I/O boundary (an Effect service).
 //
-// テストが出力の捕捉・stdin の注入・エージェント検出のシミュレートを行えるよう、
-// プロセスグローバル(console / process.stdin / 環境変数)への直接アクセスを
-// この境界に集約する。本番実装は live.ts。
+// Concentrates direct access to process globals (console /
+// process.stdin / environment variables) behind this boundary so
+// tests can capture output, inject stdin, and simulate agent
+// detection. The production implementation is live.ts.
 //
-// 絶対規則: log / logError に平文値・鍵素材を渡さない(呼び出し側の責務。
-// 値の表示は pull --show の明示経路のみで、人間の対話端末以外では拒否される
-// — agent-gate.ts)。
+// Absolute rule: never pass plaintext values or key material to log /
+// logError (the caller's responsibility. Value display is only via
+// the explicit `pull --show` path and is refused off a human
+// interactive terminal — agent-gate.ts).
 
 import { Context, type Effect } from "effect";
 
@@ -16,10 +18,11 @@ import type { CliError } from "./errors.ts";
 /**
  * Agent-detection profile.
  *
- * 実体は agent-gate.ts(検出は live.ts が std-env で行う)。値の表示可否の
- * **一次境界は TTY** で、この profile は二次層 — 据え置きの deny-list ゲート
- * (invite / member / server grant。ADR-0016 決定 7 の裁定)が
- * `agentProfile()` として読む。
+ * The substance lives in agent-gate.ts (detection is done by live.ts
+ * via std-env). The **primary boundary** for value-display permission
+ * is the TTY; this profile is the secondary layer — the kept-as-is
+ * deny-list gates (invite / member / server grant; the ruling of
+ * ADR-0016 decision 7) read it via `agentProfile()`.
  */
 export type { AgentProfile };
 
@@ -32,7 +35,7 @@ export interface CliIoShape {
   /**
    * Reads one interactive line (recovery-code entry / save confirmation).
    * `secret` requests no-echo input on a TTY; off-TTY input falls back to a
-   * plain line read. Fails when no input is available (EOF / 非対話環境).
+   * plain line read. Fails when no input is available (EOF / non-interactive environment).
    */
   readonly promptLine: (input: {
     readonly prompt: string;
@@ -43,16 +46,18 @@ export interface CliIoShape {
   /** Recovery code uses stderr; this keeps redirect detection behind the I/O service boundary. */
   readonly stderrIsTerminal: () => boolean;
   /**
-   * Whether stderr notices may use ANSI colors (notice.ts). 本番は
-   * `shouldUseColor`(stderr が端末か + NO_COLOR / FORCE_COLOR / TERM)、
-   * テストは既定で無色。色を付けるのは接頭辞だけで stdout には付けない。
+   * Whether stderr notices may use ANSI colors (notice.ts). In
+   * production, `shouldUseColor` (whether stderr is a terminal +
+   * NO_COLOR / FORCE_COLOR / TERM); tests default to no color. Only
+   * prefixes are colored — never stdout.
    */
   readonly colorEnabled: () => boolean;
   /**
    * Opens `url` in the default browser (best effort; returns whether the
-   * attempt was started). CLI ログインのブラウザ脚(AUTH_SPEC §4-1 (2))の
-   * UX 分岐専用 — 呼び出し側が「対話端末 × 非エージェント」のときだけ呼ぶ。
-   * 失敗しても login は表示 + ポーリングで完走する(縮退経路は 1 本)。
+   * attempt was started). Solely for the UX branch of the CLI
+   * login's browser leg (AUTH_SPEC §4-1 (2)) — the caller invokes it
+   * only for "interactive terminal × non-agent". login completes via
+   * display + polling even on failure (the fallback path is one).
    */
   readonly openBrowser: (url: string) => Effect.Effect<boolean>;
 }

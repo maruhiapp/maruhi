@@ -1,14 +1,16 @@
-// 非機密設定(サーバー base URL・既定のプロジェクト / 環境)の置き場所。
+// Storage for non-secret settings (server base URL, default project /
+// environment).
 //
-// 形式: JSON 1 ファイル。置き場所は $MARUHI_CONFIG_DIR(テスト・上級者向け
-// オーバーライド)→ $XDG_CONFIG_HOME/maruhi → ~/.config/maruhi。
-// シークレット(トークン・鍵素材)は絶対にここへ書かない — それらは
-// OS キーチェーンのみ(keychain.ts)。
+// Format: one JSON file. Location: $MARUHI_CONFIG_DIR (an override for
+// tests and advanced users) → $XDG_CONFIG_HOME/maruhi →
+// ~/.config/maruhi. Secrets (tokens, key material) are never written
+// here — they live only in the OS keychain (keychain.ts).
 //
-// サーバー URL に既定値はない(セルフホスト前提でホステッドのデフォルトが
-// 存在しない — タスク裁定)。旧 `githubClientId` は AUTH_SPEC §4 改訂(CLI の
-// client_id 解決の廃止)で消費者ごと削除された — 既存ファイルに残っていても
-// 未知キーとして無害に無視される(decodeConfig は許可キーのみ拾う)。
+// The server URL has no default (self-hosted is the premise, so no hosted
+// default exists — task ruling). The old `githubClientId` was removed
+// with its consumer by the AUTH_SPEC §4 revision (CLI client_id
+// resolution was dropped) — if left in an existing file it is harmlessly
+// ignored as an unknown key (decodeConfig picks up only allowed keys).
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -19,9 +21,11 @@ import { Context, Effect } from "effect";
 import { CliError, cliError } from "./errors.ts";
 
 /**
- * 裏付け元(CRYPTO_SPEC §6.5 — IV2): 招待の相互確認で相手の sig 鍵を IdP の公開
- * 鍵一覧と機械照合する出所。`github-signing-keys`(既定)/ `none`(照合しない =
- * 常に儀式)。`org-directory` は予約(未実装)。
+ * Backing source (CRYPTO_SPEC §6.5 — IV2): the source that mechanically
+ * cross-checks the other party's sig key against the IdP's public key
+ * list during the invite mutual check. `github-signing-keys` (default) /
+ * `none` (no check = always a ceremony). `org-directory` is reserved (not
+ * implemented).
  */
 export const IDENTITY_BACKINGS = ["github-signing-keys", "none"] as const;
 
@@ -43,12 +47,12 @@ export const CONFIG_KEYS = [
   "identityBacking",
 ] as const;
 
-/** 裏付け元の実効値(未設定 = `github-signing-keys` — 補足 21 裁定 B)。 */
+/** The effective backing value (unset = `github-signing-keys` — supplement 21 ruling B). */
 export function identityBackingOf(config: CliConfig): IdentityBacking {
   return config.identityBacking ?? "github-signing-keys";
 }
 
-/** `config set identityBacking <value>` の受理検査(不正 = null)。 */
+/** Acceptance check for `config set identityBacking <value>` (invalid = null). */
 export function asIdentityBacking(value: string): IdentityBacking | null {
   return (IDENTITY_BACKINGS as readonly string[]).includes(value)
     ? (value as IdentityBacking)
@@ -103,8 +107,9 @@ function decodeConfig(json: string): CliConfig | null {
         continue;
       }
       if (key === "identityBacking") {
-        // 未知の値は既定(照合あり)へ倒す: 誤記で照合が**消える**方向へは
-        // 倒さない(`none` は明示した綴りだけが効く)
+        // An unknown value falls back to the default (with check): never
+        // fall toward a typo **removing** the check (`none` works only
+        // when spelled out explicitly)
         const backing = asIdentityBacking(picked);
         if (backing !== null) {
           config.identityBacking = backing;
@@ -119,14 +124,15 @@ function decodeConfig(json: string): CliConfig | null {
   }
 }
 
-/** 読み取り失敗(ENOENT 以外)をパース失敗と区別するための内部マーカー。 */
+/** Internal marker distinguishing a read failure (other than ENOENT) from a parse failure. */
 class ConfigUnreadableError extends Error {}
 
 /**
- * 設定ファイルの**内容**が JSON として解釈できない失敗(CliError の下位型)。
- * `config set` はこの場合のみ「破棄して作り直す」を許す — 読み取り自体の失敗
- * (EACCES / EISDIR / EIO 等)は内容の破損ではないため、既存設定の置換に
- * 進んではならない。
+ * A failure where the config file's **content** cannot be interpreted as
+ * JSON (a subtype of CliError). Only for this case may `config set`
+ * "discard and recreate" — a failure to read (EACCES / EISDIR / EIO
+ * etc.) is not corrupt content, so it must not proceed to replacing the
+ * existing settings.
  */
 export class ConfigFileCorruptError extends CliError {}
 
@@ -139,9 +145,10 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
         try {
           json = await readFile(path, "utf8");
         } catch (error) {
-          // 未作成(ENOENT)**だけ**を空設定として扱う(初回実行)。EACCES /
-          // EISDIR / EIO 等の読み取り失敗まで空設定に畳むと、読めなかっただけの
-          // 既存設定を後続の `config set` が警告なしで置換してしまう
+          // Treat **only** not-created (ENOENT) as empty settings (first
+          // run). Folding read failures like EACCES / EISDIR / EIO into
+          // empty settings would let a later `config set` replace,
+          // without warning, settings that merely failed to be read
           if ((error as NodeJS.ErrnoException).code === "ENOENT") {
             return {};
           }
@@ -167,7 +174,7 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
       Effect.tryPromise({
         try: async () => {
           await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-          // temp + rename で torn write を防ぐ(同時実行の最後の書き込みが勝つ)
+          // temp + rename prevents torn writes (the last write among concurrent runs wins)
           const temp = `${path}.${process.pid}.tmp`;
           await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
           await rename(temp, path);

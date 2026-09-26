@@ -1,8 +1,9 @@
-// `maruhi token` グループ(AUTH_SPEC §6 — 設計録 dk-design.md §9 K4-13)。
+// The `maruhi token` group (AUTH_SPEC §6 — design record dk-design.md §9 K4-13).
 //
-// 値ゼロ・鍵不要・エージェントゲート非適用: トークンの目録(id・名前・接頭辞・
-// スコープ・期限 — ハッシュは無い)と指定失効。認可はサーバー(`*` × admin トークン、
-// またはセッション主体 — §6 / §13-2)。端末の失効(`device revoke`)がここへ誘導する。
+// No values, no keys, no agent gate: a catalog of tokens (id, name, prefix,
+// scopes, expiry — no hashes) and revocation by id. Authorization is
+// server-side (`*` × admin token, or the session principal — §6 / §13-2).
+// Device revocation (`device revoke`) leads here.
 
 import { ForbiddenError, TokenNotFoundError } from "@maruhi/api-schema";
 import { Effect } from "effect";

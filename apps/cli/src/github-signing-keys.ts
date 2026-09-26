@@ -1,20 +1,26 @@
-// 裏付け元 `github-signing-keys`(CRYPTO_SPEC §6.5 — IV2)。
+// The backing source `github-signing-keys` (CRYPTO_SPEC §6.5 — IV2).
 //
-// 相手(受諾者 / 招待者)の maruhi sig 公開鍵が、名指しした GitHub login の
-// **SSH 署名鍵**一覧に含まれるかを、GitHub の公開 API で機械照合する。
+// Machine-checks via GitHub's public API whether the peer's
+// (acceptor's / inviter's) maruhi sig public key is included in the
+// **SSH signing key** list of the specifically named GitHub login.
 //
-// 不変条件:
-// - 送る情報は **login だけ**(プロジェクト・鍵・値・利用状況を送らない)。
-//   ホストは `api.github.com` 固定で、設定で差し替える口は持たない(テストの
-//   差し替えは HttpClient の層 — sync-http.ts と同じ線引き)
-// - 認証なし(maruhi CLI は GitHub のトークンを一切持たない — AUTH_SPEC §4)
-// - **fail-closed**: 照合の**失敗**(鍵が無い)も**不能**(取得できない・上限・
-//   オフライン・login 不明)も「儀式へ戻る」以上の効果を持たない。裏付け元は
-//   儀式を**省く**根拠にしかならず、拒否の根拠にも免除の根拠にもならない。
-//   よってこのモジュールは CliError を返さず、結果を閉じた型で返す
-// - 応答は第三者データとして扱う: 形の検査は Effect Schema、鍵行の解析は
-//   `packages/crypto` の parseOpenSshEd25519PublicKey(テストベクター固定)。
-//   `ssh-ed25519` 以外の種別は照合対象外として読み飛ばす
+// Invariants:
+// - The only information sent is the **login** (never project, keys,
+//   values, or usage). The host is fixed to `api.github.com` with no
+//   config-based swap point (tests swap at the HttpClient layer —
+//   same boundary as sync-http.ts)
+// - Unauthenticated (the maruhi CLI holds no GitHub token at all —
+//   AUTH_SPEC §4)
+// - **fail-closed**: neither a check **failure** (key absent) nor an
+//   **inability** (unfetchable, rate-limited, offline, unknown login)
+//   has any effect beyond "return to the ceremony". A backing source
+//   can only be grounds to **skip** the ceremony — never grounds to
+//   refuse or to excuse. Hence this module never returns CliError and
+//   returns results in a closed type
+// - Responses are treated as third-party data: shape checked by
+//   Effect Schema, key lines parsed by `packages/crypto`'s
+//   parseOpenSshEd25519PublicKey (pinned by test vectors). Kinds other
+//   than `ssh-ed25519` are skipped as out of scope
 
 import { decodeHex, encodeHex, parseOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Duration, Effect, Schema } from "effect";
@@ -23,35 +29,35 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { GITHUB_LOGIN } from "./invite-link.ts";
 import { CLI_VERSION } from "./version.ts";
 
-/** 固定ホスト(差し替え不可)。 */
+/** The fixed host (not swappable). */
 const GITHUB_API_ORIGIN = "https://api.github.com";
 
-/** 1 回の問い合わせに許す時間(照合は「省く根拠」なので長く待たない)。 */
+/** Time allowed for one inquiry (a check is "grounds to skip", so do not wait long). */
 const REQUEST_TIMEOUT = Duration.seconds(10);
 
-/** GitHub の `GET /users/{login}/ssh_signing_keys` の 1 要素(必要な欄だけ)。 */
+/** One element of GitHub's `GET /users/{login}/ssh_signing_keys` (only the fields needed). */
 const SigningKeyEntry = Schema.Struct({ key: Schema.String });
 const SigningKeysResponse = Schema.Array(SigningKeyEntry);
 const decodeSigningKeys = Schema.decodeUnknownEffect(SigningKeysResponse);
 
-/** 照合の結果(閉じた型 — 呼び出し側が儀式へ戻るか否かを決める)。 */
+/** The check's result (a closed type — the caller decides whether to return to the ceremony). */
 export type BackingVerdict =
-  /** 名指しした login の署名鍵一覧に、対象の sig 公開鍵がバイト一致で含まれる。 */
+  /** The named login's signing-key list contains the target sig public key byte-for-byte. */
   | { readonly kind: "match" }
-  /** 一覧は取れたが、対象の鍵が無い(相手が未登録 / 別の鍵を登録)。 */
+  /** The list was fetched but the target key is absent (the peer is unregistered / registered a different key). */
   | { readonly kind: "not-registered" }
-  /** login が GitHub に存在しない(404)。 */
+  /** The login does not exist on GitHub (404). */
   | { readonly kind: "no-user" }
-  /** 取得できない(オフライン・上限・応答の形が違う)。理由は表示用の短文。 */
+  /** Unfetchable (offline, rate-limited, response of the wrong shape). The reason is a short display string. */
   | { readonly kind: "unavailable"; readonly detail: string };
 
-/** 一覧の取得結果(照合の前段 — 鍵行はまだ解析していない)。 */
+/** Result of fetching the list (the stage before checking — key lines not yet parsed). */
 type SigningKeysFetch =
   | { readonly kind: "entries"; readonly entries: readonly { readonly key: string }[] }
   | { readonly kind: "no-user" }
   | { readonly kind: "unavailable"; readonly detail: string };
 
-/** `GET /users/{login}/ssh_signing_keys`(無認証・固定ホスト・タイムアウトつき)。 */
+/** `GET /users/{login}/ssh_signing_keys` (unauthenticated, fixed host, with timeout). */
 function fetchSigningKeys(
   login: string,
 ): Effect.Effect<SigningKeysFetch, never, HttpClient.HttpClient> {
@@ -69,7 +75,7 @@ function fetchSigningKeys(
       ),
       Effect.timeout(REQUEST_TIMEOUT),
       Effect.map((value) => ({ ok: true, value }) as const),
-      // 通信層の失敗・タイムアウト: 本文・ヘッダーは持ち込まない(短い種別だけ)
+      // Transport-layer failure / timeout: no body or headers are carried in (only a short kind)
       Effect.catch((error) =>
         Effect.succeed({ ok: false, detail: describeFailure(error) } as const),
       ),
@@ -95,21 +101,22 @@ function fetchSigningKeys(
   });
 }
 
-/** 一覧の中に対象の Ed25519 鍵がバイト一致で含まれるか(ssh-ed25519 以外は読み飛ばす)。 */
+/** Whether the target Ed25519 key is byte-identically contained in the list (kinds other than ssh-ed25519 are skipped). */
 function containsSigningKey(
   entries: readonly { readonly key: string }[],
   targetHex: string,
 ): boolean {
   return entries.some((entry) => {
     const parsed = parseOpenSshEd25519PublicKey(entry.key);
-    // ssh-ed25519 以外(RSA / ECDSA / sk-*)や壊れた行は照合対象外
+    // Kinds other than ssh-ed25519 (RSA / ECDSA / sk-*) and broken lines are out of scope
     return parsed.ok && encodeHex(parsed.value) === targetHex;
   });
 }
 
 /**
- * login の署名鍵一覧に `sigPubHex` の鍵が含まれるかを照合する。失敗も不能も
- * 型で返し、決して CliError にしない(上記の fail-closed 定義)。
+ * Checks whether the `sigPubHex` key is contained in the login's
+ * signing-key list. Failures and inabilities alike are returned in
+ * the type, never as a CliError (the fail-closed definition above).
  */
 export function checkSigningKeyBacking(input: {
   readonly login: string;
@@ -133,7 +140,7 @@ export function checkSigningKeyBacking(input: {
   });
 }
 
-/** 応答本文の解釈(JSON 配列 + `key` 文字列。形が違えば null)。 */
+/** Interprets the response body (a JSON array + `key` string; null when the shape differs). */
 function parseEntries(text: string): Effect.Effect<readonly { readonly key: string }[] | null> {
   return Effect.gen(function* () {
     let json: unknown;
@@ -149,7 +156,7 @@ function parseEntries(text: string): Effect.Effect<readonly { readonly key: stri
   });
 }
 
-/** 通信層の失敗の説明(種別だけ。本文・ヘッダー・URL は含めない)。 */
+/** Description of a transport-layer failure (kind only; no body, headers, or URL). */
 function describeFailure(error: unknown): string {
   const tag =
     typeof error === "object" && error !== null
@@ -163,7 +170,7 @@ function describeFailure(error: unknown): string {
     : "could not reach github.com";
 }
 
-/** 照合結果の表示用の短文(儀式へ戻る理由の提示)。 */
+/** Short display text for a check result (presenting the reason to return to the ceremony). */
 export function describeBackingFallback(login: string, verdict: BackingVerdict): string {
   switch (verdict.kind) {
     case "match":

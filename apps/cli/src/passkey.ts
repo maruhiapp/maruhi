@@ -1,24 +1,34 @@
-// パスキー PRF 経路(CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5)。
+// The passkey PRF path (CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5).
 //
-// 登録 `maruhi key seal passkey`: 呼び出し側が台帳を開封して得た**予備鍵**のレコード B
-// (2026-09-19 DK — ledger-open.ts)を、CLI が配る localhost ページ(passkey-page.ts /
-// passkey-listener.ts)で作ったパスキーの PRF 出力から導いた KEK でラップして台帳へ
-// 登録する。台帳への書き込みは全材料が揃った**最後の 1 回**だけ(途中失敗で半端な行を
-// 残さない — 補足 20 裁定 I)。
+// Registration `maruhi key seal passkey`: the **reserve key** record
+// B the caller obtained by opening the ledger (2026-09-19 DK —
+// ledger-open.ts) is wrapped with a KEK derived from the PRF output
+// of a passkey made on the CLI-served localhost page
+// (passkey-page.ts / passkey-listener.ts), then registered into the
+// ledger. The ledger write happens **only once, at the end**, when
+// every material is in place (no half-written rows on a mid-failure
+// — supplement 20 ruling I).
 //
-// 開封 `maruhi key recover --passkey` / 台帳変更の `--passkey`: 台帳のラップを取り、同じ
-// パスキーの PRF で KEK を再導出して B を復号し、レコードを返す(保存しない — 予備鍵は
-// 端末鍵の発行にだけ用いる。復元の後段は key-recover.ts)。
+// Opening `maruhi key recover --passkey` / a ledger change's
+// `--passkey`: takes the ledger's wrap, re-derives the KEK from the
+// same passkey's PRF, decrypts B, and returns the record (does not
+// store it — the reserve key is used only for issuing a device key.
+// The restore's downstream is key-recover.ts).
 //
-// 儀式(登録・復元・削除)は人間の対話端末でのみ行い、AI エージェント環境では拒否する
-// (ADR-0016 決定 7 の既存ゲート)。リスナーはゲートの後でしか立たない。PRF 出力・KEK・B の
-// 平文は関数ローカルにのみ存在し、ログ・エラー・DOM に出ない。
+// Ceremonies (register, restore, delete) run only on a human's
+// interactive terminal and are refused in AI agent environments
+// (ADR-0016 decision 7's existing gate). The listener stands only
+// behind the gate. Plaintext PRF outputs, KEK, and B exist only in
+// function locals — never on logs, errors, or the DOM.
 //
-// 復元の順序(補足 20 裁定 F / I、20-6 ②′): 台帳の状態(`GET /auth/key-wraps`)が
-// passkey 行の prf_salt(公開パラメータ — AUTH_SPEC §13-7)を運ぶので、全 credential を
-// allowCredentials に渡して認証器に選ばせ、応答の credential で行を決めてから、その行の
-// ラップ(`GET /auth/key-wraps/passkey/:wrapId` — 合算窓 5 回 / 時 + 要監視の監査事件)を
-// 1 件だけ取る。取り消した儀式は窓を消費しない。
+// Restore order (supplement 20 rulings F / I, 20-6 ②′): the ledger's
+// state (`GET /auth/key-wraps`) carries each passkey row's prf_salt
+// (a public parameter — AUTH_SPEC §13-7), so every credential goes
+// to allowCredentials for the authenticator to pick; the response's
+// credential decides the row, and only then is that row's wrap
+// (`GET /auth/key-wraps/passkey/:wrapId` — a combined window of 5
+// per hour + an audit event requiring monitoring) fetched — one row
+// only. A cancelled ceremony does not consume the window.
 
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
@@ -39,15 +49,17 @@ import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";
 import type { ReserveKeys } from "./reserve.ts";
 import type { CliSession } from "./session.ts";
 
-/** 儀式の待ち時間の上限(ブラウザ起動 + 生体認証に十分。放置端末で聞き続けない)。 */
+/** Cap on the ceremony wait (enough for browser launch + biometric auth. An abandoned terminal is not listened to forever). */
 const CEREMONY_TIMEOUT = Duration.minutes(5);
 const PRF_SALT_BYTES = 32;
 const USER_HANDLE_BYTES = 16;
 const CONFIRM_CODE_DIGITS = 6;
 
 /**
- * 端末に表示し、利用者がページへ打ち込む確認コード(裁定 A 改訂 1)。一様乱数の
- * 6 桁(剰余の偏りは棄却で消す)。鍵素材ではない(ページとの同席を示す値)。
+ * The confirmation code shown on the terminal, which the user types
+ * into the page (ruling A revision 1). A uniform-random 6 digits
+ * (modulo bias is eliminated by rejection). Not key material (a
+ * value demonstrating co-presence with the page).
  */
 function newConfirmCode(): string {
   const modulus = 10 ** CONFIRM_CODE_DIGITS;
@@ -91,7 +103,7 @@ function ensurePasskeyCeremonyAllowed(
   });
 }
 
-/** ページの理由コード → 利用者への案内(自由文はページから受け取らない)。 */
+/** The page's reason code → guidance for the user (no free-form text is taken from the page). */
 function ceremonyFailure(
   code: PrfPageErrorCode | "too-many-code-attempts",
   action: "register" | "recover",
@@ -122,7 +134,7 @@ function ceremonyFailure(
   }
 }
 
-/** URL と確認コードの表示、ブラウザの自動起動(login と同じ 1 本の縮退経路)。 */
+/** Displays the URL and confirmation code, and auto-launches the browser (the same single fallback path as login). */
 function announceListener(
   io: CliIoShape,
   listener: PrfListener,
@@ -150,7 +162,7 @@ function announceListener(
   });
 }
 
-/** ページの受理された POST を待つ(5 分で打ち切り。リスナー自体の失敗も儀式の失敗)。 */
+/** Waits for the page's accepted POST (cut off at 5 minutes. The listener's own failure is also a ceremony failure). */
 function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, CliError> {
   return Effect.tryPromise({
     try: () => listener.outcome,
@@ -170,15 +182,16 @@ function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, 
   );
 }
 
-/** 儀式の結果(ページの 1 POST)。 */
+/** The ceremony's result (the page's one POST). */
 interface PrfOutcome {
   readonly credentialIdHex: string;
   readonly prf: Uint8Array;
 }
 
 /**
- * リスナーを立て、ページの 1 POST を待ち、必ず閉じる。トークンはリスナーと同寿命。
- * PRF 出力はここから返る値としてだけ存在する。
+ * Stands up the listener, waits for the page's one POST, and
+ * always closes. The token shares the listener's lifetime. The PRF
+ * output exists only as the value returned from here.
  */
 function runPrfCeremony(
   config: PrfPageConfig,
@@ -230,12 +243,12 @@ function deriveKek(prf: Uint8Array): Effect.Effect<Uint8Array, CliError> {
   });
 }
 
-/** 台帳の passkey 行(status の写し)。 */
+/** The ledger's passkey row (a copy of status). */
 interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
-  /** この登録の prf_salt(公開パラメータ — 儀式の前に要るので status が運ぶ)。 */
+  /** This registration's prf_salt (a public parameter — needed before the ceremony, so status carries it). */
   readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
@@ -256,8 +269,9 @@ function describeRow(row: PasskeyRow): string {
 
 /**
  * `maruhi key seal passkey [--label]`: seal the reserve key to a new passkey.
- * `reserve` は呼び出し側が台帳を開封して得た予備鍵(ledger-open.ts — 開封は
- * 台帳変更の資格。K4-2)。
+ * `reserve` is the reserve key the caller obtained by opening the
+ * ledger (ledger-open.ts — opening is the qualification for
+ * changing the ledger. K4-2).
  */
 export function sealPasskeyOp(input: {
   readonly session: CliSession;
@@ -276,8 +290,9 @@ export function sealPasskeyOp(input: {
         ),
       );
     }
-    // wrap_id は AAD が束縛するので暗号化の前に採番する。prf_salt は登録ごとの乱数
-    // (公開パラメータ)。user handle も登録ごとの乱数(裁定 G)
+    // wrap_id is bound by AAD, so it is issued before encryption.
+    // prf_salt is a per-registration random (a public parameter).
+    // The user handle is a per-registration random too (ruling G)
     const wrapId = newLedgerId();
     const prfSaltHex = encodeHex(crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES)));
     const outcome = yield* runPrfCeremony(
@@ -337,7 +352,7 @@ export function sealPasskeyOp(input: {
 const NO_PASSKEY_REGISTERED =
   "No passkey is registered for your account. Seal the reserve key to one with `maruhi key seal passkey` (on a registered device), or open it with the recovery code instead (`maruhi key recover` / omit --passkey)";
 
-/** 儀式で選ばれた行のラップを取る(合算窓を 1 回消費する — 要監視の監査事件)。 */
+/** Fetches the wrap of the row the ceremony selected (consumes the combined window once — an audit event requiring monitoring). */
 function fetchWrap(
   client: MaruhiClient,
   wrapId: string,
@@ -374,7 +389,7 @@ function fetchWrap(
   });
 }
 
-/** 取得したラップ(salt + credential + 暗号文)。 */
+/** The fetched wrap (salt + credential + ciphertext). */
 interface FetchedWrap {
   readonly prfSaltHex: string;
   readonly credentialIdHex: string;
@@ -382,7 +397,7 @@ interface FetchedWrap {
   readonly ciphertext: Uint8Array;
 }
 
-/** 儀式と取得の結果。 */
+/** The ceremony's and fetch's result. */
 interface RecoveryMaterial {
   readonly wrapId: string;
   readonly wrap: FetchedWrap;
@@ -390,8 +405,9 @@ interface RecoveryMaterial {
 }
 
 /**
- * 全 credential で儀式 → 応答の credential の行 → その行のラップを取る(裁定 F / I)。
- * ブロブ取得は儀式の後なので、取り消しは窓を消費しない。
+ * Ceremony with every credential → the row of the response's
+ * credential → fetch that row's wrap (rulings F / I). Since the
+ * blob fetch is after the ceremony, a cancel consumes no window.
  */
 function recoverCeremonyFirst(
   client: MaruhiClient,
@@ -422,7 +438,7 @@ function recoverCeremonyFirst(
   });
 }
 
-/** 復号 → レコードの解釈(PRF 出力・KEK はこの関数のローカルにだけ存在する)。 */
+/** Decrypt → interpret the record (the PRF output and KEK exist only in this function's locals). */
 function unwrapReserveRecord(input: {
   readonly session: CliSession;
   readonly material: RecoveryMaterial;
@@ -467,8 +483,9 @@ function unwrapReserveRecord(input: {
 
 /**
  * Opens the reserve key with a registered passkey and returns its record
- * (memory only — nothing is stored). `maruhi key recover --passkey` の前段と、
- * 台帳変更の `--passkey` 開封(ledger-open.ts)が共有する。
+ * (memory only — nothing is stored). Shared by `maruhi key
+ * recover --passkey`'s pre-stage and a ledger change's `--passkey`
+ * opening (ledger-open.ts).
  */
 export function openReserveWithPasskey(input: {
   readonly session: CliSession;

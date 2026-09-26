@@ -1,14 +1,18 @@
-// リカバリーコードの人間可読表現(CRYPTO_SPEC §8: 256-bit ランダム値を
-// Base32(RFC 4648)でグループ化した文字列)。
+// The human-readable representation of the recovery code
+// (CRYPTO_SPEC §8: a 256-bit random value as a grouped Base32
+// (RFC 4648) string).
 //
-// これは表示エンコーディングであり暗号プリミティブではない(鍵導出・ラップは
-// packages/crypto の §8 実装が担う)。32 バイト = 256 bit → 52 シンボル
-// (260 bit。末尾 4 bit はゼロ詰め)→ 4 文字 × 13 グループをハイフンで結ぶ。
+// This is a display encoding, not a crypto primitive (key derivation
+// and wrapping are owned by packages/crypto's §8 implementation).
+// 32 bytes = 256 bit → 52 symbols (260 bit; the last 4 bits are
+// zero-padded) → 4 chars × 13 groups joined by hyphens.
 //
-// 入力の受理は寛容にする: 小文字・ハイフン・空白は吸収する。ただし Base32
-// アルファベット外の文字(0 / 1 / 8 / 9 等)は推測置換せずに拒否する —
-// 0→O / 1→I|L の解釈は一意でなく、誤変換した 256-bit 値は黙って復号失敗に
-// なるだけで利用者が原因へ辿り着けない。
+// Input acceptance is lenient: lowercase, hyphens, and spaces are
+// absorbed. Characters outside the Base32 alphabet (0 / 1 / 8 / 9
+// etc.) are refused without guesswork substitution — 0→O / 1→I|L
+// interpretations are not unique, and a mistranscribed 256-bit value
+// just silently fails decryption without the user reaching the
+// cause.
 
 import { Redacted } from "effect";
 
@@ -21,9 +25,11 @@ const GROUP_SIZE = 4;
 /**
  * Formats a 256-bit recovery secret as grouped Base32 (`XXXX-XXXX-…`).
  *
- * 剥がす理由: Base32 化の入力。整形済みコードは秘密そのものの別表現なので
- * 再び `Redacted` で包んで返し、生の文字列がこの関数の外へ出ないようにする
- * (剥がすのは表示側 — recovery.ts のエージェントゲートの後ろ)。
+ * Why it is unwrapped: input for Base32 encoding. The formatted
+ * code is another representation of the secret itself, so it is
+ * wrapped in `Redacted` again on return, keeping the raw string
+ * inside this function (unwrapping is the display side's — behind
+ * recovery.ts's agent gate).
  */
 export function formatRecoveryCode(
   redactedSecret: Redacted.Redacted<Uint8Array>,
@@ -82,8 +88,9 @@ export function parseRecoveryCode(text: string): Redacted.Redacted<Uint8Array> |
       acc &= (1 << bits) - 1;
     }
   }
-  // 末尾 4 bit のゼロ詰め検査: 非ゼロは転記ミス(1 シンボル違いの別コードと
-  // 同一視しない)
+  // Zero-padding check of the last 4 bits: non-zero is a
+  // transcription error (not identified with another code one symbol
+  // away)
   if (acc !== 0) {
     return null;
   }

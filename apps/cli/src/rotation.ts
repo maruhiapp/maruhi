@@ -1,17 +1,23 @@
-// `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §6 / §7)。
+// `maruhi rotation list|dismiss` (AUDIT_SPEC §4.1 / §6 / §7).
 //
-// - list: サーバーの導出ビュー(現在有効な rotation.recommended − 解消)を
-//   取得して表示する。表示名はサーバー申告を信用せず、検証済みメタステート
-//   メント(削除済み変数は tombstone — §4.2 の「deleted は直前 active 名を
-//   保持」)から解決する(AUDIT_SPEC §7 の TCB 規律)。解決できない環境
-//   (検証済み削除など)は識別子のまま表示する
-// - dismiss: 取り下げ操作(サーバー側で rotation.dismissed を生成 — admin)。
-//   フラグは上流 credential のローテーション + push(再暗号化マーカーなし)でも
-//   解消される(§4.1-5)— dismiss は「ローテーションせずリスクを受容する」
-//   明示宣言であり、削除済み変数(push できない)の唯一の解消経路
+// - list: fetches and displays the server's derived view
+//   (currently active rotation.recommended − resolved). Display
+//   names are not trusted to the server's declaration; they are
+//   resolved from the verified meta statements (a deleted
+//   variable's tombstone — §4.2's "deleted keeps the last active
+//   name") (AUDIT_SPEC §7's TCB discipline). An environment that
+//   cannot be resolved (a verified deletion etc.) is displayed as
+//   its identifier
+// - dismiss: the withdrawal operation (the server generates
+//   rotation.dismissed — admin). A flag is also resolved by
+//   rotating the upstream credential + push (no re-encryption
+//   marker needed) (§4.1-5) — dismiss is the explicit declaration
+//   "accept the risk without rotating", and the only resolution
+//   path for a deleted variable (which cannot be pushed)
 //
-// フラグ集合は非機密メタデータ(識別子・根拠種別・対象)のみで、平文値・
-// 鍵素材はこのモジュールを通らない。
+// The flag set is only non-secret metadata (identifiers, basis
+// kinds, targets); plaintext values and key material never pass
+// through this module.
 
 import { RotationFlagNotFoundError } from "@maruhi/api-schema";
 import { Effect } from "effect";
@@ -26,7 +32,7 @@ import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
-/** 導出ビューの 1 フラグ(api-schema の RotationFlagSchema の受信形)。 */
+/** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
 interface RotationFlagView {
   readonly environmentId: string;
   readonly variableId: string;
@@ -36,14 +42,15 @@ interface RotationFlagView {
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
   /**
-   * AUDIT_SPEC §3.3 の trigger(2026-09-14 ES。`revoke_device` は 2026-09-19 DK K3 の
-   * 端末失効変種 — ワイヤ型への機械的追随。CLI の sweep 第 5 種は K4)。旧サーバーの
-   * 応答には無い。
+   * AUDIT_SPEC §3.3's trigger (2026-09-14 ES. `revoke_device` is
+   * 2026-09-19 DK K3's device-revocation variant — a mechanical
+   * follow of the wire type. The CLI's 5th sweep kind is K4).
+   * Absent in an old server's response.
    */
   readonly trigger?: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
 }
 
-/** フラグビューの取得(表示・件数報告・dismiss 対象解決の共有入口)。 */
+/** Fetches the flag view (the shared entry of display, count reporting, and dismiss-target resolution). */
 function fetchRotationFlags(
   client: MaruhiClient,
   projectId: string,
@@ -54,15 +61,17 @@ function fetchRotationFlags(
   );
 }
 
-/** 変数名の解決結果(検証済みステートメント由来のみ — 解決不能は null)。 */
+/** The variable-name resolution result (only verified-statement-derived — unresolvable = null). */
 export type NameIndex = ReadonlyMap<string, string>;
 
 /**
- * 一覧に現れる環境ごとに検証済みメタデータ(active + tombstone)を取得し、
- * variableId → 表示名の索引を作る。取得・検証に失敗した環境(検証済み削除
- * など)は索引なし = 識別子表示へ劣化する(警告つき — 表示は SHOULD であり
- * 一覧自体を止めない)。`maruhi audit` の表示名解決(同じ TCB 規律 —
- * AUDIT_SPEC §7)と共用する。
+ * For each environment appearing in the list, fetches the
+ * verified metadata (active + tombstone) and builds a variableId
+ * → display name index. An environment whose fetch/verification
+ * fails (a verified deletion etc.) has no index = degrades to
+ * identifier display (with a warning — the display is SHOULD and
+ * does not stop the listing itself). Shared with `maruhi audit`'s
+ * display-name resolution (same TCB discipline — AUDIT_SPEC §7).
  */
 export function resolveNames(
   context: ProjectContextBase,
@@ -107,8 +116,10 @@ export function resolveNames(
 
 function describeTarget(flag: RotationFlagView): string {
   if (flag.targetUserId !== undefined) {
-    // change_role 変種(降格 / scope 縮小 — AUDIT_SPEC §4.1)は削除ではないので
-    // trigger で言い分ける。trigger の無い応答(旧サーバー)は従来の表示
+    // The change_role variant (demotion / scope shrinking —
+    // AUDIT_SPEC §4.1) is not a deletion, so distinguish it by
+    // trigger. A response without trigger (an old server) shows
+    // the traditional wording
     const prefix =
       flag.trigger === "change_role"
         ? "member (role/scope changed)"
@@ -127,7 +138,7 @@ function describeBasis(basis: "read" | "readable"): string {
   return basis === "read" ? "read (confirmed fetch)" : "readable (fetch was possible)";
 }
 
-/** `maruhi rotation list`: 現在有効なフラグの表示(全メンバー — クラス 1)。 */
+/** `maruhi rotation list`: displays the currently active flags (all members — class 1). */
 export function rotationListOp(
   context: ProjectContextBase,
 ): Effect.Effect<number, CliError, CliServices> {
@@ -146,8 +157,10 @@ export function rotationListOp(
     for (const environmentId of environmentIds) {
       yield* io.log(`Environment ${displayText(environmentId)}:`);
       const index = names.get(environmentId);
-      // 表示順は検出時刻 →(同一 sweep で同時刻の場合)variableId の安定ソート。
-      // 監査 seq はワイヤに載らない(AUDIT_SPEC §7 — 序数の非漏洩)
+      // Display order is detection time → (for the same time
+      // within one sweep) a stable sort by variableId. The audit
+      // seq does not go on the wire (AUDIT_SPEC §7 — non-leakage
+      // of the ordinal)
       const rows = flags
         .filter((flag) => flag.environmentId === environmentId)
         .toSorted(
@@ -172,14 +185,16 @@ export function rotationListOp(
   });
 }
 
-/** dismiss の対象解決の結果。 */
+/** The result of dismiss's target resolution. */
 interface DismissTargets {
   readonly targets: readonly { readonly environmentId: string; readonly variableId: string }[];
 }
 
 /**
- * `--all` の対象解決: 現在有効な全フラグ(`--env` 指定時は当該環境のみ)を
- * 対単位に畳む(同一対の複数フラグ — 再削除など — は 1 対)。
+ * `--all`'s target resolution: folds the currently active flags
+ * (with `--env`, only that environment) into pairs (multiple
+ * flags of the same pair — e.g. re-deletion — count as one
+ * pair).
  */
 function resolveAllTargets(input: {
   readonly client: MaruhiClient;
@@ -215,15 +230,17 @@ function resolveAllTargets(input: {
   });
 }
 
-/** dismiss の要求形(**通信なしで**確定する部分 — 引数だけから決まる)。 */
+/** The dismiss request's form (the part settled **without communication** — decided from the arguments alone). */
 export type DismissRequest =
   | { readonly kind: "all"; readonly environmentId: string | null }
   | { readonly kind: "single"; readonly environmentId: string; readonly variableId: string };
 
 /**
- * `maruhi rotation dismiss` の要求の解釈。ネットワークを要さない検査
- * (`--all` と変数 id の矛盾・対象の欠落)はここで落とす — 前段の同期より
- * 後ろに置くと、案内が接続エラーに隠れるうえ往復が無駄になる。
+ * Interprets `maruhi rotation dismiss`'s request. Checks needing
+ * no network (a contradiction between `--all` and a variable id,
+ * a missing target) fail here — placed after the prior sync, the
+ * guidance would hide behind a connection error and waste a
+ * round trip.
  */
 export function parseDismissRequest(input: {
   readonly all: boolean;
@@ -253,8 +270,10 @@ export function parseDismissRequest(input: {
 }
 
 /**
- * `maruhi rotation dismiss` の対象解決: `--all` は現在有効な全フラグ
- * (`--env` 指定時は当該環境のみ)、個別指定は (--env, variableId) の 1 対。
+ * `maruhi rotation dismiss`'s target resolution: `--all` is
+ * every currently active flag (with `--env`, only that
+ * environment); an individual spec is the single pair (--env,
+ * variableId).
  */
 export function resolveDismissTargets(input: {
   readonly client: MaruhiClient;
@@ -272,7 +291,7 @@ export function resolveDismissTargets(input: {
   return Effect.succeed({ targets: [{ environmentId, variableId }] });
 }
 
-/** `maruhi rotation dismiss`: 取り下げの実行(admin — サーバー側で権限検査)。 */
+/** `maruhi rotation dismiss`: executes the withdrawal (admin — the server checks the authority). */
 export function rotationDismissOp(input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
@@ -301,9 +320,11 @@ export function rotationDismissOp(input: {
 }
 
 /**
- * remove / revoke 完了時のフラグ件数報告(B2 裁定 — 導線)。対象(削除した
- * user_id / 失効したサーバー鍵 FP)宛の現在有効なフラグを数えて案内する。
- * 取得失敗でコマンドの成否を変えない(SHOULD 表示)。
+ * The flag-count report at remove / revoke completion (ruling
+ * B2 — guidance). Counts the currently active flags addressed to
+ * the target (the removed user_id / the revoked server-key FP)
+ * and shows it. A fetch failure does not change the command's
+ * outcome (a SHOULD display).
  */
 export function reportRotationFlagCount(input: {
   readonly client: MaruhiClient;

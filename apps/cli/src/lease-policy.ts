@@ -1,5 +1,6 @@
-// `maruhi server grant --lease-policy <file>` の読み込みと正規化
-// (lease_policy — CRYPTO_SPEC §6.2)。引数層は effect-cli.ts。文言は ADR-0017 に従い英語。
+// Loading and normalizing `maruhi server grant --lease-policy
+// <file>` (lease_policy — CRYPTO_SPEC §6.2). The argument layer is
+// effect-cli.ts. Wording is English per ADR-0017.
 
 import { readFile } from "node:fs/promises";
 
@@ -8,8 +9,9 @@ import { Effect } from "effect";
 
 import { type CliError, usageError } from "./errors.ts";
 
-// lease_policy(CRYPTO_SPEC §6.2)のファイル入力の上限。合意規則の値と同じ
-// (超過はチェーン検証 invalid-payload になるため、入力段で先に落とす)
+// Input-file limits of lease_policy (CRYPTO_SPEC §6.2). Same values
+// as the consensus rules (an excess becomes invalid-payload at chain
+// verification, so drop it at the input stage first)
 const MAX_LEASE_POLICY_ISSUERS = 8;
 const MAX_LEASE_CLAIM_CONSTRAINTS = 8;
 const MAX_LEASE_FIELD_BYTES = 1024;
@@ -25,12 +27,14 @@ function leaseFieldOk(value: unknown, allowEmpty: boolean): value is string {
 }
 
 /**
- * lease_policy ファイル(JSON)の解釈と正規化。ファイル形式は camelCase +
- * claimConstraints をオブジェクト(claim 名 → 値)で書く — 同一 claim の矛盾する
- * 重複制約(完全一致 AND では常に偽)を構造的に表現できなくするため。各要素は
- * 1 件以上の claim 制約を必須とし、issuer + audience だけの認可を作らせない。
- * チェーン形式(順序付き配列)への変換で §6.2 の SHOULD(コードポイント昇順・
- * 重複なし)を適用する。
+ * Parses and normalizes a lease_policy file (JSON). The file format
+ * writes camelCase + claimConstraints as an object (claim name →
+ * value) — so that contradictory duplicate constraints on the same
+ * claim (always false under exact-match AND) cannot be expressed
+ * structurally. Each element requires at least one claim constraint
+ * and cannot create an issuer + audience only grant. The SHOULD of
+ * §6.2 (code-point ascending, no duplicates) is applied when
+ * converting to the chain form (an ordered array).
  */
 function parseLeasePolicy(content: string): readonly LeasePolicyIssuer[] | string {
   let parsed: unknown;
@@ -56,7 +60,7 @@ function parseLeasePolicy(content: string): readonly LeasePolicyIssuer[] | strin
   return canonicalizeLeaseElements(elements);
 }
 
-/** lease_policy の 1 要素の解釈(不正なら理由の文字列)。 */
+/** Interprets one lease_policy element (a reason string when malformed). */
 function parseLeaseElement(element: unknown): LeasePolicyIssuer | string {
   if (typeof element !== "object" || element === null || Array.isArray(element)) {
     return "each element must be an object of { issuerUrl, audience, claimConstraints }";
@@ -79,7 +83,7 @@ function parseLeaseElement(element: unknown): LeasePolicyIssuer | string {
   };
 }
 
-/** claimConstraints オブジェクトの解釈と昇順ソート(不正なら理由の文字列)。 */
+/** Interprets and ascending-sorts the claimConstraints object (a reason string when malformed). */
 function parseLeaseConstraints(
   value: unknown,
 ): { claimName: string; claimValue: string }[] | string {
@@ -100,14 +104,16 @@ function parseLeaseConstraints(
     }
     claimConstraints.push({ claimName, claimValue });
   }
-  // 制約はコードポイント昇順(§6.2 の SHOULD)。名前はオブジェクトキーなので一意
+  // Constraints are code-point ascending (§6.2's SHOULD). Names are unique because they are object keys
   claimConstraints.sort((a, b) => (a.claimName < b.claimName ? -1 : 1));
   return claimConstraints;
 }
 
 /**
- * 要素のコードポイント昇順 + 重複除去(SHOULD。評価は存在量化 — AUTH_SPEC §14-1 —
- * なので順序・重複は意味論に影響しないが、署名対象バイト列を決定論にする)。
+ * Code-point ascending sort + dedup of the elements (SHOULD.
+ * Evaluation is existential — AUTH_SPEC §14-1 — so order and
+ * duplicates do not affect the semantics, but this makes the signed
+ * bytes deterministic).
  */
 function canonicalizeLeaseElements(
   elements: readonly LeasePolicyIssuer[],
@@ -126,7 +132,7 @@ function canonicalizeLeaseElements(
   return deduped;
 }
 
-/** `--lease-policy <file>` の読み込み(省略時は空 = リース経路なし)。 */
+/** Loading `--lease-policy <file>` (empty when omitted = no lease path). */
 export function loadLeasePolicy(
   path: string | undefined,
 ): Effect.Effect<readonly LeasePolicyIssuer[], CliError> {

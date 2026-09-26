@@ -1,18 +1,24 @@
-// クライアント同期検査(CRYPTO_SPEC §6.3)。
+// Client-side sync verification (CRYPTO_SPEC §6.3).
 //
-// 同期のたびにチェーン全体を取得し、verifyChain(prev_hash 連続性・署名・
-// §6.2 認可規則 = 鍵一意性を含む)で全再検証した上で、genesis エントリハッシュの
-// 再計算がプロジェクト ID と一致することを確認する(§6.4 の束縛 — サーバーによる
-// チェーン差し替えの機械的検出)。v1 はローカルキャッシュ・差分検証を持たない
-// (毎回全取得・全再検証が最簡 — 差分検証を入れる場合は session-10 §5 の
-// 鍵索引再構築の注意に従うこと)。
+// On every sync, fetches the whole chain, re-verifies all of it
+// with verifyChain (prev_hash continuity, signatures, and §6.2's
+// authorization rules — including key uniqueness), and confirms
+// that the recomputed genesis entry hash equals the project ID
+// (the §6.4 binding — mechanical detection of the server
+// swapping the chain). v1 has no local cache or incremental
+// verification (fetching and re-verifying everything each time
+// is simplest — if incremental verification is introduced,
+// follow session-10 §5's key-index-rebuild cautions).
 //
-// 併せて §5.1 の配布時検証が使う「チェーン履歴で user_id に束縛された鍵」の索引
-// (genesis / add_member の payload。削除済みメンバーの当時の鍵も含む)を作る。
-// ヘッドゴシップ(§6.3 / §6.6): チェーン取得応答に同梱される他メンバーの申告は
-// **未検証のまま** VerifiedProject に載せて運ぶだけで、検証・照合は
-// attestation.ts(reconcileDistributedAttestations)が行う。lease 応答は申告を
-// 同梱しない(§14-2)ため常に空。
+// It also builds the index of "keys bound to user_id in the
+// chain history" that §5.1's distribution-time verification uses
+// (the genesis / add_member payloads; includes deleted members'
+// then-current keys). Head gossip (§6.3 / §6.6): other members'
+// declarations bundled into the chain-fetch response are carried
+// on VerifiedProject **still unverified** — the verification and
+// collation is done by attestation.ts
+// (reconcileDistributedAttestations). A lease response bundles no
+// declarations (§14-2), so it is always empty there.
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
@@ -38,9 +44,10 @@ export interface KeyBinding {
 }
 
 /**
- * 配布されたヘッド申告のワイヤ形(AUTH_SPEC §16-1 — チェーン取得応答の
- * `attestations`)。**未検証の生データ**として運ぶ: §6.6 の検証と照合
- * (attestation.ts)を通過するまで一切の判断材料にしない。
+ * The wire form of a distributed head declaration (AUTH_SPEC
+ * §16-1 — `attestations` of the chain-fetch response). Carried
+ * as **unverified raw data**: it feeds no judgment until it
+ * passes §6.6's verification and collation (attestation.ts).
  */
 export interface DistributedAttestationWire {
   readonly suite: "maruhi/v1";
@@ -53,8 +60,9 @@ export interface DistributedAttestationWire {
 
 /**
  * A fully verified project chain (§6.3) plus the §5.1 signer-key history
- * index and the §4.1 chain-history index (seq → hash / tenure / エポック有効
- * 区間の照会 — 値署名の宣言ヘッド時点検証の入力)。
+ * index and the §4.1 chain-history index (the seq → hash /
+ * tenure / epoch-validity-interval lookups — the input of a
+ * value signature's declared-head-point verification).
  */
 export interface VerifiedProject {
   readonly projectId: ProjectId;
@@ -62,29 +70,37 @@ export interface VerifiedProject {
   /** History queries over this verified snapshot (CRYPTO_SPEC §6.3 / §4.1). */
   readonly history: ChainHistoryIndex;
   /**
-   * Every key set ever bound to each user id (append-only history — §5.1)。
-   * DEK ラップの配布時検証(deks.ts — ヘッド束縛を持たない §5.1 の意味論)用。
-   * 値署名の鍵選択・tenure 照会は history 側を使う(dedupe で tenure を
-   * 消さない — session-14 裁定 A)。
+   * Every key set ever bound to each user id (append-only
+   * history — §5.1). For the DEK wraps' distribution-time
+   * verification (deks.ts — §5.1's semantics hold no head
+   * binding). A value signature's key selection and tenure
+   * lookups use the history side instead (dedupe must not erase
+   * tenure — session-14 ruling A).
    */
   readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
   /**
-   * 検証済みチェーンのエントリ列(seq 順)。導出状態に現れない履歴事実
-   * (例: 最後の revoke_server の seq — server revoke の中断復旧の基準)を
-   * 参照する読み取り専用ビュー。
+   * The verified chain's entry list (in seq order). A read-only
+   * view for consulting historical facts that do not appear in
+   * the derived state (e.g. the last revoke_server's seq — the
+   * reference of server revoke's interruption recovery).
    */
   readonly entries: readonly ChainEntry[];
   /**
-   * 適用済み操作の列(seq 順 — 設計録 K6-C)。直接追記の op と、定足数に達した
-   * `approve` の内側 op(seq = approve の seq、actor = 提案者)を同じ形で運ぶ。
-   * ローテーション義務・削除記録・scope 履歴・鍵索引はエントリ列ではなくこちらを
-   * 走査する(提案経由の適用を見落とさない)。
+   * The applied operations' list (in seq order — design record
+   * K6-C). Carries a directly appended op and the inner op of a
+   * quorum-reaching `approve` (seq = the approve's seq, actor =
+   * the proposer) in the same shape. Rotation obligations,
+   * deletion records, scope history, and the key index scan this
+   * one rather than the entry list (never miss an application
+   * that arrived via a proposal).
    */
   readonly applied: readonly AppliedOperation[];
   /**
-   * 同じ応答に同梱された他メンバーのヘッド申告(§6.6 — **未検証**)。旧サーバー
-   * の応答には欠ける(欠落 = 空。omission は §6.3 の規範的非保証であり拒否
-   * しない)。lease 応答由来のビューでは常に空(§14-2 — 非同梱)。
+   * Other members' head declarations bundled in the same
+   * response (§6.6 — **unverified**). Absent in an old server's
+   * response (absence = empty; omission is §6.3's normative
+   * non-guarantee, not refused). Always empty in a
+   * lease-response-derived view (§14-2 — not bundled).
    */
   readonly attestations: readonly DistributedAttestationWire[];
 }
@@ -94,9 +110,12 @@ function bindingKey(binding: KeyBinding): string {
 }
 
 /**
- * verifyChain 通過後には成り立つはずの前提(hex の正規形・鍵長)が破れたとき
- * の内部矛盾。鍵索引からの黙った欠落は §5.1 検証で「署名者がチェーン履歴に
- * 存在しません」という偽装様のエラーに化けるため、ここで型付きの失敗にする。
+ * The internal contradiction when a precondition that should
+ * hold after verifyChain (hex's canonical form, key length) is
+ * violated. A silent omission from the key index would turn into
+ * a disguising "the signer does not exist in the chain history"
+ * error at §5.1 verification, so it is made a typed failure
+ * here.
  */
 class ChainDerivationError extends Error {}
 
@@ -119,10 +138,14 @@ async function buildKeyHistory(
     }
   };
   for (const { seq, operation, actorUserId } of applied) {
-    // 鍵を登録する op は genesis / add_member / add_device(§6.2 — 2026-09-19 DK: 端末鍵も
-    // その人に束縛された鍵として履歴に載る。失効は履歴を消さない)。提案経由で適用された
-    // add_member(四眼 — K6)も同じ形で載る。verifyChain 通過後なので hex は正規形。
-    // FP は payload の鍵から再計算する(genesis の actor FP は payload 鍵と一致検証済み)
+    // The ops that register a key are genesis / add_member /
+    // add_device (§6.2 — 2026-09-19 DK: a device key also lands
+    // on the history as a key bound to its person. Revocation
+    // does not erase the history). An add_member applied via a
+    // proposal (four-eyes — K6) lands in the same shape too.
+    // Post-verifyChain, hex is in canonical form. The FP is
+    // recomputed from the payload's key (genesis's actor FP is
+    // already verified to match the payload key)
     if (
       operation.op !== "genesis" &&
       operation.op !== "add_member" &&
@@ -143,7 +166,7 @@ async function buildKeyHistory(
         `Cannot compute the key fingerprint for ${operation.op} (seq=${seq})`,
       );
     }
-    // genesis / add_device の対象 = actor 自身、add_member の対象 = payload の target
+    // genesis / add_device's target = the actor themself; add_member's target = the payload's target
     add(operation.op === "add_member" ? operation.payload.targetUserId : actorUserId, {
       encPubHex: operation.payload.encPubHex,
       sigPubHex: operation.payload.sigPubHex,
@@ -158,18 +181,21 @@ async function buildKeyHistory(
  * hash against the project id (§6.4), and cross-checks the server's claimed
  * head against the locally derived one.
  *
- * syncProject(チェーン API からの取得)と lease 応答の同梱チェーン
- * (AUTH_SPEC §14-2 — 非メンバーへの唯一の配布経路)の**両方**がここを通る。
- * 検証実装を 2 系統に割ると、片方だけが genesis 固定・ヘッド整合を失う
- * 静かな退行になる(values.ts の decryptVerifiedValue と同じ理由)。
+ * **Both** syncProject (fetching from the chain API) and the
+ * lease response's bundled chain (AUTH_SPEC §14-2 — the only
+ * distribution path to non-members) pass through here.
+ * Splitting the verification implementation into two lineages
+ * would be a silent regression where only one side loses genesis
+ * pinning and head consistency (the same reason as values.ts's
+ * decryptVerifiedValue).
  */
 export function verifyChainSnapshot(input: {
   readonly projectId: ProjectId;
   readonly entries: readonly ChainEntry[];
-  /** サーバー申告のヘッド(信用せず、導出ヘッドとの一致を検査する)。 */
+  /** The server-declared head (not trusted — checked for equality against the derived head). */
   readonly claimedHeadSeq: number;
   readonly claimedHeadHashHex: string;
-  /** 同梱されたヘッド申告(未検証のまま運ぶ — lease 経路は渡さない = 空)。 */
+  /** The bundled head declarations (carried unverified — the lease path passes none = empty). */
   readonly attestations?: readonly DistributedAttestationWire[];
 }): Effect.Effect<VerifiedProject, CliError> {
   return Effect.gen(function* () {
@@ -183,8 +209,10 @@ export function verifyChainSnapshot(input: {
         verified.error.kind === "ChainInvalid"
           ? verified.error
           : { seq: 0, reason: "invalid-payload" };
-      // 配布されたチェーンが検証を通らない = 署名済みデータの矛盾(証拠 — 再実行では
-      // 解消しない。後始末の警告に畳まれてはならない)
+      // A distributed chain failing verification = a
+      // contradiction in signed data (evidence — re-running does
+      // not resolve it. Must never be folded into a cleanup
+      // warning)
       return yield* Effect.fail(
         evidenceError(
           `Chain verification failed (seq=${seq}, reason=${reason}). The server may be distributing an invalid chain`,
@@ -193,8 +221,9 @@ export function verifyChainSnapshot(input: {
     }
     const { state, history } = verified.value;
 
-    // §6.4: プロジェクト ID = genesis エントリハッシュ。サーバーが別チェーンを
-    // 同じ ID で配布する差し替えをここで機械的に検出する
+    // §6.4: the project ID = the genesis entry hash. The swap
+    // where the server distributes a different chain under the
+    // same ID is detected mechanically here
     const genesis = entries[0];
     if (genesis === undefined) {
       return yield* Effect.fail(cliError("The chain is empty"));
@@ -211,7 +240,7 @@ export function verifyChainSnapshot(input: {
       );
     }
 
-    // サーバー申告のヘッドと導出ヘッドの整合(申告値は信用しない)
+    // Consistency between the server-declared head and the derived head (declared values are not trusted)
     if (state.headSeq !== input.claimedHeadSeq || state.headHashHex !== input.claimedHeadHashHex) {
       return yield* Effect.fail(
         evidenceError(
@@ -220,7 +249,7 @@ export function verifyChainSnapshot(input: {
       );
     }
 
-    // 適用済み操作列(K6-C)— 完成判定は core の indexProposals(K5-F)
+    // The applied-operations list (K6-C) — the completion judgment is core's indexProposals (K5-F)
     const applied = appliedOperations(
       entries,
       (seq) => history.entryHashAt(seq),
@@ -264,19 +293,23 @@ export function syncProject(
       entries: snapshot.entries,
       claimedHeadSeq: snapshot.headSeq,
       claimedHeadHashHex: snapshot.headHashHex,
-      // 旧サーバーの応答には attestations が無い(欠落 = 空で受ける — §6.3 の
-      // 規範的非保証。欠落拒否の分岐は作らない)
+      // An old server's response has no attestations (absence is
+      // accepted as empty — §6.3's normative non-guarantee. No
+      // refuse-on-absence branch is built)
       attestations: snapshot.attestations ?? [],
     });
   });
 }
 
 /**
- * 再同期後の新スナップショットが旧検証済みビューの**延長**であることの検査
- * (§6.3-2b の再同期分岐)。syncProject が全体検証と genesis 一致を済ませて
- * いる前提で、(1) 新ヘッドが旧ヘッド以上、(2) 旧 verified head の seq/hash が
- * 新スナップショット内で一致、を要求する。別の整合チェーンへの差し替え・
- * 旧 head の欠落・同 seq のハッシュ不一致はすべてここで落ちる。
+ * The check that the post-resync new snapshot is an **extension**
+ * of the old verified view (§6.3-2b's resync branch). Assuming
+ * syncProject has already done full verification and the genesis
+ * match, it requires (1) the new head is at or above the old
+ * head, (2) the old verified head's seq/hash matches inside the
+ * new snapshot. Replacement by a different consistent chain, a
+ * missing old head, and a hash mismatch at the same seq all fail
+ * here.
  */
 function ensureExtensionOf(
   previous: VerifiedProject,
@@ -295,7 +328,7 @@ function ensureExtensionOf(
   return Effect.succeed(next);
 }
 
-/** 延長検査付き再同期(§6.3-2b / session-14 裁定 G)。 */
+/** Re-sync with the extension check (§6.3-2b / session-14 ruling G). */
 export function resyncExtended(
   resync: Effect.Effect<VerifiedProject, CliError>,
   previous: VerifiedProject,

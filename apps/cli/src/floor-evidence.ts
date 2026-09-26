@@ -1,17 +1,20 @@
-// fork 証拠の報告 UX(CRYPTO_SPEC §6.3 / §14.2-5)。
+// Reporting UX of fork evidence (CRYPTO_SPEC §6.3 / §14.2-5).
 //
-// 床検査の不一致は「§6.3 の署名検証を通過したデータ同士の矛盾」なので、双方の
-// 座標・signed bytes ハッシュ・宣言ヘッドを人間が第三者へ提示可能な形で出力する
-// (同一座標への内容の異なる 2 つの有効署名 = サーバーの equivocation または
-// 鍵漏洩の否認不能な証拠 — §14.2-5)。**平文値・鍵素材は含めない**(識別は
-// すべて ID とハッシュ — ディスクレス不変条件)。
+// A floor-check mismatch is "a contradiction between data that both
+// passed §6.3 signature verification", so both coordinates, the
+// signed-bytes hashes, and the declared heads are output in a form a
+// human can present to a third party (two valid signatures with
+// different content at the same coordinate = non-repudiable evidence
+// of server equivocation or key compromise — §14.2-5). **No plaintext
+// values or key material is included** (everything is identified by
+// ID and hash — the diskless invariant).
 
 import { displayText } from "./display.ts";
 import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
 import type { AttestationEvidenceRecord, FloorConflict } from "./floor.ts";
 
-/** 証拠に含める座標(すべて ID — 名前は含めない: 名前自体が係争対象になりうる)。 */
+/** Coordinates included in the evidence (all IDs — no names: a name itself can be the disputed object). */
 export interface FloorEvidenceCoordinates {
   readonly projectId: string;
   readonly environmentId?: string;
@@ -41,7 +44,7 @@ function floorVariableLines(violation: Extract<FloorViolation, { kind: "variable
         `    metaVersion=${floor.metaVersion} meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ]
     : [
-        // declared / deleted はメタ側のみ(値床を持たない — floor.ts)
+        // declared / deleted are meta-side only (no value floor — floor.ts)
         `  floor record (previously verified): status=${floor.status} metaVersion=${floor.metaVersion}`,
         `    meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ];
@@ -66,7 +69,7 @@ function pulledValueLines(pulled: {
     `  this distribution: version=${pulled.version} epoch=${pulled.epoch}`,
     `    value_signed_bytes_hash=${pulled.valueSigHashHex}`,
     `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
-    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    writer signature: writer=${displayText(pulled.writerUserId)} fp=${pulled.writerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
@@ -92,7 +95,7 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
     `  this distribution: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.pulled.metaSigHashHex}`,
     `    declared head: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
-    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    author signature: author=${displayText(violation.pulled.authorUserId)} fp=${violation.pulled.authorKeyFingerprintHex}`,
     `    signature=${violation.pulled.signatureHex}`,
   ];
@@ -123,7 +126,7 @@ function pulledManifestLines(pulled: {
     `  this distribution: manifestVersion=${pulled.manifestVersion} epoch=${pulled.epoch}`,
     `    manifest_signed_bytes_hash=${pulled.signedBytesHashHex}`,
     `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
-    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    issuer signature: issuer=${displayText(pulled.issuerUserId)} fp=${pulled.issuerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
@@ -199,7 +202,7 @@ function variableEvidenceLines(
   ) {
     return [coordinateLine(coordinates, violation.variableId), ...valueEvidenceLines(violation)];
   }
-  // メタ系 4 種(環境メタの violation は variableId が null — 座標行は環境まで)
+  // The four meta kinds (a violation of an environment meta has variableId = null — the coordinate rows go to the environment)
   return [coordinateLine(coordinates, violation.variableId), ...metaEvidenceLines(violation)];
 }
 
@@ -222,8 +225,9 @@ function evidenceLines(
 }
 
 /**
- * 床検査の不一致を、拒否メッセージ + 提示可能な証拠(座標・両 signed bytes
- * ハッシュ・宣言ヘッド)の複数行テキストへ整形する。
+ * Formats a floor-check mismatch into multi-line text: a refusal
+ * message + presentable evidence (coordinates, both signed-bytes
+ * hashes, declared heads).
  */
 export function formatFloorViolation(
   coordinates: FloorEvidenceCoordinates,
@@ -275,7 +279,7 @@ function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly s
     record.kind === "head-mismatch"
       ? "  [head-mismatch] a verified member attestation names a different entry hash at a seq within this view"
       : "  [unresolved-after-resync] a verified member attestation names a head beyond this view that one bounded re-sync could not resolve as an extension",
-    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    attester: ${displayText(attestation.attesterUserId)} fp=${attestation.attesterKeyFingerprintHex}`,
     `    attested head: ${headText(attestation.chainHeadSeq, attestation.chainHeadHashHex)}`,
     `    attestation signature: ${attestation.signatureHex}`,
@@ -285,10 +289,12 @@ function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly s
 }
 
 /**
- * 矛盾ヘッド申告(CRYPTO_SPEC §6.6 照合 (a))の警告メッセージ。申告は §6.6 の
- * 署名検証を通過済みなので、自ビューとの矛盾は「サーバーの equivocation
- * (split view)または attester の鍵漏洩」の否認不能な証拠(§14.2-5)。
- * 証拠本体は追記専用の証拠ファイルへ保存済み(パスを導線として示す)。
+ * Warning message for a contradictory-head declaration (CRYPTO_SPEC
+ * §6.6 check (a)). The declaration already passed §6.6 signature
+ * verification, so a contradiction with our view is non-repudiable
+ * evidence of "server equivocation (split view) or attester key
+ * compromise" (§14.2-5). The evidence body is already saved to the
+ * append-only evidence file (the path is shown as the route).
  */
 export function formatAttestationEvidence(
   projectId: string,
@@ -303,10 +309,12 @@ export function formatAttestationEvidence(
 }
 
 /**
- * 観測ログの fold が検出した同座標 conflict(join 未定義 — CRYPTO_SPEC §6.3
- * 規則 (b) のマージ意味論)の拒否メッセージ。両観測とも §6.3 検証を通過した
- * 事実であり、矛盾は equivocation または鍵漏洩の否認不能な証拠 — ログは
- * 追記専用なので証拠自体は消えない(保全の案内だけを行う)。
+ * Refusal message for a same-coordinate conflict (join undefined —
+ * CRYPTO_SPEC §6.3 rule (b)'s merge semantics) detected by the
+ * observation log's fold. Both observations are facts that passed
+ * §6.3 verification, and the contradiction is non-repudiable evidence
+ * of equivocation or key compromise — the log is append-only, so the
+ * evidence itself does not disappear (only preservation is guided).
  */
 export function formatFloorConflicts(
   projectId: string,
