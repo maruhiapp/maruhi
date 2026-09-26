@@ -221,7 +221,8 @@ export interface DataWriteOps {
   /**
    * 境界 checkpoint の値スナップショットの保存(CRYPTO_SPEC §6.4 / AUTH_SPEC
    * §16-2): 環境ごとの最新包含 checkpoint のタプルを upsert し、
-   * 値スナップショット列挙を環境単位で全置換する。payload に含まれない環境の
+   * 値スナップショット列挙を環境単位で全置換する(保存済みの values digest と
+   * 一致するときは列挙が同一なので置換を省く — タプル行は常に更新)。payload に含まれない環境の
    * 既存スナップショットは変更しない(A のみ再 checkpoint しても B の基準は
    * 失われない — §6.4)。チェーン追記と同じ同期ブロック内から呼ぶ。
    */
@@ -1737,6 +1738,22 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     );
   },
   upsertCheckpointSnapshot: (environmentId, checkpoint, values, nowMs) => {
+    // 保存済み列挙の digest(上書き前に読む)。全呼び出し元は保存前に
+    // 「values の digest = checkpoint.valuesDigestHex」を突合済み
+    // (ensureCheckpointValuesDigest — standalone / create / rotate の 3 経路)で、
+    // 両表の行は同じ同期ブロックでしか書かれず、削除も両表同時(retireEnvironment)。
+    // よって保存行の values_digest_hex は保存済み列挙そのものの SHA-256 であり、
+    // 一致すれば列挙は同一 — 全置換を省いても保存状態は変わらない(§6.4 の
+    // 「受理時点状態そのもの」を保つ)。タプル座標の行は常に更新する
+    const stored = sql
+      .exec(
+        "SELECT values_digest_hex FROM environment_checkpoints WHERE environment_id = ?",
+        environmentId,
+      )
+      .toArray()[0];
+    const valuesUnchanged =
+      stored !== undefined &&
+      stringColumn(stored, "values_digest_hex") === checkpoint.valuesDigestHex;
     sql.exec(
       `INSERT INTO environment_checkpoints
          (environment_id, chain_seq, entry_hash_hex, epoch, manifest_version,
@@ -1759,6 +1776,9 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       checkpoint.valuesDigestHex,
       nowMs,
     );
+    if (valuesUnchanged) {
+      return;
+    }
     // 列挙は環境単位の全置換(受理時点状態そのもの — §6.4 の upsert 意味論)
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
     for (const value of values) {
