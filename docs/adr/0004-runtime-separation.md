@@ -1,4 +1,4 @@
-# ADR-0004: ランタイムと実行環境の分離
+# ADR-0004: Separation of runtime and execution environment
 
-**Decision**: 開発ツールチェーン・CLI = Bun 1.4 系。サーバー実行 = workerd(Workers)。サーバーコードは Web 標準 + Workers API のみで Bun API 禁止。テストは Vitest に統一(サーバー / DO は @cloudflare/vitest-pool-workers、他は通常環境)。`bun:test` 不使用。
-**Rationale**: Bun はサーバー上で動かない(動かす必要がない)。暗号コアはブラウザ / Bun / workerd の 3 環境で動く WebCrypto 縛りとし、移植性を CI で担保。
+**Decision**: Development toolchain and CLI = Bun 1.4.x. Server execution = workerd (Workers). Server code uses Web standards + Workers APIs only; Bun APIs are banned. Tests are unified on Vitest (server / DO on @cloudflare/vitest-pool-workers, everything else on the normal environment). `bun:test` is not used.
+**Rationale**: Bun does not run on the server (nor does it need to). The crypto core is constrained to WebCrypto so it runs in all three environments (browser / Bun / workerd); portability is guaranteed by CI.
