@@ -3047,6 +3047,28 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(reserves).not.toContain(owner.fingerprintHex);
   });
 
+  it("誤った行の訂正: 同期できないプロジェクトがあれば「どこにも無い」と言わず、行に触れない(K14-19)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+    ]);
+    const broken = await buildChain([{ actor: member, operation: genesisOp(member) }]);
+    const { env, origin } = await recoveryFixture({
+      device: dev2,
+      ledgerKey: owner,
+      built,
+      brokenProjects: [{ built: broken, mode: "unavailable" }],
+    });
+    await recordOwnDevice(env, origin, owner, "reserve");
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.errors.join("\n")).not.toContain("is registered nowhere now");
+    const row = (await readOwnDevices(env, origin)).find(
+      (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
+    );
+    expect(row?.revokedAtMs).toBeNull();
+  });
+
   it("key recovery: 失効した予備鍵(最初の鍵ではない)は分離し、再発行しない", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

@@ -149,9 +149,13 @@ export function retractReserveRecord(input: {
       return;
     }
     // 観測の行の材料は、有効な立場(最初の鍵のプロジェクトを優先)。最初の鍵だったプロジェクトで
-    // 既に失効し、どこにも有効でなければ、失効の印を付ける(K14-18)
+    // 既に失効し、どこにも有効でなければ、失効の印を付ける(K14-18)。同期できないプロジェクトが
+    // あれば「どこにも無い」とは言えないので、行に触れない(K14-19 — 門は引き続き鍵を守る)
     const first =
       input.groups.active.find((entry) => entry.standing.firstKey) ?? input.groups.active[0];
+    if (first === undefined && input.groups.unsynced.length > 0) {
+      return;
+    }
     if (first === undefined) {
       yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
       yield* logNote(
