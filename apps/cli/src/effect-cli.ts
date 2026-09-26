@@ -3851,7 +3851,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Create the reserve key and its recovery code (first time), separate it from this device's key on an install from before device keys, or reissue the recovery code",
+      "Create the reserve key and its recovery code (first time), separate it from a copy of a device key that an install from before device keys left in the ledger, or reissue the recovery code",
     ),
   );
 

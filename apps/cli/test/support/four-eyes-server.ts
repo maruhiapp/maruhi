@@ -7,6 +7,7 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 
+import { acceptAppendedEntry, servedChainResponse } from "./chain-handler.ts";
 import {
   type BuiltChain,
   environmentStatementFor,
@@ -95,10 +96,9 @@ export async function makeFourEyesServer(input: {
       status: 200,
       json: input.authConfig ?? { githubClientId: "dummy-client-id" },
     })),
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: { projectId, entries, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-    })),
+    onRequest("GET", `/projects/${projectId}/chain`, () =>
+      servedChainResponse(projectId, entries, hashes),
+    ),
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
@@ -114,12 +114,7 @@ export async function makeFourEyesServer(input: {
       }
       const body = request.body as { readonly entry: ChainEntry };
       appendedEntries.push(body.entry);
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      return {
-        status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
+      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
     onRequest("GET", `/projects/${projectId}/invites`, () => ({
       status: 200,

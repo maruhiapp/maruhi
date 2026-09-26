@@ -49,6 +49,7 @@ import {
 import { formatRecoveryCode } from "../src/recovery-code.ts";
 import { rotationMandates } from "../src/rotation-sweep.ts";
 import type { VerifiedProject } from "../src/sync.ts";
+import { appendableProjectHandlers } from "./support/chain-handler.ts";
 import {
   addScopedMemberOp,
   buildChain,
@@ -65,6 +66,7 @@ import {
   type WireRecipientDek,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import { ledgerHandlerFor, storedMasterRecord } from "./support/ledger.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app";
@@ -310,7 +312,11 @@ async function makeServer(input: {
             },
       ),
     ),
-    ...(input.extraProjects ?? []).flatMap((built) => extraProjectHandlers(built, appendedTo)),
+    ...(input.extraProjects ?? []).flatMap((built) =>
+      appendableProjectHandlers(built, (entry) =>
+        appendedTo.push({ projectId: built.projectId, entry }),
+      ),
+    ),
     onRequest("GET", "/auth/devices", () => ({ status: 200, json: { devices: registry } })),
     (request: MockRequest) => {
       const match = /^\/auth\/devices\/([0-9a-f]{32})$/.exec(request.path);
@@ -435,39 +441,6 @@ function listMineResponse(
   return "status" in listMine
     ? { status: listMine.status, json: { _tag: "Internal" } }
     : { status: 200, json: { deks: listMine.rows } };
-}
-
-/** 他のプロジェクトのチェーン(GET / 追記)と空の環境一覧(`makeServer` の `extraProjects`)。 */
-function extraProjectHandlers(
-  built: BuiltChain,
-  appendedTo: ServerState["appendedTo"],
-): MockHandler[] {
-  const { projectId } = built;
-  const entries: ChainEntry[] = [...built.entries];
-  const hashes: string[] = [...built.hashes];
-  return [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: { projectId, entries, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-    })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
-      const body = request.body as { readonly entry: ChainEntry };
-      appendedTo.push({ projectId, entry: body.entry });
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      return {
-        status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
-    },
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
-      status: 200,
-      json: { environments: [] },
-    })),
-  ];
 }
 
 /** ある端末鍵の `add_device` の追記(全プロジェクト — プロジェクト id と cap の role)。 */
@@ -2773,5 +2746,358 @@ describe("旧端末経路の撤去(ワイヤ型)", () => {
     expect(json).toContain(reserve.encPubHex);
     expect(json).not.toContain(reserve.encSkHex);
     expect(json).not.toContain(reserve.sigSkSeedHex);
+  });
+});
+
+describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上の判定(DK K14)", () => {
+  const QUESTION = "Type yes to record it as your reserve key (anything else = no): ";
+  const CODE_PROMPT = "Enter your recovery code: ";
+
+  /** 鍵の無い端末で `key recover` を打つ場面(台帳 = `ledgerKey`)。`answers` はコードの後の応答。 */
+  async function recoverFixture(input: {
+    readonly ledgerKey: TestUser;
+    readonly built: BuiltChain;
+    readonly extraProjects?: readonly BuiltChain[];
+    readonly brokenProjects?: readonly {
+      readonly built: BuiltChain;
+      readonly mode: "unavailable";
+    }[];
+    readonly answers?: readonly string[];
+  }): Promise<{ env: TestEnv; state: ServerState; origin: string }> {
+    const ledger = await ledgerHandlerFor(
+      storedMasterRecord(input.ledgerKey),
+      owner.userId,
+      crypto.getRandomValues(new Uint8Array(32)),
+    );
+    const { server, state } = await makeServer({
+      built: input.built,
+      withEnvironment: false,
+      extra: [ledger.handler],
+      ...(input.extraProjects === undefined ? {} : { extraProjects: input.extraProjects }),
+      ...(input.brokenProjects === undefined ? {} : { brokenProjects: input.brokenProjects }),
+    });
+    const env = await startEnvWithoutKey(server.origin, input.built.projectId);
+    env.setPromptResponses([ledger.code, ...(input.answers ?? [])]);
+    return { env, state, origin: server.origin };
+  }
+
+  /** 端末鍵 `device` のある端末で `key recovery` を打つ場面(台帳 = `ledgerKey`、登録済み)。 */
+  async function recoveryFixture(input: {
+    readonly device: TestUser;
+    readonly ledgerKey: TestUser;
+    readonly built: BuiltChain;
+    readonly extraProjects?: readonly BuiltChain[];
+    readonly brokenProjects?: readonly {
+      readonly built: BuiltChain;
+      readonly mode: "unavailable";
+    }[];
+  }): Promise<{ env: TestEnv; origin: string; ledgerPuts: unknown[] }> {
+    const ledger = await ledgerHandlerFor(
+      storedMasterRecord(input.ledgerKey),
+      owner.userId,
+      crypto.getRandomValues(new Uint8Array(32)),
+    );
+    const ledgerPuts: unknown[] = [];
+    const { server } = await makeServer({
+      built: input.built,
+      withEnvironment: false,
+      extra: [
+        ledger.handler,
+        onRequest("GET", "/auth/recovery/status", () => ({
+          status: 200,
+          json: { registered: true, updatedAtMs: 1754006400000 },
+        })),
+        onRequest("PUT", "/auth/recovery", (request) => {
+          ledgerPuts.push(request.body);
+          return { status: 204 };
+        }),
+      ],
+      ...(input.extraProjects === undefined ? {} : { extraProjects: input.extraProjects }),
+      ...(input.brokenProjects === undefined ? {} : { brokenProjects: input.brokenProjects }),
+    });
+    const env = await startEnv(server.origin, input.built.projectId, input.device);
+    env.setPromptResponses([
+      ledger.code,
+      () => {
+        const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+        const groups = (line ?? "").trim().split("-");
+        return groups[groups.length - 1] ?? "";
+      },
+    ]);
+    return { env, origin: server.origin, ledgerPuts };
+  }
+
+  async function reserveRowsOf(env: TestEnv, origin: string): Promise<readonly string[]> {
+    return (await readOwnDevices(env, origin))
+      .filter((row) => row.source === "reserve" && row.revokedAtMs === null)
+      .map((row) => row.keyFingerprintHex);
+  }
+
+  it("どこでも add_device 出所の鍵は、事実を見せた確認の yes で予備鍵として記録する", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env, state, origin } = await recoverFixture({
+      ledgerKey: reserve,
+      built,
+      answers: ["yes"],
+    });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT, QUESTION]);
+    expect(env.logs.join("\n")).toContain(
+      `The opened key ${reserve.fingerprintHex} is registered on 1 project (${built.projectId}), and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it`,
+    );
+    expect(env.errors.join("\n")).toContain(
+      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
+    // 登録は判定の前に済んでいる(予備鍵の署名で新しい端末鍵の add_device)
+    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
+    expect(state.appended[0]?.actor.keyFingerprintHex).toBe(reserve.fingerprintHex);
+  });
+
+  it("確認に yes 以外(既定)と答えれば記録せず、失効の案内を出す", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env, origin } = await recoverFixture({ ledgerKey: reserve, built, answers: [""] });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT, QUESTION]);
+    expect(env.errors.join("\n")).toContain(
+      `the opened key ${reserve.fingerprintHex} was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${reserve.fingerprintHex}\`. Then create a separate reserve key with \`maruhi key recovery\``,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+  });
+
+  it("最初の鍵(pre-DK の端末鍵の複製)は問わずに記録せず、失効と key recovery を案内する", async () => {
+    // 台帳 = owner の鍵(genesis の鍵 = 最初の鍵)。復元する端末には鍵が無い
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { env, state, origin } = await recoverFixture({ ledgerKey: owner, built });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT]);
+    expect(env.errors.join("\n")).toContain(
+      `the opened key ${owner.fingerprintHex} is your first key on 1 project (${built.projectId}) (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${owner.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+    // 登録は判定に依らず行う(複製の鍵でも新しい端末を足す — K4-10)
+    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
+  });
+
+  it("載り方が混在すれば(どこか 1 つでも最初の鍵なら)複製と判定し、同期できないプロジェクトがあっても変わらない", async () => {
+    // p1: owner の鍵は最初の鍵。p2: dev2 が作り、owner の鍵を add_device で足した(観測で
+    // 記録した鍵の伝播 — 事実確認 8)。p3: 同期できない
+    const p1 = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const p2 = await buildChain([
+      { actor: dev2, operation: genesisOp(dev2) },
+      { actor: dev2, operation: addDeviceOp(owner) },
+    ]);
+    // 同期できないプロジェクト(中身は配られない — ID を分けるため genesis を別の人に)
+    const p3 = await buildChain([{ actor: member, operation: genesisOp(member) }]);
+    const { env, origin } = await recoverFixture({
+      ledgerKey: owner,
+      built: p1,
+      extraProjects: [p2],
+      brokenProjects: [{ built: p3, mode: "unavailable" }],
+    });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `the opened key ${owner.fingerprintHex} is your first key on 1 project (${p1.projectId}) (the key you created or joined that project with)`,
+    );
+    expect(errors).not.toContain(`is your first key on 1 project (${p2.projectId})`);
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+  });
+
+  it("同期できないプロジェクトがあれば問わずに記録せず、--resume でもう一度確かめる道を言う", async () => {
+    const p1 = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const p2 = await buildChain([{ actor: member, operation: genesisOp(member) }]);
+    const { env, origin } = await recoverFixture({
+      ledgerKey: reserve,
+      built: p1,
+      brokenProjects: [{ built: p2, mode: "unavailable" }],
+    });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT]);
+    expect(env.errors.join("\n")).toContain(
+      `Note: the opened key ${reserve.fingerprintHex} was not recorded as your reserve key: 1 project could not be checked (${p2.projectId}), and maruhi records it only when every project shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+  });
+
+  it("どのチェーンにも無い鍵は問わずに記録せず、再招待の案内と判定できない理由を言う", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { env, state, origin } = await recoverFixture({ ledgerKey: reserve, built });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `${built.projectId}: the opened key is not registered on this project, so this device could not be added there`,
+    );
+    expect(errors).toContain(
+      `Note: the opened key ${reserve.fingerprintHex} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+    expect(state.appended).toEqual([]);
+  });
+
+  it("失効した鍵は問わずに記録せず、失効したプロジェクトを名指し、有効な所では登録する", async () => {
+    const p1 = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+      { actor: owner, operation: revokeDeviceOp(owner, [reserve]) },
+    ]);
+    const p2 = await buildChain([
+      { actor: dev2, operation: genesisOp(dev2) },
+      { actor: dev2, operation: addDeviceOp(reserve) },
+    ]);
+    const { env, state, origin } = await recoverFixture({
+      ledgerKey: reserve,
+      built: p1,
+      extraProjects: [p2],
+    });
+    expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.prompts).toEqual([CODE_PROMPT]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `${p1.projectId}: the opened key was revoked on this project, so this device could not be added there`,
+    );
+    expect(errors).toContain(
+      `the opened key ${reserve.fingerprintHex} is revoked on 1 project (${p1.projectId}), so it was not recorded as your reserve key. Run \`maruhi key recovery\`: it seals a new reserve key in its place`,
+    );
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
+    expect(state.appendedTo.map((row) => [row.projectId, row.entry.op])).toEqual([
+      [p2.projectId, "add_device"],
+    ]);
+  });
+
+  it("非対話の拒否は変わらない: 台帳を取る前に止まり、問わず、何も追記しない", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env, state } = await recoverFixture({ ledgerKey: reserve, built, answers: ["yes"] });
+    env.setTerminal({ stdin: false, stdout: true, stderr: true });
+    expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+    expect(env.prompts).toEqual([]);
+    expect(state.paths()).not.toContain("GET /auth/recovery");
+    expect(state.appended).toEqual([]);
+  });
+
+  it("key recovery: 復元した後の端末でも、台帳の鍵が最初の鍵なら複製として分離する", async () => {
+    // 端末 = dev2(復元で足された新しい鍵)。台帳 = owner の鍵(pre-DK の複製 — p1 の最初の鍵)
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { env, origin, ledgerPuts } = await recoveryFixture({
+      device: dev2,
+      ledgerKey: owner,
+      built,
+    });
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      `The recovery ledger holds key ${owner.fingerprintHex}, your first key on 1 project (${built.projectId}) (the key you created or joined that project with): a copy of a device key from an install before device keys, not a reserve key. Separating: creating a reserve key and sealing it instead`,
+    );
+    expect(env.errors.join("\n")).toContain(
+      `Note: the key ${owner.fingerprintHex} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${owner.fingerprintHex}\``,
+    );
+    expect(ledgerPuts).toHaveLength(1);
+    const reserves = await reserveRowsOf(env, origin);
+    expect(reserves).toHaveLength(1);
+    expect(reserves).not.toContain(owner.fingerprintHex);
+    expect(env.errors.join("\n")).not.toContain("reissued the recovery code for your reserve key");
+  });
+
+  it("key recovery: 失効した台帳の鍵(案内どおり先に失効させた複製)も分離し、再発行しない", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+    ]);
+    const { env, origin } = await recoveryFixture({ device: dev2, ledgerKey: owner, built });
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      `The recovery ledger holds key ${owner.fingerprintHex}, which is revoked on 1 project (${built.projectId}), so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
+    );
+    const errors = env.errors.join("\n");
+    // 有効な所が無いので「まだ登録されている」とは言わない
+    expect(errors).not.toContain("is still registered on");
+    expect(errors).not.toContain("reissued the recovery code for your reserve key");
+    const reserves = await reserveRowsOf(env, origin);
+    expect(reserves).toHaveLength(1);
+    expect(reserves).not.toContain(owner.fingerprintHex);
+  });
+
+  it("key recovery: 一部のプロジェクトでだけ失効した台帳の鍵は分離し、まだ有効な所での失効を案内する", async () => {
+    // p1: 台帳の鍵(owner の鍵)を失効済み。p2: dev2 が作り、owner の鍵を add_device で足した
+    // (最初の鍵ではない — 判定は revoked)
+    const p1 = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+    ]);
+    const p2 = await buildChain([
+      { actor: dev2, operation: genesisOp(dev2) },
+      { actor: dev2, operation: addDeviceOp(owner) },
+    ]);
+    const { env } = await recoveryFixture({
+      device: dev2,
+      ledgerKey: owner,
+      built: p1,
+      extraProjects: [p2],
+    });
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      `The recovery ledger holds key ${owner.fingerprintHex}, which is revoked on 1 project (${p1.projectId}), so it cannot serve as your reserve key`,
+    );
+    expect(env.errors.join("\n")).toContain(
+      `Note: the key ${owner.fingerprintHex} is still registered on 1 project (${p2.projectId}); revoke it there too: \`maruhi device revoke ${owner.fingerprintHex}\``,
+    );
+  });
+
+  it("key recovery: どこでも add_device 出所の予備鍵は従来どおり再封印し、記録を復元する", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env, origin, ledgerPuts } = await recoveryFixture({
+      device: owner,
+      ledgerKey: reserve,
+      built,
+    });
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(ledgerPuts).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain(
+      `reissued the recovery code for your reserve key (fingerprint ${reserve.fingerprintHex}); the previous code no longer works`,
+    );
+    expect(env.logs.join("\n")).not.toContain("Separating");
+    expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
+  });
+
+  it("key recovery: 確かめられないプロジェクトがあれば再封印へ進み、範囲を Note で言う", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const broken = await buildChain([{ actor: member, operation: genesisOp(member) }]);
+    const { env, origin } = await recoveryFixture({
+      device: owner,
+      ledgerKey: reserve,
+      built,
+      brokenProjects: [{ built: broken, mode: "unavailable" }],
+    });
+    expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Note: could not check the opened key ${reserve.fingerprintHex} on 1 project (${broken.projectId}), so its recovery code is reissued without them. If it is your first key on one of them (a copy of a device key from an install before device keys), re-run \`maruhi key recovery\` once they can be checked: it separates it then`,
+    );
+    expect(errors).toContain("reissued the recovery code for your reserve key");
+    expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
   });
 });

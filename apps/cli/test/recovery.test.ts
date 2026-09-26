@@ -23,6 +23,7 @@ import {
 import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
 import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import { ledgerHandlerFor, storedMasterRecord } from "./support/ledger.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 let servers: MockServer[] = [];
@@ -73,34 +74,6 @@ function noProjectsHandler(): MockHandler {
   return onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } }));
 }
 
-/** 既知の secret で `record` をラップし、GET /auth/recovery で配るハンドラとそのコード。 */
-async function ledgerHandlerFor(
-  record: StoredMasterKey,
-  userId: string,
-  secret: Uint8Array,
-): Promise<{ handler: MockHandler; code: string }> {
-  const wrapped = await wrapMasterSecret({
-    recoverySecret: secret,
-    userId,
-    // JSON.stringify(record) は使えない — 秘密側が伏字でラップされ、
-    // 「復号は成功するのに鍵が読めない」ブロブになる(本番の recovery.ts と同じ罠)
-    masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(record)),
-  });
-  if (!wrapped.ok) {
-    throw new Error("test wrap failed");
-  }
-  const handler = onRequest("GET", "/auth/recovery", () => ({
-    status: 200,
-    json: {
-      suite: "maruhi/v1",
-      nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
-      ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
-      updatedAtMs: 1754006400000,
-    },
-  }));
-  return { handler, code: Redacted.value(formatRecoveryCode(Redacted.make(secret))) };
-}
-
 /** own-devices.json に記録された(失効していない)予備鍵の行(公開側のみ)。 */
 async function recordedReservesOf(
   env: TestEnv,
@@ -144,16 +117,6 @@ function lastGroupOf(env: TestEnv): () => string {
 /** 解釈結果を剥がして生バイトで突合するためのヘルパ(null はそのまま返す)。 */
 function unwrapParsed(parsed: Redacted.Redacted<Uint8Array> | null): Uint8Array | null {
   return parsed === null ? null : Redacted.value(parsed);
-}
-
-function storedMasterRecord(user: TestUser): StoredMasterKey {
-  return {
-    suite: "maruhi/v1",
-    encPubHex: user.encPubHex,
-    encSkHex: Redacted.make(user.encSkHex),
-    sigPubHex: user.sigPubHex,
-    sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
-  };
 }
 
 describe("recovery-code の表現(Base32)", () => {
@@ -379,6 +342,8 @@ describe("maruhi key recovery(発行・再発行)", () => {
       putHandler((body) => {
         put = body;
       }),
+      // 台帳の鍵のチェーン上の判定(DK K14-4)が走査するプロジェクト一覧(空 = どこにも無い)
+      noProjectsHandler(),
     ]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -625,12 +590,10 @@ describe("maruhi key recover(復元)", () => {
     );
     const maruhi = await start([handler, noProjectsHandler()]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
-    env.setPromptResponses([code.toLowerCase(), "yes"]);
+    env.setPromptResponses([code.toLowerCase()]);
     expect(await runCli(["key", "recover"], env.layer)).toBe(0);
-    expect(env.prompts).toEqual([
-      "Enter your recovery code: ",
-      "Type yes if it is your reserve key (anything else = no): ",
-    ]);
+    // プロジェクトが無い = どのチェーンにも無い → 予備鍵かは問わない(DK K14-2 の nowhere)
+    expect(env.prompts).toEqual(["Enter your recovery code: "]);
     // キーチェーンに入るのは**新しい端末鍵**であり、台帳の B ではない(§8.1)
     const device = storedDeviceRecord(env, maruhi.origin, user.userId);
     expect(device.encPubHex).not.toBe(reserveUser.encPubHex);
@@ -642,9 +605,9 @@ describe("maruhi key recover(復元)", () => {
     const keychainDump = [...env.keychain.values()].join("\n");
     expect(keychainDump).not.toContain(reserveUser.encSkHex);
     expect(keychainDump).not.toContain(reserveUser.sigSkSeedHex);
-    // B は予備鍵として(公開側だけ)記録される
-    const reserves = await recordedReservesOf(env, maruhi.origin, user.userId);
-    expect(reserves.map((entry) => entry.keyFingerprintHex)).toEqual([reserveUser.fingerprintHex]);
+    // チェーンで判定できない鍵は予備鍵として記録しない(判定と記録の正例は device.test.ts の
+    // DK K14 の describe)
+    expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(0);
     const output = env.logs.join("\n");
     expect(output).toContain("Generated this device's key and stored it in the OS keychain");
     expect(output).toContain(
@@ -664,17 +627,18 @@ describe("maruhi key recover(復元)", () => {
     expect(env.errors.join("\n")).not.toContain(reserveUser.encSkHex);
   });
 
-  it("予備鍵でないと答えた鍵は記録せず、失効を案内する(既定 = no)", async () => {
+  it("どのチェーンにも無い鍵は問わずに記録せず、判定できない理由と key recovery を言う(DK K14-2)", async () => {
     const user = await makeTestUser("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await start([handler, noProjectsHandler()]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
-    env.setPromptResponses([code, ""]);
+    env.setPromptResponses([code]);
     expect(await runCli(["key", "recover"], env.layer)).toBe(0);
+    expect(env.prompts).toEqual(["Enter your recovery code: "]);
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(0);
     expect(env.errors.join("\n")).toContain(
-      `the opened key ${user.fingerprintHex} was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${user.fingerprintHex}\``,
+      `Note: the opened key ${user.fingerprintHex} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
     );
     // 新しい端末鍵は発行されている(台帳の鍵そのものは保存しない)
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).not.toBe(user.encPubHex);

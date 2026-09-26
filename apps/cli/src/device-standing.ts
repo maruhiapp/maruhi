@@ -5,8 +5,8 @@
 // 対象)・無い・同期できず。`device add`(既存の鍵の分岐・完了の確認・期限切れ・`--replace`
 // の表示)と `device list` と `ownDeviceOrFail`(失効の分岐)が同じ述語を使う。
 //
-// 純関数 `keyStandingIn` は既に検証したチェーンに当てるだけ(`device list` は同期を二重に
-// しない)。`keyStandingsOf` はプロジェクト一覧(サーバー申告 — 発見用)の各プロジェクトを
+// 純関数 `keyStandingIn` は既に検証したチェーンに当てるだけ(`device list` と `key recover`
+// の登録は同期を二重にしない)。`keyStandingsOf` はプロジェクト一覧(サーバー申告 — 発見用)の各プロジェクトを
 // 鍵なしの前段で同期して純関数を呼び、一覧・同期の失敗はコマンドを落とさず事実に畳む
 // (改ざんの兆候は `evidence` で運ぶ)。文言は作らない(報告側が作る — K12-10)。
 
@@ -68,7 +68,7 @@ export type KeyStanding =
     };
 
 /** Syncs one project (the keyless front half) and derives the key's standing on it. */
-function keyStandingOnProject(input: {
+export function keyStandingOnProject(input: {
   readonly session: CliSession;
   readonly projectId: string;
   readonly fingerprintHex: string;
@@ -158,4 +158,55 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
     }
   }
   return groups;
+}
+
+/**
+ * 台帳から開いた鍵が予備鍵として働くかの判定(DK K14-2 — 設計録 §19)。予備鍵は必ず
+ * `add_device` で載り(K4-30)、DK 以前の端末鍵の複製はその人の最初の鍵(genesis /
+ * `add_member`)になる。上から順に最初に当たるもの: どこか 1 つでも最初の鍵 → `first-key`
+ * (同期できないプロジェクトがあっても — 正の事実 1 つで足りる)/ どこかで失効 → `revoked` /
+ * 同期できないプロジェクトがある・一覧が取れない → `unchecked` / どこにも有効でない →
+ * `nowhere` / 有効な所がすべて `add_device` 出所 → `added`(予備鍵と記録してよいのは
+ * これだけ)。文言は作らない(報告側 — K12-10)。
+ */
+export type ReserveVerdict =
+  | { readonly kind: "first-key"; readonly projectIds: readonly string[] }
+  | {
+      readonly kind: "revoked";
+      readonly projectIds: readonly string[];
+      /** 失効していないプロジェクト(まだ有効に載っている所)。 */
+      readonly activeProjectIds: readonly string[];
+    }
+  | {
+      readonly kind: "unchecked";
+      readonly projectIds: readonly string[];
+      /** プロジェクト一覧の取得の失敗(null = 取れた)。 */
+      readonly listFailure: string | null;
+    }
+  | { readonly kind: "nowhere" }
+  | { readonly kind: "added"; readonly projectIds: readonly string[] };
+
+export function reserveVerdictOf(
+  groups: StandingGroups,
+  listFailure: string | null,
+): ReserveVerdict {
+  const firstKey = groups.active.filter((entry) => entry.standing.firstKey);
+  if (firstKey.length > 0) {
+    return { kind: "first-key", projectIds: firstKey.map((entry) => entry.projectId) };
+  }
+  const activeProjectIds = groups.active.map((entry) => entry.projectId);
+  if (groups.revoked.length > 0) {
+    return { kind: "revoked", projectIds: groups.revoked, activeProjectIds };
+  }
+  if (groups.unsynced.length > 0 || listFailure !== null) {
+    return {
+      kind: "unchecked",
+      projectIds: groups.unsynced.map((entry) => entry.projectId),
+      listFailure,
+    };
+  }
+  if (activeProjectIds.length === 0) {
+    return { kind: "nowhere" };
+  }
+  return { kind: "added", projectIds: activeProjectIds };
 }

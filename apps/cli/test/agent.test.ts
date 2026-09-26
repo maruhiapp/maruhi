@@ -592,8 +592,8 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
 
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // コード → 「予備鍵か」の 1 問(yes)
-    env.setPromptResponses([code, "yes"]);
+    // コードだけ(プロジェクトが無いので予備鍵の確認は出ない — DK K14-2 の nowhere)
+    env.setPromptResponses([code]);
     // live.ts が MARUHI_AGENT_SOCK で行う差し替えと同じ: Keychain だけ agent 実装へ
     const layer = Layer.merge(env.layer, Layer.succeed(Keychain, agent));
     expect(await runCli(["key", "recover"], layer)).toBe(0);

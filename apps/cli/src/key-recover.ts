@@ -5,14 +5,18 @@
 // 用いる(§8.1) — (1) この端末の新しい端末鍵を生成しキーチェーンへ保存、(2) 各
 // プロジェクトで B が現端末なら B の sig 鍵で `add_device(新端末)` を署名し、B の enc 鍵で
 // 自分宛ラップを開いて新端末へバックフィル、(3) B を捨てる(メモリの参照を手放す —
-// キーチェーンにも agent メモリにも書かない)。B が予備鍵か(日常の端末で使ったことの
-// ない鍵か)は暗号的事実からは判別できないので儀式の中で 1 問聞き、既定(no)は記録
-// しない側に倒す(pre-DK の紛失端末の鍵を予備鍵として伝播させない — fail-closed)。
+// キーチェーンにも agent メモリにも書かない)。B を予備鍵として記録するかは、登録の
+// ために開いたチェーン上の載り方で決める(DK K14 — K4-10 j-1 の改訂): 予備鍵は必ず
+// `add_device` で載り、pre-DK の端末鍵の複製はその人の最初の鍵になる。有効な所がすべて
+// `add_device` 出所のときだけ事実を見せて確認の 1 問を出し(既定 no)、それ以外は問わずに
+// 記録しない(pre-DK の紛失端末の鍵を予備鍵として記録しない — fail-closed)。
 //
-// `key recovery`(K4-2 / K4-9): 台帳が無ければ予備鍵を生成して封印(初回)。あれば
+// `key recovery`(K4-2 / K4-9 / K14-4): 台帳が無ければ予備鍵を生成して封印(初回)。あれば
 // 開封し、B の FP が手元の端末鍵と一致 = pre-DK(台帳が端末鍵の複製)→ 新しい予備鍵を
-// 生成して封印し直す(分離)。一致しなければ B は予備鍵 → 同じ B を新しいコードで
-// 再封印し、記録を復元する。`--replace` は開封せずに置換(コード紛失の逃げ道)。
+// 生成して封印し直す(分離)。一致しなくても、チェーン上で B がどこかの最初の鍵(復元後の
+// 端末から見た pre-DK の複製)か失効した鍵なら同じく分離する(`key recover` と同じ判定)。
+// それ以外は B を予備鍵として同じ B を新しいコードで再封印し、記録を復元する。`--replace` は
+// 開封せずに置換(コード紛失の逃げ道)。
 //
 // `key reserve rotate`(K4-11): 開封 → 新予備鍵を生成・封印・記録 → 各プロジェクトで
 // `add_device(新)` + バックフィル → `revoke_device(旧)` + sweep → 旧 B のパスキー /
@@ -25,9 +29,9 @@ import type { HttpClient } from "effect/unstable/http";
 import type { MaruhiClient } from "./api.ts";
 import {
   type CliServices,
-  openMetadataProject,
   openProject,
   type ProjectContext,
+  type ProjectContextBase,
 } from "./context.ts";
 import type { DekRecipient } from "./deks.ts";
 import { describeGapFillRoute } from "./device-gaps.ts";
@@ -41,6 +45,14 @@ import {
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
 } from "./device-ops.ts";
+import {
+  groupStandings,
+  type KeyStanding,
+  keyStandingOnProject,
+  keyStandingsOf,
+  type ReserveVerdict,
+  reserveVerdictOf,
+} from "./device-standing.ts";
 import { describeBackfill, reportRegisteredDevice } from "./device.ts";
 import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
@@ -118,38 +130,75 @@ function newOrExistingDeviceKeys(input: {
 /** 1 プロジェクトでの復元後登録の結果。 */
 interface ProjectRecoveryOutcome {
   readonly projectId: string;
-  readonly state: "registered" | "already" | "reserve-missing" | "failed";
+  readonly state: "registered" | "already" | "reserve-missing" | "reserve-revoked" | "failed";
   readonly backfill: DeviceBackfillOutcome | null;
   readonly message: string | null;
+  /** 開いた鍵のこのプロジェクトでの立場(登録の前に開いたチェーン — 判定の材料。DK K14-1)。 */
+  readonly standing: KeyStanding;
 }
 
 /** B(復元した予備鍵)で新端末鍵を 1 プロジェクトへ登録しバックフィルする。 */
 function registerDeviceWithReserve(input: {
   readonly session: CliSession;
-  readonly client: MaruhiClient;
   readonly projectId: string;
   readonly reserve: ReserveKeys;
   readonly device: MasterKeys;
 }): Effect.Effect<ProjectRecoveryOutcome, never, CliServices> {
   return Effect.gen(function* () {
     // 鍵なしの前段(床・アンカー・ゴシップは通す。申告の提出と初回同期の登録は
-    // 新端末がチェーンに載る前なので走らない — 署名は B で手動に行う)
-    const context = yield* openMetadataProject({
-      server: input.session.origin,
-      project: input.projectId,
+    // 新端末がチェーンに載る前なので走らない — 署名は B で手動に行う)。立場の判定は
+    // device-standing.ts の 1 か所(同期の失敗は「同期できず」に畳まれる — DK K14-1)
+    const standing = yield* keyStandingOnProject({
+      session: input.session,
+      projectId: input.projectId,
+      fingerprintHex: input.reserve.fingerprintHex,
     });
-    const member = context.verified.state.members.get(input.session.userId);
-    if (member === undefined) {
-      return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
-    }
-    if (!member.devices.has(input.reserve.fingerprintHex)) {
+    const base = { projectId: input.projectId, backfill: null, standing };
+    if (standing.kind === "unsynced") {
       return {
-        projectId: input.projectId,
-        state: "reserve-missing",
-        backfill: null,
+        ...base,
+        state: "failed",
+        message: standing.message,
+      } satisfies ProjectRecoveryOutcome;
+    }
+    if (standing.kind !== "active") {
+      return {
+        ...base,
+        state: standing.kind === "revoked" ? "reserve-revoked" : "reserve-missing",
         message: null,
       } satisfies ProjectRecoveryOutcome;
     }
+    return yield* addDeviceWithReserve({ ...input, context: standing.context }).pipe(
+      Effect.map(({ appended, backfill }): ProjectRecoveryOutcome => ({
+        ...base,
+        state: appended ? "registered" : "already",
+        backfill,
+        message: null,
+      })),
+      Effect.catch((error) =>
+        Effect.succeed<ProjectRecoveryOutcome>({
+          ...base,
+          state: "failed",
+          message: error.message,
+        }),
+      ),
+    );
+  });
+}
+
+/** B が現端末のプロジェクトで、B の署名で `add_device(新端末)` → B の enc 鍵でバックフィル。 */
+function addDeviceWithReserve(input: {
+  readonly session: CliSession;
+  readonly reserve: ReserveKeys;
+  readonly device: MasterKeys;
+  readonly context: ProjectContextBase;
+}): Effect.Effect<
+  { readonly appended: boolean; readonly backfill: DeviceBackfillOutcome },
+  CliError,
+  CliServices
+> {
+  return Effect.gen(function* () {
+    const { context } = input;
     const outcome = yield* appendAddDevice({
       client: context.client,
       verified: context.verified,
@@ -188,45 +237,72 @@ function registerDeviceWithReserve(input: {
       signerUserId: input.session.userId,
       signingKeyPair: input.reserve.sigKeyPair,
     });
-    return {
-      projectId: input.projectId,
-      state: outcome.appended ? "registered" : "already",
-      backfill,
-      message: null,
-    } satisfies ProjectRecoveryOutcome;
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed({
-        projectId: input.projectId,
-        state: "failed",
-        backfill: null,
-        message: error.message,
-      } satisfies ProjectRecoveryOutcome),
-    ),
-  );
+    return { appended: outcome.appended, backfill };
+  });
 }
 
-/** 予備鍵かを 1 問聞く(K4-10 — 既定 no = 記録しない側)。 */
-function askIsReserve(reserve: ReserveKeys): Effect.Effect<boolean, CliError, CliIo> {
+/**
+ * 開いた鍵を予備鍵として記録するかを、チェーン上の載り方で決める(DK K14-2 / K14-3 —
+ * K4-10 j-1 の改訂)。記録するのは有効な所がすべて `add_device` 出所(`added`)で、事実を
+ * 見せた確認に yes と答えたときだけ。それ以外は問わずに記録せず、事実と次の手を言う
+ * (記録しない誤りは観測と予備鍵の不在の警告が声を出し、記録する誤りは黙る — K13-18)。
+ */
+function settleOpenedKey(input: {
+  readonly session: CliSession;
+  readonly reserve: ReserveKeys;
+  readonly verdict: ReserveVerdict;
+}): Effect.Effect<void, CliError, CliIo | OwnDeviceStore> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    yield* io.log(
-      `Opened key ${reserve.fingerprintHex} from the recovery ledger. It is used only to register this machine's new device key, then discarded`,
-    );
-    yield* io.log(
-      "Was this key created as your reserve key (`maruhi key generate` / `key recovery` on a device-key release), never used as a daily device key? On an install from before device keys, the ledger holds a copy of a device key instead",
-    );
-    const answer = yield* io.promptLine({
-      prompt: "Type yes if it is your reserve key (anything else = no): ",
-    });
-    return answer.trim().toLowerCase() === "yes";
+    const fp = input.reserve.fingerprintHex;
+    const { verdict } = input;
+    switch (verdict.kind) {
+      case "added": {
+        yield* io.log(
+          `The opened key ${fp} is registered on ${describeProjects(verdict.projectIds)}, and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it`,
+        );
+        const answer = yield* io.promptLine({
+          prompt: "Type yes to record it as your reserve key (anything else = no): ",
+        });
+        if (answer.trim().toLowerCase() === "yes") {
+          yield* recordReserveLocally(input.session, input.reserve);
+          yield* logNote(`recorded ${fp} on this machine as your reserve key`);
+          return;
+        }
+        return yield* logWarning(
+          `the opened key ${fp} was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${fp}\`. Then create a separate reserve key with \`maruhi key recovery\``,
+        );
+      }
+      case "first-key":
+        return yield* logWarning(
+          `the opened key ${fp} is your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${fp}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
+        );
+      case "revoked":
+        return yield* logWarning(
+          `the opened key ${fp} is revoked on ${describeProjects(verdict.projectIds)}, so it was not recorded as your reserve key. Run \`maruhi key recovery\`: it seals a new reserve key in its place`,
+        );
+      case "unchecked":
+        return yield* logNote(
+          `the opened key ${fp} was not recorded as your reserve key: ${countNoun(verdict.projectIds.length, "project")} could not be checked (${verdict.projectIds.map(displayText).join(", ")}), and maruhi records it only when every project shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
+        );
+      case "nowhere":
+        return yield* logNote(
+          `the opened key ${fp} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
+        );
+    }
   });
+}
+
+/** 判定の事実の文に添えるプロジェクトの列挙(件数 + 名前)。 */
+function describeProjects(projectIds: readonly string[]): string {
+  return `${countNoun(projectIds.length, "project")} (${projectIds.map(displayText).join(", ")})`;
 }
 
 /**
  * The common tail of every recovery path: new device key → `add_device` signed
  * by the reserve key on every project where it is registered → backfill →
- * discard the reserve key (K4-10).
+ * decide from the chains whether to record the opened key as the reserve key →
+ * discard the reserve key (K4-10, revised by DK K14).
  */
 function finishRecovery(input: {
   readonly session: CliSession;
@@ -235,22 +311,17 @@ function finishRecovery(input: {
   readonly resume: boolean;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
+    const io = yield* CliIo;
     const device = yield* newOrExistingDeviceKeys({ session: input.session, resume: input.resume });
-    const isReserve = yield* askIsReserve(input.reserve);
-    if (isReserve) {
-      yield* recordReserveLocally(input.session, input.reserve);
-    } else {
-      yield* logWarning(
-        `the opened key ${input.reserve.fingerprintHex} was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${input.reserve.fingerprintHex}\`. Then create a separate reserve key with \`maruhi key recovery\``,
-      );
-    }
+    yield* io.log(
+      `Opened key ${input.reserve.fingerprintHex} from the recovery ledger. It is used only to register this machine's new device key, then discarded`,
+    );
     const projects = yield* fetchProjectMemberships(input.client);
     const outcomes: ProjectRecoveryOutcome[] = [];
     for (const project of projects) {
       outcomes.push(
         yield* registerDeviceWithReserve({
           session: input.session,
-          client: input.client,
           projectId: project.projectId,
           reserve: input.reserve,
           device,
@@ -260,6 +331,16 @@ function finishRecovery(input: {
     for (const outcome of outcomes) {
       yield* reportRecoveryOutcome(outcome);
     }
+    // 判定は登録のために開いたチェーンで行う(同期を二重にしない — DK K14-1 / K14-5)
+    const groups = groupStandings({
+      projects: outcomes.map(({ projectId, standing }) => ({ projectId, standing })),
+      listFailure: null,
+    });
+    yield* settleOpenedKey({
+      session: input.session,
+      reserve: input.reserve,
+      verdict: reserveVerdictOf(groups, null),
+    });
     // B の秘密はここで役目を終える(参照を手放す。保存経路は型で閉じている — reserve.ts)
     yield* logNote(
       "the reserve key was discarded from memory; it stays sealed in the recovery ledger only. This device now signs with its own key",
@@ -267,7 +348,7 @@ function finishRecovery(input: {
   });
 }
 
-/** 1 プロジェクトの復元後登録の報告(登録 / 済み / 予備鍵未登録 / 失敗)。 */
+/** 1 プロジェクトの復元後登録の報告(登録 / 済み / 予備鍵未登録 / 失効 / 失敗)。 */
 function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<void, never, CliIo> {
   const label = displayText(outcome.projectId);
   switch (outcome.state) {
@@ -288,6 +369,10 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
     case "reserve-missing":
       return logWarning(
         `${label}: the opened key is not registered on this project, so this device could not be added there. Ask an admin of the project to re-invite you (\`maruhi invite create\`)`,
+      );
+    case "reserve-revoked":
+      return logWarning(
+        `${label}: the opened key was revoked on this project, so this device could not be added there. Ask an admin of the project to re-invite you (\`maruhi invite create\`)`,
       );
     case "failed":
       return logWarning(`${label}: could not register this device (${outcome.message ?? ""})`);
@@ -399,6 +484,13 @@ export function keyRecoveryOp(input: {
       );
       return 0;
     }
+    // 手元の端末鍵と一致しなくても、台帳の鍵が予備鍵として働かないことはチェーンで分かる:
+    // 復元した後の端末(端末鍵は新しい)の pre-DK の複製と、失効した鍵(DK K14-4 —
+    // `key recover` と同じ判定)
+    const separated = yield* separateUnusableLedgerKey({ ...input, opened });
+    if (separated) {
+      return 0;
+    }
     // 予備鍵の再封印(同じ B・新しいコード)+ 記録の復元
     yield* issueRecoveryCodeOp({
       session: input.session,
@@ -410,6 +502,59 @@ export function keyRecoveryOp(input: {
       `reissued the recovery code for your reserve key (fingerprint ${opened.fingerprintHex}); the previous code no longer works`,
     );
     return 0;
+  });
+}
+
+/**
+ * 台帳の鍵がチェーン上で予備鍵として働かないなら、新しい予備鍵を封印して分離する(DK K14-4)。
+ * どこかで最初の鍵(pre-DK の端末鍵の複製)か、どこかで失効した鍵が対象。確かめられない
+ * プロジェクトがあれば、その範囲を Note で言って再封印へ進ませる(コードの再発行を無関係の
+ * 障害で止めない — K4-38 と同じ判断)。分離したら true。
+ */
+function separateUnusableLedgerKey(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly opened: ReserveKeys;
+}): Effect.Effect<boolean, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const fp = input.opened.fingerprintHex;
+    const standings = yield* keyStandingsOf({
+      session: input.session,
+      client: input.client,
+      fingerprintHex: fp,
+    });
+    const verdict = reserveVerdictOf(groupStandings(standings), standings.listFailure);
+    switch (verdict.kind) {
+      case "first-key":
+        yield* io.log(
+          `The recovery ledger holds key ${fp}, your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with): a copy of a device key from an install before device keys, not a reserve key. Separating: creating a reserve key and sealing it instead`,
+        );
+        yield* sealNewReserve({ session: input.session, client: input.client });
+        yield* logNote(
+          `the key ${fp} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${fp}\``,
+        );
+        return true;
+      case "revoked":
+        yield* io.log(
+          `The recovery ledger holds key ${fp}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
+        );
+        yield* sealNewReserve({ session: input.session, client: input.client });
+        if (verdict.activeProjectIds.length > 0) {
+          yield* logNote(
+            `the key ${fp} is still registered on ${describeProjects(verdict.activeProjectIds)}; revoke it there too: \`maruhi device revoke ${fp}\``,
+          );
+        }
+        return true;
+      case "unchecked":
+        yield* logNote(
+          `${verdict.listFailure === null ? `could not check the opened key ${fp} on ${describeProjects(verdict.projectIds)}` : `could not list your projects to check the opened key ${fp} (${verdict.listFailure})`}, so its recovery code is reissued without them. If it is your first key on one of them (a copy of a device key from an install before device keys), re-run \`maruhi key recovery\` once they can be checked: it separates it then`,
+        );
+        return false;
+      case "added":
+      case "nowhere":
+        return false;
+    }
   });
 }
 

@@ -39,7 +39,14 @@ import {
   type StoredMasterKey,
   tokenEntryName,
 } from "../src/keychain.ts";
-import { makeTestUser, type TestUser } from "./support/crypto.ts";
+import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
+import {
+  addOwnerDeviceOp,
+  buildChain,
+  genesisOp,
+  makeTestUser,
+  type TestUser,
+} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -260,6 +267,10 @@ describe("maruhi key recover --handoff(要求者)", () => {
   it("保護者(any): 分片で台帳のラップを開き、予備鍵は保存せず新しい端末鍵を発行する", async () => {
     // 台帳: ward の予備鍵 B を KEK でラップ、KEK(= any の分片)を alice へ封印済み
     const kek = generateMasterWrapKek();
+    const chain = await buildChain([
+      { actor: ward, operation: genesisOp(ward) },
+      { actor: ward, operation: addOwnerDeviceOp(reserve) },
+    ]);
     let createBody: { requestId: string } | null = null;
     const { env, server } = await start([
       createHandler((body) => {
@@ -268,11 +279,12 @@ describe("maruhi key recover --handoff(要求者)", () => {
       statusHandler([aliceAnyGroup()]),
       approvalsHandler(async () => [await guardianApprovalFor(env, alice, kek)]),
       groupHandler(await wrappedReserve(kek)),
-      noProjectsHandler,
+      projectListHandlerOf([chain]),
+      ...appendableProjectHandlers(chain),
       cancelHandler,
     ]);
     seedTokenOnly(env, server.origin, ward);
-    // 復元の後段の 1 問(予備鍵か)
+    // 復元の後段の確認の 1 問(予備鍵は ward の端末が add_device で足した鍵 — DK K14)
     env.setPromptResponses(["yes"]);
     expect(await runCli(["key", "recover", "--handoff"], env.layer)).toBe(0);
     // request_id はコードの導出値と一致し、E.pub 自体は送られていない
@@ -304,7 +316,12 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(logs).toContain("Generated this device's key");
     expect(logs).toMatch(/key fingerprint: [0-9a-f]{32}/);
     expect(logs).not.toContain(`key fingerprint: ${reserve.fingerprintHex}`);
-    expect(env.prompts).toContain("Type yes if it is your reserve key (anything else = no): ");
+    expect(env.prompts).toContain(
+      "Type yes to record it as your reserve key (anything else = no): ",
+    );
+    expect(errors).toContain(
+      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
+    );
     // 鍵素材は出力に出ない
     expect(logs).not.toContain(reserve.encSkHex);
     expect(errors).not.toContain(reserve.encSkHex);

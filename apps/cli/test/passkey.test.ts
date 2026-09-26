@@ -29,7 +29,14 @@ import {
 } from "../src/keychain.ts";
 import type { PrfPagePost } from "../src/passkey-page.ts";
 import { formatRecoveryCode } from "../src/recovery-code.ts";
-import { makeTestUser, type TestUser } from "./support/crypto.ts";
+import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
+import {
+  addOwnerDeviceOp,
+  buildChain,
+  genesisOp,
+  makeTestUser,
+  type TestUser,
+} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -46,7 +53,7 @@ const CREDENTIAL_HEX = "3cb8db37e0370e63a3849be601db91faf1306f83dcfb24c6428da106
 const WRAP_ID = "01JMKWRAP000000000000PASSK";
 const OTHER_WRAP_ID = "01JMKWRAP000000000000THER0";
 
-const RESERVE_QUESTION = "Type yes if it is your reserve key (anything else = no): ";
+const RESERVE_QUESTION = "Type yes to record it as your reserve key (anything else = no): ";
 const RECOVERY_CODE_AGENT_REFUSAL =
   "Refused to read a recovery code because an AI agent environment was detected (the code is key material; run the recovery on a human interactive terminal)";
 const RECOVERY_CODE_TERMINAL_REFUSAL =
@@ -567,11 +574,17 @@ describe("maruhi key recover --passkey(復元)", () => {
       credentialIdHex: "ff".repeat(16),
       prfSaltHex: "77".repeat(32),
     };
+    // 予備鍵は owner の端末が add_device で足した鍵(DK K14 — 判定は台帳の経路と同じ)
+    const chain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addOwnerDeviceOp(reserve) },
+    ]);
     const { env, server } = await start([
       statusHandler([rowOf(other, "YubiKey"), rowOf(registration, "Touch ID")]),
       wrapHandler(OTHER_WRAP_ID, other),
       wrapHandler(registration.wrapId, registration),
-      noMembershipsHandler,
+      projectListHandlerOf([chain]),
+      ...appendableProjectHandlers(chain),
     ]);
     seedTokenOnly(env, server.origin);
     env.setPromptResponses(["yes"]);
@@ -596,8 +609,11 @@ describe("maruhi key recover --passkey(復元)", () => {
       ],
     });
     expect(seen.fetchesAtCeremony).toBe(0);
-    // 儀式の後の対話は「予備鍵か」の 1 問だけ(コード入力は無い)
+    // 儀式の後の対話は判定の事実を見せた確認の 1 問だけ(コード入力は無い)
     expect(env.prompts).toEqual([RESERVE_QUESTION]);
+    expect(env.errors.join("\n")).toContain(
+      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
+    );
     expect(passkeyFetches(server).map((r) => r.path)).toEqual([
       `/auth/key-wraps/passkey/${registration.wrapId}`,
     ]);
@@ -630,20 +646,22 @@ describe("maruhi key recover --passkey(復元)", () => {
     expect(stderr).not.toContain(reserve.encSkHex);
   });
 
-  it("「予備鍵ではない」と答えると記録せず、失効の案内を出す(端末鍵の生成は成立する)", async () => {
+  it("開いた鍵が最初の鍵(pre-DK の複製)なら問わずに記録せず、失効の案内を出す(端末鍵の生成は成立する — DK K14)", async () => {
     const { registration } = await registerOnce();
+    // 台帳の鍵がプロジェクトの genesis の鍵 = その人の最初の鍵
+    const chain = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
     const { env, server } = await start([
       statusHandler([rowOf(registration)]),
       wrapHandler(registration.wrapId, registration),
-      noMembershipsHandler,
+      projectListHandlerOf([chain]),
+      ...appendableProjectHandlers(chain),
     ]);
     seedTokenOnly(env, server.origin);
-    env.setPromptResponses(["no"]);
     browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
     expect(await runCli(["key", "recover", "--passkey"], env.layer), env.errors.join("\n")).toBe(0);
-    expect(env.prompts).toEqual([RESERVE_QUESTION]);
+    expect(env.prompts).toEqual([]);
     expect(env.errors.join("\n")).toContain(
-      `the opened key ${reserve.fingerprintHex} was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${reserve.fingerprintHex}\`. Then create a separate reserve key with \`maruhi key recovery\``,
+      `the opened key ${reserve.fingerprintHex} is your first key on 1 project (${chain.projectId}) (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${reserve.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
     );
     const stored = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
     expect(stored).toBeDefined();
