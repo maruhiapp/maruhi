@@ -2,7 +2,8 @@
 # Claude Code on the web 用 SessionStart フック。
 # Bun を .bun-version(厳密ピン)に同期し、ワークスペースの依存をインストールする。
 # Playwright の Chromium はダウンロードせず、環境プリインストール版を使う
-# (apps/web/test/e2e.test.ts が PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH を参照)。
+# (apps/web・apps/site の e2e と packages/crypto のブラウザテストが
+# PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH を参照)。
 set -euo pipefail
 
 # リモート環境(Claude Code on the web)以外では何もしない
