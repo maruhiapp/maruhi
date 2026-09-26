@@ -3215,7 +3215,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.observedProjectId).toBeNull();
   });
 
-  it("台帳変更の前段: 確かめられないプロジェクトがあれば、台帳の操作は進むが鍵を記録も失効もしない(K14-4 4-f / K14-13)", async () => {
+  it("rotate は、開いた台帳の鍵を全プロジェクトで確かめられなければ何も変えずに止まる(K14-15)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3227,18 +3227,14 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       built,
       brokenProjects: [{ built: broken, mode: "unavailable" }],
     });
-    await runCli(["key", "reserve", "rotate"], env.layer);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain(
-      `Note: could not check the opened key ${reserve.fingerprintHex} on 1 project (${broken.projectId}), so this change goes ahead, but the key is not recorded on this machine as your reserve key. Once they can be checked, run \`maruhi key recovery\`: it separates the key if it is your first key on one of them (a copy of a device key from an install before device keys), and records it otherwise`,
+    expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `Refused to change anything: could not check the opened key ${reserve.fingerprintHex} on 1 project (${broken.projectId}). \`maruhi key reserve rotate\` exists to revoke the previous reserve key, and a key that cannot be checked on every project is never revoked (it could be one of your device keys), so the new reserve key would not replace it. Nothing was changed; re-run \`maruhi key reserve rotate\` once they can be checked`,
     );
-    expect(errors).toContain(
-      `Warning: not revoking ${reserve.fingerprintHex}: could not check it on 1 project (${broken.projectId}), so maruhi cannot confirm it is not one of your device keys. Once they can be checked, revoke it if it is a previous reserve key: \`maruhi device revoke ${reserve.fingerprintHex}\``,
-    );
-    // 新しい予備鍵は封印・登録されるが、確かめられない旧い鍵は失効させない
-    expect(ledgerPuts).toHaveLength(1);
-    expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
-    expect(await reserveRowsOf(env, origin)).not.toContain(reserve.fingerprintHex);
+    // 台帳・チェーン・記録のどれも変えない
+    expect(ledgerPuts).toEqual([]);
+    expect(state.appendedTo).toEqual([]);
+    expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
   it("失効の直前の門: この端末が以前 reserve と記録した複製は、rotate でも失効させない(K14-13)", async () => {
@@ -3264,13 +3260,20 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       targetUserId: owner.userId,
       deviceFingerprintsHex: [reserve.fingerprintHex],
     });
+    // 開いた鍵と記録の行はまとめて 1 回の同期で確かめる(台帳を書き換える前のチェーンの取得は
+    // プロジェクトあたり 1 回 — K14-16)
+    const paths = state.paths();
+    const beforeSeal = paths.slice(0, paths.indexOf("PUT /auth/recovery"));
+    expect(
+      beforeSeal.filter((path) => path === `GET /projects/${built.projectId}/chain`),
+    ).toHaveLength(1);
     const row = (await readOwnDevices(env, origin)).find(
       (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
     );
     expect(row?.source).toBe("observed");
   });
 
-  it("失効の門: 判定が失効でも、確かめられないプロジェクトがあれば失効させない(K14-14)", async () => {
+  it("失効の門(--replace): 判定が失効でも、確かめられないプロジェクトがあれば失効させない(K14-14)", async () => {
     // owner の鍵(以前の CLI が reserve と記録した複製): p1 で先に失効させた(案内どおり)、
     // p3 では dev2 の同期で add_device として有効、最初の鍵だったプロジェクトは同期できない
     const other = await makeTestUser("user-other-0009");
@@ -3294,7 +3297,16 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       brokenProjects: [{ built: unseen, mode: "unavailable" }],
     });
     await recordOwnDevice(env, origin, owner, "reserve");
-    await runCli(["key", "reserve", "rotate"], env.layer);
+    // 門は --replace(台帳を開かない逃げ道 — 確かめられなくても進む)で確かめる。rotate は
+    // 開いた鍵が確かめられなければ門の前で止まる(K14-15)
+    env.setPromptResponses([
+      () => {
+        const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+        const groups = (line ?? "").trim().split("-");
+        return groups[groups.length - 1] ?? "";
+      },
+    ]);
+    await runCli(["key", "recovery", "--replace"], env.layer);
     expect(env.errors.join("\n")).toContain(
       `Warning: not revoking ${owner.fingerprintHex}: could not check it on 1 project (${unseen.projectId}), so maruhi cannot confirm it is not one of your device keys`,
     );

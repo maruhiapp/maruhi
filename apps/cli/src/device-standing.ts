@@ -16,6 +16,7 @@ import { Effect, Result } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
 import { deviceProvenanceOf, revokedFingerprintsOf } from "./device-key.ts";
+import type { CliError } from "./errors.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
@@ -99,18 +100,9 @@ export function keyStandingOnProject(input: {
   readonly projectId: string;
   readonly fingerprintHex: string;
 }): Effect.Effect<KeyStanding, never, CliServices> {
-  return openMetadataProject({ server: input.session.origin, project: input.projectId }).pipe(
-    Effect.map((context): KeyStanding => {
-      const standing = keyStandingIn(context.verified, input.session.userId, input.fingerprintHex);
-      return standing.kind === "active" ? { ...standing, context } : standing;
-    }),
-    Effect.catch((error) =>
-      Effect.succeed<KeyStanding>({
-        kind: "unsynced",
-        message: error.message,
-        evidence: error.evidence === true,
-      }),
-    ),
+  return Effect.map(
+    Effect.result(openMetadataProject({ server: input.session.origin, project: input.projectId })),
+    (synced) => standingFrom(synced, input.session, input.fingerprintHex),
   );
 }
 
@@ -131,25 +123,61 @@ export function keyStandingsOf(input: {
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
 }): Effect.Effect<KeyStandings, never, CliServices> {
+  return Effect.map(
+    keyStandingsForKeys({ ...input, fingerprintsHex: [input.fingerprintHex] }),
+    (byKey) => byKey.get(input.fingerprintHex) ?? { projects: [], listFailure: null },
+  );
+}
+
+/**
+ * The standings of several keys over one pass: each listed project is synced
+ * once and the pure `keyStandingIn` is applied per key (DK K14-16 — the same
+ * shape as `device list`, which lists every device over one sync).
+ */
+function keyStandingsForKeys(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly fingerprintsHex: readonly string[];
+}): Effect.Effect<ReadonlyMap<string, KeyStandings>, never, CliServices> {
   return Effect.gen(function* () {
+    const fingerprints = [...new Set(input.fingerprintsHex)];
     const listed = yield* Effect.result(fetchProjectMemberships(input.client));
     if (Result.isFailure(listed)) {
-      return { projects: [], listFailure: listed.failure.message };
+      const failed: KeyStandings = { projects: [], listFailure: listed.failure.message };
+      return new Map(fingerprints.map((fp) => [fp, failed]));
     }
     const projectIds = listed.success.map((row) => row.projectId).toSorted(compareCodePoints);
-    const projects: KeyStandings["projects"][number][] = [];
+    const byKey = new Map(fingerprints.map((fp) => [fp, [] as KeyStandings["projects"][number][]]));
     for (const projectId of projectIds) {
-      projects.push({
-        projectId,
-        standing: yield* keyStandingOnProject({
-          session: input.session,
-          projectId,
-          fingerprintHex: input.fingerprintHex,
-        }),
-      });
+      const synced = yield* Effect.result(
+        openMetadataProject({ server: input.session.origin, project: projectId }),
+      );
+      for (const fp of fingerprints) {
+        byKey.get(fp)?.push({ projectId, standing: standingFrom(synced, input.session, fp) });
+      }
     }
-    return { projects, listFailure: null };
+    return new Map(
+      [...byKey].map(([fp, projects]) => [fp, { projects, listFailure: null } as KeyStandings]),
+    );
   });
+}
+
+/** 1 回の同期の結果(成功 / 失敗)から、1 つの鍵の立場を出す(同期できなければその事実)。 */
+function standingFrom(
+  synced: Result.Result<ProjectContextBase, CliError>,
+  session: CliSession,
+  fingerprintHex: string,
+): KeyStanding {
+  if (Result.isFailure(synced)) {
+    return {
+      kind: "unsynced",
+      message: synced.failure.message,
+      evidence: synced.failure.evidence === true,
+    };
+  }
+  const context = synced.success;
+  const standing = keyStandingIn(context.verified, session.userId, fingerprintHex);
+  return standing.kind === "active" ? { ...standing, context } : standing;
 }
 
 /** 立場ごとのプロジェクト(報告・分岐の材料)。 */
@@ -237,36 +265,53 @@ export function reserveVerdictOf(
   return { kind: "added", projectIds: activeProjectIds };
 }
 
+/** 台帳の鍵の判定と、その材料(群・確かめられなかった範囲)。 */
+export interface LedgerKeyCheck {
+  readonly verdict: ReserveVerdict;
+  readonly groups: StandingGroups;
+  /** 判定の値に依らない「確かめられなかった範囲」(null = 全部確かめた — 失効の門が読む。K14-14)。 */
+  readonly unchecked: Extract<ReserveVerdict, { readonly kind: "unchecked" }> | null;
+}
+
+/** 1 つの鍵の立場から、台帳の鍵の判定を作る(純関数)。 */
+function ledgerKeyCheckFrom(standings: KeyStandings): LedgerKeyCheck {
+  const groups = groupStandings(standings);
+  const unchecked =
+    groups.unsynced.length > 0 || standings.listFailure !== null
+      ? {
+          kind: "unchecked" as const,
+          projectIds: groups.unsynced.map((entry) => entry.projectId),
+          listFailure: standings.listFailure,
+        }
+      : null;
+  return { verdict: reserveVerdictOf(groups, standings.listFailure), groups, unchecked };
+}
+
 /**
- * 台帳から開いた鍵の判定を、サーバーが一覧に出す全プロジェクトを同期して行う(DK K14-4 4-f —
- * `key recovery` と台帳の変更の前段〔`openLedgerReserveForChange`〕と失効の門が共有する入口)。
- * `key recover` は登録のために開いたチェーンに `reserveVerdictOf` を直接当てる(同期を二重に
- * しない)。群は誤った記録を直す材料(`retractReserveRecord`)。`unchecked` は判定の値に依らない
- * 「確かめられなかった範囲」(null = 全部確かめた)— 失効の門は値でなくこれを読む(K14-14)。
+ * 台帳の鍵(と失効させる旧予備鍵)の判定を、サーバーが一覧に出す全プロジェクトを 1 回ずつ
+ * 同期して行う(DK K14-4 4-f / K14-16 — `key recovery`・台帳の変更の前段・失効の門が共有する
+ * 入口)。`key recover` は登録のために開いたチェーンに `reserveVerdictOf` を直接当てる。
  */
+export function ledgerKeyChecksOf(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly fingerprintsHex: readonly string[];
+}): Effect.Effect<ReadonlyMap<string, LedgerKeyCheck>, never, CliServices> {
+  return Effect.map(
+    keyStandingsForKeys(input),
+    (byKey) => new Map([...byKey].map(([fp, standings]) => [fp, ledgerKeyCheckFrom(standings)])),
+  );
+}
+
+/** 1 つの鍵の `ledgerKeyChecksOf`。 */
 export function ledgerKeyVerdictOf(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
-}): Effect.Effect<
-  {
-    readonly verdict: ReserveVerdict;
-    readonly groups: StandingGroups;
-    readonly unchecked: Extract<ReserveVerdict, { readonly kind: "unchecked" }> | null;
-  },
-  never,
-  CliServices
-> {
-  return Effect.map(keyStandingsOf(input), (standings) => {
-    const groups = groupStandings(standings);
-    const unchecked =
-      groups.unsynced.length > 0 || standings.listFailure !== null
-        ? {
-            kind: "unchecked" as const,
-            projectIds: groups.unsynced.map((entry) => entry.projectId),
-            listFailure: standings.listFailure,
-          }
-        : null;
-    return { verdict: reserveVerdictOf(groups, standings.listFailure), groups, unchecked };
-  });
+}): Effect.Effect<LedgerKeyCheck, never, CliServices> {
+  return Effect.map(
+    ledgerKeyChecksOf({ ...input, fingerprintsHex: [input.fingerprintHex] }),
+    (checks) =>
+      checks.get(input.fingerprintHex) ?? ledgerKeyCheckFrom({ projects: [], listFailure: null }),
+  );
 }

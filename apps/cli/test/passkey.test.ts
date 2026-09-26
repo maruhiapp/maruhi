@@ -17,7 +17,7 @@
 //  5. pre-DK の台帳(端末鍵の複製)には封印せず、`maruhi key recovery` へ誘導する
 
 import { decodeHex, derivePasskeyKek, unwrapMasterBlob, wrapMasterSecret } from "@maruhi/crypto";
-import { Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -27,6 +27,7 @@ import {
   serializeStoredMasterKey,
   tokenEntryName,
 } from "../src/keychain.ts";
+import { makeFileOwnDeviceStore, ownDevicesPathOf } from "../src/own-devices.ts";
 import type { PrfPagePost } from "../src/passkey-page.ts";
 import { formatRecoveryCode } from "../src/recovery-code.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
@@ -318,6 +319,18 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(stderr).toContain(
       `opened the reserve key (fingerprint ${reserve.fingerprintHex}) for this change`,
     );
+    // プロジェクト一覧が読めない(このサーバーは配らない)= 確かめられない: 封印は進むが、
+    // 開いた鍵を reserve と記録しない(DK K14-13 — rotate だけは止まる K14-15)
+    expect(stderr).toContain(
+      `could not list your projects to check the opened key ${reserve.fingerprintHex} (`,
+    );
+    expect(stderr).toContain(
+      "so this change goes ahead, but the key is not recorded on this machine as your reserve key",
+    );
+    const recorded = await Effect.runPromise(
+      makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath)).load(server.origin, owner.userId),
+    );
+    expect(recorded.state === "loaded" ? recorded.devices : []).toEqual([]);
     expect(stderr).toContain("Open this page in your browser");
     expect(stderr).toContain(env.browserOpens[0]);
     expect(stderr).not.toContain(PRF_HEX);

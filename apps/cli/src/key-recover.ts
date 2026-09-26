@@ -49,6 +49,8 @@ import {
   groupStandings,
   type KeyStanding,
   keyStandingOnProject,
+  type LedgerKeyCheck,
+  ledgerKeyChecksOf,
   ledgerKeyVerdictOf,
   type ReserveVerdict,
   reserveVerdictOf,
@@ -65,9 +67,10 @@ import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keycha
 import { recoveryRegistered } from "./keygen.ts";
 import {
   describeUncheckedLedgerKey,
+  openLedgerKeyForChange,
   type LedgerOpenVia,
   openLedgerReserve,
-  openLedgerReserveForChange,
+  settleLedgerKeyForChange,
 } from "./ledger-open.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
@@ -602,8 +605,16 @@ function replaceReserveWithoutOpening(input: {
     );
     const next = yield* generateReserveKeys();
     const recorded = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
-    // 失効させる鍵は台帳を書き換える前に確かめる(K14-13 — 記録の行を無検査で失効させない)
-    const retiring = yield* confirmRetiring({ ...input, fingerprintsHex: recorded });
+    // 失効させる鍵は台帳を書き換える前に確かめる(K14-13 — 記録の行を無検査で失効させない。
+    // 同期は鍵の数に依らず 1 回 — K14-16)
+    const retiring = yield* confirmRetiring({
+      session: input.session,
+      fingerprintsHex: recorded,
+      checks:
+        recorded.length === 0
+          ? new Map()
+          : yield* ledgerKeyChecksOf({ ...input, fingerprintsHex: recorded }),
+    });
     yield* issueRecoveryCodeOp({
       session: input.session,
       client: input.client,
@@ -864,16 +875,20 @@ function reportReserveSweep(
  */
 function confirmRetiring(input: {
   readonly session: CliSession;
-  readonly client: MaruhiClient;
   readonly fingerprintsHex: readonly string[];
-}): Effect.Effect<readonly string[], never, CliServices> {
+  /** 失効させる鍵ごとの判定(1 回の同期でまとめて出したもの — K14-16)。 */
+  readonly checks: ReadonlyMap<string, LedgerKeyCheck>;
+}): Effect.Effect<readonly string[], never, CliIo | OwnDeviceStore> {
   return Effect.gen(function* () {
     const kept: string[] = [];
     for (const fingerprintHex of input.fingerprintsHex) {
-      const { verdict, groups, unchecked } = yield* ledgerKeyVerdictOf({
-        ...input,
-        fingerprintHex,
-      });
+      const check = input.checks.get(fingerprintHex);
+      if (check === undefined) {
+        // 判定の無い鍵は失効させない(呼び出し側の取りこぼし — 黙って失効させる側に倒さない)
+        yield* logWarning(`not revoking ${fingerprintHex}: it was not checked on your projects`);
+        continue;
+      }
+      const { verdict, groups, unchecked } = check;
       if (verdict.kind === "first-key") {
         yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
         yield* logWarning(
@@ -900,7 +915,8 @@ function confirmRetiring(input: {
 function staleReserveFingerprints(
   session: CliSession,
   openedFingerprintHex: string | null,
-  nextFingerprintHex: string,
+  /** 新しい予備鍵(生成の前に算出する rotate では null — 生成したての鍵は記録に無い)。 */
+  nextFingerprintHex: string | null,
 ): Effect.Effect<readonly string[], CliError, OwnDeviceStore> {
   return Effect.gen(function* () {
     const store = yield* OwnDeviceStore;
@@ -968,27 +984,38 @@ export function keyReserveRotateOp(input: {
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const masterKeys = yield* loadMasterKeys(input.session);
-    const old = yield* openLedgerReserveForChange({
-      session: input.session,
-      client: input.client,
-      via: input.via,
-      masterKeys,
-      command: "maruhi key reserve rotate",
-    });
-    const next = yield* generateReserveKeys();
+    const command = "maruhi key reserve rotate";
+    const old = yield* openLedgerKeyForChange({ ...input, masterKeys, command });
     // 失効対象 = 開封した B + ローカル記録上の予備鍵(失効済みの印を含む)のうち新鍵以外。
     // 中断した前回の実行が台帳だけ差し替えて終わっていた場合、B は前回の新鍵で、
     // 元の予備鍵は記録に revoked として残るがチェーンにはまだ載っている(Bugbot 指摘)。
-    // appendRevokeDevice はチェーン上で有効な端末だけを失効させる(冪等)。失効させる鍵は
-    // 台帳を書き換える前にチェーンで確かめる(K14-13)
-    const retiring = yield* confirmRetiring({
-      ...input,
-      fingerprintsHex: yield* staleReserveFingerprints(
-        input.session,
-        old.fingerprintHex,
-        next.fingerprintHex,
-      ),
+    // appendRevokeDevice はチェーン上で有効な端末だけを失効させる(冪等)
+    const candidates = yield* staleReserveFingerprints(input.session, old.fingerprintHex, null);
+    // B と記録の行をまとめて 1 回の同期で確かめ、台帳を開く段と失効の門が共有する(K14-16)。
+    // rotate の目的は B の失効なので、B を全プロジェクトで確かめられなければ何も変えずに
+    // 止める(K14-15)。記録の行は門のとおり(確かめられなければ残して Warning — K14-13)
+    const checks = yield* ledgerKeyChecksOf({ ...input, fingerprintsHex: candidates });
+    const opened = checks.get(old.fingerprintHex);
+    if (opened === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "The opened reserve key was not checked on your projects. Report this as a maruhi bug",
+        ),
+      );
+    }
+    yield* settleLedgerKeyForChange({
+      session: input.session,
+      reserve: old,
+      check: opened,
+      command,
+      onUnchecked: "refuse",
     });
+    const retiring = yield* confirmRetiring({
+      session: input.session,
+      fingerprintsHex: candidates,
+      checks,
+    });
+    const next = yield* generateReserveKeys();
     yield* issueRecoveryCodeOp({
       session: input.session,
       client: input.client,
