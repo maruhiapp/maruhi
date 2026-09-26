@@ -171,6 +171,13 @@ async function makeServer(input: {
   readonly extraProjects?: readonly BuiltChain[];
   /** DEK ラップ登録(POST)の応答コード(既定 204。500 = バックフィルの失敗 — DK K11)。 */
   readonly dekRegisterStatus?: number;
+  /**
+   * 自分宛 DEK の GET の応答(既定: owner 宛の epoch 1 の 1 行)。`status` を置くとその
+   * コードで失敗させる(DK K12 — 新端末の鍵の到達の確認)。
+   */
+  readonly listMine?:
+    | { readonly rows: readonly Record<string, unknown>[] }
+    | { readonly status: number };
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -240,7 +247,7 @@ async function makeServer(input: {
         return null;
       }
       if (request.method === "GET") {
-        return { status: 200, json: { deks: ownWrap === null ? [] : [ownWrap] } };
+        return listMineResponse(input.listMine, ownWrap);
       }
       if (request.method === "POST") {
         if (input.dekRegisterStatus !== undefined) {
@@ -355,6 +362,22 @@ async function makeServer(input: {
       paths: () => server.requests.map((request) => `${request.method} ${request.path}`),
     },
   };
+}
+
+/** 自分宛 DEK の GET の応答(`makeServer` の `listMine` — 既定は owner 宛の epoch 1 の 1 行)。 */
+function listMineResponse(
+  listMine:
+    | { readonly rows: readonly Record<string, unknown>[] }
+    | { readonly status: number }
+    | undefined,
+  ownWrap: WireRecipientDek | null,
+): { status: number; json: unknown } {
+  if (listMine === undefined) {
+    return { status: 200, json: { deks: ownWrap === null ? [] : [ownWrap] } };
+  }
+  return "status" in listMine
+    ? { status: listMine.status, json: { _tag: "Internal" } }
+    : { status: 200, json: { deks: listMine.rows } };
 }
 
 /** 他のプロジェクトのチェーン(GET / 追記)と空の環境一覧(`makeServer` の `extraProjects`)。 */
@@ -842,7 +865,11 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       `Re-run it with that cap: \`maruhi device approve ${dev2.fingerprintHex} --cap member --env ${ENV_ID}\`.`,
     );
-    expect(errors).toContain("revoke it and re-add it instead");
+    // 足し直しの手順は 1 関数の字面(DK K12-7): 失効した鍵は戻らないので新しい鍵 + 承認
+    expect(errors).toContain(
+      "To give the device another cap, revoke it, then run `maruhi device add --replace` on that machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device with the cap you want",
+    );
+    expect(errors).not.toContain("re-add it instead");
     expect(state.appendedTo).toEqual([]);
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
@@ -1099,7 +1126,9 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(errors).toContain(
       "It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with",
     );
-    expect(errors).toContain("revoke it and re-add it as a new device");
+    expect(errors).toContain(
+      "if that machine should be on more projects, revoke it, then run `maruhi device add --replace` on that machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device",
+    );
     expect(errors).not.toContain("approve it explicitly");
     expect(state.appendedTo).toEqual([]);
   });
@@ -1390,7 +1419,10 @@ describe("maruhi device add", () => {
     });
     const env = await startEnv(server.origin, built.projectId, owner);
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("This machine already has a device key");
+    // 拒否文は --replace の 2 つの用途(失効した端末 / 複製)を名指し、唯一の端末の注意を保つ(DK K12-5)
+    expect(env.errors.join("\n")).toContain(
+      `This machine already has a device key (${owner.fingerprintHex}) with no pending device-add request, and it is not in your device registry. If this device was revoked, or its key is a copy of another device's key from an install before device keys, re-run with --replace: it removes this key from this keychain and generates a new one, whose fingerprint you then approve from a registered device (a revoked key is never registered again; the device a copy came from keeps its key). Do not pass --replace if this is your only device`,
+    );
     expect(state.paths().filter((path) => path.startsWith("POST /auth/devices/requests"))).toEqual(
       [],
     );
@@ -1410,7 +1442,7 @@ describe("maruhi device add", () => {
     expect(requestBody?.label).toBe("phone");
     expect(after).toContain(requestBody?.encPubHex ?? "never");
     expect(env.errors.join("\n")).toContain(
-      "removed the copied key from this machine's keychain (--replace)",
+      "removed the previous key from this machine's keychain (--replace)",
     );
     const logs = env.logs.join("\n");
     expect(logs).toContain("This device's key fingerprint:");
@@ -1611,6 +1643,205 @@ describe("maruhi device add", () => {
     );
     // 鍵は生成済みのまま(捨てるのは人が `--replace` を打ったとき)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeDefined();
+  });
+});
+
+/**
+ * 新端末 dev2 の `device add` の再実行(登録簿の行が合図 — 要求なし)の足場: チェーンは
+ * genesis → 環境(epoch 1)→ rotate(epoch 2)→ dev2 の `add_device`(cap は引数)。
+ * 手元の鍵は dev2。自分宛 DEK の GET の応答は `listMine`(DK K12)。
+ */
+async function deviceAddReachFixture(input: {
+  readonly cap?: Parameters<typeof addDeviceOp>[1];
+  readonly listMine: (
+    projectId: string,
+  ) => Promise<{ readonly rows: readonly Record<string, unknown>[] } | { readonly status: number }>;
+}): Promise<{ readonly env: TestEnv; readonly state: ServerState; readonly built: BuiltChain }> {
+  const dek2 = crypto.getRandomValues(new Uint8Array(32));
+  const built = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+    { actor: owner, operation: addDeviceOp(dev2, input.cap) },
+  ]);
+  reachDeks.set(built.projectId, [dek, dek2]);
+  const { server, state } = await makeServer({
+    built,
+    withEnvironment: true,
+    registryRows: [registryRowOf(dev2)],
+    requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: false, conflict: "device-registered" },
+    listMine: await input.listMine(built.projectId),
+  });
+  const env = await startEnv(server.origin, built.projectId, dev2);
+  return { env, state, built };
+}
+
+/** `deviceAddReachFixture` のチェーンの各エポックの DEK(プロジェクトごと)。 */
+const reachDeks = new Map<string, readonly Uint8Array[]>();
+
+function registryRowOf(device: TestUser): ServerState["registry"][number] {
+  return {
+    keyFingerprintHex: device.fingerprintHex,
+    encPubHex: device.encPubHex,
+    sigPubHex: device.sigPubHex,
+    label: "laptop",
+    createdAtMs: Date.now(),
+  };
+}
+
+/** 端末宛の配布行(新サーバーの形 — `recipientEncPubHex` つき、owner の登録署名)。 */
+async function deviceRowsOf(
+  projectId: string,
+  device: TestUser,
+  epochs: readonly number[],
+): Promise<Record<string, unknown>[]> {
+  const deks = reachDeks.get(projectId) ?? [];
+  return Promise.all(
+    epochs.map(async (epoch) => ({
+      ...(await wrapDekFor({
+        projectId,
+        environmentId: ENV_ID,
+        epoch,
+        dek: deks[epoch - 1] ?? new Uint8Array(32),
+        recipient: device,
+        signer: owner,
+      })),
+      recipientEncPubHex: device.encPubHex,
+    })),
+  );
+}
+
+function listMineGets(state: ServerState, projectId: string): number {
+  return state
+    .paths()
+    .filter((path) => path === `GET /projects/${projectId}/environments/${ENV_ID}/deks`).length;
+}
+
+describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", () => {
+  it("この端末宛のエポックが欠けていれば、pull と同じ警告を実 id の経路つきで出し、終了コードは 0 で何も登録しない", async () => {
+    // dev2 宛は epoch 1 だけ(兄弟の owner 宛は 1 と 2 — 他の端末宛の行は数えない)
+    const { env, state, built } = await deviceAddReachFixture({
+      listMine: async (projectId) => ({
+        rows: [
+          ...(await deviceRowsOf(projectId, dev2, [1])),
+          ...(await deviceRowsOf(projectId, owner, [1, 2])),
+        ],
+      }),
+    });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      "Approved: this device is registered on 1 project (verified on each project's chain)",
+    );
+    const warning = env.errors.find((line) => line.includes("no DEK wraps for you exist"));
+    expect(warning).toContain(
+      `Warning: ${built.projectId}: environment ${ENV_ID}: no DEK wraps for you exist at epochs 2 (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution)`,
+    );
+    expect(warning).toContain(
+      "If this machine was added as a device, the backfill to it may not have completed instead.",
+    );
+    expect(warning).toContain(
+      `A registered device of yours whose cap covers environment ${ENV_ID} and that holds its keys fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
+    );
+    // 新端末は欠けた DEK を持たないので補わない(補うのは兄弟端末の pull — K11)
+    expect(state.registered).toEqual([]);
+    expect(env.errors.join("\n")).not.toContain("not registered yet");
+  });
+
+  it("全エポックが届いていれば何も足さない(確認は走っている — GET は 1 回)", async () => {
+    const { env, state, built } = await deviceAddReachFixture({
+      listMine: async (projectId) => ({ rows: await deviceRowsOf(projectId, dev2, [1, 2]) }),
+    });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(listMineGets(state, built.projectId)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("no DEK wraps for you exist");
+    expect(errors).not.toContain("could not check");
+  });
+
+  it("この端末の cap の外の環境は確かめない(受信者でない環境を欠けとも確認の失敗とも言わない)", async () => {
+    const { env, state, built } = await deviceAddReachFixture({
+      cap: { roleCap: "owner", environmentIds: [] },
+      listMine: async () => ({ rows: [] }),
+    });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(listMineGets(state, built.projectId)).toBe(0);
+    // 欠けとも、確認の失敗(cap の外で開けない)とも言わない — 列挙に入らない
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("no DEK wraps for you exist");
+    expect(errors).not.toContain("could not check");
+  });
+
+  it("確かめられなかった環境は欠けと言わず、原因つきの Note で終了コード 0", async () => {
+    const { env, built } = await deviceAddReachFixture({
+      listMine: async () => ({ status: 500 }),
+    });
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("no DEK wraps for you exist");
+    expect(errors).toContain(
+      `Note: ${built.projectId}: could not check that the keys of environment ${ENV_ID} reached this device (`,
+    );
+    expect(errors).toContain(
+      `\`maruhi pull --project ${built.projectId} --env ${ENV_ID}\` on this machine reports any missing epochs`,
+    );
+  });
+
+  it("登録簿の行が残った失効端末は「承認側が飛ばした」でなく、失効と足し直しの手順を言う(K12-6)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
+    ]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      registryRows: [registryRowOf(dev2)],
+      requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: false, conflict: "device-registered" },
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      "Approved: this device is registered on 0 projects (verified on each project's chain)",
+    );
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Note: this key was revoked on ${built.projectId}, so it is not registered there again. To put this machine back there, run \`maruhi device add --replace\` on this machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device`,
+    );
+    // 載っているプロジェクトが無いので、残りの失効の手順は言わない
+    expect(errors).not.toContain("This keychain then no longer holds this key");
+    expect(errors).not.toContain("not registered yet");
+    expect(errors).not.toContain("the approving device skipped or failed");
+  });
+
+  it("一部のプロジェクトでだけ失効した鍵は、足し直しの後で残りのプロジェクトの鍵を失効させるよう言う(K12-6)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+      { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
+    ]);
+    // 別のプロジェクト(genesis の鍵を変えて別の id にする — 同じ人)では dev2 は有効
+    const other = await buildChain([
+      { actor: reserve, operation: genesisOp(reserve) },
+      { actor: reserve, operation: addDeviceOp(dev2) },
+    ]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      extraProjects: [other],
+      registryRows: [registryRowOf(dev2)],
+      requestCreate: { expiresAtMs: FAR_FUTURE_MS, signal: false, conflict: "device-registered" },
+    });
+    const env = await startEnv(server.origin, built.projectId, dev2);
+    expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.logs.join("\n")).toContain(
+      "Approved: this device is registered on 1 project (verified on each project's chain)",
+    );
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(`Note: this key was revoked on ${built.projectId},`);
+    expect(errors).toContain(
+      `. This keychain then no longer holds this key, so revoke it on ${other.projectId}, where it is still registered (\`maruhi device revoke ${dev2.fingerprintHex}\` from a registered device)`,
+    );
+    expect(errors).not.toContain("not registered yet");
   });
 });
 

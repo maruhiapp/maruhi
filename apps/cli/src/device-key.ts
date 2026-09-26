@@ -174,3 +174,35 @@ export function deviceProvenanceOf(
     adderStillActive: true,
   };
 }
+
+/**
+ * The fingerprints revoked for `userId` on this verified chain (the union of
+ * applied `revoke_device` entries). 記録からの登録の候補を除く述語(`device-sync.ts`)と、
+ * `device add` が「このプロジェクトでは失効した」と言う述語(DK K12-6)が共有する。
+ */
+export function revokedFingerprintsOf(
+  verified: VerifiedProject,
+  userId: string,
+): ReadonlySet<string> {
+  const revoked = new Set<string>();
+  for (const applied of verified.applied) {
+    if (
+      applied.operation.op === "revoke_device" &&
+      applied.operation.payload.targetUserId === userId
+    ) {
+      for (const fp of applied.operation.payload.deviceFingerprintsHex) {
+        revoked.add(fp);
+      }
+    }
+  }
+  return revoked;
+}
+
+/**
+ * 失効した端末を足し直す手順(DK K12-7 — CLI の写しの字面はここだけで作る)。失効した鍵は
+ * 同じ鍵のまま戻らない(記録からの登録は失効を除き、`device add` はその鍵で要求を作れない)
+ * ので、足し直しは常に新しい鍵になる。
+ */
+export function reAddDeviceRoute(machine: string): string {
+  return `run \`maruhi device add --replace\` on ${machine} (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device`;
+}

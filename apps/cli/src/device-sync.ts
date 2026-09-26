@@ -29,6 +29,8 @@ import {
   deviceProvenanceOf,
   devicesOf,
   findOwnDevice,
+  reAddDeviceRoute,
+  revokedFingerprintsOf,
 } from "./device-key.ts";
 import { appendAddDevice, backfillToDevice } from "./device-ops.ts";
 import { countNoun, displayText } from "./display.ts";
@@ -152,22 +154,6 @@ function warnReserveMissing(input: {
   );
 }
 
-/** このチェーン上で自分宛に失効した端末の FP(適用済み `revoke_device` の和集合)。 */
-function revokedFingerprintsOf(verified: VerifiedProject, userId: string): ReadonlySet<string> {
-  const revoked = new Set<string>();
-  for (const applied of verified.applied) {
-    if (
-      applied.operation.op === "revoke_device" &&
-      applied.operation.payload.targetUserId === userId
-    ) {
-      for (const fp of applied.operation.payload.deviceFingerprintsHex) {
-        revoked.add(fp);
-      }
-    }
-  }
-  return revoked;
-}
-
 /** (a)(b) 観測: チェーン上の自分の端末を記録し、失効を記録に写す。 */
 function observeDevices(input: {
   readonly context: ProjectContext;
@@ -207,7 +193,7 @@ function observeDevices(input: {
         // 失効の印を消すのは再承認だけで、登録済みの鍵は要求を作り直せない(DK K10-5)ので、
         // 「承認し直せ」とは言わない(従えない手順)。他のプロジェクトにも要るなら新しい鍵で
         yield* logNote(
-          `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it and re-add it as a new device`,
+          `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it, then ${reAddDeviceRoute("that machine")}`,
         );
       }
     }

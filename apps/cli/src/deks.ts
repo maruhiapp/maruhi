@@ -244,6 +244,17 @@ export interface EnvironmentKeys {
 }
 
 /**
+ * 1〜現エポックのうち、検証・開封を通った自分宛 DEK が無いエポック(CRYPTO_SPEC §7 の
+ * 全エポック配布との差分)。値付き pull の警告と `device add` の到達の確認(DK K12-2)が
+ * 同じ関数で判定する — 先取りの報告と後の警告が食い違う入力を構造で無くす。
+ */
+export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
+  return Array.from({ length: keys.currentEpoch }, (_, index) => index + 1).filter(
+    (epoch) => !keys.deksByEpoch.has(epoch),
+  );
+}
+
+/**
  * Derives the environment keys — the chain-derived current epoch and the
  * caller's verified, unwrapped DEKs — from one verified view, so that "the
  * epoch and the DEK set come from the same verified view" is enforced by

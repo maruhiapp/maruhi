@@ -714,7 +714,7 @@ const deviceAddConfig = {
   ),
   replace: singleFlag(
     "replace",
-    "Generate a new key even though this machine already has one (removes a copied key from this keychain — only for installs from before device keys)",
+    "Generate a new key even though this machine already has one, removing the old key from this keychain (for a device that was revoked, or a copy of another device's key from an install before device keys)",
   ),
 };
 const deviceApproveConfig = {
