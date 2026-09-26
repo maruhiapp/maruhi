@@ -1,9 +1,11 @@
-// 認証セッション(maruhi トークン)と master 鍵の解決。
+// Resolution of the authenticated session (maruhi token) and the master key.
 //
-// トークンの解決順: 環境変数 MARUHI_TOKEN(キーチェーン不在環境・CI 用の
-// 読み取り専用経路。userId は /auth/me で解決)→ OS キーチェーン。
-// master 秘密鍵はキーチェーンのみ(環境変数経路は設けない — 鍵素材を
-// プロセス環境に置く経路を v1 では作らない。session-11.md 申し送り)。
+// Token resolution order: the MARUHI_TOKEN env var (a read-only path for
+// keychain-less environments and CI; userId is resolved via /auth/me) → the
+// OS keychain.
+// The master private key is keychain-only (no env-var path — v1 does not
+// create a route that puts key material into the process environment.
+// session-11.md handoff).
 
 import type { EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
 import {
@@ -61,9 +63,10 @@ export interface CliSession {
 /**
  * The master keypair loaded from the keychain, imported and ready to use.
  *
- * `encKeyPair` / `sigKeyPair` は `Redacted` で包まない: どちらも
- * `extractable: false` でインポートした CryptoKey であり、値を取り出す口が
- * WebCrypto の側に無い(既に不透明)。包む対象は hex を持つ `record` のほう。
+ * `encKeyPair` / `sigKeyPair` are not wrapped in `Redacted`: both are
+ * CryptoKeys imported with `extractable: false`, and WebCrypto has no way to
+ * take the value out (already opaque). What gets wrapped is `record`, which
+ * holds hex.
  */
 export interface MasterKeys {
   readonly record: StoredMasterKey;
@@ -73,11 +76,13 @@ export interface MasterKeys {
 }
 
 /**
- * loopback ホスト名か: localhost / ::1(URL の括弧付き表記含む)/ 127.0.0.0/8 の
- * IPv4 リテラル(DNS 名・別記法は不可)。「http を許してよいのはどこか」の
- * 判定は CLI 内でこの 1 関数に集約する(サーバー origin — 下の
- * normalizeHttpOrigin — と OIDC 発行 URL — oidc-github.ts — で規則が割れると、
- * 片方だけ直した将来の変更が他方を黙って取り残す)。
+ * Whether the hostname is loopback: localhost / ::1 (including the URL's
+ * bracketed form) / an IPv4 literal in 127.0.0.0/8 (DNS names and other
+ * notations do not qualify). The decision of "where may http be allowed" is
+ * concentrated in this one function inside the CLI (if the rule split across
+ * server origins — normalizeHttpOrigin below — and OIDC issuer URLs —
+ * oidc-github.ts — a future change that fixed only one side would silently
+ * leave the other behind).
  */
 export function isLoopbackHostname(hostname: string): boolean {
   if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]") {
@@ -96,8 +101,8 @@ export function normalizeHttpOrigin(
   raw: string,
   label: string,
   /**
-   * 値の出所。コマンドライン以外(config・環境変数)なら「打ち間違い」では
-   * ないので、usage エラー(2)にせず直し先を示す。
+   * The value's origin. For anything but the command line (config, env var)
+   * it is not "a typo", so instead of a usage error (2) it says where to fix.
    */
   source: { readonly fix: string } | "flag" = "flag",
 ): Effect.Effect<string, CliError> {
@@ -109,11 +114,12 @@ export function normalizeHttpOrigin(
   try {
     url = new URL(raw);
   } catch {
-    // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    // The URL itself is not returned (a URL with embedded credentials is one possible written shape)
     return reject(`Cannot parse ${label} (use a URL starting with https://)`);
   }
-  // どの分岐でも URL は返さない(`http://user:token@host/x?token=…` の形で
-  // 認証情報が書かれうる)。書き方の誤りなので終了コードも 2 で揃える
+  // No branch returns the URL (it could carry credentials in the shape
+  // `http://user:token@host/x?token=…`). It is a usage error, so the exit code
+  // is also aligned on 2
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return reject(`${label} must be http(s)`);
   }
@@ -148,8 +154,9 @@ export function resolveServerOrigin(
 }
 
 /**
- * 未ログインの案内。agent セッションの中では「agent の中で実行してください」は
- * 的外れ(既に中にいる)なので、保持先が空であることだけを言う。
+ * Guidance for not-logged-in. Inside an agent session, "run it inside agent"
+ * is off the mark (you are already inside one), so it only says the store is
+ * empty.
  */
 function noSessionError(kind: KeychainKind): CliError {
   return cliError(
@@ -160,20 +167,25 @@ function noSessionError(kind: KeychainKind): CliError {
 }
 
 /**
- * 期限接近の事前警告の窓(裁定 CL — 残り 14 日から警告する。起草値)。
- * 期限切れ(401)を「突然の停止」でなく事前に観測可能にする — 特に CI では
- * この警告がジョブログに残り、operator が 401 の前に再発行を仕込める。
+ * The window for the early expiry warning (ruling CL — warn from 14 days
+ * remaining; drafted value). Makes expiry (401) observable ahead of time
+ * instead of a "sudden stop" — in CI especially, this warning stays in the
+ * job log and lets an operator plant a re-issuance before the 401.
  */
 const TOKEN_EXPIRY_WARNING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
- * 期限が警告窓に入っていれば stderr へ 1 行出す(裁定 CL)。
+ * Emits one line to stderr when the expiry enters the warning window
+ * (ruling CL).
  *
- * - stderr に出すのは stdout の機械可読性を守るため(値・JSON を pipe する
- *   コマンドの出力へ混ぜない — nextStepHint と同じ規律)
- * - 期限不明(undefined — 旧サーバー / 旧レコード)と、既にローカル判定で
- *   過去(次のリクエストが 401 で言う — 二重に言わない)は何も出さない
- * - 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number)
+ * - stderr is used to keep stdout machine-readable (not mixing into the
+ *   output of commands that pipe values / JSON — the same discipline as
+ *   nextStepHint)
+ * - Unknown expiry (undefined — old servers / old records) and expiry already
+ *   in the past by local judgment (the next request's 401 says so — no
+ *   double-saying) emit nothing
+ * - Display goes through display.ts's total formatter (the server-declared
+ *   unbounded number)
  */
 function warnNearExpiry(
   expiresAtMs: number | undefined,
@@ -195,31 +207,35 @@ function warnNearExpiry(
 }
 
 /**
- * MARUHI_TOKEN 経路のセッション解決(キーチェーン不在環境・CI 用)。
+ * Session resolution via the MARUHI_TOKEN path (for keychain-less
+ * environments and CI).
  *
- * 環境変数は平文の string が入ってくる唯一の起点なので、入口で包み、以降は
- * {@link CliSession} の Redacted としてしか流れないようにする。
+ * The env var is the only entry point where a plaintext string arrives, so it
+ * is wrapped at the door and afterwards flows only as a {@link CliSession}
+ * Redacted.
  */
 function sessionFromEnvToken(input: {
-  /** 前後の空白を落とした値(呼び出し側で trim 済み — 判定と送信で同じ値を使う)。 */
+  /** The value with surrounding whitespace dropped (already trimmed by the caller — the same value is used for checks and for sending). */
   readonly token: string;
   readonly origin: string;
   readonly declaredOrigin: string | undefined;
 }): Effect.Effect<CliSession, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    // 伏字そのものが入っていたら、通信する前に理由を名指しする。`Redacted` を
-    // 導入した以上、出力で見た "<redacted:maruhi-token>" をトークンだと思って
-    // 環境変数へ貼る経路は現実的で、そのまま送ると 401 になり
-    // 「失効・スコープ・接続先を確認してください」という**別の原因**の案内へ
-    // 送られてしまう(キーチェーン側と同じ値に同じ診断を出す)
+    // If the placeholder itself was supplied, name the reason before any
+    // traffic. Now that `Redacted` exists, pasting the "<redacted:maruhi-token>"
+    // seen in output into an env var is a realistic path, and sending it
+    // as-is produces a 401 — landing the user in guidance for a **different
+    // cause** ("check revocation, scope, and the connection target") (emit the
+    // same diagnosis for the same value as the keychain side)
     if (REDACTED_PLACEHOLDER_TEXT.test(input.token)) {
       return yield* Effect.fail(cliError(redactedPlaceholderEnvTokenMessage));
     }
     const envToken = Redacted.make(input.token, { label: "maruhi-token" });
-    // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
-    // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
-    // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
-    // MARUHI_TOKEN_ORIGIN で明示させ、解決 origin と一致するときのみ送る
+    // MARUHI_TOKEN is bound to the connection target origin: without this
+    // requirement, a Bearer token would be sent to any origin resolved by
+    // --server / config (token leakage to an attacker origin the user was led
+    // to). The target origin must be declared via MARUHI_TOKEN_ORIGIN and the
+    // token is sent only when it matches the resolved origin
     if (input.declaredOrigin === undefined || input.declaredOrigin.length === 0) {
       return yield* Effect.fail(
         cliError(
@@ -227,7 +243,7 @@ function sessionFromEnvToken(input: {
         ),
       );
     }
-    // 環境変数もコマンドラインではない(直し先を示す)
+    // An env var is not the command line either (say where to fix)
     const expectedOrigin = yield* normalizeHttpOrigin(input.declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
       fix: "the MARUHI_TOKEN_ORIGIN env var",
     });
@@ -239,12 +255,13 @@ function sessionFromEnvToken(input: {
       );
     }
     const client = yield* makeApiClient({ baseUrl: input.origin, token: envToken });
-    // W3a(AUTH_SPEC §6 の既定 TTL)以降、常用の無人環境でこの 401 の最有力
-    // 原因は**期限切れ**になる(全トークンが最長 365 日で死ぬ)。環境変数
-    // 経路の直し先はキーチェーンと違い「作業端末で再発行して env を差し替える」
-    // なので、failure.ts の汎用 401 案内(`maruhi login` のみ)を使い回さず、
-    // 生値の取得まで完遂できる実在の手順(--show-token — 裁定 CK)を言い切る
-    // (裁定 CJ — session-44 §11・§12)
+    // Since W3a (the default TTL in AUTH_SPEC §6), the most likely cause of
+    // this 401 in routinely unattended environments is **expiry** (every token
+    // dies at 365 days max). The env-var path's fix differs from the
+    // keychain's — "re-issue on a workstation and swap the env value" — so
+    // instead of reusing failure.ts's generic 401 guidance (`maruhi login`
+    // only), it names a real procedure that can fetch the raw value
+    // (--show-token — ruling CK) (ruling CJ — session-44 §11, §12)
     const me = yield* client.auth
       .me({})
       .pipe(
@@ -254,9 +271,10 @@ function sessionFromEnvToken(input: {
           ),
         ),
       );
-    // 期限接近の事前警告(裁定 CL): /auth/me はこの経路で毎回呼ぶので、
-    // tokenExpiresAtMs(裁定 CI の自己開示)は追加リクエストなしで手元にある。
-    // CI のジョブログに残り、401 で止まる前に再発行を仕込める
+    // The early expiry warning (ruling CL): /auth/me is called on this path
+    // every run anyway, so tokenExpiresAtMs (ruling CI's self-disclosure) is
+    // already at hand with no extra request. It stays in CI job logs and lets
+    // a re-issuance be planted before a 401 halts the job
     yield* warnNearExpiry(
       me.tokenExpiresAtMs,
       "Re-issue it with `maruhi login --token-name <name> --show-token` on a workstation and update MARUHI_TOKEN before it stops working",
@@ -266,22 +284,25 @@ function sessionFromEnvToken(input: {
 }
 
 /**
- * MARUHI_TOKEN がこの origin に効くか。
+ * Whether MARUHI_TOKEN works for this origin.
  *
- * logout の案内({@link resolveSession} の次の一手)がセッション解決と食い違わない
- * ようにするための判定で、規則(trim / 伏字の検出 / origin 束縛)をここに
- * 一本化する。`active` 以外はいずれも**キーチェーンへ落ちずに失敗する**状態で、
- * 「引き続き認証されます」と言ってはいけない。原因ごとに直し方が違うので
- * (足す・直す・消す)、ひとまとめにせず区別して返す。
+ * The check exists so logout guidance (the next step of
+ * {@link resolveSession}) does not diverge from session resolution, and the
+ * rules (trim / placeholder detection / origin binding) are unified here.
+ * Every state other than `active` **fails before reaching the keychain**, so
+ * "you are still authenticated" must never be said. The fix differs per
+ * cause (add / fix / delete), so the states are distinguished rather than
+ * lumped together.
  */
 export type EnvTokenStatus =
   | { readonly kind: "unset" }
   | { readonly kind: "active" }
   | { readonly kind: "placeholder" }
   | { readonly kind: "originMissing" }
-  /** 形が使えない。**理由は正規化側の文言をそのまま運ぶ** — 「URL として
-   * 解釈できない」と「http: が loopback でない」を自前で言い分けると、
-   * 次のコマンドが出す拒否理由と食い違う */
+  /** The shape is unusable. **The reason carries the normalization side's
+   * wording verbatim** — if we phrased "not parseable as a URL" vs "http: is
+   * not loopback" ourselves, it would diverge from the rejection reason the
+   * next command emits */
   | { readonly kind: "originInvalid"; readonly reason: string }
   | { readonly kind: "originMismatch" };
 
@@ -292,7 +313,7 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
     if (token === undefined || token.length === 0) {
       return { kind: "unset" };
     }
-    // 伏字そのものを貼った状態(sessionFromEnvToken が名指しで拒否する)
+    // The state where the placeholder itself was pasted (sessionFromEnvToken rejects it by name)
     if (REDACTED_PLACEHOLDER_TEXT.test(token)) {
       return { kind: "placeholder" };
     }
@@ -300,9 +321,10 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
     if (declared === undefined || declared.length === 0) {
       return { kind: "originMissing" };
     }
-    // 形が使えないのと、形は正しいが別 origin を指しているのは直し方が違う。
-    // 前者の理由は**正規化側の文言をそのまま運ぶ**(自前で言い換えると、
-    // 次のコマンドが出す拒否理由と食い違う)
+    // A shape that is unusable vs. a shape that is correct but points at
+    // another origin have different fixes. The former's reason **carries the
+    // normalization side's wording verbatim** (rephrasing it ourselves would
+    // diverge from the rejection reason the next command emits)
     const normalized = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
       fix: "the MARUHI_TOKEN_ORIGIN env var",
     }).pipe(
@@ -325,10 +347,13 @@ export function resolveSession(
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 前後の空白はここで一度だけ落とす。貼り付けで改行や空白が混じるのはごく
-    // 普通で、判定と送信で違う値を使うと (a) 伏字の検出と送る値が食い違い、
-    // (b) 空白つきの値の成否がヘッダー正規化の実装依存になる。空白だけの
-    // MARUHI_TOKEN は未設定と同じ扱い — 空トークンで往復させない
+    // Surrounding whitespace is dropped exactly once here. Newlines and
+    // spaces mixed in by pasting are perfectly normal, and using different
+    // values for the check and for sending would (a) make the placeholder
+    // detection disagree with the value sent, and (b) make a
+    // whitespace-bearing value's success depend on the header normalization
+    // implementation. An all-whitespace MARUHI_TOKEN is treated as unset — no
+    // round-trip with an empty token
     const envToken = io.envVar("MARUHI_TOKEN")?.trim();
     if (envToken !== undefined && envToken.length > 0) {
       return yield* sessionFromEnvToken({
@@ -344,9 +369,10 @@ export function resolveSession(
     }
     const record = parseStoredToken(stored);
     if (record === null) {
-      // 伏字保存は「壊れたレコード」と区別する: 原因(maruhi の不具合)も、
-      // 復旧手順(旧ビルドが書いたものなら再ログインで上書きされる)も、
-      // 汎用の「壊れています」では伝わらない
+      // A stored placeholder is distinguished from "a corrupt record":
+      // neither the cause (a maruhi bug) nor the recovery steps (a record
+      // written by an old build is overwritten by re-login) survive a generic
+      // "it is corrupt"
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderTokenMessage(keychain.kind))
@@ -355,9 +381,10 @@ export function resolveSession(
             ),
       );
     }
-    // 期限接近の事前警告(裁定 CL): 期限はログイン時にレコードへ保存済み
-    // (keychain.ts の expiresAtMs)なので、無通信のローカル判定で足りる。
-    // 旧レコード(W3a 前のログイン)は欠落 = 警告なし(再ログインで付く)
+    // The early expiry warning (ruling CL): the expiry was saved to the
+    // record at login (expiresAtMs in keychain.ts), so a local check without
+    // traffic suffices. Old records (pre-W3a logins) lack it = no warning
+    // (added on re-login)
     yield* warnNearExpiry(record.expiresAtMs, "Sign in again with `maruhi login` to rotate it");
     return {
       origin,
@@ -368,21 +395,25 @@ export function resolveSession(
 }
 
 /**
- * 「レコードが壊れている」と言い切る前の環境確認。
+ * The environment check before declaring "the record is corrupt".
  *
- * {@link importMasterKeys} の失敗は**鍵素材が壊れている場合と、この環境の
- * WebCrypto が必要なアルゴリズム(Ed25519 / HPKE)を持たない場合の両方**で
- * 起きる(crypto 側は例外を一様に失敗へ畳む)。区別せず「消してください」と
- * 案内すると、無事な鍵を消させて復号可能性を永久に失わせる。
+ * {@link importMasterKeys} failure happens **both when the key material is
+ * broken and when this environment's WebCrypto lacks the algorithms needed
+ * (Ed25519 / HPKE)** (the crypto side folds exceptions uniformly into
+ * failure). Guiding to "please delete it" without the distinction would have
+ * a healthy key deleted and lose the ability to decrypt forever.
  *
- * そこで**同じ操作を新しい鍵で試す**: 使い捨ての鍵で生成 → 書き出し →
- * 読み込みまで通らないなら、原因は保存された鍵ではなく環境。
+ * So **try the same operation with a fresh key**: if generate → export →
+ * import does not round-trip with a disposable key, the cause is the
+ * environment, not the stored key.
  *
- * **生成だけを試すのでは足りない**: ここで守りたい失敗は import 側
- * (`importKey` / HPKE の DeserializePrivateKey)で起きる。生成できても
- * 読み込みができない環境では「生成は通る = 環境は正常」と誤判定し、無事な鍵に
- * 削除を勧めてしまう。{@link importMasterKeys} が踏むのと同じ順序で確かめる。
- * 判定は失敗経路でだけ走るので、通常の実行に費用はかからない。
+ * **Trying generation alone is not enough**: the failure this guards against
+ * happens on the import side (`importKey` / HPKE's DeserializePrivateKey). In
+ * an environment that can generate but cannot import, "generation works = the
+ * environment is fine" would be a wrong verdict that recommends deleting a
+ * healthy key. Check in the same order {@link importMasterKeys} steps
+ * through. The check runs only on the failure path, so normal execution pays
+ * nothing.
  */
 export function cryptoBackendUsable(): Effect.Effect<boolean> {
   return Effect.tryPromise({
@@ -391,7 +422,7 @@ export function cryptoBackendUsable(): Effect.Effect<boolean> {
   }).pipe(Effect.catch(() => Effect.succeed(false)));
 }
 
-/** 使い捨ての鍵で生成 → 書き出し → 読み込みを一巡する(鍵素材は外に出さない)。 */
+/** Round-trips generate → export → import with a disposable key (key material never leaves). */
 async function probeCryptoRoundTrip(): Promise<boolean> {
   const enc = await generateEncryptionKeyPair({ extractable: true });
   const sig = await generateSigningKeyPair({ extractable: true });
@@ -409,28 +440,31 @@ async function probeCryptoRoundTrip(): Promise<boolean> {
 }
 
 /**
- * 環境側が原因のときの共通部分(原因と、どの経路でも同じ次の一手)。
+ * The common part when the environment is the cause (the cause, and the next
+ * step identical across paths).
  *
- * **「何が無事か」は経路ごとに違う**ので、そこは共有しない: 保存済みの鍵を
- * 指せるのはキーチェーン経路だけで、recover(まだ保存していない)や
- * generate(これから作る)で「保存されている鍵を消さないでください」と言うと、
- * 存在しない物を指した診断になる。
+ * **"What is intact" differs per path**, so that part is not shared: only the
+ * keychain path can point at the stored key — saying "do not delete the
+ * stored key" under recover (nothing stored yet) or generate (about to create
+ * one) would be a diagnosis pointing at something that does not exist.
  */
 export const unsupportedCryptoCause =
   "This environment's WebCrypto does not support the algorithms maruhi's keys need (Ed25519 / HPKE), so the key cannot be loaded" as const;
 
-/** 環境側が原因のときの次の一手(どの経路でも同じ)。 */
+/** The next step when the environment is the cause (identical across paths). */
 export const retryOnSupportedRuntime = "Re-run on a supported runtime (a newer Bun / OS)" as const;
 
-/** キーチェーンの鍵を読み込めないときの環境起因の文言(**消させない**のが要点)。 */
+/** The environment-caused wording for an unloadable keychain key (**never have the user delete** is the point). */
 export const unsupportedCryptoMessage =
   `${unsupportedCryptoCause}. The stored key is most likely intact — do not delete it. ${retryOnSupportedRuntime}` as const;
 
 /**
- * 破損と判定されたときの文言。**環境が原因でないことを確かめてから**決める。
+ * The wording when judged corrupt. Decided **only after confirming the
+ * environment is not the cause**.
  *
- * 別形式(未知スイート)は破損ではないので、この関数には来ない — 分岐は
- * 呼び出し側の {@link Effect.catchTag} が型で見分ける。
+ * Another format (an unknown suite) is not corruption, so it never reaches
+ * this function — the caller's {@link Effect.catchTag} tells the branches
+ * apart by type.
  */
 function corruptOrEnvironmentMessage(entryName: string, kind: KeychainKind): Effect.Effect<string> {
   return Effect.map(cryptoBackendUsable(), (usable) =>
@@ -439,12 +473,14 @@ function corruptOrEnvironmentMessage(entryName: string, kind: KeychainKind): Eff
 }
 
 /**
- * 既存レコードに対する拒否文言の選択。
+ * Choosing the refusal wording for an existing record.
  *
- * 「既に存在します」と言ってよいのは**実際に使える鍵があるとき**だけ。形だけ
- * 整っていて鍵素材が読めないレコードにこれを返すと、事実に反するうえ出口も
- * 示さないまま generate / recover / show の全部が塞がる。判定は保存形の検査で
- * 止めず、実際にインポートまで試して決める(コマンド 1 回に 1 度だけ)。
+ * "It already exists" may be said only **when a genuinely usable key is
+ * there**. Returning it for a record whose shape checks out but whose key
+ * material cannot be read would contradict the facts and leave no exit,
+ * while blocking all of generate / recover / show. The decision does not
+ * stop at the stored shape — it actually tries importing (once per command
+ * run).
  */
 function refusalFor(
   existing: string,
@@ -460,10 +496,11 @@ function refusalFor(
     return Effect.succeed(unreadableMasterKeyMessage(existing, entryName, kind));
   }
   return importMasterKeys(record).pipe(
-    // インポートできた = 本当に使える鍵。ここだけが本来の上書き拒否
+    // Importable = a genuinely usable key. This alone is the true overwrite refusal
     Effect.as(refusal),
-    // 読めない理由(破損 / 別形式 / 環境)で出口が違う。タグで分けるので、
-    // 失敗の種類が増えれば型検査がここを指す
+    // The exit differs by why it cannot be read (corrupt / foreign format /
+    // environment). Split by tag — if a new failure kind appears, the type
+    // check points here
     Effect.catchTag("MasterKeyUnknownSuite", (error) =>
       Effect.succeed(foreignMasterKeyMessage(error.suite, entryName, kind)),
     ),
@@ -472,8 +509,9 @@ function refusalFor(
 }
 
 /**
- * 読めないレコードの文言。**削除を勧めるのは破損と判定できたときだけ**
- * (将来版が書いたレコードを消させない — keychain.ts の分類を参照)。
+ * Wording for an unreadable record. **Deletion is recommended only when it
+ * is judged corrupt** (never have a record written by a future version
+ * deleted — see the classification in keychain.ts).
  */
 function unreadableMasterKeyMessage(stored: string, entryName: string, kind: KeychainKind): string {
   return classifyUnreadableMasterKey(stored) === "foreign"
@@ -483,13 +521,15 @@ function unreadableMasterKeyMessage(stored: string, entryName: string, kind: Key
 
 /**
  * Fails when a master key is already stored for (origin, userId); returns the
- * keychain entry name otherwise. keygen / recover 共通の上書き防止ガード
- * (鍵を失うと復号可能性を失うため、上書きは常に拒否する)。
+ * keychain entry name otherwise. The shared overwrite-protection guard of
+ * keygen / recover (losing the key means losing the ability to decrypt, so
+ * overwriting is always refused).
  *
- * 伏字レコードはここでも区別する: このガードは読み出し境界の中で**最初に**
- * 当たる場所であり(`key generate` / `key recover` の両方がここで止まる)、
- * 「鍵は既に存在します」と言ってしまうと、実際には使えない鍵を「ある」と
- * 報告したうえで、真の診断(消すべきエントリ名)は別コマンドまで出てこない。
+ * Placeholder records are distinguished here too: this guard is the
+ * **first** place hit inside the read boundary (both `key generate` and
+ * `key recover` stop here), and saying "a key already exists" would report an
+ * unusable key as present while the true diagnosis (the entry name to
+ * delete) would not surface until a different command.
  */
 export function ensureNoStoredMasterKey(
   session: CliSession,
@@ -500,9 +540,10 @@ export function ensureNoStoredMasterKey(
     const entryName = masterKeyEntryName(session.origin, session.userId);
     const existing = yield* keychain.get(entryName);
     if (existing !== null) {
-      // 「既にある」と言ってよいのは**読めるレコードが実在するとき**だけ。
-      // 読めない記録に対して拒否文言(使える鍵がある)を返すと、事実に反する
-      // うえ出口も示さないまま generate / recover / show の全部が塞がる
+      // "It already exists" may be said only **when a readable record
+      // actually exists**. Returning the refusal wording (a usable key exists)
+      // for an unreadable record would contradict the facts and leave no exit
+      // while blocking all of generate / recover / show
       return yield* Effect.fail(
         cliError(yield* refusalFor(existing, entryName, refusal, keychain.kind)),
       );
@@ -515,21 +556,25 @@ export function ensureNoStoredMasterKey(
  * Stores a master-key record, re-checking absence immediately before the write
  * and verifying afterwards that the stored record is the one just written.
  *
- * なぜ「保存の直前に再確認 + 直後に読み戻す」のか: 上書き防止
- * ガード({@link ensureNoStoredMasterKey})は読み取りだけでロックを取らず、
- * その後に鍵生成(WebCrypto 6 回)と再インポート自己検証が挟まるため、
- * 判定と書き込みの間に数十 ms の窓が開く。`Bun.secrets.set` は無条件 put で
- * compare-and-swap も create-if-absent も無く、エントリ名は (origin, userId)
- * から決定的なので、同一アカウントで `maruhi key generate` が並行すると
- * どちらも「鍵なし」を観測して両方が書き、後勝ちで一方の鍵が黙って消える。
+ * Why "re-check just before storing + read back just after": the
+ * overwrite-protection guard ({@link ensureNoStoredMasterKey}) only reads and
+ * takes no lock, and key generation (WebCrypto ×6) plus a re-import
+ * self-check sit in between, so a window of tens of ms opens between the
+ * check and the write. `Bun.secrets.set` is an unconditional put with no
+ * compare-and-swap or create-if-absent, and the entry name is deterministic
+ * from (origin, userId) — so concurrent `maruhi key generate` on the same
+ * account both observe "no key", both write, and last-writer-wins silently
+ * loses one key.
  *
- * OS キーチェーン側に原子的な条件付き書き込みが無いため、この関数は窓を
- * 塞ぐのではなく**極小化し、かつ失敗を黙らせない**: 読み戻しが自分の
- * レコードでなければ、並行実行に上書きされたことを検出して失敗する
- * (呼び出し側はリカバリーコードの発行へ進まないので、「破棄された鍵の
- * リカバリーブロブが登録される」不整合が起きない)。残る窓は再確認と
- * 書き込みの間だけで、そこに他プロセスの書き込みが丸ごと入ると両方が成功
- * しうる — その場合も生き残る鍵とそのリカバリーブロブは一致する側に倒れる。
+ * Since the OS keychain offers no atomic conditional write, this function
+ * does not close the window — it **minimizes it and refuses to stay silent
+ * about failure**: if the read-back is not our record, it detects a
+ * concurrent overwrite and fails (the caller then never proceeds to issuing
+ * a recovery code, so the inconsistency of "a recovery blob registered for a
+ * discarded key" never happens). The remaining window is between the re-check
+ * and the write only; if another process's whole write lands there, both can
+ * still succeed — and in that case the surviving key and its recovery blob
+ * land on the consistent side.
  */
 export function storeMasterKeyGuarded(
   entryName: string,
@@ -551,9 +596,11 @@ export function storeMasterKeyGuarded(
 }
 
 /**
- * 既存の鍵を**見ていた値と一致するときだけ**置き換える(`device add --replace` — DK K13-8)。
- * `storeMasterKeyGuarded` と同じ検出(読み → 書き → 読み直し)で、間に別のプロセスが書いた
- * ことを見つける。古い鍵を先に消してから保存する形にしない(消した後の失敗で鍵を失う)。
+ * Replaces the existing key **only when it matches the value we saw**
+ * (`device add --replace` — DK K13-8). Same detection as
+ * `storeMasterKeyGuarded` (read → write → read back) — spots a write by
+ * another process in between. Never shaped as delete-the-old-key-then-store
+ * (a failure after deleting would lose the key).
  */
 function replaceMasterKeyGuarded(input: {
   readonly entryName: string;
@@ -575,47 +622,51 @@ function replaceMasterKeyGuarded(input: {
 }
 
 /**
- * `device add` の保存・差し替えの途中で別の書き込みを見つけたときの文言(鍵が無いときの
- * 保存と `--replace` の差し替えで共通)。要求は保存の前に作ってあるが、新しい鍵の FP は
- * まだ画面に出していないので承認されず、その要求は期限で消える(DK K13-8 / K13-14)。
+ * The wording when another write is found mid-way through `device add`'s
+ * store / replace (shared by storing with no key and `--replace`). The
+ * request was created before storing, but the new key's FP has not been
+ * shown yet, so it is never approved and the request expires (DK K13-8 /
+ * K13-14).
  */
 const concurrentDeviceAddWrite =
   "Another process wrote this machine's device key while `maruhi device add` was running, so the new key was not stored and the key now in the keychain was left as it is. The request made for the new key is never approved (its fingerprint was not shown) and expires in 15 minutes. Run `maruhi key show` to see which key is stored now, then re-run `maruhi device add` alone" as const;
 
 /**
- * 並行書き込みを検出したときの文言。控えるべき情報が無いのが要点: この鍵は
- * どこにも保存されておらず、リカバリーコードも発行していないので、後始末は
- * 不要で、やることは「1 つずつ実行し直す」だけ。
+ * The wording when a concurrent write is detected. The point is there is
+ * nothing to copy down: this key was never stored anywhere and no recovery
+ * code was issued, so no cleanup is needed — the only thing to do is "re-run
+ * one at a time".
  */
 const concurrentMasterKeyWrite =
   "Another device key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
 
-/** キーチェーンに印のある予備鍵があるときの文言(DK K16)。 */
+/** The wording when a reserve key bearing the mark sits in the keychain (DK K16). */
 function reserveInKeychainMessage(entryName: string, kind: KeychainKind): string {
   return `The key stored in ${describeStore(kind)} (entry ${entryName}) is marked as a reserve key, which lives only in the recovery ledger and is never used as a device key. Remove that entry, then add this machine as a device (\`maruhi device add\`) or run \`maruhi key recover\``;
 }
 
 /**
- * {@link storeMasterKeyGuarded} + 成功の 2 行(保存先の名指しと FP)。
- * `key generate` / `key recover` の共通の結び — 保存先の呼び名
- * ({@link describeStore})を片方だけ直す形にしない。
+ * {@link storeMasterKeyGuarded} + the 2 success lines (naming the store and
+ * the FP). The common ending of `key generate` / `key recover` — never shaped
+ * so the store name ({@link describeStore}) is fixed on only one side.
  */
 export function storeMasterKeyAndReport(input: {
   readonly entryName: string;
   readonly serialized: string;
-  /** 何をしたか(文頭)。例: "Generated your master key" */
+  /** What was done (sentence-initial). E.g. "Generated your master key" */
   readonly action: string;
   readonly fingerprintHex: string;
   /**
-   * `device add` からの保存か(同時書き込みの文言を `device add` のものにする — 要求は
-   * 作成済み: DK K13-14)。`previous` は置き換える鍵の保存値(`--replace` — 一致する
-   * ときだけ置き換える)。
+   * Whether this store came from `device add` (uses `device add`'s
+   * concurrent-write wording — the request is already created: DK K13-14).
+   * `previous` is the stored value of the key being replaced (`--replace` —
+   * replaced only when it matches).
    */
   readonly deviceAdd?: { readonly previous: string | null } | undefined;
 }): Effect.Effect<void, CliError, Keychain | CliIo> {
   return Effect.gen(function* () {
     if (parseStoredMasterKey(input.serialized)?.kind === "reserve") {
-      // 予備鍵はキーチェーンに置かない(CRYPTO_SPEC §8 — DK K16。型の閉じ方 K4-1 a-5 の多重の守り)
+      // A reserve key is never put in the keychain (CRYPTO_SPEC §8 — DK K16; layered defense of how the type is closed, K4-1 a-5)
       return yield* Effect.fail(
         cliError(
           "Refused to store a reserve key in the keychain: the reserve key lives only in the recovery ledger. Report this as a maruhi bug",
@@ -663,17 +714,21 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
       );
     }
     if (record.kind === "reserve") {
-      // 予備鍵は台帳にだけ住む(CRYPTO_SPEC §8 — DK K16)。キーチェーンに印のある鍵があるのは
-      // 保存経路の破れで、端末鍵として署名に使わない
+      // The reserve key lives only in the recovery ledger (CRYPTO_SPEC §8 —
+      // DK K16). A marked key sitting in the keychain is a breach of the store
+      // path, and it is not used as a device key for signing
       return yield* Effect.fail(cliError(reserveInKeychainMessage(entryName, keychain.kind)));
     }
-    // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり
-    // (上書き防止ガードが全コマンドを拒否する)なので、同じ出口を案内する。
-    // 原因で分ける理由は refusalFor と同じ: 破損なら消して作り直せるが、未知
-    // スイート(将来版が書いた鍵)は消せば新しい maruhi でも失う。同じ状態に
-    // 対して二つのコマンドが違う案内を出さないよう、写像もそちらへ合わせる。
-    // importMasterKeys 自身は保存前の自己検証にも使われる — そちらは残存
-    // エントリが無く削除の案内が的外れになるため、写像はここで行う
+    // A record that parsed but cannot be imported as key material is the
+    // same dead end (the overwrite-protection guard refuses every command),
+    // so the same exit is shown. The reason for splitting by cause is the
+    // same as refusalFor's: a corrupt record can be deleted and regenerated,
+    // but an unknown suite (a key a future version wrote) is lost even to a
+    // newer maruhi once deleted. To keep the two commands from emitting
+    // different guidance for the same state, the mapping is aligned to that
+    // side too. importMasterKeys itself is also used as the pre-store
+    // self-check — that side has no existing entry and deletion guidance
+    // would be off the mark, so the mapping happens here
     return yield* importMasterKeys(record).pipe(
       Effect.catchTag("MasterKeyUnknownSuite", (error) =>
         Effect.fail(cliError(foreignMasterKeyMessage(error.suite, entryName, keychain.kind))),
@@ -688,56 +743,61 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
 }
 
 /**
- * 鍵素材そのものを読み込めない({@link importMasterKeys} の失敗)。
+ * Cannot import the key material itself ({@link importMasterKeys} failure).
  *
- * 呼び出し側が「どの成果物が壊れているか」で文言を差し替えられるよう、
- * **型で**区別する — 同じ失敗でも、キーチェーンのレコード由来かリカバリー
- * ブロブ由来かで指すべき対象と復旧手順が変わる。
+ * Distinguished **by type** so the caller can swap the wording by "which
+ * artifact is broken" — for the same failure, what to point at and the
+ * recovery steps differ between a keychain record and a recovery blob.
  *
- * 値の同一性比較(`error === corruptKeyError`)ではなくタグにしてあるのは、
- * この分岐の取り違えが「消してよい / 消してはいけない」を反転させ、鍵の
- * 恒久喪失に直結するため。網羅性を型検査に見てもらう。
+ * It is a tag rather than a value-identity check (`error === corruptKeyError`)
+ * because getting this branch wrong flips "safe to delete / must not delete"
+ * and leads straight to permanent key loss. Let the type checker enforce
+ * exhaustiveness.
  */
-// 内訳(hex を解釈できない / WebCrypto が読めない)は持たない: 呼び出し側は
-// どちらでも同じ出口へ案内するので、読まれない payload を運ばない
+// It carries no breakdown (hex that cannot be interpreted / WebCrypto that
+// cannot read): the caller guides to the same exit either way, so an unread
+// payload is not carried
 class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt")<Record<never, never>> {}
 
-/** レコードが現行版の知らないスイートを名乗っている(破損ではない)。 */
+/** The record claims a suite this version does not know (not corruption). */
 class MasterKeyUnknownSuite extends Data.TaggedError("MasterKeyUnknownSuite")<{
   readonly suite: string;
 }> {}
 
 /**
- * {@link importMasterKeys} の失敗。文言は呼び出し側が経路に合わせて決める。
+ * {@link importMasterKeys} failure. The caller decides the wording per path.
  *
- * クラス自体は公開しない: 呼び出し側は `Effect.catchTag` のタグ名で分けるので
- * 構築子を要らず、公開すると「どこでも作れる失敗」になる(生成元は 1 つに保つ)。
+ * The class itself is not exported: callers split on the `Effect.catchTag`
+ * tag name, so no constructor is needed — exporting it would make it "a
+ * failure anyone can create" (the source stays singular).
  */
 export type MasterKeyImportError = MasterKeyCorrupt | MasterKeyUnknownSuite;
 
 /**
  * Imports a stored master-key record into usable (non-extractable) key
- * objects. keygen は保存前の自己検証にも使う(壊れたレコードを書かない)。
+ * objects. keygen also uses it as the pre-store self-check (never writes a
+ * broken record).
  */
 export function importMasterKeys(
   record: StoredMasterKey,
 ): Effect.Effect<MasterKeys, MasterKeyImportError> {
   return Effect.gen(function* () {
     if (record.suite !== SUITE_ID) {
-      // 将来スイートの鍵レコードを v1 として黙って解釈しない
+      // A future suite's key record is never silently interpreted as v1
       return yield* Effect.fail(new MasterKeyUnknownSuite({ suite: record.suite }));
     }
     const encPub = decodeHex(record.encPubHex);
-    // 剥がす理由: 鍵素材のインポート(hex → bytes → 非抽出 CryptoKey)。
-    // 産物の encKeyPair / sigKeyPair は extractable: false なので、ここを
-    // 通った後の鍵は既に不透明(Redacted の対象外 — MasterKeys の注記参照)
+    // Why unwrap: importing the key material (hex → bytes → non-extractable
+    // CryptoKey). The resulting encKeyPair / sigKeyPair are
+    // extractable: false, so keys that passed through here are already opaque
+    // (not a Redacted target — see the MasterKeys note)
     const encSk = decodeHex(Redacted.value(record.encSkHex));
     const sigPub = decodeHex(record.sigPubHex);
     const sigSeed = decodeHex(Redacted.value(record.sigSkSeedHex));
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
       return yield* Effect.fail(new MasterKeyCorrupt());
     }
-    // WebCrypto の reject(壊れた鍵素材のインポート例外)も破損として扱う
+    // A WebCrypto reject (an import exception for broken key material) is also treated as corrupt
     const encKeyPair = yield* Effect.tryPromise({
       try: () => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
       catch: () => new MasterKeyCorrupt(),

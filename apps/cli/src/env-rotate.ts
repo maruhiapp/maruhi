@@ -1,19 +1,25 @@
-// エポックローテーション(CRYPTO_SPEC §7 / §5.2 / §6.2、AUTH_SPEC §12-4 / §12-5)。
+// Epoch rotation (CRYPTO_SPEC §7 / §5.2 / §6.2, AUTH_SPEC §12-4 / §12-5).
 //
-// ローテーションは構造的に 2 段である: (i) `rotate_epoch` エントリ(新エポックの
-// DEK コミットメント込み)+ 新エポックのラップ完全集合の**複合受理**(原子的 —
-// §12-4)、(ii) 現在値の再暗号化 = 実行者が writer として署名する通常 push の列
-// (§7 / §4.1。値の量に依存する巨大リクエストを避けるため複合に含めない)。
-// (i) と (ii) の間で中断すると「エポックは進んだが再暗号化が残っている」状態が
-// 残る — これは §12-7 が明示する正当な過渡状態であり、本コマンドの再実行は
-// **エポックを進めずにその再暗号化を再開する**(冪等な再開)。
+// A rotation is structurally two stages: (i) the `rotate_epoch` entry (with
+// the new epoch's DEK commitments) + the **composite acceptance** of the
+// new epoch's complete wrap set (atomic — §12-4), (ii) the re-encryption
+// of the current values = a series of ordinary pushes signed by the
+// performer as writer (§7 / §4.1. Not bundled into the composite to avoid
+// a giant request whose size depends on the amount of values).
+// Interrupting between (i) and (ii) leaves the state "the epoch advanced
+// but re-encryption remains" — a legitimate transitional state §12-7
+// makes explicit, and re-running this command **resumes that re-encryption
+// without advancing the epoch** (an idempotent resume).
 //
-// 検出は配布データからのみ行う(ローカルの進捗ファイルを持たない = ディスクレス
-// 不変条件と両立し、別デバイス・別メンバーからの再開もそのまま成立する):
-// 検証済み pull の「最新値の epoch < チェーン導出の現エポック」が未完了の証拠。
+// Detection happens only from the distributed data (no local progress file
+// = compatible with the diskless invariant, and resumption from another
+// device or member works as-is): "the latest value's epoch < the
+// chain-derived current epoch" on a verified pull is the evidence of
+// incompleteness.
 //
-// 平文はメモリ上の Uint8Array のみ。ログ・エラーに出るのは検証済みステートメント
-// 由来の変数名(displayText 済み)・件数・エポック番号だけである。
+// Plaintext exists only as in-memory Uint8Arrays. Logs and errors carry
+// only variable names (already displayText'd) from verified statements,
+// counts, and epoch numbers.
 
 import {
   AuditHeadNotReadyError,
@@ -63,47 +69,52 @@ import {
 } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
-/** 再暗号化の巡回上限(1 巡 = 全対象への push + 競合分の再取得・再検証)。 */
+/** The re-encryption pass limit (one pass = a push to every target + re-fetch / re-verify of the conflicts). */
 const MAX_REENCRYPT_PASSES = 3;
-/** チェーンの自由文字列フィールドの合意規則上限(CRYPTO_SPEC §6.1)。 */
+/** The consensus-rule bound of the chain's free-text field (CRYPTO_SPEC §6.1). */
 const MAX_REASON_BYTES = 1024;
 
-/** ローテーション 1 回分の結果(表示・終了コードの材料)。 */
+/** The result of one rotation (the material of the display and the exit code). */
 export interface RotationSummary {
   /**
-   * rotated = 新エポックを開始した / resumed = 未完了の再暗号化を再開した /
-   * up-to-date = 未完了がなく、新しいエポックも要求されなかった(確認のみ)。
+   * rotated = started a new epoch / resumed = resumed an unfinished
+   * re-encryption / up-to-date = no incompleteness and no new epoch
+   * requested (a check only).
    */
   readonly mode: "rotated" | "resumed" | "up-to-date";
   readonly previousEpoch: number;
   readonly epoch: number;
-  /** 再暗号化して push した変数数。 */
+  /** The number of variables re-encrypted and pushed. */
   readonly reencrypted: number;
-  /** 並行 push により既に現エポックで書かれていた変数数(再暗号化不要)。 */
+  /** The number of variables a concurrent push already wrote at the current epoch (no re-encryption needed). */
   readonly alreadyCurrent: number;
-  /** 競合が解けず未完了のまま残った変数数(> 0 なら部分完了)。 */
+  /** The number of variables left incomplete, conflict unresolved (> 0 = a partial completion). */
   readonly remaining: number;
   /**
-   * `remaining` が再走査を通った実測か(false = 中断により上限しか分からない)。
-   * 表示で「未確認を含む」と断らねばならないのはこちらだけである。
+   * Whether `remaining` is measured through the end-of-run rescan (false =
+   * only the upper bound is known because an interruption happened). Only
+   * this shape must be labeled "includes unverified" on display.
    */
   readonly remainingExact: boolean;
-  /** 再暗号化を中断させた原因(null = 最後まで走った)。呼び出し側が警告に使う。 */
+  /** The cause that interrupted the re-encryption (null = ran to the end). Used by the caller for warnings. */
   readonly failure: string | null;
   /**
-   * この実行が**受理された**再暗号化の書き込み(名前と新 version。巡と再開を
-   * 跨いで集約)。同期レシートの前進の材料: 再暗号化は
-   * 平文を変えないので、ここに載った version は直前 version と同じ平文を持つ。
-   * `alreadyCurrent`(並行 push — 平文が変わりうる)と未完了分は載らない。
-   * 受理済みの書き込みは取り消せないため、再走査に到達できなかった実行
-   * (`remainingExact = false`)でも載せる — 押し戻し(自分の書き込みの巻き戻し)は
-   * 再走査が証拠として中断させるので、summary が返る経路には現れない。
+   * The **accepted** re-encryption writes of this run (name and new
+   * version. Aggregated across passes and resumes). Material for advancing
+   * the sync receipt: since re-encryption does not change the plaintext, a
+   * version listed here carries the same plaintext as the previous
+   * version. `alreadyCurrent` (concurrent pushes — the plaintext may
+   * differ) and the unfinished part are not listed. An accepted write
+   * cannot be taken back, so it is listed even on a run that never reached
+   * the rescan (`remainingExact = false`) — a regression of one's own
+   * write (rollback) is interrupted by the rescan as evidence, so it never
+   * appears on a path that returns a summary.
    */
   readonly written: readonly ReencryptedVariable[];
   readonly warnings: readonly string[];
 }
 
-/** 受理された再暗号化 1 件(検証済みステートメント由来の名前と新 version)。 */
+/** One accepted re-encryption (the name from a verified statement and the new version). */
 export interface ReencryptedVariable {
   readonly name: string;
   readonly version: number;
@@ -115,38 +126,41 @@ interface RotateInput {
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   /**
-   * チェーンに記録される理由(§6.2 の payload フィールド)。`undefined` は
-   * **`--reason` 自体が未指定**であることを表す(空文字列との区別が要る —
-   * checkReasonLength)。
+   * The reason recorded on the chain (the §6.2 payload field).
+   * `undefined` means **`--reason` itself was not given** (distinct from
+   * the empty string — checkReasonLength).
    */
   readonly reason: string | undefined;
   /**
-   * 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る
-   * (`--new-epoch`)。「この実行の後に必ず新エポックが存在する」ことを要求
-   * する呼び出し(退職者の削除に伴う全環境ローテーション — §7)のための保証。
+   * Even with an unfinished re-encryption, never resume it — always create
+   * a new epoch (`--new-epoch`). A guarantee for a caller that requires
+   * "a new epoch definitely exists after this run" (the all-environment
+   * rotation on a departing member's removal — §7).
    */
   readonly forceNewEpoch: boolean;
   /**
-   * マニフェスト**欠落**の許容(`--init-manifest` — 移行経路)。
-   * マニフェスト導入前に作成された環境の manifest_version 1 初期化に
-   * 限る明示操作。配布された場合の検証は緩和しない(manifest.ts の規約)。
+   * Allowing a manifest **omission** (`--init-manifest` — the migration
+   * path). An explicit operation limited to initializing manifest_version 1
+   * on environments created before manifests existed. Verification when
+   * distributed is not relaxed (manifest.ts's convention).
    */
   readonly initManifest: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-  /** 再同期(チェーン全再検証)。CAS 競合・受理後の確認に使う。 */
+  /** Resync (full chain re-verification). Used for CAS conflicts and post-acceptance confirmation. */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3 — 内部 pull の検査・コミットと、再暗号化 push の床前進)。 */
+  /** The local floor (§6.3 — the check / commit of internal pulls and the floor advance of re-encryption pushes). */
   readonly floor: FloorHandle;
 }
 
-/** 再暗号化 1 変数分の材料(検証済み最新値 + その平文)。 */
+/** The material of one variable's re-encryption (the verified latest value + its plaintext). */
 interface ReencryptTarget {
   readonly value: VerifiedPulledValue;
   /**
-   * メモリ上のみ。ディスク・ログ・エラーメッセージへ出す経路を持たない。
-   * 再暗号化のため値そのものを持つ(DEK だけの話ではない)ので `Redacted` で包む
-   * — 剥がすのは encryptAndSignPayload の内側(暗号境界)だけ。
+   * Memory only. No path puts it on disk, in logs, or in error messages.
+   * Since it holds the value itself (not just a DEK) for re-encryption, it
+   * is wrapped in `Redacted` — unwrapping happens only inside
+   * encryptAndSignPayload (the encryption boundary).
    */
   readonly plaintext: Redacted.Redacted<Uint8Array>;
 }
@@ -156,50 +170,55 @@ interface ReencryptOutcome {
   readonly alreadyCurrent: number;
   readonly remaining: number;
   /**
-   * `remaining` が再走査を通った**実測**か(false = 再走査に到達できず、
-   * 「今巡で完了しなかった数」という上限しか分かっていない)。
+   * Whether `remaining` is a **measurement** through the rescan (false =
+   * the rescan was never reached and only the upper bound "the number not
+   * completed this pass" is known).
    */
   readonly remainingExact: boolean;
   /**
-   * 再暗号化を中断させた原因(null = 最後まで走った)。エポックが進んだ後の
-   * 失敗を例外として投げ捨てると、「エポックだけ進んで再暗号化が残っている」
-   * 事実が呼び出し側の部分完了警告を素通りしてしまうため、結果として返す。
+   * The cause that interrupted the re-encryption (null = ran to the end).
+   * Throwing a post-advance failure away as an exception would let the
+   * fact "only the epoch advanced and re-encryption remains" slip past the
+   * caller's partial-completion warning, so it is returned as a result.
    */
   readonly failure: string | null;
-  /** 受理された自分の書き込み(全巡の集約 — RotationSummary.written の材料)。 */
+  /** My accepted writes (aggregated across all passes — material for RotationSummary.written). */
   readonly written: readonly ReencryptedVariable[];
 }
 
-/** 409 を返された 1 変数(勝者の検証に要する既知 latest と申告 version を保つ)。 */
+/** One variable that got a 409 (keeps the known latest needed for verifying the winner and the claimed version). */
 interface ConflictedTarget {
   readonly variableId: string;
-  /** 競合時に自分が prev の基準にしていた検証済み値。 */
+  /** The verified value I used as the prev's basis at the conflict. */
   readonly known: VerifiedPulledValue;
-  /** 409 が申告した最新 version(勝者の整合検査の入力 — 採否の根拠にはしない)。 */
+  /** The latest version the 409 claimed (the input of the winner-consistency check — never the basis of adopt/reject). */
   readonly currentVersion: number;
 }
 
 /**
- * 理由文字列の早期検証。返り値の `null` は「`--reason` そのものが未指定」で、
- * 空文字列は返さない — **指定されたが空**(`--reason "$UNSET_VAR"` など)は
- * ここで落とす。両者を `""` に潰すと、ローテーションを要求した実行が
- * 「理由なしの確認だけ」の経路へ滑り込み、何も要求を送らないまま成功終了する
- * (退職者削除のスクリプトが、進んでいないエポックを進んだと受け取る)。
+ * Early validation of the reason string. A `null` return means
+ * "`--reason` itself was not given"; an empty string is never returned —
+ * **given but empty** (`--reason "$UNSET_VAR"` etc.) is dropped here.
+ * Collapsing both to `""` would let a run that requested a rotation slip
+ * into the "a check without a reason" path and exit successfully having
+ * sent no request (a departing-member removal script would read an
+ * unadvanced epoch as advanced). The length cap is the chain's free-text
+ * bound (§6.1). An entry over it is **invalid** (a consensus rule), so it
+ * is dropped here without waiting for the server's refusal.
  *
- * 長さ上限はチェーンの自由文字列上限(§6.1)。超えるエントリは**無効**
- * (合意規則)なので、サーバーの拒否を待たず手前で落とす。
- *
- * 「必須」判定はここでは行わない: 再開(新エントリを作らない)経路では reason は
- * 記録されず必須でもないため、必須検査は実際にエントリを署名する直前
- * (requireReason)に置く。壊れた状態からの復旧を、書き込まれないフィールドの
- * 欠落で拒否しない。
+ * The "required" judgment does not happen here: on the resume path (which
+ * creates no new entry) the reason is neither recorded nor required, so
+ * the required check sits right before the entry is actually signed
+ * (requireReason). Never refuse a recovery from a broken state on the
+ * absence of a field that would not be written.
  */
 function checkReasonLength(reason: string | undefined): Effect.Effect<string | null, CliError> {
   if (reason === undefined) {
     return Effect.succeed(null);
   }
-  // 書き方の誤りは usage エラー(2)。値そのものが空の形は共通の引数検査が
-  // 先に落とすので、ここへ来るのは空白だけ / 長すぎるの 2 つ
+  // A malformed spelling is a usage error (2). The common argument checks
+  // already drop a value that is empty itself, so the only shapes that
+  // reach here are whitespace-only / too long
   const trimmed = reason.trim();
   if (trimmed.length === 0) {
     return Effect.fail(
@@ -220,15 +239,16 @@ function checkReasonLength(reason: string | undefined): Effect.Effect<string | n
 }
 
 /**
- * 警告の重複排除。初回 pull と毎巡の再走査は同じ pull 全体の SHOULD 警告
- * (非 NFC 名など)を返すため、そのまま並べると同じ行が 4 回出て、実行固有の
- * 警告(並行削除・床の欠落)が埋もれる。
+ * Warning dedup. The first pull and each pass's rescan return the same
+ * pull-wide SHOULD warnings (non-NFC names etc.), so naively listing them
+ * prints the same line 4 times and buries the run-specific warnings
+ * (concurrent deletions, a missing floor).
  */
 function dedupeWarnings(warnings: readonly string[]): readonly string[] {
   return [...new Set(warnings)];
 }
 
-/** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
+/** Makes the reason required only on the path that creates a new epoch (part of the rotate_epoch payload). */
 function requireReason(reason: string | null): Effect.Effect<string, CliError> {
   if (reason === null) {
     return Effect.fail(
@@ -241,10 +261,11 @@ function requireReason(reason: string | null): Effect.Effect<string, CliError> {
 }
 
 /**
- * ローテーション可能性の早期検査: 環境のチェーン存在・自分が現メンバーである
- * こと・role が member 以上であること(§6.2)。pull(値の取得 = var.read の
- * 記録)より前に落とす。grant_server 有効時はラップ完全集合がサーバー鍵宛を
- * 含む(buildWrapCompleteSet — §12-4 / §7 の再ラップ義務)。
+ * Early check of rotatability: the environment exists on the chain, I am a
+ * current member, and my role is member or above (§6.2). Drops before the
+ * pull (fetching values = recording var.read). With grant_server enabled,
+ * the complete wrap set includes a server-key wrap (buildWrapCompleteSet —
+ * §12-4 / §7's re-wrap duty).
  */
 function ensureRotatable(
   verified: VerifiedProject,
@@ -253,7 +274,7 @@ function ensureRotatable(
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // メンバー性 + 端末の実効 role(member 以上)/ scope は env create と共有
+    // Membership + the device's effective role (member or above) / scope are shared with env create
     const { member } = yield* requireWritingMember({
       verified,
       environmentId,
@@ -268,7 +289,7 @@ function ensureRotatable(
   });
 }
 
-/** rotate_epoch エントリを現ヘッドの直後(seq = head + 1)に署名する。 */
+/** Signs a rotate_epoch entry right after the current head (seq = head + 1). */
 function signRotateEntry(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -279,7 +300,7 @@ function signRotateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
   return Effect.gen(function* () {
-    // 署名する端末の解決と署名は共通の 1 か所(chain-append.ts — DK K13-12)
+    // Resolving the signing device and signing share one place (chain-append.ts — DK K13-12)
     const signed = yield* signEntryAtHead({
       verified: input.verified,
       signerUserId: input.member.userId,
@@ -295,7 +316,7 @@ function signRotateEntry(input: {
       signingKeyPair: input.signingKeyPair,
       failureText: "Failed to sign the rotate_epoch entry",
     });
-    // op の絞り込み(signChainEntry は入力の op を保存する)
+    // Narrowing the op (signChainEntry persists the input's op)
     if (signed.op !== "rotate_epoch") {
       return yield* Effect.fail(cliError("Failed to sign the rotate_epoch entry"));
     }
@@ -304,46 +325,51 @@ function signRotateEntry(input: {
 }
 
 /**
- * 送信結果の判別可能な outcome。受理の確認は
- * チェーン上の自 DEK commitment の一致で行い(§12-10 (3) — 複合の効果確認は
- * チェーン同期)、accepted 系は**コマンドがエラー終了する経路でも**床
- * (自己発行マニフェスト)を前進させる材料になる。
+ * The discriminable outcomes of a send. Acceptance is confirmed by my own
+ * DEK commitment matching on the chain (§12-10 (3) — a composite's effect
+ * confirmation is a chain sync), and the accepted family becomes material
+ * for advancing the floor (my issued manifest) **even on a path where the
+ * command exits with an error**.
  */
 type RotateSendOutcome =
-  /** サーバー自身のエラー本文で拒否された(効果は生じていない — 確定)。 */
+  /** Refused with the server's own error body (no effect has occurred — settled). */
   | { readonly kind: "rejected" }
   /**
-   * 受理されていないことを確認した(確定)。チェーンが宣言ヘッドを越えて
-   * 進んでいる = この試行の CAS はもう成立しえない(prev は署名対象)。
+   * Confirmed it was not accepted (settled). The chain having advanced
+   * past the declared head = this attempt's CAS can no longer hold (the
+   * prev is signed).
    */
   | { readonly kind: "not-accepted" }
-  /** 受理を確認し、現エポック = 目標エポック(正常経路)。 */
+  /** Acceptance confirmed, and the current epoch = the target epoch (the normal path). */
   | { readonly kind: "accepted-and-current"; readonly view: VerifiedProject }
-  /** 受理を確認したが、別ローテーションが現エポックを追い越している。 */
+  /** Acceptance confirmed, but another rotation overtook the current epoch. */
   | { readonly kind: "accepted-but-superseded"; readonly view: VerifiedProject }
   /**
-   * チェーンがまだ宣言ヘッドのまま = 送信済みの複合が**まだ着地しうる**
-   * (応答は消えたが要求は輸送中でありうる)。not-accepted へ確定させない —
-   * intent(3-F)は未解決のまま残し、チェーンが動いた後の照合が確定する。
+   * The chain is still at the declared head = the sent composite **could
+   * still land** (the response vanished but the request may be in
+   * transit). Never settle to not-accepted — the intent (3-F) is left
+   * unresolved and the reconciliation after the chain moves settles it.
    */
   | { readonly kind: "send-pending" }
-  /** 受理の有無を確認できなかった(probe 失敗)— 床は前進させない。 */
+  /** Could not confirm acceptance (probe failure) — never advance the floor. */
   | { readonly kind: "acceptance-unknown" };
 
 /**
- * 複合の送信が CAS 以外の理由で失敗したときの probe。**「届かなかった」とは
- * 限らない**(応答の消失・502 / 504)ので、チェーンを見て実際に受理されたかを
- * 確かめてから言う。素の転送エラーだけを出すと、「エポックだけ進んで再暗号化は
- * 0 件」という最も危険な状態を「何も起きなかった」と読ませてしまう。
+ * The probe for when the composite send failed for a non-CAS reason.
+ * **"It didn't arrive" is not guaranteed** (a vanished response, 502 /
+ * 504), so check the chain for whether it was actually accepted before
+ * saying anything. Emitting only the raw transport error would present
+ * the most dangerous state — "only the epoch advanced, zero
+ * re-encryptions" — as "nothing happened".
  */
 function probeAmbiguousSend(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly baseline: VerifiedProject;
   readonly environmentId: string;
   readonly newEpoch: number;
-  /** 自分が生成した DEK のコミットメント(受理されたのが**自分の**分かの判定)。 */
+  /** The commitment of the DEK I generated (judges whether **mine** was the accepted share). */
   readonly dekCommitmentHex: string;
-  /** 応答が消えた試行の宣言ヘッド(= 複合の CAS 親)。着地可能性の判定材料。 */
+  /** The declared head of the attempt whose response vanished (= the composite's CAS parent). Material for judging landing-possibility. */
   readonly declaredHead: { readonly seq: number; readonly hashHex: string };
   readonly cause: string;
 }): Effect.Effect<{ readonly outcome: RotateSendOutcome; readonly error: CliError }, never> {
@@ -363,11 +389,12 @@ function probeAmbiguousSend(input: {
         ),
       };
     }
-    // 判定は**コミットメントの一致**で行い、現エポックの値では見ない。
-    // dekCommitments は全エポック分を持つので、受理後にさらに他メンバーが
-    // ローテーションして現エポックが目標を追い越していても、自分の分が載って
-    // いれば受理済みと分かる — 現エポックの一致を条件にすると、その場合に
-    // 「受理されていません」と報告してしまう(エポックは進み、再暗号化は 0 件)
+    // The judgment is a **commitment match** — never read off the current
+    // epoch's value. dekCommitments holds every epoch, so even when another
+    // member rotated further after acceptance and the current epoch has
+    // overtaken the target, seeing my share there settles it as accepted —
+    // conditioning on the current epoch matching would report "not
+    // accepted" in that case (the epoch advanced, zero re-encryptions)
     if (probe.value.environment.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex) {
       const superseded = probe.value.environment.currentEpoch > input.newEpoch;
       return {
@@ -387,11 +414,13 @@ function probeAmbiguousSend(input: {
         ),
       };
     }
-    // 現エポックが目標未満: 確定の可否は宣言ヘッド位置で分かれる。チェーンが
-    // 宣言ヘッドを越えて進んでいれば、この試行の CAS はもう成立しえない(確定
-    // 拒否)。宣言ヘッドのまま(スロットが空)なら、輸送中の要求が後から着地
-    // しうる — not-accepted へ確定させない(intent は未解決のまま残り、
-    // チェーンが動いた後の照合が確定する)
+    // The current epoch below the target: settleability splits on the
+    // declared-head position. If the chain has advanced past the declared
+    // head, this attempt's CAS can no longer hold (settled refusal). If it
+    // is still at the declared head (the slot is open), an in-transit
+    // request could still land — never settle to not-accepted (the intent
+    // stays unresolved and the reconciliation after the chain moves
+    // settles it)
     if (probe.value.view.state.headSeq > input.declaredHead.seq) {
       return {
         outcome: { kind: "not-accepted" } as const,
@@ -409,37 +438,41 @@ function probeAmbiguousSend(input: {
   });
 }
 
-/** CAS リトライの状態: 検証ビュー・自分のメンバー行・新エポックのラップ集合。 */
+/** The CAS-retry state: the verification view, my member row, and the new epoch's wrap set. */
 interface RotateState {
   readonly verified: VerifiedProject;
   readonly member: ChainMember;
   readonly deks: readonly WrappedDek[];
 }
 
-/** 複合受理の結果(受理時点の状態を持ち帰り、受理後の再同期の基準にする)。 */
+/** The composite-acceptance result (carries back the state at acceptance as the baseline of the post-acceptance resync). */
 interface AcceptedRotation {
   readonly state: RotateState;
-  /** 受理された同梱マニフェストの床記録(自計算値 — §6.3 の規則 (a)(b)(c) の材料)。 */
+  /** The floor record of the accepted bundled manifest (self-computed — material for §6.3's rules (a)(b)(c)). */
   readonly manifest: ManifestFloor;
-  /** 送信前に追記した intent(3-F)の id。効果確認の結果が閉じる。 */
+  /** The id of the intent (3-F) appended before the send. The effect confirmation's result closes it. */
   readonly intentId: string;
-  /** この試行の宣言ヘッド(= 複合の CAS 親。probe の着地可能性判定の材料)。 */
+  /** This attempt's declared head (= the composite's CAS parent. Material for the probe's landing-possibility judgment). */
   readonly declaredHead: { readonly seq: number; readonly hashHex: string };
 }
 
 /**
- * 境界 checkpoint の values_digest 突合(§12-4)の 422 の目印。宣言ヘッド確定後の
- * 並行 push が現在値を進めた形で、再署名では解決しない(値集合の再取得を要する)。
- * envRotateOp の有界再試行(検証済み pull からのやり直し — §12-4 の指定)が
- * 型で拾えるよう CliError を細分化する(toCliError は CliError を素通しするため、
- * retryOnConflict の未分類経路を跨いでも型が保たれる)。
+ * The 422 marker of the boundary checkpoint's values_digest cross-check
+ * (§12-4): the shape where a concurrent push advanced the current values
+ * after the declared head settled — a re-sign does not resolve it
+ * (re-fetching the value set is required). CliError is subclassed so
+ * envRotateOp's bounded retry (redoing from a verified pull — §12-4's
+ * specification) can catch it by type (toCliError passes CliError
+ * through, so the type survives even across retryOnConflict's
+ * unclassified path).
  */
 class RotateValuesConflictError extends CliError {}
 
 /**
- * 削除済み(tombstone)環境への rotate は 404(§12-4)。チェーンは環境の存在を
- * 主張しているのにサーバーが 404 を返す形なので、§7 の規律どおり「黙って
- * スキップせず中断して警告する」— 汎用の「環境が見つかりません」に潰さない。
+ * A rotate into a deleted (tombstone) environment is a 404 (§12-4). The
+ * shape is "the chain asserts the environment exists but the server
+ * returned 404", so per §7's discipline "never skip silently — interrupt
+ * and warn" — never collapse it into the generic "environment not found".
  */
 function mapRotateFailure(environmentId: string): (error: unknown) => unknown {
   return (error) => {
@@ -449,32 +482,37 @@ function mapRotateFailure(environmentId: string): (error: unknown) => unknown {
       );
     }
     if (error instanceof ManifestVersionConflictError) {
-      // 同梱マニフェストの CAS 競合(§12-5 (6)) = 発行と受理の間に別のメタ操作
-      // (変数の作成・rename・削除・環境 rename)が挟まった。メタ集合が変わって
-      // いる可能性があるため、この実行内での再署名では解決しない — 再実行で
-      // メタ状態を取り直す(チェーン CAS の 409 と違い、materialの再取得を要する)
+      // A CAS conflict on the bundled manifest (§12-5 (6)) = another meta
+      // operation (a variable create / rename / delete / an environment
+      // rename) was interposed between issuance and acceptance. Since the
+      // meta set may have changed, re-signing within this run cannot
+      // resolve it — a re-run re-fetches the meta state (unlike a chain
+      // CAS 409, the material must be re-fetched)
       return cliError(
         `A concurrent meta operation advanced environment ${environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run \`maruhi env rotate\` to rebuild the manifest from the refreshed state`,
       );
     }
     if (error instanceof CheckpointStateMismatchError) {
-      // 境界 checkpoint の values_digest 突合の 422(§12-4)。envRotateOp が
-      // 検証済み pull からの有界再試行で拾う(exhausted 時はこの文面がそのまま出る)
+      // The 422 of the boundary checkpoint's values_digest cross-check
+      // (§12-4). envRotateOp picks it up via a bounded retry from a
+      // verified pull (on exhaustion this wording surfaces as-is)
       return new RotateValuesConflictError({
         message: `A concurrent push advanced environment ${environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
       });
     }
-    // ChainHeadConflict 等の分類対象はそのまま通す(retryOnConflict の classify)
+    // Classification targets like ChainHeadConflict pass through as-is (retryOnConflict's classify)
     return error;
   };
 }
 
 /**
- * `rotate_epoch` 複合の送信(§12-4)。親ヘッド CAS 失敗は再同期 → エントリ
- * 再署名でリトライし(ラップ集合はメンバー集合が変わった場合のみ作り直す)、
- * 受理後は再同期して「チェーン導出の現エポックが新エポックであること」と
- * 「そのエポックのコミットメントが自分の生成した DEK のものであること」
- * (§5.2 — 照合まで DEK を使わない規律の自己生成 DEK への適用)を確認する。
+ * Sending the `rotate_epoch` composite (§12-4). A parent-head CAS failure
+ * retries via resync → re-sign the entry (the wrap set is rebuilt only
+ * when the member set changed), and after acceptance it resyncs and
+ * confirms "the chain-derived current epoch is the new epoch" and "that
+ * epoch's commitment is the DEK I generated" (§5.2 — applying to a
+ * self-generated DEK the discipline of never using a DEK before the
+ * match).
  */
 function appendRotation(
   input: RotateInput & {
@@ -485,9 +523,11 @@ function appendRotation(
     readonly dek: Redacted.Redacted<Uint8Array>;
     readonly dekCommitmentHex: string;
     /**
-     * 同梱マニフェスト(§12-4)の材料: 検証済み pull 由来の直前マニフェスト
-     * (null = 移行経路の v1 初期化)・現在のメタ集合(tombstone 込み)・
-     * 環境メタの最新形。メタ集合は rotate で不変(§4.3 — エポック前進の反映のみ)。
+     * The bundled-manifest (§12-4) material: the previous manifest from a
+     * verified pull (null = the migration path's v1 initialization), the
+     * current meta set (tombstones included), and the latest shape of the
+     * environment meta. The meta set is unchanged by a rotate (§4.3 — only
+     * the epoch advance is reflected).
      */
     readonly manifestBase: {
       readonly previous: {
@@ -498,10 +538,11 @@ function appendRotation(
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
     /**
-     * 境界 checkpoint(§12-4)の values_digest 材料: 検証済み pull の
-     * 値レベル最新形(active 変数のみ。未再暗号化 = 旧エポックの現在値 — §12-7 の
-     * 正当な状態)。再暗号化のために実読した値そのもので、追加の読み取りは
-     * 発生しない。
+     * The boundary-checkpoint (§12-4) values_digest material: the
+     * value-level latest form of the verified pull (active variables only.
+     * Not-yet-re-encrypted = a legitimate state of §12-7 — an old epoch's
+     * current value). It is the very values actually read for
+     * re-encryption, so no additional reads happen.
      */
     readonly checkpointValues: readonly EnvValuesDigestEntry[];
   },
@@ -510,12 +551,13 @@ function appendRotation(
     readonly view: VerifiedProject;
     readonly memberCount: number;
     /**
-     * **受理に使った**自分のメンバー行。CAS リトライで再同期した場合、呼び出し
-     * 側が最初に持っていた行とは鍵フィンガープリントが違いうる — 以後の書き込みの
-     * 帰属(台帳の writer)はこちらを使う。
+     * My member row **used for acceptance**. On a resync under CAS retry,
+     * it may have a different key fingerprint than the row the caller
+     * first held — the attribution of subsequent writes (the ledger's
+     * writer) uses this one.
      */
     readonly member: ChainMember;
-    /** マニフェスト床コミットの失敗警告(null = 成功)。呼び出し側が sink へ積む。 */
+    /** The manifest-floor-commit failure warning (null = success). The caller accumulates it into the sink. */
     readonly floorWarning: string | null;
   },
   CliError
@@ -531,15 +573,19 @@ function appendRotation(
         signingKeyPair: input.signingKeyPair,
       });
 
-    // 送信が「届いたかどうか不明」か(= 受理確認のプローブが要るか)。**送信を
-    // 試みたときだけ**立てる: 署名の失敗など送信前の失敗にプローブを走らせると、
-    // ローカルな失敗に「届いているかもしれません」と付けてチェーンを取り直す。
-    // 送信した場合は「サーバー自身のエラー本文で拒否された」ときだけ確定側へ倒す
-    // (CAS 競合も確定側 — 受理されていないことが分かっているので、その後の
-    // recover の中断(並行ローテーション検出)にもプローブは要らない)
+    // Whether the send was "arrival unknown" (= whether an
+    // acceptance-confirmation probe is needed). **Set only when a send was
+    // attempted**: probing on a pre-send failure like a signing failure
+    // would attach "it may have arrived" to a local failure and re-fetch
+    // the chain. When it did send, only "refused with the server's own
+    // error body" goes to the settled side (a CAS conflict is also settled
+    // — we know it was not accepted, so the recover's interruption
+    // (concurrent-rotation detection) after it needs no probe either)
     let ambiguousSend = false;
-    // 直近の送信試行の intent とマニフェスト(自計算値)。応答が消えた試行の
-    // 受理が probe で確認できたとき、床の前進材料と resolution の対象になる
+    // The latest send attempt's intent and manifest (self-computed). When
+    // the probe confirms the acceptance of an attempt whose response
+    // vanished, they become the floor-advance material and the resolution
+    // target
     let lastSent: AcceptedRotation | null = null;
     const attempted = yield* asOutcome(
       retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
@@ -557,9 +603,11 @@ function appendRotation(
                 member: state.member,
                 signingKeyPair: input.signingKeyPair,
               });
-              // 新エポックを焼き込んだマニフェスト(§12-4 / §4.3 — メタ集合は
-              // 不変でもエポック前進を反映して再発行する)。宣言ヘッドは追記前の
-              // 現ヘッド。CAS リトライではエントリとマニフェストの両方を再署名する
+              // The manifest with the new epoch baked in (§12-4 / §4.3 —
+              // re-issued reflecting the epoch advance even though the meta
+              // set is unchanged). The declared head is the current head
+              // before the append. Under CAS retry both the entry and the
+              // manifest are re-signed
               const manifest = yield* signNextManifest({
                 verified: state.verified,
                 environmentId: input.environmentId,
@@ -574,10 +622,12 @@ function appendRotation(
                   hashHex: state.verified.state.headHashHex,
                 },
               });
-              // journal-before-send(3-F): security-critical mutation の送信前に
-              // intent を追記する(永続化に失敗したら送信しない — fail-closed)。
-              // クラッシュ・応答消失で失われるのは「成功したという思い込み」では
-              // なく「確認義務の記録」になり、次の実行の照合(チェーン同期)が解決する
+              // journal-before-send (3-F): the intent is appended before
+              // sending a security-critical mutation (never send when
+              // persisting failed — fail-closed). What a crash / vanished
+              // response loses is not "the belief it succeeded" but "the
+              // record of the confirmation duty", which the next run's
+              // reconciliation (a chain sync) resolves
               const intentId = yield* input.floor.appendIntent({
                 op: "rotate_epoch",
                 environmentId: input.environmentId,
@@ -591,9 +641,11 @@ function appendRotation(
                   hashHex: state.verified.state.headHashHex,
                 },
               });
-              // 境界 checkpoint(H+2 — §12-4): 当該環境 1 タプル(new_epoch・
-              // 同梱マニフェストの版とハッシュ・実読済み現在値の values_digest)。
-              // CAS リトライではエントリ・マニフェストとともに再署名する
+              // The boundary checkpoint (H+2 — §12-4): the one tuple of
+              // this environment (new_epoch, the bundled manifest's
+              // version and hash, and the values_digest of the
+              // actually-read current values). Under CAS retry it is
+              // re-signed together with the entry and the manifest
               const checkpoint = yield* signBoundaryCheckpoint({
                 compositeEntry: entry,
                 environmentId: input.environmentId,
@@ -636,9 +688,11 @@ function appendRotation(
                 })
                 .pipe(
                   Effect.tapError((error) =>
-                    // サーバー自身のエラー本文での拒否(CAS 409 含む)= 効果は
-                    // 生じていない(確定)— intent を閉じる。resolution の追記
-                    // 失敗は握り潰してよい: intent が開いたまま残る方向は安全側
+                    // A refusal with the server's own error body (a CAS
+                    // 409 included) = no effect has occurred (settled) —
+                    // close the intent. A resolution-append failure may be
+                    // swallowed: the direction where the intent stays open
+                    // is the safe side
                     isServerRejection(error)
                       ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
                       : Effect.void,
@@ -650,8 +704,10 @@ function appendRotation(
                 );
               return sent;
             }),
-          // AuditHeadNotReady(503)は CAS 競合と同じ回復(再同期 + 再署名 +
-          // 再送)で前進する — 理由・防御的分類の趣旨は env-create.ts と同じ
+          // AuditHeadNotReady (503) advances with the same recovery as a
+          // CAS conflict (resync + re-sign + re-send) — the reason and the
+          // defensive classification's intent are the same as
+          // env-create.ts's
           classify: (error) =>
             error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
               ? "head-conflict"
@@ -667,10 +723,11 @@ function appendRotation(
               );
               const environment = yield* requireChainEnvironment(resynced, input.environmentId);
               if (environment.currentEpoch + 1 !== input.newEpoch) {
-                // 他メンバーが並行してローテーションした。生成済みの新 DEK・
-                // コミットメント・ラップ集合は当該エポック専用(§5 の info /
-                // §5.2 の原像に epoch が入る)なので流用せず中断する。再実行は
-                // 未完了の再暗号化があればエポックを進めずに再開する
+                // Another member rotated concurrently. The generated new
+                // DEK, commitment, and wrap set are dedicated to that epoch
+                // (§5's info / §5.2's preimage carry the epoch), so abort
+                // without reusing them. A re-run resumes without advancing
+                // the epoch if an unfinished re-encryption exists
                 return yield* Effect.fail(
                   cliError(
                     `Detected a concurrent rotation by another member (environment ${input.environmentId} is now at epoch ${environment.currentEpoch}). The newly generated DEK will not be used; aborting — please re-run`,
@@ -682,31 +739,35 @@ function appendRotation(
                 : yield* buildWraps(resynced);
               return { verified: resynced, member, deks };
             }),
-          // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
-          // (到達可能になった場合の誤案内を防ぐ)
+          // AuditHeadNotReady also cycles under the same classification,
+          // so the wording stays faithful to both causes (prevents a wrong
+          // guidance if it ever becomes reachable)
           exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
         },
       ),
     );
     if (attempted.kind === "failed") {
-      // 確定した拒否(サーバー自身のエラー本文)や、recover が下した中断
-      // (並行ローテーション検出 — 既に再同期してチェーンを見ている)は、
-      // 受理の有無が分かっているので追加のプローブも案内も要らない。
-      // 「そのまま再実行できます」を §7 の中断メッセージへ足さないための分岐でもある
+      // A settled refusal (the server's own error body) or an abort
+      // decided by recover (concurrent-rotation detection — the chain was
+      // already resynced and observed) know whether acceptance happened,
+      // so they need no extra probe or guidance. It is also the branch
+      // that keeps "you can re-run as-is" off the §7 interruption message
       if (!ambiguousSend || lastSent === null) {
         return yield* Effect.fail(attempted.error);
       }
-      // 送信の失敗を「何も起きなかった」と読ませない: チェーンを probe して
-      // 判別可能な outcome へ落とし、必ず失敗として返す
+      // Never let a send failure read as "nothing happened": probe the
+      // chain, drop to a discriminable outcome, and always return a
+      // failure
       return yield* settleAmbiguousRotation(input, lastSent, attempted.error.message);
     }
-    // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で
-    // 行う(§12-10 (3) — 複合の効果確認はチェーン同期)
+    // The post-acceptance confirmation uses chain re-verification, not
+    // the server's claim (the response's currentEpoch) (§12-10 (3) — a
+    // composite's effect confirmation is a chain sync)
     return yield* confirmAcceptedRotation(input, attempted.value);
   });
 }
 
-/** 判別可能 outcome の共有入力(appendRotation の確認・probe 経路が使う)。 */
+/** The shared input of a discriminable outcome (used by appendRotation's confirmation and the probe path). */
 interface RotationConfirmInput {
   readonly floor: FloorHandle;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -717,10 +778,12 @@ interface RotationConfirmInput {
 }
 
 /**
- * 受理確認済みマニフェストの床昇格(§6.3 記録契機の「受理確認」。
- * コマンドがエラー終了する経路でも、チェーン上の自 commitment 一致を確認
- * できた時点で必ず走る)。床の書き込み失敗で受理済みのローテーションを
- * 失敗扱いにしない(床は SHOULD — 警告で開示)。
+ * The floor promotion of an acceptance-confirmed manifest (the
+ * "acceptance confirmed" recording trigger of §6.3. Runs unconditionally
+ * the moment the on-chain own-commitment match is confirmed, even on a
+ * path where the command exits with an error). A floor write failure
+ * never turns an already-accepted rotation into a failure (the floor is a
+ * SHOULD — disclosed as a warning).
  */
 function promoteAcceptedManifest(
   floor: FloorHandle,
@@ -743,8 +806,9 @@ function promoteAcceptedManifest(
 }
 
 /**
- * intent(3-F)の解決。resolution の追記失敗は握り潰してよい: intent が
- * 開いたまま残る方向は安全側(次の実行の照合が同じ判定をやり直すだけ)。
+ * Resolving an intent (3-F). A resolution-append failure may be
+ * swallowed: the direction where the intent stays open is the safe side
+ * (the next run's reconciliation just redoes the same judgment).
  */
 function resolveRotationIntent(
   floor: FloorHandle,
@@ -755,10 +819,12 @@ function resolveRotationIntent(
 }
 
 /**
- * 応答が消えた送信の決着: チェーンを probe して判別可能な outcome へ
- * 落とす。accepted 系はコマンドがエラー終了しても床を前進させ、intent を閉じる。
- * acceptance-unknown は床を前進させず intent も未解決のまま残す(受理を確認して
- * いない事実を床に書かない — 次の実行の照合〔チェーン同期〕が解決する)。
+ * Settling a send whose response vanished: probe the chain and drop to a
+ * discriminable outcome. The accepted family advances the floor and
+ * closes the intent even when the command exits with an error.
+ * acceptance-unknown neither advances the floor nor resolves the intent
+ * (never write an unconfirmed acceptance into the floor — the next run's
+ * reconciliation [a chain sync] resolves it).
  */
 function settleAmbiguousRotation(
   input: RotationConfirmInput,
@@ -777,8 +843,9 @@ function settleAmbiguousRotation(
     });
     const outcome = probed.outcome;
     if (outcome.kind === "accepted-and-current" || outcome.kind === "accepted-but-superseded") {
-      // 受理をチェーンで確認した = コマンドがエラー終了しても床は前進する
-      // (受理前の manifest / epoch 基準へ戻される窓を閉じる)
+      // Acceptance confirmed on the chain = the floor advances even when
+      // the command exits with an error (closes the window that would roll
+      // it back to the pre-acceptance manifest / epoch baseline)
       const floorWarning = yield* promoteAcceptedManifest(input.floor, sent, outcome.view);
       yield* resolveRotationIntent(
         input.floor,
@@ -792,16 +859,18 @@ function settleAmbiguousRotation(
     if (outcome.kind === "not-accepted") {
       yield* resolveRotationIntent(input.floor, sent, "not-accepted");
     }
-    // send-pending / acceptance-unknown は確定させない: intent(3-F)は未解決の
-    // まま残り、次の実行の照合(チェーン同期)が accepted / rejected を確定する
+    // send-pending / acceptance-unknown are never settled: the intent
+    // (3-F) stays unresolved and the next run's reconciliation (a chain
+    // sync) settles accepted / rejected
     return yield* Effect.fail(probed.error);
   });
 }
 
 /**
- * 200 が返った複合の受理後確認(§12-10 (3) — チェーン同期)。ここから先の
- * 失敗は**エポックが既に進んだ後**の失敗なので、原因だけ出して「エポックが
- * 動いた・再暗号化は未実行」という運用状態を伝え損ねない。
+ * The post-acceptance confirmation of a composite that got a 200 (§12-10
+ * (3) — a chain sync). Any failure from here on is a failure **after the
+ * epoch already advanced**, so it surfaces only the cause without losing
+ * the operational state "the epoch moved, re-encryption is not done".
  */
 function confirmAcceptedRotation(
   input: RotationConfirmInput,
@@ -828,17 +897,19 @@ function confirmAcceptedRotation(
       }),
     );
     if (resynced.kind === "failed") {
-      // acceptance-unknown 相当(2xx は輸送層の事実でしかない — §12-10 (3))。
-      // 効果を配布物で確認できていないため床は前進させず、intent も未解決の
-      // まま残す(次の実行の照合が解決する)
+      // Equivalent to acceptance-unknown (a 2xx is only a transport-layer
+      // fact — §12-10 (3)). Since the effect could not be confirmed on the
+      // distribution, the floor is not advanced and the intent stays
+      // unresolved (the next run's reconciliation resolves it)
       return yield* Effect.fail(postCheckError(resynced.error.message));
     }
     const { view, environment } = resynced.value;
     if (environment.dekCommitments.get(input.newEpoch) !== input.dekCommitmentHex) {
-      // §5.2: コミットメント照合に成功するまで DEK をいかなる暗号操作にも使わない。
-      // 自分で生成した DEK にも同じ規律を適用する(受理されたエントリが自分の
-      // ものであることの確認 = 再暗号化を他人の DEK 前提で始めない)。
-      // 2xx なのにチェーンに自分の commitment がない = 受理されていない(確定)
+      // §5.2: never use a DEK in any cryptographic operation until the
+      // commitment match succeeds. The same discipline applies to a
+      // self-generated DEK (confirming the accepted entry is mine = never
+      // start re-encryption on someone else's DEK). A 2xx without my
+      // commitment on the chain = not accepted (settled)
       yield* resolveRotationIntent(input.floor, accepted, "not-accepted");
       return yield* Effect.fail(
         postCheckError(
@@ -847,9 +918,10 @@ function confirmAcceptedRotation(
       );
     }
     if (environment.currentEpoch !== input.newEpoch) {
-      // accepted-but-superseded: 自分の rotate は受理された(commitment 一致)が、
-      // 直後の別 rotate が現エポックを追い越した。自己発行マニフェストは最低床
-      // として残す(固定テスト:「200 + 直後に別 rotate」)
+      // accepted-but-superseded: my rotate was accepted (commitment
+      // match), but an immediately-following different rotate overtook
+      // the current epoch. Keep the self-issued manifest as a minimum
+      // floor (pinned test: "200 + another rotate right after")
       const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
       yield* resolveRotationIntent(input.floor, accepted, "accepted-superseded");
       return yield* Effect.fail(
@@ -858,8 +930,9 @@ function confirmAcceptedRotation(
         ),
       );
     }
-    // accepted-and-current: 床昇格 → intent 解決 → 成功(§12-10 (3) — 床への
-    // 記録と成功報告は効果確認の通過後のみ)
+    // accepted-and-current: floor promotion → intent resolution → success
+    // (§12-10 (3) — recording into the floor and reporting success only
+    // after the effect confirmation passes)
     const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
     yield* resolveRotationIntent(input.floor, accepted, "accepted");
     return {
@@ -872,16 +945,19 @@ function confirmAcceptedRotation(
 }
 
 /**
- * 再暗号化材料の準備(復号 + 開けなかった値の警告)。
+ * Preparing the re-encryption material (decryption + warning for the values that could not be opened).
  *
- * 「開けない」= **自分宛に当該エポックのラップが無い**場合だけである
- * (それ以外の復号失敗は decryptTargets が即時中断する)。これは別メンバーなら
- * 開ける良性の欠落なので、1 件のために全体を止めない — 失効操作で守れる範囲まで
- * 自ら捨てることになるためで、開けなかった分は部分完了として報告する。
+ * "Cannot open" = **only when no wrap of that epoch is addressed to me**
+ * (any other decryption failure makes decryptTargets abort immediately).
+ * Since this is a benign absence another member can open, the whole run is
+ * never stopped for one — a revocation operation would otherwise give up
+ * the range it could protect; the unopened share is reported as a partial
+ * completion.
  *
- * この状況が起こりうるのは §12-7 の過渡状態(旧エポックの値が残っている)だけで、
- * 通常のローテーション経路(旧エポックの値が無い = 全値が現エポック)では
- * 現エポックの DEK を必ず持っているため発生しない。
+ * This situation can only arise in §12-7's transitional state (an
+ * old-epoch value remains). On the normal rotation path (no old-epoch
+ * values = every value at the current epoch) it never happens, since the
+ * current epoch's DEK is always held.
  */
 function decryptForRotation(input: {
   readonly verified: VerifiedProject;
@@ -901,10 +977,12 @@ function decryptForRotation(input: {
 }
 
 /**
- * 1 つも再暗号化できないならエポックを進めない。進めても全ての現在値が旧エポックの
- * DEK のまま取り残されるだけで、**失効にならない**(自分宛ラップが 1 つも無い
- * メンバー / 全ラップを落とす応答で、エポックだけが空回りする)。--new-epoch も
- * 助けにならない — 開ける値が無い以上、再暗号化する材料が無い。
+ * If nothing can be re-encrypted, never advance the epoch. Advancing
+ * would only strand every current value on the old epoch's DEK — **not a
+ * revocation** (a member with no wraps addressed to them / a response that
+ * dropped every wrap, spinning only the epoch). --new-epoch doesn't help
+ * either — with no value that can be opened, there is no material to
+ * re-encrypt.
  */
 function ensureRotationIsUseful(targets: number, variables: number): Effect.Effect<void, CliError> {
   if (targets > 0 || variables === 0) {
@@ -918,15 +996,16 @@ function ensureRotationIsUseful(targets: number, variables: number): Effect.Effe
 }
 
 /**
- * 「1 つも開けない」ことの文面。**1 箇所に固定する**(通常経路の中断と再開経路の
- * 早期切り上げが同じ事実を言うため — 割れると dedupeWarnings が同じ状況について
- * 似て非なる 2 行を通す)。
+ * The wording of "nothing can be opened". **Pinned to one place** (the
+ * normal path's abort and the resume path's early cut-off state the same
+ * fact — split, and dedupeWarnings would pass two lookalike lines about
+ * the same situation).
  */
 function nothingDecryptable(variables: number): string {
   return `No values can be re-encrypted (wraps addressed to you are missing for all ${countNoun(variables, "variable")})`;
 }
 
-/** タグ付き失敗からメッセージだけを取り出す(null 伝播)。 */
+/** Extracts just the message from a tagged failure (null-propagating). */
 function failureMessage(
   failure: { readonly variableId: string; readonly message: string } | null,
 ): string | null {
@@ -934,9 +1013,10 @@ function failureMessage(
 }
 
 /**
- * 巡末の実態で裏を取った push 失敗だけを原因候補にする。並行削除(404)のように
- * **その変数自体が解決している**失敗を原因として掲げると、実際に未完了で残って
- * いる別の変数(競合など)の本当の原因を隠してしまう。
+ * Only a push failure corroborated by the end-of-pass reality becomes a
+ * cause candidate. Listing a failure whose **variable resolved itself**
+ * (like a concurrent deletion's 404) as the cause hides the real cause of
+ * another variable that is actually still unfinished (a conflict, etc.).
  */
 function pendingFailure(
   failure: { readonly variableId: string; readonly message: string } | null,
@@ -949,9 +1029,11 @@ function pendingFailure(
 }
 
 /**
- * 未完了の原因の優先順: push の失敗 > 開けない値 > 競合(既定文言 = null)。
- * 開けない値を競合に潰すと、存在しない並行 writer を追わせることになる —
- * 実際に要るのは「当該エポックのラップを持つ別メンバーによる再実行」である。
+ * The priority of an incompleteness cause: a push failure > unopenable
+ * values > a conflict (the default wording = null). Folding an unopenable
+ * value into "conflict" would send the user chasing a nonexistent
+ * concurrent writer — what is actually needed is "a re-run by another
+ * member who holds that epoch's wrap".
  */
 function blockingCause(
   pushFailure: string | null,
@@ -961,8 +1043,10 @@ function blockingCause(
 }
 
 /**
- * 未完了で終わった実行の締め。原因(blockingFailure)がある場合はそれが報告され
- * るので何もせず、無い場合だけ「起きたがもう原因ではない失敗」を警告に残す。
+ * Closing a run that ended incomplete. When there is a cause
+ * (blockingFailure) it is reported and nothing happens here; only without
+ * one, the "failure that happened but is no longer the cause" is left as
+ * a warning.
  */
 function noteStaleFailures(
   warnings: string[],
@@ -972,7 +1056,7 @@ function noteStaleFailures(
   if (blockingFailure !== null) {
     return;
   }
-  // 最終巡に失敗がない = 残っているのは競合分。過去の失敗は原因ではない
+  // No failure on the last pass = what remains is the conflicts. Past failures are not the cause
   noteResolvedFailure(
     warnings,
     seenFailure,
@@ -981,39 +1065,44 @@ function noteStaleFailures(
 }
 
 /**
- * 未完了が残っているのに押せる対象が 1 つも無い状態か(= 復号できない値だけが
- * 残っている)。残りの巡を回しても pull を繰り返すだけで前進しない。
- * 最終巡の targets は「復号しない」ので常に空 — 判定するのは復号を試みた巡だけ。
+ * Whether the state is "unfinished work remains yet nothing can be
+ * pushed" (= only undecryptable values are left). Cycling the remaining
+ * passes would just repeat pulls without progress. The final pass's
+ * targets is always empty since it "does not decrypt" — the judgment
+ * looks only at passes that attempted decryption.
  */
 function stalledOnUndecryptable(pending: readonly ReencryptTarget[], pass: number): boolean {
   return pending.length === 0 && pass < MAX_REENCRYPT_PASSES;
 }
 
 /**
- * 復号できなかった値の警告文。**1 箇所に固定する**: 同じ変数が経路ごとに
- * 少しずつ違う文面で警告されると、dedupeWarnings(集合)は別物として通してしまい、
- * 重複排除のために入れた仕組みがそのまま重複を出すことになる。
+ * The warning text of undecryptable values. **Pinned to one place**: when
+ * the same variable is warned with slightly different wording per path,
+ * dedupeWarnings (a set) would pass them as distinct — the mechanism put
+ * in for dedup would itself emit the duplicates.
  */
 function undecryptableWarning(reason: string): string {
   return `Some values cannot be re-encrypted (${reason}). These variables remain under old-epoch DEKs — a member holding wraps for those epochs must re-run this`;
 }
 
-/** 復号の結果。開けなかった値は「再暗号化できない値」として数と理由を持ち帰る。 */
+/** The decryption result. Unopened values come back as "undecryptable values" with a count and a reason. */
 interface DecryptOutcome {
   readonly targets: readonly ReencryptTarget[];
   /**
-   * **自分宛に当該エポックのラップが無い**ために開けなかった値の理由。
-   * これは良性の欠落(別メンバーなら開ける)なので、1 件で全体を落とさない —
-   * ローテーションは失効操作であり、開けない値が 1 つあるからといって開ける
-   * 99 件を旧 DEK のまま残すのは、守れる範囲を自ら捨てることになる。
-   *
-   * **ラップを持っているのに開けない場合はここに入らない**(暗号文の差し替え・
-   * 検証済みビューとの不整合の可能性であり、pull / run と同じく即時中断する)。
+   * The reason of a value that could not be opened because **no wrap of
+   * that epoch is addressed to me**. This is a benign absence (another
+   * member can open it), so one item never drops the whole run — a
+   * rotation is a revocation operation, and leaving 99 openable values on
+   * the old DEK because 1 cannot be opened gives up the range that could
+   * be protected. **A value that cannot be opened despite holding the
+   * wrap never enters here** (a possible ciphertext substitution or
+   * inconsistency with the verified view — an immediate abort, same as
+   * pull / run).
    */
   readonly undecryptable: readonly string[];
 }
 
-/** 検証済み最新値の復号(再暗号化の材料づくり)。復号規律は pull と共有する。 */
+/** Decrypting the verified latest values (the re-encryption material). The decryption discipline is shared with pull. */
 function decryptTargets(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -1025,19 +1114,24 @@ function decryptTargets(input: {
     const targets: ReencryptTarget[] = [];
     const undecryptable: string[] = [];
     for (const value of input.values) {
-      // 良性の欠落(自分宛ラップが無い)だけを「開けない値」として飛ばす。
-      // ラップを持っているのに復号が失敗するのは、AEAD 認証の失敗(暗号文の
-      // 差し替え)か検証済みビューとの不整合であり、pull / run と同じく
-      // 即時中断する — これを「別メンバーの再実行待ち」に潰すと、差し替えの
-      // 兆候を良性の運用待ちとして報告し、--new-epoch で踏み越えるよう案内する
-      // ことになる
+      // Only a benign absence (no wrap addressed to me) is skipped as an
+      // "unopenable value". A decryption failure despite holding the wrap
+      // is an AEAD authentication failure (a ciphertext substitution) or
+      // an inconsistency with the verified view, and aborts immediately
+      // like pull / run — collapsing it into "waiting on another member's
+      // re-run" would report a substitution's sign as a benign operational
+      // wait and guide toward stepping over it with --new-epoch
       //
-      // 「良性」と見なすのは**チェーン導出の現エポック以下**の欠落だけである:
-      // 現エポックを超える申告エポックの値は、手元に当該エポックのラップが無いのが
-      // 当然(deks.ts が上限超過のラップを拒否する)なので、この検査を素通りさせると
-      // 検証済みビューとの不整合が「別メンバー待ち」に化ける。上限超過は
-      // decryptVerifiedValue が pull / run と同じ文言で即時中断する
-      // (§6.3-4 の epoch-not-current-at-head が本線で、これは導出不整合への防衛線)
+      // "Benign" is judged only for an absence **at or below the
+      // chain-derived current epoch**: for a value with a claimed epoch
+      // beyond the current epoch, not holding that epoch's wrap is the
+      // expected state (deks.ts refuses an over-the-cap wrap), so letting
+      // it slip through this check would disguise an inconsistency with
+      // the verified view as "waiting on another member". An over-the-cap
+      // epoch makes decryptVerifiedValue abort immediately with the same
+      // wording as pull / run (§6.3-4's epoch-not-current-at-head is the
+      // main line; this is a defense line against a derivation
+      // inconsistency)
       if (value.epoch <= input.chainEpoch && !input.deksByEpoch.has(value.epoch)) {
         undecryptable.push(missingWrapReason(value));
         continue;
@@ -1055,13 +1149,14 @@ function decryptTargets(input: {
   });
 }
 
-/** 1 変数の再暗号化 push の結果(競合は 409 の申告 version を持ち帰る)。 */
+/** The result of one variable's re-encryption push (a conflict carries back the 409's claimed version). */
 type PushAttempt =
   /**
-   * 受理済み。床の更新に失敗した場合のみ警告を伴う(受理自体は取り消せない)。
-   * `written` は**受理された自分の書き込み**であり、以後の再走査における
-   * 整合検査の基準になる(床は SHOULD で、書き込み失敗もありうるため、
-   * 自分の書き込みの巻き戻しを床だけに頼らない)。
+   * Accepted. Accompanied by a warning only when the floor update failed
+   * (the acceptance itself cannot be taken back). `written` is **my
+   * accepted write** and becomes the consistency-check baseline of later
+   * rescans (the floor is a SHOULD and its write can fail, so a rollback
+   * use of one's own writes never relies on the floor alone).
    */
   | {
       readonly kind: "pushed";
@@ -1069,19 +1164,22 @@ type PushAttempt =
       readonly written: VerifiedPulledValue;
     }
   | { readonly kind: "conflict"; readonly currentVersion: number }
-  /** 並行削除(404)。削除済み変数に再暗号化すべき現在値は存在しない。 */
+  /** A concurrent deletion (404). A deleted variable has no current value to re-encrypt. */
   | { readonly kind: "deleted" }
   /**
-   * サーバーがエポック競合を申告した(409 EpochConflict)。原因の断定はここで
-   * せず、再走査(チェーン再検証)に委ねる — 「他メンバーが並行ローテーション
-   * した」のか「サーバーの申告がチェーンと矛盾している」のかは、チェーン導出の
-   * 現エポックを見るまで区別できない(push.ts の epoch-conflict と同じ規律)。
+   * The server claimed an epoch conflict (409 EpochConflict). The cause
+   * is not decided here — left to the rescan (a chain re-verification):
+   * whether "another member rotated concurrently" or "the server's claim
+   * contradicts the chain" is indistinguishable until the chain-derived
+   * current epoch is observed (same discipline as push.ts's
+   * epoch-conflict).
    */
   | { readonly kind: "epoch-stale" };
 
 /**
- * 再暗号化 1 変数分の push(§7 / §4.1 — 再暗号化は「実行者が writer として
- * 署名する通常 push」であり、専用のワイヤも認可も持たない)。
+ * The push of one variable's re-encryption (§7 / §4.1 — a re-encryption
+ * is "an ordinary push signed by the performer as writer" and carries no
+ * dedicated wire or authorization).
  */
 function pushReencrypted(input: {
   readonly context: ReencryptContext;
@@ -1092,8 +1190,9 @@ function pushReencrypted(input: {
     const { environmentId, epoch, dek, writerUserId, signingKey, floor, client } = input.context;
     const latest = input.target.value;
     const version = latest.version + 1;
-    // prev は検証済み最新値の**自計算**ハッシュ(サーバー申告のハッシュへ
-    // 連鎖署名しない — §12-5 の証拠連鎖の汚染回避)
+    // The prev is the **self-computed** hash of the verified latest value
+    // (never chain-sign onto the server-claimed hash — avoiding the
+    // evidence-chain contamination of §12-5)
     const signed = yield* encryptAndSignPayload({
       verified: input.view,
       environmentId: environmentId,
@@ -1113,27 +1212,32 @@ function pushReencrypted(input: {
           environmentId: environmentId,
           variableId: latest.variableId,
         },
-        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5 — SHOULD): この push は
-        // 同一平文の新エポック再暗号化であり、要ローテーションフラグの解消
-        // (上流 credential の更新 — AUDIT_SPEC §4.1-5)と見なされてはならない
+        // reencryption = the re-encryption marker (AUTH_SPEC §12-5 —
+        // SHOULD): this push is a new-epoch re-encryption of the same
+        // plaintext and must never count as clearing the needs-rotation
+        // flag (an upstream credential update — AUDIT_SPEC §4.1-5)
         payload: { value: signed.payload, reencryption: true },
       })
       .pipe(
         Effect.map(() => ({ kind: "pushed" }) as const),
         Effect.catch((error): Effect.Effect<PushAttempt, CliError> => {
           if (error instanceof VersionConflictError) {
-            // 並行 push の勝者がいる。409 の申告値では決めず、呼び出し側が
-            // 再取得・再検証して実態(勝者が既に現エポックか)を確かめる
+            // There is a concurrent push's winner. Never decide on the
+            // 409's claimed value — the caller re-fetches and re-verifies
+            // the reality (whether the winner is already at the current
+            // epoch)
             return Effect.succeed({ kind: "conflict", currentVersion: error.currentVersion });
           }
           if (error instanceof VariableNotFoundError) {
-            // 並行削除。削除は tombstone + 全バージョン削除(§12-5)であり、
-            // 再暗号化すべき現在値は存在しない — 再走査側の同じレースの扱い
-            // (警告して対象から外す)と揃え、残りの変数の処理を止めない
+            // A concurrent deletion. A deletion is a tombstone + the
+            // deletion of all versions (§12-5), so there is no current
+            // value to re-encrypt — aligned with the rescan side's
+            // handling of the same race (warn and drop from the targets);
+            // the remaining variables' processing is not stopped
             return Effect.succeed({ kind: "deleted" });
           }
           if (error instanceof EpochConflictError) {
-            // 申告を真実源にしない: チェーン再検証は再走査が行う
+            // Never make the claim the source of truth: the chain re-verification happens in the rescan
             return Effect.succeed({ kind: "epoch-stale" });
           }
           return Effect.fail(toCliError(error));
@@ -1142,12 +1246,13 @@ function pushReencrypted(input: {
     if (outcome.kind !== "pushed") {
       return outcome;
     }
-    // 受理された自分の書き込みを床へ昇格する(§6.3)。メタは変更していないので
-    // 床のメタ記録は検証済み latest のまま。規則 (c) の基準は動かさない。
-    //
-    // 床の書き込み失敗で「受理済みの再暗号化」を未完了扱いにしない: 受理は
-    // 取り消せず、この変数は既に新エポックにある。失う(SHOULD の)検出材料を
-    // 警告として伝え、残りの変数の処理は止めない
+    // Promoting my accepted write into the floor (§6.3). Since the meta
+    // did not change, the floor's meta record stays the verified latest.
+    // Rule (c)'s baseline does not move. Never let a floor write failure
+    // turn an "accepted re-encryption" into unfinished: the acceptance
+    // cannot be taken back and this variable already lives at the new
+    // epoch. The lost (SHOULD) detection material is conveyed as a
+    // warning, and the remaining variables' processing is not stopped
     const floorWarning = yield* floor
       .commitPush(
         latest.variableId,
@@ -1169,7 +1274,7 @@ function pushReencrypted(input: {
           ),
         ),
       );
-    // 受理された自分の書き込み(署名対象そのものから組む — サーバー echo でない)
+    // My accepted write (assembled from the signed subject itself — not a server echo)
     const written: VerifiedPulledValue = {
       ...latest,
       version,
@@ -1189,21 +1294,26 @@ function pushReencrypted(input: {
 }
 
 /**
- * 既知値と再取得値の突き合わせ。この実行で §6.3 検証を通した値(次巡の prev
- * アンカーの基準)に対して、巻き戻し・equivocation・分岐した prev 連鎖・409
- * 申告との食い違いを検査し(push 経路と同一の winnerInconsistency)、未完了の
- * まま消えた変数を並行削除として警告する。
+ * Matching known values against re-fetched ones. Against the values that
+ * passed §6.3 verification in this run (the basis of the next pass's prev
+ * anchors), it checks for rollbacks, equivocations, forked prev chains,
+ * and disagreements with the 409 claims (the same winnerInconsistency as
+ * the push path), and warns of variables that vanished while still
+ * unfinished as concurrent deletions.
  *
- * 整合検査は「その値を採用するか」に関わらず先に行う: 証拠はそれ自体が中断
- * すべき事実であり、「再暗号化不要」の近道に隠れてはならない。
+ * The consistency check runs before the "adopt it or not" question
+ * regardless: evidence is itself a fact worth aborting on and must not
+ * hide behind the "no re-encryption needed" shortcut.
  */
 function reconcileKnown(input: {
   readonly known: ReadonlyMap<string, ConflictedTarget>;
   /**
-   * 今巡で再暗号化を完了できなかった変数(409・一時失敗・404・エポック競合)。
-   * 消失の警告と「他メンバーが既に現エポックで書いていた」の計上は、409 に
-   * 限らずこの集合を基準にする — でないと 502 で落ちた変数が再暗号化・
-   * 再暗号化不要・未完了のどれにも数えられず、合計が合わなくなる。
+   * The variables that could not finish re-encrypting this pass (409,
+   * transient failure, 404, epoch conflict). The vanishing warning and the
+   * "another member already wrote it at the current epoch" accounting are
+   * based on this set, not just 409s — otherwise a variable that fell to a
+   * 502 would be counted in none of re-encrypted / already-current /
+   * unfinished, and the totals would not add up.
    */
   readonly unfinishedIds: ReadonlySet<string>;
   readonly latest: readonly VerifiedPulledValue[];
@@ -1216,7 +1326,7 @@ function reconcileKnown(input: {
     const latest = latestById.get(variableId);
     if (latest === undefined) {
       if (input.unfinishedIds.has(variableId)) {
-        // 未完了のまま消えた = 並行削除。黙って対象から外さない
+        // Vanished while unfinished = a concurrent deletion. Never silently dropped from the targets
         input.collectWarning(
           `Variable ${displayText(previous.known.name)} is no longer in the re-fetched active set (concurrently deleted by another member). Removing it from the re-encryption targets`,
         );
@@ -1239,79 +1349,96 @@ function reconcileKnown(input: {
   return { evidence: null, alreadyCurrent };
 }
 
-/** 再取得・再検証の結果(完了検証と 409 競合の再計画を兼ねる)。 */
+/** The result of re-fetch + re-verify (doubles as the completion check and the re-plan of 409 conflicts). */
 interface RescanResult {
   readonly view: VerifiedProject;
   /**
-   * 目標エポック未満のまま残っている active 値。**完了判定と残数はこちらが正**
-   * (targets は最終巡で空になるため)。
+   * The active values still below the target epoch. **This side is
+   * correct for the completion judgment and the remaining count**
+   * (targets becomes empty on the final pass).
    */
   readonly stale: readonly VerifiedPulledValue[];
   /**
-   * stale を復号した再暗号化材料(= 次巡の対象)。**最終巡では空**: 次巡が
-   * 無いのに復号すると、押すことのない平文を変数の数だけメモリへ作ることになる。
+   * The re-encryption material from decrypting stale (= the next pass's
+   * targets). **Empty on the final pass**: decrypting when no next pass
+   * exists would build one unusable plaintext per variable in memory.
    */
   readonly targets: readonly ReencryptTarget[];
   /**
-   * 開けなかった値の理由。最終巡(復号しない)でも自分宛ラップの有無だけは
-   * 判定するので、「開けない値だけが残った」ことは常に原因として報告できる。
+   * The reasons of the values that could not be opened. Even on the
+   * final pass (no decryption) the presence of a wrap addressed to me is
+   * still judged, so "only unopenable values remain" can always be
+   * reported as a cause.
    */
   readonly undecryptable: readonly string[];
-  /** 競合していたが既に現エポックで書かれていた変数数(再暗号化不要)。 */
+  /** The number of variables that had conflicts but were already written at the current epoch (no re-encryption needed). */
   readonly alreadyCurrent: number;
   /**
-   * 暗号学的証拠(巻き戻し・equivocation・分岐した prev 連鎖)。非 null は
-   * 即時中断であり、「再実行で解消する」種類の失敗と混ぜてはならない。
+   * Cryptographic evidence (a rollback, equivocation, forked prev chain).
+   * Non-null is an immediate abort — never mix it with the "a re-run
+   * resolves it" kind of failure.
    */
   readonly evidence: string | null;
 }
 
 /**
- * 環境の再取得・再検証(§6.3)。2 つの役割を 1 経路で担う:
- *
- * 1. **完了検証**: 目標エポック未満の active 値が残っていないことを確かめる。
- *    初回 pull から複合受理までの窓で他メンバーが作成した変数は最初の対象集合に
- *    入っておらず(受理後の作成は現エポックでしか受理されない — §12-5)、この
- *    再走査で初めて可視になる。これを省くと「エポックだけ進み、旧 DEK のままの
- *    値が残っているのに完了と報告する」形になる
- * 2. **409 競合の再計画**(§12-5 の再試行手順): 勝者を §6.3 で検証し、
- *    **勝者の整合検査(push.ts と共有の winnerRegression)**を採否の判断より
- *    前に適用する。再暗号化は勝者の signed bytes ハッシュへ prev を付け替えて
- *    署名するため、検査なしでは分岐した履歴へ自分の署名で連鎖してしまう
- *    (§12-5 の証拠連鎖の汚染)。ローカル床は巻き戻し・同一 version の相違を
- *    捕まえるが SHOULD であり(初回同期・破損時は不在)、隣接 prev の不一致は
- *    床に材料自体がない
+ * Re-fetch + re-verify of the environment (§6.3). Two roles, one path:
+ * 1. **The completion check**: confirm no active value below the target
+ *    epoch remains. A variable another member created in the window
+ *    between the first pull and the composite's acceptance was never in
+ *    the initial target set (a post-acceptance create is only accepted at
+ *    the current epoch — §12-5) and becomes visible for the first time in
+ *    this rescan. Skipping it produces the shape "the epoch advanced and
+ *    values still on the old DEK remain, yet completion was reported"
+ * 2. **Re-planning 409 conflicts** (§12-5's retry procedure): verify the
+ *    winner under §6.3, and apply **the winner's consistency check
+ *    (winnerRegression, shared with push.ts) before the adopt/reject
+ *    decision**. Re-encryption re-anchors the prev onto the winner's
+ *    signed-bytes hash and signs, so without the check one's own
+ *    signature would chain onto a forked history (§12-5's evidence-chain
+ *    contamination). The local floor catches rollbacks and same-version
+ *    differences but is a SHOULD (absent on first sync / after
+ *    corruption), and for an adjacent-prev mismatch the floor has no
+ *    material at all
  */
 function rescanEnvironment(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   /**
-   * この実行で一度でも §6.3 検証を通した値(variableId → 既知値 + 409 申告
-   * version)。**409 を返した変数に限らない**: 一時的な失敗で再走査から拾い
-   * 直した変数も次巡の prev アンカーになるため、同じ整合検査を通す。
+   * The values that passed §6.3 verification at least once in this run
+   * (variableId → known value + 409-claimed version). **Not limited to
+   * variables that got a 409**: a variable recovered by the rescan after a
+   * transient failure also becomes the next pass's prev anchor, so it
+   * passes the same consistency check.
    */
   readonly known: ReadonlyMap<string, ConflictedTarget>;
   /**
-   * 今巡で再暗号化を**完了できなかった**変数(409・一時失敗・404・エポック競合)。
-   * これらがアクティブ集合から消えていれば並行削除として警告する — 完了扱いに
-   * するのは「消えたことを見た」場合だけであり、黙って落とさない。
+   * The variables that could **not finish** re-encrypting this pass (409,
+   * transient failure, 404, epoch conflict). If these vanished from the
+   * active set they are warned as concurrent deletions — "finished" is
+   * only for the ones *seen* to vanish; never dropped silently.
    */
   readonly unfinishedIds: ReadonlySet<string>;
   /**
-   * 警告の受け皿。失敗しても収集済みの警告(非 NFC 名・並行削除)を失わないよう、
-   * 戻り値ではなくここへ流す(エラー channel は警告を運べない)。
+   * The warnings' receptacle. To keep already-collected warnings (non-NFC
+   * names, concurrent deletions) even on failure, they flow in here
+   * instead of the return value (the error channel cannot carry
+   * warnings).
    */
   readonly collectWarning: (warning: string) => void;
   /**
-   * チェーンの強制再同期。サーバーがエポック競合を申告した巡では、pull の
-   * future head 条件に依存せず**必ず**チェーンを取り直して現エポックを
-   * 導出し直す(取り直さないと、他メンバーの並行ローテーションを
-   * 「サーバーの矛盾」と誤認する — push.ts の epoch-conflict と同じ規律)。
+   * A forced resync of the chain. On a pass where the server claimed an
+   * epoch conflict, **always** re-fetch the chain and re-derive the
+   * current epoch without depending on pull's future-head condition
+   * (without the re-fetch, another member's concurrent rotation would be
+   * mistaken for "a server contradiction" — same discipline as push.ts's
+   * epoch-conflict).
    */
   readonly forceResync: boolean;
   /**
-   * 残った対象を復号するか。次巡がある場合だけ true — 最終巡は残数を数えるだけ
-   * なので、押すことのない平文を作らない(復号は「使う直前」に限る)。
+   * Whether to decrypt the remaining targets. true only when a next pass
+   * exists — the final pass only counts what remains, so no unusable
+   * plaintext is built (decryption only right before use).
    */
   readonly decryptRemaining: boolean;
 }): Effect.Effect<RescanResult, CliError> {
@@ -1326,8 +1453,9 @@ function rescanEnvironment(input: {
       floor,
     });
     const view = pulled.verified;
-    // 警告は**どの判定より前に**流す: 並行ローテーションで中断する巡でも、
-    // この pull が集めた SHOULD 警告は失われてはならない(sink の規律)
+    // Warnings flow **before any judgment**: even on a pass aborted by a
+    // concurrent rotation, the SHOULD warnings this pull collected must
+    // not be lost (the sink's discipline)
     for (const warning of pulled.warnings) {
       input.collectWarning(warning);
     }
@@ -1356,16 +1484,21 @@ function rescanEnvironment(input: {
         evidence: reconciled.evidence,
       };
     }
-    // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
-    // 限らない — 窓の間に作られた変数もここに現れる)
+    // The completion check + the next pass's targets: every active value
+    // below the target epoch (not limited to the conflicts — a variable
+    // created in the window also appears here)
     const stale = pulled.variables.filter((value) => value.epoch < epoch);
     if (!input.decryptRemaining) {
-      // 復号はしないが「開けるのか」は判定する: 自分宛ラップの有無は Map の
-      // 参照だけで分かり、平文を作らずに済む。これを飛ばすと、最終巡で初めて
-      // 判明する「開けない値だけが残った」状態の原因が既定文言(競合)に化ける
+      // No decryption, but "can it be opened" is still judged: the
+      // presence of a wrap addressed to me is known from a Map lookup and
+      // builds no plaintext. Skipping it would disguise as the default
+      // wording (conflict) the cause of a state that only surfaces on the
+      // final pass — "only unopenable values remain"
       const missing = stale.filter((value) => !deksByEpoch.has(value.epoch)).map(missingWrapReason);
-      // 復号を試みる巡と同じく、変数ごとの警告も出す(原因としての報告だけだと、
-      // push の失敗が優先された巡でどの変数が取り残されたのか伝わらない)
+      // Like the passes that attempt decryption, per-variable warnings
+      // are emitted too (with only the as-cause report, which variables
+      // were stranded is invisible on a pass where a push failure took
+      // priority)
       for (const reason of missing) {
         input.collectWarning(undecryptableWarning(reason));
       }
@@ -1378,11 +1511,15 @@ function rescanEnvironment(input: {
         evidence: null,
       };
     }
-    // 自分宛ラップの欠落(良性)では再走査自体を失敗させない: 完了判定は復号前の
-    // stale が決めており、ここで落とすと**押せた分まで**「完了を検証できません
-    // でした」に化ける。一方、ラップを持っているのに開けない場合(差し替え・
-    // ビュー不整合)は**証拠**として扱う — 初回 pull では即時中断する条件なので、
-    // 巡の途中で現れたときだけ「再実行で直る部分完了」へ格下げしてはならない
+    // A missing wrap addressed to me (benign) never fails the rescan
+    // itself: the completion judgment was made by the pre-decryption
+    // stale, and dropping here would turn **even the pushable share** into
+    // "completion could not be verified". On the other hand, a value that
+    // cannot be opened despite holding the wrap (substitution / view
+    // inconsistency) is treated as **evidence** — it was an
+    // immediate-abort condition on the first pull, so it must not be
+    // downgraded to "a re-run-fixable partial completion" just because it
+    // surfaced mid-pass
     const attempted = yield* asOutcome(
       decryptTargets({
         verified: view,
@@ -1418,44 +1555,52 @@ function rescanEnvironment(input: {
 }
 
 /**
- * 現在値の再暗号化(§7): 対象を目標エポックの DEK で暗号化して通常 push し、
- * **毎巡の末尾で環境を再走査して完了を検証する**(上限
- * {@link MAX_REENCRYPT_PASSES} 巡)。再走査は競合の実態確認(勝者が既に現
- * エポックなら再暗号化不要)と、初回 pull 以降に作られた変数の発見を兼ねる。
- * 「対象を全部 push し終えた」ことは完了の証拠にならない — 完了の証拠は
- * 「再取得・再検証したビューに目標エポック未満の active 値がない」ことである。
+ * Re-encrypting the current values (§7): encrypt each target with the
+ * target epoch's DEK and push it as an ordinary push, and **at the end of
+ * every pass, rescan the environment and verify the completion** (up to
+ * {@link MAX_REENCRYPT_PASSES} passes). The rescan doubles as confirming
+ * the conflicts' reality (a winner already at the current epoch needs no
+ * re-encryption) and discovering variables created after the first pull.
+ * "Finished pushing every target" is not evidence of completion —
+ * completion's evidence is "the re-fetched, re-verified view carries no
+ * active value below the target epoch".
  *
- * 失敗は投げずに {@link ReencryptOutcome.failure} として返す: この関数が
- * 走る時点でエポックは既に進んでおり、途中の失敗(ネットワーク・並行
- * ローテーション・床書き込み)を例外として投げると「エポックだけ進んで
- * 再暗号化が残っている」事実が部分完了の報告経路を素通りしてしまう。
- * ただし**暗号学的証拠(RescanResult.evidence)は例外**で、これは即時中断
- * (エラー channel)とする — 「再実行すれば直る」種類の失敗ではないため、
- * 部分完了 + 再開案内に混ぜてはならない(push 経路の扱いと揃える)。
+ * Failures are never thrown — they come back as {@link
+ * ReencryptOutcome.failure}: by the time this function runs the epoch has
+ * already advanced, and throwing a mid-run failure (network, a concurrent
+ * rotation, a floor write) as an exception would let the fact "only the
+ * epoch advanced and re-encryption remains" slip past the
+ * partial-completion reporting path. The exception is **cryptographic
+ * evidence (RescanResult.evidence)** alone, which is an immediate abort
+ * (the error channel) — it is not the "a re-run fixes it" kind of
+ * failure, so it must not blend into partial-completion + resume guidance
+ * (aligned with the push path's handling).
  */
 /**
- * 再暗号化の 3 関数(1 変数の push・1 巡の push・巡末の再走査)が共有する文脈。
- * 巡ごとに変わるのは view と対象だけなので、変わらないものを 1 つにまとめる
- * (同形の長い引数列が call site ごとに重複するのを避ける)。
+ * The context the 3 re-encryption functions share (one variable's push,
+ * one pass's push, the end-of-pass rescan). Only the view and the targets
+ * change per pass, so the invariants are bundled into one (avoids the
+ * same long argument list being duplicated per call site).
  */
 interface ReencryptContext {
   readonly client: MaruhiClient;
   readonly environmentId: EnvironmentId;
   readonly floor: FloorHandle;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** 再暗号化の目標エポック(ローテーション後の新エポック / 再開時の現エポック)。 */
+  /** The re-encryption's target epoch (the post-rotation new epoch / the current epoch on a resume). */
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly writerUserId: string;
-  /** 自分の鍵 FP(受理済みの自分の書き込みを台帳へ記録するときの帰属)。 */
+  /** My key FP (the attribution when recording my accepted writes into the ledger). */
   readonly writerKeyFingerprintHex: string;
   readonly signingKey: CryptoKey;
 }
 
 /**
- * 失敗を投げずに値として持ち帰る。エポックが進んだ後の失敗は「部分完了」の
- * 報告経路へ乗せる必要があり、例外として抜けると運用状態を伝え損ねる。
+ * Failures are carried back as a value, never thrown. A post-advance
+ * failure must ride the "partial completion" reporting path — escaping as
+ * an exception would lose the operational state.
  */
 function asOutcome<A, R>(
   effect: Effect.Effect<A, CliError, R>,
@@ -1471,7 +1616,7 @@ function asOutcome<A, R>(
   );
 }
 
-/** RotateInput + エポック固有の材料から再暗号化の文脈を組む。 */
+/** Builds the re-encryption context from a RotateInput + epoch-specific material. */
 function reencryptContext(
   input: RotateInput,
   /** The writer's signing device (the device holding this machine's key — device-key.ts). */
@@ -1494,46 +1639,52 @@ function reencryptContext(
   };
 }
 
-/** 1 巡分の push の結果。 */
+/** The result of one pass's pushes. */
 interface PushPassResult {
   readonly reencrypted: number;
   readonly conflicted: readonly ConflictedTarget[];
   /**
-   * サーバーがエポック競合を申告した変数(チェーンとの突き合わせは再走査が行う)。
-   * **数ではなく id で持つ**: 「申告がチェーンと矛盾している」と断じてよいのは、
-   * 申告された当の変数が再走査でも残っている場合だけである(他の変数が別の理由で
-   * 残っているだけなら、その実行は普通の部分完了として案内すべき)。
+   * The variables the server claimed an epoch conflict on (the rescan
+   * does the matching against the chain). **Held as ids, not a count**:
+   * "the claim contradicts the chain" may be asserted only when the very
+   * claimed variable still remains on the rescan (if other variables
+   * remain for other reasons, the run should be guided as an ordinary
+   * partial completion).
    */
   readonly epochStaleIds: ReadonlySet<string>;
-  /** 再暗号化を完了できなかった変数(409・一時失敗・エポック競合)。 */
+  /** The variables that could not finish re-encrypting (409, transient failure, epoch conflict). */
   readonly unfinishedIds: ReadonlySet<string>;
-  /** 受理された自分の書き込み(台帳の新しい基準)。 */
+  /** My accepted writes (the ledger's new baseline). */
   readonly written: readonly VerifiedPulledValue[];
   /**
-   * 個別に失敗した最初の原因(巡自体は止めない。数は unfinishedIds が持つ)。
-   * **どの変数の失敗か**も持つ: 巡末の再走査でその変数が解決していた場合
-   * (並行削除の 404 など)、未完了の原因として掲げると別の変数の本当の原因を
-   * 隠してしまうため、呼び出し側が実態と突き合わせて捨てられるようにする。
+   * The first cause that failed individually (the pass itself doesn't
+   * stop. The count lives in unfinishedIds). **Which variable failed** is
+   * also kept: when the end-of-pass rescan finds that variable resolved
+   * (like a concurrent deletion's 404), listing it as the incompleteness
+   * cause would hide another variable's real cause, so the caller can
+   * drop it by matching against reality.
    */
   readonly firstFailure: { readonly variableId: string; readonly message: string } | null;
   readonly warnings: readonly string[];
 }
 
 /**
- * 1 巡分の再暗号化 push。競合(409)は次の再走査へ回し、並行削除(404)は
- * 警告して飛ばす。
+ * One pass of re-encryption pushes. Conflicts (409) go to the next
+ * rescan; concurrent deletions (404) are warned and skipped.
  *
- * **個別の失敗で巡を中断しない**: 1 変数の一時的な失敗(502 等)で残りを
- * 見捨てると、100 変数のうち 3 番目で落ちた場合に 97 変数が旧エポックの DEK で
- * 読めるまま残る。さらに恒久的に失敗する 1 変数があると、順序が安定なため
- * 以後の変数が**どの再実行でも**到達不能になる。失敗は数と原因として集計し、
- * 実際の残りは巡末の再走査(検証済みの実態)が決める。
+ * **An individual failure never aborts the pass**: abandoning the rest on
+ * one variable's transient failure (a 502, etc.) would leave 97 of 100
+ * variables readable under the old epoch's DEK when it falls on the 3rd.
+ * And with one permanently-failing variable, the stable ordering would
+ * make every later variable unreachable **on every re-run**. Failures are
+ * aggregated as a count and a cause; the actual remainder is decided by
+ * the end-of-pass rescan (the verified reality).
  */
 function runPushPass(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly pending: readonly ReencryptTarget[];
-  /** 進行表示の通し番号の起点(これまでに再暗号化した数)。 */
+  /** The starting number of the progress display's running count (the number re-encrypted so far). */
   readonly doneBefore: number;
 }): Effect.Effect<PushPassResult, never, CliIo> {
   return Effect.gen(function* () {
@@ -1542,7 +1693,7 @@ function runPushPass(input: {
     const written: VerifiedPulledValue[] = [];
     const unfinishedIds = new Set<string>();
     const warnings: string[] = [];
-    // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
+    // The progress display's denominator is "the total known on this pass" (a rescan can grow the targets)
     const total = input.doneBefore + input.pending.length;
     let reencrypted = 0;
     const epochStaleIds = new Set<string>();
@@ -1552,10 +1703,12 @@ function runPushPass(input: {
         pushReencrypted({ context: input.context, view: input.view, target }),
       );
       if (attempt.kind === "failed") {
-        // 巡は止めない(残りの変数を旧エポックに取り残さない)。
-        // **どの変数がどう失敗したかは全件残す**: 原因として掲げられるのは 1 件
-        // だけなので、警告に出さないと恒久的に失敗する変数(値が大きすぎる等)の
-        // 理由がどの実行でも表に出ず、旧エポックのまま取り残され続ける
+        // The pass does not stop (never strand the remaining variables on
+        // the old epoch). **Every variable's failure mode is kept**: only
+        // one can be listed as the cause, so without a warning, a
+        // permanently-failing variable (a too-large value, etc.) would
+        // never surface its reason on any run and stay stranded on the old
+        // epoch forever
         const message = `Failed to re-encrypt variable ${displayText(target.value.name)}: ${attempt.error.message}`;
         warnings.push(message);
         firstFailure ??= { variableId: target.value.variableId, message };
@@ -1583,8 +1736,9 @@ function runPushPass(input: {
         continue;
       }
       if (attempt.value.kind === "epoch-stale") {
-        // 再走査がチェーン導出のエポックで実態を判定する。この変数は旧エポックの
-        // ままなので、エポックが動いていなければ次巡の対象として再び現れる
+        // The rescan judges reality by the chain-derived epoch. This
+        // variable stays at the old epoch, so if the epoch did not move it
+        // appears again as the next pass's target
         epochStaleIds.add(target.value.variableId);
         unfinishedIds.add(target.value.variableId);
         continue;
@@ -1592,8 +1746,8 @@ function runPushPass(input: {
       if (attempt.value.floorWarning !== null) {
         warnings.push(attempt.value.floorWarning);
       }
-      // 受理済みの自分の書き込みを台帳の基準へ昇格する: 以後の再走査が
-      // 押し戻し(自分の書き込みの巻き戻し)を検出できるようにする
+      // Promoting my accepted write into the ledger's baseline: lets later
+      // rescans detect a rollback of my own writes (regression)
       written.push(attempt.value.written);
       reencrypted += 1;
       yield* io.log(
@@ -1613,17 +1767,19 @@ function runPushPass(input: {
 }
 
 /**
- * §6.3 検証を通した値を既知値の台帳へ記録する。入口は 2 つあるが記録は同一:
- *
- * - **今巡の対象**: 次巡の prev アンカーになりうるため、409 を返したものに
- *   限らず整合検査(§12-5)の基準として保持する
- * - **受理された自分の書き込み**: 床(SHOULD)の更新に失敗しても、次の再走査は
- *   「自分が書いた version」を基準に比較できる — 受理済みの書き込みを押し戻す
- *   応答を、床の有無に関わらず巻き戻しとして検出する
- *
- * どちらも「自分が正しいと確認した値とその version」であり、記録の形が割れると
- * 片方だけ §12-5 の検査が弱まるため 1 つにしてある(409 の申告 version を運ぶ
- * recordConflicts だけは別物)。
+ * Recording into the known-values ledger a value that passed §6.3
+ * verification. There are two entries but one record shape:
+ * - **this pass's targets**: kept as the consistency-check baseline
+ *   (§12-5) because they can become the next pass's prev anchor — not
+ *   limited to the ones that got a 409
+ * - **my accepted writes**: even when the floor (SHOULD) update fails, the
+ *   next rescan can compare against "the version I wrote" — detecting a
+ *   response that rolls back an accepted write as a rollback regardless
+ *   of the floor's presence
+ * Both are "a value and its version that I verified as correct"; a split
+ * record shape would weaken one side's §12-5 check, so they are unified
+ * (only recordConflicts, which carries the 409's claimed version, is
+ * different).
  */
 function recordKnown(
   known: Map<string, ConflictedTarget>,
@@ -1639,9 +1795,10 @@ function recordKnown(
 }
 
 /**
- * 409 の申告 version で台帳を上書きする。競合の「集合」は別途保持しない —
- * 消失の警告も alreadyCurrent の計上も未完了集合(409 に限らない)が基準であり、
- * 409 だけの集合を持ち回ると「まだ何かの判断に使われている」と読めてしまう。
+ * Overwriting the ledger at the 409's claimed version. No separate
+ * conflict "set" is kept — the vanishing warning and the alreadyCurrent
+ * accounting are based on the unfinished set (not limited to 409s), and
+ * carrying a 409-only set around reads as "still used by some judgment".
  */
 function recordConflicts(
   known: Map<string, ConflictedTarget>,
@@ -1652,36 +1809,40 @@ function recordConflicts(
   }
 }
 
-/** 巡末の判定(完了検証の結果をどう扱うか)。 */
+/** The end-of-pass judgment (what to do with the completion check's result). */
 type PassVerdict =
-  /** 続行可能(remaining が 0 なら完了)。 */
+  /** Can continue (0 remaining = done). */
   | {
       readonly kind: "settled";
       readonly view: VerifiedProject;
-      /** 目標エポック未満のまま残っている変数数(完了判定と残数の正)。 */
+      /** The number of variables still below the target epoch (the correct source of the completion judgment and the remaining count). */
       readonly remaining: number;
-      /** 次巡の対象(最終巡は空 — remaining が 0 でなくても復号しない)。 */
+      /** The next pass's targets (empty on the final pass — no decryption even when remaining > 0). */
       readonly targets: readonly ReencryptTarget[];
-      /** 開けなかった値の理由(未完了の原因として報告する)。 */
+      /** The reasons of the unopened values (reported as the incompleteness cause). */
       readonly undecryptable: readonly string[];
-      /** まだ目標エポック未満のまま残っている変数 id(原因の取捨に使う)。 */
+      /** The ids of variables still below the target epoch (used to pick the cause). */
       readonly staleIds: ReadonlySet<string>;
       readonly alreadyCurrent: number;
     }
   /**
-   * 完了を検証できなかった。`remaining` は「今巡で完了しなかった数」であって
-   * 実測ではない — 上限でも下限でもない(競合分が他メンバーの手で解決していれば
-   * 過大、実行中に作られた変数は数に入らないため過小になりうる)。表示側は
-   * これを「未確認を含む」と断って出す(remainingExact = false)。
+   * Completion could not be verified. `remaining` is "the number not
+   * completed this pass", not a measurement — neither an upper nor a
+   * lower bound (over-counted when another member's hand resolved the
+   * conflicts, under-counted since a variable created mid-run isn't in
+   * the count). The display side labels it "includes unverified"
+   * (remainingExact = false).
    */
   | { readonly kind: "unverified"; readonly remaining: number; readonly failure: string }
-  /** 再実行では解消しない中断(暗号学的証拠・サーバーとチェーンの矛盾)。 */
+  /** An abort no re-run resolves (cryptographic evidence, a server–chain contradiction). */
   | { readonly kind: "abort"; readonly message: string };
 
 /**
- * 1 巡の末尾の完了検証と判定。再走査(競合・失敗の有無に関わらず必ず行う)の
- * 結果から、続行・完了・未検証・即時中断のいずれかを決める。判定の優先順は
- * 「証拠 > 矛盾 > 続行」— 証拠は再実行で解消しないため他の理由に潰されない。
+ * The end-of-pass completion check and judgment. From the rescan's result
+ * (always done regardless of conflicts / failures), one of continue /
+ * done / unverified / abort is decided. The judgment priority is
+ * "evidence > contradiction > continue" — evidence is resolved by no
+ * re-run, so it is never folded into another reason.
  */
 function settlePass(input: {
   readonly context: ReencryptContext;
@@ -1689,7 +1850,7 @@ function settlePass(input: {
   readonly known: ReadonlyMap<string, ConflictedTarget>;
   readonly pass: PushPassResult;
   readonly reencrypted: number;
-  /** 次巡があるか(= 残った対象を復号する意味があるか)。 */
+  /** Whether a next pass exists (= whether decrypting the remaining targets has a point). */
   readonly hasNextPass: boolean;
 }): Effect.Effect<
   { readonly verdict: PassVerdict; readonly warnings: readonly string[] },
@@ -1698,7 +1859,7 @@ function settlePass(input: {
 > {
   return Effect.gen(function* () {
     const { environmentId, epoch } = input.context;
-    // 収集済みの警告は再走査が失敗しても失わない(エラー channel は運べない)
+    // The collected warnings are not lost even when the rescan fails (the error channel cannot carry them)
     const warnings: string[] = [];
     const rescan = yield* asOutcome(
       rescanEnvironment({
@@ -1707,7 +1868,7 @@ function settlePass(input: {
         known: input.known,
         unfinishedIds: input.pass.unfinishedIds,
         collectWarning: (warning) => warnings.push(warning),
-        // エポック競合の申告があった巡は、チェーンを取り直してから判定する
+        // A pass where an epoch conflict was claimed re-fetches the chain before judging
         forceResync: input.pass.epochStaleIds.size > 0,
         decryptRemaining: input.hasNextPass,
       }),
@@ -1715,9 +1876,10 @@ function settlePass(input: {
     const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
     if (rescan.kind === "failed") {
       if (rescan.error.evidence === true) {
-        // 再走査の pull が証拠付きで拒否された(床違反・チェックポイント整合
-        // 規則 2)。復号段の証拠(rescan.value.evidence)と同じ扱いの
-        // 即時中断とし、「再実行で直る部分完了」へ格下げしない
+        // The rescan's pull was refused with evidence (a floor violation,
+        // checkpoint-integrity rule 2). An immediate abort, same as the
+        // decryption stage's evidence (rescan.value.evidence) — never
+        // downgraded to "a re-run-fixable partial completion"
         return {
           warnings,
           verdict: {
@@ -1726,9 +1888,10 @@ function settlePass(input: {
           },
         } as const;
       }
-      // **再走査の失敗を優先する**: 並行ローテーションの検出・一時的な失敗は
-      // ここに現れるため、変数 1 件の一時的な失敗で覆い隠してはならない
-      // (押し出すと「再実行で直る」案内に化ける)
+      // **The rescan's failure takes priority**: a concurrent rotation's
+      // detection and transient failures surface here, so they must not be
+      // covered up by a single variable's transient failure (that would
+      // disguise it as "a re-run fixes it" guidance)
       const pushFailure =
         input.pass.firstFailure === null
           ? ""
@@ -1743,8 +1906,10 @@ function settlePass(input: {
       } as const;
     }
     if (rescan.value.evidence !== null) {
-      // 暗号学的証拠は最優先の即時中断(再実行では解消しない)。エポックが
-      // 進んでいる文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
+      // Cryptographic evidence is the top-priority immediate abort (no
+      // re-run resolves it). The epoch-advanced context is conveyed
+      // together — emitting only the evidence would lose the operational
+      // state
       return {
         warnings,
         verdict: {
@@ -1754,16 +1919,19 @@ function settlePass(input: {
       } as const;
     }
     if (input.pass.epochStaleIds.size > 0) {
-      // 強制再同期したチェーンでもエポックが変わっていない(進んでいれば
-      // rescanEnvironment が失敗している)。サーバーの EpochConflict 申告は
-      // チェーンと矛盾しており、その変数を押し直しても解けない(push.ts と同じ判定)。
-      //
-      // ただし中断してよいのは**申告された当の変数がまだ残っている**場合だけ:
-      // 他メンバーが同じエポックで書き切るなどしてその変数が解消していれば、
-      // 残りは別の理由(一時的な失敗・競合)であり、再実行で片付く。「再実行では
-      // 解消しません」と断じると、再開の案内も残数の報告も届かなくなる。
-      // 再暗号化の完否を決めるのは検証済みの実態であって、サーバーの自己申告ではない
-      // 判定は stale(常に埋まる)で行う — targets は最終巡で空になる
+      // Even on the force-resynced chain the epoch did not move (if it
+      // had, rescanEnvironment would have failed). The server's
+      // EpochConflict claim contradicts the chain, and re-pushing that
+      // variable cannot resolve it (same judgment as push.ts). But an
+      // abort is allowed **only when the very claimed variable still
+      // remains**: if it resolved — say another member finished writing it
+      // at the same epoch — the rest remains for other reasons (a
+      // transient failure, a conflict) and a re-run cleans up. Declaring
+      // "a re-run won't resolve this" would keep both the resume guidance
+      // and the remaining-count report from arriving. Whether
+      // re-encryption is complete is decided by the verified reality, not
+      // the server's self-claim. The judgment uses stale (always
+      // populated) — targets is empty on the final pass
       const unresolved = rescan.value.stale.filter((value) =>
         input.pass.epochStaleIds.has(value.variableId),
       );
@@ -1796,8 +1964,10 @@ function settlePass(input: {
 }
 
 /**
- * 「起きたが、もう原因ではない失敗」の記録。原因として掲げると調査を誤誘導する
- * が、黙って落とすと 502 が起きた事実自体が消える — 解決の仕方を添えて警告に残す。
+ * The record of "a failure that happened but is no longer the cause".
+ * Listing it as the cause misleads the investigation, but silently
+ * dropping it erases the very fact that a 502 happened — it stays as a
+ * warning with how it resolved.
  */
 function noteResolvedFailure(warnings: string[], failure: string | null, resolution: string): void {
   if (failure !== null) {
@@ -1810,9 +1980,11 @@ function reencryptCurrentValues(input: {
   readonly view: VerifiedProject;
   readonly targets: readonly ReencryptTarget[];
   /**
-   * 警告の受け皿(呼び出し側と共有する配列)。中断は例外として抜けるため、
-   * 戻り値で返すと**失敗時にだけ**警告が消える — 中断こそ、床の更新失敗や
-   * 並行削除の通知が最も効く場面なので、書き込み先を共有して失わない。
+   * The warnings' receptacle (an array shared with the caller). Since an
+   * abort escapes as an exception, returning them would lose the warnings
+   * **only on failure** — an abort is exactly where a floor-update failure
+   * or a concurrent-deletion notice matters most, so the destination is
+   * shared and never lost.
    */
   readonly sink: string[];
 }): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
@@ -1823,24 +1995,28 @@ function reencryptCurrentValues(input: {
     let reencrypted = 0;
     let alreadyCurrent = 0;
     /**
-     * **直近の巡**で実際に起きた失敗(= いま未完了を塞いでいる原因)。巡を跨いで
-     * 持ち越さない: 1 巡目の一時失敗が 2 巡目で解消したなら、それはもう原因では
-     * ない。持ち越すと、解消済みの失敗を掲げたまま本当の原因(解けない 409 なら
-     * 「並行 push との競合」)を隠し、調査を検証失敗・床違反の方向へ誤誘導する。
+     * The failures that actually happened **on the latest pass** (= what
+     * is blocking the completion now). Never carried across passes: if a
+     * pass-1 transient failure resolved on pass 2, it is no longer the
+     * cause. Carrying it would display a resolved failure while hiding
+     * the real cause (an unresolvable 409 = "a conflict with a concurrent
+     * push"), misdirecting the investigation toward verification failures
+     * and floor violations.
      */
     let blockingFailure: string | null = null;
-    /** この実行で一度でも起きた失敗(完了できた場合の「起きたが解決した」報告用)。 */
+    /** Every failure that happened this run (for the "happened but resolved" report when it completes). */
     let seenFailure: string | null = null;
     /**
-     * 目標エポック未満のまま残っている変数数。**毎巡の再走査が確定させる**ので、
-     * ここは初期値を持たない(0 のまま読まれる経路は無い — 読むのは巡を 1 度
-     * 以上回した後だけ)。対象数で初期化すると、報告され得ない数を「残数の
-     * 既定値」に見せてしまう
+     * The number of variables still below the target epoch. **Fixed by
+     * each pass's rescan**, so no initial value is held here (no path
+     * reads it as 0 — it is read only after at least one pass ran).
+     * Initializing it with the target count would dress an unreportable
+     * number as "the default remaining count".
      */
     let staleCount = 0;
-    /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
+    /** The values that passed §6.3 verification this run (the baseline of the next pass's prev-anchor consistency check). */
     const known = new Map<string, ConflictedTarget>();
-    /** 受理された自分の書き込み(巡を跨いで集約 — レシートの前進の材料)。 */
+    /** My accepted writes (aggregated across passes — the receipt-advance material). */
     const written: ReencryptedVariable[] = [];
 
     const outcome = (
@@ -1884,7 +2060,7 @@ function reencryptCurrentValues(input: {
       });
       warnings.push(...settled.warnings);
       if (settled.verdict.kind === "unverified") {
-        // 再走査に到達できていない = 残数は実測ではない(PassVerdict の定義)
+        // Never reached the rescan = the remaining count is not a measurement (PassVerdict's definition)
         return outcome(settled.verdict.remaining, settled.verdict.failure, false);
       }
       if (settled.verdict.kind === "abort") {
@@ -1895,9 +2071,11 @@ function reencryptCurrentValues(input: {
       alreadyCurrent += settled.verdict.alreadyCurrent;
       staleCount = settled.verdict.remaining;
       if (staleCount === 0) {
-        // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
-        // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
-        // (完了を検証できている以上、部分完了として非ゼロ終了させない)
+        // The re-fetched, re-verified view carries no active value below
+        // the target epoch = complete. A transient mid-run failure stays
+        // as a warning, a "happened but resolved in the end" fact (since
+        // the completion was verified, it is not reported as a partial
+        // completion with a non-zero exit)
         noteResolvedFailure(
           warnings,
           failureMessage(attempted.firstFailure) ?? seenFailure,
@@ -1911,13 +2089,14 @@ function reencryptCurrentValues(input: {
       );
       seenFailure ??= failureMessage(attempted.firstFailure);
       if (stalledOnUndecryptable(pending, pass)) {
-        // 未完了は残っているのに押せる対象が 1 つも無い = 復号できない値だけが
-        // 残っている。残りの巡を回しても pull を繰り返すだけで前進しない
+        // Unfinished work remains yet nothing can be pushed = only
+        // undecryptable values are left. Cycling the remaining passes
+        // would just repeat pulls without progress
         break;
       }
     }
     noteStaleFailures(warnings, blockingFailure, seenFailure);
-    // 巡を使い切った(中断ではない): 残数は最終巡の再走査を通った**実測**である
+    // The passes ran out (not an abort): the remaining count is a **measurement** through the final pass's rescan
     return outcome(staleCount, blockingFailure, true);
   });
 }
@@ -1931,16 +2110,17 @@ function reencryptCurrentValues(input: {
  * Re-running after an interruption resumes instead of rotating again: when a
  * verified pull shows latest values below the chain-derived current epoch,
  * the epoch is left alone and only the outstanding re-encryption is finished
- * (§12-7 の正当な過渡状態からの冪等な再開)。
+ * (an idempotent resume from §12-7's legitimate transitional state).
  */
 export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, CliError, CliIo> {
   return rotateAttempt(input, 1);
 }
 
 /**
- * values_digest 突合の 422(§12-4 — 宣言ヘッド確定後の並行 push)に対する
- * 有界再試行の上限。再試行は検証済み pull からのやり直し(再暗号化に必要な
- * 読み取りと同一 — 取りこぼしの防止を兼ねる)。
+ * The bound of the bounded retry against the values_digest cross-check's
+ * 422 (§12-4 — a concurrent push after the declared head settled). The
+ * retry redoes from a verified pull (identical to the reads re-encryption
+ * needs — doubles as preventing omissions).
  */
 const MAX_VALUES_CONFLICT_ATTEMPTS = 3;
 
@@ -1948,13 +2128,16 @@ function rotateAttempt(
   input: RotateInput,
   attempt: number,
 ): Effect.Effect<RotationSummary, CliError, CliIo> {
-  // 収集した警告は**失敗経路でも**必ず吐く: 成功時は呼び出し側が
-  // summary.warnings を表示するが、中断すると表示経路に到達しない。床の更新
-  // 失敗・並行削除・床なしの但し書きは、まさに中断時に効く情報である
+  // The collected warnings are always flushed **even on a failure path**:
+  // on success the caller displays summary.warnings, but an abort never
+  // reaches that display path. A floor-update failure, a concurrent
+  // deletion, and the no-floor caveat are precisely the information that
+  // matters on an abort
   //
-  // 受け皿は **Effect の中**で作る: 外で作ると 2 回目の実行が 1 回目の警告を
-  // 抱えたまま始まり(retry / repeat / 同じ Effect の再実行)、前回の床警告や
-  // 削除通知が今回の結果として報告される
+  // The receptacle is created **inside the Effect**: built outside, a
+  // second run would start carrying the first run's warnings (retry /
+  // repeat / a re-run of the same Effect), and the previous floor warning
+  // or deletion notice would be reported as this run's result
   return Effect.suspend(() => {
     const warnings: string[] = [];
     return rotateWithWarnings(input, warnings).pipe(
@@ -1965,10 +2148,11 @@ function rotateAttempt(
             error instanceof RotateValuesConflictError &&
             attempt < MAX_VALUES_CONFLICT_ATTEMPTS
           ) {
-            // 並行 push が現在値を進めた(§12-4)。この試行の複合は受理されて
-            // いない(エポックは進んでいない)ので、生成済みの新 DEK・ラップ集合は
-            // 破棄してよい。検証済み pull からやり直し、values_digest の材料を
-            // 現在の保存状態から作り直す
+            // A concurrent push advanced the current values (§12-4).
+            // This attempt's composite was not accepted (the epoch did not
+            // advance), so the generated new DEK and wrap set may be
+            // discarded. Redo from a verified pull and rebuild the
+            // values_digest material from the current stored state
             const io = yield* CliIo;
             yield* io.log(
               `A concurrent push advanced environment ${input.environmentId}'s values — re-pulling and retrying the rotation (attempt ${attempt + 1} of ${MAX_VALUES_CONFLICT_ATTEMPTS})`,
@@ -1983,9 +2167,10 @@ function rotateAttempt(
 }
 
 /**
- * 中断復旧: エポックは進んだが再暗号化が残っている状態(§12-7 の正当な過渡
- * 状態)を、**エポックを進めずに**続きから片付ける。新しいチェーンエントリは
- * 作らないので、この経路では `--reason` は記録されず必須でもない。
+ * Interruption recovery: cleaning up from the state "the epoch advanced
+ * but re-encryption remains" (§12-7's legitimate transitional state)
+ * **without advancing the epoch**. Since no new chain entry is created,
+ * `--reason` is neither recorded nor required on this path.
  */
 function resumeReencryption(input: {
   readonly input: RotateInput;
@@ -1993,11 +2178,13 @@ function resumeReencryption(input: {
   readonly keys: { readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> };
   readonly currentEpoch: number;
   readonly stale: readonly VerifiedPulledValue[];
-  /** 指定された理由(null = `--reason` 未指定)。警告の文面にだけ効く。 */
+  /** The given reason (null = `--reason` not given). Affects only the warning's wording. */
   readonly reason: string | null;
   /**
-   * 現在値のうち 1 つでも自分で開けるか。再開できないときに `--new-epoch` を
-   * 勧めてよいか(= 進めた先に再暗号化する材料があるか)の判定に使う。
+   * Whether I can open at least one of the current values. Used to
+   * judge whether `--new-epoch` may be suggested when a resume is
+   * impossible (= whether re-encryption material exists past the
+   * advance).
    */
   readonly anyDecryptable: boolean;
   readonly warnings: string[];
@@ -2005,10 +2192,11 @@ function resumeReencryption(input: {
   return Effect.gen(function* () {
     const { currentEpoch, stale, warnings } = input;
     const environmentId = input.input.environmentId;
-    // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
-    // role 変更・削除が起きていれば、古い検証状態のまま再開経路だけが素通り
-    // してしまう。再開経路は push のみで
-    // ラップ集合を作らないため、grant の有効化はここでは義務を生まない)
+    // Re-applying the guard on the advanced verified view (if a role
+    // change / deletion happened between the first check and the pull,
+    // only the resume path would slip through with a stale verification
+    // state. The resume path only pushes and builds no wrap set, so a
+    // grant's enablement creates no duty here)
     const member = yield* ensureRotatable(
       input.pulled.verified,
       environmentId,
@@ -2017,10 +2205,12 @@ function resumeReencryption(input: {
     );
     const dek = input.keys.deksByEpoch.get(currentEpoch);
     if (dek === undefined) {
-      // 逃げ道は**満たせるときだけ**案内する: --new-epoch は自分で新 DEK を作る
-      // ので現エポックの DEK 自体は要らないが、再暗号化する材料(開ける現在値)が
-      // 1 つも無ければ ensureRotationIsUseful で弾かれる。無条件に勧めると、
-      // 2 つの矛盾するエラーの間で利用者を往復させることになる
+      // The escape is suggested **only when it can be fulfilled**:
+      // --new-epoch creates the new DEK itself so it doesn't need the
+      // current epoch's DEK, but with no re-encryption material (an
+      // openable current value) it gets rejected by
+      // ensureRotationIsUseful. Suggesting it unconditionally would send
+      // the user bouncing between two contradictory errors
       return yield* Effect.fail(
         cliError(
           input.anyDecryptable
@@ -2029,8 +2219,9 @@ function resumeReencryption(input: {
         ),
       );
     }
-    // 文面は「要求があったか」で変える: 理由なしの実行(部分完了の案内が
-    // 勧める形)は何も要求していないので、切り替えたと言うと嘘になる
+    // The wording differs by "was a request made": a reason-less run (the
+    // shape the partial-completion guidance suggests) requested nothing,
+    // so saying it switched would be a lie
     const switched =
       input.reason === null
         ? "Resuming this re-encryption (no new epoch will be created)"
@@ -2038,13 +2229,15 @@ function resumeReencryption(input: {
     yield* logWarning(
       `after the rotation to epoch ${currentEpoch}, environment ${environmentId} still has ${countNoun(stale.length, "variable")} with incomplete re-encryption. ${switched}. If a new epoch is strictly required (e.g. after removing a departed member), run with --new-epoch — this also counters responses that fake an incomplete state to suppress rotations`,
     );
-    // 開けない値があっても再開自体は止めない: **エポックは既に進んでいる**ので、
-    // 「エポックだけ進んで再暗号化が完了しない状態を作らない」という通常経路の
-    // 理由はここでは成立しない — その状態はもう出来ており、開ける分を押さない
-    // 選択はそれを維持するだけである(100 件中 1 件が開けないとき、残り 99 件を
-    // 旧 DEK のまま置き去りにしない)。= 「必ず進める」側と同じ方針なので
-    // decryptForRotation と方針を共有する(2 箇所に割れると、分類の変更が
-    // 再開経路にだけ入り損ねる)
+    // Unopenable values do not stop the resume itself: **the epoch has
+    // already advanced**, so the normal path's reason "never create the
+    // state where only the epoch advanced and re-encryption never
+    // completes" does not hold here — that state already exists, and
+    // choosing not to push the openable share only maintains it (with 1
+    // of 100 unopenable, never strand the other 99 on the old DEK). = the
+    // same policy as the "always advance" side, so the policy is shared
+    // with decryptForRotation (splitting into two places would let a
+    // classification change miss only the resume path)
     const targets = yield* decryptForRotation({
       verified: input.pulled.verified,
       environmentId,
@@ -2053,9 +2246,10 @@ function resumeReencryption(input: {
       chainEpoch: currentEpoch,
       warnings,
     });
-    // 押せる対象が 1 つも無いなら巡へ入らない。入っても空の push 巡と環境の
-    // 全再取得・全再検証を 1 往復して、既に分かっている原因へ戻るだけである
-    // (通常経路の ensureRotationIsUseful に相当する早期の切り上げ)
+    // If nothing can be pushed, never enter the passes. Entering would
+    // only run an empty push pass and a full re-fetch / re-verify of the
+    // environment, returning to an already-known cause (the early cut-off
+    // equivalent of the normal path's ensureRotationIsUseful)
     const outcome =
       targets.length === 0
         ? {
@@ -2084,10 +2278,12 @@ function resumeReencryption(input: {
             targets,
             sink: warnings,
           });
-    // 発行契機 (i)(CRYPTO_SPEC §6.3): 再開経路による**完了**も同じ節目 —
-    // 初回実行はクラッシュで発行へ到達しておらず、中断していた再暗号化が
-    // ここで完了して初めて「完了後のデータ状態」が成立する。通常経路と同じ
-    // 条件(完全完了のみ)で発行する
+    // Issuance trigger (i) (CRYPTO_SPEC §6.3): a **completion** via the
+    // resume path is the same milestone — the first run never reached
+    // issuance because of a crash, and only here does the interrupted
+    // re-encryption complete and "the post-completion data state" come
+    // into being. Issued on the same condition as the normal path (full
+    // completion only)
     if (outcome.remaining === 0 && outcome.failure === null) {
       yield* issuePostRotationCheckpoint(input.input, input.pulled.verified, warnings);
     }
@@ -2107,11 +2303,12 @@ function resumeReencryption(input: {
 }
 
 /**
- * `--init-manifest` が不要だった実行の警告文言。
- * **rotatePathOf の結果確定後に選ぶ**: path が resume / up-to-date の実行は
- * rotate 複合を送らない = 次 manifestVersion を発行しないので、「この rotation は
- * 次版を再発行する」という文言は嘘になる(フラグを渡した利用者に、発行されて
- * いない再発行を信じさせる)。
+ * The warning wording of a run where `--init-manifest` turned out
+ * unnecessary. **Chosen after rotatePathOf's result is settled**: a run
+ * whose path is resume / up-to-date sends no rotate composite = issues no
+ * next manifestVersion, so the wording "this rotation re-issues the next
+ * version" would be a lie (making the flag-passing user believe in a
+ * re-issuance that never happened).
  */
 function initManifestWarning(
   environmentId: string,
@@ -2130,9 +2327,11 @@ function initManifestWarning(
 }
 
 /**
- * rotate 前の状況警告(マニフェスト移行 + 床なし)のうち、経路(path)に
- * 依存しないもの。pull 警告の直後 = 後続の失敗(DEK 検証など)より前に積む。
- * --init-manifest の不要フラグ文言だけは経路の確定を待つ(initManifestWarning)。
+ * Of the pre-rotate situation warnings (manifest migration + no floor),
+ * the ones that don't depend on the path. Placed right after the pull
+ * warnings = before any subsequent failure (DEK verification etc.). Only
+ * the `--init-manifest` unneeded-flag wording waits for the path to
+ * settle (initManifestWarning).
  */
 function rotateSituationWarnings(
   input: RotateInput,
@@ -2154,10 +2353,12 @@ function rotateSituationWarnings(
 }
 
 /**
- * 経路選択: 複合を送るか(rotate)、複合なしの再開(resume)か、確認だけ
- * (up-to-date)か。--new-epoch と「初期化が実際に必要な --init-manifest」は
- * 必ず複合を送る — manifestVersion 1 の発行はメタ操作への同梱でしか起きない
- * (§12-5)ため、早期 return を取ると成功に見えるのに未初期化のまま残る。
+ * Path selection: send the composite (rotate), a composite-less resume
+ * (resume), or a check only (up-to-date). --new-epoch and "an actually
+ * needed --init-manifest" always send the composite — issuing
+ * manifestVersion 1 happens only bundled with a meta operation (§12-5),
+ * so an early return would look like success while leaving it
+ * uninitialized.
  */
 function rotatePathOf(input: {
   readonly staleCount: number;
@@ -2175,8 +2376,9 @@ function rotatePathOf(input: {
 }
 
 /**
- * 同梱マニフェストの材料は検証済み pull から組む(§16-2 の「自分の検証済み
- * ビューから」と同じ姿勢 — サーバー申告値をそのまま署名しない)。
+ * The bundled manifest's material is assembled from the verified pull
+ * (the same posture as §16-2's "from your own verified view" — never sign
+ * server-claimed values as-is).
  */
 function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
   readonly previous: {
@@ -2201,8 +2403,9 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
         metaVersion: value.metaVersion,
         metaSigHashHex: value.metaSignedBytesHashHex,
       })),
-      // declared(値なしの宣言 — §4.2)もマニフェストのダイジェスト対象
-      // (§4.3 — 全ステートメントの最新形。落とすと digest 不一致で 422)
+      // declared (valueless declarations — §4.2) are also manifest-digest
+      // targets (§4.3 — every statement's latest form. Dropping them gives
+      // a digest mismatch → 422)
       ...pulled.declared.map((statement) => ({
         variableId: statement.variableId,
         status: "declared" as const,
@@ -2236,35 +2439,45 @@ function rotateWithWarnings(
       input.signerUserId,
       input.signingKeyPair,
     );
-    // --new-epoch は再開経路を通らない = 必ずエントリを署名する。理由の必須検査を
-    // 署名直前まで遅らせる理由(再開では reason が記録されない)がここには無いので、
-    // pull より前に落とす — 満たしようのない引数検査のために全変数の暗号文を
-    // 取りに行き、変数ごとの var.read を監査ログへ残さない(ensureRotatable と同じ規律)
+    // --new-epoch never goes through the resume path = it always signs an
+    // entry. The reason the required check is deferred to just before
+    // signing (on resume the reason is not recorded) does not exist here,
+    // so it is dropped before the pull — never fetch every variable's
+    // ciphertext for an unsatisfiable argument check and leave a
+    // per-variable var.read on the audit log (same discipline as
+    // ensureRotatable)
     if (input.forceNewEpoch) {
       yield* requireReason(reason);
     }
-    // 対象集合の出所はサーバーの pull 応答しかない(変数一覧はチェーンに載らない
-    // — §6.2)。欠落の検出はローカル床の variable-omitted 規則(§6.3 (a))が担う
-    // ため、床がない実行(初回同期・破損後)では「一貫して落とされた変数」を
-    // 検出できない。ローテーションは失効操作でありこの残余は重いので、
-    // 完了報告の前に明示する(§14.3-3 の支配的残余の、この経路での現れ方)
+    // The target set's only source is the server's pull response (the
+    // variable list is not on the chain — §6.2). Since detecting an
+    // omission is the local floor's variable-omitted rule's job (§6.3
+    // (a)), a run without a floor (first sync, after corruption) cannot
+    // detect "a variable consistently withheld". A rotation is a
+    // revocation operation and this leftover is heavy, so it is made
+    // explicit before reporting completion (how §14.3-3's dominant
+    // leftover appears on this path)
     const floorless = input.floor.current() === null;
 
-    // (1) 検証済み pull(§6.3 / §12-7): 全アクティブ変数の最新値 + 自分宛の
-    // 全エポックのラップ。ローテーション後・再暗号化完了前は最新値のエポックが
-    // 変数ごとに異なりうる(§12-7)— それが中断復旧の検出材料でもある
+    // (1) The verified pull (§6.3 / §12-7): every active variable's
+    // latest value + the wraps of every epoch addressed to me. Between
+    // the rotation and the re-encryption's completion, the latest
+    // values' epochs can differ per variable (§12-7) — which is also the
+    // detection material of interruption recovery
     const pulled = yield* pullVerifiedEnvironment({
       client: input.client,
       verified: input.verified,
       environmentId: input.environmentId,
       resync: input.resync,
       floor: input.floor,
-      // --init-manifest(移行経路)のみマニフェストの
-      // **欠落**を許容する。配布された場合の検証はフラグに関わらず全て行う
+      // Only --init-manifest (the migration path) tolerates a manifest
+      // **omission**. Verification when distributed all happens regardless
+      // of the flag
       allowMissingManifest: input.initManifest,
     });
-    // 警告は後続の失敗(DEK 検証など)より**前**に sink へ入れる: 失敗経路の
-    // flush に含まれなければ、失敗時にだけ消えるという round 8 と同じ穴になる
+    // Warnings enter the sink **before** any subsequent failure (DEK
+    // verification etc.): if the failure path's flush didn't include them,
+    // they'd vanish exactly on failure — the same hole as round 8
     warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, pulled, floorless));
     const keys = yield* environmentKeysFor({
       client: input.client,
@@ -2279,14 +2492,15 @@ function rotateWithWarnings(
       staleCount: stale.length,
       reason,
       forceNewEpoch: input.forceNewEpoch,
-      // 初期化が実際に必要(欠落を確認した)実行は rotate 複合を必ず送る
+      // A run where the initialization is actually needed (an omission was confirmed) always sends the rotate composite
       mustInitialize: input.initManifest && pulled.manifest === null,
     });
-    // --init-manifest の不要フラグ文言は経路の確定後に選ぶ(resume /
-    // up-to-date の実行は複合を送らない = 「次版を再発行する」とは言わない)
+    // The --init-manifest unneeded-flag wording is chosen after the path
+    // settles (a resume / up-to-date run sends no composite = never say
+    // "it re-issues the next version")
     warnings.push(...initManifestNotices(input, pulled.manifest, path));
 
-    // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
+    // --- Interruption recovery: the epoch advanced but re-encryption remains ---
     if (path === "resume") {
       return yield* resumeReencryption({
         input,
@@ -2300,11 +2514,12 @@ function rotateWithWarnings(
       });
     }
 
-    // 未完了がなく --reason も指定されていない = 「確認だけ」の実行(部分完了の
-    // 案内が勧める再実行の形)。ここで --reason を要求すると、案内どおりに
-    // 再実行した利用者が理由を求められ、指定すると**二度目のローテーション**に
-    // なってしまう。何もせず完了状態を報告する。
-    // `--reason ""` はこの経路に入らない(checkReasonLength が手前で落とす)
+    // No incompleteness and no --reason given = a "check only" run (the
+    // re-run shape the partial-completion guidance suggests). Requiring
+    // --reason here would ask the user who re-ran as guided for a reason,
+    // and giving one would become **a second rotation**. Nothing is done;
+    // the completion state is reported. `--reason ""` never reaches this
+    // path (checkReasonLength drops it earlier)
     if (path === "up-to-date") {
       return {
         mode: "up-to-date",
@@ -2320,8 +2535,8 @@ function rotateWithWarnings(
       };
     }
 
-    // --- 通常のローテーション ---
-    // 理由が必須になるのはここから(チェーンエントリを実際に署名する経路)
+    // --- The normal rotation ---
+    // The reason becomes required from here (the path that actually signs a chain entry)
     const entryReason = yield* requireReason(reason);
     const newEpoch = currentEpoch + 1;
     const member = yield* ensureRotatable(
@@ -2330,11 +2545,14 @@ function rotateWithWarnings(
       input.signerUserId,
       input.signingKeyPair,
     );
-    // 再暗号化に要する平文は**エポックを進める前に**手元へ揃える: 復号できない
-    // 値があるなら、エポックだけが進んで再暗号化が永久に完了しない状態を作らない。
-    // 未完了の再暗号化(旧エポックの値)がある状態で --new-epoch が指定された
-    // 場合も、対象は「全アクティブ変数」なので中間エポックを経由せず一気に
-    // 新エポックへ揃う(全エポックの DEK は自分宛ラップから復号済み)
+    // The plaintext re-encryption needs is gathered **before advancing
+    // the epoch**: with an undecryptable value present, never create the
+    // state where only the epoch advanced and re-encryption can never
+    // complete. When --new-epoch is given while an unfinished
+    // re-encryption (old-epoch values) exists, the targets are "all
+    // active variables" anyway, so they converge to the new epoch in one
+    // go without transiting an intermediate epoch (every epoch's DEK is
+    // already decrypted from the wraps addressed to me)
     const targets = yield* decryptForRotation({
       verified: pulled.verified,
       environmentId: input.environmentId,
@@ -2344,7 +2562,7 @@ function rotateWithWarnings(
       warnings,
     });
     yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
-    // 生成直後に包む(以降 DEK は Redacted としてしか流れない)
+    // Wrapped right after generation (from here on the DEK only flows as a Redacted)
     const dek = Redacted.make(generateDek(), { label: "dek" });
     const dekCommitmentHex = yield* computeRotationCommitmentHex({
       projectId: pulled.verified.projectId,
@@ -2376,12 +2594,13 @@ function rotateWithWarnings(
     if (rotated.floorWarning !== null) {
       warnings.push(rotated.floorWarning);
     }
-    // 新エポックの DEK は生成元(自分)が保持している。チェーン導出コミットメントとの
-    // 照合は appendRotation が済ませている(§5.2)
+    // The new epoch's DEK is held by its generator (me). The match
+    // against the chain-derived commitment was already done by
+    // appendRotation (§5.2)
     const deksByEpoch = new Map<number, Redacted.Redacted<Uint8Array>>(keys.deksByEpoch);
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
-      // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
+      // The attribution is the member row at acceptance time (already updated if re-signed under CAS retry)
       context: reencryptContext(
         input,
         yield* ownDeviceBySigningKey(pulled.verified, rotated.member, input.signingKeyPair),
@@ -2413,7 +2632,7 @@ function rotateWithWarnings(
   });
 }
 
-/** --init-manifest が実際には不要だった実行の案内(文言は経路確定後に選ぶ)。 */
+/** The guidance for a run where --init-manifest turned out unnecessary (the wording is chosen after the path settles). */
 function initManifestNotices(
   input: RotateInput,
   manifest: { readonly manifestVersion: number } | null,
@@ -2424,7 +2643,7 @@ function initManifestNotices(
     : [];
 }
 
-/** 新エポック DEK のコミットメント計算(CRYPTO_SPEC §5.2)。失敗は CliError。 */
+/** Computing the new-epoch DEK's commitment (CRYPTO_SPEC §5.2). Failures are CliError. */
 function computeRotationCommitmentHex(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -2440,7 +2659,7 @@ function computeRotationCommitmentHex(input: {
           environmentId: input.environmentId,
           epoch: input.newEpoch,
         },
-        // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
+        // Why it is unwrapped: it is the commitment computation's input (the encryption boundary). The product is a hash
         dek: Redacted.value(input.dek),
       }),
     catch: () => cliError("Failed to compute the DEK commitment"),
@@ -2454,15 +2673,20 @@ function computeRotationCommitmentHex(input: {
 }
 
 /**
- * 発行契機 (i)(CRYPTO_SPEC §6.3 — SHOULD): rotate とそれに伴う再暗号化の
- * **完了後**に当該環境の周期 checkpoint を発行する(境界分は複合に同梱済み。
- * 完了後の発行なので受理時点一致検査と自己競合しない)。カバーは当該環境
- * 1 タプル(全環境カバーを rotate に課すと読んでいない環境の値取得を強制
- * する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
- * 部分完了・失敗時は呼ばない(公証すべき「完了後のデータ状態」がない)。
- * 再開経路(resumeReencryption)による完了も同じ節目として発行する —
- * 初回実行はクラッシュで発行へ到達していない。
- * SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する。
+ * Issuance trigger (i) (CRYPTO_SPEC §6.3 — SHOULD): issue the
+ * environment's periodic checkpoint **after the completion** of the
+ * rotate and its accompanying re-encryption (the boundary share is
+ * already bundled in the composite. Since issuance is post-completion, it
+ * never self-conflicts with the acceptance-time match check). The cover
+ * is the one tuple of this environment (charging a rotate an
+ * all-environment cover would force value fetches of environments it
+ * never read — the same reasoning as §12-4's audit discipline. The ruling
+ * is docs/notes/session-35.md). Not called on a partial completion or a
+ * failure (there is no "post-completion data state" to notarize). A
+ * completion via the resume path (resumeReencryption) issues at the same
+ * milestone — the first run never reached issuance because of a crash.
+ * Being a SHOULD, an issuance failure never overturns the rotate's
+ * success and is disclosed as a warning.
  */
 function issuePostRotationCheckpoint(
   input: RotateInput,

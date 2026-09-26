@@ -1,18 +1,24 @@
-// `maruhi member add|remove|change-role`(CRYPTO_SPEC §6.2 / §6.5 / §7、
-// AUTH_SPEC §12-6 / §15)。
+// `maruhi member add|remove|change-role` (CRYPTO_SPEC §6.2 / §6.5 / §7,
+// AUTH_SPEC §12-6 / §15).
 //
-// - add: 一覧の受諾ブロックから §6.5 独立検証 + 発行ピン突合 + FP 確認の儀式 →
-//   add_member 追記(CAS リトライ)→ 全環境 × 全エポックのバックフィル
-//   (409 = 登録済みの冪等再開。**再追加(過去在籍が別鍵)の 409 は旧鍵ラップの
-//   疑い**があるため、鍵履歴ゲート付きで削除 → 再登録の自動修復を行う — §12-6
-//   の修復経路。放置すると再追加メンバーが履歴エポックを復号できない)
-// - remove / change-role(member 未満への降格): エントリ追記 → **全環境の強制
-//   ローテーション**(§7)。中断復旧は server revoke と同じチェーン導出方式
-//   (rotation-sweep.ts — 基準 = 最後のローテーション義務エントリの seq)
+// - add: §6.5 independent verification of the list's acceptance block +
+//   issuance-pin cross-check + the FP-confirmation ceremony → add_member
+//   append (CAS retry) → backfill of every environment × every epoch
+//   (409 = an idempotent resume of already-registered. **A 409 from a
+//   re-addition (a past membership under a different key) suggests a
+//   stale-key wrap**, so it auto-repairs via delete → re-register behind a
+//   key-history gate — §12-6's repair path. Left alone, a re-added member
+//   cannot decrypt historical epochs)
+// - remove / change-role (demotion below member): append the entry →
+//   **forced rotation of every environment** (§7). Interruption recovery
+//   uses the same chain-derived scheme as server revoke
+//   (rotation-sweep.ts — baseline = the seq of the last rotation-duty
+//   entry)
 //
-// 自分自身の remove / member 未満への自己降格は拒否する: 実行後に本人が
-// rotate_epoch の権限を失い、§7 の義務を自分で履行できない(合意規則は
-// 禁止していないが、義務が構造的に宙に浮く形を CLI が作らない)。
+// Removing yourself or demoting yourself below member is refused: after
+// the operation the actor loses rotate_epoch authority and cannot fulfill
+// the §7 duty themselves (the consensus rules don't forbid it, but the CLI
+// never creates a shape where the duty is structurally orphaned).
 
 import { ChainHeadConflictError, DekWrapNotFoundError } from "@maruhi/api-schema";
 import {
@@ -99,41 +105,47 @@ import { resyncExtended, type VerifiedProject } from "./sync.ts";
 const MAX_ATTEMPTS = 5;
 
 /**
- * 四眼(K6)の下での各 op の結果: 方針が内側 op を対象にしていれば `propose` を追記して
- * 終わる(`proposed` — 何も適用されない)。それ以外は従来の適用結果(`applied`)。
+ * Each op's result under four-eyes (K6): if the policy targets the inner
+ * op, append a `propose` and finish (`proposed` — nothing is applied).
+ * Otherwise the usual application result (`applied`).
  */
 export type MemberOpOutcome<S> =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: S };
 
-/** remove / 降格 / 縮小後のローテーションの理由(§6.2 payload の固定文字列)。 */
+/** The rotation reason after a remove / demotion / narrowing (the fixed string of the §6.2 payload). */
 const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
 const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
 const SCOPE_NARROWED_ROTATION_REASON = "scope-narrowed";
 
 // ---------------------------------------------------------------------------
-// 共通: ローテーション義務の環境集合と基準 seq(中断復旧の基準 — チェーン導出のみ)
+// Shared: the rotation-duty environment set and the baseline seq (the interruption-recovery baseline — chain-derived only)
 // ---------------------------------------------------------------------------
 
 /**
- * **対象 user_id の**ローテーション義務エントリ(`remove_member` / 降格 / 縮小 —
- * §7)。導出の本体は rotation-sweep.ts の rotationMandates(未収束の常時警告と
- * 同じ 1 導出 — 判定のズレを構造的に防ぐ)。義務の環境集合はエントリごとに
- * 具体化済み(remove = 現 scope、降格 = 新 scope、縮小 = 旧 \ 新 — 設計録 K4-J)。
+ * **The target user_id's** rotation-duty entries (`remove_member` /
+ * demotion / narrowing — §7). The derivation's core is rotation-sweep.ts's
+ * rotationMandates (the same single derivation as the always-on
+ * unconverged warning — prevents judgment drift structurally). The duty's
+ * environment set is concretized per entry (remove = the current scope,
+ * demotion = the new scope, narrowing = old \ new — design record K4-J).
  *
- * 対象スコープにするのは、各コマンドが収束させる義務を**自分の操作の分**に
- * 限定するため: 大域の義務を基準にすると、born-reader への no-op 再実行が
- * **他人の**未収束義務を拾ってローテーションを開始する。対象の義務エントリ以降の
- * ローテーションは対象の偽造可能座標を閉じる(§7)ため、対象スコープでも自分の
- * 義務を過小に満たすことはない(他人の未収束義務は常時警告 — rotation-sweep.ts —
- * とその操作の再実行の責務)。
+ * Target-scoping exists to limit the duty each command converges to **its
+ * own operation's share**: keyed on the global duty, a no-op re-run
+ * against a born-reader would pick up **someone else's** unconverged duty
+ * and start a rotation. Rotations after the target's duty entry close the
+ * target's forgeable coordinates (§7), so a target scope never
+ * under-fulfills its own duty (others' unconverged duties are the
+ * always-on warning — rotation-sweep.ts — and that operation's re-run's
+ * responsibility).
  */
 function memberMandatesFor(
   verified: VerifiedProject,
   targetUserId: string,
 ): readonly RotationMandate[] {
-  // 端末失効の義務(`device-revoked`)は `device revoke` 自身の sweep(device-ops.ts)が
-  // 履行する — member 系コマンドの再実行が他の操作の義務を拾わない(同じ線)
+  // The device-revocation duty (`device-revoked`) is fulfilled by `device
+  // revoke`'s own sweep (device-ops.ts) — member commands' re-runs never
+  // pick up another operation's duty (same line)
   return rotationMandates(verified).filter(
     (mandate) =>
       mandate.kind !== "server-revoked" &&
@@ -142,16 +154,16 @@ function memberMandatesFor(
   );
 }
 
-/** §7 の義務環境の走査(remove / 降格 / 縮小の共有後段。基準は環境 → 最大の義務 seq)。 */
+/** The §7 duty-environment sweep (the shared aftermath of remove / demotion / narrowing. Baseline = environment → the max duty seq). */
 function sweepAfterMandate<R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly mandates: readonly RotationMandate[];
-  /** 実行者(actor)。scope 外の義務環境は rotate できない(§7)ので対象から外して注記する。 */
+  /** The actor. A duty environment outside scope cannot be rotated (§7), so it is dropped from the targets and noted. */
   readonly actorUserId: string;
-  /** 実行者が署名する端末の鍵(履行できる範囲 = 端末の実効 scope — DK K4-17)。 */
+  /** The key of the device the actor signs with (the fulfillable range = the device's effective scope — DK K4-17). */
   readonly signingKeyPair: SigningKeyPair;
-  /** 義務の種別ごとのローテーション注入(rotate エントリの reason を義務に合わせる)。 */
+  /** The per-duty-kind rotation injection (the rotate entry's reason matches the duty). */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.Effect<MemberSweepOutcome, CliError, R> {
   return Effect.gen(function* () {
@@ -160,10 +172,12 @@ function sweepAfterMandate<R>(input: {
       input.actorUserId,
       input.signingKeyPair,
     );
-    // 自分の(端末の実効)scope 外の義務環境(他人が過去に作った縮小 / remove の義務が
-    // 対象の履歴に残っている場合、cap 付き端末で実行した場合)は rotate の対象に含めない
-    // (CRYPTO_SPEC §7 — 実行者も scope 外なら rotate できない。独立レビュー S2)。
-    // 常時警告が引き続き表示する
+    // Duty environments outside my (the device's effective) scope (when a
+    // duty from a narrowing / remove someone made in the past remains on
+    // the target's history, when run on a capped device) are excluded from
+    // the rotate targets (CRYPTO_SPEC §7 — even the actor cannot rotate
+    // outside scope. Independent review S2). The always-on warning keeps
+    // displaying them
     const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
     const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
       verified: input.verified,
@@ -171,7 +185,7 @@ function sweepAfterMandate<R>(input: {
       actorScope,
       deletedVerified,
     });
-    // 環境ごとの reason = その環境の基準になった義務(最大 seq)の種別(独立レビュー N3)
+    // Each environment's reason = the kind of the duty that became that environment's baseline (max seq) (independent review N3)
     const reasons = reasonsByEnvironment(input.mandates);
     const sweep = yield* sweepRotations({
       rotate: (environmentId, mode) =>
@@ -188,9 +202,12 @@ function sweepAfterMandate<R>(input: {
 }
 
 /**
- * 実行者が rotate を履行できる環境の範囲 = 署名する端末の実効 scope(人 ∩ 端末 — DK
- * K4-17)。実効 role が member 未満(reader、または member cap の端末)なら空(rotate は
- * member 以上 — §6.2)。非メンバー・未登録端末も空(fail-closed — 常時警告に残る)。
+ * The range of environments where the actor can fulfill rotate = the
+ * signing device's effective scope (person ∩ device — DK K4-17). An
+ * effective role below member (reader, or a member-cap device) is empty
+ * (rotate needs member or above — §6.2). Non-members and unregistered
+ * devices are empty too (fail-closed — they stay on the always-on
+ * warning).
  */
 function actorEffectiveScope(
   verified: VerifiedProject,
@@ -216,8 +233,10 @@ function actorEffectiveScope(
 }
 
 /**
- * 対象の義務(remove / 降格 / 縮小 — 提案経由の適用を含む)の sweep。直接追記の後段と、
- * 四眼で適用を完成させた承認者の履行(approval-approve.ts — 承認項目 22)が共有する。
+ * The sweep of the target's duties (remove / demotion / narrowing —
+ * including application via a proposal). Shared between the direct
+ * append's aftermath and the approver's fulfillment that completes the
+ * application under four-eyes (approval-approve.ts — approval item 22).
  */
 export function sweepMemberMandates<R>(input: {
   readonly client: MaruhiClient;
@@ -231,10 +250,10 @@ export function sweepMemberMandates<R>(input: {
   return mandates.length === 0 ? Effect.succeed(null) : sweepAfterMandate({ ...input, mandates });
 }
 
-/** member 系の sweep の結果(削除済み環境と、実行者の scope 外で回せなかった環境を含む)。 */
+/** The member-family sweep result (includes deleted environments and ones that could not be rotated because they are outside the actor's scope). */
 export type MemberSweepOutcome = SweepOutcome & {
   readonly skippedDeleted: readonly string[];
-  /** 実行者の scope 外で rotate できない義務環境(§7 — 他メンバーの履行に委ねる)。 */
+  /** Duty environments outside the actor's scope that cannot be rotated (§7 — left to another member's fulfillment). */
   readonly outOfScope: readonly string[];
 };
 
@@ -246,7 +265,7 @@ const MANDATE_REASONS = {
   "device-revoked": "device-revoked",
 } satisfies Record<RotationMandate["kind"], string>;
 
-/** 環境 → 基準(最大 seq)の義務の reason(同 seq なら降格を優先)。 */
+/** Environment → the reason of the baseline (max seq) duty (on a seq tie, demotion wins). */
 function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap<string, string> {
   const chosen = new Map<string, RotationMandate>();
   for (const mandate of mandates) {
@@ -267,16 +286,17 @@ function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap
 }
 
 /**
- * メンバーシップ op の CAS 追記(retryOnConflict の共有足場 — add / remove /
- * change_role で同型)。ヘッド競合ごとに延長検査付き再同期 → `recheck` で
- * 事前検査をやり直し、並行実行が同じ変更を先に積んでいたら(already)追記せず
- * 継続する。
+ * The CAS append of a membership op (the shared scaffolding of
+ * retryOnConflict — same shape across add / remove / change_role). On each
+ * head conflict: resync with the extension check → redo the pre-check via
+ * `recheck`; if a concurrent run already committed the same change
+ * (already), continue without appending.
  */
 function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** exhausted 文言に使う op 名(例: "remove_member")。 */
+  /** The op name used in the exhausted wording (e.g. "remove_member"). */
   readonly opLabel: string;
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry, CliError>;
   readonly recheck: (
@@ -311,7 +331,7 @@ function appendWithCas(input: {
   );
 }
 
-/** actor(実行者)と target の解決(remove / change_role 共通の前段)。 */
+/** Resolving the actor and the target (the shared prologue of remove / change_role). */
 function resolveActorAndTarget(
   verified: VerifiedProject,
   signerUserId: string,
@@ -328,15 +348,18 @@ function resolveActorAndTarget(
 }
 
 /**
- * pre-flight が見る実行者の権限材料。合意は実効権限(人 ∩ 端末の cap — §6.2
- * `effectivePermissionOf`)で判定するので、手前判定もこれに合わせる(署名端末の
- * cap が人より狭ければ、実効側で検査しないと append 時の拒否まで進む)。
+ * The actor's authority material the pre-flight sees. Since the consensus
+ * judges by effective authority (person ∩ device cap — §6.2
+ * `effectivePermissionOf`), the early judgment follows it (if the signing
+ * device's cap is narrower than the person's, skipping the effective-side
+ * check means advancing to the append-time refusal).
  */
 type ActorAuthority = { readonly role: Role; readonly scope: MemberScope };
 
 /**
- * 署名端末を引き、その実効権限を返す。端末がチェーンに無い鍵(未登録・失効済み)
- * には型付きの失敗が人の権限の文言の前に出る(device-ops.ts と同じ順序)。
+ * Pulls the signing device and returns its effective authority. For a key
+ * absent from the chain (unregistered / revoked), a typed failure precedes
+ * the person's-authority wording (same order as device-ops.ts).
  */
 function actorAuthority(
   verified: VerifiedProject,
@@ -348,7 +371,7 @@ function actorAuthority(
   );
 }
 
-/** remove / change_role の対象規則(§6.2)の CLI 早期検査(文言のための手前判定)。 */
+/** The CLI's early check of the target rules (§6.2) for remove / change_role (a pre-judgment for the wording). */
 function targetedOpRejection(input: {
   readonly actor: ActorAuthority;
   readonly target: ChainMember;
@@ -378,21 +401,21 @@ function ownersCount(verified: VerifiedProject): number {
 // ---------------------------------------------------------------------------
 
 export interface MemberAddSummary {
-  /** チェーンへ追記したか(false = 既に同一鍵で在籍 — バックフィルのみの再開)。 */
+  /** Whether it was appended to the chain (false = already a member under the same key — a backfill-only resume). */
   readonly appended: boolean;
   readonly targetUserId: string;
   readonly role: Role;
-  /** バックフィルで新規登録したラップ数。 */
+  /** The number of wraps newly registered by the backfill. */
   readonly registered: number;
-  /** 既に登録済みだったラップ数(再実行の収束)。 */
+  /** The number of wraps already registered (a re-run's convergence). */
   readonly alreadyRegistered: number;
-  /** 旧鍵ラップの疑いで削除 → 再登録した数(再追加の自動修復 — §12-6)。 */
+  /** The number deleted → re-registered on stale-key-wrap suspicion (the re-addition auto-repair — §12-6). */
   readonly repaired: number;
-  /** バックフィルに失敗した環境(§7 — 黙ってスキップしない)。 */
+  /** The environments whose backfill failed (§7 — never skipped silently). */
   readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
 }
 
-/** 受諾済みの行(発行文は全行が持つ)。 */
+/** An accepted row (every row carries the issuance text). */
 type AddableRow = InvitationRow & { readonly acceptance: InviteAcceptance };
 
 const withAcceptance = (
@@ -400,8 +423,9 @@ const withAcceptance = (
 ): row is InvitationRow & { readonly acceptance: InviteAcceptance } => row.acceptance !== null;
 
 /**
- * 受諾済み招待の選択: id 指定があればその行、なければ受諾済み(accepted)が
- * ちょうど 1 件のときだけ自動選択する(複数・ゼロは明示を要求)。
+ * Choosing the accepted invite: a given id picks that row; without one,
+ * auto-select only when exactly one accepted row exists (multiple or zero
+ * requires an explicit choice).
  */
 function selectInvitation(
   rows: readonly InvitationRow[],
@@ -433,9 +457,10 @@ function selectInvitation(
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
   if (first === undefined) {
-    // completed 行は自動選択しない(過去メンバー全員の行が completed のまま
-    // 蓄積するため曖昧)。add_member 済み招待のバックフィル再開は id 明示の
-    // 経路が受ける — その導線をここで示す
+    // completed rows are never auto-selected (ambiguous: every past
+    // member's row stays completed forever). The resume of a backfill for
+    // an already add_member'd invite takes the explicit-id path — that
+    // route is shown here
     return Effect.fail(
       cliError(
         "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with `maruhi invite list` and pass it explicitly: `maruhi member add <invite-id>`",
@@ -453,22 +478,30 @@ function selectInvitation(
 }
 
 /**
- * 招待者側の相互確認(§6.5 — 必須 UX): 受諾鍵の FP ワード列と付与 role を
- * 表示し、帯域外照合の明示確認を要求する。儀式は再実行(バックフィルのみの
- * 中断復旧)でも省略しない(server-grant と同じ規律 — これからラップを配る鍵の
- * 照合を省略しない)。
+ * The inviter's mutual confirmation (§6.5 — mandatory UX): displays the
+ * acceptance key's FP word list and the granted role, and requires an
+ * explicit confirmation of the out-of-band match. The ceremony is not
+ * skipped even on a re-run (a backfill-only interruption recovery) — same
+ * discipline as server-grant (never skip verifying the key wraps are about
+ * to be dealt to).
  *
- * 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの相手
- * (origin × user_id)の指紋と一致すれば、12 語の帯域外読み上げの再実施を
- * 免除する。**付与そのものの明示確認(yes 入力)はヒット時も要求し**、
- * エージェント環境では帳を auto-pass に使わない(フラグ必須のまま — 帳は
- * 過去の検証の記録であって、この付与への人間の同意を代替しない)。さらに
- * **帳を使えるのは stdin / stdout が対話端末のときだけ**(ADR-0016 決定 7 の
- * 一次境界と同じ allow-list): 12 語儀式は実行ごとの最終語再入力が要るため
- * 盲目的なパイプでは通らないが、yes 確認はそうではないので、パイプ・CI・
- * 未検出エージェントでは帳を無効化して完全な儀式へ戻す(fail-closed)。
- * フラグの明示指定は帳より優先し、不一致は警告して通常の儀式へ戻す(自動失敗に
- * しない — 正当な鍵更新があり得る)。儀式 / フラグ照合の成功は帳へ記録する。
+ * The verified fingerprint book (KF — known-fingerprints.ts): when it
+ * matches the fingerprint of a previously out-of-band-verified
+ * counterpart (origin × user_id), the 12-word out-of-band recital is
+ * waived. **The explicit confirmation (yes input) of the grant itself is
+ * still required on a hit**, and in agent environments the book is never
+ * used as an auto-pass (a flag stays required — the book records a past
+ * verification and does not substitute a human's consent to this grant).
+ * Furthermore **the book is usable only when stdin / stdout are an
+ * interactive terminal** (the same allow-list as ADR-0016 decision 7's
+ * primary boundary): the 12-word ceremony requires re-typing the last word
+ * on each run so a blind pipe can't pass it, but a yes confirmation is not
+ * like that, so on a pipe / CI / undetected agent the book is disabled and
+ * the full ceremony returns (fail-closed). An explicit flag beats the
+ * book; a mismatch warns and returns to the normal ceremony (not an
+ * automatic failure — a legitimate key update is possible). A successful
+ * ceremony / flag match is recorded into the book.
+ * automatic failure — a legitimate key update is possible). A successful ceremony / flag match is recorded into the book.
  */
 function confirmInviteeFingerprint(input: {
   readonly origin: string;
@@ -488,9 +521,10 @@ function confirmInviteeFingerprint(input: {
       userId: input.targetUserId,
       fingerprintHex: input.fingerprintHex,
     });
-    // 帳のヒットを使えるのは対話端末 + フラグなし + 非エージェントの経路だけ
-    // (判定は usableBookHit)。そのときは読み上げ照合の指示 2 行を落とす
-    // (通話を指示した直後に「要らない」と言わない)
+    // A book hit is usable only on the interactive-terminal + no-flag +
+    // non-agent path (judged by usableBookHit). In that case the 2 lines
+    // instructing the recital comparison are dropped (never say "not
+    // needed" right after instructing the call)
     const hit = yield* usableBookHit({
       book,
       flagProvided: input.expectFingerprintHex !== null,
@@ -555,10 +589,11 @@ function confirmInviteeFingerprint(input: {
 }
 
 /**
- * 宛先 login の解決(充足形 4 の (iii)): `--github` → 発行ピンの宛先。無しは
- * null = 儀式へ。対話入力は設けない(儀式の再入力プロンプトと混ざり、また
- * 打ち間違いが「別人の GitHub」への問い合わせになる — 名指しは発行時か
- * フラグの明示的作為に限る)。
+ * Resolving the destination login (adequacy form 4's (iii)): `--github` →
+ * the issuance pin's destination. Absent = null = go to the ceremony. No
+ * interactive input is provided (it would mix with the ceremony's re-input
+ * prompt, and a typo becomes a query for "someone else's GitHub" — naming
+ * is limited to issuance time or an explicit flag).
  */
 function resolveAddresseeLogin(input: {
   readonly flagLogin: string | null;
@@ -580,9 +615,11 @@ function resolveAddresseeLogin(input: {
 }
 
 /**
- * 未登録時の二択(補足 21 裁定 D ④): 相手の GitHub に鍵が無いとき、儀式へ入る前に
- * 「頼んで再実行」か「今すぐ儀式」かを聞く。対話端末 + 非エージェント + フラグ
- * なしのときだけ(非対話ではフラグ経路のみ — 従来どおり)。yes = 儀式へ進む。
+ * The two choices when unregistered (supplement 21 ruling D ④): when the
+ * counterpart's GitHub carries no key, ask before entering the ceremony —
+ * "ask them and re-run" or "ceremony right now". Only on an interactive
+ * terminal + non-agent + no flag (non-interactive stays flag-only, as
+ * before). yes = proceed to the ceremony.
  */
 function askCeremonyOrWait(input: {
   readonly login: string;
@@ -616,12 +653,15 @@ function askCeremonyOrWait(input: {
 }
 
 /**
- * 招待者側の充足形 4(CRYPTO_SPEC §6.5 — IV2): 発行文・両署名の検証(呼び出し側
- * で済み)に加えて、裏付け元が「受諾の sig 鍵は名指しした相手の鍵である」と照合
- * できたとき、**確認入力なしに** add_member へ進んでよい(名指しは発行時の明示的
- * 作為)。`--expect-fingerprint` が同時に指定されていれば照合に加えて要求し、
- * 不一致は拒否する。照合の不能(裏付け元 `none`・宛先なし・未登録・取得不能)は
- * false = 充足形 1〜3(confirmInviteeFingerprint)へ戻る。
+ * The inviter's adequacy form 4 (CRYPTO_SPEC §6.5 — IV2): in addition to
+ * verifying the issuance text and both signatures (done by the caller),
+ * when the backing source can confirm "the acceptance's sig key is the
+ * named counterpart's key", it may proceed to add_member **without a
+ * confirmation input** (the naming was the explicit act at issuance). If
+ * `--expect-fingerprint` is also given, it is required on top of the
+ * match, and a mismatch refuses. An impossible match (backing `none`, no
+ * destination, unregistered, unfetchable) = false = falls back to adequacy
+ * forms 1-3 (confirmInviteeFingerprint).
  */
 function confirmInviteeViaBacking(input: {
   readonly identityBacking: IdentityBacking;
@@ -684,10 +724,13 @@ function confirmInviteeViaBacking(input: {
 }
 
 /**
- * 鍵 FP 再登録の警告(設計録 K5-K / K6-I): 受諾鍵が検証済みチェーンの履歴の別の在籍区間に
- * 現れるとき警告する(拒否ではない — 同一鍵での復帰は §6.2 が許容する)。同一 user_id の
- * 過去の在籍と、別 user_id の在籍の両方を言い分ける。判定材料は `keyHistory`(提案経由の
- * 追加も含む — K6-C)。直接追記・提案化の両経路で署名の前に出す。
+ * The key-FP re-registration warning (design record K5-K / K6-I): warns
+ * when the acceptance key appears on a different membership interval of
+ * the verified chain's history (not a refusal — §6.2 permits a return
+ * under the same key). Distinguishes the same user_id's past membership
+ * from a different user_id's membership. The judgment material is
+ * `keyHistory` (covers additions via proposals too — K6-C). Shown before
+ * signing on both the direct-append and proposal paths.
  */
 function warnKeyReuse(
   verified: VerifiedProject,
@@ -704,7 +747,7 @@ function warnKeyReuse(
   );
 }
 
-/** add_member の実行者 role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
+/** Early check of the add_member actor-role rule (§6.2) (a reason string when unmet). */
 function addActorRejection(actor: ActorAuthority | undefined, role: Role): string | null {
   if (actor === undefined || ROLE_RANK[actor.role] < ROLE_RANK.admin) {
     return "Only admins and above can run add_member (CRYPTO_SPEC §6.2)";
@@ -715,12 +758,12 @@ function addActorRejection(actor: ActorAuthority | undefined, role: Role): strin
   return null;
 }
 
-/** メンバー鍵一意性(§6.2 duplicate-member-key)の早期検査(不成立なら理由)。 */
+/** Early check of member-key uniqueness (§6.2 duplicate-member-key) (a reason when unmet). */
 function duplicateMemberKeyRejection(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
 ): string | null {
-  // 比較対象は現メンバー集合の全端末鍵(§6.2 — 2026-09-19 DK)
+  // The comparison target is every device key of the current member set (§6.2 — 2026-09-19 DK)
   for (const member of verified.state.members.values()) {
     for (const device of member.devices.values()) {
       if (
@@ -734,7 +777,7 @@ function duplicateMemberKeyRejection(
   return null;
 }
 
-/** add_member の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。 */
+/** The pre-append check of add_member (re-run after a CAS retry's resync as well). */
 function ensureAddable(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -764,7 +807,8 @@ function ensureAddable(input: {
           input.acceptance.inviteeSigPubHex,
         )
       ) {
-        // 追記済み(前回実行の中断・並行実行)— バックフィルのみの再開へ
+        // Already appended (a previous run's interruption / a concurrent
+        // run) — resume as backfill-only
         return { alreadyAdded: true };
       }
       return yield* Effect.fail(
@@ -777,10 +821,14 @@ function ensureAddable(input: {
     if (keyRejection !== null) {
       return yield* Effect.fail(cliError(keyRejection));
     }
-    // 原則 1(§6.2 scope-not-contained — 検査順も §6.2: duplicate 系の後): add の権限変化の
-    // 環境集合 = 新 scope(招待行)。発行時の検査(K4-G)は発行者のもので、add の実行者は
-    // 別人・別時点でありうる(独立レビュー S1)。儀式の前に落とす。追記済みの再開(上)は
-    // remove / change-role と同じく包含を問わない(残るのはバックフィルだけ)
+    // Principle 1 (§6.2 scope-not-contained — check order is also §6.2's:
+    // after the duplicate family): add's permission-change environment set
+    // = the new scope (the invite row). The issuance-time check (K4-G) is
+    // the issuer's; the add's actor may be a different person at a
+    // different time (independent review S1). Dropped before the ceremony.
+    // An already-appended resume (above), like remove / change-role, asks
+    // no containment (what remains is only the backfill)
+    // Like remove / change-role, no containment is asked (what remains is only the backfill)
     const invited = memberScopeOf(input.scope);
     if (!scopeContains(permission.scope, invited)) {
       return yield* Effect.fail(
@@ -794,9 +842,12 @@ function ensureAddable(input: {
 }
 
 /**
- * add_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。
- * scope は招待行の付与予定 scope(AUTH_SPEC §15-2 — 招待者が受諾後に別の scope を
- * 付けることはできない: 同意の範囲は発行時の発行署名が固定する)
+ * Signs an add_member entry right after the current head (the shared core
+ * = chain-append.ts). scope is the invite row's to-be-granted scope
+ * (AUTH_SPEC §15-2 — an inviter cannot grant a different scope after
+ * acceptance: the consent's range is fixed by the issuance signature at
+ * issuance)
+ * grant a different scope after acceptance: the consent's range is fixed by the issuance signature at issuance)
  */
 function signAddMemberEntry(input: {
   readonly verified: VerifiedProject;
@@ -825,7 +876,7 @@ function signAddMemberEntry(input: {
   });
 }
 
-/** バックフィル 1 環境分の結果。 */
+/** The result of one environment's backfill. */
 interface MemberBackfillResult {
   readonly registered: number;
   readonly alreadyRegistered: number;
@@ -833,19 +884,24 @@ interface MemberBackfillResult {
 }
 
 /**
- * 1 環境の全エポックの新メンバー宛バックフィル(CRYPTO_SPEC §7 — 新規メンバーは
- * 履歴も読める。共有核 = backfill.ts)。
+ * The backfill of one environment's every epoch addressed to the new
+ * member (CRYPTO_SPEC §7 — a new member can read history too. Shared core
+ * = backfill.ts).
  *
- * **再追加の自動修復(B1b 裁定 + §12-6 追補)**: エポック単位の 409 は
- * 「旧在籍時の旧鍵ラップがスロットを占有している」可能性がある。放置すると
- * 再追加メンバーは当該エポックを復号できない(409 を登録済み扱いにすると
- * 不可視化する)ため、旧鍵ラップと判定したら §12-6 の修復経路(削除 → 再登録)で
- * 新鍵ラップへ置換する。判定は 409 応答の保存済み受信者 enc 公開鍵
- * (`storedRecipientEncPubHex` — AUTH_SPEC §12-6)と受諾鍵の**厳密比較**を優先し
- * (復号可能性 = enc 鍵一致そのもの)、応答に無い場合(追補以前のセルフホスト
- * サーバー)に限り従来の鍵履歴ヒューリスティック(`staleWrapSuspected`)へ
- * フォールバックする。ヒューリスティック経路で占有ラップが実は現行鍵だった
- * としても、削除 → 再登録は同内容への収束であり安全。
+ * **The re-addition auto-repair (ruling B1b + §12-6 supplement)**: a
+ * per-epoch 409 may mean "a stale-key wrap from the previous membership is
+ * occupying the slot". Left alone the re-added member cannot decrypt that
+ * epoch (treating the 409 as already-registered makes it invisible), so
+ * when judged a stale-key wrap, the §12-6 repair path (delete →
+ * re-register) replaces it with a new-key wrap. The judgment prefers the
+ * **exact comparison** of the 409 response's stored recipient enc public
+ * key (`storedRecipientEncPubHex` — AUTH_SPEC §12-6) with the acceptance
+ * key (decryptability = enc-key equality itself), falling back to the
+ * conventional key-history heuristic (`staleWrapSuspected`) only when the
+ * response lacks it (a pre-supplement self-hosted server). Even if the
+ * occupying wrap under the heuristic path were actually the current key,
+ * delete → re-register converges to the same content and is safe.
+ * the occupying wrap under the heuristic path were actually the current key, delete → re-register converges to the same content and is safe.
  */
 function backfillMemberEnvironment(input: {
   readonly client: MaruhiClient;
@@ -858,8 +914,9 @@ function backfillMemberEnvironment(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
   return Effect.gen(function* () {
-    // 対象の**全端末**のうち実効 scope に E を含むもの(R(E) の端末展開 — CRYPTO_SPEC
-    // §6.2、DK K4)。端末ごとにスロットが別なので、端末ごとに登録する
+    // Of the target's **all devices**, those whose effective scope
+    // includes E (the device expansion of R(E) — CRYPTO_SPEC §6.2, DK K4).
+    // Each device has its own slot, so register per device
     const devices = devicesOf(input.target).filter((device) =>
       deviceReceivesEnvironment(input.target, device, input.environmentId),
     );
@@ -876,7 +933,7 @@ function backfillMemberEnvironment(input: {
   });
 }
 
-/** 1 環境 × 対象の 1 端末のバックフィル(スロット = (epoch, user_id, enc 鍵))。 */
+/** The backfill of one environment × one device of the target (slot = (epoch, user_id, enc key)). */
 function backfillMemberDevice(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -901,8 +958,10 @@ function backfillMemberDevice(input: {
     signingKeyPair: input.signingKeyPair,
     onSlotConflict: (wrap, storedRecipientEncPubHex) =>
       Effect.gen(function* () {
-        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
-        // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
+        // Whether the occupied slot is a stale-key wrap: the exact
+        // comparison against the response's stored enc public key is
+        // preferred (a match = registered under the current key =
+        // idempotent). Degrades to estimation only when absent
         const staleWrap =
           storedRecipientEncPubHex === null
             ? input.staleWrapSuspected
@@ -910,8 +969,10 @@ function backfillMemberDevice(input: {
         if (!staleWrap) {
           return "already-registered" as const;
         }
-        // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する。参照は
-        // 端末の enc 鍵まで名指しする(複数端末では省略が 422 duplicate-recipient)
+        // The repair path (§12-6): delete the occupied slot and
+        // re-register the new-key wrap. The reference names down to the
+        // device's enc key (with multiple devices, omitting it is a 422
+        // duplicate-recipient)
         yield* input.client.deks
           .remove({
             params: { projectId: input.verified.projectId, environmentId: input.environmentId },
@@ -928,13 +989,15 @@ function backfillMemberDevice(input: {
           .pipe(
             Effect.asVoid,
             Effect.catch((error) =>
-              // 並行修復でスロットが消えた場合は再登録だけ行えばよい
+              // When a concurrent repair made the slot disappear, only the re-registration is needed
               error instanceof DekWrapNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
             ),
           );
-        // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
-        // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
-        // 空スロットへの直登録になるため、そのまま復旧経路になる)
+        // delete → re-register is not atomic: if the re-register fails
+        // here the slot stays empty. The state is made explicit instead of
+        // blending into a generic failure wording (a re-run becomes a
+        // direct registration into an empty slot, so it is itself the
+        // recovery path)
         const retried = yield* register([wrap]).pipe(
           Effect.mapError((error) =>
             cliError(
@@ -942,24 +1005,28 @@ function backfillMemberDevice(input: {
             ),
           ),
         );
-        // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
-        // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
+        // When a concurrent run registered between the delete and the
+        // re-register, the acceptance check (§12-6's recipient match)
+        // passed on the current chain's key, so it converged as a new-key
+        // wrap
         return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
       }),
   });
 }
 
 /**
- * member add の前段: 招待の選択 → 発行ピン突合 → §6.5 独立検証 → 追記前検査 →
- * FP 確認の儀式。儀式は追記の有無に関わらず行う(バックフィルだけの再実行でも、
- * これからラップを配る鍵の照合を省略しない — server grant と同じ規律)。
+ * The prologue of member add: choose the invite → issuance-pin cross-check
+ * → §6.5 independent verification → pre-append checks → the
+ * FP-confirmation ceremony. The ceremony runs regardless of whether an
+ * append happens (even on a backfill-only re-run, never skip verifying the
+ * key wraps are about to be dealt to — same discipline as server grant).
  */
 function prepareMemberAdd(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
   readonly expectFingerprintHex: string | null;
-  /** `--github <login>`(裏付け元の照合先。発行ピンの宛先より優先)。 */
+  /** `--github <login>` (the backing source's match target. Beats the issuance pin's destination). */
   readonly githubLogin: string | null;
   readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
@@ -978,9 +1045,11 @@ function prepareMemberAdd(input: {
     const listed = yield* listInvitations(input.client, input.verified.projectId);
     const row = yield* selectInvitation(listed, input.inviteId);
 
-    // 発行文の検証(CRYPTO_SPEC §6.5 — IV): 行の発行署名をチェーン導出の招待者鍵で
-    // 検証する。自分が発行した行なら自分の鍵で「自分の発行か」が固定される
-    // (発行ピンに依存しない)。失敗 = 行のすり替え / 改竄 → 拒否
+    // Verifying the issuance text (CRYPTO_SPEC §6.5 — IV): the row's
+    // issuance signature is verified with the chain-derived inviter key.
+    // For a row I issued, my own key settles "is it my issuance" (independent
+    // of the issuance pin). Failure = the row was substituted / tampered →
+    // refuse
     const issuance = yield* verifyIssuance({ verified: input.verified, row });
     if (!issuance.ok) {
       return yield* Effect.fail(
@@ -988,9 +1057,12 @@ function prepareMemberAdd(input: {
       );
     }
 
-    // 発行ピン突合(SHOULD — 発行時の link_pub / role とサーバー申告の一致)。
-    // ピンがない場合(別デバイスでの発行・保持窓超過)は発行署名の検証だけが
-    // 行を固定する(IV 改訂で真実源は発行署名へ移った)
+    // The issuance-pin cross-check (SHOULD — agreement of the
+    // issuance-time link_pub / role with the server's claims). Without a
+    // pin (issued on another device, beyond the retention window) only the
+    // issuance signature's verification pins the row (the IV revision moved
+    // the source of truth to the issuance signature)
+    // issuance signature's verification pins the row (the IV revision moved the source of truth to the issuance signature)
     const pin = pinMismatchOf(input.pins, row);
     if (pin === "mismatch") {
       return yield* Effect.fail(
@@ -1005,7 +1077,7 @@ function prepareMemberAdd(input: {
       );
     }
 
-    // §6.5 の独立検証(サーバー申告の検証結果を信用しない): リンク署名 → 受諾署名
+    // §6.5's independent verification (never trusting the server's claimed verification result): the link signature → the acceptance signature
     const acceptanceVerified = yield* verifyAcceptanceBlock({
       projectId: input.verified.projectId,
       issuance: row.issuance,
@@ -1031,7 +1103,7 @@ function prepareMemberAdd(input: {
       yield* warnKeyReuse(input.verified, row.acceptance);
     }
 
-    // 充足形 4(裏付け元)→ 不成立なら充足形 1〜3(儀式 / フラグ / 帳)
+    // Adequacy form 4 (backing source) → if unmet, adequacy forms 1-3 (ceremony / flag / book)
     const backed = yield* confirmInviteeViaBacking({
       identityBacking: input.identityBacking,
       flagLogin: input.githubLogin,
@@ -1053,13 +1125,13 @@ function prepareMemberAdd(input: {
   });
 }
 
-/** バックフィルの全環境走査(1 環境の失敗で残りを止めない — §7)。 */
+/** The all-environment sweep of the backfill (one environment's failure doesn't stop the rest — §7). */
 function backfillAllEnvironments(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
-  /** バックフィルする環境(省略 = 対象の scope の全環境)。指定も scope で再度絞る。 */
+  /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
   readonly environments?: readonly string[];
   readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
@@ -1069,9 +1141,11 @@ function backfillAllEnvironments(input: {
   CliError
 > {
   return Effect.gen(function* () {
-    // 対象の scope の環境(チェーン導出・検証済み削除を除く)× 全エポック
-    // (CRYPTO_SPEC §7「対象の scope の全環境の全エポック DEK」— 2026-09-15 ES K4。
-    // `environments` の明示指定は change-role の拡大分のバックフィルに使う)
+    // The target scope's environments (chain-derived, verified-deletions
+    // excluded) × every epoch (CRYPTO_SPEC §7 "every epoch DEK of every
+    // environment in the target's scope" — 2026-09-15 ES K4. The
+    // `environments` explicit list is used for change-role's widening
+    // backfill)
     const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
     const environments = (input.environments ?? [...input.verified.state.environments.keys()])
       .filter(
@@ -1086,7 +1160,7 @@ function backfillAllEnvironments(input: {
   });
 }
 
-/** add_member の内側 op(直接追記と提案で同じ payload — 招待行の scope)。 */
+/** add_member's inner op (the same payload for a direct append and a proposal — the invite row's scope). */
 function addMemberOperation(
   row: AddableRow,
 ): Extract<ProposableOperation, { readonly op: "add_member" }> {
@@ -1104,9 +1178,11 @@ function addMemberOperation(
 }
 
 /**
- * 新メンバー宛のバックフィル(add_member の追記後段 — CRYPTO_SPEC §7 / AUTH_SPEC §12-6)。
- * 直接追記の add と、四眼で適用を完成させた承認者の履行(§12-6 の 5 番目の経路 —
- * approval-approve.ts)が共有する。対象は再同期後の現メンバー(`target`)。
+ * The backfill addressed to the new member (the aftermath of add_member's
+ * append — CRYPTO_SPEC §7 / AUTH_SPEC §12-6). Shared between a direct
+ * append's add and the fulfillment of the approver who completes the
+ * application under four-eyes (§12-6's fifth path — approval-approve.ts).
+ * The target is the current member after resync (`target`).
  */
 export function backfillNewMember(input: {
   readonly client: MaruhiClient;
@@ -1122,14 +1198,17 @@ export function backfillNewMember(input: {
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 再追加(過去在籍が別鍵)の検出: 鍵履歴に現在の鍵と異なる束縛があるか。
-    // 409 の判定は応答の保存済み enc 公開鍵との厳密比較が優先で(AUTH_SPEC
-    // §12-6 追補)、このヒューリスティックは応答にフィールドが無い旧サーバー
-    // への 409 だけに使うフォールバックである。なお追補済みサーバーは
-    // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
-    // 409 自体が「現行鍵で登録済み」しか意味しない
-    // 「別鍵」= 履歴の束縛のうち、対象の現端末集合のどれとも一致しないもの(端末が
-    // 複数でも、現端末の鍵は旧鍵ではない — DK K4)
+    // Detecting a re-addition (a past membership under a different key):
+    // does the key history carry a binding different from the current key.
+    // The 409 judgment prefers the exact comparison against the response's
+    // stored enc public key (AUTH_SPEC §12-6 supplement); this heuristic is
+    // a fallback used only for 409s from old servers whose response lacks
+    // the field. Note a supplemented server auto-cleans stale-key wraps on
+    // add_member acceptance (same supplement), so normally a 409 only ever
+    // means "registered under the current key". "A different key" = a
+    // history binding that matches none of the target's current device set
+    // (with multiple devices, a current device's key is not a stale key —
+    // DK K4)
     const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
       (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
     );
@@ -1184,8 +1263,10 @@ export function memberAddOp(input: {
         signingKeyPair: input.signingKeyPair,
       });
 
-    // 四眼(K6-A / K6-D): 方針が add_member を対象にしていれば提案して終わる。儀式
-    // (prepareMemberAdd)は提案者が済ませ、バックフィルは適用を完成させた承認者が行う
+    // Four-eyes (K6-A / K6-D): if the policy targets add_member, propose
+    // and finish. The ceremony (prepareMemberAdd) was done by the proposer,
+    // and the backfill is done by the approver who completes the
+    // application
     if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
       const proposal = yield* proposeOperation(
         input,
@@ -1230,7 +1311,7 @@ export function memberAddOp(input: {
       verified = outcome.verified;
     }
 
-    // 受理後の再同期で掲載を確認する(サーバー申告を真実源にしない)
+    // The post-acceptance resync confirms the listing (the server's claim is never the source of truth)
     verified = yield* resyncExtended(input.resync, verified);
     const target = verified.state.members.get(row.acceptance.inviteeUserId);
     if (
@@ -1269,14 +1350,15 @@ export function memberAddOp(input: {
 // ---------------------------------------------------------------------------
 
 export interface MemberRemoveSummary extends MemberSweepOutcome {
-  /** チェーンへ追記したか(false = 既に削除済み — ローテーションの続きから再開)。 */
+  /** Whether it was appended to the chain (false = already deleted — resumes from mid-rotation). */
   readonly appended: boolean;
   readonly targetUserId: string;
 }
 
 /**
- * remove の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。`proposing` = 提案化の
- * 経路(自己 remove の拒否は履行者が承認者に移るので外す — 設計録 K6-N)。
+ * remove's pre-append checks (re-run after a CAS retry's resync as well).
+ * `proposing` = the proposal path (the self-remove refusal is dropped
+ * because the fulfiller moves to the approver — design record K6-N).
  */
 function ensureRemovable(input: {
   readonly verified: VerifiedProject;
@@ -1311,9 +1393,11 @@ function ensureRemovable(input: {
 }
 
 /**
- * 削除済みからの再開(中断復旧)の条件: チェーン上に当該 user_id の remove があること
- * (タイプミスの user_id で sweep が走る形を作らない。提案経由で適用された remove — 四眼 K6 —
- * も同じ列に載る: 設計録 K6-C)と、再開する実行者が member 以上であること。
+ * The conditions for resuming from deleted (interruption recovery): a
+ * remove of that user_id exists on the chain (never create a shape where
+ * the sweep runs on a mistyped user_id. A remove applied via a proposal —
+ * four-eyes K6 — also lands on the same list: design record K6-C), and the
+ * resuming actor is member or above.
  */
 function removalResumeRejection(
   verified: VerifiedProject,
@@ -1332,7 +1416,7 @@ function removalResumeRejection(
     : null;
 }
 
-/** remove_member の §6.2 規則(role → scope-not-contained → last-owner)の手前判定。 */
+/** The pre-judgment of remove_member's §6.2 rules (role → scope-not-contained → last-owner). */
 function removeRuleRejection(
   verified: VerifiedProject,
   actor: ActorAuthority,
@@ -1342,8 +1426,9 @@ function removeRuleRejection(
   if (rejection !== null) {
     return rejection;
   }
-  // 原則 1(§6.2 scope-not-contained): remove の権限変化の環境集合 = 対象の現 scope
-  // (「消せる = rotate を履行できる」— 裁定 D)。change-role と同じ手前判定
+  // Principle 1 (§6.2 scope-not-contained): remove's permission-change
+  // environment set = the target's current scope ("can remove = can
+  // fulfill rotate" — ruling D). The same pre-judgment as change-role
   if (!scopeContains(actor.scope, target.scope)) {
     return `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`;
   }
@@ -1352,7 +1437,7 @@ function removeRuleRejection(
     : null;
 }
 
-/** remove_member エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
+/** Signs a remove_member entry right after the current head (the shared core = chain-append.ts). */
 function signRemoveEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -1394,8 +1479,10 @@ export function memberRemoveOp<R>(input: {
       });
     const first = yield* recheck(input.verified);
 
-    // 四眼(K6-A): 方針が remove_member を対象にしていれば提案して終わる(rotate 義務は
-    // 適用後に承認者の sweep が履行する — 裁定 P7 / P8)。再開(削除済み)は提案しない
+    // Four-eyes (K6-A): if the policy targets remove_member, propose and
+    // finish (the rotate duty is fulfilled by the approver's sweep after
+    // the application — rulings P7 / P8). A resume (already deleted) is
+    // never proposed
     if (!first.alreadyRemoved && proposing) {
       const proposal = yield* proposeOperation(
         input,
@@ -1434,7 +1521,7 @@ export function memberRemoveOp<R>(input: {
       appended = outcome.appended;
     }
 
-    // 受理後の再同期で削除の掲載を確認(サーバー申告を真実源にしない)
+    // The post-acceptance resync confirms the deletion's listing (the server's claim is never the source of truth)
     verified = yield* resyncExtended(input.resync, verified);
     if (verified.state.members.has(input.targetUserId)) {
       return yield* Effect.fail(
@@ -1444,9 +1531,11 @@ export function memberRemoveOp<R>(input: {
       );
     }
 
-    // 対象の義務エントリ(今回の remove の追記 or 履歴上のもの — 過去の縮小 / 降格
-    // を含む)が基準になる。remove が無いのは「削除は確認済みなのに義務エントリが
-    // ない」= 導出の内部矛盾。義務の環境集合は対象の現 scope(§7 — listed{} なら空)
+    // The target's duty entry (this remove's append or a historical one —
+    // past narrowings / demotions included) becomes the baseline. No remove
+    // at all means "a deletion was confirmed yet no duty entry exists" = an
+    // internal contradiction of the derivation. The duty's environment set
+    // is the target's current scope (§7 — listed{} means empty)
     const mandates = memberMandatesFor(verified, input.targetUserId);
     if (!mandates.some((mandate) => mandate.kind === "member-removed")) {
       return yield* Effect.fail(
@@ -1472,42 +1561,42 @@ export function memberRemoveOp<R>(input: {
 // ---------------------------------------------------------------------------
 
 export interface MemberChangeRoleSummary {
-  /** チェーンへ追記したか(false = 既に対象 (role, scope) — 義務の再開のみ)。 */
+  /** Whether it was appended to the chain (false = already at the target (role, scope) — only the duty resumes). */
   readonly appended: boolean;
   readonly targetUserId: string;
   readonly newRole: Role;
   readonly newScope: MemberScope;
-  /** 拡大分の環境(新 \ 旧 — actor のバックフィル義務。§12-6)のうち actor の scope 内。 */
+  /** Of the widened environments (new \ old — the actor's backfill duty. §12-6), those inside the actor's scope. */
   readonly widenedEnvironmentIds: readonly string[];
-  /** 履歴上の拡大分のうち actor の scope 外(自分の義務ではない — その環境を持つメンバーに委ねる)。 */
+  /** Of the historical widenings, those outside the actor's scope (not my duty — left to a member whose scope has that environment). */
   readonly widenedOutOfScopeEnvironmentIds: readonly string[];
-  /** 縮小分の環境(旧 \ 新 — rotate 義務。§7)。 */
+  /** The narrowed environments (old \ new — the rotate duty. §7). */
   readonly narrowedEnvironmentIds: readonly string[];
-  /** 拡大分のバックフィルの結果(拡大なし = null)。 */
+  /** The widened part's backfill result (no widening = null). */
   readonly backfill: Pick<
     MemberAddSummary,
     "registered" | "alreadyRegistered" | "repaired" | "failed"
   > | null;
-  /** 対象に降格の義務(role-demoted)があるか(報告文言の材料 — 新 role からは再導出しない)。 */
+  /** Whether the target has a demotion duty (role-demoted) (report-wording material — not re-derived from the new role). */
   readonly demoted: boolean;
-  /** 降格 / 縮小に伴う義務環境のローテーションの結果(義務なし = null)。 */
+  /** The result of rotating the duty environments for the demotion / narrowing (no duty = null). */
   readonly sweep: MemberSweepOutcome | null;
 }
 
-/** change_role の入力(役割と scope はどちらも省略 = 据え置き — 設計録 K4-A)。 */
+/** The change_role input (omitting role or scope means kept as-is — design record K4-A). */
 export interface ChangeRoleRequest {
   readonly newRole: Role | null;
   readonly newScope: MemberScope | null;
 }
 
-/** 対象の現 (role, scope) と要求から、追記する新 (role, scope) を決める(全置換 — §6.2)。 */
+/** From the target's current (role, scope) and the request, decides the new (role, scope) to append (a full replacement — §6.2). */
 function resolveRoleChange(
   target: ChainMember,
   request: ChangeRoleRequest,
 ): Effect.Effect<{ readonly role: Role; readonly scope: MemberScope }, CliError> {
   const role = request.newRole ?? target.role;
   if (role === "owner") {
-    // owner の scope は常に all(§6.2 scope-role-mismatch)— `--env` の併用は矛盾
+    // An owner's scope is always all (§6.2 scope-role-mismatch) — combining `--env` is a contradiction
     if (request.newScope !== null && request.newScope.kind !== "all") {
       return Effect.fail(
         usageError(
@@ -1520,7 +1609,7 @@ function resolveRoleChange(
   return Effect.succeed({ role, scope: request.newScope ?? target.scope });
 }
 
-/** change_role の role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
+/** Early check of change_role's role rules (§6.2) (a reason string when unmet). */
 function changeRoleRuleRejection(input: {
   readonly verified: VerifiedProject;
   readonly actor: ActorAuthority;
@@ -1549,9 +1638,11 @@ function changeRoleRuleRejection(input: {
 }
 
 /**
- * 原則 1(§6.2 scope-not-contained)の手前判定: role が変わるなら 旧 ∪ 新、scope
- * だけなら対称差を actor の scope が包含する。旧か新が all なら差集合が U \ X に
- * なるため all の actor しか行えない(集合代数 — 設計録 K4-I の導出)。
+ * The pre-judgment of principle 1 (§6.2 scope-not-contained): when the
+ * role changes, old ∪ new; when only the scope changes, the symmetric
+ * difference must be contained in the actor's scope. If old or new is all,
+ * the difference becomes U \ X, so only an all-scoped actor can do it
+ * (set algebra — the derivation of design record K4-I).
  */
 function scopeContainmentRejection(input: {
   readonly actor: ActorAuthority;
@@ -1570,7 +1661,7 @@ function scopeContainmentRejection(input: {
   return `Your environment scope (${describeScope(input.actor.scope)}) does not contain the environments whose permissions this change affects (target: ${describeScope(input.target.scope)} → ${describeScope(input.newScope)}) — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`;
 }
 
-/** scope だけの置換で actor が対称差(旧 △ 新)を包含するか。 */
+/** For a scope-only replacement, whether the actor contains the symmetric difference (old △ new). */
 function actorMayReplaceScope(input: {
   readonly actor: ActorAuthority;
   readonly target: ChainMember;
@@ -1582,7 +1673,7 @@ function actorMayReplaceScope(input: {
   const before = input.target.scope;
   const after = input.newScope;
   if (before.kind === "all" || after.kind === "all") {
-    // all △ all = ∅(変化なし)、all △ listed = U \ X(listed の actor は包含できない)
+    // all △ all = ∅ (no change), all △ listed = U \ X (a listed actor cannot contain it)
     return before.kind === after.kind;
   }
   const beforeIds = new Set(before.environmentIds);
@@ -1595,8 +1686,9 @@ function actorMayReplaceScope(input: {
 }
 
 /**
- * 自分自身への降格 / 縮小の拒否: §7 の義務(rotate)を本人が履行できなくなる
- * (降格後は member 未満、縮小後は当該環境が scope 外)。
+ * Refusing a demotion / narrowing onto oneself: the person would become
+ * unable to fulfill the §7 duty (rotate) (below member after a demotion,
+ * the environment outside scope after a narrowing).
  */
 function rejectSelfObligation(
   verified: VerifiedProject,
@@ -1622,9 +1714,10 @@ function rejectSelfObligation(
 }
 
 /**
- * 対象自身が §7 の義務を履行できなくなる (role, scope) の変更か: member 未満への降格、
- * または scope の縮小(履行者 = 対象自身になる直接追記、および承認者 = 対象の approve —
- * 設計録 K6-N / Cursor Bugbot 指摘対応)。
+ * Whether the change makes the target itself unable to fulfill its §7
+ * duty: a demotion below member, or a scope narrowing (a direct append
+ * where the fulfiller = the target itself, and an approve where the
+ * approver = the target — design record K6-N / Cursor Bugbot's catch).
  */
 export function selfObligationReason(
   verified: VerifiedProject,
@@ -1641,8 +1734,10 @@ export function selfObligationReason(
 }
 
 /**
- * change_role の追記前検査(CAS リトライの再同期後にも同じ検査を通す)。`proposing` = 提案化の
- * 経路(自己降格 / 自己縮小の拒否は履行者が承認者に移るので外す — 設計録 K6-N)。
+ * change_role's pre-append checks (re-run after a CAS retry's resync as
+ * well). `proposing` = the proposal path (the self-demotion /
+ * self-narrowing refusal is dropped because the fulfiller moves to the
+ * approver — design record K6-N).
  */
 function ensureRoleChangeable(input: {
   readonly verified: VerifiedProject;
@@ -1670,9 +1765,11 @@ function ensureRoleChangeable(input: {
       yield* rejectSelfObligation(input.verified, target, next);
     }
     if (target.role === next.role && sameScope(target.scope, next.scope)) {
-      // 追記済み(前回実行の中断・並行実行)または no-op。降格 / 縮小の中断復旧
-      // (エントリは載ったが義務が未了)をここから再開できる形にする。再開(rotate /
-      // バックフィル)は member 以上(remove の再開と同じガード — 独立レビュー N11)
+      // Already appended (a previous run's interruption / a concurrent
+      // run) or a no-op. Shapes so an interrupted demotion / narrowing
+      // recovery (the entry landed but the duty is unfinished) can resume
+      // from here. The resume (rotate / backfill) requires member or above
+      // (same guard as a remove resume — independent review N11)
       if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
         return yield* Effect.fail(
           cliError(
@@ -1682,8 +1779,9 @@ function ensureRoleChangeable(input: {
       }
       return { alreadyChanged: true, ...next };
     }
-    // 検査順は §6.2 の合意規則と同じ: role 規則 → last-owner → unknown-environment →
-    // scope-not-contained(独立レビュー N2)
+    // The check order follows §6.2's consensus rules: role rules →
+    // last-owner → unknown-environment → scope-not-contained (independent
+    // review N2)
     const rejection = changeRoleRuleRejection({
       verified: input.verified,
       actor: permission,
@@ -1708,9 +1806,11 @@ function ensureRoleChangeable(input: {
 }
 
 /**
- * change_role エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。payload は
- * 新 (role, scope) の全置換(CRYPTO_SPEC §6.2)— 2026-09-15 ES K4: `--role` / `--env` /
- * `--all-envs` の省略はそれぞれ据え置き(設計録 K4-A)、owner は all 固定。
+ * Signs a change_role entry right after the current head (the shared core
+ * = chain-append.ts). The payload is the full replacement of (role,
+ * scope) (CRYPTO_SPEC §6.2) — 2026-09-15 ES K4: omitting `--role` /
+ * `--env` / `--all-envs` keeps each as-is (design record K4-A), and an
+ * owner is pinned to all.
  */
 function signChangeRoleEntry(input: {
   readonly verified: VerifiedProject;
@@ -1739,9 +1839,11 @@ function signChangeRoleEntry(input: {
 }
 
 /**
- * 署名するビューの対象の現状から新 (role, scope) を解決して署名する(据え置き側は
- * **そのビュー**の現状)。CAS リトライで並行の change_role が据え置き側を変えていても
- * 上書きしない(設計録 K4-A の「省略 = 変えない」— Cursor Bugbot 指摘対応)。
+ * Resolves the new (role, scope) from the target's current state **on the
+ * signing view** and signs (the kept-as-is side comes from that view's
+ * state). Even when a concurrent change_role changed the kept-as-is side
+ * across a CAS retry, it is not overwritten (design record K4-A's
+ * "omitted = unchanged" — Cursor Bugbot's catch).
  */
 function signChangeRoleAtView(input: {
   readonly verified: VerifiedProject;
@@ -1768,11 +1870,15 @@ function signChangeRoleAtView(input: {
 }
 
 /**
- * 拡大分 = 対象の **全** `change_role` 履歴の拡大分(各エントリの直前状態との差)の
- * 和集合のうち、現 scope に残る環境(pullfrog 指摘対応: 最後のエントリだけを見ると、
- * 拡大バックフィルの中断中に第三者が別の change_role を積んだ場合に拡大分が空になり
- * 再開されない。sweep 側が対象の全義務を畳むのと同じく、履歴全体から導く。409 で
- * 冪等なので過剰分は「登録済み」に収束する)。縮小分は報告用で、最後のエントリの差。
+ * The widened part = of the union of the widened parts of **all**
+ * `change_role` entries in the target's history (each entry's diff against
+ * its immediately preceding state), the environments still in the current
+ * scope (pullfrog's catch: looking at only the last entry, a third party's
+ * change_role committed mid-interruption of a widening backfill would make
+ * the widened part empty and never resumed. Like the sweep side folding
+ * every duty of the target, it is derived from the whole history. A 409 is
+ * idempotent, so excess converges to "already registered"). The narrowed
+ * part is for reporting — the last entry's diff.
  */
 export function scopeChangesOf(
   verified: VerifiedProject,
@@ -1781,7 +1887,7 @@ export function scopeChangesOf(
   const current = new Set(environmentsOfScopeAt(verified, target.scope, verified.state.headSeq));
   const widened = new Set<string>();
   let narrowed: readonly string[] = [];
-  // 提案経由で適用された change_role も同じ列に載る(設計録 K6-C)
+  // A change_role applied via a proposal lands on the same list (design record K6-C)
   for (const { seq, operation } of verified.applied) {
     if (operation.op !== "change_role" || operation.payload.targetUserId !== target.userId) {
       continue;
@@ -1802,9 +1908,11 @@ export function scopeChangesOf(
 }
 
 /**
- * 履歴上の拡大分のうち actor の scope 外の環境は自分の義務ではない(§6.2 の系 —
- * 義務の環境集合 ⊆ 権限変化の環境集合 ⊆ actor scope。独立レビュー S6)。sweep と同じく
- * 注記に回し、その環境を scope に持つメンバーの再実行に委ねる。
+ * Of the historical widenings, environments outside the actor's scope are
+ * not my duty (a §6.2 corollary — duty environment set ⊆ permission-change
+ * environment set ⊆ actor scope. Independent review S6). Like the sweep,
+ * they go to the note and are left to a re-run by a member whose scope
+ * carries that environment.
  */
 function splitWidenedByActorScope(input: {
   readonly client: MaruhiClient;
@@ -1816,9 +1924,11 @@ function splitWidenedByActorScope(input: {
   CliError
 > {
   return Effect.gen(function* () {
-    // 検証済み削除の環境は scope に残っていても拡大分から外す(scope 外の注記を「誰も
-    // 埋められない環境」で出し続けない — pullfrog 指摘。backfillAllEnvironments と同じ集合)。
-    // 拡大分が無ければ問い合わせない(追記後の余計な要求で exit を汚さない)
+    // A verified-deleted environment is dropped from the widened part even
+    // if still in scope (never keep emitting an out-of-scope note for "an
+    // environment nobody can fill" — pullfrog's catch. Same set as
+    // backfillAllEnvironments). No widening means no query (don't dirty the
+    // exit with a pointless post-append request)
     const deletedVerified =
       input.widened.length === 0
         ? new Set<string>()
@@ -1836,11 +1946,13 @@ function splitWidenedByActorScope(input: {
 }
 
 /**
- * `maruhi member change-role`: 新 (role, scope) の全置換を追記し、拡大分を actor が
- * バックフィル(§12-6 の追記経路)→ 降格 / 縮小分の義務環境を rotate(§7)する
- * (順序は設計録 K4-B: 3 つの環境集合は互いに素で、どちらも冪等に再開できる)。
+ * `maruhi member change-role`: appends the full replacement of (role,
+ * scope), the actor backfills the widened part (§12-6's append path), then
+ * rotates the duty environments of the demotion / narrowing (§7) (the
+ * order is design record K4-B: the 3 environment sets are pairwise
+ * disjoint, and each can resume idempotently).
  */
-/** change_role の内側 op(提案化 — 省略側は提案時のビューの対象の現状で解決済み)。 */
+/** change_role's inner op (proposal-ization — the omitted side is already resolved against the target's state on the proposal-time view). */
 function changeRoleOperation(input: {
   readonly targetUserId: string;
   readonly newRole: Role;
@@ -1858,7 +1970,7 @@ function changeRoleOperation(input: {
   };
 }
 
-/** change_role の提案(K6-A): 省略側の再解決が提案時と一致することも再同期後に確かめる。 */
+/** change_role's proposal (K6-A): after the resync it also confirms that the omitted side's re-resolution matches the proposal-time one. */
 function proposeRoleChange(
   input: ProposeContext,
   inner: ProposableOperation,
@@ -1891,9 +2003,11 @@ function proposeRoleChange(
 }
 
 /**
- * change_role の直接追記(CAS)と、受理後の再同期での掲載確認(サーバー申告を真実源に
- * しない)。要求の不動点(省略側は現状据え置き)と一致すること — 並行の change_role が
- * 据え置き側を変えていても、要求した側が載っていれば成立。
+ * change_role's direct append (CAS) and the listing confirmation on the
+ * post-acceptance resync (the server's claim is never the source of
+ * truth). Must match the request's fixpoint (the omitted side stays
+ * as-is) — even if a concurrent change_role changed the kept side, it
+ * holds when the requested side is on the chain.
  */
 function appendRoleChange(input: {
   readonly client: MaruhiClient;
@@ -1921,8 +2035,9 @@ function appendRoleChange(input: {
         verified,
         resync: input.resync,
         opLabel: "change_role",
-        // 省略した側(role / scope)は**署名するビュー**の対象の現状から解決する
-        // (signChangeRoleAtView — Cursor Bugbot 指摘対応)
+        // The omitted side (role / scope) is resolved from the target's
+        // state on **the signing view** (signChangeRoleAtView — Cursor
+        // Bugbot's catch)
         signEntry: (view) =>
           signChangeRoleAtView({
             verified: view,
@@ -1960,7 +2075,7 @@ function appendRoleChange(input: {
   });
 }
 
-/** change_role の適用後の履行の結果(拡大バックフィル + 降格 / 縮小 sweep)。 */
+/** The result of change_role's post-application fulfillment (widening backfill + demotion / narrowing sweep). */
 export type RoleChangeFulfilment = Pick<
   MemberChangeRoleSummary,
   | "widenedEnvironmentIds"
@@ -1972,9 +2087,11 @@ export type RoleChangeFulfilment = Pick<
 >;
 
 /**
- * change_role の適用後段(設計録 K4-B の順序: 拡大分のバックフィル → 降格 / 縮小分の
- * rotate)。直接追記の change-role と、四眼で適用を完成させた承認者の履行
- * (approval-approve.ts — 承認項目 22)が共有する。対象は再同期後の現メンバー。
+ * change_role's post-application stage (design record K4-B's order:
+ * widening backfill → rotate of the demotion / narrowing part). Shared
+ * between a direct-append change-role and the fulfillment of the approver
+ * who completes the application under four-eyes (approval-approve.ts —
+ * approval item 22). The target is the current member after resync.
  */
 export function fulfilRoleChange<R>(input: {
   readonly client: MaruhiClient;
@@ -1994,7 +2111,7 @@ export function fulfilRoleChange<R>(input: {
       widened: change.widened,
     });
 
-    // (1) 拡大分のバックフィル — actor は包含規則により DEK を持つ(§12-6)。409 で冪等
+    // (1) The widening backfill — the actor holds the DEK by the containment rule (§12-6). Idempotent via 409
     const backfill =
       widened.length === 0
         ? null
@@ -2009,8 +2126,9 @@ export function fulfilRoleChange<R>(input: {
             signingKeyPair: input.signingKeyPair,
           });
 
-    // (2) 降格 / 縮小の義務環境の rotate(§7)。対象の義務エントリが無ければ義務自体が
-    // 発生していない(昇格・拡大・最初から reader の no-op)— 他人の未収束義務は拾わない
+    // (2) Rotate the demotion / narrowing duty environments (§7). With no
+    // duty entry on the target, no duty ever arose (promotion, widening, a
+    // born-reader no-op) — others' unconverged duties are not picked up
     const mandates = memberMandatesFor(input.verified, input.target.userId);
     const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
     const sweep =
@@ -2044,13 +2162,15 @@ export function memberChangeRoleOp<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** 義務の理由(降格 = role-demoted / 縮小のみ = scope-narrowed)ごとのローテーション注入。 */
+  /** The per-duty-reason rotation injection (demotion = role-demoted / narrowing only = scope-narrowed). */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
   readonly proposal: ProposalInput;
 }): Effect.Effect<MemberOpOutcome<MemberChangeRoleSummary>, CliError, R> {
   return Effect.gen(function* () {
-    // 提案化の判定は要求を現ビューで解決した新 (role, scope) で行う(owner の確立は常時対象)。
-    // 検査の順(§6.2 の合意規則の順 — 自己義務 → role 規則 …)は ensureRoleChangeable が持つ
+    // The proposal-ization judgment runs on the new (role, scope) resolved
+    // from the request on the current view (establishing an owner is always
+    // targeted). The check order (the order of §6.2's consensus rules — own
+    // duty → role rules → …) belongs to ensureRoleChangeable
     const { target: current } = yield* resolveActorAndTarget(
       input.verified,
       input.signerUserId,
@@ -2077,8 +2197,10 @@ export function memberChangeRoleOp<R>(input: {
       });
     const first = yield* recheck(input.verified);
 
-    // 四眼(K6-A): 方針が対象にしていれば提案して終わる(拡大バックフィル・縮小 sweep は
-    // 適用後に承認者が履行する — 承認項目 22)。省略側は提案時のビューの現状で固定される
+    // Four-eyes (K6-A): if the policy targets it, propose and finish (the
+    // widening backfill and the narrowing sweep are fulfilled by the
+    // approver after the application — approval item 22). The omitted side
+    // is fixed to the proposal-time view's state
     if (!first.alreadyChanged && proposing) {
       const proposal = yield* proposeRoleChange(input, inner, resolved, recheck);
       return { kind: "proposed", proposal };
@@ -2116,16 +2238,16 @@ export function memberChangeRoleOp<R>(input: {
 // member list
 // ---------------------------------------------------------------------------
 
-/** 1 メンバー行(検証済みチェーン導出 — 値ゼロ。設計録 裁定 M / K4-E、端末列は DK K4-20)。 */
+/** One member row (verified-chain-derived — zero values. Design record ruling M / K4-E; the devices column is DK K4-20). */
 export interface MemberListRow {
   readonly userId: string;
   readonly role: Role;
   readonly scope: MemberScope;
-  /** The member's device keys (fingerprint ascending — 2026-09-19 DK: 端末は複数ありうる)。 */
+  /** The member's device keys (fingerprint ascending — 2026-09-19 DK: a member can have multiple devices). */
   readonly devices: readonly ChainDevice[];
 }
 
-/** 検証済みチェーンのメンバー一覧(user_id 昇順)。 */
+/** The verified chain's member list (user_id ascending). */
 export function memberListRows(verified: VerifiedProject): readonly MemberListRow[] {
   return [...verified.state.members.values()]
     .map((member) => ({
@@ -2137,7 +2259,7 @@ export function memberListRows(verified: VerifiedProject): readonly MemberListRo
     .toSorted((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 }
 
-/** `--json` の 1 文書(機械可読 — エージェント / スクリプト向け。値ゼロ)。 */
+/** One `--json` document (machine-readable — for agents / scripts. Zero values). */
 export function memberListJson(rows: readonly MemberListRow[]): string {
   return JSON.stringify(
     {
@@ -2145,8 +2267,10 @@ export function memberListJson(rows: readonly MemberListRow[]): string {
         userId: row.userId,
         role: row.role,
         scope: jsonScope(row.scope),
-        // 端末一覧(K4-20): FP と cap を構造化して出す。連結した `keyFingerprintHex` は
-        // K4 で撤去(消費側に分解させない — 設計録 §7 K2-10 追加巡 j-4 の完成形)
+        // The devices list (K4-20): FP and cap emitted structured. The
+        // concatenated `keyFingerprintHex` was removed in K4 (never make
+        // consumers decompose it — the finished form of design record §7
+        // K2-10 extra round j-4)
         devices: row.devices.map((device) => ({
           keyFingerprintHex: device.keyFingerprintHex,
           roleCap: device.roleCap,
@@ -2166,7 +2290,7 @@ function jsonScope(scope: MemberScope) {
     : { kind: "listed" as const, environmentIds: [...scope.environmentIds] };
 }
 
-/** 人が読む 1 行(user id・role・scope・端末数・端末 FP(cap)。id は中和する)。 */
+/** The human-readable row (user id, role, scope, device count, device FPs (cap). The id is neutralized). */
 export function formatMemberListRow(row: MemberListRow): string {
   return `${displayText(row.userId)}\t${row.role}\tscope=${describeScope(row.scope)}\tdevices=${row.devices.length}\tfp=${row.devices.map(describeDevice).join(",")}`;
 }

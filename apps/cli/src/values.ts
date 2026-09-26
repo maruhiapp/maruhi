@@ -1,27 +1,37 @@
-// 配布された値・メタデータステートメントの検証(CRYPTO_SPEC §6.3)。
+// Verification of distributed values and metadata statements (CRYPTO_SPEC
+// §6.3).
 //
-// 復号・名前解決より前に、すべての値の §4.1 値署名と、環境・全変数(削除済み
-// 含む)の §4.2 メタステートメントを検証済みチェーン履歴に対して検証する。
-// 期待座標は申告値を信用せず自前で組み立てる: projectId = 検証済み genesis
-// ハッシュ、environmentId = リクエストに使った ID、variableId = pull 応答の
-// 外側メタデータ。writer / author は配布された user_id + 鍵 FP(チェーン履歴と
-// 照合)。名前はステートメント検証を経たものだけを信用する(§12-2 — 裸の
-// name スナップショットは wire から消えた)。
+// Before decryption or name resolution, every value's §4.1 value signature
+// and the §4.2 meta-statements of the environment and all variables
+// (including deleted ones) are verified against the verified chain history.
+// The expected coordinates are assembled locally without trusting the
+// claimed values: projectId = the verified genesis hash, environmentId = the
+// ID used in the request, variableId = the pull response's outer metadata.
+// writer / author are the distributed user_id + key FP (matched against the
+// chain history). Only names that passed statement verification are trusted
+// (§12-2 — the bare name snapshot is gone from the wire).
 //
-// future head(宣言 seq > 自ビューのヘッド)は値・ステートメントとも即時拒否
-// せず、**1 回だけ**再同期して延長検査(sync.ts の ensureExtensionOf)を通し、
-// 新ビューで全体を再検証する(有界 — §6.3-2b)。
+// A future head (declared seq > own view's head), on a value or a
+// statement, is not refused immediately: re-sync **exactly once**, pass the
+// extension check (sync.ts's ensureExtensionOf), and re-verify everything
+// against the new view (bounded — §6.3-2b).
 //
-// 同一環境内で同名の active ステートメントが複数検証に通る場合(サーバーの
-// equivocation)は解決を拒否する(§4.2)。非 NFC 名の配布は警告(SHOULD —
-// §12-1。byte-exact 照合は誤解決を生まないが、視覚的同名の並存を不可視に
-// しない)。deleted 済み variableId の active 併置(無断復活の運搬形)は拒否。
+// When several same-named active statements in one environment pass
+// verification (server equivocation), resolution is refused (§4.2). A
+// distributed non-NFC name is a warning (SHOULD — §12-1; byte-exact
+// matching never mis-resolves, but the coexistence of visually identical
+// names must not be invisible). An active juxtaposed onto an already
+// deleted variableId (the transport shape of an unauthorized undeletion) is
+// refused.
 //
-// latest-only の限界(裁定 B): pull は最新版のみ運ぶため predecessor を持たず、
-// 値の prev 実在一致・エポック非減少、メタの prev 実在一致・削除後の再 active 化
-// はここでは検査できない(形の検査のみ)。検査済みと偽らない — 永続床による
-// 検出は floor-check.ts の領分。**メタはエポックアンカーを持たないため、前進 meta_version
-// への注入は床を持っても検出されない**(§14.3-5 の既知残余)。
+// The latest-only limitation (ruling B): pull carries only the newest
+// version, so there is no predecessor — a value's prev-existence match and
+// epoch non-decrease, and meta's prev-existence match and re-activation
+// after deletion cannot be checked here (shape checks only). Never pretend
+// they were checked — detection via the persistent floor is floor-check.ts's
+// domain. **Because meta carries no epoch anchor, an injection onto an
+// advanced meta_version is not detected even with a floor** (the known
+// leftover of §14.3-5).
 
 import type {
   CheckpointValueSnapshot,
@@ -67,68 +77,70 @@ import { resyncExtended, type VerifiedProject } from "./sync.ts";
 /** One pulled variable whose write signature and statement passed §6.3. */
 export interface VerifiedPulledValue {
   readonly variableId: string;
-  /** 検証済みステートメントの name(これ以外の名前を信用しない — §12-2)。 */
+  /** The verified statement's name (no other name is trusted — §12-2). */
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
-  /** 署名済みの prev(直前 version の signed bytes ハッシュ。version 1 は空)。 */
+  /** The signed prev (the signed-bytes hash of the immediately preceding version. Empty for version 1). */
   readonly prevValueSigHashHex: string;
   /**
    * Locally recomputed hash of the value's signed bytes — the prev anchor
-   * for pushing the next version (§4.1 の連鎖) and the comparator for
+   * for pushing the next version (the §4.1 chain) and the comparator for
    * same-coordinate equivocation evidence (§14.2-5).
    */
   readonly signedBytesHashHex: string;
-  /** 検証済みステートメントの metaVersion(巻き戻し・fork 検査の基準)。 */
+  /** The verified statement's metaVersion (the basis of the rollback / fork checks). */
   readonly metaVersion: number;
-  /** ステートメントの signed bytes ハッシュ(自計算 — 同一 metaVersion の相違検査)。 */
+  /** The statement's signed-bytes hash (self-computed — the same-metaVersion difference check). */
   readonly metaSignedBytesHashHex: string;
-  /** 署名済みの prev(直前 metaVersion の signed bytes ハッシュ。metaVersion 1 は空)。 */
+  /** The signed prev (the signed-bytes hash of the immediately preceding metaVersion. Empty for metaVersion 1). */
   readonly prevMetaSigHashHex: string;
-  /** 値署名の宣言ヘッド(床検査の fork 証拠に含める — §6.3 / §14.2-5)。 */
+  /** The value signature's declared head (included in the fork evidence of a floor check — §6.3 / §14.2-5). */
   readonly valueChainHeadSeq: number;
   readonly valueChainHeadHashHex: string;
-  /** メタステートメントの宣言ヘッド(同上)。 */
+  /** The meta-statement's declared head (same). */
   readonly metaChainHeadSeq: number;
   readonly metaChainHeadHashHex: string;
-  /** 検証済みの値署名と帰属(fork 証拠の自己完結性 — §14.2-5)。 */
+  /** The verified value signature and its attribution (self-contained fork evidence — §14.2-5). */
   readonly valueSignatureHex: string;
   readonly writerUserId: string;
   readonly writerKeyFingerprintHex: string;
-  /** 検証済みのステートメント署名と帰属(同上)。 */
+  /** The verified statement signature and its attribution (same). */
   readonly metaSignatureHex: string;
   readonly authorUserId: string;
   readonly authorKeyFingerprintHex: string;
-  /** ステートメントのワイヤ layoutVersion(省略 = 1 — §12-2)。 */
+  /** The statement's wire layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** レイアウト v2 のスキーマ欄(v1 = null。型は宣言 — advisory §14.3-7)。 */
+  /** The schema column of layout v2 (null for v1. The type is a declaration — advisory §14.3-7). */
   readonly schema: VerifiedSchemaFields | null;
 }
 
 /** A bulk pull whose values and statements all passed verification (§12-7 / §6.3). */
 export interface VerifiedEnvironmentPull {
-  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
+  /** The view used for verification (may have advanced via a future head's bounded resync). */
   readonly verified: VerifiedProject;
   readonly variables: readonly VerifiedPulledValue[];
   /**
-   * 検証済み declared ステートメント(値なしの宣言 — §4.2 レイアウト v2)。
-   * declared だけが正当な値なし状態(CRYPTO_SPEC §6.3 の値配布要求)。
+   * Verified declared statements (valueless declarations — §4.2 layout v2).
+   * declared is the only legitimate valueless state (CRYPTO_SPEC §6.3's
+   * value-distribution requirement).
    */
   readonly declared: readonly VerifiedVariableStatement[];
-  /** 検証済み tombstone(マニフェスト発行のダイジェスト材料 — §4.3)。 */
+  /** Verified tombstones (digest material for manifest issuance — §4.3). */
   readonly tombstones: readonly VerifiedTombstone[];
-  /** 検証済みの環境メタステートメント(マニフェスト発行の envMeta 材料)。 */
+  /** The verified environment meta-statement (the envMeta material for manifest issuance). */
   readonly environment: VerifiedMetaEvidence;
   /**
-   * 検証済みマニフェスト(§4.3)。null は移行経路(allowMissingManifest)が
-   * 欠落を許容した場合のみ — 通常経路の欠落は拒否済み(§6.3)。
+   * The verified manifest (§4.3). null only when the migration path
+   * (allowMissingManifest) permitted the omission — an omission on the
+   * normal path is already refused (§6.3).
    */
   readonly manifest: VerifiedManifest | null;
-  /** 自分宛ラップ(検証は deks.ts の §5.1 / §5.2 経路が担う)。 */
+  /** The wraps addressed to me (verification is the §5.1 / §5.2 path of deks.ts). */
   readonly deks: readonly RecipientDek[];
-  /** 非 NFC 名の配布などの SHOULD 警告(呼び出し側が表示する)。 */
+  /** SHOULD warnings such as a distributed non-NFC name (displayed by the caller). */
   readonly warnings: readonly string[];
 }
 
@@ -146,15 +158,17 @@ type VerifyOutcome<T> =
       readonly kind: "rejected";
       readonly message: string;
       /**
-       * 証拠(署名済み配布データとチェーン公証・座標の矛盾 — 再実行では解消しない)か。
-       * false は「誠実な破壊様式」= UnsupportedMetaLayout(クライアント更新が要る —
-       * CRYPTO_SPEC §4.2 / 裁定 CR)だけで、改ざん疑いの分類に潰さない
-       * (checkpoint-integrity.ts の rejected と同じ形)。
+       * Whether it is evidence (a contradiction between signed distributed
+       * data and the chain notarization / coordinates — a re-run does not
+       * resolve it). false is only the "honest breaking mode" =
+       * UnsupportedMetaLayout (the client needs an update — CRYPTO_SPEC
+       * §4.2 / ruling CR); never collapsed into the tampering-suspect
+       * classification (same shape as checkpoint-integrity.ts's rejected).
        */
       readonly evidence: boolean;
     };
 
-/** 申告 AAD の座標成分が期待座標(検証済み genesis / 要求 env / 応答外側 id)と一致するか(§6.3-5)。 */
+/** Whether the claimed AAD's coordinate components match the expected coordinates (verified genesis / requested env / response's outer id) (§6.3-5). */
 function coordinatesMatch(
   verified: VerifiedProject,
   environmentId: string,
@@ -169,16 +183,19 @@ function coordinatesMatch(
 }
 
 /**
- * 検証失敗理由 → future / rejected。chain-head-future と「未同期区間の新規
- * メンバーが宣言する自ビューより先のヘッド(writer / author が未知 かつ 宣言
- * seq > 自ヘッド)」は有界再同期の入口(future)へ。それ以外は拒否
- * (分類は値・メタで共有する)。
+ * Verification failure reasons → future / rejected. chain-head-future and
+ * "a head beyond the own view declared by a new member of an unsynced
+ * interval (the writer / author is unknown AND the declared seq > own
+ * head)" go to the bounded-resync entry (future). Everything else is a
+ * refusal (the classification is shared between value and meta).
  *
- * UnsupportedMetaLayout(サポート範囲 {1, 2} 超過の layoutVersion — crypto が
- * **署名検証より前**に検査する)は「クライアント更新が必要」の誠実な破壊様式で
- * あり、改ざん疑いの文面に潰さない(CRYPTO_SPEC §4.2 — 裁定 CR)。
+ * UnsupportedMetaLayout (a layoutVersion beyond the supported range
+ * {1, 2} — checked by crypto **before** the signature verification) is an
+ * honest breaking mode meaning "the client needs an update", and is not
+ * collapsed into the tampering-suspect wording (CRYPTO_SPEC §4.2 — ruling
+ * CR).
  */
-/** future(有界再同期の入口)に分類できる失敗か(§6.3-2b)。 */
+/** Whether a failure can be classified as future (the bounded-resync entry) (§6.3-2b). */
 function isFutureFailure(
   verified: VerifiedProject,
   chainHeadSeq: number,
@@ -203,7 +220,7 @@ function failureOutcome<T>(
   if (error.kind === "UnsupportedMetaLayout") {
     return {
       kind: "rejected",
-      // 誠実な破壊様式(クライアント更新が要る)— 改ざんの証拠ではない(裁定 CR)
+      // An honest breaking mode (the client needs an update) — not evidence of tampering (ruling CR)
       evidence: false,
       message: `${label} uses statement layout version ${error.layoutVersion ?? "(unknown)"}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
@@ -219,10 +236,11 @@ function failureOutcome<T>(
 }
 
 /**
- * 検証済みステートメント → 証拠材料の共通フィールド(§14.2-5 の自己完結性)。
- * 床検査と証拠表示が使う 7 フィールドの写像をここに一本化する(手書きの
- * 再列挙で 1 フィールド落とすと、テストに落ちずに equivocation 証拠が黙って
- * 弱くなるため)。
+ * Verified statement → the shared evidence-material fields (§14.2-5's
+ * self-containedness). The mapping of the 7 fields the floor check and the
+ * evidence display use is unified here (a hand-written re-enumeration that
+ * drops one field would silently weaken the equivocation evidence without
+ * failing a test).
  */
 function metaEvidenceFields(
   statement: DistributedVariableMetaStatement | DistributedEnvironmentMetaStatement,
@@ -240,12 +258,14 @@ function metaEvidenceFields(
 }
 
 /**
- * 変数ステートメントのワイヤ v2 フィールド(§12-2)の解釈: v1 は 4 フィールド
- * とも不在、v2 は 4 フィールドとも存在する。部分的な存在は正直サーバーの応答に
- * ない形(保存行の結合をサーバーが保証する — §12-2)なので拒否する。
- * layoutVersion のワイヤ型は上限を固定しない整数(明示値 2 以上)で、サポート
- * 範囲({1, 2})の検査は署名検証より前に crypto 層(metaContextRejection)が
- * 行う — ここでは範囲を検査しない(v3 を Schema / 形状エラーに潰さない)。
+ * Interpreting a variable statement's wire v2 fields (§12-2): a v1 has all
+ * 4 fields absent, a v2 has all 4 present. A partial presence is a shape an
+ * honest server's response never has (the server guarantees the join of
+ * stored rows — §12-2), so it is refused. layoutVersion's wire type is an
+ * integer with no fixed upper bound (explicit values ≥ 2), and the
+ * supported-range ({1, 2}) check happens in the crypto layer
+ * (metaContextRejection) before the signature verification — the range is
+ * not checked here (don't collapse a v3 into a Schema / shape error).
  */
 type WireStatementLayout =
   | { readonly layoutVersion: 1; readonly schema: null }
@@ -281,12 +301,12 @@ function wireStatementLayoutOf(
   };
 }
 
-/** 部分的な v2 フィールドを持つ配布の拒否メッセージ(§12-2 の全欠揃い規約)。 */
+/** The refusal message for a distribution carrying a partial v2 field set (§12-2's all-or-nothing rule). */
 function partialLayoutMessage(label: string): string {
   return `${label} carries only part of the layout-v2 field set (layoutVersion / varType / required / description must be all present or all absent — an inconsistent server response)`;
 }
 
-/** crypto の署名対象 context に渡す v2 フィールド(required は署名規約の文字列形 — §4.2)。 */
+/** The v2 fields passed to crypto's signed context (required in the signature convention's string form — §4.2). */
 function contextLayoutFields(
   layout: WireStatementLayout | null,
 ): Pick<MetaStatementContext, "layoutVersion" | "schema"> {
@@ -302,9 +322,10 @@ function contextLayoutFields(
 }
 
 /**
- * ステートメントの複合検証(§6.3)。期待座標から context を自前で組む。
- * 変数ステートメントの v2 フィールド(layout)は呼び出し側が wire から解釈して
- * 渡す(環境メタは v1 のまま — §4.2 — で layout を持たない)。
+ * The composite verification of a statement (§6.3). The context is
+ * assembled locally from the expected coordinates. A variable statement's
+ * v2 fields (layout) are interpreted from the wire by the caller and passed
+ * in (an environment meta stays v1 — §4.2 — and carries no layout).
  */
 async function verifyStatement(
   verified: VerifiedProject,
@@ -340,9 +361,10 @@ async function verifyStatement(
 }
 
 /**
- * 変数ステートメントの検証(verifyStatement のワイヤ v2 解釈込みの入口)。
- * 部分的な v2 フィールドはここで拒否し、成功時は layout(表示・引き継ぎ・
- * ダイジェスト材料)も返す。
+ * Verifying a variable statement (the entry of verifyStatement with the
+ * wire v2 interpretation). A partial v2 field set is refused here; on
+ * success the layout (for display, carry-over, digest material) is also
+ * returned.
  */
 async function verifyVariableStatement(
   verified: VerifiedProject,
@@ -377,9 +399,11 @@ async function verifyOne(
 ): Promise<VerifyOutcome<VerifiedPulledValue>> {
   const payload = variable.value;
   const statement = variable.statement;
-  // 座標整合(§6.3-5): 検証・復号は期待座標で行うため不一致はどのみち失敗するが、
-  // 明示検査で「どの座標が食い違ったか」を可視化する。名前はステートメント検証を
-  // 通るまで信用できないため、メッセージは variableId で識別する
+  // Coordinate agreement (§6.3-5): verification and decryption run on the
+  // expected coordinates, so a mismatch fails either way — the explicit
+  // check visualizes *which* coordinate disagreed. Since the name cannot be
+  // trusted until the statement verification passes, messages identify by
+  // variableId
   if (!coordinatesMatch(verified, environmentId, variable)) {
     return {
       kind: "rejected",
@@ -394,7 +418,7 @@ async function verifyOne(
       message: `Variable ${displayText(variable.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
     };
   }
-  // 名前 → variableId の対応は検証済みステートメント経由が必須(§4.2 / §12-7)
+  // The name → variableId mapping must go through a verified statement (§4.2 / §12-7)
   const verifiedStatement = await verifyVariableStatement(
     verified,
     environmentId,
@@ -405,8 +429,10 @@ async function verifyOne(
     return verifiedStatement;
   }
   if (statement.status !== "active") {
-    // deleted = 無断復活の運搬形、declared = 値未設定の宣言に値を併置する形
-    // (declared だけが正当な値なし状態 — §6.3。値の同梱はその逆の矛盾)
+    // deleted = the transport shape of an unauthorized undeletion;
+    // declared = juxtaposing a value onto a valueless declaration (declared
+    // is the only legitimate valueless state — §6.3; bundling a value is
+    // the opposite contradiction)
     return {
       kind: "rejected",
       evidence: true,
@@ -475,20 +501,22 @@ interface PullWire {
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /**
-   * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない)。
-   * 不在 = declared なし(旧サーバー応答との decode 互換を兼ねる optionalKey)。
+   * The latest statements of declared variables (§12-7 — no value or
+   * version exists). Absent = no declared (an optionalKey doubling as
+   * decode compatibility with old server responses).
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
+  /** The latest manifest (§12-7 — omission is unconditionally refused, §6.3. optional only for the migration's transitional state). */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
-   * チェックポイント時点の値スナップショット列挙(§12-7 — 規則 2 の材料。
-   * 基準を持つ環境での欠落は checkpoint-integrity.ts が拒否する)。
+   * The enumeration of value snapshots at the checkpoint (§12-7 — rule
+   * 2's material. An omission on an environment with a baseline is refused
+   * by checkpoint-integrity.ts).
    */
   readonly checkpointSnapshot?: CheckpointValueSnapshot | undefined;
 }
 
-/** 環境自身のステートメント検証(active であること込み)。証拠材料を返す。 */
+/** Verifying the environment's own statement (including that it is active). Returns the evidence material. */
 async function verifyEnvironmentStatement(
   verified: VerifiedProject,
   environmentId: string,
@@ -527,7 +555,7 @@ async function verifyEnvironmentStatement(
   };
 }
 
-/** 削除済み変数の tombstone ステートメント検証(active / declared 側との併置 = 無断復活の運搬形も拒否)。 */
+/** Verifying a deleted variable's tombstone statement (a juxtaposition with the active / declared side = the transport shape of an unauthorized undeletion, also refused). */
 async function verifyDeletedStatements(
   verified: VerifiedProject,
   environmentId: string,
@@ -570,8 +598,9 @@ async function verifyDeletedStatements(
     }
     tombstones.push({
       variableId: statement.variableId,
-      // deleted は直前 active 名を保持する(§4.2)— 削除済み変数の表示名の
-      // 検証済みの唯一の源(要ローテーションフラグの名前解決 — AUDIT_SPEC §7)
+      // deleted keeps the immediately preceding active name (§4.2) — the
+      // only verified source of a deleted variable's display name (name
+      // resolution for the needs-rotation flag — AUDIT_SPEC §7)
       name: statement.name,
       status: "deleted",
       ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
@@ -580,14 +609,14 @@ async function verifyDeletedStatements(
   return { kind: "ok", value: tombstones };
 }
 
-/** 検証済み live(active + declared)集合の名前検査: 同名の重複 = 解決拒否(§4.2)、非 NFC = 警告(SHOULD)。 */
+/** The name check of the verified live (active + declared) set: a duplicate same name = resolution refusal (§4.2), non-NFC = a warning (SHOULD). */
 function checkVerifiedNames(
   values: readonly { readonly variableId: string; readonly name: string }[],
   warnings: string[],
 ): string | null {
   const seenNames = new Set<string>();
   for (const value of values) {
-    // 一意性は byte-exact 比較(§12-1。全受理名が NFC ならば NFC 一致と同値)
+    // Uniqueness is a byte-exact comparison (§12-1. Equivalent to NFC equality when every accepted name is NFC)
     if (seenNames.has(value.name)) {
       return `Multiple live statements with the same name passed verification (server equivocation): ${displayText(value.name)}. Refusing name resolution`;
     }
@@ -602,11 +631,12 @@ function checkVerifiedNames(
 }
 
 /**
- * メタデータのみ pull の変数ステートメント群の検証(§12-7 のメタデータのみ
- * モード)。座標整合・variableId 重複拒否の検査は値付き pull の verifyOne と
- * 同一の規律で、値署名の検証だけがない。declared は active と同じ列に混在して
- * 流れる(§12-7 — status フィールドが判別を担う)ため、拒否するのは deleted の
- * 混入のみ。
+ * Verifying the variable statements of a metadata-only pull (§12-7's
+ * metadata-only mode). The coordinate-agreement and variableId-duplicate
+ * refusal checks follow the same discipline as the value-carrying pull's
+ * verifyOne; only the value-signature verification is absent. declared
+ * flows mixed into the same list as active (§12-7 — the status field
+ * discriminates), so only a deleted's infiltration is refused.
  */
 async function verifyVariableStatements(
   verified: VerifiedProject,
@@ -665,9 +695,11 @@ async function verifyVariableStatements(
 }
 
 /**
- * 値付き応答の declaredVariables(§12-7)の検証。CRYPTO_SPEC §6.3 の値配布
- * 要求の実装点: status active の検証済みステートメントがこの列に現れることは
- * 「値の欠落」として拒否する(declared だけが正当な値なし状態)。
+ * Verifying the declaredVariables (§12-7) of a value-bearing response. The
+ * implementation point of CRYPTO_SPEC §6.3's value-distribution
+ * requirement: a verified statement with status active appearing in this
+ * list is refused as "a value omission" (declared is the only legitimate
+ * valueless state).
  */
 async function verifyDeclaredStatements(
   verified: VerifiedProject,
@@ -699,8 +731,10 @@ async function verifyDeclaredStatements(
     }
     seenIds.add(statement.variableId);
     if (statement.status !== "declared") {
-      // active がここに現れる = 検証済み active ステートメントの値が値付き応答に
-      // 欠けている(値の欠落 G6 — §6.3 の値配布要求)。deleted の混入も拒否
+      // An active appearing here = the value of a verified active
+      // statement is missing from the value-bearing response (a value
+      // omission, G6 — §6.3's value-distribution requirement). An
+      // infiltrating deleted is also refused
       return {
         kind: "rejected",
         evidence: true,
@@ -731,7 +765,7 @@ async function verifyDeclaredStatements(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
-/** アクティブ変数群の検証(variableId 重複の拒否込み)。 */
+/** Verifying the active variables (including the variableId-duplicate refusal). */
 async function verifyActiveVariables(
   verified: VerifiedProject,
   environmentId: string,
@@ -742,8 +776,9 @@ async function verifyActiveVariables(
   const seenIds = new Set<string>();
   const values: VerifiedPulledValue[] = [];
   for (const variable of variables) {
-    // 同一応答内の variableId 重複は無条件拒否(同一座標に異なる signed bytes を
-    // 併置する equivocation の運搬形を含む — 裁定 G)
+    // A duplicate variableId within one response is refused
+    // unconditionally (covers the transport shape of equivocation that
+    // juxtaposes different signed bytes at the same coordinates — ruling G)
     if (seenIds.has(variable.variableId)) {
       return {
         kind: "rejected",
@@ -761,12 +796,13 @@ async function verifyActiveVariables(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
-/** 検証段の実行結果(rejected は失敗チャネルへ潰し済み — future | ok の 2 値)。 */
+/** The result of running a verification stage (rejected is already folded into the failure channel — the 2 values future | ok). */
 type StageResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "future" };
 
 /**
- * 検証段の共通ラッパ: crypto 実行自体の失敗を CliError へ、rejected を失敗
- * チャネルへ潰す(各段の残余は future | ok の 2 値になる)。
+ * The shared wrapper of a verification stage: folds a crypto-execution
+ * failure into a CliError and a rejected into the failure channel (each
+ * stage's leftover is the 2 values future | ok).
  */
 function verifyStage<T>(
   run: () => Promise<VerifyOutcome<T>>,
@@ -778,9 +814,10 @@ function verifyStage<T>(
       catch: () => cliError(`${description} failed to run (crypto error)`),
     });
     if (outcome.kind === "rejected") {
-      // 配布された署名済みデータが検証を通らない = 証拠(再実行では解消しない —
-      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない)。
-      // 例外は誠実な破壊様式(UnsupportedMetaLayout)
+      // Signed distributed data that fails verification = evidence (a
+      // re-run does not resolve it — errors.ts's definition of evidence; it
+      // must not be folded into cleanup warnings). The exception is the
+      // honest breaking mode (UnsupportedMetaLayout)
       return yield* Effect.fail(
         outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
       );
@@ -792,9 +829,11 @@ function verifyStage<T>(
 }
 
 /**
- * マニフェスト段(§4.3 / §6.3): 欠落 = 一律拒否(唯一の例外は移行経路の
- * allowMissingManifest — manifest.ts のモジュールコメント)。配布された場合は
- * 検証済み全ステートメント(tombstone 込み)からダイジェストを再計算して照合する。
+ * The manifest stage (§4.3 / §6.3): omission = unconditional refusal (the
+ * only exception is the migration path's allowMissingManifest —
+ * manifest.ts's module comment). When distributed, the digest is
+ * recomputed from every verified statement (tombstones included) and
+ * compared.
  */
 function verifyManifestStage(input: {
   readonly verified: VerifiedProject;
@@ -803,7 +842,7 @@ function verifyManifestStage(input: {
   readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
-  /** 床のマニフェスト記録(隣接 prev 検証の predecessor — M1-A1。床なし = null)。 */
+  /** The floor's manifest record (the predecessor of the adjacent prev verification — M1-A1. null when there is no floor). */
   readonly floorManifest: ManifestFloor | null;
 }): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
   const wireManifest = input.manifest;
@@ -811,11 +850,13 @@ function verifyManifestStage(input: {
     if (!input.allowMissingManifest) {
       return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
     }
-    // 移行許容(--init-manifest)は「マニフェスト未初期化の環境」のためにある。
-    // 検証済みチェーン上に基準 checkpoint を持つ環境は必ずマニフェストを持つ
-    // (checkpoint タプルが manifest_version を束縛する — §6.2 / §12-4)ため、
-    // その欠落は移行操作下でも握り潰しの証拠として拒否する(床のマニフェスト
-    // 記録確立後の欠落拒否 — §6.3 — のチェーン導出版)
+    // The migration allowance (--init-manifest) exists for "an environment
+    // whose manifest was never initialized". An environment that has a
+    // baseline checkpoint on the verified chain always carries a manifest
+    // (the checkpoint tuple binds manifest_version — §6.2 / §12-4), so its
+    // omission is refused as evidence of suppression even under the
+    // migration operation (the chain-derived version of refusing an
+    // omission after the floor's manifest record is established — §6.3)
     if (input.verified.history.latestCheckpointFor(input.environmentId) !== undefined) {
       return Effect.fail(
         evidenceError(
@@ -827,8 +868,10 @@ function verifyManifestStage(input: {
   }
   return verifyStage(
     () =>
-      // マニフェストの拒否は署名済み配布データの矛盾 = 証拠(manifest.ts の結果型は
-      // evidence を持たないので、ここで付ける — 誠実な破壊様式はこの段には無い)
+      // A manifest refusal is a contradiction between signed distributed
+      // data = evidence (manifest.ts's result type carries no evidence, so
+      // it is attached here — there is no honest breaking mode at this
+      // stage)
       verifyDistributedManifest({
         verified: input.verified,
         environmentId: input.environmentId,
@@ -847,13 +890,17 @@ function verifyManifestStage(input: {
 }
 
 /**
- * pull 応答の共通検証骨格(§6.3): 環境ステートメント → アクティブ集合(値付き /
- * メタのみで差し替わる)→ declared 集合(値付き応答の declaredVariables — メタ
- * のみモードは variables に混在するため空)→ tombstone → 名前検査 →
- * **マニフェスト**(ダイジェスト再計算・エポック整合 — §4.3。欠落 = 一律拒否。
- * 唯一の例外は移行経路の allowMissingManifest — manifest.ts のモジュール
- * コメント)。ダイジェスト再計算の集合は variables ∪ declared ∪ deleted の
- * 全ステートメント。future はどの段でも全体を future にする(有界再同期の入口)。
+ * The shared verification skeleton of a pull response (§6.3): environment
+ * statement → the active set (swapped by shape: value-bearing /
+ * metadata-only) → the declared set (the declaredVariables of a
+ * value-bearing response — empty in metadata-only mode where they are
+ * mixed into variables) → tombstones → the name check → **the manifest**
+ * (digest recomputation and epoch agreement — §4.3. omission =
+ * unconditional refusal; the only exception is the migration path's
+ * allowMissingManifest — manifest.ts's module comment). The digest
+ * recomputation set is every statement of variables ∪ declared ∪ deleted.
+ * A future at any stage makes the whole thing future (the bounded-resync
+ * entry).
  */
 function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
   verified: VerifiedProject,
@@ -867,11 +914,11 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   verifyActives: () => Promise<
     VerifyOutcome<{ readonly values: readonly T[]; readonly ids: Set<string> }>
   >,
-  /** 検証済みアクティブ 1 件 → variables_digest のエントリ(§4.3 (3) の再計算材料)。 */
+  /** One verified active → the variables_digest entry (the recomputation material of §4.3 (3)). */
   digestEntryOf: (value: T) => ManifestDigestEntry,
-  /** 移行経路(--init-manifest)のみ true — 欠落の許容であって検証の緩和ではない。 */
+  /** True only for the migration path (--init-manifest) — an omission allowance, not a verification relaxation. */
   allowMissingManifest: boolean,
-  /** 床のマニフェスト記録(隣接 prev 検証 — M1-A1。床を持たない経路は null)。 */
+  /** The floor's manifest record (the adjacent prev verification — M1-A1. Paths with no floor pass null). */
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
@@ -975,10 +1022,12 @@ function verifyAll(
   allowMissingManifest: boolean,
   floorManifest: ManifestFloor | null,
   /**
-   * 応答を**取得した時点**のビューのヘッド seq(pull = 取得時ビュー、lease =
-   * 同梱チェーンのヘッド)。有界再同期の再検証は同じ応答本文を前進後のビューで
-   * 再検証するため、規則 2 の基準が応答より新しい良性競合の判別に要る
-   * (checkpoint-integrity.ts)。
+   * The head seq of the view **at the moment the response was fetched**
+   * (pull = the fetch-time view, lease = the bundled chain's head). Since
+   * the bounded resync's re-verification re-verifies the same response
+   * body against the advanced view, distinguishing a benign race where
+   * rule 2's baseline is newer than the response needs this
+   * (checkpoint-integrity.ts).
    */
   fetchedAtHeadSeq: number,
 ): Effect.Effect<
@@ -1008,13 +1057,15 @@ function verifyAll(
     if (result.kind === "future") {
       return { kind: "future" } as const;
     }
-    // チェックポイント整合の規則 2(§6.3 — 値付き経路のみ。metadata-only は
-    // 値を運ばないため対象外 §12-7)。tombstone の削除説明はマニフェスト整合済み
-    // 集合を前提にするため、マニフェスト段(verifyAllCommon 内)の後に置く。
-    // evidence 付き拒否 = 検証済みデータとチェーン公証の矛盾(rotate の巡末分類が
-    // 「再実行で直る」案内へ格下げしないための型付け)。evidence なしの拒否 =
-    // 取得ビューより後に基準が前進した良性競合でも説明できる形(再 pull で解消
-    // しうる)
+    // Rule 2 of checkpoint integrity (§6.3 — the value-carrying path only.
+    // metadata-only is out of scope since it carries no values, §12-7). The
+    // tombstone deletion explanation assumes the manifest-consistent set,
+    // so it sits after the manifest stage (inside verifyAllCommon). A
+    // refusal with evidence = a contradiction between verified data and the
+    // chain notarization (typed so rotate's endgame classification does not
+    // downgrade it to the "a re-run fixes it" guidance). A refusal without
+    // evidence = a shape a benign race — the baseline advanced past the
+    // fetch-time view — can also explain (a re-pull can resolve it)
     const checkpoint = yield* Effect.tryPromise({
       try: () =>
         checkCheckpointIntegrity({
@@ -1050,14 +1101,17 @@ function verifyAll(
 }
 
 /**
- * 検証済み配布物に対する meta-op intent の照合(§6.3 記録規律 (ii) — 3-F)。
- * 検証済みマニフェストが intent の版へ到達・追い越していれば、確認義務は
- * 解決できる:
- * - 同版・同ハッシュ = 自分の発行が配布されている(accepted)
- * - 同版・異ハッシュ = 自分の発行は保存されていない(not-accepted — 配布側の
- *   検証済みマニフェストは観測として床へ join 済みで、証拠は失われない)
- * - 前進 = 検証済み後続状態の観測により義務を果たした(superseded)
- * - 配布版が intent より古い = 未解決のまま(次の照合機会に持ち越す)
+ * Reconciling meta-op intents against a verified distribution (§6.3 record
+ * discipline (ii) — 3-F). If the verified manifest reached or passed the
+ * intent's version, the confirmation duty can resolve:
+ * - same version, same hash = my issuance is being distributed (accepted)
+ * - same version, different hash = my issuance was not stored
+ *   (not-accepted — the distributed verified manifest is already joined
+ *   into the floor as an observation, so the evidence is not lost)
+ * - advanced = the duty fulfilled by observing a verified successor state
+ *   (superseded)
+ * - the distributed version older than the intent = left unresolved
+ *   (carried over to the next reconciliation opportunity)
  */
 function resolveMetaIntents(
   floor: FloorHandle,
@@ -1085,28 +1139,37 @@ function resolveMetaIntents(
 }
 
 /**
- * 床検査(§6.3 の (a)(b)(c))と床コミット(更新順序の規範: 検査は前回成功
- * pull の基準、基準の前進は検証成功後に変数床と原子的に)。検査はすべて
- * 署名検証を通過したデータ同士の比較なので、不一致は否認不能な証拠であり
- * 全件拒否する(§6.3 の「拒否・警告」の強い側)。
+ * The floor check (§6.3's (a)(b)(c)) and the floor commit (the update
+ * ordering norm: checks run against the last successful pull's baseline,
+ * and the baseline's advance is committed atomically with the variable
+ * floors after verification succeeds). Every check compares data that
+ * passed signature verification, so a disagreement is non-repudiable
+ * evidence and every case is refused (the strong side of §6.3's "reject vs
+ * warn").
  *
- * コミット点は §6.3 検証成功(以後のラップ検証・復号の失敗で床は巻き戻さない
- * — 記録されるのは署名検証済みダイジェストのみで、基準の単調性論証は復号の
- * 成否と独立。「成功した pull(検証込み)」の「検証」は §6.3 を指す解釈)。
+ * The commit point is the §6.3 verification success (a later wrap
+ * verification / decryption failure never rolls the floor back — only
+ * signature-verified digests are recorded, and the baseline monotonicity
+ * argument is independent of decryption success. The "verification" of "a
+ * successful pull (verification included)" is read as §6.3).
  */
 function enforceFloor(input: {
   readonly floor: FloorHandle;
   /**
-   * 規則 (c) 基準の導出に使うビュー。**pull 応答の取得より前に検証したビュー**
-   * でなければならない: 応答より新しいビュー(future head の有界再同期後)から
-   * 基準を導出すると、応答生成と再同期の間の rotate で基準が過前進し、
-   * 「ローテーション後・再暗号化完了前の正当な旧エポック最新値」(§12-7)を
-   * 次回 pull で誤拒否する(§6.3 の「チェーン同期単独で基準を前進させない」
-   * 規範の再同期経路への適用)。基準 ≤ 応答生成時点のエポックなら、
-   * 以後に受理される正規 push のエポックは常に基準以上で誤拒否がない。
+   * The view used to derive the rule (c) baseline. **It must be the view
+   * verified before the pull response was fetched**: deriving the baseline
+   * from a view newer than the response (after a future head's bounded
+   * resync) over-advances the baseline across a rotate that landed between
+   * the response generation and the resync, and the next pull would
+   * falsely refuse "a legitimate old-epoch latest value after a rotation,
+   * before re-encryption completes" (§12-7) (applying §6.3's "never advance
+   * the baseline on a chain sync alone" norm to the resync path). With
+   * baseline ≤ the epoch at response-generation time, the epoch of every
+   * legitimate push accepted later is always ≥ the baseline, so no false
+   * rejection.
    */
   readonly baselineView: VerifiedProject;
-  /** 検証に使ったビュー(床のチェーンヘッドのコミット値)。 */
+  /** The view used for verification (the commit value of the floor's chain head). */
   readonly commitView: VerifiedProject;
   readonly environmentId: string;
   readonly snapshot: VerifiedPullSnapshot;
@@ -1114,8 +1177,10 @@ function enforceFloor(input: {
   return Effect.gen(function* () {
     const violation = checkEnvironmentPull(input.floor.current(), input.snapshot);
     if (violation !== null) {
-      // 拒否 + 提示可能な証拠(座標・両 signed bytes ハッシュ・宣言ヘッド)。
-      // 床違反は正規署名済みデータ同士の矛盾 = 証拠(再実行では解消しない)
+      // Refuse + presentable evidence (coordinates, both signed-bytes
+      // hashes, declared heads). A floor violation is a contradiction
+      // between properly signed data = evidence (a re-run does not resolve
+      // it)
       return yield* Effect.fail(
         evidenceError(
           formatFloorViolation(
@@ -1125,39 +1190,46 @@ function enforceFloor(input: {
         ),
       );
     }
-    // 環境がチェーンに存在しないのに検証を通る配布はここで止まる(メタは
-    // エポックアンカーを持たないため、変数ゼロの環境ではステートメント検証
-    // だけでは検出できない)
+    // A distribution that passes verification for an environment absent
+    // from the chain stops here (meta carries no epoch anchor, so in an
+    // environment with zero variables statement verification alone cannot
+    // detect it)
     yield* requireChainEnvironment(input.commitView, input.environmentId);
-    // 規則 (c) 基準の前進値 = 応答取得前ビューのチェーン導出現エポック(§6.2 —
-    // サーバー申告の currentEpoch は使わない)
+    // The rule (c) baseline's advance value = the pre-response-fetch
+    // view's chain-derived current epoch (§6.2 — the server-claimed
+    // currentEpoch is never used)
     const baselineEnvironment = input.baselineView.state.environments.get(input.environmentId);
     if (baselineEnvironment === undefined) {
-      // 応答取得と再同期の間に環境が作られた稀なレース: 基準を過前進させずに
-      // 導出できるビューがないため、このコミットは見送る(次回 pull で確立。
-      // 床は SHOULD — 検出材料の確立が一周遅れるだけで誤検出はない)
+      // The rare race where the environment was created between the
+      // response fetch and the resync: there is no view to derive the
+      // baseline from without over-advancing it, so this commit is skipped
+      // (established on the next pull. The floor is a SHOULD — the
+      // detection material is just established one cycle late; no false
+      // detection)
       return;
     }
     yield* input.floor.commitPull(
       buildEnvironmentFloor(baselineEnvironment.currentEpoch, input.snapshot),
       { seq: input.commitView.state.headSeq, hashHex: input.commitView.state.headHashHex },
     );
-    // 検証済み配布物が到達したので、この環境の未解決 meta intent(3-F)を照合する
+    // A verified distribution arrived, so reconcile this environment's unresolved meta intents (3-F)
     yield* resolveMetaIntents(input.floor, input.snapshot.manifest);
   });
 }
 
 /**
- * pull 系の共通骨格(§6.3-2b): 取得 → 検証 → 床検査(accept)。future
- * (宣言ヘッドが自ビューより先 = 自チェーンが古いだけの可能性)はどの段でも
- * **1 回だけ**再同期し、旧ビューの延長であることを検査してから全体を再検証
- * する(有界。延長検査 + prev_hash 連鎖により、前進ビューは openProject 時の
- * 床検査と整合したまま — 床 seq 以下の全エントリが一致する)。再検証も future
- * なら divergedMessage で拒否する。
+ * The shared skeleton of the pull family (§6.3-2b): fetch → verify →
+ * floor check (accept). A future (a declared head beyond the own view =
+ * possibly just a stale own chain) at any stage re-syncs **exactly once**,
+ * checks that the new view is an extension of the old, then re-verifies
+ * everything (bounded. Via the extension check + the prev_hash chain, the
+ * advanced view stays consistent with openProject's floor check — every
+ * entry at or below the floor's seq matches). A re-verification that is
+ * still future is refused with divergedMessage.
  */
 function pullWithBoundedResync<TWire, TVerified>(input: {
   readonly verified: VerifiedProject;
-  /** future head 時の有界再同期(1 回)。 */
+  /** The bounded resync on a future head (once). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly fetch: Effect.Effect<TWire, CliError>;
   readonly verify: (
@@ -1167,7 +1239,7 @@ function pullWithBoundedResync<TWire, TVerified>(input: {
     { readonly kind: "ok"; readonly value: TVerified } | { readonly kind: "future" },
     CliError
   >;
-  /** 床検査・コミット。view = 検証に使ったビュー(再同期で前進していることがある)。 */
+  /** The floor check / commit. view = the view used for verification (may have advanced via the resync). */
   readonly accept: (view: VerifiedProject, value: TVerified) => Effect.Effect<void, CliError>;
   readonly divergedMessage: string;
 }): Effect.Effect<
@@ -1187,7 +1259,7 @@ function pullWithBoundedResync<TWire, TVerified>(input: {
       yield* input.accept(advanced, second.value);
       return { view: advanced, wire, value: second.value };
     }
-    // 再同期の後もチェーン上に無い位置へ束縛された配布 = 分岐 / 偽造の証拠
+    // A distribution bound to a chain position that still does not exist after the resync = evidence of a fork / forgery
     return yield* Effect.fail(evidenceError(input.divergedMessage));
   });
 }
@@ -1203,14 +1275,15 @@ export function pullVerifiedEnvironment(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  /** future head 時の有界再同期(1 回)。 */
+  /** The bounded resync on a future head (once). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3)。検査(規則 (a)(b)(c))と検証成功後の原子コミットを担う。 */
+  /** The local floor (§6.3). Carries the check (rules (a)(b)(c)) and the atomic commit after verification succeeds. */
   readonly floor: FloorHandle;
   /**
-   * マニフェスト**欠落**の許容(移行経路 `maruhi env rotate --init-manifest` のみ)。
-   * 配布された場合の検証は緩和しない。既定 false =
-   * 欠落は一律拒否(§6.3)。
+   * Allowing a manifest **omission** (the migration path `maruhi env
+   * rotate --init-manifest` only). Verification when distributed is not
+   * relaxed. Default false = an omission is unconditionally refused
+   * (§6.3).
    */
   readonly allowMissingManifest?: boolean;
 }): Effect.Effect<VerifiedEnvironmentPull, CliError> {
@@ -1229,10 +1302,11 @@ export function pullVerifiedEnvironment(input: {
           input.environmentId,
           wire,
           input.allowMissingManifest === true,
-          // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
+          // The adjacent-version prev verification (M1-A1): the floor's manifest record is passed as the predecessor
           input.floor.current()?.manifest ?? null,
-          // 応答は input.verified のビューの下で取得された(再同期後の再検証でも
-          // 取得時点は変わらない — 規則 2 の良性競合判別の基準)
+          // The response was fetched under input.verified's view (even on
+          // a post-resync re-verification the fetch moment does not change
+          // — the baseline for rule 2's benign-race discrimination)
           input.verified.state.headSeq,
         ).pipe(
           Effect.map((result) =>
@@ -1247,9 +1321,10 @@ export function pullVerifiedEnvironment(input: {
       accept: (view, value) =>
         enforceFloor({
           floor: input.floor,
-          // 検証は(前進していることのある)view、規則 (c) 基準は応答取得前の
-          // ビューから導出する(enforceFloor の baselineView 契約 — 再同期での
-          // 基準過前進を防ぐ)
+          // Verification uses the (possibly advanced) view; the rule (c)
+          // baseline is derived from the pre-response-fetch view
+          // (enforceFloor's baselineView contract — prevents the baseline
+          // over-advancing on a resync)
           baselineView: input.verified,
           commitView: view,
           environmentId: input.environmentId,
@@ -1280,8 +1355,9 @@ export function pullVerifiedEnvironment(input: {
  * same response (AUTH_SPEC §14-2), so "our chain is merely stale" is not an
  * honest explanation; the response contradicts itself.
  *
- * 床は使わない: ワークロードは床を持たない初回同期クラス(§14.3-3)で、
- * その主要な緩和はリポジトリアンカー(anchor.ts — §6.3 帯域外アンカー (b))。
+ * No floor is used: a workload is a first-sync class that holds no floor
+ * (§14.3-3), and its main relaxation is the repository anchor (anchor.ts —
+ * §6.3 out-of-band anchor (b)).
  */
 export function verifyLeaseDistribution(input: {
   readonly verified: VerifiedProject;
@@ -1290,22 +1366,25 @@ export function verifyLeaseDistribution(input: {
 }): Effect.Effect<
   {
     readonly variables: readonly VerifiedPulledValue[];
-    /** 検証済み declared(§14-2 — ci run の presence 検査の材料)。 */
+    /** The verified declared (§14-2 — material for ci run's presence check). */
     readonly declared: readonly VerifiedVariableStatement[];
     readonly warnings: readonly string[];
   },
   CliError
 > {
   return Effect.gen(function* () {
-    // マニフェスト検証は義務(CRYPTO_SPEC §9.1 (5))で、欠落 =
-    // 一律拒否(移行許容はない: ワークロードは初期化を行えない — 初期化は
-    // メンバーの明示操作 §14)。床由来の prev 検査は適用しない —
-    // ワークロードは床を持たない初回同期クラス(§14.3-3。session-31 §3 M1-A1
-    // の lease 適用外の注記): 署名・digest・エポック整合・欠落拒否は pull と
-    // 同水準のまま、predecessor は null(共有検証器の同一性)
-    // lease は応答がチェーンを同梱する自己完結形 — 取得ビュー = 同梱チェーンの
-    // ヘッドそのもの(基準が取得ビューより新しい形は構造的に存在せず、規則 2 の
-    // 拒否は常に evidence 側に分類される)
+    // Manifest verification is mandatory (CRYPTO_SPEC §9.1 (5)) and an
+    // omission = unconditional refusal (no migration allowance: a workload
+    // cannot initialize — initialization is a member's explicit operation,
+    // §14). The floor-derived prev check does not apply — a workload is a
+    // first-sync class that holds no floor (§14.3-3. session-31 §3 M1-A1's
+    // note that leases are out of scope): signature, digest, epoch
+    // agreement, and omission refusal stay at the pull's level, and the
+    // predecessor is null (the shared verifier's identity). A lease is a
+    // self-contained shape where the response bundles the chain — the
+    // fetch view = the bundled chain's head itself (the shape where the
+    // baseline is newer than the fetch view structurally cannot exist, and
+    // rule 2's refusals always classify to the evidence side)
     const result = yield* verifyAll(
       input.verified,
       input.environmentId,
@@ -1321,10 +1400,11 @@ export function verifyLeaseDistribution(input: {
         ),
       );
     }
-    // 基準なし警告(§6.3 SHOULD — 床を持たないクライアントは、値付き配布を
-    // 受けた環境に基準 checkpoint が存在しないことを検出したら警告する。
-    // 不在の黙認は「このクラスの主要保証 = チェックポイント整合が働いていない」
-    // ことの不可視化になる — session-36 裁定 V)
+    // The no-baseline warning (§6.3 SHOULD — a client with no floor warns
+    // when it detects that an environment it received a value-carrying
+    // distribution for has no baseline checkpoint. Silently tolerating the
+    // absence would make "this class's main guarantee = checkpoint
+    // integrity is not working" invisible — session-36 ruling V)
     const warnings =
       input.verified.history.latestCheckpointFor(input.environmentId) === undefined
         ? [
@@ -1340,45 +1420,49 @@ export function verifyLeaseDistribution(input: {
   });
 }
 
-/** メタデータのみ pull の検証済み応答(§12-7 のメタデータのみモード)。 */
+/** The verified response of a metadata-only pull (§12-7's metadata-only mode). */
 export interface VerifiedEnvironmentMetadata {
-  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
+  /** The view used for verification (may have advanced via a future head's bounded resync). */
   readonly verified: VerifiedProject;
-  /** 削除済みでない全変数の検証済みステートメント(active と declared の混在 — §12-7)。 */
+  /** The verified statements of all non-deleted variables (active and declared mixed — §12-7). */
   readonly variables: readonly VerifiedVariableStatement[];
-  /** 検証済み tombstone(削除済み変数の名前解決の唯一の源 — AUDIT_SPEC §7)。 */
+  /** Verified tombstones (the only source of name resolution for deleted variables — AUDIT_SPEC §7). */
   readonly tombstones: readonly VerifiedTombstone[];
-  /** 検証済みの環境メタステートメント(マニフェスト発行の envMeta 材料)。 */
+  /** The verified environment meta-statement (the envMeta material for manifest issuance). */
   readonly environment: VerifiedMetaEvidence;
-  /** 検証済みマニフェスト(欠落は拒否済み — メタのみ pull に移行許容はない)。 */
+  /** The verified manifest (omission already refused — no migration tolerance on a metadata-only pull). */
   readonly manifest: VerifiedManifest;
   /**
-   * サーバー申告の schemaPolicy(§12-7 / §12-11 — advisory)。null = 旧サーバー
-   * (未申告)。**検証規則の入力にしない** — 用途は UX(schema set の事前案内)
-   * のみ。署名されない申告値なので verified の名を持つ本構造では advisory と明示する。
+   * The server-claimed schemaPolicy (§12-7 / §12-11 — advisory). null =
+   * an old server (not claiming). **Never an input to a verification
+   * rule** — its only use is UX (advance guidance for schema set). An
+   * unsigned claimed value, so this structure carrying the verified name
+   * marks it advisory explicitly.
    */
   readonly advisorySchemaPolicy: SchemaPolicy | null;
   readonly warnings: readonly string[];
 }
 
 /**
- * メタ操作の同梱マニフェスト(§12-5)の発行材料: 検証済みメタデータ pull の
- * 直前マニフェスト・現在のメタ集合(active / declared / tombstone 込み — §4.3 の
- * ダイジェストは全ステートメントを覆う)・環境メタの最新形。
+ * The issuing material of a meta operation's bundled manifest (§12-5): the
+ * previous manifest of a verified metadata pull, the current meta set
+ * (active / declared / tombstones included — §4.3's digest covers every
+ * statement), and the latest shape of the environment meta.
  */
 export interface ManifestIssueBase {
   readonly previous: {
     readonly manifestVersion: number;
     readonly signedBytesHashHex: string;
   };
-  /** 現在のメタ集合(tombstone 込み)— 新変数のエントリは呼び出し側が試行ごとに足す。 */
+  /** The current meta set (tombstones included) — the caller appends the new variable's entry per attempt. */
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
 }
 
 /**
- * 検証済みメタデータ pull からマニフェスト発行材料を組む(push の create / activate
- * と schema set / var rm が共有 — サーバー申告値ではなく検証済みビューから組む)。
+ * Assembles the manifest issuing material from a verified metadata pull
+ * (shared by push's create / activate and schema set / var rm — built from
+ * the verified view, not server-claimed values).
  */
 export function manifestIssueBaseOf(metadata: VerifiedEnvironmentMetadata): ManifestIssueBase {
   return {
@@ -1412,11 +1496,11 @@ interface MetadataPullWire {
   readonly variables: readonly DistributedVariableMetaStatement[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   readonly manifest?: DistributedEnvironmentManifest;
-  /** schemaPolicy の advisory 同梱(§12-7 — 不在 = 旧サーバー)。 */
+  /** The advisory bundling of schemaPolicy (§12-7 — absent = an old server). */
   readonly schemaPolicy?: SchemaPolicy;
 }
 
-/** メタデータのみ pull の検証済み中間値(pullWithBoundedResync の TVerified)。 */
+/** The verified intermediate value of a metadata-only pull (pullWithBoundedResync's TVerified). */
 interface VerifiedMetadataValue {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedVariableStatement[];
@@ -1445,15 +1529,16 @@ function verifyAllMetadata(
   return verifyAllCommon(
     verified,
     environmentId,
-    // メタのみモードの declared は variables に混在する(§12-7)— declared の
-    // 別列は値付き応答のみ
+    // In metadata-only mode declared is mixed into variables (§12-7) — a
+    // separate declared list exists only on a value-bearing response
     { ...pull, declaredVariables: [] },
     () => verifyVariableStatements(verified, environmentId, pull.variables),
     (statement) => ({
       variableId: statement.variableId,
-      // active / declared の別は検証済みステートメントの status(§4.3 の entry は
-      // status を含む — "active" 固定にすると declared を含む環境のダイジェスト
-      // 再計算が常に不一致になる)
+      // The active / declared distinction is the verified statement's
+      // status (§4.3's entry includes status — pinning "active" would make
+      // the digest recomputation of an environment containing a declared
+      // always disagree)
       status: statement.status,
       metaVersion: statement.metaVersion,
       metaSigHashHex: statement.metaSigHashHex,
@@ -1464,13 +1549,16 @@ function verifyAllMetadata(
 }
 
 /**
- * メタデータのみ pull の床検査(値を運ばない形 — メタ水準の規則 (a)(b) と
- * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)と**環境水準の
- * 床コミット**(session-31 §3 M1-A3): チェーンヘッド・環境メタ床・マニフェスト
- * 床・環境水準エポック観測(§6.3 座標 (ii))を join する。**値床は捏造しない・
- * pull 基準(規則 (c))は前進させない** — 値を読んでいない観測から値水準の
- * 基準を作ると、ローテーション後・再暗号化完了前の正当な旧エポック値を
- * 誤拒否する(§6.3 の規範)。
+ * The floor check of a metadata-only pull (the valueless shape — only the
+ * meta-level rules (a)(b) and omission / undeletion. See
+ * checkEnvironmentMetadataPull) and the **environment-level floor commit**
+ * (session-31 §3 M1-A3): join the chain head, the environment meta floor,
+ * the manifest floor, and the environment-level epoch observation (§6.3
+ * coordinate (ii)). **Never fabricate a value floor, never advance the
+ * pull baseline (rule (c))** — deriving a value-level baseline from an
+ * observation that read no values would falsely refuse a legitimate
+ * old-epoch value after a rotation, before re-encryption completes
+ * (§6.3's norm).
  */
 function enforceMetadataFloor(input: {
   readonly floor: FloorHandle;
@@ -1489,7 +1577,7 @@ function enforceMetadataFloor(input: {
       manifest: input.manifest,
     });
     if (violation !== null) {
-      // 床違反は正規署名済みデータ同士の矛盾 = 証拠(値付き pull の enforceFloor と同じ)
+      // A floor violation is a contradiction between properly signed data = evidence (same as the value pull's enforceFloor)
       return yield* Effect.fail(
         evidenceError(
           formatFloorViolation(
@@ -1499,11 +1587,13 @@ function enforceMetadataFloor(input: {
         ),
       );
     }
-    // 環境がチェーンに存在しないのに検証を通る配布はここで止まる(enforceFloor
-    // と同じファントム環境検査 — メタはエポックアンカーを持たない)
+    // A distribution that passes verification for an environment absent
+    // from the chain stops here (the same phantom-environment check as
+    // enforceFloor — meta carries no epoch anchor)
     const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
-    // 検証済み事実の join(§6.3 — 記録契機の列挙ではなく単一の記録規則)。
-    // journal-before-release: 追記の永続化が検査合格の使用・成功報告に先行する
+    // The join of verified facts (§6.3 — a single recording rule, not an
+    // enumeration of recording triggers). journal-before-release:
+    // persisting the append precedes using the pass or reporting success
     yield* input.floor.commitMetadata(
       {
         observedEpoch: environment.currentEpoch,
@@ -1517,7 +1607,7 @@ function enforceMetadataFloor(input: {
       },
       { seq: input.verified.state.headSeq, hashHex: input.verified.state.headHashHex },
     );
-    // 検証済み配布物が到達したので、この環境の未解決 meta intent(3-F)を照合する
+    // A verified distribution arrived, so reconcile this environment's unresolved meta intents (3-F)
     yield* resolveMetaIntents(input.floor, input.manifest);
   });
 }
@@ -1535,9 +1625,9 @@ export function pullVerifiedEnvironmentMetadata(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  /** future head 時の有界再同期(1 回)。 */
+  /** The bounded resync on a future head (once). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor — M1-A3)。 */
+  /** The local floor (§6.3). The meta-level check + the environment-level commit (enforceMetadataFloor — M1-A3). */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
   return Effect.map(
@@ -1554,7 +1644,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
           view,
           input.environmentId,
           wire,
-          // 隣接版の prev 検証(M1-A1): metadata-only / value pull の両経路で同一
+          // The adjacent-version prev verification (M1-A1): identical on the metadata-only / value pull paths
           input.floor.current()?.manifest ?? null,
         ).pipe(
           Effect.flatMap(
@@ -1568,8 +1658,9 @@ export function pullVerifiedEnvironmentMetadata(input: {
               if (result.kind === "future") {
                 return Effect.succeed({ kind: "future" as const });
               }
-              // allowMissing なしの verifyAllCommon は欠落を拒否済み — null は
-              // 型面の残余(構造的に到達しない)なので明示的に落とす
+              // verifyAllCommon without allowMissing already refused an
+              // omission — null is a leftover on the type side
+              // (structurally unreachable), so fail it explicitly
               if (result.manifest === null) {
                 return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
               }
@@ -1605,7 +1696,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
       tombstones: value.tombstones,
       environment: value.environment,
       manifest: value.manifest,
-      // advisory(§12-11): 検証しない申告値 — UX 用途のみ(不在 = 旧サーバー)
+      // advisory (§12-11): an unverified claimed value — UX use only (absent = an old server)
       advisorySchemaPolicy: wire.schemaPolicy ?? null,
       warnings: value.warnings,
     }),
@@ -1613,10 +1704,12 @@ export function pullVerifiedEnvironmentMetadata(input: {
 }
 
 /**
- * 環境一覧の署名済みステートメントから「検証済みの削除済み環境」の集合を返す
- * (§12-4 — 削除も署名付きステートメント)。検証に失敗した・座標が合わない・
- * status が deleted でないステートメントは含めない(fail-closed — 呼び出し側は
- * 削除を信用せず対象に残す。サーバーの申告だけで黙ってスキップしない §7)。
+ * Returns the set of "verified deleted environments" from an environment
+ * list's signed statements (§12-4 — a deletion is also a signed
+ * statement). Statements that fail verification, whose coordinates don't
+ * match, or whose status is not deleted are not included (fail-closed —
+ * the caller keeps them as targets without trusting the deletion; §7 never
+ * silently skips on the server's claim alone).
  */
 export function verifiedDeletedEnvironments(
   verified: VerifiedProject,

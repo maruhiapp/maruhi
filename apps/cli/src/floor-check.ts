@@ -1,22 +1,28 @@
-// ローカル床の検出規則(CRYPTO_SPEC §6.3 の (a)(b)(c))と更新順序の規範。
+// The local floor's detection rules ((a)(b)(c) of CRYPTO_SPEC §6.3) and the
+// norm for update ordering.
 //
-// 検査対象はすべて §6.3 の署名検証を通過済みの配布データ(values.ts)。床との
-// 不一致は「正規署名済みデータ同士の矛盾」なので、検出はサーバーの equivocation
-// または(在籍区間内の鍵による)偽造の否認不能な証拠であり、誤検出の懸念がない
-// — よって全件を拒否とする(§6.3 の「拒否・警告」の強い側)。
+// Everything checked has already passed the §6.3 signature verification of
+// distributed data (values.ts). A disagreement with the floor is "a
+// contradiction between properly signed data", so a detection is
+// non-repudiable evidence of server equivocation or forgery (by a key inside
+// its membership interval) — no false-positive concern — and every case is
+// therefore refused (the strong side of §6.3's "reject vs warn").
 //
-// - 規則 (a): チェーンの短縮、version / metaVersion / エポックの後退、削除の
-//   無断取り消し
-// - 規則 (b): 床と同一 version / metaVersion に対する signed bytes の相違
-//   (内容差し替え・分岐の証拠)
-// - 規則 (c): 床の version より新しい version の epoch が、当該環境の pull 時点
-//   エポック基準(pullEpoch)より小さい配布の拒否(削除済みメンバーの鍵による
-//   「前進 version への旧エポック注入」の検出 — §14.3-5)。基準は前回成功 pull
-//   の値を使い、チェーン同期単独では前進させない(誤拒否と検出喪失の両縁)。
+// - Rule (a): chain shortening, rollback of version / metaVersion / epoch,
+//   unauthorized undeletion
+// - Rule (b): differing signed bytes for the same version / metaVersion as
+//   the floor (evidence of content replacement or a fork)
+// - Rule (c): rejecting a distribution whose epoch, on a version newer than
+//   the floor's version, is below that environment's pull-time epoch baseline
+//   (pullEpoch) (detecting "old-epoch injection into an advanced version" by
+//   a deleted member's key — §14.3-5). The baseline uses the last successful
+//   pull's value and is never advanced by a chain sync alone (both edges:
+//   false rejection and loss of detection).
 //
-// **メタステートメントの床は巻き戻し検出のみ**: メタはエポックアンカーを
-// 持たないため(§4.2)、前進 metaVersion の注入は床を持っても検出されない
-// (§14.3-5 — 最重要の非保証。「検出済み」と誤認する検査をここに置かない)。
+// **A meta-statement's floor detects rollback only**: meta carries no epoch
+// anchor (§4.2), so an injected advanced metaVersion is not detected even
+// with a floor (§14.3-5 — the most important non-guarantee; do not put a
+// check here that could be mistaken for "detected").
 
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -42,62 +48,66 @@ import type { VerifiedManifest } from "./manifest.ts";
 import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedPulledValue } from "./values.ts";
 
-/** deleted / declared(変数のみ — §4.2 レイアウト v2)を含む検証済みメタステートメントの証拠材料。 */
+/** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v2). */
 export interface VerifiedMetaEvidence {
   readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
-  /** 配布された著者署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  /** The distributed author signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
   readonly authorUserId: string;
   readonly authorKeyFingerprintHex: string;
 }
 
-/** 検証済み tombstone(deleted ステートメント)。 */
+/** A verified tombstone (a deleted statement). */
 export interface VerifiedTombstone extends VerifiedMetaEvidence {
   readonly variableId: string;
-  /** 検証済み deleted ステートメントの name(直前 active 名を保持 — §4.2)。 */
+  /** A verified deleted statement's name (keeps the immediately preceding active name — §4.2). */
   readonly name: string;
 }
 
-/** 床検査の入力(§6.3 の検証を全通過した pull 応答のダイジェスト)。 */
+/** The input of a floor check (a digest of a pull response that passed all §6.3 verification). */
 export interface VerifiedPullSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedPulledValue[];
   /**
-   * 検証済み declared ステートメント(値なし — §4.2 レイアウト v2 / §12-7 の
-   * declaredVariables)。値付き応答で declared に値が配布されないことは正当
-   * (declared だけが正当な値なし状態 — CRYPTO_SPEC §6.3)。
+   * Verified declared statements (valueless — §4.2 layout v2 / §12-7's
+   * declaredVariables). In a value-bearing response, declared variables not
+   * being distributed a value is legitimate (declared is the only legitimate
+   * valueless state — CRYPTO_SPEC §6.3).
    */
   readonly declared: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   /**
-   * 検証済みマニフェスト(§4.3)。null は移行経路(--init-manifest)が欠落を
-   * 許容した場合のみ — 通常経路の欠落は values.ts が床検査の前に拒否している。
+   * The verified manifest (§4.3). null only when the migration path
+   * (--init-manifest) permitted the omission — on the normal path values.ts
+   * has already refused an omission before the floor check.
    */
   readonly manifest: VerifiedManifest | null;
 }
 
 /**
- * メタデータのみ pull(§12-7)の検証済みダイジェスト。値を運ばないため、
- * 床検査はメタ水準(規則 (a)(b) のメタ部分 + 欠落・削除取り消し)に限られる —
- * 値の巻き戻し・equivocation・規則 (c) はこの形からは検査できない
- * (検査済みと偽らない: 値水準の床検査は値を運ぶ pull の領分)。
+ * The verified digest of a metadata-only pull (§12-7). Since it carries no
+ * values, the floor check is limited to the meta level (the meta part of
+ * rules (a)(b) + omission and undeletion) — value rollback, equivocation,
+ * and rule (c) cannot be checked from this shape (never pretend they were
+ * checked: the value-level floor check belongs to value-bearing pulls).
  */
 export interface VerifiedMetadataSnapshot {
   readonly environment: VerifiedMetaEvidence;
-  /** 削除済みでない全変数の検証済みステートメント(active と declared の混在 — §12-7)。 */
+  /** Verified statements of all non-deleted variables (active and declared mixed — §12-7). */
   readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /** 検証済みマニフェスト(欠落は values.ts が拒否済み — メタのみ pull に移行許容はない)。 */
+  /** The verified manifest (omission already refused by values.ts — no migration tolerance on a metadata-only pull). */
   readonly manifest: VerifiedManifest;
 }
 
 /**
- * レイアウト v2 のスキーマ欄(検証済みステートメント由来 — CRYPTO_SPEC §4.2)。
- * 型は**宣言**であり値との一致は保証されない(§14.3-7 — 表示・検証は advisory)。
+ * The schema column of layout v2 (from a verified statement — CRYPTO_SPEC
+ * §4.2). The type is a **declaration** and agreement with the value is not
+ * guaranteed (§14.3-7 — display and validation are advisory).
  */
 export interface VerifiedSchemaFields {
   readonly varType: MetaVarType;
@@ -106,42 +116,42 @@ export interface VerifiedSchemaFields {
 }
 
 /**
- * 検証済みの変数ステートメント(メタデータのみ pull の 1 変数 — active と
- * declared の両方が流れる §12-7。status フィールドが判別を担う)。
+ * A verified variable statement (one variable of a metadata-only pull — both
+ * active and declared flow, §12-7; the status field discriminates).
  */
 export interface VerifiedVariableStatement extends VerifiedMetaEvidence {
   readonly variableId: string;
-  /** 検証済みステートメントの name(名前解決はこれ以外を信用しない — §12-2)。 */
+  /** The verified statement's name (name resolution trusts nothing else — §12-2). */
   readonly name: string;
-  /** ワイヤの layoutVersion(省略 = 1 — §12-2)。 */
+  /** The wire's layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** レイアウト v2 のスキーマ欄(v1 ステートメント = null)。 */
+  /** The schema column of layout v2 (null for a v1 statement). */
   readonly schema: VerifiedSchemaFields | null;
 }
 
-/** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド・署名と帰属)。 */
+/** Evidence material of a distributed value side (coordinates, hashes, declared head, signature and attribution). */
 export interface PulledValueEvidence {
   readonly version: number;
   readonly epoch: number;
   readonly valueSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
-  /** 配布された writer 署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  /** The distributed writer signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
   readonly writerUserId: string;
   readonly writerKeyFingerprintHex: string;
 }
 
-/** 床側(過去に検証済み)のメタ記録。 */
+/** The floor-side (previously verified) meta record. */
 export interface FloorMetaEvidence {
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
 }
 
-/** active な変数床(値側の証拠比較の基準)。 */
+/** An active variable floor (the basis of value-side evidence comparison). */
 export type ActiveVariableFloor = Extract<VariableFloor, { status: "active" }>;
 
-/** 床検査で検出した不整合(拒否 + 証拠表示の材料 — floor-evidence.ts が整形)。 */
+/** An inconsistency detected by the floor check (material for refusal + evidence display — formatted by floor-evidence.ts). */
 export type FloorViolation =
   | {
       readonly kind: "chain-shortened";
@@ -180,7 +190,7 @@ export type FloorViolation =
   | {
       readonly kind: "stale-epoch-injection";
       readonly variableId: string;
-      /** 規則 (c) の基準(前回成功 pull 時点のチェーン導出現エポック)。 */
+      /** The rule (c) baseline (the chain-derived current epoch at the last successful pull). */
       readonly baselineEpoch: number;
       readonly floorVersion: number;
       readonly pulled: PulledValueEvidence;
@@ -222,21 +232,23 @@ export type FloorViolation =
       readonly pulled: VerifiedManifest;
     }
   | {
-      // マニフェスト床の確立後にマニフェストが配布されない形(--init-manifest の
-      // 欠落許容下でも、一度確立した床に対する欠落は握り潰しの証拠)
+      // The shape where no manifest is distributed after a manifest floor was
+      // established (even under --init-manifest's omission tolerance, an
+      // omission against an established floor is evidence of suppression)
       readonly kind: "manifest-omitted";
       readonly floor: ManifestFloor;
     }
   | {
-      // 規則 (c) のマニフェスト適用(§6.3): 床の manifest_version
-      // より新しいマニフェストの epoch が pull 時点エポック床より小さい配布
+      // Rule (c) applied to manifests (§6.3): a distribution whose manifest is
+      // newer than the floor's manifest_version but whose epoch is below the
+      // pull-time epoch baseline
       readonly kind: "stale-manifest-injection";
       readonly baselineEpoch: number;
       readonly floorManifestVersion: number;
       readonly pulled: VerifiedManifest;
     };
 
-/** 拒否メッセージの種別ラベル(証拠の整形は floor-evidence.ts)。 */
+/** Kind labels for rejection messages (evidence formatting lives in floor-evidence.ts). */
 export function floorViolationLabel(violation: FloorViolation): string {
   switch (violation.kind) {
     case "chain-shortened":
@@ -273,11 +285,13 @@ export function floorViolationLabel(violation: FloorViolation): string {
 }
 
 /**
- * チェーン床の検査(規則 (a) のチェーン部分)。同期・検証済みのチェーンが
- * 床に記録したヘッドを含む延長であることを要求する: (1) 短縮(headSeq の
- * 後退)、(2) 床 seq 位置のハッシュ不一致(= 床のヘッドが載っていない別分岐 —
- * prev_hash 連鎖により床 seq 一致は床以下の全エントリ一致を意味する)。
- * seq が床より先へ進むのは正常(他メンバーの追記)。
+ * The chain floor check (the chain part of rule (a)). Requires the synced,
+ * verified chain to be an extension that contains the head recorded in the
+ * floor: (1) shortening (headSeq regression), (2) hash mismatch at the
+ * floor's seq position (= a different branch not containing the floor's head
+ * — via the prev_hash chain, matching at the floor's seq means matching every
+ * entry at or below it). seq advancing past the floor is normal (other
+ * members' appends).
  */
 export function checkChainFloor(
   floor: ProjectFloor,
@@ -285,7 +299,7 @@ export function checkChainFloor(
 ): FloorViolation | null {
   const floorHead = floor.chainHead;
   if (floorHead === null) {
-    // ヘッド観測がまだない床(intent だけのログ等)— 検査対象がない
+    // A floor with no head observation yet (e.g. an intents-only log) — nothing to check
     return null;
   }
   const syncedHead: ChainHeadFloor = {
@@ -333,7 +347,7 @@ function metaEvidenceOf(value: VerifiedPulledValue): VerifiedMetaEvidence {
   };
 }
 
-/** 変数メタの床検査(後退 = (a)・同一 metaVersion の相違 = (b)。前進は非保証)。 */
+/** The floor check of variable meta (regression = (a); a difference at the same metaVersion = (b). Advancement is not guaranteed). */
 function checkMetaAgainstFloor(
   target: "variable" | "environment",
   variableId: string | null,
@@ -350,9 +364,10 @@ function checkMetaAgainstFloor(
 }
 
 /**
- * マニフェスト床の検査(規則 (a)(b) のマニフェスト部分 + 確立後の欠落)。
- * 床にマニフェスト記録がない(マニフェスト導入前の床)場合は検査対象がない —
- * 記録の確立は検証成功後の床コミットが担う。
+ * The manifest floor check (the manifest part of rules (a)(b) + omission
+ * after establishment). If the floor has no manifest record (a floor from
+ * before manifests were introduced) there is nothing to check — establishing
+ * the record is the job of the floor commit after verification succeeds.
  */
 function checkManifestAgainstFloor(
   floor: EnvironmentFloor,
@@ -363,8 +378,9 @@ function checkManifestAgainstFloor(
     return null;
   }
   if (manifest === null) {
-    // 一度確立したマニフェスト床に対する欠落は、移行経路(--init-manifest)の
-    // 許容下でも握り潰しの証拠(初期化済み環境のマニフェストは消えない)
+    // An omission against an established manifest floor is evidence of
+    // suppression even under the migration path's (--init-manifest) tolerance
+    // (an initialized environment's manifest does not disappear)
     return { kind: "manifest-omitted", floor: manifestFloor };
   }
   if (manifest.manifestVersion < manifestFloor.manifestVersion) {
@@ -374,30 +390,36 @@ function checkManifestAgainstFloor(
     manifest.manifestVersion === manifestFloor.manifestVersion &&
     manifest.signedBytesHashHex !== manifestFloor.manifestSigHashHex
   ) {
-    // epoch を含む全署名対象が signed bytes に入るため、同一 manifestVersion の
-    // 内容相違はこの 1 検査で覆われる(§4.3 の署名対象全列挙)
+    // Since every signed field including epoch goes into the signed bytes, a
+    // content difference at the same manifestVersion is covered by this one
+    // check (§4.3's full enumeration of signed fields)
     return { kind: "manifest-equivocation", floor: manifestFloor, pulled: manifest };
   }
   return null;
 }
 
 /**
- * 規則 (c) のマニフェスト適用(§6.3): 床の manifest_version より
- * 新しいマニフェストの epoch が基準より小さい配布は、旧エポック鍵による前進
- * manifestVersion 注入の証拠。マニフェスト床がない場合は version 0 相当
- * (値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの epoch は
- * 発行時点の現エポック ≥ 基準)。
+ * Rule (c) applied to manifests (§6.3): a distribution whose manifest is
+ * newer than the floor's manifest_version but whose epoch is below the
+ * baseline is evidence of an advanced manifestVersion injected with an
+ * old-epoch key. Without a manifest floor it is the same as version 0 (same
+ * shape as a value's "variable not in the floor" — a legitimate first
+ * manifest after introduction has epoch = the current epoch at issuance ≥
+ * the baseline).
  *
- * 基準は pull 時点エポック床・**床マニフェスト自身の epoch**・**環境水準の
- * エポック観測(§6.3 座標 (ii) — 出所を問わず join される observedEpoch)**の
- * 最大値: マニフェスト連鎖のエポックは非減少(§4.3 の epoch-regressed —
- * 検証済み)なので、床が検証済みの epoch E を知っている以上、それより新しい
- * manifestVersion の正当なマニフェストの epoch は E 以上でしかありえない
- * (推移形)。pullEpoch だけを基準にすると、rotate 直後(commitManifest は
- * 前進するが pullEpoch は pull まで動かない)や有界再同期の形(pullEpoch は
- * 応答取得前ビュー)で、床が知っている epoch より古い焼き込みが素通りする。
- * observedEpoch は値を誤拒否する経路を持たないため、この baseline には
- * 制約なく参加できる(値規則 (c) には使わない — 座標の型が分ける)。
+ * The baseline is the maximum of the pull-time epoch floor, **the floor
+ * manifest's own epoch**, and **the environment-level epoch observation
+ * (§6.3 coordinate (ii) — the observedEpoch that is joined regardless of
+ * origin)**: manifest-chain epochs are non-decreasing (§4.3's
+ * epoch-regressed — verified), so once the floor knows a verified epoch E, a
+ * legitimate manifest with a newer manifestVersion can only have epoch ≥ E
+ * (transitive). Using pullEpoch alone as the baseline lets a burn-in older
+ * than the epoch the floor knows slip through in shapes like right after a
+ * rotate (commitManifest advances but pullEpoch does not move until a pull)
+ * or a bounded resync (pullEpoch is the pre-response view). observedEpoch has
+ * no path that falsely rejects a value, so it can join this baseline
+ * unconditionally (it is not used for the value rule (c) — the coordinate's
+ * type splits them).
  */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
@@ -419,7 +441,7 @@ function checkManifestEpochBaseline(
   return null;
 }
 
-/** active な床 × active な配布値の検査(規則 (a)(b) の値・変数メタ部分)。 */
+/** The check of an active floor × an active distributed value (the value and variable-meta parts of rules (a)(b)). */
 function checkActiveVariable(
   floor: ActiveVariableFloor,
   value: VerifiedPulledValue,
@@ -430,18 +452,19 @@ function checkActiveVariable(
     return { kind: "value-rollback", variableId, floor, pulled };
   }
   if (value.version === floor.version && value.signedBytesHashHex !== floor.valueSigHashHex) {
-    // epoch を含む全署名対象が signed bytes に入るため、同一 version の内容
-    // 相違はこの 1 検査で覆われる(§4.1 の署名対象全列挙)
+    // Since every signed field including epoch goes into the signed bytes, a
+    // content difference at the same version is covered by this one check
+    // (§4.1's full enumeration of signed fields)
     return { kind: "value-equivocation", variableId, floor, pulled };
   }
   if (value.version > floor.version && value.epoch < floor.epoch) {
-    // §4.1 のエポック単調性(推移的 — 版番号のギャップに関わらず要求できる)
+    // §4.1's epoch monotonicity (transitive — required regardless of gaps in version numbers)
     return { kind: "value-epoch-regression", variableId, floor, pulled };
   }
   return checkMetaAgainstFloor("variable", variableId, floor, metaEvidenceOf(value));
 }
 
-/** 床が active と記録している変数のメタ水準検査(active / tombstone / 欠落の 3 分岐)。 */
+/** The meta-level check of a variable the floor records as active (3 branches: active / tombstone / omitted). */
 function checkFloorActiveMeta(
   variableId: string,
   floor: ActiveVariableFloor,
@@ -452,14 +475,15 @@ function checkFloorActiveMeta(
     return checkMetaAgainstFloor("variable", variableId, floor, active);
   }
   if (tombstone !== undefined) {
-    // metaVersion が床より進んだ deleted は正当な削除。同一 metaVersion で
-    // status が違えば signed bytes も違う = (b) の証拠。後退は (a)
+    // A deleted whose metaVersion advanced past the floor's is a legitimate
+    // deletion. A different status at the same metaVersion means different
+    // signed bytes = (b) evidence. A regression is (a)
     return checkMetaAgainstFloor("variable", variableId, floor, tombstone);
   }
   return { kind: "variable-omitted", variableId, floor };
 }
 
-/** 床が active と記録している変数の検査(値水準 + メタ水準)。 */
+/** The check of a variable the floor records as active (value level + meta level). */
 function checkFloorActive(
   variableId: string,
   floor: ActiveVariableFloor,
@@ -473,10 +497,11 @@ function checkFloorActive(
 }
 
 /**
- * 床が declared と記録している変数の検査(メタ水準のみ — declared は値床を
- * 持たない §4.2)。正当な後続 = activation(active・metaVersion 前進)/
- * スキーマ再発行(declared のまま前進)/ 削除(tombstone)。後退・同版相違は
- * 規則 (a)(b)、欠落は variable-omitted。
+ * The check of a variable the floor records as declared (meta level only —
+ * declared has no value floor, §4.2). Legitimate successors = activation
+ * (active, advanced metaVersion) / schema re-issuance (advanced while still
+ * declared) / deletion (tombstone). Regression or a same-version difference
+ * is rule (a)/(b); omission is variable-omitted.
  */
 function checkFloorDeclared(
   variableId: string,
@@ -491,7 +516,7 @@ function checkFloorDeclared(
   return checkMetaAgainstFloor("variable", variableId, floor, evidence);
 }
 
-/** 床が deleted と記録している変数の検査(削除は終端状態 — §4.2 / session-15 §2-2)。 */
+/** The check of a variable the floor records as deleted (deletion is a terminal state — §4.2 / session-15 §2-2). */
 function checkFloorDeleted(
   variableId: string,
   floor: Extract<VariableFloor, { status: "deleted" }>,
@@ -499,8 +524,9 @@ function checkFloorDeleted(
   tombstone: VerifiedTombstone | undefined,
 ): FloorViolation | null {
   if (active !== undefined) {
-    // 削除の無断取り消し(規則 (a))。deleted 後の再 active 化は正当な経路が
-    // 存在しない(サーバー受理も predecessor 検証も拒否する — session-15 §2-2)
+    // Unauthorized undeletion (rule (a)). No legitimate path re-activates a
+    // deleted variable (both server acceptance and predecessor verification
+    // refuse it — session-15 §2-2)
     return { kind: "deletion-revoked", variableId, floor, pulled: active };
   }
   if (tombstone === undefined) {
@@ -510,25 +536,29 @@ function checkFloorDeleted(
     tombstone.metaVersion !== floor.metaVersion ||
     tombstone.metaSigHashHex !== floor.metaSigHashHex
   ) {
-    // deleted は終端状態で正当な後続ステートメントが存在しないため、床との
-    // 厳密一致を要求する(後退 = (a)、相違 = (b)、前進 = deleted 後の偽造)
+    // deleted is a terminal state with no legitimate successor statement, so
+    // an exact match with the floor is required (regression = (a), difference
+    // = (b), advancement = a post-deletion forgery)
     return { kind: "tombstone-mismatch", variableId, floor, pulled: tombstone };
   }
   return null;
 }
 
 /**
- * 環境メタ検査 + 床にある変数ごとの検査(欠落・後退・相違・削除取り消し)の
- * 共通骨格。active 側の検査だけが形(値付き / メタのみ)で差し替わる。
- * active / deleted の同一 ID 併置は values.ts が拒否済み。
+ * The shared skeleton of the environment meta check + the per-variable check
+ * of everything in the floor (omission / regression / difference /
+ * undeletion). Only the active-side check is swapped by shape (value-bearing
+ * / metadata-only). values.ts has already refused an active / deleted pair
+ * on the same ID.
  */
 function checkFloorCommon<T extends { readonly variableId: string }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
   activeList: readonly T[],
   /**
-   * 値付き pull の検証済み declared 集合(§12-7 の declaredVariables)。メタのみ
-   * pull は declared が activeList に混在する(§12-7)ため空を渡す。
+   * The verified declared set of a value-bearing pull (§12-7's
+   * declaredVariables). A metadata-only pull mixes declared into activeList
+   * (§12-7), so an empty list is passed.
    */
   declaredList: readonly VerifiedVariableStatement[],
   tombstoneList: readonly VerifiedTombstone[],
@@ -554,10 +584,12 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   }
   for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
     const active = actives.get(variableId);
-    // declared / deleted 床のメタ水準検査には declared 配布も証拠として使える。
-    // active 床は値の存在を要求する(active → declared の正当な遷移は存在しない
-    // — §4.2)ため declared 配布を渡さない: 値付き経路では checkActive が
-    // variable-omitted(値の欠落 — §6.3 の値配布要求)として拒否する
+    // For the meta-level check of a declared / deleted floor, a declared
+    // distribution can also serve as evidence. An active floor requires the
+    // value to exist (no legitimate active → declared transition exists —
+    // §4.2), so no declared distribution is passed: on the value-bearing
+    // path, checkActive refuses it as variable-omitted (a missing value —
+    // §6.3's value-distribution requirement)
     const meta = active === undefined ? declared.get(variableId) : toMeta(active);
     const violation =
       variableFloor.status === "active"
@@ -573,9 +605,10 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
 }
 
 /**
- * 環境 1 つ分の床検査(規則 (a)(b)(c))。床なし(初回)は検査対象がない —
- * その場合に何が保証されないかは §14.3-3(初回同期クライアント)。
- * 返すのは最初に見つかった不整合 1 件(すべて拒否条件なので列挙は不要)。
+ * The floor check for one environment (rules (a)(b)(c)). No floor (first
+ * run) means nothing to check — what is not guaranteed in that case is
+ * §14.3-3 (first-sync client). Returns the first inconsistency found (all
+ * are refusal conditions, so no enumeration is needed).
  */
 export function checkEnvironmentPull(
   floor: EnvironmentFloor | null,
@@ -596,17 +629,20 @@ export function checkEnvironmentPull(
   if (violation !== null) {
     return violation;
   }
-  // マニフェスト床の規則 (a)(b) + 確立後の欠落 + 規則 (c) のマニフェスト適用
+  // Rules (a)(b) on the manifest floor + omission after establishment + rule (c) applied to manifests
   const manifestViolation =
     checkManifestAgainstFloor(floor, snapshot.manifest) ??
     checkManifestEpochBaseline(floor, snapshot.manifest);
   if (manifestViolation !== null) {
     return manifestViolation;
   }
-  // 規則 (c): 床の version より新しい version(床にない変数は version 0 相当 —
-  // 前回 pull 以降に正当に作られた変数は当時の現エポック以上でしか書けない)の
-  // epoch が pull 時点エポック基準より小さい配布は前進注入の証拠。基準「以上」は
-  // 受理する(ローテーション直後・再暗号化完了前の正当な旧エポック値 — §12-7)
+  // Rule (c): a distribution whose version is newer than the floor's (a
+  // variable not in the floor counts as version 0 — a variable legitimately
+  // created since the last pull can only have been written at the
+  // then-current epoch or later) and whose epoch is below the pull-time epoch
+  // baseline is evidence of forward injection. "At or above" the baseline is
+  // accepted (a legitimate old-epoch value right after a rotation, before
+  // re-encryption completes — §12-7)
   for (const value of snapshot.variables) {
     const variableFloor = floorRecordGet(floor.variables, value.variableId);
     const floorVersion = variableFloor?.status === "active" ? variableFloor.version : 0;
@@ -624,11 +660,15 @@ export function checkEnvironmentPull(
 }
 
 /**
- * メタデータのみ pull(§12-7)の床検査: 規則 (a)(b) のメタ部分(環境・変数
- * ステートメントの後退 / 同一 metaVersion の相違)、検証済み変数の欠落、
- * 削除の無断取り消し・tombstone の差し替え。値を運ばない形のため値水準の
- * 検査と規則 (c) は対象外。検査合格後の**環境水準の床コミット**(チェーンヘッド・環境メタ床・マニフェスト床・座標 (ii) のみ。値床は捏造
- * しない・pull 基準は前進させない)は呼び出し側(enforceMetadataFloor)が行う。
+ * The floor check of a metadata-only pull (§12-7): the meta part of rules
+ * (a)(b) (regression of environment / variable statements, a difference at
+ * the same metaVersion), omission of a verified variable, unauthorized
+ * undeletion, and tombstone replacement. Since this shape carries no values,
+ * the value-level checks and rule (c) are out of scope. The
+ * **environment-level floor commit** after the checks pass (chain head,
+ * environment meta floor, manifest floor, and coordinate (ii) only — never
+ * fabricating a value floor, never advancing the pull baseline) is done by
+ * the caller (enforceMetadataFloor).
  */
 export function checkEnvironmentMetadataPull(
   floor: EnvironmentFloor | null,
@@ -641,7 +681,7 @@ export function checkEnvironmentMetadataPull(
     floor,
     snapshot.environment,
     snapshot.variables,
-    // メタのみ pull は declared が variables に混在する(§12-7)— 別列はない
+    // A metadata-only pull mixes declared into variables (§12-7) — there is no separate list
     [],
     snapshot.tombstones,
     checkFloorActiveMeta,
@@ -650,9 +690,11 @@ export function checkEnvironmentMetadataPull(
   if (violation !== null) {
     return violation;
   }
-  // マニフェストはメタのみモードでも配布される(§12-7 — メタ検証の完全性は
-  // 同水準)ため、床の規則 (a)(b) と規則 (c) のマニフェスト適用はここでも検査
-  // する(値水準の規則 (c) と床コミットが値付き pull の領分であることは不変)
+  // The manifest is distributed even in metadata-only mode (§12-7 — meta
+  // verification completeness is the same level), so rules (a)(b) and rule
+  // (c) applied to manifests are checked here too (the value-level rule (c)
+  // and the floor commit remaining the domain of value-bearing pulls is
+  // unchanged)
   return (
     checkManifestAgainstFloor(floor, snapshot.manifest) ??
     checkManifestEpochBaseline(floor, snapshot.manifest)
@@ -660,9 +702,11 @@ export function checkEnvironmentMetadataPull(
 }
 
 /**
- * 検証成功した pull 応答から次の環境床を組み立てる(§6.3 の更新順序: 検査は
- * 前回基準で行い、規則 (c) 基準の前進 = 今回のチェーン導出現エポックは検証
- * 成功後に変数床と原子的にコミットされる — 呼び出し側が commitPull で書く)。
+ * Assembles the next environment floor from a pull response that passed
+ * verification (§6.3's update order: the checks run against the previous
+ * baseline, and advancing the rule (c) baseline = this run's chain-derived
+ * current epoch is committed atomically with the variable floors after
+ * verification succeeds — written by the caller via commitPull).
  */
 export function buildEnvironmentFloor(
   chainCurrentEpoch: number,
@@ -680,7 +724,7 @@ export function buildEnvironmentFloor(
     };
   }
   for (const declared of snapshot.declared) {
-    // declared はメタ側のみ前進(値床は activation まで空 — §4.2 / session-46 §8)
+    // declared advances only on the meta side (the value floor stays empty until activation — §4.2 / session-46 §8)
     variables[declared.variableId] = {
       status: "declared",
       metaVersion: declared.metaVersion,
@@ -696,7 +740,7 @@ export function buildEnvironmentFloor(
   }
   return {
     pullEpoch: chainCurrentEpoch,
-    // 環境水準のエポック観測(座標 (ii))も同じ検証済み観測から確立する
+    // The environment-level epoch observation (coordinate (ii)) is established from the same verified observation
     observedEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
@@ -714,58 +758,64 @@ export function buildEnvironmentFloor(
 }
 
 /**
- * 1 コマンド実行中の環境床ハンドル。プロセス内で pull が複数回起きる場合
- * (push の再試行ループ)に、直前の pull がコミットした床を次の検査の基準に
- * する。プロセス内キャッシュはコミットのたびに**ストアが fold した(= ログへ
- * 永続化済みの)環境床**へ同期する(単なる送信スナップショットではない):
- * 追記専用ログの join が取り込んだ並行 CLI の検出材料(union・deleted 終端・
- * より新しい version / pullEpoch)を、同一コマンド内の後続検査が取りこぼさない
- * ため。ディスクの床は自 CLI が §6.3 検証済みレコードしか書かないので、fold
- * 結果の採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外)。
+ * The environment floor handle for one command run. When several pulls
+ * happen inside one process (push's retry loop), the floor the previous pull
+ * committed becomes the baseline of the next check. The in-process cache
+ * syncs on every commit to **the environment floor the store folded (= the
+ * state persisted to the log)**, not a mere send-snapshot: so that detection
+ * material a concurrent CLI's append-only-log join took in (unions, deleted
+ * terminal states, newer versions / pullEpochs) is not missed by later checks
+ * in the same command. The on-disk floor only ever gets §6.3-verified records
+ * written by this CLI, so adopting the fold result as the check baseline is
+ * sound (an attacker who can write local state is outside the floor's scope).
  *
- * intent(3-F)も環境スコープでここが窓口になる: openProject 時点の未解決
- * intent + 自プロセスが追記した intent を保持し、効果確認(§12-10 (3))を
- * 通過した経路が resolution で閉じる。
+ * Intents (3-F) are environment-scoped and this is their window: it holds the
+ * intents unresolved at openProject time plus the ones this process appended,
+ * and a path that passed the effect confirmation (§12-10 (3)) closes them via
+ * resolution.
  */
 export interface FloorHandle {
-  /** 現在の環境床(初回 pull 前は openProject 時に読んだスナップショット)。 */
+  /** The current environment floor (before the first pull, the snapshot read at openProject). */
   readonly current: () => EnvironmentFloor | null;
-  /** この環境の未解決 intent(要照合 — §6.3 記録規律 (ii))。 */
+  /** This environment's unresolved intents (awaiting reconciliation — §6.3 record discipline (ii)). */
   readonly unresolvedIntents: () => readonly FloorIntent[];
-  /** 検証済み pull の原子コミット(規則 (c) 基準 + 変数床 + ヘッドを 1 レコードで)。 */
+  /** The atomic commit of a verified pull (rule (c) baseline + variable floors + head in one record). */
   readonly commitPull: (
     environment: EnvironmentFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
-  /** 受理された push の変数床前進(pullEpoch は動かさない)。 */
+  /** The variable-floor advance of an accepted push (pullEpoch does not move). */
   readonly commitPush: (
     variableId: string,
     variable: VariableFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * metadata-only pull の環境水準コミット(値床は捏造しない・pull
-   * 基準は前進させない。環境メタ床・マニフェスト床・座標 (ii) のみ)。
+   * The environment-level commit of a metadata-only pull (never fabricates a
+   * value floor, never advances the pull baseline; environment meta floor,
+   * manifest floor, and coordinate (ii) only).
    */
   readonly commitMetadata: (
     commit: Omit<MetadataCommit, "chainHead" | "environmentId">,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * 受理確認済みの自己発行マニフェストの床昇格(pullEpoch・変数床は
-   * 動かさない)。怠ると受理後の床が旧 manifestVersion のままになり、旧版を
-   * 配布し続けるサーバーを規則 (a) が検出できない窓が生まれる。
+   * Floor promotion of a self-issued manifest confirmed as accepted
+   * (pullEpoch and variable floors do not move). Skipping it would leave the
+   * post-acceptance floor at the old manifestVersion and open a window where
+   * rule (a) cannot detect a server that keeps distributing the old version.
    */
   readonly commitManifest: (
     manifest: ManifestFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * security-critical mutation の送信前 intent(3-F)。永続化(fsync 相当)の
-   * 成功まで送信しない(fail-closed)。返り値は resolution 用の intent id。
+   * The pre-send intent (3-F) of a security-critical mutation. The send
+   * never happens before persistence (fsync equivalent) succeeds
+   * (fail-closed). The return value is the intent id used for resolution.
    */
   readonly appendIntent: (input: FloorIntentInput) => Effect.Effect<string, CliError>;
-  /** 効果確認の結果で intent を閉じる(未知 / 解決済み id は no-op — 冪等)。 */
+  /** Closes an intent with the effect-confirmation result (an unknown / resolved id is a no-op — idempotent). */
   readonly resolveIntent: (
     intentId: string,
     outcome: FloorIntentOutcome,
@@ -773,11 +823,13 @@ export interface FloorHandle {
 }
 
 /**
- * 送信の失敗がサーバー自身のエラー本文での拒否(= 効果は生じていない — 確定)
- * なら intent(3-F)を rejected で閉じる `Effect.tapError` 用コールバック。
- * 転送層の失敗(応答消失)は未解決のまま残す — 次の照合機会(チェーン同期 /
- * metadata-only pull)が解決する。resolution の追記失敗は握り潰してよい:
- * intent が開いたまま残る方向は安全側(要照合が残るだけ)。
+ * An `Effect.tapError` callback that closes an intent (3-F) as rejected when
+ * the send failed with a rejection in the server's own error body (= the
+ * effect never happened — decided). A transport-layer failure (lost
+ * response) stays unresolved — the next reconciliation opportunity (chain
+ * sync / metadata-only pull) resolves it. A failed resolution append may be
+ * swallowed: the direction where an intent stays open is the safe side (it
+ * just leaves something to reconcile).
  */
 export function rejectIntentOnServerRejection(
   floor: FloorHandle,
@@ -789,13 +841,13 @@ export function rejectIntentOnServerRejection(
       : Effect.void;
 }
 
-/** 床ストアに対する環境床ハンドルを作る。 */
+/** Builds an environment floor handle over the floor store. */
 export function makeFloorHandle(input: {
   readonly store: FloorStoreShape;
   readonly projectId: string;
   readonly environmentId: string;
   readonly initial: EnvironmentFloor | null;
-  /** openProject 時点の、この環境の未解決 intent(fold の表面化 — 3-F)。 */
+  /** This environment's unresolved intents as of openProject (surfaced by the fold — 3-F). */
   readonly intents?: readonly FloorIntent[];
 }): FloorHandle {
   let current = input.initial;
@@ -833,15 +885,19 @@ export function makeFloorHandle(input: {
         .pipe(Effect.map(adopt)),
     commitManifest: (manifest, head) =>
       Effect.suspend(() => {
-        // プロセス内の基準は**ディスク書き込みの成否に関わらず先に**前進させる:
-        // 自分が受理させた manifestVersion を知っている事実は、書き込みに失敗
-        // しても同一実行内の再走査の検出材料であり続ける(受理後に旧版を配布し
-        // 続けるサーバーの検出)。前進はディスク側と同一の join 実装で行う
-        // (`>=` 後勝ちの別実装を持たない)。join が conflict(同版・
-        // 異ハッシュ)を検出した場合は**前進を採用しない**: 証拠を捨てた側を
-        // 検査基準にすると、ディスク書き込みが I/O 失敗で警告に落ちた実行の
-        // 残りが equivocation を見ないまま走る(ディスクが書けた場合は fold が
-        // 同じ conflict で以後の commit を typed エラーにする)
+        // The in-process baseline advances **first, regardless of whether the
+        // disk write succeeds**: the fact that we know the manifestVersion we
+        // got accepted remains detection material for later scans in the same
+        // run even if the write fails (detecting a server that keeps
+        // distributing the old version after acceptance). The advance uses
+        // the same join implementation as the disk side (no separate
+        // "`>=` last-wins" implementation). If the join detects a conflict
+        // (same version, different hash), the advance is **not adopted**:
+        // making the side that discarded evidence the check baseline would
+        // let the rest of a run whose disk write fell to a warning on I/O
+        // failure proceed without seeing equivocation (when the disk write
+        // succeeds, the fold turns later commits into typed errors on the
+        // same conflict)
         if (current !== null) {
           const conflicts: FloorConflict[] = [];
           const joined = joinEnvironmentFloor(
