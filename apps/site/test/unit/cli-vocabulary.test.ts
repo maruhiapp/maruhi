@@ -7,6 +7,9 @@
 //   1. コマンド経路(`maruhi device approve` 等)が help に存在すること
 //   2. グループ(子コマンドを持つ経路)の後ろに来るのが子コマンドであること
 //   3. 添えられた `--flag` が、その経路の FLAGS か GLOBAL FLAGS にあること
+//   4. ```sh ブロックの呼び出しが、USAGE の必須位置引数(`<environment-id>` 等)を数だけ
+//      添えていること(インラインコードは散文の中でコマンド名だけを指しうるので対象外。
+//      getting-started の `maruhi env create` が引数なしのまま出荷された回帰の固定)
 // 散文の主張(「コードかパスキーで開く」)は機械では捉えられないので、この検査の外
 // (そこは K6-R の「規範の主張は 1 ページが持つ」で守る)。
 import { readdirSync, readFileSync } from "node:fs";
@@ -21,8 +24,12 @@ const help = readFileSync(join(repoRoot, "apps", "cli", "test", "golden", "help.
 /** help の 1 節(`$ maruhi <path> --help` の中身)が宣言するフラグと、グループか否か。 */
 interface CommandSpec {
   readonly flags: ReadonlySet<string>;
+  /** 値を取るフラグ(`--project string` 等 — 次の語はフラグの値で位置引数ではない)。 */
+  readonly valuedFlags: ReadonlySet<string>;
   /** 子コマンドを持ち、引数を取らない経路(`maruhi device` 等)。 */
   readonly isGroup: boolean;
+  /** USAGE 行の必須位置引数の数(`[...]` の中と `--` の後ろは数えない)。 */
+  readonly requiredArgs: number;
 }
 
 const defined = (value: string | undefined): value is string => value !== undefined;
@@ -30,8 +37,14 @@ const defined = (value: string | undefined): value is string => value !== undefi
 /** 節の中で `--flag` で始まる行は FLAGS / GLOBAL FLAGS のものだけ(他の節は語で始まる)。 */
 function parseSection(lines: readonly string[]): CommandSpec {
   const flags = lines.map((line) => /^\s+(--[a-z][a-z-]*)/.exec(line)?.[1]).filter(defined);
+  const valuedFlags = lines
+    .map((line) => /^\s+(--[a-z][a-z-]*)(?:, -[a-z])?\s+[a-z]+\s{2,}/.exec(line)?.[1])
+    .filter(defined);
   const isGroup = lines.includes("SUBCOMMANDS") && !lines.includes("ARGUMENTS");
-  return { flags: new Set(flags), isGroup };
+  const usage = lines[lines.indexOf("USAGE") + 1] ?? "";
+  const beforeSeparator = usage.split(" -- ")[0] ?? "";
+  const requiredArgs = beforeSeparator.replace(/\[[^\]]*\]/g, "").match(/<[^>]+>/g)?.length ?? 0;
+  return { flags: new Set(flags), valuedFlags: new Set(valuedFlags), isGroup, requiredArgs };
 }
 
 /** help golden の各節から、コマンド経路 → その宣言。 */
@@ -66,6 +79,8 @@ interface Invocation {
   /** 経路の後ろに残った語(引数、またはグループの子コマンド)。 */
   readonly rest: readonly string[];
   readonly flags: readonly string[];
+  /** 経路の後ろ・`--` より前の、フラグでもフラグの値でもない語(位置引数の候補)。 */
+  readonly tokens: readonly string[];
 }
 
 /** 経路 = help に存在する最長の前置(残りは引数: `config set server <url>` の `server` 等)。 */
@@ -108,7 +123,9 @@ function parseSegment(segment: string): Invocation | null {
   const tokens = (call[1] ?? "").trim().split(/\s+/).filter(Boolean);
   const words = leadingWords(tokens);
   if (words.length === 0) return null;
-  return { ...resolvePath(words), flags: flagsBeforeSeparator(tokens) };
+  const resolved = resolvePath(words);
+  const pathLength = resolved.path.split(" ").length;
+  return { ...resolved, flags: flagsBeforeSeparator(tokens), tokens: tokens.slice(pathLength) };
 }
 
 function invocations(line: string): Invocation[] {
@@ -133,6 +150,36 @@ function problemsOf(call: Invocation): string[] {
   return unknownFlags(call, spec);
 }
 
+/** 位置引数の数(`#` のコメント・行継続の `\\`・`--` で止め、フラグとその値は除く)。 */
+function positionalCount(call: Invocation, spec: CommandSpec): number {
+  let count = 0;
+  for (let i = 0; i < call.tokens.length; i++) {
+    const token = call.tokens[i] ?? "";
+    if (token === "--" || token === "\\" || token.startsWith("#")) break;
+    if (token.startsWith("--")) {
+      if (spec.valuedFlags.has(token)) i++;
+      continue;
+    }
+    count++;
+  }
+  return count;
+}
+
+/** ```sh ブロックの呼び出しが USAGE の必須位置引数を欠いている点(無ければ空)。 */
+function missingArguments(markdown: string): string[] {
+  const calls = shellBlocks(markdown)
+    .flatMap((block) => block.split("\n"))
+    .flatMap(invocations);
+  const problems = calls.flatMap((call) => {
+    const spec = commands.get(call.path);
+    if (spec === undefined || spec.isGroup) return [];
+    return positionalCount(call, spec) < spec.requiredArgs
+      ? [`maruhi ${call.path} (missing a required argument)`]
+      : [];
+  });
+  return [...new Set(problems)];
+}
+
 function vocabularyProblems(markdown: string): string[] {
   const problems = codeLines(markdown).flatMap((line) => invocations(line).flatMap(problemsOf));
   return [...new Set(problems)];
@@ -145,6 +192,12 @@ describe("docs quote the CLI vocabulary of apps/cli/test/golden/help.txt", () =>
     expect(commands.get("guardian add")?.flags.has("--passkey")).toBe(false);
     expect(commands.get("device")?.isGroup).toBe(true);
     expect(commands.get("device revoke")?.isGroup).toBe(false);
+    expect(commands.get("env create")?.requiredArgs).toBe(1);
+    expect(commands.get("env diff")?.requiredArgs).toBe(2);
+    expect(commands.get("member add")?.requiredArgs).toBe(0);
+    expect(commands.get("run")?.requiredArgs).toBe(0);
+    expect(commands.get("push")?.valuedFlags).toContain("--env");
+    expect(commands.get("push")?.valuedFlags.has("--no-sync")).toBe(false);
   });
 
   it.each(pages)("%s names only commands and flags the CLI has", (page) => {
@@ -160,6 +213,23 @@ describe("docs quote the CLI vocabulary of apps/cli/test/golden/help.txt", () =>
     ]);
     // 散文の中の `maruhi` は呼び出しではない(CLI の文言の引用)
     expect(vocabularyProblems("`a person runs maruhi at an interactive terminal`")).toEqual([]);
+  });
+
+  it.each(pages)("%s gives every shell example its required arguments", (page) => {
+    expect(missingArguments(pageText(page))).toEqual([]);
+  });
+
+  it("catches a shell example without its required argument", () => {
+    expect(missingArguments("```sh\nmaruhi env create\n```")).toEqual([
+      "maruhi env create (missing a required argument)",
+    ]);
+    // フラグの値は位置引数に数えない
+    expect(missingArguments("```sh\nmaruhi env create --project abc\n```")).toEqual([
+      "maruhi env create (missing a required argument)",
+    ]);
+    expect(missingArguments("```sh\nmaruhi env create dev # comment\n```")).toEqual([]);
+    // インラインコードは対象外(散文がコマンド名だけを指す)
+    expect(missingArguments("run `maruhi env create` first")).toEqual([]);
   });
 });
 

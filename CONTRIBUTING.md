@@ -8,6 +8,31 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - Install dependencies with `bun install`
 - Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → ImportLint → fallow → React Doctor → tests)
 
+### Repository layout
+
+- `packages/crypto` — the E2EE core (WebCrypto + HPKE); runs in browsers, Bun, and workerd
+- `packages/core` — domain types, Effect Schemas, and shared logic
+- `packages/api-schema` — the HttpApi definition shared by the server and the CLI client
+- `apps/server` — Cloudflare Workers + Durable Objects + D1
+- `apps/cli` — the `maruhi` / `mh` CLI
+- `apps/web` — the dashboard (`my.maruhi.app`)
+- `apps/site` — the landing page and docs (`maruhi.app`)
+
+### Running locally
+
+- Dashboard: `bun run --filter @maruhi/web dev` (Vite, port 5173). The dev server answers 404 to requests without an `Accept: text/html` header, so add `-H "Accept: text/html"` when checking it with curl
+- Server: `cd apps/server && bun x wrangler dev`
+- Docs site: `bun run --filter @maruhi/site dev`
+- CLI: `cd apps/cli && bun src/bin.ts --help`
+
+### Tests
+
+- `bun run test` runs the unit and integration suites of every package (server tests run in workerd through `@cloudflare/vitest-plugin`)
+- It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `wrangler dev`; CI runs them as separate steps:
+  - `bun run --filter @maruhi/web build && bun run --filter @maruhi/web e2e`
+  - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
+- To run one package or one file: `cd apps/cli && bun x vitest run test/push.test.ts`
+
 For development rules, see [CLAUDE.md](CLAUDE.md) (Japanese) and [docs/adr/](docs/adr/) (Japanese). In particular:
 
 - The crypto specification [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) (Japanese) is the sole source of truth. Changes to `packages/crypto` must go through human review and verification against the test vectors (`test-vectors/`)

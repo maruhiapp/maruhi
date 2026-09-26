@@ -46,13 +46,15 @@ This creates two keys: this device's key, which stays in this machine's keychain
 ## 5. Create a project and push a secret
 
 ```sh
-maruhi project init
-maruhi env create
+maruhi project init                               # prints the new project ID
+maruhi config set defaultProject <project-id>     # the ID printed above
+maruhi env create dev
+maruhi config set defaultEnvironment dev
 maruhi push DATABASE_URL        # reads the value from stdin
 maruhi run -- your-command      # values arrive as environment variables
 ```
 
-`maruhi push` encrypts the value it reads from stdin before anything leaves your machine. `maruhi run` decrypts in memory and passes the values to `your-command` as environment variables. Nothing is written to disk.
+The two `maruhi config set` lines make that project and environment the defaults, so later commands need no `--project` or `--env`. `maruhi push` encrypts the value it reads from stdin before anything leaves your machine. `maruhi run` decrypts in memory and passes the values to `your-command` as environment variables. Nothing is written to disk.
 
 :::note
 Commands that display plaintext values are refused when the CLI detects it is not attached to an interactive terminal, including inside AI agent environments.

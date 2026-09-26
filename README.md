@@ -126,6 +126,7 @@ From the stable release (`v0.1.0`) onward, `bun install -g maruhi` is enough.
 - [Devices](https://maruhi.app/docs/devices) — one device key per machine and one reserve key in the recovery ledger: adding a machine by approving its fingerprint (`maruhi device add` / `approve`, with a role and environment cap), `maruhi device list`, revoking a lost device with `maruhi device revoke` plus `maruhi token revoke` and the rotation that follows, `maruhi key reserve rotate`, the migration from installs before device keys, and what the dashboard shows (source: [`apps/site/docs/devices.mdx`](apps/site/docs/devices.mdx))
 - [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — crypto specification (sole source of truth; Japanese)
 - [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — authentication and identity specification (Japanese)
+- [docs/AUDIT_SPEC.md](docs/AUDIT_SPEC.md) — audit specification (Japanese)
 - [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — self-hosting guide
 - [docs/adr/](docs/adr/) — architecture decision records (Japanese)
 
