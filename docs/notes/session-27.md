@@ -1,100 +1,116 @@
-# セッション 27 メモ(Phase 2 Wave 3 D — ヘッドゴシップ + 環境マニフェスト + チェックポイントの設計探索と仕様起草。docs/spec-only)
+# Session 27 notes (Phase 2 Wave 3 D — head gossip + environment manifest + checkpoint design exploration and spec drafting. docs/spec-only)
 
-日付: 2026-08-18。前提: Wave 2 全完了(A1 #63 / A2 #65 / リプレイ先着束縛 #67 /
-B1a #68 / B1b #69 / B2 #70 / C1 #71 / A3 #79)の main。
-スコープ: **設計探索と仕様起草のみ**。`packages/crypto`・server・CLI 等の実装
-コード・テストベクターの実体・api-schema の Schema 定義は変更しない。
-**本 PR のマージ = 所有者による仕様承認**(session-22 の仕様起草 PR と同じ規律)。
-実装は承認後の別 PR で、テストベクター先行で行う(§14 の分割案)。
+Date: 2026-08-18. Premise: Wave 2 fully complete (A1 #63 / A2 #65 / replay
+first-come binding #67 / B1a #68 / B1b #69 / B2 #70 / C1 #71 / A3 #79) on main.
+Scope: **design exploration and spec drafting only**. No changes to
+implementation code in `packages/crypto` · server · CLI, test-vector bodies,
+or api-schema Schema definitions.
+**Merging this PR = the owner's approval of the spec** (same discipline as
+session-22's spec-drafting PR). Implementation comes in a separate
+post-approval PR, test vectors first (§14's split plan).
 
-**セッション番号の対応(混同防止の注記)**: 仕様書の Status 行はノートファイル
-なしの「セッション 26」を C1 裁定(2026-08-16)に、「セッション 25」を B2 裁定
-(2026-08-15)に使用済みで、後者は A3 ノート `session-25.md`(2026-08-17)と
-既に二重使用になっている。本ノートは 27 とし、以後のノート番号は Status 行の
-セッション番号と一致させる。
+**Note on session-number correspondence (anti-confusion)**: the spec's Status
+line already used "session 26" (no notes file) for the C1 ruling (2026-08-16)
+and "session 25" for the B2 ruling (2026-08-15); the latter is already
+double-used by the A3 notes `session-25.md` (2026-08-17). These notes are 27,
+and from here on note numbers match the Status line's session numbers.
 
-起点: CRYPTO_SPEC §13 未決 #12(環境マニフェスト・チェックポイント —
-「セッション 12 ノート §4 案 C の検討結果」)の解消。未決 #4 の残り
-(定期・網羅的チェックポイント)と AUDIT_SPEC §8 未決 #2(監査ヘッドの
-チェーンへのチェックポイント)を統合する。閉じるべき残余の正確な定義は
-CRYPTO_SPEC §14(G5/G6/G7、§14.3-3/-4/-5)。
+Starting point: resolving CRYPTO_SPEC §13 unresolved #12 (environment
+manifest · checkpoints — "outcome of examining session-12 notes §4 option
+C"). It consolidates the remainder of unresolved #4 (periodic · exhaustive
+checkpoints) and AUDIT_SPEC §8 unresolved #2 (checkpoints of the audit head
+into the chain). The precise definition of the residual to close is
+CRYPTO_SPEC §14 (G5/G6/G7, §14.3-3/-4/-5).
 
-## 1. 問題定義(何がまだ保証されていないか)
+## 1. Problem statement (what is still unguaranteed)
 
-§4.1 / §4.2 / §5.2 / §6.3(床・帯域外アンカー・ヘッド束縛)の導入後も残る
-非保証(CRYPTO_SPEC §14.3)を、検証者クラス別に再構成する:
+Reorganizing the post-§4.1 / §4.2 / §5.2 / §6.3 (floor · out-of-band anchors ·
+head binding) remaining non-guarantees (CRYPTO_SPEC §14.3) by verifier class:
 
-1. **§14.3-3(ビューごとの巻き戻し — G5/G6)**: 床を持たない初回同期
-   クライアントに対し、サーバーは「内部整合する古いビュー」(短縮チェーン +
-   当時の値・ステートメント一式)を配布できる。緩和済みは帯域外チャネルを
-   持つ 2 クラスのみ(招待リンクアンカー = 新メンバー、リポジトリアンカー =
-   ワークロード)。**チェーンヘッドの鮮度が担保されても、データ層
-   (値・メタ)の完全性・最新性はチェーンから導出できない**(チェーンは
-   値もメタも運ばない)— アンカーだけでは「新しいチェーン + 古いデータ」の
-   組合せが残る(エポック非後退検査が唯一の部分緩和)
-2. **§14.3-4(split view — G7)**: メンバーごとに異なる内部整合ビューの配布は
-   v1 では機構的に検出されない(prev 連鎖・ヘッド束縛による証拠化まで)
-3. **§14.3-5(前進注入)**: 値はエポック単調性 + 床規則 (c) で床持ち
-   クライアントに検出されるが、**メタステートメントにはエポックに相当する
-   鮮度アンカーがなく、床を持つクライアントに対しても前進 meta_version の
-   注入(在籍区間内の宣言ヘッドを使う削除済みメンバー・漏洩鍵)は検出され
-   ない**。値と非対称な最重要の穴(§14.2-4 の注意書き)
-4. **G6(変数集合の欠落)**: pull 応答から変数(tombstone 含む)を丸ごと
-   落とす欠落は、床持ちには床の union で検出されるが、床なしには検出不能
-5. **監査ログの改竄(AUDIT_SPEC §6 / 未決 #2)**: 監査ログはサーバー管理
-   データであり暗号学的な改竄不能性がない。チェーンミラー部分はチェーン
-   突合で再構築可能だが、行動系(var.read 等)の事後改竄・削除は検出材料が
-   ない(seq 欠番のみ)
+1. **§14.3-3 (per-view rollback — G5/G6)**: against a first-sync client with no
+   floor, the server can distribute "an internally consistent old view" (a
+   truncated chain + the values · statements set of that time). Mitigated only
+   for the 2 classes holding an out-of-band channel (invite-link anchor = new
+   members, repository anchor = workloads). **Even with chain-head freshness
+   guaranteed, the data layer's (values · meta) completeness · freshness is
+   not derivable from the chain** (the chain carries neither values nor meta)
+   — anchors alone leave the combination "new chain + old data" possible (the
+   epoch-non-regression check is the only partial mitigation)
+2. **§14.3-4 (split view — G7)**: distributing different internally
+   consistent views per member is mechanically undetectable in v1 (until
+   evidencing via prev chaining · head binding)
+3. **§14.3-5 (forward injection)**: values are detected by floor-holding
+   clients via epoch monotonicity + floor rule (c), but **meta statements
+   have no freshness anchor analogous to the epoch, and even to a
+   floor-holding client the injection of a forward meta_version (a deleted
+   member or compromised key using an in-tenure declared head) is
+   undetected**. The most important hole, asymmetric with values (the §14.2-4
+   note)
+4. **G6 (variable-set omission)**: dropping a whole variable (tombstones
+   included) from a pull response is detected via floor union for
+   floor-holders, but is undetectable without a floor
+5. **Audit-log tampering (AUDIT_SPEC §6 / unresolved #2)**: the audit log is
+   server-managed data with no cryptographic tamper-evidence. Its
+   chain-mirror portion is reconstructible by chain reconciliation, but
+   post-hoc tampering · deletion of behavior-kind rows (var.read etc.) has no
+   detection material (only seq gaps)
 
-## 2. 検証者クラスと到達可能な保証の上限
+## 2. Verifier classes and the ceiling of reachable guarantees
 
-設計に先立ち「どのクラスに何が原理的に届くか」を固定した(届かないものを
-届くと書かない — §14 の規律):
+Before designing, "what is in-principle reachable for which class" was fixed
+(don't write unreachable things as reachable — the §14 discipline):
 
-| クラス | チェーンヘッドの鮮度 | データ層の最新性・完全性 |
+| Class | Chain-head freshness | Data-layer freshness · completeness |
 |---|---|---|
-| 床持ち返却クライアント | 床(既存) | 床(既存)+ 本設計でメタ前進注入を閉じる |
-| 床なし + 招待リンクアンカー(新メンバー) | アンカー(既存) | **本設計のチェックポイントで初めて届く** |
-| 床なし + リポジトリアンカー(ワークロード) | アンカー(既存。エポック非後退込み) | 同上 |
-| 床なし + アンカーなし | **原理的に不可能**(トラストアンカーゼロからの鮮度保証は存在しない)| 同左(§14.3-3 の残余はこのクラスに縮む) |
+| Floor-holding returning client | Floor (existing) | Floor (existing) + this design closes meta forward-injection |
+| No floor + invite-link anchor (new member) | Anchor (existing) | **Reached for the first time by this design's checkpoints** |
+| No floor + repository anchor (workload) | Anchor (existing. Including epoch non-regression) | Same as above |
+| No floor + no anchor | **In-principle impossible** (no freshness guarantee exists from zero trust anchors) | Same (§14.3-3's residual shrinks to this class) |
 
-split view(G7)については: サーバー経由のゴシップはサーバーが申告を選択的に
-落とせる(omission は G8 = 防止不能)ため、**能動的な悪意サーバーに対する
-保証付き検出はどの設計でも成立しない**。得られるのは (i) 検出可能性の追加
-(継続的・完全な omission を強いる = 攻撃の運用コスト増)、(ii) 交差配布された
-矛盾申告の否認不能な証拠化、(iii) 外部の合意点(リポジトリアンカー = git)との
-合成による縮小、まで。この上限は仕様(§14)に正直に書く。
+On split view (G7): since gossip via the server lets the server selectively
+drop attestations (omission = G8 = unpreventable), **guaranteed detection
+against an actively malicious server is impossible under any design**. What
+is reachable stops at (i) added detectability (forcing sustained · complete
+omission = raising the attack's operating cost), (ii) non-repudiable
+evidencing of cross-distributed contradictory attestations, (iii) shrinking
+by composition with an external meeting point (repository anchor = git).
+This ceiling is written honestly into the spec (§14).
 
-## 3. 設計探索の経過(3 巡)
+## 3. Course of the design exploration (3 rounds)
 
-- **巡 1(素朴案)**: マニフェスト = 変数集合ダイジェストの署名ステートメント、
-  チェックポイント = 監査 (seq, hash) + マニフェストハッシュのチェーン op、
-  ゴシップ = 申告の保存・配布。→ 巡 2 で 2 つの構造欠陥を検出
-- **巡 2(上位互換 1: 鮮度アンカーの合成)**: (a) マニフェスト自体に鮮度
-  アンカーがなければ「マニフェストの前進注入」が同じ問題を再帰する
-  (検出機構自体が偽造される)。**現エポックの焼き込み + エポック整合検証**
-  (値の §6.3-4 と同型)で、メタ層に値と対称の時刻代理を与える。
-  (b) マニフェストの最新性はチェーン上のチェックポイントが固定し、チェーン
-  ヘッドの鮮度は床・アンカー・ゴシップが担う — 「アンカー → チェーン →
-  チェックポイント → マニフェスト → メタ/値」の一方向の検証連鎖になり、
-  循環が消える(§6)
-- **巡 3(上位互換 2: 情報漏洩の除去と値ヘッドの追加)**: (a) チェック
-  ポイントに監査 seq を載せると、チェーン(全メンバー配布)経由で admin 未満に
-  監査行総数が漏れ、C1 裁定(AUDIT_SPEC §7 の「件数にも漏らさない」・seq の
-  admin 限定開示)と正面衝突する — **監査ヘッドは累積ハッシュのみ**を載せる
-  (照合は計算列との突合で seq 不要 — §5.3)。(b) 未決 #4/#12 の文言は
-  「**値**・監査ログのヘッド」を求めており、値の巻き戻しの床なし検出は
-  チェックポイントが唯一の経路 — 環境ごとの**値スナップショットダイジェスト**を
-  payload に追加し、pull / lease 応答にスナップショット列挙を同梱して
-  per-variable の非後退検査を可能にする(§5.2)。以後の巡で上位互換案は
-  出なかった
+- **Round 1 (naive option)**: manifest = a signed statement of the
+  variable-set digest; checkpoint = a chain op of audit (seq, hash) +
+  manifest hash; gossip = attestation storage · distribution. → Round 2
+  detected 2 structural defects
+- **Round 2 (strictly-better 1: freshness-anchor composition)**: (a) unless
+  the manifest itself carries a freshness anchor, "manifest forward
+  injection" recurses the same problem (the detection mechanism itself gets
+  forged). **Baking in the current epoch + epoch-consistency verification**
+  (same shape as §6.3-4 for values) gives the meta layer a time proxy
+  symmetric with values. (b) Manifest freshness is pinned by the on-chain
+  checkpoint; chain-head freshness is carried by floors · anchors · gossip —
+  producing the one-way verification chain "anchor → chain → checkpoint →
+  manifest → meta/values" and the cycle disappears (§6)
+- **Round 3 (strictly-better 2: removing the info leak + adding the value
+  head)**: (a) putting an audit seq on a checkpoint leaks the audit row count
+  to below-admin via the chain (distributed to every member), colliding
+  head-on with the C1 ruling (AUDIT_SPEC §7's "don't leak even the count" ·
+  seq is disclosed to admins only) — **the audit head is represented only by
+  its accumulated hash** (reconciliation is against a computed column and
+  needs no seq — §5.3). (b) Unresolved #4/#12's wording asks for "**value** ·
+  audit-log heads"; for floorless detection of value rollback the checkpoint
+  is the only path — a per-environment **value-snapshot digest** was added to
+  the payload, and the pull / lease responses carry the snapshot listing,
+  enabling per-variable non-regression checks (§5.2). No strictly-better
+  option appeared in subsequent rounds
 
-## 4. 機構 (a): ヘッドゴシップ(署名付きヘッド申告)
+## 4. Mechanism (a): head gossip (signed head attestations)
 
-§6.3 の既定方針(書き込みは §4.1/§4.2 のヘッド束縛が運搬役、Phase 2 で
-読み取り側の申告とサーバー経由の相互配布を加える)の具体化。
+The concretization of §6.3's default policy (writes are carried by §4.1/§4.2
+head binding; Phase 2 adds reader-side attestations and their mutual
+distribution via the server).
 
-### 4-1. 申告の形式
+### 4-1. Attestation format
 
 ```
 head_attestation_signed_bytes = LP("maruhi/v1/head-attestation",
@@ -102,66 +118,82 @@ head_attestation_signed_bytes = LP("maruhi/v1/head-attestation",
                                    chain_head_hash_hex, chain_head_seq)
 ```
 
-- **署名は必須(Ed25519)**: 無署名だとサーバーが偽申告を合成でき、警告誘発
-  DoS と偽の安心の両方向に使える。署名付きなら、交差配布された矛盾申告は
-  「サーバーの equivocation または鍵漏洩」の否認不能な証拠になる(§14.2-5 の
-  証拠化と同じ地位)
-- `attester_user_id` の焼き込みは §5.1 の signer_user_id と同じ帰属付け替え
-  対策。project_id で文脈束縛(別プロジェクトへの移植は検証失敗)
-- **タイムスタンプ・ノンスは署名対象に含めない**: 署名の意味論は「この
-  ヘッドまで検証した」の帰属であり鮮度証明ではない(§5.1 の教訓)。申告の
-  新旧は chain_head_seq が自然に順序付け、古い申告の再配布はサーバーの
-  omission(申告を古く見せる)と等価 = G8 に帰着し、暗号では防げない。
-  タイムスタンプを含める変種は「いつ同期したか」という行動情報を増やす
-  だけで検出能力を足さない(§7 のプライバシー検討)ため却下
+- **Signature mandatory (Ed25519)**: unsigned, the server could synthesize
+  fake attestations and use them both for warning-inducing DoS and false
+  reassurance. Signed, cross-distributed contradictory attestations become
+  non-repudiable evidence of "server equivocation or key compromise" (same
+  status as §14.2-5's evidencing)
+- Baking in `attester_user_id` is the same anti-rebinding measure as §5.1's
+  signer_user_id. Context-bound by project_id (transplanting to another
+  project fails verification)
+- **No timestamp · nonce inside the signed bytes**: the signature's semantics
+  is the attribution "verified up to this head", not a freshness proof
+  (§5.1's lesson). An attestation's recency is naturally ordered by
+  chain_head_seq; redistributing an old attestation is equivalent to the
+  server omitting it (making the attestation look stale) = reduces to G8,
+  which crypto cannot prevent. A variant including a timestamp was dismissed
+  because it only adds behavioral info ("when did they sync") without adding
+  detection capability (§7's privacy consideration)
 
-### 4-2. 保存と配布
+### 4-2. Storage and distribution
 
-- サーバーはプロジェクト DO に**メンバーごとの最新申告 1 行**を保存する
-  (チェーンに載せない — 申告は読み取りのたびに更新される高頻度・可変データ
-  であり、チェーン op にすると §6.4 のエントリ上限を同期活動が消費する。
-  §6.2 の「チェーンは可変メタデータの台帳にしない」と同じ線)
-- 受理検証(§6.4 の両輪の不正クライアント側): 呼び出し主体 = attester の
-  厳密一致、受理時点の現メンバー(reader 以上)の sig 鍵での署名検証、
-  head_hash が自チェーンの seq 位置のエントリハッシュと一致、保存済み申告
-  からの seq 単調前進(後退は 409 — 黙って成功させない規律)
-- 配布はチェーン取得応答に現メンバーの申告集合を同梱する(同期検証の直後に
-  照合するのが自然な位置)。`remove_member` 受理時に当該メンバーの申告行を
-  削除する(現メンバーのみ配布 — §12-6 の旧鍵ラップ掃除と同型の導出状態への
-  収束)
-- 提出はクライアントの SHOULD: チェーン同期 + 検証の成功後、検証済みヘッドが
-  前回申告より前進していた場合に提出する(reader を含む全メンバー —
-  §6.3 の 2026-08-01 追記のとおり)
+- The server stores **one latest attestation row per member** in the project
+  DO (not on the chain — an attestation is high-frequency mutable data
+  refreshed on every read; making it a chain op would let sync activity
+  consume §6.4's entry cap. Same line as §6.2's "the chain is not a ledger of
+  mutable metadata")
+- Acceptance verification (the dishonest-client wheel of §6.4's pair): exact
+  match of caller = attester; signature verification under a current-member
+  (reader or above) sig key at acceptance time; head_hash matches the entry
+  hash at that seq position of the own chain; monotone forward progression of
+  seq from the stored attestation (regression is 409 — the discipline of not
+  silently succeeding)
+- Distribution bundles the current members' attestation set into the chain
+  fetch response (the natural position — reconciliation happens right after
+  sync verification). On `remove_member` acceptance the member's attestation
+  row is deleted (only current members are distributed — same-shaped
+  convergence to derived state as §12-6's old-key wrap cleanup)
+- Submission is a client SHOULD: after chain sync + verification succeed,
+  submit when the verified head has advanced past the previous attestation
+  (every member including readers — per §6.3's 2026-08-01 addendum)
 
-### 4-3. 検出時の挙動
+### 4-3. Behavior on detection
 
-他メンバーの申告と自ビューの照合は §6.3-2 のヘッド束縛照合と同型の 2 種区別:
+Reconciling other members' attestations against one's own view is a 2-case
+distinction of the same shape as §6.3-2's head-binding reconciliation:
 
-- (a) 申告 seq ≤ 自ヘッドでハッシュ不一致 = **分岐または偽造の硬い証拠** —
-  当該同期の成果物の使用を中断して警告し、証拠(申告 + 自ビューのチェーン
-  ダイジェスト)を非機密ローカル状態へ保存する(§14.2-5 の証拠化。実装は
-  既存 floor-evidence の様式)
-- (b) 申告 seq > 自ヘッド = 自分が古いだけの可能性 — 再同期・再検証して
-  自チェーンの延長として解決すれば正常、解決しなければ (a)
-- 証拠の**サーバーへの報告 API は作らない**: equivocation の疑いがある
-  サーバーへ証拠を渡しても意味がなく(攻撃者に検出の成立を教えるだけ)、
-  証拠はローカル保存 + 帯域外共有が正しい(AUDIT_SPEC §7 の「専用の狭い
-  報告エンドポイント」の将来例外は使わない)
+- (a) attested seq ≤ own head with a hash mismatch = **hard evidence of a
+  fork or a forgery** —
+  suspend use of that sync's artifacts and warn; save the evidence (the
+  attestation + the chain digest of one's own view) into non-confidential
+  local state (§14.2-5's evidencing; implementation follows the existing
+  floor-evidence format)
+- (b) attested seq > own head = possibly just self being stale — if a re-sync
+  · re-verify resolves it as an extension of one's own chain, normal; if not,
+  (a)
+- **No evidence-reporting API to the server is built**: handing evidence to a
+  server suspected of equivocation is pointless (it only tells the attacker
+  that detection succeeded); local save + out-of-band sharing is the correct
+  handling (AUDIT_SPEC §7's "dedicated narrow reporting endpoint" future
+  exception is not used)
 
-### 4-4. 参加させないクラス
+### 4-4. Classes that do not participate
 
-- **ワークロード(CI)は申告に参加しない**: ワークロードは Ed25519 署名鍵を
-  持たず(一時 X25519 のみ)、無署名申告は偽造可能で証拠価値がない。行動
-  記録は `server.lease_issued` が既に担う。lease 応答への他メンバー申告の
-  同梱もしない — 悪意サーバーは古い整合ビューに当時の申告を添えて配れる
-  ため検出を足さず、「検証済み」と誤認させる仕様面だけが増える(ワークロード
-  の防衛はリポジトリアンカー + チェックポイントが担う — §6)
+- **Workloads (CI) do not participate in attestation**: workloads hold no
+  Ed25519 signing key (only an ephemeral X25519), and unsigned attestations
+  are forgeable with zero evidence value. Behavior records are already
+  carried by `server.lease_issued`. Other members' attestations are also not
+  bundled into lease responses — a malicious server can attach the
+  period's attestations to an old consistent view, so it adds no detection
+  and only adds a spec surface that misleads into "verified" (workload
+  defense is carried by the repository anchor + checkpoints — §6)
 
-## 5. 機構 (b)(c): 環境マニフェストとチェックポイント
+## 5. Mechanisms (b)(c): the environment manifest and checkpoints
 
-### 5-1. 環境マニフェスト(データプレーンの署名付きステートメント)
+### 5-1. The environment manifest (a signed statement of the data plane)
 
-環境単位の「メタ状態の全体像」を、メタ状態を変えるたびに発行者が署名する:
+The issuer signs the environment-level "full picture of the meta state"
+every time the meta state changes:
 
 ```
 env_manifest_signed_bytes = LP("maruhi/v1/env-manifest-sig",
@@ -175,744 +207,937 @@ env_manifest_signed_bytes = LP("maruhi/v1/env-manifest-sig",
 variables_digest_hex = lower_hex(SHA-256(LP("maruhi/v1/env-manifest-vars",
                                             entry_1, …, entry_n)))
 entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)
-          (variable_id のバイト昇順。tombstone を含む全ステートメント。空集合可)
+          (variable_id in ascending byte order. All statements including
+           tombstones. May be empty)
 ```
 
-- **エポックの焼き込みが本体**: 検証規則「manifest の epoch = 宣言ヘッド
-  時点の当該環境の現エポック」(値の §6.3-4 と同型)により、メタ層が値と
-  対称の鮮度アンカーを得る。削除・降格は全環境 rotate を伴う(§7)ため、
-  在籍区間を失った鍵は現エポックのマニフェストを署名できない —
-  **偽メタステートメント単体はマニフェスト不整合で落ち、偽マニフェスト込み
-  でも現エポック宛は不能**。床規則 (c) のマニフェスト版で、床持ちの残余は
-  値と同じ (i)(ii)(iii)(§14.3-5)に縮む
-- **発行契機 = メタ状態を変える全操作**(変数の作成・rename・削除、環境の
-  rename、rotate〔エポック前進の反映〕、環境作成〔manifest_version 1、変数
-  空集合〕)。**値の push では発行しない**(マニフェストは値 version を
-  含めない — session-12 案 C-2 の却下理由 (i)〔全 push がマニフェスト CAS を
-  通るホットパス直列化〕をそのまま回避する。値の巻き戻しはチェックポイントの
-  値スナップショットが担う — §5.2)。メタ操作は低頻度で、manifest_version
-  CAS は既存 metaVersion CAS と同時に解決される
-- **発行者 = その操作の実行者**(追加署名 1 個)。role 水準は操作自体と同じ
-  (§12-3 の表を変えない)。環境の削除ではマニフェストを再発行しない —
-  配下メタはカスケード削除され配布チャネルが消える(§12-4 の既存整理)。
-  環境自身の deleted ステートメントが終端の検出材料
-- **サーバーは完全検証できる**(メタは平文): 署名・ヘッド・認可時点・
-  エポック整合・prev 連鎖に加えて**ダイジェストの再計算一致**まで受理条件に
-  できる(値の AAD と違い E2EE の制約がない)。不正クライアントの偽
-  マニフェスト持ち込みは受理段で全部落ちる
-- クライアント検証: 配布された全ステートメント(tombstone 込み)の個別検証
-  (§6.3)→ ダイジェスト再計算 → マニフェストと照合 → マニフェスト自体の
-  署名・ヘッド・認可時点・エポック整合 → チェックポイント整合(§5.2)。
-  ダイジェスト不一致 = ステートメントの欠落・注入の検出
-- **prev 連鎖は証拠化のために持つが、検証は最新マニフェストのみで足りる**:
-  「checkpoint 以後の後続性」は manifest_version の単調性 + エポック整合で
-  検証でき、中間マニフェストの配布・検証を要しない(連鎖全配布を要する
-  変種は manifest_version 行数の際限ない配布を招くため却下)。equivocation
-  (同一 manifest_version への異なる有効署名)は §14.2-5 と同じ否認不能な証拠
+- **The baked-in epoch is the main body**: the verification rule "manifest
+  epoch = that environment's current epoch at the declared head" (same shape
+  as §6.3-4 for values) gives the meta layer a freshness anchor symmetric
+  with values. Deletion · demotion are accompanied by an all-environment
+  rotate (§7), so a key that has lost its tenure interval cannot sign a
+  manifest for the current epoch — **a forged meta statement alone drops on
+  manifest inconsistency, and even with a forged manifest bundled, one
+  addressed to the current epoch is impossible**. This is the manifest
+  version of floor rule (c); the residual for floor-holders shrinks to the
+  same (i)(ii)(iii) as values (§14.3-5)
+- **Issuance trigger = every operation that changes the meta state**
+  (variable create · rename · delete, environment rename, rotate [reflects
+  epoch advancement], environment creation [manifest_version 1, empty
+  variable set]). **Not issued on value push** (the manifest carries no value
+  version — this avoids session-12 option C-2's dismissal reason (i)
+  [every-push-through-manifest-CAS hot-path serialization] as-is. Value
+  rollback is carried by the checkpoint's value snapshot — §5.2). Meta
+  operations are low-frequency, and the manifest_version CAS resolves at the
+  same time as the existing metaVersion CAS
+- **Issuer = that operation's performer** (1 extra signature). The role
+  level is the same as the operation itself (doesn't change §12-3's table).
+  On environment deletion the manifest is not re-issued — the subordinate
+  meta is cascade-deleted and the distribution channel disappears (§12-4's
+  existing arrangement). The environment's own deleted statement is the
+  terminal detection material
+- **The server can fully verify** (meta is plaintext): on top of signature ·
+  head · authorization time · epoch consistency · prev chaining, **recomputed
+  digest equality** can be an acceptance condition too (unlike a value's
+  AAD, E2EE imposes no constraint). A dishonest client's forged manifest is
+  all dropped at the acceptance stage
+- Client verification: individual verification of every distributed
+  statement (tombstones included) (§6.3) → digest recomputation → reconcile
+  against the manifest → the manifest's own signature · head · authorization
+  time · epoch consistency → checkpoint consistency (§5.2). A digest
+  mismatch = detection of a missing / injected statement
+- **The prev chain is held for evidencing, but verification needs only the
+  latest manifest**: "succession since the checkpoint" is verifiable via
+  manifest_version monotonicity + epoch consistency, without needing
+  distribution · verification of intermediate manifests (a variant requiring
+  full-chain distribution invites unbounded distribution of
+  manifest_version rows — dismissed). Equivocation (different valid
+  signatures on the same manifest_version) is the same non-repudiable
+  evidence as §14.2-5
 
-### 5-2. チェックポイント(新チェーン op `checkpoint`)
+### 5-2. The checkpoint (new chain op `checkpoint`)
 
-クライアント(member 以上)が自分の検証済みビューのデータ状態ダイジェストを
-チェーンへ公証する。発行者の実効権限が admin の場合のみ、サーバー申告の
-監査ヘッドも同じエントリで公証する(実効権限が admin でなければ
-空文字列 = 公証なし):
+A client (member or above) notarizes the data-state digest of their verified
+view into the chain. Only when the issuer's effective permission is admin
+does the same entry also notarize the server-declared audit head
+(non-admin-effective = empty string = no notarization):
 
 ```
-payload(正規化フィールド順): [environments_lp_hex, audit_head_hash_hex]
-environments_lp_hex = LP(entry_1, …, entry_n)   (environment_id のバイト昇順)
+payload (canonical field order): [environments_lp_hex, audit_head_hash_hex]
+environments_lp_hex = LP(entry_1, …, entry_n)   (environment_id in ascending byte order)
 entry_i = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
              values_digest_hex)
 values_digest_hex = lower_hex(SHA-256(LP("maruhi/v1/env-values-digest",
                                          v_1, …, v_m)))
 v_j = LP(variable_id, version, value_sig_hash_hex)
-      (variable_id のバイト昇順。active 変数のみ — tombstone はマニフェスト側)
+      (variable_id in ascending byte order. active variables only —
+       tombstones live on the manifest side)
 ```
 
-- **チェーンに載せる理由**: チェーンは既に「全員が検証する認証済み
-  ブロードキャスト」(session-12 案 B-4 と同じ判断)であり、チェックポイントの
-  最新性はチェーンヘッドの鮮度に還元される。チェーンヘッドの鮮度は床・
-  アンカー・ゴシップの担当 — これで「巻き戻し検出機構自体の巻き戻し」の
-  再帰が止まる(§6 の循環なし論証)
-- **発行者はクライアントのみ**(構造的必然): チェーン op は actor の Ed25519
-  署名を要し、サーバーは署名できない。よって「定期」はサーバー cron ではなく
-  クライアント駆動。発行契機は (i) rotate と現在値の再暗号化の完了後
-  (SHOULD)、(ii) 明示操作(`maruhi project checkpoint`)、(iii) push / pull
-  成功時に基準チェックポイントから 7 日超または未発行を検出した場合の提案
-  (SHOULD。起草値)。契機 (iii) の基準は実効権限で分け、admin は最新の
-  **公証あり**チェックポイント、それ以外は最新のチェックポイントとする。
-  発行は検証済みビュー内の全非削除環境をカバーする(SHOULD)。受理時点一致が
-  有界再試行で収束しない場合は、一致を確認できた環境の部分集合で発行してよい。
-  追記経路は汎用チェーン追記 API とする。クライアント供給の付随データがなく、
-  複合で原子的に束ねる別入力がないためである。ただしサーバーは受理時点状態
-  から再構成した値スナップショット列挙を checkpoint 追記と同じ受理処理で
-  保存する(create_environment / rotate_epoch のクライアント供給データを
-  束ねる複合受理とは逆の整理)
-- **合意規則(チェーン有効性)は形式・actor のチェーン role・座標整合**:
-  payload 構造(hex 長・
-  重複 environment_id の拒否 = MUST。昇順は生成 SHOULD で検証は順序を規範に
-  しない — エントリはタプルを運ぶため、重複を許すと基準・regression の比較
-  対象が非決定になる。レビュー第 3 巡)、非空の audit_head_hash を持つ
-  actor は admin 以上(`checkpoint-audit-role-insufficient`。API 受理面は
-  さらにトークンスコープ admin を要求)、各 environment_id の
-  `create_environment` 先行(unknown-environment)、各環境の epoch = エントリ時点(自エントリ適用前)の
-  チェーン導出現エポックとの厳密一致、**各環境の manifest_version が同一環境を
-  含む直近の先行チェックポイント以上(`checkpoint-regression` — レビュー
-  ループ 1 指摘 1: 悪意 member による検出基準の巻き戻しをチェーン層で遮断。
-  §16)**。環境集合は部分集合でよい(全カバーを合意規則にしない — 環境作成と
-  競合させない)。manifest_sig_hash / values_digest / audit_head_hash の
-  **内容**はチェーン検証では検証不能(§5.2 DEK コミットメントの「形式は
-  合意規則、内容は照合側」と同じ線引き)
-- **サーバー受理検証(受理ポリシー)**: マニフェスト参照と values_digest は
-  **受理時点の保存状態との厳密一致**(発行者のビューが古い・並行書き込みが
-  挟まった場合は 422 → 再取得・再署名・再試行 — チェーン CAS 409 と同じ構造。
-  ダイジェストの原像はワイヤで運ばない — サーバーが受理時点状態から一意に
-  再構成できる。レビューループ 1 指摘 4: 当初の「過去状態の公証も許す +
-  原像同梱」案は、per-variable 単調検査・active 集合カバー検査など受理規則が
-  複雑化する一方で利得が「並行 push と 422 競合しない」だけであり、
-  チェックポイントの低頻度に見合わないため受理時点一致へ単純化した)。
-  削除済み環境のエントリも受理段で拒否する。非空の audit_head_hash は
-  API 呼び出し主体の実効権限 admin を要求し、さらに
-  保存済み累積ハッシュ列への**所属 + 位置下限**(直前 checkpoint の
-  `chain.checkpointed` ミラー行以上)を検査する。初回 checkpoint は位置下限を
-  課さない。最新一致は、追記自身が監査ミラーを書くため要求しない。
-  公証する発行者はチェーンヘッド(CAS 親)の確定後に監査ヘッドを取得し、
-  `audit-head-stale` では申告も取り直す。これにより正直サーバーで位置検査が
-  構造的に成立し、良性の並行発行を改竄告発にしない。偽公証や古い公証点の
-  持ち込みは受理段で落ちる
-- **クライアント検証(チェックポイントの消費)**: 環境ごとの基準 =
-  **その環境のエントリを含む最新のチェックポイント**(レビューループ 1
-  指摘 2: 「最新のチェックポイント op」を基準にすると、環境を含まない
-  チェックポイントの追記で当該環境の基準が消える)。基準に対し、
-  (i) 配布マニフェストの manifest_version が基準以上、等号なら sig_hash 一致、
-  **かつマニフェストの epoch が基準の epoch 以上**、(ii) pull / lease 応答に
-  同梱される「チェックポイント時点の値スナップショット列挙(variable_id,
-  version, value_sig_hash)」のダイジェスト = チェーン上の values_digest を
-  照合した上で、配布された各変数の version がスナップショット以上・等号なら
-  value_sig_hash 一致・**スナップショットより新しい version の epoch が基準の
-  epoch 以上(床規則 (c) のチェックポイント版 — レビューループ 1 指摘 3。
-  基準時点の正当性の論証は床規則 (c) と同一: チェックポイント受理後の正規
-  push は当時の現エポック = 基準 epoch 以上でしか起きない)**・スナップ
-  ショットにあって配布にない変数は検証済み tombstone(マニフェスト整合込み)が
-  ない限り欠落として拒否。**これで床なしクライアント(アンカーでチェーン
-  鮮度を得た後)に、チェックポイント時点までの値・メタの巻き戻し・欠落・
-  差し替えの検出に加えて、エポック基準による前進注入の検出まで届く**
-  (基準が「最後に成功した pull」でなく「チェックポイント発行」になった床
-  規則 (c) と同じ形 — 返却クライアントの床より粗いだけ)
-- **監査ヘッドは実効権限 admin による「発行時未検証の公証」**: 実効権限
-  admin の発行者は、サーバー申告の累積ハッシュを全行検証せずに署名する。
-  それ以外の発行は空文字列(公証なし)とし、`GET /audit-head` の変化を
-  ポーリングしてクラス 2 の活動窓を推論する経路を作らない。価値は
-  **固定と前進**にある。admin の突合は
-  公証ヘッドの所属に加えて、出現位置が公証間で非後退、かつ直前 checkpoint の
-  ミラー行以上であることを検査する。公証済み接頭辞の事後改竄・削除と、
-  古い実在ヘッドを返し続ける陳腐化リプレイを区別可能な証拠にする。
-  公証済み接頭辞の前進は admin クライアントの発行頻度に依存し、記録時点の
-  虚偽(最初から嘘を書く)も従来どおり非保証(AUDIT_SPEC §6)
+- **Why it's on the chain**: the chain is already "the authenticated
+  broadcast everyone verifies" (same judgment as session-12 option B-4), and
+  a checkpoint's freshness reduces to the chain head's freshness. Chain-head
+  freshness is the job of floors · anchors · gossip — this stops the
+  recursion of "rolling back the rollback-detection mechanism itself" (§6's
+  acyclic argument)
+- **Issuers are clients only** (structural necessity): a chain op requires
+  the actor's Ed25519 signature, which the server cannot produce. So
+  "periodic" is not a server cron but client-driven. Issuance triggers: (i)
+  after a rotate + re-encryption of current values completes (SHOULD), (ii)
+  an explicit operation (`maruhi project checkpoint`), (iii) a proposal
+  (SHOULD. draft value) when a push / pull success detects >7 days since the
+  reference checkpoint or none issued. The reference for trigger (iii) is
+  split by effective permission: for admin, the latest **notarizing**
+  checkpoint; otherwise the latest checkpoint. Issuance covers every
+  non-deleted environment in the verified view (SHOULD). If acceptance-time
+  agreement does not converge within a bounded retry, issuing over the subset
+  of environments whose agreement could be confirmed is allowed. The append
+  path is the generic chain-append API — there is no client-supplied
+  companion data, and no other input that a composite would need to bundle
+  atomically. However, the server stores a value-snapshot listing
+  reconstituted from the acceptance-time state inside the same acceptance
+  processing as the checkpoint append (the opposite arrangement from the
+  composite acceptance that bundles client-supplied data for
+  create_environment / rotate_epoch)
+- **Consensus rules (chain validity) are format · the actor's chain role ·
+  coordinate consistency**: payload structure (hex lengths ·
+  rejecting duplicate environment_ids = MUST. Ascending order is a
+  generation SHOULD and verification does not norm ordering — since the
+  entry carries tuples, allowing duplicates would make the reference ·
+  regression comparison non-deterministic. Review round 3), an actor with a
+  non-empty audit_head_hash must be admin or above
+  (`checkpoint-audit-role-insufficient`. The API acceptance side additionally
+  requires token-scope admin), each environment_id must follow a
+  `create_environment` (unknown-environment), each environment's epoch must
+  exactly match the chain-derived current epoch at entry time (before
+  applying the entry itself), **each environment's manifest_version must be
+  at least that of the most recent prior checkpoint containing the same
+  environment (`checkpoint-regression` — review-loop 1 finding 1: blocks, at
+  the chain layer, a malicious member rolling back the detection baseline.
+  §16)**. The environment set may be a subset (full coverage is not a
+  consensus rule — don't race environment creation). The **contents** of
+  manifest_sig_hash / values_digest / audit_head_hash cannot be verified by
+  chain verification (same boundary as §5.2's DEK commitment — "format in
+  consensus rules, content on the reconciliation side")
+- **Server acceptance verification (acceptance policy)**: the manifest
+  references and values_digest are an **exact match against stored state at
+  acceptance time** (if the issuer's view is stale or a concurrent write
+  intervened: 422 → re-fetch · re-sign · retry — the same structure as the
+  chain CAS 409. The digests' preimages are not carried on the wire — the
+  server reconstitutes them uniquely from acceptance-time state.
+  Review-loop 1 finding 4: the original "also allow notarizing a past state
+  + bundle the preimage" option was simplified to acceptance-time matching —
+  it complicated the acceptance rules (per-variable monotonicity checks,
+  active-set coverage checks) while its only gain was "not racing a
+  concurrent push with a 422", not worth it for a low-frequency checkpoint).
+  Entries for deleted environments are also rejected at acceptance. A
+  non-empty audit_head_hash requires the API caller's effective permission
+  admin, and additionally checks **membership + a position floor** against
+  the stored accumulated-hash column (at or above the `chain.checkpointed`
+  mirror row of the immediately preceding checkpoint). A first checkpoint
+  carries no position floor. Latest-state equality is not required, since
+  the append itself writes an audit mirror. A notarizing issuer fetches the
+  audit head after the chain head (CAS parent) settles, and on
+  `audit-head-stale` re-fetches the attestation too. This makes the position
+  check structurally sound under an honest server, and doesn't turn benign
+  concurrent issuance into a tamper accusation. Forged or stale notarization
+  points are dropped at acceptance
+- **Client verification (consuming a checkpoint)**: the per-environment
+  reference = **the latest checkpoint containing an entry for that
+  environment** (review-loop 1 finding 2: taking "the latest checkpoint op"
+  as the reference would erase an environment's reference whenever a
+  checkpoint not containing it is appended). Against the reference: (i) the
+  distributed manifest's manifest_version ≥ reference's; on equality the
+  sig_hash must match, **and the manifest's epoch ≥ the reference's epoch**;
+  (ii) after reconciling the digest of the "checkpoint-time value-snapshot
+  listing (variable_id, version, value_sig_hash)" bundled into the pull /
+  lease response against the on-chain values_digest, each distributed
+  variable's version ≥ the snapshot's; on equality
+  the value_sig_hash must match, **and a version newer than the snapshot's
+  must have an epoch ≥ the reference epoch (the checkpoint version of floor
+  rule (c) — review-loop 1 finding 3. The argument for the reference point's
+  soundness is identical to floor rule (c)'s: a regular push after checkpoint
+  acceptance can only occur at the then-current epoch = reference epoch or
+  later)** · a variable present in the snapshot but absent from the
+  distribution is rejected as missing unless a verified tombstone (including
+  manifest consistency) exists. **This gives a floorless client (after
+  gaining chain freshness via an anchor) detection of value · meta
+  rollback · omission · substitution up to the checkpoint point, plus
+  detection of forward injection via the epoch reference** (the same shape
+  as floor rule (c) where the reference became "checkpoint issuance" instead
+  of "the last successful pull" — just coarser than a returning client's
+  floor)
+- **The audit head is an "issued-unverified notarization" by
+  effective-permission admin**: an issuer with effective permission admin
+  signs the server-declared accumulated hash without verifying every row.
+  Other issuances carry the empty string (no notarization), so no path is
+  built that infers class-2 activity windows by polling `GET /audit-head`
+  for changes. The value is **pinning and forward-progress**. An admin's
+  reconciliation checks, on top of the notarized head's membership, that its
+  position does not regress across notarizations and is at or above the
+  immediately preceding checkpoint's mirror row. This makes post-hoc
+  tampering · deletion of a notarized prefix distinguishable, as evidence,
+  from a staleness replay that keeps returning an old real head. How far the
+  notarized prefix advances depends on admin-client issuance frequency, and
+  falsehood at record time (writing a lie from the start) remains
+  unguaranteed as before (AUDIT_SPEC §6)
 
-### 5-3. 監査ヘッドの累積ハッシュ(AUDIT_SPEC 未決 #2 の解消形)
+### 5-3. The audit head's accumulated hash (the resolution form of AUDIT_SPEC unresolved #2)
 
-- サーバー(プロジェクト DO)は監査行の追記時に累積ハッシュを維持する:
+- The server (project DO) maintains the accumulated hash on each audit-row
+  append:
   `h_n = lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))`
-  (`h_0` = 空文字列。row_digest は行の固定列列挙の LP ハッシュ — 列順は
-  AUDIT_SPEC 側で固定。payload は保存された TEXT のバイト列をそのまま使い、
-  JSON 正規化を持ち込まない)
-- **チェックポイントに seq は載せない**(巡 3 の発見): チェーンは reader を
-  含む全メンバーに配布され、監査 seq は無欠番の共有採番であるため、載せると
-  admin 未満がクラス 2 の行数・活動量を確定推論できる(C1 裁定 — AUDIT_SPEC
-  §7 の「件数にも漏らさない」・seq の admin 限定開示 — と正面衝突)。
-  累積ハッシュは乱数的で序数を運ばない。admin の照合は全行を取得しながら
-  累積ハッシュ列を再計算し、(a) 公証値の所属、(b) 公証位置の非後退、
-  (c) 直前 checkpoint ミラー行以上、を検査する。チェーン payload へ seq を
-  追加せず、陳腐化リプレイも検出できる
-- **D1 側(ユーザー系・org 系)は対象外**: チェックポイントの置き場が
-  プロジェクトチェーンであり、プロジェクトに属さない監査行を載せる場所が
-  ない。D1 側の改竄耐性は従来どおり(AUDIT_SPEC §6 の脅威モデル)
+  (`h_0` = empty string. row_digest is the LP hash of the row's fixed column
+  enumeration — the column order is fixed on the AUDIT_SPEC side. The
+  payload uses the stored TEXT bytes verbatim; no JSON canonicalization is
+  imported)
+- **Checkpoints carry no seq** (round-3 finding): the chain is distributed
+  to every member including readers, and audit seq is a gapless shared
+  numbering — carrying it would let below-admin infer class-2 row counts ·
+  activity volume exactly (a head-on collision with the C1 ruling —
+  AUDIT_SPEC §7's "don't leak even the count" · admin-only seq disclosure).
+  The accumulated hash is random-looking and carries no ordinal. Admin
+  reconciliation recomputes the accumulated-hash column while fetching every
+  row and checks (a) the notarized value's membership, (b) non-regression of
+  notarized positions, (c) at-or-above the immediately preceding checkpoint
+  mirror row. Adding no seq to the chain payload, a staleness replay is
+  still detectable
+- **The D1 side (user-kind · org-kind) is out of scope**: the checkpoint's
+  home is the project chain; there is no place to put audit rows that don't
+  belong to a project. The D1 side's tamper resistance stays as before
+  (AUDIT_SPEC §6's threat model)
 
-## 6. 合成: 循環なしの検証連鎖(罠 7 への回答)
+## 6. Composition: the acyclic verification chain (answer to trap 7)
 
-各機構の「最新性を誰が担保するか」は一方向に閉じる:
+Each mechanism's "who guarantees freshness" closes one direction:
 
 ```
-帯域外アンカー(招待リンク / リポジトリ)・ローカル床・ヘッドゴシップ
-  → チェーンヘッドの鮮度
-    → チェーン上の最新チェックポイント(チェーン検証の導出値)
-      → 環境マニフェスト(manifest_version・sig_hash の固定)+ 値スナップ
-        ショット(per-variable の非後退基準)+ 監査ヘッド(事後改竄の固定)
-        → メタステートメント集合(ダイジェスト一致)→ 値(variable_id 束縛)
+out-of-band anchors (invite link / repository) · local floor · head gossip
+  → chain-head freshness
+    → the latest on-chain checkpoint (a derived value of chain verification)
+      → environment manifest (pins manifest_version · sig_hash) + value
+        snapshot (per-variable non-regression reference) + audit head
+        (pins post-hoc tampering)
+        → the meta-statement set (digest equality) → values (variable_id binding)
 ```
 
-- チェックポイントの鮮度をマニフェストが担保する等の逆向き依存はない
-- マニフェストのエポック焼き込みは連鎖と独立の第 2 の防衛層(チェーン導出の
-  現エポックにのみ依存 — チェックポイントが古くても、rotate 後の偽
-  マニフェストはエポック整合で落ちる)
-- 「アンカーも床も持たないクライアント」には連鎖の起点がなく、§14.3-3 の
-  残余はこのクラスに縮む(§2 の上限どおり — 消えはしない)
+- No reverse dependency such as a manifest guaranteeing a checkpoint's
+  freshness
+- The manifest's baked-in epoch is a second defense layer independent of
+  the chain (depends only on the chain-derived current epoch — even if the
+  checkpoint is stale, a post-rotate forged manifest drops on epoch
+  consistency)
+- For "a client holding neither anchor nor floor" the chain has no starting
+  point; §14.3-3's residual shrinks to this class (per §2's ceiling — it
+  does not disappear)
 
-## 7. プライバシーと DoS(罠 5 への回答)
+## 7. Privacy and DoS (answer to trap 5)
 
-- **ヘッド申告は行動情報か**: 申告が運ぶのは (attester, head_hash, head_seq,
-  署名) のみ。AUDIT_SPEC §6 の線引き(「人の行動の監視情報か、開示機構の
-  作動か」)に照らすと、申告は変数アクセス(var.read = クラス 2)と違い
-  「チェーン同期の到達点」だけを示す。チェーン自体(全操作・全 actor)が
-  既にクラス 1 で全メンバーに配布・検証されている以上、「M のビューが
-  seq N に達した」の開示は既存開示に対する増分が小さく、かつ split view
-  検出という**全メンバー(reader 含む)の利害**の必須材料である(admin に
-  絞ると non-admin への split view が検出されない — R3 の「見せかけの防御」と
-  同じ構図)。よって申告の配布は**クラス 1 相当(全メンバー)**とする。
-  ただし増分を最小化する: (i) タイムスタンプは署名対象にも配布にも含めない
-  (サーバー保存行の受理時刻は監査・デバッグ用で配布しない)、(ii) 監査
-  イベント化しない(高頻度・低情報で var.read と同じ肥大問題を持ち、
-  要ローテーション検出に不要で、「いつ同期したか」の恒久記録という行動情報を
-  増やさない)
-- **DoS 面**: 申告受理 = Ed25519 検証 1 回 + 単調検査。保存はメンバーごと
-  1 行(UPDATE)でストレージ肥大なし。受理レート制限(起草値: メンバー
-  あたり固定窓 1 時間 60 回、超過 429)。チェックポイントは通常のチェーン
-  追記としてエントリ上限・累積上限(§6.4)に服し、member 権限の追記連打は
-  既存のチェーン肥大 DoS 対策(受理ポリシー)の範囲内。マニフェストは
-  メタ操作と 1:1 で新しい書き込み経路を作らない
+- **Is a head attestation behavioral info?** An attestation carries only
+  (attester, head_hash, head_seq, signature). Against AUDIT_SPEC §6's
+  boundary ("monitoring info on a person's actions vs. the functioning of a
+  disclosure mechanism"), an attestation — unlike variable access (var.read
+  = class 2) — only shows "the point a chain sync reached". Since the chain
+  itself (every op · every actor) is already distributed to · verified by
+  every member as class 1, disclosing "M's view reached seq N" is a small
+  increment over existing disclosure, and it is **required material for the
+  interest of every member (readers included)**: split-view detection
+  (narrowing it to admins would leave split views against non-admins
+  undetected — the same shape as R3's "defense-in-appearance"). So
+  attestation distribution is **class-1-equivalent (all members)**. The
+  increment is still minimized: (i) no timestamp — neither signed nor
+  distributed (the stored row's acceptance time is for audit · debugging and
+  is not distributed); (ii) no audit-event conversion (high-frequency ·
+  low-info — same bloat problem as var.read, contributes nothing to
+  rotation-needed detection, and avoids adding a permanent record of "when
+  they synced" as behavioral info)
+- **DoS side**: accepting an attestation = 1 Ed25519 verification + a
+  monotonicity check. Storage is 1 row per member (UPDATE) — no storage
+  bloat. Acceptance rate limit (draft value: a fixed window of 60/hour per
+  member, 429 on excess). Checkpoints obey the entry cap · cumulative cap
+  (§6.4) as ordinary chain appends; an append barrage at member permission
+  is inside the existing chain-bloat DoS countermeasure (acceptance policy).
+  A manifest is 1:1 with a meta operation and creates no new write path
 
-## 7.5 必須の設計確認(タスク指定チェックリストへの回答 — session-12 §5 の様式)
+## 7.5 Mandatory design checks (answers to the task-specified checklist — session-12 §5 format)
 
-| 確認事項 | 回答 |
+| Check | Answer |
 |---|---|
-| アイデンティティ規則(§6.1) | 申告 = attester_user_id + 鍵 FP、マニフェスト = issuer_user_id + 鍵 FP、チェックポイント = チェーン actor(user_id + FP)。**プロバイダ ID・メールアドレスはどこにも現れない**。監査ヘッドはハッシュのみ(行の中身を運ばない) |
-| 標準部品のみ(§1 原則 2) | 新設は Ed25519 署名 2 種(マニフェスト・申告)+ SHA-256 ダイジェスト 3 種(variables / values / audit-head)+ §2.1 LP のみ。外部の透明性ログ基盤・新暗号プリミティブ・新規依存なし。ダイジェストは §5.2 コミットメントと同じ「公開ハッシュによる同定」の適用(hiding を要しない — 対象は公開メタデータと公開ハッシュ) |
-| ドメイン分離 | 新設 5 ドメイン(`env-manifest-sig` / `env-manifest-vars` / `env-values-digest` / `head-attestation` / `audit-head`)は既存ドメインと最初の LP フィールドが全て異なり衝突しない |
-| 平文値・鍵素材の非通過 | 追加されるワイヤ・保存物は署名(公開)・ハッシュ・連番のみ。床・ピンと同じ非機密クラス(ディスクレス不変条件と両立) |
-| ユーザー向け文言 | 本改訂では発生しない(警告・エラーメッセージの文言は実装 PR — ADR-0017) |
+| Identity rules (§6.1) | Attestation = attester_user_id + key FP; manifest = issuer_user_id + key FP; checkpoint = chain actor (user_id + FP). **Provider IDs · email addresses appear nowhere**. The audit head is a hash only (carries no row content) |
+| Standard parts only (§1 principle 2) | Newly added: 2 Ed25519 signature kinds (manifest · attestation) + 3 SHA-256 digests (variables / values / audit-head) + §2.1 LP only. No external transparency-log infrastructure · no new crypto primitives · no new dependencies. The digests apply §5.2's same "identification by public hash" commitment (no hiding needed — the subjects are public metadata and public hashes) |
+| Domain separation | The 5 new domains (`env-manifest-sig` / `env-manifest-vars` / `env-values-digest` / `head-attestation` / `audit-head`) differ from every existing domain in their first LP field — no collision |
+| No plaintext values · key material passes through | Everything added to the wire · storage is signatures (public) · hashes · serials only. Same non-confidential class as floors · pins (compatible with the diskless invariant) |
+| User-facing wording | None arises in this revision (warning · error-message wording belongs to the implementation PR — ADR-0017) |
 
-## 8. チェーン肥大の数値見積もり(罠 6 への回答。§6.4 の grant_server 先例に倣う)
+## 8. Numeric estimate of chain bloat (answer to trap 6 — follows §6.4's grant_server precedent)
 
-- **checkpoint エントリの最大形**: 環境エントリ = environment_id(≤ 64 文字)+
-  epoch / manifest_version(10 進 ≤ 10 文字)+ ハッシュ 2 本(64 文字 × 2)≈
-  約 220 バイト。LP + 入れ子 hex 化で約 2 倍 ≈ 450 バイト/環境。アクティブ
-  環境上限 100(AUTH_SPEC §12-8)で約 45 KiB + 監査ヘッド 64 バイト ≈
-  **最大約 50 KiB / エントリ**(§6.4 の 1 MiB 上限の 5%)。実運用(環境
-  数個)では 1〜3 KiB
-- **頻度と累積**: 推奨頻度(7 日ごと + rotate と再暗号化の完了後)で年間約
-  50〜100 エントリ。
-  最大形でも 100 × 50 KiB = 5 MiB/年 → 32 MiB の累積上限まで 6 年以上、
-  エントリ数は 10,000 まで 100 年オーダー。実運用形(数 KiB)ではサイズは
-  事実上無視できる。**支配項は頻度であり、push ごと・pull ごとの発行は
-  この見積もりを破壊するため仕様で明示的に禁止しない代わりに推奨契機を
-  規範化する**(§5.2 の (i)〜(iii)。受理ポリシーの引き上げはセルフホストで
-  可能 — §6.4 の性格)
-- **マニフェスト・申告はチェーンに載らない**(データプレーン)ため肥大に
-  無関係。マニフェストのサーバー保持は**最新 1 通のみ**(AUTH_SPEC §12-5 —
-  過去行を要する検証経路が存在しない)ため行が蓄積せず、行数上限も置かない
-  (当初起草した「manifestVersion 行数 / 環境 = 100,000」上限は、変数側
-  metaVersion 予算の合流により削除操作まで恒久遮断する形になり PR #31 裁定と
-  矛盾したため、レビュー第 3 巡 — pullfrog 指摘 — で撤回した。§16)
+- **Largest checkpoint entry**: environment entry = environment_id (≤ 64
+  chars) + epoch / manifest_version (decimal ≤ 10 chars) + 2 hashes
+  (64 chars × 2) ≈ ~220 bytes. With LP + nested hex encoding ≈ 2× ≈ 450
+  bytes/environment. At the active-environment cap 100 (AUTH_SPEC §12-8)
+  that's ~45 KiB + 64 bytes of audit head ≈ **max ~50 KiB / entry** (5% of
+  §6.4's 1 MiB cap). In real operation (a few environments) it's 1–3 KiB
+- **Frequency and accumulation**: at the recommended frequency (every 7 days
+  + after rotate-and-re-encrypt completes), ~50–100 entries/year. Even at
+  the largest shape, 100 × 50 KiB = 5 MiB/year → over 6 years to the 32 MiB
+  cumulative cap; the entry count reaches 10,000 on the order of 100 years.
+  At the real-operation shape (a few KiB) the size is effectively
+  negligible. **The dominant term is frequency; instead of explicitly
+  forbidding per-push / per-pull issuance in the spec, which would break
+  this estimate, the recommended triggers are made normative** (§5.2's
+  (i)–(iii). Raising the acceptance policy is possible in self-hosting —
+  §6.4's nature)
+- **Manifests · attestations are not on the chain** (data plane), so they
+  are unrelated to bloat. The server keeps **only the latest 1 manifest**
+  (AUTH_SPEC §12-5 — no verification path needs past rows), so rows don't
+  accumulate and no row-count cap is placed (the initially drafted
+  "manifestVersion rows / environment = 100,000" cap was retracted in
+  review round 3 — a pullfrog finding — because joining the variable-side
+  metaVersion budget would permanently block even delete operations,
+  contradicting the PR #31 ruling. §16)
 
-## 9. 設計案の比較と却下案(再検討可能な形の記録)
+## 9. Design-option comparison and dismissed options (recorded in re-reviewable form)
 
-### ヘッドゴシップ
+### Head gossip
 
-| 変種 | 評価 |
+| Variant | Assessment |
 |---|---|
-| 申告に署名(採用) | 偽申告の合成を遮断し、矛盾申告を否認不能な証拠にする。コストは 1 署名/同期 |
-| 無署名申告 | **却下**: サーバーが任意の申告を合成でき、警告 DoS と偽の安心の両方向に使える。証拠価値ゼロ |
-| 申告にタイムスタンプ | **却下**: 鮮度は証明できず(§5.1 の意味論)、行動情報(いつ同期したか)だけが増える。新旧は head_seq で足りる |
-| 申告をチェーン op 化 | **却下**: 同期のたびの追記がエントリ上限を消費(チェーン肥大 DoS を仕様が内蔵する形)。「チェーンは可変メタデータの台帳にしない」(§6.2)にも反する |
-| 申告の監査イベント化 | **却下**: 高頻度・低情報(var.read の肥大問題と同じ)+ 要ローテーション検出に不寄与 + 行動情報の恒久記録を新設する |
-| ワークロードの参加 / lease 応答への申告同梱 | **却下**: ワークロードは署名鍵を持たず偽造可能な申告しか出せない。同梱側も「古いビュー + 当時の申告」で無力化され、検出を足さずに「検証済み」の誤認だけを生む |
-| fork 証拠のサーバー報告 API | **却下**: equivocation の疑いがあるサーバーに証拠を渡す構図が転倒している。ローカル保存 + 帯域外共有(v1 は警告 + 保存まで) |
+| Signed attestations (adopted) | Blocks forged-attestation synthesis and makes contradictory attestations non-repudiable evidence. Cost is 1 signature/sync |
+| Unsigned attestations | **Dismissed**: the server could synthesize arbitrary attestations — usable both for warning DoS and false reassurance. Zero evidence value |
+| Timestamps on attestations | **Dismissed**: freshness is not provable (§5.1's semantics); only behavioral info (when they synced) grows. head_seq suffices for recency |
+| Making attestations a chain op | **Dismissed**: per-sync appends consume the entry cap (the spec would have chain-bloat DoS built in). Also against "the chain is not a ledger of mutable metadata" (§6.2) |
+| Attestations as audit events | **Dismissed**: high-frequency · low-info (same bloat problem as var.read) + no contribution to rotation-needed detection + creates a new permanent record of behavioral info |
+| Workload participation / bundling attestations in lease responses | **Dismissed**: workloads hold no signing key and can only produce forgeable attestations. The bundling side is neutralized by "old view + the-period's attestations", adding no detection while producing only the false impression of "verified" |
+| A server-reporting API for fork evidence | **Dismissed**: the composition of handing evidence to a server suspected of equivocation is inverted. Local save + out-of-band sharing (v1 stops at warn + save) |
 
-### 環境マニフェスト
+### Environment manifest
 
-| 変種 | 評価 |
+| Variant | Assessment |
 |---|---|
-| メタ操作ごと発行 + エポック焼き込み(採用) | メタ層に値と対称の鮮度アンカーを与え、§14.3-5 のメタ非対称を閉じる。ホットパス(push)に触れない |
-| 値の最新 version も含める(C-2 の (i) 再訪) | **却下(維持)**: 全 push がマニフェスト CAS を通る直列化点 + 並行 writer の常時競合。値の巻き戻しはチェックポイントの値スナップショットが低頻度側で担う |
-| エポック焼き込みなし(集合ダイジェストのみ) | **却下**: マニフェスト自体の前進注入が再帰し、「検出機構が偽造される」形が残る(巡 2 の欠陥) |
-| チェックポイント時のみ発行(マニフェスト非常設) | **却下**: チェックポイント間の窓で床持ちクライアントへのメタ前進注入が通る — 常設のエポックアンカーこそが値の単調性の対応物 |
-| マニフェストをチェーン op 化 | **却下**: 表示編集(rename)がチェーンを消費する形は §6.2 が明示的に退けた判断の蒸し返し |
-| prev 連鎖の全配布・全検証 | **却下**: manifest_version 行の際限ない配布。単調性 + エポック整合で同じ検出が最新 1 通で成立し、equivocation は sig_hash 相違で証拠化される |
+| Issued per meta operation + baked-in epoch (adopted) | Gives the meta layer a freshness anchor symmetric with values and closes §14.3-5's meta asymmetry. Doesn't touch the hot path (push) |
+| Also include values' latest version (revisiting C-2's (i)) | **Dismissed (kept)**: a serialization point where every push passes the manifest CAS + permanent contention among concurrent writers. Value rollback is carried by the checkpoint's value snapshot on the low-frequency side |
+| No baked-in epoch (set digest only) | **Dismissed**: the manifest's own forward injection recurses — the "detection mechanism gets forged" shape remains (round-2 defect) |
+| Issued only at checkpoints (manifest not standing) | **Dismissed**: meta forward injection to floor-holding clients passes in the window between checkpoints — a standing epoch anchor is exactly the counterpart of value monotonicity |
+| Manifest as a chain op | **Dismissed**: display edits (rename) consuming the chain is a re-litigation of the judgment §6.2 explicitly rejected |
+| Full distribution · verification of the prev chain | **Dismissed**: unbounded distribution of manifest_version rows. Monotonicity + epoch consistency give the same detection with the latest 1 manifest, and equivocation is evidenced by the sig_hash difference |
 
-### チェックポイント
+### Checkpoints
 
-| 変種 | 評価 |
+| Variant | Assessment |
 |---|---|
-| 独立 op `checkpoint`(採用) | 既存 op の payload に触れず(chain-entries.json は追記で足りる — §11)、環境横断の状態(監査ヘッド)を自然に持てる |
-| rotate_epoch payload への相乗り | **却下**: 監査ヘッド(環境非依存)の座標が歪む + 既存ベクター全再生成 + rotate のない期間のチェックポイントが打てない。rotate と再暗号化の完了後の発行を SHOULD の契機にすれば同じ効果を得る |
-| 監査ヘッドに (seq, hash) を載せる | **却下(巡 3)**: チェーン経由で admin 未満に監査行総数が漏れ、C1 裁定(件数非漏洩・seq の admin 限定)と矛盾する。hash のみで照合は成立する |
-| 値スナップショットの Merkle tree 化 | **却下(C-4 維持)**: 部分証明の需要がない(pull は環境単位の全変数取得)。フラットなダイジェスト + スナップショット列挙の同梱で per-variable 検査が成立する |
-| サーバー発行のチェックポイント | **構造的に不可能**: チェーン op は actor 署名を要し、サーバーは署名鍵を持たない(これは欠陥ではなく「サーバーが自分の状態を自己公証しても価値がない」ことの現れ — 公証の価値はメンバーの署名にある) |
-| 監査行の発行時全検証 | **却下**: 公証主体の admin は全行を閲覧できるが、checkpoint ごとの全行取得・再計算は重い。公証時はサーバー申告値を固定し、完全な検証を後続の明示的な admin 突合へ分離する |
-| 過去状態の公証を許す受理 + ダイジェスト原像のワイヤ同梱 | **却下(レビューループ 1 で自案を差し替え)**: 並行 push との 422 競合を避ける利得に対し、受理規則の複雑化(per-variable 単調検査・active 集合カバー検査・原像の重複配送)が過大。受理時点一致 + 再試行(チェーン CAS 409 と同構造)で足りる |
-| 「最新のチェックポイント op」を消費基準にする | **却下(レビューループ 1)**: 環境を含まないチェックポイントの追記が当該環境の基準を消す。基準は「その環境を含む最新のエントリ」でなければならない |
+| Standalone op `checkpoint` (adopted) | Touches no existing op's payload (chain-entries.json only needs appends — §11); can naturally hold cross-environment state (the audit head) |
+| Riding on the rotate_epoch payload | **Dismissed**: the audit head's (environment-independent) coordinates get skewed + every existing vector regenerated + no checkpoint possible in rotate-free periods. The same effect is had by making post-rotate-and-re-encrypt completion a SHOULD trigger |
+| (seq, hash) on the audit head | **Dismissed (round 3)**: leaks the audit row count to below-admin via the chain, contradicting the C1 ruling (count non-disclosure · admin-only seq). The hash alone suffices for reconciliation |
+| Merkle-tree the value snapshot | **Dismissed (C-4 kept)**: no need for partial proofs (pull fetches every variable of an environment). A flat digest + bundled snapshot listing gives the per-variable check |
+| Server-issued checkpoints | **Structurally impossible**: a chain op requires an actor signature, and the server holds no signing key (this isn't a defect but the manifestation of "a server self-notarizing its own state is worthless" — the notarization's value lies in the member's signature) |
+| Verifying every audit row at issuance | **Dismissed**: a notarizing admin can browse all rows, but fetching · recomputing all rows per checkpoint is heavy. At notarization the server-declared value is pinned; full verification is separated into a later explicit admin reconciliation |
+| Acceptance that also allows notarizing past state + bundling the digest preimage on the wire | **Dismissed (own option replaced in review loop 1)**: against the gain of not racing a concurrent push with a 422, the acceptance rules over-complicate (per-variable monotonicity checks · active-set coverage checks · duplicate preimage delivery). Acceptance-time matching + retry (same structure as the chain CAS 409) suffices |
+| Making "the latest checkpoint op" the consumption reference | **Dismissed (review loop 1)**: appending a checkpoint that doesn't contain an environment erases that environment's reference. The reference must be "the latest entry containing that environment" |
 
-## 10. 残余対応表(範囲 2 — 各機構がどの残余をどの水準で閉じるか)
+## 10. Residual-coverage table (scope 2 — which residual each mechanism closes, at which level)
 
-水準: **防止** = 暗号学的に不能 / **検出** = 機構的に検出(誤検出なし)/
-**証拠化** = 否認不能な証拠の固定 / **—** = 寄与なし。既存機構が既に担う部分は
-「既存」と記し、本設計は重複再実装しない。
+Levels: **prevent** = cryptographically impossible / **detect** =
+mechanically detected (no false positives) / **evidence** = non-repudiable
+evidence pinned / **—** = no contribution. Portions already carried by
+existing mechanisms are marked "existing"; this design does not
+re-implement them.
 
-| 残余(§14.3) | クライアントクラス | 既存機構 | 本設計の追加 | 到達水準 |
+| Residual (§14.3) | Client class | Existing mechanism | This design's addition | Level reached |
 |---|---|---|---|---|
-| -3 ビュー巻き戻し(チェーン) | 床持ち | 床(検出)| — | 既存で検出 |
-| 〃 | 床なし + 招待アンカー | アンカー(検出)| — | 既存で検出 |
-| 〃 | 床なし + リポジトリアンカー | アンカー(検出)| — | 既存で検出 |
-| 〃 | 床なし + アンカーなし | なし | ゴシップ(申告照合 — omission で回避可)| 証拠化どまり(**残余**)|
-| -3 データ層の巻き戻し・欠落(チェーンは新しい)| 床持ち | 床(検出)| — | 既存で検出 |
-| 〃 | 床なし + アンカーあり | エポック非後退のみ(部分)| **チェックポイント**(マニフェスト・値スナップショット整合)| **検出**(チェックポイント時点まで)|
-| -4 split view | 全クラス | 証拠化(prev 連鎖・ヘッド束縛)| **ゴシップ**(申告の交差照合)+ リポジトリアンカー(外部合意点)| 検出可能性 + 証拠化(omission で回避可 — **保証なし**)|
-| -5 値の前進注入 | 床持ち | エポック単調性 + 床 (c)(検出)| — | 既存で検出 |
-| -5 メタの前進注入 | 床持ち | **なし**(証拠化のみ)| **マニフェスト**(エポック整合 + 床のマニフェスト版 (c))| **検出**(値と対称の残余 (i)(ii)(iii) に縮む)|
-| -5 (i) 床なし初回同期 | 床なし | -3 に帰着 | チェックポイント(アンカーあり時)| 検出(チェックポイント時点まで)|
-| -5 (ii) remove → rotate 完了までの窓 | 全クラス | §7 の運用義務 | —(rotate 複合へのマニフェスト同梱で観測材料は増える)| **残余**(機構化は session-12 §10-7 = 独立タスク)|
-| -5 (iii) エポック床が古い返却クライアント | 床持ち | なし | マニフェストにも同型の残余があることを明記 | **残余**(値と対称)|
-| G6 変数集合の欠落 | 床持ち | 床 union(検出)| — | 既存で検出 |
-| 〃 | 床なし + アンカーあり | なし | **マニフェスト**(ダイジェスト再計算)| **検出** |
-| 監査ログの事後改竄 | admin(全行閲覧者)| seq 欠番のみ | **チェックポイント**(累積ハッシュの固定 + admin 突合の位置検査 — 公証点は直前チェックポイントのミラー行まで単調前進。ループ 3 第 2 ラウンド指摘 1)| **検出**(公証済み接頭辞の行 — 陳腐化リプレイによる接頭辞の凍結も突合で検出。**接頭辞の前進は実効権限 admin の発行頻度に依存**〔第 5 ラウンド — 契機 (iii) の admin 基準分離で緩和〕。記録時点の虚偽は非保証のまま)|
+| -3 view rollback (chain) | floor-holding | floor (detect) | — | detected by existing |
+| 〃 | no floor + invite anchor | anchor (detect) | — | detected by existing |
+| 〃 | no floor + repository anchor | anchor (detect) | — | detected by existing |
+| 〃 | no floor + no anchor | none | gossip (attestation reconciliation — avoidable by omission) | stops at evidencing (**residual**) |
+| -3 data-layer rollback · omission (chain is new) | floor-holding | floor (detect) | — | detected by existing |
+| 〃 | no floor + anchor | epoch non-regression only (partial) | **checkpoint** (manifest · value-snapshot consistency) | **detect** (up to the checkpoint point) |
+| -4 split view | all classes | evidencing (prev chaining · head binding) | **gossip** (cross-reconciliation of attestations) + repository anchor (external meeting point) | detectability + evidencing (avoidable by omission — **no guarantee**) |
+| -5 value forward injection | floor-holding | epoch monotonicity + floor (c) (detect) | — | detected by existing |
+| -5 meta forward injection | floor-holding | **none** (evidencing only) | **manifest** (epoch consistency + the manifest version of floor (c)) | **detect** (shrinks to the value-symmetric residual (i)(ii)(iii)) |
+| -5 (i) floorless first sync | floorless | reduces to -3 | checkpoint (when an anchor exists) | detect (up to the checkpoint point) |
+| -5 (ii) the remove → rotate-complete window | all classes | §7's operational obligation | — (the observation material grows via manifest bundling into the rotate composite) | **residual** (mechanization is session-12 §10-7 = a separate task) |
+| -5 (iii) a returning client with a stale epoch floor | floor-holding | none | noted that the manifest has a same-shaped residual | **residual** (value-symmetric) |
+| G6 variable-set omission | floor-holding | floor union (detect) | — | detected by existing |
+| 〃 | no floor + anchor | none | **manifest** (digest recomputation) | **detect** |
+| audit-log post-hoc tampering | admin (all-rows viewer) | seq gaps only | **checkpoint** (pinning the accumulated hash + position checks in admin reconciliation — the notarization point advances monotonically up to the immediately preceding checkpoint's mirror row. Loop-3 round-2 finding 1) | **detect** (rows in the notarized prefix — prefix freezing by staleness replay is also detected on reconciliation. **Prefix advancement depends on issuance frequency of effective-permission admin** [round 5 — mitigated by trigger (iii)'s admin reference split]. Falsehood at record time remains unguaranteed) |
 
-## 11. 既存申し送りの位置づけ(罠 8 への回答)
+## 11. Positioning of existing handoffs (answer to trap 8)
 
-| 申し送り | 裁定 |
+| Handoff | Ruling |
 |---|---|
-| session-25 §8: アンカー更新提案(rotate / push 成功時 — §6.3 (b) SHOULD 後半) | **独立タスクのまま**(UX 改善であり検出の性質を変えない — session-25 の判断を維持)。ただしチェックポイント発行の推奨契機(rotate と再暗号化の完了後)と導線が同じため、実装 PR-M2 で同時に実装するのが自然(§12 に注記) |
-| session-12 §10-7: remove + 全環境 rotate の複合化(§14.3-5 (ii) の機構化) | **独立タスクのまま**(ROADMAP「将来」に記載済み)。本設計はこの窓を変えない。マニフェストは rotate 複合へ同梱されるが、checkpoint は rotate と再暗号化の完了後に独立追記されるため、remove → rotate 完了の窓を原子化しない。複合化はチェーン追記系の再設計(2 エントリ複合 + ボディサイズ + DO 実行時間)であり、本設計と直交 |
-| AUDIT_SPEC 未決 #2: 監査ヘッドのチェックポイント | **本設計に統合・解消**(§5.3。累積ハッシュのみ・seq 非搭載) |
+| session-25 §8: the anchor-update proposal (on rotate / push success — the second half of §6.3 (b) SHOULD) | **Stays a separate task** (a UX improvement that doesn't change detection's nature — session-25's judgment kept). However, since it shares a pathway with the checkpoint's recommended issuance trigger (after rotate + re-encrypt completes), implementing both together in PR-M2 is natural (noted in §12) |
+| session-12 §10-7: making remove + all-environment rotate a composite (mechanizing §14.3-5 (ii)) | **Stays a separate task** (listed in ROADMAP "future"). This design doesn't change that window. The manifest is bundled into the rotate composite, but a checkpoint is appended independently after rotate + re-encrypt completes, so the remove → rotate-complete window is not made atomic. Compositing is a redesign of the chain-append stack (2-entry composite + body size + DO execution time) and is orthogonal to this design |
+| AUDIT_SPEC unresolved #2: checkpoints of the audit head | **Integrated into this design and resolved** (§5.3. Accumulated hash only · no seq) |
 
-## 12. 要裁定一覧(推奨案は仕様 draft 本文へ反映済み。マージ = 推奨案の承認、異論は PR レビューで)
+## 12. Rulings needed (recommended options are already reflected in the spec draft body. Merge = approval of the recommended options; objections go to the PR review)
 
-1. **環境マニフェストの導入**(メタ操作ごとの複合発行 + エポック焼き込み。
-   CRYPTO_SPEC §4.3 / AUTH_SPEC §12-4・§12-5・§12-7)。代替 = マニフェスト
-   なしでチェックポイントのみ(§9 のとおりメタ前進注入の窓が残る)。
-   推奨 = 導入
-2. **チェーン op `checkpoint` の新設**(合意規則 — §6.2。既存ベクターは
-   追記で足り再生成不要 — §13-1)。公開前の今が「未知 op = チェーン無効」の
-   合意規則の下で新 op を追加できる窓であることは grant_server 拡張
-   (session-22 §2 R1)と同じ論法。非空の監査ヘッドを持つ actor はチェーン
-   role admin 以上(`checkpoint-audit-role-insufficient`)とする。
-   推奨 = 導入
-3. **チェックポイントへの値スナップショットダイジェスト + pull / lease
-   応答へのスナップショット列挙の同梱**(§5.2)。代替 = メタのみの
-   チェックポイント(値の巻き戻しが床なしクライアントに残る — 未決 #4/#12 の
-   「値のヘッド」要求を満たさない)。応答肥大は最大形で約 110 KiB / 環境
-   (変数 1,000 時)、実運用は数 KiB。推奨 = 導入(受理時保存は PR-M2、
-   pull / lease への配布とクライアント検証は PR-M3 に分離可能)
-4. **監査ヘッドは累積ハッシュのみ(seq 非搭載)**(§5.3 — C1 裁定との整合)。
-   推奨 = hash のみ
-5. **ヘッド申告の可視性と形式**(クラス 1 相当の配布・タイムスタンプ非搭載・
-   監査イベント化しない — §7)。推奨 = 本文どおり
-6. **ワークロードのゴシップ非参加 + lease 応答へ申告を同梱しない**(§4-4)。
-   推奨 = 非参加
-7. **checkpoint の発行権限 = member 以上**(データ層の公証は rotate と同水準。
-   監査ヘッドの取得・公証だけは要裁定 11 の実効権限 admin 限定とし、権限を
-   分離する)。推奨 = member
-8. **申告提出のトークンスコープ = read**(申告は読み取り同期の付随であり、
-   書けるのは自分の署名済み申告 1 行のみ。write を要求すると reader 常在の
-   認可モデル — §6.2 — で read トークンの同期クライアントが申告に参加でき
-   ない)。推奨 = read
-9. **チェックポイント推奨頻度の起草値**(7 日 + rotate と再暗号化の完了後 —
-   §5.2)。契機 (iii) は実効権限 admin だけ「最新の公証あり checkpoint」を
-   基準とする。レビューで調整
-10. **既存申し送りの位置づけ**(§11 の 3 件)。推奨 = 本文どおり
-11. **監査ヘッド公証の実効権限 admin 限定**(2026-08-18 レビュー第 4〜5
-    ラウンドで追加 — §16): `GET /audit-head` を member に開くと、累積
-    ハッシュの変化のポーリングがクラス 2 の活動窓を admin 未満へ漏らす
-    タイミングサイドチャネルになる(セキュリティ自動レビューの指摘)。
-    取得と公証を実効権限 admin(min(トークンスコープ, チェーン role))限定
-    とし、それ以外の checkpoint 発行は audit_head_hash = 空(公証なし)と
-    する。**帰結として公証済み接頭辞の前進は admin の発行頻度に依存する**
-    (明示的な残余 — AUDIT_SPEC §6。発行契機 (iii) の基準を admin
-    クライアントだけ「最新の公証ありチェックポイント」に分離して緩和)。
-    代替 = member 開放 + レート制限(窓は粗くなるが漏洩は残る)。
-    推奨 = admin 限定 + 契機分離
+1. **Introducing the environment manifest** (composite issuance per meta
+   operation + baked-in epoch. CRYPTO_SPEC §4.3 / AUTH_SPEC §12-4 · §12-5 ·
+   §12-7). Alternative = checkpoints only, no manifest (the meta
+   forward-injection window remains — §9). Recommended = introduce
+2. **New chain op `checkpoint`** (consensus rules — §6.2. Existing vectors
+   only need appends, no regeneration — §13-1). That now-before-release is
+   the window where a new op can be added under the "unknown op = chain
+   invalid" consensus rule is the same argument as the grant_server
+   extension (session-22 §2 R1). An actor carrying a non-empty audit head
+   must be chain-role admin or above (`checkpoint-audit-role-insufficient`).
+   Recommended = introduce
+3. **A value-snapshot digest on the checkpoint + a snapshot listing bundled
+   into pull / lease responses** (§5.2). Alternative = a meta-only
+   checkpoint (value rollback remains for floorless clients — fails
+   unresolved #4/#12's "value head" requirement). Response bloat is ~110
+   KiB/environment at the largest shape (1,000 variables); real operation
+   is a few KiB. Recommended = introduce (acceptance-time storage in PR-M2;
+   pull / lease distribution and client verification can be split into
+   PR-M3)
+4. **The audit head is the accumulated hash only (no seq)** (§5.3 —
+   consistency with the C1 ruling). Recommended = hash only
+5. **Attestation visibility and format** (class-1-equivalent distribution ·
+   no timestamp · no audit-event conversion — §7). Recommended = as the
+   body
+6. **Workloads don't participate in gossip + attestations are not bundled
+   into lease responses** (§4-4). Recommended = non-participation
+7. **checkpoint issuance permission = member or above** (data-layer
+   notarization is at the same level as rotate. Only audit-head fetch ·
+   notarization is limited to effective-permission admin per ruling-needed
+   11 — the permissions are separated). Recommended = member
+8. **Token scope for attestation submission = read** (an attestation is a
+   sidecar of a read sync, and what can be written is only one's own signed
+   attestation row. Requiring write would lock read-token sync clients out
+   of attesting under the always-reader authorization model — §6.2).
+   Recommended = read
+9. **Draft values for the recommended checkpoint frequency** (7 days +
+   after rotate + re-encrypt completes — §5.2). For trigger (iii), only
+   effective-permission admin takes "the latest notarizing checkpoint" as
+   the reference. Tuned in review
+10. **Positioning of the existing handoffs** (§11's 3 items). Recommended =
+    as the body
+11. **Limiting audit-head notarization to effective-permission admin**
+    (added in review rounds 4–5 on 2026-08-18 — §16): opening
+    `GET /audit-head` to member makes polling for accumulated-hash changes
+    a timing side channel leaking class-2 activity windows to below-admin
+    (a finding from the automated security review). Fetching and
+    notarizing are limited to effective-permission admin
+    (min(token scope, chain role)); checkpoint issuance by anyone else
+    carries audit_head_hash = empty (no notarization). **As a consequence,
+    the notarized prefix's advancement depends on admin issuance
+    frequency** (an explicit residual — AUDIT_SPEC §6. Mitigated by
+    splitting trigger (iii)'s reference so only admin clients take "the
+    latest notarizing checkpoint"). Alternative = open to member + rate
+    limit (coarsens the window but the leak remains). Recommended =
+    admin-only + trigger split
 
-## 13. テストベクター計画(session-12 §8 の様式。承認後の実装 PR で、実装より先にコミット)
+## 13. Test-vector plan (session-12 §8's format. In the post-approval implementation PR, committed ahead of implementation)
 
-### 13-1. `chain-entries.json`(**追記 — 全再生成は不要**。PR-M2)
+### 13-1. `chain-entries.json` (**appends — no full regeneration needed**. PR-M2)
 
-- **再生成の要否の判定(罠 2 への回答)**: `checkpoint` は新 op の追加で
-  あり、既存 op の payload 形式に触れない(grant_server のリースポリシー
-  拡張 = payload 形式変更 = 全再生成、とは異なる)。既存正規チェーンの
-  エントリのバイト列・ハッシュ・既存 negative はすべて不変であり、正規
-  チェーンの**末尾への checkpoint エントリ追加 + expected_head_states の
-  拡張**(最新チェックポイントの導出 — 状態導出の意味論拡張)で足りる。
-  「未知 op = チェーン無効」の合意規則により本改訂は全実装の同時更新を
-  要する破壊的変更だが、公開前のため後方互換条項を持たない(§6.2 の先例と
-  同じ前提)
-- 追加の正例: 変数・マニフェストのある環境での checkpoint(**member actor +
-  空の audit_head_hash** と **admin actor + 非空 audit_head_hash** の権限分岐の
-  両側を固定)/ 環境ゼロ
-  (空 environments)/ 過去 manifest_version の公証(直近チェックポイント
-  以上の単調範囲内 — **合意規則層では有効**であることの固定。受理層は
-  受理時点一致を要求して拒否する〔§6.4〕が、それは chain-entries ベクターの
-  検証対象外 = 受理系の実装テスト〔13-5〕の領分)
-- 追加の negative(authorization 類型): `authz-checkpoint-reader`(role
-  不足)/ `authz-checkpoint-audit-member`(member actor が非空の監査ヘッドを
-  公証 — `checkpoint-audit-role-insufficient`)/ `authz-checkpoint-unknown-environment` /
-  `authz-checkpoint-epoch-mismatch`
-  (エントリ時点の現エポックと不一致)/ `authz-checkpoint-regression`
-  (同一環境を含む先行チェックポイントより小さい manifest_version — 検査順序
-  role → audit role → unknown → epoch → regression の固定込み)。payload 構造検査
-  (認可段より前 — §6.2 の段順): hex 長不正・環境エントリの重複 ID・
-  昇順違反の扱い(scope_environments と同じ「生成は昇順 SHOULD・検証は集合」
-  なら昇順違反は positive — 意図をベクターで固定)
+- **Judgment of whether regeneration is needed (answer to trap 2)**:
+  `checkpoint` is the addition of a new op and touches no existing op's
+  payload format (unlike grant_server's lease-policy extension = payload
+  format change = full regeneration). Every existing canonical chain's
+  entry bytes · hashes · existing negatives are invariant; appending a
+  checkpoint entry to the canonical chain's **tail + extending
+  expected_head_states** (deriving the latest checkpoint — a semantic
+  extension of state derivation) suffices. Under the "unknown op = chain
+  invalid" consensus rule this revision is a breaking change requiring
+  every implementation to update at once, but being pre-release it carries
+  no backward-compatibility clause (same premise as §6.2's precedent)
+- Added positives: a checkpoint in an environment with variables · a
+  manifest (**pinning both sides of the permission split — member actor +
+  empty audit_head_hash and admin actor + non-empty audit_head_hash**) /
+  zero environments (empty environments) / notarizing a past
+  manifest_version (within the monotone range of at-least-the-last-
+  checkpoint — **pinned as valid at the consensus-rule layer**. The
+  acceptance layer requires acceptance-time matching and rejects it
+  [§6.4], but that is outside what the chain-entries vector verifies = the
+  domain of acceptance-side implementation tests [13-5])
+- Added negatives (authorization kinds): `authz-checkpoint-reader` (role
+  insufficient) / `authz-checkpoint-audit-member` (member actor notarizing a
+  non-empty audit head — `checkpoint-audit-role-insufficient`) /
+  `authz-checkpoint-unknown-environment` /
+  `authz-checkpoint-epoch-mismatch` (mismatches the current epoch at entry
+  time) / `authz-checkpoint-regression` (a manifest_version smaller than a
+  prior checkpoint containing the same environment — including pinning the
+  check order role → audit role → unknown → epoch → regression). Payload
+  structure checks (before the authorization stage — §6.2's stage order):
+  bad hex lengths · duplicate environment-entry IDs · how an ascending-order
+  violation is handled (if it's the same "generation is ascending SHOULD ·
+  verification is set-wise" as scope_environments, then an ascending
+  violation is positive — pin the intent in a vector)
 
-### 13-2. `env-manifest.json`(新規。PR-M1)
+### 13-2. `env-manifest.json` (new. PR-M1)
 
-- フィクスチャ方式: chain-entries.json の正規チェーンを参照(8-1 の先例)
-- 正例: manifest_version 1(環境作成 — 変数空集合)/ 変数作成後 / rename 後
-  (prev 連鎖)/ 削除後(tombstone 込みダイジェスト)/ rotate 後(エポック
-  前進)/ 削除済み issuer の在籍中座標の過去マニフェスト
-- negative: `tampered-signature` / `tampered-digest` / 座標移植
-  `transplant-project` / `-environment` / `transplant-issuer` +
+- Fixture method: references chain-entries.json's canonical chain (the 8-1
+  precedent)
+- Positives: manifest_version 1 (environment creation — empty variable
+  set) / after variable creation / after rename (prev chaining) / after
+  deletion (tombstone-inclusive digest) / after rotate (epoch advanced) /
+  a past manifest at in-tenure coordinates of a deleted issuer
+- negatives: `tampered-signature` / `tampered-digest` / coordinate
+  transplants `transplant-project` / `-environment` / `transplant-issuer` +
   `wrong-issuer-key` / `chain-head-swap` + `chain-head-seq-mismatch` /
-  `prev-hash-mismatch` / `epoch-regression`(rotate 後に旧エポックを焼き込んだ
-  前進 manifest_version — 本設計の核となる negative)/
-  `epoch-not-current-at-head` / `digest-variable-omitted`(ステートメント
-  1 本を落としたダイジェスト)/ `digest-tombstone-omitted`(tombstone 隠し)/
-  `digest-order-swap`(昇順違反の正規形不一致)/ `fork-same-version`(同一
-  manifest_version の分岐 — 証拠化の固定)/ `suite-mismatch` /
-  `issuer-role-insufficient`(reader 署名)/ `issuer-removed-at-head`
+  `prev-hash-mismatch` / `epoch-regression` (a forward manifest_version
+  with the old epoch baked in after rotate — this design's core negative) /
+  `epoch-not-current-at-head` / `digest-variable-omitted` (a digest that
+  dropped one statement) / `digest-tombstone-omitted` (hiding a tombstone)
+  / `digest-order-swap` (canonical-form mismatch on an ascending-order
+  violation) / `fork-same-version` (a fork on the same manifest_version —
+  pinning evidencing) / `suite-mismatch` / `issuer-role-insufficient`
+  (reader signature) / `issuer-removed-at-head`
 
-### 13-3. `head-attestation.json`(新規。PR-M4)
+### 13-3. `head-attestation.json` (new. PR-M4)
 
-- 正例: 基本 / reader の申告 / 削除済みメンバーの在籍中ヘッドへの過去申告
-  (検証は通るが配布対象外 — 意図の固定)
-- negative: `tampered-signature` / `transplant-project` /
+- Positives: basic / a reader's attestation / a past attestation to an
+  in-tenure head of a deleted member (verifies but is outside distribution
+  — pinning the intent)
+- negatives: `tampered-signature` / `transplant-project` /
   `transplant-attester` + `wrong-attester-key` / `head-not-in-chain` /
   `head-seq-mismatch` / `suite-mismatch`
 
-### 13-4. `checkpoint-digest.json`(新規。PR-M2 / PR-M3)
+### 13-4. `checkpoint-digest.json` (new. PR-M2 / PR-M3)
 
-- variables_digest / values_digest / audit-head 累積ハッシュの LP 正規形の
-  固定(空集合・単一要素・複数要素・昇順)。既存 `encoding.json` と同系の
-  正規化ベクター
+- Pin the LP canonical forms of variables_digest / values_digest / the
+  audit-head accumulated hash (empty set · single element · multiple
+  elements · ascending order). Canonicalization vectors in the same family
+  as the existing `encoding.json`
 
-### 13-5. ベクター化できない項目(実装テスト計画。各実装 PR に含める)
+### 13-5. Items that can't be vectorized (implementation-test plan. Included in each implementation PR)
 
-- 申告: 単調受理(後退 409)・remove 時の行削除・配布照合の 2 種区別
-  (seq ≤ 自ヘッドの不一致 = 即時証拠 / seq > 自ヘッド = 再同期 → 解決)・
-  証拠保存(floor-evidence 様式)
-- マニフェスト: メタ操作との複合受理・manifest_version CAS 再試行(両署名の
-  再発行)・サーバーのダイジェスト再計算検証・pull 同梱・床のマニフェスト版
-  (a)(b)(c) 検査・マニフェスト欠落 = 拒否(警告格下げ分岐がないことの固定 —
-  ループ 3 指摘 2)
-- チェックポイント: 受理検証(保存突合 — 偽公証の拒否・削除済み環境エントリの
-  拒否・**監査ヘッド位置下限**〔`audit-head-stale`: CAS 競合後の古い申告の
-  再署名 = 良性の競合が受理段で型付き拒否され、admin 突合の位置検査違反として
-  現れないこと — 受理ポリシー層でありベクター化しない。ループ 3 第 3
-  ラウンド〕)・スナップショット同梱検証(per-variable 非後退・欠落 =
-  tombstone なしの消失の拒否・列挙省略の拒否)・監査累積ハッシュの維持と
-  admin 照合フロー(所属 + 位置 — **非前進ヘッドの連続公証**〔陳腐化
-  リプレイ〕が位置検査で検出されることを含む — ループ 3 第 2 ラウンド
-  指摘 1)・チェックポイントより古いマニフェスト配布の拒否・基準なし環境の
-  値付き配布での警告・有界再試行超過時の部分集合発行への退避
-- チェックポイントの権限マトリクス: (a) admin role × admin token +
-  非空 audit_head_hash = 受理、(b) admin role × write token + 非空 = 403、
-  (c) member role × admin token + 非空 = 403(API の実効権限不足。チェーン
-  合意規則でも `checkpoint-audit-role-insufficient`)、(d) member role ×
-  write token + 空文字列 = データ層 checkpoint として受理。これは API
-  受理ポリシーの統合テストであり、chain-entries ベクターの
-  `authz-checkpoint-audit-member` と層を分ける
-- 部分集合 checkpoint のスナップショット保存: A / B の基準を確立後に A のみを
-  checkpoint し、A の snapshot + checkpoint 参照だけが同一 DO トランザクションで
-  upsert され、B の既存 snapshot + 参照が維持されること。追記だけ成功・保存だけ
-  成功の中間状態を作らないこと
-- lease 経路: マニフェスト・チェックポイント整合の検証義務(§9.1 (5))を
-  ci-run クライアントに追加
+- Attestations: monotone acceptance (regression 409) · row deletion on
+  remove · the 2-case distinction of distribution reconciliation (mismatch
+  with seq ≤ own head = immediate evidence / seq > own head = re-sync →
+  resolve) · evidence saving (floor-evidence format)
+- Manifest: composite acceptance with a meta operation · manifest_version
+  CAS retry (re-issuing both signatures) · the server's digest-recomputation
+  verification · pull bundling · the manifest versions of floor rules
+  (a)(b)(c) · missing manifest = reject (pinning that there is no
+  warning-downgrade branch — loop-3 finding 2)
+- Checkpoint: acceptance verification (reconciliation against stored state —
+  rejecting forged notarizations · rejecting entries for deleted
+  environments · **the audit-head position floor** [`audit-head-stale`:
+  re-signing a stale attestation after a CAS race = a benign race is
+  type-rejected at acceptance and never appears as a position-check
+  violation in admin reconciliation — an acceptance-policy layer, not
+  vectorized. Loop 3 round 3]) · snapshot-bundling verification
+  (per-variable non-regression · omission = rejecting a tombstoneless
+  disappearance · rejecting an elided listing) · maintaining the audit
+  accumulated hash + the admin reconciliation flow (membership + position —
+  including that **consecutive notarizations of a non-advancing head**
+  [staleness replay] are detected by the position check — loop-3 round-2
+  finding 1) · rejecting manifest distribution older than a checkpoint ·
+  warning on a value-bearing distribution of an environment with no
+  reference · falling back to subset issuance when bounded retry is
+  exceeded
+- Checkpoint permission matrix: (a) admin role × admin token + non-empty
+  audit_head_hash = accepted, (b) admin role × write token + non-empty =
+  403, (c) member role × admin token + non-empty = 403 (the API's effective
+  permission is insufficient. Also `checkpoint-audit-role-insufficient`
+  under the chain consensus rules), (d) member role × write token + empty
+  string = accepted as a data-layer checkpoint. This is an integration test
+  of the API acceptance policy and is kept in a different layer from the
+  chain-entries vector's `authz-checkpoint-audit-member`
+- Snapshot storage of a subset checkpoint: after references for A / B are
+  established, checkpointing only A upserts A's snapshot + checkpoint
+  reference in the same DO transaction while B's existing snapshot +
+  reference are preserved. No intermediate state of append-succeeded-only
+  / save-succeeded-only is created
+- lease path: add the verification obligation of manifest · checkpoint
+  consistency (§9.1 (5)) to the ci-run client
 
-## 14. 実装分割案(session-12 §9 の様式。暗号層変更を含む PR は「ベクター先行 → crypto → api-schema → server → CLI」の層順・crypto は人間レビュー必須。変更不要な層は各 PR の列挙どおり省略)
+## 14. Implementation split plan (session-12 §9's format. PRs containing crypto-layer changes follow the layer order "vectors first → crypto → api-schema → server → CLI"; crypto requires human review. Layers needing no change are omitted as enumerated per PR)
 
-1. **PR-M1: 環境マニフェスト** — env-manifest.json → crypto(manifest の
-   sign / verify / digest 計算)→ api-schema(EnvironmentManifest 型・メタ
-   操作の複合化)→ server(メタ複合受理・create / rotate 複合への同梱・
-   pull 同梱・最新 1 通の保持)→ CLI(発行・検証・床のマニフェスト拡張)。
-   §14.3-5 のメタ非対称を閉じる最優先 PR。**移行手順を含める**: マニフェスト
-   検証は欠落 = 拒否の一本(§6.3 — 警告分岐なし)であるため、導入前に作成
-   された内部ドッグフーディング環境は、クライアント側の強制を有効化する前に
-   明示操作(rename の空回しでなく専用の初期化コマンド、または rotate)で
-   manifest_version 1 を発行しておく
-2. **PR-M2: チェックポイント op** — chain-entries.json 追記 +
-   checkpoint-digest.json → crypto(op の合意規則検証・latestCheckpoint の
-   状態導出)→ api-schema(checkpoint payload / `CheckpointStateMismatch` /
-   監査ヘッド取得 API)→ server(受理検証・監査累積ハッシュの維持・監査ヘッド取得
-   エンドポイント・**checkpoint 受理時点の値スナップショット列挙の保存**)→
-   CLI(`maruhi project checkpoint` + マニフェスト整合検証 + rotate と
-   再暗号化の完了後の発行提案。session-25 §8 のアンカー更新提案も同じ導線で
-   同時実装)
-3. **PR-M3: 値スナップショット配布・検証** — api-schema(pull / lease 応答の
-   スナップショット列挙)→ server(応答への保存済み列挙の同梱)→ CLI / lease
-   クライアント(values_digest 照合 + per-variable 非後退検査)
-4. **PR-M4: ヘッドゴシップ** — head-attestation.json → crypto(申告の
-   sign / verify)→ api-schema(申告 POST・チェーン取得応答の拡張)→
-   server(受理・保存・配布・remove 時掃除)→ CLI(提出・照合・証拠保存)
-- 順序: M1 → M2 → M3(M2 は M1 のマニフェスト保存行に依存、M3 は M2 の
-  チェックポイントに依存)。M4 は M1〜M3 と独立で並走可能。中間状態でも
-  保証は単調に増える(M1 だけでメタ前進注入が床持ちに閉じ、M2 で床なしへの
-  **メタ完全性**と値スナップショット基準の受理・保存が入り、M3 でその基準の
-  配布・検証による値の巻き戻し検出が閉じ、M4 で split view の検出可能性が
-  加わる)
+1. **PR-M1: environment manifest** — env-manifest.json → crypto (manifest
+   sign / verify / digest computation) → api-schema (EnvironmentManifest
+   type · compositing the meta operations) → server (composite meta
+   acceptance · bundling into the create / rotate composites · pull
+   bundling · latest-only retention) → CLI (issuance · verification · the
+   floor's manifest extension). The top-priority PR that closes §14.3-5's
+   meta asymmetry. **Includes a migration procedure**: since manifest
+   verification is missing = reject only (§6.3 — no warning branch),
+   internal dogfooding environments created before introduction must issue
+   manifest_version 1 via an explicit operation (a dedicated init command
+   rather than a no-op rename, or a rotate) before the client-side mandate
+   is turned on
+2. **PR-M2: the checkpoint op** — chain-entries.json appends +
+   checkpoint-digest.json → crypto (the op's consensus-rule verification ·
+   latestCheckpoint state derivation) → api-schema (checkpoint payload /
+   `CheckpointStateMismatch` / the audit-head fetch API) → server
+   (acceptance verification · maintaining the audit accumulated hash ·
+   the audit-head fetch endpoint · **storing the acceptance-time
+   value-snapshot listing on checkpoint acceptance**) → CLI (`maruhi
+   project checkpoint` + manifest-consistency verification + the issuance
+   proposal after rotate + re-encrypt completes. session-25 §8's
+   anchor-update proposal is also implemented in the same pathway)
+3. **PR-M3: value-snapshot distribution · verification** — api-schema
+   (snapshot listing in pull / lease responses) → server (bundling the
+   stored listing into responses) → CLI / lease client (values_digest
+   reconciliation + per-variable non-regression check)
+4. **PR-M4: head gossip** — head-attestation.json → crypto (attestation
+   sign / verify) → api-schema (attestation POST · chain-fetch response
+   extension) → server (acceptance · storage · distribution · cleanup on
+   remove) → CLI (submission · reconciliation · evidence saving)
+- Order: M1 → M2 → M3 (M2 depends on M1's manifest storage row; M3 depends
+  on M2's checkpoint). M4 is independent of M1–M3 and can run in parallel.
+  Even in intermediate states guarantees grow monotonically (M1 alone
+  closes meta forward injection for floor-holders; M2 adds **meta
+  completeness** for floorless clients plus acceptance · storage of the
+  value-snapshot reference; M3 closes value-rollback detection via
+  distribution · verification of that reference; M4 adds split-view
+  detectability)
 
-## 15. 仕様書への反映(改訂対象と非対象)
+## 15. What lands in the specs (in-scope vs. out-of-scope)
 
-- **CRYPTO_SPEC 0.6-draft**: §4.3(環境マニフェスト — 新設)/ §6.2
-  (`checkpoint` op の合意規則)/ §6.3(ヘッドゴシップ段落の具体化・
-  チェックポイント整合検証・床のマニフェスト拡張)/ §6.4(checkpoint・
-  申告の受理検証)/ §6.6(ヘッド申告 — 新設)/ §11(ベクター追補)/
-  §13(#4・#12 の解消)/ §14(G5/G6/G7 の担い手更新・保証と非保証の改訂)
-- **AUTH_SPEC 0.11-draft**: §12-4(create / rotate 複合へのマニフェスト
-  同梱)/ §12-5(メタ操作のマニフェスト複合受理)/ §12-7(pull 応答への
-  マニフェスト・スナップショット同梱)/ §12-8(マニフェストは最新 1 通保持・
-  行数上限なし)/ §6(checkpoint の空 = write / 非空 = admin)/ §14-2
-  (lease 応答への同梱)/ §16(ヘッド申告・
-  チェックポイント支援 API — 新設)
-- **AUDIT_SPEC 1.0-draft**: §3.4(`chain.checkpointed` ミラー)/ §5.1
-  (累積ハッシュの維持)/ §6(チェックポイントによる事後改竄検出の追加・
-  申告を監査イベント化しない判断)/ §8(未決 #2 の解消)
-- **ADR: 改訂不要と判断**。ADR-0002 は「署名付きメンバーシップログ・ヘッド
-  ゴシップ・文脈束縛・エポック制」を決定済みで、本改訂はその詳細化
-  (CRYPTO_SPEC の領分)。マニフェスト・チェックポイントも同 ADR の
-  「検証可能性はクライアント検証で担保する」の枠内であり、アーキテクチャ
-  選択の変更を含まない
+- **CRYPTO_SPEC 0.6-draft**: §4.3 (environment manifest — new) / §6.2
+  (consensus rules for the `checkpoint` op) / §6.3 (concretizing the
+  head-gossip paragraph · checkpoint-consistency verification · the floor's
+  manifest extension) / §6.4 (acceptance verification for checkpoints ·
+  attestations) / §6.6 (head attestations — new) / §11 (vector
+  supplement) / §13 (resolving #4 · #12) / §14 (updating the carriers of
+  G5/G6/G7 · revising guarantees and non-guarantees)
+- **AUTH_SPEC 0.11-draft**: §12-4 (manifest bundling into the create /
+  rotate composites) / §12-5 (manifest composite acceptance for meta
+  operations) / §12-7 (manifest · snapshot bundling into pull responses) /
+  §12-8 (manifests are retained latest-only · no row cap) / §6 (checkpoint
+  empty = write / non-empty = admin) / §14-2 (bundling into lease
+  responses) / §16 (head attestations · checkpoint support APIs — new)
+- **AUDIT_SPEC 1.0-draft**: §3.4 (the `chain.checkpointed` mirror) / §5.1
+  (maintaining the accumulated hash) / §6 (adding post-hoc-tamper detection
+  via checkpoints · the decision not to make attestations audit events) /
+  §8 (resolving unresolved #2)
+- **ADR: judged not to need a revision**. ADR-0002 already decided
+  "signed membership log · head gossip · context binding · epochs"; this
+  revision is a refinement of it (CRYPTO_SPEC's domain). The manifest ·
+  checkpoint are likewise inside that ADR's frame of "verifiability is
+  guaranteed by client verification" and contain no architecture-choice
+  change
 
-## 16. レビュー→修正ループ(PR 内。session-12 §12 の様式)
+## 16. Review → fix loops (inside the PR. session-12 §12's format)
 
-### ループ 1(起草直後のセルフレビュー — 3 観点: セキュリティ / 正しさ・並行性 / 仕様・ワイヤ契約)
+### Loop 1 (self-review right after drafting — 3 lenses: security / correctness · concurrency / spec · wire contract)
 
-1. **[高] チェックポイント自体の基準巻き戻し(セキュリティ)**: 当初案は
-   「過去の manifest_version の公証も許す」受理だったため、悪意・過失のある
-   **現 member** が古い状態を公証したチェックポイントを追記すると、床なし
-   クライアントの検出基準が下がる(検出機構の基準自体が巻き戻される —
-   罠 7 の変種)。→ 合意規則 `checkpoint-regression`(同一環境を含む直近の
-   先行チェックポイントに対する manifest_version 非後退 — payload の公開値
-   のみで照合可能 = client-verifiable)を追加。values_digest の中身の
-   per-variable 非後退はダイジェスト不透明性によりチェーン検証では照合でき
-   ないが、そのクラス(共謀サーバー + 現 member)は正規 push の権限を持ち
-   G9 に帰着する(§6.4 に明記)
-2. **[高] 環境を含まないチェックポイントによる基準消失(正しさ)**:
-   消費基準を「最新のチェックポイント op」にすると、部分集合チェック
-   ポイント(合意規則上有効)の追記が他環境の基準を消す。→ 基準 =
-   「その環境のエントリを含む最新のチェックポイント」へ変更(§6.3)
-3. **[高] 床なしクライアントへの前進注入が未検出(セキュリティ)**: 当初の
-   消費規則(version / manifest_version の非後退のみ)では、旧エポック鍵に
-   よる「スナップショットの次の version / manifest_version」の偽造が床なし
-   クライアントを素通りする(床規則 (c) に相当する検査がない)。→
-   「スナップショットより新しい version・基準より新しい manifest_version の
-   epoch ≥ 基準の epoch」(床規則 (c) のチェックポイント版)を §6.3 に追加。
-   基準時点の正当性の論証は床 (c) と同一で、誤拒否の反例(ローテーション後・
-   再暗号化前の正当な旧エポック値)は「スナップショット以下の version には
-   適用しない」ことで既に除外されている
-4. **[中] 受理検証の複雑化と並行競合(正しさ・契約)**: 当初案(過去状態の
-   公証許容 + 原像のワイヤ同梱 + per-variable 単調検査 + active 集合カバー
-   検査)は、並行 push と競合しない利得のために受理規則を 4 段に肥大させて
-   いた。→ 受理時点の保存状態との厳密一致へ単純化(原像はサーバーが再構成、
-   競合は 422 → 再取得・再署名 — チェーン CAS 409 と同じ既存構造。監査
-   ヘッドのみ「所属」検査 — チェーン追記自体がミラー行を書くため最新一致は
-   自己競合する)
-5. **[低] 群**: マニフェスト受理の「受理時点エポック独立検査を置かない」
-   含意の明文化(rotate 複合の manifestVersion CAS が代替する — AUTH_SPEC
-   §12-5。「受理は現エポックのみ」の含意注記と同じ構図)/ §6.6 に配布申告の
-   クライアント検証規則(鍵選択・在籍・ヘッド照合)を明文化 / AUDIT §5.1 に
-   累積ハッシュの導入マイグレーション(既存行からの再計算初期化)を明記 /
-   §14.3-3 に「チェックポイント時点まで」の限定を追記
+1. **[high] Rolling back the checkpoint's own reference (security)**: the
+   initial draft's acceptance also allowed "notarizing a past
+   manifest_version", so a malicious or careless **current member** could
+   append a checkpoint notarizing an old state, lowering the detection
+   reference for floorless clients (the detection mechanism's reference
+   itself gets rolled back — a trap-7 variant). → Added the consensus rule
+   `checkpoint-regression` (manifest_version non-regression against the
+   most recent prior checkpoint containing the same environment —
+   reconcilable on payload public values alone = client-verifiable). The
+   per-variable non-regression of values_digest's contents cannot be
+   checked by chain verification due to digest opacity, but that class
+   (colluding server + current member) holds regular push permission and
+   reduces to G9 (noted in §6.4)
+2. **[high] Reference loss via a checkpoint not containing an environment
+   (correctness)**: taking "the latest checkpoint op" as the consumption
+   reference lets appending a subset checkpoint (valid under consensus
+   rules) erase other environments' references. → Changed the reference to
+   "the latest checkpoint containing an entry for that environment" (§6.3)
+3. **[high] Forward injection to floorless clients undetected
+   (security)**: under the initial consumption rule (only version /
+   manifest_version non-regression), an old-epoch key could forge "the
+   next version / manifest_version past the snapshot" and pass a floorless
+   client undetected (no check analogous to floor rule (c)). → Added to
+   §6.3 "versions newer than the snapshot · manifest_versions newer than
+   the reference have epoch ≥ the reference's epoch" (the checkpoint
+   version of floor rule (c)). The argument for the reference point's
+   soundness is identical to floor (c)'s; the false-rejection
+   counterexample (a legitimate old-epoch value after rotation but before
+   re-encryption) is already excluded by "not applying it to versions at or
+   below the snapshot"
+4. **[medium] Acceptance-verification complexity and concurrent races
+   (correctness · contract)**: the initial option (allow notarizing past
+   state + bundle the preimage on the wire + per-variable monotonicity
+   checks + active-set coverage checks) had bloated the acceptance rules
+   to 4 stages just to avoid racing a concurrent push. → Simplified to an
+   exact match against stored state at acceptance time (the server
+   reconstitutes the preimage; a race is 422 → re-fetch · re-sign — the
+   same existing structure as the chain CAS 409. Only the audit head gets a
+   "membership" check — since the chain append itself writes the mirror
+   row, latest-equality would self-race)
+5. **[low] group**: made explicit that manifest acceptance places no
+   acceptance-time epoch-independence check (the rotate composite's
+   manifestVersion CAS substitutes — AUTH_SPEC §12-5. Same shape as the
+   "acceptance is current-epoch only" implied note) / wrote the
+   client-verification rules for distributed attestations into §6.6 (key
+   selection · tenure · head reconciliation) / noted the accumulated
+   hash's introduction migration (initialize by recomputation from
+   existing rows) in AUDIT §5.1 / appended the "up to the checkpoint
+   point" qualifier to §14.3-3
 
-### ループ 2(修正の再検証)
+### Loop 2 (re-verifying the fixes)
 
-ループ 1 の修正を 3 観点で再走査し、新規指摘なし(ブロッキングゼロ)を確認:
+Re-scanned loop 1's fixes under the 3 lenses and confirmed no new findings
+(zero blocking):
 
-- セキュリティ: 検証連鎖(§6)に逆向き依存が増えていないこと、
-  `checkpoint-regression` が正当フロー(発行前のビュー最新化)で常に満たせる
-  こと、エポック基準検査の誤拒否反例がないことを再確認
-- 正しさ・並行性: 受理時点一致の再試行ループが有限で収束すること(競合相手は
-  低頻度のメタ操作・push であり、チェーン CAS と同じ楽観的再試行)、監査
-  ヘッド所属検査が自己競合しないことを確認
-- 契約: 3 仕様書間の相互参照(CRYPTO §4.3/§6.2/§6.3/§6.4/§6.6 ↔ AUTH
-  §12/§16 ↔ AUDIT §3.4/§5.1/§6/§8)の整合、エラー理由コードの名前空間
-  (ChainInvalidReason と API 型付きエラー)の分離を確認
+- Security: re-confirmed that the verification chain (§6) gained no reverse
+  dependency, that `checkpoint-regression` is always satisfiable by the
+  honest flow (refreshing the view before issuance), and that the
+  epoch-reference check has no false-rejection counterexample
+- Correctness · concurrency: confirmed that the acceptance-time-match
+  retry loop converges finitely (the racing counterpart is a low-frequency
+  meta operation · push — the same optimistic retry as the chain CAS) and
+  that the audit-head membership check doesn't self-race
+- Contract: confirmed consistency of cross-references among the 3 specs
+  (CRYPTO §4.3/§6.2/§6.3/§6.4/§6.6 ↔ AUTH §12/§16 ↔ AUDIT
+  §3.4/§5.1/§6/§8) and the separation of the error reason-code namespaces
+  (ChainInvalidReason vs API typed errors)
 
-### ループ 3(PR #80 公開後 — pullfrog レビュー対応。2026-08-18)
+### Loop 3 (after PR #80 went public — pullfrog review response. 2026-08-18)
 
-pullfrog が ⚠️ 2 件・行コメント 4 件・nitpick 3 件を検出。すべて妥当で修正した:
+pullfrog detected ⚠️ 2 items · 4 line comments · 3 nitpicks. All were valid
+and were fixed:
 
-1. **[高] manifestVersion 行数上限が PR #31 裁定と矛盾(行コメント)**:
-   当初起草の「100,000 行 / 環境」上限は、変数 1,000 × 改名で各変数の
-   metaVersion 予算内のまま環境共有カウンタが枯渇し、**削除操作まで恒久遮断
-   する**(PR #31 が metaVersion 上限で明示的に退けた形の再現)。修正は
-   pullfrog 提案 (b) の強い形: 検証経路を精査すると prev 検査・配布・
-   チェックポイント受理のすべてが最新マニフェストしか参照しない —
-   **サーバー保持を最新 1 通のみに規定し、行が蓄積しないため上限自体を撤回**
-   (AUTH_SPEC §12-5 / §12-8)。メタステートメント(全 metaVersion 保持)との
-   非対称は意図的である旨を明記
-2. **[高] マニフェスト未初期化の警告分岐が攻撃者の選べる緩和経路(行コメント)**:
-   クライアントは「未初期化」と「サーバーの握り潰し」を区別できず、分岐は
-   マニフェスト隠し(本機構が塞ぐべき攻撃)の格下げ経路になる。公開前導入で
-   分岐が守る対象も存在しない。→ 欠落 = 拒否に一本化(§6.3)。既存
-   ドッグフーディング環境の初期化は PR-M1 の移行手順(§14)
-3. **[中] 重複 environment_id の規律が 3 文書間で矛盾(行コメント)**:
-   合意規則 = MUST 拒否、payload 生成文 = SHOULD 集合、ノート = 昇順まで
-   規範、の 3 様。エントリはタプルを運ぶため集合意味論では基準・regression の
-   比較対象が非決定になる — **重複 = MUST 拒否、昇順 = 生成 SHOULD**(検証は
-   順序を規範にしない)に統一(§6.2・本ノート §5-2)
-4. **[中] スナップショット列挙の省略が規則 2 の無効化経路(行コメント)**:
-   基準チェックポイントの存在は検証済みチェーンからサーバー非依存に判定できる
-   のに、列挙を欠く応答の扱いが未規定で「スキップ」の読みが成立した。→
-   「基準を持つ環境の値付き配布が列挙を欠く場合は拒否」を明記(§6.3)
-5. **[中] 環境削除時のマニフェスト行と削除済み環境への checkpoint が未規定
-   (総評)**: §12-4 のカスケード対象にマニフェスト・スナップショットを明記
-   (「削除で解放される」原則の対象)。削除済み環境を含む checkpoint は
-   受理段拒否(`environment-deleted`)— チェーンは削除を観測しないため
-   **合意規則にはできない**ことも明記(§6.4)。発行者は検証済み削除
-   ステートメントのある環境を含めない(§6.3)
-6. **[低] 群**: 環境単位 manifestVersion CAS による並行メタ操作の直列化
-   (バッチ投入は逐次実行)の実装注意を §12-5 に追記 / AUDIT §5.1 の
-   row_digest で NULL と空文字列が同一プリイメージになる問題をタグ付き
-   バイト列(NULL = `0x00`、非 NULL = `0x01` + 値)で解消 / 本ノートの
-   簡体字の修正
+1. **[high] The manifestVersion row cap contradicts the PR #31 ruling
+   (line comment)**: the initially drafted "100,000 rows / environment"
+   cap — with 1,000 variables × renames, the environment-shared counter
+   would exhaust itself while each variable stayed within its metaVersion
+   budget, **permanently blocking even delete operations** (a replay of the
+   shape PR #31 explicitly rejected with the metaVersion cap). The fix is
+   the strong form of pullfrog's proposal (b): on close inspection of the
+   verification paths, prev checks · distribution · checkpoint acceptance
+   all reference only the latest manifest — **the server's retention is
+   specified as latest-only; since rows don't accumulate, the cap itself
+   was retracted** (AUTH_SPEC §12-5 / §12-8). The asymmetry vs meta
+   statements (every metaVersion retained) is noted as intentional
+2. **[high] The warning branch for an uninitialized manifest is a mitigation
+   path the attacker can choose (line comment)**: a client can't distinguish
+   "uninitialized" from "the server suppressed it" — the branch becomes a
+   downgrade path for manifest-hiding (the very attack this mechanism must
+   close). And in a pre-release introduction there is no population for the
+   branch to protect. → Consolidated to missing = reject (§6.3).
+   Initializing existing dogfooding environments is in PR-M1's migration
+   procedure (§14)
+3. **[medium] The duplicate-environment_id discipline contradicted itself
+   across the 3 documents (line comment)**: consensus rule = MUST reject;
+   the payload-generation sentence = SHOULD set; the notes = even ascending
+   order normative — three different readings. Since the entry carries
+   tuples, under set semantics the reference · regression comparison target
+   would be non-deterministic — unified to **duplicate = MUST reject,
+   ascending = generation SHOULD** (verification does not norm ordering)
+   (§6.2 · these notes §5-2)
+4. **[medium] Eliding the snapshot listing is a path that voids rule 2
+   (line comment)**: the existence of a reference checkpoint can be judged
+   server-independently from the verified chain, yet the handling of a
+   response missing the listing was unspecified and a "skip" reading was
+   possible. → Wrote explicitly "a value-bearing distribution of an
+   environment that has a reference but lacks the listing is rejected"
+   (§6.3)
+5. **[medium] The manifest row on environment deletion and checkpoints to a
+   deleted environment were unspecified (overall comment)**: marked
+   manifests · snapshots explicitly as cascade targets in §12-4 (subjects
+   of the "freed on deletion" principle). A checkpoint containing a deleted
+   environment is rejected at acceptance (`environment-deleted`) — also
+   noted explicitly that **this cannot be a consensus rule** since the
+   chain does not observe the deletion (§6.4). An issuer includes no
+   environment whose verified deletion statement exists (§6.3)
+6. **[low] group**: appended to §12-5 the implementation note that a
+   per-environment manifestVersion CAS serializes concurrent meta
+   operations (batch submissions run sequentially) / resolved in AUDIT
+   §5.1's row_digest the issue that NULL and the empty string collapse into
+   the same preimage, via tagged byte strings (NULL = `0x00`, non-NULL =
+   `0x01` + value) / fixed a kanji typo in these notes
 
-### ループ 3 第 2 ラウンド(b85a64d への再レビュー — 前回 8 件の解消確認 + 新規 ⚠️ 2・ℹ️ 3)
+### Loop 3 round 2 (re-review of b85a64d — confirming the previous 8 items resolved + new ⚠️ 2 · ℹ️ 3)
 
-1. **[高] 監査ヘッドの陳腐化リプレイ**: 受理検証(所属のみ)・合意規則
-   (manifest_version のみ)・payload(seq なし — C1 準拠)のどれも公証点の
-   **前進**を強制しないため、悪意サーバーは実在する古い h_k を監査ヘッド
-   取得で返し続けるだけで、k 行目以降を無期限に改竄可能なまま全チェック
-   ポイントの突合を通過できた。→ admin 突合を「所属 + 位置」へ拡張
-   (AUDIT_SPEC §6): 公証ヘッドの出現位置がチェックポイント間で非後退、
-   かつ**直前チェックポイント自身のミラー行(chain.checkpointed)以上**で
-   あること — チェックポイント追記自体がミラー行を書くため、保護接頭辞は
-   単調に前進する。チェーン・ワイヤへの seq 追加なし(C1 と両立)、検査は
-   admin 側で完結。§14.2-7・§10 対応表・13-5 を追随
-2. **[高] カバー範囲の規範欠落**: 「部分集合でよい」(合意規則)と「削除済み
-   環境を含めない」(発行)だけでは、rotate 契機の素直な実装が「操作した
-   環境だけ公証」になり、ワークロード専用環境(メンバーの対話的同期が
-   走らない)の基準が恒久的に生まれない — §10 対応表の「検出」の前提が
-   規範に存在しなかった。→ 発行 SHOULD に「検証済みビュー内の全(非削除)
-   環境を含める」を追加し、床なしクライアント(特にワークロード)は基準なし
-   環境の値付き配布で警告する(基準の有無はチェーンからサーバー非依存に
-   判定できる — 不在の黙認は主要保証の不作動の不可視化)
-3. **[中] 発行契機 (i) のタイミング**: rotate 直後は再暗号化 push の集中
-   区間であり、受理時点一致検査と自己競合する。→ (i) を「rotate と
-   それに伴う再暗号化の完了後」に書き下し(再暗号化の writer = rotate
-   実行者なので同一クライアントの直列化で衝突しない)、再試行の有界性を明記
-4. **[低] 群**: 本ノート 13-5 の「未初期化環境の警告」残存(本文が削除した
-   分岐の再導入指示になっていた)を「マニフェスト欠落 = 拒否」へ差し替え /
-   13-1 の「過去 manifest_version の公証」ベクターに合意規則層限定の注記
-   (受理層は受理時点一致で拒否 — 層の別をベクター意図に明記)/ 簡体字の
-   取りこぼし(:115)と解消記録自体の簡体字を修正
+1. **[high] Staleness replay of the audit head**: none of the acceptance
+   verification (membership only), the consensus rules (manifest_version
+   only), or the payload (no seq — C1 compliant) forced the notarization
+   point's **advancement**, so a malicious server could keep returning a
+   real old h_k on audit-head fetches and pass every checkpoint's
+   reconciliation while remaining able to tamper with everything after row
+   k indefinitely. → Extended admin reconciliation to "membership +
+   position" (AUDIT_SPEC §6): the notarized head's position must not
+   regress across checkpoints and must be **at or above the immediately
+   preceding checkpoint's own mirror row (chain.checkpointed)** — since a
+   checkpoint append itself writes the mirror row, the protected prefix
+   advances monotonically. No seq added to the chain · wire (compatible
+   with C1); the check completes on the admin side. §14.2-7 · the §10
+   table · 13-5 followed
+2. **[high] The coverage norm was missing**: with only "a subset is fine"
+   (consensus rules) and "don't include deleted environments" (issuance),
+   a straightforward implementation of the rotate trigger would become
+   "notarize only the environment operated on", and workload-only
+   environments (where no member's interactive sync ever runs) would
+   permanently never get a reference — the "detect" premise of §10's table
+   had no norm behind it. → Added "include every (non-deleted) environment
+   in the verified view" to the issuance SHOULD, and floorless clients
+   (workloads in particular) warn on a value-bearing distribution of an
+   environment with no reference (reference existence is judgeable from the
+   chain server-independently — silently tolerating its absence would
+   invisibly disable the main guarantee)
+3. **[medium] The timing of issuance trigger (i)**: right after a rotate is
+   the concentrated interval of re-encryption pushes, which self-races the
+   acceptance-time-match check. → Rewrote (i) as "after rotate and the
+   attendant re-encryption complete" (the re-encryption writer = the rotate
+   performer, so same-client serialization can't collide), and noted the
+   boundedness of retries
+4. **[low] group**: the leftover "warning on uninitialized environment" in
+   these notes' 13-5 (it had become an instruction to re-introduce the
+   branch the body deleted) replaced with "missing manifest = reject" /
+   added a consensus-rule-layer-only note to 13-1's "notarizing a past
+   manifest_version" vector (the acceptance layer rejects via
+   acceptance-time matching — pinned the layer distinction into the
+   vector's intent) / fixed the missed kanji typo (:115) and a kanji typo
+   inside the resolution record itself
 
-### ループ 3 第 3 ラウンド(22f5cb9 への再レビュー — Bugbot Medium 1 + pullfrog ⚠️ 1・ℹ️ 2。同根)
+### Loop 3 round 3 (re-review of 22f5cb9 — Bugbot Medium 1 + pullfrog ⚠️ 1 · ℹ️ 2. Same root)
 
-1. **[高] 位置検査 (c) が良性の並行発行で偽の改竄告発になる(Bugbot /
-   pullfrog 同根)**: 第 2 ラウンドで追加した突合位置検査は、成立を強制する
-   規定が発行側にも受理側にもなかった — 契機 (iii) は複数メンバーで同時に
-   成立し、CAS に敗れた正直な発行者が「データ層のビューだけ再取得・監査
-   ヘッド申告は古いまま」で再署名すると、受理(所属のみ)を通過して (c)
-   違反がチェーンに恒久固定される(再試行経路なし)。→ **受理検証(§6.4)に
-   位置下限を追加**(`audit-head-stale`: 申告位置 ≥ 直前チェックポイントの
-   ミラー行 — 正直なサーバーの下で (c) が構造的に必ず成立する。良性競合は
-   受理段の型付き拒否 → 申告の取り直しへ回る)、発行・再試行の最新化対象に
-   監査ヘッド申告を明記(§6.3)、突合 (b)(c) 違反の意味論を「行の改竄」で
-   なく「受理ポリシーを執行しないサーバー(陳腐化リプレイを可能にする状態)の
-   証拠」として所属違反と区別(AUDIT_SPEC §6)
-2. **[中] 全環境カバー × 受理時点一致 × 有界再試行の合成(pullfrog)**:
-   カバー範囲の全環境化で競合面がプロジェクト全体に広がり、有界再試行を
-   使い切った場合の振る舞いが未規定だった。→ 退避経路 =「受理時点一致が
-   確認できた環境の部分集合で発行してよい」(§6.2 は部分集合を有効とし、
-   部分基準は基準ゼロより厳密に強い)を §6.3 に追加。§6.4 の競合確率の
-   根拠を「チェックポイント頻度」から「発行所要時間 × プロジェクト全体の
-   書き込み頻度」へ述べ直し
-3. **[低] 13-5 のテスト意図(pullfrog)**: 「非前進の公証 = 悪意」だけを
-   想定していた列挙に、良性競合が受理段で拒否されること(受理ポリシー層 —
-   ベクター化しない)を追記
+1. **[high] Position check (c) turns a benign concurrent issuance into a
+   false tamper accusation (Bugbot / pullfrog same root)**: the
+   reconciliation position check added in round 2 had no provision forcing
+   its satisfiability on either the issuance or the acceptance side —
+   trigger (iii) can fire simultaneously in multiple members, and if an
+   honest issuer who lost the CAS re-signs with "only the data-layer view
+   re-fetched · the audit-head attestation still old", it passes acceptance
+   (membership only) and a (c) violation gets permanently pinned into the
+   chain (no retry path). → **Added a position floor to acceptance
+   verification (§6.4)** (`audit-head-stale`: attested position ≥ the
+   immediately preceding checkpoint's mirror row — under an honest server
+   (c) is structurally always satisfied. A benign race routes to a typed
+   rejection at acceptance → re-fetching the attestation), marked the
+   audit-head attestation as a refresh target on issuance · retry (§6.3),
+   and separated reconciliation (b)(c) violations' semantics from "row
+   tampering" as "evidence of a server not executing the acceptance policy
+   (a state permitting staleness replay)" — distinct from a membership
+   violation (AUDIT_SPEC §6)
+2. **[medium] The composition of all-environment coverage ×
+   acceptance-time matching × bounded retry (pullfrog)**: with coverage
+   spanning all environments the race surface expands to the whole
+   project, and behavior when the bounded retry is exhausted was
+   unspecified. → Added the escape path "issuance over the subset of
+   environments whose acceptance-time agreement could be confirmed is
+   allowed" to §6.3 (§6.2 treats a subset as valid, and a partial reference
+   is strictly stronger than zero reference). Restated the race-probability
+   basis in §6.4 from "checkpoint frequency" to "issuance duration ×
+   project-wide write frequency"
+3. **[low] The test intent of 13-5 (pullfrog)**: to the enumeration, which
+   had only assumed "non-advancing notarization = malice", appended that a
+   benign race is rejected at the acceptance stage (the acceptance-policy
+   layer — not vectorized)
 
-### ループ 3 第 4 ラウンド(6e9c2fb への再レビュー — セキュリティ自動レビュー MEDIUM 1)
+### Loop 3 round 4 (re-review of 6e9c2fb — automated security review MEDIUM 1)
 
-1. **[中] `GET /audit-head` の member 開放がタイミングサイドチャネル**:
-   累積ハッシュ自体は乱数的で序数を運ばないが、**変化のポーリング**が
-   「可視のクラス 1 イベントを伴わない監査行の追記 = クラス 2(var.read 等)の
-   活動窓」を admin 未満へ漏らす — C1 裁定が守る可視性境界の迂回。→
-   監査ヘッドの取得・公証を **admin 限定**に変更(AUTH_SPEC §16-2 /
-   CRYPTO_SPEC §6.2・§6.3 / AUDIT_SPEC §6。要裁定 §12-11 として追加)。
-   checkpoint 自体の発行権限(member — 要裁定 §12-7)は不変で、admin 未満の
-   発行は audit_head_hash = 空文字列(公証なし — データ層の公証は独立に
-   有効)。監査ヘッドの突合は元々 admin にしかできないため、公証の担い手を
-   admin に寄せても突合の担い手は変わらない(admin は全行を閲覧できる主体で
-   あり、この応答は新しい情報を運ばない)。突合・受理の位置検査は「公証あり
-   (非空)のチェックポイント」に対して適用する形へ整理
+1. **[medium] Opening `GET /audit-head` to member is a timing side
+   channel**: the accumulated hash itself is random-looking and carries no
+   ordinal, but **polling for changes** leaks "audit-row appends unaccompanied
+   by a visible class-1 event = class-2 (var.read etc.) activity windows"
+   to below-admin — a circumvention of the visibility boundary the C1
+   ruling protects. → Changed audit-head fetch · notarization to
+   **admin-only** (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.2 · §6.3 / AUDIT_SPEC
+   §6. Added as ruling-needed §12-11). The checkpoint issuance permission
+   itself (member — ruling-needed §12-7) is unchanged, and issuance by
+   below-admin carries audit_head_hash = empty string (no notarization —
+   data-layer notarization is independently valid). Since audit-head
+   reconciliation could only ever be done by admin, moving the
+   notarization's carrier to admin doesn't change the reconciliation's
+   carrier (admin is the all-rows-viewing principal anyway, and this
+   response carries no new info). The reconciliation · acceptance position
+   checks are reorganized to apply to "notarizing (non-empty) checkpoints"
 
-### ループ 3 第 5 ラウンド(fe7b408 への再レビュー — pullfrog ⚠️ 1・ℹ️ 1 + Bugbot Medium 2 + 第 4 ラウンド pullfrog ℹ️ 2 の回収。同根 = admin 限定化の波及)
+### Loop 3 round 5 (re-review of fe7b408 — pullfrog ⚠️ 1 · ℹ️ 1 + Bugbot Medium 2 + collecting round 4's pullfrog ℹ️ 2. Same root = the ripple of going admin-only)
 
-1. **[高] 契機 (iii) が公証の有無を区別せず、member 発行が admin の契機を
-   潰す(pullfrog / Bugbot 同根)**: member 発行(公証なし)も「最新
-   チェックポイント」としてタイマーをリセットするため、member が admin より
-   頻繁に同期するプロジェクトでは admin に (iii) が発火せず、公証済み接頭辞が
-   停止する — 活発な member の正規操作だけで監査改竄の窓を開けたままに
-   できる。→ **(iii) の基準を実効権限で分離**(admin =「最新の公証あり
-   チェックポイント」、それ以外 =「最新のチェックポイント」— §6.3)し、
-   「接頭辞の前進は admin の発行頻度に依存する」を明示的な残余として
-   AUDIT_SPEC §6・本ノート §10 に明記(過大主張の修正 — Bugbot Medium 2)
-2. **[中] 発行・再試行規則が全発行者に監査ヘッド取得を指示(Bugbot
-   Medium 1)**: admin 限定化後も §6.3 が「監査ヘッド申告を最新化 /
-   取り直す」を無条件に書いており、準拠する member クライアントが 403 を
-   踏む。→ 取得・取り直しを「公証する場合〔実効権限 admin〕のみ」に条件付け
-3. **[中] 判定軸の不一致(pullfrog nit)**: 「admin 未満の発行者」(role 軸)と
-   認可(スコープ × role)がずれ、role admin × write スコープのトークンが
-   403 を踏んでからフォールバックする読みになっていた。→
-   **実効権限(min(トークンスコープ, チェーン role) — AUTH_SPEC §9-2)**に
-   統一(クライアントは事前判定できる)。**このラウンドの統一は 3 箇所を
-   取りこぼし、第 6・第 7 ラウンドで回収した**(当初の記録が「全箇所を統一」と
-   実態より広く主張していた点も第 7 ラウンドで訂正 — 記録は実際に統一した
-   範囲だけを主張する)
-4. **[低] 最新化の順序(第 4 ラウンド pullfrog nit の回収)**: 監査ヘッド
-   申告を先に取ると、間に着地した他者の checkpoint で受理段の
-   `audit-head-stale` に落ちる。→「申告の取得はチェーンヘッド(CAS 親)の
-   確定より後」を §6.3 に明記(audit-head-stale を正直クライアントに事実上
-   到達不能 = サーバー不正の signal に純化)
-5. **[低] 位置下限の基底ケース(第 4 ラウンド pullfrog nit の回収)**:
-   プロジェクト初のチェックポイントには「直前エントリ」が存在しない。→
-   「存在しない場合は検査を課さない(空虚に真)」を §6.4 と AUDIT_SPEC §6 の
-   両方に明記(受理と突合が同一述語・同一基底ケースであることが健全性の根拠)
+1. **[high] Trigger (iii) doesn't distinguish notarizing from
+   non-notarizing; member issuance kills admin's trigger (pullfrog /
+   Bugbot same root)**: since member issuance (no notarization) also
+   resets the timer as "the latest checkpoint", in a project where members
+   sync more frequently than admins, (iii) never fires for admin and the
+   notarized prefix stalls — routine operations by active members alone
+   can leave the audit-tamper window open forever. → **Split (iii)'s
+   reference by effective permission** (admin = "the latest notarizing
+   checkpoint", others = "the latest checkpoint" — §6.3), and noted "the
+   prefix's advancement depends on admin issuance frequency" as an
+   explicit residual in AUDIT_SPEC §6 · these notes §10 (fixing an
+   overclaim — Bugbot Medium 2)
+2. **[medium] The issuance · retry rules instructed every issuer to fetch
+   the audit head (Bugbot Medium 1)**: even after going admin-only, §6.3
+   unconditionally wrote "refresh / re-fetch the audit-head attestation",
+   so a compliant member client would hit a 403. → Conditioned fetching ·
+   re-fetching on "only when notarizing [effective-permission admin]"
+3. **[medium] Mismatched determination axes (pullfrog nit)**: "below-admin
+   issuer" (the role axis) and authorization (scope × role) were out of
+   alignment — the reading had a role-admin × write-scope token hitting
+   403 before falling back. → Unified on **effective permission
+   (min(token scope, chain role) — AUTH_SPEC §9-2)** (clients can
+   pre-determine). **This round's unification missed 3 places and was
+   collected in rounds 6–7** (round 7 also corrected that the original
+   record had claimed "unified everywhere", broader than actual — a record
+   claims only the range actually unified)
+4. **[low] The refresh order (collecting round-4 pullfrog nit)**: fetching
+   the audit-head attestation first would drop into acceptance's
+   `audit-head-stale` on someone else's checkpoint landing in between. →
+   Noted in §6.3 "the attestation is fetched after the chain head (CAS
+   parent) settles" (makes audit-head-stale practically unreachable for
+   honest clients = purifies it into a server-fault signal)
+5. **[low] The position floor's base case (collecting round-4 pullfrog
+   nit)**: a project's first checkpoint has no "immediately preceding
+   entry". → Noted "when none exists, no check is imposed (vacuously
+   true)" in both §6.4 and AUDIT_SPEC §6 (acceptance and reconciliation
+   being the same predicate · same base case is the soundness basis)
 
-### ループ 3 第 6 ラウンド(3326666 への再レビュー — Bugbot Medium 2。実効権限統一の追随漏れ)
+### Loop 3 round 6 (re-review of 3326666 — Bugbot Medium 2. Missed follow-ups of the effective-permission unification)
 
-1. **[中] AUTH §16-2 の再試行文言が無条件のまま**: CheckpointStateMismatch の
-   再試行が「監査ヘッド申告も再取得」を全発行者に指示しており、公証しない
-   発行者(member / write スコープ)が 403 を踏む読みが残っていた。→
-   「公証する実効権限 admin の発行者は申告も」に条件付け
-2. **[中] CRYPTO §6.2 の空文字列の説明が role 軸のまま**: 「admin 未満の
-   発行者」の文言が残存。→ 実効権限(min(トークンスコープ, チェーン role))へ
-   統一(第 5 ラウンド指摘 3 の取りこぼし)
+1. **[medium] AUTH §16-2's retry wording was still unconditional**:
+   CheckpointStateMismatch's retry still instructed every issuer to "also
+   re-fetch the audit-head attestation", leaving a reading where a
+   non-notarizing issuer (member / write scope) hits a 403. → Conditioned
+   on "a notarizing, effective-permission-admin issuer also [re-fetches]"
+2. **[medium] CRYPTO §6.2's empty-string explanation was still on the role
+   axis**: the wording "below-admin issuer" remained. → Unified on
+   effective permission (min(token scope, chain role)) (a miss of round-5
+   finding 3)
 
-### ループ 3 第 7 ラウンド(6f39996 への再レビュー — pullfrog ℹ️ 1)
+### Loop 3 round 7 (re-review of 6f39996 — pullfrog ℹ️ 1)
 
-1. **[低] AUTH §16-2 の「audit_head_hash のみ申告値を写す」が無条件のまま
-   (第 5 ラウンド指摘 3 の最後の取りこぼし)**: 隣接バレットと読み合わせ
-   ないと実効権限 admin 限定に着地しない文になっていた。→「実効権限 admin の
-   発行者は…写す(それ以外は空文字列)」へ条件付け。併せて本 §16 の第 5
-   ラウンドの記録が「全箇所を統一」と実態(3 箇所残存)より広く主張していた
-   点を訂正(記録は実際に統一した範囲だけを主張する — ノートは後続実装 PR の
-   前提資料であるため)
+1. **[low] AUTH §16-2's "only audit_head_hash transcribes the attested
+   value" was still unconditional (the last miss of round-5 finding 3)**:
+   the sentence only landed on the effective-permission-admin limit when
+   read together with the neighboring bullet. → Conditioned on "an
+   effective-permission-admin issuer transcribes … (others: empty
+   string)". Also corrected that this §16's round-5 record had claimed
+   "unified everywhere", broader than actual (3 places remained) — a
+   record claims only the range actually unified, since the notes are the
+   basis material of the follow-up implementation PRs
 
-### ループ 3 第 8 ラウンド(所有者確認前の最終整合レビュー)
+### Loop 3 round 8 (final consistency review before owner confirmation)
 
-規範仕様はレビュー修正後の形で整合していたが、本ノート前半の設計結論と
-§15 の反映一覧に起草時点の記述が残っていた。後続実装が古い説明を手順として
-読まないよう、次を現行仕様へ同期した:
+The normative spec was consistent in its post-review-fix form, but the
+first half of these notes' design conclusions and §15's landing list still
+carried draft-time descriptions. To keep the follow-up implementation from
+reading the stale explanations as procedures, the following were synced to
+the current spec:
 
-1. 発行契機を rotate 成功後から **rotate + 再暗号化完了後**へ変更し、
-   契機 (iii) の実効権限別基準・全環境カバー・部分集合退避を反映
-2. 監査ヘッドの受理を所属検査のみから **所属 + 位置下限**へ更新し、
-   取得順序・`audit-head-stale` の再試行を反映
-3. 監査公証を実効権限 admin 限定、公証なし = 空文字列、公証接頭辞の前進は
-   admin の発行頻度に依存するという残余へ更新
-4. 撤回済みのマニフェスト行数上限を、**最新 1 通保持・上限なし**へ修正
-5. 非空監査ヘッドの公証をチェーン role admin 以上の合意規則 +
-   実効権限 admin の API 受理条件へ明示し、ベクター計画を追随
-6. remove + rotate の申し送りと M2/M3 分割を、checkpoint は再暗号化後の
-   独立追記・スナップショット保存は M2 の受理責務、という現行仕様へ更新
-7. AUTH §6 のトークンスコープを checkpoint の空 = write / 非空 = admin に
-   更新し、§16-2 の「純チェーン op」を「クライアント供給の付随データなし +
-   サーバー再構成スナップショットは同時保存」へ精密化
-8. チェーン肥大の年間値をハード上限でなく推奨契機に基づく運用見積もりと
-   明記し、冒頭の実装分割参照を §11 から §14 へ修正
-9. 部分集合 checkpoint のスナップショットを環境ごとの最新包含 checkpoint
-   として同一 DO トランザクションで upsert し、非包含環境の基準を維持する
-   規則・統合テストを追加
-10. M2 / M3 の api-schema 境界を明記し、M2 の中間保証をメタ完全性 +
-    snapshot 基準の受理・保存、M3 を配布・検証と正確化
-11. ROADMAP の実装分割を M2 = 受理時 snapshot 保存 / M3 = 配布・検証へ
-    精密化し、解消済みのチェーンヘッド外部チェックポイントを「将来」から削除
+1. Changed the issuance trigger from after-rotate-success to **after
+   rotate + re-encryption complete**, and reflected trigger (iii)'s
+   effective-permission-split reference · all-environment coverage ·
+   subset escape
+2. Updated audit-head acceptance from membership-only to **membership +
+   position floor**, and reflected the fetch order · `audit-head-stale`
+   retry
+3. Updated the audit notarization to effective-permission admin only, no
+   notarization = empty string, and the residual that the notarized
+   prefix's advancement depends on admin issuance frequency
+4. Corrected the retracted manifest row cap to **latest-only retention ·
+   no cap**
+5. Made explicit that notarizing a non-empty audit head is a chain-role
+   admin+ consensus rule + an effective-permission-admin API acceptance
+   condition, and the vector plan followed
+6. Updated the remove + rotate handoff and the M2/M3 split to the current
+   spec: a checkpoint is an independent append after re-encryption;
+   snapshot storage is M2's acceptance responsibility
+7. Updated AUTH §6's token scope to checkpoint empty = write / non-empty =
+   admin, and refined §16-2's "pure chain op" to "no client-supplied
+   companion data + the server-reconstituted snapshot is stored
+   atomically"
+8. Marked the chain-bloat annual figure as an operating estimate based on
+   the recommended triggers rather than a hard cap, and fixed the
+   implementation-split reference at the top from §11 to §14
+9. Added the rule · integration test that a subset checkpoint's snapshot
+   upserts, in the same DO transaction, each environment's latest
+   containing checkpoint while preserving non-included environments'
+   references
+10. Marked the M2 / M3 api-schema boundary and made precise M2's
+    intermediate guarantee (meta completeness + acceptance · storage of
+    the snapshot reference) and M3 (distribution · verification)
+11. Refined ROADMAP's implementation split to M2 = acceptance-time
+    snapshot storage / M3 = distribution · verification, and removed the
+    resolved external chain-head checkpoint from "future"
