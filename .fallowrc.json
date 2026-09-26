@@ -1,28 +1,38 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  // CLI / lint 設定からのみ参照されるツールは import されないため未使用依存から除外する
-  // (@stylexjs/unplugin と @stylexjs/eslint-plugin は @astryxdesign/build / oxlint 設定からの間接参照)
+  // Tools referenced only from CLI / lint config are never imported, so they
+  // are excluded from unused-dependency checks
+  // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
+  // via @astryxdesign/build / the oxlint config)
   "ignoreDependencies": [
     "@import-lint/cli",
     "oxlint-plugin-eslint",
     "@stylexjs/unplugin",
     "@stylexjs/eslint-plugin"
   ],
-  // apps/web のエントリは vite.config.ts の文字列参照(funstackStatic の root/app)のため
-  // fallow が自動検出できない。手動でエントリポイントとして宣言する
-  // theme/maruhi.js は astryx theme build の生成物。import 指定子 ../../theme/maruhi.js を
-  // fallow は TS 流儀で maruhi.ts に解決するため、実体の .js が未到達と誤検出される。
-  // vitest.unit.config.ts(web ユニットテスト)は規約外のファイル名(vitest.config.ts は
-  // e2e が使用済み)でルート vitest.config.ts から文字列参照されるため自動検出されない。
-  // apps/server/scripts は運営者が bun run で直接叩く運用スクリプト(サインアップ招待
-  // コードの発行 — AUTH_SPEC §3)で、製品コードから import されないため手動宣言する。
-  // apps/server/src/restore-worker.ts は wrangler.restore.jsonc の main(復元 worker —
-  // docs/notes/hosted-ops.md §2-E)で、index.ts から import されない別エントリ。
-  // apps/site は Blume CLI が blume.config.ts を読み、scripts/ は bun run で直接叩く。
-  // apps/site/test/unit/shims は docs のレシピ検査(recipes.test.ts)が PATH 経由で起動する偽の
-  // ベンダー CLI(bin/ の sh ラッパーが bun で実行する)で、import されないため手動宣言する。
-  // apps/cli/test/support/exec-probe.ts は live-exec.test.ts が `bun` で起動する実プロセスの
-  // プローブ(Bun.spawn を Node の vitest から検査するため)で、同じく import されない
+  // apps/web's entries are string references inside vite.config.ts
+  // (funstackStatic's root/app), so fallow cannot detect them automatically —
+  // declare them as entry points manually.
+  // theme/maruhi.js is a product of the astryx theme build. fallow resolves
+  // the import specifier ../../theme/maruhi.js to maruhi.ts in the TS idiom,
+  // which would falsely flag the real .js as unreachable.
+  // vitest.unit.config.ts (web unit tests) uses a non-conventional filename
+  // (vitest.config.ts is taken by e2e) and is referenced by string from the
+  // root vitest.config.ts, so it is not auto-detected.
+  // apps/server/scripts are ops scripts operators run directly via bun run
+  // (issuing signup invite codes — AUTH_SPEC §3); product code never imports
+  // them, so they are declared manually.
+  // apps/server/src/restore-worker.ts is the `main` of wrangler.restore.jsonc
+  // (the restore worker — docs/notes/hosted-ops.md §2-E), a separate entry not
+  // imported from index.ts.
+  // apps/site: the Blume CLI reads blume.config.ts and scripts/ are invoked
+  // directly via bun run.
+  // apps/site/test/unit/shims are fake vendor CLIs launched over PATH by the
+  // docs recipe checks (recipes.test.ts) (the bin/ sh wrappers run them under
+  // bun); never imported, so declared manually.
+  // apps/cli/test/support/exec-probe.ts is a real-process probe that
+  // live-exec.test.ts launches with `bun` (to inspect Bun.spawn from Node-side
+  // vitest) — likewise never imported
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
@@ -39,12 +49,16 @@
     "apps/site/test/unit/shims/*.ts",
     "apps/cli/test/support/exec-probe.ts"
   ],
-  // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
-  // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。
-  // apps/web/public は SPA 外の静的配信アセット(invite.html から参照される invite.css 等 —
-  // AUTH_SPEC §15-3)で、モジュールグラフに載らないため未到達と誤検出される。
-  // apps/site(Blume)は blume.config.ts が Blume CLI から読まれるエントリで、.astro / .mdx と
-  // public/ の静的資産はモジュールグラフ外。.blume/ は Blume の生成ランタイム(gitignore 済み)
+  // Out of analysis scope: agent skills (vendored content), the deepsec
+  // isolated workspace, the test-vector reference generation/verification
+  // tools (throwaway; never imported by product code), and scripts/ —
+  // standalone repo tooling run via bun, never imported.
+  // apps/web/public holds statically served assets outside the SPA (e.g.
+  // invite.css referenced by invite.html — AUTH_SPEC §15-3); they sit off the
+  // module graph and would be falsely flagged unreachable.
+  // For apps/site (Blume), blume.config.ts is the entry read by the Blume CLI,
+  // and .astro / .mdx plus public/ static assets are off the module graph.
+  // .blume/ is Blume's generated runtime (gitignored)
   "ignorePatterns": [
     ".agents/**",
     ".claude/**",
@@ -55,7 +69,8 @@
     "apps/site/pages/**",
     "apps/site/.blume/**",
     "apps/site/.blume-verify/**",
-    "packages/crypto/test-vectors/tools/**"
+    "packages/crypto/test-vectors/tools/**",
+    "scripts/**"
   ],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",

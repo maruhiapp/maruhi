@@ -1,12 +1,12 @@
 #!/bin/bash
-# Claude Code on the web 用 SessionStart フック。
-# Bun を .bun-version(厳密ピン)に同期し、ワークスペースの依存をインストールする。
-# Playwright の Chromium はダウンロードせず、環境プリインストール版を使う
-# (apps/web・apps/site の e2e と packages/crypto のブラウザテストが
-# PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH を参照)。
+# SessionStart hook for Claude Code on the web.
+# Syncs Bun to .bun-version (strict pin) and installs workspace dependencies.
+# Does not download Playwright's Chromium — uses the environment's
+# preinstalled build (the apps/web / apps/site e2e suites and the
+# packages/crypto browser tests read PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH).
 set -euo pipefail
 
-# リモート環境(Claude Code on the web)以外では何もしない
+# No-op outside the remote environment (Claude Code on the web)
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
@@ -21,14 +21,16 @@ export PATH="$HOME/.bun/bin:$PATH"
 
 bun install
 
-# Playwright パスはフックの本業。任意の deepsec install より先に書き、
-# 後続が落ちても e2e がプリインストール Chromium を使えるようにする。
+# The Playwright path is this hook's core job. Write it before the optional
+# deepsec install so a later failure cannot keep e2e off the preinstalled
+# Chromium.
 if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -x /opt/pw-browsers/chromium ]; then
   echo 'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/opt/pw-browsers/chromium' >>"$CLAUDE_ENV_FILE"
 fi
 
-# `.deepsec/` はルート bun とは別隔離。失敗してもフック全体は落とさない。
-# (`/deepsec` は欠落時に pnpm install で直す。init 再開はしない。)
+# `.deepsec/` is isolated from the root bun install. A failure here must not
+# fail the whole hook. (`/deepsec` repairs itself via pnpm install when
+# missing; init is never re-run.)
 if [ -f .deepsec/package.json ]; then
   deepsec_install_status=0
   if command -v pnpm >/dev/null 2>&1; then

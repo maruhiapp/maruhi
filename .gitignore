@@ -8,20 +8,23 @@ coverage/
 .wrangler/
 .dev.vars
 
-# fallow のローカルキャッシュ(コミットする baseline は fallow-baselines/)
+# fallow's local cache (the committed baselines are fallow-baselines/)
 .fallow/
 
-# Homebrew formula は生成物(apps/cli/scripts/generate-formula.ts が Release の
-# checksums.txt から作り、tap リポジトリへコピーする — docs/RELEASING.md)。
-# 形の例は packaging/homebrew/maruhi.example.rb をコミットしている
+# The Homebrew formula is a generated artifact (apps/cli/scripts/
+# generate-formula.ts builds it from the Release checksums.txt and copies it
+# to the tap repository — docs/RELEASING.md).
+# packaging/homebrew/maruhi.example.rb is committed as a shape example
 packaging/homebrew/maruhi.rb
 
-# Blume の生成ランタイム(apps/site — blume dev / build が毎回作り直す)
+# Blume's generated runtime (apps/site — blume dev / build recreates it)
 .blume/
 .blume-verify/
 
-# ダッシュボードのスクリーンショット(apps/web/test/screenshots.ts の出力 — PR に添付する一時物)
+# Dashboard screenshots (output of apps/web/test/screenshots.ts — temporary
+# files for attaching to PRs)
 apps/web/screenshots/
-# vitest browser mode の失敗時キャプチャ(ローカル実行の副産物 — スイートは消費しない)
+# vitest browser-mode failure captures (a local-run byproduct — the suite does
+# not consume them)
 .vitest-attachments/
 **/__screenshots__/
