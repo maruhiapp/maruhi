@@ -3406,12 +3406,17 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
     );
     expect(revoked).not.toContain(owner.fingerprintHex);
-    // 誤った reserve の行は、有効な p3 の立場で観測の行に直る
+    // 誤った reserve の行は、有効な p3 の立場で観測の行に直り(K14-4 4-g)、続く rotate の p1 の
+    // 同期で、p1 の履歴(最初の鍵)による証人に書き直される(失効の印つき — DK K15-12)
     const row = (await readOwnDevices(env, origin)).find(
       (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
     );
-    expect(row?.source).toBe("observed");
-    expect(row?.observedProjectId).toBe(p3.projectId);
+    expect(row).toMatchObject({
+      source: "observed",
+      addedByFingerprintHex: null,
+      observedProjectId: p1.projectId,
+    });
+    expect(row?.revokedAtMs).not.toBeNull();
   });
 
   it("key recovery: どこでも add_device 出所の予備鍵は従来どおり再封印し、記録を復元する", async () => {
@@ -3642,6 +3647,120 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(ledgerPuts).toHaveLength(1);
       expect(revokedFingerprints(state)).toEqual([reserve.fingerprintHex]);
       expect(env.errors.join("\n")).not.toContain("This machine's records show");
+    });
+
+    it("先に add_device として観測した鍵も、後で最初の鍵のプロジェクトを同期すれば証人になる(観測の順序に依らない — K15-11)", async () => {
+      // D2 はまず p3(K は D2 の add_device)を同期し、p4(K は失効済み — 行に失効の印)を経て、
+      // p1(K は最初の鍵)を同期した
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const other = await makeTestUser("user-other-0016");
+      const p4 = await buildChain([
+        { actor: other, operation: genesisOp(other) },
+        { actor: other, operation: addMemberOp(dev2, "owner") },
+        { actor: dev2, operation: addDeviceOp(owner) },
+        { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+      ]);
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1, p4],
+        extra: [inviteHandler(p3), inviteHandler(p1), inviteHandler(p4)],
+      });
+      await syncBeforeHidden(env, p3);
+      const first = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(first).toMatchObject({
+        addedByFingerprintHex: dev2.fingerprintHex,
+        observedProjectId: p3.projectId,
+      });
+      await syncBeforeHidden(env, p4);
+      const marked = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(marked?.revokedAtMs).not.toBeNull();
+      await syncBeforeHidden(env, p1);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+        recordedAtMs: first?.recordedAtMs,
+        // 失効の印は保つ(消すと失効した鍵が他のプロジェクトへ登録し直される — K4-3)
+        revokedAtMs: marked?.revokedAtMs,
+      });
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}`,
+      );
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+    });
+
+    it("最初の鍵だったプロジェクトで既に失効した鍵も、そのチェーンの履歴で証人になる(判定と同じ述語 — K15-12)", async () => {
+      // p1 で K は最初の鍵だったが、案内どおり失効済み(p1 の有効な端末ではない)。p3 では有効
+      const p1 = await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: addDeviceOp(dev2) },
+        { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+      ]);
+      const { p3 } = await hiddenFirstKeyScene();
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+        extra: [inviteHandler(p3), inviteHandler(p1)],
+      });
+      await syncBeforeHidden(env, p3);
+      await syncBeforeHidden(env, p1);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+      });
+      // 同じ同期の (b) が付けた失効の印を、証人の書き直しが消さない
+      expect(witness?.revokedAtMs).not.toBeNull();
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}`,
+      );
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+    });
+
+    it("既に証人の行は、別の最初の鍵のプロジェクトの同期で書き直さない(最初の証人を保つ — K15-12)", async () => {
+      // K は p1(genesis)と p5(add_member)の両方で最初の鍵。D2 は p3 → p1 → p5 の順に同期した
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const other = await makeTestUser("user-other-0017");
+      const p5 = await buildChain([
+        { actor: other, operation: genesisOp(other) },
+        { actor: other, operation: addMemberOp(owner, "owner") },
+        { actor: owner, operation: addDeviceOp(dev2) },
+      ]);
+      const { env, origin } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1, p5],
+        extra: [inviteHandler(p3), inviteHandler(p1), inviteHandler(p5)],
+      });
+      await syncBeforeHidden(env, p3);
+      await syncBeforeHidden(env, p1);
+      await syncBeforeHidden(env, p5);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+      });
     });
 
     it("承認した端末以外で観測した予備鍵(出所の端末つきの観測の行)は証人にならず、rotate は失効させる", async () => {

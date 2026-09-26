@@ -19,7 +19,7 @@ import { Effect, Result } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
-import { deviceProvenanceOf, revokedFingerprintsOf } from "./device-key.ts";
+import { deviceProvenanceOf, revokedFingerprintsOf, wasFirstKeyOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
 import type { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
@@ -79,30 +79,6 @@ export function keyStandingIn(
   return revokedFingerprintsOf(verified, userId).has(fingerprintHex)
     ? { kind: "revoked", firstKey }
     : { kind: "absent", firstKey };
-}
-
-/**
- * The device's keys were the first key of `userId` in some tenure on this chain
- * (an applied genesis or `add_member` carrying them). Applied operations outlive
- * the tenure, so a key re-added with `add_device` after a re-invite still counts.
- */
-function wasFirstKeyOf(
-  verified: VerifiedProject,
-  userId: string,
-  device: { readonly encPubHex: string; readonly sigPubHex: string },
-): boolean {
-  const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
-    keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
-  return verified.applied.some(({ operation, actorUserId }) => {
-    if (operation.op === "genesis") {
-      return actorUserId === userId && carries(operation.payload);
-    }
-    return (
-      operation.op === "add_member" &&
-      operation.payload.targetUserId === userId &&
-      carries(operation.payload)
-    );
-  });
 }
 
 /** 1 プロジェクトの立場(同期できなければその事実 — 「無い」と混同しない)。 */
