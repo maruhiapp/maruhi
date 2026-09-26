@@ -7,7 +7,6 @@
 
 import {
   AuditHeadNotReadyError,
-  ApprovalNotAcceptedError,
   AuthFlowError,
   AuthRateLimitedError,
   ChainCapacityExceededError,
@@ -21,7 +20,6 @@ import {
   DekWrapNotFoundError,
   DekWrapRejectedError,
   DeviceLimitError,
-  DeviceOpsNotAcceptedError,
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
@@ -190,18 +188,6 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
   ),
-  when(
-    isInstanceOf(ApprovalNotAcceptedError),
-    (e) =>
-      `This server does not accept four-eyes approval entries (${e.op}) yet — they land with a later server release`,
-  ),
-  // 端末鍵の 2 op(DK): K3 より前のサーバーが返す(errors/chain.ts)。文言は 1 箇所
-  // (設計録 dk-design.md §9 K4-14 — device add / approve / revoke / key recovery が同じ写像を踏む)
-  when(
-    isInstanceOf(DeviceOpsNotAcceptedError),
-    (e) =>
-      `This server does not accept device operations (${e.op}). It predates the device-key server release — ask the server administrator to update it (docs/SELF_HOSTING.md "Updates"); until then this account can use exactly one device per project and no reserve key`,
-  ),
   // 端末数の受理ポリシー(AUTH_SPEC §12-3 — 合意規則ではない。DK K3)
   when(
     isInstanceOf(DeviceLimitError),
@@ -336,7 +322,6 @@ export function isServerRejection(error: unknown): boolean {
     DekWrapNotFoundError,
     DekWrapRejectedError,
     DeviceLimitError,
-    DeviceOpsNotAcceptedError,
     EnvironmentConflictError,
     EnvironmentNotFoundError,
     EpochConflictError,

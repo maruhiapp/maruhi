@@ -77,7 +77,7 @@ describe("total timestamp formatters", () => {
 
 describe("keychain record codecs", () => {
   it("トークン・master 鍵レコードの往復と破損検出", () => {
-    const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1" };
+    const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1", expiresAtMs: 1 };
     const parsed = parseStoredToken(JSON.stringify(token));
     if (parsed === null) throw new Error("expected a parsed token record");
     // 生値の突合は必ず剥がして行う(包んだままの toEqual は中身を見ない)
@@ -93,6 +93,10 @@ describe("keychain record codecs", () => {
     expect(Redacted.value(reparsed.token)).toBe("maruhi_pat_x");
     expect(parseStoredToken("not json")).toBeNull();
     expect(parseStoredToken(JSON.stringify({ token: "x" }))).toBeNull();
+    // 期限は必須(欠落は破損)
+    expect(
+      parseStoredToken(JSON.stringify({ token: "maruhi_pat_x", userId: "u1", tokenId: "t1" })),
+    ).toBeNull();
     expect(parseStoredMasterKey(JSON.stringify({ suite: "maruhi/v1" }))).toBeNull();
   });
 
@@ -849,7 +853,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
-  it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は従来どおり", async () => {
+  it("キーチェーン経路はレコード保存の期限から無通信で警告する", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([]);
     servers.push(server);
@@ -871,16 +875,6 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(nearErrors).toContain("Sign in again with `maruhi login`");
     // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
     expect(server.requests).toHaveLength(0);
-
-    // W3a 前のログインが書いた旧レコード(expiresAtMs なし)は警告なしで動く
-    const legacyEnv = await makeTestEnv();
-    await seedConfig(legacyEnv, { server: server.origin });
-    legacyEnv.keychain.set(
-      tokenEntryName(server.origin),
-      JSON.stringify({ token: "maruhi_pat_keychain", userId: "user-0001", tokenId: "tok_1" }),
-    );
-    await runCli(["key", "show"], legacyEnv.layer);
-    expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
   it("環境変数がキーチェーンより優先される", async () => {
@@ -897,7 +891,12 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     await seedConfig(env, { server: server.origin });
     env.keychain.set(
       tokenEntryName(server.origin),
-      JSON.stringify({ token: "maruhi_pat_keychain", userId: user.userId, tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_keychain",
+        userId: user.userId,
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);

@@ -101,11 +101,7 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
 type ManifestViolation = Extract<
   FloorViolation,
   {
-    kind:
-      | "manifest-rollback"
-      | "manifest-equivocation"
-      | "manifest-omitted"
-      | "stale-manifest-injection";
+    kind: "manifest-rollback" | "manifest-equivocation" | "stale-manifest-injection";
   }
 >;
 
@@ -133,14 +129,6 @@ function manifestEvidenceLines(
   coordinates: FloorEvidenceCoordinates,
   violation: ManifestViolation,
 ): readonly string[] {
-  if (violation.kind === "manifest-omitted") {
-    return [
-      coordinateLine(coordinates),
-      `  floor record (previously verified): manifestVersion=${violation.floor.manifestVersion} epoch=${violation.floor.epoch}`,
-      `    manifest_signed_bytes_hash=${violation.floor.manifestSigHashHex}`,
-      "  this distribution: (no manifest)",
-    ];
-  }
   if (violation.kind === "stale-manifest-injection") {
     return [
       coordinateLine(coordinates),
@@ -213,7 +201,6 @@ function evidenceLines(
   if (
     violation.kind === "manifest-rollback" ||
     violation.kind === "manifest-equivocation" ||
-    violation.kind === "manifest-omitted" ||
     violation.kind === "stale-manifest-injection"
   ) {
     return manifestEvidenceLines(coordinates, violation);

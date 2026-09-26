@@ -121,16 +121,13 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  * 再計算検証する)。
  *
  * signupPolicy(AUTH_SPEC §3 — H1)は advisory(公開情報 — ランディングの案内
- * 文言と同じ内容。検証・認可規則の入力にしない)。optionalKey なのは本フィールドを
- * 持たない旧サーバーの応答を導出クライアントが壊さないため(欠落時は従来どおり
- * 進む — CLI の fail-fast は advisory の欠落でログインを止めない)。
- * 新サーバーは常に載せる。
+ * 文言と同じ内容。検証・認可規則の入力にしない)。
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
   serverKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   serverEncPubHex: Schema.optionalKey(EncPubHex),
-  signupPolicy: Schema.optionalKey(SignupPolicySchema),
+  signupPolicy: SignupPolicySchema,
 });
 
 /**

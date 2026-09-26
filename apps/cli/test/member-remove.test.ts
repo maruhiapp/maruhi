@@ -145,6 +145,7 @@ async function makeRemoveServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -177,6 +178,7 @@ async function makeRemoveServer(input: {
           currentEpoch: environments[statement.environmentId]?.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     async (request) => {
@@ -218,6 +220,7 @@ async function makeRemoveServer(input: {
           manifest,
           // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
           ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -261,6 +264,7 @@ async function makeRemoveServer(input: {
         environment.deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,

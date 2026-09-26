@@ -388,7 +388,14 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     ).toBe(204);
 
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientClass: "server", recipientUserId: fpHex }],
+      wraps: [
+        {
+          epoch: 1,
+          recipientClass: "server",
+          recipientUserId: fpHex,
+          recipientEncPubHex: SERVER_ENC_PUB_HEX,
+        },
+      ],
     });
     expect(removed.status).toBe(204);
     const deleted = await queryProjectDo(
@@ -428,7 +435,14 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     // 素通しにすると member の ULID が target_key_fingerprint 列へ載り、
     // (target_user_id, seq) 索引からこの削除が消える(AUDIT_SPEC §1-2)
     const crossClass = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientClass: "server", recipientUserId: OWNER }],
+      wraps: [
+        {
+          epoch: 1,
+          recipientClass: "server",
+          recipientUserId: OWNER,
+          recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex,
+        },
+      ],
     });
     expect(crossClass.status).toBe(404);
     expect(((await crossClass.json()) as Record<string, unknown>)["_tag"]).toBe("DekWrapNotFound");
@@ -440,7 +454,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     });
     expect(registered.status).toBe(204);
     const reverse = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: fpHex }],
+      wraps: [{ epoch: 1, recipientUserId: fpHex, recipientEncPubHex: SERVER_ENC_PUB_HEX }],
     });
     expect(reverse.status).toBe(404);
 
@@ -464,8 +478,13 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     // クラス込みキーで通過するが、server 側が保存行と不一致 = 404 で全体拒否
     const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: OWNER },
-        { epoch: 1, recipientClass: "server", recipientUserId: OWNER },
+        { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "server",
+          recipientUserId: OWNER,
+          recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex,
+        },
       ],
     });
     expect(response.status).toBe(404);

@@ -291,9 +291,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     // 行が蓄積しないため行数上限も置かない — §12-8)。signed_bytes_hash_hex は
     // サーバー再計算(prev 検査 = 次の manifestVersion の prev 照合材料。配布
     // しない)。issuer は受理時点のチェーン導出メンバー(user_id + 鍵 FP)。
-    // 環境削除のカスケード対象(§12-4 — retireEnvironment が行を消す)。
-    // マニフェスト導入前に作成された環境は行なしで始まり、最初のメタ操作 /
-    // rotate が manifest_version 1 を確立する(移行手順 — session-27 §14)
+    // 環境削除のカスケード対象(§12-4 — retireEnvironment が行を消す)
     tables: ["environment_manifests"],
     apply(sql) {
       sql.exec(

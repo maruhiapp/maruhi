@@ -8,7 +8,7 @@
 // 並行 commit は union される」形で固定する。後半(結線テスト)は
 // floor-detection.test.ts。
 
-import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -538,71 +538,6 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
       const result = await load();
       expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 4 });
       expect(result.floor?.chainHead?.seq).toBe(4);
-    });
-  });
-
-  describe("旧保存形(単一 JSON スナップショット)からの移行", () => {
-    const legacy = {
-      v: 1,
-      chainHead: { seq: 3, hashHex: HASH_A },
-      environments: {
-        prod: {
-          pullEpoch: 2,
-          metaVersion: 1,
-          metaSigHashHex: HASH_A,
-          manifest: { manifestVersion: 1, epoch: 2, manifestSigHashHex: HASH_B },
-          variables: {
-            va: {
-              status: "active",
-              version: 3,
-              epoch: 2,
-              valueSigHashHex: HASH_B,
-              metaVersion: 1,
-              metaSigHashHex: HASH_C,
-            },
-          },
-        },
-      },
-    };
-
-    it("旧ファイルを互換読みし(observedEpoch は既知の検証済み事実から導出)、最初の追記でログへ移行する", async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
-      const loaded = await load();
-      expect(loaded.state).toBe("loaded");
-      expect(loaded.floor?.environments["prod"]).toMatchObject({
-        pullEpoch: 2,
-        observedEpoch: 2,
-        metaVersion: 1,
-      });
-      // 最初の追記が旧状態をスナップショットレコードとしてログへ移行する
-      await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 4, hashHex: HASH_B }));
-      const raw = await readFile(logPath(), "utf8");
-      expect(raw).toContain('"r":"snapshot"');
-      const result = await load();
-      expect(result.floor?.chainHead).toEqual({ seq: 4, hashHex: HASH_B });
-      expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
-      // 旧ファイルはフォレンジック材料として残る(追記専用の規律 — 消さない)
-      const entries = await readdir(dir);
-      expect(entries).toContain(`${PROJECT_ID}.json`);
-    });
-
-    it("旧ファイルの破損は corrupt として区別する", async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), "{broken");
-      expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 0 });
-    });
-
-    it("空の .jsonl(open と write の間で落ちた残骸)は有効な旧形式を隠さない", async () => {
-      // open(\"a\") はファイルを即座に作るため、直後のクラッシュで 0 byte の
-      // ログが残りうる。これを missing(初回)へ潰すと、有効な旧床がある run が
-      // 床なし(fail-open)で走り、事実と違う first sync 通知が出る
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
-      await writeFile(join(dir, `${PROJECT_ID}.jsonl`), "");
-      const loaded = await load();
-      expect(loaded.state).toBe("loaded");
-      expect(loaded.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
     });
   });
 

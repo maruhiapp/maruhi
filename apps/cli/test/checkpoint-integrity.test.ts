@@ -190,6 +190,7 @@ function chainHandler(built: BuiltChain): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -223,6 +224,7 @@ function pullHandler(overrides: PullOverrides = {}): MockHandler {
       deks: wraps,
       manifest: overrides.manifest ?? manifestMain,
       ...(served === null ? {} : { checkpointSnapshot: served }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -381,6 +383,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     };
@@ -594,6 +597,7 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     };
@@ -707,6 +711,7 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
       deletedVariables: overrides.deletedVariables ?? [],
       manifest: overrides.manifest ?? manifestMain,
       ...(served === null ? {} : { checkpointSnapshot: served }),
+      schemaPolicy: "enabled" as const,
     } as LeaseWire;
   }
 

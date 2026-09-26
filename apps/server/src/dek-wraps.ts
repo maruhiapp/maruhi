@@ -40,16 +40,15 @@ export function wrapRecipientClass(ref: {
 /**
  * (epoch × 受信者クラス × recipient × 端末鍵) の重複検出キー(削除経路 —
  * programs-dek)。クラスの真実源は保存行の recipient_class 列であり、削除経路は
- * このキーの重複検出に加えて保存値とのクラス突合で守る。端末鍵(enc 公開鍵)は
- * 任意(省略 = 当該 (epoch, recipient) の唯一のスロット — 設計録 §8 K3-3)。
+ * このキーの重複検出に加えて保存値とのクラス突合で守る。
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
   readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
-  readonly recipientEncPubHex?: string;
+  readonly recipientEncPubHex: string;
 }): string {
-  return `${ref.epoch}:${wrapRecipientClass(ref)}:${ref.recipientUserId}:${ref.recipientEncPubHex ?? ""}`;
+  return `${ref.epoch}:${wrapRecipientClass(ref)}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
 }
 
 /**

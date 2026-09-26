@@ -1,7 +1,6 @@
 // 端末鍵のチェーン上の立場(DK K13-1 — 設計録 dk-design.md §18)。
 //
-// 「この鍵はこのプロジェクトで何か」という問いを 1 か所で答える: 有効(出所つき —
-// `add_device` で足された / その人の最初の鍵)・失効(自分宛の適用済み `revoke_device` の
+// 「この鍵はこのプロジェクトで何か」という問いを 1 か所で答える: 有効・失効(自分宛の適用済み `revoke_device` の
 // 対象)・無い・同期できず。`device add`(既存の鍵の分岐・完了の確認・期限切れ・`--replace`
 // の表示)と `device list` と `ownDeviceOrFail`(失効の分岐)が同じ述語を使う。
 //
@@ -10,20 +9,16 @@
 // 鍵なしの前段で同期して純関数を呼び、一覧・同期の失敗はコマンドを落とさず事実に畳む
 // (改ざんの兆候は `evidence` で運ぶ)。文言は作らない(報告側が作る — K12-10)。
 //
-// 一覧はサーバー申告で完全性の証人にならない(DK K15 — 設計録 §20)。台帳の鍵の判定は、この端末の
-// 観測の記録(このサーバー・このアカウントの own-devices.json の、検証済みチェーンで最初の鍵として
-// 観測した行)を、止める向きにだけ足す(`recorded-first-key`)。
+// 台帳の鍵が予備鍵かは、台帳の中身の予備鍵の印で決まる(CRYPTO_SPEC §8 — DK K16)。チェーンが
+// 台帳の鍵について言うのは「失効しているか」だけ(`ledgerKeyVerdictOf`)。
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
-import { deviceProvenanceOf, revokedFingerprintsOf, wasFirstKeyOf } from "./device-key.ts";
+import { revokedFingerprintsOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
-import type { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
-import { OwnDeviceStore } from "./own-devices.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
@@ -35,23 +30,9 @@ export type ChainKeyStanding =
       readonly kind: "active";
       readonly member: ChainMember;
       readonly device: ChainDevice;
-      /**
-       * このチェーンでその人の最初の鍵(genesis / add_member)だったことがある — 今の出所が
-       * 最初の鍵か、以前の在籍の最初の鍵(`remove_member` の後の再招待で `add_device` として
-       * 戻った鍵を含む — DK K14-1 1-f)。
-       */
-      readonly firstKey: boolean;
     }
-  | {
-      readonly kind: "revoked";
-      /** 失効の前に、このチェーンでその人の最初の鍵だったことがある(DK K14-18)。 */
-      readonly firstKey: boolean;
-    }
-  | {
-      readonly kind: "absent";
-      /** 以前の在籍で、このチェーンでその人の最初の鍵だったことがある(DK K14-18)。 */
-      readonly firstKey: boolean;
-    };
+  | { readonly kind: "revoked" }
+  | { readonly kind: "absent" };
 
 /**
  * The standing of `fingerprintHex` for `userId` on one verified chain. A key that
@@ -66,19 +47,11 @@ export function keyStandingIn(
   const member = verified.state.members.get(userId);
   const device = member?.devices.get(fingerprintHex);
   if (member !== undefined && device !== undefined) {
-    const provenance = deviceProvenanceOf(verified, userId, device);
-    const firstKey =
-      provenance.addedByFingerprintHex === null || wasFirstKeyOf(verified, userId, device);
-    return { kind: "active", member, device, firstKey };
+    return { kind: "active", member, device };
   }
-  // 失効した鍵・以前の在籍の鍵も、公開鍵は束縛の履歴(keyHistory)に残る(DK K14-18)
-  const bound = (verified.keyHistory.get(userId) ?? []).find(
-    (binding) => binding.keyFingerprintHex === fingerprintHex,
-  );
-  const firstKey = bound !== undefined && wasFirstKeyOf(verified, userId, bound);
   return revokedFingerprintsOf(verified, userId).has(fingerprintHex)
-    ? { kind: "revoked", firstKey }
-    : { kind: "absent", firstKey };
+    ? { kind: "revoked" }
+    : { kind: "absent" };
 }
 
 /** 1 プロジェクトの立場(同期できなければその事実 — 「無い」と混同しない)。 */
@@ -123,42 +96,23 @@ export function keyStandingsOf(input: {
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
 }): Effect.Effect<KeyStandings, never, CliServices> {
-  return Effect.map(
-    keyStandingsForKeys({ ...input, fingerprintsHex: [input.fingerprintHex] }),
-    (byKey) => byKey.get(input.fingerprintHex) ?? { projects: [], listFailure: null },
-  );
-}
-
-/**
- * The standings of several keys over one pass: each listed project is synced
- * once and the pure `keyStandingIn` is applied per key (DK K14-16 — the same
- * shape as `device list`, which lists every device over one sync).
- */
-function keyStandingsForKeys(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-  readonly fingerprintsHex: readonly string[];
-}): Effect.Effect<ReadonlyMap<string, KeyStandings>, never, CliServices> {
   return Effect.gen(function* () {
-    const fingerprints = [...new Set(input.fingerprintsHex)];
     const listed = yield* Effect.result(fetchProjectMemberships(input.client));
     if (Result.isFailure(listed)) {
-      const failed: KeyStandings = { projects: [], listFailure: listed.failure.message };
-      return new Map(fingerprints.map((fp) => [fp, failed]));
+      return { projects: [], listFailure: listed.failure.message };
     }
     const projectIds = listed.success.map((row) => row.projectId).toSorted(compareCodePoints);
-    const byKey = new Map(fingerprints.map((fp) => [fp, [] as KeyStandings["projects"][number][]]));
+    const projects: KeyStandings["projects"][number][] = [];
     for (const projectId of projectIds) {
       const synced = yield* Effect.result(
         openMetadataProject({ server: input.session.origin, project: projectId }),
       );
-      for (const fp of fingerprints) {
-        byKey.get(fp)?.push({ projectId, standing: standingFrom(synced, input.session, fp) });
-      }
+      projects.push({
+        projectId,
+        standing: standingFrom(synced, input.session, input.fingerprintHex),
+      });
     }
-    return new Map(
-      [...byKey].map(([fp, projects]) => [fp, { projects, listFailure: null } as KeyStandings]),
-    );
+    return { projects, listFailure: null };
   });
 }
 
@@ -188,11 +142,6 @@ export interface StandingGroups {
   }[];
   readonly revoked: readonly string[];
   readonly absent: readonly string[];
-  /**
-   * どの立場であれ(有効・失効・無い)、この鍵がその人の最初の鍵だった(ことがある)プロジェクト
-   * (DK K14-18 — 台帳の鍵の判定が読む。`device add` の 2 択は有効な立場の `firstKey` だけを読む)。
-   */
-  readonly firstKeyProjects: readonly string[];
   readonly unsynced: readonly {
     readonly projectId: string;
     readonly message: string;
@@ -205,13 +154,9 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
     active: [] as StandingGroups["active"][number][],
     revoked: [] as string[],
     absent: [] as string[],
-    firstKeyProjects: [] as string[],
     unsynced: [] as StandingGroups["unsynced"][number][],
   };
   for (const { projectId, standing } of standings.projects) {
-    if (standing.kind !== "unsynced" && standing.firstKey) {
-      groups.firstKeyProjects.push(projectId);
-    }
     if (standing.kind === "active") {
       groups.active.push({ projectId, standing });
     } else if (standing.kind === "unsynced") {
@@ -224,180 +169,40 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
 }
 
 /**
- * 台帳から開いた鍵が予備鍵として働くかの判定(DK K14-2 — 設計録 §19)。予備鍵は必ず
- * `add_device` で載り(K4-30)、DK 以前の端末鍵の複製はその人の最初の鍵(genesis /
- * `add_member`)になる。上から順に最初に当たるもの: どこか 1 つでも最初の鍵(失効・無いの立場の
- * 以前の最初の鍵を含む — K14-18)→ `first-key`
- * (同期できないプロジェクトがあっても — 正の事実 1 つで足りる)/ 今のチェーンは示さないが、
- * この端末の観測の記録に最初の鍵だったとある → `recorded-first-key`(サーバーが一覧から隠した
- * プロジェクトを補う — DK K15-1。`revoked` より前: 見えるプロジェクトで失効済みでも失効の門を
- * 通さない)/ どこかで失効 → `revoked` /
- * 同期できないプロジェクトがある・一覧が取れない → `unchecked` / どこにも有効でない →
- * `nowhere` / 有効な所がすべて `add_device` 出所 → `added`(予備鍵と記録してよいのは
- * これだけ)。文言は作らない(報告側 — K12-10)。
+ * 台帳から開いた鍵の、チェーンが言う事実(DK K16): 予備鍵かどうかは台帳の中身の印で決まり
+ * (CRYPTO_SPEC §8)、チェーンが言うのは「どこかで失効しているか」だけ。失効した予備鍵は台帳の鍵と
+ * して働かない(利用者が `device revoke` で予備鍵を失効させた場合)。文言は作らない(K12-10)。
  */
 export type ReserveVerdict =
-  | { readonly kind: "first-key"; readonly projectIds: readonly string[] }
-  | {
-      readonly kind: "recorded-first-key";
-      /** この端末が最初の鍵として観測したプロジェクト(観測の行の `observedProjectId`)。 */
-      readonly projectId: string;
-    }
   | {
       readonly kind: "revoked";
       readonly projectIds: readonly string[];
       /** 失効していないプロジェクト(まだ有効に載っている所)。 */
       readonly activeProjectIds: readonly string[];
     }
-  | {
-      readonly kind: "unchecked";
-      readonly projectIds: readonly string[];
-      /** プロジェクト一覧の取得の失敗(null = 取れた)。 */
-      readonly listFailure: string | null;
-    }
-  | { readonly kind: "nowhere" }
-  | { readonly kind: "added"; readonly projectIds: readonly string[] };
+  | { readonly kind: "usable" };
 
-/** 止める事実(チェーンの最初の鍵・この端末の証人・失効)— 印があっても予備鍵として扱わない。 */
-export function stopsLedgerKey(
-  verdict: ReserveVerdict,
-): verdict is Extract<
-  ReserveVerdict,
-  { readonly kind: "first-key" | "recorded-first-key" | "revoked" }
-> {
-  return (
-    verdict.kind === "first-key" ||
-    verdict.kind === "recorded-first-key" ||
-    verdict.kind === "revoked"
-  );
-}
-
-export function reserveVerdictOf(
-  groups: StandingGroups,
-  listFailure: string | null,
-  /** この端末の観測の記録にある、この鍵が最初の鍵だったプロジェクト(`recordedFirstKeysOf`)。 */
-  recordedFirstKey: string | null,
-): ReserveVerdict {
-  if (groups.firstKeyProjects.length > 0) {
-    return { kind: "first-key", projectIds: groups.firstKeyProjects };
-  }
-  if (recordedFirstKey !== null) {
-    return { kind: "recorded-first-key", projectId: recordedFirstKey };
-  }
-  const activeProjectIds = groups.active.map((entry) => entry.projectId);
-  if (groups.revoked.length > 0) {
-    return { kind: "revoked", projectIds: groups.revoked, activeProjectIds };
-  }
-  if (groups.unsynced.length > 0 || listFailure !== null) {
-    return {
-      kind: "unchecked",
-      projectIds: groups.unsynced.map((entry) => entry.projectId),
-      listFailure,
-    };
-  }
-  if (activeProjectIds.length === 0) {
-    return { kind: "nowhere" };
-  }
-  return { kind: "added", projectIds: activeProjectIds };
-}
-
-/** 台帳の鍵の判定と、その材料(群・確かめられなかった範囲)。 */
-export interface LedgerKeyCheck {
-  readonly verdict: ReserveVerdict;
-  readonly groups: StandingGroups;
-  /** 判定の値に依らない「確かめられなかった範囲」(null = 全部確かめた — 失効の門が読む。K14-14)。 */
-  readonly unchecked: Extract<ReserveVerdict, { readonly kind: "unchecked" }> | null;
-}
-
-/** 1 つの鍵の立場から、台帳の鍵の判定を作る(純関数)。 */
-function ledgerKeyCheckFrom(
-  standings: KeyStandings,
-  recordedFirstKey: string | null,
-): LedgerKeyCheck {
-  const groups = groupStandings(standings);
-  const unchecked =
-    groups.unsynced.length > 0 || standings.listFailure !== null
-      ? {
-          kind: "unchecked" as const,
-          projectIds: groups.unsynced.map((entry) => entry.projectId),
-          listFailure: standings.listFailure,
-        }
-      : null;
-  return {
-    verdict: reserveVerdictOf(groups, standings.listFailure, recordedFirstKey),
-    groups,
-    unchecked,
-  };
-}
-
-/**
- * この端末の観測の記録にある「最初の鍵だった」(DK K15-1 / K15-6): このサーバー・このアカウントの
- * 記録のうち、出所 observed で出所の端末が無く(`deviceProvenanceOf` の最初の鍵)、観測した
- * プロジェクトを持つ行 — 書き手は検証済みチェーンの観測(と K14 の訂正)だけ。失効の印は問わない
- * (最初の鍵だった事実は失効の後も真)。FP → プロジェクト。止める向きにだけ使う: 記録が無い・
- * 壊れている・読めないときは空(K14 の判定のまま — 読めない失敗は Note)。
- */
-export function recordedFirstKeysOf(
-  session: CliSession,
-): Effect.Effect<ReadonlyMap<string, string>, never, OwnDeviceStore | CliIo> {
-  return Effect.gen(function* () {
-    const store = yield* OwnDeviceStore;
-    const loaded = yield* store.load(session.origin, session.userId);
-    const witnesses = new Map<string, string>();
-    if (loaded.state !== "loaded") {
-      return witnesses;
-    }
-    for (const row of loaded.devices) {
-      if (
-        row.source === "observed" &&
-        row.addedByFingerprintHex === null &&
-        row.observedProjectId !== null
-      ) {
-        witnesses.set(row.keyFingerprintHex, row.observedProjectId);
+export function reserveVerdictOf(groups: StandingGroups): ReserveVerdict {
+  return groups.revoked.length > 0
+    ? {
+        kind: "revoked",
+        projectIds: groups.revoked,
+        activeProjectIds: groups.active.map((entry) => entry.projectId),
       }
-    }
-    return witnesses;
-  }).pipe(
-    Effect.catch((error) =>
-      logNote(
-        `could not read this machine's own-devices record (${error.message}); the key is checked on the project chains only`,
-      ).pipe(Effect.as(new Map<string, string>())),
-    ),
-  );
+    : { kind: "usable" };
 }
 
 /**
- * 台帳の鍵(と失効させる旧予備鍵)の判定を、サーバーが一覧に出す全プロジェクトを 1 回ずつ
- * 同期して行う(DK K14-4 4-f / K14-16 — `key recovery`・台帳の変更の前段・失効の門が共有する
- * 入口)。`key recover` は登録のために開いたチェーンに `reserveVerdictOf` を直接当てる。
+ * 台帳の鍵がどこかで失効しているかを、サーバーが一覧に出す全プロジェクトを同期して確かめる
+ * (`key recovery`・台帳の変更の前段)。`key recover` は登録のために開いたチェーンに
+ * `reserveVerdictOf` を直接当てる(同期を二重にしない)。
  */
-export function ledgerKeyChecksOf(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-  readonly fingerprintsHex: readonly string[];
-}): Effect.Effect<ReadonlyMap<string, LedgerKeyCheck>, never, CliServices> {
-  return Effect.gen(function* () {
-    const byKey = yield* keyStandingsForKeys(input);
-    const recorded = yield* recordedFirstKeysOf(input.session);
-    return new Map(
-      [...byKey].map(([fp, standings]) => [
-        fp,
-        ledgerKeyCheckFrom(standings, recorded.get(fp) ?? null),
-      ]),
-    );
-  });
-}
-
-/** 1 つの鍵の `ledgerKeyChecksOf`。 */
 export function ledgerKeyVerdictOf(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
-}): Effect.Effect<LedgerKeyCheck, never, CliServices> {
-  return Effect.map(
-    ledgerKeyChecksOf({ ...input, fingerprintsHex: [input.fingerprintHex] }),
-    (checks) =>
-      checks.get(input.fingerprintHex) ??
-      ledgerKeyCheckFrom({ projects: [], listFailure: null }, null),
+}): Effect.Effect<ReserveVerdict, never, CliServices> {
+  return Effect.map(keyStandingsOf(input), (standings) =>
+    reserveVerdictOf(groupStandings(standings)),
   );
 }

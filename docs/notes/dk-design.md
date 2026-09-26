@@ -3476,3 +3476,65 @@ K16-2 と K16-4 は、印の無い既存の予備鍵の利用者を止めない�
   - (1) `--replace` の記録の行は印を読めない(台帳を開かない)ので、行の失効には今の門(チェーン + 証人)が残る。利用者ゼロなので、行の書き手は生成した鍵と印を確かめた鍵だけになる。ただし行の欄が無く、以前の行と区別できない(K16-6 反例 4)。
   - (2) 印は「この CLI が生成した」ことの記録で、台帳を開ける者(本人と区別できない)が改造した CLI で印を付けることは防がない(脅威モデルの外 — K4-30 / K4-37)。
 - **申し送り(所有者判断)**: 利用者ゼロなので、pre-DK の経路(FP 一致の分離・K13 の 2 択・K15 の証人・K14 のチェーンの推し量りの一部)は、印を必須にした後は「起きない場面への多重の守り」になる。消して単純にするかは別の判断(K16-6 第 2 巡)。
+
+## 22. 互換の削除(2026-09-26 — 所有者裁定: 利用者ゼロなので後方互換は要らない)
+
+### 22-1. 裁定と範囲
+
+- 所有者裁定(2026-09-26): 「今はユーザーゼロなので互換性は無視してよい」「後方互換性を意識した箇所はすべて削除してよい」。K16 の申し送り(pre-DK の経路)と、それ以外の互換を 1 本の PR で消す。群ごとにコミットを分ける。
+- 残すもの(互換ではなく、今の機能・守り):
+  - 失効した予備鍵の扱い: 利用者が `device revoke` で予備鍵を失効させる場面は今もあるので、失効の判定と記録の印(`markRevokedReserveRecord`)は残した。
+  - 厳格受理・アンチ互換の拒否テスト・テストベクター(古い形を**拒む**守り)。
+  - 暗号(第 4 群 — recovery-wrap の AAD・`master-wrap` の名前)は `packages/crypto` の人間レビューが要るので外した。
+  - schemaPolicy の書き込みゲートは機能として残し、互換の文言だけを消す。
+
+### 22-2. 第 1 群: pre-DK の経路とローカルファイルの旧形式(CLI)
+
+- **pre-DK の経路**: 台帳の鍵は「予備鍵の印がある」かつ「どこでも失効していない」ときだけ予備鍵として使う。止める事実は失効だけになった。
+  - 消したもの:
+    - チェーンの最初の鍵の推し量り(`firstKey` / `first-key`)。
+    - K15 の証人(`recorded-first-key`・`recordFirstKeyWitnesses`)。
+    - 記録の書き直し(`retractReserveRecord` の最初の鍵の分岐)。
+    - `key recovery` の FP 一致の分離。
+    - 失効の門(`confirmRetiring` — reserve の行を書くのは、生成した鍵と印を確かめた鍵だけになった)。
+    - `device add` の 2 択(K13-2)。最初の鍵も、有効なプロジェクトがあれば登録済みと報告して 0 で終わる。
+  - 残したもの: 鍵の無い端末で台帳を変えさせない守り。`openLedgerReserveForChange` の先頭で端末鍵を読む(`seal passkey` / `guardian add`)。
+  - docs: `devices.mdx` の「Installs from before device keys」節と関連する項、`recover-your-key.mdx` の最初の鍵の項を削除した。CRYPTO_SPEC §8 と AUTH_SPEC §13-1 から pre-DK の例示を除いた(挙動は不変)。
+- **ローカルファイルの旧形式**:
+  - 床の旧保存形(`<id>.json` の単一スナップショット)の互換読みと移行。
+  - known-fingerprints の v1(1 人 1 指紋)。
+  - 発行ピンの scope 欠落(K4 以前)と、`verifiedAtSeq` / `expectedGithubLogin` の欠落の許容。今は null だけを許す。
+  - キーチェーンのトークンの `expiresAtMs` 欠落(W3a 以前)。
+  - own-devices と known-fingerprints の外枠のデコードを `origin-book.ts` に共通化した(版の違いが消えて重複になったため — fallow)。
+- **ミューテーション**(9 変異 — 基準が緑であることを先に確かめた): 8 が落ちた(失効した予備鍵の記録の印 × 4 経路・鍵の無い端末の守り・ピンの scope 突合・指紋帳の版・トークンの期限)。生き残った 1(Z9 ピンの scope 欠落を受け入れる)は等価変異 — `scopeEnvironmentIds` の欠落は配列の検査で同じく不正になる。
+- **文言**:
+  - CLI: 伏字レコードの「older maruhi」、checkpoint のスナップショット欠落の「server predates」、ヘッド申告の「previous release」。
+  - web: 登録簿 404 の「older servers」。
+
+### 22-3. 第 2 群: ワイヤとサーバーの互換
+
+- **必須にしたワイヤの欄**(旧サーバー / 旧クライアントのための省略可を外した):
+  - 応答: `ChainSnapshot.attestations`・`AuthConfig.signupPolicy`・環境一覧 / pull / メタのみ pull の `schemaPolicy`・`RotationFlag.trigger`・`RecipientDek.recipientEncPubHex`・`DekWrapExists.storedRecipientEncPubHex`・`LeaseRateLimited.scope`・`GuardianShareResult.deviceShares`(先頭行を写した上位の `encHex` / `ciphertextHex` は削除)。
+  - 要求: `DekWrapRef.recipientEncPubHex`。端末鍵を省略した参照を「スロットがちょうど 1 つなら消す」経路(K3-3 の 422 `duplicate-recipient`)を削除した。
+- **削除した型**: `ApprovalNotAccepted`(K5 前のサーバー)・`DeviceOpsNotAccepted`(K3 前のサーバー)。
+- **CLI のフォールバック**:
+  - 409 の保存済み鍵が無いときの鍵履歴の推し量り(`staleWrapSuspected`)。再追加の案内の Note は残した。
+  - `recipientEncPubHex` の無い行を自分宛と読む扱い、端末の欠けの導出の打ち切り。
+  - `trigger` の無い行の表示。
+- **マニフェストの移行経路**: `env rotate --init-manifest` と `allowMissingManifest` を削除した。マニフェストの欠落は常に拒否する。検証済み pull の `manifest` は null を取らなくなり、床の `manifest-omitted` の違反種別も消えた。
+  - サーバーの「保存行が無ければ最新 0 から v1」は、環境作成の複合が使うので残した(移行の注釈だけを消した)。
+- **監査の旧形 `var.read`**(1 変数 1 行)の読み取り(Q3 の列値の枝)を削除した。§7 の `variable_id` フィルタの列一致は、`var.created` などの他のイベントのために残る。
+- **文言**: schemaPolicy の「旧検証者保護」の理由付けを CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5 / §12-11 から除いた。ゲートは機能として残す(所有者裁定)。AUTH_SPEC §12-6 の `storedRecipientEncPubHex` は MUST にした。
+
+### 22-4. 第 3 群: デプロイ・DB
+
+- 済み:
+  - レート制限の binding(5 つ)を必須にし、binding の無い旧 `wrangler.jsonc` 向けの fail-open と warn を削除した。
+  - client_id のプレースホルダ検出(旧テンプレートのフォーク向け)を削除した。
+  - `docs/SELF_HOSTING.md` の "Updates" から、リリースごとの移行手順を削除した。
+- **保留(所有者判断)**: 次のものは運営のデプロイ(`env.hosted`)の D1 / DO に既にある行とスキーマ版に依存する。コードだけ消すと、次のデプロイで壊れうる。
+  - D1 マイグレーション(18)と DO SQLite マイグレーション(14)の畳み込み。wrangler の適用記録と DO のスキーマ版(`migrations.length` 超過は起動拒否)が既存の版を持つ。
+  - `expires_at` の null 許容(裁定 CE 前の無期限トークン行)。
+  - `recovery_wraps` の旧列、`row_id` の遅延バックフィル。
+  - rotation-detect の K3 前の保存行の補完。
+  - 運営の DB を作り直す(データを捨てる)か、前進マイグレーションで既存行を直してから消すかを決めてもらう。

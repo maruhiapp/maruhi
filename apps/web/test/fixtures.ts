@@ -160,6 +160,7 @@ const environmentStatement = {
 
 export const environmentsFixture: EnvironmentList = {
   environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
+  schemaPolicy: "disabled",
 };
 
 export const metadataPullFixture: EnvironmentMetadataPull = {
@@ -174,6 +175,7 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     },
   ],
   deletedVariables: [],
+  schemaPolicy: "disabled",
 };
 
 // admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)。端末 2 事件(AUDIT_SPEC §3.4 —
@@ -247,6 +249,7 @@ export const rotationFlagsFixture: RotationFlagList = {
       targetUserId: "user_colleague",
       recommendedAtMs: 1_756_000_300_000,
       triggerChainSeq: 3,
+      trigger: "remove_member",
     },
     // 端末失効の変種(AUDIT_SPEC §4.1 — DK): trigger = revoke_device、対象は人(FP は運ばない)
     {

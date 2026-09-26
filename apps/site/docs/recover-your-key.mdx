@@ -30,11 +30,10 @@ maruhi key recover            # asks for the recovery code
 
 The CLI opens the reserve key, generates this machine's device key, registers it on every project where the reserve key is a device, distributes the environment keys to it, and discards the reserve key from memory. Projects where the reserve key is not registered, or was revoked, are listed: ask an admin there to re-invite you.
 
-Before discarding it, maruhi decides whether the opened key is your reserve key, without asking you. When maruhi creates a reserve key, it marks the key's sealed record as a reserve key; the mark is inside the encryption, so the server can neither add nor remove it. A key whose record carries the mark is recorded on this machine as your reserve key, unless one of the facts below says otherwise. A key without the mark is never recorded as one: on an install from before device keys, the ledger holds a copy of a device key instead.
+Before discarding it, maruhi decides whether the opened key is your reserve key, without asking you. When maruhi creates a reserve key, it marks the key's sealed record as a reserve key; the mark is inside the encryption, so the server can neither add nor remove it. A key whose record carries the mark is recorded on this machine as your reserve key, unless it was revoked:
 
-- **Your first key on some project** — on its chain, or in this machine's own records of a project the server no longer lists (a machine that lost only its keychain still has them): it is a copy of a device key. Nothing is recorded; revoke it if the machine that held it is lost or retired (`maruhi device revoke <fingerprint>`), then run `maruhi key recovery`, which seals a separate reserve key in its place.
 - **Revoked on some project**: it cannot serve as your reserve key. Nothing is recorded; `maruhi key recovery` seals a new one.
-- **No reserve-key mark**: it was not created as a reserve key. Nothing is recorded; revoke it if it belongs to a lost or retired device, then run `maruhi key recovery`, which seals a separate reserve key in its place.
+- **No reserve-key mark**: it was not created as a reserve key. Nothing is recorded; `maruhi key recovery` seals a reserve key in its place.
 
 `maruhi key recovery` reissues the code (the old one stops working) if you suspect it was seen by someone else; it opens the ledger with the current code, or with `--passkey`. When the code is lost, `maruhi key recovery --replace` creates a new reserve key sealed with a new code without opening the ledger, and revokes the reserve keys recorded on that machine on every project the server lists for you — see [The reserve key](/docs/devices#the-reserve-key) for the check to run afterwards.
 

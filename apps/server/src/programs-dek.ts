@@ -95,10 +95,7 @@ interface ResolvedWrapRef {
 /**
  * §12-6 の修復経路: admin による (環境, エポック, 受信者, 端末鍵) 単位のラップ削除。
  * 上書き禁止(可用性攻撃の遮断)は維持したまま、毒ラップを削除 → 不足分の
- * 追記経路で再登録する。存在しないタプルは 404(黙って成功させない)。端末鍵を
- * 省略した参照は当該 (エポック, 受信者) のスロットがちょうど 1 つのときだけ
- * 消せる(複数 = 422 duplicate-recipient — 端末軸の曖昧な参照を黙って広く
- * 解釈しない)。
+ * 追記経路で再登録する。存在しないタプルは 404(黙って成功させない)。
  */
 export const deleteDekWrapsProgram = (
   actor: DataActor,
@@ -127,33 +124,17 @@ export const deleteDekWrapsProgram = (
       // そのクラスのラップは存在しない(404 と同じ扱い — 黙って成功させない)。
       // これで「class 違いの同一 (epoch, recipient) ref」も片方が必ずここで落ち、
       // 1 行の削除に監査 2 行が積まれる形も同時に塞がる
-      const slots = (yield* store.listWrapSlots(environmentId, ref.epoch, ref.recipientUserId))
-        .filter((slot) => slot.recipientClass === wrapRecipientClass(ref))
-        .filter(
-          (slot) =>
-            ref.recipientEncPubHex === undefined ||
-            slot.recipientEncPubHex === ref.recipientEncPubHex,
-        );
-      const slot = slots[0];
+      const slot = (yield* store.listWrapSlots(environmentId, ref.epoch, ref.recipientUserId)).find(
+        (candidate) =>
+          candidate.recipientClass === wrapRecipientClass(ref) &&
+          candidate.recipientEncPubHex === ref.recipientEncPubHex,
+      );
       if (slot === undefined) {
         return yield* rejectData({
           kind: "dek-wrap-not-found",
           epoch: ref.epoch,
           recipientUserId: ref.recipientUserId,
         });
-      }
-      if (slots.length > 1) {
-        // 端末鍵を省略した参照が複数の端末スロットを名指している(設計録 §8 K3-3)
-        return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
-      }
-      const resolvedKey = `${ref.epoch}:${ref.recipientUserId}:${slot.recipientEncPubHex}`;
-      if (
-        resolved.some(
-          (r) => `${r.epoch}:${r.recipientUserId}:${r.recipientEncPubHex}` === resolvedKey,
-        )
-      ) {
-        // 省略形と明示形で同じスロットを 2 度名指した
-        return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
       }
       resolved.push({
         epoch: ref.epoch,

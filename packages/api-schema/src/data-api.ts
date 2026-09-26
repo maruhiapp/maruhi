@@ -102,7 +102,7 @@ export const EnvironmentSummarySchema = Schema.Struct({
 export const EnvironmentListSchema = Schema.Struct({
   environments: Schema.Array(EnvironmentSummarySchema),
   /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — pull と同じ規約)。 */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
 });
 
 /**
@@ -154,17 +154,16 @@ export const EnvironmentPullSchema = Schema.Struct({
    * declared 変数の最新ステートメント(§12-7 — レイアウト v2)。
    * 値・バージョンは存在しない(declared だけが正当な値なし状態 — CRYPTO_SPEC
    * §6.3 の値配布要求)。マニフェストのダイジェスト再計算(§4.3)の材料として
-   * 必須の同梱。declared 変数が無い環境では載らない(optionalKey — 旧サーバー
-   * 応答との decode 互換も兼ねる)。
+   * 必須の同梱。declared 変数が無い環境では載らない。
    */
   declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   deks: Schema.Array(RecipientDekSchema),
   /**
    * プロジェクトの schemaPolicy の advisory 同梱(§12-7 / §12-11 — サーバー
    * 申告・署名されない。クライアントの用途は UX のみで、検証規則の入力に
-   * しない)。本改訂以降のサーバーは常に載せる(不在 = 旧サーバー)。
+   * しない)。
    */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
   /**
    * 最新の環境マニフェスト + issuer 情報(§12-7)。クライアントは
    * ダイジェスト再計算・エポック整合を検証し、**欠落は一律拒否**(CRYPTO_SPEC
@@ -204,7 +203,7 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
   /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
   /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — EnvironmentPull と同じ規約)。 */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
 });
 
 /**

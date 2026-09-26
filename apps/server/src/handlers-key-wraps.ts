@@ -515,8 +515,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const shares = yield* repo.sharesOfGuardian(principal.userId);
-        // 自分の端末行(FP 昇順 — repo が並べる)。先頭行が従来のフィールド、全行が
-        // deviceShares(設計録 §8 K3-10 — 端末 1 つなら唯一の行 = 従来どおり)
+        // 自分の端末行(FP 昇順 — repo が並べる)。全行が deviceShares(設計録 §8 K3-10)。
+        // グループの属性(ward・mode・shareIndex)は先頭行から取る
         const deviceRows = shares.filter((s) => s.groupId === params.groupId);
         const share = deviceRows[0];
         if (share === undefined) {
@@ -543,8 +543,6 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           wardUserId: share.wardUserId,
           mode: share.mode,
           shareIndex: share.shareIndex,
-          encHex: share.encHex,
-          ciphertextHex: share.ciphertextHex,
           deviceShares: deviceRows.map((row) => ({
             guardianKeyFingerprintHex: row.guardianKeyFingerprintHex,
             guardianEncPubHex: row.guardianEncPubHex,

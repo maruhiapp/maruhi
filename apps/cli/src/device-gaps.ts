@@ -53,9 +53,7 @@ interface OwnDeviceGap {
 
 /**
  * 同梱の行から、同じ人の他の有効な端末のうちこの環境の受信者(`deviceReceivesEnvironment`
- * — 実効 scope)であるものについて、1〜現エポックのうち行の無いエポックを導く。行が 1 つ
- * でも `recipientEncPubHex` を欠けば(K3 前の旧サーバー = 端末 1 つ)帰属が分からないので
- * 導かない。
+ * — 実効 scope)であるものについて、1〜現エポックのうち行の無いエポックを導く。
  */
 function ownDeviceGapsOf(input: {
   readonly verified: VerifiedProject;
@@ -65,13 +63,15 @@ function ownDeviceGapsOf(input: {
   readonly rows: readonly RecipientDek[];
 }): readonly OwnDeviceGap[] {
   const self = input.verified.state.members.get(input.recipient.userId);
-  if (self === undefined || input.rows.some((row) => row.recipientEncPubHex === undefined)) {
+  if (self === undefined) {
     return [];
   }
   const held = new Map<string, Set<number>>();
   for (const row of input.rows) {
-    const key = row.recipientEncPubHex ?? "";
-    held.set(key, (held.get(key) ?? new Set()).add(row.epoch));
+    held.set(
+      row.recipientEncPubHex,
+      (held.get(row.recipientEncPubHex) ?? new Set()).add(row.epoch),
+    );
   }
   return devicesOf(self).flatMap((device) => {
     if (

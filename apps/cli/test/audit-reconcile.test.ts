@@ -153,6 +153,7 @@ function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState 
         entries: input.built.entries as readonly ChainEntry[],
         headSeq: input.built.entries.length,
         headHashHex: input.built.hashes[input.built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", "/auth/me", () => ({

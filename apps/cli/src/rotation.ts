@@ -37,10 +37,9 @@ interface RotationFlagView {
   readonly triggerChainSeq: number;
   /**
    * AUDIT_SPEC §3.3 の trigger(2026-09-14 ES。`revoke_device` は 2026-09-19 DK K3 の
-   * 端末失効変種 — ワイヤ型への機械的追随。CLI の sweep 第 5 種は K4)。旧サーバーの
-   * 応答には無い。
+   * 端末失効変種 — ワイヤ型への機械的追随。CLI の sweep 第 5 種は K4)。
    */
-  readonly trigger?: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
+  readonly trigger: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
 }
 
 /** フラグビューの取得(表示・件数報告・dismiss 対象解決の共有入口)。 */
@@ -108,7 +107,7 @@ export function resolveNames(
 function describeTarget(flag: RotationFlagView): string {
   if (flag.targetUserId !== undefined) {
     // change_role 変種(降格 / scope 縮小 — AUDIT_SPEC §4.1)は削除ではないので
-    // trigger で言い分ける。trigger の無い応答(旧サーバー)は従来の表示
+    // trigger で言い分ける
     const prefix =
       flag.trigger === "change_role"
         ? "member (role/scope changed)"

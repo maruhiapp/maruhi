@@ -714,7 +714,7 @@ const deviceAddConfig = {
   ),
   replace: singleFlag(
     "replace",
-    "Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key from an install before device keys)",
+    "Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key)",
   ),
 };
 const deviceApproveConfig = {
@@ -852,13 +852,6 @@ const envRotateConfig = {
   "new-epoch": singleFlag(
     "new-epoch",
     "Always create a new epoch, even when incomplete re-encryption could be resumed instead",
-  ),
-  // 移行専用: マニフェスト導入前に作成された環境の
-  // manifest_version 1 初期化。許容するのは**欠落**のみで、配布された
-  // マニフェストの検証は緩和しない(manifest.ts)
-  "init-manifest": singleFlag(
-    "init-manifest",
-    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves",
   ),
   // 明示されたときだけ同期レシートを進める(既定パスへの
   // 暗黙の探索はしない — rotate はリポジトリの外からも打たれ、設定は cwd 依存)
@@ -1840,7 +1833,6 @@ function envRotateCommand(
   flags: CommonFlags & {
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
-    readonly initManifest?: boolean | undefined;
     readonly config?: string | undefined;
   },
   environmentId: EnvironmentId,
@@ -1871,7 +1863,6 @@ function envRotateCommand(
       // 防衛線として残る)
       reason: flags.reason,
       forceNewEpoch: flags.newEpoch === true,
-      initManifest: flags.initManifest === true,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
@@ -3775,12 +3766,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const keySealPasskey = Command.make("passkey", keySealPasskeyConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      const masterKeys = yield* loadMasterKeys(context.session);
       const reserve = yield* openLedgerReserveForChange({
         session: context.session,
         client: context.client,
         via: values.passkey ? "passkey" : "code",
-        masterKeys,
         command: "maruhi key seal passkey",
       });
       yield* sealPasskeyOp({
@@ -3851,7 +3840,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Create the reserve key and its recovery code (first time), separate it from a copy of a device key that an install from before device keys left in the ledger, or reissue the recovery code",
+      "Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code",
     ),
   );
 
@@ -3880,15 +3869,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         mode: values.mode,
         userIds: values["user-id"],
         openReserve: (session, client) =>
-          Effect.flatMap(loadMasterKeys(session), (masterKeys) =>
-            openLedgerReserveForChange({
-              session,
-              client,
-              via: "code",
-              masterKeys,
-              command: "maruhi guardian add …",
-            }),
-          ),
+          openLedgerReserveForChange({
+            session,
+            client,
+            via: "code",
+            command: "maruhi guardian add …",
+          }),
       });
     }),
   ).pipe(
@@ -4477,18 +4463,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         values["environment-id"],
         "`maruhi env rotate dev`",
       );
-      const {
-        reason,
-        "new-epoch": newEpoch,
-        "init-manifest": initManifest,
-        config: syncConfig,
-        ...flags
-      } = values;
+      const { reason, "new-epoch": newEpoch, config: syncConfig, ...flags } = values;
       onExitCode(
-        yield* envRotateCommand(
-          { ...flags, reason, newEpoch, initManifest, config: syncConfig },
-          environmentId,
-        ),
+        yield* envRotateCommand({ ...flags, reason, newEpoch, config: syncConfig }, environmentId),
       );
     }),
   ).pipe(

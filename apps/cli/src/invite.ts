@@ -1212,8 +1212,7 @@ function displayStatus(row: InvitationRow, nowMs: number): string {
 /**
  * 発行ピン突合(§6.5 の招待者側の追加材料 — SHOULD): サーバー申告の行が発行時の
  * link_pub・role・scope と食い違えば、行のすり替え・role / scope の虚偽申告の兆候。
- * ピンが無い(別端末発行)場合は発行署名の検証だけが行を固定する。scope を持たない
- * 旧ピン(K4 以前の発行)は scope の突合を省く(追加のみ・後方互換 — 設計録 K4-L)。
+ * ピンが無い(別端末発行)場合は発行署名の検証だけが行を固定する。
  */
 export function pinMismatchOf(
   pins: InvitePins | null,
@@ -1223,17 +1222,11 @@ export function pinMismatchOf(
   if (pin === undefined) {
     return "missing";
   }
-  if (pin.linkPubHex !== row.issuance?.linkPubHex || pin.role !== row.role) {
-    return "mismatch";
-  }
-  if (
-    pin.scopeKind !== undefined &&
-    pin.scopeEnvironmentIds !== undefined &&
-    !sameScope({ scopeKind: pin.scopeKind, scopeEnvironmentIds: pin.scopeEnvironmentIds }, row)
-  ) {
-    return "mismatch";
-  }
-  return "match";
+  return pin.linkPubHex !== row.issuance?.linkPubHex ||
+    pin.role !== row.role ||
+    !sameScope(pin, row)
+    ? "mismatch"
+    : "match";
 }
 
 /** 一覧 1 行の検証と表示(integrity failure の件数を返す)。 */

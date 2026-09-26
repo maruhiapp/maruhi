@@ -217,7 +217,7 @@ export function loadCheckedFloor(
     } else if (loaded.droppedRecords > 0) {
       // 部分的な破損は fold の自己回復で続行できるが、無言にはしない: 落ちた
       // 行が最新の head / manifest 観測だった場合、その座標の検出材料は次の
-      // 検証済み観測まで一世代薄くなる(旧保存形の corrupt 警告と同じ可視化水準)
+      // 検証済み観測まで一世代薄くなる(全体破損の corrupt 警告と同じ可視化水準)
       yield* logWarning(
         `${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
       );

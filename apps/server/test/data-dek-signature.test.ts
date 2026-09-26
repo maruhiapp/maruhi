@@ -57,7 +57,11 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     // 何も挿入されず監査行も残らない
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({
+        epoch: 1,
+        recipientUserId,
+        recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
+      })),
     });
     expect(removed.status).toBe(204);
     const auditsBefore = await queryProjectDo(
@@ -165,7 +169,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     // ベクター negative `transplant-signer` が crypto 層で固定する
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     const reWrap = await wrapDekTo({
@@ -197,7 +203,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       },
     });
     const removedAgain = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removedAgain.status).toBe(204);
     const replayed = await requestJson("POST", `/environments/${ENV}/deks`, token(STRANGER), {
@@ -271,7 +279,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     const readerWrap = deks.find((wrap) => wrap.recipientUserId === READER);
     if (readerWrap === undefined) throw new Error("missing reader wrap");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     const restored = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
@@ -360,7 +370,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   it("accepts a caller-signed poison wrap: 署名は帰属であり内容検証ではない(§5.1 の意味論)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     // 中身が復号不能なフェイクでも、呼び出し主体(MEMBER)の署名が正しければ
@@ -393,7 +405,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     const payload = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // admin(owner)が毒ラップ想定の READER 宛を削除 → MEMBER が自署名で再登録
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     const reWrap = await wrapDekTo({

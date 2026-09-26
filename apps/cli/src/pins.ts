@@ -48,12 +48,9 @@ export interface IssuedInvitePin {
   /** リンク公開鍵(hex 64)。サーバー申告の行の link_pub と突合する(SHOULD)。 */
   readonly linkPubHex: string;
   readonly role: "reader" | "member" | "admin";
-  /**
-   * 付与予定 scope(2026-09-15 ES K4 — role と同じ地位の追加突合材料。真実源は
-   * 発行署名)。K4 以前に発行したピンには無い(両方欠落 = 突合をスキップ)。
-   */
-  readonly scopeKind?: ScopeKind;
-  readonly scopeEnvironmentIds?: readonly string[];
+  /** 付与予定 scope(2026-09-15 ES K4 — role と同じ地位の追加突合材料。真実源は発行署名)。 */
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly string[];
   readonly expiresAtMs: number;
   /**
    * 宛先の GitHub login(`invite create --github` — 裏付け元の照合先。手元だけに
@@ -136,32 +133,21 @@ function positiveIntField(record: Record<string, unknown>, key: string): number 
   return isPositiveInteger(value) ? value : null;
 }
 
-/**
- * 省略可能な文字列フィールド: 欠落 / null = null、パターン一致 = 値、それ以外 =
- * "invalid"(欠落と不正を区別する — 旧形式のピンは欠落、改竄・破損は不正)。
- */
-function optionalPatternField(
+/** null 可の文字列フィールド: null = null、パターン一致 = 値、それ以外(欠落を含む)= "invalid"。 */
+function nullablePatternField(
   record: Record<string, unknown>,
   key: string,
   pattern: RegExp,
 ): string | null | "invalid" {
-  const raw = record[key];
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  return patternField(record, key, pattern) ?? "invalid";
+  return record[key] === null ? null : (patternField(record, key, pattern) ?? "invalid");
 }
 
-/** 省略可能な正整数フィールド(欠落 / null = null、不正 = "invalid")。 */
-function optionalPositiveIntField(
+/** null 可の正整数フィールド(null = null、それ以外の不正・欠落 = "invalid")。 */
+function nullablePositiveIntField(
   record: Record<string, unknown>,
   key: string,
 ): number | null | "invalid" {
-  const raw = record[key];
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  return positiveIntField(record, key) ?? "invalid";
+  return record[key] === null ? null : (positiveIntField(record, key) ?? "invalid");
 }
 
 function decodeAnchor(value: unknown): InviteAnchor | null {
@@ -172,7 +158,7 @@ function decodeAnchor(value: unknown): InviteAnchor | null {
   const headHashHex = patternField(value, "headHashHex", HEX_64);
   const inviterUserId = patternField(value, "inviterUserId", /^.{1,1024}$/s);
   const inviterKeyFingerprintHex = patternField(value, "inviterKeyFingerprintHex", HEX_32);
-  const verifiedAtSeq = optionalPositiveIntField(value, "verifiedAtSeq");
+  const verifiedAtSeq = nullablePositiveIntField(value, "verifiedAtSeq");
   const inviterSigPubHex = patternField(value, "inviterSigPubHex", HEX_64);
   if (
     headSeq === null ||
@@ -201,8 +187,8 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   const linkPubHex = patternField(value, "linkPubHex", HEX_64);
   const role = ROLES.find((known) => known === value["role"]) ?? null;
   const expiresAtMs = positiveIntField(value, "expiresAtMs");
-  const expectedGithubLogin = optionalPatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
-  const scope = optionalScopeFields(value);
+  const expectedGithubLogin = nullablePatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
+  const scope = scopeFields(value);
   if (
     linkPubHex === null ||
     role === null ||
@@ -215,21 +201,12 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   return { linkPubHex, role, ...scope, expiresAtMs, expectedGithubLogin };
 }
 
-/**
- * 省略可能な scope の対(両方欠落 = 旧ピン → 空、片方だけ・構造規則違反 = "invalid")。
- * 構造規則は CRYPTO_SPEC §6.2(kind の閉集合・all ⇒ 空・256 以下・重複なし・id 形式)。
- */
-function optionalScopeFields(
+/** scope の対(構造規則違反 = "invalid")。構造規則は CRYPTO_SPEC §6.2(kind の閉集合・all ⇒ 空・256 以下・重複なし・id 形式)。 */
+function scopeFields(
   record: Record<string, unknown>,
-):
-  | { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] }
-  | "invalid"
-  | {} {
+): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | "invalid" {
   const kind = record["scopeKind"];
   const ids = record["scopeEnvironmentIds"];
-  if (kind === undefined && ids === undefined) {
-    return {};
-  }
   if (
     (kind !== "all" && kind !== "listed") ||
     !isScopeIdList(ids) ||

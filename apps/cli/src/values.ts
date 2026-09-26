@@ -121,11 +121,8 @@ export interface VerifiedEnvironmentPull {
   readonly tombstones: readonly VerifiedTombstone[];
   /** 検証済みの環境メタステートメント(マニフェスト発行の envMeta 材料)。 */
   readonly environment: VerifiedMetaEvidence;
-  /**
-   * 検証済みマニフェスト(§4.3)。null は移行経路(allowMissingManifest)が
-   * 欠落を許容した場合のみ — 通常経路の欠落は拒否済み(§6.3)。
-   */
-  readonly manifest: VerifiedManifest | null;
+  /** 検証済みマニフェスト(§4.3 — 欠落は拒否済み §6.3)。 */
+  readonly manifest: VerifiedManifest;
   /** 自分宛ラップ(検証は deks.ts の §5.1 / §5.2 経路が担う)。 */
   readonly deks: readonly RecipientDek[];
   /** 非 NFC 名の配布などの SHOULD 警告(呼び出し側が表示する)。 */
@@ -476,7 +473,7 @@ interface PullWire {
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /**
    * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない)。
-   * 不在 = declared なし(旧サーバー応答との decode 互換を兼ねる optionalKey)。
+   * 不在 = declared なし。
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
@@ -792,38 +789,21 @@ function verifyStage<T>(
 }
 
 /**
- * マニフェスト段(§4.3 / §6.3): 欠落 = 一律拒否(唯一の例外は移行経路の
- * allowMissingManifest — manifest.ts のモジュールコメント)。配布された場合は
- * 検証済み全ステートメント(tombstone 込み)からダイジェストを再計算して照合する。
+ * マニフェスト段(§4.3 / §6.3): 欠落 = 一律拒否。配布された場合は検証済み全ステートメント
+ * (tombstone 込み)からダイジェストを再計算して照合する。
  */
 function verifyManifestStage(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly manifest: DistributedEnvironmentManifest | undefined;
-  readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
   /** 床のマニフェスト記録(隣接 prev 検証の predecessor — M1-A1。床なし = null)。 */
   readonly floorManifest: ManifestFloor | null;
-}): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
+}): Effect.Effect<StageResult<VerifiedManifest>, CliError> {
   const wireManifest = input.manifest;
   if (wireManifest === undefined) {
-    if (!input.allowMissingManifest) {
-      return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
-    }
-    // 移行許容(--init-manifest)は「マニフェスト未初期化の環境」のためにある。
-    // 検証済みチェーン上に基準 checkpoint を持つ環境は必ずマニフェストを持つ
-    // (checkpoint タプルが manifest_version を束縛する — §6.2 / §12-4)ため、
-    // その欠落は移行操作下でも握り潰しの証拠として拒否する(床のマニフェスト
-    // 記録確立後の欠落拒否 — §6.3 — のチェーン導出版)
-    if (input.verified.history.latestCheckpointFor(input.environmentId) !== undefined) {
-      return Effect.fail(
-        evidenceError(
-          `The server did not distribute an environment manifest for ${input.environmentId}, although the verified chain carries a checkpoint binding one (manifest suppression — CRYPTO_SPEC §6.3). The migration allowance does not apply to a checkpointed environment`,
-        ),
-      );
-    }
-    return Effect.succeed({ kind: "ok", value: null } as const);
+    return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
   }
   return verifyStage(
     () =>
@@ -850,9 +830,8 @@ function verifyManifestStage(input: {
  * pull 応答の共通検証骨格(§6.3): 環境ステートメント → アクティブ集合(値付き /
  * メタのみで差し替わる)→ declared 集合(値付き応答の declaredVariables — メタ
  * のみモードは variables に混在するため空)→ tombstone → 名前検査 →
- * **マニフェスト**(ダイジェスト再計算・エポック整合 — §4.3。欠落 = 一律拒否。
- * 唯一の例外は移行経路の allowMissingManifest — manifest.ts のモジュール
- * コメント)。ダイジェスト再計算の集合は variables ∪ declared ∪ deleted の
+ * **マニフェスト**(ダイジェスト再計算・エポック整合 — §4.3。欠落 = 一律拒否)。
+ * ダイジェスト再計算の集合は variables ∪ declared ∪ deleted の
  * 全ステートメント。future はどの段でも全体を future にする(有界再同期の入口)。
  */
 function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
@@ -869,8 +848,6 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   >,
   /** 検証済みアクティブ 1 件 → variables_digest のエントリ(§4.3 (3) の再計算材料)。 */
   digestEntryOf: (value: T) => ManifestDigestEntry,
-  /** 移行経路(--init-manifest)のみ true — 欠落の許容であって検証の緩和ではない。 */
-  allowMissingManifest: boolean,
   /** 床のマニフェスト記録(隣接 prev 検証 — M1-A1。床を持たない経路は null)。 */
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<
@@ -880,7 +857,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       readonly variables: readonly T[];
       readonly declared: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
-      readonly manifest: VerifiedManifest | null;
+      readonly manifest: VerifiedManifest;
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -934,7 +911,6 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       verified,
       environmentId,
       manifest: pull.manifest,
-      allowMissingManifest,
       entries: [
         ...actives.value.values.map(digestEntryOf),
         ...declared.value.values.map((statement) => ({
@@ -972,7 +948,6 @@ function verifyAll(
   verified: VerifiedProject,
   environmentId: string,
   pull: PullWire,
-  allowMissingManifest: boolean,
   floorManifest: ManifestFloor | null,
   /**
    * 応答を**取得した時点**のビューのヘッド seq(pull = 取得時ビュー、lease =
@@ -1002,7 +977,6 @@ function verifyAll(
         metaVersion: value.metaVersion,
         metaSigHashHex: value.metaSignedBytesHashHex,
       }),
-      allowMissingManifest,
       floorManifest,
     );
     if (result.kind === "future") {
@@ -1061,11 +1035,8 @@ function verifyAll(
  */
 function resolveMetaIntents(
   floor: FloorHandle,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): Effect.Effect<void, CliError> {
-  if (manifest === null) {
-    return Effect.void;
-  }
   return Effect.forEach(
     floor.unresolvedIntents().filter((intent) => intent.op === "meta-op"),
     (intent) => {
@@ -1207,12 +1178,6 @@ export function pullVerifiedEnvironment(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** ローカル床(§6.3)。検査(規則 (a)(b)(c))と検証成功後の原子コミットを担う。 */
   readonly floor: FloorHandle;
-  /**
-   * マニフェスト**欠落**の許容(移行経路 `maruhi env rotate --init-manifest` のみ)。
-   * 配布された場合の検証は緩和しない。既定 false =
-   * 欠落は一律拒否(§6.3)。
-   */
-  readonly allowMissingManifest?: boolean;
 }): Effect.Effect<VerifiedEnvironmentPull, CliError> {
   return Effect.map(
     pullWithBoundedResync({
@@ -1228,7 +1193,6 @@ export function pullVerifiedEnvironment(input: {
           view,
           input.environmentId,
           wire,
-          input.allowMissingManifest === true,
           // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
           input.floor.current()?.manifest ?? null,
           // 応答は input.verified のビューの下で取得された(再同期後の再検証でも
@@ -1310,7 +1274,6 @@ export function verifyLeaseDistribution(input: {
       input.verified,
       input.environmentId,
       input.wire,
-      false,
       null,
       input.verified.state.headSeq,
     );
@@ -1353,11 +1316,10 @@ export interface VerifiedEnvironmentMetadata {
   /** 検証済みマニフェスト(欠落は拒否済み — メタのみ pull に移行許容はない)。 */
   readonly manifest: VerifiedManifest;
   /**
-   * サーバー申告の schemaPolicy(§12-7 / §12-11 — advisory)。null = 旧サーバー
-   * (未申告)。**検証規則の入力にしない** — 用途は UX(schema set の事前案内)
+   * サーバー申告の schemaPolicy(§12-7 / §12-11 — advisory)。**検証規則の入力にしない** — 用途は UX(schema set の事前案内)
    * のみ。署名されない申告値なので verified の名を持つ本構造では advisory と明示する。
    */
-  readonly advisorySchemaPolicy: SchemaPolicy | null;
+  readonly advisorySchemaPolicy: SchemaPolicy;
   readonly warnings: readonly string[];
 }
 
@@ -1412,8 +1374,8 @@ interface MetadataPullWire {
   readonly variables: readonly DistributedVariableMetaStatement[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   readonly manifest?: DistributedEnvironmentManifest;
-  /** schemaPolicy の advisory 同梱(§12-7 — 不在 = 旧サーバー)。 */
-  readonly schemaPolicy?: SchemaPolicy;
+  /** schemaPolicy の advisory 同梱(§12-7)。 */
+  readonly schemaPolicy: SchemaPolicy;
 }
 
 /** メタデータのみ pull の検証済み中間値(pullWithBoundedResync の TVerified)。 */
@@ -1436,7 +1398,7 @@ function verifyAllMetadata(
       readonly environment: VerifiedMetaEvidence;
       readonly variables: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
-      readonly manifest: VerifiedManifest | null;
+      readonly manifest: VerifiedManifest;
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -1458,7 +1420,6 @@ function verifyAllMetadata(
       metaVersion: statement.metaVersion,
       metaSigHashHex: statement.metaSigHashHex,
     }),
-    false,
     floorManifest,
   );
 }
@@ -1568,11 +1529,6 @@ export function pullVerifiedEnvironmentMetadata(input: {
               if (result.kind === "future") {
                 return Effect.succeed({ kind: "future" as const });
               }
-              // allowMissing なしの verifyAllCommon は欠落を拒否済み — null は
-              // 型面の残余(構造的に到達しない)なので明示的に落とす
-              if (result.manifest === null) {
-                return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
-              }
               return Effect.succeed({
                 kind: "ok" as const,
                 value: {
@@ -1605,8 +1561,8 @@ export function pullVerifiedEnvironmentMetadata(input: {
       tombstones: value.tombstones,
       environment: value.environment,
       manifest: value.manifest,
-      // advisory(§12-11): 検証しない申告値 — UX 用途のみ(不在 = 旧サーバー)
-      advisorySchemaPolicy: wire.schemaPolicy ?? null,
+      // advisory(§12-11): 検証しない申告値 — UX 用途のみ
+      advisorySchemaPolicy: wire.schemaPolicy,
       warnings: value.warnings,
     }),
   );
