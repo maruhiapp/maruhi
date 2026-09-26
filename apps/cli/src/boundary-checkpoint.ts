@@ -23,6 +23,7 @@ import { Effect } from "effect";
 
 import { ownDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
+import type { VerifiedProject } from "./sync.ts";
 
 /**
  * H+1 の複合エントリに続く境界 checkpoint(H+2)を署名する。values は検証済み
@@ -38,6 +39,8 @@ export function signBoundaryCheckpoint(input: {
   readonly manifestVersion: number;
   readonly manifestSigHashHex: string;
   readonly values: readonly EnvValuesDigestEntry[];
+  /** 署名端末の解決に使う検証済みビュー(手元の鍵が無いときの文言 — DK K13-5)。 */
+  readonly verified: VerifiedProject;
   readonly member: ChainMember;
   /** 署名する端末の FP(手元の鍵 — 複合エントリと同じ端末)。 */
   readonly deviceFingerprintHex: string;
@@ -55,7 +58,7 @@ export function signBoundaryCheckpoint(input: {
       try: () => computeChainEntryHash(input.compositeEntry),
       catch: () => cliError("Failed to sign the boundary checkpoint entry"),
     });
-    const device = yield* ownDeviceOrFail(input.member, {
+    const device = yield* ownDeviceOrFail(input.verified, input.member, {
       keyFingerprintHex: input.deviceFingerprintHex,
     });
     const signed = yield* Effect.tryPromise({

@@ -550,6 +550,37 @@ export function storeMasterKeyGuarded(
 }
 
 /**
+ * 既存の鍵を**見ていた値と一致するときだけ**置き換える(`device add --replace` — DK K13-8)。
+ * `storeMasterKeyGuarded` と同じ検出(読み → 書き → 読み直し)で、間に別のプロセスが書いた
+ * ことを見つける。古い鍵を先に消してから保存する形にしない(消した後の失敗で鍵を失う)。
+ */
+function replaceMasterKeyGuarded(input: {
+  readonly entryName: string;
+  readonly previous: string;
+  readonly serialized: string;
+}): Effect.Effect<void, CliError, Keychain> {
+  return Effect.gen(function* () {
+    const keychain = yield* Keychain;
+    const current = yield* keychain.get(input.entryName);
+    if (current !== input.previous) {
+      return yield* Effect.fail(cliError(concurrentDeviceKeyReplace));
+    }
+    yield* keychain.set(input.entryName, input.serialized);
+    const stored = yield* keychain.get(input.entryName);
+    if (stored !== input.serialized) {
+      return yield* Effect.fail(cliError(concurrentDeviceKeyReplace));
+    }
+  });
+}
+
+/**
+ * 差し替えの途中で別の書き込みを見つけたときの文言。新しい鍵の FP はまだ画面に出して
+ * いないので承認されず、その要求は期限で消える(DK K13-8)。
+ */
+const concurrentDeviceKeyReplace =
+  "Another process changed this machine's device key while `maruhi device add --replace` was running, so the new key was not stored and the key now in the keychain was left as it is. The request made for the new key is never approved (its fingerprint was not shown) and expires in 15 minutes. Run `maruhi key show` to see which key is stored now, then re-run `maruhi device add` alone" as const;
+
+/**
  * 並行書き込みを検出したときの文言。控えるべき情報が無いのが要点: この鍵は
  * どこにも保存されておらず、リカバリーコードも発行していないので、後始末は
  * 不要で、やることは「1 つずつ実行し直す」だけ。
@@ -568,9 +599,17 @@ export function storeMasterKeyAndReport(input: {
   /** 何をしたか(文頭)。例: "Generated your master key" */
   readonly action: string;
   readonly fingerprintHex: string;
+  /** 置き換える鍵の保存値(`device add --replace` — 一致するときだけ置き換える)。 */
+  readonly previous?: string | undefined;
 }): Effect.Effect<void, CliError, Keychain | CliIo> {
   return Effect.gen(function* () {
-    yield* storeMasterKeyGuarded(input.entryName, input.serialized);
+    yield* input.previous === undefined
+      ? storeMasterKeyGuarded(input.entryName, input.serialized)
+      : replaceMasterKeyGuarded({
+          entryName: input.entryName,
+          previous: input.previous,
+          serialized: input.serialized,
+        });
     const keychain = yield* Keychain;
     const io = yield* CliIo;
     yield* io.log(`${input.action} and stored it in ${describeStore(keychain.kind)}`);

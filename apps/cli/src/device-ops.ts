@@ -131,7 +131,11 @@ function signAddDevice(input: {
     if (already) {
       return null;
     }
-    const actorDevice = yield* ownDeviceBySigningKey(member, input.signer.signingKeyPair);
+    const actorDevice = yield* ownDeviceBySigningKey(
+      input.verified,
+      member,
+      input.signer.signingKeyPair,
+    );
     const duplicate = duplicateKeyRejection(input.verified, input.candidate);
     if (duplicate !== null) {
       return yield* Effect.fail(cliError(duplicate));
@@ -260,7 +264,11 @@ function signRevokeDevice(input: {
     if (revoking.length === 0) {
       return null;
     }
-    const actorDevice = yield* ownDeviceBySigningKey(actor, input.signer.signingKeyPair);
+    const actorDevice = yield* ownDeviceBySigningKey(
+      input.verified,
+      actor,
+      input.signer.signingKeyPair,
+    );
     const rejection = revokeRejection({ actor, actorDevice, target, revoking });
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));

@@ -675,7 +675,9 @@ export function openEnvironment(
     const device =
       self === undefined
         ? undefined
-        : yield* ownDeviceOrFail(self, { encPubHex: context.masterKeys.record.encPubHex });
+        : yield* ownDeviceOrFail(context.verified, self, {
+            encPubHex: context.masterKeys.record.encPubHex,
+          });
     yield* requireEnvironmentInScope({
       verified: context.verified,
       userId: context.session.userId,

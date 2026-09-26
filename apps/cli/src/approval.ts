@@ -232,7 +232,7 @@ function ensureWithdrawable(
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
   // 合意は実効権限(人 ∩ 端末 cap — §6.2 effectivePermissionOf)で判定する
-  return Effect.flatMap(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+  return Effect.flatMap(ownDeviceBySigningKey(verified, actor, signingKeyPair), (device) =>
     effectivePermissionOf(actor, device).role !== "owner" &&
     resolution.proposal.proposerUserId !== signerUserId
       ? Effect.fail(
@@ -354,7 +354,7 @@ function ensurePolicySettable(
       cliError("Only an owner can change the four-eyes approval policy (CRYPTO_SPEC §6.2)"),
     );
   }
-  return Effect.flatMap(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+  return Effect.flatMap(ownDeviceBySigningKey(verified, actor, signingKeyPair), (device) =>
     ensurePolicySettableWith(verified, request, effectivePermissionOf(actor, device)),
   );
 }

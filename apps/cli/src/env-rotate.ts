@@ -34,11 +34,12 @@ import type {
   EnvValuesDigestEntry,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
+import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
+import { signEntryAtHead } from "./chain-append.ts";
 import { issueCheckpoint } from "./checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
@@ -278,36 +279,27 @@ function signRotateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
   return Effect.gen(function* () {
-    const device = yield* ownDeviceBySigningKey(input.member, input.signingKeyPair);
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "rotate_epoch",
-            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
-            payload: {
-              environmentId: input.environmentId,
-              newEpoch: input.newEpoch,
-              reason: input.reason,
-              dekCommitmentHex: input.dekCommitmentHex,
-            },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("Failed to sign the rotate_epoch entry"),
+    // 署名する端末の解決と署名は共通の 1 か所(chain-append.ts — DK K13-12)
+    const signed = yield* signEntryAtHead({
+      verified: input.verified,
+      signerUserId: input.member.userId,
+      operation: {
+        op: "rotate_epoch",
+        payload: {
+          environmentId: input.environmentId,
+          newEpoch: input.newEpoch,
+          reason: input.reason,
+          dekCommitmentHex: input.dekCommitmentHex,
+        },
+      },
+      signingKeyPair: input.signingKeyPair,
+      failureText: "Failed to sign the rotate_epoch entry",
     });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the rotate_epoch entry"));
-    }
     // op の絞り込み(signChainEntry は入力の op を保存する)
-    if (signed.value.op !== "rotate_epoch") {
+    if (signed.op !== "rotate_epoch") {
       return yield* Effect.fail(cliError("Failed to sign the rotate_epoch entry"));
     }
-    return signed.value;
+    return signed;
   });
 }
 
@@ -609,6 +601,7 @@ function appendRotation(
                 manifestVersion: manifest.manifestVersion,
                 manifestSigHashHex: manifest.manifestSigHashHex,
                 values: input.checkpointValues,
+                verified: state.verified,
                 member: state.member,
                 deviceFingerprintHex: entry.actor.keyFingerprintHex,
                 signingKey: input.signingKeyPair.privateKey,
@@ -2076,7 +2069,11 @@ function resumeReencryption(input: {
         : yield* reencryptCurrentValues({
             context: reencryptContext(
               input.input,
-              yield* ownDeviceBySigningKey(member, input.input.signingKeyPair),
+              yield* ownDeviceBySigningKey(
+                input.pulled.verified,
+                member,
+                input.input.signingKeyPair,
+              ),
               {
                 epoch: currentEpoch,
                 dek,
@@ -2387,7 +2384,7 @@ function rotateWithWarnings(
       // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
       context: reencryptContext(
         input,
-        yield* ownDeviceBySigningKey(rotated.member, input.signingKeyPair),
+        yield* ownDeviceBySigningKey(pulled.verified, rotated.member, input.signingKeyPair),
         {
           epoch: newEpoch,
           dek,
