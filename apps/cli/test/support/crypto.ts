@@ -105,6 +105,20 @@ export function genesisOp(user: TestUser): ChainOperation {
   return { op: "genesis", payload: { encPubHex: user.encPubHex, sigPubHex: user.sigPubHex } };
 }
 
+/** add_device(cap (owner, all) — 予備鍵の登録の形。actor は同じ人の有効な端末 — CRYPTO_SPEC §6.2)。 */
+export function addOwnerDeviceOp(device: TestUser): ChainOperation {
+  return {
+    op: "add_device",
+    payload: {
+      encPubHex: device.encPubHex,
+      sigPubHex: device.sigPubHex,
+      roleCap: "owner",
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+    },
+  };
+}
+
 export function addMemberOp(
   target: TestUser,
   role: "owner" | "admin" | "member" | "reader",

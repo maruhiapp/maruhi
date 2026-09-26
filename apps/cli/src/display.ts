@@ -126,6 +126,11 @@ export function countNoun(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
+/** 件数つきのプロジェクトの列挙(「2 projects (a, b)」— 台帳の鍵の判定の文が共有する)。 */
+export function describeProjects(projectIds: readonly string[]): string {
+  return `${countNoun(projectIds.length, "project")} (${projectIds.map(displayText).join(", ")})`;
+}
+
 /**
  * Escapes everything outside printable ASCII as `\u{...}` (hex, at least four
  * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /

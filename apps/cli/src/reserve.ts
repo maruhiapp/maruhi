@@ -17,9 +17,14 @@
 import { ALL_SCOPE, type EncryptionKeyPair, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { deviceProvenanceOf } from "./device-key.ts";
+import type { ReserveVerdict, StandingGroups } from "./device-standing.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import type { CliIo } from "./io.ts";
 import { generateKeyRecord } from "./key-record.ts";
 import type { StoredMasterKey } from "./keychain.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
 import { type CliSession, importMasterKeys } from "./session.ts";
 
@@ -103,4 +108,84 @@ export function recordedReserves(
       .filter((device) => device.source === "reserve" && device.revokedAtMs === null)
       .toSorted((a, b) => b.recordedAtMs - a.recordedAtMs);
   });
+}
+
+/**
+ * 台帳の鍵が予備鍵として働かないと分かったとき、この端末の誤った reserve の行を直す
+ * (DK K14-4 4-g)。書き手の事実は既存のもの(K4-3)だけ: `first-key` → 検証済みチェーンで
+ * 最初の鍵として観測した行(出所 observed)に置き換える。`revoked` → 失効を観測した印を
+ * 付ける。行が無ければ何もしない。書き込みの失敗はコマンドを落とさず Warning にする。
+ */
+export function retractReserveRecord(input: {
+  readonly session: CliSession;
+  readonly fingerprintHex: string;
+  readonly verdict: ReserveVerdict;
+  readonly groups: StandingGroups;
+}): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
+  return Effect.gen(function* () {
+    const { session, fingerprintHex } = input;
+    const store = yield* OwnDeviceStore;
+    const loaded = yield* store.load(session.origin, session.userId);
+    const recorded =
+      loaded.state === "loaded"
+        ? loaded.devices.find(
+            (row) =>
+              row.keyFingerprintHex === fingerprintHex &&
+              row.source === "reserve" &&
+              row.revokedAtMs === null,
+          )
+        : undefined;
+    if (recorded === undefined) {
+      return;
+    }
+    if (input.verdict.kind === "revoked") {
+      yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
+      yield* logNote(
+        `this machine had recorded ${fingerprintHex} as your reserve key; it is revoked, so the record now says so`,
+      );
+      return;
+    }
+    if (input.verdict.kind !== "first-key") {
+      return;
+    }
+    // 観測の行の材料は、有効な立場(最初の鍵のプロジェクトを優先)。最初の鍵だったプロジェクトで
+    // 既に失効し、どこにも有効でなければ、失効の印を付ける(K14-18)。同期できないプロジェクトが
+    // あれば「どこにも無い」とは言えないので、行に触れない(K14-19 — 門は引き続き鍵を守る)
+    const first =
+      input.groups.active.find((entry) => entry.standing.firstKey) ?? input.groups.active[0];
+    if (first === undefined && input.groups.unsynced.length > 0) {
+      return;
+    }
+    if (first === undefined) {
+      yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
+      yield* logNote(
+        `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")} and is registered nowhere now, so the record now says it is revoked`,
+      );
+      return;
+    }
+    const { device, context } = first.standing;
+    yield* store.record(session.origin, session.userId, {
+      keyFingerprintHex: fingerprintHex,
+      encPubHex: device.encPubHex,
+      sigPubHex: device.sigPubHex,
+      roleCap: device.roleCap,
+      scope: device.scope,
+      source: "observed",
+      label: null,
+      addedByFingerprintHex: deviceProvenanceOf(context.verified, session.userId, device)
+        .addedByFingerprintHex,
+      observedProjectId: first.projectId,
+      recordedAtMs: Date.now(),
+      revokedAtMs: null,
+    });
+    yield* logNote(
+      `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")}, so the record now lists it as an observed device key (it is no longer revoked by \`maruhi key reserve rotate\` or \`maruhi key recovery --replace\`)`,
+    );
+  }).pipe(
+    Effect.catch((error) =>
+      logWarning(
+        `could not correct this machine's record of ${input.fingerprintHex} (${error.message}); check it with \`maruhi key show\``,
+      ),
+    ),
+  );
 }
