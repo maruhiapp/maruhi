@@ -919,6 +919,17 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
     await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
+    // 読み上げ名は表に見える列(状態・役割・招待者)で行を同定する。見える文言は "Revoke"
+    const pendingRevoke = page.getByRole("button", {
+      name: /^Revoke pending member invitation from user_e2e, expires /,
+    });
+    await expect(pendingRevoke.count()).resolves.toBe(1);
+    await expect(pendingRevoke.textContent()).resolves.toBe("Revoke");
+    await expect(
+      page
+        .getByRole("button", { name: /^Revoke accepted reader invitation from user_e2e, expires / })
+        .count(),
+    ).resolves.toBe(1);
     // 2 段階確認(裁定 CO — DP3 改訂 4 で AlertDialog に): 行の Revoke → モーダルの Revoke で実行
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
@@ -985,6 +996,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("no expiry recorded", { exact: true }).count()).resolves.toBe(1);
     // lastUsedAtMs null は "never"(2 行)
     await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(2);
+    // 行の Revoke は見える文言 "Revoke" のまま、読み上げ名に行の同定(トークン名)を含む
+    const table = page.getByTestId("token-table");
+    for (const name of ["ci", "old-laptop", "legacy"]) {
+      const button = table.getByRole("button", { name: `Revoke token "${name}"`, exact: true });
+      await expect(button.count()).resolves.toBe(1);
+      await expect(button.textContent()).resolves.toBe("Revoke");
+    }
     // 発行 UI・生値表示は置かない — CLI ログインへの静的案内のみ
     await expect(page.getByTestId("token-notes").textContent()).resolves.toContain("maruhi login");
     expect(violations).toEqual([]);
@@ -1086,8 +1104,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(dialog.count()).resolves.toBe(1);
     const rowRevoke = page
       .getByTestId("token-table")
-      .getByRole("button", { name: "Revoke", exact: true })
-      .first();
+      .getByRole("button", { name: 'Revoke token "old-laptop"', exact: true });
     await expect.poll(() => rowRevoke.isDisabled()).toBe(true);
     release?.();
     // 完了 → ダイアログが閉じ、再取得で行が消え、残る行の Revoke は再び有効
@@ -1095,7 +1112,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect
-      .poll(() => page.getByRole("button", { name: "Revoke", exact: true }).first().isDisabled())
+      .poll(() =>
+        page.getByRole("button", { name: 'Revoke token "old-laptop"', exact: true }).isDisabled(),
+      )
       .toBe(false);
     await page.close();
   });
@@ -1330,8 +1349,15 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       table.getByText("not among your tokens (revoked or expired?)", { exact: true }).count(),
     ).resolves.toBe(1);
     await expect(table.getByText("none linked", { exact: true }).count()).resolves.toBe(1);
-    // 失効の入口は突合できた行だけ("Revoke token" — 端末の失効ではない)
+    // 失効の入口は突合できた行だけ("Revoke token" — 端末の失効ではない)。読み上げ名は
+    // トークン名と端末名で行を同定する
     await expect(table.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(1);
+    const deviceRevoke = table.getByRole("button", {
+      name: 'Revoke token "ci" of device macbook',
+      exact: true,
+    });
+    await expect(deviceRevoke.count()).resolves.toBe(1);
+    await expect(deviceRevoke.textContent()).resolves.toBe("Revoke token");
     // 登録・削除・承認の操作は無い。紛失時の導線は CLI の device revoke → トークン失効
     await expect(
       page.getByRole("button", { name: /register|approve|remove device/i }).count(),

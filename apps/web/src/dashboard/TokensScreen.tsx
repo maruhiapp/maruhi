@@ -128,7 +128,11 @@ function buildTokenColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
-        <RevokeButton onArm={() => onArm(row.id)} isLocked={isLocked} />
+        <RevokeButton
+          onArm={() => onArm(row.id)}
+          isLocked={isLocked}
+          accessibleName={`Revoke token "${row.name}"`}
+        />
       ),
     },
   ];

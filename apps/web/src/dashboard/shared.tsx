@@ -422,19 +422,28 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
  * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
  * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
  * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
- * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は対象の名詞を
- * 添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で使う。
+ * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は見える文言で、
+ * 対象の名詞を添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で
+ * 使う。`accessibleName` は行の同定を含む読み上げ名(表の中で "Revoke" が並ぶと支援技術の
+ * ボタン一覧で区別できない)。Astryx Button は children が label と異なるとき label を
+ * aria-label にするので、label = 読み上げ名、children = 見える文言で渡す。
  */
 export function RevokeButton({
   onArm,
   isLocked,
+  accessibleName,
   label = "Revoke",
 }: {
   onArm: () => void;
   isLocked: boolean;
+  accessibleName: string;
   label?: string;
 }): ReactNode {
-  return <Button label={label} variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
+  return (
+    <Button label={accessibleName} variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked}>
+      {label}
+    </Button>
+  );
 }
 
 /**

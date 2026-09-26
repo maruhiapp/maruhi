@@ -22,6 +22,7 @@ import {
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
+  formatServerTime,
   HexText,
   LoadingRow,
   RevokeButton,
@@ -85,6 +86,14 @@ function isRevocable(row: InviteRow): boolean {
   return REVOCABLE_STATUSES.includes(row.status);
 }
 
+/**
+ * 招待行の Revoke の読み上げ名。表に見えている列(状態・役割・招待者・期限)で行を
+ * 同定する(招待 id は表に出ていないので使わない)。
+ */
+function inviteRevokeName(row: InviteRow): string {
+  return `Revoke ${row.status} ${row.role} invitation from ${row.inviterUserId}, expires ${formatServerTime(row.expiresAtMs)}`;
+}
+
 function buildInviteColumns(
   isLocked: boolean,
   onArm: (id: string | undefined) => void,
@@ -126,7 +135,13 @@ function buildInviteColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: InviteRow) =>
-        isRevocable(row) ? <RevokeButton onArm={() => onArm(row.id)} isLocked={isLocked} /> : null,
+        isRevocable(row) ? (
+          <RevokeButton
+            onArm={() => onArm(row.id)}
+            isLocked={isLocked}
+            accessibleName={inviteRevokeName(row)}
+          />
+        ) : null,
     },
   ];
 }

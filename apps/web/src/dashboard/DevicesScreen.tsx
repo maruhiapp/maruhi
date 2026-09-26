@@ -163,6 +163,7 @@ function buildDeviceColumns(
         return (
           <RevokeButton
             label="Revoke token"
+            accessibleName={`Revoke token "${linked.token.name}" of device ${row.label}`}
             onArm={() => onArm(linked.token.id)}
             isLocked={isLocked}
           />
