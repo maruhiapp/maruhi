@@ -2800,3 +2800,138 @@ K4-21 (c)「鍵があるとき、その鍵の FP の要求行か登録簿の行�
 | K13-18 | 諮る点 (2): 最初の鍵の 2 択の終了コード | (a) **exit 1 のまま**。(b) exit 0 にする | — | 判断を誤ったときの害の非対称で決める: (b) が外れるのは複製の端末で、スクリプトは「この端末は自分の鍵で登録された」と読む。複製の鍵はチェーンに載っているので端末は動き続け、DK が表に出したい状態(1 つの鍵を 2 台が持つ)が**黙って**残る。(a) が外れるのは元の端末で、実害は無いのに失敗に見える。文は「この端末そのものなら何もしなくてよい」と言うので、人が読めば解ける(**声を出す**誤り) | (a) への反例「CI で `device add` を冪等に打つスクリプト」— 最初の鍵の端末は `device add` の対象ではなく(`key generate` / 招待で鍵を得た端末)、スクリプトで打つ場面は複製の検出が要る場面と重なる。(b) への反例: 上の非対称。加えて K4-18(既存の鍵は既定で止まる)からの挙動の連続性を崩す | **(a)**。原則「機械に判定できない問いの終了コードは、誤りが黙って残る側を避ける(声を出す誤りを選ぶ)」— K4-18 ✓、K13-2 の軸(捨ててよいと言わない)✓ |
 
 → 完了記録の「所有者に諮る点」(1)(2) はこの決定で閉じる。
+
+## 19. K14 追記(2026-09-26 — DK 申し送りの回収: `key recover` の予備鍵の判定をチェーン上の載り方で)
+
+§11 W-3(V-4)の回収。`maruhi key recover` は台帳を開いた後「Was this key created as your reserve key …?」と人に聞き(K4-10 j-1 — 既定 no)、答えで開いた鍵 B の扱いを分けていた。全端末を失った直後の人は答えられないことがある。所有者の裁定(K14 のプロンプト §0)は **W-3 = ON**: 問いを「チェーン上の載り方による機械判定 + 判定の事実を見せた確認」に置き換える(**K4-10 j-1 の改訂** — 本節で改訂する)。**確認の 1 問は残す**(儀式の中の yes。判断でなく確認にする — W-3 第 3 巡)。仕様(CRYPTO / AUTH / AUDIT)・ADR・`CLAUDE.md`・`packages/crypto`・サーバー・ワイヤ形式・受理ポリシーの値・`own-devices.json` の欄・床の形式・台帳の形式は変えない。W-4 / W-6・K5 諮る点 (1)(2)・K2 申し送り 4・K7 諮る点 (4)(5)・K8 諮る点 (2)・K9 諮る点 (2)(3)・K13 申し送り (1)(2) は範囲外。表は K6-X の書式(空欄は「探していない」の印)。裁定は実装の前にここへ記録し、実装中の判断は K14-9 以降として同じ形で足す。
+
+**着手前の確認**: `origin/main`(`31d4353` — #203 のマージ。その前に #204)から開始。本節の前に K14 の節・W-3 の回収の記録は無く(W-3 は §11 の表と K7〜K13 の申し送りに「範囲外」として現れるだけ)、GitHub の open な PR は 0 件。
+
+**原則(本ラウンドの軸)**: 「**機械に言える事実は機械が言い、人には事実を見せて確認だけを求める。事実が足りないときは、誤りが黙って残る側に倒さない**」(W-3 第 3 巡 + K13-18)。
+
+### K14 の事実確認(コードの分岐と述語の定義を読んだ — K6-X。行番号は 31d4353)
+
+1. **問いが変えるものは 2 つだけ**(`key-recover.ts` `finishRecovery` :231〜): `newOrExistingDeviceKeys` → `askIsReserve`(:210 — 「Opened key …」の行、問い、プロンプト「Type yes if it is your reserve key (anything else = no): 」、`answer === "yes"`)→ yes なら `recordReserveLocally`(`own-devices.json` に出所 "reserve" の行)、それ以外なら Warning「the opened key … was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now … Then create a separate reserve key with `maruhi key recovery`」→ `fetchProjectMemberships` → 各プロジェクトで `registerDeviceWithReserve` → 報告 → 破棄の Note。**登録(B の署名で `add_device(新端末)` + バックフィル)と破棄は答えに依らず両側で同じ**。答えが変えるのは「出所 reserve の記録」と「失効の案内」だけ。
+2. **記録が無くても B は次の同期で観測される**(`device-sync.ts` (a) :179 — 検証済みチェーン上の自分の端末でローカル記録に無いものを出所 "observed" で記録し Note、(c) で他のプロジェクトへ `add_device`)。よって「予備鍵を記録しない」誤りは、伝播を止めない(K4-10 反例 1 の「次の同期で観測 → 伝播は (3) 経由」は現行でも真)。一方「reserve と記録する」ことの効き目は: `key show` の予備鍵の表示、K4-9 の予備鍵の不在の警告(記録があれば出ない)、`key reserve rotate` / `--replace` の失効対象(`staleReserveFingerprints` — 出所 reserve の行)。**pre-DK の複製 K を reserve と記録すると、予備鍵の不在の警告が黙り、利用者は分離していない台帳を分離済みと信じる**(黙って残る誤り)。予備鍵を記録し損ねると、失効の Warning が出る・次の同期で観測の Note が出る(声を出す誤り)。
+3. **判定の部品**(`device-standing.ts`): `keyStandingIn(verified, userId, fp)` は有効(`firstKey` = `deviceProvenanceOf` の `addedByFingerprintHex === null` — `addedSeq` のエントリが `add_device` でない)/ 失効(`revokedFingerprintsOf` — 適用済み `revoke_device`)/ 無い。`keyStandingOnProject`(非公開)は `openMetadataProject`(鍵なしの前段 — トークンだけで同期できる)で同期して純関数を呼び、失敗を「同期できず」(`evidence` つき)に畳む。`keyStandingsOf` は一覧の失敗を `listFailure` に畳む。`groupStandings` は 4 群に分ける。**鍵なしの前段・トークンの水準(read で足りる — 同期だけ)・一覧の失敗・同期できずは、`key recover` の場面でもそのまま使える**。足りないのは「群から予備鍵かを言う規則」(K13 は `device add` の分岐として `device.ts` に持つ — 「捨ててよいか」の問いで、予備鍵かの問いではない)。
+4. **`key recover` は既に全プロジェクトを同期している**(`registerDeviceWithReserve` :127 — `openMetadataProject` → `members.get(自分)` が無ければ失敗 `You are not a chain-derived member` → `member.devices.has(B)` が偽なら `reserve-missing`)。**追加の同期は要らない**: 登録のために開いた検証済みチェーンに `keyStandingIn` を当てれば同じ判定になる(K13-1 の `device list` と同じ — 同期を二重にしない)。ただし現行は `members.get` / `devices.has` を自前で読み、失効(`revoked`)と無い(`absent`)を区別しない(どちらも `reserve-missing` の「not registered on this project」)。
+5. **チェーンに載る経路**(`packages/crypto` chain-verify.ts — 読むだけ): 端末は `firstDeviceOf`(:570 — genesis の actor :1154 / `add_member` の payload :1173)か `applyAddDevice`(:1184 — **actor 自身の端末集合へ**)でしか載らない。`add_device` は本人の端末が署名する(他人は足せない)。提案経由(`approve` の内側の `add_device`)は `addedSeq` のエントリが `approve` なので `firstKey` に倒れる(K13-1 第 3 巡 — 保守的な向き)。
+6. **台帳に入る鍵の集合**(grep: `issueRecoveryCodeOp` の呼び出し元 4 か所 + パスキー・保護者の封印): (i) `sealNewReserve`(`recovery.ts` :425 — `generateReserveKeys` の新しい鍵。`key generate` の後段 / `key recovery` の初回 / pre-DK の分離)、(ii) `replaceReserveWithoutOpening`(`--replace` — 新しい鍵)、(iii) `keyReserveRotateOp`(新しい鍵)、(iv) `keyRecoveryOp` の再発行(**開いた B そのもの**を新しいコードで再封印)、(v) `key seal passkey` / `guardian add`(`openLedgerReserveForChange` で開いた B を封印)。**生成された鍵はすべて予備鍵で、キーチェーンに入らない**(`ReserveKeys` の brand — `reserve.ts`)。既存の B を封印し直す (iv)(v) は「台帳に既にあったもの」を運ぶだけ。よって台帳に入りうるのは「DK の予備鍵」か「DK 以前から台帳にあった端末鍵の複製」だけで、**DK 以後に承認された端末鍵が台帳に入る経路は無い**(W-3 の前提は成り立つ)。
+7. **予備鍵は最初の鍵にならない**: 予備鍵の秘密はキーチェーンに無いので、`project init`(genesis)・`invite accept`(`add_member`)の署名・payload に使われない(どちらもキーチェーンの端末鍵を使う)。予備鍵がチェーンに載るのは `syncOwnDevices` (c)(同期している端末の署名で `add_device` — K4-30)、`key reserve rotate` / `--replace`(この端末の署名で `add_device`)だけ。
+8. **W-3 の反例の前提**: 反例 1(どこにも無い)— 現行は `reserve-missing` を列挙し、問いは出す。反例 2(`--new-identity`)— 新しい身元の最初の鍵は端末鍵、予備鍵は `sealNewReserve` → 同期で `add_device`。整合。反例 3(載り方がプロジェクトごとに違う)— pre-DK の K は、K の端末が承認した DK の端末 D2 が K を観測で記録し(事実 2)、D2 だけが招待を受けたプロジェクトへ `add_device` で足すので、**最初の鍵のプロジェクトと `add_device` のプロジェクトが混在しうる**。加えて (a) 同期できないプロジェクトがあると、そこで最初の鍵かは分からない。(b) **`remove_member` の後の再招待で鍵が替わったとき**: K が最初の鍵だったプロジェクトから外され、D2 で再招待を受けると、`add_member` の最初の鍵は D2 になり、K は D2 の同期で `add_device` として足し直される(`remove_member` は `revoke_device` ではないので `revokedFingerprintsOf` に入らない)。**K が最初の鍵だった全プロジェクトでこれが起きると、現在の状態では K はどこでも `add_device` 出所に見える**(履歴には以前の在籍の最初の鍵として残るが、`keyStandingIn` は現在の端末の `addedSeq` しか見ない)。(c) 失効: `revoke_device` の後は `keyStandingIn` が出所を返さない(`revoked`)。
+9. **`key recovery` の pre-DK 判別は写しが割れている**(`keyRecoveryOp` :391 — 「開封した B の FP = キーチェーンの端末鍵の FP」だけ。`ledger-open.ts` `openLedgerReserveForChange` :77 も同じ比較)。一致しなければ B を予備鍵として再封印し **`recordReserveLocally`**(:408)。**`key recover` の後の端末では、端末鍵は新しいので pre-DK の複製 K と一致しない** → `key recovery` は K を「予備鍵」と呼んでコードを再発行し、reserve と記録する(K4-2 の判別は「K を持つ端末で打つ」前提で、復元後には成り立たない)。現行の `key recover` の Warning は「失効させよ → `key recovery` で予備鍵を分けよ」と案内するが、失効の後の `key recovery` は失効した K のコードを再発行し、reserve と記録する(`own-devices.ts` `record` :370 は行を上書きし `revokedAtMs: null` に戻す)。**案内に従うと、死んだ鍵を予備鍵と信じる状態が黙って残る**(既存の穴 — W-3 の判定と同じ問いの写し)。同じ比較の写しは `openLedgerReserveForChange`(`key seal passkey` / `guardian add` / `key reserve rotate`)にもある。
+10. **儀式ゲートと問いの位置**: `key recover` のゲートは開封の段にある(コード — `recovery.ts` `ensureRecoveryCodeInteractionAllowed`、パスキー — `passkey.ts` `ensurePasskeyCeremonyAllowed`、保護者 — `handoff.ts` `ensureHandoffRequestAllowed`。いずれも既知エージェント + 3 つの標準入出力が端末か)。問いは開封の後なので、**問いの位置・有無を変えても非対話の拒否は変わらない**(拒否は台帳の取得より前 — `recovery.test.ts` の既存 2 件が固定)。3 経路はすべて `finishRecovery` に合流する。
+11. **同じ主張の写し**(grep — K7-15): 「Was this key created」「Type yes if it is your reserve key」は `key-recover.ts` :217 / :220、`recovery.test.ts` :632、`passkey.test.ts` :49、`handoff.test.ts` :307、`agent.test.ts`(コメントと応答 "yes")。「not recorded as your reserve key」は `key-recover.ts` :244、`recovery.test.ts` :677、`passkey.test.ts` :646。docs は `recover-your-key.mdx` :31(「asks one question — whether the opened key was created as your reserve key … the answer is no」)と `devices.mdx` :156(「it asks whether the opened key is your reserve key, and the answer is no」)。help の `key recovery` の説明(「separate it from this device's key on an install from before device keys」— `effect-cli.ts` と golden)は事実 9 の判別の写し。「copy of a device key」は `key-recover.ts` :217 だけ。`key recover` のチェーンつきのテストは**無い**(全件 `GET /projects` が空)。
+
+### K14-1. 判定の述語(何で「予備鍵か」を言うか)
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 1-a 何もしない(問いのまま) | 差分なし | — | — | 所有者裁定 W-3 = ON | 棄却 |
+| 1-b 文言だけ直す(問いに「pre-DK なら no」を足す) | 差分が小さい | — | — | 答えられない人に同じ判断を求める(V-4 のまま) | 棄却 |
+| 1-c `keyStandingsOf` を `finishRecovery` の頭で呼び、問いの位置で判定する | 問いの位置を保つ | — | — | 登録で同じプロジェクトをもう一度同期する(事実 4 — N 倍の同期が 2 回) | 棄却 |
+| 1-d **登録のために開いたチェーンに `keyStandingIn` を当て(`keyStandingOnProject` を登録の前段に使う — 公開する)、全プロジェクトの立場を `groupStandings` で束ね、群から判定を返す純関数 `reserveVerdictOf(groups, listFailure)` を `device-standing.ts` に足す**。判定は登録の後、記録の前 | 同期を増やさず、立場の判定・同期の失敗の畳み方は K13 の 1 か所(写しを作らない) | 1-c より同期が半分。登録の `members.get` / `devices.has` の自前の読み(事実 4)も同じ述語に寄り、失効と無いを言い分けられる | 判定を型(判別共用体)で返し、文言は報告側が作る(K12-10) | 反例 1「判定が登録の後になる — 登録の途中で落ちると記録されない」→ 記録しない側(事実 2 — 声を出す)。`--resume` がもう一度判定する。反例 2「一覧の取得に失敗すると判定に届かない」→ 現行も一覧の失敗でコマンドが落ちる(ただし現行は問いで記録した後)。記録しないで落ちる方が安全側 | **採用** |
+| 1-e 履歴(以前の在籍の最初の鍵 — `applied` の genesis / `add_member` の payload)まで見る新しい述語 | 事実 8 (b) の再招待の穴を塞ぐ | 1-d に足す形 | — | 反例「`keyStandingIn` と別の『最初の鍵』の述語ができる」— K13-1 の「同じ問いは 1 つの純関数で」に反し、`device add` の 2 択と判定が割れる(同じ鍵を片方は最初の鍵、片方は `add_device` と言う)。穴 (b) は確認の 1 問(K14-3)と `no` の案内が拾う。`device add` 側と揃えて足すなら別タスク | 棄却(既知の限界 + 申し送り) |
+
+**第 2 巡**: 上位互換 = 1-d の「登録のチェーンに当てる」。銀の弾丸 = 型で返す。反例 = 1-d に 2、1-e に 1。**第 3 巡**: 試した案「判定を `keyStandingsOf` の中に入れる」→ `keyStandingsOf` は同期の包みで、`device add` も使う。判定の規則(予備鍵か)を混ぜると問いが 2 つになる。新案なし。試した案「群ではなく `KeyStandings` を受ける」→ `groupStandings` を呼び直すだけ。群を受ける方が `device add` と同じ入口(`settleExistingKey` も群で分岐)。新案なし。**第 4 巡**: 試した案「`registerDeviceWithReserve` の失敗(追記の失敗)を『同期できず』に数える」→ 同期できていれば立場は分かっている。追記の失敗は立場を変えない。新案なし。打ち止め。
+
+**原則**: 「**同じ問いは 1 つの純関数で答え、判定は既に開いたチェーンに当てる**」— K13-1 ✓、K4-5 ✓(判断はチェーン、登録簿・記録は入力にしない)、K7-15 ✓。**採用: 1-d**。
+
+### K14-2. 判定の規則と、判定できないときの既定
+
+判定の値(`reserveVerdictOf` — 上から順に最初に当たるもの):
+
+| 値 | 条件 | 記録 | 確認の問い |
+|---|---|---|---|
+| `first-key` | どこか 1 つでも有効で `firstKey`(同期できないプロジェクトがあっても — 正の事実 1 つで足りる) | しない | 出さない |
+| `revoked` | 最初の鍵は無く、どこかで失効 | しない | 出さない |
+| `unchecked` | 上の 2 つでなく、同期できないプロジェクトがある(一覧の失敗は判定に届かない — K14-1 反例 2) | しない | 出さない |
+| `nowhere` | どこにも有効でない(無い だけ) | しない | 出さない |
+| `added` | 有効な所が 1 つ以上あり、すべて `add_device` 出所。失効・同期できず無し(無いプロジェクトはあってよい — 登録の報告が「再招待」を列挙する) | 確認の yes のとき | **出す** |
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 2-a 判定できないときは今の問い(判断)に戻す | 現行と同じ逃げ道 | — | — | 判定できない場面ほど人も答えられない(V-4)。問いが「判断」に戻る(W-3 第 3 巡に反する) | 棄却 |
+| 2-b 判定できないときは予備鍵と記録する | 予備鍵の記録を失わない | — | — | 事実 2: 複製を reserve と記録する誤りは黙って残る(K13-18 の非対称)。穴 1 と逆向き | 棄却 |
+| 2-c **判定できないときは記録しない(事実と理由を Note / Warning で言い、次の手を名指す)。問いは `added` だけ** | 誤りが声を出す側 | 事実 2 により、記録しない誤りは観測(出所 observed)が伝播を補い、予備鍵の不在の警告(K4-9)が `key recovery` へ導く。`key recovery` は K14-4 で同じ判定を使うので、次の手が判定と矛盾しない | 「予備鍵か」の問いを「予備鍵と記録してよいか」の述語に置き換える(K13 の軸「判定できない原因でなく、判定できる安全の述語で切る」) | 反例 1「DK の予備鍵なのに一部のプロジェクトが同期できない」→ `unchecked`、記録しない。Note が「同期できたら `maruhi key recover --resume` がもう一度確かめる」と言う(`--resume` は既存の鍵で登録を飛ばし、判定をやり直す)。反例 2「プロジェクトが 1 つも無い人」→ `nowhere`、記録しない。次の keyed コマンドでは(プロジェクトが無いので)何も起きず、`key show` が予備鍵の記録なしを言う。Note は `maruhi key recovery`(予備鍵と判定されれば再封印と記録 — K14-4)を名指す。反例 3「失効した B」— `revoked` はどちらの鍵でも台帳の鍵として働かない(復元の登録が失効したプロジェクトで通らない)。記録しても伝播は失効を除くが、予備鍵があると信じさせる。記録しない | **採用** |
+| 2-d `revoked` と `unchecked` の優先を逆にする | — | — | — | どちらも記録しない。失効は正の事実なので先に言う方が次の手(`key recovery` — K14-4 で分離する)が定まる | 棄却 |
+
+**第 2 巡**: 上位互換 = 2-c の「観測と警告が記録しない誤りを補う」。銀の弾丸 = 安全の述語への置き換え。反例 = 2-c に 3(いずれも Note の次の手で解ける)。**第 3 巡**: 試した案「`first-key` にも確認を出す」→ 答えで結果が変わらない問い(事実が優先)は儀式の形だけの問いで、答えられない人に同じ負担を戻す。事実を見せる Warning で足りる。新案なし。試した案「`added` でも記録を省き、観測に任せる(問いを消す)」→ 所有者裁定「確認の 1 問は残す」。加えて記録の出所 reserve は rotate / `--replace` の失効対象になる(事実 2)ので、観測(observed)と同じではない。新案なし。**第 4 巡**: 試した案「同期できないプロジェクトの床(`floor.ts`)で最初の鍵かを推定する」→ K13-7 のとおり床はサーバー・アカウントで分かれず、証人にならない。新案なし。打ち止め。
+
+**原則**: 「**判定できないときは記録しない — 記録しない誤りは観測と警告が声を出し、記録する誤りは黙る**」— K13-18 ✓(誤りが黙って残る側を避ける)、K4-10 の既定 no ✓(fail-closed を保つ)、穴 1 ✓(1 つでも最初の鍵なら予備鍵と言わない)、K4-30 ✓(予備鍵は `add_device` でしか載らない)。**採用: 2-c**。
+
+### K14-3. 確認の 1 問の文言と、事実に反して答えた場合
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 3-a 問いを「Is this your reserve key?」に短くする | — | — | — | 判断を求める形のまま(W-3) | 棄却 |
+| 3-b **事実の行(どのプロジェクトで、誰の署名で載ったか — 「added by one of your devices (add_device), never as your first key」— と、それが予備鍵の載り方で、pre-DK の複製は参加したプロジェクトで最初の鍵になること)を出してから、プロンプト「Type yes to record it as your reserve key (anything else = no): 」**。yes → 記録 + Note。それ以外 → 記録せず、現行の Warning(失効の案内 → `key recovery`)をそのまま出す | 事実を見せて確認を取る。既定(空 Enter)は記録しない側(K4-10 を保つ) | 事実 8 (b)(再招待で K がどこでも `add_device` に見える)を知っている人は、事実の行と自分の記憶が食い違うことで `no` を選べる。`no` の後の案内(失効 → `key recovery`)は K14-4 で判定と矛盾しない(失効すれば `revoked` → 分離) | — | 反例 1「事実に反して no(予備鍵なのに)」→ 記録しない(K14-2 の安全側)。案内「lost or retired device なら失効」は条件つきで、予備鍵なら何もしない。次の同期で観測(事実 2)。`key recovery` は `added` を見て再封印・記録する(K14-4)— 自己回復する。反例 2「事実に反して yes は無い」→ `added` 以外では問いを出さないので、事実に反する yes の入口は無い(`first-key` を yes で覆す経路を作らない)。反例 3「非対話」→ 問いは開封の後で、ゲートは開封の前(事実 10)。変わらない | **採用** |
+| 3-c `no` のとき新しい文を作る(「you answered no although …」) | 答えの食い違いを名指す | — | — | 食い違いは事実 8 (b) の正当な場合もある(利用者の方が正しい)。責める文は偽の選択肢(K13-17)。現行の条件つきの文で足りる | 棄却 |
+
+**第 2 巡**: 上位互換 = 3-b の「事実との食い違いで no を選べる」。反例 = 3-b に 3。**第 3 巡**: 試した案「プロンプトに FP を入れる」→ 事実の行に FP とプロジェクトがある。長いプロンプトは端末で折り返す。新案なし。**第 4 巡**: 試した案「`first-key` / `revoked` の文に `yes` で覆す道を足す」→ 反例 2 の入口を作る。新案なし。打ち止め。
+
+**原則**: 「**確認の問いは、機械の判定が『記録してよい』と言うときだけ出し、答えで事実を覆す入口を作らない**」— W-3 第 3 巡 ✓、K13-17 ✓(偽の選択肢を出さない)、K4-10 の既定 ✓。**採用: 3-b**。
+
+### K14-4. `key recovery` の pre-DK 判別との写しの統一
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 4-a 何もしない(FP の一致だけ) | 差分なし | — | — | 事実 9: `key recover` の案内に従うと、失効した K を予備鍵として再封印・記録する(黙る)。判定が 2 つに割れる(K7-15) | 棄却 |
+| 4-b 案内の順序だけ変える(「先に `key recovery`、その後に失効」) | コード変更なし | — | — | `key recovery` は復元後の端末で K を見分けられない(FP が一致しない)ので、順序を変えても K を予備鍵として記録する | 棄却 |
+| 4-c 案内を `key recovery --replace` に変える | 判別に依らない | — | — | `--replace` は旧 B を封印していたパスキー・保護者の行を消し、「記録に予備鍵が無いので何も失効させていない」の Warning を出す — 手順としては成立するが、`key recovery`(素の)を打った人の穴は残る | 棄却 |
+| 4-d **`key recovery` は FP の一致(現行 — 手元の端末鍵の複製)の後、一致しなければ `keyStandingsOf` + `reserveVerdictOf` で同じ判定を行い、`first-key` と `revoked` は分離(`sealNewReserve` — 新しい予備鍵を封印)、それ以外(`added` / `nowhere` / `unchecked`)は現行の再封印 + 記録。`unchecked` は確かめられなかったプロジェクトを Note で言う** | 判定が 1 つ。`key recover` の案内(失効 → `key recovery`)が失効の前後どちらでも分離に届く | 失効の後でも分離する(`revoked`)ので、案内の順序(失効を先 — 紛失端末の鍵を早く止める)を保てる | 判定の関数を共有(K14-1) | 反例 1「予備鍵が作りたてでまだどこにも登録されていない(`key generate` の直後 — K4-1 の順序で登録は次の同期)」→ `nowhere` は再封印(現行)。正しい。反例 2「同期できないプロジェクトがあり、そこだけで K が最初の鍵」→ 再封印(現行と同じ誤り)。ただしコードの再発行は漏洩の疑いのときの操作で、無関係の壊れたプロジェクトで止めない(K4-38 の `--replace` と同じ判断)。Note で範囲を言う(既知の限界)。反例 3「`revoked` だが他のプロジェクトでは有効」→ 分離後も旧 B は有効な所に残る(秘密は台帳から消える)。Note で「まだ登録されている所では失効させよ」と言う(有効な所があるときだけ — 偽の選択肢にしない)。反例 4「ネットワークの費用」→ FP が一致しないときだけプロジェクト数ぶんの同期(`device add` の既存の鍵の判定と同じ費用 — K13 既知の限界 (3)) | **採用** |
+| 4-e `openLedgerReserveForChange`(`key seal passkey` / `guardian add` / `key reserve rotate`)も同じ判定にする | 写しを全部揃える | — | — | 3 コマンドの挙動(拒否の条件)が変わり、`seal passkey` / `guardian add` に全プロジェクトの同期が加わる。W-3 の範囲(`key recover` の問い)とプロンプトが名指した写し(`key recovery`)の外 | 棄却(申し送り — 所有者に諮る点) |
+
+**第 2 巡**: 上位互換 = 4-d の「失効の前後どちらでも分離に届く」。銀の弾丸 = 判定の共有。反例 = 4-d に 4、4-a〜4-c に各 1。**第 3 巡**: 試した案「`revoked` のときは分離でなく拒否(`--replace` を案内)」→ 失効した鍵のコードを再発行する意味は無く、分離(新しい予備鍵の封印)は台帳を開けた者の操作として K4-2 の資格を満たす。拒否は 1 手増えるだけ。新案なし。試した案「`first-key` で分離した後、旧 B を自動で失効させる」→ 旧 B(pre-DK の K)を持つ端末が生きている場合がある(K4-2 反例 2 — 複製が 2 台)。鍵の破棄・失効は明示(K4-18)。新案なし。**第 4 巡**: 試した案「FP の一致の判定を消し、チェーンの判定だけにする」→ 一致は手元の事実で、同期に依らない(同期できなくても分離できる)。残す。新案なし。打ち止め。
+
+**原則**: 「**同じ問い(台帳の鍵は予備鍵として働くか)には同じ判定を使い、案内の先が判定と矛盾しないようにする**」— K7-15 ✓、K4-2 ✓(台帳を変えるのは台帳を開けた者 — 判別の材料に「開封した B のチェーン上の立場」を足す。ローカル状態・申告は使わない)、K11-5 ✓(案内は述語が許す経路だけを名指す)、K4-18 ✓(失効は明示)。**採用: 4-d**。
+
+### K14-5. 判定の位置と出力の順序
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 5-a **「Opened key …」の行 → 各プロジェクトの登録(立場を集める)→ 各プロジェクトの報告 → 判定の事実と(`added` なら)確認 → 記録 / 案内 → 破棄の Note** | 判定の材料(報告)を見た後に確認を問う | 報告(「再招待が要る」「登録した」)と判定の事実が同じ画面に並ぶ | — | 反例「登録の報告の Warning の後に問いが来ると読み落とす」→ 問いはプロンプトで止まる。反例「中断」→ 記録しない側(K14-1 反例 1) | **採用** |
+| 5-b 判定と確認を登録の前に置く(1-c と同じ — 同期を二重に) | 問いの位置を保つ | — | — | K14-1 1-c の棄却理由 | 棄却 |
+
+**第 2 巡・第 3 巡**: 試した案「問いの前に報告を出さず、判定だけを先に言う」→ 報告の順序を入れ替えるだけで、材料が後から出る。新案なし(2 巡続けて空)。打ち止め。
+
+**原則**: 「**確認は材料を見せた後に問う**」— W-3 第 3 巡 ✓。**採用: 5-a**。
+
+### K14-6. docs の更新範囲
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 6-a **`recover-your-key.mdx` :31 の「asks one question …」を、判定(どこでも `add_device` なら確認の yes で記録 / どこかで最初の鍵なら複製として記録せず失効と `key recovery` を案内 / 失効・確かめられない・どこにも無いなら記録せず次の手)に書き換える。`devices.mdx` :156 の「it asks … the answer is no」を判定の文に。pre-DK の手順 1 に「復元した後の端末でも `key recovery` が見分ける」を 1 文。help の `key recovery` の説明を「a copy of a device key held in the ledger by an install from before device keys」に** | 利用者に見える主張の写しを全部直す(事実 11) | — | — | 反例「What can go wrong に新しい文を足す」→ `key recover` の新しい文は条件と次の手を自分で言う(docs に同じ文を写すと写しが増える)。足さない | **採用** |
+| 6-b docs を変えない | — | — | — | 「asks one question」「the answer is no」が偽になる | 棄却 |
+
+**第 2 巡・第 3 巡**: 試した案「`recover-your-key.mdx` に判定の表を置く」→ 5 値のうち利用者に違いがあるのは「確認がある / 無い」と次の手だけ。段落で足りる。新案なし(2 巡続けて空)。打ち止め。
+
+**原則**: 「**主張を変えたら、その主張の写しを grep で全部数えて直す**」— K7-15 ✓、K6-R ✓。**採用: 6-a**。
+
+### K14-7. 検査の置き場
+
+| 案 | 内容 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|
+| 7-a **`apps/cli/test/device.test.ts` に describe「maruhi key recover / key recovery — 台帳の鍵の判定(DK K14)」を足す(`makeServer` の `extraProjects` / `brokenProjects` / `projectsStatus` と `extra` の台帳ハンドラ)。台帳のラップのヘルパは `recovery.test.ts` の `ledgerHandlerFor` / `storedMasterRecord` を `test/support/ledger.ts` へ移して共有。問いの字面の既存テスト(`recovery.test.ts` / `passkey.test.ts` / `handoff.test.ts` / `agent.test.ts` — どれもプロジェクト 0 = `nowhere`)は新しい挙動(問いが出ない)に直す** | チェーンつきのサーバーの足場が既にある(K13) | 正例と反例をチェーンの事実で組める | — | 反例「`recovery.test.ts` に置く」→ チェーンつきの足場を写す(fallow の重複)。反例「ヘルパを写す」→ 同じ | **採用** |
+
+**第 2 巡・第 3 巡**: 試した案「`device-standing.ts` の純関数の単体テスト」→ 群は同期の結果で、配線(登録のチェーンに当てる)を留めないと K14-1 の性質が落ちる。CLI の結果で確かめる(K13-10 と同じ)。新案なし(2 巡続けて空)。打ち止め。
+
+**原則**: 「**検査は性質(判定と記録・案内の対応)を CLI の出力とローカル記録で留める**」— K13-10 ✓。**採用: 7-a**。
+
+### K14-8. 所有者に諮る点に回すもの(実装しない)
+
+- `openLedgerReserveForChange` の pre-DK 判別(事実 9 の残りの写し — K14-4 4-e)。pre-DK の利用者が K の端末で承認した DK の端末 D2 で `key seal passkey` / `guardian add` を打つと、D2 の鍵は K と一致しないので K をそのまま封印し reserve と記録する。`key reserve rotate` なら K を旧予備鍵として全プロジェクトで失効させる(K の端末が止まる — 声は出る)。同じ判定を使うと 3 コマンドに同期が加わり、拒否の条件が変わる。
+- 事実 8 (b)(再招待で最初の鍵が替わった後の pre-DK の K)を履歴で塞ぐか(K14-1 1-e)。`device add` の 2 択(K13-2)と揃えて足すなら、`keyStandingIn` に「以前の在籍で最初の鍵だった」を足す形になる。
+
+### K14 の裁定一覧(実装前の固定)
+
+| # | 論点 | 採用 | 他案に対して何が上位か | 原則 |
+|---|---|---|---|---|
+| K14-1 | 判定の述語 | 1-d: 登録のチェーンに `keyStandingIn`(`keyStandingOnProject` を公開して登録の前段に)→ `groupStandings` → 新しい純関数 `reserveVerdictOf`(`device-standing.ts`) | 同期を増やさず、立場の判定・失敗の畳み方は K13 の 1 か所。登録の自前の読みも同じ述語に | 同じ問いは 1 つの純関数で、開いたチェーンに当てる |
+| K14-2 | 判定の規則と既定 | 2-c: `first-key` > `revoked` > `unchecked` > `nowhere` > `added`。記録は `added` の確認の yes だけ | 記録しない誤りは観測と警告が声を出し、記録する誤りは黙る | 誤りが黙って残る側に倒さない(K13-18) |
+| K14-3 | 確認の 1 問 | 3-b: 事実の行 → 「Type yes to record it as your reserve key (anything else = no): 」。`no` は現行の Warning。`added` 以外では問わない | 判断でなく確認。事実を覆す入口を作らない | 確認は記録してよいときだけ |
+| K14-4 | `key recovery` の判別 | 4-d: FP の一致 → 同じ判定。`first-key` / `revoked` は分離、他は再封印(`unchecked` は Note) | 判定が 1 つになり、`key recover` の案内が失効の前後どちらでも分離に届く | 同じ問いに同じ判定、案内の先が判定と矛盾しない |
+| K14-5 | 位置と順序 | 5-a: 開封 → 登録 → 報告 → 判定と確認 → 記録 / 案内 → 破棄 | 同期が 1 回、確認は材料の後 | 確認は材料を見せた後に |
+| K14-6 | docs | 6-a: `recover-your-key.mdx` :31、`devices.mdx` :153 / :156、help の `key recovery` | 主張の写しを全部 | K7-15 |
+| K14-7 | 検査 | 7-a: `device.test.ts` の K14 describe + `test/support/ledger.ts` | 足場の再利用 | 検査は性質を |
+| K14-8 | 範囲外 | `openLedgerReserveForChange` の判別・履歴の最初の鍵は所有者に諮る | — | — |
