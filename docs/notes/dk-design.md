@@ -3023,3 +3023,23 @@ K4-21 (c)「鍵があるとき、その鍵の FP の要求行か登録簿の行�
 | K14-6 | docs | 6-a + **6-d** | 拒否の理由を pre-DK の手順に 1 文 | K7-15 |
 | K14-7 | 検査 | 7-a + 1-f / 4-f / 4-g の正例・反例 | — | 検査は性質を |
 | K14-8 | 範囲外 | **諮る点 (1)(2) は本 PR で回収**。残る諮る点は無し | — | — |
+
+### 再ループの実装中の追加裁定(K14-11〜)
+
+| # | 論点 | 案 | 上位互換 | 銀の弾丸 | 反例 | 採用 |
+|---|---|---|---|---|---|---|
+| K14-11 | 判定の文の「件数つきのプロジェクトの列挙」を `key-recover.ts` と `ledger-open.ts` の両方が要る(`ledger-open.ts` は `key-recover.ts` に読まれるので逆向きに import できない) | (a) `ledger-open.ts` に写す。(b) **`display.ts` の `describeProjects` に置き、両方が読む**。(c) `device.ts` の `projectList` を使う | (b) は文言の部品を 1 か所に | — | (a) への反例: 写し(K7-15)。(c) への反例: `projectList` は件数を付けない別の形(`device add` の文の既存の字面を変えることになる) | **(b)** |
+| K14-12(手続きの記録) | ミューテーションで生き残った変異 N2 / N6 / N7 / N8 | 1-f / 4-f / 4-g の 8 変異のうち 4 つが最初は**生き残った**。出力を読むといずれも挙動が変わる(等価ではない): N2(`add_member` の対象の人で絞らない)は別の人の鍵だった公開鍵を最初の鍵に数える、N6(reserve 以外の行も直す)は観測の行を書き換えて偽の Note を出す、N7(台帳変更の前段で確かめられない範囲の Note を出さない)、N8(`key recover` で誤った行を直さない)。検査の弱さとして 4 件を足し、それぞれ 1 件落ちることを確かめた | — | — | 反例「足した分岐は既存の検査が拾っている」— 既存の検査は新しい分岐の片側(正例)しか組んでいなかった | 原則「分岐を足したら、その分岐の両側(正例と、足した条件だけが違う反例)を組む」(K12-11 / K13-13 / K14-10 の再掲) |
+
+### K14 完了記録の追補(2026-09-26 — 再ループの後)
+
+- **成果物(1-f)**: `device-standing.ts` — `keyStandingIn` の `firstKey` = 今の出所が最初の鍵 ∨ `wasFirstKeyOf`(適用済みの genesis〔actor がその人〕/ `add_member`〔`targetUserId` がその人〕の payload がこの鍵の enc / sig の公開鍵)。読み手 3 か所(`device add` の 2 択・`--replace` の表示・`reserveVerdictOf`)が同じ意味を得る。
+- **成果物(4-f)**: `device-standing.ts` `ledgerKeyVerdictOf`(`keyStandingsOf` + `groupStandings` + `reserveVerdictOf` — 群も返す)。`key-recover.ts` `separateUnusableLedgerKey` と `ledger-open.ts` `openLedgerReserveForChange` が共有する。`openLedgerReserveForChange` は FP の一致の後に判定し、`first-key` / `revoked` は記録せずに止める(`ledgerKeyUnusableMessage` — 既存の FP 一致の拒否と同じ形)、`unchecked` は Note で範囲を言って進む。効果型は `CliServices` に(呼び出し元 3 か所 — `effect-cli.ts` の `key seal passkey` / `guardian add`、`keyReserveRotateOp` — はすべて `CliServices` の中)。
+- **成果物(4-g)**: `reserve.ts` `retractReserveRecord` — この端末に出所 reserve で失効していない行があるときだけ、`first-key` → 最初の鍵のプロジェクトで観測した行(出所 observed・cap・出所の端末・`observedProjectId`)に置き換える、`revoked` → `markRevoked`。書き込みの失敗は Warning(コマンドを落とさない)。呼ぶのは `key recover`(`settleOpenedKey`)・`key recovery` の分離・`openLedgerReserveForChange` の拒否。
+- **成果物(K14-11)**: `display.ts` `describeProjects`。
+- **docs(6-d)**: `devices.mdx` の pre-DK の手順 1 に「分離の前は、台帳を変える 3 コマンドがどの端末でも止まり `key recovery` を名指す」を 1 文。
+- **テスト**: `device.test.ts` 88 → 96 件(+8: 再招待後の `key recover` が `first-key` / 同じ鍵の端末の `device add` が 2 択 / `key reserve rotate` の拒否と行の訂正〔台帳も記録も変えない〕/ 失効した予備鍵の分離で古い行に失効の印 / 別の人の最初の鍵だった公開鍵は数えない / `key recover` での行の訂正 / reserve 以外の行は直さない / 台帳変更の前段の `unchecked` の Note)。`passkey.test.ts` +1(別の端末でも台帳の鍵が最初の鍵なら封印しない)。
+- **ミューテーション**: 再ループで足した分岐の 8 変異(N1〜N8)。N1(以前の在籍を見ない)・N3(台帳変更の前段の判定を無視)・N4(最初の鍵の行を直さない)・N5(失効の印を付けない)は最初から落ちた。N2 / N6 / N7 / N8 は最初は生き残り、K14-12 で検査を足して全て落ちることを確かめた。全変異を戻した後に緑(`git diff --stat` が変わらないことを各変異の後に確認)。K14 の M1〜M12 は再ループの前に回したもの。
+- **検証**: `bun run check` はすべて exit 0。`fallow audit --base origin/main` は「No issues in 19 changed files」。途中で出た lint の未使用 import 1 件は直した。`test` は 145 ファイル 5073 件(main の 5051 件から +22)。`apps/site`: `validate --strict` / `build`(13 ページ)/ e2e 12 件 / unit 126 件。
+- **所有者に諮る点**: **無し**(K14-8 の (1)(2) は 4-f / 1-f で本 PR に回収した)。挙動の変化として知っておいてほしい点は 2 つ。(i) `key seal passkey` / `guardian add` / `key reserve rotate` は、開封の後にプロジェクト数ぶんの同期を行う(`device add` / `key recovery` と同じ費用)。(ii) 以前の在籍で最初の鍵だった鍵を持つ端末の `device add` は、「登録済み」(exit 0)でなく最初の鍵の 2 択(exit 1)になる(声を出す側 — K13-18)。
+- **既知の限界(改訂)**: K14 完了記録の (1)〜(5) のうち、(2)(`key recovery` の `unchecked`)は台帳変更の前段にも同じく当てはまる(Note で範囲を言って進む)。追加で (6) 同期できないプロジェクトの以前の在籍は見えない(1-f は同期できたチェーンの適用済み操作列だけを見る)。
