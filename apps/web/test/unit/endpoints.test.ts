@@ -4,8 +4,8 @@
 // テストプロセスのみ)と突合し、「パス整合」と「セッション許可」を fail-loud に
 // する。serving-topology.test.ts(サーバー側の run_worker_first 被覆)の
 // クライアント側対応物。
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 
 import { isSessionAllowedEndpoint, maruhiApi, UNAUTHENTICATED_ENDPOINTS } from "@maruhi/api-schema";
 import { describe, expect, it } from "vitest";
@@ -297,5 +297,140 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
       offenders,
       "consumption site whose type argument is not a types.ts export — derive it there",
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RSC(サーバーグラフ)からの dashboard import の境界。
+//
+// CLAUDE.md「RSC は静的シェルのみ」: サーバーグラフのファイル(App.tsx / Root.tsx /
+// "use client" を持たない pages/*.tsx)が src/dashboard/* を import するとき、対象は
+// "use client" 境界のモジュール(クライアント参照に置き換わる)か、サーバー側で評価
+// されてよいと分かっている許可リスト(routes.ts — ルート定義とパス定数のみ)に限る。
+// 境界の無い dashboard モジュール(api.ts 等)を直接 import すると、その本体が
+// ビルド時 RSC で評価される。type-only import は消去されるので対象外。routes.ts 自身が
+// 相対 import を持つと許可リスト経由で任意のモジュールがサーバーグラフへ入るので、
+// routes.ts には相対 import を置かせない。
+// ---------------------------------------------------------------------------
+
+/** サーバーグラフから import してよい "use client" でない dashboard モジュール。 */
+const SERVER_GRAPH_DASHBOARD_ALLOWLIST: ReadonlySet<string> = new Set(["dashboard/routes.ts"]);
+
+/** コメントを除いた本文の先頭が "use client" ディレクティブか。 */
+function hasUseClientDirective(source: string): boolean {
+  return /^\s*(["'])use client\1/.test(stripComments(source));
+}
+
+/** 値としての import / re-export の指定子(`import type` / `export type` は除く)。 */
+function valueImportSpecifiers(source: string): string[] {
+  const stripped = stripComments(source);
+  return [
+    ...stripped.matchAll(/\b(?:import|export)\s+(type\s+)?(?:[^'";]*?\bfrom\s+)?(["'])([^"']+)\2/g),
+  ]
+    .filter((match) => match[1] === undefined)
+    .map((match) => match[3] ?? "");
+}
+
+/** 相対指定子を srcRoot 相対のパス(区切りは "/")へ解決する。相対でなければ undefined。 */
+function resolveRelative(fromFile: string, specifier: string): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  return join(dirname(fromFile), specifier).split(sep).join("/");
+}
+
+/**
+ * サーバーグラフのファイル(srcRoot 相対)ごとに、境界違反の dashboard import を返す。
+ * `read` は srcRoot 相対パス → 本文(存在しなければ undefined)。純関数にして下の
+ * 否定の自己テストで同じ検査器を偽のソースに当てる。
+ */
+function serverGraphDashboardOffenders(
+  serverGraphFiles: ReadonlyArray<string>,
+  read: (relativePath: string) => string | undefined,
+): string[] {
+  return serverGraphFiles.flatMap((file) =>
+    valueImportSpecifiers(read(file) ?? "")
+      .map((specifier) => resolveRelative(file, specifier))
+      .filter((target) => target !== undefined && isUnboundedDashboardImport(target, read))
+      .map((target) => `${file} -> ${target}`),
+  );
+}
+
+/** dashboard 配下で、許可リスト外かつ "use client" 境界が確認できない import 先か。 */
+function isUnboundedDashboardImport(
+  target: string,
+  read: (relativePath: string) => string | undefined,
+): boolean {
+  if (!target.startsWith("dashboard/") || SERVER_GRAPH_DASHBOARD_ALLOWLIST.has(target)) {
+    return false;
+  }
+  return !hasUseClientDirective(read(target) ?? "");
+}
+
+describe("server-graph imports of src/dashboard stay behind a client boundary (RSC は静的シェルのみ)", () => {
+  const srcRoot = join(import.meta.dirname, "../../src");
+  const read = (relativePath: string): string | undefined => {
+    const filePath = join(srcRoot, relativePath);
+    // 解決できない import 先は「境界が確認できない」として検査器が offender にする
+    return existsSync(filePath) ? readFileSync(filePath, "utf8") : undefined;
+  };
+  const pageFiles = readdirSync(join(srcRoot, "pages"))
+    .filter((name) => name.endsWith(".tsx"))
+    .map((name) => `pages/${name}`);
+  const serverGraphFiles = ["App.tsx", "Root.tsx", ...pageFiles].filter(
+    (file) => !hasUseClientDirective(read(file) ?? ""),
+  );
+
+  it("finds the server-graph files and the dashboard imports they make (not vacuous)", () => {
+    expect(serverGraphFiles).toEqual(expect.arrayContaining(["App.tsx", "Root.tsx"]));
+    expect(pageFiles.length, "no pages/*.tsx found").toBeGreaterThan(0);
+    const dashboardImports = serverGraphFiles.flatMap((file) =>
+      valueImportSpecifiers(read(file) ?? "")
+        .map((specifier) => resolveRelative(file, specifier))
+        .filter((target) => target?.startsWith("dashboard/")),
+    );
+    expect(dashboardImports.length, "sweep pattern is stale").toBeGreaterThan(0);
+  });
+
+  it("imports only 'use client' dashboard modules or the allowlist from server-graph files", () => {
+    expect(serverGraphDashboardOffenders(serverGraphFiles, read)).toEqual([]);
+  });
+
+  it("keeps the allowlisted routes.ts free of relative imports", () => {
+    const routes = read("dashboard/routes.ts");
+    expect(routes, "dashboard/routes.ts not found").toBeDefined();
+    // type-only の相対 import も許可リストを経由した依存の入口になりうるので禁じる
+    expect(stripComments(routes ?? "")).not.toMatch(/\b(?:from|import)\s+["']\./);
+  });
+
+  it("flags a server-graph import of a dashboard module without 'use client' (self-test)", () => {
+    const fake = new Map<string, string>([
+      [
+        "pages/Fake.tsx",
+        [
+          "// server component",
+          'import { apiGet } from "../dashboard/api.ts";',
+          'import { Screen } from "../dashboard/Screen.tsx";',
+          'import { spaPaths } from "../dashboard/routes.ts";',
+          'import type { Me } from "../dashboard/types.ts";',
+          'export { helper } from "../dashboard/helper.ts";',
+          'import { missing } from "../dashboard/missing.ts";',
+          'import { Other } from "../components/Other.tsx";',
+        ].join("\n"),
+      ],
+      ["dashboard/api.ts", "// fetch layer\nexport const apiGet = 1;"],
+      ["dashboard/Screen.tsx", '// comment first\n"use client";\nexport const Screen = 1;'],
+      ["dashboard/routes.ts", "export const spaPaths = 1;"],
+      ["dashboard/types.ts", "export type Me = string;"],
+      ["dashboard/helper.ts", "export const helper = 1;"],
+    ]);
+    expect(serverGraphDashboardOffenders(["pages/Fake.tsx"], (p) => fake.get(p))).toEqual([
+      "pages/Fake.tsx -> dashboard/api.ts",
+      "pages/Fake.tsx -> dashboard/helper.ts",
+      "pages/Fake.tsx -> dashboard/missing.ts",
+    ]);
+    // "use client" 判定: 後続行のディレクティブ風の文は境界にならない
+    expect(hasUseClientDirective('const x = 1;\n"use client";')).toBe(false);
+    expect(hasUseClientDirective("'use client';\nexport {}")).toBe(true);
+    // routes.ts の相対 import 検査も偽のソースで割れる
+    expect(stripComments('import { x } from "./api.ts";')).toMatch(/\b(?:from|import)\s+["']\./);
   });
 });
