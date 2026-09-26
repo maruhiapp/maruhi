@@ -551,6 +551,24 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("ALTER TABLE head_attestations_new RENAME TO head_attestations");
     },
   },
+  {
+    // dek_wraps の受信者索引(dw_recipient)。§12-6 の再追加受理時掃除
+    // (data-store.ts の deleteStaleMemberWraps)は `recipient_user_id = ? AND
+    // recipient_class = 'member'` で引くが、recipient_user_id は主キーの第 3 成分で
+    // 前方一致を使えず、全行走査になっていた(行数は §12-8 の累積上限
+    // 1,000,000 で有界だが、add_member の受理 = 書き込みフェーズ内で走る)。
+    // 列順は WHERE の等値 2 列に合わせる(選択性の高い user_id を先頭)。
+    //
+    // 索引作成は行数比例(部分索引化・端末軸ステップと同じ爆風半径の注記が
+    // 当てはまる)。1 transactionSync で走るため途中失敗は丸ごと巻き戻る。
+    // 行には触れない
+    tables: [],
+    apply(sql) {
+      sql.exec(
+        "CREATE INDEX IF NOT EXISTS dw_recipient ON dek_wraps (recipient_user_id, recipient_class)",
+      );
+    },
+  },
 ];
 
 /**

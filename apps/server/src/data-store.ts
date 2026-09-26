@@ -1842,9 +1842,10 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     );
   },
   // SELECT → DELETE の 2 文だが同一同期タスク内(permit 下・原子コミット)。
-  // 走査は主キー前方一致を使えない(recipient は主キー第 3 成分)ため全行
-  // 走査になるが、行数は §12-8 の累積上限が束縛し、add_member は低頻度の
-  // 管理操作である
+  // recipient は主キー第 3 成分で主キー前方一致を使えないため、受信者索引
+  // dw_recipient (recipient_user_id, recipient_class)(do-schema.ts の
+  // マイグレーションステップ)で引く — 走査は対象 user_id 宛のラップ行に限られる
+  // (test/do-schema.test.ts が EXPLAIN QUERY PLAN で固定)
   deleteStaleMemberWraps: (recipientUserId, keepEncPubHex) => {
     const stale = sql
       .exec(
