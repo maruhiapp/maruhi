@@ -7,10 +7,10 @@
 //   (variableId 昇順)。返した変数が 0 の pull は行を書かない
 // - 密度: 100 変数の環境を 1 回 pull → 監査行 1 行。行 + 索引の
 //   バイト数の実測(仕様 §3.3 / AUTH_SPEC §12-8 余裕の会計の数値の出所)
-// - 要ローテーション検出の同値性(§4.1 手順 3 の (a)): 旧形のみ / 集約形のみ /
-//   混在の 3 形で detectMemberRemoval の basis が一致する(集約は検出の入力を
-//   欠損させない — 裁定 CZ の線引き)。区間外の読み取りは両形とも数えない
-// - §7 の variable_id フィルタ(Q4): 旧形の列一致と集約形の payload 一致の
+// - 要ローテーション検出(§4.1 手順 3 の (a)): 集約形の列挙から detectMemberRemoval の
+//   basis が決まる(集約は検出の入力を欠損させない — 裁定 CZ の線引き)。区間外の
+//   読み取りは数えない
+// - §7 の variable_id フィルタ(Q4): 列一致(var.created 等)と集約形の payload 一致の
 //   和集合。ページング(カーソル・limit)が 2 クエリ合流でも seq 降順・重複なし
 
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
@@ -120,7 +120,7 @@ describe("集約形の記録(§3.3)", () => {
   });
 });
 
-/** 集約形 / 旧形の行を直接シードする(検出の同値性・密度の実測用)。 */
+/** 集約形の行を直接シードする(検出・密度の実測用)。 */
 function aggregatedRead(
   actorUserId: string,
   environmentId: string,
@@ -138,7 +138,8 @@ function aggregatedRead(
   };
 }
 
-function legacyRead(
+/** 密度の比較用: 集約前の 1 変数 1 行の形(今のサーバーは書かない — 実測の対照)。 */
+function perVariableRead(
   actorUserId: string,
   environmentId: string,
   variableId: string,
@@ -175,7 +176,7 @@ describe("密度の実測(行 + 索引のバイト数 — §3.3 / AUTH_SPEC §12
       const LEGACY_ROWS = 20_000;
       const legacy = measure(
         Array.from({ length: LEGACY_ROWS }, (_r, i) =>
-          legacyRead("user-reader", "env-0001", variables[i % 100] as string),
+          perVariableRead("user-reader", "env-0001", variables[i % 100] as string),
         ),
       );
       const AGG_ROWS = 200;
@@ -207,7 +208,7 @@ describe("密度の実測(行 + 索引のバイト数 — §3.3 / AUTH_SPEC §12
   });
 });
 
-describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧形 / 集約形 / 混在)", () => {
+describe("要ローテーション検出(§4.1 手順 3 (a) — 集約形の列挙)", () => {
   const TARGET = "user-target-0001";
   const E = "env-equiv-0001";
 
@@ -247,9 +248,8 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
         environmentId: E,
         variableId: "v3",
       },
-      // 在籍区間の前の読み取り(数えない — 両形とも)
+      // 在籍区間の前の読み取り(数えない)
       aggregatedRead(TARGET, E, ["v3"]),
-      legacyRead(TARGET, E, "v3"),
       {
         serverTs: ts,
         event: "chain.member_added",
@@ -294,18 +294,9 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
     });
   }
 
-  it("旧形のみ・集約形のみ・混在で basis が一致する(v1 / v2 = read, v3 = readable)", async () => {
-    const expected = { [`${E}/v1`]: "read", [`${E}/v2`]: "read", [`${E}/v3`]: "readable" };
-    const legacyOnly = await basisOf(
-      scenario([legacyRead(TARGET, E, "v1"), legacyRead(TARGET, E, "v2")]),
-    );
-    const aggregatedOnly = await basisOf(scenario([aggregatedRead(TARGET, E, ["v1", "v2"])]));
-    const mixed = await basisOf(
-      scenario([legacyRead(TARGET, E, "v1"), aggregatedRead(TARGET, E, ["v2"])]),
-    );
-    expect(legacyOnly).toEqual(expected);
-    expect(aggregatedOnly).toEqual(expected);
-    expect(mixed).toEqual(expected);
+  it("集約形の列挙で basis が決まる(v1 / v2 = read, v3 = readable)", async () => {
+    const basis = await basisOf(scenario([aggregatedRead(TARGET, E, ["v1", "v2"])]));
+    expect(basis).toEqual({ [`${E}/v1`]: "read", [`${E}/v2`]: "read", [`${E}/v3`]: "readable" });
   });
 
   it("他人の集約行は数えない(actor 列で照合 — 可視性・本人判定と同じ列)", async () => {
@@ -318,7 +309,7 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
   });
 });
 
-describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形の payload 一致)", () => {
+describe("§7 の variable_id フィルタ(Q4 — 列一致 + 集約形の payload 一致)", () => {
   it("集約行は列挙が当該変数を含むときだけ一致し、削除後の pull は含まない", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

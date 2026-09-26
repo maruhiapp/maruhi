@@ -1,4 +1,4 @@
-// ES + PF1 K2 のワイヤ非互換の実測(docs/SELF_HOSTING.md "Updates" の移行手順の根拠)。
+// ES + PF1 K2 のワイヤ非互換の実測(互換受理を持たないことの固定)。
 //
 // 2026-09-14 の ES 改訂は add_member / change_role の payload 形式と招待の発行文を変え、
 // 互換受理の経路を持たない(CRYPTO_SPEC §6.2 — 所有者裁定)。ここでは「更新前の CLI が

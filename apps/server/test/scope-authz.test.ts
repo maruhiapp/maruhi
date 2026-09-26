@@ -32,6 +32,7 @@ import {
   signMetaStatementAs,
   valueSignedBytesHashOf,
   valuesDigestOf,
+  vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
   type WireEncryptedPayload,
@@ -319,7 +320,9 @@ describe("scope 認可 — 書き込み系(§12-3 の 3〜5 行目)", () => {
     );
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
-        wraps: [{ epoch: 1, recipientUserId: OWNER }],
+        wraps: [
+          { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+        ],
       }),
     );
     // scope 内の環境削除は受理される(admin の正例)

@@ -648,7 +648,13 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       `/environments/${ENV}/deks`,
       tokenOf(fixture.tokens, OWNER),
       {
-        wraps: [{ epoch: 2, recipientUserId: READER }],
+        wraps: [
+          {
+            epoch: 2,
+            recipientUserId: READER,
+            recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+          },
+        ],
       },
     );
     expect(removed.status).toBe(204);
@@ -658,7 +664,15 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "DELETE",
       `/environments/${ENV}/deks`,
       tokenOf(fixture.tokens, OWNER),
-      { wraps: [{ epoch: 1, recipientUserId: READER }] },
+      {
+        wraps: [
+          {
+            epoch: 1,
+            recipientUserId: READER,
+            recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+          },
+        ],
+      },
     );
     expect(removedEpoch1.status).toBe(204);
     const reWrap = await wrapDekTo({

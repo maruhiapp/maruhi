@@ -1246,11 +1246,6 @@ describe("scheduled: 期限切れセッションの定期掃除", () => {
   });
 });
 
-// 旧フォークの wrangler テンプレートが配布していた client_id のプレースホルダ。
-// 現テンプレートには現れないが、後方互換防御として検出を維持している
-// (handlers-auth.ts の CLIENT_ID_PLACEHOLDER と同期)
-const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
-
 // worker.fetch を env 差し替えで直接呼ぶための着信リクエスト型合わせ
 // (fetch 側は IncomingRequestCfProperties を要求するが、コンストラクタ産の
 // Request は CfProperties になる — workers-types の既知の型差)
@@ -1268,18 +1263,13 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     expect(body["githubClientId"]).toBe(env.GITHUB_CLIENT_ID);
   });
 
-  it("returns 503 SetupIncomplete while the client_id is still the placeholder", async () => {
-    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
-    const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
-    expect(response.status).toBe(503);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body["_tag"]).toBe("SetupIncomplete");
-    expect(body["reason"]).toBe("github-oauth-unconfigured");
-  });
-
-  it("treats an empty or missing client_id as unconfigured too", async () => {
+  it("returns 503 SetupIncomplete while the client_id is empty or missing", async () => {
     const empty = { ...env, GITHUB_CLIENT_ID: "" };
-    expect((await worker.fetch(incoming(`${BASE}/auth/config`), empty)).status).toBe(503);
+    const emptyResponse = await worker.fetch(incoming(`${BASE}/auth/config`), empty);
+    expect(emptyResponse.status).toBe(503);
+    const emptyBody = (await emptyResponse.json()) as Record<string, unknown>;
+    expect(emptyBody["_tag"]).toBe("SetupIncomplete");
+    expect(emptyBody["reason"]).toBe("github-oauth-unconfigured");
     // vars を消したデプロイ(Env 型の外だが実行時に起こり得る)も 503 へ倒す
     // (素通しすると /auth/config は encode defect、start は client_id=undefined で
     // GitHub へ飛ぶ)
@@ -1311,7 +1301,7 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
   });
 
   it("githubStart fails closed with 503 instead of bouncing to GitHub's error page", async () => {
-    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: "" };
     const response = await worker.fetch(incoming(`${BASE}/auth/github/start`), unconfigured);
     expect(response.status).toBe(503);
     const body = (await response.json()) as Record<string, unknown>;
