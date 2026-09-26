@@ -1,80 +1,102 @@
-# 品質ゲート(CLAUDE.md の 7 ステップと同一順序)+ web 統合ステップ
-# 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint → 5. fallow → 6. React Doctor → 7. テスト
-# → 8. web ビルド(8d/8e = apex サイト)→ 9. web e2e / 9b. site e2e(wrangler dev + Playwright)→ 10. astryx doctor
-# → 11. crypto 3 環境テスト(workerd / browser / Bun。CRYPTO_SPEC §11)
+# Quality gate (same order as the steps in CLAUDE.md) + web integration steps
+# 0. English source check → 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint →
+# 5. fallow → 6. React Doctor → 7. tests → 8. web build (8d/8e = apex site)
+# → 9. web e2e / 9b. site e2e (wrangler dev + Playwright) → 10. astryx doctor
+# → 11. crypto 3-environment tests (workerd / browser / Bun — CRYPTO_SPEC §11)
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-  # release.yml が publish 前の品質ゲートとしてこのファイルを丸ごと再利用する
-  # (複製すると ci.yml の修正がリリース側に反映されず古いまま残るため)
+  # release.yml reuses this whole file as its pre-publish quality gate
+  # (duplicating it would leave the release side on a stale copy when ci.yml
+  # changes)
   workflow_call:
 
-# 同じ PR への連続 push では古い run を取り消す(結果の出ない run に runner を使わない)。
-# PR 以外(main への push・release.yml からの workflow_call)は run ごとに別グループにして
-# 取り消しも待機列の置き換えも起こさない: 同一グループの pending は新しい run に置き換えられる
-# ため、main の push を共有グループに入れると途中のコミットの CI が黙って消える
+# Cancel stale runs on consecutive pushes to the same PR (don't spend a runner
+# on runs that will never be looked at). Non-PR runs (pushes to main,
+# workflow_call from release.yml) get a per-run group so nothing is cancelled
+# or replaced: pending entries in one group are superseded by newer runs, so
+# putting main pushes in a shared group would silently drop CI for intermediate
+# commits
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# 既定の緩い権限に頼らない。テスト実行に必要なのは checkout のみ
+# Don't rely on the loose default permissions. Test execution only needs checkout
 permissions:
   contents: read
 
 env:
-  # 「言わざる」原則(CLAUDE.md)はメンテナ環境の CI にも適用する:
-  # wrangler / alchemy / その他ツールのテレメトリを一括で無効化
+  # The "say nothing" principle (CLAUDE.md) applies to the maintainer-side CI
+  # too: disable telemetry for wrangler / alchemy / other tools in one place
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    # workflow_call 経由でリリースのゲートにもなるため上限を明示する
-    # (呼び出し側の release.yml は `uses:` job に timeout を掛けられない。
-    # 実測 10〜15 分 + 余裕。既定の 360 分だと hang がリリースを 6 時間塞ぐ)
+    # An explicit cap because this also gates releases via workflow_call
+    # (the calling release.yml can't put a timeout on a `uses:` job.
+    # Measured at 10–15 min + headroom. The 360-min default would let a hang
+    # block a release for 6 hours)
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # React Doctor の diff モードと fallow audit が base ブランチとの比較を必要とする
+          # React Doctor's diff mode and fallow audit need to compare against
+          # the base branch
           fetch-depth: 0
-          # 以後のステップは checkout 済みのローカル履歴だけを見る(認証付き git
-          # 操作はない)。依存・テストコードを走らせる job にトークンを残さない
+          # Later steps only read the checked-out local history (no
+          # authenticated git operations). Don't leave a token in a job that
+          # runs dependencies and test code
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
 
+      # ADR-0019 ratchet: CJK text may not appear in files a PR touches
+      # (exemptions: scripts/english-exemptions.txt + inline `english-exempt`
+      # markers). Runs before install — the script has no dependencies
+      - name: 0. English source check (changed files)
+        run: bun run check:english
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # docs のレシピ検査(apps/site/test/unit/recipes.test.ts)は導入済みのシェル(sh / bash / zsh /
-      # dash)すべてで回す。ubuntu-latest に zsh は無いので入れる(ページが zsh を名指しで約束しており、
-      # 検査側は CI で zsh の存在を断言する — PR #153 改訂 5)
+      # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
+      # installed shell (sh / bash / zsh / dash). ubuntu-latest has no zsh, so
+      # install it (the page promises zsh by name, and the check asserts its
+      # presence in CI — PR #153 revision 5)
       - name: Install zsh (docs recipe checks)
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh
 
-      # 既知脆弱性の監査(GHSA アドバイザリ照合)。厳密ピン留め運用は意図しない
-      # 更新を防ぐ代わりに既知 CVE の放置に気づきにくいため、CI で常時検知する
-      # --ignore はビルド・テスト時のみ動くメンテナ側ツールチェーンの推移依存で、
-      # 範囲内更新では直せないもの(ignore は ID 単位。新しい advisory は引き続き検知する):
-      #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2(ICNS / JXL / HEIF の
-      #     解析で無限ループ = DoS)。latest が 2.0.2 で修正版なし。Blume の画像最適化がビルド時に
-      #     読むのは自リポジトリの PNG / SVG のみで、信頼できない画像を渡す経路がない
-      #     (2026-09-03 時点。DP2 — PR #147。Blume の更新で消える見込み)
-      #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0(ReDoS)— @astrojs/vercel > @vercel/routing-utils
-      #     の厳密ピン。Vercel へはデプロイしないため実行経路がない。名前単位の overrides で 6.3.0 に
-      #     すると router(express 5 系、^8)まで巻き込むので採らない(同上)
-      #   GHSA-rgj7-g3m4-5g8c: sharp@0.35.2(同梱 libheif の脆弱性。修正は 0.35.4)—
-      #     miniflare が 0.35.2 を完全ピンしており範囲内更新で直せない(bun audit fix は無効)。
-      #     miniflare は @cloudflare/vitest-plugin / wrangler dev のテスト・開発専用で、
-      #     信頼できない HEIF 画像を渡す経路がなく配信物にも載らない。blume > astro 側の sharp は
-      #     既に 0.35.4。wrangler / miniflare の更新で消える見込み(2026-09-08 時点。PR #161)
+      # Known-vulnerability audit (GHSA advisory matching). The strict-pinning
+      # policy intentionally does not chase every update, so CI continuously
+      # detects known CVEs left in place instead.
+      # --ignore covers transitive deps of maintainer-side toolchains that only
+      # run at build/test time and can't be fixed by an in-range update
+      # (ignores are per-ID; new advisories still get detected):
+      #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2 (infinite
+      #     loop parsing ICNS / JXL / HEIF = DoS). latest is 2.0.2 with no fix
+      #     release. Blume's image optimization only reads our own repo's
+      #     PNG / SVG at build time — no path for untrusted images
+      #     (as of 2026-09-03. DP2 — PR #147. Expected to disappear with a Blume
+      #     update)
+      #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0 (ReDoS) — a strict pin via
+      #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
+      #     no execution path. A name-scoped override to 6.3.0 would drag in
+      #     router (express 5 line, ^8), so it is not taken (same source)
+      #   GHSA-rgj7-g3m4-5g8c: sharp@0.35.2 (vulnerability in the bundled
+      #     libheif; fixed in 0.35.4) — miniflare fully pins 0.35.2, so an
+      #     in-range update can't fix it (bun audit fix doesn't help).
+      #     miniflare is test/dev-only via @cloudflare/vitest-plugin /
+      #     wrangler dev: no path feeds it an untrusted HEIF image and it never
+      #     ships. The sharp under blume > astro is already 0.35.4. Expected to
+      #     disappear with a wrangler / miniflare update (as of 2026-09-08.
+      #     PR #161)
       - name: Audit (bun audit)
         run: >-
           bun audit
@@ -95,10 +117,11 @@ jobs:
       - name: 4. ImportLint
         run: bunx import-lint --format github
 
-      # fallow 3.22: 解析は 1 回だけ実行し、同じ JSON から CI 向け 2 形式を描画する。
-      # annotations / summary 形式は fork PR でも write トークンなしで描画されるため、
-      # PR コメント形式(要トークン)ではなくこちらを使う。ゲート判定(exit code)は
-      # audit 本体のものを最後に返す
+      # fallow 3.22: run the analysis once and render two CI-facing formats from
+      # the same JSON. The annotations / summary formats render even on fork PRs
+      # with no write token, so they are used instead of the PR-comment format
+      # (which needs one). The gate verdict (exit code) is the audit's own,
+      # returned last
       - name: 5. fallow (baseline audit)
         run: |
           set +e
@@ -115,36 +138,41 @@ jobs:
       - name: 7. Test (Vitest)
         run: bun run test
 
-      # 主実装(WebCrypto / panva hpke)と独立実装系(pyca 生成 + 参照検証
-      # スクリプト)のクロスチェックを CI で継続化する(観点 7 — 従来は手動実行
-      # のみで、主実装とベクターが揃って劣化しても検出できなかった)。tools は
-      # ワークスペース外の独立プロジェクト(bunfig.toml)のためここで frozen
-      # install する(数パッケージ・sub-second。実測で verify 含め 1 秒未満)
+      # Keeps the cross-check between the main implementation (WebCrypto /
+      # panva hpke) and the independent implementation line (pyca-generated +
+      # reference verifier scripts) running in CI (consideration 7 — it used to
+      # be manual-only, so a joint degradation of impl and vectors could not be
+      # detected). tools is an independent project outside the workspace
+      # (bunfig.toml), so it gets its own frozen install here (a few packages,
+      # sub-second; under 1s including verify in measurement)
       - name: 7b. Crypto vectors cross-check (independent reference verifier)
         working-directory: packages/crypto/test-vectors/tools
         run: |
           bun install --frozen-lockfile
           bun run verify
 
-      # web の e2e はビルド成果物(dist/public + _headers)前提のため、
-      # ルート vitest.config.ts の projects には入れず独立ステップで実行する
-      # (docs/notes/spike-a.md の推奨)。ポートは OS 割り当てで並列衝突しない。
+      # The web e2e assumes build artifacts (dist/public + _headers), so it is
+      # not in the root vitest.config.ts projects and runs as its own step
+      # (recommended in docs/notes/spike-a.md). The port is OS-assigned so
+      # parallel runs don't collide.
       - name: 8. Web build (vite + CSP headers)
         run: bun run --filter @maruhi/web build
 
-      # combined 配信構成(W2 裁定 BM — server が web アセットを同梱)の設定
-      # 妥当性検査。credential 不要のローカル検証で、assets ディレクトリの実在・
-      # wrangler.jsonc の整合をデプロイと同じ経路で確かめる(パス空間の被覆は
-      # apps/server/test/serving-topology.test.ts が step 7 で検査済み)
+      # Config validity check for the combined serving layout (W2 ruling BM —
+      # server bundles the web assets). A credential-free local verification
+      # that follows the same path as a deploy to confirm the assets directory
+      # exists and wrangler.jsonc is consistent (path-space coverage is checked
+      # by apps/server/test/serving-topology.test.ts in step 7)
       - name: 8b. Server deploy dry-run (combined assets config)
         run: bunx wrangler deploy --dry-run
         working-directory: apps/server
         env:
           WRANGLER_SEND_METRICS: "false"
 
-      # 運用基盤 H3(docs/notes/hosted-ops.md §2-F): hosted 環境と復元 worker の設定も
-      # 同じ経路で検査し、hosted 環境が最上位のバインディングから drift していない
-      # ことを scripts/check-hosted-config.ts で確かめる
+      # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
+      # environment and the restore worker through the same path, and confirm
+      # via scripts/check-hosted-config.ts that the hosted environment has not
+      # drifted from the outermost bindings
       - name: 8c. Hosted / restore config dry-run + drift check
         working-directory: apps/server
         env:
@@ -154,16 +182,19 @@ jobs:
           bunx wrangler deploy --dry-run -c wrangler.restore.jsonc
           bun scripts/check-hosted-config.ts
 
-      # apex サイト(apps/site — Blume。LP + docs、DP2)。blume build + scripts/postbuild.ts
-      # (style 属性の外部化・inline ハッシュの CSP・外部参照ゼロの機械検査・_headers)を
-      # ビルドの経路で走らせ、独立 wrangler 設定(maruhi-site — Static Assets のみ)の妥当性を
-      # 製品 Worker(8b)と同じ dry-run で検査する。Blume は bunx --bun で Bun 上で実行する
-      # (Node 22.12+ の要求を CI の Node 版に依存させない — web-design-pass.md §4 裁定 J)
+      # apex site (apps/site — Blume. LP + docs, DP2). Runs blume build +
+      # scripts/postbuild.ts (style-attribute externalization, inline-hash CSP,
+      # zero-external-reference mechanical checks, _headers) through the build
+      # path, then validates the standalone wrangler config (maruhi-site —
+      # Static Assets only) with the same dry-run as the product Worker (8b).
+      # Blume runs on Bun via bunx --bun (avoids depending on the CI's Node
+      # version for its Node 22.12+ requirement — web-design-pass.md §4 ruling J)
       - name: 8d. Site build (Blume + CSP headers)
         run: bun run --filter @maruhi/site build
 
-      # 内部リンク・アンカー・アセット参照の検証(Blume の validate。--external は付けず
-      # 外部 URL を叩かない — 「言わざる」は CI にも適用)。--strict で警告も落とす
+      # Validates internal links / anchors / asset references (Blume's
+      # validate. --external is not passed and external URLs are never hit —
+      # "say nothing" applies to CI too). --strict also fails on warnings
       - name: 8d2. Site link validation (blume validate)
         run: bun run --filter @maruhi/site validate
 
@@ -173,31 +204,37 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
-      # Playwright ブラウザ導入(step 9 / 9b / 11 の browser テストが共有)。
-      # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
-      # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
-      # ubuntu-latest(実測時 ubuntu-24.04 noble イメージ)がすべて同梱済みで、
-      # apt が新規に入れるのはフォント 9 個(21.1MB)のみ。その apt 取得が遅い
-      # ミラーで 5 分超かかることがあり、これが変動の正体。フォント無しでも
-      # e2e / crypto:browser が通ることを CI で実証済み(テストは DOM テキストと
-      # computed style のみ検証し、字形描画に依存しない)ため --with-deps は
-      # 使わない(イメージ更新で同梱が欠けた場合は playwright が欠落 .so 名を
-      # 挙げて明示的に落ちるので、そのとき見直す)。
-      # --only-shell: web e2e(chromium.launch headless)と crypto test:browser
-      # (vitest browser provider、headless)は chromium headless shell だけで
-      # 動くことを実測済み(フル Chromium は不要。取得量も約半分)。
-      # ~/.cache/ms-playwright は playwright の厳密ピン版をキーにキャッシュし、
-      # ミス時も headless shell の取得(数十 MB・数秒)だけで済む。ミス時の取得も
-      # 速いがキャッシュは意図して維持する: ブラウザ CDN の変動・停滞という外部
-      # 要因を平常経路から外すため(35s〜6m42s の変動の教訓)。
-      # 導入を単一ステップに集約したので step 9 / 11 は常に同一 revision を使う。
+      # Playwright browser install (shared by the browser tests in step 9 / 9b /
+      # 11). The old layout (playwright install --with-deps inside step 9 every
+      # run) accounted for the measured 35s–6m42s variance of step 9. Breakdown
+      # from measured logs: ubuntu-latest (ubuntu-24.04 noble image at the time)
+      # already ships all of Chromium's runtime libraries; apt only installs 9
+      # fonts (21.1MB). That apt fetch can take 5+ minutes on a slow mirror —
+      # the actual source of the variance. e2e / crypto:browser were proven to
+      # pass without the fonts in CI (tests verify DOM text and computed style
+      # only, not glyph rendering), so --with-deps is not used (if an image
+      # update drops a bundled .so, playwright fails loudly naming the missing
+      # .so — revisit then).
+      # --only-shell: the web e2e (chromium.launch headless) and crypto
+      # test:browser (vitest browser provider, headless) were measured to work
+      # on the chromium headless shell alone (full Chromium is unnecessary and
+      # roughly halves the download).
+      # ~/.cache/ms-playwright is cached keyed by the strictly pinned playwright
+      # version, so a miss only fetches the headless shell (tens of MB, seconds).
+      # The miss path is also fast, but the cache is kept deliberately: it moves
+      # browser-CDN variance and stalls off the normal path (the 35s–6m42s
+      # lesson).
+      # Consolidating install into a single step means steps 9 / 11 always use
+      # the same revision.
       - name: Resolve Playwright version (browser cache key)
         id: playwright-version
-        # fail-closed: 解決失敗時の bun --print は "undefined" を exit 0 で返すため、
-        # 検証しないとキーが playwright-shell-Linux-undefined に固定され、以後の
-        # バージョン更新でキャッシュが自己修復しなくなる(レビュー指摘)
-        # 導入ステップは apps/web の版だけを入れるが、site e2e(9b)も同じブラウザを使う。
-        # 両者のピンが割れたら、ここで理由つきで止める(後段の browser-not-installed より先に)
+        # fail-closed: bun --print returns "undefined" with exit 0 when
+        # resolution fails, so without validation the key would pin to
+        # playwright-shell-Linux-undefined and later version bumps would stop
+        # self-healing the cache (review feedback)
+        # The install step only uses apps/web's pin, but site e2e (9b) shares
+        # the browser. If the two pins diverge, stop here with a reason (before
+        # the browser-not-installed error downstream)
         run: |
           version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')
           case "$version" in "" | undefined) echo "::error::could not resolve the pinned playwright version"; exit 1 ;; esac
@@ -208,23 +245,27 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # restore / save を分離: 一体型 actions/cache の保存は post ステップ
-      # (success() 条件)のため、ミス後に step 9〜11 のどれかが落ちると保存されず、
-      # 赤いまま反復する開発中ブランチで毎回取り直しになる(レビュー指摘)。
-      # 保存は導入ステップの直後に行い、後続の成否に依存させない
+      # restore / save are split: the combined actions/cache only saves in its
+      # post step (success() condition), so if any of steps 9–11 fails after a
+      # miss, nothing is saved and a red development branch re-fetches every
+      # run (review feedback). Saving happens right after the install step and
+      # does not depend on later outcomes
       - name: Restore Playwright Chromium cache (headless shell)
         id: playwright-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          # キー名の "shell" はキャッシュ内容(headless shell のみ)を表す。
-          # フル Chromium 導入へ戻す変更をする場合はキー名も変えること
+          # The "shell" in the key name describes the cache contents (headless
+          # shell only). If the layout ever goes back to full Chromium, change
+          # the key name too
           key: playwright-shell-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # working-directory は必須: ルート cwd の bunx はワークスペースのピンではなく
-      # npm の latest を解決するため(docs/notes/session-04.md に既出の罠。レビューで
-      # react-doctor の実測により再確認)、apps/web で実行してピン版に install させる。
-      # これでキャッシュの中身(revision)とテストが要求する revision が常に一致する
+      # working-directory is required: bunx at the repo root resolves npm's
+      # latest instead of the workspace pin (a known trap already recorded in
+      # docs/notes/session-04.md; re-confirmed by react-doctor measurement in
+      # review). Running in apps/web makes it install the pinned version. This
+      # keeps the cached contents (revision) and the revision the tests require
+      # always equal
       - name: Install Playwright Chromium (headless shell, cache miss only)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
@@ -238,14 +279,16 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
-      # ステップ単位の timeout: ハング時(2026-08-19 run 32217317312 で実績)に
-      # ジョブ上限 30 分ではなくステップ上限で早期に落とす(実測 + 余裕で設定)
+      # Per-step timeout: on a hang (actual incident on 2026-08-19, run
+      # 32217317312), fail fast on the step limit rather than the 30-minute job
+      # limit (set to measured time + headroom)
       - name: 9. Web e2e (wrangler dev + Playwright)
         timeout-minutes: 5
         run: bun run --filter @maruhi/web e2e
 
-      # apex サイトの e2e(wrangler dev + Playwright): 全リクエスト同一オリジン・CSP 違反ゼロ・
-      # フォントの自己配信・light / dark の accent・/docs 到達・末尾スラッシュ / 404(step 8d の dist 前提)
+      # apex site e2e (wrangler dev + Playwright): every request same-origin,
+      # zero CSP violations, self-hosted fonts, light/dark accent, /docs
+      # reachable, trailing-slash / 404 (assumes the dist from step 8d)
       - name: 9b. Site e2e (wrangler dev + Playwright)
         timeout-minutes: 5
         run: bun run --filter @maruhi/site e2e
@@ -253,11 +296,12 @@ jobs:
       - name: 10. Astryx doctor (web)
         run: bun run --filter @maruhi/web doctor:astryx
 
-      # crypto の 3 環境実行(CRYPTO_SPEC §11)。ルート vitest.config.ts(step 7)は
-      # packages/*/vitest.config.ts の glob で node プロジェクトのみを拾う。
-      # workerd / browser はビルド外部依存(workerd バイナリ / Playwright Chromium)を
-      # 要するため独立ステップで実行する。browser は上の Playwright 導入ステップが
-      # 入れた headless shell(step 9 と同一 revision)を使う。
+      # crypto's 3-environment runs (CRYPTO_SPEC §11). The root
+      # vitest.config.ts (step 7) only picks up node projects via the
+      # packages/*/vitest.config.ts glob. workerd / browser need out-of-build
+      # dependencies (the workerd binary / Playwright Chromium), so they run as
+      # their own step. browser uses the headless shell installed by the
+      # Playwright step above (same revision as step 9).
       - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
         timeout-minutes: 10
         run: |

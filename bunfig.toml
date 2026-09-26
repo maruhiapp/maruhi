@@ -1,3 +1,2 @@
-# 依存はすべて厳密ピン留め(CLAUDE.md / ADR-0011)
+# All dependencies are strictly pinned (CLAUDE.md / ADR-0011)
 [install]
-exact = true
