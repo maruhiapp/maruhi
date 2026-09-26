@@ -74,7 +74,7 @@ function fileLines(path) {
     return [];
   }
   if (text.includes("")) return [];
-  return text.split("\n").map((text, i) => ({ path, line: i + 1, text }));
+  return text.split("\n").map((line, i) => ({ path, line: i + 1, text: line }));
 }
 
 // Lines added by the working-tree diff vs the merge base (covers committed
