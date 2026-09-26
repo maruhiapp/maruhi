@@ -57,10 +57,10 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      # ADR-0019 ratchet: CJK text may not appear in files a PR touches
+      # ADR-0019 ratchet: CJK text may not appear in the lines a PR adds
       # (exemptions: scripts/english-exemptions.txt + inline `english-exempt`
       # markers). Runs before install — the script has no dependencies
-      - name: 0. English source check (changed files)
+      - name: 0. English source check (added lines)
         run: bun run check:english
 
       - name: Install dependencies

@@ -157,7 +157,7 @@ apps/
   no i18n mechanism. Exceptions are enumerated in ADR-0019 decision 2 and
   `scripts/english-exemptions.txt`; intentional non-English data carries an
   inline `english-exempt` marker. `bun run check:english` enforces this on
-  changed files
+  newly added lines
 - Domain-term renderings follow `docs/GLOSSARY.md`; cross-reference codes
   (ruling codes, `§` refs, `session-NN`) are never translated
 - Pin unstable dependencies (Bun / Effect v4 / Alchemy v2 / FunStack) exactly.

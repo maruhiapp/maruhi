@@ -50,8 +50,9 @@
     "apps/cli/test/support/exec-probe.ts"
   ],
   // Out of analysis scope: agent skills (vendored content), the deepsec
-  // isolated workspace, and the test-vector reference generation/verification
-  // tools (throwaway; never imported by product code).
+  // isolated workspace, the test-vector reference generation/verification
+  // tools (throwaway; never imported by product code), and scripts/ —
+  // standalone repo tooling run via bun, never imported.
   // apps/web/public holds statically served assets outside the SPA (e.g.
   // invite.css referenced by invite.html — AUTH_SPEC §15-3); they sit off the
   // module graph and would be falsely flagged unreachable.
@@ -68,7 +69,8 @@
     "apps/site/pages/**",
     "apps/site/.blume/**",
     "apps/site/.blume-verify/**",
-    "packages/crypto/test-vectors/tools/**"
+    "packages/crypto/test-vectors/tools/**",
+    "scripts/**"
   ],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",

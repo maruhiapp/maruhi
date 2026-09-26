@@ -1,8 +1,13 @@
-// English-only source check (ADR-0019). Scans text files for CJK characters
-// and fails if any are found outside the exemptions.
+// English-only source check (ADR-0019). Scans text for CJK characters and
+// fails if any are found outside the exemptions.
 //
-//   bun scripts/check-english.mjs          files changed vs the PR base ref
+//   bun scripts/check-english.mjs          lines added vs the PR base ref
 //   bun scripts/check-english.mjs --all    every tracked file (post-migration)
+//
+// Changed mode is a ratchet: only lines a diff *adds* are checked, so a PR
+// that touches a file with pre-existing Japanese is not forced to translate
+// it (ADR-0019 decision 4). --all checks whole files and is for the
+// post-migration steady state.
 //
 // A line containing the word `english-exempt` is skipped (inline opt-out for
 // intentional non-English data). Whole files are exempted by listing them in
@@ -17,16 +22,17 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ALL = process.argv.includes("--all");
 
-const TEXT_EXT =
-  /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|json|jsonc|md|mdx|yml|yaml|toml|sh|rb|py|css|html?|svg|txt|astro|cfg|ini|env|example)$/i;
-
 // Hiragana, katakana, halfwidth katakana, CJK ext-A, unified + compat
 // ideographs, and CJK punctuation. U+3299 (the maruhi mark glyph) is
 // intentionally out of range.
 const CJK = /[　-〿぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿]/;
 
 function git(args) {
-  return execSync(`git ${args}`, { cwd: ROOT, encoding: "utf8" }).trim();
+  return execSync(`git ${args}`, {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 1 << 28,
+  }).trim();
 }
 
 function exemptPaths() {
@@ -59,35 +65,64 @@ function mergeBase() {
   process.exit(2);
 }
 
-function changedFiles() {
-  // Working-tree diff against the merge base covers both committed branch
-  // changes (CI) and not-yet-committed local edits (bun run check pre-commit)
-  return git(`diff --name-only ${mergeBase()}`).split("\n").filter(Boolean);
-}
-
-const files = (ALL ? git("ls-files").split("\n") : changedFiles()).filter((path) =>
-  TEXT_EXT.test(path),
-);
-const exemptions = exemptPaths();
-
-const offenders = [];
-for (const path of files) {
-  if (isExempt(path, exemptions)) continue;
+// Every line of a file as {path, line, text}; empty for unreadable/binary files.
+function fileLines(path) {
   let text;
   try {
     text = readFileSync(join(ROOT, path), "utf8");
   } catch {
-    continue;
+    return [];
   }
-  text.split("\n").forEach((line, i) => {
-    if (CJK.test(line) && !line.includes("english-exempt")) {
-      offenders.push(`${path}:${i + 1}: ${line.trim().slice(0, 100)}`);
+  if (text.includes("")) return [];
+  return text.split("\n").map((text, i) => ({ path, line: i + 1, text }));
+}
+
+// Lines added by the working-tree diff vs the merge base (covers committed
+// branch changes and not-yet-committed local edits), plus whole contents of
+// untracked files, which the diff never mentions.
+function addedLines() {
+  const out = [];
+  let path = null;
+  let line = 0;
+  for (const raw of git(`diff -U0 --no-color ${mergeBase()}`).split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (hunk) {
+      line = Number(hunk[1]);
+    } else if (raw.startsWith("+++ ")) {
+      path = raw.startsWith("+++ b/") ? raw.slice(6) : null;
+    } else if (path && raw.startsWith("+")) {
+      out.push({ path, line, text: raw.slice(1) });
+      line += 1;
     }
-  });
+  }
+  for (const untracked of git("ls-files --others --exclude-standard").split("\n")) {
+    if (untracked) out.push(...fileLines(untracked));
+  }
+  return out;
+}
+
+function allLines() {
+  return git("ls-files")
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((path) => fileLines(path));
+}
+
+const lines = ALL ? allLines() : addedLines();
+const exemptions = exemptPaths();
+
+const offenders = [];
+for (const { path, line, text } of lines) {
+  if (isExempt(path, exemptions)) continue;
+  if (CJK.test(text) && !text.includes("english-exempt")) {
+    offenders.push(`${path}:${line}: ${text.trim().slice(0, 100)}`);
+  }
 }
 
 if (offenders.length > 0) {
-  console.error(`check-english: ${offenders.length} line(s) contain CJK text (ADR-0019).`);
+  console.error(
+    `check-english: ${offenders.length} ${ALL ? "line(s)" : "added line(s)"} contain CJK text (ADR-0019).`,
+  );
   console.error(
     "Translate them, or for intentional non-English data add an inline" +
       " `english-exempt` marker / a path entry in scripts/english-exemptions.txt:",
@@ -97,5 +132,5 @@ if (offenders.length > 0) {
   process.exit(1);
 }
 console.log(
-  `check-english: clean (${files.length} file(s) scanned${ALL ? ", --all" : ", changed-only"})`,
+  `check-english: clean (${lines.length} ${ALL ? "file line(s), --all" : "added line(s), changed-only"})`,
 );
