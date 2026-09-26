@@ -714,7 +714,7 @@ const deviceAddConfig = {
   ),
   replace: singleFlag(
     "replace",
-    "Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key from an install before device keys)",
+    "Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key)",
   ),
 };
 const deviceApproveConfig = {
@@ -3775,12 +3775,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const keySealPasskey = Command.make("passkey", keySealPasskeyConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
-      const masterKeys = yield* loadMasterKeys(context.session);
       const reserve = yield* openLedgerReserveForChange({
         session: context.session,
         client: context.client,
         via: values.passkey ? "passkey" : "code",
-        masterKeys,
         command: "maruhi key seal passkey",
       });
       yield* sealPasskeyOp({
@@ -3851,7 +3849,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Create the reserve key and its recovery code (first time), separate it from a copy of a device key that an install from before device keys left in the ledger, or reissue the recovery code",
+      "Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code",
     ),
   );
 
@@ -3880,15 +3878,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         mode: values.mode,
         userIds: values["user-id"],
         openReserve: (session, client) =>
-          Effect.flatMap(loadMasterKeys(session), (masterKeys) =>
-            openLedgerReserveForChange({
-              session,
-              client,
-              via: "code",
-              masterKeys,
-              command: "maruhi guardian add …",
-            }),
-          ),
+          openLedgerReserveForChange({
+            session,
+            client,
+            via: "code",
+            command: "maruhi guardian add …",
+          }),
       });
     }),
   ).pipe(

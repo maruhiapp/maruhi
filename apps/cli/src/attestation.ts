@@ -316,7 +316,7 @@ export function submitHeadAttestationIfAdvanced(input: {
       return;
     }
     yield* logNote(
-      `could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds; the server may be running a previous release without PUT /projects/:id/head-attestation). This does not affect the current command (${submitted})`,
+      `could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds). This does not affect the current command (${submitted})`,
     );
   });
 }

@@ -1458,14 +1458,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
     await page.getByTestId("device-empty").waitFor();
     await expect(page.getByText("No devices registered").count()).resolves.toBe(1);
-    // 旧サーバー(devices グループ無し)の 404 は空状態に畳まず、登録簿の名詞で写す(K5-9)
+    // 404 は空状態に畳まず、登録簿の名詞で写す(K5-9)
     mode = "not-found";
     await page.reload({ waitUntil: "networkidle" });
-    await page
-      .getByText(
-        "The server reports no device registry for your account (older servers do not have one).",
-      )
-      .waitFor();
+    await page.getByText("The server reports no device registry for your account.").waitFor();
     // 401 はシェルがその場でサインイン画面へ
     mode = "unauthorized";
     await page.reload({ waitUntil: "networkidle" });

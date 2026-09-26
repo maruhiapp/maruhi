@@ -31,7 +31,6 @@ import {
   findOwnDevice,
   reAddDeviceRoute,
   revokedFingerprintsOf,
-  wasFirstKeyOf,
 } from "./device-key.ts";
 import { appendAddDevice, backfillToDevice } from "./device-ops.ts";
 import { countNoun, displayText } from "./display.ts";
@@ -151,7 +150,7 @@ function warnReserveMissing(input: {
     return Effect.void;
   }
   return logWarning(
-    "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery` to create a reserve key and seal it — on installs from before device keys, the recovery ledger keeps a copy of this device's key and `maruhi key recovery` replaces it with a separate reserve key. Without a reserve key, losing this device means losing access",
+    "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery` to create a reserve key and seal it. Without a reserve key, losing this device means losing access",
   );
 }
 
@@ -198,9 +197,6 @@ function observeDevices(input: {
         );
       }
     }
-    // 証人の書き直しは同期の前の行(`records`)から書くので、同じ同期の失効の印(b)より前に置く
-    // (後に置くと印を消す — 消えた印は失効した鍵の再登録を許す。K4-3)
-    yield* recordFirstKeyWitnesses({ context, records, store });
     // (b): このチェーンの失効を記録に写す(現端末でない失効 FP のうち、記録が active のもの)
     const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
     const toMark = records
@@ -220,39 +216,6 @@ function observeDevices(input: {
       );
     }
   });
-}
-
-/**
- * (a′) 証人の記録(DK K15-11 / K15-12): 先に `add_device` として観測した行(出所 observed・
- * 出所の端末あり)の鍵が、このチェーンのどの在籍でもその人の最初の鍵だった(台帳の鍵の判定と
- * 同じ述語 `wasFirstKeyOf` — 有効・失効・以前の在籍を問わない)なら、出所の端末なし・観測した
- * プロジェクト = このプロジェクトに書き直す。証人が観測の順序に依らなくなる。読み手は証人だけで、
- * 向きは止める側だけ。失効の印・記録の時刻・cap は保つ(行を新しく作らない)。
- */
-function recordFirstKeyWitnesses(input: {
-  readonly context: ProjectContext;
-  readonly records: readonly OwnDeviceEntry[];
-  readonly store: OwnDeviceStoreShape;
-}): Effect.Effect<void, never, CliIo> {
-  const { context, records, store } = input;
-  const { session } = context;
-  return Effect.forEach(
-    records.filter(
-      (record) =>
-        record.source === "observed" &&
-        record.addedByFingerprintHex !== null &&
-        wasFirstKeyOf(context.verified, session.userId, record),
-    ),
-    (record) =>
-      store
-        .record(session.origin, session.userId, {
-          ...record,
-          addedByFingerprintHex: null,
-          observedProjectId: context.projectId,
-        })
-        .pipe(Effect.catch((error) => noteWriteFailure(error))),
-    { discard: true },
-  );
 }
 
 function describeAdder(provenance: {
@@ -326,8 +289,7 @@ function registerRecorded(input: {
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
     });
-    // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3 —
-    // K10 以前の CLI が上書きした記録の cap がチェーンと食い違っていても、ここで見える)
+    // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3)
     yield* logNote(
       `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${describeFailedBackfill(context.projectId, backfill.failed)}`,
     );

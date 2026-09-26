@@ -132,9 +132,8 @@ const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
   project: "The server reports no such project for your account.",
   invitation: "The server reports no such invitation for this project.",
   token: "The server reports no such token for your account.",
-  // 旧サーバー(`devices` グループ無し)の 404 — 空状態には畳まない(K5-9)
-  "device registry":
-    "The server reports no device registry for your account (older servers do not have one).",
+  // 404 は空状態には畳まない(K5-9)
+  "device registry": "The server reports no device registry for your account.",
 };
 
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */

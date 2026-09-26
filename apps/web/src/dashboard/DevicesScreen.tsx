@@ -248,7 +248,7 @@ function DevicesResource({
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
-  // 置換形(裁定 B-a)。404 は旧サーバー(登録簿の無い面)の文言(K5-9)。失効後の
+  // 置換形(裁定 B-a)。404 は登録簿の名詞の文言(K5-9)。失効後の
   // 再取得(refreshing — 登録簿・トークン一覧のどちらか)中は直前の表を残し、行の
   // Revoke token は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading devices" />;

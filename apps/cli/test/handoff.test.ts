@@ -105,7 +105,12 @@ async function start(handlers: readonly MockHandler[]): Promise<Started> {
 function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   env.keychain.set(
     tokenEntryName(origin),
-    JSON.stringify({ token: "maruhi_pat_stored", userId: user.userId, tokenId: "tok_1" }),
+    JSON.stringify({
+      token: "maruhi_pat_stored",
+      userId: user.userId,
+      tokenId: "tok_1",
+      expiresAtMs: 4_102_444_800_000,
+    }),
   );
 }
 
@@ -321,7 +326,7 @@ describe("maruhi key recover --handoff(要求者)", () => {
     // 予備鍵の印がある鍵は問わずに記録する(DK K16-3 / K16-6)
     expect(env.prompts).toEqual([]);
     expect(errors).toContain(
-      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
+      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
     );
     // 鍵素材は出力に出ない
     expect(logs).not.toContain(reserve.encSkHex);

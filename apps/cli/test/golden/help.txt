@@ -572,7 +572,7 @@ SUBCOMMANDS
   show        Print this device's public keys and fingerprint, and the reserve key fingerprint (never the private keys)
   publish     Print your signing public key as an OpenSSH line to register on GitHub as a signing key (--gh adds it through the gh CLI)
   recover     Recover on a new machine: open the reserve key (recovery code, --passkey, or --handoff via your guardians), then register a new device key for this machine with it
-  recovery    Create the reserve key and its recovery code (first time), separate it from a copy of a device key that an install from before device keys left in the ledger, or reissue the recovery code
+  recovery    Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code
   seal        Seal the reserve key to a passkey (passkey / list / remove)
   reserve     Manage the reserve key (rotate)
 
@@ -639,7 +639,7 @@ GLOBAL FLAGS
 
 $ maruhi key recovery --help
 DESCRIPTION
-  Create the reserve key and its recovery code (first time), separate it from a copy of a device key that an install from before device keys left in the ledger, or reissue the recovery code
+  Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code
 
 USAGE
   maruhi key recovery [flags]
@@ -772,7 +772,7 @@ USAGE
 FLAGS
   --server string    Server URL (defaults to config server)
   --label string     Display name for this device in the device registry (default: the hostname)
-  --replace          Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key from an install before device keys)
+  --replace          Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key)
 
 GLOBAL FLAGS
   --help, -h       Show help information

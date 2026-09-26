@@ -759,7 +759,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(revoked).toBe(1);
@@ -774,7 +779,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     // 削除を失効より先に行う: 失効成功後に削除が失敗すると無効トークンが
     // キーチェーンに残り以後の全コマンドが 401 になるため。失効失敗は exit 1
@@ -794,7 +804,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(env.keychain.size).toBe(0);
@@ -806,7 +821,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
@@ -831,7 +851,12 @@ describe("maruhi logout", () => {
       await seedConfig(env, { server: maruhi.origin });
       env.keychain.set(
         tokenEntryName(maruhi.origin),
-        JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+        JSON.stringify({
+          token: "maruhi_pat_stored",
+          userId: "user-0001",
+          tokenId: "tok_1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       );
       env.setEnvVar("MARUHI_TOKEN", token);
       if (origin !== undefined) {
@@ -853,7 +878,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
@@ -871,7 +901,12 @@ describe("maruhi logout", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     env.setEnvVar("MARUHI_TOKEN", " \n");
     expect(await runCli(["logout"], env.layer)).toBe(0);

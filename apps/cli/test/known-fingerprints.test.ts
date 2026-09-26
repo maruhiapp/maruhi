@@ -68,28 +68,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect(stored.v).toBe(2);
   });
 
-  it("v1 の帳(1 人 1 指紋)は 1 要素の集合として読み、次の record で v2 になる", async () => {
-    const { book, path } = await makeBook();
-    await writeFile(
-      path,
-      JSON.stringify({
-        v: 1,
-        known: { [ORIGIN]: { [USER_A]: { fingerprintHex: FP_A, verifiedAtMs: 1 } } },
-      }),
-    );
-    const before = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
-    if (before.state !== "hit") throw new Error("expected hit");
-    expect(before.entries).toEqual([{ fingerprintHex: FP_A, verifiedAtMs: 1 }]);
-    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
-    const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
-    expect(stored.v).toBe(2);
-    const after = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
-    if (after.state !== "hit") throw new Error("expected hit");
-    expect(after.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
-      [FP_A, FP_B].toSorted(),
-    );
-  });
-
   it("ENOENT 以外の読み込み失敗(EISDIR 等)は miss に畳まず、lookup / record とも失敗する", async () => {
     const { book, path } = await makeBook();
     await mkdir(path);
@@ -133,8 +111,18 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     await writeFile(
       path,
       JSON.stringify({
+        v: 2,
+        known: { [ORIGIN]: { [USER_A]: { fingerprints: { zz: { verifiedAtMs: 1 } } } } },
+      }),
+    );
+    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+
+    // v2 以外の版は、中身が v2 の形でも読まない
+    await writeFile(
+      path,
+      JSON.stringify({
         v: 1,
-        known: { [ORIGIN]: { [USER_A]: { fingerprintHex: "zz", verifiedAtMs: 1 } } },
+        known: { [ORIGIN]: { [USER_A]: { fingerprints: { [FP_A]: { verifiedAtMs: 1 } } } } },
       }),
     );
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
@@ -143,7 +131,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     // 禁止で全体破損として拒否される(prototype 汚染の構造的排除)
     await writeFile(
       path,
-      `{"v":1,"known":{"${ORIGIN}":{"__proto__":{"fingerprintHex":"${FP_A}","verifiedAtMs":1}}}}`,
+      `{"v":2,"known":{"${ORIGIN}":{"__proto__":{"fingerprints":{"${FP_A}":{"verifiedAtMs":1}}}}}}`,
     );
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
   });

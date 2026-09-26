@@ -956,6 +956,8 @@ describe("maruhi member add", () => {
           [INVITE_ID]: {
             linkPubHex: "ee".repeat(32),
             role: "member",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
             expiresAtMs: 1755993600000,
             expectedGithubLogin: null,
           },
@@ -1093,6 +1095,8 @@ describe("maruhi member add", () => {
             [INVITE_ID]: {
               linkPubHex: issued.linkPubHex,
               role: "member",
+              scopeKind: "all",
+              scopeEnvironmentIds: [],
               expiresAtMs: 1755993600000,
               expectedGithubLogin: "bob",
             },
@@ -1273,10 +1277,12 @@ describe("maruhi member add", () => {
       await writeFile(
         env.fingerprintBookPath,
         JSON.stringify({
-          v: 1,
+          v: 2,
           known: {
             [env.serverOrigin]: {
-              [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+              [acceptor.userId]: {
+                fingerprints: { ["00".repeat(16)]: { verifiedAtMs: 1700000000000 } },
+              },
             },
           },
         }),
@@ -1335,10 +1341,12 @@ describe("maruhi member add", () => {
     await writeFile(
       env.fingerprintBookPath,
       JSON.stringify({
-        v: 1,
+        v: 2,
         known: {
           [env.serverOrigin]: {
-            [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+            [acceptor.userId]: {
+              fingerprints: { ["00".repeat(16)]: { verifiedAtMs: 1700000000000 } },
+            },
           },
         },
       }),
