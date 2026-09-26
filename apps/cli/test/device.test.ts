@@ -1,19 +1,25 @@
-// `maruhi device add / approve / list / revoke` と初回同期の端末登録(CRYPTO_SPEC §3 /
-// §6.2 / §7、AUTH_SPEC §13-11 — 2026-09-19 DK K4。設計録 dk-design.md §9)の統合テスト。
-// 端末 op の署名・検証は実 crypto、サーバーはワイヤレベルモック。
+// Integration tests for `maruhi device add / approve / list / revoke` and the
+// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
+// — 2026-09-19 DK K4. Design doc dk-design.md §9).
+// Device ops are signed / verified with real crypto; the server is a wire-level mock.
 //
-// 固定する性質:
-//  1. `device approve` は儀式ゲート(TTY + 非エージェント)を要求一覧の取得より前に置き、
-//     要求行の公開鍵から FP を再計算して照合する(申告 FP は使わない — K4-6)。承認は
-//     各プロジェクトの `add_device` + バックフィル + ローカル記録(approved)+ 登録簿の PUT
-//  2. 初回同期(鍵ありの前段)は、ローカル記録の 3 出所(reserve / approved / observed)だけを
-//     チェーンへ足し、登録簿(`GET /auth/devices`)は読まない・書かない(K4-3)。失効した
-//     記録は足さない。チェーンで観測した端末は出所つきで記録する(K4-4)
-//  3. ラップ完全集合の期待数はサーバーと同じ述語(実効 scope × 端末、保存キー粒度)
-//  4. `device revoke` は FP で確定し、最後の端末は失効できない(last-device-protected)
-//  5. `device add` は鍵のある端末で既定拒否(`--replace` で作り直す — K4-18)、承認の合図は
-//     登録簿、完了の確認はチェーン(K4-5)
-//  6. 旧端末経路の承認(`source: "device"`)はワイヤ型が受け付けない(撤去の固定)
+// Pinned properties:
+//  1. `device approve` puts the ceremony gate (TTY + non-agent) before fetching
+//     the request list, and recomputes the FP from the request row's public key
+//     to compare (the claimed FP is never used — K4-6). Approval is each
+//     project's `add_device` + backfill + local record (approved) + the registry PUT
+//  2. The first sync (the keyed prelude) appends only the local record's 3
+//     provenances (reserve / approved / observed) to the chain, and never reads
+//     or writes the registry (`GET /auth/devices`) (K4-3). A revoked record is
+//     never appended. Devices observed on the chain are recorded with provenance (K4-4)
+//  3. The expected count of the complete wrap set uses the same predicate as
+//     the server (effective scope × devices, storage-key granularity)
+//  4. `device revoke` settles by FP, and the last device cannot be revoked (last-device-protected)
+//  5. `device add` refuses by default on a device that already has a key
+//     (rebuild with `--replace` — K4-18); the signal of approval is the
+//     registry, confirmation of completion is the chain (K4-5)
+//  6. Approval over the old device path (`source: "device"`) is rejected by
+//     the wire type (pinning the removal)
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -75,9 +81,9 @@ const ENV_ID = "env-app";
 const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
 
 let owner: TestUser;
-/** owner の 2 台目(承認される新端末 / 失効される端末)。 */
+/** owner's second device (the new device being approved / the device being revoked). */
 let dev2: TestUser;
-/** owner の予備鍵(公開側だけローカル記録に載る)。 */
+/** owner's reserve key (only the public side lands on the local record). */
 let reserve: TestUser;
 let member: TestUser;
 let dek: Uint8Array;
@@ -96,7 +102,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** `add_device`(cap 付き — CRYPTO_SPEC §6.2)。actor は同じ人の有効な端末。 */
+/** `add_device` (cap-carrying — CRYPTO_SPEC §6.2). actor is a valid device of the same person. */
 function addDeviceOp(
   device: TestUser,
   cap: { roleCap: "owner" | "admin" | "member" | "reader"; environmentIds?: readonly string[] } = {
@@ -128,7 +134,7 @@ function revokeDeviceOp(target: TestUser, devices: readonly TestUser[]): ChainOp
 interface ServerState {
   readonly handlers: MockHandler[];
   readonly appended: ChainEntry[];
-  /** すべてのプロジェクト(`extraProjects` を含む)への追記(プロジェクト id つき)。 */
+  /** Appends to every project (including `extraProjects`) — with project ids. */
   readonly appendedTo: { readonly projectId: string; readonly entry: ChainEntry }[];
   readonly registered: { environmentId: string; deks: readonly Record<string, unknown>[] }[];
   readonly registry: {
@@ -137,10 +143,10 @@ interface ServerState {
     sigPubHex: string;
     label: string;
     createdAtMs: number;
-    /** 登録簿の行が運ぶ発行トークンの id(K4-13 のトークン失効の提案の照合キー)。 */
+    /** The issued token's id carried on the registry row (the match key for K4-13's token-revocation proposal). */
     tokenId?: string;
   }[];
-  /** `DELETE /auth/tokens/:tokenId` で失効を要求されたトークン id(呼び出し順)。 */
+  /** Token ids whose revocation was requested via `DELETE /auth/tokens/:tokenId` (in call order). */
   readonly tokenRevokes: string[];
   readonly registryPuts: { fp: string; body: Record<string, unknown> }[];
   readonly registryDeletes: string[];
@@ -149,8 +155,8 @@ interface ServerState {
 }
 
 /**
- * チェーン(追記可)+ 環境 1 つ(owner 宛の epoch 1 ラップ)+ 端末登録簿 + 要求一覧 +
- * プロジェクト一覧のモック。
+ * A mock of the chain (appendable) + one environment (an epoch-1 wrap for
+ * owner) + the device registry + the request list + the project list.
  */
 async function makeServer(input: {
   readonly built: BuiltChain;
@@ -158,54 +164,58 @@ async function makeServer(input: {
   readonly requests?: readonly Record<string, unknown>[];
   readonly registryRows?: readonly ServerState["registry"][number][];
   readonly tokensStatus?: number;
-  /** `GET /auth/tokens` が返すトークンの行(既定: 空 — `tokensStatus` が 403 ならそちらが優先)。 */
+  /** The token rows `GET /auth/tokens` returns (default: empty — `tokensStatus` 403 takes precedence). */
   readonly tokens?: readonly Record<string, unknown>[];
-  /** `DELETE /auth/tokens/:tokenId` の応答コード(既定 204。404 = TokenNotFound)。 */
+  /** The response code of `DELETE /auth/tokens/:tokenId` (default 204. 404 = TokenNotFound). */
   readonly tokenRevokeStatus?: number;
-  /** 追加のハンドラ(MockServer は起動時に列を写すので、後から push できない)。 */
+  /** Extra handlers (MockServer copies the list at startup, so they cannot be pushed later). */
   readonly extra?: readonly MockHandler[];
-  /** 環境一覧 GET の応答コード(既定 200。500 = 受理後の sweep を失敗させる)。 */
+  /** The environment-list GET's response code (default 200. 500 = fails the post-acceptance sweep). */
   readonly environmentsStatus?: number;
   /**
-   * 登録簿 PUT の応答コードを呼び出し順に(429 = 行の上限、500 = 一時的な失敗)。
-   * 尽きたら 204(DK K9-1: 失敗した回の後の再実行を成功させる)。
+   * The registry PUT's response codes in call order (429 = the row cap, 500 =
+   * a transient failure). Once exhausted, 204 (DK K9-1: the re-run after a failed attempt succeeds).
    */
   readonly registryPutStatuses?: readonly number[];
   /**
-   * `POST /auth/devices/requests` の応答: 期限と、合図(登録簿の行)を即座に立てるか。
-   * `conflict` を置くと(合図を立てた後に)409 を返す。
+   * The `POST /auth/devices/requests` response: the deadline, and whether to
+   * raise the signal (the registry row) immediately. Setting `conflict`
+   * returns 409 (after the signal was raised).
    */
   readonly requestCreate?: {
     readonly expiresAtMs: number;
     readonly signal: boolean;
     readonly conflict?: "request-exists" | "device-registered";
   };
-  /** 同じ人が属する他のプロジェクト(チェーンの GET / 追記と空の環境一覧だけを配る — DK K10)。 */
+  /** Other projects the same person belongs to (serves only the chain GET / append and an empty environment list — DK K10). */
   readonly extraProjects?: readonly BuiltChain[];
-  /** DEK ラップ登録(POST)の応答コード(既定 204。500 = バックフィルの失敗 — DK K11)。 */
+  /** The DEK-wrap registration (POST) response code (default 204. 500 = the backfill failure — DK K11). */
   readonly dekRegisterStatus?: number;
   /**
-   * 自分宛 DEK の GET の応答(既定: owner 宛の epoch 1 の 1 行)。`status` を置くとその
-   * コードで失敗させる(DK K12 — 新端末の鍵の到達の確認)。
+   * The response of the GET for DEKs addressed to self (default: 1 row of
+   * epoch 1 for owner). Setting `status` fails it with that code (DK K12 —
+   * the check that the new device's keys arrived).
    */
   readonly listMine?:
     | { readonly rows: readonly Record<string, unknown>[] }
     | { readonly status: number };
-  /** `GET /auth/devices/requests/:fp` が返す生きた要求(FP が一致するもの — 既定は 404)。 */
+  /** The live request `GET /auth/devices/requests/:fp` returns (the one whose FP matches — default 404). */
   readonly pendingRequests?: readonly Record<string, unknown>[];
-  /** プロジェクト一覧 GET の応答コード(既定 200 — DK K13 の一覧の失敗)。 */
+  /** The project-list GET's response code (default 200 — DK K13's list failure). */
   readonly projectsStatus?: number;
   /**
-   * 一覧に載るが同期できないプロジェクト(DK K13-3): `unavailable` = チェーン GET が 500、
-   * `tampered` = ヘッドの申告がエントリと食い違う(検証の矛盾 — `evidence`)。
+   * Projects on the list that cannot be synced (DK K13-3): `unavailable` =
+   * the chain GET is 500; `tampered` = the head claim disagrees with the
+   * entries (a verification contradiction — `evidence`).
    */
   readonly brokenProjects?: readonly {
     readonly built: BuiltChain;
     readonly mode: "unavailable" | "tampered";
   }[];
   /**
-   * サーバーが一覧から隠すプロジェクト(DK K15): チェーンの GET / 追記は配るが `GET /projects` に
-   * 出さない(`--project` で名指せば同期できる — 隠す前に同期した端末を組むため)。
+   * Projects the server hides from the list (DK K15): it serves the chain
+   * GET / append but does not list them on `GET /projects` (syncable when
+   * named via `--project` — to assemble a device that synced before the hiding).
    */
   readonly unlistedProjects?: readonly BuiltChain[];
 }): Promise<{ server: MockServer; state: ServerState }> {
@@ -397,7 +407,7 @@ async function makeServer(input: {
       }
       const body = request.body as { encPubHex: string; sigPubHex: string; label: string };
       if (input.requestCreate.signal) {
-        // 承認側が最後に行う登録簿 PUT の代わり: 要求の公開鍵から FP を計算して合図を立てる
+        // In place of the registry PUT the approver does last: compute the FP from the request's public key and raise the signal
         const fp = await computeUserKeyFingerprint(
           hexBytes(body.encPubHex),
           hexBytes(body.sigPubHex),
@@ -434,7 +444,7 @@ async function makeServer(input: {
   };
 }
 
-/** 自分宛 DEK の GET の応答(`makeServer` の `listMine` — 既定は owner 宛の epoch 1 の 1 行)。 */
+/** The response of the GET for DEKs addressed to self (`makeServer`'s `listMine` — default 1 row of epoch 1 for owner). */
 function listMineResponse(
   listMine:
     | { readonly rows: readonly Record<string, unknown>[] }
@@ -450,7 +460,7 @@ function listMineResponse(
     : { status: 200, json: { deks: listMine.rows } };
 }
 
-/** ある端末鍵の `add_device` の追記(全プロジェクト — プロジェクト id と cap の role)。 */
+/** An `add_device` append for a given device key (across all projects — with project id and cap role). */
 function addsOf(
   state: ServerState,
   device: TestUser,
@@ -491,7 +501,7 @@ async function recordOwnDevice(
   device: TestUser,
   source: OwnDeviceSource,
   revokedAtMs: number | null = null,
-  /** 観測したプロジェクト(観測の行 — 書き手が必ず書く形。DK K15-6)。 */
+  /** The observed project (the observation row — the shape the writer always writes. DK K15-6). */
   observedProjectId: string | null = null,
 ): Promise<void> {
   const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
@@ -512,7 +522,7 @@ async function recordOwnDevice(
   );
 }
 
-/** 鍵ありの前段を通るコマンド(invite create)の発行 POST。 */
+/** The issuance POST of a command that passes through the keyed prelude (invite create). */
 function inviteHandler(built: BuiltChain): MockHandler {
   return onRequest("POST", `/projects/${built.projectId}/invites`, () => ({
     status: 200,
@@ -528,7 +538,7 @@ async function chainWithEnvironment(): Promise<BuiltChain> {
 }
 
 describe("maruhi device approve", () => {
-  it("バックフィルの失敗は、承認の再実行でなく兄弟端末の pull を案内する(DK K11-5)", async () => {
+  it("a backfill failure guides toward a sibling device's pull, not a re-run of the approval (DK K11-5)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -538,7 +548,7 @@ describe("maruhi device approve", () => {
     });
     const env = await startEnv(server.origin, built.projectId, owner);
     expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
-    // 端末はチェーンに載り、後段(記録・登録簿・取消)は走る — 欠けは pull が補う
+    // The device lands on the chain and the later stages (record · registry · cancellation) run — pull fills the gap
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
     expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
     const errors = env.errors.join("\n");
@@ -549,7 +559,7 @@ describe("maruhi device approve", () => {
     expect(errors).not.toContain("Re-run `maruhi device approve`");
   });
 
-  it("儀式ゲート: エージェント環境・非端末では要求一覧を取る前に拒否する(K4-6 反例 3)", async () => {
+  it("ceremony gate: refuses before fetching the request list in an agent environment / non-device (K4-6 counterexample 3)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -572,7 +582,7 @@ describe("maruhi device approve", () => {
     expect(state.appended).toEqual([]);
   });
 
-  it("全長 FP で照合し、add_device → バックフィル → ローカル記録 → 登録簿 PUT → 要求の取消の順に進む", async () => {
+  it("compares the full-length FP and proceeds add_device → backfill → local record → registry PUT → request cancellation", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -584,7 +594,7 @@ describe("maruhi device approve", () => {
       await runCli(["device", "approve", dev2.fingerprintHex.toUpperCase()], env.layer),
       env.errors.join("\n"),
     ).toBe(0);
-    // add_device(既定 cap = owner / all)を owner の端末が署名して追記した
+    // owner's device signed and appended the add_device (default cap = owner / all)
     expect(state.appended).toHaveLength(1);
     const entry = state.appended[0]!;
     expect(entry.op).toBe("add_device");
@@ -596,7 +606,7 @@ describe("maruhi device approve", () => {
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
-    // バックフィル: env-app の epoch 1 が新端末の enc 鍵宛に登録された
+    // Backfill: env-app's epoch 1 was registered addressed to the new device's enc key
     expect(state.registered).toHaveLength(1);
     expect(
       state.registered[0]?.deks.map((wrap) => [
@@ -605,7 +615,7 @@ describe("maruhi device approve", () => {
         wrap["epoch"],
       ]),
     ).toEqual([[owner.userId, dev2.encPubHex, 1]]);
-    // ローカル記録(approved — 承認した端末の FP が出所)
+    // The local record (approved — the approving device's FP is the provenance)
     const recorded = await readOwnDevices(env, server.origin);
     const row = recorded.find((candidate) => candidate.keyFingerprintHex === dev2.fingerprintHex);
     expect(row).toMatchObject({
@@ -614,7 +624,7 @@ describe("maruhi device approve", () => {
       addedByFingerprintHex: owner.fingerprintHex,
       revokedAtMs: null,
     });
-    // 登録簿の PUT(合図 — 最後)と要求の取消
+    // The registry PUT (the signal — last) and the request's cancellation
     expect(state.registryPuts).toEqual([
       {
         fp: dev2.fingerprintHex,
@@ -628,8 +638,9 @@ describe("maruhi device approve", () => {
     );
     const approveLogs = env.logs.join("\n");
     expect(approveLogs).toContain("registered the device (backfilled 1 DEK wrap");
-    // FP の出所の規律(K7-7): label / 12 語の直後に、追加する機械の画面と見比べよと 1 文
-    // (要求を置けるのはアカウント全域の admin トークン — `ensureKeyMaterialAccess`)
+    // The FP provenance rule (K7-7): right after the label / 12 words, one
+    // sentence saying to compare it with the screen of the machine being
+    // added (whoever can place a request holds an account-wide admin token — `ensureKeyMaterialAccess`)
     expect(approveLogs).toContain(
       "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours",
     );
@@ -638,7 +649,7 @@ describe("maruhi device approve", () => {
     );
   });
 
-  it("12 語でも照合でき、`--cap` / `--env` は端末の cap になる(K4-6)", async () => {
+  it("the 12 words can also be compared; `--cap` / `--env` become the device's cap (K4-6)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -663,7 +674,7 @@ describe("maruhi device approve", () => {
     expect(env.logs.join("\n")).toContain(`cap reader/${ENV_ID}`);
   });
 
-  it("要求行の申告 FP が公開鍵と食い違えば無視し、一致する要求が無ければ失敗する(サーバーの差し込み)", async () => {
+  it("ignores a request row whose claimed FP disagrees with the public key; fails when no request matches (a server injection)", async () => {
     const built = await chainWithEnvironment();
     const forged = { ...requestRowOf(dev2), keyFingerprintHex: "00".repeat(16) };
     const { server, state } = await makeServer({
@@ -679,7 +690,7 @@ describe("maruhi device approve", () => {
     );
     expect(errors).toContain("No pending device-add request matches that fingerprint");
     expect(state.appended).toEqual([]);
-    // 接頭辞や 11 語は受けない(§3 の切り詰め禁止)
+    // Prefixes or 11 words are not accepted (§3's no-truncation rule)
     expect(await runCli(["device", "approve", dev2.fingerprintHex.slice(0, 16)], env.layer)).toBe(
       2,
     );
@@ -687,8 +698,8 @@ describe("maruhi device approve", () => {
       "must be the full 32-character fingerprint or its 12 words",
     );
   });
-  it("全プロジェクトが skipped でも(この端末が未登録など)終了コードは 1 で、要求は残す", async () => {
-    // session は member(チェーンに居ない)→ 唯一のプロジェクトで skipped
+  it("even when every project is skipped (this device unregistered, etc.), exit code is 1 and the request is kept", async () => {
+    // session is member (not on the chain) → skipped on the only project
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -705,8 +716,8 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([]);
   });
 
-  it("この端末がチェーンに居ないプロジェクトは skipped で、要求なしの承認でなく同期の経路を案内する(DK K10-5)", async () => {
-    // dev2 は owner と同じ人の端末鍵だが、このプロジェクトのチェーンには居ない
+  it("a project where this device is not on the chain is skipped, and guides toward the sync path rather than request-less approval (DK K10-5)", async () => {
+    // dev2 is a device key of the same person as owner, but is not on this project's chain
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -719,12 +730,12 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       `skipped — this machine's key is not one of your registered devices here, so it cannot register devices here. A device of yours that is registered here adds the new device (and this machine) when it runs a keyed command on this project at a terminal (\`maruhi pull --project ${built.projectId}\`, for instance)`,
     );
-    // 従えない手順(要求なしの承認)を案内しない
+    // Never guides toward an unachievable procedure (request-less approval)
     expect(errors).not.toContain("approve this machine first");
     expect(state.appendedTo).toEqual([]);
   });
 
-  it("手元の鍵がチェーンに無いときの案内は、待機中の要求の承認と同期の経路を分けて言う(DK K10-5)", async () => {
+  it("when the key at hand is not on the chain, the guidance separates approving the pending request from the sync path (DK K10-5)", async () => {
     const built = await chainWithEnvironment();
     const { server } = await makeServer({ built, withEnvironment: true });
     const env = await startEnv(server.origin, built.projectId, dev2);
@@ -736,7 +747,7 @@ describe("maruhi device approve", () => {
     expect(errors).not.toContain("run `maruhi device approve` for this machine");
   });
 
-  it("同じ鍵の要求が複数あれば黙って選ばず、ラベルを示して止まる", async () => {
+  it("when several requests exist for the same key, it never silently picks one — it shows the labels and stops", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -752,7 +763,7 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([]);
   });
 
-  it("どのプロジェクトにも載らなければ、ローカル記録・登録簿 PUT・要求の取消を行わない(再実行できる)", async () => {
+  it("if it lands on no project, no local record, registry PUT, or request cancellation runs (re-runnable)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -760,7 +771,7 @@ describe("maruhi device approve", () => {
       requests: [requestRowOf(dev2)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // 存在しない環境を scope に指定 → 唯一のプロジェクトで failed(通信前判定)
+    // A scope naming a nonexistent environment → failed on the only project (a pre-communication check)
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex, "--env", "env-missing"], env.layer),
     ).toBe(1);
@@ -770,7 +781,7 @@ describe("maruhi device approve", () => {
       "the device was not registered on any project, so nothing was recorded and the request was left in place",
     );
     expect(state.appended).toEqual([]);
-    // 記録されるのは初回同期の観測(この端末)だけで、approved の行は書かれない
+    // Only the first-sync observation (this device) is recorded — no approved row is written
     expect((await readOwnDevices(env, server.origin)).map((row) => row.source)).toEqual([
       "observed",
     ]);
@@ -778,7 +789,7 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([]);
   });
 
-  it("登録簿 PUT が 429 なら要求を取り消さず(DK K9-1)、rows を消した後の再実行が already → PUT → 取消で収束する", async () => {
+  it("a registry-PUT 429 does not cancel the request (DK K9-1); a re-run after rows were cleared converges via already → PUT → cancellation", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -787,27 +798,27 @@ describe("maruhi device approve", () => {
       registryPutStatuses: [429],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // チェーンには載ったので失敗ではない(終了コード 0 — K8-5 第 3 巡)
+    // It did land on the chain, so it is not a failure (exit code 0 — K8-5 round 3)
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
       env.errors.join("\n"),
     ).toBe(0);
     expect(state.appended).toHaveLength(1);
     expect(state.registryPuts).toHaveLength(1);
-    // 合図を出せなかったので、合図を出し直す材料(要求)は残す
+    // The signal could not be raised, so its material (the request) is kept
     expect(state.requestCancels).toEqual([]);
     const note = env.errors.join("\n");
     expect(note).toContain("the device registry is full (32 rows)");
-    // docs(`devices.mdx`)が引用する 2 文は、両方の分岐で隣り合う(PR #196 pullfrog)
+    // The two sentences docs (`devices.mdx`) quotes sit adjacent on both branches (PR #196 pullfrog)
     expect(note).toContain(
       "will not see the completion signal. The request is left in place until",
     );
-    // 打ち直すコマンドは同じ cap を運ぶ(DK K10-1 — フラグなしの再実行は既定の owner / all)
+    // The re-issue command carries the same cap (DK K10-1 — a flagless re-run is the default owner / all)
     expect(note).toContain(
       `re-run \`maruhi device approve ${dev2.fingerprintHex} --cap owner --all-envs\` before then to list it`,
     );
     expect(note).toContain("unlisted in your device registry");
-    // 承認側が rows を消して再実行: 全プロジェクト already(追記なし)→ PUT → 取消
+    // The approver clears rows and re-runs: every project is already (no append) → PUT → cancellation
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
       env.errors.join("\n"),
@@ -821,7 +832,7 @@ describe("maruhi device approve", () => {
     expect(env.logs.join("\n")).toContain("already registered");
   });
 
-  it("429 以外の PUT 失敗(一時的な 500)でも要求を残し、同じ再実行の案内を出す(DK K9-2)", async () => {
+  it("a PUT failure other than 429 (a transient 500) also keeps the request and shows the same re-run guidance (DK K9-2)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -848,7 +859,7 @@ describe("maruhi device approve", () => {
     expect(note).not.toContain("registry is full");
   });
 
-  it("PUT 失敗の Note の打ち直しは今回の cap と --project を運ぶ(DK K10-1)", async () => {
+  it("the re-issue in the PUT-failure Note carries this run's cap and --project (DK K10-1)", async () => {
     const built = await chainWithEnvironment();
     const { server } = await makeServer({
       built,
@@ -879,8 +890,8 @@ describe("maruhi device approve", () => {
     );
   });
 
-  it("チェーンに別の cap で載っている鍵の再実行は、何も追記・記録せず要求を残して拒否し、同じ cap のコマンドを出す(DK K10-1)", async () => {
-    // 前回の承認(member / env-app)が PUT の失敗か中断で要求を残した状態
+  it("re-running for a key already on the chain under a different cap refuses without appending or recording, keeps the request, and emits the same-cap command (DK K10-1)", async () => {
+    // The state where the previous approval (member / env-app) left the request behind on a PUT failure or interruption
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
@@ -895,7 +906,7 @@ describe("maruhi device approve", () => {
       requests: [requestRowOf(dev2)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // フラグなし = 既定の owner / all(K9 の Note をフラグなしで打った人 — 広げる向き)
+    // Flagless = the default owner / all (the person who typed the K9 Note flagless — the widening direction)
     expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain(
@@ -904,7 +915,7 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       `Re-run it with that cap: \`maruhi device approve ${dev2.fingerprintHex} --cap member --env ${ENV_ID}\`.`,
     );
-    // 足し直しの手順は 1 関数の字面(DK K12-7): 失効した鍵は戻らないので新しい鍵 + 承認
+    // The re-add procedure is spelled in one function (DK K12-7): a revoked key never comes back, so a new key + approval
     expect(errors).toContain(
       "To give the device another cap, revoke it, then run `maruhi device add --replace` on that machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device with the cap you want",
     );
@@ -912,12 +923,12 @@ describe("maruhi device approve", () => {
     expect(state.appendedTo).toEqual([]);
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
-    // 記録は承認で上書きされない(同期の観測がチェーンの cap で書いた行のまま)
+    // The record is not overwritten by the approval (the row stays as the sync observation wrote it with the chain's cap)
     const before = (await readOwnDevices(env, server.origin)).find(
       (row) => row.keyFingerprintHex === dev2.fingerprintHex,
     );
     expect(before).toMatchObject({ source: "observed", roleCap: "member" });
-    // 出されたコマンドで打ち直すと収束する(already → 記録 → PUT → 取消)
+    // Re-issuing via the emitted command converges (already → record → PUT → cancellation)
     expect(
       await runCli(
         ["device", "approve", dev2.fingerprintHex, "--cap", "member", "--env", ENV_ID],
@@ -938,8 +949,8 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
   });
 
-  it("別のプロジェクトに未登録でも、どこかのチェーンの cap と食い違えばどこにも今回の cap で足さない(DK K10-4 の 2 相)", async () => {
-    // P1 には member / all で載っている。P2(genesis の端末が別 = 別のプロジェクト id)には無い
+  it("even if unregistered on another project, a disagreement with any chain's cap appends this run's cap nowhere (DK K10-4's 2 phases)", async () => {
+    // Present on P1 as member / all. Absent on P2 (genesis's device differs = a different project id)
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2, { roleCap: "member" }) },
@@ -959,8 +970,8 @@ describe("maruhi device approve", () => {
     expect(env.errors.join("\n")).toContain(
       `Device ${dev2.fingerprintHex} is already registered with cap member/all on ${p1.projectId}`,
     );
-    // 今回の cap(owner / all)の add_device はどのプロジェクトにも出ない(同期の観測 → 登録が
-    // P2 に足すことはあるが、それはチェーンの cap = member)
+    // An add_device with this run's cap (owner / all) appears on no project
+    // (the sync observation → registration may append to P2, but that uses the chain's cap = member)
     expect(addsOf(state, dev2).map((add) => add.roleCap)).not.toContain("owner");
     expect(
       (await readOwnDevices(env, server.origin)).find(
@@ -969,7 +980,7 @@ describe("maruhi device approve", () => {
     ).not.toBe("approved");
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
-    // 同じ cap の打ち直しは両方のプロジェクトに member で載せて収束する
+    // The same-cap re-issue lands as member on both projects and converges
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex, "--cap", "member"], env.layer),
       env.errors.join("\n"),
@@ -978,7 +989,7 @@ describe("maruhi device approve", () => {
     expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
   });
 
-  it("鍵のチェーン上の cap がプロジェクトごとに既に違えば、--project で 1 つずつ打ち直すよう案内する(DK K10-2)", async () => {
+  it("if the key's on-chain caps already differ per project, guides toward re-issuing one by one via --project (DK K10-2)", async () => {
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2, { roleCap: "member" }) },
@@ -1004,15 +1015,15 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       "Its cap differs between those projects, so re-run it once per project with `--project <id>` and the cap shown for that project.",
     );
-    // dev2 はどこにも足されない(同期が他の端末〔genesis の予備鍵〕を足すのは別の経路)
+    // dev2 is appended nowhere (the sync appending another device [genesis's reserve key] is a different path)
     expect(addsOf(state, dev2)).toEqual([]);
     expect(state.requestCancels).toEqual([]);
   });
 });
 
-describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () => {
+describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", () => {
   for (const source of ["reserve", "approved", "observed"] as const) {
-    it(`ローカル記録の出所 ${source} はチェーンに無ければ add_device + バックフィルされ、登録簿は読まれない`, async () => {
+    it(`a local-record provenance ${source} absent from the chain gets add_device + backfill, and the registry is never read`, async () => {
       const built = await chainWithEnvironment();
       const { server, state } = await makeServer({
         built,
@@ -1031,7 +1042,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       const env = await startEnv(server.origin, built.projectId, owner);
       const device = source === "reserve" ? reserve : dev2;
       await recordOwnDevice(env, server.origin, device, source);
-      // 鍵ありの前段を通るコマンド(invite create)— 同期の付随で登録が走る
+      // A command passing through the keyed prelude (invite create) — registration runs as a side effect of the sync
       expect(
         await runCli(["invite", "create", "--role", "member"], env.layer),
         env.errors.join("\n"),
@@ -1049,17 +1060,18 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       expect(env.errors.join("\n")).toContain(
         `registered your device ${device.fingerprintHex} (${source}`,
       );
-      // 記録の cap が働く時点で、足した cap を出す(DK K10-3)
+      // Emits the appended cap at the point the record's cap is in force (DK K10-3)
       expect(env.errors.join("\n")).toContain(`with cap owner/all on project ${built.projectId}`);
-      // 登録簿は判断の入力にならない: 読まれもしない(登録簿だけにある端末は足されない)
+      // The registry is never an input to the decision: it is not even read (a device present only in the registry is never appended)
       expect(state.paths().filter((path) => path.startsWith("GET /auth/devices"))).toEqual([]);
-      // 予備鍵の不在の警告(K4-9)は「自分の端末がこの端末だけ、かつ記録に予備鍵が無い」
-      // ときだけ: reserve は記録があり、approved / observed は登録後に端末が 2 つになる
+      // The no-reserve-key warning (K4-9) only when "your devices are just this
+      // one and the record holds no reserve key": reserve has a record, and
+      // approved / observed end up with 2 devices after registration
       expect(env.errors.join("\n")).not.toContain("no reserve key is registered");
     });
   }
 
-  it("登録した端末のバックフィルの失敗は、次の同期でなく pull を案内する(DK K11-5)", async () => {
+  it("a failed backfill for a registered device guides toward pull, not the next sync (DK K11-5)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -1078,7 +1090,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(errors).not.toContain("retried on the next sync");
   });
 
-  it("エージェント環境・非端末では記録からの登録を行わない(儀式ゲート — K4-37)", async () => {
+  it("in an agent environment / non-device, registration from the record does not run (the ceremony gate — K4-37)", async () => {
     for (const mode of ["agent", "non-tty"] as const) {
       const built = await chainWithEnvironment();
       const { server, state } = await makeServer({
@@ -1087,14 +1099,14 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
         extra: [inviteHandler(built)],
       });
       const env = await startEnv(server.origin, built.projectId, owner);
-      // 仕込まれた行(署名されていないファイル)— 出所は approved を装う
+      // The planted row (an unsigned file) — the provenance poses as approved
       await recordOwnDevice(env, server.origin, dev2, "approved");
       if (mode === "agent") {
         env.setAgent({ isAgent: true, name: "test-agent" });
       } else {
         env.setTerminal({ stdin: false });
       }
-      // 鍵ありの前段(初回同期)は走るが、登録は飛ばす
+      // The keyed prelude (the first sync) runs, but registration is skipped
       await runCli(["invite", "create", "--role", "member"], env.layer);
       expect(state.appended).toEqual([]);
       expect(state.registered).toEqual([]);
@@ -1107,12 +1119,12 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
           ? "an AI agent environment was detected (test-agent)"
           : "stdin is not an interactive terminal",
       );
-      // 前段は 1 コマンド 1 プロジェクトなので、このプロジェクトを対象にしたコマンドを出す(DK K10-5)
+      // The prelude is one command per project, so emit a command aimed at this project (DK K10-5)
       expect(errors).toContain(`for example \`maruhi pull --project ${built.projectId}\``);
     }
   });
 
-  it("失効と記録した端末は足さず、登録簿にしか無い端末も足さない(negative)", async () => {
+  it("a device recorded as revoked is never appended, and neither is a device present only in the registry (negative)", async () => {
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -1136,13 +1148,13 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     ).toBe(0);
     expect(state.appended).toEqual([]);
     expect(state.registered).toEqual([]);
-    // この端末だけ・予備鍵の記録なし → K4-9 の警告
+    // Only this device, no reserve-key record → the K4-9 warning
     expect(env.errors.join("\n")).toContain(
       "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery`",
     );
   });
 
-  it("失効と記録した端末がチェーンで有効なら、従えない『承認し直せ』でなく失効か足し直しを案内する(DK K10-5)", async () => {
+  it("when a device recorded as revoked is valid on the chain, it guides toward revocation or re-adding — not the unachievable 'approve it again' (DK K10-5)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -1172,7 +1184,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
     expect(state.appendedTo).toEqual([]);
   });
 
-  it("チェーンで観測した端末は出所(誰の端末が seq いくつで足したか)つきで記録し、失効の観測は記録に写す", async () => {
+  it("a device observed on the chain is recorded with provenance (whose device appended it at which seq); an observed revocation is transcribed into the record", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -1185,7 +1197,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       extra: [inviteHandler(built)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // reserve は以前ここで記録されていた(active)— チェーンの失効を記録に写す
+    // reserve was previously recorded here (active) — the chain's revocation is transcribed into the record
     await recordOwnDevice(env, server.origin, reserve, "reserve");
     expect(
       await runCli(["invite", "create", "--role", "member"], env.layer),
@@ -1198,7 +1210,7 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       observedProjectId: built.projectId,
       revokedAtMs: null,
     });
-    // 自分の端末自身も記録される(Note は出ない)
+    // Your own device is recorded too (no Note is shown)
     expect(recorded.find((row) => row.keyFingerprintHex === owner.fingerprintHex)).toMatchObject({
       source: "observed",
       addedByFingerprintHex: null,
@@ -1214,37 +1226,37 @@ describe("初回同期の端末登録(device-sync — K4-3 / K4-4 / K4-9)", () =
       `device ${reserve.fingerprintHex} is revoked on project ${built.projectId}; marked as revoked`,
     );
     expect(errors).not.toContain(`observed your device ${owner.fingerprintHex}`);
-    // 失効した端末は再登録されない
+    // A revoked device is never re-registered
     expect(state.appended).toEqual([]);
   });
 });
 
-describe("ラップ完全集合の期待数(サーバーと同じ述語 — R(E) の端末展開)", () => {
-  it("実効 scope に E を含む (人, 端末) の対と grant を保存キー粒度で数える", async () => {
+describe("the expected count of the complete wrap set (the server's same predicate — the R(E) device expansion)", () => {
+  it("counts (person, device) pairs whose effective scope contains E plus grants, at storage-key granularity", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
       { actor: owner, operation: createEnvironmentOp("env-b", dek) },
-      // owner の 2 台目は env-b だけを持つ cap
+      // owner's second device has a cap holding env-b only
       {
         actor: owner,
         operation: addDeviceOp(dev2, { roleCap: "member", environmentIds: ["env-b"] }),
       },
-      // member は env-a だけの scope(端末は 1 つ・cap 無し)
+      // member's scope is env-a only (1 device, no cap)
       { actor: owner, operation: addScopedMemberOp(member, "member", ["env-a"]) },
     ]);
     const verified = await verifyChainWithHistory(built.entries);
     if (!verified.ok) throw new Error("chain");
     const view = { state: verified.value.state } as VerifiedProject;
-    // env-a: owner の 1 台目(all)+ member = 2。owner の 2 台目は env-a を持たない
+    // env-a: owner's 1st device (all) + member = 2. owner's 2nd device does not hold env-a
     expect(expectedWrapRecipientCount(view, "env-a")).toBe(2);
-    // env-b: owner の 1 台目 + 2 台目 = 2。member は scope 外
+    // env-b: owner's 1st + 2nd devices = 2. member is out of scope
     expect(expectedWrapRecipientCount(view, "env-b")).toBe(2);
   });
 });
 
-describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", () => {
-  it("失効直前(seq−1)の端末の実効 scope を義務にする(seq 時点では端末が消えているので ALL に倒れない)", async () => {
+describe("the sweep's fifth kind: the device-revoked obligation (rotation-sweep — K4-8)", () => {
+  it("makes the obligation out of the revoked device's effective scope just before revocation (seq−1) — at seq the device is gone, so it must not collapse to ALL", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -1278,8 +1290,8 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
       },
     ]);
   });
-  it("部分的に収束した義務(env-a は rotate 済み・env-b は未)は後の同期でも env-b だけを未収束として警告する(持ち越し)", async () => {
-    // dev2(owner / all)を失効 → env-a だけ rotate 済み。env-b の義務は残ったまま
+  it("a partially converged obligation (env-a rotated · env-b not) still warns only env-b as unconverged on later syncs (carryover)", async () => {
+    // Revoke dev2 (owner / all) → only env-a has rotated. env-b's obligation remains
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -1301,9 +1313,10 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
     );
     expect(errors).not.toMatch(/device-revoked[^\n]*environments env-a/);
   });
-  it("失効する端末の実効 scope が署名端末の scope 外なら、その環境は rotate せず outOfScope として注記する", async () => {
-    // 署名端末 dev2 = (owner, listed {})。失効対象 reserve = (owner, all) → 義務 env-a / env-b
-    // はどちらも dev2 の scope 外 = rotate できない(注記して常時警告に委ねる)
+  it("when the revoked device's effective scope is outside the signing device's scope, that environment is not rotated and is noted as outOfScope", async () => {
+    // Signing device dev2 = (owner, listed {}). Revocation target reserve =
+    // (owner, all) → obligations env-a / env-b are both outside dev2's scope =
+    // cannot rotate (note it and defer to the standing warning)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -1325,13 +1338,13 @@ describe("sweep 第 5 種 device-revoked の義務(rotation-sweep — K4-8)", ()
 });
 
 describe("maruhi device revoke", () => {
-  it("受理後の sweep が失敗しても失効は成功として扱い、ローカル記録と登録簿の後段を飛ばさない", async () => {
+  it("a post-acceptance sweep failure still treats the revocation as successful and never skips the local-record / registry follow-up", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: addDeviceOp(dev2) },
     ]);
-    // 環境一覧 GET が 500 → 受理後の sweep(削除済み環境の検証)が失敗する
+    // Environment-list GET is 500 → the post-acceptance sweep (verifying the deleted environment) fails
     const { server, state } = await makeServer({
       built,
       withEnvironment: false,
@@ -1353,7 +1366,7 @@ describe("maruhi device revoke", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("the rotation sweep after the revocation failed");
     expect(errors).not.toContain(": revocation failed —");
-    // 後段は走る: ローカル記録は失効、登録簿の行は削除
+    // The follow-up runs: the local record is revoked, the registry row is deleted
     const recorded = await readOwnDevices(env, server.origin);
     expect(
       recorded.find((row) => row.keyFingerprintHex === dev2.fingerprintHex)?.revokedAtMs,
@@ -1361,7 +1374,7 @@ describe("maruhi device revoke", () => {
     expect(state.registryDeletes).toEqual([dev2.fingerprintHex]);
   });
 
-  it("FP の接頭辞で確定し、revoke_device を追記してローカル記録と登録簿に反映する(--yes)", async () => {
+  it("settles by FP prefix, appends revoke_device, and reflects it in the local record and the registry (--yes)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -1400,12 +1413,12 @@ describe("maruhi device revoke", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain(`revoke  ${dev2.fingerprintHex} (cap owner/all)`);
     expect(logs).toContain(`${built.projectId}: revoked ${dev2.fingerprintHex}`);
-    // トークンの目録が読めなければ事実だけ伝える(K4-13)
+    // If the token inventory cannot be read, just convey the fact (K4-13)
     expect(env.errors.join("\n")).toContain("revoking a device does not revoke its API token");
     expect(env.prompts).toEqual([]);
   });
 
-  it("登録簿の表示名でも参照でき、確認表に FP を併記して yes を待つ。yes 以外は何も送らない", async () => {
+  it("the device can also be referenced by the registry display name; the confirmation table shows the FP alongside and waits for yes. Anything but yes sends nothing", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -1435,7 +1448,7 @@ describe("maruhi device revoke", () => {
     expect(state.appended).toEqual([]);
   });
 
-  it("最後の端末は失効できない(last-device-protected)。短い接頭辞は usage エラー", async () => {
+  it("the last device cannot be revoked (last-device-protected). A short prefix is a usage error", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server, state } = await makeServer({ built, withEnvironment: false });
     const env = await startEnv(server.origin, built.projectId, owner);
@@ -1448,7 +1461,7 @@ describe("maruhi device revoke", () => {
   });
 });
 
-/** トークン目録の 1 行(`GET /auth/tokens` の応答 — K4-13 の照合対象)。 */
+/** One row of the token inventory (the `GET /auth/tokens` response — K4-13's match target). */
 function tokenRow(id: string, name: string): Record<string, unknown> {
   return {
     id,
@@ -1461,8 +1474,8 @@ function tokenRow(id: string, name: string): Record<string, unknown> {
   };
 }
 
-describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
-  /** dev2 を登録済みの端末として持つチェーン・登録簿・ローカル記録を用意する。 */
+describe("maruhi device revoke — the token-revocation proposal (K4-13)", () => {
+  /** Prepare a chain · registry · local record holding dev2 as a registered device. */
   async function setup(input: {
     readonly registryTokenId?: string;
     readonly tokens: readonly Record<string, unknown>[];
@@ -1495,10 +1508,10 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     return { state, env };
   }
 
-  it("登録簿の tokenId で照合し、--yes だけなら提案を出して失効は送らない", async () => {
+  it("matches by the registry's tokenId; with only --yes it issues the proposal and sends no revocation", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
-      // 名前が cli:<label> でも tokenId がある行は tokenId だけで照合する
+      // Even when the name is cli:<label>, a row with a tokenId is matched by tokenId alone
       tokens: [tokenRow("tok_lost", "ci"), tokenRow("tok_other", "cli:old-laptop")],
     });
     expect(
@@ -1515,7 +1528,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(env.prompts).toEqual([]);
   });
 
-  it("登録簿の行に tokenId が無ければ名前 cli:<label> で照合する", async () => {
+  it("when the registry row has no tokenId, matches by the name cli:<label>", async () => {
     const { state, env } = await setup({
       tokens: [tokenRow("tok_named", "cli:old-laptop"), tokenRow("tok_other", "cli:desktop")],
     });
@@ -1528,7 +1541,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(state.tokenRevokes).toEqual(["tok_named"]);
   });
 
-  it("--revoke-token は照合したトークンの失効を送り、報告する", async () => {
+  it("--revoke-token sends the matched token's revocation and reports it", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
       tokens: [tokenRow("tok_lost", "cli:old-laptop")],
@@ -1542,7 +1555,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(env.errors.join("\n")).not.toContain("tokens were left as they are");
   });
 
-  it("対話では失効の確認の後にトークンの失効を聞き、yes なら失効を送る", async () => {
+  it("interactively, after the revocation confirmation it asks about token revocation; yes sends it", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
       tokens: [tokenRow("tok_lost", "cli:old-laptop")],
@@ -1557,7 +1570,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(state.tokenRevokes).toEqual(["tok_lost"]);
   });
 
-  it("対話でトークンの失効を断れば送らず、後で失効する手順を案内する(端末の失効は残る)", async () => {
+  it("declining token revocation interactively sends nothing and guides the later-revocation procedure (the device revocation stays)", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
       tokens: [tokenRow("tok_lost", "cli:old-laptop")],
@@ -1572,7 +1585,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(env.errors.join("\n")).toContain("revoke them later with `maruhi token revoke <id>`");
   });
 
-  it("失効の送信が TokenNotFound(既に失効済み)でも失敗にしない", async () => {
+  it("a revocation send returning TokenNotFound (already revoked) is not a failure", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
       tokens: [tokenRow("tok_lost", "cli:old-laptop")],
@@ -1585,7 +1598,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     expect(state.tokenRevokes).toEqual(["tok_lost"]);
   });
 
-  it("照合できるトークンが無ければ token list へ案内する", async () => {
+  it("when no token can be matched, guides toward token list", async () => {
     const { state, env } = await setup({
       tokens: [tokenRow("tok_other", "cli:desktop")],
     });
@@ -1599,7 +1612,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
 });
 
 describe("maruhi device add", () => {
-  it("最初の鍵を持つ端末は 2 択で拒否し(要求を作らない)、--replace は新しい鍵の要求の後で差し替える(K13-2 / K13-8)", async () => {
+  it("a device holding the first key is refused with a 2-way choice (no request is created); --replace swaps after the new key's request (K13-2 / K13-8)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server, state } = await makeServer({
       built,
@@ -1608,16 +1621,16 @@ describe("maruhi device add", () => {
     });
     const env = await startEnv(server.origin, built.projectId, owner);
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
-    // genesis の鍵 = 最初の鍵: この端末そのものか pre-DK の複製かは機械に分からない(K13-2)
+    // The genesis key = the first key: the machine cannot tell this very device apart from a pre-DK replica (K13-2)
     expect(env.errors.join("\n")).toContain(
       `This machine's device key (${owner.fingerprintHex}) is your first key on ${built.projectId} (the key you created or joined that project with), and it has no pending device-add request. maruhi cannot tell whether this machine is the device that key belongs to or holds a copy of it from an install before device keys. If this machine is that device, nothing is needed: it is already registered. If it holds a copy, re-run with --replace: it generates a new key for this machine and prints its fingerprint to approve from a registered device (the machine the copy came from keeps its key). Do not pass --replace if this is your only device`,
     );
-    // 既存の鍵は要求を作りに行かない(サーバーの 1 時間 5 回の窓を消費しない)
+    // An existing key never goes to create a request (never spends the server's 5-per-hour window)
     expect(state.paths().filter((path) => path.startsWith("POST /auth/devices/requests"))).toEqual(
       [],
     );
 
-    // --replace: 捨てる鍵の立場を表示 → 新しい鍵を生成 → 要求 → 差し替え → 合図 → チェーンで確認
+    // --replace: show the discarded key's standing → generate a new key → request → swap → signal → confirm on the chain
     const before = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
     expect(
       await runCli(["device", "add", "--label", "phone", "--replace"], env.layer),
@@ -1639,17 +1652,18 @@ describe("maruhi device add", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("This device's key fingerprint:");
     expect(logs).toContain("fp words:");
-    // 真実はチェーン: 合図の後に同期し、まだ載っていないプロジェクトを数える
+    // The chain is the truth: sync after the signal and count the projects it has not landed on yet
     expect(logs).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain)",
     );
-    // 不足分の案内(K7-2): 承認側の作業は終わっている・要求は使い切り・登録するのは
-    // cap が覆う端末の次の鍵付きコマンド(「承認側の再実行」「まだ作業中」とは言わない)
+    // The shortfall guidance (K7-2): the approver's work is done · the request
+    // is spent · registration happens on the next keyed command of a device
+    // the cap covers (never says "re-run the approval" or "still working")
     const missingNote = env.errors.find((line) => line.includes("not registered yet on"));
     expect(missingNote).toContain(`not registered yet on ${built.projectId}`);
     expect(missingNote).toContain("skipped or failed on them");
     expect(missingNote).toContain("The request is used up");
-    // 前段は 1 コマンド 1 プロジェクトなので「そのプロジェクトを対象にした」鍵付きコマンド(DK K10-5)
+    // The prelude is one command per project, so it is "a keyed command aimed at that project" (DK K10-5)
     expect(missingNote).toContain(
       "when it runs a keyed command on that project at a terminal (`maruhi pull --project <id>`, for instance)",
     );
@@ -1657,7 +1671,7 @@ describe("maruhi device add", () => {
     expect(missingNote).not.toContain("Re-run `maruhi device approve`");
   });
 
-  it("409 request-exists の再開で要求の照会に失敗したら、その失敗を伝える(「失効」と誤案内しない)", async () => {
+  it("when resuming on a 409 request-exists and the request lookup fails, reports that failure (never misguides as 'revoked')", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
       built,
@@ -1670,14 +1684,14 @@ describe("maruhi device add", () => {
       ],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // 既定のモックは GET /auth/devices/requests/:fp に 404 を返す
+    // The default mock returns 404 for GET /auth/devices/requests/:fp
     expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("expired before this machine saw the completion signal");
     expect(errors).toContain("DeviceNotFound");
   });
 
-  it("新しい鍵の 409 device-registered(FP の衝突でしか起きない)では待たず「Approved」とも言わず、チェーンの立場で報告する(K13-3 — 穴 5 の防御)", async () => {
+  it("a new key's 409 device-registered (only possible on an FP collision) never waits, never claims 'Approved', and reports in terms of the chain's standing (K13-3 — hole-5 defense)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server, state } = await makeServer({
       built,
@@ -1696,17 +1710,17 @@ describe("maruhi device add", () => {
     expect(logs).not.toContain("The request expires at");
     expect(logs).not.toContain("Waiting for approval");
     expect(env.errors.join("\n")).not.toContain("still waiting (");
-    // 新しい鍵はどのチェーンにも無い — 範囲つきで「失うものは無い」と言う
+    // The new key is on no chain — it says 'nothing is lost' with the scope attached
     expect(env.errors.join("\n")).toContain(
       "has no pending device-add request and is on no project the server lists for you (1 listed), each chain synced and verified, so replacing it loses nothing there",
     );
-    // 要求の照会には行かない(新しい鍵に生きた要求は無い)
+    // Never goes to look up the request (the new key has no live request)
     expect(
       state.paths().some((path) => /^GET \/auth\/devices\/requests\/[0-9a-f]{32}$/.test(path)),
     ).toBe(false);
   });
 
-  it("登録簿の行は分岐に使わない: 行があっても最初の鍵なら 2 択で止まり、「登録簿にある」を再開の理由にしない(K13-9)", async () => {
+  it("a registry row is never used to branch: even with a row, a first key stops at the 2-way choice, and 'in the registry' is not grounds to resume (K13-9)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server, state } = await makeServer({
       built,
@@ -1726,9 +1740,9 @@ describe("maruhi device add", () => {
     );
   });
 
-  it("要求の作成から TTL の 1/3 が経っても合図が無ければ、承認側の出力を確認せよと 1 度だけ出す(K7-3)", async () => {
+  it("when a third of the TTL has passed since the request's creation with no signal, emits 'check the approver's output' exactly once (K7-3)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // 要求は 6 分前に作られたことにする(期限 = 作成 + 15 分)。合図はまだ無い
+    // Pretend the request was created 6 minutes ago (deadline = creation + 15 min). No signal yet
     const requestedAtMs = Date.now() - DEVICE_ADD_WAIT_HINT_AFTER_MS - 60 * 1000;
     const { server, state } = await makeServer({
       built,
@@ -1741,7 +1755,7 @@ describe("maruhi device add", () => {
       JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
     );
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // 1 巡目(合図なし → 案内)の後、承認側の PUT に相当する行を置く: 2 巡目で合図を拾う
+    // After round 1 (no signal → guidance), place a row equivalent to the approver's PUT: round 2 picks up the signal
     const run = runCli(["device", "add", "--label", "phone"], env.layer);
     const rowPlaced = new Promise<void>((resolve) => {
       const tick = (): void => {
@@ -1773,7 +1787,7 @@ describe("maruhi device add", () => {
     expect(await run, env.errors.join("\n")).toBe(0);
     const hints = env.errors.filter((line) => line.includes("still waiting ("));
     expect(hints).toHaveLength(1);
-    // 経過は実測(再開した待機では閾値より大きい)— ここでは閾値 + 1 分
+    // Elapsed is measured for real (a resumed wait exceeds the threshold) — here threshold + 1 minute
     expect(hints[0]).toContain("6 minutes since the request");
     expect(hints[0]).toContain("this key is not in your device registry yet");
     expect(hints[0]).toContain(
@@ -1782,7 +1796,7 @@ describe("maruhi device add", () => {
     expect(env.logs.join("\n")).toContain("Approved: this device is registered on 0 projects");
   }, 15_000);
 
-  it("要求が失効していれば TTL の案内で終わる(合図なし)", async () => {
+  it("when the request has expired, it ends with the TTL guidance (no signal)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
       built,
@@ -1800,32 +1814,35 @@ describe("maruhi device add", () => {
     expect(expired).toContain(
       "The device-add request expired before this machine saw the completion signal (requests live 15 minutes)",
     );
-    // 案内は実装どおり(K7-1): 再実行は拒否される(K4-21)ので `--replace` を、承認側が
-    // 何も登録していないことを条件に案内する。「同じ鍵で作り直す」とは言わない
+    // The guidance matches the implementation (K7-1): re-running is refused
+    // (K4-21), so it guides toward `--replace` conditioned on the approver
+    // having registered nothing. Never says "rebuild with the same key"
     expect(expired).toContain("if it registered nothing, run `maruhi device add --replace`");
     expect(expired).not.toContain("it reuses this key");
-    // K9-3 の T3: 承認側が登録したが登録簿に載せられず、期限までに再実行しなかったとき、
-    // 鍵はチェーンに載っている — `--replace` で捨てさせない分岐を持つ
+    // K9-3's T3: when the approver registered but could not get onto the
+    // registry and nobody re-ran before the deadline, the key is on the chain
+    // — carrying the branch that never lets `--replace` discard it
     expect(expired).toContain(
       "If it registered this device but could not list it in your device registry, keep this key",
     );
-    // この時点のチェーンの事実(K13-4 — 条件は保ったまま足す)
+    // The chain's fact at this point (K13-4 — appended while keeping the conditions)
     expect(expired).toContain(
       "On the project chains right now, this key is on no project the server lists for you (1 listed). If the approving device is still working, re-running `maruhi device add` on this machine later shows whether it registered this key, without a new request",
     );
-    // 鍵は生成済みのまま(捨てるのは人が `--replace` を打ったとき)
+    // The key stays generated (it is discarded only when a human types `--replace`)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeDefined();
   });
 });
 
 /**
- * 新端末 dev2 の `device add` の再実行(登録簿の行が合図 — 要求なし)の足場: チェーンは
- * genesis → 環境(epoch 1)→ rotate(epoch 2)→ dev2 の `add_device`(cap は引数)。
- * 手元の鍵は dev2。自分宛 DEK の GET の応答は `listMine`(DK K12)。
+ * Scaffolding for the new device dev2's `device add` re-run (the registry row
+ * is the signal — no request): the chain is genesis → environment (epoch 1) →
+ * rotate (epoch 2) → dev2's `add_device` (cap is an argument).
+ * The key at hand is dev2. The response of the GET for DEKs addressed to self is `listMine` (DK K12).
  */
 async function deviceAddReachFixture(input: {
   readonly cap?: Parameters<typeof addDeviceOp>[1];
-  /** dev2 の生きた要求を置く(待機の再開 → 合図 → 「Approved」の経路 — DK K13-2)。 */
+  /** Places dev2's live request (the resume-wait → signal → "Approved" path — DK K13-2). */
   readonly pending?: boolean;
   readonly listMine: (
     projectId: string,
@@ -1851,7 +1868,7 @@ async function deviceAddReachFixture(input: {
   return { env, state, built };
 }
 
-/** `deviceAddReachFixture` のチェーンの各エポックの DEK(プロジェクトごと)。 */
+/** The DEK of each epoch of `deviceAddReachFixture`'s chain (per project). */
 const reachDeks = new Map<string, readonly Uint8Array[]>();
 
 function registryRowOf(device: TestUser): ServerState["registry"][number] {
@@ -1864,7 +1881,7 @@ function registryRowOf(device: TestUser): ServerState["registry"][number] {
   };
 }
 
-/** 端末宛の配布行(新サーバーの形 — `recipientEncPubHex` つき、owner の登録署名)。 */
+/** A device-addressed distribution row (the new server's shape — with `recipientEncPubHex`, owner's registration signature). */
 async function deviceRowsOf(
   projectId: string,
   device: TestUser,
@@ -1892,10 +1909,11 @@ function listMineGets(state: ServerState, projectId: string): number {
     .filter((path) => path === `GET /projects/${projectId}/environments/${ENV_ID}/deks`).length;
 }
 
-describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", () => {
-  it("この端末宛のエポックが欠けていれば、pull と同じ警告を実 id の経路つきで出し、終了コードは 0 で何も登録しない", async () => {
-    // dev2 宛は epoch 1 だけ(兄弟の owner 宛は 1 と 2 — 他の端末宛の行は数えない)。
-    // 生きた要求の待機を再開し(要求は作らない)、合図(登録簿の行)の後に確かめる
+describe("maruhi device add — key arrival and revocation after the signal (DK K12)", () => {
+  it("if an epoch addressed to this device is missing, emits pull's same warning with the real-id path, exits 0, and registers nothing", async () => {
+    // Only epoch 1 is addressed to dev2 (the sibling's owner gets 1 and 2 —
+    // rows addressed to other devices are not counted). Resume waiting on the
+    // live request (no request is created), and check after the signal (the registry row)
     const { env, state, built } = await deviceAddReachFixture({
       pending: true,
       listMine: async (projectId) => ({
@@ -1919,7 +1937,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     expect(warning).toContain(
       `A registered device of yours whose cap covers environment ${ENV_ID} and that holds its keys fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
     );
-    // 新端末は欠けた DEK を持たないので補わない(補うのは兄弟端末の pull — K11)
+    // The new device lacks the missing DEKs, so it does not fill them (the sibling device's pull fills them — K11)
     expect(state.registered).toEqual([]);
     expect(env.errors.join("\n")).toContain("resuming the wait for its approval");
     expect(state.paths().filter((path) => path.startsWith("POST /auth/devices/requests"))).toEqual(
@@ -1928,7 +1946,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     expect(env.errors.join("\n")).not.toContain("not registered yet");
   });
 
-  it("全エポックが届いていれば何も足さない(確認は走っている — GET は 1 回)", async () => {
+  it("when every epoch has arrived, nothing is appended (the check does run — GET is once)", async () => {
     const { env, state, built } = await deviceAddReachFixture({
       listMine: async (projectId) => ({ rows: await deviceRowsOf(projectId, dev2, [1, 2]) }),
     });
@@ -1939,20 +1957,20 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     expect(errors).not.toContain("could not check");
   });
 
-  it("この端末の cap の外の環境は確かめない(受信者でない環境を欠けとも確認の失敗とも言わない)", async () => {
+  it("does not check environments outside this device's cap (an environment it is not a recipient of is called neither missing nor a check failure)", async () => {
     const { env, state, built } = await deviceAddReachFixture({
       cap: { roleCap: "owner", environmentIds: [] },
       listMine: async () => ({ rows: [] }),
     });
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
     expect(listMineGets(state, built.projectId)).toBe(0);
-    // 欠けとも、確認の失敗(cap の外で開けない)とも言わない — 列挙に入らない
+    // Called neither missing nor a check failure (outside the cap, cannot be opened) — never enters the enumeration
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("no DEK wraps for you exist");
     expect(errors).not.toContain("could not check");
   });
 
-  it("確かめられなかった環境は欠けと言わず、原因つきの Note で終了コード 0", async () => {
+  it("an environment that could not be checked is not called missing — a Note with the cause, exit code 0", async () => {
     const { env, built } = await deviceAddReachFixture({
       listMine: async () => ({ status: 500 }),
     });
@@ -1967,7 +1985,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     );
   });
 
-  it("全プロジェクトで失効した鍵は、登録簿の行が残っていても待たず、失効と足し直しで止まる(K13-2 — 諮る点 (2) の回収)", async () => {
+  it("a key revoked on every project never waits even if the registry row remains, and stops with revocation and re-adding (K13-2 — collecting consultation point (2))", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -1981,7 +1999,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
-    // 「Approved: … 0 projects」は構造上出ない(登録簿の行を合図に待つ経路が無い)
+    // "Approved: … 0 projects" can structurally never appear (there is no path that waits on the registry row as the signal)
     expect(env.logs.join("\n")).not.toContain("Approved:");
     const errors = env.errors.join("\n");
     expect(errors).toContain(
@@ -1995,13 +2013,13 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     );
   });
 
-  it("一部のプロジェクトでだけ失効した鍵は、足し直しの後で残りのプロジェクトの鍵を失効させるよう言う(K12-6)", async () => {
+  it("a key revoked on only some projects says to revoke it on the remaining projects after re-adding (K12-6)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
       { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
     ]);
-    // 別のプロジェクト(genesis の鍵を変えて別の id にする — 同じ人)では dev2 は有効
+    // On another project (its genesis key differs → a different id — same person), dev2 is valid
     const other = await buildChain([
       { actor: reserve, operation: genesisOp(reserve) },
       { actor: reserve, operation: addDeviceOp(dev2) },
@@ -2015,8 +2033,8 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
-    // 有効なプロジェクトがあり、そこでは add_device 出所 → 使える鍵(exit 0 — K13-2)。承認は
-    // 起きていないので「Approved」とは言わない(K13-3)
+    // A valid project exists, and there the provenance is add_device → a
+    // usable key (exit 0 — K13-2). No approval happened, so it never says "Approved" (K13-3)
     const logs = env.logs.join("\n");
     expect(logs).toContain(
       "This key is registered on 1 project (verified on each project's chain)",
@@ -2031,7 +2049,7 @@ describe("maruhi device add — 合図の後の鍵の到達と失効(DK K12)", (
   });
 });
 
-/** 鍵なしの端末(トークンだけ — `device add` が鍵を生成する)。 */
+/** A device without a key (token only — `device add` generates the key). */
 async function startEnvWithoutKey(origin: string, projectId: string): Promise<TestEnv> {
   const env = await makeTestEnv();
   env.keychain.set(
@@ -2046,8 +2064,8 @@ function requestPosts(state: ServerState): readonly string[] {
   return state.paths().filter((path) => path === "POST /auth/devices/requests");
 }
 
-describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)", () => {
-  it("どのプロジェクトでも add_device 出所の有効な鍵は、要求を作らずに登録済みを報告して 0。登録簿の行が無ければ補足する(T3)", async () => {
+describe("maruhi device add — an existing key's standing on the chain (DK K13)", () => {
+  it("a valid key whose provenance is add_device on every project reports registered and exits 0 without creating a request. Appends a note if the registry row is missing (T3)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -2065,7 +2083,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     );
     expect(requestPosts(state)).toEqual([]);
 
-    // 登録簿に行があれば補足しない(補足は行が無いときだけ)
+    // No note when the registry has a row (the note is only for a missing row)
     const withRow = await makeServer({
       built,
       withEnvironment: false,
@@ -2076,7 +2094,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(env2.errors.join("\n")).not.toContain("has no row in your device registry");
   });
 
-  it("承認が起きていない経路で無いプロジェクトは、承認側の筋書きでなく中立の文で言う(K13-3)", async () => {
+  it("a project missing on a path where no approval happened is stated in a neutral sentence, not the approver-side script (K13-3)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -2098,8 +2116,8 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(errors).not.toContain("The request is used up");
   });
 
-  it("穴 1: 別のプロジェクトで add_device 出所でも、どこか 1 つで最初の鍵なら 2 択で 1(観測の記録からの登録は承認の証拠にならない)", async () => {
-    // P1 では dev2 の鍵が genesis(最初の鍵)、P2 では観測の記録から add_device された
+  it("hole 1: even with add_device provenance on another project, if it is the first key anywhere, refuse with the 2-way choice (registration via an observation record is no evidence of approval)", async () => {
+    // On P1, dev2's key is genesis (the first key); on P2 it was add_device'd from an observation record
     const p1 = await buildChain([{ actor: dev2, operation: genesisOp(dev2) }]);
     const p2 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -2123,7 +2141,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(requestPosts(state)).toEqual([]);
   });
 
-  it("有効ゼロで全件を同期でき、どこにも無ければ、一覧の件数つきで「失うものは無い」と言う", async () => {
+  it("when everything synced with zero valid placements and the key is nowhere, it says 'nothing is lost' with the list count attached", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server, state } = await makeServer({ built, withEnvironment: false });
     const env = await startEnv(server.origin, built.projectId, dev2);
@@ -2135,14 +2153,14 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(requestPosts(state)).toEqual([]);
   });
 
-  it("案 B: 床にあって一覧に無いプロジェクトは情報として添えるだけで、判定(どこにも無い)を止めない", async () => {
+  it("plan B: a project in the floor but absent from the list is only attached as information — it never stops the judgment ('nowhere')", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({ built, withEnvironment: false });
     const env = await startEnv(server.origin, built.projectId, dev2);
     const unlisted = "ab".repeat(32);
     await mkdir(env.floorDir, { recursive: true });
     await writeFile(join(env.floorDir, `${unlisted}.jsonl`), "");
-    // ID の形でないもの・付随ファイルは数えない
+    // Things that are not ID-shaped and sidecar files are not counted
     await writeFile(join(env.floorDir, `${"cd".repeat(32)}.attested.json`), "{}");
     await writeFile(join(env.floorDir, "notes.jsonl"), "");
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
@@ -2154,7 +2172,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(errors).not.toContain("could not check every project");
   });
 
-  it("同期できないプロジェクトがあれば「無い」と言わず断言もしない。検証の矛盾は改ざんの兆候として Warning", async () => {
+  it("when a project cannot be synced, it neither says 'nowhere' nor asserts it. A verification contradiction is a Warning as a tampering sign", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const down = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
     const tampered = await buildChain([{ actor: member, operation: genesisOp(member) }]);
@@ -2187,7 +2205,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(requestPosts(state)).toEqual([]);
   });
 
-  it("プロジェクト一覧が取れなくても落ちず、同期できずとして断言しない(穴 6)", async () => {
+  it("does not fail when the project list cannot be fetched, and never asserts it as unsyncable (hole 6)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({ built, withEnvironment: false, projectsStatus: 500 });
     const env = await startEnv(server.origin, built.projectId, dev2);
@@ -2200,7 +2218,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(errors).not.toContain("is revoked on");
   });
 
-  it("合図の後: 同期できないプロジェクトは「not registered yet」に混ぜず、一覧の失敗では 0 を数えない(K13-3)", async () => {
+  it("after the signal: unsyncable projects are not mixed into 'not registered yet', and a list failure never counts a 0 (K13-3)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -2225,7 +2243,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     );
     expect(errors).not.toContain("not registered yet");
     expect(errors).not.toContain("Warning:");
-    // 生きた要求の再開は要求を作らない(窓を消費しない — 穴 5 の経路も無い)
+    // Resuming a live request never creates a request (never spends the window — and no hole-5 path exists)
     expect(requestPosts(state)).toEqual([]);
 
     const listDown = await makeServer({
@@ -2245,7 +2263,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(env2.errors.join("\n")).toContain("Note: your projects could not be listed (");
   });
 
-  it("合図の後に全プロジェクトが同期できなければ、0 を事実として数えず、確かめられなかった件数を添える(K13-16)", async () => {
+  it("when no project can be synced after the signal, it never counts 0 as fact — it attaches the count of what could not be checked (K13-16)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -2258,7 +2276,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
       brokenProjects: [{ built, mode: "unavailable" }],
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
-    // 一覧の 1 件目(genesis が reserve)は同期でき dev2 は無い、2 件目は同期できない
+    // The list's first entry (genesis is reserve) syncs and dev2 is absent; the second cannot be synced
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
     expect(env.logs.join("\n")).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain), and 1 project could not be checked",
@@ -2268,12 +2286,12 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     );
   });
 
-  it("期限切れには、承認側の出力の条件を保ったまま、この時点のチェーンの事実を足す(K13-4)", async () => {
+  it("on expiry, appends the chain's fact at this point while keeping the approver-side output's conditions (K13-4)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
     ]);
-    // 登録簿の行は無い(T3 — 承認側の PUT が落ちた)まま、要求は期限切れ
+    // The registry row stays missing (T3 — the approver's PUT dropped), and the request has expired
     const { server } = await makeServer({
       built,
       withEnvironment: false,
@@ -2290,7 +2308,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     );
   });
 
-  it("--replace は要求の作成が失敗(上限・満杯)すれば何も置き換えず、古い鍵が残る(K13-8)", async () => {
+  it("--replace: when request creation fails (cap · full), nothing is replaced and the old key remains (K13-8)", async () => {
     for (const reason of ["add-requests", "device-rows"] as const) {
       const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
       const { server } = await makeServer({
@@ -2321,7 +2339,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     }
   });
 
-  it("鍵の無い端末も「生成 → 要求 → 保存」の順: 要求が失敗すれば鍵を残さない(K13-8)", async () => {
+  it("a keyless device follows the same order 'generate → request → save': a failed request leaves no key (K13-8)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
       built,
@@ -2339,18 +2357,18 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(env.errors.join("\n")).not.toContain("nothing was replaced");
   });
 
-  it("ガードつき差し替えは、要求の作成の間に別のプロセスが書いた鍵を上書きせず、FP も出さない(K13-8)", async () => {
+  it("the guarded replace never overwrites a key another process wrote during request creation, and emits no FP (K13-8)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     let env: TestEnv | null = null;
     let entry = "";
-    // 別のプロセスが書いた値(ガードは値の一致だけを見る)
+    // A value written by another process (the guard only compares the value)
     const intruder = "written-by-another-process";
     const { server } = await makeServer({
       built,
       withEnvironment: false,
       extra: [
         onRequest("POST", "/auth/devices/requests", () => {
-          // 要求の作成の間に別のプロセスがキーチェーンを書き換える
+          // Another process rewrites the keychain while the request is being created
           env?.keychain.set(entry, intruder);
           return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
         }),
@@ -2369,7 +2387,7 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     );
   });
 
-  it("鍵の無い端末の保存で同時書き込みを見つけたら、要求が作成済みであることを言い、key generate の文を出さない(K13-14)", async () => {
+  it("on detecting a concurrent write while a keyless device saves, it states that the request was already created and never emits the key-generate sentence (K13-14)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     let env: TestEnv | null = null;
     let entry = "";
@@ -2396,8 +2414,8 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
   });
 });
 
-describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-6)", () => {
-  /** P1 で失効・P2 で有効(一部のプロジェクトだけの失効)。手元の鍵は dev2。 */
+describe("everyday commands on a revoked key, and device list (DK K13-5 / K13-6)", () => {
+  /** Revoked on P1, valid on P2 (revocation on only some projects). The key at hand is dev2. */
   async function partlyRevoked(): Promise<{
     readonly env: TestEnv;
     readonly p1: BuiltChain;
@@ -2418,7 +2436,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     return { env, p1, p2 };
   }
 
-  it("このプロジェクトで失効した鍵は、未登録の経路でなく足し直し(新しい鍵)と残りのプロジェクトの後始末を言う", async () => {
+  it("a key revoked on this project gets re-adding (a new key) plus cleanup of the remaining projects — not the unregistered path", async () => {
     const { env } = await partlyRevoked();
     expect(await runCli(["pull", "--env", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
@@ -2429,7 +2447,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     expect(errors).not.toContain("If `maruhi device add` is still waiting on this machine");
   });
 
-  it("失効していない未登録の鍵は従来の経路で、偽の選択肢「or it was revoked」を言わない", async () => {
+  it("an unregistered key that is not revoked takes the conventional path, without the false option 'or it was revoked'", async () => {
     const built = await chainWithEnvironment();
     const { server } = await makeServer({ built, withEnvironment: true });
     const env = await startEnv(server.origin, built.projectId, dev2);
@@ -2442,7 +2460,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     expect(errors).not.toContain("was revoked on this project's chain");
   });
 
-  it("device list は失効したプロジェクトを行で示し、委ねた問い(どこに残っているか)に答える", async () => {
+  it("device list marks the revoked project in a row and answers the delegated question (where does the key remain)", async () => {
     const { env, p1, p2 } = await partlyRevoked();
     expect(await runCli(["device", "list"], env.layer), env.errors.join("\n")).toBe(0);
     const logs = env.logs.join("\n");
@@ -2453,7 +2471,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     );
   });
 
-  it("device list はどのチェーンにも無いこの端末の鍵も出し、--project では表示した範囲を言う", async () => {
+  it("device list also shows this device's key that is on no chain, and with --project it states the range displayed", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({ built, withEnvironment: false });
     const env = await startEnv(server.origin, built.projectId, dev2);
@@ -2472,7 +2490,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     );
   });
 
-  it("device list は同期できなかったプロジェクトについて「無い」と言わない(K13-16)", async () => {
+  it("device list never says 'absent' for a project that could not be synced (K13-16)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const down = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
     const { server } = await makeServer({
@@ -2497,7 +2515,7 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
     expect(logs).not.toContain("the only project shown");
   });
 
-  it("device list はプロジェクト一覧が取れなくても落ちず、登録簿と記録を出す", async () => {
+  it("device list does not fail when the project list cannot be fetched — it shows the registry and the record", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { server } = await makeServer({
       built,
@@ -2515,13 +2533,14 @@ describe("失効した鍵の普段のコマンドと device list(DK K13-5 / K13-
 });
 
 /**
- * 予備鍵 rotate の足場: 前回が台帳の差し替えで中断した状態(台帳は N1 = reserve、元の予備鍵
- * O = dev2 は記録に revoked の印、チェーンには O も N1 も載っている)。
+ * Scaffolding for reserve-key rotate: the state where the previous run
+ * interrupted at the ledger swap (the ledger holds N1 = reserve; the original
+ * reserve key O = dev2 is marked revoked in the record; both O and N1 are on the chain).
  */
 async function reserveRotateFixture(options: {
   readonly withEnvironment: boolean;
   readonly dekRegisterStatus?: number;
-  /** 旧予備鍵(dev2 / reserve)をチェーンに載せるか(既定 true。false = 失効も掃除も起きない)。 */
+  /** Whether to put the old reserve key (dev2 / reserve) on the chain (default true. false = neither revocation nor cleanup happens). */
   readonly retiringOnChain?: boolean;
 }): Promise<{
   readonly env: TestEnv;
@@ -2600,17 +2619,18 @@ async function reserveRotateFixture(options: {
   return { env, state, origin: server.origin, ledgerPuts, built };
 }
 
-describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
-  it("前回が台帳の差し替えで中断していても、記録上の旧予備鍵をまとめて失効させる", async () => {
-    // 前回の中断: 台帳は N1(= reserve)に差し替わり、元の予備鍵 O(= dev2)は記録に
-    // revoked の印が付いたが、チェーンにはまだ O も N1 も載っている(環境は無し —
-    // 失効後の掃除〔rotate〕はここでは見ない)
+describe("maruhi key reserve rotate (re-run — a Bugbot find)", () => {
+  it("even if the previous run interrupted at the ledger swap, it revokes the record's old reserve keys together", async () => {
+    // The previous interruption: the ledger was swapped to N1 (= reserve) and
+    // the original reserve key O (= dev2) was marked revoked in the record,
+    // but the chain still carries both O and N1 (no environment — the
+    // post-revocation cleanup [rotate] is not examined here)
     const { env, state, origin, ledgerPuts } = await reserveRotateFixture({
       withEnvironment: false,
     });
     expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
     expect(ledgerPuts).toHaveLength(1);
-    // revoke_device は O と N1 の両方を対象にする(N1 だけではない)
+    // revoke_device targets both O and N1 (not N1 alone)
     const revoke = state.appended.find((entry) => entry.op === "revoke_device");
     expect(revoke?.payload).toEqual({
       targetUserId: owner.userId,
@@ -2621,22 +2641,23 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     expect(env.logs.join("\n")).toContain(
       `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on the 1 project the server lists for you`,
     );
-    // ローカル記録: O と N1 は失効、新鍵だけが有効な予備鍵
+    // Local record: O and N1 revoked; only the new key is a valid reserve key
     const recorded = await readOwnDevices(env, origin);
     const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
     expect(active).toHaveLength(1);
     expect([dev2.fingerprintHex, reserve.fingerprintHex]).not.toContain(
       active[0]?.keyFingerprintHex,
     );
-    // 予備鍵の秘密はキーチェーンに残らない
+    // The reserve key's secret never remains in the keychain
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
     expect(keychain).toContain(owner.encPubHex);
   });
 
-  it("新しい予備鍵へのバックフィルの失敗を報告し、pull の経路を名指す(DK K11 の G9)", async () => {
-    // 旧予備鍵をチェーンに載せない = 失効も失効後の掃除(rotate)も起きない。終了コードは
-    // バックフィルの失敗だけで決まる(承認・復元と同じく 1 — K11-14 の所有者裁定)
+  it("reports a backfill failure to the new reserve key and names the pull path specifically (DK K11's G9)", async () => {
+    // Never putting the old reserve key on the chain = neither revocation nor
+    // the post-revocation cleanup (rotate) happens. The exit code is decided
+    // by the backfill failure alone (1, same as approval / recovery — the K11-14 ownership ruling)
     const { env, built } = await reserveRotateFixture({
       withEnvironment: true,
       dekRegisterStatus: 500,
@@ -2653,9 +2674,9 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
   });
 });
 
-describe("maruhi key recovery --replace(台帳を開かずに置換 — K4-38)", () => {
-  it("記録にある旧予備鍵を各プロジェクトで失効させ、新予備鍵を登録する", async () => {
-    // チェーン: owner の端末 + 旧予備鍵(reserve)。台帳は開けない(コード紛失)
+describe("maruhi key recovery --replace (replace without opening the ledger — K4-38)", () => {
+  it("revokes the old reserve key in the record on every project and registers the new reserve key", async () => {
+    // The chain: owner's device + the old reserve key (reserve). The ledger cannot be opened (the code is lost)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -2695,16 +2716,16 @@ describe("maruhi key recovery --replace(台帳を開かずに置換 — K4-38)",
     expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
       0,
     );
-    // 台帳は読まずに差し替える
+    // The ledger is replaced without being read
     expect(state.paths()).not.toContain("GET /auth/recovery");
     expect(ledgerPuts).toHaveLength(1);
-    // 新予備鍵の add_device と旧予備鍵の revoke_device
+    // The new reserve key's add_device and the old reserve key's revoke_device
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device", "revoke_device"]);
     expect(state.appended[1]?.payload).toEqual({
       targetUserId: owner.userId,
       deviceFingerprintsHex: [reserve.fingerprintHex],
     });
-    // 記録: 旧予備鍵は失効、新予備鍵だけが有効
+    // The record: the old reserve key revoked, only the new reserve key valid
     const recorded = await readOwnDevices(env, server.origin);
     expect(
       recorded.find((row) => row.keyFingerprintHex === reserve.fingerprintHex)?.revokedAtMs,
@@ -2712,15 +2733,15 @@ describe("maruhi key recovery --replace(台帳を開かずに置換 — K4-38)",
     const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
     expect(active).toHaveLength(1);
     expect(active[0]?.keyFingerprintHex).not.toBe(reserve.fingerprintHex);
-    // 予備鍵の秘密はキーチェーンに残らない
+    // The reserve key's secret never remains in the keychain
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
     expect(keychain).toContain(owner.encPubHex);
   });
 });
 
-describe("旧端末経路の撤去(ワイヤ型)", () => {
-  it('HandoffApprovalSchema は source "device" / blob を受け付けず、HandoffLookupSchema の roles は分片だけ', async () => {
+describe("the removal of the old device path (wire types)", () => {
+  it('HandoffApprovalSchema rejects source "device" / blob, and HandoffLookupSchema\'s roles take only the fragment', async () => {
     const approval = {
       source: "device",
       shareIndex: 0,
@@ -2742,7 +2763,7 @@ describe("旧端末経路の撤去(ワイヤ型)", () => {
       Schema.decodeUnknownEffect(HandoffLookupSchema)(lookup),
     );
     expect(Exit.isFailure(rejectedLookup)).toBe(true);
-    // 予備鍵の秘密はローカル記録に載らない(公開側だけ — K4-1)
+    // The reserve key's secret never lands on the local record (public side only — K4-1)
     const env = await makeTestEnv();
     await recordOwnDevice(env, "https://example.test", reserve, "reserve");
     const json = await readFile(ownDevicesPathOf(env.configPath), "utf8");
@@ -2752,10 +2773,10 @@ describe("旧端末経路の撤去(ワイヤ型)", () => {
   });
 });
 
-describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上の判定(DK K14)", () => {
+describe("maruhi key recover / key recovery — the on-chain judgment of the ledger key (DK K14)", () => {
   const CODE_PROMPT = "Enter your recovery code: ";
 
-  /** 鍵の無い端末で `key recover` を打つ場面(台帳 = `ledgerKey`)。`answers` はコードの後の応答。 */
+  /** The scene of typing `key recover` on a keyless device (the ledger = `ledgerKey`). `answers` are responses after the code. */
   async function recoverFixture(input: {
     readonly ledgerKey: TestUser;
     readonly built: BuiltChain;
@@ -2785,7 +2806,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     return { env, state, origin: server.origin };
   }
 
-  /** 端末鍵 `device` のある端末で `key recovery` を打つ場面(台帳 = `ledgerKey`、登録済み)。 */
+  /** The scene of typing `key recovery` on a device that has device key `device` (the ledger = `ledgerKey`, already registered). */
   async function recoveryFixture(input: {
     readonly device: TestUser;
     readonly ledgerKey: TestUser;
@@ -2796,7 +2817,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       readonly mode: "unavailable";
     }[];
     readonly unlistedProjects?: readonly BuiltChain[];
-    /** 追加のハンドラ(隠す前の同期に使う invite create の発行など)。 */
+    /** Extra handlers (e.g. the invite-create issuance used for the pre-hiding sync). */
     readonly extra?: readonly MockHandler[];
   }): Promise<{ env: TestEnv; state: ServerState; origin: string; ledgerPuts: unknown[] }> {
     const ledger = await ledgerHandlerFor(
@@ -2818,7 +2839,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
           ledgerPuts.push(request.body);
           return { status: 204 };
         }),
-        // rotate の末尾が読む台帳の行(旧予備鍵のパスキー / 保護者 — 無し)
+        // The ledger rows read by rotate's tail (the old reserve key's passkey / guardian — none)
         onRequest("GET", "/auth/key-wraps", () => ({
           status: 200,
           json: {
@@ -2846,8 +2867,9 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
   }
 
   /**
-   * 台帳に封印する記録: テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)、それ以外
-   * (`owner` など)は DK 以前の端末鍵の複製(印なし)。
+   * The record sealed into the ledger: the test's `reserve` is a reserve key
+   * the CLI generated (marked — DK K16); the others (`owner` etc.) are
+   * replicas of pre-DK device keys (unmarked).
    */
   function ledgerRecordOf(ledgerKey: TestUser) {
     return ledgerKey === reserve ? storedReserveRecord(reserve) : storedMasterRecord(ledgerKey);
@@ -2859,7 +2881,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       .map((row) => row.keyFingerprintHex);
   }
 
-  it("予備鍵の印があり止める事実の無い鍵は、問わずに予備鍵として記録する(DK K16-3 / K16-6)", async () => {
+  it("a key bearing the reserve-key mark and no stopping fact is recorded as a reserve key without asking (DK K16-3 / K16-6)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -2871,13 +2893,13 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
-    // 登録は判定の前に済んでいる(予備鍵の署名で新しい端末鍵の add_device)
+    // Registration is already done before the judgment (the reserve key signs the new device key's add_device)
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
     expect(state.appended[0]?.actor.keyFingerprintHex).toBe(reserve.fingerprintHex);
   });
 
-  it("予備鍵の印があっても、チェーンで最初の鍵なら記録しない(止める事実は印に優先する — DK K16-2 反例 1)", async () => {
-    // 印のある鍵が genesis の鍵(改造した CLI・未知の不具合でしか起きない矛盾)
+  it("even with the reserve-key mark, a key that is the first key on the chain is not recorded (a stopping fact outranks the mark — DK K16-2 counterexample 1)", async () => {
+    // The marked key is the genesis key (a contradiction only a doctored CLI or an unknown bug can produce)
     const built = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
     const { env, origin } = await recoverFixture({ ledgerKey: reserve, built });
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
@@ -2887,9 +2909,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("予備鍵の印の無い鍵は、どこでも add_device 出所でも予備鍵として記録しない(DK K16-6)", async () => {
-    // 台帳 = dev2 の鍵(印なし — この CLI が予備鍵として生成した鍵ではない)。チェーンでは
-    // どこでも add_device 出所(K14 の推し量りなら「予備鍵かもしれない」と問うた場面)
+  it("a key without the reserve-key mark is not recorded as a reserve key, even if add_device-issued everywhere (DK K16-6)", async () => {
+    // The ledger = dev2's key (unmarked — not a key this CLI generated as a
+    // reserve key). On the chain it is add_device-issued everywhere (the scene
+    // where K14's inference would have asked "might be a reserve key")
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -2901,12 +2924,12 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `Warning: the opened key ${dev2.fingerprintHex} was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it was not recorded as your reserve key. If it is the key of a lost or retired device, revoke it now: \`maruhi device revoke ${dev2.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([]);
-    // 登録は印に依らず行う(復元の目的は新しい端末鍵の登録 — K4-10)
+    // Registration happens regardless of the mark (recovery's purpose is registering a new device key — K4-10)
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
   });
 
-  it("最初の鍵(pre-DK の端末鍵の複製)は問わずに記録せず、失効と key recovery を案内する", async () => {
-    // 台帳 = owner の鍵(genesis の鍵 = 最初の鍵)。復元する端末には鍵が無い
+  it("does not record the first key (a pre-DK device-key replica) — it guides toward revocation and key recovery", async () => {
+    // The ledger = owner's key (the genesis key = the first key). The recovering device has no key
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { env, state, origin } = await recoverFixture({ ledgerKey: owner, built });
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
@@ -2915,19 +2938,20 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `the opened key ${owner.fingerprintHex} is your first key on 1 project (${built.projectId}) (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${owner.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([]);
-    // 登録は判定に依らず行う(複製の鍵でも新しい端末を足す — K4-10)
+    // Registration happens regardless of the judgment (even a replica key adds a new device — K4-10)
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
   });
 
-  it("載り方が混在すれば(どこか 1 つでも最初の鍵なら)複製と判定し、同期できないプロジェクトがあっても変わらない", async () => {
-    // p1: owner の鍵は最初の鍵。p2: dev2 が作り、owner の鍵を add_device で足した(観測で
-    // 記録した鍵の伝播 — 事実確認 8)。p3: 同期できない
+  it("if the ways it landed are mixed (it is the first key anywhere), it is judged a replica — unchanged even with an unsyncable project", async () => {
+    // p1: owner's key is the first key. p2: dev2 created it and add_device'd
+    // owner's key (the propagation of a key recorded via observation — fact-
+    // check 8). p3: cannot be synced
     const p1 = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const p2 = await buildChain([
       { actor: dev2, operation: genesisOp(dev2) },
       { actor: dev2, operation: addDeviceOp(owner) },
     ]);
-    // 同期できないプロジェクト(中身は配られない — ID を分けるため genesis を別の人に)
+    // The unsyncable project (its contents are not distributed — genesis is a different person to split the ID)
     const p3 = await buildChain([{ actor: member, operation: genesisOp(member) }]);
     const { env, origin } = await recoverFixture({
       ledgerKey: owner,
@@ -2945,7 +2969,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("予備鍵の印のある鍵は、同期できないプロジェクトがあっても記録する(DK K16-6 — 端末鍵になりえない)", async () => {
+  it("a key bearing the reserve-key mark is recorded even with an unsyncable project (DK K16-6 — it cannot be a device key)", async () => {
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -2964,7 +2988,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
   });
 
-  it("予備鍵の印のある鍵は、どのチェーンにも無くても記録し、登録できないプロジェクトは再招待を案内する(DK K16-6)", async () => {
+  it("a key bearing the reserve-key mark is recorded even when on no chain, and projects it could not be registered on get re-invite guidance (DK K16-6)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { env, state, origin } = await recoverFixture({ ledgerKey: reserve, built });
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
@@ -2980,7 +3004,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(state.appended).toEqual([]);
   });
 
-  it("失効した鍵は問わずに記録せず、失効したプロジェクトを名指し、有効な所では登録する", async () => {
+  it("a revoked key is not recorded; the revoked projects are named specifically, and it registers where still valid", async () => {
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3010,7 +3034,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     ]);
   });
 
-  it("非対話の拒否は変わらない: 台帳を取る前に止まり、問わず、何も追記しない", async () => {
+  it("the non-interactive refusal is unchanged: stops before taking the ledger, asks nothing, appends nothing", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3023,8 +3047,8 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(state.appended).toEqual([]);
   });
 
-  it("key recovery: 復元した後の端末でも、台帳の鍵が最初の鍵なら複製として分離する", async () => {
-    // 端末 = dev2(復元で足された新しい鍵)。台帳 = owner の鍵(pre-DK の複製 — p1 の最初の鍵)
+  it("key recovery: even on a post-recovery device, a ledger key that is the first key is segregated as a replica", async () => {
+    // The device = dev2 (the new key added by recovery). The ledger = owner's key (a pre-DK replica — p1's first key)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3048,14 +3072,14 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(env.errors.join("\n")).not.toContain("reissued the recovery code for your reserve key");
   });
 
-  it("key recovery: 案内どおり先に失効させた複製は、最初の鍵だった事実で複製と判定して分離する(K14-18)", async () => {
+  it("key recovery: a replica revoked beforehand as guided is judged a replica on the fact that it was the first key, and segregated (K14-18)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
       { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
     ]);
     const { env, origin } = await recoveryFixture({ device: dev2, ledgerKey: owner, built });
-    // この端末は以前それを reserve と記録していた(どこにも有効でないので、行は失効の印で直る)
+    // This device once recorded it as reserve (valid nowhere, so the row is corrected with the revoked mark)
     await recordOwnDevice(env, origin, owner, "reserve");
     expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
     expect(env.errors.join("\n")).toContain(
@@ -3070,7 +3094,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(reserves).not.toContain(owner.fingerprintHex);
   });
 
-  it("誤った行の訂正: 同期できないプロジェクトがあれば「どこにも無い」と言わず、行に触れない(K14-19)", async () => {
+  it("correcting a wrong row: with an unsyncable project it never says 'nowhere' and never touches the row (K14-19)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3092,7 +3116,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.revokedAtMs).toBeNull();
   });
 
-  it("key recovery: 失効した予備鍵(最初の鍵ではない)は分離し、再発行しない", async () => {
+  it("key recovery: a revoked reserve key (not the first key) is segregated and not re-issued", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3105,7 +3129,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `The recovery ledger holds key ${reserve.fingerprintHex}, which is revoked on 1 project (${built.projectId}), so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
     );
     const errors = env.errors.join("\n");
-    // 有効な所が無いので「まだ登録されている」とは言わない
+    // With nowhere still valid, it never says 'still registered'
     expect(errors).not.toContain("is still registered on");
     expect(errors).not.toContain("reissued the recovery code for your reserve key");
     const reserves = await reserveRowsOf(env, origin);
@@ -3113,9 +3137,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(reserves).not.toContain(reserve.fingerprintHex);
   });
 
-  it("key recovery: 一部のプロジェクトでだけ失効した台帳の鍵は分離し、まだ有効な所での失効を案内する", async () => {
-    // p1: 予備鍵を失効済み。p3: dev2 が作り、予備鍵を add_device で足した(どちらでも最初の鍵
-    // ではない — 判定は revoked)
+  it("key recovery: a ledger key revoked on only some projects is segregated, and it guides toward revoking where still valid", async () => {
+    // p1: the reserve key is already revoked. p3: dev2 created it and
+    // add_device'd the reserve key (on neither is it the first key — the
+    // judgment is revoked)
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3141,7 +3166,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     );
   });
 
-  /** 再招待の後: 以前の在籍の最初の鍵 owner が、新しい最初の鍵 dev2 の同期で add_device として戻った。 */
+  /** After the re-invite: the previous membership's first key, owner, came back as an add_device in the new first key dev2's sync. */
   async function reinvitedChain(): Promise<BuiltChain> {
     return buildChain([
       { actor: member, operation: genesisOp(member) },
@@ -3152,7 +3177,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     ]);
   }
 
-  it("再招待で add_device として戻った以前の最初の鍵も、最初の鍵と判定する(K14-1 1-f — key recover)", async () => {
+  it("a previous first key that came back as an add_device via re-invite is also judged the first key (K14-1 1-f — key recover)", async () => {
     const built = await reinvitedChain();
     const { env, origin } = await recoverFixture({ ledgerKey: owner, built });
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
@@ -3163,7 +3188,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("同じ述語なので、その鍵を持つ端末の device add も 2 択で止まる(K14-1 1-f)", async () => {
+  it("same predicate, so device add on a device holding that key also stops at the 2-way choice (K14-1 1-f)", async () => {
     const built = await reinvitedChain();
     const { server, state } = await makeServer({ built, withEnvironment: false });
     const env = await startEnv(server.origin, built.projectId, owner);
@@ -3174,9 +3199,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(requestPosts(state)).toEqual([]);
   });
 
-  it("key reserve rotate: 台帳の鍵が最初の鍵なら止め、この端末の誤った reserve の行を観測の行に直す(K14-4 4-f / 4-g)", async () => {
-    // 端末 = dev2。台帳 = owner の鍵(pre-DK の複製 — 最初の鍵)。dev2 は以前それを reserve と
-    // 記録していた(旧い台帳変更の前段の記録 — 追加の事実確認 (c))
+  it("key reserve rotate: if the ledger key is the first key, stop and correct this device's wrong reserve row into an observation row (K14-4 4-f / 4-g)", async () => {
+    // The device = dev2. The ledger = owner's key (a pre-DK replica — the
+    // first key). dev2 once recorded it as reserve (the record of an old
+    // ledger change's prelude — additional fact-check (c))
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3195,7 +3221,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(errors).toContain(
       `Note: this machine had recorded ${owner.fingerprintHex} as your reserve key; it is your first key on ${built.projectId}, so the record now lists it as an observed device key`,
     );
-    // 台帳も鍵も変えない(元の端末を失効させない)
+    // Neither the ledger nor the keys change (the original device is not revoked)
     expect(ledgerPuts).toEqual([]);
     const row = (await readOwnDevices(env, origin)).find(
       (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
@@ -3206,7 +3232,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("key recovery: 失効した予備鍵を分離したら、この端末の古い reserve の行に失効の印を付ける(K14-4 4-g — pullfrog の情報指摘)", async () => {
+  it("key recovery: once a revoked reserve key is segregated, mark this device's old reserve row as revoked (K14-4 4-g — pullfrog's information find)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3227,9 +3253,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(reserves).not.toContain(reserve.fingerprintHex);
   });
 
-  it("別の人の最初の鍵だった公開鍵は、この人の最初の鍵に数えない(K14-1 1-f — 人で絞る)", async () => {
-    // 予備鍵の公開鍵が、以前は別の人(外された)の add_member の鍵だった — 鍵の一意性は
-    // 現メンバー間だけ(§6.2)。この人にとっては add_device 出所の鍵
+  it("a public key that was someone else's first key does not count as this person's first key (K14-1 1-f — narrowed by person)", async () => {
+    // The reserve key's public key was once another person's (now removed)
+    // add_member key — key uniqueness holds only among current members (§6.2).
+    // For this person it is an add_device-provenance key
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       {
@@ -3254,12 +3281,12 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     ]);
     const { env, origin } = await recoverFixture({ ledgerKey: reserve, built });
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
-    // 最初の鍵と数えないので止める事実は無く、印があるので記録する
+    // Not counted as the first key, so no stopping fact exists; the mark is present, so it is recorded
     expect(env.errors.join("\n")).not.toContain("is your first key");
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
   });
 
-  it("key recover: 最初の鍵と判定した鍵をこの端末が reserve と記録していれば直す(K14-4 4-g)", async () => {
+  it("key recover: if this device recorded the first-key-judged key as reserve, correct it (K14-4 4-g)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const { env, origin } = await recoverFixture({ ledgerKey: owner, built });
     await recordOwnDevice(env, origin, owner, "reserve");
@@ -3270,7 +3297,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("誤りを直すのは reserve の行だけ: 観測・承認の行はそのまま(K14-4 4-g)", async () => {
+  it("only reserve rows are corrected: observation / approval rows are untouched (K14-4 4-g)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3286,7 +3313,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.observedProjectId).toBeNull();
   });
 
-  it("rotate: 予備鍵の印のある台帳の鍵は、確かめられないプロジェクトがあっても置き換えて失効させる(DK K16-6 — K14-15 の見直し)", async () => {
+  it("rotate: a ledger key bearing the reserve-key mark is replaced and revoked even with unverifiable projects (DK K16-6 — revisiting K14-15)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3298,7 +3325,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       built,
       brokenProjects: [{ built: broken, mode: "unavailable" }],
     });
-    // 同期できないプロジェクトでの登録・失効は失敗として報告される(終了コード 1 — 再実行で続く)
+    // Registration / revocation on unsyncable projects is reported as a failure (exit code 1 — a re-run continues)
     expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).not.toContain("Refused to change anything");
     expect(ledgerPuts).toHaveLength(1);
@@ -3308,7 +3335,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(revoked).toEqual([reserve.fingerprintHex]);
   });
 
-  it("rotate: 予備鍵の印の無い台帳の鍵は、チェーンでどこでも add_device 出所でも何も変えずに止まる(DK K16-6)", async () => {
+  it("rotate: a ledger key without the reserve-key mark stops changing nothing, even if add_device-issued everywhere on the chain (DK K16-6)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3322,15 +3349,15 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(env.errors.join("\n")).toContain(
       `The recovery ledger holds key ${dev2.fingerprintHex}, which was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one): a copy of a device key from an install before device keys, or a key sealed by another client, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key reserve rotate\``,
     );
-    // 台帳・チェーン・記録のどれも変えない
+    // Neither ledger, chain, nor record changes
     expect(ledgerPuts).toEqual([]);
     expect(state.appendedTo).toEqual([]);
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
 
-  it("失効の直前の門: この端末が以前 reserve と記録した複製は、rotate でも失効させない(K14-13)", async () => {
-    // 端末 = dev2。台帳 = 本物の予備鍵(add_device)。以前の CLI が owner の鍵(最初の鍵 —
-    // pre-DK の複製)を reserve と記録していた
+  it("the gate just before revocation: a replica this device once recorded as reserve is not revoked even by rotate (K14-13)", async () => {
+    // The device = dev2. The ledger = a genuine reserve key (add_device). An
+    // older CLI had recorded owner's key (the first key — a pre-DK replica) as reserve
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3351,8 +3378,8 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       targetUserId: owner.userId,
       deviceFingerprintsHex: [reserve.fingerprintHex],
     });
-    // 開いた鍵と記録の行はまとめて 1 回の同期で確かめる(台帳を書き換える前のチェーンの取得は
-    // プロジェクトあたり 1 回 — K14-16)
+    // The opened key and the record rows are checked together in a single sync
+    // (the chain fetch before rewriting the ledger is once per project — K14-16)
     const paths = state.paths();
     const beforeSeal = paths.slice(0, paths.indexOf("PUT /auth/recovery"));
     expect(
@@ -3364,9 +3391,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.source).toBe("observed");
   });
 
-  it("失効の門(--replace): 判定が失効でも、確かめられないプロジェクトがあれば失効させない(K14-14)", async () => {
-    // owner の鍵(以前の CLI が reserve と記録した複製): p1 で先に失効させた(案内どおり)、
-    // p3 では dev2 の同期で add_device として有効、最初の鍵だったプロジェクトは同期できない
+  it("the revocation gate (--replace): even when the judgment is revoke, it never revokes if a project could not be verified (K14-14)", async () => {
+    // owner's key (a replica an older CLI recorded as reserve): revoked
+    // beforehand on p1 (as guided); on p3 it is valid as an add_device in
+    // dev2's sync; the project where it was the first key cannot be synced
     const other = await makeTestUser("user-other-0009");
     const p1 = await buildChain([
       { actor: member, operation: genesisOp(member) },
@@ -3388,8 +3416,9 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       brokenProjects: [{ built: unseen, mode: "unavailable" }],
     });
     await recordOwnDevice(env, origin, owner, "reserve");
-    // 門は --replace(台帳を開かない逃げ道 — 確かめられなくても進む)で確かめる。rotate は
-    // 開いた鍵が確かめられなければ門の前で止まる(K14-15)
+    // Check the gate via --replace (the escape hatch that never opens the
+    // ledger — it proceeds even when unverifiable). rotate stops before the
+    // gate if the opened key cannot be verified (K14-15)
     env.setPromptResponses([
       () => {
         const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
@@ -3407,9 +3436,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(revoked).not.toContain(owner.fingerprintHex);
   });
 
-  it("失効の門: 最初の鍵だったプロジェクトで既に失効した複製も、全部確かめた上で失効させない(K14-18)", async () => {
-    // owner の鍵(以前の CLI が reserve と記録した pre-DK の複製): p1 では最初の鍵で、案内どおり
-    // 失効済み。p3 では dev2 の同期で add_device として有効。全プロジェクトを確かめられる
+  it("the revocation gate: a replica already revoked on the project where it was the first key is still not revoked after everything verifies (K14-18)", async () => {
+    // owner's key (a pre-DK replica an older CLI recorded as reserve): on p1 it
+    // was the first key and is already revoked as guided; on p3 it is valid as
+    // an add_device in dev2's sync. Every project is verifiable
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3437,8 +3467,9 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
     );
     expect(revoked).not.toContain(owner.fingerprintHex);
-    // 誤った reserve の行は、有効な p3 の立場で観測の行に直り(K14-4 4-g)、続く rotate の p1 の
-    // 同期で、p1 の履歴(最初の鍵)による証人に書き直される(失効の印つき — DK K15-12)
+    // The wrong reserve row is corrected into an observation row under p3's
+    // standing as valid (K14-4 4-g), and the following rotate's p1 sync
+    // rewrites it as a witness by p1's history (the first key) — with the revoked mark (DK K15-12)
     const row = (await readOwnDevices(env, origin)).find(
       (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
     );
@@ -3450,7 +3481,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.revokedAtMs).not.toBeNull();
   });
 
-  it("key recovery: どこでも add_device 出所の予備鍵は従来どおり再封印し、記録を復元する", async () => {
+  it("key recovery: a reserve key whose provenance is add_device everywhere is re-sealed as before and the record is restored", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3469,7 +3500,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
   });
 
-  it("key recovery: 予備鍵の印のある鍵は、確かめられないプロジェクトがあっても再封印して記録する(DK K16-6 — K14-13 の見直し)", async () => {
+  it("key recovery: a key bearing the reserve-key mark is re-sealed and recorded even with unverifiable projects (DK K16-6 — revisiting K14-13)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3487,7 +3518,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
   });
 
-  it("key recovery: 予備鍵の印の無い鍵は、チェーンでどこでも add_device 出所でも分離する(DK K16-6)", async () => {
+  it("key recovery: a key without the reserve-key mark is segregated even if add_device-issued everywhere on the chain (DK K16-6)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -3502,16 +3533,17 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `The recovery ledger holds key ${dev2.fingerprintHex}, which was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one): a copy of a device key from an install before device keys, or a key sealed by another client, not a reserve key. Separating: creating a reserve key and sealing it instead`,
     );
     expect(ledgerPuts).toHaveLength(1);
-    // 記録されたのは新しく生成した予備鍵だけ(開いた dev2 の鍵ではない)
+    // Only the newly generated reserve key is recorded (not the opened dev2 key)
     const reserves = await reserveRowsOf(env, origin);
     expect(reserves).toHaveLength(1);
     expect(reserves).not.toContain(dev2.fingerprintHex);
   });
 
-  describe("サーバーが一覧から隠したプロジェクト(DK K15)", () => {
-    // 典型の場面(設計録 §20 事実 6 (iv)): pre-DK の利用者の端末 M1(鍵 = owner の鍵 K)が DK の
-    // 端末 D2(dev2)を p1 で承認した。D2 は p1 を同期して K を観測し(最初の鍵)、招待で p3 に
-    // 参加して K を p3 へ add_device した。台帳は K(pre-DK)。サーバーは p1 を一覧から隠す
+  describe("projects the server hid from the list (DK K15)", () => {
+    // The typical scene (design doc §20 fact 6 (iv)): a pre-DK user's device
+    // M1 (key = owner's key K) approved DK's device D2 (dev2) on p1. D2 synced
+    // p1 and observed K (the first key), joined p3 via an invite, and
+    // add_device'd K onto p3. The ledger is K (pre-DK). The server hides p1 from the list
     async function hiddenFirstKeyScene(): Promise<{ p1: BuiltChain; p3: BuiltChain }> {
       const p1 = await buildChain([
         { actor: owner, operation: genesisOp(owner) },
@@ -3525,7 +3557,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       return { p1, p3 };
     }
 
-    /** 隠される前に p1 を同期した(鍵ありの前段を通るコマンド — 観測が K の行を書く)。 */
+    /** Synced p1 before it was hidden (a command through the keyed prelude — the observation writes K's row). */
     async function syncBeforeHidden(env: TestEnv, p1: BuiltChain): Promise<void> {
       expect(
         await runCli(
@@ -3547,7 +3579,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     const recordedFirstKey = (projectId: string) =>
       `was your first key on project ${projectId} (the key you created or joined that project with) when this machine synced that project's verified chain, although the projects the server lists for you now do not show it`;
 
-    it("rotate: 隠されたプロジェクトで最初の鍵だった台帳の鍵を、この端末の観測の記録で止め、何も変えない", async () => {
+    it("rotate: a ledger key that was the first key on a hidden project is stopped by this device's observation record; nothing changes", async () => {
       const { p1, p3 } = await hiddenFirstKeyScene();
       const { env, state, origin, ledgerPuts } = await recoveryFixture({
         device: dev2,
@@ -3557,7 +3589,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         extra: [inviteHandler(p1)],
       });
       await syncBeforeHidden(env, p1);
-      // 観測の経路が書いた証人(出所 observed・出所の端末なし・観測したプロジェクト p1)
+      // The witness the observation path wrote (provenance observed · no source device · observed project p1)
       const witness = (await readOwnDevices(env, origin)).find(
         (row) => row.keyFingerprintHex === owner.fingerprintHex,
       );
@@ -3570,7 +3602,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(env.errors.join("\n")).toContain(
         `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}: a copy of a device key from an install before device keys, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key reserve rotate\``,
       );
-      // 台帳・記録・チェーンのどれも変えない(K は p3 で使用中の端末鍵のまま)
+      // Neither ledger, record, nor chain changes (K stays an in-use device key on p3)
       expect(ledgerPuts).toEqual([]);
       expect(revokedFingerprints(state)).toEqual([]);
       expect(await reserveRowsOf(env, origin)).toEqual([]);
@@ -3580,11 +3612,12 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(row?.source).toBe("observed");
     });
 
-    it("rotate: 見えるプロジェクトで失効済みでも、証人の最初の鍵を失効済みより先に言う(判定の順序 — K15-1 反例 3)", async () => {
-      // K は p4 で失効済み(案内どおり)・p3 で有効・p1(隠された)で最初の鍵。証人が `revoked` の
-      // 後ろにあると、チェーンの判定は「失効」になり、失効の門が p3 の K を通しうる
+    it("rotate: even when revoked on a visible project, the witness's 'first key' is stated before 'revoked' (judgment ordering — K15-1 counterexample 3)", async () => {
+      // K is revoked on p4 (as guided) · valid on p3 · the first key on p1
+      // (hidden). If the witness sat behind `revoked`, the chain judgment
+      // would be "revoked" and the revocation gate could pass p3's K
       const { p1, p3 } = await hiddenFirstKeyScene();
-      // p3 と genesis を分ける(プロジェクト ID は genesis のハッシュ)
+      // Separating p3 and genesis (the project ID is the genesis hash)
       const other = await makeTestUser("user-other-0015");
       const p4 = await buildChain([
         { actor: other, operation: genesisOp(other) },
@@ -3602,7 +3635,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         extra: [inviteHandler(p1), inviteHandler(p4)],
       });
       await syncBeforeHidden(env, p1);
-      // p4 の同期で、証人の行に失効の印が付く(最初の鍵だった事実は失効の後も真 — K15-6)
+      // On p4's sync the witness row gains the revoked mark (the fact of having been the first key stays true past revocation — K15-6)
       await syncBeforeHidden(env, p4);
       const witness = (await readOwnDevices(env, origin)).find(
         (row) => row.keyFingerprintHex === owner.fingerprintHex,
@@ -3618,7 +3651,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(revokedFingerprints(state)).toEqual([]);
     });
 
-    it("key recovery: 隠されたプロジェクトで最初の鍵だった台帳の鍵は、証人で複製として分離し、予備鍵と記録しない", async () => {
+    it("key recovery: a ledger key that was the first key on a hidden project is segregated as a replica by the witness and never recorded as a reserve key", async () => {
       const { p1, p3 } = await hiddenFirstKeyScene();
       const { env, origin, ledgerPuts } = await recoveryFixture({
         device: dev2,
@@ -3636,20 +3669,20 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         `Note: the key ${owner.fingerprintHex} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${owner.fingerprintHex}\``,
       );
       expect(ledgerPuts).toHaveLength(1);
-      // 記録されたのは新しい予備鍵だけ(K は証人の行のまま)
+      // Only the new reserve key is recorded (K stays as the witness row)
       const reserves = await reserveRowsOf(env, origin);
       expect(reserves).toHaveLength(1);
       expect(reserves).not.toContain(owner.fingerprintHex);
     });
 
-    it("key recover: キーチェーンだけを失った端末は、証人があれば問わずに記録しない", async () => {
+    it("key recover: a device that lost only its keychain is not recorded when a witness exists", async () => {
       const { p1, p3 } = await hiddenFirstKeyScene();
       const { env, origin } = await recoverFixture({
         ledgerKey: owner,
         built: p3,
         unlistedProjects: [p1],
       });
-      // 以前この端末が p1 を同期して K を観測した記録(設定ディレクトリは残っている)
+      // The record of this device once syncing p1 and observing K (the config directory remains)
       await recordOwnDevice(env, origin, owner, "observed", null, p1.projectId);
       expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
       expect(env.prompts).toEqual([CODE_PROMPT]);
@@ -3659,7 +3692,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(await reserveRowsOf(env, origin)).toEqual([]);
     });
 
-    it("正規のサーバーで無関係な手がかり(床・別サーバーの記録・観測したプロジェクトの無い行)があっても、正しい予備鍵の rotate は止まらない(K13-7)", async () => {
+    it("on an honest server, unrelated clues (the floor · another server's record · a row with no observed project) never stop the correct reserve-key rotate (K13-7)", async () => {
       const built = await buildChain([
         { actor: owner, operation: genesisOp(owner) },
         { actor: owner, operation: addDeviceOp(reserve) },
@@ -3669,10 +3702,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         ledgerKey: reserve,
         built,
       });
-      // 床(サーバー・アカウントで分かれない)に一覧に無いプロジェクト
+      // A project in the floor (not split by server · account) that is absent from the list
       await mkdir(env.floorDir, { recursive: true });
       await writeFile(join(env.floorDir, `${"ab".repeat(32)}.jsonl`), "");
-      // 別のサーバーの記録では、同じ FP が最初の鍵として観測されている(混ざらない)
+      // In another server's record, the same FP is observed as the first key (they never mix)
       const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
       await Effect.runPromise(
         store.record("https://other.example", owner.userId, {
@@ -3689,7 +3722,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
           revokedAtMs: null,
         }),
       );
-      // このサーバーの観測の行でも、観測したプロジェクトの無い形は証人にしない(K15-6)
+      // Even a this-server observation row is never a witness in the shape with no observed project (K15-6)
       await recordOwnDevice(env, origin, reserve, "observed");
       expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
       expect(ledgerPuts).toHaveLength(1);
@@ -3697,9 +3730,9 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(env.errors.join("\n")).not.toContain("This machine's records show");
     });
 
-    it("先に add_device として観測した鍵も、後で最初の鍵のプロジェクトを同期すれば証人になる(観測の順序に依らない — K15-11)", async () => {
-      // D2 はまず p3(K は D2 の add_device)を同期し、p4(K は失効済み — 行に失効の印)を経て、
-      // p1(K は最初の鍵)を同期した
+    it("a key first observed as an add_device also becomes a witness once the project where it is the first key is synced later (independent of observation order — K15-11)", async () => {
+      // D2 first synced p3 (K is D2's add_device), then p4 (K is revoked —
+      // the row carries the revoked mark), then p1 (K is the first key)
       const { p1, p3 } = await hiddenFirstKeyScene();
       const other = await makeTestUser("user-other-0016");
       const p4 = await buildChain([
@@ -3737,7 +3770,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         addedByFingerprintHex: null,
         observedProjectId: p1.projectId,
         recordedAtMs: first?.recordedAtMs,
-        // 失効の印は保つ(消すと失効した鍵が他のプロジェクトへ登録し直される — K4-3)
+        // Keep the revoked mark (erasing it would let the revoked key be re-registered onto other projects — K4-3)
         revokedAtMs: marked?.revokedAtMs,
       });
       expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
@@ -3748,8 +3781,8 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(revokedFingerprints(state)).toEqual([]);
     });
 
-    it("最初の鍵だったプロジェクトで既に失効した鍵も、そのチェーンの履歴で証人になる(判定と同じ述語 — K15-12)", async () => {
-      // p1 で K は最初の鍵だったが、案内どおり失効済み(p1 の有効な端末ではない)。p3 では有効
+    it("a key already revoked on the project where it was the first key also becomes a witness via that chain's history (the same predicate as the judgment — K15-12)", async () => {
+      // On p1, K was the first key but is already revoked as guided (not a valid device of p1). On p3 it is valid
       const p1 = await buildChain([
         { actor: owner, operation: genesisOp(owner) },
         { actor: owner, operation: addDeviceOp(dev2) },
@@ -3773,7 +3806,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
         addedByFingerprintHex: null,
         observedProjectId: p1.projectId,
       });
-      // 同じ同期の (b) が付けた失効の印を、証人の書き直しが消さない
+      // The revoked mark the same sync's (b) attached is not erased by the witness rewrite
       expect(witness?.revokedAtMs).not.toBeNull();
       expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain(
@@ -3783,8 +3816,8 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(revokedFingerprints(state)).toEqual([]);
     });
 
-    it("既に証人の行は、別の最初の鍵のプロジェクトの同期で書き直さない(最初の証人を保つ — K15-12)", async () => {
-      // K は p1(genesis)と p5(add_member)の両方で最初の鍵。D2 は p3 → p1 → p5 の順に同期した
+    it("an existing witness row is not rewritten by another first-key project's sync (keep the first witness — K15-12)", async () => {
+      // K is the first key on both p1 (genesis) and p5 (add_member). D2 synced in the order p3 → p1 → p5
       const { p1, p3 } = await hiddenFirstKeyScene();
       const other = await makeTestUser("user-other-0017");
       const p5 = await buildChain([
@@ -3811,9 +3844,10 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       });
     });
 
-    it("承認した端末以外で観測した予備鍵(出所の端末つきの観測の行)は証人にならず、rotate は失効させる", async () => {
-      // dev2 は予備鍵を封印した端末ではない: 予備鍵は owner の端末が add_device し、dev2 は同期で
-      // 観測した(出所 observed・出所の端末 = owner の鍵)
+    it("a reserve key observed on a non-approving device (an observation row with a source device) is no witness, and rotate revokes it", async () => {
+      // dev2 is not the device that sealed the reserve key: owner's device
+      // add_device'd the reserve key and dev2 observed it via a sync
+      // (provenance observed · source device = owner's key)
       const built = await buildChain([
         { actor: owner, operation: genesisOp(owner) },
         { actor: owner, operation: addDeviceOp(dev2) },
@@ -3839,7 +3873,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       expect(revokedFingerprints(state)).toEqual([reserve.fingerprintHex]);
     });
 
-    it("非対話の拒否は変わらない: 証人があっても rotate は台帳を取る前に止まり、何も変えない", async () => {
+    it("the non-interactive refusal is unchanged: even with a witness, rotate stops before taking the ledger and changes nothing", async () => {
       const { p1, p3 } = await hiddenFirstKeyScene();
       const { env, state, origin, ledgerPuts } = await recoveryFixture({
         device: dev2,

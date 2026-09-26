@@ -1,5 +1,6 @@
-// pull(§5.1 配布時検証 + §12-7 全エポック DEK)と run(メモリ注入)、
-// AI エージェント検出の線引き(値表示は拒否 / run は許可)のテスト。
+// Tests for pull (§5.1 distribution-time verification + §12-7 all-epoch DEKs)
+// and run (memory injection), and for the AI-agent-detection boundary
+// (value display is refused / run is allowed).
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -54,15 +55,15 @@ interface Fixture {
 let fixture: Fixture;
 let servers: MockServer[] = [];
 
-/** genesis をヘッドにした宣言(seq 1 の entry hash = projectId — どの延長ビューにも実在)。 */
+/** A declaration headed by genesis (seq 1's entry hash = projectId — exists in every extension view). */
 function genesisHead(projectId: string): { seq: number; hashHex: string } {
   return { seq: 1, hashHex: projectId };
 }
 
 /**
- * pull 応答の 1 変数(検証済みステートメント + 値 — §12-7 のワイヤ形)。
- * ステートメントの宣言ヘッドは genesis(メタはエポックアンカーを持たないため、
- * author が member 以上ならどのビューでも検証を通る — §4.2)。
+ * One variable of a pull response (verified statement + value — the §12-7 wire shape).
+ * The statement's declared head is genesis (meta carries no epoch anchor, so
+ * any view verifies when author is member-or-above — §4.2).
  */
 async function pullEntry(
   projectId: string,
@@ -90,7 +91,7 @@ async function pullEntry(
   };
 }
 
-/** pull 応答の環境ステートメント(active・metaVersion 1・genesis ヘッド)。 */
+/** The environment statement of a pull response (active · metaVersion 1 · genesis head). */
 async function pullEnvStatement(
   projectId: string,
   author?: TestUser,
@@ -109,7 +110,7 @@ beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
-  // チェーンには実 DEK のコミットメントが載る(§5.2 — pull の照合まで実データ)
+  // The chain carries the real DEK's commitment (§5.2 — real data down to the pull comparison)
   const built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -120,9 +121,9 @@ beforeAll(async () => {
     await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
     await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
   ];
-  // 最新バージョンのエポックは変数ごとに異なる(§12-7): ALPHA は epoch 2、
-  // BETA はローテーション後も再暗号化されていない epoch 1 のまま。
-  // 値署名(§4.1)の宣言ヘッドは各エポックが現エポックだった位置(inclusive):
+  // The latest version's epoch differs per variable (§12-7): ALPHA is epoch 2,
+  // BETA stays at epoch 1, never re-encrypted after the rotation.
+  // The value signature (§4.1) declares the head where each epoch was current (inclusive):
   // ALPHA = seq 3(rotate)、BETA = seq 2(create)
   const valueAlpha = await encryptValueFor({
     dek: dek2,
@@ -208,9 +209,9 @@ function chainHandler(): MockHandler {
 }
 
 /**
- * 配布集合(override 済み)→ digest 入力。variableId 重複の override は digest
- * 計算が受け付けないため後勝ちで畳む(重複自体はクライアントがマニフェスト検証
- * より前に拒否する)。
+ * Distributed set (after overrides) → digest input. Overrides with duplicate
+ * variableIds fold last-wins because the digest computation rejects them (the
+ * duplicate itself is refused by the client before manifest verification).
  */
 function digestStatementsOf(
   variables: readonly unknown[],
@@ -238,11 +239,11 @@ function pullHandler(overrides?: {
   readonly deletedVariables?: readonly unknown[];
   readonly declaredVariables?: readonly unknown[];
   readonly statement?: unknown;
-  /** マニフェストのダイジェスト入力の上書き(欠落 negative の作成用)。 */
+  /** Overrides for the manifest's digest input (for building absence negatives). */
   readonly digestDeclared?: readonly unknown[];
 }): MockHandler {
   const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
-  // 既定 + テストの上書き(spread は存在するキーだけを差し替える)
+  // Default + test overrides (spread replaces only existing keys)
   const resolved = {
     statement: envStatement as unknown,
     variables: [entryAlpha, entryBeta] as readonly unknown[],
@@ -253,9 +254,9 @@ function pullHandler(overrides?: {
     ...overrides,
   };
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    // マニフェスト(§12-7)は**配布する集合そのもの**から計算する(override で
-    // 改竄・差し替えした集合にも一致させる — 各テストの negative はマニフェスト
-    // ではなくステートメント / 値の検証で落ちることを検査している)
+    // The manifest (§12-7) is computed from **the distributed set itself**
+    // (matching even sets tampered with / swapped via override — each test's
+    // negative verifies it is rejected by statement / value verification, not by the manifest)
     const manifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -301,7 +302,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
 }
 
 describe("maruhi pull", () => {
-  it("同期 + §5.1 検証 + 復号し、メタデータのみ表示する(値は出さない)", async () => {
+  it("syncs + §5.1-verifies + decrypts, then shows only metadata (never the value)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
@@ -313,9 +314,9 @@ describe("maruhi pull", () => {
     expect(output).not.toContain("beta-value");
   });
 
-  it("自分宛ラップの欠けエポックを警告する(§7 の全エポック配布との差分の本人側検出)", async () => {
-    // 全アクティブ値は epoch 2 = 復号は成功する(現在値だけでは永遠に顕在化
-    // しない静かな欠け)。epoch 1 の自分宛ラップが無いことを SHOULD 警告する
+  it("warns about epochs missing a wrap for self (self-side detection of the diff from §7's all-epoch distribution)", async () => {
+    // All active values are epoch 2 = decryption succeeds (a silent gap that
+    // current values alone would never surface). SHOULD-warns that no wrap for self exists at epoch 1
     const env = await startEnv([
       chainHandler(),
       pullHandler({ variables: [fixture.entryAlpha], deks: [fixture.wraps[1]] }),
@@ -324,32 +325,33 @@ describe("maruhi pull", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("no DEK wraps for you exist at epochs 1");
     expect(errors).toContain("re-run `maruhi member add`");
-    // 端末の場面は承認の再実行でなく兄弟端末の pull(DK K11-5)
+    // The device-side scenario is a sibling device's pull, not a re-run of approval (DK K11-5)
     expect(errors).toContain(
       `fills the missing epochs when it runs \`maruhi pull --project ${fixture.built.projectId} --env ${ENV_ID}\``,
     );
     expect(errors).not.toContain("maruhi device approve");
 
-    // 全エポックが揃っていれば警告しない(誤検知なし)
+    // No warning when every epoch is covered (no false positive)
     const complete = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], complete.layer)).toBe(0);
     expect(complete.errors.join("\n")).not.toContain("no DEK wraps for you exist at epochs");
   });
 
-  it("--show は人間には値を表示する", async () => {
+  it("--show displays the value to a human", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
     expect(env.logs).toContain("ALPHA=alpha-value");
     expect(env.logs).toContain("BETA=beta-value");
   });
 
-  it("コマンドの出力は CliIo だけを通る(実 fd を直に叩く経路を作らない)", async () => {
-    // 引数層を移した先(effect/unstable/cli)は出力を `Console` / `Stdio` の
-    // サービス経由で行うが、上流が描画経路を増やしたときに実 fd へ素通りする
-    // 穴ができうる。**復号した値**が現れる唯一のコマンドで安全網を張る
+  it("command output goes only through CliIo (no path that hits real fds directly)", async () => {
+    // The layer the argument handling moved to (effect/unstable/cli) emits via
+    // the `Console` / `Stdio` services, but an upstream addition of a rendering
+    // path could open a hole that passes through to real fds. Put the safety
+    // net on the one command where **a decrypted value** can appear
     const env = await startEnv([chainHandler(), pullHandler()]);
     const bypassed: string[] = [];
-    // 束縛ラッパーではなく元のメソッドそのものを控える(戻すたびに 1 段積まない)
+    // Capture the original methods themselves, not bound wrappers (no extra layer stacked on each restore)
     const realWrite = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array): boolean => {
       bypassed.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
@@ -360,18 +362,19 @@ describe("maruhi pull", () => {
     } finally {
       process.stdout.write = realWrite;
     }
-    // 窓には vitest のレポータ出力も混ざるので、**maruhi の語**で判定する
+    // The window also mixes in vitest's reporter output, so judge by **maruhi's words**
     const written = bypassed.join("");
     expect(written).not.toContain("alpha-value");
     expect(written).not.toContain("beta-value");
     expect(written).not.toContain("Sync and verification OK");
   });
 
-  it("--show=false / --show false は**書いたとおり**に読まれ、値を表示しない", async () => {
-    // boolean のインライン値(`--show=false`)も空白区切りの値(`--show false`)も
-    // false として読まれる。読み損ねて true に化けると「表示しない」と書いた実行が
-    // 全シークレットを出す — 拒否ではなく**正しく読まれる**ことが要点(直前の
-    // テストが、この配布データで --show が実際に値を出すことを示す)
+  it("--show=false / --show false are read **exactly as written** and do not display the value", async () => {
+    // Both an inline boolean value (`--show=false`) and a space-separated one
+    // (`--show false`) are read as false. Misreading into true would turn a
+    // run that says "do not display" into one that prints every secret — the
+    // point is **being read correctly**, not refusal (the previous test shows
+    // --show actually emits the value on this same distribution data)
     const inline = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(0);
     expect(inline.logs.join("\n")).not.toContain("alpha-value");
@@ -382,38 +385,39 @@ describe("maruhi pull", () => {
     expect(spaced.logs.join("\n")).not.toContain("alpha-value");
   });
 
-  it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
-    // 重複を黙って解決すると(素の Flag.Boolean は first-wins で沈黙する)、明示した
-    // `--no-show` が捨てられて全シークレットが端末へ出うる(`maruhi pull --no-show
-    // $FLAGS` の形)。どの規則でも**打った順で結果が変わる**ので、Flag.atMost(1) が
-    // 順序に依らず落とす
+  it("duplicate flags like `--no-show --show` fail without displaying the value", async () => {
+    // Resolving a duplicate silently (bare Flag.Boolean stays silent with
+    // first-wins) could drop the explicit `--no-show` and print every secret
+    // to the terminal (the `maruhi pull --no-show $FLAGS` shape). Under any
+    // rule **the result would depend on the order typed**, so Flag.atMost(1)
+    // rejects it regardless of order
     const later = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
     expect(later.logs.join("\n")).not.toContain("alpha-value");
     expect(later.errors.join("\n")).toContain("Flag --show was specified more than once");
-    // 検査は通信より前(復号する平文をそもそも作らない)
+    // The check precedes any communication (never produces the plaintext to decrypt in the first place)
     expect(server?.requests).toHaveLength(0);
 
-    // 逆順(最後が --no-show)も同じ扱い。「結果が安全な向きなら通す」に
-    // すると、書いた指定が捨てられていること自体が伝わらない
+    // The reverse order (--no-show last) is treated identically. A "pass when
+    // the result leans safe" rule would hide that a written flag was dropped
     const earlier = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "--no-show"], earlier.layer)).toBe(2);
     expect(earlier.errors.join("\n")).toContain("Flag --show was specified more than once");
 
-    // 同じ綴りの重複も落ちる(`--show --show`)
+    // Same-spelling duplicates are also rejected (`--show --show`)
     const same = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "--show"], same.layer)).toBe(2);
     expect(same.logs.join("\n")).not.toContain("alpha-value");
 
-    // 単独の `--no-show` は書いたとおり false として通る(拒否するのは重複だけ)
+    // A lone `--no-show` passes as false exactly as written (only duplicates are refused)
     const single = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--no-show"], single.layer)).toBe(0);
     expect(single.logs.join("\n")).not.toContain("alpha-value");
   });
 
-  it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
-    // 悪意ある共同編集者が保存した値(ESC + BEL)+ 正当な複数行(PEM 風)
+  it("--show neutralizes ANSI/control sequences in the value while keeping newlines", async () => {
+    // A value saved by a malicious co-editor (ESC + BEL) + a legitimate multi-line value (PEM-style)
     const evil = "sk-\u001b[31mFAKE\u0007\nline2";
     const value = await encryptValueFor({
       dek: fixture.dek2,
@@ -434,17 +438,18 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    // ESC / BEL は端末へ生で流れない
+    // ESC / BEL never reach the terminal raw
     expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\u0007");
-    // 改行は保持(複数行シークレットが壊れない)。ただし 2 行目以降は印を付けて
-    // 出力する: 素で流すと値の側で `NAME=value` の行を偽造できる
+    // Newlines are kept (multi-line secrets stay intact). But lines from the
+    // second onward are marked: emitted raw, the value could forge a
+    // `NAME=value` line
     expect(output).toContain("SECRET= (a 2-line value");
     expect(output).toContain("| sk-\uFFFD[31mFAKE\uFFFD\n| line2");
   });
 
-  it("不正 UTF-8 の値があると --show は失敗し、正常な値も一切出力しない", async () => {
-    // 不正 UTF-8 バイト列(0xff/0xfe は UTF-8 に現れない)を平文とする値
+  it("--show fails when a value is invalid UTF-8, and prints no value at all", async () => {
+    // A value whose plaintext is an invalid UTF-8 byte sequence (0xff/0xfe never appear in UTF-8)
     const binary = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -467,38 +472,38 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("not valid UTF-8 and cannot be displayed");
-    // all-or-nothing: 先に並ぶ ALPHA(正常デコード可)も部分出力しない
+    // all-or-nothing: even ALPHA, which sorts first (decodes fine), is not partially printed
     expect(env.logs.join("\n")).not.toContain("ALPHA=alpha-value");
   });
 
-  it("AI エージェント検出時、--show は拒否される(run を迂回策として勧めない)", async () => {
+  it("when an AI agent is detected, --show is refused (never suggests run as a workaround)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("AI agent environment was detected");
-    // 値表示の迂回になる run を勧めない(エージェントに迂回レシピを渡さない)
+    // Never suggest run as a bypass for value display (do not hand the agent a bypass recipe)
     expect(errors).not.toContain("maruhi run");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
-    // 拒否はコマンド入口(復号前)で確定する: 同期・復号・メタデータ表示に進まない
+    // The refusal is fixed at the command entrance (pre-decryption): it never proceeds to sync, decrypt, or metadata display
     expect(env.logs.join("\n")).not.toContain("Sync and verification OK");
   });
 
-  it("**未知**のエージェントでも --show は拒否される(TTY が一次境界 = fail-closed)", async () => {
-    // deny-list(既知の環境変数)では素通りしていた形。stdout がパイプ・
-    // リダイレクトなら、検出リストに無くても値は見せない
-    // (`maruhi pull --show > secrets.txt` が拒否されるのも同じ判定)
+  it("--show is refused even for an **unknown** agent (TTY is the primary boundary = fail-closed)", async () => {
+    // A deny-list (known env vars) would have let this through. When stdout is
+    // a pipe / redirect, the value is never shown even if the detection list
+    // misses it (`maruhi pull --show > secrets.txt` is refused by the same check)
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdout: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
-    // 復号より前に確定する(平文をそもそも作らない)
+    // Fixed before decryption (the plaintext is never produced in the first place)
     expect(env.logs.join("\n")).not.toContain("Sync and verification OK");
   });
 
-  it("stdin が端末でない実行(CI・ヒアドキュメント)も拒否される", async () => {
+  it("runs whose stdin is not a terminal (CI, heredoc) are refused too", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setTerminal({ stdin: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
@@ -506,7 +511,7 @@ describe("maruhi pull", () => {
     expect(env.logs.join("\n")).not.toContain("alpha-value");
   });
 
-  it("値を表示しない pull は端末でなくても通る(拒否は --show だけ)", async () => {
+  it("a pull that displays no value passes without a terminal (refusal is only for --show)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
     env.setTerminal({ stdin: false, stdout: false });
@@ -514,7 +519,7 @@ describe("maruhi pull", () => {
     expect(env.logs.join("\n")).toContain("Sync and verification OK");
   });
 
-  it("署名者を偽装したラップ(signerUserId の虚偽申告)を拒否する", async () => {
+  it("refuses a wrap that forges the signer (a false signerUserId claim)", async () => {
     const stranger = await makeTestUser("user-stranger-9999");
     const spoofed = await wrapDekFor({
       projectId: fixture.built.projectId,
@@ -524,7 +529,7 @@ describe("maruhi pull", () => {
       recipient: fixture.owner,
       signer: stranger,
     });
-    // サーバーが signer を owner と虚偽申告する(署名は stranger のまま)
+    // The server falsely claims the signer is owner (the signature stays stranger's)
     const lying = {
       ...spoofed,
       signerUserId: fixture.owner.userId,
@@ -535,7 +540,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("registration signature does not verify");
   });
 
-  it("チェーン履歴に存在しない署名者のラップを拒否する", async () => {
+  it("refuses a wrap whose signer does not exist in chain history", async () => {
     const stranger = await makeTestUser("user-stranger-9999");
     const foreign = await wrapDekFor({
       projectId: fixture.built.projectId,
@@ -553,7 +558,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("signer does not exist in the chain history");
   });
 
-  it("署名 bit 反転を拒否する", async () => {
+  it("refuses a signature bit-flip", async () => {
     const wrap = fixture.wraps[0];
     if (wrap === undefined) {
       throw new Error("fixture");
@@ -567,15 +572,16 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("registration signature does not verify");
   });
 
-  it("申告エポックの DEK が配布されていない変数はエラーになる", async () => {
+  it("a variable whose declared-epoch DEK is not distributed is an error", async () => {
     const env = await startEnv([chainHandler(), pullHandler({ deks: [fixture.wraps[1]] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("your wrap is missing");
   });
 
-  it("別変数の暗号文の差し替え(メタデータと AAD の不一致)は復号より前に拒否される", async () => {
-    // BETA の暗号文を ALPHA のスロットで配る。値署名の検証(§6.3-5 の座標整合)が
-    // 復号より前に申告 AAD と外側メタデータの不一致を検出する
+  it("ciphertext swapped in from another variable (metadata / AAD mismatch) is refused before decryption", async () => {
+    // Distribute BETA's ciphertext in ALPHA's slot. The value-signature
+    // verification (the §6.3-5 coordinate match) detects the declared-AAD /
+    // outer-metadata mismatch before decryption
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -588,9 +594,9 @@ describe("maruhi pull", () => {
     );
   });
 
-  it("チェーン現エポックを超えるラップ(ファントムエポック)を拒否する", async () => {
-    // 正規メンバー(owner)署名でも、チェーンに rotate_epoch がない epoch 3 の
-    // ラップは受理しない(§12-6 のクライアント側 — サーバー不信の本線)
+  it("refuses a wrap beyond the chain's current epoch (a phantom epoch)", async () => {
+    // Even signed by a legitimate member (owner), a wrap for epoch 3 — which
+    // has no rotate_epoch on the chain — is not accepted (the client side of §12-6 — the main line of server distrust)
     const phantom = await wrapDekFor({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -607,9 +613,10 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("beyond the chain's current epoch (2)");
   });
 
-  it("チェーン現エポックを超える申告エポックの変数を拒否する", async () => {
-    // チェーンに存在しないエポック(3)は、どのヘッドを宣言しても「ヘッド時点の
-    // 現エポック」と一致しない — 値署名の検証(§6.3-4)が復号より前に拒否する
+  it("refuses a variable whose declared epoch exceeds the chain's current epoch", async () => {
+    // An epoch that does not exist on the chain (3) never matches "the current
+    // epoch at the declared head", whichever head is declared — the value-
+    // signature verification (§6.3-4) refuses before decryption
     const phantomValue = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -631,10 +638,11 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
   });
 
-  it("チェーン上のコミットメントと一致しない DEK(毒ラップ = 偽 DEK 注入)を拒否する(§5.2)", async () => {
-    // 正規メンバー(owner)が §5.1 署名した実在エポック宛のラップでも、中身が
-    // チェーン掲載のコミットメントと一致しない DEK なら使用前に拒否する
-    // (悪意サーバー + チェーン履歴上の鍵保持者の共謀による偽 DEK 注入の遮断 —
+  it("refuses a DEK that does not match the on-chain commitment (a poisoned wrap = fake-DEK injection) (§5.2)", async () => {
+    // Even a wrap §5.1-signed by a legitimate member (owner) for a real epoch
+    // is refused before use when its contents are a DEK that does not match
+    // the on-chain commitment (blocking fake-DEK injection by collusion of a
+    // malicious server + a key holder in chain history —
     // CRYPTO_SPEC §14.2-1)
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
     const poison = await wrapDekFor({
@@ -650,9 +658,9 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("does not match the commitment on the chain");
   });
 
-  it("push 前(listMine 経由)でもコミットメント不一致の DEK を拒否する(§5.2 の機密性側)", async () => {
-    // §5.2 の (2): 偽 DEK での暗号化(攻撃者が読める push)の誘導を、DEK 使用前の
-    // 照合で遮断する。listMine の配布に毒ラップを混ぜる
+  it("refuses a commitment-mismatched DEK even pre-push (via listMine) (the §5.2 confidentiality side)", async () => {
+    // §5.2 (2): blocks the push toward encrypting with a fake DEK (a push the
+    // attacker can read) via a comparison before the DEK is used. Mix a poisoned wrap into the listMine distribution
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
     const poison = await wrapDekFor({
       projectId: fixture.built.projectId,
@@ -664,8 +672,8 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      // GAMMA は未存在 → create 経路の名前解決はメタデータのみ pull(§12-7)、
-      // DEK は listMine で 1 回だけ取得される(その配布に毒ラップを混ぜる)
+      // GAMMA does not exist → the create path's name resolution pulls only
+      // metadata (§12-7); the DEK is fetched exactly once via listMine (mix the poisoned wrap into that distribution)
       onRequest(
         "GET",
         `/projects/${fixture.built.projectId}/environments/${ENV_ID}/pull/metadata`,
@@ -699,9 +707,10 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("does not match the commitment on the chain");
   });
 
-  it("チェーンに create_environment がない環境(ファントム環境)の配布を拒否する", async () => {
-    // チェーンが知らない環境に既定エポックを与えない(§6.2): その値は値署名の
-    // 検証(§6.3-4 — 環境作成前ヘッドの拒否)が復号より前に落とす
+  it("refuses a distribution for an environment with no create_environment on the chain (a phantom environment)", async () => {
+    // Never grant the default epoch to an environment the chain does not know
+    // (§6.2): the value is rejected by the value-signature verification
+    // (§6.3-4 — refusal of a pre-creation head) before decryption
     const ghostValue = await encryptValueFor({
       dek: fixture.dek1,
       projectId: fixture.built.projectId,
@@ -737,8 +746,9 @@ describe("maruhi pull", () => {
         json: {
           environmentId: "ghost",
           currentEpoch: 1,
-          // メタステートメントは環境の存在を検査しない(§12-4 の非対称)ため
-          // ghost 環境のステートメント自体は検証を通り、値署名(§6.3-4)が落とす
+          // A meta statement never checks the environment's existence (the
+          // §12-4 asymmetry), so the ghost environment's statement itself
+          // verifies; the value signature (§6.3-4) rejects it
           statement: ghostEnvStatement,
           variables: [ghostEntry],
           deletedVariables: [],
@@ -750,7 +760,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("reason=environment-not-created-at-head");
   });
 
-  it("署名者 FP がチェーン履歴のどの鍵とも一致しないラップを拒否する", async () => {
+  it("refuses a wrap whose signer FP matches no key in chain history", async () => {
     const wrap = fixture.wraps[0];
     if (wrap === undefined) {
       throw new Error("fixture");
@@ -764,7 +774,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("signer does not exist in the chain history");
   });
 
-  it("同一エポックの DEK ラップの重複を拒否する", async () => {
+  it("refuses duplicate DEK wraps for the same epoch", async () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({ deks: [fixture.wraps[0], fixture.wraps[0], fixture.wraps[1]] }),
@@ -773,9 +783,9 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("Duplicate DEK wraps");
   });
 
-  it("別環境の座標で暗号化された暗号文の差し替えは復号より前に拒否される", async () => {
-    // environmentId だけ他所(other-env)の値を prod として配布 → 申告 AAD の
-    // 座標整合(§6.3-5)が復号より前に検出する
+  it("ciphertext swapped in that was encrypted under another environment's coordinates is refused before decryption", async () => {
+    // Distribute a value whose environmentId alone is elsewhere's (other-env)
+    // as if it were prod → the declared-AAD coordinate match (§6.3-5) detects it before decryption
     const crossEnv = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -799,10 +809,10 @@ describe("maruhi pull", () => {
     );
   });
 
-  it("削除→新鍵で再追加されたメンバーの過去署名は当時の鍵で検証できる(§5.1)", async () => {
-    // signer は在籍当時の鍵一式(keysetA)で署名し、その後削除 → 同一 user_id が
-    // 新鍵(keysetB)で再追加された。keyHistory は 2 束縛を持ち、FP 一致で
-    // 当時の鍵が選ばれる(チェーンは append-only — CRYPTO_SPEC §5.1)
+  it("a removed→re-added (new key) member's past signature verifies under the key of its time (§5.1)", async () => {
+    // signer signs with the keyset of its membership time (keysetA), is then
+    // removed → the same user_id is re-added with a new keyset (keysetB).
+    // keyHistory holds 2 bindings; the FP match selects the key of that time (the chain is append-only — CRYPTO_SPEC §5.1)
     const oldKeys = await makeTestUser("user-rotated-5555");
     const newKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
@@ -822,8 +832,9 @@ describe("maruhi pull", () => {
       recipient: owner,
       signer: oldKeys,
     });
-    // 値も当時の鍵で署名(§4.1): 宣言ヘッドは在籍区間内(seq 3 = 自身の
-    // create_environment エントリ)— 削除後の全チェーンでも検証できる(§6.3-1)
+    // The value is also signed with the key of that time (§4.1): the declared
+    // head is within the membership interval (seq 3 = its own create_environment
+    // entry) — it verifies against the whole post-removal chain too (§6.3-1)
     const value = await encryptValueFor({
       dek,
       projectId: built.projectId,
@@ -881,7 +892,7 @@ describe("maruhi pull", () => {
     expect(env.logs.join("\n")).toContain("HISTORIC");
   });
 
-  it("トークン・秘密鍵素材は出力に現れない", async () => {
+  it("tokens / secret-key material never appear in the output", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = [...env.logs, ...env.errors].join("\n");
@@ -890,7 +901,7 @@ describe("maruhi pull", () => {
     expect(output).not.toContain(fixture.owner.sigSkSeedHex);
   });
 
-  it("変数名の制御文字(ANSI・改行)は端末出力でサニタイズされる", async () => {
+  it("control characters in variable names (ANSI, newlines) are sanitized in terminal output", async () => {
     const evilName = "EVIL\u001b[2J\nNAME";
     const value = await encryptValueFor({
       dek: fixture.dek2,
@@ -911,12 +922,12 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = [...env.logs, ...env.errors].join("\n");
-    // 生の ESC がそのまま端末へ流れない(制御文字は置換される)
+    // Raw ESC never flows to the terminal (control characters are replaced)
     expect(output).not.toContain("\u001b");
     expect(output).toContain("EVIL\uFFFD[2J\uFFFDNAME");
   });
 
-  it("変数名の重複(サーバー応答の不整合)を拒否する", async () => {
+  it("refuses duplicate variable names (a server-response inconsistency)", async () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -930,7 +941,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("Multiple live statements with the same name");
   });
 
-  it("値署名の bit 反転を復号より前に拒否する(§4.1)", async () => {
+  it("refuses a value-signature bit-flip before decryption (§4.1)", async () => {
     const value = fixture.valueAlpha;
     const flipped = `${value.signatureHex.slice(0, -1)}${
       value.signatureHex.endsWith("0") ? "1" : "0"
@@ -945,9 +956,9 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("reason=signature-invalid");
   });
 
-  it("writer の虚偽申告(署名は別人のまま)を拒否する(§4.1 の帰属)", async () => {
-    // 署名は owner のまま、writer を別 user_id + 別 FP と申告 → チェーン履歴に
-    // その束縛が存在せず検証鍵を選択できない
+  it("refuses a false writer claim (the signature stays someone else's) (the §4.1 attribution)", async () => {
+    // The signature stays owner's while writer is claimed as another user_id +
+    // another FP → no such binding exists in chain history, so no verification key can be selected
     const stranger = await makeTestUser("user-stranger-9999");
     const lying = {
       ...fixture.valueAlpha,
@@ -962,9 +973,9 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("reason=writer-unknown");
   });
 
-  it("削除済み writer が削除後のヘッドを宣言した値を拒否する(§6.3-3)", async () => {
-    // oldKeys は seq 4 で削除。head 5(削除後)を宣言する値は、署名が有効でも
-    // 「宣言ヘッド時点の在籍」で拒否される(削除済みメンバーの鍵による新規注入)
+  it("refuses a value whose removed writer declared a post-removal head (§6.3-3)", async () => {
+    // oldKeys is removed at seq 4. A value declaring head 5 (post-removal) is
+    // refused on "membership at the declared head" even with a valid signature (fresh injection by a removed member's key)
     const oldKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -1029,7 +1040,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("reason=writer-not-member-at-head");
   });
 
-  it("同一応答内の variableId 重複を拒否する(equivocation の運搬形)", async () => {
+  it("refuses duplicate variableIds within one response (the carriage form of equivocation)", async () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -1043,10 +1054,10 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("Duplicate variable IDs within one response");
   });
 
-  it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する", async () => {
-    // 旧ビュー = genesis のみ(seq 1)。新メンバーを seq 2 で追加し、その新メンバーが
-    // seq 3 で環境作成 + 値を書く。旧ビューでは writer が未知(writer-unknown)だが
-    // 宣言 seq が自ヘッドより先なので即時拒否せず再同期して受理する
+  it("a value written by a member added in the unsynced gap is accepted via bounded resync", async () => {
+    // Old view = genesis only (seq 1). A new member is added at seq 2 and writes
+    // the environment + value at seq 3. Under the old view the writer is
+    // unknown (writer-unknown), but the declared seq is beyond our head, so it resyncs instead of refusing outright, and accepts
     const owner = fixture.owner;
     const newcomer = await makeTestUser("user-newcomer-2222");
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -1128,9 +1139,10 @@ describe("maruhi pull", () => {
     expect(env.logs.join("\n")).toContain("NEWCOMER");
   });
 
-  it("future head(自ビューより先の宣言 seq)は有界再同期の延長検査を経て受理する(§6.3-2b)", async () => {
-    // 旧ビュー = seq 2 まで(rotate 未観測)。値は seq 3(rotate)をヘッドに宣言。
-    // 初回検証は chain-head-future → 再同期で 3 エントリの延長が見え、再検証で受理
+  it("a future head (a declared seq beyond our view) is accepted via the bounded-resync extension check (§6.3-2b)", async () => {
+    // Old view = up to seq 2 (the rotate is unobserved). The value declares
+    // seq 3 (the rotate) as head. First verification is chain-head-future →
+    // the resync reveals a 3-entry extension; re-verification accepts
     const { built } = fixture;
     const shortChain = built.entries.slice(0, 2);
     let chainCalls = 0;
@@ -1155,20 +1167,20 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    // first sync + future head の再同期でチェーンは 2 回取得される
+    // The chain is fetched twice: the first sync + the future-head resync
     expect(chainCalls).toBe(2);
     expect(env.logs.join("\n")).toContain("ALPHA");
   });
 
-  it("future head の再同期が旧ビューの延長でなければ拒否する(別整合チェーンの差し替え)", async () => {
-    // 旧ビュー = 正規 3 エントリ。値は seq 4 を宣言 → 再同期で「同じ genesis から
-    // 分岐した別の 4 エントリチェーン」が返る = 旧 head(seq 3)のハッシュが不一致
+  it("refuses when the future-head resync is not an extension of the old view (a swapped different-history chain)", async () => {
+    // Old view = the honest 3 entries. The value declares seq 4 → the resync
+    // returns "a different 4-entry chain branched off the same genesis" = the old head's (seq 3) hash mismatches
     const { built, owner } = fixture;
     const forkDek = crypto.getRandomValues(new Uint8Array(32));
     const forked = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, fixture.dek1) },
-      // 正規チェーンの seq 3(rotate epoch 2)と異なるエントリ = 分岐
+      // An entry differing from the honest chain's seq 3 (rotate epoch 2) = a branch
       { actor: owner, operation: createEnvironmentOp("side", forkDek) },
       { actor: owner, operation: rotateEpochOp(ENV_ID, 2, fixture.dek2) },
     ]);
@@ -1209,7 +1221,7 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("not an extension of the verified view");
   });
 
-  it("seq が自ビュー以下でハッシュが一致しないヘッドの宣言は即時拒否する(§6.3-2a)", async () => {
+  it("a head declaration whose seq is at-or-below our view but whose hash mismatches is refused immediately (§6.3-2a)", async () => {
     const bogus = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -1230,8 +1242,8 @@ describe("maruhi pull", () => {
   });
 });
 
-describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
-  it("ステートメント署名の bit 反転を復号より前に拒否する", async () => {
+describe("distribution-time verification of meta statements (§4.2 / §6.3)", () => {
+  it("refuses a statement-signature bit-flip before decryption", async () => {
     const statement = fixture.entryAlpha.statement;
     const flipped = `${statement.signatureHex.slice(0, -1)}${
       statement.signatureHex.endsWith("0") ? "1" : "0"
@@ -1246,8 +1258,8 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.errors.join("\n")).toContain("meta statement failed");
   });
 
-  it("名前の付け替え(name だけ差し替えたステートメント)を拒否する(name-swap の運搬形)", async () => {
-    // 署名は正規のまま name フィールドだけ書き換える = byte-exact 署名で落ちる
+  it("refuses a name swap (a statement with only its name replaced) (the carriage form of a name-swap)", async () => {
+    // Keep the signature honest but rewrite only the name field = rejected by the byte-exact signature
     const swapped = { ...fixture.entryAlpha.statement, name: "DEBUG_ENDPOINT" };
     const env = await startEnv([
       chainHandler(),
@@ -1259,7 +1271,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.errors.join("\n")).toContain("reason=signature-invalid");
   });
 
-  it("別変数のステートメントの移植(variableId 不一致)を拒否する", async () => {
+  it("refuses a statement transplanted from another variable (variableId mismatch)", async () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -1272,7 +1284,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     );
   });
 
-  it("author の虚偽申告(署名は別人のまま)を拒否する(§4.2 の帰属)", async () => {
+  it("refuses a false author claim (the signature stays someone else's) (the §4.2 attribution)", async () => {
     const stranger = await makeTestUser("user-stranger-9999");
     const lying = {
       ...fixture.entryAlpha.statement,
@@ -1287,8 +1299,8 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.errors.join("\n")).toContain("reason=author-unknown");
   });
 
-  it("環境ステートメントの改竄・deleted 配布を拒否する", async () => {
-    // 署名 bit 反転
+  it("refuses tampered / deleted environment-statement distribution", async () => {
+    // Signature bit-flip
     const flipped = `${fixture.envStatement.signatureHex.slice(0, -1)}${
       fixture.envStatement.signatureHex.endsWith("0") ? "1" : "0"
     }`;
@@ -1299,7 +1311,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(await runCli(["pull"], tampered.layer)).toBe(1);
     expect(tampered.errors.join("\n")).toContain("meta statement failed");
 
-    // deleted ステートメントの配布(削除済み環境の pull はサーバーでは 404 のはず)
+    // Distributing a deleted statement (pulling a deleted environment should 404 on the server)
     const deletedStatement = await pullEnvStatement(fixture.built.projectId);
     const deleted = await startEnv([
       chainHandler(),
@@ -1322,8 +1334,8 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(deleted.errors.join("\n")).toContain("was served a deleted statement");
   });
 
-  it("削除済み変数の tombstone は検証され、active との併置(無断復活の運搬形)は拒否する", async () => {
-    // 正常系: deleted ステートメントのみの配布は受理され、値には現れない
+  it("a deleted variable's tombstone is verified; co-listing it with active (the carriage form of unauthorized resurrection) is refused", async () => {
+    // Happy path: a distribution of only a deleted statement is accepted and never surfaces in values
     const tombstone = await statementFor({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -1338,7 +1350,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(await runCli(["pull"], ok.layer)).toBe(0);
     expect(ok.logs.join("\n")).not.toContain("RETIRED_KEY");
 
-    // 同一 variableId が active と deleted の両方で配布される = 拒否
+    // The same variableId distributed as both active and deleted = refusal
     const revived = { ...tombstone, variableId: fixture.entryAlpha.variableId };
     const conflict = await startEnv([chainHandler(), pullHandler({ deletedVariables: [revived] })]);
     expect(await runCli(["pull"], conflict.layer)).toBe(1);
@@ -1346,7 +1358,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       "served as both live (active or declared) and deleted",
     );
 
-    // tombstone の署名改竄も拒否(配布し続ける以上、検証もし続ける)
+    // A tampered tombstone signature is refused too (as long as it is distributed, it is verified)
     const flipped = `${tombstone.signatureHex.slice(0, -1)}${
       tombstone.signatureHex.endsWith("0") ? "1" : "0"
     }`;
@@ -1358,7 +1370,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(tampered.errors.join("\n")).toContain("meta statement failed");
   });
 
-  it("非 NFC 名の配布は警告される(SHOULD — §12-1。処理は継続する)", async () => {
+  it("distributing a non-NFC name is warned (SHOULD — §12-1; processing continues)", async () => {
     const nfdName = "CAFE\u0301_URL";
     expect(nfdName.normalize("NFC")).not.toBe(nfdName);
     const value = await encryptValueFor({
@@ -1382,9 +1394,9 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.errors.join("\n")).toContain("not NFC-normalized");
   });
 
-  it("削除済み author のステートメントは在籍中ヘッドで検証できる(§6.3-1 の対)", async () => {
-    // author(oldKeys)は seq 4 で削除済み。宣言ヘッド seq 3(在籍中)の
-    // ステートメントは削除後の全チェーンでも当時の鍵で検証できる
+  it("a removed author's statement verifies under a during-membership head (the §6.3-1 counterpart)", async () => {
+    // author (oldKeys) is removed at seq 4. A statement declaring head seq 3
+    // (during membership) verifies under the key of that time against the whole post-removal chain
     const oldKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -1435,8 +1447,8 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       variables: [{ variableId: "vh", statement: historicStatement, value }],
       deletedVariables: [],
       deks: [wrap],
-      // マニフェスト発行者は現メンバー(owner)— author の削除はマニフェストの
-      // 発行可否と独立(§4.3 の issuer 在籍検査は issuer 自身に対してのみ)
+      // The manifest issuer is a current member (owner) — the author's removal
+      // is independent of whether the manifest may be issued (the §4.3 issuer-membership check applies only to the issuer itself)
       manifest: await manifestFor({
         projectId: built.projectId,
         environmentId: ENV_ID,
@@ -1474,7 +1486,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.logs.join("\n")).toContain("HISTORIC");
   });
 
-  it("削除済み author が削除後のヘッドを宣言したステートメントを拒否する", async () => {
+  it("refuses a statement whose removed author declared a post-removal head", async () => {
     const oldKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -1503,8 +1515,9 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       writer: owner,
       head: headOf(built, 3),
     });
-    // メタのforward injectionのうち「削除後ヘッドの宣言」は在籍検査で落ちる(§6.3-3。
-    // 在籍中ヘッドを宣言するforward injectionはエポックアンカーがなく v1 未検出 — §14.3-5)
+    // Of meta forward-injections, "declaring a post-removal head" is rejected
+    // by the membership check (§6.3-3. A forward injection declaring a
+    // during-membership head has no epoch anchor and is undetected in v1 — §14.3-5)
     const forgedStatement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -1555,9 +1568,9 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     expect(env.errors.join("\n")).toContain("reason=author-not-member-at-head");
   });
 
-  it("ステートメントの future head も有界再同期を経て受理する(値と同じ機構の流用 — §6.3-2b)", async () => {
-    // 旧ビュー = seq 2 まで。ステートメントは seq 3(rotate)をヘッドに宣言。
-    // 初回検証は chain-head-future → 再同期で延長が見え、再検証で受理
+  it("a statement's future head is accepted via bounded resync too (reusing the same mechanism as values — §6.3-2b)", async () => {
+    // Old view = up to seq 2. The statement declares seq 3 (the rotate) as
+    // head. First verification is chain-head-future → the resync reveals the extension; re-verification accepts
     const { built } = fixture;
     const futureStatement = await statementFor({
       projectId: built.projectId,
@@ -1596,7 +1609,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
 });
 
 describe("maruhi run", () => {
-  it("復号した値を子プロセス環境変数としてメモリ注入する", async () => {
+  it("injects decrypted values as child-process environment variables (memory injection)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "printenv", "ALPHA"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
@@ -1607,17 +1620,18 @@ describe("maruhi run", () => {
     });
   });
 
-  it("AI エージェント検出時でも run は許可される(線引き)", async () => {
+  it("run is allowed even when an AI agent is detected (the boundary)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
-    // 端末でなくても通す(CI / パイプ)。run は値を**見せる**経路ではなく、
-    // 子プロセスの環境変数へ注入する消費経路なので TTY 境界の対象外
+    // It passes without a terminal (CI / pipe). run is not a path that *shows*
+    // the value but a consumption path injecting it into the child's
+    // environment variables — outside the TTY boundary
     env.setTerminal({ stdin: false, stdout: false });
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
   });
 
-  it("値は子プロセス環境のみに現れ、端末出力には出ない", async () => {
+  it("the value appears only in the child-process environment, never in terminal output", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
     const output = [...env.logs, ...env.errors].join("\n");
@@ -1626,15 +1640,16 @@ describe("maruhi run", () => {
     expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe("alpha-value");
   });
 
-  it("子プロセスの終了コードを伝播する", async () => {
+  it("propagates the child process's exit code", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setRunnerExitCode(3);
     expect(await runCli(["run", "--", "false"], env.layer)).toBe(3);
   });
 
-  it("コマンド未指定は pull も復号もせずにエラーになる", async () => {
-    // 実行対象が無い実行は書き方の誤り(usage エラー)。ここを通すと配布の
-    // 取得と全変数の復号まで進んでから同じことを言う = 使われない平文を作る
+  it("no command specified errors without pulling or decrypting", async () => {
+    // A run with nothing to execute is a usage mistake (usage error). Letting
+    // it through would fetch the distribution and decrypt every variable
+    // before saying the same thing = producing plaintext that is never used
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run"], env.layer)).toBe(2);
@@ -1643,7 +1658,7 @@ describe("maruhi run", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("`--` だけで実行対象が無い場合も同じ", async () => {
+  it("the same when `--` is given but nothing follows it", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "--"], env.layer)).toBe(2);
@@ -1651,18 +1666,20 @@ describe("maruhi run", () => {
     expect(server?.requests).toHaveLength(0);
   });
 
-  it("`--` の後ろの空文字列の引数も落とさずに渡す", async () => {
-    // 空文字列の引数を truthy 判定で落とすと、子プロセスの引数が黙って 1 つ減り、
-    // 引数検査も誤爆する。`--` の後ろは argv のトークンをそのまま渡す
+  it("passes empty-string arguments after `--` through without dropping them", async () => {
+    // Dropping an empty-string argument on a truthiness check silently shrinks
+    // the child's argv by one and misfires the argument check too. Everything
+    // after `--` is passed through as an argv token verbatim
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "printenv", "", "ALPHA"], env.layer)).toBe(0);
     expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
   });
 
-  it("`--` の前の空の引数は、子プロセス側に空白の引数があっても拾う", async () => {
-    // `--` の前後は 1 つの配列に混ざる(上流のパーサ)ので、先頭の空文字列が
-    // 実行対象の位置に来る。`Argument.filter` が「実行対象が空」として落とす
-    // — 子プロセスの空白だけの引数(`" "`)は落とさない(2 つ目以降はそのまま渡す)
+  it("catches an empty argument before `--` even when the child side has a whitespace argument", async () => {
+    // The tokens before and after `--` merge into one array (the upstream
+    // parser), so a leading empty string lands in the executable position.
+    // `Argument.filter` rejects it as "nothing to execute" — a whitespace-only
+    // child argument (`" "`) is not rejected (the second onward pass through as-is)
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "", "--", "printenv", " "], env.layer)).toBe(2);
@@ -1671,34 +1688,35 @@ describe("maruhi run", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("`--` の**前**に置いた実行対象は子プロセスにならない(`--` の後ろだけを取る)", async () => {
-    // 上流のパーサは `--` の前後の位置引数を 1 つの配列にまとめるため、宣言だけ
-    // では `maruhi run stray -- printenv` が **stray の実行**に化ける。
-    // `Stdio.args` の `--` 位置と個数を突き合わせて落とす(ADR-0016 決定 8)
+  it("an executable placed **before** `--` never becomes the child process (only what follows `--` is taken)", async () => {
+    // Because the upstream parser merges the positional args around `--` into
+    // one array, `maruhi run stray -- printenv` would morph into **running
+    // stray** on declaration alone. It is rejected by matching `--`'s position
+    // and count in `Stdio.args` (ADR-0016 decision 8)
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "stray", "--", "printenv"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Unexpected extra arguments (1;");
     expect(errors).toContain("Write the command to run after `--`");
-    // 中身は出さない(位置引数には平文が書かれうる)
+    // Never print the contents (a positional arg could contain plaintext)
     expect(errors).not.toContain("stray");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server?.requests).toHaveLength(0);
   });
 
-  it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {
-    // maruhi の終端として扱う `--` は先頭の 1 つだけで、内側の `--` は子プロセスの
-    // 引数として残す(落とすと npm / cargo / docker 形式の引数転送が壊れる)
+  it("a nested `--` (`npm test -- --watch`) also passes through to the child verbatim", async () => {
+    // Only the first `--` is treated as maruhi's terminator; inner `--`s stay
+    // as child arguments (dropping them would break npm / cargo / docker-style argument forwarding)
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run", "--", "npm", "test", "--", "--watch"], env.layer)).toBe(0);
     expect(env.runnerCalls[0]?.command).toEqual(["npm", "test", "--", "--watch"]);
   });
 
-  it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
-    // 引数の書き方の検査(strict)が子プロセスの引数に及ぶと、`maruhi run -- <cmd>`
-    // は任意のコマンドを実行できなくなる。`--` 以降は maruhi のフラグ・位置引数
-    // として解釈されないため、検査の対象にならない
+  it("everything after `--` skips maruhi's argument checks and passes to the child verbatim", async () => {
+    // If the strict argument-usage check reached the child's arguments,
+    // `maruhi run -- <cmd>` could no longer run arbitrary commands. Everything
+    // past `--` is never interpreted as a maruhi flag or positional arg, so it is outside the check's scope
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(
       await runCli(["run", "--", "printenv", "--show=false", "--shwo", "extra"], env.layer),

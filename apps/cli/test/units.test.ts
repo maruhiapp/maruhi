@@ -1,6 +1,6 @@
-// 細部のユニットテスト: キーチェーンレコードの codec、run の注入検証、
-// stdin 正規化、MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
-// (CLI ログインのポーリング規則は login.test.ts — AUTH_SPEC §4)
+// Unit tests for details: keychain record codecs, run's injection checks,
+// stdin normalization, the MARUHI_TOKEN env-var path, server URL resolution.
+// (CLI login polling rules live in login.test.ts — AUTH_SPEC §4)
 
 import {
   DataLimitExceededError,
@@ -53,16 +53,16 @@ afterEach(async () => {
 });
 
 describe("total timestamp formatters", () => {
-  it("Date 範囲外・非有限でも RangeError にせず明示表示へ劣化する", () => {
+  it("degrades to an explicit display — no RangeError — for out-of-Date-range or non-finite input", () => {
     expect(formatUtcSeconds(0)).toBe("1970-01-01 00:00:00 UTC");
     expect(formatUtcMinutes(0)).toBe("1970-01-01 00:00 UTC");
     expect(formatUtcDate(0)).toBe("1970-01-01");
-    // Date 範囲内でも年 0〜9999 の外(toISOString が拡張年形式を返す領域)は
-    // 固定 slice が黙って別位置を切るため、明示劣化に倒す
+    // Even inside the Date range, years outside 0-9999 (where toISOString
+    // returns an expanded-year form) silently shift a fixed slice — degrade explicitly instead
     expect(formatUtcSeconds(Date.UTC(9999, 11, 31, 23, 59, 59))).toBe("9999-12-31 23:59:59 UTC");
     for (const bad of [
-      253_402_300_800_000, // 年 10000
-      -62_167_219_200_001, // 年 -1
+      253_402_300_800_000, // year 10000
+      -62_167_219_200_001, // year -1
       8_640_000_000_000_000,
       -1e300,
       Number.POSITIVE_INFINITY,
@@ -76,18 +76,18 @@ describe("total timestamp formatters", () => {
 });
 
 describe("keychain record codecs", () => {
-  it("トークン・master 鍵レコードの往復と破損検出", () => {
+  it("round-trips token / device key records and detects corruption", () => {
     const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1" };
     const parsed = parseStoredToken(JSON.stringify(token));
     if (parsed === null) throw new Error("expected a parsed token record");
-    // 生値の突合は必ず剥がして行う(包んだままの toEqual は中身を見ない)
+    // Always unwrap before comparing raw values (toEqual on wrapped values does not inspect the contents)
     expect(Redacted.value(parsed.token)).toBe("maruhi_pat_x");
     expect({ userId: parsed.userId, tokenId: parsed.tokenId }).toEqual({
       userId: "u1",
       tokenId: "t1",
     });
-    // 保存側との往復: serializeStoredToken → parseStoredToken で生値が戻る
-    // (直列化が伏字を書いていればここで落ちる)
+    // Round-trip against the storage side: serializeStoredToken → parseStoredToken
+    // returns the raw value (if serialization wrote a redaction this fails here)
     const reparsed = parseStoredToken(serializeStoredToken(parsed));
     if (reparsed === null) throw new Error("expected a reparsed token record");
     expect(Redacted.value(reparsed.token)).toBe("maruhi_pat_x");
@@ -96,7 +96,7 @@ describe("keychain record codecs", () => {
     expect(parseStoredMasterKey(JSON.stringify({ suite: "maruhi/v1" }))).toBeNull();
   });
 
-  it("キーチェーン名はサーバー origin(と userId)でスコープされる", () => {
+  it("keychain names are scoped by server origin (and userId)", () => {
     expect(tokenEntryName("https://a.example")).not.toBe(tokenEntryName("https://b.example"));
     expect(masterKeyEntryName("https://a.example", "u1")).not.toBe(
       masterKeyEntryName("https://a.example", "u2"),
@@ -105,7 +105,7 @@ describe("keychain record codecs", () => {
 });
 
 describe("resolveServerOrigin", () => {
-  it("フラグ → config の順に解決し、origin へ正規化する", async () => {
+  it("resolves flag → config in order and normalizes to an origin", async () => {
     const origin = await Effect.runPromise(
       resolveServerOrigin("https://maruhi.example/some/path", {}),
     );
@@ -116,14 +116,14 @@ describe("resolveServerOrigin", () => {
     expect(fromConfig).toBe("http://localhost:8787");
   });
 
-  it("未設定・不正 URL はエラー", async () => {
+  it("unset or malformed URLs are errors", async () => {
     const missing = await Effect.runPromiseExit(resolveServerOrigin(undefined, {}));
     expect(Exit.isFailure(missing)).toBe(true);
     const invalid = await Effect.runPromiseExit(resolveServerOrigin("not-a-url", {}));
     expect(Exit.isFailure(invalid)).toBe(true);
   });
 
-  it("http: は loopback のみ許可する(平文送信の遮断)", async () => {
+  it("allows http: only for loopback (blocks plaintext sends)", async () => {
     const loopback = await Effect.runPromise(resolveServerOrigin("http://localhost:8787", {}));
     expect(loopback).toBe("http://localhost:8787");
     const remote = await Effect.runPromiseExit(resolveServerOrigin("http://maruhi.example", {}));
@@ -146,13 +146,13 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   };
 }
 
-describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
+describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
   const ENTRY = masterKeyEntryName("https://maruhi.test", "user-1");
 
   /**
-   * 並行実行を模す Keychain: `onSet` で「自分の書き込みの前後に他プロセスが
-   * 書いた」状況を注入する。OS キーチェーンに条件付き書き込みが無い以上、
-   * 固定できるのは「後勝ちを検出して失敗すること」である
+   * A Keychain simulating concurrent runs: `onSet` injects "another process
+   * wrote before/after my write" situations. Since the OS keychain has no
+   * conditional write, all that can be pinned is "detect last-writer-wins and fail"
    */
   const fakeKeychain = (input: {
     readonly initial?: string;
@@ -177,7 +177,7 @@ describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
     };
   };
 
-  it("空のエントリへは保存できる", async () => {
+  it("can save into an empty entry", async () => {
     const keychain = fakeKeychain({});
     const exit = await Effect.runPromiseExit(
       storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
@@ -186,9 +186,9 @@ describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
     expect(keychain.store.get(ENTRY)).toBe("record-mine");
   });
 
-  it("判定と書き込みの間に現れたレコードは上書きしない", async () => {
-    // ensureNoStoredMasterKey の後で他プロセスが書いた形。素の set は
-    // 後勝ちで相手の鍵を黙って消していた
+  it("does not overwrite a record that appeared between the check and the write", async () => {
+    // The shape where another process wrote after ensureNoStoredMasterKey. A
+    // plain set would silently erase the other's key as last-writer-wins
     const keychain = fakeKeychain({ initial: "record-other" });
     const exit = await Effect.runPromiseExit(
       storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
@@ -198,9 +198,9 @@ describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
     expect(keychain.store.get(ENTRY)).toBe("record-other");
   });
 
-  it("書き込み直後に上書きされたら失敗する(リカバリー発行へ進ませない)", async () => {
-    // 自分の書き込みの直後に他プロセスが書いた形。読み戻しが自分のレコードで
-    // ないことを検出し、破棄された鍵のリカバリーブロブ登録を防ぐ
+  it("fails when overwritten right after writing (does not proceed to recovery issuance)", async () => {
+    // The shape where another process wrote right after my write. Detecting that
+    // the read-back is not my record prevents registering a recovery blob for the discarded key
     const keychain = fakeKeychain({
       onSet: (store) => store.set(ENTRY, "record-other"),
     });
@@ -213,14 +213,14 @@ describe("storeMasterKeyGuarded(上書き検出つき保存)", () => {
 });
 
 describe("runOp", () => {
-  /** 子プロセスを起動しないランナー(起動まで到達したら分かるようにする)。 */
+  /** A runner that never spawns the child process (so reaching spawn is observable). */
   const spawnedNothing = Layer.succeed(ProcessRunner, {
     run: () => Effect.succeed(0),
     exec: () => Effect.succeed({ exitCode: 0, output: "" }),
     runSession: () => Effect.succeed(0),
   });
 
-  it("実行対象が空白だけでも子プロセスを起動しない(入口の検査と同じ判定)", async () => {
+  it("does not spawn a child process even for a whitespace-only command (same check as the entry point)", async () => {
     const exit = await Effect.runPromiseExit(
       runOp({ command: ["  "], variables: [] }).pipe(Effect.provide(spawnedNothing)),
     );
@@ -228,21 +228,21 @@ describe("runOp", () => {
     expect(JSON.stringify(exit)).toContain("Specify the command to run after `--`");
   });
 
-  it("実行対象が空文字列だけなら子プロセスを起動しない", async () => {
-    // 入口の引数検査(cli.ts)と同じ判定をここでも持つ(直接呼び出し向けの
-    // 防衛線)。`[""]` は「1 要素あるが実行できない」形
+  it("does not spawn a child process for an empty-string command", async () => {
+    // The same check as the entry point's argument validation (cli.ts) lives here
+    // too (a defense line for direct callers). `[""]` is the "one element but not runnable" shape
     const exit = await Effect.runPromiseExit(
       runOp({ command: [""], variables: [] }).pipe(Effect.provide(spawnedNothing)),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("Specify the command to run after `--`");
-    // 書き方の誤りは入口と同じ usage エラー(終了コード 2)として立てる
+    // Usage mistakes surface as the same usage error as the entry point (exit code 2)
     expect(JSON.stringify(exit)).toContain('"usage":true');
   });
 });
 
-describe("showValues(復号後の防衛線)", () => {
-  /** 出力を捨てる CliIo(この検査は「表示に至らないこと」だけを見る)。 */
+describe("showValues (the post-decryption defense line)", () => {
+  /** A CliIo that discards output (this check only observes "display is never reached"). */
   const silentIo = Layer.succeed(CliIo, {
     log: () => Effect.void,
     logError: () => Effect.void,
@@ -275,10 +275,10 @@ describe("showValues(復号後の防衛線)", () => {
       ),
     );
 
-  it("入口の検査を通らない直接呼び出しでも、端末以外では表示しない", async () => {
-    // 本線は pull の入口(復号前)。ここは showValues を直接呼ぶ将来の経路が
-    // 入口検査を欠いても表示に至らせない防衛線で、**両層とも同じ判定**
-    // (一次 = TTY / 二次 = エージェント検出)であることを固定する
+  it("does not display off-terminal even for a direct call that bypasses the entry check", async () => {
+    // The main path is pull's entry point (before decryption). This defense line
+    // keeps a future direct showValues caller from reaching display without the
+    // entry check — pins **both layers using the same decision** (primary = TTY, secondary = agent detection)
     const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
     expect(Exit.isFailure(piped)).toBe(true);
     expect(JSON.stringify(piped)).toContain("stdout is not an interactive terminal");
@@ -288,7 +288,7 @@ describe("showValues(復号後の防衛線)", () => {
     expect(Exit.isFailure(headless)).toBe(true);
     expect(JSON.stringify(headless)).toContain("stdin is not an interactive terminal");
 
-    // CI・非対話シェルで一番多い形 = 両方が非端末(3 分岐すべてを固定)
+    // The most common shape in CI / non-interactive shells = both non-terminal (pins all 3 branches)
     const detached = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: false });
     expect(Exit.isFailure(detached)).toBe(true);
     expect(JSON.stringify(detached)).toContain(
@@ -305,14 +305,14 @@ describe("showValues(復号後の防衛線)", () => {
     expect(JSON.stringify(agent)).toContain("AI agent environment was detected");
   });
 
-  it("人間の対話端末では表示する(検査が空振りしていない陽性対照)", async () => {
+  it("displays on a human interactive terminal (positive control that the checks are not vacuous)", async () => {
     const allowed = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: true });
     expect(Exit.isSuccess(allowed)).toBe(true);
   });
 
-  it("値の改行で `NAME=value` の行を偽造できない", async () => {
-    // 値は共同編集者が書ける。改行をそのまま流すと、存在しない変数の行を
-    // 画面に作れる(pull --show を見て貼る利用者を騙せる)
+  it("cannot forge a `NAME=value` line via a newline in the value", async () => {
+    // Values can be written by co-editors. Streaming a newline verbatim would let
+    // them fabricate a line for a nonexistent variable on screen (deceiving a user who copies from pull --show)
     const logs: string[] = [];
     const capturingIo = Layer.succeed(CliIo, {
       log: (line: string) => {
@@ -343,14 +343,14 @@ describe("showValues(復号後の防衛線)", () => {
       ),
     );
     expect(Exit.isSuccess(exit)).toBe(true);
-    // 偽造された行は `NAME=value` の形では出ない(印が付く)
+    // A forged line never appears in `NAME=value` form (it carries a marker)
     expect(logs).not.toContain("DATABASE_URL=postgres://attacker/");
     expect(logs).toContain("| DATABASE_URL=postgres://attacker/");
   });
 
-  it("末尾の改行は行数を増やさず、あることだけを述べる", async () => {
-    // "a\nb\n" は 2 行 + 末尾改行。素朴な split は空の 3 行目を作り、
-    // 行数の申告も 1 つずれる(改行の有無は値の一部なので捨てもしない)
+  it("a trailing newline does not add to the line count; it is only reported as present", async () => {
+    // "a\nb\n" is 2 lines + a trailing newline. A naive split would fabricate an
+    // empty third line and shift the reported count by one (the trailing newline is part of the value, so it is not dropped either)
     const logs: string[] = [];
     const capturingIo = Layer.succeed(CliIo, {
       log: (line: string) => {
@@ -385,10 +385,10 @@ describe("showValues(復号後の防衛線)", () => {
     expect(logs).toEqual([logs[0], "| a", "| b"]);
   });
 
-  it("表示する値でも並び順を壊す文字は中和する(名前側と同じ扱い)", async () => {
-    // 値は共同編集者が書くので、悪意ある値で他メンバーの端末表示を偽装できる。
-    // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と
-    // 同じ一覧で中和されることを固定する — 片方だけ足された状態を作らない
+  it("neutralizes order-breaking characters even in displayed values (same treatment as the name side)", async () => {
+    // Values are written by co-editors, so a malicious value could fake another
+    // member's terminal display. Killing ANSI alone leaves bidi overrides and
+    // zero-width chars — pin that the same list as the name side (displayText) neutralizes them (never add coverage to only one side)
     const logs: string[] = [];
     const errors: string[] = [];
     const capturingIo = Layer.succeed(CliIo, {
@@ -423,29 +423,29 @@ describe("showValues(復号後の防衛線)", () => {
       ),
     );
     expect(Exit.isSuccess(exit)).toBe(true);
-    // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す。改行を含む値は
-    // 2 行目以降に印を付けて出す(値の側で `NAME=value` の行を偽造させない)
+    // ZWNJ (needed for some scripts) and newlines (legitimate values like PEMs)
+    // are kept. A value containing newlines is printed with a marker on the second line onward (so the value side cannot forge a `NAME=value` line)
     expect(logs).toEqual([
       'SECRET= (a 2-line value; the leading "| " on each line below is a marker added by maruhi)',
       "| a\uFFFDb\uFFFDc\uFFFDd\u200Ce",
       "| f",
     ]);
-    // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
-    // (値そのものは警告に載せない)
+    // Neutralization is not silent: name that the display differs from the actual
+    // value (without putting the value itself in the warning)
     expect(errors.join("\n")).toContain("SECRET");
     expect(errors.join("\n")).toContain("do not match the actual values");
   });
 });
 
 describe("buildInjectionEnv", () => {
-  it("名前・値を検証して env map を作る", async () => {
+  it("validates names and values to build the env map", async () => {
     const env = await Effect.runPromise(
       buildInjectionEnv([variable("A", "1"), variable("B_2", "two")]),
     );
     expect(env).toEqual({ A: "1", B_2: "two" });
   });
 
-  it("`=` を含む名前・NUL を含む値・不正 UTF-8 を拒否する(値はエラーに出さない)", async () => {
+  it("rejects names containing `=`, values containing NUL, and invalid UTF-8 (the error does not show the value)", async () => {
     const badName = await Effect.runPromiseExit(buildInjectionEnv([variable("A=B", "x")]));
     expect(Exit.isFailure(badName)).toBe(true);
     const nulName = await Effect.runPromiseExit(buildInjectionEnv([variable("A\0B", "x")]));
@@ -459,7 +459,7 @@ describe("buildInjectionEnv", () => {
     expect(Exit.isFailure(invalidUtf8)).toBe(true);
   });
 
-  it("bash 関数インポート名(BASH_FUNC_x%% / x())を拒否する(shellshock 系)", async () => {
+  it("rejects bash function-import names (BASH_FUNC_x%% / x()) (shellshock family)", async () => {
     for (const name of ["BASH_FUNC_ls%%", "evil()", "a b", "my-secret", "1abc"]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
@@ -467,7 +467,7 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("大文字小文字の違いだけの名前の衝突を拒否する(Windows の非区別対策)", async () => {
+  it("rejects name collisions that differ only in case (Windows case-insensitivity defense)", async () => {
     const exit = await Effect.runPromiseExit(
       buildInjectionEnv([variable("Secret_A", "x"), variable("SECRET_A", "y")]),
     );
@@ -475,8 +475,8 @@ describe("buildInjectionEnv", () => {
     expect(JSON.stringify(exit)).toContain("differing only by letter case");
   });
 
-  it("execution-controlの環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
-    // "Path" は Windows の大文字小文字非区別への防衛(大文字化して比較)
+  it("rejects injection into execution-control env var names (PATH / LD_* / NODE_OPTIONS etc.)", async () => {
+    // "Path" defends against Windows case-insensitivity (compared after uppercasing)
     for (const name of [
       "PATH",
       "Path",
@@ -493,11 +493,11 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("POSIX / Windows の実行制御名への注入も拒否する", async () => {
+  it("also rejects injection into POSIX / Windows execution-control names", async () => {
     for (const name of [
-      // POSIX: rc / 設定ディレクトリの差し替えとプロンプト評価
+      // POSIX: rc / config-directory substitution and prompt evaluation
       "HOME",
-      "home", // 大文字化比較(Windows の非区別)への防衛
+      "home", // defense against case-folded comparison (Windows case-insensitivity)
       "USERPROFILE",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
@@ -508,7 +508,7 @@ describe("buildInjectionEnv", () => {
       "BASHOPTS",
       "NODE_REPL_EXTERNAL_MODULE",
       "PYTHONINSPECT",
-      // Windows: 実行解決の差し替え
+      // Windows: substitution of execution resolution
       "PATHEXT",
       "COMSPEC",
       "SYSTEMROOT",
@@ -521,9 +521,9 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("「別プログラムを起動する」名前への注入も拒否する", async () => {
+  it("also rejects injection into names that launch other programs", async () => {
     for (const name of [
-      // 子プロセスが起動する先(pager / editor / browser / askpass)
+      // Programs a child process would launch (pager / editor / browser / askpass)
       "LESSOPEN",
       "LESSCLOSE",
       "PAGER",
@@ -533,12 +533,12 @@ describe("buildInjectionEnv", () => {
       "BROWSER",
       "SSH_ASKPASS",
       "SUDO_ASKPASS",
-      // インタプリタの初期化フックとモジュール探索
+      // Interpreter init hooks and module search paths
       "LUA_INIT",
       "LUA_PATH",
       "LUA_CPATH",
-      "PSModulePath", // 大文字化比較(Windows の非区別)への防衛
-      // ローダ・補助データの探索先
+      "PSModulePath", // defense against case-folded comparison (Windows case-insensitivity)
+      // Loader / auxiliary-data search locations
       "GLIBC_TUNABLES",
       "MALLOC_CONF",
       "LOCPATH",
@@ -555,7 +555,7 @@ describe("buildInjectionEnv", () => {
       "AWS_CA_BUNDLE",
       "PYTHONUSERBASE",
       "PYTHONWARNINGS",
-      // Windows home/config・shell 探索・npm 設定
+      // Windows home/config, shell lookup, npm settings
       "HOMEDRIVE",
       "HOMEPATH",
       "APPDATA",
@@ -595,13 +595,13 @@ describe("buildInjectionEnv", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
-    // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
+    // Pins the ruling (M2) that no blanket prefix rejection was adopted: legitimate variables like NODE_ENV pass
     const allowed = await Effect.runPromise(
       buildInjectionEnv([
         variable("NODE_ENV", "production"),
         variable("BUN_INSTALL", "x"),
-        // npm registry auth は maruhi run の正当な secret 注入用途。
-        // NPM_CONFIG_ 全体を拒否せず、上の実行制御キーだけを個別拒否する
+        // npm registry auth is a legitimate secret-injection use of maruhi run.
+        // NPM_CONFIG_ as a whole is not rejected — only the execution-control keys above are denied individually
         variable("NPM_CONFIG__AUTH", "credential"),
         variable("NPM_CONFIG__AUTHTOKEN", "credential"),
         variable("NPM_CONFIG_REGISTRY", "https://registry.example"),
@@ -616,22 +616,22 @@ describe("buildInjectionEnv", () => {
     ]);
   });
 
-  it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する", async () => {
-    // resolveSession は MARUHI_TOKEN をキーチェーンより先に見るため、この名前の
-    // 変数を作れる共同メンバーは、被害者の `maruhi run -- make deploy` の中の
-    // 入れ子 `maruhi` を自分のトークンで認証させられる。予約名前空間なので
-    // 個別名ではなく prefix ごと塞ぐ(将来 MARUHI_* を増やしても穴が再発しない)
+  it("rejects injection into maruhi's own namespace (MARUHI_*)", async () => {
+    // resolveSession checks MARUHI_TOKEN before the keychain, so a co-member who
+    // can create a variable of this name could authenticate a nested `maruhi`
+    // inside the victim's `maruhi run -- make deploy` as themselves. It is a
+    // reserved namespace, so the whole prefix is blocked rather than individual names (adding more MARUHI_* later cannot reopen the hole)
     for (const name of [
       "MARUHI_TOKEN",
       "MARUHI_TOKEN_ORIGIN",
-      "maruhi_token", // 大文字化比較(Windows の非区別)への防衛
-      "MARUHI_FUTURE_KNOB", // 未知の MARUHI_* も prefix で覆う
+      "maruhi_token", // defense against case-folded comparison (Windows case-insensitivity)
+      "MARUHI_FUTURE_KNOB", // unknown future MARUHI_* are covered by the prefix
     ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
-    // 予約名前空間の外は通る(MARUHI で始まるだけの別名を巻き込まない)
+    // Names outside the reserved namespace pass (names merely starting with MARUHI are not caught)
     const allowed = await Effect.runPromise(
       buildInjectionEnv([variable("MARUHISECRET", "x"), variable("APP_MARUHI_TOKEN", "y")]),
     );
@@ -640,7 +640,7 @@ describe("buildInjectionEnv", () => {
 });
 
 describe("buildChildEnvironment", () => {
-  it("親・追加envのMARUHI_*だけをcase-insensitiveに除外する", () => {
+  it("excludes MARUHI_* from the parent / extra env, case-insensitively", () => {
     expect(
       buildChildEnvironment(
         {
@@ -666,33 +666,33 @@ describe("buildChildEnvironment", () => {
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
-describe("decodeValueText(値デコード方針の一本化)", () => {
-  it("有効な UTF-8(改行・タブ込み)はそのまま返し、不正 UTF-8 は null を返す", () => {
+describe("decodeValueText (unified value-decoding policy)", () => {
+  it("returns valid UTF-8 as-is (including newlines / tabs) and null for invalid UTF-8", () => {
     expect(decodeValueText(new TextEncoder().encode("multi\nline\tvalue"))).toBe(
       "multi\nline\tvalue",
     );
-    // --show / run 共通の fatal 方針: 置換文字で偽装せず、呼び出し側が明示エラーにする
+    // The fatal policy shared by --show / run: no substitution-character camouflage — the caller raises an explicit error
     expect(decodeValueText(new Uint8Array([0xff, 0xfe]))).toBeNull();
   });
 });
 
-describe("toCliError(サーバー由来文字列の端末中和)", () => {
-  it("401 は期限切れ・失効の両方の可能性と再ログインを案内する(AUTH_SPEC §6)", () => {
-    // 期限切れは失効と同じ 401 に畳まれる(区別はワイヤに出ない)ため、
-    // 案内は両方の可能性を言い、次の一手(再ログイン)を示す
+describe("toCliError (terminal neutralization of server-sourced strings)", () => {
+  it("guides a 401 to both possibilities — expired and revoked — and to re-login (AUTH_SPEC §6)", () => {
+    // Expiry folds into the same 401 as revocation (the distinction never reaches
+    // the wire), so the guidance names both possibilities and the next step (re-login)
     const rendered = toCliError(new UnauthorizedError());
     expect(rendered.message).toContain("expired or revoked");
     expect(rendered.message).toContain("maruhi login");
   });
 
-  it("テナント quota の型付きエラーは不透明な未知へ落ちず、次の一手を案内する(AUTH_SPEC §11-3 / §12-8)", () => {
-    // 429 ProjectLimit(org のプロジェクト数上限 — 新規 init のみ)
+  it("typed tenant-quota errors do not fall into opaque unknown; they guide the next step (AUTH_SPEC §11-3 / §12-8)", () => {
+    // 429 ProjectLimit (org project-count cap — only on new init)
     const projectLimit = toCliError(new ProjectLimitError({ limit: 100 }));
     expect(projectLimit.message).not.toContain("Unexpected error");
     expect(projectLimit.message).toContain("maximum number of projects (100");
     expect(projectLimit.message).toContain("existing projects are unaffected");
-    // 422 DataLimitExceeded project-storage-bytes(DO ストレージ総量ガード):
-    // 削除・読み取りが拒否下でも通ることを案内する(退出経路・解放手段)
+    // 422 DataLimitExceeded project-storage-bytes (DO total-storage guard):
+    // the guidance says delete / read still work under the refusal (exit path / freeing means)
     const storage = toCliError(
       new DataLimitExceededError({ resource: "project-storage-bytes", limit: 9_000_000_000 }),
     );
@@ -700,13 +700,13 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(storage.message).toContain("9000000000 bytes");
     expect(storage.message).toContain("reading values");
     expect(storage.message).toContain("deleting");
-    // 他の §12-8 数量上限は従来の一般形のまま
+    // Other §12-8 quantity caps keep the conventional general form
     const generic = toCliError(new DataLimitExceededError({ resource: "variables", limit: 1000 }));
     expect(generic.message).toBe("Exceeds a server acceptance limit (variables limit 1000)");
   });
 
-  it("エラー Schema の自由文字列 ID を中和する", () => {
-    // ワイヤ上無制約の Schema.String 列(悪意あるサーバーが ANSI/改行を埋められる)
+  it("neutralizes the error Schema's free-form string IDs", () => {
+    // Schema.String fields unconstrained on the wire (a malicious server could embed ANSI / newlines)
     const notFound = toCliError(
       new ProjectNotFoundError({ projectId: "x\u001b[31mred\u001b[0m\nfake" }),
     );
@@ -715,19 +715,19 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(notFound.message).toContain("x\uFFFD[31mred\uFFFD[0m\uFFFDfake");
   });
 
-  it("宣言を尽くした先の未知エラーは message を出さず、型の名前だけを添える", () => {
-    // 型付きクライアントの失敗 3 種(宣言済みエラー / HttpClientError /
-    // SchemaError)はすべて写像済みなので、ここへ来るのは本当の未知だけ。
-    // message は応答本文の断片を含みうるため、中和ではなく**出さない**
+  it("an unknown error past all declared cases prints no message — only the type name is attached", () => {
+    // All three typed-client failure kinds (declared errors / HttpClientError /
+    // SchemaError) are already mapped, so only a true unknown reaches here.
+    // message may contain fragments of the response body, so it is **not printed** rather than neutralized
     const unknown = toCliError(new Error("boom sk-live-SUPER-SECRET \u001b]0;pwned\u0007"));
     expect(unknown.message).toBe("Unexpected error (Error)");
     expect(unknown.message).not.toContain("sk-live-SUPER-SECRET");
     expect(unknown.message).not.toContain("\u001b");
   });
 
-  it("接続失敗は専用の写像が受け持つ(未知へ落ちない)", () => {
-    // 「未知 fallback を絞ると接続失敗の手掛かりが消える」ことにならない根拠:
-    // 転送レベルの失敗は HttpClientError の写像が名前付きで説明する
+  it("connection failure is handled by its own mapping (never falls into unknown)", () => {
+    // Why narrowing the unknown fallback does not erase the connection-failure
+    // trail: transport-level failures are explained by name in the HttpClientError mapping
     const transport = new HttpClientError.HttpClientError({
       reason: new HttpClientError.TransportError({
         request: HttpClientRequest.get("https://maruhi.example/chain"),
@@ -737,13 +737,13 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     const rendered = toCliError(transport);
     expect(rendered.message).toContain("Failed to connect to the server");
     expect(rendered.message).not.toContain("Unexpected error");
-    // 下位の cause の文面(ホスト・ポート等)は素通ししない
+    // The lower cause's text (host, port, etc.) is not passed through
     expect(rendered.message).not.toContain("ECONNREFUSED");
   });
 
-  it("応答のスキーマ不一致は「場所と期待」だけを出す(値は出さない)", async () => {
-    // 上流(effect rc.109)の整形は期待した型と場所しか出さない。応答本文には
-    // 変数名も暗号文も載るので、**値を含む整形に変わったらここが落ちる**
+  it("a response schema mismatch shows only 'location and expectation' (never values)", async () => {
+    // Upstream (effect rc.109) formatting shows only the expected type and
+    // location. The response body can carry variable names and ciphertext, so **if the formatting ever includes values this test fails**
     const Payload = Schema.Struct({ version: Schema.Number });
     const exit = await Effect.runPromiseExit(
       Schema.decodeUnknownEffect(Payload)({ version: "sk-live-SUPER-SECRET" }),
@@ -755,16 +755,16 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(rendered.message).toContain("Expected number");
     expect(rendered.message).toContain('["version"]');
     expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");
-    // 同じチャネルにリクエストの encode 失敗も流れてくる(向きは型から分からない)
-    // ので、誘導先は両向きを並べる。サーバー原因への一方的な誘導へ戻ったら落ちる
+    // Request-encode failures flow through the same channel (the direction is not
+    // visible from the type), so the guidance lists both directions. If it regresses to one-sided "server's fault" guidance this fails
     expect(rendered.message).toContain("values you provided");
-    // 改行は 1 行へ畳んでから中和する(置換文字で読めなくならない)
+    // Newlines are folded into one line before neutralizing (so replacement chars do not make it unreadable)
     expect(rendered.message).not.toContain("\uFFFD");
   });
 });
 
 describe("normalizeStdinValue", () => {
-  it("末尾の改行 1 つ(LF / CRLF)のみ除去する", () => {
+  it("removes only a single trailing newline (LF / CRLF)", () => {
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v\n")))).toBe("v");
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v\r\n")))).toBe("v");
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v\n\n")))).toBe("v\n");
@@ -773,25 +773,25 @@ describe("normalizeStdinValue", () => {
 });
 
 describe("cryptoBackendUsable", () => {
-  it("動く環境では true(破損の診断を環境のせいにしない)", async () => {
-    // この判定は「鍵が読めない」原因が鍵か環境かを分ける。動く環境で false を
-    // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・do not delete
-    // ください」に化け、唯一の復旧手順(手で消す)へ辿り着けなくなる
+  it("is true in a working environment (never blames corruption on the environment)", async () => {
+    // This check splits "the key is unreadable" into key vs. environment causes.
+    // Returning false on a working environment turns even a genuinely broken
+    // record's diagnosis into "environment unsupported — do not delete", making the only recovery step (deleting by hand) unreachable
     expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
   });
 
-  it("環境起因の共通文言は「何が無事か」を含まない(経路ごとに違うため)", () => {
-    // 保存済みの鍵を指せるのはキーチェーン経路だけ。recover / generate は
-    // まだ何も保存していないので、共通部分がここまで書くと無い物を指す
+  it("environment-caused shared wording does not contain 'what is intact' (it differs per path)", () => {
+    // Only the keychain path can point to a stored key. recover / generate have
+    // not stored anything yet, so shared wording written that far would point at something that does not exist
     expect(unsupportedCryptoCause).not.toContain("do not delete");
     expect(unsupportedCryptoCause).not.toContain("stored");
-    // キーチェーン経路の文言だけが「do not delete it」を持つ
+    // Only the keychain path's wording carries "do not delete it"
     expect(unsupportedCryptoMessage).toContain("do not delete it");
   });
 });
 
-describe("MARUHI_TOKEN 環境変数経路", () => {
-  it("キーチェーンなしでも /auth/me で userId を解決して動く", async () => {
+describe("the MARUHI_TOKEN env-var path", () => {
+  it("works without a keychain by resolving userId via /auth/me", async () => {
     const user = await makeTestUser("user-env-0001");
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", (request) => {
@@ -804,13 +804,13 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
-    // key show は session 解決 + master 鍵を要求する。master 鍵がないため
-    // エラーになるが、セッション解決(/auth/me)自体は通ることを検証する
+    // key show requires session resolution + the device key. It errors for lack of
+    // a device key, but verifies that session resolution (/auth/me) itself goes through
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("No device key on this machine");
   });
 
-  it("期限が 14 日以内なら stderr へ事前警告する(裁定 CL — 環境変数経路は /auth/me の自己開示から)", async () => {
+  it("pre-warns on stderr when expiry is within 14 days (ruling CL — the env-var path learns it from /auth/me self-disclosure)", async () => {
     const user = await makeTestUser("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
@@ -831,7 +831,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(errors).toContain("--show-token");
   });
 
-  it("期限が窓の外なら警告しない(環境変数経路)", async () => {
+  it("does not warn when expiry is outside the window (env-var path)", async () => {
     const user = await makeTestUser("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
@@ -849,7 +849,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
-  it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は従来どおり", async () => {
+  it("the keychain path warns without network from the record's stored expiry; old records (no expiry) behave as before", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([]);
     servers.push(server);
@@ -869,10 +869,10 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const nearErrors = nearEnv.errors.join("\n");
     expect(nearErrors).toContain("Warning: the API token expires on");
     expect(nearErrors).toContain("Sign in again with `maruhi login`");
-    // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
+    // The warning needs no communication to decide (not a single request goes out)
     expect(server.requests).toHaveLength(0);
 
-    // W3a 前のログインが書いた旧レコード(expiresAtMs なし)は警告なしで動く
+    // Old records written by pre-W3a logins (no expiresAtMs) work without a warning
     const legacyEnv = await makeTestEnv();
     await seedConfig(legacyEnv, { server: server.origin });
     legacyEnv.keychain.set(
@@ -883,7 +883,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
-  it("環境変数がキーチェーンより優先される", async () => {
+  it("the env var takes precedence over the keychain", async () => {
     const user = await makeTestUser("user-env-0001");
     let presented = "";
     const server = await MockServer.start([
@@ -905,7 +905,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(presented).toBe("Bearer maruhi_pat_env");
   });
 
-  it("/auth/me が 401 なら案内メッセージで失敗する", async () => {
+  it("fails with a guidance message when /auth/me returns 401", async () => {
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => ({ status: 401, json: { _tag: "Unauthorized" } })),
     ]);
@@ -917,14 +917,14 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Authentication with MARUHI_TOKEN failed");
-    // 無人環境のこの 401 の最有力原因は期限切れ(W3a 裁定 CJ)。
-    // 直し先は env 差し替えであることまで案内する(`maruhi login` 単独の
-    // キーチェーン向け案内へ退行させない)
+    // The most likely cause of this 401 in an unattended environment is expiry
+    // (W3a ruling CJ). The guidance goes as far as naming the fix — swapping the
+    // env var (never regress to the `maruhi login`-alone keychain guidance)
     expect(errors).toContain("expired or revoked");
     expect(errors).toContain("update the MARUHI_TOKEN value");
   });
 
-  it("空白だけの MARUHI_TOKEN は未設定として扱う(空トークンで往復させない)", async () => {
+  it("treats a whitespace-only MARUHI_TOKEN as unset (no round trip with an empty token)", async () => {
     let hit = false;
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => {
@@ -935,9 +935,9 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     servers.push(server);
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
-    // 判定を trim 後の値で行わないと、`Bearer `(空)を送ってから 401 になり、
-    // 「期限切れ・失効かもしれません」という別原因の案内(session.ts の
-    // 認証失敗文言)へ落ちる
+    // If the decision were not made on the trimmed value, we would send
+    // `Bearer ` (empty) and land on a 401 with guidance for a different cause —
+    // "may be expired or revoked" (session.ts's auth-failure wording)
     env.setEnvVar("MARUHI_TOKEN", " \n");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
@@ -945,7 +945,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).toContain("Not logged in");
   });
 
-  it("MARUHI_TOKEN_ORIGIN 未指定なら MARUHI_TOKEN を使わず案内する", async () => {
+  it("does not use MARUHI_TOKEN and guides when MARUHI_TOKEN_ORIGIN is unset", async () => {
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => ({ status: 200, json: { userId: "u", orgs: [] } })),
     ]);
@@ -959,7 +959,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     );
   });
 
-  it("MARUHI_TOKEN_ORIGIN の形式が不正なら実行の失敗(1)として直し先を示す", async () => {
+  it("a malformed MARUHI_TOKEN_ORIGIN is an execution failure (1) that shows where to fix", async () => {
     let hit = false;
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => {
@@ -971,18 +971,18 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    // 環境変数の値はコマンドラインの打ち間違いではないので usage(2)にせず、
-    // 直す先(環境変数)を言って 1 で終わる
+    // An env-var value is not a command-line typo, so it is not usage (2) —
+    // name the fix target (the env var) and exit with 1
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "notaurl");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const text = env.errors.join("\n");
     expect(text).toContain("fix the MARUHI_TOKEN_ORIGIN env var");
-    // 値そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    // The value itself is never echoed (a URL with embedded credentials is possible)
     expect(text).not.toContain("notaurl");
     expect(hit).toBe(false);
   });
 
-  it("MARUHI_TOKEN_ORIGIN が接続先と一致しなければトークンを送らない", async () => {
+  it("does not send the token when MARUHI_TOKEN_ORIGIN does not match the connection target", async () => {
     let hit = false;
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => {
@@ -997,17 +997,17 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not match the connection target");
-    // トークンは接続先へ送信されない
+    // The token is never sent to the connection target
     expect(hit).toBe(false);
   });
 });
 
-describe("入力検証と defect の扱い", () => {
-  it("不正なプロジェクト ID / 環境 ID は早期にエラーになる", async () => {
+describe("input validation and defect handling", () => {
+  it("invalid project / environment IDs error early", async () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: "https://maruhi.example", defaultEnvironment: "dev" });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    // 書き方の誤りは usage エラー(2)。指定値そのものは返さない
+    // A usage mistake is a usage error (2). The supplied value itself is not echoed
     expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Invalid project ID");
     expect(env.errors.join("\n")).not.toContain("not-hex");
@@ -1017,30 +1017,30 @@ describe("入力検証と defect の扱い", () => {
       defaultProject: "ab".repeat(32),
     });
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    // 環境 ID の形式検証はネットワークアクセス(セッション解決)より先に走る
+    // The environment ID format check runs before any network access (session resolution)
     expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
     expect(env2.errors.join("\n")).toContain("Invalid environment ID");
     expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 
-  it("config 由来の不正な ID は打ち間違いではなく、直す先を示して 1 で落ちる", async () => {
+  it("a config-sourced invalid ID is not a typo — it names the fix target and exits 1", async () => {
     const env = await makeTestEnv();
-    // コマンドラインには何も書いていないので、2(書き方の誤り)で報告すると
-    // 「直す場所が無いのに usage エラー」になる
+    // Nothing was typed on the command line, so reporting it as 2 (usage error)
+    // would be "a usage error with nothing to fix"
     await seedConfig(env, { server: "https://maruhi.example", defaultProject: "not-hex" });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     expect(await runCli(["pull", "--env", "dev"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("fix defaultProject in your config");
   });
 
-  it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {
+  it("a defect (bug-sourced throw) is reported as 1, not a usage error (2)", async () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    // 型の名前だけを添える形を**厳密に**固定する(部分一致だけだと
-    // `internal error: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
+    // Pin the "only the type name is attached" shape **strictly** (a partial
+    // match would still pass after regressing to `internal error: <upstream message>` — the rule would lose its teeth)
     expect(env.errors.join("\n")).toContain("maruhi: internal error (Error)");
-    // defect の message は出さない — 打たれた値を埋め込んだ文面でも到達しうる
+    // A defect's message is not shown — even wording embedding the typed value could reach here
     expect(env.errors.join("\n")).not.toContain("config load defect");
   });
 });

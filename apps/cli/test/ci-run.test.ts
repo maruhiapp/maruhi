@@ -1,11 +1,11 @@
-// `maruhi ci run`(CRYPTO_SPEC §9.1 / AUTH_SPEC §14)のテスト。
+// Tests for `maruhi ci run` (CRYPTO_SPEC §9.1 / AUTH_SPEC §14).
 //
-// lease エンドポイントは MockServer 偽装(実 crypto フィクスチャで応答を組み、
-// リクエストの ephemeralPubHex へ動的に wrapLeaseDek する)。OIDC 発行は
-// MockServer の別パス(署名はダミー — クライアントは検証しない)、env 読みは
-// テスト層の setEnvVar。サーバー側の判定は apps/server/test/lease.test.ts が
-// 固定済みで、ここはクライアント挙動(§9.1 の検証義務・再試行規律・
-// エラー区分の案内)に集中する。
+// The lease endpoint is impersonated by MockServer (responses are built from real
+// crypto fixtures, wrapLeaseDek'ing dynamically to the request's ephemeralPubHex).
+// OIDC issuance is a separate MockServer path (signature is a dummy — the client
+// does not verify), env reads are the test layer's setEnvVar. Server-side
+// decisions are already pinned by apps/server/test/lease.test.ts; this file
+// focuses on client behavior (§9.1 verification duties, retry discipline, error-category guidance).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -72,9 +72,9 @@ beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
-  // チェーンには実 DEK のコミットメントと grant_server(リースポリシー付き)が
-  // 載る — 本番のリース対象プロジェクトと同じ形(クライアントの §9.1 検証は
-  // grant の有無を検査しないが、忠実なフィクスチャにしておく)
+  // The chain carries a commitment to the real DEK and a grant_server (with the
+  // lease policy) — the same shape as a production leased project (the client's
+  // §9.1 verification does not inspect grant presence, but keep the fixture faithful)
   const built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -88,8 +88,8 @@ beforeAll(async () => {
     },
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  // 最新バージョンのエポックは変数ごとに異なる(§12-7 と同じ形): ALPHA は
-  // epoch 2、BETA はローテーション後も再暗号化されていない epoch 1 のまま
+  // The latest version's epoch differs per variable (same shape as §12-7):
+  // ALPHA is epoch 2, BETA stays at epoch 1 — never re-encrypted after rotation
   const valueAlpha = await encryptValueFor({
     dek: dek2,
     ...common,
@@ -151,19 +151,19 @@ afterEach(async () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* フィクスチャ: OIDC 発行と lease 応答                                        */
+/* Fixtures: OIDC issuance and lease responses                                 */
 /* -------------------------------------------------------------------------- */
 
 function base64UrlJson(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-/** ダミー署名の compact JWS(クライアントは署名を検証しない — §14-1)。 */
+/** Compact JWS with a dummy signature (the client does not verify it — §14-1). */
 function fakeJwt(payload: Record<string, unknown>): string {
   return `${base64UrlJson({ alg: "RS256", kid: "k1" })}.${base64UrlJson(payload)}.c2lnbmF0dXJl`;
 }
 
-/** サーバーと同じ経路: 提示トークンの payload から claims を読む。 */
+/** Same path as the server: read the claims from the presented token's payload. */
 function jwtPayload(token: string): Record<string, unknown> {
   const segment = token.split(".")[1];
   if (segment === undefined) {
@@ -173,13 +173,13 @@ function jwtPayload(token: string): Record<string, unknown> {
 }
 
 interface OidcIssuance {
-  /** 発行要求で指定された audience(検査用)。 */
+  /** The audience specified in the issuance request (for inspection). */
   readonly audiences: string[];
-  /** 発行済みトークン数(jti に埋める — リプレイ検査でトークンを区別する)。 */
+  /** Number of tokens issued so far (embedded into jti — distinguishes tokens in the replay check). */
   issued: number;
 }
 
-/** GitHub Actions の OIDC 発行エンドポイントの偽装(`{ value }` を返す)。 */
+/** Impersonation of the GitHub Actions OIDC issuance endpoint (returns `{ value }`). */
 function oidcHandler(state: OidcIssuance): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
@@ -191,10 +191,10 @@ function oidcHandler(state: OidcIssuance): MockHandler {
     const audience = request.query["audience"] ?? "";
     state.audiences.push(audience);
     state.issued += 1;
-    // sub を発行ごとに変える: claims_digest は iss / sub / aud のみを束縛する
-    // ため、jti だけの違いでは「再試行後に古いトークンの claims を使い回す」
-    // 実装がすり抜ける(digest が同じになる)。sub が変われば、正しい実装
-    // (2 本目のトークンの claims で digest を計算)だけが開封に成功する
+    // Vary sub per issuance: claims_digest binds only iss / sub / aud, so an
+    // implementation that "reuses the old token's claims after retry" slips
+    // through on a jti-only difference (the digest ends up identical). When sub
+    // changes, only the correct implementation (computing the digest from the second token's claims) can unseal
     return {
       status: 200,
       json: {
@@ -210,21 +210,21 @@ function oidcHandler(state: OidcIssuance): MockHandler {
 }
 
 interface LeaseResponseOverrides {
-  /** リースラップの束縛 claims の差し替え(別ジョブ文脈向けラップの転用形)。 */
+  /** Substitutes the claims bound to the lease wrap (a wrap repurposed for another job context). */
   readonly claims?: Partial<LeaseClaims>;
-  /** エポックごとの DEK の差し替え(毒ラップ = コミットメント不一致)。 */
+  /** Substitutes the per-epoch DEK (poisoned wrap = commitment mismatch). */
   readonly dekForEpoch?: (epoch: number, dek: Uint8Array) => Uint8Array;
   readonly entries?: readonly ChainEntry[];
   readonly declaredProjectId?: string;
   readonly currentEpoch?: number;
   readonly variables?: readonly PullEntry[];
-  /** declared 変数の同梱(§14-2 — ci run の presence 検査の材料)。 */
+  /** Bundles the declared variables (§14-2 — material for ci run's presence check). */
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
-  /** 追加のリースラップ(重複エポック・チェーン外エポックの負例用)。 */
+  /** Extra lease wraps (for the negative cases: duplicate epochs and off-chain epochs). */
   readonly extraLeases?: readonly { readonly epoch: number; readonly dek: Uint8Array }[];
 }
 
-/** 提示トークンの claims(サーバーと同じ経路)+ 上書き(転用形の偽装用)。 */
+/** The presented token's claims (same path as the server) plus overrides (to fake the repurposed shape). */
 async function leaseClaimsDigestOf(
   oidcToken: string,
   overrides?: LeaseResponseOverrides,
@@ -241,7 +241,7 @@ async function leaseClaimsDigestOf(
   return digest.value;
 }
 
-/** 一時鍵への実 wrapLeaseDek(CRYPTO_SPEC §9.1 の info 構成)。 */
+/** A real wrapLeaseDek to the ephemeral key (the CRYPTO_SPEC §9.1 info construction). */
 async function leaseWrapFor(input: {
   readonly ephemeralPubHex: string;
   readonly claimsDigestHex: string;
@@ -273,7 +273,7 @@ async function leaseWrapFor(input: {
   };
 }
 
-/** リクエストの一時鍵へ実 crypto でリースラップした応答(AUTH_SPEC §14-2)。 */
+/** A response lease-wrapped with real crypto to the request's ephemeral key (AUTH_SPEC §14-2). */
 async function leaseResponseFor(
   body: { readonly oidcToken: string; readonly ephemeralPubHex: string },
   overrides?: LeaseResponseOverrides,
@@ -315,7 +315,7 @@ async function leaseResponseFor(
       environmentId: ENV_ID,
       epoch: resolved.currentEpoch,
       issuer: fixture.owner,
-      // 宣言ヘッドは申告エポックが現エポックである位置(create = 2、rotate = 3)
+      // The declared head sits where the declared epoch is current (create = 2, rotate = 3)
       head: headOf(built, resolved.currentEpoch === 1 ? 2 : 3),
       envStatement,
       statements: [
@@ -339,7 +339,7 @@ function leaseBody(request: MockRequest): { oidcToken: string; ephemeralPubHex: 
   return request.body as { oidcToken: string; ephemeralPubHex: string };
 }
 
-/** 正常応答の lease ハンドラ。 */
+/** Lease handler for a normal response. */
 function leaseHandler(overrides?: LeaseResponseOverrides, projectId?: string): MockHandler {
   return async (request) => {
     if (request.method !== "POST" || request.path !== leasePath(projectId)) {
@@ -350,7 +350,7 @@ function leaseHandler(overrides?: LeaseResponseOverrides, projectId?: string): M
 }
 
 /* -------------------------------------------------------------------------- */
-/* テスト環境                                                                  */
+/* Test environment                                                            */
 /* -------------------------------------------------------------------------- */
 
 interface CiEnv {
@@ -360,15 +360,15 @@ interface CiEnv {
 }
 
 /**
- * CI 実行の環境: **ログインも config もシードしない**(CI モードのキーチェーン・
- * config 非依存はこの構成自体が固定する — 依存があればコマンドは失敗する)。
+ * CI-run environment: **seeds neither login nor config** (CI mode's keychain /
+ * config independence is pinned by this setup itself — any dependency fails the command).
  */
 async function startCiEnv(handlers: readonly MockHandler[]): Promise<CiEnv> {
   const oidc: OidcIssuance = { audiences: [], issued: 0 };
   const server = await MockServer.start([oidcHandler(oidc), ...handlers]);
   servers.push(server);
   const env = await makeTestEnv();
-  // ランナー供給の発行エンドポイント(既存クエリ付き = & 連結の分岐も踏む)
+  // Runner-supplied issuance endpoint (already has a query — also exercises the &-joining branch)
   env.setEnvVar(OIDC_REQUEST_URL_ENV, `${server.origin}/oidc/token?api-version=2`);
   env.setEnvVar(OIDC_REQUEST_TOKEN_ENV, RUNNER_TOKEN);
   return { env, server, oidc };
@@ -391,56 +391,56 @@ function ciArgs(server: MockServer, extra: readonly string[] = []): string[] {
   ];
 }
 
-/** 平文・トークンが出力に混ざっていないことの共通検査。 */
+/** Shared check that no plaintext or token leaks into the output. */
 function expectNoSecretLeak(env: TestEnv): void {
   const output = [...env.logs, ...env.errors].join("\n");
   expect(output).not.toContain("alpha-value");
   expect(output).not.toContain("beta-value");
   expect(output).not.toContain(RUNNER_TOKEN);
-  // fakeJwt の payload セグメント(トークン本体)も出さない
+  // The fakeJwt payload segment (the token body) must not be printed either
   expect(output).not.toContain(base64UrlJson({ alg: "RS256", kid: "k1" }));
 }
 
 /* -------------------------------------------------------------------------- */
-/* 正常系                                                                      */
+/* Happy path                                                                 */
 /* -------------------------------------------------------------------------- */
 
-describe("maruhi ci run(正常系)", () => {
-  it("1 回の lease 呼び出しで検証・復号し、子プロセス env へ注入する", async () => {
+describe("maruhi ci run (happy path)", () => {
+  it("verifies and decrypts with a single lease call, injecting into the child process env", async () => {
     const { env, server, oidc } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(0);
 
-    // 注入(メモリのみ — ProcessRunner の extraEnv)
+    // Injection (memory only — ProcessRunner's extraEnv)
     expect(env.runnerCalls).toHaveLength(1);
     expect(env.runnerCalls[0]?.command).toEqual(["printenv", "ALPHA"]);
     expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe("alpha-value");
     expect(env.runnerCalls[0]?.extraEnv["BETA"]).toBe("beta-value");
 
-    // 応答は自己完結(§14-2): 呼んだのは OIDC 発行と lease の 2 つだけ
-    // (チェーン API・pull API を呼ばない)
+    // The response is self-contained (§14-2): only two calls were made — OIDC
+    // issuance and lease (no chain API, no pull API)
     expect(server.requests.map((request) => request.path)).toEqual(["/oidc/token", leasePath()]);
-    // audience の既定はサーバー origin(AUTH_SPEC §14-1 の推奨値)
+    // audience defaults to the server origin (the AUTH_SPEC §14-1 recommended value)
     expect(oidc.audiences).toEqual([server.origin]);
-    // 一時鍵は 32 バイト hex で送られる
+    // The ephemeral key is sent as 32-byte hex
     const sent = leaseBody(server.requests[1] as MockRequest);
     expect(sent.ephemeralPubHex).toMatch(/^[0-9a-f]{64}$/);
 
-    // キーチェーン・config 非依存(シードしていない環境で成功している)
+    // Keychain/config independent (it succeeds in an environment where nothing is seeded)
     expect(env.keychain.size).toBe(0);
-    // 検証の成立は stderr に残す(stdout は子プロセスのために空ける)
+    // Verification success goes to stderr (stdout is kept clear for the child process)
     expect(env.logs).toEqual([]);
     expect(env.errors.join("\n")).toContain("Lease verified");
     expectNoSecretLeak(env);
   });
 
-  it("--audience が発行要求の audience を上書きする", async () => {
+  it("--audience overrides the audience of the issuance request", async () => {
     const { env, server, oidc } = await startCiEnv([leaseHandler()]);
     const code = await runCli(ciArgs(server, ["--audience", "https://maruhi.example"]), env.layer);
     expect(code).toBe(0);
     expect(oidc.audiences).toEqual(["https://maruhi.example"]);
   });
 
-  it("required = true の declared がリース応答にあれば子プロセスを起動しない(presence fail-fast — §1-4)", async () => {
+  it("does not spawn the child process when a required = true declared is in the lease response (presence fail-fast — §1-4)", async () => {
     const declared = await statementFor({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -457,12 +457,12 @@ describe("maruhi ci run(正常系)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("Required variables are declared but have no value yet");
     expect(errors).toContain("MUST_HAVE");
-    // エラー文面に description を含めない
+    // The error text must not contain the description
     expect(errors).not.toContain("internal note");
     expectNoSecretLeak(env);
   });
 
-  it("required = false の declared は情報表示のみで実行する", async () => {
+  it("runs with only an informational display when a required = false declared is present", async () => {
     const declared = await statementFor({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -482,11 +482,11 @@ describe("maruhi ci run(正常系)", () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* §9.1 の検証義務(負例)                                                     */
+/* §9.1 verification duties (negative cases)                                   */
 /* -------------------------------------------------------------------------- */
 
-describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
-  it("(1) 改竄チェーンを拒否する(署名検証)", async () => {
+describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)", () => {
+  it("(1) rejects a tampered chain (signature verification)", async () => {
     const entries = fixture.built.entries.map((entry, index) =>
       index === 1 ? ({ ...entry, timestampMs: entry.timestampMs + 1 } as ChainEntry) : entry,
     );
@@ -497,9 +497,9 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expectNoSecretLeak(env);
   });
 
-  it("(1) genesis が事前固定の projectId と一致しない配布を拒否する", async () => {
-    // 別プロジェクト ID を固定した CI 設定に、元プロジェクトのチェーンを配布する
-    // 差し替え形。応答の申告 projectId は要求どおりに偽装する(申告整合は通る)
+  it("(1) rejects a distribution whose genesis does not match the pinned projectId", async () => {
+    // A swapped shape: a CI config pinning a different project ID is served the
+    // original project's chain. The response's declared projectId is faked to match the request (declaration consistency passes)
     const pinned = "22".repeat(32);
     const { env, server } = await startCiEnv([leaseHandler({ declaredProjectId: pinned }, pinned)]);
     const args = [
@@ -520,7 +520,7 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("(3) コミットメント不一致(毒ラップ)を拒否し、値を復号しない", async () => {
+  it("(3) rejects a commitment mismatch (poisoned wrap) and does not decrypt the value", async () => {
     const poison = crypto.getRandomValues(new Uint8Array(32));
     const { env, server } = await startCiEnv([
       leaseHandler({ dekForEpoch: (epoch, dek) => (epoch === 2 ? poison : dek) }),
@@ -531,7 +531,7 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expectNoSecretLeak(env);
   });
 
-  it("(4) 値署名の不正(暗号文の差し替え)を拒否する", async () => {
+  it("(4) rejects a bad value signature (substituted ciphertext)", async () => {
     const tampered: PullEntry = {
       ...fixture.entryAlpha,
       value: {
@@ -547,9 +547,9 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("claims_digest 不一致(別ジョブ文脈向けラップの転用)は開封で落ちる", async () => {
-    // サーバーが別の sub(別リポジトリのジョブ)向けに作ったラップを転用する形。
-    // HPKE info の claims_digest が食い違い、復号失敗になる(設計原則 3)
+  it("fails at unseal on a claims_digest mismatch (a wrap repurposed from another job context)", async () => {
+    // The shape where a wrap the server made for another sub (a job in another
+    // repository) is repurposed. The HPKE info claims_digest mismatches and decryption fails (design principle 3)
     const { env, server } = await startCiEnv([
       leaseHandler({ claims: { subject: "repo:evil/other:ref:refs/heads/main" } }),
     ]);
@@ -559,18 +559,18 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expectNoSecretLeak(env);
   });
 
-  it("申告 currentEpoch がチェーン導出と食い違う応答を拒否する", async () => {
+  it("rejects a response whose declared currentEpoch disagrees with the chain-derived one", async () => {
     const { env, server } = await startCiEnv([leaseHandler({ currentEpoch: 1 })]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("the chain derives epoch 2");
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("(4) 同梱チェーンより先のヘッドを宣言する値は再同期せず即時拒否する", async () => {
-    // pull は future head を有界再同期で解消できる(§6.3-2b — 自分のチェーンが
-    // 古いだけの可能性がある)が、lease はチェーンが**同じ応答に**同梱される
-    // (§14-2)ため、その説明が存在しない = 応答の自己矛盾として即時拒否する。
-    // これは verifyLeaseDistribution を pull と分ける唯一の挙動差
+  it("(4) rejects immediately — without re-syncing — a value declaring a head beyond the bundled chain", async () => {
+    // pull can resolve a future head via bounded re-sync (§6.3-2b — the local
+    // chain may just be stale), but a lease bundles the chain **in the same
+    // response** (§14-2) so that explanation cannot exist — reject immediately
+    // as a self-contradicting response. This is the only behavioral difference separating verifyLeaseDistribution from pull
     const { built, owner, dek2 } = fixture;
     const futureValue = await encryptValueFor({
       dek: dek2,
@@ -591,11 +591,11 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("beyond the chain included in the same response");
     expect(env.runnerCalls).toHaveLength(0);
-    // 再同期に相当する追加取得をしない(OIDC 発行と lease の 1 回ずつだけ)
+    // No extra fetch equivalent to a re-sync (exactly one OIDC issuance and one lease call)
     expect(server.requests.map((request) => request.path)).toEqual(["/oidc/token", leasePath()]);
   });
 
-  it("同一エポックの重複リースラップを拒否する", async () => {
+  it("rejects duplicate lease wraps for the same epoch", async () => {
     const { env, server } = await startCiEnv([
       leaseHandler({ extraLeases: [{ epoch: 1, dek: fixture.dek1 }] }),
     ]);
@@ -604,7 +604,7 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("チェーン導出現エポックを超えるエポックのリースラップを拒否する", async () => {
+  it("rejects a lease wrap for an epoch beyond the chain-derived current epoch", async () => {
     const { env, server } = await startCiEnv([
       leaseHandler({
         extraLeases: [{ epoch: 3, dek: crypto.getRandomValues(new Uint8Array(32)) }],
@@ -620,7 +620,7 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
 /* token-replayed / 429 / 503(AUTH_SPEC §14-3)                                */
 /* -------------------------------------------------------------------------- */
 
-/** 先頭 `failures` 回だけ指定エラーを返し、以後は正常応答する lease ハンドラ。 */
+/** Lease handler that returns the given error for the first `failures` calls, then responds normally. */
 function flakyLeaseHandler(
   failures: number,
   error: { readonly status: number; readonly json: unknown },
@@ -643,8 +643,8 @@ const TOKEN_REPLAYED = {
   json: { _tag: "LeaseUnauthorized", reason: "token-replayed" },
 };
 
-describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
-  it("token-replayed は新規トークンで 1 回だけ自動再試行し、同一の一時鍵を提示する", async () => {
+describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
+  it("auto-retries token-replayed exactly once with a fresh token, presenting the same ephemeral key", async () => {
     const { env, server, oidc } = await startCiEnv([flakyLeaseHandler(1, TOKEN_REPLAYED)]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("Minting a fresh token and retrying once");
@@ -655,15 +655,15 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
       leaseBody(leases[0] as MockRequest),
       leaseBody(leases[1] as MockRequest),
     ];
-    // 新規トークン(jti が違う)+ 同一の一時鍵(§14-1 の束縛はトークン単位 —
-    // 鍵をローテーションしない)
+    // A fresh token (different jti) + the same ephemeral key (§14-1 binding is
+    // per token — the key is not rotated)
     expect(first.oidcToken).not.toBe(second.oidcToken);
     expect(first.ephemeralPubHex).toBe(second.ephemeralPubHex);
     expect(oidc.issued).toBe(2);
     expect(env.runnerCalls).toHaveLength(1);
   });
 
-  it("token-replayed が新規トークンでも続くなら 1 回で打ち切る(3 回目を送らない)", async () => {
+  it("stops after one retry if token-replayed persists with a fresh token (never sends a third)", async () => {
     const { env, server, oidc } = await startCiEnv([flakyLeaseHandler(99, TOKEN_REPLAYED)]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("token-replayed again with a freshly minted token");
@@ -673,7 +673,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expectNoSecretLeak(env);
   });
 
-  it("token-replayed 以外の 401 は再試行せず理由コードを案内する", async () => {
+  it("does not retry non-token-replayed 401s and guides with the reason code", async () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 401,
@@ -685,7 +685,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
   });
 
-  it("429 は再試行せず、残り秒数と再実行の案内を出す", async () => {
+  it("does not retry on 429; reports the remaining seconds and how to re-run", async () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 429,
@@ -699,7 +699,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("503 oidc-jwks-unavailable は一過性(資格情報の異常ではない)と案内する", async () => {
+  it("guides that 503 oidc-jwks-unavailable is transient (not a credential problem)", async () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 503,
@@ -713,7 +713,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(output).not.toContain("Log in again");
   });
 
-  it("503 server-key-unconfigured はデプロイ設定の欠落としてセットアップへ誘導する", async () => {
+  it("guides 503 server-key-unconfigured toward setup as a missing deploy configuration", async () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 503,
@@ -724,7 +724,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(env.errors.join("\n")).toContain("docs/SELF_HOSTING.md");
   });
 
-  it("503 server-wraps-missing は管理者のローテーション / バックフィルへ誘導する", async () => {
+  it("guides 503 server-wraps-missing toward admin rotation / backfill", async () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 503,
@@ -735,10 +735,10 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(env.errors.join("\n")).toContain("`maruhi env rotate` / `maruhi server grant`");
   });
 
-  it("404 は lease 特有の一様応答として直し先(座標 / grant / ポリシー)を案内する", async () => {
-    // §14-1 の存在秘匿: 未知プロジェクト・grant なし・ポリシー不一致・スコープ外は
-    // すべて同じ 404。メンバー向けの「Project not found — check the ID and your
-    // access」ではなく、CI で最も起きやすいポリシー不一致まで並べて案内する
+  it("guides the fix target (coordinates / grant / policy) for 404, the uniform lease-specific response", async () => {
+    // §14-1 existence hiding: unknown project, no grant, policy mismatch, and
+    // out-of-scope all return the same 404. Rather than the member-facing
+    // "Project not found — check the ID and your access", the guidance also lists the policy mismatch most common in CI
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 404,
@@ -749,18 +749,18 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     const output = env.errors.join("\n");
     expect(output).toContain("lease-policy mismatch");
     expect(output).toContain("maruhi server grant --lease-policy");
-    // 再試行しない(資格情報でも一過性でもない)
+    // No retry (neither a credential problem nor transient)
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
     expect(env.runnerCalls).toHaveLength(0);
   });
 });
 
 /* -------------------------------------------------------------------------- */
-/* OIDC 発行(GitHub Actions 環境)                                            */
+/* OIDC issuance (GitHub Actions environment)                                  */
 /* -------------------------------------------------------------------------- */
 
-describe("maruhi ci run(OIDC 発行)", () => {
-  it("発行エンドポイントの env が無ければ、通信前に id-token: write の要件を名指しする", async () => {
+describe("maruhi ci run (OIDC issuance)", () => {
+  it("names the id-token: write requirement before any communication when the issuance-endpoint env is absent", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     env.setEnvVar(OIDC_REQUEST_URL_ENV, undefined);
     env.setEnvVar(OIDC_REQUEST_TOKEN_ENV, undefined);
@@ -769,10 +769,10 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("aud が複数のトークンは往復前に拒否する(claims digest が一意に決まらない)", async () => {
+  it("rejects a multi-aud token before the round trip (the claims digest would not be uniquely determined)", async () => {
     const { env, server } = await startCiEnv([
-      // 発行エンドポイントが複数 audience のトークンを返す異常形(既定の
-      // oidcHandler と衝突しない別パスに置き、env で差し向ける)
+      // The abnormal shape where the issuance endpoint returns a multi-audience
+      // token (placed on a separate path that does not collide with the default oidcHandler, routed via env)
       (request) =>
         request.path === "/oidc/multi"
           ? {
@@ -785,31 +785,31 @@ describe("maruhi ci run(OIDC 発行)", () => {
     env.setEnvVar(OIDC_REQUEST_URL_ENV, `${server.origin}/oidc/multi`);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("multiple audiences");
-    // lease エンドポイントには到達しない
+    // The lease endpoint is never reached
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(0);
   });
 
-  it("非 loopback の http: 発行 URL には bearer token を送らない", async () => {
+  it("does not send the bearer token to a non-loopback http: issuance URL", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
-    // ルーティング不能な TEST-NET-1 アドレス: 検証が甘くても実送信は起きないが、
-    // 検証が正しければ**通信自体が発生しない**ことを応答時間と文言で固定する
+    // An unroutable TEST-NET-1 address: even lenient verification would not
+    // produce a real send, but correct verification means **no communication happens at all** — pinned by the response time and wording
     env.setEnvVar(OIDC_REQUEST_URL_ENV, "http://192.0.2.1/oidc/token");
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
     expect(server.requests).toHaveLength(0);
   });
 
-  it('"127." で始まるだけの DNS 名は loopback 扱いしない', async () => {
+  it('does not treat a DNS name merely starting with "127." as loopback', async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
-    // "127.evil.com" は 127.0.0.0/8 のリテラルではなく任意 IP へ解決できる公開
-    // DNS 名 — 接頭辞判定だと平文 http でも通ってしまう形の固定
+    // "127.evil.com" is not a 127.0.0.0/8 literal — a public DNS name that can
+    // resolve to any IP; pins the shape where prefix matching would let plaintext http through
     env.setEnvVar(OIDC_REQUEST_URL_ENV, "http://127.evil.com/oidc/token");
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
     expect(server.requests).toHaveLength(0);
   });
 
-  it("パース不能な発行 URL も通信前に拒否する", async () => {
+  it("also rejects an unparsable issuance URL before any communication", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     env.setEnvVar(OIDC_REQUEST_URL_ENV, "not a url");
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
@@ -817,7 +817,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("発行エンドポイントの redirect には追従しない(bearer の再送を塞ぐ)", async () => {
+  it("does not follow redirects from the issuance endpoint (blocks bearer re-sends)", async () => {
     const { env, server } = await startCiEnv([
       (request) =>
         request.path.startsWith("/oidc/redirect")
@@ -828,7 +828,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
     env.setEnvVar(OIDC_REQUEST_URL_ENV, `${server.origin}/oidc/redirect`);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("HTTP 302");
-    // リダイレクト先(正規の発行パス)への再送は発生しない
+    // No re-send to the redirect target (the legitimate issuance path)
     expect(
       server.requests.filter((request) => request.path.startsWith("/oidc/token")),
     ).toHaveLength(0);
@@ -836,7 +836,7 @@ describe("maruhi ci run(OIDC 発行)", () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* リポジトリアンカー(§6.3 (b) — 検証義務 (2))                               */
+/* Repository anchor (§6.3 (b) — verification duty (2))                        */
 /* -------------------------------------------------------------------------- */
 
 async function anchorFile(contents: unknown): Promise<string> {
@@ -856,15 +856,15 @@ function validAnchor(): Record<string, unknown> {
   };
 }
 
-describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6.3 (b))", () => {
-  it("包含 + エポック非後退を満たすアンカーで成功する", async () => {
+describe("maruhi ci run --anchor (repository anchor — CRYPTO_SPEC §6.3 (b))", () => {
+  it("succeeds with an anchor satisfying containment + non-regressing epoch", async () => {
     const path = await anchorFile(validAnchor());
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("repository anchor");
   });
 
-  it("ピン留めヘッドを含まないチェーンを拒否する", async () => {
+  it("rejects a chain that does not contain the pinned head", async () => {
     const path = await anchorFile({ ...validAnchor(), headHashHex: "ab".repeat(32) });
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
@@ -872,7 +872,7 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("アンカー未満へのエポック後退(ローテーション前ビューの配布)を拒否する", async () => {
+  it("rejects an epoch regression below the anchor (distributing a pre-rotation view)", async () => {
     const path = await anchorFile({ ...validAnchor(), environments: { [ENV_ID]: 3 } });
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
@@ -880,7 +880,7 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("チェーン長を超える seq のピン留めヘッド(古いビューの配布)を拒否する", async () => {
+  it("rejects a pinned head whose seq exceeds the chain length (distribution of a stale view)", async () => {
     const path = await anchorFile({
       ...validAnchor(),
       headSeq: fixture.built.entries.length + 5,
@@ -891,7 +891,7 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("アンカー済み環境がチェーンに無い配布(作成以前への巻き戻し)を拒否する", async () => {
+  it("rejects a distribution where the anchored environment is absent from the chain (rollback to before creation)", async () => {
     const path = await anchorFile({ ...validAnchor(), environments: { ghost: 1 } });
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
@@ -899,7 +899,7 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
     expect(env.runnerCalls).toHaveLength(0);
   });
 
-  it("壊れたアンカーファイルは通信より前に落とす(再生成の導線つき)", async () => {
+  it("fails a broken anchor file before any communication (with a path to regenerate it)", async () => {
     const path = await anchorFile({ version: 2 });
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
@@ -909,11 +909,11 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
 });
 
 /* -------------------------------------------------------------------------- */
-/* 引数層(ADR-0016)                                                          */
+/* Argument layer (ADR-0016)                                                   */
 /* -------------------------------------------------------------------------- */
 
-describe("maruhi ci run(引数層 — ADR-0016)", () => {
-  it("--server / --project / --env の欠落は CI 特有の直し方を言う(exit 2)", async () => {
+describe("maruhi ci run (argument layer — ADR-0016)", () => {
+  it("missing --server / --project / --env gets CI-specific fix guidance (exit 2)", async () => {
     for (const args of [
       ["ci", "run", "--", "true"],
       ["ci", "run", "--server", "https://maruhi.example", "--", "true"],
@@ -934,7 +934,7 @@ describe("maruhi ci run(引数層 — ADR-0016)", () => {
     }
   });
 
-  it("--project の形式(genesis ハッシュ)はネットワークより前に検査する", async () => {
+  it("checks the --project format (genesis hash) before the network", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     const args = [
       "ci",
@@ -953,7 +953,7 @@ describe("maruhi ci run(引数層 — ADR-0016)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("`--` の無い実行・実行対象なしは書き方の誤り(exit 2)", async () => {
+  it("a run without `--` / with no command to run is a usage error (exit 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["ci", "run"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Specify the command to run");
@@ -961,11 +961,11 @@ describe("maruhi ci run(引数層 — ADR-0016)", () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* maruhi project anchor(生成側)                                             */
+/* maruhi project anchor (generating side)                                     */
 /* -------------------------------------------------------------------------- */
 
 describe("maruhi project anchor", () => {
-  it("検証済みビューからアンカー JSON を stdout へ出す(ci run --anchor で通る形)", async () => {
+  it("prints anchor JSON to stdout from the verified view (in a form that passes ci run --anchor)", async () => {
     const { built, owner } = fixture;
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -993,7 +993,7 @@ describe("maruhi project anchor", () => {
       environments: { [ENV_ID]: 2 },
     });
 
-    // 出力したアンカーはそのまま ci run --anchor の検査を通る(往復の整合)
+    // The emitted anchor passes ci run --anchor verification as-is (round-trip consistency)
     const path = await anchorFile(anchor);
     const ci = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(ci.server, ["--anchor", path]), ci.env.layer)).toBe(0);
