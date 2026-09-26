@@ -1,7 +1,7 @@
-// login(サーバー仲介 web-flow ハンドオフ — AUTH_SPEC §4: start → ブラウザ承認
-// → poll → キーチェーン)と logout(自トークン失効 + キーチェーン削除)のテスト。
-// maruhi サーバーはローカル HTTP モック。CLI はアイデンティティプロバイダと
-// 直接通信しない(§4 の原則)ので、GitHub 側のモックは存在しない。
+// Tests for login (the server-brokered web-flow handoff — AUTH_SPEC §4: start →
+// browser approval → poll → keychain) and logout (self-token revocation +
+// keychain removal). The maruhi server is a local HTTP mock. The CLI never
+// talks to the identity provider directly (the §4 principle), so there is no GitHub-side mock.
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -18,13 +18,13 @@ import {
 
 let servers: MockServer[] = [];
 
-/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6: 2099-01-01T00:00:00Z)。 */
+/** The exchange response's expiry fixture (AUTH_SPEC §6: 2099-01-01T00:00:00Z). */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
 
-/** 公開相関子(128-bit hex — api-schema の CliFlowIdSchema に一致)。 */
+/** The public correlator (128-bit hex — matches api-schema's CliFlowIdSchema). */
 const FLOW_ID = "0123456789abcdef0123456789abcdef";
 
-/** CLI 専用 bearer 資格情報のフィクスチャ(§4-1 (1) — CLI には不透明)。 */
+/** Fixture for the CLI-only bearer credential (§4-1 (1) — opaque to the CLI). */
 const FLOW_TOKEN = "v1.dGVzdC1mbG93.fixture-mac-value";
 
 const USER_CODE = "ABCD-1234";
@@ -41,7 +41,7 @@ async function start(handlers: readonly MockHandler[]): Promise<MockServer> {
   return server;
 }
 
-/** poll の approved 応答(§4-1 (5) — 生値 token はこの一度だけワイヤに現れる)。 */
+/** The approved poll response (§4-1 (5) — the raw token appears on the wire only this once). */
 function approvedResponse(input?: {
   readonly token?: string;
   readonly expiresAtMs?: number;
@@ -59,16 +59,16 @@ function approvedResponse(input?: {
 }
 
 /**
- * ハンドオフの maruhi 側(start + ポーリング n 回 pending → 最終応答)。
- * start 応答の pollIntervalSeconds は 0(テストは `--poll-interval 0` で下限も
- * 0 に落とし、実時間の sleep をしない)。
+ * The maruhi side of the handoff (start + n polls of pending → final response).
+ * The start response's pollIntervalSeconds is 0 (tests pass `--poll-interval 0`
+ * so the lower bound is also 0 — no real-time sleep).
  */
 function fakeHandoff(
   input: {
     readonly pendingPolls?: number;
-    /** 最終 poll 応答(既定: approved)。 */
+    /** The final poll response (default: approved). */
     readonly finalPoll?: MockResponse;
-    /** start 応答の上書き(期限・間隔の境界ケース用)。 */
+    /** Overrides for the start response (for expiry / interval edge cases). */
     readonly startOverrides?: Readonly<Record<string, unknown>>;
     readonly token?: string;
     readonly expiresAtMs?: number;
@@ -117,32 +117,32 @@ function fakeHandoff(
   return { handlers, polls: () => polls, startBodies, pollBodies };
 }
 
-/** 全テスト共通のフラグ(実時間の sleep をしない)。 */
+/** Flags shared by all tests (no real-time sleep). */
 const FAST_POLL = ["--poll-interval", "0"] as const;
 
 describe("maruhi login", () => {
-  it("長すぎる --token-name はどの通信よりも前に落とす(ブラウザ承認を無駄にしない)", async () => {
-    // 上限(api-schema の MAX_TOKEN_NAME_LENGTH)を引数層で見ないと、長すぎる
-    // 名前は **ブラウザでの承認を完走した後**にリクエストの encode 失敗として
-    // 現れる。しかも Schema のエラーは応答側と同じ型なので、診断が
-    // 「サーバー側の異常」に見えてしまう
+  it("fails an overlong --token-name before any communication (never wastes the browser approval)", async () => {
+    // If the argument layer skipped the cap (api-schema's MAX_TOKEN_NAME_LENGTH),
+    // an overlong name would surface as a request-encode failure **after the
+    // browser approval completed**. Worse, a Schema error shares its type with
+    // the response side, so the diagnosis would look like "a server-side fault"
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
     const code = await runCli(["login", "--token-name", "n".repeat(129), ...FAST_POLL], env.layer);
-    // 書き方の誤りは usage エラー(2)
+    // A usage mistake is a usage error (2)
     expect(code).toBe(2);
     expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
-    // start すら呼ばない(ブラウザ承認を求めない)
+    // start is never even called (no browser approval requested)
     expect(maruhi.requests).toHaveLength(0);
     expect(env.errors.join("\n")).not.toContain("Waiting for approval");
   });
 
-  it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6)", async () => {
-    // 上限は api-schema の MAX_TOKEN_TTL_DAYS と共有(--token-name と同じ規律:
-    // 書き方の誤りをブラウザ承認の完走後に出さない)
+  it("fails an out-of-range --token-ttl-days before any communication (AUTH_SPEC §6)", async () => {
+    // The cap is shared with api-schema's MAX_TOKEN_TTL_DAYS (same rule as
+    // --token-name: never surface a usage mistake after the browser approval has completed)
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -156,7 +156,7 @@ describe("maruhi login", () => {
     expect(maruhi.requests).toHaveLength(0);
   });
 
-  it("--token-ttl-days は expiresInDays として start payload に載り、省略時は載らない", async () => {
+  it("--token-ttl-days rides on the start payload as expiresInDays, and is absent when omitted", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -165,13 +165,13 @@ describe("maruhi login", () => {
     expect(await runCli(["login", "--token-ttl-days", "365", ...FAST_POLL], env.layer)).toBe(0);
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(handoff.startBodies[0]?.["expiresInDays"]).toBe(365);
-    // 省略時はサーバー既定(90 日)に委ねる — キー自体を送らない
+    // When omitted, the server default (90 days) applies — the key itself is not sent
     expect(Object.hasOwn(handoff.startBodies[1] ?? {}, "expiresInDays")).toBe(false);
-    // 有効期限は発行時に固定され、いつ再ログインが要るかを表示する
+    // The validity period is fixed at issuance; when re-login will be needed is displayed
     expect(env.logs.join("\n")).toContain("The token expires on 2099-01-01 (UTC)");
   });
 
-  it("start → 承認待ち → poll → maruhi トークンのみキーチェーンへ保存する", async () => {
+  it("start → wait for approval → poll → saves only the maruhi token to the keychain", async () => {
     const handoff = fakeHandoff({ pendingPolls: 2 });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -180,21 +180,21 @@ describe("maruhi login", () => {
     const code = await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer);
     expect(code).toBe(0);
     expect(handoff.polls()).toBe(3);
-    // 発行パラメータは start に載る(§4-1 (1) — 発行時ではなく開始時に確定)
+    // The issuance parameters ride on start (§4-1 (1) — fixed at start, not at issuance)
     expect(handoff.startBodies[0]?.["tokenName"]).toBe("cli-test");
-    // poll はフロー資格の 2 識別子のみを運ぶ(§4-1 (5))
+    // poll carries only the two flow-credential identifiers (§4-1 (5))
     expect(handoff.pollBodies[0]).toEqual({ flowId: FLOW_ID, flowToken: FLOW_TOKEN });
     const logs = env.logs.join("\n");
-    // 検証 URL とユーザーコードは対話の案内(stderr — 裁定 D-2)に出る
-    // (フィッシング照合の材料 — §4-1 (2))。有効期間はサーバー応答から導く
+    // The verification URL and user code go to the interactive guidance (stderr —
+    // ruling D-2) as phishing-match material (§4-1 (2)). The validity period is derived from the server response
     const guidance = env.errors.join("\n");
     expect(guidance).toContain(VERIFICATION_URL);
     expect(guidance).toContain(`Confirmation code: ${USER_CODE}`);
     expect(guidance).toContain("This request expires in 15 minutes");
     expect(guidance).toContain("Waiting for approval");
-    // 結果(stdout)は成功の 1 行 + 期限
+    // The result (stdout) is a single success line + the expiry
     expect(logs).toContain("Signed in as user-0001");
-    // flowToken は資格情報 — ブラウザチャネルにも端末出力にも出ない(§4-1 (1))
+    // flowToken is a credential — it appears on neither the browser channel nor the terminal output (§4-1 (1))
     expect(logs).not.toContain(FLOW_TOKEN);
     expect(env.errors.join("\n")).not.toContain(FLOW_TOKEN);
     const stored = env.keychain.get(tokenEntryName(maruhi.origin));
@@ -203,16 +203,16 @@ describe("maruhi login", () => {
       token: "maruhi_pat_issued",
       userId: "user-0001",
       tokenId: "tok_1",
-      // 期限接近警告(裁定 CL)のローカル判定材料もレコードへ載る
+      // The record also carries the local decision material for the expiry-approaching warning (ruling CL)
       expiresAtMs: EXPIRES_AT_MS,
     });
     expect(stored).not.toContain(FLOW_TOKEN);
-    // トークン生値は端末出力に出ない(--show-token なし)
+    // The raw token never reaches the terminal output (no --show-token)
     expect(logs).not.toContain("maruhi_pat_issued");
   });
 
-  describe("signupPolicy の事前 fail-fast(AUTH_SPEC §3 / hosted-design §2-2 (i)(ii))", () => {
-    /** /auth/config が signupPolicy を申告するハンドオフ一式。 */
+  describe("signupPolicy pre-fail-fast (AUTH_SPEC §3 / hosted-design §2-2 (i)(ii))", () => {
+    /** A handoff set where /auth/config declares a signupPolicy. */
     function handoffWithConfig(config: Record<string, unknown>): {
       handlers: MockHandler[];
       polls: () => number;
@@ -230,7 +230,7 @@ describe("maruhi login", () => {
       };
     }
 
-    it("invite 制: 対話端末では既存アカウント保持を確認し、yes なら進む", async () => {
+    it("invite-only: an interactive terminal confirms keeping the existing account; yes proceeds", async () => {
       const handoff = handoffWithConfig({ signupPolicy: "invite" });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
@@ -240,11 +240,11 @@ describe("maruhi login", () => {
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
       expect(env.prompts.join("\n")).toContain("Do you already have a maruhi account");
       expect(env.errors.join("\n")).toContain("invite-only");
-      // 確認を通過したら通常どおり start → poll へ進む
+      // Past the confirmation, proceed to the usual start → poll
       expect(handoff.polls()).toBeGreaterThan(0);
     });
 
-    it("invite 制: no(既定)なら start を呼ぶ前に案内を出して終了する", async () => {
+    it("invite-only: on no (the default), shows guidance and exits before calling start", async () => {
       const handoff = handoffWithConfig({ signupPolicy: "invite" });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
@@ -252,7 +252,7 @@ describe("maruhi login", () => {
       env.setPromptResponses([""]);
 
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
-      // 誤操作ガード(認可ではない): 無駄なブラウザ往復を始めない
+      // A misoperation guard (not authorization): never begins a wasted browser round trip
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
       const output = [...env.logs, ...env.errors].join("\n");
       expect(output).toContain("sign up in your browser first");
@@ -260,7 +260,7 @@ describe("maruhi login", () => {
       expect(env.keychain.size).toBe(0);
     });
 
-    it("closed: 対話端末では確認を挟み、no なら終了する", async () => {
+    it("closed: an interactive terminal asks for confirmation; no exits", async () => {
       const handoff = handoffWithConfig({ signupPolicy: "closed" });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
@@ -272,7 +272,7 @@ describe("maruhi login", () => {
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
     });
 
-    it("非対話環境(エージェント・パイプ)では案内だけ出して進む(プロンプトで吊るさない)", async () => {
+    it("in a non-interactive environment (agent / pipe), shows only guidance and proceeds (never hangs on a prompt)", async () => {
       for (const shape of ["agent", "piped"] as const) {
         const handoff = handoffWithConfig({ signupPolicy: "invite" });
         const maruhi = await start(handoff.handlers);
@@ -290,7 +290,7 @@ describe("maruhi login", () => {
       }
     });
 
-    it("open では確認も案内も挟まない", async () => {
+    it("open: neither confirmation nor guidance is inserted", async () => {
       const handoff = handoffWithConfig({ signupPolicy: "open" });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
@@ -301,15 +301,15 @@ describe("maruhi login", () => {
       expect(env.errors.join("\n")).not.toContain("invite-only");
     });
 
-    it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも進む(advisory の欠落で login を壊さない)", async () => {
-      // 未申告: フィールドなしの 200
+    it("proceeds even with signupPolicy undeclared (old server) / no /auth/config (never breaks login on a missing advisory)", async () => {
+      // Undeclared: a 200 without the field
       const withoutField = handoffWithConfig({});
       const oldServer = await start(withoutField.handlers);
       const env1 = await makeTestEnv();
       await seedConfig(env1, { server: oldServer.origin });
       expect(await runCli(["login", ...FAST_POLL], env1.layer)).toBe(0);
       expect(env1.prompts).toHaveLength(0);
-      // 不在: /auth/config ハンドラなし(404)— fakeHandoff 素のまま
+      // Absent: no /auth/config handler (404) — fakeHandoff left plain
       const bare = fakeHandoff();
       const bareServer = await start(bare.handlers);
       const env2 = await makeTestEnv();
@@ -319,21 +319,21 @@ describe("maruhi login", () => {
     });
   });
 
-  it("対話端末 × 非エージェントではブラウザ自動起動を試みる(§4-1 (2) の UX 分岐)", async () => {
+  it("attempts browser auto-launch on an interactive terminal × non-agent (the §4-1 (2) UX branch)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // 既定の TestEnv = 対話端末 × 非エージェント
+    // The default TestEnv = interactive terminal × non-agent
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
     expect(env.errors.join("\n")).toContain("Opened your browser");
   });
 
-  it("エージェント環境・非対話端末ではブラウザを開かないが、表示 + ポーリングで完走する", async () => {
-    // 縮退経路は 1 本(表示 + ポーリング)で全環境を覆う — 新しいセキュリティ
-    // ゲートではないので、非対象環境でもログインは成功する
+  it("does not open a browser in an agent environment / non-interactive terminal, but completes via display + polling", async () => {
+    // The degraded path is a single one (display + polling) covering every
+    // environment — it is not a new security gate, so login still succeeds in non-target environments
     for (const shape of ["agent", "piped"] as const) {
       const handoff = fakeHandoff();
       const maruhi = await start(handoff.handlers);
@@ -349,13 +349,13 @@ describe("maruhi login", () => {
       const guidance = env.errors.join("\n");
       expect(guidance).toContain(VERIFICATION_URL);
       expect(guidance).toContain(USER_CODE);
-      // 自動起動を試みていないので「開けなかった」とも言わない
+      // Since no auto-launch was attempted, it also never claims "could not open"
       expect(guidance).not.toContain("Could not open a browser");
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
     }
   });
 
-  it("ブラウザ起動に失敗しても完走する(起動は best-effort)", async () => {
+  it("completes even when browser launch fails (launch is best-effort)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -364,29 +364,29 @@ describe("maruhi login", () => {
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
-    // 失敗した起動を「開いた」と主張しない(URL の手動オープン案内は常に出ている)
+    // A failed launch is never claimed as "opened" (the manual-open guidance for the URL is always shown)
     expect(env.errors.join("\n")).not.toContain("Opened your browser");
     expect(env.errors.join("\n")).toContain("Could not open a browser automatically");
   });
 
-  it("http(s) 以外・パース不能な verificationUrl は OS opener に渡さない(fail-closed)", async () => {
-    // OS の URL ハンドラは任意スキームをディスパッチする。verificationUrl は
-    // サーバー応答由来の untrusted 入力なので、opener に渡す前に検証し、不合格は
-    // ブラウザ自動起動をスキップして手動オープン案内(表示)+ ポーリングで完走する
+  it("never passes a non-http(s) or unparsable verificationUrl to the OS opener (fail-closed)", async () => {
+    // The OS URL handler dispatches arbitrary schemes. verificationUrl is
+    // untrusted input from a server response, so it is validated before reaching
+    // the opener; on failure, browser auto-launch is skipped and the flow completes via manual-open guidance (display) + polling
     for (const url of ["file:///etc/passwd", "javascript:alert(1)", "not a url"]) {
       const handoff = fakeHandoff({ startOverrides: { verificationUrl: url } });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
-      // 既定の TestEnv = 対話端末 × 非エージェント(自動起動の対象環境)
+      // The default TestEnv = interactive terminal × non-agent (the auto-launch target environment)
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
       expect(env.browserOpens).toHaveLength(0);
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
     }
   });
 
-  it("サーバー由来の verificationUrl / userCode の制御文字は中和して表示する", async () => {
-    // 敵対的・侵害済みサーバーの ANSI 注入を端末へ生で流さない(displayText)
+  it("displays server-sourced verificationUrl / userCode with control characters neutralized", async () => {
+    // ANSI injection from a hostile / compromised server never reaches the terminal raw (displayText)
     const handoff = fakeHandoff({
       startOverrides: {
         verificationUrl: "https://evil.example/\u001b[2Jverify",
@@ -403,7 +403,7 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("Confirmation code: AB\uFFFDCD");
   });
 
-  it("ブラウザ側の拒否(denied)はエラーで終了する(§4-1 (4) の拒否操作)", async () => {
+  it("a browser-side refusal (denied) ends in an error (the §4-1 (4) refusal operation)", async () => {
     const handoff = fakeHandoff({ finalPoll: { status: 200, json: { status: "denied" } } });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -414,7 +414,7 @@ describe("maruhi login", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("期限切れ(410 CliFlowExpired)はポーリングをやめて再ログインを案内する(§4-2)", async () => {
+  it("expiry (410 CliFlowExpired) stops polling and guides toward re-login (§4-2)", async () => {
     const handoff = fakeHandoff({
       finalPoll: { status: 410, json: { _tag: "CliFlowExpired" } },
     });
@@ -428,9 +428,9 @@ describe("maruhi login", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("一様拒否(400 CliFlowRejected)は理由を出し分けず再ログインを案内する(§4-2)", async () => {
-    // 資格不一致・消費済みフローの再 poll 等はすべて同一応答(サーバーがフロー
-    // 状態のオラクルを作らない)— CLI 側も理由を捏造しない
+  it("uniform refusal (400 CliFlowRejected) does not discriminate reasons and guides toward re-login (§4-2)", async () => {
+    // Credential mismatch, re-polling a consumed flow, etc. all get the same
+    // response (the server builds no oracle for flow state) — the CLI side never fabricates a reason either
     const handoff = fakeHandoff({
       finalPoll: { status: 400, json: { _tag: "CliFlowRejected" } },
     });
@@ -443,7 +443,7 @@ describe("maruhi login", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("poll の 429 は失敗ではなく退避して続行する(§4-1 (5))", async () => {
+  it("a poll 429 is not a failure — it backs off and continues (§4-1 (5))", async () => {
     let polls = 0;
     const maruhi = await start([
       onRequest("POST", "/auth/cli/start", () => ({
@@ -473,9 +473,9 @@ describe("maruhi login", () => {
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
   });
 
-  it("次のポーリングが申告期限を越えるならローカルで期限切れにする(deadline は sleep の前)", async () => {
-    // サーバー申告の残余期限 1ms × 間隔 10 秒 — 待っている間にフローは失効する
-    // ので、無駄な sleep もリクエストもせずに終了する
+  it("expires locally when the next poll would pass the declared deadline (deadline precedes sleep)", async () => {
+    // Server-declared remaining deadline 1ms × interval 10s — the flow would
+    // expire while waiting, so it ends with no wasted sleep or request
     const handoff = fakeHandoff({
       startOverrides: { expiresInSeconds: 0.001, pollIntervalSeconds: 10 },
     });
@@ -488,9 +488,9 @@ describe("maruhi login", () => {
     expect(handoff.polls()).toBe(0);
   });
 
-  it("有効期間の案内と期限切れの文面はサーバー応答の expiresInSeconds から導く(裁定 D-1)", async () => {
-    // 分単位で切り捨て、1 分未満だけ秒で言う。定数は CLI に無い(サーバーの
-    // TTL を変えても案内が食い違わない)。期限切れの文面にも同じ期間を添える
+  it("the validity guidance and the expiry wording derive from the server response's expiresInSeconds (ruling D-1)", async () => {
+    // Truncated to minutes; only sub-minute is said in seconds. The CLI holds no
+    // constant (the guidance cannot disagree if the server changes its TTL). The expiry wording carries the same duration
     for (const [seconds, window] of [
       [600, "10 minutes"],
       [61, "1 minute"],
@@ -508,7 +508,7 @@ describe("maruhi login", () => {
       expect(guidance).toContain(`This request expires in ${window}`);
       expect(guidance).toContain(`The sign-in request expired (it was valid for ${window})`);
     }
-    // 非数・非正は既定(サーバーの起草値と同じ 15 分)へ丸めて案内する
+    // Non-numeric / non-positive values are rounded to the default (15 minutes, same as the server's drafted value) for the guidance
     const handoff = fakeHandoff({ startOverrides: { expiresInSeconds: -1 } });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -517,13 +517,13 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("This request expires in 15 minutes");
   });
 
-  it("対話の案内は stderr、結果は stdout(`maruhi login > file` でも案内が見える)", async () => {
+  it("interactive guidance goes to stderr, results to stdout (guidance stays visible even with `maruhi login > file`)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer)).toBe(0);
-    // stdout は結果だけ(URL・コード・待機表示を混ぜない)
+    // stdout carries only the result (no URL / code / waiting display mixed in)
     expect(env.logs).toEqual([
       "Signed in as user-0001. The token is stored in the OS keychain",
       "The token expires on 2099-01-01 (UTC). Signing in again with the same token name (cli-test) rotates it and revokes the old one",
@@ -531,7 +531,7 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).not.toContain(VERIFICATION_URL);
   });
 
-  it("未設定サーバー(503 SetupIncomplete)はセットアップガイドを案内して失敗する", async () => {
+  it("an unconfigured server (503 SetupIncomplete) fails after showing the setup guide", async () => {
     const maruhi = await start([
       onRequest("POST", "/auth/cli/start", () => ({
         status: 503,
@@ -546,9 +546,9 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 
-  it("範囲外の expiresAtMs でもクラッシュせず明示劣化する(display.ts の total 表示)", async () => {
-    // ワイヤの expiresAtMs は無制限 number — Date 範囲(±8.64e15)外を
-    // toISOString へ渡すと RangeError の defect になる(display.ts の規律)
+  it("degrades explicitly without crashing on an out-of-range expiresAtMs (display.ts's total display)", async () => {
+    // expiresAtMs on the wire is an unbounded number — passing a value outside
+    // the Date range (±8.64e15) to toISOString would be a RangeError defect (the display.ts rule)
     const handoff = fakeHandoff({ expiresAtMs: 9.9e15 });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -558,7 +558,7 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).toContain("(invalid timestamp: 9900000000000000)");
   });
 
-  it("--show-token は発行した生値を 1 度だけ端末へ出し、供給手順を案内する(裁定 CK)", async () => {
+  it("--show-token prints the issued raw value to the terminal exactly once and guides the provisioning steps (ruling CK)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -569,21 +569,21 @@ describe("maruhi login", () => {
     expect(logs).toContain("maruhi_pat_issued");
     expect(logs).toContain("MARUHI_TOKEN");
     expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
-    // 供給ログインの身元スワップの注記(裁定 CM)— **既定名で発行した**この
-    // ケースでは「素の再ログイン」を勧めてはならない(同名ローテーションが
-    // いま表示したトークン自体を失効させる)。正しい
-    // 復し方 = 別名での発行し直し
+    // The provisioned-login identity-swap note (ruling CM) — in this case, issued
+    // **under the default name**, "a plain re-login" must not be recommended
+    // (the same-name rotation would revoke the very token just displayed). The
+    // correct recovery = re-issue under a different name
     const notes = env.errors.join("\n");
     expect(notes).toContain("default token name");
     expect(notes).toContain("issue it under a distinct name instead");
     expect(notes).not.toContain("run a plain `maruhi login` afterwards");
-    // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
+    // Keychain saving is independent of whether the token is shown (display is one additional place, not a substitute)
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
   });
 
-  it("--show-token + 明示 --token-name では素の再ログインによる復し方を案内する(裁定 CM)", async () => {
-    // 別名で供給した場合は素の再ログイン(既定名のローテーション)が供給済み
-    // トークンに触れない — こちらのケースでのみこの案内を出す
+  it("--show-token + explicit --token-name guides recovery via a plain re-login (ruling CM)", async () => {
+    // When provisioned under a different name, a plain re-login (rotating the
+    // default name) never touches the provisioned token — this guidance is shown only in this case
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -597,10 +597,10 @@ describe("maruhi login", () => {
     expect(notes).not.toContain("issue it under a distinct name instead");
   });
 
-  it("--show-token は敵対的サーバーの ANSI 注入を可視エスケープに畳む(escapeText — コピー同一性は保つ)", async () => {
-    // token はワイヤ上無制約の Schema.String。表示はコピーする値なので
-    // displayText(U+FFFD 置換 = 値の破壊)でなく escapeText(正直な Base62 は
-    // 素通し・注入は \u{hex} の可視列)を通す
+  it("--show-token folds a hostile server's ANSI injection into visible escapes (escapeText — copy fidelity is kept)", async () => {
+    // token is an unconstrained Schema.String on the wire. The display is a value
+    // meant to be copied, so it goes through escapeText (honest Base62 passes
+    // through; injection becomes a visible \u{hex} sequence) rather than displayText (U+FFFD substitution = destroying the value)
     const handoff = fakeHandoff({
       token: "maruhi_pat_evil\u001b[2Jinjected\nSet MARUHI_TOKEN to attacker-value",
     });
@@ -610,16 +610,16 @@ describe("maruhi login", () => {
 
     expect(await runCli(["login", "--show-token", ...FAST_POLL], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    // 生の ESC・偽の追加行は端末へ届かない(エスケープ列として可視化される)
+    // Raw ESC / fake appended lines never reach the terminal (visualized as escape sequences)
     expect(logs).not.toContain("\u001b");
     expect(logs).toContain("maruhi_pat_evil");
     expect(logs).not.toContain("\nSet MARUHI_TOKEN to attacker-value");
   });
 
-  it("--show-token はエージェント環境・非対話端末をどの通信よりも前に拒否する(fail-closed 2 層)", async () => {
-    // 拒否される環境でブラウザ承認を完走させると、同名ローテーションで旧
-    // トークンだけ失効し新しい生値は得られない(置き換え対象の CI トークンを
-    // 壊すだけ)— 判定は start より前
+  it("--show-token refuses agent environments / non-interactive terminals before any communication (fail-closed, 2 layers)", async () => {
+    // Running the browser approval to completion in a refused environment would
+    // only revoke the old token via same-name rotation without yielding the new
+    // raw value (it just breaks the CI token being replaced) — the check runs before start
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
 
@@ -638,7 +638,7 @@ describe("maruhi login", () => {
     expect(maruhi.requests).toHaveLength(0);
   });
 
-  it("ログイン後、鍵なし + リカバリー登録済みなら `key recover` を案内する", async () => {
+  it("after login, no key + recovery registered → guides `key recover`", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
@@ -653,12 +653,12 @@ describe("maruhi login", () => {
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     const hint = env.errors.join("\n");
     expect(hint).toContain("`maruhi key recover`");
-    // 導線の順序(K7-4): 端末が残っていれば追加、無ければ復元
+    // Path ordering (K7-4): if a device remains, add; otherwise, recover
     expect(hint.indexOf("`maruhi device add`")).toBeGreaterThan(-1);
     expect(hint.indexOf("`maruhi device add`")).toBeLessThan(hint.indexOf("`maruhi key recover`"));
   });
 
-  it("ログイン後、鍵あり + リカバリー未登録なら発行を促す(保管リマインダ)", async () => {
+  it("after login, key present + recovery unregistered → prompts issuance (the storage reminder)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
@@ -669,7 +669,7 @@ describe("maruhi login", () => {
     ]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // 事前にこの (origin, user) の master 鍵レコードを置いておく
+    // Pre-place a device key record for this (origin, user)
     env.keychain.set(
       masterKeyEntryName(maruhi.origin, "user-0001"),
       JSON.stringify({
@@ -685,19 +685,19 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("issue one with `maruhi key recovery`");
   });
 
-  it("ログイン後の案内は状態確認に失敗してもログインを失敗させず、スキップを明示する", async () => {
-    // recovery/status ハンドラなし = 状態確認が失敗する状況
+  it("a failed status check on post-login guidance does not fail the login; the skip is made explicit", async () => {
+    // recovery/status handler absent = the situation where the status check fails
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
-    // 無言のスキップにしない(CLAUDE.md: catch で無言に飲まない)
+    // Never a silent skip (CLAUDE.md: do not swallow silently in a catch)
     expect(env.errors.join("\n")).toContain("skipped the next-step hint");
   });
 
-  it("キーチェーン保存に失敗したら発行済みトークンを失効させてから失敗する(孤児化防止)", async () => {
+  it("on keychain-save failure, revokes the issued token before failing (anti-orphaning)", async () => {
     let revoked = 0;
     const handoff = fakeHandoff();
     const maruhi = await start([
@@ -715,10 +715,10 @@ describe("maruhi login", () => {
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
     expect(revoked).toBe(1);
     expect(env.keychain.size).toBe(0);
-    expect(env.errors.join("\n")).toContain("キーチェーン");
+    expect(env.errors.join("\n")).toContain("キーチェーン"); // english-exempt: asserts literal text owned by apps/cli/test/support/env.ts
   });
 
-  it("キーチェーン保存失敗 + 失効も失敗した場合は「失効させた」と主張しない", async () => {
+  it("never claims 'revoked' when keychain-save fails and revocation also fails", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
@@ -732,12 +732,12 @@ describe("maruhi login", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("revoking the issued token also failed");
     expect(errors).not.toContain("has been revoked on the server");
-    // 同名再ログインによるローテーション失効の案内がある
+    // Guidance exists for rotation-revocation via a same-name re-login
     expect(errors).toContain("cli-test");
   });
 
-  it("config の server が不正な場合は、直す先を示して 1 で落ちる", async () => {
-    // コマンドラインに何も書いていないので「書き方の誤り(2)」ではない
+  it("an invalid config server names the fix target and exits 1", async () => {
+    // Nothing was typed on the command line, so it is not "a usage mistake (2)"
     const env = await makeTestEnv();
     await seedConfig(env, { server: "ftp://bad.example" });
     expect(await runCli(["logout"], env.layer)).toBe(1);
@@ -746,7 +746,7 @@ describe("maruhi login", () => {
 });
 
 describe("maruhi logout", () => {
-  it("自トークンを失効させ、キーチェーンから削除する", async () => {
+  it("revokes the own token and removes it from the keychain", async () => {
     let revoked = 0;
     const maruhi = await start([
       onRequest("POST", "/auth/token/revoke", (request) => {
@@ -766,7 +766,7 @@ describe("maruhi logout", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("失効 API の失敗(5xx)時はキーチェーンを先に削除する(無効トークンを残さない)", async () => {
+  it("on revocation-API failure (5xx), deletes from the keychain first (never leaves an invalid token)", async () => {
     const maruhi = await start([
       onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
     ]);
@@ -776,14 +776,14 @@ describe("maruhi logout", () => {
       tokenEntryName(maruhi.origin),
       JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
     );
-    // 削除を失効より先に行う: 失効成功後に削除が失敗すると無効トークンが
-    // キーチェーンに残り以後の全コマンドが 401 になるため。失効失敗は exit 1
-    // だが、キーチェーンからは既に削除済み(再ログインで回収可能)
+    // Deletion runs before revocation: if revocation succeeded and deletion then
+    // failed, an invalid token would remain in the keychain and every later
+    // command would 401. A failed revocation is exit 1, but the keychain entry is already removed (recoverable via re-login)
     expect(await runCli(["logout"], env.layer)).toBe(1);
     expect(env.keychain.size).toBe(0);
   });
 
-  it("既に失効済み(401)の場合もキーチェーンを削除して成功する", async () => {
+  it("also succeeds by removing the keychain entry when already revoked (401)", async () => {
     const maruhi = await start([
       onRequest("POST", "/auth/token/revoke", () => ({
         status: 401,
@@ -800,7 +800,7 @@ describe("maruhi logout", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("MARUHI_TOKEN が残っている場合は「引き続き認証される」ことを警告する", async () => {
+  it("warns that a remaining MARUHI_TOKEN 'keeps authenticating'", async () => {
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -815,12 +815,12 @@ describe("maruhi logout", () => {
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN is set");
   });
 
-  it("MARUHI_TOKEN が伏字・MARUHI_TOKEN_ORIGIN 未設定なら原因ごとに案内する", async () => {
-    // どちらも次のコマンドが失敗する状態だが、直し方が違う(貼り直す / 足す)
+  it("a redacted MARUHI_TOKEN / unset MARUHI_TOKEN_ORIGIN gets per-cause guidance", async () => {
+    // Both are states where the next command fails, but the fixes differ (re-paste / add one)
     for (const [token, origin, expected] of [
       ["<redacted:maruhi-token>", "https://x.example", "redaction placeholder"],
       ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN is not set"],
-      // 形が使えない理由は解決側の文言をそのまま出す(言い換えない)
+      // The reason the shape cannot be used is shown in the resolver's own wording (not paraphrased)
       ["maruhi_pat_env", "not-a-url", "Cannot parse"],
       ["maruhi_pat_env", "http://remote.example", "loopback"],
     ] as const) {
@@ -844,10 +844,10 @@ describe("maruhi logout", () => {
     }
   });
 
-  it("MARUHI_TOKEN_ORIGIN が一致しない場合は「使われない」と案内する", async () => {
-    // resolveSession は origin 束縛を要求し、一致しなければ**キーチェーンへ
-    // 落ちずに失敗する**。ここで「引き続き認証されます」と言うと、次の
-    // コマンドが失敗する理由と食い違う
+  it("a mismatched MARUHI_TOKEN_ORIGIN guides that it 'is not used'", async () => {
+    // resolveSession requires the origin binding; a mismatch **fails without
+    // reaching the keychain**. Saying "keeps authenticating" here would
+    // contradict why the next command fails
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -863,9 +863,9 @@ describe("maruhi logout", () => {
     expect(notes).not.toContain("stays authenticated with that token");
   });
 
-  it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {
-    // resolveSession は trim 後に空なら未設定として扱う。ここだけ生値で見ると
-    // 「引き続き認証されます」と言った直後に「Not logged in」で落ちる
+  it("does not warn on a whitespace-only MARUHI_TOKEN (same check as session resolution)", async () => {
+    // resolveSession treats an empty-after-trim value as unset. If only this
+    // looked at the raw value, it would say "keeps authenticating" right before failing with "Not logged in"
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -878,7 +878,7 @@ describe("maruhi logout", () => {
     expect(env.errors.join("\n")).not.toContain("MARUHI_TOKEN is set");
   });
 
-  it("トークン未保存はエラーメッセージで案内する", async () => {
+  it("an unsaved token is guided via an error message", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });

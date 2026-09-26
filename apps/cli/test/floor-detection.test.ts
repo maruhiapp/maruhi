@@ -1,10 +1,11 @@
-// ローカル床の結線テスト(CRYPTO_SPEC §6.3 規則 (a)(b)(c))。
-// 同一 TestEnv(= 同一の床ファイル)に対してモックサーバーを差し替え、
-// セッション(プロセス実行)を跨ぐ巻き戻し・欠落・forward injectionの永続検出を検査する。
+// Wiring tests for the local floor (CRYPTO_SPEC §6.3 rules (a)(b)(c)).
+// Swap mock servers against the same TestEnv (= the same floor file) and
+// check the persistent detection — across sessions (process runs) — of
+// rollback, omission, and forward injection.
 //
-// フェーズ 1 は常に正直な応答で床を確立し、フェーズ 2 以降で改竄された配布を
-// 与える。改竄はすべて正規鍵の有効署名付き(署名検証は通る)— 床だけが検出
-// できる攻撃面であることを固定する。
+// Phase 1 always establishes the floor with honest responses; phase 2 onward
+// feeds tampered distributions. Every tamper carries a valid signature from a
+// legitimate key (signature verification passes) — pinning that this is an attack surface only the floor can detect.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,9 +47,9 @@ let dek1: Uint8Array;
 let dek2: Uint8Array;
 /** chain1 = [genesis, create_environment](epoch 1)。 */
 let chain1: BuiltChain;
-/** chain2 = chain1 + rotate_epoch(2)(決定的ビルドにより chain1 の厳密な延長)。 */
+/** chain2 = chain1 + rotate_epoch(2) (a strict extension of chain1 via deterministic builds). */
 let chain2: BuiltChain;
-/** chainB = genesis は同一だが seq 2 から分岐した別チェーン。 */
+/** chainB = same genesis, but a different chain branched at seq 2. */
 let chainB: BuiltChain;
 let wrap1: WireRecipientDek;
 let wrap2: WireRecipientDek;
@@ -71,7 +72,7 @@ beforeAll(async () => {
     ...steps,
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
   ]);
-  // 同一 genesis から seq 2 で分岐(create の DEK コミットメントが異なる)
+  // Branches from the same genesis at seq 2 (the create's DEK commitment differs)
   chainB = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dekB) },
@@ -103,7 +104,7 @@ function genesisHead(): { seq: number; hashHex: string } {
   return { seq: 1, hashHex: projectId };
 }
 
-/** 変数値(epoch に応じた正しい宣言ヘッド: epoch1 = create、epoch2 = rotate)。 */
+/** The variable value (the correct declared head per epoch: epoch1 = create, epoch2 = rotate). */
 async function valueOf(input: {
   readonly variableId: string;
   readonly version: number;
@@ -159,12 +160,12 @@ interface PullPayload {
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly deks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
-  /** 同梱マニフェストの manifestVersion(フェーズ間でメタ集合が変わるときは進める)。 */
+  /** The bundled manifest's manifestVersion (advance it when the meta set changes between phases). */
   readonly manifestVersion?: number;
   /**
-   * manifestVersion > 1 の prev(直前マニフェストの signed-bytes ハッシュ)。
-   * 床が直前版を記録しているフィクスチャは、隣接 prev 検証を満たす
-   * 正しい連鎖を渡す(prevOfPhase ヘルパ)。未指定はフィクスチャのダミー。
+   * prev for manifestVersion > 1 (the previous manifest's signed-bytes hash).
+   * Fixtures where the floor has recorded the previous version pass the
+   * correct chain satisfying the adjacent prev check (the prevOfPhase helper). Unspecified = the fixture's dummy.
    */
   readonly prevManifestSigHashHex?: string;
 }
@@ -178,7 +179,7 @@ interface ManifestPayload {
   readonly prevManifestSigHashHex?: string;
 }
 
-/** 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的 = 再計算は byte-exact。 */
+/** The manifest computed from the distributed set itself (§12-7). Ed25519 is deterministic = recomputation is byte-exact. */
 async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   const epoch = payload.currentEpoch ?? 1;
   return manifestFor({
@@ -196,7 +197,7 @@ async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   });
 }
 
-/** 前フェーズのマニフェストの signed-bytes ハッシュ(次版の prev の連鎖材料)。 */
+/** The previous phase's manifest signed-bytes hash (chaining material for the next version's prev). */
 async function prevOfPhase(payload: ManifestPayload): Promise<string> {
   return manifestHashOf(
     projectId,
@@ -205,7 +206,7 @@ async function prevOfPhase(payload: ManifestPayload): Promise<string> {
 }
 
 function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
-  // 呼び出しごとに進む(future head の有界再同期で次のチェーンが見える)
+  // Advances on each call (the bounded resync for a future head reveals the next chain)
   let call = 0;
   return onRequest("GET", `/projects/${projectId}/chain`, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
@@ -247,7 +248,7 @@ function deksHandlerFor(deks: readonly WireRecipientDek[]): MockHandler {
   }));
 }
 
-/** メタデータのみ pull(§12-7 — push の名前解決経路)の応答。 */
+/** The response of a metadata-only pull (§12-7 — push's name-resolution path). */
 function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
   return onRequest(
     "GET",
@@ -266,7 +267,7 @@ function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
   );
 }
 
-/** 同一 TestEnv(= 同一の床)に対する新しいサーバーフェーズを開始する。 */
+/** Starts a new server phase against the same TestEnv (= the same floor). */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<MockServer> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -279,7 +280,7 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
   return server;
 }
 
-/** 床(観測ログの fold)を読む。ログは追記専用の JSONL(floor-log.ts)。 */
+/** Reads the floor (the fold of the observation log). The log is append-only JSONL (floor-log.ts). */
 async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
   const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(projectId));
   expect(loaded.state).toBe("loaded");
@@ -287,19 +288,19 @@ async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
   return loaded.floor as ProjectFloor;
 }
 
-/** 床ログの生バイト(非機密性・証拠保全の検査用)。 */
+/** The floor log's raw bytes (for checking non-confidentiality / evidence preservation). */
 async function readFloorRaw(env: TestEnv): Promise<string> {
   return readFile(join(env.floorDir, `${projectId}.jsonl`), "utf8");
 }
 
-/** フェーズ 1(正直な配布)で床を確立し、pull が成功することを検証する。 */
+/** Establishes the floor in phase 1 (an honest distribution) and verifies pull succeeds. */
 async function establishFloor(env: TestEnv, payload: PullPayload, chain = chain1): Promise<void> {
   await startPhase(env, [chainHandlerFor([chain]), pullHandlerFor(payload)]);
   expect(await runCli(["pull"], env.layer)).toBe(0);
 }
 
-describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
-  it("初回同期は床なしの注意を出し、床ファイルを作る(非機密ダイジェストのみ)", async () => {
+describe("floor establishment and fail-open (§6.3 / no floor · corruption)", () => {
+  it("the first sync issues a no-floor notice and creates the floor file (non-sensitive digests only)", async () => {
     const env = await makeTestEnv();
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "beta-value" });
     await establishFloor(env, {
@@ -318,13 +319,13 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
     const record = floor.environments[ENV_ID];
     expect(record?.pullEpoch).toBe(1);
     expect(record?.variables["vb"]).toMatchObject({ status: "active", version: 1, epoch: 1 });
-    // 床ログに平文値・変数名を書かない(ディスクレス不変条件)
+    // Never writes plaintext values / variable names to the floor log (the diskless invariant)
     const raw = await readFloorRaw(env);
     expect(raw).not.toContain("beta-value");
     expect(raw).not.toContain("BETA");
   });
 
-  it("床ログの破損は初回とは異なる警告で fail-open し、次の成功 pull から追記を再開する", async () => {
+  it("floor-log corruption fails open with a warning distinct from the first-run one, and resumes appending from the next successful pull", async () => {
     const env = await makeTestEnv();
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const entry = {
@@ -333,8 +334,8 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
       value: beta,
     };
     await establishFloor(env, { variables: [entry], deks: [wrap1] });
-    // 解読可能なレコードが 1 行も残らない全体破損(部分的な torn 行は corrupt では
-    // なく自己回復の対象 — floor.test.ts)
+    // Whole-file corruption where not a single parseable record remains (a
+    // partially torn line is not corruption but a self-recovery target — floor.test.ts)
     await writeFile(join(env.floorDir, `${projectId}.jsonl`), "{broken-json");
     env.errors.length = 0;
     await startPhase(env, [
@@ -350,8 +351,8 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
   });
 });
 
-describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
-  it("version の後退を拒否し、両 signed bytes ハッシュと宣言ヘッドを証拠として出す", async () => {
+describe("persistent detection of rollback (§6.3 rule (a))", () => {
+  it("refuses a version regression and emits both signed-bytes hashes and the declared head as evidence", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "old" });
@@ -374,20 +375,21 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("value-version rollback");
-    // fork 証拠: 床側と配布側の signed bytes ハッシュ・宣言ヘッド・座標
+    // Fork evidence: the floor-side and distributed-side signed-bytes hashes, declared head, coordinates
     expect(errors).toContain(await valueHashOf(v2, owner.userId));
     expect(errors).toContain(await valueHashOf(v1, owner.userId));
     expect(errors).toContain(`variable=vb`);
     expect(errors).toContain(`declared head: seq=2`);
-    // 平文値は証拠に含まれない
+    // The plaintext value is not in the evidence
     expect(errors).not.toContain("old");
     expect(errors).not.toContain("new");
   });
 
-  it("variableId `constructor`(正当な ID)でも床の確立と巻き戻し検出が機能する", async () => {
-    // Object.prototype の継承プロパティ名と衝突する §12-1 適合 ID。
-    // 素のブラケット参照だと「床にない ID」が Function に解決され、
-    // 床が自己破損・誤検査になる — own-property 参照で正しく動くことを固定する
+  it("floor establishment and rollback detection work even for variableId `constructor` (a legitimate ID)", async () => {
+    // A §12-1-conforming ID that collides with an inherited Object.prototype
+    // property name. With a bare bracket lookup, "an ID absent from the floor"
+    // would resolve to Function and the floor would self-corrupt / misdetect —
+    // pin that own-property lookup works correctly
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "constructor", name: "CTOR_VAR" });
     const v1 = await valueOf({ variableId: "constructor", version: 1, epoch: 1, plaintext: "a" });
@@ -410,7 +412,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("value-version rollback");
   });
 
-  it("拒否された pull は床を前進させない(更新順序の規範 — 検査は前回基準)", async () => {
+  it("a refused pull never advances the floor (the update-ordering norm — checks run against the previous baseline)", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "old" });
@@ -430,7 +432,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(after.environments[ENV_ID]).toEqual(before.environments[ENV_ID]);
   });
 
-  it("変数 metaVersion の後退を拒否する", async () => {
+  it("refuses a variable metaVersion regression", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const metaV2 = await statementOf({ variableId: "vb", name: "BETA", metaVersion: 2 });
@@ -451,7 +453,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("meta-statement rollback");
   });
 
-  it("環境 metaVersion の後退を拒否する", async () => {
+  it("refuses an environment metaVersion regression", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -481,7 +483,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("meta-statement rollback");
   });
 
-  it("環境メタの同一 metaVersion への異なる signed bytes(環境名の付け替え)を拒否する", async () => {
+  it("refuses different signed bytes under the same environment-meta metaVersion (an environment-name swap)", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -490,7 +492,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
       deks: [wrap1],
     });
 
-    // 同一 metaVersion 1 で name だけ異なる環境ステートメント(有効署名)
+    // An environment statement at the same metaVersion 1 differing only in name (valid signature)
     const swapped = await environmentStatementFor({
       projectId,
       environmentId: ENV_ID,
@@ -509,11 +511,11 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("signed bytes served for the same metaVersion");
-    // 環境メタの証拠座標は環境まで(variable= を含まない)
+    // The environment meta's evidence coordinates stop at the environment (no variable=)
     expect(errors).toContain(`coordinates: project=${projectId} environment=${ENV_ID}\n`);
   });
 
-  it("エポックの後退(前進 version への床エポック未満の配布)を拒否する", async () => {
+  it("refuses an epoch regression (distributing below the floor's epoch under an advancing version)", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "va", name: "ALPHA" });
     const v3e2 = await valueOf({ variableId: "va", version: 3, epoch: 2, plaintext: "cur" });
@@ -527,7 +529,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
       chain2,
     );
 
-    // version 4 > 床 3 だが epoch 1 < 床の epoch 2(§4.1 monotonicity violation)
+    // version 4 > floor 3 but epoch 1 < floor's epoch 2 (§4.1 monotonicity violation)
     const v4e1 = await valueOf({ variableId: "va", version: 4, epoch: 1, plaintext: "regressed" });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -541,7 +543,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("monotonicity violation");
   });
 
-  it("チェーン長の後退(短縮)を拒否する(有界再同期でも解決しない場合)", async () => {
+  it("refuses a chain-length regression (shortening) — when bounded resync cannot resolve it", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -555,7 +557,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
       chain2,
     );
 
-    // 再同期(2 回目の chain 取得)でも chain1 のまま = 真の短縮
+    // Still chain1 after the resync (the second chain fetch) = a true shortening
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
@@ -567,11 +569,11 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
     expect(errors).toContain(`seq=2 hash=${chain1.hashes[1]}`);
   });
 
-  it("床ヘッドが自ビューより先の正直なレース(兄弟プロセスの前進)は有界再同期で解決する", async () => {
+  it("an honest race where the floor head is beyond our view (a sibling process's advance) resolves via bounded resync", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
-    // 床は chain2(seq 3)まで確立済み
+    // The floor is already established through chain2 (seq 3)
     await establishFloor(
       env,
       {
@@ -582,8 +584,9 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
       chain2,
     );
 
-    // 1 回目の同期は古いビュー(chain1)を掴む(同期と床ロードの間に兄弟が床を
-    // 前進させた形のレース)→ 短縮を即時証拠にせず 1 回だけ再同期して解決する
+    // The first sync grabs the old view (chain1) — the race shape where a
+    // sibling advanced the floor between sync and floor load → do not treat
+    // the shortening as immediate evidence; resolve via a single resync
     await startPhase(env, [
       chainHandlerFor([chain1, chain2]),
       pullHandlerFor({
@@ -596,7 +599,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a))", () => {
   });
 });
 
-describe("欠落の永続検出(§6.3 規則 (a))", () => {
+describe("persistent detection of omission (§6.3 rule (a))", () => {
   async function twoVariablePhases(env: TestEnv): Promise<void> {
     const alpha = await valueOf({ variableId: "va", version: 1, epoch: 1, plaintext: "a" });
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -611,8 +614,9 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
       value: beta,
     };
     await establishFloor(env, { variables: [alphaEntry, betaEntry], deks: [wrap1] });
-    // フェーズ 2: BETA を配布から落とす(選択的な応答の切り詰め)。メタデータ
-    // のみ pull(push の解決経路)でも同様に落とす — 床のメタ水準検査が対象
+    // Phase 2: drop BETA from the distribution (selective response trimming).
+    // Drop it likewise on the metadata-only pull (push's resolution path) —
+    // the floor's meta-level check is the target
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [alphaEntry], deks: [wrap1] }),
@@ -621,7 +625,7 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
     ]);
   }
 
-  it("pull: 検証済み変数の欠落を拒否する", async () => {
+  it("pull: refuses the omission of a verified variable", async () => {
     const env = await makeTestEnv();
     await twoVariablePhases(env);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -630,7 +634,7 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
     expect(errors).toContain("variable=vb");
   });
 
-  it("run: 欠落した配布ではコマンドを実行しない(非ゼロ終了)", async () => {
+  it("run: never executes the command on a distribution with an omission (non-zero exit)", async () => {
     const env = await makeTestEnv();
     await twoVariablePhases(env);
     expect(await runCli(["run", "--", "printenv"], env.layer)).toBe(1);
@@ -638,7 +642,7 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
-  it("push: 欠落した配布では push しない(解決 pull で床検査が発火)", async () => {
+  it("push: never pushes on a distribution with an omission (the floor check fires on the resolution pull)", async () => {
     const env = await makeTestEnv();
     await twoVariablePhases(env);
     env.setStdin(new TextEncoder().encode("value"));
@@ -646,7 +650,7 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
     expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
-  it("tombstone の欠落(削除記録の隠蔽)を拒否する", async () => {
+  it("refuses a tombstone omission (concealment of the deletion record)", async () => {
     const env = await makeTestEnv();
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const betaEntry = {
@@ -677,20 +681,21 @@ describe("欠落の永続検出(§6.3 規則 (a))", () => {
   });
 });
 
-describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — 検出と誤拒否なしの両縁)", () => {
-  it("ローテーション前の正当な旧エポック新版は受理し、基準前進後の旧エポック新版は拒否する", async () => {
+describe("floor detection of forward injection without false refusal (§6.3 rule (c) — both edges: detection and no false refusal)", () => {
+  it("accepts a legitimate pre-rotation old-epoch new version, and refuses an old-epoch new version after the criterion advances", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "v1" });
-    // フェーズ 1: epoch 1 のチェーンで pull(基準 = 1)
+    // Phase 1: pull on the epoch-1 chain (criterion = 1)
     await establishFloor(env, {
       variables: [{ variableId: "vb", statement, value: v1 }],
       deks: [wrap1],
     });
 
-    // フェーズ 2: rotate 済みチェーン(現エポック 2)だが、rotate 前に正当に
-    // push された v2(epoch 1)が最新のまま = 再暗号化完了前の正当な状態。
-    // 基準は前回 pull の 1 なので誤拒否しない(規則 (c) の誤拒否側の縁)
+    // Phase 2: the chain has rotated (current epoch 2), but v2 (epoch 1),
+    // legitimately pushed before the rotate, is still latest = the legitimate
+    // state before re-encryption completes. The criterion is the previous
+    // pull's 1, so no false refusal (rule (c)'s no-false-refusal edge)
     const v2 = await valueOf({
       variableId: "vb",
       version: 2,
@@ -698,8 +703,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
       plaintext: "v2",
       prevValueSigHashHex: await valueHashOf(v1, owner.userId),
     });
-    // 隣接版(床 v1 の直後 = v2)の prev は床のマニフェスト hash と厳密検証される
-    // ため、正当な連鎖を組む
+    // The adjacent version's (v2, right after the floor's v1) prev is strictly
+    // verified against the floor's manifest hash, so assemble a legitimate chain
     const prevHash = await prevOfPhase({ variables: [statement] });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -707,19 +712,19 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // rotate 複合がマニフェストを再発行済み(§12-4)の形
+        // The shape where the rotate composite has already re-issued the manifest (§12-4)
         manifestVersion: 2,
         prevManifestSigHashHex: prevHash,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    // 検証成功後、基準は変数床と原子的に 2 へ前進している
+    // After verification succeeds, the criterion has advanced to 2 atomically with the variable floor
     const floor = await readFloorFile(env);
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(2);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 1 });
 
-    // フェーズ 3: 基準 2 の下で、床の version より新しい v3 が epoch 1 のまま =
-    // 旧エポック鍵によるforward injectionの形(規則 (c) の検出側の縁)
+    // Phase 3: under criterion 2, a v3 newer than the floor's version still at
+    // epoch 1 = the shape of a forward injection by the old-epoch key (rule (c)'s detection edge)
     const v3 = await valueOf({
       variableId: "vb",
       version: 3,
@@ -733,7 +738,7 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
         variables: [{ variableId: "vb", statement, value: v3 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // メタ集合はフェーズ 2 と同一 = 同じ v2 マニフェスト(byte-exact)を配布
+        // The meta set is identical to phase 2 = distribute the same v2 manifest (byte-exact)
         manifestVersion: 2,
         prevManifestSigHashHex: prevHash,
       }),
@@ -744,11 +749,11 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
     expect(errors).toContain("pull-time epoch baseline=2");
   });
 
-  it("床にない新規変数にも規則 (c) を適用する(基準未満のエポックの新規配布は注入の形)", async () => {
+  it("applies rule (c) to a new variable absent from the floor too (a new distribution below the criterion's epoch is the injection shape)", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 2, plaintext: "b" });
-    // 基準 2 の床を確立(rotate 済みチェーン)
+    // Establish a criterion-2 floor (the post-rotate chain)
     await establishFloor(
       env,
       {
@@ -759,8 +764,9 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
       chain2,
     );
 
-    // 前回 pull 以降に「作られた」ことになっている新規変数が epoch 1 = 基準未満
-    // (正当な作成は作成時点の現エポック ≥ 基準でしか起きない)
+    // A new variable "created" after the previous pull is at epoch 1 = below
+    // the criterion (a legitimate creation can only happen at the current
+    // epoch of its creation time ≥ the criterion)
     const injected = await valueOf({ variableId: "vc", version: 1, epoch: 1, plaintext: "x" });
     const injectedEntry = {
       variableId: "vc",
@@ -774,8 +780,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
         variables: [betaEntry, injectedEntry],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // 「vc が作られた」ことになっている = マニフェストも前進している形
-        // (隣接版なので prev は正しく連鎖させる — prev 検証とは独立の検査を固定)
+        // "vc was created" = the shape where the manifest has also advanced
+        // (an adjacent version, so prev chains correctly — pinning a check independent of prev verification)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement], currentEpoch: 2 }),
       }),
@@ -788,8 +794,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) — �
   });
 });
 
-describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §14.2-5)", () => {
-  it("同一 version への異なる signed bytes の配布を equivocation の証拠として拒否する", async () => {
+describe("evidencing differing signed bytes at the same coordinates (§6.3 rule (b) / §14.2-5)", () => {
+  it("refuses a distribution of different signed bytes under the same version as evidence of equivocation", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const original = await valueOf({
@@ -803,7 +809,7 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
       deks: [wrap1],
     });
 
-    // 同一 version 1 に別内容(fresh nonce・別平文)— 署名は正規鍵で有効
+    // Different content under the same version 1 (fresh nonce · different plaintext) — the signature is valid under the legitimate key
     const replaced = await valueOf({
       variableId: "vb",
       version: 1,
@@ -824,7 +830,7 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
     expect(errors).toContain(await valueHashOf(replaced, owner.userId));
   });
 
-  it("同一 metaVersion への異なる signed bytes(名前の付け替え)を拒否する", async () => {
+  it("refuses different signed bytes under the same metaVersion (a name swap)", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const original = await statementOf({ variableId: "vb", name: "BETA" });
@@ -847,11 +853,11 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
   });
 });
 
-describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", () => {
+describe("the floor semantics of deletion (§6.3 rule (a) — deleted is a terminal state)", () => {
   const tombstoneOf = () =>
     statementOf({ variableId: "vb", name: "BETA", metaVersion: 2, status: "deleted" });
 
-  it("正当な削除(metaVersion 前進の tombstone)は受理し、床を deleted へ進める", async () => {
+  it("accepts a legitimate deletion (a tombstone advancing metaVersion) and advances the floor to deleted", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -866,8 +872,9 @@ describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", 
         variables: [],
         deletedVariables: [await tombstoneOf()],
         deks: [wrap1],
-        // 削除のメタ操作がマニフェストを再発行済み(§12-4)の形。隣接版の
-        // prev は床 v1 のマニフェスト hash と厳密検証される
+        // The shape where the deletion meta operation has already re-issued
+        // the manifest (§12-4). The adjacent version's prev is strictly
+        // verified against the floor's v1 manifest hash
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -881,11 +888,11 @@ describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", 
   });
 
   it.each([
-    ["metaVersion 前進", 3],
-    ["同一 metaVersion", 2],
-    ["metaVersion 後退", 1],
+    ["metaVersion advance", 3],
+    ["same metaVersion", 2],
+    ["metaVersion regression", 1],
   ])(
-    "unauthorized undeletion(deleted 記録済みの active 配布 — %s)を拒否する",
+    "refuses unauthorized undeletion (an active distribution of a deleted-recorded variable — %s)",
     async (_label, metaVersion) => {
       const env = await makeTestEnv();
       await establishFloor(env, {
@@ -894,8 +901,8 @@ describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", 
         deks: [wrap1],
       });
 
-      // 削除済み variableId が active として配布される(metaVersion の値に依らず
-      // 拒否 — deleted は終端状態で正当な再 active 化が存在しない)
+      // A deleted variableId distributed as active (refused regardless of the
+      // metaVersion value — deleted is a terminal state and no legitimate re-activation exists)
       const revived = await statementOf({ variableId: "vb", name: "BETA", metaVersion });
       const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
       await startPhase(env, [
@@ -910,7 +917,7 @@ describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", 
     },
   );
 
-  it("tombstone(deleted は終端状態 — 床との厳密一致を要求)を拒否する", async () => {
+  it("refuses the tombstone (deleted is a terminal state — demanding strict agreement with the floor)", async () => {
     const env = await makeTestEnv();
     await establishFloor(env, {
       variables: [],
@@ -933,8 +940,8 @@ describe("削除の床意味論(§6.3 規則 (a) — deleted は終端状態)", 
   });
 });
 
-describe("分岐 2 種の区別(§6.3-2)", () => {
-  it("床 seq 以下のハッシュ不一致(同一 genesis の別分岐)は即時証拠として拒否する", async () => {
+describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
+  it("a hash mismatch at-or-below the floor seq (a different branch of the same genesis) is refused as immediate evidence", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -943,7 +950,7 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // chainB は genesis 同一・seq 2 から分岐・長さは床より先(3)= 短縮ではなく分岐
+    // chainB shares genesis, branches at seq 2, and is longer than the floor (3) = a branch, not a shortening
     await startPhase(env, [chainHandlerFor([chainB]), pullHandlerFor({ variables: [], deks: [] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
@@ -952,7 +959,7 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
     expect(errors).toContain(chainB.hashes[1] as string);
   });
 
-  it("床より先の宣言ヘッドは有界再同期で解決し、延長なら受理して床を前進させる", async () => {
+  it("a declared head beyond the floor resolves via bounded resync; if it is an extension, accept and advance the floor", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -961,8 +968,8 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // 値の宣言ヘッドが seq 3(rotate 後)= 自ビュー(chain1)より先 → 再同期で
-    // chain2(chain1 の延長)が見え、正常受理される
+    // The value's declared head is seq 3 (post-rotate) = beyond our view
+    // (chain1) → the resync reveals chain2 (an extension of chain1) and it is accepted normally
     const v2 = await valueOf({
       variableId: "vb",
       version: 2,
@@ -976,8 +983,8 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // rotate 複合がマニフェストを再発行済み(§12-4)の形(隣接版 — prev
-        // 連鎖を満たす)
+        // The shape where the rotate composite has already re-issued the
+        // manifest (§12-4) (an adjacent version — satisfies the prev chain)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -985,16 +992,17 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain2.hashes[2] });
-    // 規則 (c) 基準は応答取得**前**のビュー(chain1 = エポック 1)から導出する:
-    // 再同期(チェーン同期)で知ったエポック 2 を基準へ昇格させると、応答生成と
-    // 再同期の間に rotate が挟まった場合に「ローテーション後・再暗号化完了前」の
-    // 正当な旧エポック最新値を次回 pull で誤拒否する(§6.3 の「チェーン同期単独で
-    // 基準を前進させない」規範の再同期経路への適用)
+    // The rule (c) criterion is derived from the view **before** the response
+    // was fetched (chain1 = epoch 1): if the epoch 2 learned via the resync
+    // (chain sync) were promoted into the criterion, a rotate landing between
+    // response generation and resync would make the next pull falsely refuse
+    // the legitimate "post-rotation, pre-re-encryption" old-epoch latest value
+    // (applying §6.3's norm "a chain sync alone never advances the criterion" to the resync path)
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 2 });
   });
 
-  it("床より先の宣言ヘッドが再同期でも解決しなければ証拠として拒否する", async () => {
+  it("refuses as evidence when a declared head beyond the floor is not resolved even by resync", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -1003,8 +1011,8 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // 宣言ヘッド seq 3 は chain1 より先だが、再同期しても chain1 のまま =
-    // 存在しないヘッドへの束縛(chain divergence or forgery)
+    // Declared head seq 3 is beyond chain1, but the chain stays chain1 even
+    // after resync = bound to a nonexistent head (chain divergence or forgery)
     const forged = await encryptValueFor({
       dek: dek1,
       projectId,
@@ -1028,13 +1036,13 @@ describe("分岐 2 種の区別(§6.3-2)", () => {
   });
 });
 
-describe("push 受理後の床前進(§6.3 — 自分の書き込みの巻き戻し検出)", () => {
-  it("push が床を前進させ、直後の古い配布の pull を拒否する", async () => {
+describe("floor advancement after push acceptance (§6.3 — detecting rollback of your own write)", () => {
+  it("push advances the floor, and a pull of an older distribution right after is refused", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const entry = { variableId: "vb", statement, value: v1 };
-    // フェーズ 1: push(メタデータ解決 → 値付き pull で v1 検証 → v2 を受理)
+    // Phase 1: push (metadata resolution → v1 verified by a value-bearing pull → v2 accepted)
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullMetadataHandlerFor({ variables: [statement] }),
@@ -1050,10 +1058,10 @@ describe("push 受理後の床前進(§6.3 — 自分の書き込みの巻き戻
     expect(await runCli(["push", "BETA"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 1 });
-    // 規則 (c) 基準は push では動かない(pull 時点のまま)
+    // The rule (c) criterion does not move on push (stays at pull time)
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
 
-    // フェーズ 2: サーバーが push 前の v1 を配布(自分の書き込みの巻き戻し)
+    // Phase 2: the server distributes the pre-push v1 (a rollback of your own write)
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [entry], deks: [wrap1] }),
@@ -1063,12 +1071,13 @@ describe("push 受理後の床前進(§6.3 — 自分の書き込みの巻き戻
   });
 });
 
-describe("メタのforward injectionは床でも検出されない(§14.3-5 — 非保証の明示)", () => {
-  it("前進 metaVersion の注入(名前の付け替え)は床があっても受理される(既知の残余)", async () => {
-    // メタステートメントはエポックアンカーを持たず(§4.2)、値の規則 (c) に
-    // 相当する検出は構造的に存在しない。床の保証は巻き戻し検出のみであり、
-    // このテストは「検出済み」と誤認しないための非保証の固定である。
-    // 閉包は環境マニフェスト / チェックポイントの責務
+describe("meta forward injection is not detected even by the floor (§14.3-5 — stating the non-guarantee)", () => {
+  it("an advancing-metaVersion injection (a name swap) is accepted even with a floor (the known residue)", async () => {
+    // A meta statement carries no epoch anchor (§4.2), so the equivalent of
+    // the value-side rule (c) detection structurally does not exist. The
+    // floor's guarantee is rollback detection only, and this test pins the
+    // non-guarantee so it is never mistaken as "detected". Closure is the
+    // responsibility of the environment manifest / checkpoints
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const original = await statementOf({ variableId: "vb", name: "BETA" });
@@ -1077,8 +1086,9 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
       deks: [wrap1],
     });
 
-    // 実最新(metaVersion 1)の次の metaVersion 2 を偽造(正規鍵の有効署名 —
-    // 在籍区間内の鍵 + サーバー共謀の形)。巻き戻しも欠落もないため床は発火しない
+    // Forge a metaVersion 2 as the next of the actual latest (metaVersion 1)
+    // — a valid signature from a legitimate key (the shape of a key within its
+    // membership interval + server collusion). With no rollback or omission, the floor does not fire
     const injected = await statementOf({
       variableId: "vb",
       name: "BETA_INJECTED",
@@ -1089,10 +1099,11 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
       pullHandlerFor({
         variables: [{ variableId: "vb", statement: injected, value }],
         deks: [wrap1],
-        // サーバー共謀のforward injectionはマニフェストも一緒に前進させられる
-        // (issuer 資格を持つ攻撃鍵 — §14.3-5 の非保証はこの形まで含めて成立)。
-        // 隣接 prev も、共謀サーバーは実マニフェストの hash を知って
-        // いるため正しく連鎖できる — 非保証はこの検査の導入後も変わらない
+        // A server-colluding forward injection can also advance the manifest
+        // with it (the attacking key holds issuer credentials — the §14.3-5
+        // non-guarantee holds up to and including this shape). The adjacent
+        // prev can also be chained correctly, since the colluding server knows
+        // the real manifest's hash — the non-guarantee is unchanged even after this check's introduction
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [original] }),
       }),
@@ -1101,9 +1112,10 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
     expect(env.logs.join("\n")).toContain("BETA_INJECTED");
   });
 
-  it("環境メタのforward injectionも床では検出されない(§14.3-5 — 任意の変数・環境のメタに成立)", async () => {
-    // §14.3-5: forward injectionは攻撃鍵が在籍区間中に author 資格を持っていた任意の
-    // 変数・環境のメタに成立する。変数側と同様、環境側も非検出を固定する
+  it("environment-meta forward injection is also undetected by the floor (§14.3-5 — holds for any variable's / environment's meta)", async () => {
+    // §14.3-5: forward injection holds for the meta of any variable /
+    // environment where the attacking key held author credentials during its
+    // membership interval. Pin non-detection on the environment side too, same as the variable side
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -1126,8 +1138,8 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
         statement: injectedEnvMeta,
         variables: [{ variableId: "vb", statement, value }],
         deks: [wrap1],
-        // 変数側と同じくマニフェストごと前進させる形(§14.3-5 — prev も共謀
-        // サーバーが正しく連鎖できる)
+        // The same shape as the variable side: the manifest advances with it
+        // (§14.3-5 — the colluding server can chain prev correctly too)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -1136,22 +1148,25 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
   });
 });
 
-describe("未解決 intent の起動時照合(宣言ヘッド位置のエントリ同一性で確定する)", () => {
-  it("残置 intent は accepted / rejected / pending を宣言ヘッド位置で区別する(同一 commitment の旧試行を昇格させない)", async () => {
-    // CAS リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
-    // 再署名する。拒否された旧試行の intent(resolution の追記失敗・クラッシュ)を
-    // commitment の一致だけで「受理済み」と誤認して昇格させると、受理された試行の
-    // マニフェスト(同版・異ハッシュ)との typed conflict で床が恒久拒否になる。
-    // 逆に、スロットが空なだけの intent を not-accepted に潰すと、輸送中の複合が
-    // 後から着地したときに誰も回収しない — pending は未解決のまま残す
+describe("startup reconciliation of unresolved intents (settled by entry identity at the declared-head position)", () => {
+  it("a leftover intent is classified as accepted / rejected / pending by the declared-head position (never promotes an old attempt sharing the same commitment)", async () => {
+    // A CAS retry re-signs the declared head and manifest with the same DEK
+    // (= the same commitment). Misjudging a refused old attempt's intent (a
+    // failed resolution append, a crash) as "accepted" on commitment match
+    // alone and promoting it would put the floor into a permanent refusal via
+    // a typed conflict with the accepted attempt's manifest (same version,
+    // different hash). Conversely, crushing an intent whose slot is merely
+    // empty down to not-accepted would leave nobody to collect a composite
+    // that lands in transit later — pending stays unresolved
     const env = await makeTestEnv();
     const store = makeFileFloorStore(env.floorDir);
     const rotateEntry = chain2.entries[2];
     if (rotateEntry?.op !== "rotate_epoch") throw new Error("rotate entry missing");
     const commitment = rotateEntry.payload.dekCommitmentHex;
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
-    // pull が配布する v2 マニフェスト(rotate 複合の再発行形)と同一の hash を
-    // 受理済み intent に持たせる(実運用では同じ複合の同梱物なので当然一致する)
+    // Give the accepted intent the same hash as the v2 manifest the pull
+    // distributes (the re-issued form of the rotate composite) — in practice
+    // they are bundled in the same composite, so of course they match
     const servedManifest = {
       variables: [statement],
       currentEpoch: 2,
@@ -1159,8 +1174,8 @@ describe("未解決 intent の起動時照合(宣言ヘッド位置のエント�
       prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
     };
     const acceptedManifestHash = await prevOfPhase(servedManifest);
-    // (a) 受理された試行: 宣言ヘッド = seq 2(create 直後)→ スロット seq 3 が
-    // 本 intent の rotate エントリ
+    // (a) The accepted attempt: declared head = seq 2 (right after create) →
+    // slot seq 3 holds this intent's rotate entry
     await Effect.runPromise(
       store.appendIntent(projectId, {
         op: "rotate_epoch",
@@ -1173,9 +1188,9 @@ describe("未解決 intent の起動時照合(宣言ヘッド位置のエント�
         declaredHead: { seq: 2, hashHex: chain1.hashes[1] as string },
       }),
     );
-    // (b) 拒否された旧試行: 同一 commitment だが宣言ヘッドが古く(seq 1)、
-    // そのスロット(seq 2)は別エントリ(create)に占有されている = この試行は
-    // もう着地しえない(確定拒否)。マニフェストの signed bytes も異なる
+    // (b) The refused old attempt: the same commitment, but the declared head
+    // is old (seq 1) and its slot (seq 2) is occupied by a different entry
+    // (create) = this attempt can never land now (settled refusal). The manifest's signed bytes also differ
     await Effect.runPromise(
       store.appendIntent(projectId, {
         op: "rotate_epoch",
@@ -1188,8 +1203,8 @@ describe("未解決 intent の起動時照合(宣言ヘッド位置のエント�
         declaredHead: { seq: 1, hashHex: projectId },
       }),
     );
-    // (c) 着地待ちの intent: 宣言ヘッド = 現ヘッド(seq 3)→ スロット seq 4 は
-    // 空 = 輸送中でありうる。確定させない(未解決のまま残す)
+    // (c) The intent awaiting landing: declared head = the current head
+    // (seq 3) → slot seq 4 is empty = it could be in transit. Never settle it (leave it unresolved)
     await Effect.runPromise(
       store.appendIntent(projectId, {
         op: "rotate_epoch",
@@ -1220,31 +1235,31 @@ describe("未解決 intent の起動時照合(宣言ヘッド位置のエント�
     expect(errors).toContain("it was not accepted");
     expect(errors).toContain("still awaiting confirmation");
     const floor = await readFloorFile(env);
-    // 受理された試行のマニフェストだけが床にあり(pull の検証済み観測と同一)、
-    // 旧試行のハッシュは昇格していない = typed conflict は発生しない
+    // Only the accepted attempt's manifest is in the floor (identical to the
+    // pull's verified observation); the old attempt's hash is not promoted = no typed conflict occurs
     expect(floor.conflicts).toEqual([]);
     expect(floor.environments[ENV_ID]?.manifest).toEqual({
       manifestVersion: 2,
       epoch: 2,
       manifestSigHashHex: acceptedManifestHash,
     });
-    // pending の intent だけが要照合として残る
+    // Only the pending intent remains as needing reconciliation
     expect(floor.intents).toHaveLength(1);
     expect(floor.intents[0]).toMatchObject({ epoch: 3 });
   });
 });
 
-describe("commitHead のみの床(project verify 先行)との相互作用", () => {
-  it("verify で作られたヘッドのみの床から、後続 pull が環境床を確立できる", async () => {
+describe("interplay with a commitHead-only floor (project verify first)", () => {
+  it("a later pull can establish the environment floor from a head-only floor created by verify", async () => {
     const env = await makeTestEnv();
-    // フェーズ 1: project verify(チェーン床検査 + ヘッド前進のみ。環境床なし)
+    // Phase 1: project verify (chain floor check + head advance only; no environment floor)
     await startPhase(env, [chainHandlerFor([chain1])]);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     let floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 2, hashHex: chain1.hashes[1] });
     expect(floor.environments[ENV_ID]).toBeUndefined();
 
-    // フェーズ 2: pull が環境床(規則 (c) 基準込み)を確立する
+    // Phase 2: pull establishes the environment floor (including the rule (c) criterion)
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     await startPhase(env, [

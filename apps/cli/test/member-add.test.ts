@@ -1,14 +1,14 @@
-// `maruhi member add`(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 / §15)の統合テスト。
+// Integration tests for `maruhi member add` (CRYPTO_SPEC §6.2 / §6.5 / §7, AUTH_SPEC §12-6 / §15).
 //
-// 固定する性質:
-//  1. add_member は一覧の受諾ブロックから組む(鍵・user_id。role は招待行から)。
-//     §6.5 の独立検証・発行ピン突合・FP 儀式(--expect-fingerprint / 最終語
-//     再入力 / エージェント拒否)が追記の前に立つ
-//  2. バックフィル: 全環境 × 全エポックを新メンバーへラップし、409 = 登録済みで
-//     冪等に再開する(既に同一鍵で在籍 → 追記スキップ)
-//  3. 再追加(過去在籍が別鍵)では 409 スロットを削除 → 再登録で修復する
-//     (鍵履歴ゲート — 同一鍵の再実行では削除しない)
-//  4. duplicate-member-key の早期検査・受諾鍵不一致の在籍検出
+// Properties pinned here:
+//  1. add_member is built from the listing's acceptance block (key, user_id;
+//     role from the invite row). §6.5's independent verification, issuance-pin
+//     match, and FP ceremony (--expect-fingerprint / last-word re-entry /
+//     agent refusal) all stand before the append
+//  2. Backfill: wraps all environments × all epochs to the new member; 409 =
+//     already registered, resumed idempotently (same key already a member → skip the append)
+//  3. Re-adding (past membership under another key) deletes the 409 slot then
+//     re-registers to repair (key-history gate — a rerun with the same key never deletes)
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -72,8 +72,8 @@ afterEach(async () => {
 type Acceptance = AcceptanceFixture;
 
 /**
- * プロジェクトごとの発行済み招待(招待者の発行署名つき)。invitationRow が同期的に
- * 発行文を載せられるよう、acceptanceFor / issuedFor の呼び出しで用意しておく。
+ * The issued invites per project (with the inviter's issuance signature).
+ * Prepared by the acceptanceFor / issuedFor calls so invitationRow can synchronously carry the issuance text.
  */
 const issuedByProject = new Map<string, IssuedInviteFixture>();
 
@@ -92,7 +92,7 @@ async function issuedFor(projectId: string): Promise<IssuedInviteFixture> {
   return issued;
 }
 
-/** 受諾者本人の正規の受諾ブロック(§6.5 の受諾署名 + リンク署名つき)。 */
+/** The accepter's own proper acceptance block (with the §6.5 acceptance signature + link signature). */
 async function acceptanceFor(projectId: string, invitee: TestUser): Promise<Acceptance> {
   return acceptanceFixture({ projectId, issued: await issuedFor(projectId), invitee });
 }
@@ -111,7 +111,7 @@ interface AddServerState {
   readonly counters: { appendAttempts: number; registerAttempts: number };
 }
 
-/** dek_wraps ルート(/environments/:id/deks)のメソッド別ハンドラ。 */
+/** Per-method handler for the dek_wraps route (/environments/:id/deks). */
 function onDeksRoute(
   projectId: string,
   method: string,
@@ -129,10 +129,10 @@ function onDeksRoute(
 }
 
 /**
- * member add フロー用の状態つきモック。dek_wraps のスロット占有をシミュレート
- * する: `occupiedSlots` にある (環境:エポック:受信者) への登録は 409(§12-6 の
- * 上書き禁止)、削除はスロットを解放する。バッチ登録はどれか 1 つでも占有なら
- * 409(原子的受理)。
+ * Stateful mock for the member-add flow. Simulates dek_wraps slot occupancy:
+ * registering into an (environment:epoch:recipient) present in `occupiedSlots`
+ * returns 409 (§12-6's no-overwrite), and deletion frees the slot. A batch
+ * registration gets 409 if even one slot is occupied (atomic acceptance).
  */
 async function makeAddServer(input: {
   readonly built: BuiltChain;
@@ -141,17 +141,17 @@ async function makeAddServer(input: {
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
   /**
-   * スロット → 保存済み受信者 enc 公開鍵(hex)。指定したスロットの 409 は
-   * `storedRecipientEncPubHex` を運ぶ(AUTH_SPEC §12-6 追補後のサーバー)。
-   * 未指定のスロットはフィールドなしの 409(追補以前のサーバー)。
+   * Slot → the stored recipient enc public key (hex). A 409 on a listed slot
+   * carries `storedRecipientEncPubHex` (the post-supplement AUTH_SPEC §12-6
+   * server). An unlisted slot's 409 has no field (the pre-supplement server).
    */
   readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
-  /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
+  /** Injection into chain appends (e.g. 409). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
+  /** When onAppend injects, the chain is replaced with this shape from then on (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
-  /** dek_wraps 登録への差し込み(呼び出し回数ベース)。undefined = 通常処理。 */
+  /** Injection into dek_wraps registration (call-count based). undefined = normal processing. */
   readonly onRegister?: (call: number) => MockResponse | undefined;
 }): Promise<AddServerState> {
   const projectId = input.built.projectId;
@@ -241,7 +241,7 @@ async function makeAddServer(input: {
             _tag: "DekWrapExists",
             epoch: conflict.epoch,
             recipientUserId: conflict.recipientUserId,
-            // AUTH_SPEC §12-6 追補後のサーバーだけが載せる(省略可フィールド)
+            // Only a post-supplement AUTH_SPEC §12-6 server carries this (optional field)
             ...(storedEncPub === undefined ? {} : { storedRecipientEncPubHex: storedEncPub }),
           },
         };
@@ -310,7 +310,7 @@ async function startAddEnv(
   return { ...env, serverOrigin: server.origin };
 }
 
-/** 検証済み指紋帳(KF)のファイル内容を読み出す。 */
+/** Reads the fingerprint book (KF) file contents. */
 async function readBook(
   env: TestEnv,
 ): Promise<Record<string, Record<string, { fingerprints: Record<string, unknown> }>>> {
@@ -323,7 +323,7 @@ async function readBook(
 }
 
 describe("maruhi member add", () => {
-  it("受諾ブロックから add_member を組み、全環境 × 全エポックをバックフィルする(--expect-fingerprint)", async () => {
+  it("builds add_member from the acceptance block and backfills all environments × all epochs (--expect-fingerprint)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -358,7 +358,7 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // add_member payload = 受諾ブロックの鍵 + 招待行の role
+    // add_member payload = the acceptance block's key + the invite row's role
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "add_member") throw new Error("add_member entry missing");
@@ -367,12 +367,12 @@ describe("maruhi member add", () => {
       encPubHex: acceptor.encPubHex,
       sigPubHex: acceptor.sigPubHex,
       role: "member",
-      // 招待行の scope(K2 の CLI は all のみ発行)で署名する — AUTH_SPEC §15-2
+      // Signs with the invite row's scope (the K2 CLI issues only all) — AUTH_SPEC §15-2
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
 
-    // バックフィル: エポック 1〜2 を新メンバー宛にラップ(1 バッチで受理)
+    // Backfill: wraps epochs 1-2 to the new member (accepted as a single batch)
     expect(state.registerBodies).toHaveLength(1);
     const wraps = state.registerBodies[0]?.deks ?? [];
     expect(wraps.map((wrap) => [wrap.epoch, wrap.recipientUserId])).toEqual([
@@ -386,7 +386,7 @@ describe("maruhi member add", () => {
     );
   });
 
-  it("実行者の scope が招待行の scope を包含しなければ、儀式の前に add_member を拒否する(原則 1 — 独立レビュー S1)", async () => {
+  it("rejects add_member before the ceremony when the executor's scope does not contain the invite row's scope (principle 1 — independent review S1)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -394,7 +394,7 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
       { actor: inviter, operation: addScopedMemberOp(devAdmin, "admin", [ENV_ID]) },
     ]);
-    // 招待行は all(発行者 = owner)。dev 専任 admin が add を実行する
+    // The invite row is all (issuer = owner). A dev-only admin runs add
     const state = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
@@ -411,18 +411,18 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("does not contain the invite's scope");
-    // 儀式(エージェント拒否)にも追記にも到達しない
+    // Neither the ceremony (agent refusal) nor the append is reached
     expect(env.errors.join("\n")).not.toContain("AI agent environment");
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("listed scope の招待は招待行の scope で署名し、バックフィルを対象の scope の環境に限る(ES K4 — §7)", async () => {
+  it("a listed-scope invite is signed with the invite row's scope and backfill is limited to the target scope's environments (ES K4 — §7)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
     ]);
-    // 発行文が scope を覆う(CRYPTO_SPEC §6.5)ので、listed の発行文で受諾ブロックを作る
+    // The issuance text covers the scope (CRYPTO_SPEC §6.5), so the acceptance block is built from the listed issuance text
     issuedByProject.set(
       built.projectId,
       await issueInviteFixture({
@@ -477,20 +477,20 @@ describe("maruhi member add", () => {
     expect(entry.payload.role).toBe("member");
     expect(entry.payload.scopeKind).toBe("listed");
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID]);
-    // prod は対象の scope 外 — ラップを作らない(作ればサーバーが 422 scope-out-of-range)
+    // prod is outside the target scope — no wrap is made (making one gets the server to return 422 scope-out-of-range)
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_ID]);
     expect(env.logs.join("\n")).toContain("in the member's scope × every epoch");
-    // 同じ手順で組んだチェーンは同じ projectId になる — listed の発行文を他テストに残さない
+    // A chain built by the same steps gets the same projectId — do not leak the listed issuance text into other tests
     issuedByProject.delete(built.projectId);
   });
 
-  it("ChainHeadConflict(409)は再同期して add_member を再署名し、リトライする(§12-4)", async () => {
+  it("re-syncs on ChainHeadConflict (409), re-signs add_member, and retries (§12-4)", async () => {
     const passerby = await makeTestUser("user-passerby-5555");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
-    // 送信と並行して他メンバーの追記で伸びたチェーン(同一 prefix の延長)
+    // A chain grown by another member's append concurrent with the send (an extension of the same prefix)
     const concurrent = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -528,22 +528,22 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // 追記は 2 回試行(409 → 再同期 + 再署名 → 受理)。受理エントリは新ヘッドの子
+    // The append is attempted twice (409 → re-sync + re-sign → accepted). The accepted entry is a child of the new head
     expect(state.counters.appendAttempts).toBe(2);
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "add_member") throw new Error("add_member entry missing");
     expect(entry.seq).toBe(concurrent.entries.length + 1);
     expect(entry.payload.targetUserId).toBe(acceptor.userId);
-    // バックフィルも完了する
+    // The backfill completes too
     expect(
       state.registerBodies.flatMap((body) => body.deks.map((wrap) => wrap.recipientUserId)),
     ).toEqual([acceptor.userId]);
   });
 
-  it("修復経路の削除後に再登録が失敗したら、スロットが空である事実を明示して失敗する", async () => {
-    // 削除 → 再登録は原子的でない: 間で失敗すると対象はそのエポックのラップを
-    // 一つも持たない。汎用文言に紛れると気づけない
+  it("when re-registration fails after a repair-path deletion, fails while making explicit that the slot is empty", async () => {
+    // Delete → re-register is not atomic: a failure in between leaves the target
+    // with no wrap for that epoch. Buried in generic wording, that goes unnoticed
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -575,7 +575,7 @@ describe("maruhi member add", () => {
         }),
       ],
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
-      // 呼び出し順: 0 = 一括(409)→ 1 = epoch1 単発(409)→ 削除 → 2 = 再登録
+      // Call order: 0 = batch (409) → 1 = epoch-1 single (409) → delete → 2 = re-register
       onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
     });
     const env = await startAddEnv(state, built.projectId);
@@ -583,7 +583,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(1);
-    // 削除は実行済み = スロットは空
+    // The delete already ran = the slot is empty
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -601,7 +601,7 @@ describe("maruhi member add", () => {
     expect(errors).toContain("re-run `maruhi member add` to resume");
   });
 
-  it("儀式(最終語再入力)を通しても追加でき、エージェント環境ではフラグなしを拒否する", async () => {
+  it("can add through the ceremony (last-word re-entry); an agent environment refuses without the flag", async () => {
     const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
     if (acceptorFpBytes === null) throw new Error("fp");
     const words = await fingerprintToWords(acceptorFpBytes);
@@ -634,7 +634,7 @@ describe("maruhi member add", () => {
     expect(state.appendedEntries).toHaveLength(1);
     expect(env.logs.join("\n")).toContain(`role:    member (will be granted to this member)`);
 
-    // エージェント環境: --expect-fingerprint なしは拒否(儀式を代行させない)
+    // Agent environment: no --expect-fingerprint is refused (never let it stand in for the ceremony)
     const state2 = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, acceptance),
@@ -649,7 +649,7 @@ describe("maruhi member add", () => {
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
-  it("中断復旧: 既に同一鍵で在籍なら追記せず、バックフィルの 409 を登録済みとして収束する", async () => {
+  it("interruption recovery: if already a member with the same key, skips the append and converges the backfill's 409 as already-registered", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -668,7 +668,7 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // 前回実行が登録済み(受諾鍵と同一鍵の在籍 = 修復は不要)
+      // The previous run already registered (membership under the acceptance key = no repair needed)
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
     });
     const env = await startAddEnv(state, built.projectId);
@@ -678,15 +678,15 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
-    // 同一鍵の在籍では削除(修復)を発動しない — 鍵履歴ゲート
+    // Membership under the same key never triggers delete (repair) — the key-history gate
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("already a member with the same key");
     expect(logs).toContain("1 already registered");
   });
 
-  it("再追加(過去在籍が別鍵): 409 スロットを削除 → 再登録で新鍵へ修復する", async () => {
-    // 同じ user_id の旧鍵アイデンティティ(過去在籍)
+  it("re-adding (past membership under another key): deletes the 409 slot then re-registers to repair to the new key", async () => {
+    // The old key identity for the same user_id (past membership)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -717,7 +717,7 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // 旧在籍時の旧鍵ラップが epoch 1 のスロットを占有している
+      // The old-key wrap from the past membership occupies the epoch-1 slot
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
     });
     const env = await startAddEnv(state, built.projectId);
@@ -726,7 +726,7 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // epoch 1 は削除 → 再登録(修復)、epoch 2 は通常登録
+    // epoch 1 is deleted → re-registered (repair); epoch 2 registers normally
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -742,7 +742,7 @@ describe("maruhi member add", () => {
     const registered = state.registerBodies.flatMap((body) =>
       body.deks.map((wrap) => [wrap.epoch, wrap.recipientEncPubHex] as const),
     );
-    // 再登録された epoch 1 のラップは**新鍵**宛(修復の本体)
+    // The re-registered epoch-1 wrap is addressed to the **new key** (the substance of the repair)
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     expect(registered).toContainEqual([2, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
@@ -750,11 +750,11 @@ describe("maruhi member add", () => {
     expect(logs).toContain("1 old-key wrap repaired");
   });
 
-  it("409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
-    // 「過去に別鍵で在籍 + 直前の member add が現行鍵で部分完了」の再実行。
-    // 鍵履歴ヒューリスティックは stale を疑う(旧判定なら誤削除)が、409 が
-    // 保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で登録済みと判定できる
-    // (AUTH_SPEC §12-6 追補)
+  it("does not delete when the 409's stored enc public key matches the acceptance key — even with a different-key membership history (blocks mis-deletion)", async () => {
+    // A rerun of "past membership under another key + the immediately preceding
+    // member add partially completed under the current key". The key-history
+    // heuristic suspects stale (the old check would mis-delete), but the 409
+    // carries the stored enc public key (= the current key), so an exact comparison detects already-registered (AUTH_SPEC §12-6 supplement)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -762,7 +762,7 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: addMemberOp(oldKeys, "member") },
       { actor: inviter, operation: removeMemberOp(oldKeys) },
       { actor: inviter, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-      // 現行鍵での再追加は受理済み(前回実行の中断)— バックフィルのみの再開
+      // Re-adding under the current key was already accepted (the previous run interrupted) — resume backfill only
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
     ]);
     const slot = `${ENV_ID}:1:${acceptor.userId}`;
@@ -788,7 +788,7 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // 前回実行が epoch 1 を**現行鍵で**登録済み(部分完了)
+      // The previous run already registered epoch 1 **under the current key** (partial completion)
       occupiedSlots: [slot],
       occupiedSlotEncPub: { [slot]: acceptor.encPubHex },
     });
@@ -797,17 +797,17 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
-    // 一致 = 登録済み(冪等)。削除(誤削除)は 1 件も発動しない
+    // A match = already registered (idempotent). Not a single delete (mis-deletion) fires
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("1 already registered");
     expect(logs).not.toContain("old-key wraps repaired");
   });
 
-  it("409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
-    // 鍵履歴に別鍵はない(ヒューリスティックは stale を疑わない)が、409 の
-    // フィールドが別鍵を申告する形。フィールドがヒューリスティックに**優先**
-    // することを固定する(比較を外して推定へ戻す変異でこのテストだけが落ちる)
+  it("repairs when the 409's stored enc public key mismatches the acceptance key, regardless of key history (the field wins)", async () => {
+    // The key history has no other key (the heuristic does not suspect stale),
+    // but the 409's field declares another key. Pins that the field **wins over**
+    // the heuristic (a mutation dropping the comparison for estimation fails only this test)
     const strangerKeys = await makeTestUser("user-someone-else");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -835,7 +835,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
-    // 不一致 = 修復(削除 → 再登録)。鍵履歴ゲートに依存しない
+    // A mismatch = repair (delete → re-register). Independent of the key-history gate
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -856,8 +856,8 @@ describe("maruhi member add", () => {
     expect(logs).toContain("1 old-key wrap repaired");
   });
 
-  it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する", async () => {
-    // add_member 済み(サーバーが行を completed へ更新済み)+ バックフィル中断の形
+  it("a completed row can resume with an explicit id; a rerun without id guides toward that path", async () => {
+    // The shape where add_member already ran (the server updated the row to completed) + the backfill was interrupted
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -876,8 +876,8 @@ describe("maruhi member add", () => {
       }),
     ];
 
-    // id なし: completed は自動選択しない(過去メンバーの行が蓄積するため)が、
-    // 再開の導線(id 明示)をエラーで案内する
+    // No id: a completed row is never auto-selected (past members' rows
+    // accumulate), but the error guides toward the resume path (explicit id)
     const state1 = await makeAddServer({ built, invitation: completedRow, ownDeks });
     const env1 = await startAddEnv(state1, built.projectId);
     expect(
@@ -886,7 +886,7 @@ describe("maruhi member add", () => {
     expect(env1.errors.join("\n")).toContain("pass it explicitly: `maruhi member add <invite-id>`");
     expect(state1.appendedEntries).toHaveLength(0);
 
-    // id 明示: completed 行 + 同一鍵在籍 → 追記せずバックフィルのみ再開する
+    // Explicit id: completed row + same-key membership → no append; resume backfill only
     const state2 = await makeAddServer({ built, invitation: completedRow, ownDeks });
     const env2 = await startAddEnv(state2, built.projectId);
     expect(
@@ -902,7 +902,7 @@ describe("maruhi member add", () => {
     expect(env2.logs.join("\n")).toContain("already a member with the same key");
   });
 
-  it("発行署名・リンク署名・受諾署名の検証失敗、発行ピン不一致、発行文なしは追記前に中止する", async () => {
+  it("aborts before appending on issuance-signature / link-signature / acceptance-signature failure, issuance-pin mismatch, or a missing issuance text", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -910,17 +910,17 @@ describe("maruhi member add", () => {
     const acceptance = await acceptanceFor(built.projectId, acceptor);
 
     for (const [invitation, fragment] of [
-      // role の改竄(発行署名が覆う — 発行文の検証で落ちる)
+      // role tampering (covered by the issuance signature — fails issuance-text verification)
       [
         invitationRow(built.projectId, acceptance, { role: "admin" }),
         "issue signature that does not verify",
       ],
-      // 鍵すり替え(両署名の宣言鍵束縛が破れる — リンク署名を先に報告)
+      // key swapping (breaks the declared-key binding of both signatures — the link signature is reported first)
       [
         invitationRow(built.projectId, { ...acceptance, inviteeEncPubHex: "aa".repeat(32) }),
         "the link signature failed verification",
       ],
-      // 受諾署名だけの改竄
+      // tampering of the acceptance signature only
       [
         invitationRow(built.projectId, {
           ...acceptance,
@@ -939,7 +939,7 @@ describe("maruhi member add", () => {
       expect(state.appendedEntries, fragment).toHaveLength(0);
     }
 
-    // 発行ピンと link_pub が食い違うサーバー申告(行のすり替え)
+    // A server declaration whose issuance pin and link_pub disagree (row substitution)
     const state2 = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, acceptance),
@@ -969,14 +969,14 @@ describe("maruhi member add", () => {
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
-  it("受諾鍵が現メンバーの鍵と一致する場合は duplicate-member-key として追記前に拒否する", async () => {
+  it("rejects as duplicate-member-key before appending when the acceptance key matches a current member's key", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
-    // 攻撃者が招待者の公開鍵をそのまま宣言して受諾した形(署名は自己束縛なので
-    // 招待者の秘密鍵がなければ作れない — ここでは合意規則の早期検査だけを見る
-    // ため、招待者自身の鍵で署名した「鍵流用」受諾を作る)
+    // The shape where an attacker declares the inviter's public key verbatim in
+    // their acceptance (the signature is self-bound, so it cannot be made without
+    // the inviter's secret key — only the early consensus-rule check is under test here, so we build a "key reuse" acceptance signed with the inviter's own key)
     const sock = await acceptanceFixture({
       projectId: built.projectId,
       issued: await issuedFor(built.projectId),
@@ -996,7 +996,7 @@ describe("maruhi member add", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--expect-fingerprint の不一致(横取りの疑い)は追記前に中止する", async () => {
+  it("an --expect-fingerprint mismatch (suspected interception) aborts before appending", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -1014,8 +1014,8 @@ describe("maruhi member add", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  describe("裏付け元(IV2 — 充足形 4)", () => {
-    /** 受諾済み招待 + 環境 1 つのサーバー状態に GitHub の署名鍵一覧の偽装を足す。 */
+  describe("the identity-backing source (IV2 — fulfillment shape 4)", () => {
+    /** Adds an impersonated GitHub signing-key list to a server state with an accepted invite + one environment. */
     async function backedState(
       built: BuiltChain,
       registeredKeys: readonly string[],
@@ -1057,7 +1057,7 @@ describe("maruhi member add", () => {
       ]);
     }
 
-    it("--github の相手に受諾鍵が登録済みなら、確認入力なしに add_member へ進む(エージェント環境でも)", async () => {
+    it("proceeds to add_member without confirmation input when the --github peer already has the acceptance key registered (even in an agent environment)", async () => {
       const built = await chain();
       const state = await backedState(built, [sshLineOf(acceptor)]);
       const env = await backedEnv(state, built.projectId);
@@ -1067,7 +1067,7 @@ describe("maruhi member add", () => {
       expect(env.logs.join("\n")).toContain(
         "Acceptance key verified: it is registered as a signing key on github.com/bob",
       );
-      // 機械照合の成功は帳へ記録しない(帳は人間の帯域外確認の記録 — 裁定 D ②)
+      // A successful machine match is not recorded to the book (the book records human out-of-band confirmation — ruling D ②)
       await expect(readBook(env)).rejects.toThrow();
 
       const state2 = await backedState(built, [sshLineOf(acceptor)]);
@@ -1078,7 +1078,7 @@ describe("maruhi member add", () => {
       expect(state2.appendedEntries).toHaveLength(1);
     });
 
-    it("発行ピンの宛先 login を既定に使い、--expect-fingerprint は照合に加えて要求する", async () => {
+    it("uses the issuance pin's destination login as the default, and still requires --expect-fingerprint on top of the match", async () => {
       const built = await chain();
       const state = await backedState(built, [sshLineOf(acceptor)]);
       const env = await backedEnv(state, built.projectId);
@@ -1116,14 +1116,14 @@ describe("maruhi member add", () => {
       expect(state2.appendedEntries).toHaveLength(0);
     });
 
-    it("未登録は二択で止まる(既定 = 頼んで再実行、yes = 今すぐ儀式)。取得不能は儀式へ", async () => {
+    it("unregistered stops at a two-way choice (default = ask them to re-run, yes = run the ceremony now). An unreachable listing goes to the ceremony", async () => {
       const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
       if (acceptorFpBytes === null) throw new Error("fp");
       const words = await fingerprintToWords(acceptorFpBytes);
       if (!words.ok) throw new Error("words");
       const built = await chain();
 
-      // 未登録 + 空応答 → 追記せずに止まる
+      // Unregistered + empty answer → stops without appending
       const state = await backedState(built, [sshLineOf(inviter)]);
       const env = await backedEnv(state, built.projectId);
       env.setPromptResponses([""]);
@@ -1134,7 +1134,7 @@ describe("maruhi member add", () => {
       );
       expect(state.appendedEntries).toHaveLength(0);
 
-      // 未登録 + yes → 儀式(最終語)へ
+      // Unregistered + yes → to the ceremony (last word)
       const state2 = await backedState(built, [sshLineOf(inviter)]);
       const env2 = await backedEnv(state2, built.projectId);
       env2.setPromptResponses(["yes", words.value[words.value.length - 1] ?? ""]);
@@ -1143,7 +1143,7 @@ describe("maruhi member add", () => {
       expect(env2.prompts[1]).toContain("type the last of the 12 words");
       expect(state2.appendedEntries).toHaveLength(1);
 
-      // 取得不能(上限)→ note + 儀式(二択は出さない)
+      // Unreachable (cap) → note + ceremony (no two-way choice)
       const state3 = await backedState(built, [], 403);
       const env3 = await backedEnv(state3, built.projectId);
       env3.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
@@ -1152,7 +1152,7 @@ describe("maruhi member add", () => {
       expect(env3.errors.join("\n")).toContain("could not be fetched");
       expect(state3.appendedEntries).toHaveLength(1);
 
-      // identityBacking = none → 照合しない(note + 儀式)
+      // identityBacking = none → no match (note + ceremony)
       const state4 = await backedState(built, [sshLineOf(acceptor)]);
       const env4 = await backedEnv(state4, built.projectId);
       await seedConfig(env4, {
@@ -1167,7 +1167,7 @@ describe("maruhi member add", () => {
     });
   });
 
-  it("検証済み指紋帳: 儀式の成功が記録され、再実行は yes 確認のみで通る(エージェント環境は据え置き拒否)(KF)", async () => {
+  it("fingerprint book: a ceremony success is recorded and a rerun passes with a yes confirmation only (an agent environment is still refused) (KF)", async () => {
     const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
     if (acceptorFpBytes === null) throw new Error("fp");
     const words = await fingerprintToWords(acceptorFpBytes);
@@ -1193,20 +1193,20 @@ describe("maruhi member add", () => {
     });
     const env = await startAddEnv(state, built.projectId);
 
-    // 1 回目: 儀式(最終語再入力)→ 成功が帳へ記録される
+    // Run 1: the ceremony (last-word re-entry) → the success is recorded to the book
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
     const recorded = await readBook(env);
-    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
-    // 2 回目(在籍済み → バックフィルのみの再実行): 帳のヒットで 12 語の
-    // 読み上げ再実施は免除されるが、付与そのものの明示確認(yes)は残る。
-    // 読み上げ照合の指示 2 行はヒット時は出さない(指示直後に免除を言わない)
+    // Run 2 (already a member → backfill-only rerun): a book hit exempts the
+    // 12-word read-out re-run, but the explicit yes confirmation of the grant
+    // itself remains. The two read-out-match instruction lines are not printed on a hit (no exemption note right after the instruction)
     const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
@@ -1216,7 +1216,7 @@ describe("maruhi member add", () => {
     expect(secondRunLogs).toContain("not required again");
     expect(secondRunLogs).not.toContain("reads to you out of band");
 
-    // 3 回目(エージェント環境): 帳のヒットがあっても代行は拒否(フラグ必須)
+    // Run 3 (agent environment): a book hit does not allow standing in (the flag is required)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["member", "add"], env.layer)).toBe(1);
     expect(env.prompts).toHaveLength(2);
@@ -1224,9 +1224,9 @@ describe("maruhi member add", () => {
       "Refused to run the acceptance-key confirmation ceremony",
     );
 
-    // 4 回目(非対話 — stdin がパイプ): 帳のヒットがあっても yes 確認へは
-    // 進めず、完全な儀式(最終語再入力)へ戻る(盲目的な `printf yes |` で
-    // 通らない — 一次境界は端末)
+    // Run 4 (non-interactive — stdin is a pipe): a book hit does not advance to
+    // the yes confirmation; it returns to the full ceremony (last-word re-entry)
+    // — a blind `printf yes |` cannot pass (the primary boundary is the terminal)
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdin: false });
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
@@ -1235,8 +1235,8 @@ describe("maruhi member add", () => {
     expect(env.prompts[2]).toContain("type the last of the 12 words");
     expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
 
-    // 5 回目(stdout がリダイレクト): 境界は stdin と stdout の両方(&&)—
-    // 片側だけの実装ミスを固定する
+    // Run 5 (stdout redirected): the boundary is stdin AND stdout (&&) — pins a
+    // single-sided implementation mistake
     env.setTerminal({ stdin: true, stdout: false });
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
@@ -1245,7 +1245,7 @@ describe("maruhi member add", () => {
     expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
   });
 
-  it("検証済み指紋帳: 不一致は自動で通さず警告して儀式へ戻し、成功で上書きする(KF)", async () => {
+  it("fingerprint book: a mismatch never auto-passes — it warns, returns to the ceremony, and a success overwrites (KF)", async () => {
     const acceptorFpBytes = decodeHex(acceptor.fingerprintHex);
     if (acceptorFpBytes === null) throw new Error("fp");
     const words = await fingerprintToWords(acceptorFpBytes);
@@ -1283,8 +1283,8 @@ describe("maruhi member add", () => {
       );
     };
 
-    // 対話環境: 警告 + 儀式は省略されない。成功で帳が新指紋へ上書きされる
-    // (`maruhi key generate` による正当な鍵更新の反映)
+    // Interactive environment: the warning + ceremony are not skipped. The
+    // success overwrites the book with the new fingerprint (reflecting a legitimate key update via `maruhi key generate`)
     const state = await makeAddServer({ built, invitation, ownDeks });
     const env = await startAddEnv(state, built.projectId);
     await seedStaleBook(env);
@@ -1293,12 +1293,12 @@ describe("maruhi member add", () => {
     expect(env.prompts).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("is not among the one verified");
     const recorded = await readBook(env);
-    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);
 
-    // エージェント環境 + 不一致 + フラグなし = 従来どおり拒否(auto-pass しない)
+    // Agent environment + mismatch + no flag = refused as before (never auto-passes)
     const state2 = await makeAddServer({ built, invitation, ownDeks });
     const env2 = await startAddEnv(state2, built.projectId);
     await seedStaleBook(env2);
@@ -1310,7 +1310,7 @@ describe("maruhi member add", () => {
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
-  it("検証済み指紋帳: --expect-fingerprint の一致成功も記録する(古い記録の警告はフラグ経路では出ない)(KF)", async () => {
+  it("fingerprint book: an --expect-fingerprint match success is also recorded (the stale-record warning never appears on the flag path) (KF)", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -1330,8 +1330,8 @@ describe("maruhi member add", () => {
       ],
     });
     const env = await startAddEnv(state, built.projectId);
-    // 古い記録(正当な鍵更新の直後にフラグで回す形): フラグが実指紋と一致して
-    // いるので「the out-of-band check is required again」を出さず、記録を上書き
+    // Stale record (the shape of re-running with the flag right after a
+    // legitimate key update): the flag matches the actual fingerprint, so "the out-of-band check is required again" is not shown; the record is overwritten
     await writeFile(
       env.fingerprintBookPath,
       JSON.stringify({
@@ -1349,7 +1349,7 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(env.errors.join("\n")).not.toContain("is not among the one verified");
     const recorded = await readBook(env);
-    // 集合に足す(DK — 古い記録は消さず、同じ人の別端末として残る)
+    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);

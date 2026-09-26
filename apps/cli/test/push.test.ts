@@ -1,6 +1,6 @@
-// push(§12-5 CAS)のテスト: create / 新バージョン、409 リトライ
-// (VersionConflict / EpochConflict = 再同期 → 再暗号化 → 再試行)、
-// スキーマ外の素の 413 分岐。
+// Tests for push (§12-5 CAS): create / new version, 409 retries
+// (VersionConflict / EpochConflict = resync → re-encrypt → retry),
+// and the raw out-of-schema 413 branch.
 
 import { decryptVariable } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -47,7 +47,7 @@ let wrap2: WireRecipientDek;
 let envStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
 
-/** pull 応答の 1 変数(検証済みステートメント + 値)。宣言ヘッドは genesis。 */
+/** One variable of a pull response (verified statement + value). The declared head is genesis. */
 async function entryOf(
   variableId: string,
   name: string,
@@ -79,7 +79,7 @@ beforeAll(async () => {
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
   ]);
-  // 同一 genesis(同一プロジェクト)にローテーションが積まれた形
+  // The shape where a rotation is stacked on the same genesis (same project)
   chainV2 = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -103,7 +103,7 @@ afterEach(async () => {
 });
 
 function chainHandlerOf(chains: readonly BuiltChain[]): MockHandler {
-  // 呼び出しごとに進む(EpochConflict 再同期で新チェーンが見える)。最後で止まる
+  // Advances on each call (the EpochConflict resync reveals the new chain). Stops at the last one
   let call = 0;
   return onRequest("GET", `/projects/${chainV1.projectId}/chain`, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
@@ -130,8 +130,8 @@ function deksHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): MockHand
 }
 
 /**
- * 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的なので、
- * 同一集合の再計算は byte-exact に一致する(equivocation にならない)。
+ * The manifest computed from the distributed set itself (§12-7). Ed25519 is
+ * deterministic, so recomputing the same set matches byte-exactly (no equivocation).
  */
 async function manifestOf(
   statements: readonly WireDistributedVariableStatement[],
@@ -152,7 +152,7 @@ async function manifestOf(
   });
 }
 
-/** 値付き pull(§12-7)の応答 JSON(マニフェスト同梱)。 */
+/** The response JSON of a value-bearing pull (§12-7) — manifest bundled. */
 async function pullJsonOf(
   variables: readonly {
     variableId: string;
@@ -161,9 +161,9 @@ async function pullJsonOf(
   }[],
   deks: readonly WireRecipientDek[],
   currentEpoch = 1,
-  /** メタ集合が変わる応答は次 version を渡す(同 version の集合差は equivocation)。 */
+  /** A response whose meta set changes takes the next version (a same-version set difference is equivocation). */
   manifestVersion = 1,
-  /** version > 1 の prev(直前マニフェストの hash — 隣接 prev 検証の連鎖)。 */
+  /** prev for version > 1 (the previous manifest's hash — the chain for the adjacent prev check). */
   prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return {
@@ -182,7 +182,7 @@ async function pullJsonOf(
   };
 }
 
-/** 指定集合・版のマニフェストの signed-bytes ハッシュ(次版の prev の材料)。 */
+/** The signed-bytes hash of the manifest for a given set · version (material for the next version's prev). */
 async function manifestHashAt(
   statements: readonly WireDistributedVariableStatement[],
   currentEpoch = 1,
@@ -219,16 +219,16 @@ function pullHandlerOf(
 }
 
 /**
- * 変数作成の受理を記録する箱(§12-10 (3) の効果確認 pull が、受理済みの
- * ステートメント + マニフェストの配布を模すための共有状態)。
+ * The box that records variable-creation acceptances (shared state so the
+ * §12-10 (3) confirmation pull can mimic distributing the accepted statement + manifest).
  */
 interface CreateEcho {
   body: CreateBody | null;
-  /** 作成の issueBase になった variant(配布集合 = variant + 作成ステートメント)。 */
+  /** The variant that became the creation's issueBase (distributed set = variant + creation statement). */
   baseVariant: readonly WireDistributedVariableStatement[];
 }
 
-/** 発行形 → 配布形(§12-2 — サーバーが呼び出し主体の帰属を付ける)。 */
+/** Issued form → distributed form (§12-2 — the server attaches the caller's attribution). */
 function distributedStatementOf(body: CreateBody): WireDistributedVariableStatement {
   return {
     ...body.statement,
@@ -238,11 +238,12 @@ function distributedStatementOf(body: CreateBody): WireDistributedVariableStatem
 }
 
 /**
- * メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で
- * 止まる)。variant 間のマニフェストは prev を実際に連鎖させる(隣接版の prev
- * 検証を満たす正当な「他メンバーのメタ操作」のモデル化)。
- * `echo` が受理済み作成を持つ場合は、その配布(variant + 作成ステートメント +
- * 受理したマニフェスト)を返す — 効果確認(§12-10 (3))の材料。
+ * The response of a metadata-only pull (§12-7). Advances through variants on
+ * each call (stops at the last). Manifests between variants actually chain
+ * their prev (models a legitimate "another member's meta operation" that
+ * satisfies the adjacent-version prev check).
+ * When `echo` holds an accepted creation, it returns that distribution
+ * (variant + creation statement + accepted manifest) — material for the confirmation (§12-10 (3)).
  */
 function pullMetadataHandlerOf(
   variants: readonly (readonly WireDistributedVariableStatement[])[],
@@ -268,8 +269,9 @@ function pullMetadataHandlerOf(
     `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
     async () => {
       if (echo !== undefined && echo.body !== null) {
-        // 受理済み: 配布形 = issueBase の集合 + 作成ステートメント、マニフェスト =
-        // 受理した発行形 + issuer 帰属(env-rotate.test.ts の acceptRotate と同型)
+        // Accepted: the distributed form = the issueBase set + creation
+        // statement; the manifest = the accepted issued form + issuer
+        // attribution (isomorphic to acceptRotate in env-rotate.test.ts)
         return {
           status: 200,
           json: {
@@ -297,8 +299,8 @@ function pullMetadataHandlerOf(
           statement: envStatement,
           variables,
           deletedVariables: [],
-          // variant の前進 = 他メンバーのメタ操作 1 回のモデル化。manifestVersion も
-          // 一緒に進める(床の単調性と整合する)
+          // A variant advance = one meta operation by another member, modeled.
+          // manifestVersion advances with it (consistent with the floor's monotonicity)
           manifest: await manifestAt(index),
         },
       };
@@ -323,7 +325,7 @@ async function startEnv(handlers: readonly MockHandler[], stdin: string): Promis
 interface CreateBody {
   readonly statement: WireDistributedVariableStatement;
   readonly value: WireEncryptedPayload;
-  /** 同梱マニフェスト(§12-4 — 変数作成もマニフェストを再発行する)。 */
+  /** The bundled manifest (§12-4 — variable creation also re-issues the manifest). */
   readonly manifest: {
     readonly environmentId: string;
     readonly epoch: number;
@@ -352,7 +354,7 @@ async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promis
 }
 
 describe("maruhi push", () => {
-  it("新規変数は create(version 1)。stdin の値が現エポックで暗号化される", async () => {
+  it("a new variable is a create (version 1); the stdin value is encrypted under the current epoch", async () => {
     const createCalls: CreateBody[] = [];
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
@@ -365,7 +367,7 @@ describe("maruhi push", () => {
         (request: MockRequest) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
-          // 受理: 以後の metadata pull(効果確認 — §12-10 (3))が配布する
+          // Accepted: later metadata pulls (the confirmation — §12-10 (3)) distribute it
           echo.body = body;
           return {
             status: 200,
@@ -391,8 +393,8 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
     expect(createCalls).toHaveLength(1);
     const body = createCalls[0] as CreateBody;
-    // 作成は metaVersion 1 のステートメントを同梱する(§12-5): author 署名付き・
-    // prev 空・宣言ヘッド = 最後に検証したchain head
+    // The creation bundles a metaVersion-1 statement (§12-5): signed by author,
+    // empty prev, declared head = the last verified chain head
     expect(body.statement.name).toBe("API_KEY");
     expect(body.statement.status).toBe("active");
     expect(body.statement.metaVersion).toBe(1);
@@ -406,17 +408,17 @@ describe("maruhi push", () => {
       variableId: body.statement.variableId,
       version: 1,
     });
-    // 値署名ブロック(§4.1): 新規変数は prev 空、宣言ヘッド = 最後に検証した
-    // chain head、writer = 自分(署名は master sig 鍵)
+    // The value-signature block (§4.1): a new variable has empty prev, declared
+    // head = the last verified chain head, writer = self (the signature is the master sig key)
     expect(body.value.prevValueSigHashHex).toBe("");
     expect(body.value.chainHeadSeq).toBe(chainV1.entries.length);
     expect(body.value.chainHeadHashHex).toBe(headOf(chainV1, chainV1.entries.length).hashHex);
     expect(body.value.signatureHex).toMatch(/^[0-9a-f]{128}$/);
-    // 末尾改行 1 つは除去され、値は現エポック DEK で復号できる
+    // One trailing newline is stripped, and the value decrypts under the current-epoch DEK
     expect(await decryptWire(dek1, body.value)).toBe("secret-value");
-    // 同梱マニフェスト(§12-4): 直前(サーバー配布の v1)の次 = v2、prev は
-    // 検証済み直前マニフェストの signed bytes ハッシュ、ダイジェストは作成後の
-    // 全変数集合(= 新規ステートメント 1 件)からの再計算値
+    // The bundled manifest (§12-4): next of the previous (server-distributed
+    // v1) = v2; prev is the verified previous manifest's signed-bytes hash;
+    // the digest is recomputed from the post-creation full variable set (= the 1 new statement)
     expect(body.manifest.manifestVersion).toBe(2);
     expect(body.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(body.manifest.epoch).toBe(1);
@@ -428,14 +430,16 @@ describe("maruhi push", () => {
     );
     expect(body.manifest.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     expect(env.logs.join("\n")).toContain("version=1");
-    // 新規作成の名前解決はメタデータのみ pull(§12-7)で行い、値付き pull を
-    // 一切呼ばない = サーバー側で var.read が記録されない経路(session-11 裁定 3)
+    // Name resolution for a new creation uses a metadata-only pull (§12-7) and
+    // never calls a value-bearing pull = a path where the server records no
+    // var.read (session-11 ruling 3)
     const paths = server.requests.map((request) => request.path);
     expect(paths).toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`);
     expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
-    // 肯定側の固定(否定側 =「未確認なら書かない」は旧サーバーテストが固定):
-    // 効果確認(1-E′)を**通過した**作成は、自分の書き込みを床へ昇格し、確認
-    // pull の検証済みマニフェスト(= 自己発行 v2)が床にあり、intent が閉じる
+    // The positive side pinned (the negative side — "never write unconfirmed" —
+    // is pinned by the old-server test): a creation that **passed** the
+    // confirmation (1-E′) promotes its own write into the floor; the
+    // confirmation pull's verified manifest (= self-issued v2) is in the floor, and the intent closes
     const loaded = await Effect.runPromise(
       makeFileFloorStore(env.floorDir).load(chainV1.projectId),
     );
@@ -450,7 +454,7 @@ describe("maruhi push", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
-  it("受理後にサーバー echo がローカル署名値と食い違えば型付きエラーで報告する", async () => {
+  it("when the post-acceptance server echo disagrees with the locally signed value, it is reported as a typed error", async () => {
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -462,7 +466,7 @@ describe("maruhi push", () => {
         (request: MockRequest) => {
           const body = request.body as CreateBody;
           echo.body = body;
-          // 受理はするが、echo の version をローカル署名値(1)と食い違わせる
+          // Accepts, but makes the echo's version disagree with the locally signed value (1)
           return {
             status: 200,
             json: {
@@ -486,7 +490,7 @@ describe("maruhi push", () => {
 
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("echoes different coordinates");
-    // 床への昇格はローカル署名値で完了している(echo 突合は床コミットの後段)
+    // Promotion into the floor has completed with the locally signed value (the echo comparison runs after the floor commit)
     const created = echo.body as CreateBody | null;
     expect(created).not.toBeNull();
     const loaded = await Effect.runPromise(
@@ -497,7 +501,7 @@ describe("maruhi push", () => {
     ).toMatchObject({ status: "active", version: 1, epoch: 1 });
   });
 
-  it("intent(3-F)の追記に失敗したら変数作成を送信しない(journal-before-send の fail-closed)", async () => {
+  it("if appending the intent (3-F) fails, never send the variable creation (fail-closed journal-before-send)", async () => {
     let createCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -520,16 +524,18 @@ describe("maruhi push", () => {
     env.failFloorIntentAppends();
 
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    // Never fire a security-critical mutation without recording the confirmation obligation
     expect(createCalls).toBe(0);
     expect(env.errors.join("\n")).toContain("intent");
   });
 
-  it("旧サーバー相当(manifest を黙って捨てて 200)では、受理後照合が失敗し床のマニフェストを前進させない(1-E′ — §12-10 (3))", async () => {
-    // strict 受理(§12-10 (1))未導入の旧サーバーの形: 変数作成の 200 は返すが
-    // 同梱マニフェストを保存せず、以後も旧マニフェスト(v1・作成前の集合)を
-    // 配布し続ける。成功の定義 = 検証可能な配布物での効果確認なので、CLI は
-    // 成功と言わず、自己発行マニフェストを床に書かない(受理後照合)
+  it("with an old-server equivalent (silently drops the manifest and returns 200), the post-acceptance check fails and the floor's manifest does not advance (1-E′ — §12-10 (3))", async () => {
+    // The shape of an old server without strict acceptance (§12-10 (1)): it
+    // returns 200 for the variable creation but never stores the bundled
+    // manifest, and keeps distributing the old manifest (v1, the pre-creation
+    // set). Because success is defined as confirmation over verifiable
+    // distributed artifacts, the CLI does not call it success and does not
+    // write its self-issued manifest to the floor (the post-acceptance check)
     let created: CreateBody | null = null;
     let metadataCalls = 0;
     const server = await MockServer.start([
@@ -546,8 +552,9 @@ describe("maruhi push", () => {
               environmentId: ENV_ID,
               currentEpoch: 1,
               statement: envStatement,
-              // 受理後もステートメントは保存済み(値・メタは旧サーバーでも保存
-              // される)が、マニフェストは v1(作成前の空集合)のまま = 黙殺の形
+              // After acceptance the statement is stored (values / meta are
+              // stored even by an old server), but the manifest stays v1 (the
+              // pre-creation empty set) = the shape of silent dropping
               variables: created === null ? [] : [distributedStatementOf(created)],
               deletedVariables: [],
               manifest: await manifestOf([], 1, 1),
@@ -583,34 +590,37 @@ describe("maruhi push", () => {
 
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 効果確認の失敗として報告する(2xx を成功と読ませない)
+    // Reported as a confirmation failure (a 2xx must not be read as success)
     expect(errors).toContain("post-acceptance confirmation");
     expect(errors).toContain("success is defined by the confirmed effect");
-    // 確認の metadata pull は実際に行われた(受理後照合)
+    // The confirmation metadata pull did actually run (the post-acceptance check)
     expect(metadataCalls).toBeGreaterThanOrEqual(2);
     const loaded = await Effect.runPromise(
       makeFileFloorStore(env.floorDir).load(chainV1.projectId),
     );
     const record = loaded.floor?.environments[ENV_ID];
-    // 自己発行マニフェスト(v2)は床に書かれない — 記録されるのは検証済み観測
-    // (解決 pull の v1)のみ。旧サーバーへ「保存されていないマニフェスト」を
-    // 床に固定して以後の欠落を omission と誤判定する事故を作らない
+    // The self-issued manifest (v2) is not written to the floor — only verified
+    // observations (the resolution pull's v1) are recorded. Do not pin "a
+    // manifest the old server never stored" into the floor and create the accident
+    // where every later absence is misjudged as an omission
     expect(record?.manifest?.manifestVersion).toBe(1);
-    // **変数床も書かれない**(§12-10 (3) — 床への記録は確認通過後のみ)。
-    // 2xx だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
-    // いなかった場合に、以後の全 pull が variable-omitted で恒久拒否される
-    // (未確認の思い込みが equivocation 証拠に化ける)
+    // **The variable floor is not written either** (§12-10 (3) — floor records
+    // only after the confirmation passes). Planting your own write into the
+    // floor on the basis of a 2xx alone would make every later pull
+    // permanently refuse with variable-omitted if the server never actually
+    // stored it (an unconfirmed belief morphs into equivocation evidence)
     const body = created as CreateBody | null;
     expect(record?.variables[body?.statement.variableId ?? ""]).toBeUndefined();
-    // 確認義務の記録(intent — 3-F)は未解決のまま残る
+    // The confirmation-obligation record (the intent — 3-F) stays unresolved
     expect(loaded.floor?.intents).toHaveLength(1);
   });
 
-  it("同版の別マニフェストが配布されたら hash 不一致として失敗する(1-E′ — §12-10 (3))", async () => {
-    // サーバーは 200 を返すが、発行した manifestVersion に**別内容**の検証可能な
-    // マニフェスト(自分の変数 + 注入された変数を覆う)を配布する。デジェストは
-    // 配布集合と整合するため §4.3 検証は通る — 自己発行 (version, hash) との
-    // 照合だけがこれを検出する
+  it("a different manifest distributed under the same version fails as a hash mismatch (1-E′ — §12-10 (3))", async () => {
+    // The server returns 200 but distributes a verifiable manifest of
+    // **different content** under the issued manifestVersion (covering your
+    // variable + an injected one). The digest is consistent with the
+    // distributed set, so the §4.3 verification passes — only the comparison
+    // against the self-issued (version, hash) detects this
     const extraStatement = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -649,8 +659,9 @@ describe("maruhi push", () => {
               statement: envStatement,
               variables: statements,
               deletedVariables: [],
-              // 同じ manifestVersion(2)だが別集合を覆う = 別の signed bytes。
-              // prev は正しく v1 へ連鎖させる(隣接 prev 検証は通る形 — hash 照合の固定)
+              // Same manifestVersion (2) but covering a different set =
+              // different signed bytes. prev chains correctly to v1 (a shape
+              // that passes the adjacent prev check — to pin the hash comparison)
               manifest: await manifestOf(statements, 1, 2, await manifestHashAt([])),
             },
           };
@@ -688,13 +699,13 @@ describe("maruhi push", () => {
     const loaded = await Effect.runPromise(
       makeFileFloorStore(env.floorDir).load(chainV1.projectId),
     );
-    // 発行したマニフェストは保存されていないことを確認済み = intent は
-    // not-accepted で閉じる(検証済みの配布側 v2' は観測として床に残る)
+    // Confirmed that the issued manifest was not stored = the intent closes as
+    // not-accepted (the verified distributed-side v2' remains in the floor as an observation)
     expect(loaded.floor?.intents).toEqual([]);
     expect(loaded.floor?.environments[ENV_ID]?.manifest?.manifestVersion).toBe(2);
   });
 
-  it("VersionConflict(409)は再取得した winner を検証し、その hash へ prev を付け替えて再試行する", async () => {
+  it("VersionConflict (409) verifies the refetched winner and retries with prev re-pointed to its hash", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -707,7 +718,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    // 実際に勝った version 7(409 後の再取得で見える)
+    // The actual winner version 7 (visible on the refetch after the 409)
     const winner = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -724,8 +735,9 @@ describe("maruhi push", () => {
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
-      // listMine ハンドラを置かない: 既存変数への push は値付き pull の同梱 DEK を
-      // 使い、listMine との二重取得をしない(session-11 裁定 3)。呼べば 404 で落ちる
+      // No listMine handler placed: a push to an existing variable uses the DEK
+      // bundled in the value-bearing pull and never double-fetches via listMine
+      // (session-11 ruling 3). Calling it would 404
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -744,7 +756,7 @@ describe("maruhi push", () => {
           const body = request.body as { value: WireEncryptedPayload };
           pushBodies.push(body.value);
           if (pushBodies.length === 1) {
-            // 競合: 実は誰かが version 7 まで進めていた
+            // The conflict: someone had in fact advanced to version 7
             return { status: 409, json: { _tag: "VersionConflict", currentVersion: 7 } };
           }
           return {
@@ -768,14 +780,15 @@ describe("maruhi push", () => {
     expect(pushBodies).toHaveLength(2);
     expect(pushBodies[0]?.aad.version).toBe(5);
     expect(pushBodies[1]?.aad.version).toBe(8);
-    // prev は検証済みの現行最新 → 409 後は再取得・検証した winner の
-    // signed-bytes hash(自計算 — サーバー申告のハッシュではない)へ付け替わる
+    // prev points to the verified current latest → after the 409 it re-points
+    // to the refetched, verified winner's signed-bytes hash (self-computed —
+    // not the server-claimed hash)
     expect(pushBodies[0]?.prevValueSigHashHex).toBe(await valueHashOf(existing, owner.userId));
     expect(pushBodies[1]?.prevValueSigHashHex).toBe(await valueHashOf(winner, owner.userId));
-    // 再試行は新 version で再暗号化されている(nonce も新しい)
+    // The retry is re-encrypted under the new version (the nonce is new too)
     expect(pushBodies[0]?.nonceHex).not.toBe(pushBodies[1]?.nonceHex);
     expect(await decryptWire(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
-    // DEK は値付き pull の同梱分のみで賄われ、listMine は一度も呼ばれない
+    // The DEK is covered solely by what the value-bearing pull bundled; listMine is never called
     expect(
       server.requests.filter(
         (request) =>
@@ -785,10 +798,11 @@ describe("maruhi push", () => {
     ).toHaveLength(0);
   });
 
-  it("409 の申告が検証済み latest より古い(巻き戻し)なら拒否する", async () => {
-    // クライアントは v4 を検証済み。悪意サーバーは v2 まで巻き戻した 409 を返し、
-    // 再取得でも巻き戻しビュー(v2 = 単体では全検証を通る古い正規値)を配布する。
-    // セッション内で保持している検証済み latest(v4)からの後退として拒否する
+  it("refuses when the 409's claim is older than the verified latest (a rollback)", async () => {
+    // The client has verified v4. A malicious server returns a 409 rolled back
+    // to v2, and the refetch distributes the rolled-back view (v2 = an old
+    // honest value that passes every check standalone). Refuse it as a
+    // regression from the verified latest (v4) held within the session
     const head = headOf(chainV1, chainV1.entries.length);
     const v4 = await encryptValueFor({
       dek: dek1,
@@ -844,13 +858,14 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // 初回 pull がコミットした床の規則が先に検出する(floor-check.ts の文言)
+    // The floor rules committed by the first pull detect it first (floor-check.ts's wording)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
-  it("409 後の winner の prev が検証済み直前 version と連鎖しなければ拒否する", async () => {
-    // クライアントは v4 を検証済み。winner は v5 だが prev が v4 でなく別の
-    // 履歴(fork)に連鎖している → 隣接 predecessor の §6.3-6 検査で拒否する
+  it("refuses when the post-409 winner's prev does not chain to the verified previous version", async () => {
+    // The client has verified v4. The winner is v5, but its prev chains not to
+    // v4 but to a different history (a fork) → refused by the adjacent-
+    // predecessor §6.3-6 check
     const head = headOf(chainV1, chainV1.entries.length);
     const v4 = await encryptValueFor({
       dek: dek1,
@@ -863,7 +878,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    // v5 だが prev はダミー(v4 の hash ではない = 分岐した履歴への連鎖)
+    // v5, but prev is a dummy (not v4's hash = chained to a branched history)
     const forkedV5 = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -913,14 +928,15 @@ describe("maruhi push", () => {
     );
   });
 
-  it("409 後の winner が版番号ギャップ越しにエポック後退していたら拒否する", async () => {
-    // known = epoch 2 の v4(検証済み)。winner は version 6(ギャップ 2 で prev
-    // 隣接検査は対象外)だが epoch 1 = 旧エポックへ後退している(削除済みメンバーの
-    // 旧エポック署名の版番号ずらし注入の形)。初回 pull がコミットした床の規則 (a)
-    // が再取得 pull の時点で先に検出する(winner 検査は床が使えない場合の防衛層
-    // として残る)
-    const head3 = headOf(chainV2, 3); // rotate(epoch 2 が現)を含むヘッド
-    const head2 = headOf(chainV2, 2); // create(epoch 1 が現)のヘッド
+  it("refuses when the post-409 winner regresses the epoch across a version-number gap", async () => {
+    // known = v4 at epoch 2 (verified). The winner is version 6 (a gap of 2,
+    // so the adjacent prev check does not apply) but epoch 1 = regressed to
+    // the old epoch (the shape of a version-number-shifting injection signed
+    // under a removed member's old-epoch key). The floor's rule (a), committed
+    // by the first pull, detects it first at the refetch pull (the winner
+    // check remains as a defense layer for when the floor is unusable)
+    const head3 = headOf(chainV2, 3); // the head that includes rotate (epoch 2 current)
+    const head2 = headOf(chainV2, 2); // the head of create (epoch 1 current)
     const knownV4 = await encryptValueFor({
       dek: dek2,
       projectId: chainV2.projectId,
@@ -980,7 +996,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("monotonicity violation");
   });
 
-  it("409 後の再取得が申告 currentVersion より古ければ不整合として拒否する", async () => {
+  it("a refetch after 409 older than the claimed currentVersion is refused as an inconsistency", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -998,7 +1014,7 @@ describe("maruhi push", () => {
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        // 再取得しても version 4 のまま(409 の申告 7 より古い)
+        // The refetch still returns version 4 (older than the 409's claimed 7)
         pullHandlerOf([entryExisting], [wrap1]),
         onRequest(
           "POST",
@@ -1014,7 +1030,7 @@ describe("maruhi push", () => {
     );
   });
 
-  it("409 後の再取得で winner が欠落していたら拒否する(床の欠落検出が先に発火)", async () => {
+  it("refuses when the winner is missing from the post-409 refetch (the floor's absence detection fires first)", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1058,7 +1074,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
-  it("409 後の再取得が同一 version で異なる signed bytes を返したら equivocation として拒否する", async () => {
+  it("refuses as equivocation when the post-409 refetch returns different signed bytes under the same version", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
     const coordinates = {
       dek: dek1,
@@ -1071,7 +1087,7 @@ describe("maruhi push", () => {
       head,
     } as const;
     const existing = await encryptValueFor({ ...coordinates, plaintext: "old" });
-    // 同一座標(version 4)で内容の異なる有効署名(§14.2-5 の証拠の形)
+    // A valid signature with different content at the same coordinates (version 4) — the §14.2-5 evidence shape
     const forked = await encryptValueFor({ ...coordinates, plaintext: "forked" });
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
@@ -1092,7 +1108,7 @@ describe("maruhi push", () => {
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
-        // currentVersion 4 = 検証済み latest と同じ version を申告する 409
+        // currentVersion 4 = a 409 claiming the same version as the verified latest
         () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 4 } }),
       ),
     ]);
@@ -1109,14 +1125,14 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("equivocation");
   });
 
-  it("EpochConflict(409)は再同期 → 新エポック DEK 取得 → 再暗号化して再試行する(エポックの真実源はチェーン)", async () => {
-    // push.test は「同一 genesis の 2 状態」を前提にする(Ed25519 の決定論署名 +
-    // 固定 timestamp により成立)
+  it("EpochConflict (409) resyncs → fetches the new-epoch DEK → re-encrypts and retries (the chain is the epoch's source of truth)", async () => {
+    // push.test assumes "two states over the same genesis" (holds via
+    // Ed25519's deterministic signatures + fixed timestamps)
     expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
-      // first syncはローテーション前(epoch 1)、再同期でローテーション後が見える
+      // The first sync is pre-rotation (epoch 1); the resync reveals post-rotation
       chainHandlerOf([chainV1, chainV2]),
       deksHandlerOf([[wrap1], [wrap1, wrap2]]),
       pullMetadataHandlerOf([[]], 1, echo),
@@ -1127,8 +1143,9 @@ describe("maruhi push", () => {
           const body = request.body as CreateBody;
           createBodies.push(body);
           if (createBodies.length === 1) {
-            // サーバー申告の currentEpoch は嘘(5)。真実源はチェーン導出値(2)
-            // であることを固定する(申告値を使う退行は aad.epoch=5 になり検出)
+            // The server-claimed currentEpoch is a lie (5). Pin that the source
+            // of truth is the chain-derived value (2) (the regression of using
+            // the claimed value would become aad.epoch=5 and be detected)
             return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 5 } };
           }
           echo.body = body;
@@ -1156,20 +1173,21 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
     expect(createBodies).toHaveLength(2);
     expect(createBodies[0]?.value.aad.epoch).toBe(1);
-    // 再試行はチェーン導出の新エポック(2。申告の 5 ではない)+ 新 DEK で
-    // 暗号化されている。再同期でチェーンが 2 回取得されている
+    // The retry is encrypted under the chain-derived new epoch (2 — not the
+    // claimed 5) + a new DEK. The chain has been fetched twice across the resync
     expect(createBodies[1]?.value.aad.epoch).toBe(2);
     expect(await decryptWire(dek2, (createBodies[1] as CreateBody).value)).toBe("rotated-value");
     expect(
       server.requests.filter((r) => r.path === `/projects/${chainV1.projectId}/chain`),
     ).toHaveLength(2);
-    // 平文値は出力に現れない
+    // The plaintext value never appears in the output
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("rotated-value");
   });
 
-  it("EpochConflict 申告がチェーンと矛盾する(再同期しても現エポック不変)なら試行回数に関わらず矛盾として報告する", async () => {
-    // サーバーが毎回 EpochConflict を返し続ける = 試行上限まで到達するが、
-    // 汎用の「競合が解消しません」でなく定的な矛盾エラーを報告する
+  it("an EpochConflict claim contradicting the chain (current epoch unchanged after resync) is reported as a contradiction regardless of attempt count", async () => {
+    // The server keeps returning EpochConflict every time = the attempt cap is
+    // reached, but report a definite contradiction error rather than the
+    // generic "the conflict does not resolve"
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
@@ -1189,7 +1207,7 @@ describe("maruhi push", () => {
     expect(errors).not.toContain("did not resolve");
   });
 
-  it("EpochConflict 後に新エポックの DEK が自分宛にない場合は明示エラーになる", async () => {
+  it("an explicit error when no new-epoch DEK addressed to self exists after an EpochConflict", async () => {
     const env = await startEnv(
       [
         chainHandlerOf([chainV1, chainV2]),
@@ -1207,7 +1225,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("No DEK for the current epoch 2 is registered for you");
   });
 
-  it("create の競合(並行作成)は名前から再解決して push 経路へ切り替える", async () => {
+  it("a create conflict (concurrent creation) re-resolves by name and switches to the push path", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1225,13 +1243,15 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      // 初回解決では変数なし(create 経路)、競合後の再解決では並行作成された
-      // v-racer が見える(解決はメタデータのみ pull — §12-7)
+      // The first resolution sees no variable (the create path); the
+      // re-resolution after the conflict sees the concurrently created
+      // v-racer (resolution is a metadata-only pull — §12-7)
       pullMetadataHandlerOf([[], [entryRacer.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
-        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(メタデータ側の
-        // variant 2 と同じマニフェスト — 隣接 prev は v1 へ連鎖)
+        // The shape where the concurrent creation's meta operation advanced
+        // the manifest to v2 (the same manifest as the metadata side's
+        // variant 2 — the adjacent prev chains to v1)
         return {
           status: 200,
           json: await pullJsonOf([entryRacer], [wrap1], 1, 2, await manifestHashAt([])),
@@ -1261,17 +1281,17 @@ describe("maruhi push", () => {
     env.setStdin(new TextEncoder().encode("after-race"));
 
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    // 値付き pull は再解決で既存変数になってから 1 回だけ(初回解決は
-    // メタデータのみで値を読まない)
+    // The value-bearing pull runs exactly once, after the re-resolution makes
+    // it an existing variable (the first resolution is metadata-only and reads no value)
     expect(pullCalls).toBe(1);
     const body = pushed as WireEncryptedPayload | null;
     expect(body?.aad.variableId).toBe("v-racer");
     expect(body?.aad.version).toBe(2);
-    // 再解決後の prev は検証済み v1(並行作成の winner)の signed-bytes hash
+    // After re-resolution, prev is the verified v1's (the concurrent-creation winner's) signed-bytes hash
     expect(body?.prevValueSigHashHex).toBe(await valueHashOf(existing, owner.userId));
   });
 
-  it("スキーマ外の素の 413 は「値が大きすぎる」として報告する", async () => {
+  it("a raw out-of-schema 413 is reported as 'the value is too large'", async () => {
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
@@ -1290,7 +1310,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("too large");
   });
 
-  it("create 経路への VersionConflict(異常応答)も名前から再解決して自壊しない", async () => {
+  it("a VersionConflict on the create path (an anomalous response) also re-resolves by name and does not self-destruct", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1308,19 +1328,20 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      // 初回解決は変数なし(create 経路)、再解決で v-late が見える
+      // The first resolution sees no variable (create path); the re-resolution sees v-late
       pullMetadataHandlerOf([[], [entryLate.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
-        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
+        // The shape where the concurrent creation's meta operation advanced the manifest to v2 (identical to variant 2)
         return {
           status: 200,
           json: await pullJsonOf([entryLate], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
-        // create にはスキーマ上返しうるが通常起きない応答。乱数 ID のまま
-        // push 経路へ落ちる退行(存在しない ID への push)をしないこと
+        // A response create may return per the schema but never does in
+        // practice. Never regress into falling onto the push path with the
+        // random ID still in place (a push to a nonexistent ID)
         status: 409,
         json: { _tag: "VersionConflict", currentVersion: 1 },
       })),
@@ -1343,12 +1364,12 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    // 値付き pull は再解決後の 1 回のみ(初回解決はメタデータのみ)
+    // The value-bearing pull runs only once, after re-resolution (the first resolution is metadata-only)
     expect(pullCalls).toBe(1);
     expect(pushedVersion).toBe(2);
   });
 
-  it("名前解決で変数名が重複していたら拒否する(恣意的な 1 件へ束縛しない)", async () => {
+  it("refuses when name resolution finds duplicate variable names (never binds to an arbitrary one)", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -1378,7 +1399,7 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        // 名前解決はメタデータのみ pull — 同名 active の重複はその検証で拒否される
+        // Name resolution is a metadata-only pull — a duplicate same-name active is refused by its verification
         pullMetadataHandlerOf([[entryA.statement, entryB.statement]]),
       ],
       "value",
@@ -1387,9 +1408,9 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("Multiple live statements with the same name");
   });
 
-  it("409 後の再取得ステートメントが metaVersion 巻き戻しなら拒否する(§12-5 のメタ同型)", async () => {
-    // クライアントは metaVersion 2 のステートメントを検証済み。再取得(409 後)で
-    // metaVersion 1 のステートメントが配布される = メタデータ巻き戻しの証拠
+  it("refuses when the post-409 refetched statement is a metaVersion rollback (the §12-5 meta isomorph)", async () => {
+    // The client has verified the metaVersion-2 statement. The refetch (post-
+    // 409) distributing a metaVersion-1 statement = evidence of a metadata rollback
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -1469,14 +1490,15 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // 初回 pull がコミットした床の規則 (a) が先に検出する(floor-check.ts の文言)
+    // The floor's rule (a), committed by the first pull, detects it first (floor-check.ts's wording)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
-  it("409 後の再取得が隣接 metaVersion で prev 不一致なら拒否する(分岐履歴への連鎖)", async () => {
-    // クライアントは metaVersion 1 のステートメントを検証済み。再取得(409 後)の
-    // metaVersion 2 の prev が検証済み signed bytes ハッシュと一致しない =
-    // 分岐した prev 連鎖への追従を拒否する(winnerValueRegression の隣接検査の同型)
+  it("refuses when the post-409 refetch has an adjacent metaVersion with a prev mismatch (chaining to a branched history)", async () => {
+    // The client has verified the metaVersion-1 statement. The refetched (post-
+    // 409) metaVersion-2's prev not matching the verified signed-bytes hash =
+    // refuse to follow a branched prev chain (isomorphic to
+    // winnerValueRegression's adjacency check)
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -1510,7 +1532,7 @@ describe("maruhi push", () => {
       head: { seq: 1, hashHex: chainV1.projectId },
       metaVersion: 1,
     });
-    // prev 既定値("cd"×32)は statementV1 の signed bytes ハッシュと一致しない
+    // prev's default ("cd"×32) does not match statementV1's signed-bytes hash
     const forkedSuccessor = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -1539,9 +1561,10 @@ describe("maruhi push", () => {
             ],
             [wrap1],
             1,
-            // 2 回目は metaVersion 2 の勝者 = メタ操作 1 回分マニフェストも前進
-            // (隣接版なので prev は v1 マニフェストへ連鎖させる — マニフェストの
-            // prev 検証とは独立に、勝者ステートメントの prev 不一致だけを固定する)
+            // The second time, the metaVersion-2 winner = the manifest also
+            // advances by one meta operation (an adjacent version, so prev
+            // chains to the v1 manifest — independent of the manifest's own
+            // prev verification, only the winner statement's prev mismatch is pinned)
             pullCalls === 1 ? 1 : 2,
             pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
           ),
@@ -1566,7 +1589,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("chaining onto a diverged history");
   });
 
-  it("409 後の再取得が同一 metaVersion で異なる signed bytes を返したら equivocation として拒否する(rename fork)", async () => {
+  it("refuses as equivocation when the post-409 refetch returns different signed bytes under the same metaVersion (a rename fork)", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -1592,7 +1615,7 @@ describe("maruhi push", () => {
       prevValueSigHashHex: await valueHashOf(existing, owner.userId),
     });
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
-    // 同一 metaVersion(1)で name が異なる有効ステートメント = rename fork の証拠
+    // Valid statements under the same metaVersion (1) with differing name = evidence of a rename fork
     const forkedStatement = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -1640,7 +1663,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("equivocation");
   });
 
-  it("create への MetaVersionConflict(409)は名前から再解決する(並行 rename との競合)", async () => {
+  it("a MetaVersionConflict (409) on create re-resolves by name (a conflict with a concurrent rename)", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1658,11 +1681,11 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      // 初回解決は変数なし(create 経路)、再解決で v-meta-race が見える
+      // The first resolution sees no variable (create path); the re-resolution sees v-meta-race
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
-        // 並行 rename のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
+        // The shape where the concurrent rename's meta operation advanced the manifest to v2 (identical to variant 2)
         return {
           status: 200,
           json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
@@ -1694,13 +1717,13 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    // 値付き pull は再解決後の 1 回のみ(初回解決はメタデータのみ)
+    // The value-bearing pull runs only once, after re-resolution (the first resolution is metadata-only)
     expect(pullCalls).toBe(1);
     expect(pushedVersion).toBe(2);
   });
 
-  it("名前は署名前に NFC 正規化される(ルックアップキーとステートメントの両方 — §12-1)", async () => {
-    // NFD(結合文字)の名前で push → 同梱ステートメントの name は NFC 正規形
+  it("names are NFC-normalized before signing (both the lookup key and the statement — §12-1)", async () => {
+    // Push with an NFD (combining-character) name → the bundled statement's name is the NFC normal form
     const nfdName = "CAFE\u0301_URL";
     const nfcName = nfdName.normalize("NFC");
     expect(nfcName).not.toBe(nfdName);
@@ -1741,10 +1764,10 @@ describe("maruhi push", () => {
     expect(createCalls[0]?.statement.name).toBe(nfcName);
   });
 
-  it("競合が解消しない場合は試行上限で中断する", async () => {
-    // サーバーが「検証済み latest と同じ currentVersion + 同一の値の配布」を
-    // 返し続ける = 各周回の winner 検査(欠落・古い pull・equivocation)は通るが
-    // 前進しない。汎用の試行上限で打ち切る
+  it("aborts at the attempt cap when the conflict never resolves", async () => {
+    // The server keeps returning "the same currentVersion as the verified
+    // latest + a distribution of the same value" = each round's winner checks
+    // (absence · stale pull · equivocation) pass but nothing advances. Cut off at the generic attempt cap
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1780,10 +1803,10 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("did not resolve");
   });
 
-  it("名前解決と値取得の間に並行 rename が入ったら push を向けずに拒否する", async () => {
-    // メタデータ解決は API_KEY → v-existing。値付き pull では同じ変数が
-    // API_KEY_V2 へ改名済み(metaVersion 2)= 入力した名前と別の名前に変わった
-    // 変数への push を防ぐ
+  it("refuses without aiming the push when a concurrent rename lands between name resolution and value fetch", async () => {
+    // Metadata resolution: API_KEY → v-existing. The value-bearing pull sees
+    // the same variable already renamed to API_KEY_V2 (metaVersion 2) = blocks
+    // a push aimed at a variable whose name changed from the typed one
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -1809,8 +1832,9 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        // 並行 rename のメタ操作はマニフェストも v2 へ進める(§12-5 — 同版の
-        // 集合差は equivocation になってしまうため、正直な rename の形で組む)
+        // The concurrent rename's meta operation also advances the manifest to
+        // v2 (§12-5 — a same-version set difference would be equivocation, so
+        // it is assembled in the shape of an honest rename)
         onRequest(
           "GET",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
@@ -1832,9 +1856,10 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("concurrent rename");
   });
 
-  it("メタデータ解決の応答のアクティブ一覧に deleted ステートメントが混ざっていたら拒否する(§12-7)", async () => {
-    // メタデータのみ pull にも値付き pull と同じ検証規律が掛かる(削除の無断
-    // 取り消しの運搬形。値がない分、検証はステートメント側だけで完結する)
+  it("refuses when the metadata-resolution response's active list mixes in a deleted statement (§12-7)", async () => {
+    // A metadata-only pull is under the same verification discipline as a
+    // value-bearing one (the carriage form of unauthorized deletion reversal.
+    // With no values, verification completes on the statement side alone)
     const deletedStatement = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,

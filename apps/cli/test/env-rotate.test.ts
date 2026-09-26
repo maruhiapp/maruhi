@@ -1,20 +1,23 @@
-// エポックローテーション(`maruhi env rotate`)のテスト。
+// Tests for epoch rotation (`maruhi env rotate`).
 //
-// 検証の柱:
-//  1. 複合リクエスト(§12-4): rotate_epoch エントリ(new_epoch = 現 + 1・reason・
-//     新エポックのコミットメント — §5.2 / §6.2)+ 現メンバー集合と厳密一致する
-//     ラップ完全集合。各ラップは §5.1 署名を持ち、受信者が開封した DEK は
-//     エントリのコミットメントと一致する
-//  2. 現在値の再暗号化(§7 / §4.1): 全アクティブ変数の最新値が新 DEK で
-//     再暗号化され、実行者が writer として署名した通常 push で送られる
-//  3. **中断復旧**: 複合受理後・再暗号化完了前に中断した状態(= エポックは
-//     進んだが最新値の epoch が現エポック未満)を再実行が検出し、エポックを
-//     進めずに残りだけを再暗号化する(冪等な再開)
-//  4. CAS 競合・並行ローテーション・部分完了・認可の各分岐
+// Pillars verified:
+//  1. The composite request (§12-4): a rotate_epoch entry (new_epoch = current
+//     + 1 · reason · the new epoch's commitment — §5.2 / §6.2) + a complete
+//     wrap set matching the current member set exactly. Each wrap carries a
+//     §5.1 signature, and the DEK the recipient opens matches the entry's commitment
+//  2. Re-encryption of current values (§7 / §4.1): the latest value of every
+//     active variable is re-encrypted under the new DEK and sent via a normal
+//     push signed by the runner as writer
+//  3. **Interruption recovery**: a state interrupted after the composite was
+//     accepted but before re-encryption finished (= the epoch advanced yet a
+//     latest value's epoch is below the current epoch) is detected on re-run,
+//     and the remainder alone is re-encrypted without advancing the epoch (idempotent resume)
+//  4. The branches: CAS conflict · concurrent rotation · partial completion · authorization
 //
-// モックサーバーは実サーバーの状態遷移を模す(受理したエントリをチェーンへ
-// 追記し、複合のラップを配布集合へ入れ、push を最新値へ反映する)— これにより
-// 「1 回目でクラッシュ → 2 回目で再開」を同一フィクスチャ上で通しで検査できる。
+// The mock server mimics the real server's state transitions (appends accepted
+// entries to the chain, puts the composite's wraps into the distribution set,
+// and reflects pushes into latest values) — so "crash on run 1 → resume on
+// run 2" can be exercised end-to-end on a single fixture.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -81,7 +84,7 @@ import {
 
 const ENV_ID = "dev";
 
-/** rotate 複合リクエストのボディ(api-schema の environments.rotate payload)。 */
+/** The body of the rotate composite request (api-schema's environments.rotate payload). */
 interface RotateBody {
   readonly parentHeadHashHex: string;
   readonly entry: ChainEntry & {
@@ -94,13 +97,13 @@ interface RotateBody {
     };
   };
   readonly deks: readonly WrappedDek[];
-  /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
+  /** The bundled manifest (§12-4 — issuance form. issuer is what the caller contracts). */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  /** The boundary checkpoint (H+2 — §12-4's mandatory bundle). */
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
-/** pull 応答の 1 変数(検証済みステートメント + 配布形の値)。 */
+/** One variable of a pull response (verified statement + distribution-form value). */
 interface PulledVariable {
   readonly variableId: string;
   readonly statement: WireDistributedVariableStatement;
@@ -114,9 +117,9 @@ let dek2: Uint8Array;
 let dek3: Uint8Array;
 /** genesis + create_environment(epoch 1)。 */
 let chainBase: BuiltChain;
-/** 同一 genesis に rotate_epoch(epoch 2、DEK = dek2)が積まれた形。 */
+/** The shape with rotate_epoch (epoch 2, DEK = dek2) stacked onto the same genesis. */
 let chainRotated: BuiltChain;
-/** さらに rotate_epoch(epoch 3、DEK = dek3)まで積まれた形。 */
+/** The shape with a further rotate_epoch (epoch 3, DEK = dek3) stacked on top. */
 let chainRotatedTwice: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
@@ -156,7 +159,7 @@ afterEach(async () => {
   servers = [];
 });
 
-/** 1 変数分の pull 応答(値署名の宣言ヘッドは当該エポックが現エポックだった位置)。 */
+/** A pull response for one variable (the value signature's declared head is where that epoch was the current epoch). */
 async function variableAt(input: {
   readonly built: BuiltChain;
   readonly variableId: string;
@@ -166,7 +169,7 @@ async function variableAt(input: {
   readonly version: number;
   readonly plaintext: string;
   readonly headSeq: number;
-  /** version > 1 の prev(既定はフィクスチャのダミー — 連鎖検査の negative 用)。 */
+  /** The prev of a version > 1 (default is the fixture's dummy — for the negative of the chain check). */
   readonly prevValueSigHashHex?: string;
 }): Promise<PulledVariable> {
   return {
@@ -199,53 +202,55 @@ async function variableAt(input: {
 interface ServerOptions {
   readonly built: BuiltChain;
   readonly variables: PulledVariable[];
-  /** 削除済み変数の tombstone(§12-5 — 保存・配布し続ける)。 */
+  /** A deleted variable's tombstone (§12-5 — kept stored and distributed). */
   readonly deletedVariables?: WireDistributedVariableStatement[];
   readonly deks: WireRecipientDek[];
   readonly currentEpoch: number;
-  /** rotate 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
+  /** A per-rotate-call injected response (undefined = normal acceptance). */
   readonly onRotate?: (call: number) => MockResponse | undefined;
   /**
-   * rotate 複合の**受理直後**に呼ぶフック(受理後にサーバーが配布状態を
-   * 差し替える攻撃・並行操作のモデル化)。引数は受理後のチェーン現在形。
+   * A hook called **right after accepting** the rotate composite (models an
+   * attack / concurrent operation where the server swaps the distribution
+   * state post-acceptance). The argument is the chain's current form post-acceptance.
    */
   readonly onRotateAccepted?: (chain: {
     readonly entries: readonly ChainEntry[];
     readonly hashes: readonly string[];
   }) => Promise<void> | void;
   /**
-   * **受理した後**に差し込む応答(応答の消失・502 のモデル化)。チェーンへの
-   * 追記とラップの配布は起きるが、クライアントにはエラーだけが見える。
+   * A response injected **after acceptance** (models a lost response / 502).
+   * The chain append and the wrap distribution do happen, but the client only sees the error.
    */
   readonly onRotateAfterAccept?: (call: number) => MockResponse | undefined;
-  /** push 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
+  /** A per-push-call injected response (undefined = normal acceptance). */
   readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
-  /** pull 呼び出しごとの差し込み応答(undefined = 正常応答)。巡末の再走査を潰す用。 */
+  /** A per-pull-call injected response (undefined = normal response). Used to break the pass-end rescan. */
   readonly onPull?: (call: number) => MockResponse | undefined;
-  /** chain 取得ごとの差し込み応答(undefined = 正常応答)。受理確認を潰す用。 */
+  /** A per-chain-fetch injected response (undefined = normal response). Used to break the acceptance check. */
   readonly onChain?: (call: number) => MockResponse | undefined;
   /**
-   * rotate を試みた**後**に配信するチェーン(他メンバーの並行ローテーションの
-   * モデル化)。timestamp は決定的なので、元のチェーンの延長として検証を通る。
+   * The chain to serve **after** a rotate is attempted (models another
+   * member's concurrent rotation). Timestamps are deterministic, so it
+   * verifies as an extension of the original chain.
    */
   readonly chainAfterRotateAttempt?: BuiltChain | undefined;
   /**
-   * 受理した**後**に、さらに他メンバーのローテーションを 1 件追記する
-   * (現エポックが目標エポックを追い越す形のモデル化)。
+   * After accepting, additionally append one more member's rotation (models
+   * the shape where the current epoch overtakes the target epoch).
    */
   readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
   /**
-   * 受理した境界 checkpoint を配布チェーンへ追記しない(rotate エントリのみを
-   * 配布する「checkpoint 隠し」サーバーのモデル化 — PR-F4 cross-layer。
-   * checkpoint はチェーン合意規則上は任意なのでチェーン自体は有効なまま、
-   * §4.3 (2) の束縛タプルだけが消える)。
+   * Never append the accepted boundary checkpoint to the distribution chain
+   * (models a "checkpoint-hiding" server that distributes only the rotate
+   * entry — PR-F4 cross-layer. Checkpoints are optional under the chain's
+   * consensus rule, so the chain itself stays valid while only the §4.3 (2) bound tuple disappears).
    */
   readonly dropCheckpointFromChain?: boolean;
   /**
-   * standalone checkpoint の受理(汎用 append)+ /auth/me + /audit-head を
-   * 有効にする(契機 (i) — rotate + 再暗号化完了後の周期 checkpoint 発行 —
-   * のモデル化。PR-M2)。省略時は従来どおり未実装(発行は失敗し警告になる —
-   * 既存テストの前提を変えない)。
+   * Enable acceptance of a standalone checkpoint (generic append) + /auth/me
+   * + /audit-head (models trigger (i) — the periodic checkpoint issued after
+   * rotate + re-encryption complete — PR-M2). When omitted, stays unimplemented
+   * as before (issuance fails and becomes a warning — never changes existing tests' premise).
    */
   readonly standaloneCheckpoint?: { readonly auditHeadHashHex: string };
 }
@@ -256,17 +261,18 @@ interface ServerState {
   readonly pushes: {
     readonly variableId: string;
     readonly value: WireDistributedValue;
-    /** リクエストの再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false として記録)。 */
+    /** The request's re-encryption marker (AUTH_SPEC §12-5 — omitted is recorded as false). */
     readonly reencryption: boolean;
   }[];
-  /** 配布チェーンの現在形(standalone checkpoint の追記の検査用)。 */
+  /** The distribution chain's current form (for checking the standalone-checkpoint append). */
   readonly chainEntries: readonly ChainEntry[];
 }
 
 /**
- * 実サーバーの状態遷移を模したハンドラ群: 受理した rotate_epoch エントリを
- * チェーンへ追記し、複合の同梱ラップを配布集合へ入れ、受理した push を
- * 最新値へ反映する。これにより「クラッシュ → 再実行」が同一状態上で通る。
+ * Handlers mimicking the real server's state transitions: append the accepted
+ * rotate_epoch entry to the chain, put the composite's bundled wraps into the
+ * distribution set, and reflect an accepted push into the latest value. This
+ * lets "crash → re-run" run on the same state.
  */
 function makeServer(options: ServerOptions): ServerState {
   const projectId = chainBase.projectId;
@@ -282,19 +288,20 @@ function makeServer(options: ServerOptions): ServerState {
   let pushCalls = 0;
   let pullCalls = 0;
   let chainCalls = 0;
-  // 保存済みの最新マニフェスト(§12-5 — 保持は 1 通)。配信状態(エポック・
-  // メタ集合)が変わるたびに次 manifestVersion で再発行する(テストが変数集合を
-  // 差し替える = 他メンバーのメタ操作のモデル化)。受理した rotate の同梱
-  // マニフェストはそのまま最新として置き換える
+  // The stored latest manifest (§12-5 — only one is kept). Re-issued at the
+  // next manifestVersion whenever the distribution state (epoch · meta set)
+  // changes (the test swapping the variable set = models another member's
+  // meta operation). An accepted rotate's bundled manifest replaces it as the latest
   let manifestState: {
     key: string;
     manifest: WireDistributedManifest;
     version: number;
   } | null = null;
-  // 保存済みチェックポイントスナップショット(§16-2 — checkpoint 受理時点の
-  // 配布集合の列挙 + 対応 checkpoint 位置)。以後の値付き pull に同梱する(§12-7)
+  // The stored checkpoint snapshot (§16-2 — the enumeration of the
+  // distribution set at checkpoint-acceptance time + the corresponding
+  // checkpoint position). Bundled into later value-carrying pulls (§12-7)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
-  /** checkpoint エントリの受理時のみ upsert(§16-2 — それ以外の op は素通し)。 */
+  /** Upsert only when a checkpoint entry is accepted (§16-2 — other ops pass through). */
   const storeCheckpointSnapshot = async (entry: ChainEntry): Promise<void> => {
     if (entry.op !== "checkpoint") {
       return;
@@ -318,8 +325,9 @@ function makeServer(options: ServerOptions): ServerState {
       return manifestState.manifest;
     }
     const version = (manifestState?.version ?? 0) + 1;
-    // 再発行は直前マニフェストへ prev を連鎖させる(隣接版の prev 検証 —
-    // M1-A1 — を満たす正直なメタ操作のモデル化。実サーバーの §12-5 (5) と同じ)
+    // Re-issuance chains prev into the previous manifest (models an honest
+    // meta operation satisfying the adjacent-version prev check — M1-A1. Same
+    // as the real server's §12-5 (5))
     const previous = manifestState?.manifest;
     const manifest = await manifestFor({
       projectId,
@@ -338,11 +346,12 @@ function makeServer(options: ServerOptions): ServerState {
     return manifest;
   };
 
-  /** 受理: rotate + 境界 checkpoint の 2 エントリを追記し、同梱ラップを配布集合へ入れる(§12-4)。 */
+  /** Acceptance: append the 2 entries — rotate + boundary checkpoint — and put the bundled wraps into the distribution set (§12-4). */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
     if (options.dropCheckpointFromChain === true) {
-      // checkpoint 隠しサーバーはスナップショットも保存しない(整合した隠蔽の
-      // モデル化 — チェーンに基準がないのに列挙を配ると規則 2 がそこで落ちる)
+      // A checkpoint-hiding server stores no snapshot either (models
+      // consistent hiding — distributing an enumeration with no checkpoint on
+      // the chain would fail rule 2 right there)
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
     } else {
@@ -351,15 +360,16 @@ function makeServer(options: ServerOptions): ServerState {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // 境界 checkpoint の受理と同一トランザクションでスナップショットを保存
-      // (§16-2 — 受理時点 = 再暗号化前の配布集合)
+      // Store the snapshot in the same transaction as the boundary
+      // checkpoint's acceptance (§16-2 — acceptance time = the pre-re-encryption distribution set)
       await storeCheckpointSnapshot(body.checkpoint);
     }
     currentEpoch = body.entry.payload.newEpoch;
-    // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
-    // ダイジェストが現行集合を覆う場合のみ「最新」として固定する — 受理前に
-    // テストが変数集合を差し替えた(= 他メンバーのメタ操作の)場合は key を
-    // 空にし、次の pull で次 version を再発行させる
+    // Distribution form = the accepted issuance form + the caller's issuer
+    // info (§12-2). Only when the bundled digest covers the current set is it
+    // pinned as "latest" — if the test swapped the variable set before
+    // acceptance (= another member's meta operation), the key is left empty
+    // and the next pull re-issues the next version
     const digestNow = await variablesDigestOf(projectId, [
       ...variables.map((variable) => variable.statement),
       ...deletedVariables,
@@ -390,7 +400,7 @@ function makeServer(options: ServerOptions): ServerState {
     await options.onRotateAccepted?.({ entries, hashes });
   };
 
-  /** 他メンバーのローテーションを 1 件、現在のチェーンの末尾へ追記する。 */
+  /** Appends one rotation by another member to the current chain's tail. */
   const appendOtherRotate = async (target: {
     readonly epoch: number;
     readonly dek: Uint8Array;
@@ -416,7 +426,7 @@ function makeServer(options: ServerOptions): ServerState {
     currentEpoch = target.epoch;
   };
 
-  // 契機 (i) の周期 checkpoint 発行(PR-M2)用の追加エンドポイント(オプション)
+  // Extra endpoints for the trigger (i) periodic checkpoint issuance (PR-M2) (optional)
   const standaloneHandlers: MockHandler[] =
     options.standaloneCheckpoint === undefined
       ? []
@@ -443,8 +453,8 @@ function makeServer(options: ServerOptions): ServerState {
             const body = request.body as { readonly entry: ChainEntry };
             entries.push(body.entry);
             hashes.push(await computeChainEntryHash(body.entry));
-            // standalone checkpoint の受理もスナップショットを upsert(§16-2 —
-            // 保存規律は経路によらず同一)
+            // Accepting a standalone checkpoint also upserts the snapshot
+            // (§16-2 — the storage discipline is the same regardless of path)
             await storeCheckpointSnapshot(body.entry);
             return {
               status: 200,
@@ -487,7 +497,7 @@ function makeServer(options: ServerOptions): ServerState {
             deletedVariables,
             deks,
             manifest: await serveManifest(),
-            // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
+            // Whenever a stored row for the base checkpoint exists, it is always bundled (§12-7 — the material of rule 2)
             ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
           },
         }
@@ -503,7 +513,7 @@ function makeServer(options: ServerOptions): ServerState {
       const body = request.body as RotateBody;
       rotateBodies.push(body);
       if (options.chainAfterRotateAttempt !== undefined) {
-        // 他メンバーが先に(あるいは並行して)追記した形へ差し替える
+        // Swap to the shape where another member appended first (or concurrently)
         entries.splice(0, entries.length, ...options.chainAfterRotateAttempt.entries);
         hashes.splice(0, hashes.length, ...options.chainAfterRotateAttempt.hashes);
       }
@@ -548,7 +558,7 @@ function makeServer(options: ServerOptions): ServerState {
       if (injected !== undefined) {
         return injected;
       }
-      // 配布形は「受理した payload + 呼び出し主体の writer 情報」(§12-2)
+      // The distribution form is "the accepted payload + the caller's writer info" (§12-2)
       const stored: WireDistributedValue = {
         ...body.value,
         writerUserId: owner.userId,
@@ -573,7 +583,7 @@ function makeServer(options: ServerOptions): ServerState {
   return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
 
-/** 床(観測ログの fold)を読む(M1-A4 の床前進 / 非前進の固定用)。 */
+/** Reads the floor (the fold of the observation log) — for pinning M1-A4's floor advance / non-advance. */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(chainBase.projectId),
@@ -590,7 +600,7 @@ async function startEnv(handlers: readonly MockHandler[], user: TestUser): Promi
   return env;
 }
 
-/** 1 ラップの §5.1 署名検証 + 受信者の開封(env-create.test.ts と同型)。 */
+/** §5.1 signature verification of one wrap + the recipient's opening (same shape as env-create.test.ts). */
 async function verifyAndUnwrap(input: {
   readonly wrap: WrappedDek;
   readonly recipient: TestUser;
@@ -653,7 +663,7 @@ async function decryptWire(dek: Uint8Array, value: WireDistributedValue): Promis
   return new TextDecoder().decode(result.value);
 }
 
-/** 複合の同梱ラップから、実行者が生成した新エポック DEK を取り出す。 */
+/** Extracts the new-epoch DEK the runner generated, from the composite's bundled wraps. */
 async function newEpochDekOf(body: RotateBody): Promise<Uint8Array> {
   const wrap = body.deks.find((candidate) => candidate.recipientUserId === owner.userId);
   if (wrap === undefined) {
@@ -663,7 +673,7 @@ async function newEpochDekOf(body: RotateBody): Promise<Uint8Array> {
 }
 
 describe("maruhi env rotate", () => {
-  it("複合リクエスト: rotate_epoch エントリ(コミットメント込み)+ ラップ完全集合を送り、現在値を新 DEK で再暗号化する", async () => {
+  it("composite request: sends a rotate_epoch entry (with commitment) + the complete wrap set, and re-encrypts current values under the new DEK", async () => {
     const member = await makeTestUser("user-member-3333");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -712,7 +722,7 @@ describe("maruhi env rotate", () => {
 
     expect(
       await runCli(
-        ["env", "rotate", ENV_ID, "--reason", "退職者の削除に伴う予防的ローテーション"],
+        ["env", "rotate", ENV_ID, "--reason", "preventive rotation upon member removal"],
         env.layer,
       ),
     ).toBe(0);
@@ -720,22 +730,22 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(1);
     const body = state.rotateBodies[0];
     if (body === undefined) throw new Error("rotate was not called");
-    // 親ヘッド CAS + エントリは現ヘッドの直後(seq = head + 1)に actor = 呼び出し主体
+    // Parent-head CAS + the entry sits right after the current head (seq = head + 1), actor = the caller
     expect(body.parentHeadHashHex).toBe(head);
     expect(body.entry.op).toBe("rotate_epoch");
     expect(body.entry.seq).toBe(built.entries.length + 1);
     expect(body.entry.prevHashHex).toBe(head);
     expect(body.entry.actor.userId).toBe(owner.userId);
-    // new_epoch = 現エポック + 1、reason はチェーンへ載る(§6.2)
+    // new_epoch = current epoch + 1; reason lands on the chain (§6.2)
     expect(body.entry.payload.environmentId).toBe(ENV_ID);
     expect(body.entry.payload.newEpoch).toBe(2);
-    expect(body.entry.payload.reason).toBe("退職者の削除に伴う予防的ローテーション");
-    // ラップ先 = 検証済み現メンバー集合と厳密一致(§6.3)
+    expect(body.entry.payload.reason).toBe("preventive rotation upon member removal");
+    // Wrap targets = exactly the verified current member set (§6.3)
     expect(body.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, member.userId].toSorted(),
     );
     expect(body.deks.every((wrap) => wrap.epoch === 2)).toBe(true);
-    // 全受信者が同一の新 DEK を得て、それがエントリのコミットメント(§5.2)と一致する
+    // Every recipient gets the same new DEK, matching the entry's commitment (§5.2)
     const deks: string[] = [];
     for (const wrap of body.deks) {
       const unwrapped = await verifyAndUnwrap({
@@ -753,23 +763,23 @@ describe("maruhi env rotate", () => {
       expectedCommitmentHex: body.entry.payload.dekCommitmentHex,
     });
     expect(matched.ok).toBe(true);
-    // 再暗号化: 全アクティブ変数が新エポック・次 version で push されている
+    // Re-encryption: every active variable is pushed at the new epoch, next version
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vbb"]);
     const pushedA = state.pushes.find((push) => push.variableId === "vaa");
     const pushedB = state.pushes.find((push) => push.variableId === "vbb");
     if (pushedA === undefined || pushedB === undefined) throw new Error("missing pushes");
     expect(pushedA.value.aad).toMatchObject({ epoch: 2, version: 2, variableId: "vaa" });
     expect(pushedB.value.aad).toMatchObject({ epoch: 2, version: 3, variableId: "vbb" });
-    // 平文は保存されている(新 DEK で復号できる)
+    // Plaintext is preserved (decryptable under the new DEK)
     expect(await decryptWire(newDek, pushedA.value)).toBe("postgres://example");
     expect(await decryptWire(newDek, pushedB.value)).toBe("key-abc");
-    // prev は検証済み直前 version の signed bytes ハッシュ(§4.1 の連鎖)
+    // prev is the signed-bytes hash of the verified immediately-prior version (the §4.1 chain)
     expect(pushedA.value.prevValueSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(env.logs.join("\n")).toContain("epoch 1 → 2");
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
   });
 
-  it("ラップ完全集合 = R(E): scope に環境を含まない現メンバーには新 DEK をラップしない(ES K4 — CRYPTO_SPEC §6.2 / §6.3)", async () => {
+  it("the complete wrap set = R(E): a current member whose scope excludes the environment gets no new-DEK wrap (ES K4 — CRYPTO_SPEC §6.2 / §6.3)", async () => {
     const insider = await makeTestUser("user-insider-7777");
     const outsider = await makeTestUser("user-outsider-8888");
     const built = await buildChain([
@@ -802,7 +812,7 @@ describe("maruhi env rotate", () => {
       [owner.userId, insider.userId].toSorted(),
     );
 
-    // scope 外の環境は通信前に拒否する(値付き pull = var.read の記録より前 — §6.3)
+    // An out-of-scope environment is refused before communication (before a value-carrying pull = a var.read record — §6.3)
     const outsiderEnv = await startEnv(state.handlers, outsider);
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "scope test"], outsiderEnv.layer),
@@ -811,7 +821,7 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(1);
   });
 
-  it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3 — PR-M2)", async () => {
+  it("trigger (i): issues a periodic checkpoint for the environment after rotate + re-encryption complete (CRYPTO_SPEC §6.3 — PR-M2)", async () => {
     const auditHead = "ab".repeat(32);
     const variables = [
       await variableAt({
@@ -844,7 +854,7 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "periodic"], env.layer)).toBe(0);
-    // 末尾 = 再暗号化完了後の周期 checkpoint(境界分の H+2 の後に standalone)
+    // The tail = the periodic checkpoint after re-encryption completes (standalone, after the boundary's H+2)
     const tail = state.chainEntries[state.chainEntries.length - 1];
     if (tail === undefined || tail.op !== "checkpoint") {
       throw new Error("the post-rotation periodic checkpoint was not appended");
@@ -853,7 +863,7 @@ describe("maruhi env rotate", () => {
     const tuple = tail.payload.environments[0];
     if (tuple === undefined) throw new Error("missing tuple");
     expect(tuple.environmentId).toBe(ENV_ID);
-    // 公証対象 = 再暗号化**完了後**のデータ状態(新エポックの値)
+    // The notarized subject = the data state **after** re-encryption completed (new-epoch values)
     expect(tuple.epoch).toBe(2);
     const reencrypted = state.pushes.find((push) => push.variableId === "vaa");
     if (reencrypted === undefined) throw new Error("missing re-encrypted push");
@@ -866,12 +876,12 @@ describe("maruhi env rotate", () => {
     ]);
     if (!digest.ok) throw new Error("digest failed");
     expect(tuple.valuesDigestHex).toBe(digest.value);
-    // 実効権限 admin(モックの /auth/me = admin スコープ)なので監査ヘッドを公証する
+    // Effective permission admin (the mock's /auth/me = admin scope), so it notarizes the audit head
     expect(tail.payload.auditHeadHashHex).toBe(auditHead);
     expect(env.logs.join("\n")).toContain("post-rotation periodic checkpoint");
   });
 
-  it("中断復旧: 複合受理後にクラッシュした状態から、エポックを進めず残りの再暗号化を再開する", async () => {
+  it("interruption recovery: from a state that crashed after the composite was accepted, resumes the remaining re-encryption without advancing the epoch", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -894,7 +904,7 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 2 変数目の push でサーバーが落ちる(= 再暗号化の途中でクラッシュ)
+    // The server falls on the second variable's push (= a crash mid-re-encryption)
     const state = makeServer({
       built: chainBase,
       variables,
@@ -909,25 +919,26 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // vbb だけが 1 回目の実行中ずっと落ちる(巡内リトライでも回復しない)
+      // Only vbb keeps failing throughout run 1 (never recovers even on in-pass retries)
       onPush: (call, variableId) =>
         variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 1 回目: ローテーションは受理されたが、再暗号化は 1 変数で中断する
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "初回"], env.layer)).toBe(1);
+    // Run 1: the rotation was accepted, but re-encryption interrupts at 1 variable
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "first run"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.pushes).toHaveLength(1);
     const first = state.rotateBodies[0];
     if (first === undefined) throw new Error("rotate was not called");
     const newDek = await newEpochDekOf(first);
 
-    // 2 回目(同じ設定・同じローカル床): エポックは 2 のまま、残り 1 変数だけを
-    // 再暗号化する。rotate は**呼ばれない**(エポックを二重に進めない)。
-    // --reason 付き = ローテーションの要求なので、再開へ切り替わった実行は
-    // 成功終了しない(スクリプトが「新エポックができた」と誤認しない)
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再実行"], env.layer)).toBe(1);
+    // Run 2 (same config, same local floor): the epoch stays 2, and only the
+    // remaining 1 variable is re-encrypted. rotate is **never called** (never
+    // advances the epoch twice). Because --reason was passed = a rotation was
+    // requested, a run that switched to resuming must not exit successfully
+    // (a script must not mistake it for "a new epoch was made")
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "re-run"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.pushes).toHaveLength(2);
     const resumed = state.pushes[1];
@@ -935,18 +946,19 @@ describe("maruhi env rotate", () => {
     expect(resumed.variableId).toBe("vbb");
     expect(resumed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(newDek, resumed.value)).toBe("key-abc");
-    // 再開であることは明示される(--reason はチェーンに記録されない旨も)
+    // That it resumed is made explicit (also that the --reason is never recorded on the chain)
     expect(env.errors.join("\n")).toContain("with incomplete re-encryption");
     expect(env.logs.join("\n")).toContain("resumed re-encryption");
-    // 再開は「要求されたローテーション」ではない: 新エポックを作っていない事実を
-    // 完了報告が隠さない(退職者削除後の実行が成功扱いに見える形を塞ぐ)
+    // A resume is not "the requested rotation": the completion report never
+    // hides the fact that no new epoch was made (blocks the shape where a run
+    // after member removal looks successful)
     expect(env.logs.join("\n")).toContain("No new epoch was created");
     expect(env.errors.join("\n")).toContain("the requested rotation was not performed");
-    // 要求があった実行では「要求を実行せず切り替えた」と明示する
+    // On a run that had a request, state explicitly "switched without running the request"
     expect(env.errors.join("\n")).toContain("The requested rotation will not be performed");
   });
 
-  it("契機 (i): 再開経路で再暗号化が完了した場合も周期 checkpoint を発行する", async () => {
+  it("trigger (i): a periodic checkpoint is also issued when re-encryption completes on the resume path", async () => {
     const auditHead = "cd".repeat(32);
     const variables = [
       await variableAt({
@@ -984,23 +996,24 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // vbb だけが 1 回目の実行中ずっと落ちる = 再暗号化の途中でクラッシュ。
-      // 1 回目は完全完了に至らないので周期 checkpoint は発行されない
+      // Only vbb keeps failing throughout run 1 = a crash mid-re-encryption.
+      // Run 1 never reaches full completion, so no periodic checkpoint is issued
       onPush: (call, variableId) =>
         variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
       standaloneCheckpoint: { auditHeadHashHex: auditHead },
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 1 回目: rotate は受理されたが再暗号化は中断 — checkpoint はチェーン末尾に
-    // 増えない(rotate + 境界 checkpoint の 2 エントリのみ)
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "初回"], env.layer)).toBe(1);
+    // Run 1: rotate was accepted but re-encryption interrupted — the chain's
+    // tail gains no checkpoint (only the 2 entries: rotate + boundary checkpoint)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "first run"], env.layer)).toBe(1);
     const afterCrash = state.chainEntries.length;
-    expect(state.chainEntries[afterCrash - 1]?.op).toBe("checkpoint"); // 境界分(H+2)
+    expect(state.chainEntries[afterCrash - 1]?.op).toBe("checkpoint"); // the boundary's (H+2)
     expect(state.chainEntries[afterCrash - 2]?.op).toBe("rotate_epoch");
 
-    // 2 回目(理由なし = 案内どおりの再開): 残り 1 変数を再暗号化して**完了**する
-    // → 完了の節目で当該環境の周期 checkpoint が発行される
+    // Run 2 (no reason = the guided resume): re-encrypts the remaining 1
+    // variable and **completes** → the environment's periodic checkpoint is
+    // issued at the completion boundary
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.chainEntries.length).toBe(afterCrash + 1);
     const tail = state.chainEntries[state.chainEntries.length - 1];
@@ -1011,7 +1024,7 @@ describe("maruhi env rotate", () => {
     const tuple = tail.payload.environments[0];
     if (tuple === undefined) throw new Error("missing tuple");
     expect(tuple.environmentId).toBe(ENV_ID);
-    // 公証対象 = 再暗号化**完了後**のデータ状態(両変数とも新エポックの値)
+    // The notarized subject = the data state **after** re-encryption completed (both variables on the new epoch)
     expect(tuple.epoch).toBe(2);
     const pushedA = state.pushes.find((push) => push.variableId === "vaa");
     const pushedB = state.pushes.find((push) => push.variableId === "vbb");
@@ -1034,7 +1047,7 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("post-rotation periodic checkpoint");
   });
 
-  it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
+  it("a post-rotation push failure reports the fact that the epoch advanced as a partial completion", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1065,12 +1078,12 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "初回"], env.layer)).toBe(1);
-    // 複合は受理済み = エポックは進んでいる。生のエラーだけで終わらせず、
-    // 「エポックが進み再暗号化が残っている」ことと再開手段を伝える
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "first run"], env.layer)).toBe(1);
+    // The composite was accepted = the epoch did advance. Never end on the raw
+    // error alone — convey "the epoch advanced and re-encryption remains" plus the means to resume
     expect(state.rotateBodies).toHaveLength(1);
-    // 巡を使い切った(= 毎巡の再走査は通っている)ので、残数は実測である。
-    // 「中断」とも「未確認を含む」とも言わない
+    // All passes were spent (= each pass's rescan did run), so the remaining
+    // count is measured. Says neither "interrupted" nor "includes unverified"
     expect(env.logs.join("\n")).toContain("Partial completion");
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
     expect(env.logs.join("\n")).not.toContain("may include unconfirmed ones");
@@ -1080,7 +1093,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("resume from the remainder without advancing the epoch");
   });
 
-  it("部分完了の原因は最新の失敗を出す(解消済みの一時失敗が本当の原因を隠さない)", async () => {
+  it("the partial-completion cause shows the latest failure (a resolved transient failure must not hide the real cause)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1107,7 +1120,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // 1 巡目は一時的な 503、以降は 404 を返し続ける(= いま塞いでいる原因)
+      // Pass 1 is a transient 503; from then on it keeps returning 404 (= the cause blocking it now)
       onPush: (call, variableId) =>
         call === 0
           ? { status: 503, bodyText: "unavailable" }
@@ -1115,7 +1128,9 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "原因の鮮度"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "cause freshness"], env.layer)).toBe(
+      1,
+    );
     const errors = env.errors.join("\n");
     expect(errors).toContain(
       "re-encryption did not complete: Re-encryption of variable DATABASE_URL was rejected with 404 (possible concurrent deletion)",
@@ -1123,7 +1138,7 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("re-encryption did not complete: Failed to re-encrypt");
   });
 
-  it("解消した一時失敗は原因として残さない(解けない競合は競合として報告する)", async () => {
+  it("a resolved transient failure is not kept as the cause (an unresolved conflict is reported as a conflict)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1160,7 +1175,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // vaa は 1 巡目だけ 502(2 巡目で成功)。vbb は最後まで競合し続ける
+      // vaa is a 502 only on pass 1 (succeeds on pass 2). vbb keeps conflicting to the end
       onPush: (call, variableId) => {
         if (variableId === "vaa") {
           return call === 0 ? { status: 502, bodyText: "bad gateway" } : undefined;
@@ -1170,17 +1185,18 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "混在"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "mixed"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 残っているのは競合分だけなので、原因は競合である。解消済みの 502 を
-    // 掲げると、調査が検証失敗・床違反の方向へ誤誘導される
+    // Only the conflicting share remains, so the cause is conflict. Raising
+    // the resolved 502 would mislead the investigation toward verification
+    // failure / floor violation
     expect(errors).toContain("conflicts with concurrent pushes did not resolve");
     expect(errors).not.toContain("re-encryption did not complete");
-    // 解消した失敗が起きた事実自体は警告として残す
+    // The fact that a now-resolved failure happened is kept as a warning
     expect(errors).toContain("There were failures during re-encryption");
   });
 
-  it("巡末の再走査に到達できなかった場合だけ、残数を「未確認を含む」として報告する", async () => {
+  it("only when the pass-end rescan was never reached is the remaining count reported as 'includes unverified'", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1208,20 +1224,22 @@ describe("maruhi env rotate", () => {
       ],
       currentEpoch: 1,
       onPush: () => ({ status: 503, bodyText: "unavailable" }),
-      // 初回 pull は通し、巡末の再走査で落とす(= 実態を確かめられない)
+      // Let the first pull through, then fail the pass-end rescan (= the actual state cannot be checked)
       onPull: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再走査失敗"], env.layer)).toBe(1);
-    // 競合分が他メンバーの手で解決している可能性が残るので、断定しない
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "rescan failure"], env.layer)).toBe(
+      1,
+    );
+    // The conflicting share may have been resolved by another member, so it is never asserted
     expect(env.logs.join("\n")).toContain("1 variable incomplete (may include unconfirmed ones)");
     expect(env.errors.join("\n")).toContain("re-encryption was interrupted");
   });
 
-  it("理由なしの再実行は再開だけを要求している(再暗号化済みの変数は対象にせず成功終了)", async () => {
+  it("a reasonless re-run is a request to resume only (already re-encrypted variables are excluded and it exits successfully)", async () => {
     const variables = [
-      // 既に epoch 2 へ再暗号化済み(宣言ヘッド = rotate エントリ自身)
+      // Already re-encrypted to epoch 2 (declared head = the rotate entry itself)
       await variableAt({
         built: chainRotated,
         variableId: "vaa",
@@ -1255,9 +1273,10 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 部分完了の案内は「再実行すると、エポックを進めずに残りから再開します」。
-    // その案内どおりの実行(理由なし)は再開だけを要求しているので、やり残しが
-    // なくなった時点で成功終了する(--reason 付きの実行だけが exit 1 になる)
+    // The partial-completion guidance says "re-run to resume from the
+    // remainder without advancing the epoch". A run per that guidance (no
+    // reason) is a request to resume only, so it exits successfully once
+    // nothing is left (only a --reason'd run gets exit 1)
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.rotateBodies).toHaveLength(0);
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
@@ -1265,17 +1284,17 @@ describe("maruhi env rotate", () => {
     if (pushed === undefined) throw new Error("resume push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
-    // 再暗号化 push は自己申告マーカーを伴う(AUTH_SPEC §12-5 — 要ローテーション
-    // フラグの解消 — AUDIT_SPEC §4.1-5 — と見なされないため)
+    // The re-encryption push carries the self-declaration marker (AUTH_SPEC
+    // §12-5 — so it is not counted as resolving the rotation-needed flag — AUDIT_SPEC §4.1-5)
     expect(pushed.reencryption).toBe(true);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("the requested rotation was not performed");
-    // 何も要求していない実行に「要求を実行せず切り替えた」と言わない
+    // Never tell a run that requested nothing "switched without running the request"
     expect(errors).toContain("with incomplete re-encryption. Resuming this re-encryption");
     expect(errors).not.toContain("The requested rotation will not be performed");
   });
 
-  it("完了検証: 初回 pull と複合受理の窓で作られた変数は 422 → 再 pull で対象へ入り、再暗号化してから完了とする", async () => {
+  it("completion check: a variable made in the window between the first pull and composite acceptance gets 422 → re-pull puts it in the target set and it completes only after re-encryption", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1288,11 +1307,12 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 初回 pull と複合受理の窓で、他メンバーが旧エポックの変数を作成する。
-    // 実サーバーはこの窓の並行作成を受理時点突合(§12-4 — 境界 checkpoint の
-    // values_digest)で 422 拒否するため、再 pull 後の再試行で対象集合へ入る
-    // (受理された checkpoint のスナップショットが常に配布集合を覆う — 規則 2
-    // の前提)
+    // In the window between the first pull and the composite's acceptance,
+    // another member creates a variable on the old epoch. The real server
+    // rejects such a concurrent creation with 422 via the acceptance-time
+    // match (§12-4 — the boundary checkpoint's values_digest), so the post-
+    // re-pull retry lands it in the target set (an accepted checkpoint's
+    // snapshot always covers the distribution set — the premise of rule 2)
     const late = await variableAt({
       built: chainBase,
       variableId: "vlate",
@@ -1330,13 +1350,13 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "窓"], env.layer)).toBe(0);
-    // 窓で作られた vlate も、再試行の対象集合に入って再暗号化されてから完了する
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "window"], env.layer)).toBe(0);
+    // vlate, created in the window, also enters the retry's target set and completes only after re-encryption
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vlate"]);
     expect(state.rotateBodies).toHaveLength(2);
     const body = state.rotateBodies[1];
     if (body === undefined) throw new Error("rotate retry missing");
-    // 再試行の境界 checkpoint は vlate 込みの値集合を公証している
+    // The retry's boundary checkpoint notarizes the value set including vlate
     expect(body.checkpoint.payload.environments[0]?.valuesDigestHex).not.toBe(
       state.rotateBodies[0]?.checkpoint.payload.environments[0]?.valuesDigestHex,
     );
@@ -1347,7 +1367,7 @@ describe("maruhi env rotate", () => {
     expect(await decryptWire(newDek, pushedLate.value)).toBe("late-value");
   });
 
-  it("--new-epoch は未完了の再暗号化があっても新しいエポックを作る(§7 の全環境ローテーション用)", async () => {
+  it("--new-epoch creates a new epoch even with an unfinished re-encryption (for §7's all-environment rotation)", async () => {
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -1373,21 +1393,24 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(state.handlers, owner);
 
     expect(
-      await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除", "--new-epoch"], env.layer),
+      await runCli(
+        ["env", "rotate", ENV_ID, "--reason", "member removal", "--new-epoch"],
+        env.layer,
+      ),
     ).toBe(0);
-    // 再開ではなくローテーション: 新エポック 3 のエントリが作られ、
-    // 旧エポックの値は中間エポックを経由せず一気に epoch 3 へ揃う
+    // Not a resume but a rotation: an epoch-3 entry is made, and old-epoch
+    // values go straight to epoch 3 without passing through the middle epoch
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(3);
     const pushed = state.pushes[0];
     if (pushed === undefined) throw new Error("push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 3, version: 2 });
-    // 強制ローテーションの再暗号化 push も自己申告マーカーを伴う(§12-5)
+    // A forced rotation's re-encryption push also carries the self-declaration marker (§12-5)
     expect(pushed.reencryption).toBe(true);
     expect(env.logs.join("\n")).toContain("epoch 2 → 3");
   });
 
-  it("再開経路は --reason を要求しない(記録されないフィールドで復旧を阻まない)", async () => {
+  it("the resume path does not require --reason (never blocks recovery over a field that is not recorded)", async () => {
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -1417,7 +1440,7 @@ describe("maruhi env rotate", () => {
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
   });
 
-  it("ChainHeadConflict(409)は再同期してエントリを再署名し、リトライする(§12-4)", async () => {
+  it("ChainHeadConflict (409) re-syncs, re-signs the entry, and retries (§12-4)", async () => {
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -1446,20 +1469,21 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合テスト"], env.layer)).toBe(0);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "conflict test"], env.layer)).toBe(0);
     expect(state.rotateBodies).toHaveLength(2);
     const [first, second] = state.rotateBodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
-    // 再署名されている(タイムスタンプ・署名が変わる)が、生成済み DEK の
-    // コミットメントとラップ集合は同一エポック向けのまま再利用される
+    // Re-signed (timestamp · signature change), but the generated DEK's
+    // commitment and the wrap set are reused as-is for the same epoch
     expect(second.entry.payload.dekCommitmentHex).toBe(first.entry.payload.dekCommitmentHex);
     expect(second.deks).toEqual(first.deks);
   });
 
-  it("CheckpointStateMismatch(422)は検証済み pull からやり直して有界再試行する(§12-4)", async () => {
-    // 境界 checkpoint の values_digest 突合の 422 = 宣言ヘッド確定後の並行 push。
-    // 再署名では解決しない(値集合の再取得を要する)ため、リトライは複合送信の
-    // 再署名ループではなく検証済み pull からのやり直しで行う(session-33 §5 F-2)
+  it("CheckpointStateMismatch (422) retries bounded, restarting from a verified pull (§12-4)", async () => {
+    // A 422 from the boundary checkpoint's values_digest match = a concurrent
+    // push after the declared head was fixed. Re-signing does not resolve it
+    // (the value set must be re-fetched), so the retry restarts from a
+    // verified pull rather than the composite-send re-sign loop (session-33 §5 F-2)
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -1484,27 +1508,29 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "値競合テスト"], env.layer)).toBe(0);
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "value-conflict test"], env.layer),
+    ).toBe(0);
     expect(state.rotateBodies).toHaveLength(2);
     const [first, second] = state.rotateBodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
-    // 再試行は pull からのやり直し = 新しい DEK を生成する(前試行の複合は受理
-    // されておらずエポックも進んでいない — 破棄してよい)
+    // A retry restarts from a pull = a new DEK is generated (the previous
+    // attempt's composite was never accepted and the epoch never advanced — safe to discard)
     expect(second.entry.payload.dekCommitmentHex).not.toBe(first.entry.payload.dekCommitmentHex);
-    // 境界 checkpoint は再試行でも同梱される(値集合は不変なので digest は同一)
+    // The boundary checkpoint is bundled on the retry too (the value set is unchanged, so the digest is identical)
     expect(second.checkpoint.payload.environments[0]?.valuesDigestHex).toBe(
       first.checkpoint.payload.environments[0]?.valuesDigestHex,
     );
     expect(env.logs.join("\n")).toContain("re-pulling and retrying the rotation");
-    // intent 規律(3-F)× 有界再試行(F-2)の cross-layer(PR-F4): 1 試行目の
-    // intent は 422(確定拒否)が閉じ、2 試行目の intent は受理確認が閉じる —
-    // 再試行ループが未解決 intent を積み残さない
+    // The intent discipline (3-F) × bounded retries (F-2) cross-layer (PR-F4):
+    // attempt 1's intent is closed by the 422 (definite rejection), attempt
+    // 2's intent is closed by the acceptance check — the retry loop never leaves an unresolved intent behind
     const floor = await loadFloor(env);
     expect(floor?.intents).toEqual([]);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({ epoch: 2 });
   });
 
-  it("CheckpointStateMismatch が解消しない場合は有界で打ち切り、再実行を案内する(§12-4)", async () => {
+  it("when CheckpointStateMismatch does not resolve, it aborts bounded and guides toward a re-run (§12-4)", async () => {
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -1526,17 +1552,20 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "値競合テスト"], env.layer)).toBe(1);
-    // 有界(3 試行)で打ち切る — 無限に pull し続けない
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "value-conflict test"], env.layer),
+    ).toBe(1);
+    // Abort after the bound (3 attempts) — never pulls forever
     expect(state.rotateBodies).toHaveLength(3);
     const errors = env.errors.join("\n");
     expect(errors).toContain("values-digest-mismatch");
     expect(errors).toContain("Re-run `maruhi env rotate` to rebuild the checkpoint");
-    // intent 規律(3-F)× 有界再試行の cross-layer(PR-F4): 422 は確定拒否
-    // (isServerRejection)なので 3 試行分の intent はすべて rejected で閉じ、
-    // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)。
-    // 床は初回 pull が配った mv1 のまま(打ち切り後の正しい床状態そのものを
-    // 固定する — 緩い不等式はマニフェスト消失も通す)
+    // The intent discipline (3-F) × bounded retries cross-layer (PR-F4): 422
+    // is a definite rejection (isServerRejection), so all 3 attempts' intents
+    // close as rejected — no unresolved intent piles up and the floor never
+    // advances (no match obligation left for the next run). The floor stays at
+    // mv1 distributed by the first pull (pins the correct post-abort floor
+    // state itself — a loose inequality would also let a vanished manifest through)
     const floor = await loadFloor(env);
     expect(floor?.intents).toEqual([]);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
@@ -1545,13 +1574,16 @@ describe("maruhi env rotate", () => {
     });
   });
 
-  it("受理した境界 checkpoint をチェーン配布から落とすサーバーは、受理後の再走査が strict 検証で検出する(PR-F4 cross-layer)", async () => {
-    // 2-G′ の帰結の end-to-end 固定: 複合発行のマニフェスト(epoch = new_epoch・
-    // 宣言ヘッド = 追記前)は境界 checkpoint タプルとの完全一致でのみ検証できる
-    // (H+1 例外は存在しない — §4.3 (2))。受理した checkpoint をチェーン配布から
-    // 隠すサーバー(チェーン自体は合意規則上有効なまま)は、受理後の再走査 pull の
-    // マニフェスト検証が strict へ落ちて epoch-not-current-at-head で検出される —
-    // 「checkpoint 隠し」で H+1 相当の緩い受理へ戻す経路が存在しないことの固定
+  it("a server that drops the accepted boundary checkpoint from chain distribution is detected by the post-acceptance rescan's strict verification (PR-F4 cross-layer)", async () => {
+    // The end-to-end pinning of the 2-G' consequence: the manifest issued
+    // with the composite (epoch = new_epoch · declared head = before the
+    // append) verifies only on an exact match against the boundary-checkpoint
+    // tuple (no H+1 exception exists — §4.3 (2)). A server that hides the
+    // accepted checkpoint from chain distribution (the chain itself stays
+    // valid under the consensus rule) is detected when the post-acceptance
+    // rescan pull's manifest verification falls to strict and fails with
+    // epoch-not-current-at-head — pinning that no path exists for "checkpoint
+    // hiding" to revert to an H+1-equivalent loose acceptance
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -1570,14 +1602,15 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "checkpoint 隠し"], env.layer)).toBe(
-      1,
-    );
-    // 複合自体は受理されている(検出は受理後の再走査 pull の配布時検証)
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "checkpoint hiding"], env.layer),
+    ).toBe(1);
+    // The composite itself is accepted (detection happens in the post-acceptance rescan pull's distribution-time verification)
     expect(state.rotateBodies).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
-    // 受理の確認(チェーン上の自 commitment 一致)は checkpoint の有無と独立に
-    // 成立するため、床の自己発行マニフェスト昇格(M1-A4)自体は行われている
+    // The acceptance check (self commitment matching on the chain) holds
+    // independently of the checkpoint's presence, so the floor's
+    // self-issued-manifest promotion (M1-A4) itself does happen
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
       manifestVersion: 2,
@@ -1585,7 +1618,7 @@ describe("maruhi env rotate", () => {
     });
   });
 
-  it("CAS リトライ中に他メンバーの並行ローテーションを検出したら、生成済み DEK を使わず中断する", async () => {
+  it("detecting another member's concurrent rotation mid-CAS-retry aborts without using the generated DEK", async () => {
     const projectId = chainBase.projectId;
     const entries: ChainEntry[] = [...chainBase.entries];
     const hashes: string[] = [...chainBase.hashes];
@@ -1593,7 +1626,7 @@ describe("maruhi env rotate", () => {
     const rotateBodies: RotateBody[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${projectId}/chain`, () => {
-        // 2 回目以降の同期では、他メンバーの rotate_epoch が積まれている
+        // From the second sync on, the other member's rotate_epoch is stacked
         if (chainCalls > 0 && entries.length === chainBase.entries.length) {
           entries.push(...chainRotated.entries.slice(chainBase.entries.length));
           hashes.push(...chainRotated.hashes.slice(chainBase.hashes.length));
@@ -1643,13 +1676,13 @@ describe("maruhi env rotate", () => {
     ];
     const env = await startEnv(handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "並行"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "concurrent"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("concurrent rotation");
-    // 並行ローテーションを検出した時点で止まる(上限まで再送しない)
+    // Stops the moment the concurrent rotation is detected (never resends to the bound)
     expect(rotateBodies).toHaveLength(1);
   });
 
-  it("再暗号化の VersionConflict は再取得で実態を確かめ、勝者が既に現エポックなら再暗号化不要として扱う", async () => {
+  it("a re-encryption VersionConflict verifies the actual state via re-fetch; if the winner is already on the current epoch, re-encryption is treated as unneeded", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1660,8 +1693,8 @@ describe("maruhi env rotate", () => {
       plaintext: "key-abc",
       headSeq: 2,
     });
-    // 409 の後の再取得で見える「他メンバーが新エポックで書いた勝者」。
-    // 正直な並行 writer は検証済み version 1 へ prev を連鎖させている
+    // The "winner another member wrote on the new epoch" visible on the
+    // re-fetch after the 409. An honest concurrent writer chains prev into the verified version 1
     const winner = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1687,7 +1720,7 @@ describe("maruhi env rotate", () => {
         if (call !== 0) {
           return undefined;
         }
-        // 並行 push の勝者が確定した状態にしてから 409 を返す
+        // Returns the 409 after settling the state where the concurrent push's winner won
         variables[0] = winner;
         return { status: 409, json: { _tag: "VersionConflict", currentVersion: 2 } };
       },
@@ -1695,12 +1728,12 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
-    // 勝者は現エポックで受理済み = 再暗号化不要。上書きしに行かない
+    // The winner was accepted on the current epoch = re-encryption unneeded. Never goes to overwrite
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("1 variable already re-encrypted by concurrent updates");
   });
 
-  it("409 の勝者が分岐した履歴へ連鎖していたら、prev を付け替えず中断する(§12-5)", async () => {
+  it("if the 409's winner chains into a diverged history, it aborts without re-pointing prev (§12-5)", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1711,10 +1744,11 @@ describe("maruhi env rotate", () => {
       plaintext: "key-abc",
       headSeq: 2,
     });
-    // 勝者の prev が検証済み version 1 の signed bytes ハッシュを指していない
-    // = 分岐した履歴(equivocation の証拠)。ここへ自分の署名で連鎖しない。
-    // 勝者は現エポックなので床の規則 (c) には掛からず、かつ「再暗号化不要」の
-    // 近道より前に整合検査が走ることも同時に固定する
+    // The winner's prev not pointing at the verified version-1 signed-bytes
+    // hash = a diverged history (evidence of equivocation). Our signature
+    // never chains into it. Also pins at the same time that the consistency
+    // check runs before the "re-encryption unneeded" shortcut, and that the
+    // current-epoch winner never trips the floor's rule (c)
     const forked = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1746,19 +1780,20 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "分岐"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "divergence"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("chaining onto a diverged history");
-    // 中断でも収集済みの警告は失わない(床なしの但し書きは中断時こそ効く)
+    // Even on abort, collected warnings are not lost (the no-floor proviso matters most exactly on abort)
     expect(errors).toContain("the omission cannot be detected");
-    // 暗号学的証拠は「再実行で直る失敗」ではない: 部分完了 + 再開案内へ
-    // 潰さず、調査を促す即時中断として出す(push 経路と同じ扱い)
+    // Cryptographic evidence is not "a failure a re-run fixes": never collapse
+    // it into partial completion + resume guidance — it surfaces as an
+    // immediate abort that prompts investigation (same treatment as the push path)
     expect(errors).toContain("This is evidence that re-running will not resolve");
     expect(env.logs.join("\n")).not.toContain("Partial completion");
   });
 
-  it("最終巡の競合も再取得で確かめる(勝者が現エポックなら未完了と誤報しない)", async () => {
+  it("a conflict on the final pass is also verified via re-fetch (never misreports unfinished when the winner is on the current epoch)", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1790,7 +1825,7 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // 最終巡(3 回目)の競合の直後に、他メンバーの現エポック書き込みが確定する
+      // Right after the final pass's (3rd) conflict, another member's current-epoch write settles
       onPush: (call) => {
         if (call === 2) {
           variables[0] = winner;
@@ -1806,7 +1841,7 @@ describe("maruhi env rotate", () => {
     expect(env.errors.join("\n")).not.toContain("has not completed");
   });
 
-  it("再暗号化中の並行削除(404)は警告して続行する(残りの変数を巻き添えにしない)", async () => {
+  it("a concurrent deletion (404) mid-re-encryption warns and continues (never takes the remaining variables down with it)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1829,7 +1864,7 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 削除は tombstone(status deleted・metaVersion + 1)+ 全バージョン削除(§12-5)
+    // The deletion is a tombstone (status deleted · metaVersion + 1) + deletion of all versions (§12-5)
     const tombstone = await statementFor({
       projectId: chainBase.projectId,
       environmentId: ENV_ID,
@@ -1860,7 +1895,7 @@ describe("maruhi env rotate", () => {
         if (call !== 0) {
           return undefined;
         }
-        // 再暗号化の直前に他メンバーが削除した
+        // Another member deleted it right before the re-encryption
         variables.splice(
           variables.findIndex((variable) => variable.variableId === variableId),
           1,
@@ -1871,19 +1906,20 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除レース"], env.layer)).toBe(0);
-    // 削除された変数は対象から外れ、残りは再暗号化される
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "deletion race"], env.layer)).toBe(0);
+    // The deleted variable drops out of the target set; the rest are re-encrypted
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     expect(env.errors.join("\n")).toContain("deleted concurrently by another member");
-    // 404 は中断原因として記録され、完了時は「起きたが解決した」warning になる
-    // (部分完了の原因が「並行 push との競合」に化けない)
+    // The 404 is recorded as the abort's cause, and at completion it becomes a
+    // "happened but resolved" warning (the partial-completion cause never morphs into "conflict with a concurrent push")
     expect(env.errors.join("\n")).toContain("rejected with 404");
   });
 
-  it("404 を返し続けながら変数を配布し続けるサーバーでは、404 が部分完了の原因として出る", async () => {
-    // 「404 で拒否するが、pull ではアクティブなまま配布する」= 削除でも競合でも
-    // ない。原因を記録しないと部分完了の報告が既定文言(並行 push との競合)に
-    // 化け、運用者が存在しない競合を追うことになる
+  it("on a server that keeps returning 404 while still distributing the variable, the 404 surfaces as the partial-completion cause", async () => {
+    // "Refuses with 404 yet keeps distributing it as active on pull" = neither
+    // deletion nor conflict. Without recording the cause, the partial-
+    // completion report morphs into the default wording (conflict with a
+    // concurrent push) and the operator chases a nonexistent conflict
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1917,7 +1953,9 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "404 継続"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "persistent 404"], env.layer)).toBe(
+      1,
+    );
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
     expect(env.logs.join("\n")).toContain("Partial completion");
@@ -1927,7 +1965,7 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
   });
 
-  it("409 の申告より古い値しか配布されない応答は、勝者として採用せず中断する(§12-5)", async () => {
+  it("a response distributing only values older than the 409's claim is never adopted as the winner — it aborts (§12-5)", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -1948,7 +1986,7 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // 「最新は version 9」と申告しながら、再取得では version 1 しか配布しない
+      // Claims "latest is version 9" yet distributes only version 1 on re-fetch
       onPush: (call) =>
         call === 0
           ? { status: 409, json: { _tag: "VersionConflict", currentVersion: 9 } }
@@ -1956,12 +1994,14 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "自己矛盾"], env.layer)).toBe(1);
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "self-contradiction"], env.layer),
+    ).toBe(1);
     expect(state.pushes).toHaveLength(0);
     expect(env.errors.join("\n")).toContain("known latest version");
   });
 
-  it("競合が解消しないまま残った再暗号化は、部分完了として警告し非ゼロで終わる", async () => {
+  it("a re-encryption left with an unresolved conflict warns as a partial completion and exits non-zero", async () => {
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -1983,28 +2023,29 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // 毎回 409。再取得しても最新値は旧エポックのまま = 再暗号化は完了しない
+      // 409 every time. Even on re-fetch the latest value stays on the old epoch = re-encryption never completes
       onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "conflict"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
-    // 「完了」の顔で終わらせない(サマリ自体が部分完了を名乗る)
+    // Never ends with a "completed" face (the summary itself declares partial completion)
     expect(env.logs.join("\n")).toContain("Partial completion");
     expect(env.logs.some((line) => line.startsWith("Done:"))).toBe(false);
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
     const errors = env.errors.join("\n");
     expect(errors).toContain("has not completed");
-    // 旧エポックの DEK 保持者が現在値を読めるままであることを明示する
+    // Explicitly states that old-epoch DEK holders can still read the current values
     expect(errors).toContain("DEKs older than epoch 2");
   });
 
-  it("再開経路でも前進した検証ビューでガードを再適用する(pull 中に自分が削除された場合)", async () => {
-    // 4 エントリ目で実行者(member)を削除。初回の同期では 3 エントリしか見えず、
-    // 環境ステートメントが seq 4 を宣言する(future head)ため有界再同期が走る。
-    // 再開経路は push のみでラップ集合を作らないので grant_server は再開を止めない。
-    // ガードの再適用そのものは在籍・role で固定する
+  it("on the resume path too, the guard is re-applied against the advanced verified view (the case where self was deleted mid-pull)", async () => {
+    // The 4th entry removes the runner (member). The first sync sees only 3
+    // entries, and the environment statement declares seq 4 (a future head),
+    // so a bounded resync runs. The resume path only pushes and never builds
+    // the wrap set, so grant_server does not stop the resume. The guard's
+    // re-application itself is pinned on membership · role
     const runner = await makeTestUser("user-member-3333");
     const granted = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -2036,7 +2077,7 @@ describe("maruhi env rotate", () => {
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${granted.projectId}/chain`, () => {
-        // 初回は削除を含まない 4 エントリ(runner は在籍・epoch 2)、再同期で 5
+        // First serves 4 entries without the removal (runner is a member · epoch 2); the resync serves 5
         const count = chainCalls === 0 ? 4 : 5;
         chainCalls += 1;
         return {
@@ -2084,11 +2125,11 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("not a chain-derived member");
-    // 再開経路でも書き込みには進んでいない
+    // Even on the resume path it never proceeds to writing
     expect(pushPaths).toHaveLength(0);
   });
 
-  it("サーバーの EpochConflict 申告は原因を断定せず、再走査のチェーン検証に委ねる", async () => {
+  it("the server's EpochConflict claim never decides the cause — it defers to the rescan's chain verification", async () => {
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -2110,21 +2151,21 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // チェーンは epoch 2 のままなのに、サーバーは毎回エポック競合を申告する
+      // The chain stays at epoch 2, yet the server claims an epoch conflict every time
       onPush: () => ({ status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } }),
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "申告"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "claim"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 申告を鵜呑みにして「他メンバーが並行ローテーションした」と報告しない。
-    // チェーン導出の現エポックが変わっていない以上、これは応答の矛盾である
+    // Never swallows the claim whole and reports "another member rotated
+    // concurrently". As long as the chain-derived current epoch is unchanged, this is a contradictory response
     expect(errors).not.toContain("concurrent rotation");
     expect(errors).toContain("the server's response contradicts the chain");
     expect(errors).toContain("re-running will not resolve this");
   });
 
-  it("EpochConflict の申告があっても、再走査で全変数が揃っていれば完了とする(警告は残す)", async () => {
+  it("even with an EpochConflict claim, if every variable is in place on the rescan it completes (the warning stays)", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -2135,7 +2176,7 @@ describe("maruhi env rotate", () => {
       plaintext: "key-abc",
       headSeq: 2,
     });
-    // 申告の裏で、他メンバーが**同じエポック**で書き切った
+    // Behind the claim, another member wrote everything on **the same epoch**
     const winner = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -2167,21 +2208,23 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 再暗号化の完否を決めるのは検証済みの実態であって、サーバーの自己申告では
-    // ない。揃っている事実を「応答が矛盾している」中断で覆い隠さない
+    // What decides re-encryption's completion is the verified actual state,
+    // not the server's self-claim. The in-place fact is never covered over by
+    // a "contradictory response" abort
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("1 variable already re-encrypted by concurrent updates");
     const errors = env.errors.join("\n");
-    // 矛盾した申告自体は調査対象として残す(中断はしない)
+    // The contradictory claim itself stays as an investigation target (but no abort)
     expect(errors).toContain("the server's response contradicts the chain");
     expect(errors).not.toContain("re-running will not resolve this");
   });
 
-  it("EpochConflict を申告された変数が解消していれば、残りは普通の部分完了として案内する", async () => {
-    // 申告された vaa は他メンバーが現エポックで書き切って解消。残っているのは
-    // 別理由(502)の vbb だけ — ここで「再実行では解消しません」と断じると、
-    // 再実行で片付く状態なのに再開の案内も残数の報告も届かなくなる
+  it("when an EpochConflict-claimed variable resolves, the rest get ordinary partial-completion guidance", async () => {
+    // The claimed vaa is resolved because another member wrote it out on the
+    // current epoch. What remains is only vbb for a different reason (502) —
+    // declaring "a re-run will not resolve this" here would leave a re-
+    // runnable state with neither resume guidance nor a remaining count
     const staleA = await variableAt({
       built: chainRotated,
       variableId: "vaa",
@@ -2227,7 +2270,7 @@ describe("maruhi env rotate", () => {
       currentEpoch: 2,
       onPush: (_call, variableId) => {
         if (variableId === "vaa") {
-          // 申告と同時に、他メンバーの現エポック書き込みが確定する
+          // Simultaneously with the claim, another member's current-epoch write settles
           variables[0] = winnerA;
           return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
         }
@@ -2238,17 +2281,18 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 矛盾した申告自体は調査対象として残す(が、中断はしない)
-    // 「揃っていることを確認した」とは言わない: 再走査が示すのは未完了集合に
-    // 残っていないことだけで、現エポックで書かれたのか削除されたのかは分からない
+    // The contradictory claim itself stays as an investigation target (but no abort)
+    // Never says "confirmed everything is in place": all the rescan shows is
+    // that nothing is left in the unfinished set — whether it was written on
+    // the current epoch or deleted is unknown
     expect(errors).toContain("The reported variable is not in the rescanned incomplete set");
-    // 中断していれば部分完了の報告経路へ到達しない = 残数も再開案内も出ない
+    // An abort would never reach the partial-completion reporting path = neither the remaining count nor the resume guidance comes out
     expect(env.logs.join("\n")).toContain("Partial completion");
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
     expect(errors).toContain("resume from the remainder without advancing the epoch");
   });
 
-  it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
+  it("when the chain has actually advanced on an EpochConflict, it is treated as a concurrent rotation, not a contradiction", async () => {
     const rotatedTwice = chainRotatedTwice;
     const variables = [
       await variableAt({
@@ -2271,7 +2315,7 @@ describe("maruhi env rotate", () => {
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${chainBase.projectId}/chain`, () => {
-        // first syncは epoch 2。再暗号化の途中で他メンバーが epoch 3 へ進める
+        // The first sync is epoch 2. Mid-re-encryption, another member advances to epoch 3
         const built = chainCalls === 0 ? chainRotated : rotatedTwice;
         chainCalls += 1;
         return {
@@ -2320,16 +2364,16 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 強制再同期でチェーンが実際に進んでいることを確認したので、これは
-    // サーバーの矛盾ではない(良性のレースを不正と誤認しない)
+    // The forced resync confirmed the chain actually advanced, so this is not
+    // a server contradiction (a benign race is not mistaken for foul play)
     expect(errors).toContain("concurrent rotation");
     expect(errors).not.toContain("the server's response contradicts the chain");
     expect(pushPaths).toHaveLength(1);
   });
 
-  it("--new-epoch は復号できない値があってもエポックを進める(失効を優先する — §7)", async () => {
-    // 退職者削除の実行。開けない値が 1 つあるだけでエポックが 1 つも進まないと、
-    // 削除されたメンバーの旧 DEK が**全変数**に対して有効なまま残る
+  it("--new-epoch advances the epoch even with an undecryptable value (revocation wins — §7)", async () => {
+    // The member-removal run. If one unopenable value stopped the epoch from
+    // advancing at all, the removed member's old DEK would stay valid for **every** variable
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -2356,29 +2400,33 @@ describe("maruhi env rotate", () => {
     const state = makeServer({
       built: chainRotated,
       variables,
-      // epoch 1 の自分宛ラップが無い
+      // No wrap addressed to self at epoch 1
       deks: [await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner })],
       currentEpoch: 2,
     });
     const env = await startEnv(state.handlers, owner);
 
     expect(
-      await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除", "--new-epoch"], env.layer),
+      await runCli(
+        ["env", "rotate", ENV_ID, "--reason", "member removal", "--new-epoch"],
+        env.layer,
+      ),
     ).toBe(1);
-    // **エポックは進んでいる**(失効そのものは達成される)
+    // **The epoch did advance** (the revocation itself is achieved)
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(3);
-    // 開ける値は新エポックへ、開けない値は未完了として報告する
+    // Openable values go to the new epoch; unopenable ones are reported unfinished
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Some values cannot be re-encrypted");
     expect(env.logs.join("\n")).toContain("Partial completion");
   });
 
-  it("複合の送信が失敗しても、受理されていれば「エポックは進んだ」と報告する", async () => {
-    // 応答の消失(502 / タイムアウト)。DO は受理済みなのにクライアントには
-    // 転送エラーしか見えない — 素のエラーで終わると「何も起きなかった」と
-    // 読ませ、エポックだけ進んで再暗号化 0 件という最も危険な状態を隠す
+  it("even when the composite send fails, if it was accepted it reports 'the epoch advanced'", async () => {
+    // A lost response (502 / timeout). The DO accepted it, yet the client only
+    // sees the transport error — ending on the raw error would read as
+    // "nothing happened" and hide the most dangerous state: an epoch advanced
+    // with 0 re-encryptions
     const variables = [
       await variableAt({
         built: chainBase,
@@ -2405,30 +2453,32 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // 受理はする(チェーンへ追記される)が、応答は 502 で返す
+      // Accepts it (appended to the chain), but the response returns 502
       onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "応答消失"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "lost response"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
-    // M1-A4: チェーン上の自 commitment 一致を確認した時点で、コマンドが
-    // エラー終了でも床(自己発行マニフェスト)は前進している
+    // M1-A4: the moment the self commitment is confirmed matching on the
+    // chain, the floor (the self-issued manifest) has advanced even if the
+    // command exits with an error
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
       manifestVersion: 2,
       epoch: 2,
     });
-    // 効果確認が済んだので intent(3-F)も閉じている
+    // With the effect confirmed, the intent (3-F) is closed too
     expect(floor?.intents).toEqual([]);
   });
 
-  it("1 つも再暗号化できないならエポックを進めない(空回りで失効にならない)", async () => {
-    // 自分宛のラップが 1 つも無いメンバー(あるいは全ラップを落とす応答)。
-    // ここでエポックだけ進めると、全ての現在値が旧エポックの DEK のまま残り、
-    // 失効にならないまま「ローテーションした」記録だけがチェーンに載る
+  it("if not even one value can be re-encrypted, the epoch never advances (an idle spin is no revocation)", async () => {
+    // A member with not a single wrap addressed to them (or a response that
+    // drops every wrap). Advancing only the epoch here would leave every
+    // current value under the old epoch's DEK, and the chain would carry just
+    // a "rotated" record with no revocation achieved
     const variables = [
       await variableAt({
         built: chainBase,
@@ -2444,16 +2494,16 @@ describe("maruhi env rotate", () => {
     const state = makeServer({ built: chainBase, variables, deks: [], currentEpoch: 1 });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "空回り"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "idle spin"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("No values can be re-encrypted");
     expect(errors).toContain("nothing is actually revoked");
   });
 
-  it("送信失敗の裏で進んでいたのが他メンバーのローテーションなら、そう伝える", async () => {
-    // epoch は目標値に達しているが、載っているのは他メンバーの DEK
-    // コミットメント — 自分の失効ローテーションは受理されていない
+  it("if what advanced behind the send failure was another member's rotation, it says so", async () => {
+    // The epoch has reached the target value, but what landed is another
+    // member's DEK commitment — our revocation rotation was never accepted
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2468,30 +2518,30 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // 送信は 502。裏では別メンバーが epoch 2 へローテーション済みにする
+      // The send is a 502. Behind it, another member has already rotated to epoch 2
       onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
       chainAfterRotateAttempt: chainRotated,
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "他メンバー"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "other member"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("another member's rotation");
     expect(errors).toContain("this run's entry was not accepted");
-    // 自分の分が受理されたと読ませない
+    // Never reads as our share having been accepted
     expect(errors).not.toContain("this rotation itself was accepted");
-    // M1-A4: チェーン上の commitment が別物 = 床は前進しない(自己発行
-    // マニフェストの記録なし)。受理されていないことは確認済みなので intent は
-    // not-accepted として閉じる
+    // M1-A4: the commitment on the chain differs = the floor never advances
+    // (no self-issued manifest recorded). Since non-acceptance is confirmed,
+    // the intent closes as not-accepted
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest?.manifestVersion ?? 1).toBeLessThanOrEqual(1);
     expect(floor?.intents).toEqual([]);
   });
 
-  it("受理後にさらに他メンバーが進めていても、自分の分の受理を見落とさない", async () => {
-    // 受理 → 応答消失 → 確認までの間に別メンバーがさらにローテーション。
-    // 現エポックの一致で判定すると「受理されていません」と誤報告してしまうが、
-    // コミットメントは全エポック分が残るので自分の分は見分けられる
+  it("even when another member has advanced further after the acceptance, our share's acceptance is not missed", async () => {
+    // Between acceptance → lost response → confirmation, another member
+    // rotates further. Judging by current-epoch match would misreport "not
+    // accepted", but commitments for every epoch remain, so our share is distinguishable
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2506,19 +2556,19 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // 受理はする(自分のエントリがチェーンに載る)が応答は 502。
-      // その後さらに他メンバーが epoch 3 まで進める
+      // Accepts it (our entry lands on the chain) but the response is 502.
+      // After that another member advances further to epoch 3
       onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
       appendRotateAfterAccept: { epoch: 3, dek: dek3 },
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "追い越し"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "overtaken"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
     expect(errors).not.toContain("was not accepted");
-    // M1-A4: 追い越されても自分のマニフェスト(v2)は最低床として残る
+    // M1-A4: even when overtaken, our manifest (v2) stays as the minimum floor
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
       manifestVersion: 2,
@@ -2527,10 +2577,11 @@ describe("maruhi env rotate", () => {
     expect(floor?.intents).toEqual([]);
   });
 
-  it("200 直後の別 rotate で受理後確認が追い越しを見ても、自分のマニフェストは最低床として残る(M1-A4)", async () => {
-    // 200 は返った(受理確定)が、受理後確認の再同期までに別メンバーが epoch 3 へ
-    // 進めた形。現エポック(3)≠ 目標(2)でコマンドはエラー終了するが、
-    // チェーン上の epoch 2 commitment は自分のものなので床は前進する
+  it("when the post-acceptance check sees an overtake by another rotate right after the 200, our manifest still stays as the minimum floor (M1-A4)", async () => {
+    // The 200 returned (acceptance is certain), but the shape where another
+    // member advanced to epoch 3 before the post-acceptance check's resync.
+    // The command errors out on current epoch (3) ≠ target (2), yet the epoch-
+    // 2 commitment on the chain is ours, so the floor advances
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2549,9 +2600,9 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "受理後追い越し"], env.layer)).toBe(
-      1,
-    );
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "post-acceptance overtake"], env.layer),
+    ).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("possibly a concurrent rotation right after acceptance");
     expect(errors).toContain(
@@ -2565,9 +2616,10 @@ describe("maruhi env rotate", () => {
     expect(floor?.intents).toEqual([]);
   });
 
-  it("--init-manifest が不要で再開だけの実行は、次版の再発行を言わない(M1-B2)", async () => {
-    // 中断復旧の形(エポック 2・最新値は epoch 1 のまま)+ 不要な --init-manifest。
-    // 経路は resume = rotate 複合を送らない = 「次版を再発行する」と言うのは嘘
+  it("a resume-only run with an unneeded --init-manifest never claims the next version will be re-issued (M1-B2)", async () => {
+    // The interruption-recovery shape (epoch 2 · latest values still on epoch
+    // 1) + an unneeded --init-manifest. The path is resume = no rotate
+    // composite is sent = saying "the next version will be re-issued" is a lie
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -2613,11 +2665,11 @@ describe("maruhi env rotate", () => {
       "only resumes the incomplete re-encryption and issues no new manifest",
     );
     expect(errors).not.toContain("re-issues the next manifestVersion");
-    // 実際に rotate 複合は送っていない(resume は push のみ)
+    // No rotate composite was actually sent (resume only pushes)
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("--init-manifest が不要で確認だけの実行は、何も発行しないと言う(M1-B2)", async () => {
+  it("a check-only run with an unneeded --init-manifest says nothing is issued (M1-B2)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -2655,10 +2707,11 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("削除済み環境への rotate(404)は確定した拒否として扱い、再実行を勧めない", async () => {
-    // サーバー自身のエラー本文で拒否された = 受理の有無は確定している。
-    // 受理確認のプローブ(チェーンの二重取得)も要らず、§7 の中断メッセージに
-    // 「そのまま再実行できます」を足してもいけない(404 は決定的で再発する)
+  it("a rotate onto a deleted environment (404) is treated as a definite rejection — it never suggests re-running", async () => {
+    // Rejected in the server's own error body = acceptance is definitively
+    // known. No acceptance-check probe (a second chain fetch) is needed, and
+    // "you can re-run as-is" must never be added to §7's interruption message
+    // (a 404 is definitive and recurs)
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2687,18 +2740,18 @@ describe("maruhi env rotate", () => {
     const chainCallsBefore = server.requests.filter((request) =>
       request.path.endsWith("/chain"),
     ).length;
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除済み"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "deleted"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // §7 の専用メッセージが出る(汎用の「環境が見つかりません」に潰さない)
+    // §7's dedicated message comes out (never collapsed into the generic "environment not found")
     expect(errors).toContain("may be selectively blocking rotation");
     expect(errors).not.toContain("safe to simply re-run");
     expect(errors).not.toContain("was accepted");
-    // 受理確認のためのチェーン再取得をしていない(初回同期の 1 回だけ)
+    // No chain re-fetch for the acceptance check (only the first sync's one)
     const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
     expect(chainCalls - chainCallsBefore).toBe(1);
   });
 
-  it("受理されたか確認できない場合は、エポックが進んだ可能性を明示する", async () => {
+  it("when acceptance cannot be confirmed, it explicitly states the epoch may have advanced", async () => {
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2714,18 +2767,19 @@ describe("maruhi env rotate", () => {
       ],
       currentEpoch: 1,
       onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
-      // 確認のためのチェーン再取得も落ちる(通信障害が続いている)
+      // The chain re-fetch for confirmation also fails (the connectivity failure persists)
       onChain: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "確認不能"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "unverifiable"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("may already have advanced to epoch 2");
     expect(errors).toContain("Restore connectivity and re-run");
-    // M1-A4: probe 失敗 = acceptance-unknown — 受理を確認していない事実を
-    // 床へ書かない(前進しない)。確認義務の記録(intent — 3-F)は未解決で残り、
-    // 次の実行の照合(チェーン同期)が解決する
+    // M1-A4: a probe failure = acceptance-unknown — the fact that acceptance
+    // was never confirmed is never written to the floor (no advance). The
+    // confirmation-obligation record (the intent — 3-F) stays unresolved and
+    // the next run's match (the chain sync) resolves it
     const floor = await loadFloor(env);
     expect(floor?.environments[ENV_ID]?.manifest?.manifestVersion ?? 1).toBeLessThanOrEqual(1);
     expect(floor?.intents).toHaveLength(1);
@@ -2736,7 +2790,7 @@ describe("maruhi env rotate", () => {
     });
   });
 
-  it("複合の送信が失敗し、受理もされていなければ「そのまま再実行できる」と伝える", async () => {
+  it("when the composite send fails and it was never accepted, it conveys 'you can re-run as-is'", async () => {
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2755,19 +2809,19 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "未達"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "undelivered"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // チェーンが宣言ヘッドのまま = 輸送中の要求が後から着地しうるため、
-    // 「受理されていない」と断定しない(send-pending)
+    // The chain still sits at the declared head = a request in transit could
+    // land later, so it never asserts "not accepted" (send-pending)
     expect(errors).toContain("does not show it as accepted yet");
     expect(errors).toContain("safe to simply re-run");
-    // intent(3-F)は確定させず未解決のまま残す — チェーンが動いた後の照合が
-    // accepted / rejected を確定する
+    // The intent (3-F) is left unresolved rather than settled — the match
+    // after the chain moves settles accepted / rejected
     const floor = await loadFloor(env);
     expect(floor?.intents).toHaveLength(1);
   });
 
-  it("intent(3-F)の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+  it("when the intent (3-F) append fails, the composite is never sent (journal-before-send is fail-closed)", async () => {
     const state = makeServer({
       built: chainBase,
       variables: [],
@@ -2787,16 +2841,17 @@ describe("maruhi env rotate", () => {
     env.failFloorIntentAppends();
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "journal"], env.layer)).toBe(1);
-    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    // A security-critical mutation is never fired without a confirmation-obligation record
     expect(state.rotateBodies).toHaveLength(0);
     expect(env.errors.join("\n")).toContain("intent");
   });
 
-  it("ラップを持っているのに開けない値は、差し替えの疑いとして即時中断する", async () => {
-    // 自分宛ラップはあるのに復号が失敗する = 暗号文の差し替え or 検証済みビューとの
-    // 不整合。良性の「ラップ待ち」に潰して --new-epoch で踏み越えるよう案内しては
-    // ならない(pull / run と同じく即時中断する)。
-    // 現エポックの値だが暗号化に使われた鍵が違う(= AEAD 認証が通らない)形
+  it("a value that cannot be opened despite holding the wrap aborts immediately as a suspected swap", async () => {
+    // A wrap addressed to self exists yet decryption fails = a ciphertext swap
+    // or an inconsistency with the verified view. It must never be collapsed
+    // into a benign "waiting for a wrap" with guidance to step over it via
+    // --new-epoch (it aborts immediately, same as pull / run).
+    // The shape: a current-epoch value, but the encryption key differs (= AEAD authentication fails)
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -2821,21 +2876,21 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "通常"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "normal"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("possibly replaced by the server");
-    // 良性の欠落として扱わない = 踏み越える手段を案内しない
+    // Never treated as a benign gap = no means to step over it is offered
     expect(errors).not.toContain("run with --new-epoch");
     expect(errors).not.toContain("a member holding wraps");
   });
 
-  it("巡の途中で現れた開けない値も、部分完了へ格下げせず証拠として中断する", async () => {
-    // 上のケースは初回 pull(ローテーション前)なので、失敗させても失うのは
-    // 「まだ始めていない実行」だけである。危ないのは**エポックが進んだ後**に
-    // 現れた場合で、ここを再走査の一時失敗と同じ扱いにすると「未確認を含む
-    // 部分完了 — 再実行すれば再開します」に化ける(差し替えの兆候が、
-    // 何度でも同じ結果を返す再実行の案内に潰される)
+  it("an unopenable value appearing mid-pass is also never demoted to partial completion — it aborts as evidence", async () => {
+    // The case above is at the first pull (before rotation), so failing it
+    // only loses "a run that never started". The dangerous case is it
+    // appearing **after the epoch advanced** — treating it like a rescan's
+    // transient failure morphs it into "a partial completion including
+    // unverified — re-run to resume" (the sign of a swap swallowed by guidance for a re-run that returns the same result forever)
     const variables = [
       await variableAt({
         built: chainBase,
@@ -2848,10 +2903,11 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 初回 pull には現れず、複合受理の後(= 巡末の再走査)にだけ現れる旧
-    // エポックの値。署名は妥当だが、境界 checkpoint のスナップショットに存在
-    // しない旧エポックの「作成」であり、規則 2(CRYPTO_SPEC §6.3 — PR-M3)が
-    // backdated 作成の証拠として pull ごと拒否する
+    // An old-epoch value absent from the first pull that appears only after
+    // the composite's acceptance (= the pass-end rescan). The signature is
+    // sound, but it is an old-epoch "creation" absent from the boundary
+    // checkpoint's snapshot, and rule 2 (CRYPTO_SPEC §6.3 — PR-M3) rejects the
+    // whole pull as evidence of backdated creation
     const tampered = await variableAt({
       built: chainBase,
       variableId: "vtamper",
@@ -2882,21 +2938,21 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "巡中"], env.layer)).toBe(1);
-    // 初回 pull のケースと違い、ここではローテーション自体は起きている
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "mid-pass"], env.layer)).toBe(1);
+    // Unlike the first-pull case, the rotation itself did happen here
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
-    // 規則 2 の backdated 作成の証拠として拒否される(PR-M3)
+    // Rejected as evidence of rule-2 backdated creation (PR-M3)
     expect(errors).toContain("below the checkpoint baseline epoch");
     expect(errors).toContain("This is evidence that re-running will not resolve");
-    // 「再実行すれば片付く」系の案内へ格下げしない
+    // Never demoted into "a re-run will clear it" style guidance
     expect(errors).not.toContain("resume from the remainder");
     expect(errors).not.toContain("may include unconfirmed ones");
   });
 
-  it("復号できない値が 1 つあっても、再開は開ける分を再暗号化する(epoch は既に進んでいる)", async () => {
-    // §12-7 の過渡状態にいるメンバー: epoch 2 のラップは持つが epoch 1 は持たない
-    // (ローテーション後に追加された / epoch 1 の再ラップが未登録)
+  it("even with one undecryptable value, resume re-encrypts the openable share (the epoch has already advanced)", async () => {
+    // A member in the §12-7 transitional state: holds the epoch-2 wrap but not
+    // epoch 1's (added after the rotation / the epoch-1 re-wrap is unregistered)
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -2923,7 +2979,7 @@ describe("maruhi env rotate", () => {
     const state = makeServer({
       built: chainRotatedTwice,
       variables,
-      // epoch 1 の自分宛ラップが無い(epoch 2 / 3 のみ)
+      // No wrap addressed to self at epoch 1 (only epochs 2 / 3)
       deks: [
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
         await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
@@ -2932,7 +2988,7 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 開けなかった 1 件は未完了として報告されるが、開ける 1 件は押される
+    // The 1 unopenable value is reported unfinished, but the 1 openable one is pushed
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     const pushed = state.pushes[0];
@@ -2941,17 +2997,18 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("Some values cannot be re-encrypted");
     expect(errors).toContain("No DEK for epoch 1");
-    // 原因が既定文言(競合)に化けない
+    // The cause never morphs into the default wording (conflict)
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
-    // 同じ変数の警告は 1 回だけ(再開経路と巡末の再走査で文面が割れると
-    // dedupeWarnings が別物として通してしまう)
+    // The same variable's warning appears only once (if the wording split
+    // between the resume path and the pass-end rescan, dedupeWarnings would
+    // let both through as distinct)
     expect(
       env.errors.filter((line) => line.includes("Some values cannot be re-encrypted")),
     ).toHaveLength(1);
   });
 
-  it("409 以外の失敗で拾い直した勝者にも整合検査を適用する(分岐 prev への連鎖を防ぐ)", async () => {
+  it("a winner re-picked after a non-409 failure also gets the consistency check (preventing a chain into a diverged prev)", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -2962,7 +3019,7 @@ describe("maruhi env rotate", () => {
       plaintext: "key-abc",
       headSeq: 2,
     });
-    // 502 の後の再走査で見える「現エポックだが prev が繋がらない後継」
+    // The "on the current epoch but prev does not connect" successor visible on the rescan after the 502
     const forked = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -2984,7 +3041,7 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // 409 ではなく一時的な失敗(この変数は conflicted 集合に入らない)
+      // A transient failure rather than a 409 (this variable never enters the conflicted set)
       onPush: (call) => {
         if (call !== 0) {
           return undefined;
@@ -3000,7 +3057,7 @@ describe("maruhi env rotate", () => {
     expect(env.errors.join("\n")).toContain("chaining onto a diverged history");
   });
 
-  it("床のない実行では、応答から落とされた変数を検出できない旨を警告する", async () => {
+  it("on a floorless run it warns that a variable dropped from the response cannot be detected", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -3030,20 +3087,21 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    // first sync(床なし): 対象集合の出所はサーバー応答しかなく、一貫した
-    // 欠落は検出できない。失効目的のローテーションではこれを黙らない
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床なし"], env.layer)).toBe(0);
+    // First sync (no floor): the target set's only provenance is the server
+    // response, so a consistent omission cannot be detected. On a revocation-
+    // purpose rotation this is never kept silent
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "no floor"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("the omission cannot be detected");
 
-    // 2 回目(床あり)では出ない
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床あり"], env.layer)).toBe(0);
+    // It does not appear on run 2 (with floor)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "with floor"], env.layer)).toBe(0);
     const secondRunErrors = env.errors.filter((line) =>
       line.includes("the omission cannot be detected"),
     );
     expect(secondRunErrors).toHaveLength(1);
   });
 
-  it("受理済みの自分の書き込みを押し戻す応答は、床に頼らず巻き戻しとして検出する", async () => {
+  it("a response pushing back an already-accepted write of ours is detected as a rollback without relying on the floor", async () => {
     const stale = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -3074,11 +3132,12 @@ describe("maruhi env rotate", () => {
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
-      // vcc は競合させて 2 巡目へ持ち込む。vbb の受理済み書き込み(version 2)は
-      // 反映せず、再走査で version 1 のまま配布し続ける = 押し戻し
+      // vcc is made to conflict and carried into pass 2. vbb's accepted write
+      // (version 2) is never reflected — the rescan keeps distributing it at
+      // version 1 = a push-back
       onPush: (_call, variableId) => {
         if (variableId === "vbb") {
-          // 受理はするが保存はしない(サーバーが自分の書き込みを握り潰す形)
+          // It accepts but never persists (the shape where the server swallows our write)
           return {
             status: 200,
             json: { variableId, version: 2, epoch: 2 },
@@ -3088,19 +3147,19 @@ describe("maruhi env rotate", () => {
       },
     });
     const env = await startEnv(state.handlers, owner);
-    // 受理済み push の床コミットだけを失敗させる: 床は SHOULD であり、書けない
-    // 場合(破損・権限)でもこの検出が成立することを固定する
+    // Fail only the floor commit of the accepted push: the floor is a SHOULD,
+    // and this pins that the detection works even when it cannot be written (corruption · permission)
     env.failFloorPushCommits();
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
-    // 床がなくても、自分が署名した version からの後退は巻き戻しの証拠
+    // Even without a floor, regressing from a version we signed is evidence of a rollback
     expect(env.errors.join("\n")).toContain(
       "older than the known latest version (2) — inconsistent",
     );
   });
 
-  it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {
-    // 非 NFC 名(合成済みでない Á)は毎 pull で警告が出る — 3 巡しても 1 行
+  it("the same SHOULD warning is not displayed twice across passes", async () => {
+    // A non-NFC name (uncomposed Á) warns on every pull — still one line across 3 passes
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -3126,12 +3185,12 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "重複"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "duplicates"], env.layer)).toBe(1);
     const nfcWarnings = env.errors.filter((line) => line.includes("not NFC-normalized"));
     expect(nfcWarnings).toHaveLength(1);
   });
 
-  it("1 変数の恒久的な失敗が、他の変数の再暗号化を巻き添えにしない", async () => {
+  it("one variable's permanent failure never takes other variables' re-encryption down with it", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -3178,24 +3237,27 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      // 先頭の 1 変数だけが常に失敗する(順序が安定なため、中断すると
-      // 後続の変数はどの再実行でも到達できなくなる)
+      // Only the leading 1 variable always fails (since the order is stable,
+      // aborting would leave the following variables unreachable on any re-run)
       onPush: (_call, variableId) =>
         variableId === "vaa" ? { status: 502, bodyText: "bad gateway" } : undefined,
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "毒変数"], env.layer)).toBe(1);
-    // 後続の 2 変数は新エポックへ移っている(部分完了は毒変数のみ)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "poison variable"], env.layer)).toBe(
+      1,
+    );
+    // The 2 following variables did move to the new epoch (the partial completion is the poison variable only)
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vbb", "vcc"]);
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
   });
 
-  it("押せる対象が尽きて打ち切った巡でも、原因を競合に潰さず報告する", async () => {
-    // 競合していた vbb が 2 巡目で他メンバーに書き切られ、残るのは開けない
-    // vaa だけ。押せる対象が尽きるので stalledOnUndecryptable で打ち切るが、
-    // このとき原因を既定文言(競合)に落とすと、存在しない並行 writer を
-    // 追わせることになる(最終巡まで回る形は次のテストが担当する)
+  it("even on a pass aborted because no pushable target remained, the cause is reported without collapsing to conflict", async () => {
+    // The conflicting vbb is written out by another member on pass 2, leaving
+    // only the unopenable vaa. The pass aborts via stalledOnUndecryptable
+    // because no pushable target remains — but collapsing the cause to the
+    // default wording (conflict) here would have the operator chase a
+    // nonexistent concurrent writer (the shape that runs to the final pass is the next test's job)
     const undecryptable = await variableAt({
       built: chainRotatedTwice,
       variableId: "vaa",
@@ -3232,13 +3294,13 @@ describe("maruhi env rotate", () => {
     const state = makeServer({
       built: chainRotatedTwice,
       variables,
-      // epoch 1 の自分宛ラップが無い(= vaa は開けない)
+      // No wrap addressed to self at epoch 1 (= vaa cannot be opened)
       deks: [
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
         await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
       ],
       currentEpoch: 3,
-      // vbb は競合し続けるが、2 巡目の後に他メンバーが現エポックで書き切る
+      // vbb keeps conflicting, but another member writes it out on the current epoch after pass 2
       onPush: (call) => {
         if (call === 1) {
           variables[1] = winner;
@@ -3255,11 +3317,13 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
   });
 
-  it("最終巡(復号しない巡)でも、開けない値をラップの有無だけで原因として拾う", async () => {
-    // 押せる対象(vbb)が最後まで競合し続けるので打ち切りは起きず、巡を使い切る。
-    // 最終巡の再走査は**復号しない**(押すことのない平文を作らない)ため
-    // targets は空になるが、自分宛ラップの有無は Map 参照だけで分かる —
-    // ここを飛ばすと、開けない vaa が残っているのに原因が競合の既定文言に化ける
+  it("even on the final pass (the non-decrypting pass), an unopenable value is collected as a cause from wrap presence alone", async () => {
+    // The pushable target (vbb) keeps conflicting to the end, so no abort
+    // happens and the passes run out. The final pass's rescan **never
+    // decrypts** (it makes no plaintext that will never be pushed), so
+    // targets comes back empty — but wrap presence for self is known from a
+    // Map lookup alone. Skipping this would leave the unopenable vaa behind
+    // while the cause morphs into the conflict default wording
     const variables = [
       await variableAt({
         built: chainRotatedTwice,
@@ -3286,20 +3350,21 @@ describe("maruhi env rotate", () => {
     const state = makeServer({
       built: chainRotatedTwice,
       variables,
-      // epoch 1 の自分宛ラップが無い(= vaa は開けない)
+      // No wrap addressed to self at epoch 1 (= vaa cannot be opened)
       deks: [
         await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
         await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
       ],
       currentEpoch: 3,
-      // vbb は最後まで競合し続ける(= 毎巡 push する対象が残り、打ち切らない)
+      // vbb keeps conflicting to the end (= a push target remains on every pass, so it never aborts)
       onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
     });
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
-    // 受理された push は無い(全巡 409)。vbb は毎巡「押せる対象」として残るので
-    // 打ち切りは起きず、最終巡の復号なし再走査まで到達する
+    // No push is accepted (409 on every pass). vbb remains as "a pushable
+    // target" every pass, so no abort happens and it reaches the final pass's
+    // decryption-free rescan
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("No DEK for epoch 1");
@@ -3307,10 +3372,11 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("2 variables incomplete");
   });
 
-  it("現エポックの DEK が無くて再開できない場合、--new-epoch の逃げ道を案内する", async () => {
-    // 中断されたローテーションの後に加わったメンバー: 現エポック(2)のラップが
-    // まだ自分宛に無い。再開はできないが --new-epoch なら成立する(自分で新しい
-    // DEK を作るので現エポックの DEK は要らない)— 案内しないと失効が詰む
+  it("when resume is impossible for lack of the current epoch's DEK, it guides toward the --new-epoch escape", async () => {
+    // A member who joined after the interrupted rotation: no wrap for the
+    // current epoch (2) addressed to them yet. Resume is impossible, but
+    // --new-epoch works (they make a new DEK themselves, so the current
+    // epoch's DEK is unneeded) — without this guidance the revocation deadlocks
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -3332,17 +3398,19 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "member removal"], env.layer)).toBe(
+      1,
+    );
     const errors = env.errors.join("\n");
     expect(errors).toContain("Cannot resume the incomplete re-encryption");
     expect(errors).toContain("run with --new-epoch");
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("恒久的に失敗する変数の理由は、原因欄に出なくても警告として残す", async () => {
-    // 原因として掲げられるのは 1 件だけ。2 件目以降を落とすと、恒久的に失敗する
-    // 変数(値が大きすぎる等)の理由がどの実行でも表に出ず、旧エポックのまま
-    // 取り残され続ける
+  it("a permanently failing variable's reason is kept as a warning even when it never reaches the cause field", async () => {
+    // Only 1 item is raised as the cause. Dropping the second onward would
+    // leave a permanently failing variable's reason (a too-large value, say)
+    // never surfaced on any run, left behind on the old epoch forever
     const common = { built: chainBase, dek: dek1, epoch: 1, version: 1, headSeq: 2 } as const;
     const variables = [
       await variableAt({ ...common, variableId: "vaa", name: "TRANSIENT", plaintext: "a" }),
@@ -3369,17 +3437,19 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "混在失敗"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "mixed failures"], env.layer)).toBe(
+      1,
+    );
     const errors = env.errors.join("\n");
-    // 変数名つきで両方の理由が残る(原因欄に出るのは片方だけでも)
+    // Both reasons remain with variable names (even though only one reaches the cause field)
     expect(errors).toContain("Failed to re-encrypt variable TRANSIENT");
     expect(errors).toContain("Failed to re-encrypt variable TOO_BIG");
   });
 
-  it("開ける現在値が 1 つも無いなら、満たせない --new-epoch を勧めない", async () => {
-    // 自分宛ラップが 1 つも無い場合、--new-epoch へ進んでも
-    // ensureRotationIsUseful で弾かれる。勧めると 2 つの矛盾するエラーの間で
-    // 利用者を往復させることになる
+  it("when not a single current value can be opened, it never recommends the unsatisfiable --new-epoch", async () => {
+    // With not a single wrap addressed to self, even proceeding to
+    // --new-epoch is rejected by ensureRotationIsUseful. Recommending it would
+    // bounce the user between two contradictory errors
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -3395,17 +3465,20 @@ describe("maruhi env rotate", () => {
     const state = makeServer({ built: chainRotated, variables, deks: [], currentEpoch: 2 });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "member removal"], env.layer)).toBe(
+      1,
+    );
     const errors = env.errors.join("\n");
     expect(errors).toContain("You cannot open any current value");
     expect(errors).not.toContain("run with --new-epoch");
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("操作に適用されないオプション・綴り間違いは黙って捨てずに拒否する", async () => {
-    // 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数・
-    // 位置引数のオプション化)は全コマンド共通の検査が持つ(args.test.ts)。
-    // ここでは env 固有の適用可否と、rotate でも同じく落ちることを固定する
+  it("options not applicable to the operation and misspellings are refused, never silently dropped", async () => {
+    // Mistakes in the invocation itself (undeclared options · a value for a
+    // boolean · extra positional args · a positional arg written as an option)
+    // are owned by the check shared across all commands (args.test.ts). Here
+    // we pin the env-specific applicability and that rotate fails the same way
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -3413,19 +3486,19 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // 綴り間違い(放置すると「必ず新エポック」の意図が黙って弱い再開経路へ落ちる)
+    // A misspelling (left alone, the intent "always a new epoch" silently falls to the weaker resume path)
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epochs"], env.layer),
     ).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown flag");
-    // create 専用のオプションを rotate に付けた場合も拒否する(env 固有の検査)
+    // A create-only option passed to rotate is also refused (the env-specific check)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--name", "n"], env.layer)).toBe(
       2,
     );
     expect(env.errors.join("\n")).toContain("Unknown flag");
-    // boolean への値指定: effect/unstable/cli はインライン形(`=false`)も
-    // 空白区切り形(`--new-epoch false`)も boolean の値として**解釈する**ので、
-    // これらは誤りではなく書いたとおりの通常実行になる
+    // A value for a boolean: effect/unstable/cli **interprets** both the
+    // inline form (`=false`) and the space-separated form (`--new-epoch
+    // false`) as the boolean's value, so these are not mistakes — they are normal runs read as written
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch=false"], env.layer),
     ).toBe(0);
@@ -3433,11 +3506,12 @@ describe("maruhi env rotate", () => {
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
     ).toBe(0);
-    // 値は捨てられて余分な位置引数になるのではなく、フラグの値として消費される
+    // The value is not dropped into an extra positional arg — it is consumed as the flag's value
     expect(env.errors.join("\n")).not.toContain("Unexpected extra arguments");
-    // 位置引数の名前をオプションとして書く形は値を捨てずに拒否する
-    // (`env rotate dev --environment-id other` が dev をローテーションする形を塞ぐ)。
-    // 環境 ID はチェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く
+    // Writing the positional arg's name as an option is refused without
+    // discarding the value (blocks the shape where `env rotate dev
+    // --environment-id other` rotates dev). An environment ID is unique
+    // across all chain history (§6.2), so a mix-up is permanent
     const beforeSwap = server.requests.length;
     expect(
       await runCli(
@@ -3446,23 +3520,24 @@ describe("maruhi env rotate", () => {
       ),
     ).toBe(2);
     expect(env.errors.join("\n")).toContain("--environment-id is a positional argument");
-    // 取り違えの検査は通信より前(誤った ID で var.read を残さない)
+    // The mix-up check runs before any communication (never leaves a var.read under the wrong ID)
     expect(server.requests.length).toBe(beforeSwap);
-    // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
-    // 引数表から導くので、手書きの一覧との二重管理で弾かれることがない
-    // (「拒否されない」ではなく**成功する**ことを固定する — 検査の緩みが
-    // ローテーション自体の失敗に化けても気付けるように)
+    // Declared options that are not operation-only (--project etc.) are not
+    // refused. The allowed set is derived from the argument table, so a
+    // hand-written list never falls out of sync and rejects them (pins that
+    // they **succeed**, not merely "are not refused" — so a loosened check
+    // surfacing as a failure of the rotation itself is still noticed)
     expect(
       await runCli(
         ["env", "rotate", ENV_ID, "--reason", "x", "--project", chainBase.projectId],
         env.layer,
       ),
     ).toBe(0);
-    // 拒否された例では HTTP は一切起きていない(通信するのは通常実行の 2 例だけ)
+    // On the refused examples no HTTP happens at all (only the 2 normal-run examples communicate)
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
-  it("対象環境が grant_server の開示スコープに入っていれば、完全集合にサーバー宛ラップを含めてローテーションする(§12-4 / §7)", async () => {
+  it("when the target environment sits inside a grant_server's disclosure scope, the complete set includes the server-addressed wrap and rotates (§12-4 / §7)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -3487,7 +3562,7 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "grant あり"], env.layer)).toBe(0);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "with grant"], env.layer)).toBe(0);
     expect(state.rotateBodies).toHaveLength(1);
     const body = state.rotateBodies[0] as {
       deks: readonly {
@@ -3496,18 +3571,19 @@ describe("maruhi env rotate", () => {
         recipientEncPubHex: string;
       }[];
     };
-    // 完全集合 = 現メンバー(owner)+ スコープ内 grant のサーバー鍵(§7 の
-    // 再ラップ義務 — 再ラップしなければリース経路が停止する)
+    // The complete set = the current members (owner) + the server key of an
+    // in-scope grant (§7's re-wrap obligation — without the re-wrap the lease path stops)
     expect(body.deks).toHaveLength(2);
     const serverWrap = body.deks.find((wrap) => wrap.recipientClass === "server");
     expect(serverWrap?.recipientUserId).toBe(grantEntry.payload.serverKeyFingerprintHex);
     expect(serverWrap?.recipientEncPubHex).toBe(grantEntry.payload.serverEncPubHex);
   });
 
-  it("別環境だけを開示した grant_server は、この環境の失効ローテーションを止めない(§7)", async () => {
-    // エポックは環境ごとに独立に進む(§3)。dev だけを開示した grant が prod の
-    // ローテーションを塞ぐと、退職者削除に必要な唯一の手段が別環境の設定で
-    // 止まる — スコープ(§6.2 の「対象環境の部分集合」)で判定する
+  it("a grant_server disclosing only a different environment never stops this environment's revocation rotation (§7)", async () => {
+    // Epochs advance independently per environment (§3). If a grant
+    // disclosing only dev blocked prod's rotation, the sole means needed for
+    // member removal would stall on another environment's setting — the
+    // judgment uses scope (§6.2's "subset of target environments")
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -3530,11 +3606,13 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(0);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "member removal"], env.layer)).toBe(
+      0,
+    );
     expect(state.rotateBodies).toHaveLength(1);
   });
 
-  it("reader はローテーションできない(member 以上 — §6.2)。値の取得より前に拒否する", async () => {
+  it("a reader cannot rotate (member or above — §6.2). Refused before any value fetch", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(reader, "reader") },
@@ -3547,13 +3625,13 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, reader);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "テスト"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "test"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("reader");
-    // pull(var.read の記録)にも到達していない
+    // It never even reaches a pull (a var.read record)
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
   });
 
-  it("未完了がなく --reason もない実行は、確認だけして何も書き込まない", async () => {
+  it("a run with nothing unfinished and no --reason only checks and writes nothing", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -3561,16 +3639,16 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // 部分完了の案内が勧める再実行の着地点。ここで --reason を要求すると、
-    // 案内どおりに再実行した利用者が理由を求められ、指定すると二度目の
-    // ローテーションになってしまう
+    // The landing point of the re-run the partial-completion guidance
+    // recommends. Requiring --reason here would demand a reason from the user
+    // who re-ran as guided — and specifying one would trigger a second rotation
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("Check complete");
     expect(env.logs.join("\n")).toContain("To create a new epoch, pass --reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("--new-epoch に --reason が無い実行は、値を取りに行く前に落とす(var.read を残さない)", async () => {
+  it("a --new-epoch run without --reason fails before fetching values (leaves no var.read)", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -3604,18 +3682,18 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // --new-epoch は必ずエントリを署名する = 理由が必須。満たしようのない
-    // 引数検査のために全変数の暗号文を取りに行き、変数ごとの var.read を
-    // 監査ログへ残さない(ensureRotatable と同じ規律)
-    // 書き方の誤り(理由の欠落)は usage エラー(2)。同じ `--reason` の
-    // 誤りが終了コードで割れないようにする
+    // --new-epoch always signs an entry = a reason is mandatory. Never goes to
+    // fetch every variable's ciphertext for an unsatisfiable argument check
+    // and leaves a per-variable var.read in the audit log (the same discipline as ensureRotatable)
+    // A usage mistake (the missing reason) is a usage error (2) — so the same
+    // `--reason` mistake never splits by exit code
     expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("空の --reason は「確認だけ」に潰さず落とす(要求したのに何もしない成功終了を作らない)", async () => {
+  it("an empty --reason fails instead of collapsing into 'check only' (never makes a successful exit that did nothing despite a request)", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -3623,24 +3701,25 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // `--reason "$UNSET_VAR"` の形。未指定と同一視すると、退職者削除の
-    // スクリプトが「新エポックができた」と受け取ったまま何も送られない。
-    // 空文字列は共通の引数検査が usage エラー(2)で落とす(「未指定」と
-    // 区別できない値を既定へフォールバックさせない — ADR-0016 決定 2 の NonBlank 宣言)
+    // The `--reason "$UNSET_VAR"` shape. Treating it as unspecified would
+    // leave the member-removal script believing "a new epoch was made" while
+    // nothing was sent. An empty string is failed as a usage error (2) by the
+    // shared argument check (a value indistinguishable from "unspecified"
+    // never falls back to the default — ADR-0016 decision 2's NonBlank declaration)
     for (const empty of [["--reason", ""], ["--reason="]]) {
       expect(await runCli(["env", "rotate", ENV_ID, ...empty], env.layer)).toBe(2);
       expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");
       expect(env.logs.join("\n")).not.toContain("Check complete");
     }
-    // 空白だけの値も共通検査が空として落とす(`"$VAR"` の未設定形は `""` にも
-    // `" "` にもなる)
+    // A whitespace-only value is also failed as empty by the shared check
+    // (the unset form of `"$VAR"` can become `""` or `" "`)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("新しいエポックを作る経路では --reason を要求する(--new-epoch 指定時も)", async () => {
+  it("the path that creates a new epoch requires --reason (also with --new-epoch given)", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -3653,21 +3732,23 @@ describe("maruhi env rotate", () => {
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("チェーンに存在しない環境へのローテーションは拒否する(create_environment 未観測)", async () => {
+  it("a rotation onto an environment absent from the chain is refused (create_environment never observed)", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", "staging", "--reason", "テスト"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", "staging", "--reason", "test"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not exist on the chain");
     expect(state.rotateBodies).toHaveLength(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// `--config`: 同期レシートの前進(SY2 第 2 段 2b — M1)。回す環境(dev — makeServer が
-// ローテーションの複合受理と再暗号化 push を模す)とレシート環境(ops —
-// makeValueEnvironmentServer。epoch 1 固定の状態つき値環境)を 1 つのモックサーバーに
-// 合成し、rotate → レシートの書き込み → `sync plan` / `sync apply` を同じ状態上で通す。
+// `--config`: advancing the sync receipt (SY2 stage 2 2b — M1). The rotated
+// environment (dev — makeServer models the rotation's composite acceptance
+// and the re-encryption pushes) and the receipt environment (ops —
+// makeValueEnvironmentServer, a stateful value environment pinned at epoch
+// 1) are combined into one mock server, running rotate → receipt write →
+// `sync plan` / `sync apply` on the same state.
 // ---------------------------------------------------------------------------
 
 const RECEIPTS_ENV = "ops";
@@ -3680,7 +3761,7 @@ function output(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-describe("maruhi env rotate --config(同期レシートの前進 — M1)", () => {
+describe("maruhi env rotate --config (advancing the sync receipt — M1)", () => {
   let dekReceipts: Uint8Array;
   /** genesis + create dev(epoch 1、dek1)+ create ops(epoch 1、dekReceipts)。 */
   let chainWithReceipts: BuiltChain;
@@ -3711,7 +3792,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     });
   });
 
-  /** 回す環境の 2 変数(DATABASE_URL v1 / API_KEY は version を指定)。 */
+  /** The rotated environment's 2 variables (DATABASE_URL v1 / API_KEY takes a version). */
   async function sourceVariables(built: BuiltChain, apiKeyVersion = 1): Promise<PulledVariable[]> {
     return [
       await variableAt({
@@ -3737,7 +3818,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     ];
   }
 
-  /** レシート環境に置かれた既存レシート(前回の同期の結果)。 */
+  /** The existing receipt placed in the receipt environment (the previous sync's result). */
   async function storedReceipt(input: {
     readonly target: string;
     readonly variables: Readonly<Record<string, number>>;
@@ -3777,7 +3858,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     return { variableId, statement, value };
   }
 
-  /** 既定の設定: dev を同期元にする Vercel ターゲット `web`、レシートは ops。 */
+  /** The default config: a Vercel target `web` synced from dev; the receipt is ops. */
   function defaultConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       version: 1,
@@ -3798,7 +3879,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     readonly server: Omit<ServerOptions, "built"> & { readonly built?: BuiltChain };
     readonly receipts?: readonly StoredVariable[];
     readonly config?: Record<string, unknown>;
-    /** 先頭に差し込むハンドラ(レシート環境の書き込み失敗の差し込み等)。 */
+    /** Handlers injected at the front (e.g. injecting a receipt-environment write failure). */
     readonly before?: readonly MockHandler[];
   }): Promise<ReceiptFixture> {
     const built = input.server.built ?? chainWithReceipts;
@@ -3811,7 +3892,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       wrap: wrapReceipts,
       initialVariables: input.receipts ?? [],
     });
-    // 回す環境のハンドラを先に置く(チェーンは makeServer の可変な現在形が正)
+    // The rotated environment's handlers go first (the chain follows makeServer's mutable current form)
     const env = await startEnv(
       [...(input.before ?? []), ...state.handlers, ...receipts.handlers],
       owner,
@@ -3837,7 +3918,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     });
   }
 
-  /** レシート環境の最新レシートを復号して変数の写像を返す。 */
+  /** Decrypts the receipt environment's latest receipt and returns the variable mapping. */
   async function receiptVariablesOf(
     fixture: ReceiptFixture,
     target: string,
@@ -3854,7 +3935,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     return runCli(["env", "rotate", ENV_ID, ...args], fixture.env.layer);
   }
 
-  it("完了した再暗号化の分だけレシートを新 version へ進め、その後の sync plan は全件 unchanged・apply は何も書かない", async () => {
+  it("advances the receipt to the new version only for completed re-encryptions; the following sync plan is all unchanged and apply writes nothing", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -3866,8 +3947,8 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
-    // 再暗号化 = 2 変数の新 version(値は不変)。レシートは 1 回だけ新 version として書く
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
+    // Re-encryption = the 2 variables' new versions (values unchanged). The receipt is written as a new version exactly once
     expect(fixture.state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vbb"]);
     expect(fixture.receipts.writes.map((write) => write.kind)).toEqual(["version"]);
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 2 });
@@ -3875,11 +3956,11 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       "Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as version 2 of sync-receipt:web in environment ops)",
     );
     expect(output(fixture.env)).not.toContain("left as delivered");
-    // 出力に平文は出ない(レシートは名前と version だけ)
+    // No plaintext appears in the output (the receipt carries only names and versions)
     expect(output(fixture.env)).not.toContain("postgres://example");
     expect(output(fixture.env)).not.toContain("key-abc");
 
-    // その後の plan は全件 unchanged、apply は書くものが無い(二重書きしない)
+    // The plan after that is all unchanged; apply has nothing to write (never writes twice)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -3897,7 +3978,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.receipts.writes).toHaveLength(1);
   });
 
-  it("--config が無ければレシートには触れない(レシート環境を読みも書きもしない)", async () => {
+  it("without --config it never touches the receipt (the receipt environment is neither read nor written)", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -3909,8 +3990,8 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
     const receiptsPulls: string[] = [];
-    // startFixture の後では差し込めないので、レシート環境の読みはサーバーの記録で数える
-    expect(await rotate(fixture, "--reason", "定期")).toBe(0);
+    // Since it cannot be injected after startFixture, receipt-environment reads are counted via the server's records
+    expect(await rotate(fixture, "--reason", "scheduled")).toBe(0);
     for (const server of servers) {
       receiptsPulls.push(
         ...server.requests
@@ -3921,7 +4002,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(receiptsPulls).toEqual([]);
     expect(fixture.receipts.writes).toEqual([]);
     expect(output(fixture.env)).not.toContain("receipt");
-    // 進めていないので plan は全件 changed(無害 — 次の apply が同じ平文を書き直す)
+    // Since nothing advanced, the plan is all changed (harmless — the next apply rewrites the same plaintext)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -3930,10 +4011,10 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("レシートが遅れていた変数は進めない(同期先に届いているのは古い平文)", async () => {
+  it("a variable whose receipt lagged is not advanced (what reached the sync destination is old plaintext)", async () => {
     const fixture = await startFixture({
       server: {
-        // API_KEY は同期後にもう一度 push されて version 2(レシートは 1 のまま)
+        // API_KEY was pushed once more after the sync to version 2 (the receipt stays at 1)
         variables: await sourceVariables(chainWithReceipts, 2),
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
@@ -3943,9 +4024,9 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
-    // DATABASE_URL: 1 → 2(直前を指していた)。API_KEY: 1 のまま(3 に進めると
-    // version 2 の未同期の差分を隠す)
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
+    // DATABASE_URL: 1 → 2 (it pointed at the immediately prior one). API_KEY:
+    // stays at 1 (advancing to 3 would hide version 2's unsynced diff)
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
     expect(fixture.env.logs.join("\n")).toContain(
       "Advanced the receipt for target web to the re-encrypted versions of 1 variable (saved as version 2 of sync-receipt:web in environment ops); 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)",
@@ -3959,18 +4040,18 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.env.logs.join("\n")).toContain("~ API_KEY\tversion 1 -> 3");
   });
 
-  it("レシートに無い名前(未同期)は進めず、進めるものが無ければレシートを書かない", async () => {
+  it("a name absent from the receipt (unsynced) is not advanced; with nothing to advance, no receipt is written", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts, 2),
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // DATABASE_URL は同期先へ届いていない(レシートに無い)。API_KEY は遅れている
+      // DATABASE_URL has not reached the sync destination (absent from the receipt). API_KEY is lagging
       receipts: [await storedReceipt({ target: "web", variables: { API_KEY: 1 } })],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.receipts.writes).toEqual([]);
     expect(fixture.env.logs.join("\n")).toContain(
       "Receipt for target web not advanced: 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)",
@@ -3983,7 +4064,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("並行 push で既に現エポックにある変数(alreadyCurrent — 平文が変わりうる)は進めない", async () => {
+  it("a variable already on the current epoch via a concurrent push (alreadyCurrent — its plaintext may differ) is not advanced", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -3992,7 +4073,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     ]);
     const [staleA, staleB] = await sourceVariables(built);
     if (staleA === undefined || staleB === undefined) throw new Error("fixture");
-    // 409 の後の再取得で見える「他メンバーが新エポックで書いた勝者」(平文は別物)
+    // The "winner another member wrote on the new epoch" visible on the re-fetch after the 409 (the plaintext differs)
     const winner = await variableAt({
       built,
       variableId: "vbb",
@@ -4024,7 +4105,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    // 再開経路(エポック 2 に対する未完了): DATABASE_URL だけ自分が再暗号化する
+    // The resume path (unfinished against epoch 2): only DATABASE_URL is re-encrypted by us
     expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
     expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["vaa"]);
     expect(fixture.env.logs.join("\n")).toContain(
@@ -4032,14 +4113,14 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
     expect(output(fixture.env)).not.toContain("left as delivered");
-    // 勝者の平文は同期されていない = plan が update と示す(隠さない)
+    // The winner's plaintext was never synced = plan shows update (never hidden)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("~ API_KEY\tversion 1 -> 2");
   });
 
-  it("部分完了(remaining > 0)では完了した変数だけ進め、終了コードはローテーションの報告のまま", async () => {
+  it("on partial completion (remaining > 0) only the completed variables advance, and the exit code stays the rotation's report", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -4053,19 +4134,19 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(1);
     expect(fixture.env.logs.join("\n")).toContain("Partial completion");
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
     expect(output(fixture.env)).not.toContain("left as delivered");
   });
 
-  it("再開(resumed)では再開した分だけ進む(前回の実行で進んだ変数は遅れとして残る)", async () => {
+  it("on resume, only the resumed share advances (variables advanced in the previous run stay lagging)", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
-        // vbb だけが 1 回目の実行中ずっと落ちる(巡内リトライでも回復しない)
+        // Only vbb keeps failing throughout run 1 (never recovers even on in-pass retries)
         onPush: (call, variableId) =>
           variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
       },
@@ -4074,12 +4155,13 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    // 1 回目は --config 無し(レシートは触られない)
-    expect(await rotate(fixture, "--reason", "初回")).toBe(1);
+    // Run 1 has no --config (the receipt is untouched)
+    expect(await rotate(fixture, "--reason", "first run")).toBe(1);
     expect(fixture.receipts.writes).toEqual([]);
-    // 2 回目 = 再開 + --config: この実行が再暗号化した API_KEY だけ進む。1 回目に
-    // 進んだ DATABASE_URL(version 2)は、この実行には「不変」の証拠が無い =
-    // 触らない(次の plan が update と示し、apply が同じ平文を書き直す — 無害な側)
+    // Run 2 = resume + --config: only API_KEY, which this run re-encrypted,
+    // advances. DATABASE_URL (version 2), which advanced on run 1, has no
+    // "unchanged" evidence on this run = left untouched (the next plan shows
+    // update and apply rewrites the same plaintext — the harmless side)
     expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("resumed re-encryption");
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 1, API_KEY: 2 });
@@ -4094,8 +4176,8 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.env.logs.join("\n")).toContain("= API_KEY\tversion 2 (unchanged)");
   });
 
-  it("レシート環境自身を回した場合はレシート変数が再暗号化されるだけで、進めるターゲットは無い(その後の plan は通る)", async () => {
-    // レシートは dev に置き、同期元は ops(値環境 — epoch 1 固定)にする
+  it("rotating the receipt environment itself only re-encrypts the receipt variable — no target is advanced (the following plan still passes)", async () => {
+    // The receipt sits on dev, and the sync source is ops (the value environment — pinned at epoch 1)
     const sourceInOps = await statementFor({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
@@ -4135,13 +4217,13 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       },
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
-    // レシート変数そのものが再暗号化される(通常の変数と同じ)。レシートの書き込みは無い
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
+    // The receipt variable itself is re-encrypted (same as a normal variable). No receipt is written
     expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["receipt-web"]);
     expect(fixture.env.logs.join("\n")).toContain(
       "No sync target in the config is synced from environment dev, so no receipt was advanced",
     );
-    // 新 version のレシートは中身が不変 = plan は unchanged
+    // The new-version receipt's contents are unchanged = plan is unchanged
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -4150,7 +4232,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("レシートが無いターゲットは静かに飛ばす", async () => {
+  it("a target without a receipt is quietly skipped", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -4158,12 +4240,12 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
         currentEpoch: 1,
       },
     });
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.receipts.writes).toEqual([]);
     expect(output(fixture.env)).not.toContain("receipt");
   });
 
-  it("同じ環境を同期元にする複数ターゲットはすべて処理し、1 つの書き込み失敗で残りを止めず終了コードも変えない", async () => {
+  it("every target synced from the same environment is processed; one write failure stops neither the rest nor the exit code", async () => {
     const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
     const fixture = await startFixture({
       server: {
@@ -4181,7 +4263,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
           worker: vercelTarget(ENV_ID, ["DATABASE_URL"]),
         },
       }),
-      // web のレシートの書き込みだけを落とす
+      // Only web's receipt write is failed
       before: [
         (request) =>
           request.method === "POST" && request.path === `${base}/variables/receipt-web/versions`
@@ -4190,7 +4272,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.errors.join("\n")).toContain(
       "the rotation is done, but the receipt for target web could not be advanced (",
     );
@@ -4204,7 +4286,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("ローテーション後の再同期に失敗しても、後始末の失敗として警告し終了コードは変えない", async () => {
+  it("a failed post-rotation resync only warns as a cleanup failure — the exit code is unchanged", async () => {
     const pushed: string[] = [];
     const fixture = await startFixture({
       server: {
@@ -4215,7 +4297,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
           pushed.push(variableId);
           return undefined;
         },
-        // 再暗号化が終わった後のチェーン取得(= 後始末の再同期)だけを落とす
+        // Only the chain fetch after re-encryption finished (= the cleanup resync) is failed
         onChain: () => (pushed.length === 2 ? { status: 503, bodyText: "unavailable" } : undefined),
       },
       receipts: [
@@ -4223,19 +4305,19 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).toContain(
       "the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (",
     );
     expect(fixture.receipts.writes).toEqual([]);
-    // 後始末の後ろの案内(アンカー更新)も出る
+    // The guidance after the cleanup (the anchor update) also comes out
     expect(fixture.env.errors.join("\n")).toContain(
       "a committed repository anchor (if any) is now stale",
     );
   });
 
-  it("レシート環境の読みの通信失敗は警告に留め、終了コードは変えない(SY2 第 2 段 2b 裁定 D の範囲)", async () => {
+  it("a communication failure reading the receipt environment stays a warning — the exit code is unchanged (the scope of SY2 stage 2 2b ruling D)", async () => {
     const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
     const fixture = await startFixture({
       server: {
@@ -4254,7 +4336,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).toContain(
       "the rotation is done, but the receipt for target web could not be advanced (",
@@ -4262,7 +4344,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("レシート環境の検証拒否(床違反 = 証拠)は警告に畳まず、失敗として通す", async () => {
+  it("a verification refusal on the receipt environment (a floor violation = evidence) is never folded into a warning — it passes through as a failure", async () => {
     const newer = await storedReceipt({
       target: "web",
       variables: { DATABASE_URL: 1, API_KEY: 1 },
@@ -4281,28 +4363,28 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       },
       receipts: [newer],
     });
-    // 先に plan でレシート環境の床を確立する(version 2 を検証済みとして記録)
+    // First establish the receipt environment's floor via plan (records version 2 as verified)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
-    // サーバーが古い version を配り直す(巻き戻し)
+    // The server redistributes an old version (a rollback)
     const stored = fixture.receipts.variables[0];
     if (stored === undefined) throw new Error("receipt missing");
     stored.value = older.value;
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
-    // ローテーション自体は済んでいる(報告は先に出る)。証拠は「apply し直せ」に化けない
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(1);
+    // The rotation itself is done (its report comes out first). The evidence never morphs into "re-run apply"
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).toContain("value-version rollback");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
     expect(fixture.receipts.writes).toEqual([]);
-    // エポックは進んでいるので、アンカー更新の案内は証拠の前に出ている
+    // Since the epoch advanced, the anchor-update guidance comes out ahead of the evidence
     expect(fixture.env.errors.join("\n")).toContain(
       "a committed repository anchor (if any) is now stale",
     );
   });
 
-  it("後始末の再同期でチェーンの差し替えを検出したら、証拠として失敗する(警告に畳まない)", async () => {
+  it("detecting a chain swap on the cleanup resync fails as evidence (never folded into a warning)", async () => {
     const pushed: string[] = [];
     const fixture = await startFixture({
       server: {
@@ -4313,8 +4395,9 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
           pushed.push(variableId);
           return undefined;
         },
-        // 再暗号化が終わった後は、同じ genesis の**短い**チェーン(rotate を含まない
-        // 別の整合チェーン)を配る = 検証は通るが検証済みビューの延長ではない
+        // After re-encryption finished, it serves a **shorter** chain on the
+        // same genesis (a different consistent chain without the rotate) =
+        // verifies, yet is not an extension of the verified view
         onChain: () =>
           pushed.length === 2
             ? {
@@ -4333,7 +4416,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(1);
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).toContain("not an extension of the verified view");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
@@ -4343,7 +4426,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("レシート環境の値署名が検証を通らなければ、証拠として失敗する", async () => {
+  it("when the receipt environment's value signature fails verification, it fails as evidence", async () => {
     const receipt = await storedReceipt({
       target: "web",
       variables: { DATABASE_URL: 1, API_KEY: 1 },
@@ -4354,11 +4437,11 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // 署名を壊した値を配る(偽造された配布のモデル化)
+      // Serves a value with a broken signature (models a forged distribution)
       receipts: [{ ...receipt, value: { ...receipt.value, signatureHex: "00".repeat(64) } }],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(1);
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
     expect(fixture.receipts.writes).toEqual([]);
@@ -4367,7 +4450,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
-  it("レシート環境の未対応レイアウト(誠実な破壊様式)は証拠ではなく、後始末の警告に留まる", async () => {
+  it("an unsupported layout on the receipt environment (an honest breaking format) is not evidence — it stays a cleanup warning", async () => {
     const receipt = await storedReceipt({
       target: "web",
       variables: { DATABASE_URL: 1, API_KEY: 1 },
@@ -4378,8 +4461,8 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // この CLI が知らない layoutVersion(将来の CLI が書いたステートメント — v2 欄は
-      // 揃っている)。署名検証より前に弾かれる
+      // A layoutVersion this CLI does not know (a statement written by a
+      // future CLI — the v2 fields are all present). Rejected before signature verification
       receipts: [
         {
           ...receipt,
@@ -4394,8 +4477,9 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       ],
     });
 
-    // モックのマニフェストは元のステートメントから組む(モック側の整形が未知の
-    // レイアウトで転ばないように)。CLI はマニフェスト段より前の検証段で弾く
+    // The mock's manifest is built from the original statement (so the mock's
+    // own assembly does not trip on the unknown layout). The CLI rejects it at
+    // the verification stage before the manifest stage
     fixture.receipts.manifest = await manifestFor({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
@@ -4406,13 +4490,13 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       statements: [receipt.statement],
     });
 
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.errors.join("\n")).toContain("could not be advanced (");
     expect(fixture.env.errors.join("\n")).toContain("This is not a tampering indication");
     expect(fixture.receipts.writes).toEqual([]);
   });
 
-  it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
+  it("warns when a receipt variable's version nears the cap (M1's writes consume versions too)", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -4427,13 +4511,13 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
         }),
       ],
     });
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.errors.join("\n")).toContain(
       "the receipt variable sync-receipt:web is at version 900 of the 1000-version limit per variable",
     );
   });
 
-  it("設定の project が回すプロジェクトと違えば、エポックを進める前に書き方の誤りとして止まる(2)", async () => {
+  it("when the config's project differs from the rotated project, it stops as a usage mistake (2) before advancing the epoch", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -4442,14 +4526,14 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       },
       config: defaultConfig({ project: "2".repeat(64) }),
     });
-    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(2);
+    expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(2);
     expect(fixture.state.rotateBodies).toHaveLength(0);
     expect(fixture.env.errors.join("\n")).toContain(
       "The sync config belongs to a different project (its `project` does not match the project being rotated)",
     );
   });
 
-  it("設定が読めなければ、エポックを進める前に止まる(1)", async () => {
+  it("when the config cannot be read, it stops before advancing the epoch (1)", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -4458,13 +4542,13 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
       },
     });
     expect(
-      await rotate(fixture, "--reason", "定期", "--config", `${fixture.configPath}.missing`),
+      await rotate(fixture, "--reason", "scheduled", "--config", `${fixture.configPath}.missing`),
     ).toBe(1);
     expect(fixture.state.rotateBodies).toHaveLength(0);
     expect(fixture.env.errors.join("\n")).toContain("Cannot read the sync config");
   });
 
-  it("確認だけの実行(up-to-date)は何も再暗号化していないのでレシートに触れない", async () => {
+  it("a check-only run (up-to-date) re-encrypted nothing, so it never touches the receipt", async () => {
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
