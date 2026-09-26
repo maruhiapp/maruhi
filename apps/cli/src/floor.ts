@@ -328,6 +328,12 @@ export interface FloorStoreShape {
     projectId: string,
     evidence: AttestationEvidenceRecord,
   ) => Effect.Effect<string, CliError>;
+  /**
+   * 床の記録があるプロジェクト ID(ファイル名だけを読む — 内容・形式は読まない)。床は
+   * 設定ファイルの場所で 1 つなので、別のサーバー・アカウントのプロジェクトも混ざる。
+   * 判断の材料にしない(`device add` の「どこにも無い」の範囲を補う情報だけ — DK K13-7)。
+   */
+  readonly listProjectIds: () => Effect.Effect<readonly string[], CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}

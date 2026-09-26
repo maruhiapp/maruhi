@@ -37,7 +37,7 @@ export function signEntryAtHead(input: {
       return yield* Effect.fail(cliError("Not a chain-derived member"));
     }
     // 署名する端末 = 手元の署名鍵と一致する、その人の有効な端末(K4-16 — device-key.ts)
-    const device = yield* ownDeviceBySigningKey(actor, input.signingKeyPair);
+    const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({

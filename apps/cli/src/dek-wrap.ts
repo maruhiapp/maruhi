@@ -329,7 +329,7 @@ export function requireWritingMember(input: {
         cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
       );
     }
-    const device = yield* ownDeviceBySigningKey(member, input.signingKeyPair);
+    const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
     const permission = effectivePermissionOf(member, device);
     if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
       return yield* Effect.fail(

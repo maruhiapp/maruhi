@@ -294,7 +294,9 @@ export function environmentKeysFor(input: {
     }
     // 開封する端末 = 手元の enc 鍵と一致する自分の有効な端末(DK K4-16)。実効 scope
     // (人 ∩ 端末 — K4-17)の外の環境の DEK は、宛てられていても使わない
-    const device = yield* ownDeviceOrFail(self, { encPubHex: input.recipient.encPubHex });
+    const device = yield* ownDeviceOrFail(input.verified, self, {
+      encPubHex: input.recipient.encPubHex,
+    });
     const permission = effectivePermissionOf(self, device);
     if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
       return yield* Effect.fail(

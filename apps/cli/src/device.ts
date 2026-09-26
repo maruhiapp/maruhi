@@ -1,10 +1,13 @@
 // `maruhi device` グループ(CRYPTO_SPEC §3 / §6.2「端末鍵」、AUTH_SPEC §13-11 — 2026-09-19
 // DK。設計録 dk-design.md §9 K4-5 / K4-6 / K4-7 / K4-13 / K4-18)。
 //
-// - `device add [--label] [--replace]`(新端末側): 端末鍵を生成して要求を出し、FP(hex +
-//   12 語)を表示して待つ。待機の合図は登録簿(advisory)、完了の確認は各プロジェクトの
-//   検証済みチェーン(K4-5)。同じビューで、載ったプロジェクトの鍵の到達(自分宛の DEK が
-//   全エポックにあるか — DK K12)と失効した鍵を確かめて報告する。ゲートなし(DK-D — 要求側は何も足さない)
+// - `device add [--label] [--replace]`(新端末側): 端末鍵を生成して要求を出し、保存してから
+//   FP(hex + 12 語)を表示して待つ(`--replace` も「生成 → 要求 → ガードつき差し替え」—
+//   DK K13-8)。待機の合図は登録簿(advisory)、完了の確認は各プロジェクトの検証済み
+//   チェーン(K4-5)。同じビューで、載ったプロジェクトの鍵の到達(自分宛の DEK が全エポックに
+//   あるか — DK K12)と失効した鍵を確かめて報告する。鍵が既にあれば、生きた要求なら待機を
+//   再開し、無ければ要求を作らずにチェーン上の立場(`device-standing.ts`)で分ける
+//   (DK K13-2 — K4-21 (c) の改訂)。ゲートなし(DK-D — 要求側は何も足さない)
 // - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
 //   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
 //   → 各プロジェクトを開いて判定(既に載っている鍵の cap が今回の cap と違えば何も書かずに
@@ -59,7 +62,6 @@ import {
   devicesOf,
   findOwnDevice,
   reAddDeviceRoute,
-  revokedFingerprintsOf,
 } from "./device-key.ts";
 import {
   appendAddDevice,
@@ -71,9 +73,17 @@ import {
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
 } from "./device-ops.ts";
+import {
+  groupStandings,
+  keyStandingIn,
+  type KeyStandings,
+  keyStandingsOf,
+  type StandingGroups,
+} from "./device-standing.ts";
 import { countNoun, displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { FloorStore } from "./floor.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
 import { generateKeyRecord } from "./key-record.ts";
@@ -167,71 +177,420 @@ export function deviceAddOp(input: {
   readonly pollIntervalMs?: number | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const keys = yield* deviceKeyForRequest(input);
-    const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
-    const request = yield* createOrResumeRequest(input, keys);
-    yield* io.log(`This device's key fingerprint: ${keys.fingerprintHex}`);
-    yield* io.log(`fp words: ${formatWordList(words)}`);
-    if (request.kind === "already-registered") {
-      // 要求行は無い(登録簿の行が合図)— approve の案内は出さず、チェーンの確認へ
-      yield* io.log(
-        "This key is already in your device registry (no pending request); verifying it on each project's chain",
-      );
-    } else {
-      yield* io.log(
-        `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(request.expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting while the request is valid`,
-      );
-      yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
+    const keychain = yield* Keychain;
+    const entryName = masterKeyEntryName(input.session.origin, input.session.userId);
+    const existing = yield* keychain.get(entryName);
+    if (existing !== null && !input.replace) {
+      // 既存の鍵(DK K13-2 — K4-21 (c) の改訂 K13-9): 生きた要求があれば待機を再開し、
+      // 無ければチェーン上の立場で分ける。どちらの経路も要求を作りに行かない(サーバーは
+      // 衝突の検査より前に 1 時間 5 回の窓を消費する。再開の期限は照会の応答にある)
+      const keys = yield* loadMasterKeys(input.session);
+      const pending = yield* pendingRequestOf(input.client, keys.fingerprintHex);
+      if (pending !== null) {
+        yield* logNote(
+          `this machine already has device key ${keys.fingerprintHex} with a device-add request — resuming the wait for its approval`,
+        );
+        return yield* awaitApproval(input, keys, pending.expiresAtMs);
+      }
+      return yield* settleExistingKey(input, keys);
     }
-    const signalled = yield* waitForRegistryRow({
-      client: input.client,
-      fingerprintHex: keys.fingerprintHex,
-      // 登録簿に載っている鍵は 1 巡目で合図を拾う(期限は形式上 TTL ぶん先)
-      expiresAtMs:
-        request.kind === "pending" ? request.expiresAtMs : Date.now() + DEVICE_ADD_REQUEST_TTL_MS,
-      intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
-      // 途中の案内は要求があるときだけ(登録簿の行が合図の待機では「承認側の出力」が無い)
-      hintAfterMs: request.kind === "pending" ? DEVICE_ADD_WAIT_HINT_AFTER_MS : null,
-    });
-    if (!signalled) {
-      // 期限切れ後の再実行は拒否される(鍵あり + 要求なし + 登録簿なし — K4-21)ので、
-      // 先へ進む手は `--replace` だけ。ただし承認側の登録簿 PUT が落ち、承認側が期限までに
-      // 再実行しなかったときは、鍵はチェーンに載っている(合図だけが無い — K9-3 の T3)。
-      // `--replace` はその鍵を捨ててチェーンに孤児を残すので、承認側の出力を条件に分ける
-      // (K7-1 / K9-3)。第 1 文も「承認前に」とは言わない(T3 では承認は済んでいる)
-      return yield* Effect.fail(
-        cliError(
-          `The device-add request expired before this machine saw the completion signal (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\`. If it registered this device but could not list it in your device registry, keep this key: it is already registered on the projects that output lists (\`maruhi device list\` on this machine shows where), and only its row in your device registry is missing`,
-        ),
-      );
+    const started = yield* startWithNewKey(input, entryName, existing);
+    if (started.request.kind === "already-registered") {
+      // 新しい鍵の FP に登録簿の行がある(FP の衝突でしか起きない)。待っていた要求は
+      // 無いので「Approved」とは言わず、チェーンの立場で報告する(DK K13-3 — 穴 5 の防御)
+      return yield* settleExistingKey(input, started.keys);
     }
-    // 真実はチェーン: 合図(登録簿の行)の後に各プロジェクトを同期して自分の端末を数え、
-    // 載っているプロジェクトでは同じビューで鍵の到達を確かめる(DK K12-1)
-    const confirmation = yield* confirmOnChains({
-      session: input.session,
-      client: input.client,
-      keys,
-    });
-    yield* io.log(
-      `Approved: this device is registered on ${countNoun(confirmation.registered.length, "project")} (verified on each project's chain)`,
-    );
-    // 完了の文は立場が分かった時点で出し、鍵の到達の確認(環境ごとの取得)はその後に回す
-    // (pullfrog 指摘 — K12-14。出力の順序は K12-3 のまま)
-    yield* reportConfirmation(confirmation, keys);
+    return yield* awaitApproval(input, started.keys, started.request.expiresAtMs);
   });
 }
 
-/** 1 プロジェクトのチェーン上のこの鍵の立場(DK K12-6 — 同期できなければ absent)。 */
-type KeyStanding =
-  | {
-      readonly kind: "present";
-      readonly context: ProjectContextBase;
-      readonly member: ChainMember;
-      readonly device: ChainDevice;
+/** この鍵の生きた要求(無ければ null。404 以外の照会の失敗は伝える — K4-33)。 */
+function pendingRequestOf(
+  client: MaruhiClient,
+  fingerprintHex: string,
+): Effect.Effect<{ readonly expiresAtMs: number } | null, CliError> {
+  return client.devices.requestGet({ params: { fp: fingerprintHex } }).pipe(
+    Effect.map((request) => ({ expiresAtMs: request.expiresAtMs })),
+    Effect.catchTag("DeviceNotFound", () => Effect.succeed(null)),
+    Effect.mapError(toCliError),
+  );
+}
+
+/** 待機の前の表示(FP は保存した鍵についてだけ出す — 保存していない鍵を承認させない: K13-8)。 */
+function announceFingerprint(keys: MasterKeys): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
+    yield* io.log(`This device's key fingerprint: ${keys.fingerprintHex}`);
+    yield* io.log(`fp words: ${formatWordList(words)}`);
+  });
+}
+
+/** 要求の合図(登録簿の行)を待ち、合図の後にチェーンで確かめる(K4-5)。 */
+function awaitApproval(
+  input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+    readonly pollIntervalMs?: number | undefined;
+  },
+  keys: MasterKeys,
+  expiresAtMs: number,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* announceFingerprint(keys);
+    yield* io.log(
+      `On a device that is already registered, run \`maruhi device approve ${keys.fingerprintHex}\` (or pass the 12 words). The request expires at ${formatUtcMinutes(expiresAtMs)} (15 minutes); re-running \`maruhi device add\` with this key resumes waiting while the request is valid`,
+    );
+    yield* io.log("Waiting for approval (Ctrl+C to stop waiting; the request stays valid)…");
+    const signalled = yield* waitForRegistryRow({
+      client: input.client,
+      fingerprintHex: keys.fingerprintHex,
+      expiresAtMs,
+      intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
+      hintAfterMs: DEVICE_ADD_WAIT_HINT_AFTER_MS,
+    });
+    const standings = yield* keyStandingsOf({
+      session: input.session,
+      client: input.client,
+      fingerprintHex: keys.fingerprintHex,
+    });
+    if (!signalled) {
+      // 期限切れ: 承認側の出力を条件にした 2 分岐(K7-1 / K9-3)は保つ — 期限ぎりぎりに
+      // 始まった承認がまだ追記前でありうる(競合)。そのうえで、この時点のチェーンの事実を
+      // 時点つきで足す(DK K13-4 — K9-3 3-c の部分回収)
+      return yield* Effect.fail(
+        cliError(
+          `The device-add request expired before this machine saw the completion signal (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\`. If it registered this device but could not list it in your device registry, keep this key: it is already registered on the projects that output lists (\`maruhi device list\` on this machine shows where), and only its row in your device registry is missing. ${describeChainsNow(standings)}`,
+        ),
+      );
     }
-  | { readonly kind: "revoked" }
-  | { readonly kind: "absent" };
+    if (standings.listFailure !== null) {
+      // 一覧が取れなければ数えられない(「0 projects」は事実でない — K13-3)
+      yield* io.log(
+        "Approved: the approving device gave the completion signal (this device is listed in your device registry)",
+      );
+      yield* logNote(
+        `your projects could not be listed (${standings.listFailure}), so no project chain was checked; \`maruhi device list\` checks where this key is registered`,
+      );
+      return;
+    }
+    const groups = groupStandings(standings);
+    yield* io.log(
+      `Approved: this device is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
+    );
+    // 完了の文は立場が分かった時点で出し、鍵の到達の確認(環境ごとの取得)はその後に回す
+    // (K12-14。出力の順序は K12-3 のまま)
+    yield* reportStandings(groups, keys, { approved: true });
+  });
+}
+
+/** 期限切れの文に足す、この時点のチェーンの事実(DK K13-4 — 条件は消さない)。 */
+function describeChainsNow(standings: KeyStandings): string {
+  if (standings.listFailure !== null) {
+    return `maruhi could not check the project chains just now (your projects could not be listed: ${standings.listFailure}); re-running \`maruhi device add\` on this machine checks them again without a new request`;
+  }
+  const groups = groupStandings(standings);
+  if (groups.active.length > 0) {
+    return `On the project chains right now, this key is registered on ${groups.active.map((project) => displayText(project.projectId)).join(", ")} — keep it; re-running \`maruhi device add\` on this machine confirms that without a new request`;
+  }
+  const unchecked =
+    groups.unsynced.length === 0
+      ? ""
+      : ` (${groups.unsynced.map((project) => displayText(project.projectId)).join(", ")} could not be checked)`;
+  const revoked =
+    groups.revoked.length === 0
+      ? ""
+      : `; it is revoked on ${groups.revoked.map(displayText).join(", ")}`;
+  return `On the project chains right now, this key is on ${describeListed(standings.projects.length)}${unchecked}${revoked}. If the approving device is still working, re-running \`maruhi device add\` on this machine later shows whether it registered this key, without a new request`;
+}
+
+/**
+ * 数の文の範囲(Bugbot 指摘 — K13-16): 同期できなかったプロジェクトがあれば、数は確かめた
+ * 分だけの下限なので、その件数を添える(全部が同期できなければ「0」は事実でない)。
+ */
+function describeUnchecked(groups: StandingGroups): string {
+  return groups.unsynced.length === 0
+    ? ""
+    : `, and ${countNoun(groups.unsynced.length, "project")} could not be checked`;
+}
+
+/** プロジェクト id の並び(文言用)。 */
+function projectList(projectIds: readonly string[]): string {
+  return projectIds.map(displayText).join(", ");
+}
+
+/** 「サーバーが一覧に出した N 件」の範囲(断言の範囲を言う — K13-2)。 */
+function describeListed(count: number): string {
+  return `no project the server lists for you (${count === 0 ? "none" : count} listed)`;
+}
+
+/**
+ * 既存の鍵で生きた要求が無いときの分岐(DK K13-2 — 設計録 §18 の表)。exit 0 は「どの
+ * プロジェクトでも `add_device` で足された有効な鍵」だけ(観測の記録からの登録で pre-DK の
+ * 鍵も `add_device` になりうるので、1 つでも最初の鍵なら人に委ねる — 穴 1)。有効ゼロの
+ * ときは、同期できず → 失効あり → どこにも無い の順に、断言の範囲を言って止まる。
+ */
+function settleExistingKey(
+  input: { readonly session: CliSession; readonly client: MaruhiClient },
+  keys: MasterKeys,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const standings = yield* keyStandingsOf({ ...input, fingerprintHex: keys.fingerprintHex });
+    const groups = groupStandings(standings);
+    if (groups.active.length > 0) {
+      return yield* reportActiveKey(input.client, keys, groups);
+    }
+    return yield* Effect.fail(cliError(yield* refusalWithoutActiveKey(keys, standings, groups)));
+  });
+}
+
+/** 有効なプロジェクトがある既存の鍵: 最初の鍵なら 2 択で止まり、そうでなければ報告して 0。 */
+function reportActiveKey(
+  client: MaruhiClient,
+  keys: MasterKeys,
+  groups: StandingGroups,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const fingerprintHex = keys.fingerprintHex;
+    const first = groups.active.filter((project) => project.standing.firstKey);
+    if (first.length > 0) {
+      return yield* Effect.fail(
+        cliError(
+          `This machine's device key (${fingerprintHex}) is your first key on ${projectList(first.map((project) => project.projectId))} (the key you created or joined that project with), and it has no pending device-add request. maruhi cannot tell whether this machine is the device that key belongs to or holds a copy of it from an install before device keys. If this machine is that device, nothing is needed: it is already registered. If it holds a copy, re-run with --replace: it generates a new key for this machine and prints its fingerprint to approve from a registered device (the machine the copy came from keeps its key). Do not pass --replace if this is your only device`,
+        ),
+      );
+    }
+    yield* io.log(`This device's key fingerprint: ${fingerprintHex}`);
+    yield* io.log(
+      `This key is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
+    );
+    const registry = yield* fetchRegistry(client);
+    if (registry !== null && !registry.some((row) => row.keyFingerprintHex === fingerprintHex)) {
+      // T3(承認側の登録簿 PUT が落ちた — K9-3): 表示の補足だけ(登録簿は分岐に使わない)
+      yield* logNote(
+        "this key has no row in your device registry (an approval whose registry write failed leaves it so). The registry only labels devices, so nothing else is needed; `maruhi device list` shows this key without a label",
+      );
+    }
+    yield* reportStandings(groups, keys, { approved: false });
+  });
+}
+
+/**
+ * 有効ゼロの既存の鍵の止まり方(同期できず → 失効あり → どこにも無い の順)。どの文も
+ * 断言の範囲を言う(同期できなければ断言しない — K13-2)。
+ */
+function refusalWithoutActiveKey(
+  keys: MasterKeys,
+  standings: KeyStandings,
+  groups: StandingGroups,
+): Effect.Effect<string, never, CliServices> {
+  return Effect.gen(function* () {
+    const fingerprintHex = keys.fingerprintHex;
+    if (standings.listFailure !== null || groups.unsynced.length > 0) {
+      yield* warnEvidence(groups.unsynced);
+      const causes =
+        standings.listFailure === null
+          ? groups.unsynced
+              .map(
+                (project) =>
+                  `${displayText(project.projectId)} could not be synced (${project.message})`,
+              )
+              .join("; ")
+          : `your projects could not be listed (${standings.listFailure})`;
+      const facts = [
+        groups.revoked.length > 0 ? `It is revoked on ${projectList(groups.revoked)}. ` : "",
+        groups.absent.length > 0 ? `It is not on ${projectList(groups.absent)}. ` : "",
+      ].join("");
+      return `This machine's device key (${fingerprintHex}) has no pending device-add request, and maruhi could not check every project it may be registered on: ${causes}. ${facts}Nothing is decided from a project that was not checked, so this does not say the key is unused. Re-run \`maruhi device add\` once those projects sync. If you know this key is revoked, a copy of another device's key, or registered nowhere, re-run with --replace instead (not on your only device)`;
+    }
+    if (groups.revoked.length > 0) {
+      return `This machine's device key (${fingerprintHex}) is revoked on ${projectList(groups.revoked)} and registered on ${describeListed(standings.projects.length)}, and it has no pending device-add request. To add this machine back, ${reAddDeviceRoute("this machine")} — you choose its cap again when approving`;
+    }
+    const unlisted = yield* unlistedFloorProjects(standings);
+    return `This machine's device key (${fingerprintHex}) has no pending device-add request and is on ${describeListed(standings.projects.length)}, each chain synced and verified, so replacing it loses nothing there: re-run with --replace — it discards this key, generates a new one and prints its fingerprint to approve from a registered device${unlisted}`;
+  });
+}
+
+/**
+ * 案 B(DK K13-7 — 情報のみ): この端末の床にあるが一覧に無いプロジェクト。床はサーバー・
+ * アカウントで分かれないので判定には使わず、「どこにも無い」の断言の範囲を補うだけ。
+ * 読めなければ何も足さない。
+ */
+function unlistedFloorProjects(standings: KeyStandings): Effect.Effect<string, never, CliServices> {
+  return Effect.gen(function* () {
+    const floor = yield* FloorStore;
+    const ids = yield* floor
+      .listProjectIds()
+      .pipe(Effect.catch(() => Effect.succeed<readonly string[]>([])));
+    const listed = new Set(standings.projects.map((project) => project.projectId));
+    const unlisted = ids.filter((id) => !listed.has(id));
+    if (unlisted.length === 0) {
+      return "";
+    }
+    return `. This machine also has local records of ${countNoun(unlisted.length, "project")} that list does not include (${unlisted.map(displayText).join(", ")}); those records are not separated by server or account, so they may not be yours here — if one is, check it with \`maruhi project verify --project <id>\` before replacing`;
+  });
+}
+
+/** 検証に失敗したチェーン(改ざんの兆候 — ネットワークの失敗と同じ Note にしない)。 */
+function warnEvidence(unsynced: StandingGroups["unsynced"]): Effect.Effect<void, never, CliIo> {
+  return Effect.forEach(
+    unsynced.filter((project) => project.evidence),
+    (project) =>
+      logWarning(
+        `${displayText(project.projectId)}: ${project.message} — a sign of tampering rather than a network error, so nothing about this key is decided from that project`,
+      ),
+    { discard: true },
+  );
+}
+
+/**
+ * 立場の報告(完了の文・「registered on N」の文の後 — 鍵の到達 → 失効 → 同期できず →
+ * 未登録の順。K12-3)。`approved` = 待っていた要求の合図の後か(承認側の筋書きはそのとき
+ * だけ真 — K13-3)。
+ */
+function reportStandings(
+  groups: StandingGroups,
+  keys: MasterKeys,
+  options: { readonly approved: boolean },
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    for (const project of groups.active) {
+      const issues = yield* checkKeyReach({ ...project.standing, keys });
+      for (const issue of issues) {
+        yield* reportKeyReachIssue(project.projectId, issue);
+      }
+    }
+    if (groups.revoked.length > 0) {
+      // このチェーンに載った失効の事実と足し直しの手順を言う(承認側の筋書きでなく — K12-6)
+      yield* logNote(
+        `this key was revoked on ${groups.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${groups.active.length > 0 ? `. This keychain then no longer holds this key, so revoke it on ${groups.active.map((project) => displayText(project.projectId)).join(", ")}, where it is still registered (\`maruhi device revoke ${keys.fingerprintHex}\` from a registered device)` : ""}`,
+      );
+    }
+    yield* warnEvidence(groups.unsynced);
+    const unsyncedNotes = groups.unsynced.filter((project) => !project.evidence);
+    for (const project of unsyncedNotes) {
+      // 同期できなかったプロジェクトは「無い」と言わない(K13-3)
+      yield* logNote(
+        `${displayText(project.projectId)}: could not sync this project (${project.message}), so whether this key is registered there is unknown; \`maruhi device list\` checks again`,
+      );
+    }
+    if (groups.absent.length === 0) {
+      return;
+    }
+    const absent = groups.absent.map(displayText).join(", ");
+    if (options.approved) {
+      // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
+      // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
+      // 「cap がそこを覆う端末」が**そのプロジェクトを対象に**打つ鍵付きコマンド(`device-sync.ts`
+      // — 前段は 1 コマンド 1 プロジェクト: DK K10-5。cap 起因の skip は承認側の再同期では
+      // 直らない: K6-V 補 2 / K7-2)。承認は失敗を `failed` に畳むので、一部成功の合図の後には
+      // failed のプロジェクトも混じる(K7-15)。失効・同期できずはここに入れない(K12-6 / K13-3)
+      yield* logNote(
+        `not registered yet on ${absent} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
+      );
+      return;
+    }
+    // 承認は起きていない(既存の鍵の経路)ので承認側の筋書きを言わない
+    yield* logNote(
+      `this key is not registered on ${absent}. A device of yours whose cap covers them registers it on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance), once it has synced a project that has this key. \`maruhi device list\` shows where this key is registered`,
+    );
+  });
+}
+
+/**
+ * 新しい鍵で要求を始める(鍵が無いとき・`--replace`)。順序は「生成 → 要求の作成 →
+ * 成功したらガードつきで保存 / 差し替え」(DK K13-8): 要求の作成が失敗(上限・満杯・
+ * ネットワーク)しても、キーチェーンは何も変わらない(古い鍵は残り、鍵が無ければ無いまま)。
+ * `--replace` では、捨てる鍵の立場を差し替えの前に表示する(止めない — 明示の同意: K4-18)。
+ */
+function startWithNewKey(
+  input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+    readonly label: string;
+  },
+  entryName: string,
+  previous: string | null,
+): Effect.Effect<
+  { readonly keys: MasterKeys; readonly request: RequestState },
+  CliError,
+  CliServices
+> {
+  return Effect.gen(function* () {
+    if (previous !== null) {
+      yield* describeReplacedKey(input);
+    }
+    const record = yield* generateKeyRecord();
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.mapError(() =>
+        cliError(
+          "Could not load the generated device key back (nothing was stored in the keychain). Report this as a maruhi bug",
+        ),
+      ),
+    );
+    const request = yield* createOrResumeRequest(input, validated).pipe(
+      Effect.tapError(() =>
+        previous === null
+          ? Effect.void
+          : logNote(
+              "nothing was replaced: the previous key is still in this machine's keychain (--replace replaces it only once the new key's request exists)",
+            ),
+      ),
+    );
+    yield* storeMasterKeyAndReport({
+      entryName,
+      serialized: serializeStoredMasterKey(record),
+      action: previous === null ? "Generated this device's key" : "Generated this device's new key",
+      fingerprintHex: validated.fingerprintHex,
+      deviceAdd: { previous },
+    });
+    if (previous !== null) {
+      yield* logNote("replaced the previous key in this machine's keychain (--replace)");
+    }
+    return { keys: validated, request };
+  });
+}
+
+/** `--replace` で捨てる鍵の立場(表示だけ — DK K13-8)。 */
+function describeReplacedKey(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+}): Effect.Effect<void, never, CliServices> {
+  return Effect.gen(function* () {
+    const loaded = yield* Effect.result(loadMasterKeys(input.session));
+    if (Result.isFailure(loaded)) {
+      yield* logNote(
+        `could not read the key being replaced (${loaded.failure.message}); its standing on your projects is not shown`,
+      );
+      return;
+    }
+    const fingerprintHex = loaded.success.fingerprintHex;
+    const standings = yield* keyStandingsOf({ ...input, fingerprintHex });
+    const groups = groupStandings(standings);
+    const added = groups.active.filter((project) => !project.standing.firstKey);
+    const first = groups.active.filter((project) => project.standing.firstKey);
+    const parts = [
+      added.length > 0
+        ? `registered on ${projectList(added.map((project) => project.projectId))}`
+        : null,
+      first.length > 0
+        ? `registered on ${projectList(first.map((project) => project.projectId))} as your first key there`
+        : null,
+      groups.revoked.length > 0 ? `revoked on ${groups.revoked.map(displayText).join(", ")}` : null,
+      groups.unsynced.length > 0
+        ? `not checked on ${projectList(groups.unsynced.map((project) => project.projectId))} (could not sync)`
+        : null,
+      standings.listFailure === null
+        ? null
+        : `not checked anywhere (your projects could not be listed: ${standings.listFailure})`,
+    ].filter((part): part is string => part !== null);
+    yield* logNote(
+      `replacing this machine's key ${fingerprintHex}, which is ${parts.length === 0 ? `on ${describeListed(standings.projects.length)}` : parts.join("; ")}${groups.active.length > 0 ? `. Once the new key is approved, revoke the previous key where it is still registered unless another machine holds it (\`maruhi device revoke ${fingerprintHex}\` from a registered device)` : ""}`,
+    );
+  });
+}
 
 /** 1 環境の鍵の到達の確認で報告する事実(DK K12-3 — 届いていれば何も運ばない)。 */
 type KeyReachIssue =
@@ -246,66 +605,6 @@ type KeyReachIssue =
       readonly environmentId: string | null;
       readonly message: string;
     };
-
-/** 合図の後のチェーンでの確認の結果(プロジェクトごとの立場。載っている所は文脈つき)。 */
-interface ChainConfirmation {
-  readonly registered: readonly {
-    readonly projectId: string;
-    readonly standing: Extract<KeyStanding, { readonly kind: "present" }>;
-  }[];
-  readonly revoked: readonly string[];
-  readonly missing: readonly string[];
-}
-
-function confirmOnChains(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-  readonly keys: MasterKeys;
-}): Effect.Effect<ChainConfirmation, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const projects = yield* fetchProjectMemberships(input.client);
-    const registered: ChainConfirmation["registered"][number][] = [];
-    const revoked: string[] = [];
-    const missing: string[] = [];
-    for (const project of projects) {
-      const standing = yield* keyStandingOnProject({
-        session: input.session,
-        projectId: project.projectId,
-        fingerprintHex: input.keys.fingerprintHex,
-      });
-      if (standing.kind === "present") {
-        registered.push({ projectId: project.projectId, standing });
-      } else {
-        (standing.kind === "revoked" ? revoked : missing).push(project.projectId);
-      }
-    }
-    return { registered, revoked, missing };
-  });
-}
-
-/**
- * 1 プロジェクトの検証済みチェーンでのこの鍵の立場: 有効な端末(文脈つき — 鍵の到達の
- * 確認が同じビューを使う)、自分宛の `revoke_device` で失効した鍵、どちらでもない。
- */
-function keyStandingOnProject(input: {
-  readonly session: CliSession;
-  readonly projectId: string;
-  readonly fingerprintHex: string;
-}): Effect.Effect<KeyStanding, never, CliServices> {
-  return openMetadataProject({ server: input.session.origin, project: input.projectId }).pipe(
-    Effect.map((context): KeyStanding => {
-      const member = context.verified.state.members.get(input.session.userId);
-      const device = member?.devices.get(input.fingerprintHex);
-      if (member !== undefined && device !== undefined) {
-        return { kind: "present", context, member, device };
-      }
-      return revokedFingerprintsOf(context.verified, input.session.userId).has(input.fingerprintHex)
-        ? { kind: "revoked" }
-        : { kind: "absent" };
-    }),
-    Effect.catch(() => Effect.succeed<KeyStanding>({ kind: "absent" })),
-  );
-}
 
 /**
  * この端末宛の DEK が、承認側が配ったはずの各環境(`deviceEnvironmentsOf` — バックフィルと
@@ -356,39 +655,6 @@ function checkKeyReach(input: {
   });
 }
 
-/** 合図の後の確認の報告(完了の文の後に — 鍵の到達を確かめて欠け → 失効 → 未登録の順。K12-3)。 */
-function reportConfirmation(
-  confirmation: ChainConfirmation,
-  keys: MasterKeys,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    for (const project of confirmation.registered) {
-      const issues = yield* checkKeyReach({ ...project.standing, keys });
-      for (const issue of issues) {
-        yield* reportKeyReachIssue(project.projectId, issue);
-      }
-    }
-    if (confirmation.revoked.length > 0) {
-      // 承認は起きていない(登録簿の行が残った失効端末 — DK K12-6)。承認側の筋書きでなく、
-      // このチェーンに載った失効の事実と足し直しの手順を言う
-      yield* logNote(
-        `this key was revoked on ${confirmation.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${confirmation.registered.length > 0 ? `. This keychain then no longer holds this key, so revoke it on ${confirmation.registered.map((project) => displayText(project.projectId)).join(", ")}, where it is still registered (\`maruhi device revoke ${keys.fingerprintHex}\` from a registered device)` : ""}`,
-      );
-    }
-    if (confirmation.missing.length > 0) {
-      // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
-      // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
-      // 「cap がそこを覆う端末」が**そのプロジェクトを対象に**打つ鍵付きコマンド(`device-sync.ts`
-      // — 前段は 1 コマンド 1 プロジェクト: DK K10-5。cap 起因の skip は承認側の再同期では
-      // 直らない: K6-V 補 2 / K7-2)。承認は失敗を `failed` に畳むので、一部成功の合図の後には
-      // failed のプロジェクトも混じる(K7-15)。失効したプロジェクトはここに入れない(K12-6)
-      yield* logNote(
-        `not registered yet on ${confirmation.missing.map(displayText).join(", ")} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
-      );
-    }
-  });
-}
-
 /** 鍵の到達の確認の 1 件(欠けは pull と同じ警告の文言 — K12-3。確認の失敗は Note)。 */
 function reportKeyReachIssue(
   projectId: string,
@@ -405,73 +671,6 @@ function reportKeyReachIssue(
       ? `${project}: could not list its environments to check that their keys reached this device (${issue.message}); \`maruhi pull --project ${project} --env <environment>\` on this machine reports any missing epochs`
       : `${project}: could not check that the keys of environment ${displayText(issue.environmentId)} reached this device (${issue.message}); \`${gapFillCommandOf(projectId, issue.environmentId)}\` on this machine reports any missing epochs`,
   );
-}
-
-/**
- * 要求に使う鍵: 無ければ生成、あれば「同じ鍵の要求がある(待機の再開 — K4-5)」か
- * 「pre-DK の複製・失効した端末(`--replace` で作り直す — K4-18 / DK K12-5)」かを分ける。
- */
-function deviceKeyForRequest(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-  readonly replace: boolean;
-}): Effect.Effect<MasterKeys, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const keychain = yield* Keychain;
-    const entryName = masterKeyEntryName(input.session.origin, input.session.userId);
-    const existing = yield* keychain.get(entryName);
-    if (existing !== null && !input.replace) {
-      const keys = yield* loadMasterKeys(input.session);
-      const pending = yield* input.client.devices
-        .requestGet({ params: { fp: keys.fingerprintHex } })
-        .pipe(
-          Effect.map(() => true),
-          Effect.catchTag("DeviceNotFound", () => Effect.succeed(false)),
-          Effect.mapError(toCliError),
-        );
-      const registered = yield* fetchRegistry(input.client).pipe(
-        Effect.map(
-          (rows) => rows?.some((row) => row.keyFingerprintHex === keys.fingerprintHex) === true,
-        ),
-      );
-      if (pending) {
-        yield* logNote(
-          `this machine already has device key ${keys.fingerprintHex} with a device-add request — resuming the wait for its approval`,
-        );
-        return keys;
-      }
-      if (registered) {
-        yield* logNote(
-          `this machine already has device key ${keys.fingerprintHex} and it is in your device registry — verifying it on each project's chain`,
-        );
-        return keys;
-      }
-      return yield* Effect.fail(
-        cliError(
-          `This machine already has a device key (${keys.fingerprintHex}) with no pending device-add request, and it is not in your device registry. If this device was revoked, or its key is a copy of another device's key from an install before device keys, re-run with --replace: it removes this key from this keychain and generates a new one, whose fingerprint you then approve from a registered device (a revoked key is never registered again; the device a copy came from keeps its key). Do not pass --replace if this is your only device — recover from the ledger with \`maruhi key recover\` instead if you ever need to`,
-        ),
-      );
-    }
-    if (existing !== null) {
-      yield* keychain.remove(entryName);
-      yield* logNote("removed the previous key from this machine's keychain (--replace)");
-    }
-    const record = yield* generateKeyRecord();
-    const validated = yield* importMasterKeys(record).pipe(
-      Effect.mapError(() =>
-        cliError(
-          "Could not load the generated device key back (nothing was stored in the keychain). Report this as a maruhi bug",
-        ),
-      ),
-    );
-    yield* storeMasterKeyAndReport({
-      entryName,
-      serialized: serializeStoredMasterKey(record),
-      action: "Generated this device's key",
-      fingerprintHex: validated.fingerprintHex,
-    });
-    return validated;
-  });
 }
 
 /** 要求の作成の結果: 待機中の要求(期限つき)か、登録簿に既に載っている鍵か。 */
@@ -1047,8 +1246,11 @@ export function reportRegisteredDevice(input: {
 // device list
 // ---------------------------------------------------------------------------
 
-/** 表示行の材料: FP → チェーン上の出現(プロジェクトごとの 1 行)。 */
-type ListRows = Map<string, { readonly projectId: string; readonly line: string }[]>;
+/** 表示行の材料: FP → チェーン上の出現(プロジェクトごとの 1 行)と、同期できたチェーン。 */
+interface ListRows {
+  readonly rows: Map<string, { readonly projectId: string; readonly line: string }[]>;
+  readonly chains: readonly { readonly projectId: string; readonly verified: VerifiedProject }[];
+}
 
 /** 各プロジェクトのチェーンから自分の端末を集める(同期できないプロジェクトは Note)。 */
 function collectChainRows(input: {
@@ -1056,7 +1258,8 @@ function collectChainRows(input: {
   readonly projectIds: readonly string[];
 }): Effect.Effect<ListRows, never, CliServices> {
   return Effect.gen(function* () {
-    const rows: ListRows = new Map();
+    const rows: ListRows["rows"] = new Map();
+    const chains: ListRows["chains"][number][] = [];
     for (const projectId of input.projectIds) {
       const context = yield* openMetadataProject({
         server: input.session.origin,
@@ -1068,6 +1271,7 @@ function collectChainRows(input: {
         );
         continue;
       }
+      chains.push({ projectId, verified: context.verified });
       const self = context.verified.state.members.get(input.session.userId);
       for (const device of self === undefined ? [] : devicesOf(self)) {
         const provenance = deviceProvenanceOf(context.verified, input.session.userId, device);
@@ -1083,8 +1287,30 @@ function collectChainRows(input: {
         rows.set(device.keyFingerprintHex, lines);
       }
     }
-    return rows;
+    return { rows, chains };
   });
+}
+
+/**
+ * 1 端末のチェーン上の出現: 有効な行(cap・出所)と、失効したプロジェクトの行(立場の
+ * 判定は `keyStandingIn` — `device add` と同じ述語: DK K13-6)。
+ */
+function chainLinesOf(input: {
+  readonly listed: ListRows;
+  readonly userId: string;
+  readonly fingerprintHex: string;
+}): readonly string[] {
+  const active = (input.listed.rows.get(input.fingerprintHex) ?? []).map((row) => row.line);
+  const revoked = input.listed.chains
+    .filter(
+      (chain) =>
+        keyStandingIn(chain.verified, input.userId, input.fingerprintHex).kind === "revoked",
+    )
+    .map(
+      (chain) =>
+        `${displayText(chain.projectId)}: revoked (a revoked key is never registered again)`,
+    );
+  return [...active, ...revoked];
 }
 
 /** 1 端末の見出し(登録簿の表示名・トークン id は server-reported、ローカル記録は出所)。 */
@@ -1126,18 +1352,28 @@ export function deviceListOp(input: {
     const registry = yield* fetchRegistry(input.client);
     const lookup = yield* store.load(input.session.origin, input.session.userId);
     const local = lookup.state === "loaded" ? lookup.devices : [];
-    const projectIds = yield* resolveProjectIds(input.client, input.project);
+    // プロジェクト一覧が取れなくても、登録簿とローカル記録は出せるので落とさない(DK K13-6)
+    const projectIds = yield* resolveProjectIds(input.client, input.project).pipe(
+      Effect.catch((error) =>
+        logNote(
+          `your projects could not be listed (${error.message}), so no project chain is shown`,
+        ).pipe(Effect.as<readonly string[]>([])),
+      ),
+    );
     const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
       Effect.succeed<MasterKeys | null>(null),
     );
     // FP → 表示行(チェーンが真実。登録簿とローカル記録は注記として並べる)
-    const rows = yield* collectChainRows({ session: input.session, projectIds });
+    const listed = yield* collectChainRows({ session: input.session, projectIds });
     const active = local.filter((entry) => entry.revokedAtMs === null);
+    // この端末の鍵は、どのチェーンにも・登録簿にも・有効な記録にも無くても出す(失効した
+    // 端末のエラーが「`maruhi device list` で確認」と委ねる先 — DK K13-6)
     const fingerprints = [
       ...new Set([
-        ...rows.keys(),
+        ...listed.rows.keys(),
         ...(registry ?? []).map((row) => row.keyFingerprintHex),
         ...active.map((entry) => entry.keyFingerprintHex),
+        ...(localKeys === null ? [] : [localKeys.fingerprintHex]),
       ]),
     ].toSorted(compareCodePoints);
     if (fingerprints.length === 0) {
@@ -1160,24 +1396,45 @@ export function deviceListOp(input: {
           record: local.find((entry) => entry.keyFingerprintHex === fingerprintHex),
         }),
       );
-      yield* printChainLines(rows.get(fingerprintHex) ?? []);
+      yield* printChainLines({
+        lines: chainLinesOf({ listed, userId: input.session.userId, fingerprintHex }),
+        project: input.project,
+        unsynced: projectIds.length - listed.chains.length,
+      });
     }
   });
 }
 
-/** 1 端末のチェーン上の出現(無ければその旨)。 */
-function printChainLines(
-  lines: readonly { readonly line: string }[],
-): Effect.Effect<void, never, CliIo> {
+/**
+ * 1 端末のチェーン上の出現(無ければ、表示した範囲を言ってその旨 — DK K13-6)。同期できな
+ * かったプロジェクトについては「無い」と言わない(Bugbot 指摘 — K13-16)。
+ */
+function printChainLines(input: {
+  readonly lines: readonly string[];
+  readonly project: string | undefined;
+  /** 同期できなかったプロジェクトの数(`collectChainRows` が Note を出したもの)。 */
+  readonly unsynced: number;
+}): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    if (lines.length === 0) {
-      yield* io.log("  (not on any synced project chain)");
+    if (input.lines.length === 0) {
+      yield* io.log(describeNoChainLines(input.project, input.unsynced));
     }
-    for (const project of lines) {
-      yield* io.log(`  ${project.line}`);
+    for (const line of input.lines) {
+      yield* io.log(`  ${line}`);
     }
   });
+}
+
+function describeNoChainLines(project: string | undefined, unsynced: number): string {
+  if (project !== undefined) {
+    return unsynced > 0
+      ? `  (project ${displayText(project)} could not be synced, so whether this key is on its chain is unknown)`
+      : `  (not on the chain of project ${displayText(project)}, the only project shown)`;
+  }
+  return unsynced > 0
+    ? `  (not on any synced project chain; ${countNoun(unsynced, "project")} could not be synced)`
+    : "  (not on any synced project chain)";
 }
 
 // ---------------------------------------------------------------------------

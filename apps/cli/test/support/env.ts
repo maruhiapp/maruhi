@@ -228,6 +228,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
       resolveIntent: (projectId, intentId, outcome) =>
         floorStore.resolveIntent(projectId, intentId, outcome),
       loadAttestedHead: (projectId) => floorStore.loadAttestedHead(projectId),
+      listProjectIds: () => floorStore.listProjectIds(),
       saveAttestedHead: (projectId, head) => floorStore.saveAttestedHead(projectId, head),
       appendAttestationEvidence: (projectId, evidence) =>
         floorStore.appendAttestationEvidence(projectId, evidence),

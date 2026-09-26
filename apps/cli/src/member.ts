@@ -202,7 +202,7 @@ function actorEffectiveScope(
     if (actor === undefined) {
       return { kind: "listed", environmentIds: [] };
     }
-    const device = yield* ownDeviceBySigningKey(actor, signingKeyPair).pipe(
+    const device = yield* ownDeviceBySigningKey(verified, actor, signingKeyPair).pipe(
       Effect.catch(() => Effect.succeed<ChainDevice | null>(null)),
     );
     if (device === null) {
@@ -339,10 +339,11 @@ type ActorAuthority = { readonly role: Role; readonly scope: MemberScope };
  * には型付きの失敗が人の権限の文言の前に出る(device-ops.ts と同じ順序)。
  */
 function actorAuthority(
+  verified: VerifiedProject,
   actor: ChainMember,
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<EffectivePermission, CliError> {
-  return Effect.map(ownDeviceBySigningKey(actor, signingKeyPair), (device) =>
+  return Effect.map(ownDeviceBySigningKey(verified, actor, signingKeyPair), (device) =>
     effectivePermissionOf(actor, device),
   );
 }
@@ -749,7 +750,7 @@ function ensureAddable(input: {
         cliError("Only admins and above can run add_member (CRYPTO_SPEC §6.2)"),
       );
     }
-    const permission = yield* actorAuthority(actor, input.signingKeyPair);
+    const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
     const actorRejection = addActorRejection(permission, input.role);
     if (actorRejection !== null) {
       return yield* Effect.fail(cliError(actorRejection));
@@ -1297,7 +1298,7 @@ function ensureRemovable(input: {
       input.signerUserId,
       input.targetUserId,
     );
-    const permission = yield* actorAuthority(actor, input.signingKeyPair);
+    const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
     if (target === undefined) {
       const resumable = removalResumeRejection(input.verified, permission, input.targetUserId);
       return resumable === null
@@ -1660,7 +1661,7 @@ function ensureRoleChangeable(input: {
       input.signerUserId,
       input.targetUserId,
     );
-    const permission = yield* actorAuthority(actor, input.signingKeyPair);
+    const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
     if (target === undefined) {
       return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
     }

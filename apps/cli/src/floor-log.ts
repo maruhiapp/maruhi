@@ -24,7 +24,7 @@
 // 互換読みし、最初の追記でスナップショットレコードとしてログへ移行する
 // (旧ファイルはフォレンジック材料としてそのまま残す — 追記専用の規律)。
 
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
@@ -1123,6 +1123,31 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             ),
         }),
       ),
+    listProjectIds: () =>
+      Effect.tryPromise({
+        try: async () => {
+          let names: readonly string[];
+          try {
+            names = await readdir(dir);
+          } catch (error) {
+            if (isFileMissingError(error)) {
+              return [];
+            }
+            throw error;
+          }
+          // 本体(`<id>.jsonl`)と旧形式(`<id>.json`)だけ。`<id>.attested.json` などは
+          // ID の形(hex 64)に一致しないので落ちる
+          const ids = new Set<string>();
+          for (const name of names) {
+            const match = /^(.+)\.jsonl?$/.exec(name);
+            if (match?.[1] !== undefined && isProjectId(match[1])) {
+              ids.add(match[1]);
+            }
+          }
+          return [...ids].toSorted();
+        },
+        catch: () => cliError(`Cannot list the local floor directory: ${dir}`),
+      }),
     loadAttestedHead: (projectId) =>
       Effect.tryPromise({
         try: async () => {

@@ -2,8 +2,9 @@
 //
 // メンバーは端末鍵の**集合**を持つ(`ChainMember.devices`)。この端末が署名・開封に
 // 使う鍵は「手元の鍵と一致する、その人の現在有効な端末」であり(設計録 dk-design.md
-// §9 K4-16)、黙って「最初の端末」を選ばない。手元の鍵がチェーンに無い(未登録・
-// 失効済み)なら型付きの失敗で `device approve` の再実行を案内する。
+// §9 K4-16)、黙って「最初の端末」を選ばない。手元の鍵がチェーンに無ければ型付きの失敗で、
+// このチェーンで失効していれば新しい鍵での足し直し(DK K13-5)、そうでなければ登録の経路
+// (待機中の要求の承認か、ここに載っている端末の同期 — DK K10-5)を案内する。
 //
 // 相手の鍵が要る経路(バックフィル先・保護者の分片・発行署名の検証)は端末集合を
 // **すべて**回す(呼び出し側)。単調性(原則 D2)の通信前判定は crypto の公開 API
@@ -44,26 +45,63 @@ export function findOwnDevice(member: ChainMember, ref: OwnKeyRef): ChainDevice 
 }
 
 /**
- * 手元の鍵がこのプロジェクトのチェーンに無いときの文言(未登録 / 失効済みの両方)。
+ * 手元の鍵がこのプロジェクトのチェーンに無く、失効もしていないときの文言(未登録)。
  * `device approve` が効くのは待機中の要求があるときだけ(登録済みの鍵は要求を作り直せない)。
  * 他のプロジェクトに載っている端末は、ここに載っている自分の端末の同期が足す(DK K10-5)。
  */
 function deviceNotOnChainMessage(userId: string): string {
-  return `The key on this machine is not one of your active device keys on this project's chain (member ${displayText(userId)}). Either this device has not been registered here yet, or it was revoked. If \`maruhi device add\` is still waiting on this machine, approve it from a registered device with \`maruhi device approve\`. If this device is registered on other projects of yours, a device of yours that is registered here adds it when it runs a keyed command on this project at a terminal, if its cap covers this device's and it has synced a project that has it (\`maruhi device list\` shows where each device is registered)`;
+  return `The key on this machine is not one of your active device keys on this project's chain (member ${displayText(userId)}). This device has not been registered here yet. If \`maruhi device add\` is still waiting on this machine, approve it from a registered device with \`maruhi device approve\`. If this device is registered on other projects of yours, a device of yours that is registered here adds it when it runs a keyed command on this project at a terminal, if its cap covers this device's and it has synced a project that has it (\`maruhi device list\` shows where each device is registered)`;
 }
 
 /**
- * The member's active device holding the caller's key, or a typed failure
- * pointing at `maruhi device approve` (K4-16 — never "the first device").
+ * 手元の鍵がこのプロジェクトで失効しているときの文言(DK K13-5)。失効した鍵は戻らないので
+ * 足し直しは新しい鍵(`reAddDeviceRoute`)。本体はこのプロジェクトのチェーンしか見えない
+ * ので、他のプロジェクトに残っている場合の後始末は条件つきで言い、確認は `device list` に
+ * 委ねる(`device list` は各プロジェクトの失効も示す — K13-6)。
+ */
+function deviceRevokedMessage(userId: string, fingerprintHex: string): string {
+  return `The key on this machine (${fingerprintHex}) was revoked on this project's chain (member ${displayText(userId)}), and a revoked key is never registered again. To use this machine here again, ${reAddDeviceRoute("this machine")}. If this key is still registered on other projects of yours, revoke it there once the new key is approved (\`maruhi device list\` shows where it is still registered)`;
+}
+
+/**
+ * The member's active device holding the caller's key, or a typed failure:
+ * revoked on this chain → the re-add route (a new key); otherwise the
+ * registration routes (K4-16 — never "the first device"; DK K13-5). The
+ * verified chain resolves the caller's key to a fingerprint through the key
+ * history, so a revoked key (no longer in `member.devices`) is recognised.
  */
 export function ownDeviceOrFail(
+  verified: VerifiedProject,
   member: ChainMember,
   ref: OwnKeyRef,
 ): Effect.Effect<ChainDevice, CliError> {
   const device = findOwnDevice(member, ref);
-  return device === undefined
-    ? Effect.fail(cliError(deviceNotOnChainMessage(member.userId)))
-    : Effect.succeed(device);
+  if (device !== undefined) {
+    return Effect.succeed(device);
+  }
+  const fingerprintHex = historicalFingerprintOf(verified, member.userId, ref);
+  return Effect.fail(
+    cliError(
+      fingerprintHex !== undefined &&
+        revokedFingerprintsOf(verified, member.userId).has(fingerprintHex)
+        ? deviceRevokedMessage(member.userId, fingerprintHex)
+        : deviceNotOnChainMessage(member.userId),
+    ),
+  );
+}
+
+/** 鍵の参照を、その人に束縛されたことのある鍵(`keyHistory` — 失効した鍵も残る)の FP に解決する。 */
+function historicalFingerprintOf(
+  verified: VerifiedProject,
+  userId: string,
+  ref: OwnKeyRef,
+): string | undefined {
+  if ("keyFingerprintHex" in ref) {
+    return ref.keyFingerprintHex;
+  }
+  return (verified.keyHistory.get(userId) ?? []).find((binding) =>
+    "encPubHex" in ref ? binding.encPubHex === ref.encPubHex : binding.sigPubHex === ref.sigPubHex,
+  )?.keyFingerprintHex;
 }
 
 /**
@@ -72,6 +110,7 @@ export function ownDeviceOrFail(
  * extra fingerprint parameter.
  */
 export function ownDeviceBySigningKey(
+  verified: VerifiedProject,
   member: ChainMember,
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ChainDevice, CliError> {
@@ -80,7 +119,7 @@ export function ownDeviceBySigningKey(
       try: () => exportSigningPublicKey(signingKeyPair.publicKey),
       catch: () => cliError("Failed to export the signing public key (crypto error)"),
     });
-    return yield* ownDeviceOrFail(member, { sigPubHex: encodeHex(sigPub) });
+    return yield* ownDeviceOrFail(verified, member, { sigPubHex: encodeHex(sigPub) });
   });
 }
 

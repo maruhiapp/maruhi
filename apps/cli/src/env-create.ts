@@ -21,13 +21,13 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import { AuditHeadNotReadyError, ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
-import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
+import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
+import { signEntryAtHead } from "./chain-append.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
-import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -83,34 +83,25 @@ function signCreateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
   return Effect.gen(function* () {
-    const device = yield* ownDeviceBySigningKey(input.member, input.signingKeyPair);
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "create_environment",
-            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
-            payload: {
-              environmentId: input.environmentId,
-              dekCommitmentHex: input.dekCommitmentHex,
-            },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("Failed to sign the create_environment entry"),
+    // 署名する端末の解決と署名は共通の 1 か所(chain-append.ts — DK K13-12)
+    const signed = yield* signEntryAtHead({
+      verified: input.verified,
+      signerUserId: input.member.userId,
+      operation: {
+        op: "create_environment",
+        payload: {
+          environmentId: input.environmentId,
+          dekCommitmentHex: input.dekCommitmentHex,
+        },
+      },
+      signingKeyPair: input.signingKeyPair,
+      failureText: "Failed to sign the create_environment entry",
     });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
-    }
     // op の絞り込み(signChainEntry は入力の op を保存する)
-    if (signed.value.op !== "create_environment") {
+    if (signed.op !== "create_environment") {
       return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
     }
-    return signed.value;
+    return signed;
   });
 }
 
@@ -313,6 +304,7 @@ function attemptCreate(
       manifestVersion: 1,
       manifestSigHashHex: signedManifest.manifestSigHashHex,
       values: [],
+      verified: state.verified,
       member: state.member,
       deviceFingerprintHex: entry.actor.keyFingerprintHex,
       signingKey: input.signingKeyPair.privateKey,
