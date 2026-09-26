@@ -11,6 +11,15 @@ scripts/check-english.mjs
 # Third-party license text that must stay verbatim.
 apps/web/public/fonts/OFL-NotoSansCJK.txt
 
+# Copyright-holder name in license files is a proper noun (the author's
+# handle); transliteration is the owner's call, not a translator's.
+LICENSE.md
+apps/cli/LICENSE
+apps/web/LICENSE.md
+packages/api-schema/LICENSE
+packages/core/LICENSE
+packages/crypto/LICENSE
+
 # Brand mark assets — the comments name the kanji glyph the mark derives from.
 apps/site/public/favicon.svg
 apps/site/public/logo-dark.svg
