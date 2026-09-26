@@ -3548,7 +3548,12 @@ K16-2 と K16-4 は、印の無い既存の予備鍵の利用者を止めない�
   - 作り直さずにデプロイした場合:
     - D1: `wrangler d1 migrations apply` が新しい `…_init` を既存の表に当てようとして `CREATE TABLE` で失敗し、`bun run deploy` はデプロイ前に止まる。
     - DO: 既存の DO はスキーマ版 12 を持ち、コードの 1 より新しいので、コンストラクタが開くのを拒否する(`applyProjectDoMigrations`)。
-- **作り直しの手順(運営が実行する。この環境には Cloudflare の資格情報が無いので、Claude は実行していない)**:
+- **作り直しの手順**(当初は運営が実行する想定だったが、所有者が API トークンを渡し、2026-09-26 に Claude が実行した。実施記録は下):
   1. D1: `wrangler d1 export` で念のため退避する(ops-backup と同じ)。`wrangler d1 delete` → `wrangler d1 create` をし、`env.hosted` の `database_id` を新しい ID に差し替える。
   2. DO: `ProjectChainDO` の名前空間を消して作り直す。Cloudflare の現行の手順は `exports` の `"state": "deleted"` の墓標で、`migrations` 配列からの移行は一方向。実行時に現行のドキュメントで確かめること(https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)。削除は取り消せない(Trash が無い)。
   3. 新しいコードを `bun run deploy`(migrate → deploy)でデプロイする。
+- **実施記録(2026-09-26)**:
+  1. D1 `maruhi`(旧 ID `85cb9161-…`)を `wrangler d1 export` で退避(INSERT 43 行。リポジトリには置かない)してから削除し、作り直した。新 ID `c45d4f84-3142-46cf-ab3b-c9571ca7eed0` を `env.hosted` の `database_id` に入れた。
+  2. DO: `maruhi-server-hosted` に、503 を返すだけの仮 Worker を `exports: { ProjectChainDO: { type: "durable-object", state: "deleted" } }` でデプロイし、名前空間を削除した(wrangler 4.136.1。出力 "Durable Object exports reconciliation: Deleted: ProjectChainDO")。この間 `my.maruhi.app` は 503。
+  3. `wrangler.jsonc` の `migrations` を `exports`(`storage: "sqlite"`)に置き換えた。一度 `exports` でデプロイしたので `migrations` には戻せない。セルフホストの新規デプロイも `exports` で DO を作る。
+  4. main から `bun run deploy`(`--env hosted`)で D1 マイグレーションとデプロイを実行し、新しい名前空間で DO を作った。
