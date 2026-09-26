@@ -598,7 +598,7 @@ function replaceReserveWithoutOpening(input: {
       ),
     );
     yield* logWarning(
-      `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
+      `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project, except any that the project chains show to be a device key or that cannot be checked on every project (each is named below)${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
     );
     const next = yield* generateReserveKeys();
     const recorded = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
@@ -857,8 +857,9 @@ function reportReserveSweep(
 /**
  * 失効の直前の門(DK K14-13): rotate / `--replace` が失効させる旧予備鍵を 1 つずつ全プロジェクトの
  * チェーンで判定し、失効させてよい鍵だけを返す。最初の鍵(端末鍵 — 決して失効させない。この
- * 端末の誤った reserve の行は観測の行に直す)と、確かめられない鍵は残して Warning で言う。
- * 失効させるのは `added` / `nowhere` / `revoked`(中断した rotate の続き)だけ。記録の行の
+ * 端末の誤った reserve の行は観測の行に直す)と、全プロジェクトを確かめられなかった鍵(判定の
+ * 値が `revoked` でも — K14-14)は残して Warning で言う。失効させるのは、全部確かめた上での
+ * `added` / `nowhere` / `revoked`(中断した rotate の続き)だけ。記録の行の
  * 出所が何であっても(以前の CLI の誤った行でも)、失効はチェーンの事実を要する。
  */
 function confirmRetiring(input: {
@@ -869,15 +870,19 @@ function confirmRetiring(input: {
   return Effect.gen(function* () {
     const kept: string[] = [];
     for (const fingerprintHex of input.fingerprintsHex) {
-      const { verdict, groups } = yield* ledgerKeyVerdictOf({ ...input, fingerprintHex });
+      const { verdict, groups, unchecked } = yield* ledgerKeyVerdictOf({
+        ...input,
+        fingerprintHex,
+      });
       if (verdict.kind === "first-key") {
         yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
         yield* logWarning(
           `not revoking ${fingerprintHex}: it is your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with), so it is a device key, not a previous reserve key`,
         );
-      } else if (verdict.kind === "unchecked") {
+      } else if (unchecked !== null) {
+        // 失効は全プロジェクトを確かめたときだけ(判定の値が revoked でも — K14-14)
         yield* logWarning(
-          `not revoking ${fingerprintHex}: ${describeUncheckedLedgerKey("it", verdict)}, so maruhi cannot confirm it is not one of your device keys. Once they can be checked, revoke it if it is a previous reserve key: \`maruhi device revoke ${fingerprintHex}\``,
+          `not revoking ${fingerprintHex}: ${describeUncheckedLedgerKey("it", unchecked)}, so maruhi cannot confirm it is not one of your device keys. Once they can be checked, revoke it if it is a previous reserve key: \`maruhi device revoke ${fingerprintHex}\``,
         );
       } else {
         kept.push(fingerprintHex);

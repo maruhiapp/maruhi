@@ -686,7 +686,7 @@ const keyRecoveryConfig = {
   ),
   replace: singleFlag(
     "replace",
-    "Replace the reserve key with a new one without opening the ledger (when the recovery code is lost or may be compromised); the reserve keys recorded on this machine are revoked on every project",
+    "Replace the reserve key with a new one without opening the ledger (when the recovery code is lost or may be compromised); the reserve keys recorded on this machine are revoked on every project once your project chains confirm each is not a device key",
   ),
 };
 const keyReserveRotateConfig = {

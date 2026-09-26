@@ -3270,6 +3270,40 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(row?.source).toBe("observed");
   });
 
+  it("失効の門: 判定が失効でも、確かめられないプロジェクトがあれば失効させない(K14-14)", async () => {
+    // owner の鍵(以前の CLI が reserve と記録した複製): p1 で先に失効させた(案内どおり)、
+    // p3 では dev2 の同期で add_device として有効、最初の鍵だったプロジェクトは同期できない
+    const other = await makeTestUser("user-other-0009");
+    const p1 = await buildChain([
+      { actor: member, operation: genesisOp(member) },
+      { actor: member, operation: addMemberOp(dev2, "owner") },
+      { actor: dev2, operation: addDeviceOp(owner) },
+      { actor: dev2, operation: addDeviceOp(reserve) },
+      { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+    ]);
+    const p3 = await buildChain([
+      { actor: dev2, operation: genesisOp(dev2) },
+      { actor: dev2, operation: addDeviceOp(owner) },
+    ]);
+    const unseen = await buildChain([{ actor: other, operation: genesisOp(other) }]);
+    const { env, origin, state } = await recoveryFixture({
+      device: dev2,
+      ledgerKey: reserve,
+      built: p1,
+      extraProjects: [p3],
+      brokenProjects: [{ built: unseen, mode: "unavailable" }],
+    });
+    await recordOwnDevice(env, origin, owner, "reserve");
+    await runCli(["key", "reserve", "rotate"], env.layer);
+    expect(env.errors.join("\n")).toContain(
+      `Warning: not revoking ${owner.fingerprintHex}: could not check it on 1 project (${unseen.projectId}), so maruhi cannot confirm it is not one of your device keys`,
+    );
+    const revoked = state.appendedTo.flatMap(({ entry }) =>
+      entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
+    );
+    expect(revoked).not.toContain(owner.fingerprintHex);
+  });
+
   it("key recovery: どこでも add_device 出所の予備鍵は従来どおり再封印し、記録を復元する", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

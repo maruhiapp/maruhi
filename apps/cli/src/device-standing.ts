@@ -239,21 +239,34 @@ export function reserveVerdictOf(
 
 /**
  * 台帳から開いた鍵の判定を、サーバーが一覧に出す全プロジェクトを同期して行う(DK K14-4 4-f —
- * `key recovery` と台帳の変更の前段〔`openLedgerReserveForChange`〕が共有する入口)。
+ * `key recovery` と台帳の変更の前段〔`openLedgerReserveForChange`〕と失効の門が共有する入口)。
  * `key recover` は登録のために開いたチェーンに `reserveVerdictOf` を直接当てる(同期を二重に
- * しない)。群は誤った記録を直す材料(`retractReserveRecord`)として返す。
+ * しない)。群は誤った記録を直す材料(`retractReserveRecord`)。`unchecked` は判定の値に依らない
+ * 「確かめられなかった範囲」(null = 全部確かめた)— 失効の門は値でなくこれを読む(K14-14)。
  */
 export function ledgerKeyVerdictOf(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
 }): Effect.Effect<
-  { readonly verdict: ReserveVerdict; readonly groups: StandingGroups },
+  {
+    readonly verdict: ReserveVerdict;
+    readonly groups: StandingGroups;
+    readonly unchecked: Extract<ReserveVerdict, { readonly kind: "unchecked" }> | null;
+  },
   never,
   CliServices
 > {
   return Effect.map(keyStandingsOf(input), (standings) => {
     const groups = groupStandings(standings);
-    return { verdict: reserveVerdictOf(groups, standings.listFailure), groups };
+    const unchecked =
+      groups.unsynced.length > 0 || standings.listFailure !== null
+        ? {
+            kind: "unchecked" as const,
+            projectIds: groups.unsynced.map((entry) => entry.projectId),
+            listFailure: standings.listFailure,
+          }
+        : null;
+    return { verdict: reserveVerdictOf(groups, standings.listFailure), groups, unchecked };
   });
 }
