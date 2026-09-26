@@ -330,8 +330,14 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
     let json: string;
     try {
       json = await readFile(path, "utf8");
-    } catch {
-      return { state: "missing" };
+    } catch (error) {
+      // 未作成(ENOENT)**だけ**を「なし」に畳む。EACCES / EISDIR / EIO 等を
+      // 「なし」に畳むと record が空の帳簿で上書きして検証済み FP を黙って失わせ、
+      // lookup は miss を返して変更警告を黙らせる(pins.ts / config.ts と同じ規律)
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { state: "missing" };
+      }
+      throw error;
     }
     const book = decodeBook(json);
     return book === null ? { state: "corrupt" } : { book, state: "loaded" };

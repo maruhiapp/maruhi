@@ -5,8 +5,9 @@
 //  2. 同一キーへの record は上書き(正当な鍵更新の反映)、他エントリは保持
 //  3. 破損ファイルは corrupt(miss と区別)で、record は破損を上書きしない
 //  4. 形式外のキー・指紋は record が手前で拒否する(次回ロードの全体破損を防ぐ)
+//  5. ENOENT 以外の読み込み失敗は miss に畳まず失敗にする(空の帳での上書き・変更警告の黙殺を防ぐ)
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -87,6 +88,27 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect(after.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
       [FP_A, FP_B].toSorted(),
     );
+  });
+
+  it("ENOENT 以外の読み込み失敗(EISDIR 等)は miss に畳まず、lookup / record とも失敗する", async () => {
+    const { book, path } = await makeBook();
+    await mkdir(path);
+
+    const lookupFailed = await Effect.runPromise(
+      book.lookup(ORIGIN, USER_A).pipe(
+        Effect.map(() => null),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      ),
+    );
+    expect(lookupFailed).toContain("Cannot read the verified-fingerprint book");
+
+    const recordFailed = await Effect.runPromise(
+      book.record(ORIGIN, USER_A, FP_A).pipe(
+        Effect.map(() => null),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      ),
+    );
+    expect(recordFailed).toContain("Cannot write the verified-fingerprint book");
   });
 
   it("破損ファイルは corrupt(miss と区別)で、record は破損を上書きしない", async () => {
