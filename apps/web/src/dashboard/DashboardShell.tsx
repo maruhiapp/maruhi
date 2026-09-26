@@ -123,6 +123,25 @@ function useShellNav(destination: ShellDestination, project: CurrentProject | un
   }, [setNav, destination, projectId, projectLabel]);
 }
 
+// 静的シェル(Root.tsx)の <title>。ダッシュボードを離れる(RSC の Home / About へ SPA 遷移
+// する)ときはこの値へ戻す
+const BASE_DOCUMENT_TITLE = "maruhi";
+
+/**
+ * 画面ごとの document.title(`<画面名> — maruhi`)。SPA 遷移では静的シェルの <title> が
+ * 変わらないため、支援技術・タブ・履歴で画面を区別できるよう client 側で設定する。
+ * アンマウント時は静的シェルの値へ戻す(同一コミット内では旧画面のクリーンアップが
+ * 新画面の設定より先に走るので、遷移先の値が上書きされることはない)。
+ */
+function useDocumentTitle(title: string): void {
+  useEffect(() => {
+    document.title = `${title} — ${BASE_DOCUMENT_TITLE}`;
+    return () => {
+      document.title = BASE_DOCUMENT_TITLE;
+    };
+  }, [title]);
+}
+
 type AuthState =
   | { status: "loading" }
   | { status: "signed-out"; signedOutNow: boolean }
@@ -228,6 +247,7 @@ function DashboardSideNav({
 
 /** サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。 */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
+  useDocumentTitle("Sign in");
   return (
     <Center axis="both" padding={6} minHeight="100dvh">
       <VStack gap={4} align="center" width="100%" maxWidth={400}>
@@ -355,8 +375,12 @@ interface PageProps {
   children: ReactNode;
 }
 
-/** セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。 */
-function StatusFrame({ children }: { children: ReactNode }): ReactNode {
+/**
+ * セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。
+ * `title` は document.title。
+ */
+function StatusFrame({ title, children }: { title: string; children: ReactNode }): ReactNode {
+  useDocumentTitle(title);
   return (
     <Center axis="both" padding={6} minHeight="100dvh">
       <VStack width="100%" maxWidth={480}>
@@ -376,7 +400,7 @@ export function DashboardLayout(): ReactNode {
   const { auth, reload, signOut, expire } = useSession();
   if (auth.status === "loading") {
     return (
-      <StatusFrame>
+      <StatusFrame title="Checking your session">
         <LoadingRow label="Checking your session" />
       </StatusFrame>
     );
@@ -384,7 +408,7 @@ export function DashboardLayout(): ReactNode {
   if (auth.status === "signed-out") return <SignInScreen signedOutNow={auth.signedOutNow} />;
   if (auth.status === "failed") {
     return (
-      <StatusFrame>
+      <StatusFrame title="Session check failed">
         <FailureNotice failure={auth.failure} onRetry={reload} />
       </StatusFrame>
     );
@@ -434,6 +458,7 @@ export function DashboardShell({
   children,
 }: PageProps): ReactNode {
   useShellNav(destination, project);
+  useDocumentTitle(title);
   return (
     <Layout
       height="auto"

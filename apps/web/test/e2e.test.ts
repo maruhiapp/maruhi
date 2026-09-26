@@ -556,6 +556,29 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("login-card").waitFor();
     const signIn = page.getByTestId("sign-in-link");
     await expect(signIn.getAttribute("href")).resolves.toBe("/auth/github/start");
+    // SPA の画面ごとの document.title(静的シェルの <title> は "maruhi" 固定)
+    await expect.poll(() => page.title()).toBe("Sign in — maruhi");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("titles the session-check frames (loading / failure) per state", async () => {
+    // セッション確認中・失敗時のフレーム(StatusFrame)も document.title を持つ
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/auth/me", async (route) => {
+      await gate;
+      return fulfillJson(route, 500, { _tag: "InternalError" });
+    });
+    await page.goto(`${BASE}/dashboard`);
+    await page.getByText("Checking your session").first().waitFor();
+    await expect.poll(() => page.title()).toBe("Checking your session — maruhi");
+    release?.();
+    await expect.poll(() => page.title()).toBe("Session check failed — maruhi");
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -779,6 +802,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
     await page.getByTestId("home-heading").waitFor();
     expect(apiRequests).toEqual([]);
+    // RSC ページ(Home)は静的シェルの <title> のまま
+    await expect(page.title()).resolves.toBe("maruhi");
     await page.close();
   });
 
@@ -1095,6 +1120,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await page.getByTestId("project-list").waitFor();
     expect(sessionChecks).toBe(1);
+    // document.title は画面の h1 に追随する(SPA 遷移でも更新される)
+    await expect.poll(() => page.title()).toBe("Projects — maruhi");
     const userItem = page.getByTestId("signed-in-user");
     await userItem.evaluate((el) => {
       (el as HTMLElement).dataset["shellProbe"] = "mounted";
@@ -1106,6 +1133,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(
       page.getByRole("link", { name: "API tokens" }).getAttribute("aria-current"),
     ).resolves.toBe("page");
+    await expect.poll(() => page.title()).toBe("API tokens — maruhi");
     expect(sessionChecks).toBe(1);
     await expect(page.getByText("Checking your session").count()).resolves.toBe(0);
     await expect(
@@ -1117,6 +1145,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe(
       "Account audit",
     );
+    await expect.poll(() => page.title()).toBe("Account audit — maruhi");
     expect(sessionChecks).toBe(1);
     expect(violations).toEqual([]);
     await page.close();
