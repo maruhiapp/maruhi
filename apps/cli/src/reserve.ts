@@ -58,9 +58,20 @@ function reserveKeysFromRecord(record: StoredMasterKey): Effect.Effect<ReserveKe
   );
 }
 
-/** Generates a fresh reserve key (memory only — the caller seals it into the ledger). */
+/**
+ * Generates a fresh reserve key (memory only — the caller seals it into the ledger).
+ * The record carries the reserve-key mark (`kind: "reserve"` — CRYPTO_SPEC §8, DK K16):
+ * the one positive fact that a ledger key is a reserve key.
+ */
 export function generateReserveKeys(): Effect.Effect<ReserveKeys, CliError> {
-  return Effect.flatMap(generateKeyRecord(), reserveKeysFromRecord);
+  return Effect.flatMap(generateKeyRecord(), (record) =>
+    reserveKeysFromRecord({ ...record, kind: "reserve" }),
+  );
+}
+
+/** 台帳から開いた鍵が、この CLI が予備鍵として生成した印を持つか(DK K16-6)。 */
+export function isMarkedReserve(reserve: ReserveKeys): boolean {
+  return reserve.record.kind === "reserve";
 }
 
 /** The own-devices row for a reserve key (cap (owner, all) — CRYPTO_SPEC §3). */

@@ -590,6 +590,11 @@ const concurrentDeviceAddWrite =
 const concurrentMasterKeyWrite =
   "Another device key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
 
+/** キーチェーンに印のある予備鍵があるときの文言(DK K16)。 */
+function reserveInKeychainMessage(entryName: string, kind: KeychainKind): string {
+  return `The key stored in ${describeStore(kind)} (entry ${entryName}) is marked as a reserve key, which lives only in the recovery ledger and is never used as a device key. Remove that entry, then add this machine as a device (\`maruhi device add\`) or run \`maruhi key recover\``;
+}
+
 /**
  * {@link storeMasterKeyGuarded} + 成功の 2 行(保存先の名指しと FP)。
  * `key generate` / `key recover` の共通の結び — 保存先の呼び名
@@ -609,6 +614,14 @@ export function storeMasterKeyAndReport(input: {
   readonly deviceAdd?: { readonly previous: string | null } | undefined;
 }): Effect.Effect<void, CliError, Keychain | CliIo> {
   return Effect.gen(function* () {
+    if (parseStoredMasterKey(input.serialized)?.kind === "reserve") {
+      // 予備鍵はキーチェーンに置かない(CRYPTO_SPEC §8 — DK K16。型の閉じ方 K4-1 a-5 の多重の守り)
+      return yield* Effect.fail(
+        cliError(
+          "Refused to store a reserve key in the keychain: the reserve key lives only in the recovery ledger. Report this as a maruhi bug",
+        ),
+      );
+    }
     const previous = input.deviceAdd?.previous ?? null;
     yield* previous === null
       ? storeMasterKeyGuarded(
@@ -648,6 +661,11 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
           ? cliError(redactedPlaceholderMasterKeyMessage(entryName, keychain.kind))
           : cliError(unreadableMasterKeyMessage(stored, entryName, keychain.kind)),
       );
+    }
+    if (record.kind === "reserve") {
+      // 予備鍵は台帳にだけ住む(CRYPTO_SPEC §8 — DK K16)。キーチェーンに印のある鍵があるのは
+      // 保存経路の破れで、端末鍵として署名に使わない
+      return yield* Effect.fail(cliError(reserveInKeychainMessage(entryName, keychain.kind)));
     }
     // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり
     // (上書き防止ガードが全コマンドを拒否する)なので、同じ出口を案内する。

@@ -21,6 +21,11 @@ export function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
+/** CLI が予備鍵として生成した記録(予備鍵の印つき — CRYPTO_SPEC §8 / DK K16)。 */
+export function storedReserveRecord(user: TestUser): StoredMasterKey {
+  return { ...storedMasterRecord(user), kind: "reserve" };
+}
+
 /** 既知の secret で `record` をラップし、GET /auth/recovery で配るハンドラとそのコード。 */
 export async function ledgerHandlerFor(
   record: StoredMasterKey,

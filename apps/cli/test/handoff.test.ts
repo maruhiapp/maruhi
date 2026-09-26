@@ -83,6 +83,8 @@ function recordOf(user: TestUser): StoredMasterKey {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
+    // テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)。それ以外は端末鍵
+    ...(user === reserve ? { kind: "reserve" as const } : {}),
   };
 }
 
@@ -316,11 +318,10 @@ describe("maruhi key recover --handoff(要求者)", () => {
     expect(logs).toContain("Generated this device's key");
     expect(logs).toMatch(/key fingerprint: [0-9a-f]{32}/);
     expect(logs).not.toContain(`key fingerprint: ${reserve.fingerprintHex}`);
-    expect(env.prompts).toContain(
-      "Type yes to record it as your reserve key (anything else = no): ",
-    );
+    // 予備鍵の印がある鍵は問わずに記録する(DK K16-3 / K16-6)
+    expect(env.prompts).toEqual([]);
     expect(errors).toContain(
-      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
+      `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
     );
     // 鍵素材は出力に出ない
     expect(logs).not.toContain(reserve.encSkHex);

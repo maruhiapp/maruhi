@@ -258,6 +258,20 @@ export type ReserveVerdict =
   | { readonly kind: "nowhere" }
   | { readonly kind: "added"; readonly projectIds: readonly string[] };
 
+/** 止める事実(チェーンの最初の鍵・この端末の証人・失効)— 印があっても予備鍵として扱わない。 */
+export function stopsLedgerKey(
+  verdict: ReserveVerdict,
+): verdict is Extract<
+  ReserveVerdict,
+  { readonly kind: "first-key" | "recorded-first-key" | "revoked" }
+> {
+  return (
+    verdict.kind === "first-key" ||
+    verdict.kind === "recorded-first-key" ||
+    verdict.kind === "revoked"
+  );
+}
+
 export function reserveVerdictOf(
   groups: StandingGroups,
   listFailure: string | null,
