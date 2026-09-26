@@ -275,7 +275,7 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
                 Sign in
               </Heading>
               <Text type="body" color="secondary" size="sm" justify="center">
-                A read-only view of your projects, as reported by the server.
+                Your projects' metadata, as reported by the server.
               </Text>
             </VStack>
             {signedOutNow ? (

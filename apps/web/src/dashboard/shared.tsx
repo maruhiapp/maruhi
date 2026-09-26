@@ -31,7 +31,8 @@ import { type ReactNode, useEffect, useRef } from "react";
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
 import { useReportSessionExpired } from "./session-expiry.ts";
-import type { ChainRole, ForbiddenReason } from "./types.ts";
+import type { ChainRole, ForbiddenReason, TokenList, TokenSummary } from "./types.ts";
+import type { ResourceState } from "./use-api-resource.ts";
 import type { RevocationState } from "./use-revocation.ts";
 
 /**
@@ -560,4 +561,30 @@ export function ServerReportedNote(): ReactNode {
       <Text type="code">maruhi audit verify</Text> on your own machine.
     </Text>
   );
+}
+
+/** 武装中のトークン(一覧にあれば)。 */
+function armedToken(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): TokenSummary | undefined {
+  return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
+}
+
+/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
+export function armedTokenName(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): string {
+  const token = armedToken(tokens, armedId);
+  return token === undefined ? "this token" : `token "${token.name}"`;
+}
+
+/** 失効成功の告知文(確認時点の名前 — 再取得後の一覧には残らない)。 */
+export function tokenRevokedMessage(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): string {
+  const token = armedToken(tokens, armedId);
+  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
 }

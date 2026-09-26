@@ -29,6 +29,8 @@ import {
   LoadingRow,
   RevokeButton,
   RevocationOutcome,
+  armedTokenName,
+  tokenRevokedMessage,
   SectionBlock,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
@@ -209,26 +211,6 @@ function TokensResource({
   );
 }
 
-/** 武装中のトークン(一覧にあれば)。 */
-function armedToken(
-  state: ResourceState<TokenList>,
-  armedId: string | undefined,
-): TokenSummary | undefined {
-  return state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
-}
-
-/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
-function armedName(state: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = armedToken(state, armedId);
-  return token === undefined ? "this token" : `token "${token.name}"`;
-}
-
-/** 失効成功の告知文(確認時点の名前 — 再取得後の一覧には残らない)。 */
-function revokedMessage(state: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = armedToken(state, armedId);
-  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
-}
-
 export function TokensScreen(): ReactNode {
   const { state, reload } = useApiResource<TokenList>(apiPaths.tokens());
   // 失効状態は一覧リソースの外に持つ(use-revocation.ts のヘッダーコメント)
@@ -250,9 +232,9 @@ export function TokensScreen(): ReactNode {
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
         <RevocationOutcome
           revocation={revocation}
-          title={`Revoke ${armedName(state, revocation.armedId)}?`}
+          title={`Revoke ${armedTokenName(state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
-          successMessage={revokedMessage(state, revocation.armedId)}
+          successMessage={tokenRevokedMessage(state, revocation.armedId)}
           subject="token"
           arm={arm}
           confirm={confirm}

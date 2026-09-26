@@ -30,6 +30,8 @@ import {
   LoadingRow,
   RevokeButton,
   RevocationOutcome,
+  armedTokenName,
+  tokenRevokedMessage,
   SectionBlock,
   ServerTime,
 } from "./shared.tsx";
@@ -263,26 +265,6 @@ function DevicesResource({
   );
 }
 
-/** 武装中のトークン(一覧にあれば)。 */
-function armedToken(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): TokenSummary | undefined {
-  return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
-}
-
-/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
-function armedName(tokens: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "this token" : `token "${token.name}"`;
-}
-
-/** 失効成功の告知文(確認時点の名前 — 再取得後のトークン一覧には残らない)。 */
-function revokedMessage(tokens: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
-}
-
 export function DevicesScreen(): ReactNode {
   const devices = useApiResource<DeviceList>(apiPaths.devices());
   const tokens = useApiResource<TokenList>(apiPaths.tokens());
@@ -321,9 +303,9 @@ export function DevicesScreen(): ReactNode {
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名はトークン一覧から引く */}
         <RevocationOutcome
           revocation={revocation}
-          title={`Revoke ${armedName(tokens.state, revocation.armedId)}?`}
+          title={`Revoke ${armedTokenName(tokens.state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. This does not revoke the device key on the project chains — do that from the CLI."
-          successMessage={revokedMessage(tokens.state, revocation.armedId)}
+          successMessage={tokenRevokedMessage(tokens.state, revocation.armedId)}
           subject="token"
           arm={arm}
           confirm={confirm}
