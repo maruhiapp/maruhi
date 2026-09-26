@@ -1,29 +1,35 @@
-// `effect/unstable/cli` の引数層(ADR-0016 決定 1 — 第 1 段階: pull / run /
-// env create、第 2 段階: env rotate / diff、server、invite、member、
-// 第 3 段階: push、config、key、project、rotation、audit、login、logout)。
-// エントリは cli.ts の runCli。
+// The `effect/unstable/cli` argument layer (ADR-0016 decision 1 — stage 1:
+// pull / run / env create, stage 2: env rotate / diff, server, invite,
+// member, stage 3: push, config, key, project, rotation, audit, login,
+// logout). The entry is cli.ts's runCli.
 //
-// `env` / `server` / `invite` / `member` は**真の入れ子サブコマンド**
-// (ADR-0016 決定 6): 宣言が操作ごとに分かれるため、「その操作に適用されない
-// オプション」を拒否する自前の機構は要らない。「その操作に無いフラグは
-// usage エラー(exit 2)」の性質は宣言 + teardown が保つ
-// (effect-cli.test.ts が固定する)。
+// `env` / `server` / `invite` / `member` are **true nested subcommands**
+// (ADR-0016 decision 6): since the declaration is split per operation, no
+// hand-rolled mechanism is needed to refuse "an option that does not apply
+// to that operation". The property "a flag the operation lacks is a usage
+// error (exit 2)" is upheld by the declaration + teardown (pinned by
+// effect-cli.test.ts).
 //
-// 規律(ADR-0016 の決定):
-//
-// 1. **引数の検査に自前の走査を書かない**。すべて宣言で表す —
-//    重複指定 = `Flag.atMost(1)`(**boolean にも付ける**)、空 / 空白だけの値 =
-//    `Flag.withSchema`、実行対象の必須 = `Argument.atLeast(1)` / `Argument.filter`
-// 2. **打たれた値を診断に出さない**。文面は `CliOutput.Formatter`
-//    (cli-formatter.ts)で組み直す
-// 3. **終了コードはエラー型が持つ**(`Runtime.errorExitCode` — errors.ts)。
-//    唯一の例外 `ShowHelp` は teardown で 2 へ読み替える(cli-teardown.ts)
-// 4. **組み込みグローバルフラグは `--help` / `--version` だけ**に絞る。既定では
-//    `--wizard` / `--completions` / `--log-level` が全コマンドへ生え、
-//    `maruhi pull --wizard` は**対話ウィザードが実際に起動する**(実測)
-// 5. **`process.*` を直に読まない**。argv も端末の有無も `Stdio` サービス経由
-// 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
-//    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
+// The discipline (ADR-0016's decisions):
+// 1. **Never write a hand-rolled scan for argument checks**. Everything is
+//    expressed by declarations — a duplicated flag = `Flag.atMost(1)`
+//    (**put it on booleans too**), an empty / whitespace-only value =
+//    `Flag.withSchema`, a required run target = `Argument.atLeast(1)` /
+//    `Argument.filter`
+// 2. **Never surface a typed-in value in diagnostics**. The wording is
+//    reassembled by `CliOutput.Formatter` (cli-formatter.ts)
+// 3. **The exit code lives on the error type** (`Runtime.errorExitCode` —
+//    errors.ts). The sole exception `ShowHelp` is re-read as 2 in the
+//    teardown (cli-teardown.ts)
+// 4. **Built-in global flags are narrowed to `--help` / `--version`
+//    only**. By default `--wizard` / `--completions` / `--log-level` grow
+//    onto every command, and `maruhi pull --wizard` **actually launches an
+//    interactive wizard** (measured)
+// 5. **Never read `process.*` directly**. argv and terminal presence go
+//    through the `Stdio` service
+// 6. **stdout is for the command's output only**. The command body's
+//    output is `CliIo.log`; help and diagnostics go to `Console` (=
+//    `CliIo.logError` = stderr)
 
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -262,31 +268,28 @@ import { tokenListOp, tokenRevokeOp } from "./token.ts";
 import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
 
-/** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
+/** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
 const RUN_TERMINATOR_HINT =
   ". Write the command to run after `--` (example: `maruhi run -- printenv MY_VAR`)";
 
 /* -------------------------------------------------------------------------- */
-/* 宣言(検査は Effect の機構に載せる — 自前の走査を書かない)                 */
+/* Declarations (checks ride on Effect's mechanisms — no hand-rolled scan) */
 /* -------------------------------------------------------------------------- */
 
 /**
- * 空・空白だけの値を受け付けない文字列。
- *
- * `maruhi push API_KEY --env "$ENV"` で ENV が未設定のとき、既定環境へ黙って
- * 書き込む事故を塞ぐ。
+ * A string that accepts no empty / whitespace-only value. Blocks the
+ * accident of `maruhi push API_KEY --env "$ENV"` silently writing into the
+ * default environment when ENV is unset.
  */
 const NonBlank = Schema.String.check(Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE }));
 
 /**
- * 値を取るオプション 1 つ。
- *
- * `atMost(1)` が**重複指定の拒否**(effect の既定は first-wins で沈黙)を
- * 宣言で表す。`maruhi pull --no-show $FLAGS` が全シークレットを表示する形の
- * 事故をここで塞ぐ。
- *
- * `noUncheckedIndexedAccess: true` なので結果は `string | undefined` =
- * context.ts の {@link CommonFlags} とそのまま噛み合う(Option へ変換しない)。
+ * One value-taking option. `atMost(1)` expresses **the refusal of a
+ * duplicated flag** in the declaration (effect's default is first-wins,
+ * silently). The accident shape `maruhi pull --no-show $FLAGS` that would
+ * display every secret is blocked here. With `noUncheckedIndexedAccess:
+ * true` the result is `string | undefined` = meshes directly with
+ * context.ts's {@link CommonFlags} (no Option conversion).
  */
 function singleValued(name: string, description: string) {
   return Flag.String(name).pipe(
@@ -298,12 +301,12 @@ function singleValued(name: string, description: string) {
 }
 
 /**
- * boolean オプション 1 つ。
- *
- * **boolean にも `atMost(1)` が要る**: 素の `Flag.Boolean` は重複を沈黙で解決し、
- * **打った順で結果が変わる**(実測: `--show --no-show` は first-wins で `true`、
- * `--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の `$FLAGS` に
- * `--show` が混ざる形(ef7cba1)は順序に依存させてはいけない。
+ * One boolean option. **A boolean also needs `atMost(1)`**: a raw
+ * `Flag.Boolean` resolves duplicates silently, and **the result changes
+ * with the order typed** (measured: `--show --no-show` is `true` under
+ * first-wins, `--no-show --show` is `false`). The shape where `--show`
+ * sneaks into `$FLAGS` of `maruhi pull --no-show $FLAGS` (ef7cba1) must
+ * not depend on the order.
  */
 function singleFlag(name: string, description: string) {
   return Flag.Boolean(name).pipe(
@@ -314,10 +317,10 @@ function singleFlag(name: string, description: string) {
 }
 
 /**
- * テスト用の隠しフラグ(値 1 つ)。ヘルプにも打ち間違いの候補にも出さない。
- *
- * `Flag.withHidden` がヘルプと補完から外す(rc.113+)。診断の一覧(specOf)も
- * 葉の `hidden` を辿って除外する — 内部向けの綴りを広めない。
+ * A hidden flag for testing (one value). Appears in neither help nor
+ * typo candidates. `Flag.withHidden` removes it from help and completion
+ * (rc.113+). The diagnostics listing (specOf) also walks the leaf's
+ * `hidden` to exclude it — never popularize an internal spelling.
  */
 function hiddenIntegerValued(name: string, description: string) {
   return Flag.Int(name).pipe(
@@ -329,8 +332,9 @@ function hiddenIntegerValued(name: string, description: string) {
 }
 
 /**
- * その宣言は hidden な葉(`Param.Single`)か。ラッパ(Map / Variadic /
- * Transform / Optional)は子を `param` に持つので、葉まで辿って判定する。
+ * Whether that declaration is a hidden leaf (`Param.Single`). A wrapper
+ * (Map / Variadic / Transform / Optional) carries its child in `param`, so
+ * walk to the leaf to judge.
  */
 function isHiddenParam(param: Param.Any): boolean {
   let current: unknown = param;
@@ -344,12 +348,13 @@ function isHiddenParam(param: Param.Any): boolean {
 }
 
 /**
- * 診断用のコマンド宣言を、**コマンド定義そのもの**から導く。
- *
- * 手書きの写しを持つと、フラグを足したときに診断だけ古いまま残る。`Param` は
- * 公開型として `kind`(`"flag"` / `"argument"`)を持つので、宣言の並びから
- * そのまま仕分けできる。名前はオブジェクトのキー(= 打つときの綴り)を使う。
- * hidden な宣言は一覧に出さない(内部向けの綴りを広めない)。
+ * Derive the diagnostics' command declaration from **the command
+ * definition itself**. A hand-written copy would leave only the
+ * diagnostics stale when a flag is added. `Param` is a public type
+ * carrying `kind` (`"flag"` / `"argument"`), so they can be sorted
+ * straight off the declaration listing. The name uses the object key (=
+ * the spelling typed). A hidden declaration is not listed (never
+ * popularize an internal spelling).
  */
 function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
   const flags: string[] = [];
@@ -364,22 +369,22 @@ function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
 }
 
 /* -------------------------------------------------------------------------- */
-/* コマンド定義                                                                */
+/* Command definitions                                                        */
 /* -------------------------------------------------------------------------- */
 
-/** 環境系コマンドが取る共通フラグ(context.ts の CommonFlags と同じ名前)。 */
+/** The common flags an environment command takes (same names as context.ts's CommonFlags). */
 const commonFlags = () => ({
   ...projectFlags(),
   env: singleValued("env", "Environment ID (default: the `defaultEnvironment` setting)"),
 });
 
-/** プロジェクト水準のコマンドが取る共通フラグ(env は取らない)。 */
+/** The common flags a project-level command takes (no env). */
 const projectFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
   project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 });
 
-/** セッション水準のコマンドが取る共通フラグ(project も env も取らない)。 */
+/** The common flags a session-level command takes (neither project nor env). */
 const serverOnlyFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
 });
@@ -389,14 +394,15 @@ const pullConfig = {
   show: singleFlag("show", "Print the values (interactive terminals only)"),
 };
 
-/** `run` / `ci run` 共通の実行対象(`--` の後ろ)の宣言。 */
+/** The declaration of the run target (after `--`) shared by `run` / `ci run`. */
 const runCommandArgument = () =>
-  // `--` の後ろはここに入る(空文字列も保持される)。`atLeast(1)` が
-  // 「実行対象のない実行」を、`filter` が「実行対象が空文字列」
-  // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
-  // 2 つ目以降の空文字列は**子プロセスの引数として保つ**。
-  // rc.117 では 0 個の `atLeast` が `MissingArgument` になる。文面への写像は
-  // cli-formatter.ts(command 引数だけ RUN_COMMAND_REQUIRED)
+  // Everything after `--` lands here (empty strings are kept too).
+  // `atLeast(1)` drops "a run with no run target" and `filter` drops "a
+  // run target that is an empty string" (the unset shape of `maruhi run --
+  // "$CMD"`). Both are declarations, and a second-or-later empty string is
+  // **kept as a child-process argument**. On rc.117 an atLeast of 0 becomes
+  // `MissingArgument`. The wording mapping lives in cli-formatter.ts (only
+  // the command argument is RUN_COMMAND_REQUIRED)
   Argument.String("command").pipe(
     Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
@@ -412,9 +418,10 @@ const runConfig = {
 };
 
 /**
- * `maruhi agent -- <command>`(KL2 — agent.ts)。run と同じ「`--` の後ろだけが
- * 実行対象」の宣言。フラグは持たない(サーバーにも鍵にも触らず、子を起動して
- * 保持先を用意するだけ)。
+ * `maruhi agent -- <command>` (KL2 — agent.ts). Same "only what follows
+ * `--` is the run target" declaration as run. Carries no flags (it touches
+ * neither the server nor keys — it just spawns the child and prepares the
+ * holder).
  */
 const agentConfig = {
   "key-ttl": singleValued(
@@ -433,14 +440,15 @@ const agentConfig = {
   ),
 };
 
-/** `maruhi agent status`: フラグ無し(セッションの有無は環境変数で決まる)。 */
+/** `maruhi agent status`: no flags (session presence is decided by the environment variable). */
 const agentStatusConfig = {};
 
 /**
- * `maruhi ci run` の宣言: 通常の run と違い config
- * ファイルを読まないため、server / project / env は**フラグで必須**。宣言上は
- * optional(singleValued)にし、欠落の診断は本体側で CI 特有の直し方
- * (「config へ」ではなく「フラグを書く」)を言う。
+ * `maruhi ci run`'s declaration: unlike an ordinary run it reads no
+ * config file, so server / project / env are **mandatory as flags**. On
+ * the declaration they are optional (singleValued), and a missing one is
+ * diagnosed by the body side with the CI-specific fix ("write the flag",
+ * not "set it in config").
  */
 const ciRunConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
@@ -455,9 +463,10 @@ const ciRunConfig = {
 };
 
 /**
- * `maruhi ci sync <target>` の宣言(SY2 第 2 段 — 裁定 D): `ci run` と同じく
- * config ファイルを読まない(server / project はフラグで必須)。環境は同期設定の
- * ターゲットが決めるので `--env` は無い。`--yes` は手元の apply と同じ語。
+ * `maruhi ci sync <target>`'s declaration (SY2 stage 2 — ruling D): like
+ * `ci run` it reads no config file (server / project are mandatory flags).
+ * There is no `--env` since the sync config's target decides the
+ * environment. `--yes` is the same word as the local apply.
  */
 const ciSyncConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
@@ -482,11 +491,11 @@ const ciSyncConfig = {
 };
 
 /**
- * `maruhi push` の余分な位置引数に添える固有の直し方。
- *
- * `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した引数の
- * 中身は出さない(平文でありうる)ので、代わりに「値は stdin から」を必ず
- * 添える — でないと直しようがない(cli-formatter.ts の strayHint)。
+ * `maruhi push`'s specific fix, attached to its extra positional
+ * arguments. `maruhi push API_KEY "$SECRET"` is the most likely
+ * misspelling. The refused argument's content is never shown (it may be
+ * plaintext), so "the value comes via stdin" is always attached instead —
+ * otherwise there is no way to fix it (cli-formatter.ts's strayHint).
  */
 const PUSH_STDIN_HINT =
   '. Values are read from stdin (example: `printf %s "$SECRET" | maruhi push API_KEY`)';
@@ -509,7 +518,7 @@ const pushConfig = {
   ),
 };
 
-/** 設定キーの位置引数(config のサブコマンド共通)。 */
+/** The config key's positional argument (shared by config's subcommands). */
 const configKeyArgument = () =>
   Argument.String("key").pipe(
     Argument.withDescription(`Config key (${CONFIG_KEYS.join(" | ")})`),
@@ -522,8 +531,10 @@ const configGetConfig = {
 
 const configSetConfig = {
   key: configKeyArgument(),
-  // 空 / 空白だけの値は宣言(NonBlank)で拒否する: `config set defaultProject
-  // "$PROJ"` の未設定形が既存の設定を空で上書きして成功を報告する事故を塞ぐ
+  // An empty / whitespace-only value is refused by the declaration
+  // (NonBlank): blocks the accident where the unset shape of `config set
+  // defaultProject "$PROJ"` overwrites the existing config with an empty
+  // value and reports success
   value: Argument.String("value").pipe(
     Argument.withDescription("Value to set"),
     Argument.withSchema(NonBlank),
@@ -539,7 +550,7 @@ const rotationDismissConfig = {
     "Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)",
   ),
   all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
-  // --all の実行では取らない。atMost(1) が「--all なら省略」を宣言で表す
+  // Not taken on a --all run. atMost(1) expresses "omitted under --all" in the declaration
   variable: Argument.String("variable").pipe(
     Argument.withDescription("Variable ID to dismiss (omit with --all)"),
     Argument.withSchema(NonBlank),
@@ -548,7 +559,7 @@ const rotationDismissConfig = {
   ),
 };
 
-/** audit のページ指定フラグ(list / invites / self 共通)。 */
+/** audit's pagination flag (shared by list / invites / self). */
 const auditPageFlags = () => ({
   limit: Flag.Int("limit").pipe(
     Flag.withDescription(
@@ -564,10 +575,11 @@ const auditPageFlags = () => ({
 });
 
 /**
- * `maruhi audit`(親)と `maruhi audit list` が共有する宣言。**bare `audit` =
- * list**(現行仕様)を保つため、親コマンド自身がこの宣言とハンドラを持つ
- * (実測: ハンドラ付き親 + withSubcommands で、bare 親はハンドラを実行し、
- * サブコマンド指定時は子だけが走る)。
+ * The declaration shared by `maruhi audit` (the parent) and `maruhi audit
+ * list`. To keep **bare `audit` = list** (the current spec), the parent
+ * command itself carries this declaration and handler (measured: a
+ * handler-carrying parent + withSubcommands runs the handler on the bare
+ * parent, and only the child runs when a subcommand is given).
  */
 const auditListConfig = {
   ...projectFlags(),
@@ -588,7 +600,7 @@ const auditListConfig = {
 
 const auditInvitesConfig = { ...projectFlags(), ...auditPageFlags() };
 
-// self はアカウント全域でプロジェクトを取らない(--project は宣言に無い =
+// self takes no project account-wide (no --project on the declaration =
 // Unknown flag)
 const auditSelfConfig = { ...serverOnlyFlags(), ...auditPageFlags() };
 
@@ -651,7 +663,7 @@ const keyRecoverConfig = {
     "Keep the device key already on this machine and only register it on the projects where it is still missing (re-run after an interrupted recovery)",
   ),
 };
-/** passkey のラベル(台帳の表示名 — api-schema の受理形を宣言側で先に検査する)。 */
+/** The passkey's label (the ledger's display name — the api-schema acceptance shape is checked early on the declaration side). */
 const PasskeyLabel = Schema.String.check(
   Schema.isPattern(PASSKEY_LABEL_PATTERN, { message: PASSKEY_LABEL_MESSAGE }),
 );
@@ -778,7 +790,7 @@ const tokenRevokeConfig = {
   ),
 };
 
-/** 保護者グループの承認方式(CRYPTO_SPEC §8.3)。 */
+/** The guardian group's approval scheme (CRYPTO_SPEC §8.3). */
 const GUARDIAN_MODES = ["any", "all"] as const;
 
 function isGuardianMode(value: string | undefined): value is GuardianMode {
@@ -832,14 +844,14 @@ const projectCheckpointConfig = {
   project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 };
 
-/** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
+/** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */
 const environmentIdArgument = (name: string, description: string) =>
   Argument.String(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
 
 const envCreateConfig = {
   ...projectFlags(),
   name: singleValued("name", "Display name (defaults to the environment ID)"),
-  // キーは**打つときの綴り**にする(specOf が診断名としてそのまま使う)
+  // The key is **the spelling typed** (specOf uses it as the diagnostic name as-is)
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
 
@@ -853,15 +865,17 @@ const envRotateConfig = {
     "new-epoch",
     "Always create a new epoch, even when incomplete re-encryption could be resumed instead",
   ),
-  // 移行専用: マニフェスト導入前に作成された環境の
-  // manifest_version 1 初期化。許容するのは**欠落**のみで、配布された
-  // マニフェストの検証は緩和しない(manifest.ts)
+  // Migration-only: initializes manifest_version 1 on environments
+  // created before manifests existed. What it tolerates is an **omission**
+  // only — verification of a distributed manifest is not relaxed
+  // (manifest.ts)
   "init-manifest": singleFlag(
     "init-manifest",
     "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves",
   ),
-  // 明示されたときだけ同期レシートを進める(既定パスへの
-  // 暗黙の探索はしない — rotate はリポジトリの外からも打たれ、設定は cwd 依存)
+  // The sync receipt advances only when given (no implicit discovery of
+  // the default path — rotate can be run from outside a repository and the
+  // config is cwd-dependent)
   config: singleValued(
     "config",
     `Path to the sync config committed in the repository; when given, the receipts of the targets synced from this environment advance to the re-encrypted versions (no default: without it, receipts are left alone)`,
@@ -872,7 +886,7 @@ const envRotateConfig = {
 const envDiffConfig = {
   ...projectFlags(),
   "environment-id": environmentIdArgument("environment-id", "First environment ID to compare"),
-  // diff 専用のサブコマンドなので**必須**として宣言できる(欠落は MissingArgument)
+  // Declared **required** since it is a diff-only subcommand (a missing one is MissingArgument)
   "other-environment-id": environmentIdArgument(
     "other-environment-id",
     "Second environment ID to compare",
@@ -880,8 +894,9 @@ const envDiffConfig = {
 };
 
 /**
- * 四眼(CRYPTO_SPEC §6.2 — K6)の下で提案になりうるコマンドが取る期限フラグ。方針が
- * 対象にしていない操作では読まれない(直接追記)。
+ * The expiry flag taken by commands that can become proposals under
+ * four-eyes (CRYPTO_SPEC §6.2 — K6). Never read on an operation the
+ * policy doesn't target (a direct append).
  */
 const proposalFlags = () => ({
   expires: singleValued(
@@ -916,19 +931,19 @@ const serverRevokeConfig = {
   ),
 };
 
-/** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
+/** The role an invite can grant (an owner is never granted via an invite — AUTH_SPEC §15-1). */
 const INVITE_ROLES = ["reader", "member", "admin"] as const;
 
 function isInviteRole(value: string | undefined): value is InviteRole {
   return INVITE_ROLES.some((known) => known === value);
 }
 
-/** `--env <id>`(反復可)— 招待 / change-role の scope(CRYPTO_SPEC §6.2 — 2026-09-15 ES K4)。 */
+/** `--env <id>` (repeatable) — the scope of invite / change-role (CRYPTO_SPEC §6.2 — 2026-09-15 ES K4). */
 function scopeEnvFlag(description: string) {
   return Flag.String("env").pipe(
     Flag.withDescription(description),
     Flag.withSchema(NonBlank),
-    // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
+    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly string[])
     Flag.atLeast(0),
   );
 }
@@ -959,10 +974,11 @@ const inviteAcceptConfig = {
     "inviter-fingerprint",
     "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
   ),
-  // 招待リンクはリンク鍵の種を内包する = ただの表示可能文字列ではない。
-  // `Argument.Redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
-  // 渡す(剥がすのは既存の境界だけ)。プロジェクト ID はリンクが運ぶ(v2 —
-  // 生トークン経路は廃止)ので --project は持たない
+  // An invite link embeds the link-key seed = not a mere displayable
+  // string. It is received as `Argument.Redacted` and passed to
+  // invite-link.ts's interpretation boundary still Redacted (only the
+  // existing boundary unwraps it). The link carries the project ID (v2 —
+  // the raw-token path is gone), so it takes no --project
   target: Argument.Redacted("target").pipe(
     Argument.withDescription("Invite link (quote the link so the shell does not interpret it)"),
   ),
@@ -978,7 +994,7 @@ const inviteRevokeConfig = {
   ),
 };
 
-/** メンバーに付与できる role(CRYPTO_SPEC §6.2)。 */
+/** The role grantable to a member (CRYPTO_SPEC §6.2). */
 const MEMBER_ROLES = ["reader", "member", "admin", "owner"] as const;
 
 function isMemberRole(value: string | undefined): value is Role {
@@ -996,7 +1012,7 @@ const memberAddConfig = {
     "expect-fingerprint",
     "Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
   ),
-  // add 専用の宣言なので「受諾済みが 1 件なら省略可」を atMost(1) で表す
+  // Since the declaration is add-only, "omittable when exactly one accepted row exists" is expressed by atMost(1)
   "invite-id": Argument.String("invite-id").pipe(
     Argument.withDescription(
       "Invite ID to add (may be omitted when exactly one invite is accepted)",
@@ -1007,7 +1023,7 @@ const memberAddConfig = {
   ),
 };
 
-/** remove / change-role の対象 user_id(必須・非空)。 */
+/** The target user_id of remove / change-role (required, non-empty). */
 const memberTargetArgument = () =>
   Argument.String("user-id").pipe(
     Argument.withDescription("Target user ID (see `maruhi member list`)"),
@@ -1046,7 +1062,7 @@ const memberListConfig = {
   json: singleFlag("json", "Print the members as JSON (user id, role, scope, key fingerprint)"),
 };
 
-/** 提案 id の位置引数(`maruhi approval show / approve / withdraw` — 承認項目 23)。 */
+/** The proposal id positional (`maruhi approval show / approve / withdraw` — approval item 23). */
 const proposalIdArgument = () =>
   Argument.String("proposal-id").pipe(
     Argument.withDescription(
@@ -1086,10 +1102,10 @@ const projectPolicyApprovalsConfig = {
   ),
 };
 
-/** `maruhi schema`(表示 — bare 親が show を兼ねる。audit と同じ型)。 */
+/** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit). */
 const schemaShowConfig = { ...commonFlags() };
 
-/** `--type` の閉集合(CRYPTO_SPEC §4.2 — 裁定 CT)+ 明示クリアの `none`。 */
+/** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 
 const schemaSetConfig = {
@@ -1123,7 +1139,7 @@ const schemaSetConfig = {
   ),
 };
 
-/** `maruhi schema import <file>`(ブートストラップ — 設計文書 §1-3)。 */
+/** `maruhi schema import <file>` (bootstrap — design doc §1-3). */
 const schemaImportConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -1134,10 +1150,10 @@ const schemaImportConfig = {
   ),
 };
 
-/** `maruhi schema export`(派生スナップショットの生成 — 設計文書 §1-6)。 */
+/** `maruhi schema export` (producing the derived snapshot — design doc §1-6). */
 const schemaExportConfig = { ...commonFlags() };
 
-/** `maruhi schema verify-snapshot <file>`(CI の乖離検査 — 設計文書 §1-6)。 */
+/** `maruhi schema verify-snapshot <file>` (the CI divergence check — design doc §1-6). */
 const schemaVerifySnapshotConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -1148,7 +1164,7 @@ const schemaVerifySnapshotConfig = {
   ),
 };
 
-/** `maruhi schema lint [paths...]`(コード契約の突合 — 設計文書 §1-7)。 */
+/** `maruhi schema lint [paths...]` (matching against the code contract — design doc §1-7). */
 const schemaLintConfig = {
   ...commonFlags(),
   ignore: Flag.String("ignore").pipe(
@@ -1156,7 +1172,7 @@ const schemaLintConfig = {
       "Environment-variable name to exclude from the undeclared check (repeatable; for runtime variables not managed by maruhi, e.g. NODE_ENV)",
     ),
     Flag.withSchema(NonBlank),
-    // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
+    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly string[])
     Flag.atLeast(0),
   ),
   paths: Argument.String("path").pipe(
@@ -1165,7 +1181,7 @@ const schemaLintConfig = {
   ),
 };
 
-/** `maruhi var rm <NAME>`(変数の削除 — AUTH_SPEC §12-5)。 */
+/** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5). */
 const varRmConfig = {
   ...commonFlags(),
   force: singleFlag(
@@ -1179,9 +1195,10 @@ const varRmConfig = {
 };
 
 /**
- * `maruhi sync plan` / `apply` の宣言(SY2 第 1 段)。環境はフラグでなく
- * リポジトリ設定(`maruhi.sync.json` のターゲット)が決めるので `--env` は無い。
- * `--project` はあるが、設定に `project` があればそれと照合する。
+ * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The
+ * environment is decided not by a flag but by the repository config (the
+ * `maruhi.sync.json` targets), so there is no `--env`. `--project` exists
+ * but is checked against the config's `project` when present.
  */
 const syncTargetArgument = () =>
   Argument.String("target").pipe(
@@ -1212,8 +1229,9 @@ const syncApplyConfig = {
 };
 
 /**
- * `maruhi sync init <target>` の宣言(SY2 第 2 段 — 裁定 F): ネットワークにも
- * ファイルにも触れず、フラグから設定 JSON を組んで stdout に出す。
+ * `maruhi sync init <target>`'s declaration (SY2 stage 2 — ruling F):
+ * touches neither network nor files; assembles the config JSON from the
+ * flags and prints it to stdout.
  */
 const syncInitConfig = {
   preset: singleValued(
@@ -1274,11 +1292,13 @@ const syncInitConfig = {
 };
 
 /**
- * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
- * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
- * 導く — 親の段を手書きの写しで持つと、サブコマンドを足したときに振り分けと
- * 診断だけ古いまま残る。makeRootCommand の `Command.make(名前)` はこのキーと
- * 同じ綴りを使う(食い違いは effect-cli.test.ts の適合検査で落ちる)。
+ * The nesting stage (group) → the subcommand name → the declaration.
+ * **This table is the single source** — COMMAND_SPECS (the dispatch keys
+ * and the diagnostics' declaration / subcommand lists) is derived from
+ * it. Holding the parents' stages as a hand-written copy would leave only
+ * the dispatch and diagnostics stale when a subcommand is added.
+ * makeRootCommand's `Command.make(name)` uses the same spelling as this
+ * key (a disagreement falls in effect-cli.test.ts's conformity check).
  */
 const GROUP_CONFIGS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, Param.Any>>>>>
@@ -1361,27 +1381,31 @@ const GROUP_CONFIGS: Readonly<
 };
 
 /**
- * 親の段自身が宣言(とハンドラ)を持つグループ。bare `maruhi audit` = list を
- * 保つ audit だけで、診断(`audit --bogus` の未宣言フラグ)も親の段の宣言で
- * 組めるよう COMMAND_SPECS の親エントリへ流し込む。
+ * The groups whose parent stage itself carries a declaration (and a
+ * handler). Only audit, which keeps bare `maruhi audit` = list — feeding
+ * it into COMMAND_SPECS' parent entry so diagnostics (`audit --bogus`'s
+ * undeclared flag) can also be assembled from the parent stage's
+ * declaration.
  */
 const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
   audit: auditListConfig,
   schema: schemaShowConfig,
-  // bare `maruhi agent -- <cmd>` がセッションの起動。`status` だけがサブコマンド
+  // Bare `maruhi agent -- <cmd>` starts a session. Only `status` is a subcommand
   agent: agentConfig,
 };
 
 /**
- * commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。
- * 入れ子の段は subcommands を持ち、不明なサブコマンドの診断が「取りうる
- * 操作の一覧」を出すのに使う(cli-formatter.ts)。
+ * commandKey → the diagnostics' declaration. Keys are the same as what
+ * runCli's dispatch returns. A nested stage holds subcommands, which the
+ * unknown-subcommand diagnostic uses to print "the list of possible
+ * operations" (cli-formatter.ts).
  */
 /**
- * root(`maruhi` 段)の診断キー。`ShowHelp.commandPath` が 1 段のとき
- * `commandPath.slice(1).join(" ")` は空文字列になるので、その綴りに合わせる。
- * 未知のコマンド(`maruhi bogus`)の診断が「取りうるコマンドの一覧」を
- * 出すために使う(cli-formatter.ts の unknownSubcommandMessage)。
+ * The diagnostic key of the root (the `maruhi` stage). When
+ * `ShowHelp.commandPath` has 1 stage, `commandPath.slice(1).join(" ")`
+ * becomes an empty string, so it matches that spelling. Used for an
+ * unknown command's (`maruhi bogus`) diagnostic to print "the list of
+ * possible commands" (cli-formatter.ts's unknownSubcommandMessage).
  */
 export const ROOT_SPEC_KEY = "";
 
@@ -1396,13 +1420,13 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
       [
         group,
         {
-          // 親自身が宣言を持つ段(audit)は、その宣言を診断にも使う
+          // A stage whose parent itself carries a declaration (audit) uses it for diagnostics too
           ...(GROUP_PARENT_CONFIGS[group] === undefined
             ? { flags: [], positionals: [] }
             : specOf(GROUP_PARENT_CONFIGS[group])),
           subcommands: [
             ...Object.keys(subcommands),
-            // 入れ子のグループ(`key seal`)は親(`key`)の取りうる操作に数える
+            // A nested group (`key seal`) counts as its parent's (`key`) possible operations
             ...Object.keys(GROUP_CONFIGS)
               .filter((other) => other.startsWith(`${group} `))
               .map((other) => other.slice(group.length + 1)),
@@ -1416,7 +1440,7 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
 
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   ...LEAF_AND_GROUP_SPECS,
-  // root 段(1 段の一覧)。未知のコマンドの診断が「取りうるコマンド」を出す
+  // The root stage (the single-stage list). The unknown-command diagnostic prints "the possible commands
   [ROOT_SPEC_KEY]: {
     flags: [],
     positionals: [],
@@ -1427,16 +1451,19 @@ export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
 };
 
 /**
- * `maruhi run` が実行するコマンド列を確定する(**`--` の後ろだけ**)。
+ * Settles the command list `maruhi run` executes (**only what follows
+ * `--`**). The parser merges the positional arguments before and after
+ * `--` into one array (measured: upstream's `parseArgs` produces
+ * `[...result.arguments, ...afterEndOfOptions]`). So on the declaration
+ * alone, `maruhi run stray -- printenv` would disguise as running `stray`.
+ * As the implementation of ADR-0016 decision 8 (`--` is required, judged
+ * by reading `Stdio.args`), it also checks **that the count after `--`
+ * matches**.
  *
- * パーサは `--` の前後の位置引数を 1 つの配列にまとめる(実測: 上流の
- * `parseArgs` が `[...result.arguments, ...afterEndOfOptions]`)。したがって
- * 宣言だけでは `maruhi run stray -- printenv` が `stray` の実行に化ける。
- * ADR-0016 決定 8(`--` を必須とし、判定は `Stdio.args` を読む)の実装として、
- * **`--` の後ろの個数と一致すること**まで見る。
- *
- * 個数は**パーサが解決した配列と argv の位置**から出す(宣言の写しを持たない
- * — 値を取るフラグを足したときに黙ってずれる)。中身は診断に出さない。
+ * The count is derived from **the array the parser resolved and argv's
+ * position** (never a copy of the declaration — it would silently drift
+ * when a value-taking flag is added). The contents never appear in
+ * diagnostics.
  */
 function commandAfterTerminator(
   parsed: readonly string[],
@@ -1445,8 +1472,9 @@ function commandAfterTerminator(
     const stdio = yield* Stdio.Stdio;
     const argv = yield* stdio.args;
     const terminator = argv.indexOf("--");
-    // `--` が無い分岐では、可変長引数がそのまま余分な位置引数になる
-    // (`--env prod` の `prod` はフラグの値として食べられている)
+    // On the no-`--` branch, the variadic arguments stay as extra
+    // positional arguments (`--env prod`'s `prod` was eaten as the flag's
+    // value)
     const stray = terminator < 0 ? parsed.length : parsed.length - (argv.length - terminator - 1);
     if (stray > 0) {
       return yield* Effect.fail(
@@ -1460,7 +1488,7 @@ function commandAfterTerminator(
 }
 
 /**
- * `maruhi env create <id>` の本体(複合リクエスト — §12-4)。
+ * `maruhi env create <id>`'s body (the composite request — §12-4).
  */
 function envCreateCommand(
   flags: CommonFlags & { readonly name?: string | undefined },
@@ -1481,14 +1509,15 @@ function envCreateCommand(
       floor,
     });
     yield* io.log(
-      // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
-      // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
+      // The member count is the size of **the wrap set actually
+      // registered** (when rebuilt under a CAS retry, it may disagree with
+      // the run-start view's member count)
       `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${countNoun(created.memberCount, "current member")})`,
     );
   });
 }
 
-/** 位置引数で受けた環境 ID の形式検証(**指定値そのものはエラーに出さない**)。 */
+/** Format validation of an environment ID passed as a positional (**the given value itself never appears in the error**). */
 function requireEnvironmentId(
   value: string,
   example: string,
@@ -1502,11 +1531,11 @@ function requireEnvironmentId(
       );
 }
 
-/** 環境 ID の形(--env フラグ用の文面。指定値そのものはエラーに出さない)。 */
+/** The environment ID's shape (the wording for the --env flag. The given value itself never appears in the error). */
 const ENV_FLAG_SHAPE_MESSAGE =
   "Invalid environment ID for --env (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)";
 
-/** 未指定は許容し、指定時は [1, max] の整数のみ通す。 */
+/** Unspecified is allowed; when given, only an integer in [1, max] passes. */
 function outsideIntRange(value: number | undefined, max: number): boolean {
   if (value === undefined) {
     return false;
@@ -1525,8 +1554,9 @@ function parseAuditPage(
       ),
     );
   }
-  // カーソルは行 id(AUDIT_SPEC §5.1 row_id — 形式は api-schema の Schema と
-  // 共有)。前ページ末尾の「To continue:」案内が示す値をそのまま渡す
+  // The cursor is a row id (AUDIT_SPEC §5.1 row_id — the format is shared
+  // with api-schema's Schema). Pass the value the previous page's trailing
+  // "To continue:" guidance showed, as-is
   if (before !== undefined && !AUDIT_ROW_ID_PATTERN.test(before)) {
     return Effect.fail(
       usageError(
@@ -1545,12 +1575,12 @@ interface AuditFilterFlags {
   readonly var: string | undefined;
 }
 
-/** 未指定は許容し、指定時は非空かつ max 文字以内のみ通す。 */
+/** Unspecified is allowed; when given, only non-empty within max chars passes. */
 function boundedFlagValue(value: string | undefined, max: number): boolean {
   return value === undefined || (value.length > 0 && value.length <= max);
 }
 
-/** フィルタフラグの最初の書き方の誤り(なければ null)。 */
+/** The first misspelling among the filter flags (null when none). */
 function auditFilterProblem(values: AuditFilterFlags): string | null {
   if (!boundedFlagValue(values.event, 64)) {
     return "--event must be an event name (area.verb — e.g. var.version_pushed)";
@@ -1570,7 +1600,7 @@ function auditFilterProblem(values: AuditFilterFlags): string | null {
   return null;
 }
 
-/** list のフィルタフラグの検査(形式はネットワークより先に見る)。 */
+/** Checking list's filter flags (the format is checked before any network). */
 function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFilters, CliError> {
   const problem = auditFilterProblem(values);
   if (problem !== null) {
@@ -1586,10 +1616,11 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
 }
 
 /**
- * `--token-name` の長さ検査(**指定値そのものはエラーに出さない**)。
- *
- * 上限は `@maruhi/api-schema` の宣言と同じ定数を見る(CLI 側に数字を写すと、
- * 宣言を緩めたときにこちらだけ古い上限で拒否し続ける)。
+ * The length check of `--token-name` (**the given value itself never
+ * appears in the error**). The bound reads the same constant as
+ * `@maruhi/api-schema`'s declaration (transcribing the number onto the
+ * CLI side would keep refusing under a stale bound when the declaration
+ * is relaxed).
  */
 function requireTokenName(value: string | undefined): Effect.Effect<string, CliError> {
   const name = value ?? `cli:${hostname()}`;
@@ -1599,10 +1630,11 @@ function requireTokenName(value: string | undefined): Effect.Effect<string, CliE
 }
 
 /**
- * `--token-ttl-days` の範囲検査(AUTH_SPEC §6)。上限・既定は
- * `@maruhi/api-schema` の宣言と同じ定数を見る(requireTokenName と同じ理由:
- * 書き方の誤りはブラウザ承認の完走より前に落とす)。省略は undefined のまま
- * 返し、サーバー側の既定(90 日)に委ねる。
+ * The range check of `--token-ttl-days` (AUTH_SPEC §6). The bound and
+ * default read the same constants as `@maruhi/api-schema`'s declaration
+ * (same reason as requireTokenName: a misspelling drops before the
+ * browser approval completes). An omitted one is returned as undefined,
+ * left to the server-side default (90 days).
  */
 function requireTokenTtlDays(
   value: number | undefined,
@@ -1616,12 +1648,14 @@ function requireTokenTtlDays(
 }
 
 /**
- * `maruhi schema`(表示)の本体(bare `maruhi schema` と親ハンドラが共有 —
- * audit と同じ型)。**鍵なしクラス**(openMetadataEnvironment — メタデータ
- * のみ pull)で、**agent-gate は適用しない(許可側 — 設計文書 §1-1)**:
- * 出力は値ゼロ(名前・型・説明・必須・状態のみ)であり、ADR-0016 決定 7 の
- * 2 層ゲートの適用対象は「値を表示する系」に限られる。エージェント環境で
- * そのまま動くことが本機能の主用途(deny-list に含めないことはテストで固定)。
+ * `maruhi schema` (display)'s body (shared between bare `maruhi schema`
+ * and the parent handler — same shape as audit). **The keyless class**
+ * (openMetadataEnvironment — a metadata-only pull) and **agent-gate does
+ * not apply (the permissive side — design doc §1-1)**: the output carries
+ * zero values (names, types, descriptions, required, status only), and
+ * ADR-0016 decision 7's two-layer gate applies only to "value-displaying"
+ * commands. Running as-is in an agent environment is this feature's main
+ * use (not being on the deny-list is pinned by a test).
  */
 function runSchemaShow(values: {
   readonly server?: string | undefined;
@@ -1640,7 +1674,7 @@ function runSchemaShow(values: {
   });
 }
 
-/** `--type` の解釈(未指定 = keep・`none` = 明示クリア。**指定値そのものはエラーに出さない**)。 */
+/** Interpreting `--type` (unspecified = keep, `none` = an explicit clear. **The given value itself never appears in the error**). */
 function parseSchemaTypeFlag(
   value: string | undefined,
 ): Effect.Effect<FieldUpdate<MetaVarType>, CliError> {
@@ -1659,8 +1693,10 @@ function parseSchemaTypeFlag(
 }
 
 /**
- * `schema set` の欄指定の解釈(部分更新 §1-2 — 未指定 = keep、空へ戻すのは
- * 明示フラグのみ)。矛盾する指定(--required と --optional 等)は usage エラー。
+ * Interpreting `schema set`'s column specifications (partial update §1-2
+ * — unspecified = keep, only an explicit flag returns to empty). A
+ * contradictory specification (--required and --optional etc.) is a usage
+ * error.
  */
 function parseSchemaFieldUpdates(values: {
   readonly type?: string | undefined;
@@ -1695,7 +1731,7 @@ function parseSchemaFieldUpdates(values: {
   });
 }
 
-/** `schema set` の成功報告(型は宣言として表示 — 「verified」の語を使わない §14.3)。 */
+/** `schema set`'s success report (the type is displayed as a declaration — the word "verified" is never used, §14.3). */
 function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   const typeShown = summary.schema.varType === "" ? "-" : summary.schema.varType;
   if (summary.created) {
@@ -1704,7 +1740,7 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}, metaVersion=${summary.metaVersion})`;
 }
 
-/** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
+/** Validating a config key passed as a positional (**the given value itself never appears in the error**). */
 function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
   const key = asConfigKey(value);
   return key === null
@@ -1712,7 +1748,7 @@ function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
     : Effect.succeed(key);
 }
 
-/** GitHub login を取るフラグ(`--github` / `--from`)の形式検査(未指定 = null)。 */
+/** Format check of the flag taking a GitHub login (`--github` / `--from`) (unspecified = null). */
 function parseGithubLoginFlag(
   flagName: string,
   value: string | undefined,
@@ -1729,7 +1765,7 @@ function parseGithubLoginFlag(
       );
 }
 
-/** 裏付け元の設定(CRYPTO_SPEC §6.5 — 未設定 = github-signing-keys)。 */
+/** The backing-source setting (CRYPTO_SPEC §6.5 — unset = github-signing-keys). */
 const loadIdentityBacking: Effect.Effect<IdentityBacking, CliError, ConfigStore> = Effect.gen(
   function* () {
     const store = yield* ConfigStore;
@@ -1737,7 +1773,7 @@ const loadIdentityBacking: Effect.Effect<IdentityBacking, CliError, ConfigStore>
   },
 );
 
-/** `maruhi project verify`: チェーン検証 + 床・アンカー検査 + 状態表示。 */
+/** `maruhi project verify`: chain verification + floor / anchor checks + state display. */
 function projectVerify(
   serverFlag: string | undefined,
   projectFlag: string | undefined,
@@ -1747,18 +1783,20 @@ function projectVerify(
     const context = yield* openSession(serverFlag);
     const projectId = yield* resolveProjectId(projectFlag, context.config);
     const synced = yield* syncProject(context.client, projectId);
-    // チェーン床の検査(§6.3 規則 (a))も verify の一部
+    // The chain-floor check (§6.3 rule (a)) is also part of verify
     const checked = (yield* loadCheckedFloor(
       projectId,
       synced,
       syncProject(context.client, projectId),
     )).verified;
-    // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
+    // The mechanical matching of the invite-link anchor (§6.3 (a) / §6.5) is also part of verify
     yield* checkInviteAnchor(projectId, checked);
-    // 他メンバーのヘッド申告との照合(§6.3 ヘッドゴシップ / §6.6)も verify の
-    // 一部(矛盾申告 = split view の硬い証拠で中断・証拠保存)。提出は行わない
-    // (verify は master 鍵を要求しない読み取りコマンド)。床ヘッドの前進は
-    // attachProject と同じく reconcileGossip の中で全検査通過後に行う
+    // Matching against other members' head claims (§6.3 head gossip /
+    // §6.6) is also part of verify (a contradictory claim = hard evidence
+    // of a split view → abort and preserve the evidence). No submission
+    // happens (verify is a read command that does not require the master
+    // key). The floor head's advance happens inside reconcileGossip after
+    // every check passes, same as attachProject
     const verified = yield* reconcileGossip(
       projectId,
       checked,
@@ -1766,7 +1804,7 @@ function projectVerify(
     );
     yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
     yield* io.log(`head: ${verified.state.headHashHex}`);
-    // scope 列(2026-09-15 ES K4 — 裁定 M)。`maruhi member list` と同じ行形式
+    // The scope column (2026-09-15 ES K4 — ruling M). The same row format as `maruhi member list`
     yield* io.log(`Members (${verified.state.members.size}):`);
     for (const row of memberListRows(verified)) {
       yield* io.log(`  ${formatMemberListRow(row)}`);
@@ -1776,10 +1814,12 @@ function projectVerify(
         `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq})`,
       );
     }
-    // 未収束のローテーション義務(§7 — チェーン導出 + 検証済み削除の除外)も
-    // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
-    // 通信なしで確定する)。削除済み環境の検証失敗は「確定できません」の注意
-    // だけで verify 自体は成功扱い(チェーン検証は済んでいる)
+    // The unconverged rotation duties (§7 — chain-derived, verified
+    // deletions excluded) are also part of verify (the always-on warning —
+    // rotation-sweep.ts — detail display. With zero candidates it settles
+    // with no communication). A deleted environment's verification failure
+    // is only the caveat "could not be confirmed" — verify itself counts
+    // as successful (the chain verification is done)
     const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
     if (pending === null) {
       return;
@@ -1797,8 +1837,9 @@ function projectVerify(
 }
 
 /**
- * §7: 実行者の scope 外の義務環境は rotate できない — 失敗ではなく注記(常時警告が引き続き
- * 表示し、その環境を scope に持つメンバーの env rotate で収束する)。
+ * §7: a duty environment outside the performer's scope cannot be rotated
+ * — a note, not a failure (the always-on warning keeps displaying it, and
+ * an env rotate by a member whose scope covers it converges it).
  */
 function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<void, never, CliIo> {
   if (outOfScope.length === 0) {
@@ -1811,11 +1852,13 @@ function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<vo
 }
 
 /**
- * 発行契機 (iii) の提案(CRYPTO_SPEC §6.3): pull / push の成功後に基準
- * チェックポイントの鮮度(7 日超・未発行 = genesis から 7 日超)を検出したら
- * 提案を **Note 1 行**で出す。提案の判定失敗でコマンド本体の成功を覆さない
- * (提案は SHOULD の付随)。push ではアンカー更新の提案を
- * 同じ 1 行の末尾に同梱する(DP5 裁定 C — 2 行に分けない)。
+ * The proposal of issuance trigger (iii) (CRYPTO_SPEC §6.3): when a pull /
+ * push success detects staleness of the baseline checkpoint (over 7 days,
+ * or never issued = over 7 days since genesis), emit the proposal **as a
+ * 1-line Note**. A failed proposal judgment never overturns the command
+ * body's success (the proposal is a SHOULD attachment). On push, the
+ * anchor-update proposal is bundled into the end of the same line (DP5
+ * ruling C — never split into 2 lines).
  */
 function proposeCheckpointRefresh(
   context: Pick<ProjectContext, "client" | "verified" | "session">,
@@ -1835,7 +1878,7 @@ function proposeCheckpointRefresh(
   }).pipe(Effect.catch(() => Effect.void));
 }
 
-/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
+/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]` (§7 / §12-4). */
 function envRotateCommand(
   flags: CommonFlags & {
     readonly reason?: string | undefined;
@@ -1846,13 +1889,16 @@ function envRotateCommand(
   environmentId: EnvironmentId,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 同期設定(M1)は**ネットワークより先に**読む: 壊れたファイル・別プロジェクトの
-    // 設定の検出をエポックを進めた後ろに置かない(進めた後に落ちると、後始末の
-    // 不備でローテーションが失敗に見える)
+    // The sync config (M1) is read **before any network**: detecting a
+    // broken file or another project's config is never placed behind the
+    // epoch advance (failing after advancing would make the rotation look
+    // failed over a cleanup omission)
     const syncConfig = flags.config === undefined ? null : yield* loadSyncConfig(flags.config);
-    // 環境床(§6.3)を使うため環境コンテキストで開く(環境は位置引数で確定)。
-    // 収束系コマンドなので未収束義務の常時警告は抑制する(このコマンド自身の
-    // ローテーション報告が同じ事実を伝える — context.ts の OpenProjectOptions)
+    // Opened as an environment context to use the environment floor (§6.3)
+    // (the environment is fixed by the positional). Being a convergent
+    // command, the always-on warning of unconverged duties is suppressed
+    // (this command's own rotation report conveys the same fact —
+    // context.ts's OpenProjectOptions)
     const context = yield* openEnvironment(
       { ...flags, env: environmentId },
       { quietMandateWarning: true },
@@ -1865,10 +1911,11 @@ function envRotateCommand(
       verified: context.verified,
       environmentId,
       recipient: context.recipient,
-      // 未指定(undefined)と空文字列は**別物**として渡す: 空の `--reason` は
-      // 宣言(NonBlank)が exit 2 で落とすので、ここへ来る undefined は
-      // **`--reason` 自体が無い**実行だけ(env-rotate の checkReasonLength は
-      // 防衛線として残る)
+      // Unspecified (undefined) and an empty string are passed as
+      // **distinct values**: an empty `--reason` is dropped by the
+      // declaration (NonBlank) with exit 2, so an undefined reaching here
+      // is only a run **without `--reason` itself** (env-rotate's
+      // checkReasonLength stays as a defense line)
       reason: flags.reason,
       forceNewEpoch: flags.newEpoch === true,
       initManifest: flags.initManifest === true,
@@ -1877,34 +1924,39 @@ function envRotateCommand(
       resync: context.resync,
       floor: context.floorHandle,
     });
-    // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
-    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)
+    // "Was a new epoch requested" is fixed by the launch-time flag
+    // (--reason is required only on the path that creates a new epoch —
+    // env-rotate.ts's requireReason)
     const code = yield* reportRotation(
       environmentId,
       summary,
       flags.newEpoch === true || flags.reason !== undefined,
     );
     if (summary.mode === "rotated") {
-      // アンカー更新の提案(CRYPTO_SPEC §6.3 (b)): エポックが
-      // 進んだ = コミット済みアンカーのエポック床が古くなった。後始末より
-      // **前**に出す: 後始末が証拠で失敗しても、エポックが進んだ事実とアンカーの
-      // 陳腐化は変わらない
+      // The anchor-update proposal (CRYPTO_SPEC §6.3 (b)): an advanced
+      // epoch = the committed anchor's epoch floor went stale. Emitted
+      // **before** the cleanup: even when the cleanup fails on evidence,
+      // the fact the epoch advanced and the anchor's staleness do not
+      // change
       yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
     }
     if (syncConfig !== null) {
-      // 後始末: 受理された再暗号化の分だけレシートを新 version へ進める。
-      // 失敗は警告に留め、終了コードはローテーションの報告のまま(sync-rotate.ts)。
-      // レシート環境が回した環境と同じなら床ハンドルも同じものを使う(同じ環境に
-      // 2 つのハンドルを開かない)
+      // Cleanup: the receipt advances to the new version only for the
+      // accepted re-encryptions. A failure stays a warning and the exit
+      // code remains the rotation's report (sync-rotate.ts). When the
+      // receipt environment is the rotated environment itself, the same
+      // floor handle is reused (never open two handles on one
+      // environment)
       const receiptsFloor =
         syncConfig.receiptsEnvironment === environmentId
           ? context.floorHandle
           : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
       yield* advanceReceiptsAfterRotation({
         client: context.client,
-        // ローテーションでチェーンは前進している: 後始末は再同期した検証済みビュー
-        // (openEnvironment 時点のビューの延長であることを検査する)から始める。
-        // 再同期の通信失敗は後始末の内側で警告に畳む
+        // The rotation advanced the chain: the cleanup starts from the
+        // resynced verified view (checked to be an extension of
+        // openEnvironment's view). A resync communication failure is
+        // folded into a warning inside the cleanup
         verified: context.verified,
         recipient: context.recipient,
         resync: context.resync,
@@ -1922,10 +1974,12 @@ function envRotateCommand(
 }
 
 /**
- * `maruhi env diff <a> <b>`: 2 環境の**変数名の集合**を比較する(値は取得も
- * 復号もしない)。差分があっても終了コードは 0 のまま: 「差分あり」は成功した
- * 実行の**報告内容**であって実行の失敗ではなく、1 に混ぜると検証失敗・床違反
- * (= サーバー不正の証拠)や通信失敗と区別できなくなる。
+ * `maruhi env diff <a> <b>`: compares the two environments' **variable
+ * name sets** (values are neither fetched nor decrypted). A difference
+ * leaves the exit code 0: "a difference exists" is a **report content** of
+ * a successful run, not a run failure — mixing it into 1 would make it
+ * indistinguishable from a verification failure / floor violation (=
+ * evidence of a malicious server) or a communication failure.
  */
 function envDiffCommand(
   flags: CommonFlags,
@@ -1933,8 +1987,9 @@ function envDiffCommand(
   otherEnvironmentId: EnvironmentId,
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 前段(チェーン同期 + §6.3 検証)は 1 回だけ。master 鍵は要求しない
-    // (復号しないため — context.ts の openMetadataProjectWith)
+    // The prologue (chain sync + §6.3 verification) runs exactly once. The
+    // master key is not required (nothing is decrypted — context.ts's
+    // openMetadataProjectWith)
     const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
     const diff = yield* envDiffOp({
       client: context.client,
@@ -1942,8 +1997,9 @@ function envDiffCommand(
       resync: context.resync,
       first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
       second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
-      // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
-      // ヘッド**は pull / push と同じく前進させる。記録は pull ごと(envDiffOp)
+      // No environment-level meta floor is built (no values were read),
+      // but the **chain floor's head** advances the same as pull / push.
+      // Recording happens per pull (envDiffOp)
       commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
     });
     yield* reportEnvironmentDiff(diff);
@@ -1951,10 +2007,10 @@ function envDiffCommand(
 }
 
 /**
- * `maruhi ci run` の必須フラグの解決: config ファイルへ
- * フォールバックしない(CI ランナーに永続 config は無く、genesis 固定は
- * ワークフロー YAML のレビューに置く)。診断も「config を設定する」ではなく
- * 「フラグを書く」を言う。
+ * Resolving `maruhi ci run`'s required flags: never falls back to the
+ * config file (a CI runner has no persistent config, and pinning the
+ * genesis belongs to the workflow YAML's review). The diagnostic also
+ * says "write the flag", not "set it in config".
  */
 function requireCiFlag(
   value: string | undefined,
@@ -1964,8 +2020,8 @@ function requireCiFlag(
   if (value !== undefined) {
     return Effect.succeed(value);
   }
-  // `ci sync` に `--env` は無い(環境は同期設定のターゲットが決める)ので、直し方も
-  // コマンドごとに言う
+  // `ci sync` has no `--env` (the sync config's target decides the
+  // environment), so the fix is stated per command
   return Effect.fail(
     usageError(
       command === "ci run"
@@ -1975,14 +2031,14 @@ function requireCiFlag(
   );
 }
 
-/** `maruhi sync init` の必須フラグ(書き方の誤り = 2)。 */
+/** `maruhi sync init`'s required flags (a misspelling = 2). */
 function requireInitFlag(value: string | undefined, flag: string): Effect.Effect<string, CliError> {
   return value === undefined
     ? Effect.fail(usageError(`sync init requires ${flag} (pass --preset, --env, and --receipts)`))
     : Effect.succeed(value);
 }
 
-/** `maruhi ci run -- <cmd>` の本体(検証は ci-run.ts / lease-client.ts)。 */
+/** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
 function ciRunCommand(values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -1992,7 +2048,7 @@ function ciRunCommand(values: {
   readonly command: readonly string[];
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 形式検証はすべてネットワーク・鍵生成より先(既存コマンドと同じ規律)
+    // Every format check precedes network / key generation (the same discipline as the existing commands)
     const origin = yield* normalizeHttpOrigin(
       yield* requireCiFlag(values.server, "--server"),
       "the server URL",
@@ -2011,7 +2067,7 @@ function ciRunCommand(values: {
       origin,
       projectId: projectFlag,
       environmentId: envFlag,
-      // audience の既定はサーバーの正規化 origin(AUTH_SPEC §14-1 の推奨値)
+      // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
       audience: values.audience ?? origin,
       anchorPath: values.anchor,
       command: values.command,
@@ -2019,7 +2075,7 @@ function ciRunCommand(values: {
   });
 }
 
-/** `maruhi ci sync <target>` の本体(リースと同期は sync-ci.ts)。 */
+/** `maruhi ci sync <target>`'s body (the lease and the sync live in sync-ci.ts). */
 function ciSyncCommand(values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -2030,8 +2086,9 @@ function ciSyncCommand(values: {
   readonly target: string;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 形式検証と設定の読み込みはネットワーク・鍵生成より先(ci run と同じ規律)。
-    // `--env` は無い: 環境は同期設定のターゲットが決める
+    // The format checks and the config read precede network / key
+    // generation (the same discipline as ci run). There is no `--env`: the
+    // sync config's target decides the environment
     const origin = yield* normalizeHttpOrigin(
       yield* requireCiFlag(values.server, "--server", "ci sync"),
       "the server URL",
@@ -2057,8 +2114,9 @@ function ciSyncCommand(values: {
 }
 
 /**
- * `--environments dev,prod` の解釈(grant では必須 — 最小開示の既定として
- * 環境は明示指定。session-22 §2 の裁定)。空要素は書き間違いとして拒否する。
+ * Interpreting `--environments dev,prod` (mandatory on grant — the
+ * minimal-disclosure default is environments are explicitly listed.
+ * session-22 §2's ruling). An empty element is refused as a misspelling.
  */
 function parseEnvironmentsFlag(
   value: string | undefined,
@@ -2089,10 +2147,11 @@ function parseEnvironmentsFlag(
   return Effect.succeed(ids as readonly EnvironmentId[]);
 }
 
-/** `maruhi server grant --environments <ids> [--lease-policy <file>]`(§9 / §12-6)。 */
+/** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
 /**
- * 四眼(K6-K): `--expires <duration>` → 提案の期限と時計。方針が対象にしていない操作では
- * 読まれないが、形式の不備は通信前に usage(2)で落とす。
+ * Four-eyes (K6-K): `--expires <duration>` → the proposal's expiry and
+ * clock. Never read on an operation the policy doesn't target, but a
+ * malformed format drops as usage (2) before any communication.
  */
 function proposalInputOf(expires: string | undefined): Effect.Effect<ProposalInput, CliError> {
   const parsed = parseProposalExpiry(expires);
@@ -2103,7 +2162,7 @@ function proposalInputOf(expires: string | undefined): Effect.Effect<ProposalInp
   return Effect.succeed({ nowMs, expiresAtMs: nowMs + parsed.lifetimeMs });
 }
 
-/** 提案の残り票数の文言(「needs N more owner approval(s)」— 裁定 P8)。 */
+/** The wording of a proposal's remaining vote count ("needs N more owner approval(s)" — ruling P8). */
 function describeNeeded(view: ProposalView): string {
   if (view.needed === null) {
     return "the policy is off, so it cannot be approved (withdraw it)";
@@ -2113,8 +2172,9 @@ function describeNeeded(view: ProposalView): string {
 }
 
 /**
- * 提案した(または既に提案されていた)ことの報告(K6-A — 「追記した」と取り違えない形)。
- * 何も適用されていないことと、次に誰が何をするかを言う。
+ * Reporting that it was proposed (or was already proposed) (K6-A — a
+ * shape never mistaken for "appended"). States that nothing was applied
+ * and who does what next.
  */
 function reportProposed(
   io: CliIoShape,
@@ -2181,7 +2241,7 @@ function serverGrantCommand(
     yield* io.log(
       `Done: disclosure to server key ${summary.serverKeyFingerprintHex} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
     );
-    // §9: 開示中であることを常時明示する(失効経路もその場で案内する)
+    // §9: always indicate that it is being disclosed (the revocation path is also guided on the spot)
     yield* logNote(
       "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
     );
@@ -2189,7 +2249,7 @@ function serverGrantCommand(
   });
 }
 
-/** `maruhi server revoke [--fingerprint <hex>]`(§7 / §9)。 */
+/** `maruhi server revoke [--fingerprint <hex>]` (§7 / §9). */
 function serverRevokeCommand(
   flags: CommonFlags & {
     readonly fingerprint?: string | undefined;
@@ -2200,9 +2260,9 @@ function serverRevokeCommand(
     const io = yield* CliIo;
     const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
     const proposal = yield* proposalInputOf(flags.expires);
-    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
+    // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
     const context = yield* openProject(flags, { quietMandateWarning: true });
-    // 1 環境のローテーション(envRotateOp の再利用 — sweepRotateFor)
+    // One environment's rotation (reusing envRotateOp — sweepRotateFor)
     const outcome = yield* serverRevokeOp({
       client: context.client,
       verified: context.verified,
@@ -2225,7 +2285,7 @@ function serverRevokeCommand(
     if (exitCode === 0) {
       yield* io.log("Done: the revocation and the rotation of every environment completed");
     }
-    // 要ローテーションフラグの件数と導線(AUDIT_SPEC §4.1 の revoke 変種)
+    // The needs-rotation-flag count and route (the revoke variant of AUDIT_SPEC §4.1)
     if (summary.serverKeyFingerprintHex !== null) {
       yield* reportRotationFlagCount({
         client: context.client,
@@ -2237,7 +2297,7 @@ function serverRevokeCommand(
   });
 }
 
-/** revoke の追記結果の報告(sweep 共通部分は reportSweepOutcome が受け持つ)。 */
+/** Reporting revoke's append result (the sweep's shared part is carried by reportSweepOutcome). */
 function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effect<void, CliError> {
   if (summary.appended) {
     return io.log(
@@ -2245,8 +2305,9 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
     );
   }
   if (summary.serverKeyFingerprintHex !== null) {
-    // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
-    // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
+    // The target grant existed, but the CAS-conflict resync found it
+    // already revoked (a concurrent revoke). The fact that someone revoked
+    // the same key is operationally significant, so it is made explicit
     return io.log(
       `The targeted grant (FP=${summary.serverKeyFingerprintHex}) was already revoked by a concurrent run — skipping the append and proceeding to rotate every environment (§7)`,
     );
@@ -2256,7 +2317,7 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
   );
 }
 
-/** `maruhi invite create --role <r> [--env <id>]… [--github <login>]`(§15-2 発行 + §15-3 リンク組み立て)。 */
+/** `maruhi invite create --role <r> [--env <id>]… [--github <login>]` (§15-2 issuance + §15-3 link assembly). */
 function inviteCreateCommand(
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
@@ -2273,17 +2334,18 @@ function inviteCreateCommand(
         ),
       );
     }
-    // scope: `--env` 反復 = listed(昇順・重複拒否)、`--no-envs` = listed{}、省略 = all
-    // (裁定 K — `--all-envs` は置かない)
+    // scope: `--env` repetition = listed (ascending, duplicates refused),
+    // `--no-envs` = listed{}, omitted = all (ruling K — no `--all-envs`)
     const scope =
       (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ??
       ALL_SCOPE;
     const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
     const identityBacking = yield* loadIdentityBacking;
-    // 発行署名(CRYPTO_SPEC §6.5)は招待者のチェーン sig 鍵で作る = master 鍵が要る
+    // The issuance signature (CRYPTO_SPEC §6.5) is made with the inviter's chain sig key = requires the master key
     const context = yield* openProject({ server: flags.server, project: flags.project });
-    // リンクの `il`(§15-3): 自分の GitHub login の表示用スナップショット(/auth/me)。
-    // 取れなくても発行は成立する(受諾者側が儀式へ戻るだけ)
+    // The link's `il` (§15-3): a display snapshot of my GitHub login
+    // (/auth/me). Unfetchable still lets the issuance succeed (the
+    // acceptor just falls back to the ceremony)
     const inviterLogin =
       identityBacking === "none"
         ? null
@@ -2305,7 +2367,7 @@ function inviteCreateCommand(
   });
 }
 
-/** `invite accept` の入力拒否理由 → usage 文言。 */
+/** An `invite accept` input-rejection reason → the usage wording. */
 function acceptInputRejectionMessage(reason: InviteInputRejection): string {
   if (reason === "unsupported-version") {
     return "This invite link's format version is not supported. Ask the inviter to issue a new link with the current maruhi CLI (`maruhi invite create`), or update your CLI if it is older than theirs";
@@ -2317,10 +2379,10 @@ function acceptInputRejectionMessage(reason: InviteInputRejection): string {
 }
 
 /**
- * `invite accept` の入力(リンク)の解決。
- *
- * 入力は引数層から `Redacted` のまま届く(リンクはリンク鍵の種を内包する)。
- * 構文解釈は invite-link.ts の境界に任せ、ここでは剥がさない。
+ * Resolving `invite accept`'s input (the link). The input arrives from
+ * the argument layer still as `Redacted` (a link embeds the link-key
+ * seed). The syntax interpretation is left to invite-link.ts's boundary —
+ * it is not unwrapped here.
  */
 function resolveAcceptLink(
   rawTarget: Redacted.Redacted<string>,
@@ -2332,7 +2394,7 @@ function resolveAcceptLink(
   return Effect.succeed(parsed.link);
 }
 
-/** `maruhi invite accept <link>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
+/** `maruhi invite accept <link>` (§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5). */
 function inviteAcceptCommand(flags: {
   readonly server?: string | undefined;
   readonly target: Redacted.Redacted<string>;
@@ -2365,7 +2427,7 @@ function inviteAcceptCommand(flags: {
   });
 }
 
-/** `maruhi invite list`(受諾ブロックの §6.5 独立検証 + 発行ピン突合)。 */
+/** `maruhi invite list` (§6.5 independent verification of the acceptance blocks + the issuance-pin cross-check). */
 function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const context = yield* openMetadataProject(flags);
@@ -2377,13 +2439,14 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
       pins: loaded.pins,
       nowMs: Date.now(),
     });
-    // 署名検証失敗・ピン不一致は「読み取りの成功」ではなく証拠の検出 — 0 に
-    // しない(スクリプトが健全性チェックとして使える)
+    // A signature-verification failure or a pin mismatch is not "a
+    // successful read" but a detection of evidence — never 0 (a script can
+    // use it as a health check)
     return summary.integrityFailures > 0 ? 1 : 0;
   });
 }
 
-/** `maruhi device revoke` の報告(プロジェクトごとの失効 FP と sweep — K4-7 / K4-8)。 */
+/** `maruhi device revoke`'s report (the per-project revoked FPs and the sweep — K4-7 / K4-8). */
 function reportDeviceRevoke(
   summary: DeviceRevokeSummary,
 ): Effect.Effect<number, CliError, CliServices> {
@@ -2398,7 +2461,7 @@ function reportDeviceRevoke(
   });
 }
 
-/** 1 プロジェクトの失効結果の報告(終了コード: 追記失敗・sweep 失敗・rotate 失敗は 1)。 */
+/** Reporting one project's revocation result (exit code: an append failure, a sweep failure, a rotate failure = 1). */
 function reportRevokedProject(
   project: ProjectRevokeOutcome,
 ): Effect.Effect<number, CliError, CliServices> {
@@ -2413,7 +2476,7 @@ function reportRevokedProject(
       `${label}: revoked ${project.revoked.length === 0 ? "nothing (already revoked)" : project.revoked.join(", ")}`,
     );
     if (project.sweepFailed !== null) {
-      // 失効は載っている。義務の履行だけが残る(常時警告が引き続き表示する)
+      // The revocation is on the chain. What remains is only fulfilling the duty (the always-on warning keeps displaying it)
       yield* logWarning(
         `${label}: the rotation sweep after the revocation failed — ${project.sweepFailed}. The revocation itself is on the chain; the mandate stays listed as unconverged until \`maruhi env rotate <environment> --new-epoch --reason <text>\` is run for the affected environments`,
       );
@@ -2435,13 +2498,12 @@ function reportRevokedProject(
 }
 
 /**
- * sweep 結果(§7 の全環境走査)の報告と終了コードの導出(server revoke /
- * member remove / change-role 共通)。
- *
- * `alreadyRotatedBasis` は「どの時点より後のエポックなら回転済みと確認したか」
- * の言い分け(revoke = 失効・member = 義務エントリ)。報告の形と §7 の
- * 「rotate の失敗を黙ってスキップしない」規律は 1 か所に保つ — 二重に持つと
- * 片方だけ直る。
+ * Reporting the sweep result (the §7 all-environment scan) and deriving
+ * the exit code (shared by server revoke / member remove / change-role).
+ * `alreadyRotatedBasis` phrases "past which point an epoch was confirmed
+ * rotated" (revoke = the revocation, member = the duty entry). The report
+ * shape and §7's "never silently skip a failed rotate" discipline are
+ * kept in one place — held twice, only one would get fixed.
  */
 function reportSweepOutcome(
   sweep: SweepOutcome & {
@@ -2475,22 +2537,23 @@ function reportSweepOutcome(
       }
     }
     for (const failure of sweep.failed) {
-      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
-      // よる選択的なローテーション阻止を不可視にしない)
+      // §7: never silently skip a rotate refusal of an environment
+      // believed active (never make selective rotation blocking by a
+      // malicious server invisible)
       yield* logWarning(
         `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
       );
       exitCode = 1;
     }
     if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
-      // アンカー更新の提案 — sweep 全体で 1 行だけ出す
+      // The anchor-update proposal — emitted as one line across the whole sweep
       yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
     }
     return exitCode;
   });
 }
 
-/** `maruhi member add [invite-id]`(§6.5 の相互確認 + add_member + バックフィル)。 */
+/** `maruhi member add [invite-id]` (§6.5's mutual confirmation + add_member + the backfill). */
 function memberAddCommand(
   flags: CommonFlags & {
     readonly invite?: string | undefined;
@@ -2537,7 +2600,7 @@ function memberAddCommand(
   });
 }
 
-/** member add の結果報告と終了コード(バックフィル失敗 = 部分完了)。 */
+/** member add's result report and exit code (a backfill failure = a partial completion). */
 function reportMemberAdd(
   io: CliIoShape,
   summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
@@ -2566,14 +2629,14 @@ function reportMemberAdd(
   });
 }
 
-/** `maruhi member remove <user-id>`(§7 — 全環境の強制ローテーションを伴う)。 */
+/** `maruhi member remove <user-id>` (§7 — accompanied by the forced rotation of every environment). */
 function memberRemoveCommand(
   flags: CommonFlags & { readonly target: string; readonly expires?: string | undefined },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const proposal = yield* proposalInputOf(flags.expires);
-    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
+    // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
     const context = yield* openProject(flags, { quietMandateWarning: true });
     const outcome = yield* memberRemoveOp({
       client: context.client,
@@ -2585,7 +2648,7 @@ function memberRemoveCommand(
       rotateWith: (reason) => sweepRotateFor(context, reason),
       proposal,
     });
-    // 自己 remove の提案(K6-N′): 提案は適用ではないが、承認者に頼む前に帰結を本人に見せる
+    // Proposing a self-remove (K6-N′): a proposal is not an application, but the consequence is shown to the person before asking an approver
     if (outcome.kind === "proposed" && flags.target === context.session.userId) {
       yield* logNote(
         "this proposal removes you — once an owner approves it, you lose access to the project",
@@ -2611,8 +2674,9 @@ function memberRemoveCommand(
             "Done: the member removal and the rotation of every environment in the target's scope completed",
           );
         }
-        // 要ローテーションフラグの件数と導線(AUDIT_SPEC §4.1。ローテーションは
-        // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
+        // The needs-rotation-flag count and route (AUDIT_SPEC §4.1. A
+        // rotation only distributes a new DEK — an already-read value
+        // itself cannot be un-read)
         yield* reportRotationFlagCount({
           client: context.client,
           projectId: context.projectId,
@@ -2624,7 +2688,7 @@ function memberRemoveCommand(
   });
 }
 
-/** 提案になった(K6-A)なら報告して 0、適用されたなら後段の報告へ。 */
+/** If it became a proposal (K6-A), report and exit 0; if applied, continue to the aftermath report. */
 function unlessProposed<S>(
   io: CliIoShape,
   outcome: MemberOpOutcome<S>,
@@ -2636,9 +2700,10 @@ function unlessProposed<S>(
 }
 
 /**
- * `maruhi member change-role <user-id> [--role <r>] [--env <id>]… [--all-envs]`: 新
- * (role, scope) の全置換(CRYPTO_SPEC §6.2)。省略は据え置き(設計録 K4-A)。拡大分は
- * バックフィル、降格 / 縮小分は §7 のローテーション義務。
+ * `maruhi member change-role <user-id> [--role <r>] [--env <id>]…
+ * [--all-envs]`: the full replacement of (role, scope) (CRYPTO_SPEC
+ * §6.2). An omission is kept as-is (design record K4-A). The widened part
+ * is backfilled; the demoted / narrowed part carries §7's rotation duty.
  */
 function memberChangeRoleCommand(
   flags: Omit<CommonFlags, "env"> & {
@@ -2654,7 +2719,7 @@ function memberChangeRoleCommand(
     const io = yield* CliIo;
     const request = yield* parseChangeRoleRequest(flags);
     const proposal = yield* proposalInputOf(flags.expires);
-    // 収束系コマンド: 未収束義務の常時警告は抑制(降格 / 縮小の sweep 報告が担う)
+    // A convergent command: the always-on warning of unconverged duties is suppressed (the demotion / narrowing sweep report carries it)
     const context = yield* openProject(
       { server: flags.server, project: flags.project },
       { quietMandateWarning: true },
@@ -2688,7 +2753,7 @@ function memberChangeRoleCommand(
   });
 }
 
-/** change-role の適用後段の報告(直接追記と、承認者の履行〔approval approve〕が共有する)。 */
+/** Reporting change-role's post-application stage (shared by the direct append and the approver's fulfillment [approval approve]). */
 function reportRoleChangeFulfilment(
   io: CliIoShape,
   summary: RoleChangeFulfilment,
@@ -2718,8 +2783,9 @@ function reportRoleChangeFulfilment(
 }
 
 /**
- * change-role の入力: `--role` / `--env`… / `--all-envs` の少なくとも 1 つ(省略は
- * 据え置き — 設計録 K4-A)。形式の不備は usage(2)で通信前に落とす。
+ * change-role's input: at least one of `--role` / `--env`… / `--all-envs`
+ * (an omission is kept as-is — design record K4-A). A malformed format
+ * drops as usage (2) before any communication.
  */
 function parseChangeRoleRequest(flags: {
   readonly role?: string | undefined;
@@ -2747,15 +2813,17 @@ function parseChangeRoleRequest(flags: {
   });
 }
 
-/** change-role の拡大分バックフィルの報告(失敗 = 部分完了 → 1)。 */
+/** Reporting change-role's widening backfill (a failure = a partial completion → 1). */
 function reportScopeBackfill(
   io: CliIoShape,
   summary: RoleChangeFulfilment,
   rerunCommand: string,
 ): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
-    // scope 外に残る拡大分の注記は、自分の scope 内のバックフィルが無い場合にも出す
-    // (Cursor Bugbot 指摘: listed admin が他人の拡大の後に再実行する主経路)
+    // The note of the widenings remaining outside scope is emitted even
+    // when no backfill exists within my scope (Cursor Bugbot's catch: the
+    // main path is a listed admin re-running after someone else's
+    // widening)
     if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
       yield* logWarning(
         `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
@@ -2776,7 +2844,7 @@ function reportScopeBackfill(
   });
 }
 
-/** change-role の義務(降格 / 縮小)の説明行(sweep 報告の前置き)。 */
+/** The explanation line of change-role's duties (demotion / narrowing) (the sweep report's preamble). */
 function reportChangeRoleMandates(
   io: CliIoShape,
   summary: RoleChangeFulfilment,
@@ -2796,10 +2864,11 @@ function reportChangeRoleMandates(
 }
 
 /**
- * `maruhi member list [--json]`: 検証済みチェーンのメンバー(user id・role・scope・鍵 FP)。
- * 値ゼロなので agent-gate(ensureValueDisplayAllowed)は掛けない(設計録 裁定 M /
- * K4-E — `maruhi schema` と同じ許可側)。master 鍵も要求しない(project verify と同じ
- * 鍵なしクラス)。
+ * `maruhi member list [--json]`: the verified chain's members (user id,
+ * role, scope, key FPs). Zero values, so the agent-gate
+ * (ensureValueDisplayAllowed) is not applied (design record ruling M /
+ * K4-E — the same permissive side as `maruhi schema`). The master key is
+ * not required either (the same keyless class as project verify).
  */
 function memberListCommand(
   flags: CommonFlags & { readonly json: boolean },
@@ -2822,11 +2891,11 @@ function memberListCommand(
 }
 
 /* -------------------------------------------------------------------------- */
-/* 四眼(CRYPTO_SPEC §6.2 — PF1 K6): approval list / show / approve / withdraw、  */
-/* project policy approvals。値ゼロなので agent-gate は掛けない(設計録 K6-E)  */
+/* Four-eyes (CRYPTO_SPEC §6.2 — PF1 K6): approval list / show / approve / withdraw, */
+/* project policy approvals. Zero values, so the agent-gate is not applied (design record K6-E) */
 /* -------------------------------------------------------------------------- */
 
-/** 1 提案の要約行(`approval list`)。 */
+/** The summary line of one proposal (`approval list`). */
 function formatProposalRow(view: ProposalView): string {
   const p = view.proposal;
   const votes = view.required === null ? "policy off" : `${view.votes}/${view.required} approvals`;
@@ -2838,7 +2907,7 @@ function formatProposalRow(view: ProposalView): string {
   return `${p.proposalHashHex.slice(0, 12)}…\tseq=${p.proposalSeq}\tby ${displayText(p.proposerUserId)}\t${describeInnerOperation(p.inner)}\t${votes}\texpires ${formatUtcMinutes(p.expiresAtMs)}${flags.length === 0 ? "" : `\t[${flags.join(", ")}]`}`;
 }
 
-/** `--json` の 1 文書(機械可読 — K6-O。値ゼロ)。 */
+/** One `--json` document (machine-readable — K6-O. Zero values). */
 function approvalListJson(
   policy: Parameters<typeof describePolicy>[0],
   views: readonly ProposalView[],
@@ -2871,8 +2940,9 @@ function approvalListJson(
 }
 
 /**
- * 既に足りている pending 提案の案内(K5-L / K6 — `required_approvals` 引き下げ後): 次の
- * approve で完成する・完成させられるのは未投票の owner だけ。
+ * The guidance for an already-satisfied pending proposal (K5-L / K6 —
+ * after the `required_approvals` reduction): the next approve completes
+ * it — only a not-yet-voted owner can complete it.
  */
 function readyNote(view: ProposalView): string | null {
   if (!view.target || view.expired || view.needed !== 0) {
@@ -2885,7 +2955,7 @@ function readyNote(view: ProposalView): string | null {
   return `${view.proposal.proposalHashHex.slice(0, 12)}… already has enough recounted approvals under the current policy — the next approve applies it; ${eligible}`;
 }
 
-/** `maruhi approval list [--json]`(検証済みチェーンの pending — K5-M。票数は再集計)。 */
+/** `maruhi approval list [--json]` (the verified chain's pending — K5-M. Vote counts are re-tallied). */
 function approvalListCommand(
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.Effect<void, CliError, CliServices> {
@@ -2913,7 +2983,7 @@ function approvalListCommand(
   });
 }
 
-/** `maruhi approval show <id>`(提案者・内側 op・期限・投票者・自分が approve できるか)。 */
+/** `maruhi approval show <id>` (the proposer, the inner op, the expiry, the voters, whether I can approve). */
 function approvalShowCommand(
   flags: CommonFlags & { readonly ref: string },
 ): Effect.Effect<void, CliError, CliServices> {
@@ -2928,14 +2998,15 @@ function approvalShowCommand(
     for (const line of proposalDetailLines(view)) {
       yield* io.log(line);
     }
-    // 承認者側の鍵 FP 再登録の警告(K6-I′ — 提案者側の K6-I と同じ述語・文言)
+    // The approver-side key-FP re-registration warning (K6-I′ — same predicate and wording as the proposer-side K6-I)
     if (view.proposal.inner.op === "add_member") {
       for (const reuse of keyReuseOf(context.verified, view.proposal.inner.payload)) {
         yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
       }
     }
-    // 票の資格は署名する端末の実効 role(DK K4)。鍵なし実行(MARUHI_TOKEN)では端末が
-    // 定まらないので、その旨だけ告げる(show は鍵を要求しないコマンドのまま)
+    // A vote's eligibility is the signing device's effective role (DK
+    // K4). On a keyless run (MARUHI_TOKEN) no device is determined, so
+    // only that is stated (show stays a key-free command)
     const localKeys = yield* loadMasterKeys(context.session).pipe(
       Effect.catch(() => Effect.succeed(null)),
     );
@@ -2954,7 +3025,7 @@ function approvalShowCommand(
   });
 }
 
-/** `approval show` の詳細行(提案者・内側 op・期限・票 — 純関数)。 */
+/** `approval show`'s detail lines (the proposer, the inner op, the expiry, the votes — a pure function). */
 function proposalDetailLines(view: ProposalView): readonly string[] {
   const p = view.proposal;
   const lapsed = p.approvals.filter((vote) => !view.voters.includes(vote.userId));
@@ -2983,7 +3054,7 @@ function proposalDetailLines(view: ProposalView): readonly string[] {
   ];
 }
 
-/** 「あなたは approve できるか」の行(K5-L の案内を含む)。 */
+/** The "can you approve" line (including K5-L's guidance). */
 function eligibilityLine(
   verified: Parameters<typeof voteEligibility>[0],
   userId: string,
@@ -3009,7 +3080,7 @@ function eligibilityLine(
   return `  you:             can approve — after yours it still ${describeNeeded(afterMine)}: ${command}`;
 }
 
-/** 承認者の履行のうち sweep(remove / revoke)の報告(前置き → sweep → 完了行)。 */
+/** Reporting the sweep part of the approver's fulfillment (remove / revoke) (preamble → sweep → the completion line). */
 function reportFulfilledSweep(
   io: CliIoShape,
   input: {
@@ -3033,7 +3104,7 @@ function reportFulfilledSweep(
   });
 }
 
-/** 承認者の履行(承認項目 22)の報告と終了コード(内側 op の種類ごと)。 */
+/** Reporting the approver's fulfillment (approval item 22) and the exit code (per inner op kind). */
 const FULFILMENT_REPORTERS: {
   readonly [K in Fulfilment["kind"]]: (
     io: CliIoShape,
@@ -3089,7 +3160,7 @@ function reportFulfilment(
   io: CliIoShape,
   fulfilment: Fulfilment,
 ): Effect.Effect<number, CliError, CliServices> {
-  // 網羅 Record は kind ごとに引数の型が狭まる(Extract)が、共通の呼び出し口では広い型で呼ぶ
+  // An exhaustive Record narrows the argument type per kind (Extract), but the shared call site calls it with the wide type
   const report = FULFILMENT_REPORTERS[fulfilment.kind] as (
     io: CliIoShape,
     fulfilment: Fulfilment,
@@ -3097,13 +3168,13 @@ function reportFulfilment(
   return report(io, fulfilment);
 }
 
-/** `maruhi approval approve <id>`(署名 → 完成なら履行 — K6-B / 承認項目 22)。 */
+/** `maruhi approval approve <id>` (sign → fulfill if complete — K6-B / approval item 22). */
 function approvalApproveCommand(
   flags: CommonFlags & { readonly ref: string },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 完成時の sweep 報告が未収束義務を担うので常時警告は抑制(収束系コマンドと同じ)
+    // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
     const context = yield* openProject(flags, { quietMandateWarning: true });
     const outcome = yield* approveProposalOp({
       client: context.client,
@@ -3138,7 +3209,7 @@ function approvalApproveCommand(
   });
 }
 
-/** `maruhi approval withdraw <id>`(提案者または owner — K6-L)。 */
+/** `maruhi approval withdraw <id>` (the proposer or an owner — K6-L). */
 function approvalWithdrawCommand(
   flags: CommonFlags & { readonly ref: string },
 ): Effect.Effect<void, CliError, CliServices> {
@@ -3164,7 +3235,7 @@ function approvalWithdrawCommand(
   });
 }
 
-/** `--ops a,b` の解析(閉集合 — typo は usage エラー。昇順・重複なし)。 */
+/** Parsing `--ops a,b` (a closed set — a typo is a usage error. Ascending, no duplicates). */
 function parsePolicyOps(
   text: string | undefined,
 ): Effect.Effect<readonly ApprovalTargetOp[], CliError> {
@@ -3188,7 +3259,7 @@ function parsePolicyOps(
   return Effect.succeed(ops.toSorted());
 }
 
-/** `--required N` / `--off` → 方針要求(どちらも無ければ null = 表示のみ)。 */
+/** `--required N` / `--off` → the policy request (neither = null = display only). */
 function parsePolicyRequest(flags: {
   readonly required?: string | undefined;
   readonly ops?: string | undefined;
@@ -3219,9 +3290,11 @@ function parsePolicyRequest(flags: {
 }
 
 /**
- * `maruhi project policy approvals [--required N [--ops …]] [--off]`(承認項目 17 / K6-H):
- * フラグなし = 現方針の表示(鍵なし)。有効化 / 変更 / オフは owner の署名。方針が有効な
- * 間は set_approval_policy 自身が四眼の対象なので提案になる(CRYPTO_SPEC §6.2)。
+ * `maruhi project policy approvals [--required N [--ops …]] [--off]`
+ * (approval item 17 / K6-H): no flags = display the current policy
+ * (keyless). Enable / change / off are an owner's signature. While the
+ * policy is enabled, set_approval_policy itself is a four-eyes target, so
+ * it becomes a proposal (CRYPTO_SPEC §6.2).
  */
 function projectPolicyApprovalsCommand(
   flags: CommonFlags & {
@@ -3278,8 +3351,9 @@ function projectPolicyApprovalsCommand(
 }
 
 /**
- * 有効化の運用前提の案内(承認項目 17 の所有者選択 (i) — 案内に留め、プロンプトにしない):
- * owner ≥ required + 1 と、全 owner のリカバリー登録。
+ * The guidance of the enablement's operational prerequisites (the owner
+ * selection (i) of approval item 17 — kept as guidance, never a prompt):
+ * owner ≥ required + 1, and every owner's recovery registration.
  */
 function warnPolicyAvailability(
   verified: Parameters<typeof proposalViews>[0],
@@ -3302,14 +3376,17 @@ function warnPolicyAvailability(
 }
 
 /**
- * コマンド本体。ハンドラは `Effect<void>` しか返せない(`Command.runWith` が
- * 値を捨てる)ので、子プロセスの終了コードは `onExitCode` で持ち出す。
+ * The command body. Since the handler can only return `Effect<void>`
+ * (`Command.runWith` discards the value), the child process's exit code is
+ * carried out via `onExitCode`.
  */
 /**
- * `maruhi sync` 共通の前段: 設定 → ターゲット → プロジェクト(設定の `project`
- * とフラグの照合)→ 同期元 / レシート環境の床ハンドル。config はここで 1 回だけ
- * 読む。プロジェクト前段は 1 回(2 環境を別々に開いて食い違う 2 つの検証済み
- * ビューで比較しない — env diff と同じ理由)。
+ * `maruhi sync`'s shared prologue: config → target → project (matching
+ * the config's `project` against the flag) → the floor handles of the
+ * sync-source / receipt environments. The config is read exactly once
+ * here. The project prologue happens once (never compare two verified
+ * views that disagree by opening two environments separately — same
+ * reason as env diff).
  */
 function openSyncTarget(values: {
   readonly server: string | undefined;
@@ -3318,7 +3395,7 @@ function openSyncTarget(values: {
   readonly target: string;
 }) {
   return Effect.gen(function* () {
-    // 設定はネットワークより先に読む(壊れたファイルの検出を往復の後ろに置かない)
+    // The config is read before any network (a broken file's detection is never placed behind a round trip)
     const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
     const target = yield* requireSyncTarget(config, values.target);
     yield* checkConfigProject(config, values.project);
@@ -3328,9 +3405,10 @@ function openSyncTarget(values: {
     });
     const sourceFloor = yield* floorHandleFor(context, target.environment);
     const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
-    // http ドライバの統合トークンの環境。同期元・レシート環境と同じなら**同じ床
-    // ハンドル**を使う(同じ環境に 2 つのハンドルを持つと、トークンの pull で前進した
-    // 床をレシートの push が知らない)
+    // The http driver's integration-token environment. When it equals
+    // the sync-source / receipt environment, **the same floor handle** is
+    // used (holding two handles on one environment would leave the
+    // receipt's push unaware of the floor the token's pull advanced)
     const tokenFloor =
       target.driver.kind !== "http"
         ? null
@@ -3347,9 +3425,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const pull = Command.make("pull", pullConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      // 値の表示拒否はコマンド入口 = **復号前**に検査する(環境全体を復号して
-      // から拒否しない = 復号された平文をそもそも作らない)。復号後の
-      // showValues にも同じ検査があり、そちらは防衛線(display.ts)
+      // The value-display refusal is the command entry = checked **before
+      // decryption** (never decrypt the whole environment first and then
+      // refuse = never build decrypted plaintext at all). The same check
+      // also exists in the post-decryption showValues — that one is a
+      // defense line (display.ts)
       if (values.show) {
         yield* ensureValueDisplayAllowed;
       }
@@ -3361,7 +3441,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         recipient: context.recipient,
         resync: context.resync,
         floor: context.floorHandle,
-        // 同じ人の他の端末の欠けたエポックを補う(DK K11-4 — pull だけ)
+        // Filling the missing epochs of my other devices (DK K11-4 — pull only)
         fillOwnDeviceGaps: { signingKeyPair: context.masterKeys.sigKeyPair },
       });
       yield* logWarnings(pulled.warnings);
@@ -3376,16 +3456,18 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       for (const variable of pulled.variables) {
         yield* io.log(formatPulledLine(variable));
       }
-      // declared(値なしの宣言 — §4.2 レイアウト v2)はメタデータ行として列挙
-      // する(値・バージョンは存在しない。schema の詳細は `maruhi schema`)
+      // declared (valueless declarations — §4.2 layout v2) are listed as
+      // metadata rows (no value or version exists. The schema's detail is
+      // `maruhi schema`)
       for (const declared of pulled.declared) {
         yield* io.log(`${displayText(declared.name)}\t(declared — no value set)`);
       }
       if (values.show) {
         yield* showValues(pulled.variables);
       }
-      // 発行契機 (iii)(CRYPTO_SPEC §6.3): pull 成功時の基準チェックポイントの
-      // 鮮度検出。提案のみ(自動発行しない)
+      // Issuance trigger (iii) (CRYPTO_SPEC §6.3): detecting the baseline
+      // checkpoint's staleness on a successful pull. Proposal only (never
+      // auto-issued)
       yield* proposeCheckpointRefresh(context, { includeAnchor: false });
     }),
   ).pipe(
@@ -3397,7 +3479,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const run = Command.make("run", runConfig, (values) =>
     Effect.gen(function* () {
       const { command: parsed, ...flags } = values;
-      // 通信・復号より前(コマンド本体の先頭)で落とす
+      // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
       const context = yield* openEnvironment(flags);
       const pulled = yield* pullVariables({
@@ -3409,13 +3491,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         floor: context.floorHandle,
       });
       yield* logWarnings(pulled.warnings);
-      // presence fail-fast(設計文書 §1-4 — 裁定 CT / CU): required = true の
-      // declared が検証済み集合にあれば、子プロセスを起動せず型付きエラー
+      // The presence fail-fast (design doc §1-4 — rulings CT / CU): when a
+      // required = true declared is in the verified set, fail with a typed
+      // error without spawning the child process
       yield* enforceDeclaredPresence(pulled.declared);
-      // type は advisory(§14.3-7)— 不一致は警告のみで実行続行
+      // type is advisory (§14.3-7) — a mismatch warns only and the run continues
       yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
-      // 環境変数名は検証済みステートメント経由(§4.2 / §12-7)。実行制御系
-      // 変数名 denylist(run.ts)は検証済み name に適用される防衛層
+      // Environment-variable names go through verified statements (§4.2 /
+      // §12-7). The execution-control variable-name denylist (run.ts) is a
+      // defense layer applied to the verified name
       onExitCode(yield* runOp({ command, variables: pulled.variables }));
     }),
   ).pipe(
@@ -3432,7 +3516,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const agent = Command.make("agent", agentConfig, (values) =>
     Effect.gen(function* () {
-      // 通信も鍵も無い経路だが、`--` の規律は run と同じ(書き方の誤りは先に落とす)
+      // A path with neither communication nor keys, but the `--` discipline is the same as run's (a misspelling drops first)
       const command = yield* commandAfterTerminator(values.command);
       const keyTtl =
         values["key-ttl"] === undefined
@@ -3450,15 +3534,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const push = Command.make("push", pushConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      // 同期設定は**ネットワークより先に**読む: 壊れたファイル・明示された
-      // 別プロジェクトの設定の検出を push の後ろに置かない(SY2 第 2 段 2b の裁定 B と同じ)
+      // The sync config is read **before any network**: detecting a broken
+      // file or an explicitly-given other project's config is never placed
+      // behind the push (same as SY2 stage 2 2b's ruling B)
       const syncSetup = yield* loadPushSyncConfig({
         config: values.config,
         noSync: values["no-sync"],
       });
       const context = yield* openEnvironment(values);
-      // 後始末の内容は push の**前**に決める(明示した設定の `project` の食い違いは
-      // 書き方の誤り = 2 で、push は送られない)
+      // The cleanup's contents are decided **before** the push (a
+      // disagreement with the explicitly-given config's `project` is a
+      // misspelling = 2, and the push is not sent)
       const syncDecision =
         syncSetup === null
           ? null
@@ -3467,8 +3553,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
               environmentId: context.environmentId,
               name: values.name,
             });
-      // stdin は平文が素の bytes で入ってくる起点。ここで包み、以降は
-      // Redacted としてしか流さない(剥がすのは push.ts の暗号境界のみ)
+      // stdin is the origin where plaintext enters as raw bytes. Wrapped
+      // here and flows only as a Redacted from now on (unwrapped only at
+      // push.ts's encryption boundary)
       const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
         label: "variable-value",
       });
@@ -3480,8 +3567,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         value,
         verified: context.verified,
         resync: context.resync,
-        // 値署名(§4.1)/ 作成時のステートメント著者署名(§4.2):
-        // writer / author = 自分の内部 user_id、鍵 = master sig 鍵
+        // The value signature (§4.1) / the creation-time statement author
+        // signature (§4.2): writer / author = my internal user_id, key =
+        // the master sig key
         writerUserId: context.session.userId,
         signingKey: context.masterKeys.sigKeyPair.privateKey,
         floor: context.floorHandle,
@@ -3490,13 +3578,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* io.log(
         `Pushed ${displayText(values.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
       );
-      // 発行契機 (iii)(CRYPTO_SPEC §6.3): push 成功時の基準チェックポイントの
-      // 鮮度検出。アンカー更新の提案は同じ導線に同梱する
-      // (裁定は docs/notes/session-35.md)
+      // Issuance trigger (iii) (CRYPTO_SPEC §6.3): detecting the baseline
+      // checkpoint's staleness on a successful push. The anchor-update
+      // proposal rides the same route (the ruling is
+      // docs/notes/session-35.md)
       yield* proposeCheckpointRefresh(context, { includeAnchor: true });
       if (syncSetup !== null && syncDecision !== null) {
-        // 後始末: `onPush` を持つターゲットへ直接 apply するか CI を起動する。
-        // 失敗は警告に留め、終了コードは push のまま(証拠だけは失敗 — sync-push.ts)
+        // Cleanup: apply directly to targets carrying `onPush`, or launch
+        // CI. A failure stays a warning and the exit code stays push's
+        // (only the evidence fails — sync-push.ts)
         yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
       }
     }),
@@ -3508,17 +3598,20 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const login = Command.make("login", loginConfig, (values) =>
     Effect.gen(function* () {
-      // **どの通信よりも先**に見る。上限は api-schema と共有する
-      // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は start の
-      // encode 失敗(接続失敗と紛らわしい診断)として現れる
+      // Checked **before any communication**. The bound is shared with
+      // api-schema (MAX_TOKEN_NAME_LENGTH). Without it, a too-long name
+      // surfaces as start's encode failure (a diagnostic confusingly close
+      // to a connection failure)
       const tokenName = yield* requireTokenName(values["token-name"]);
       const expiresInDays = yield* requireTokenTtlDays(values["token-ttl-days"]);
-      // --show-token は発行した PAT の生値を端末へ出す(AUTH_SPEC §6 の
-      // 「発行時の端末表示 1 箇所」— 裁定 CK)。表示可否は値表示と同じ
-      // fail-closed の 2 層ゲート(ADR-0016 決定 7)で、**どの通信よりも前**に
-      // 判定する: 拒否される環境でブラウザ承認を完走させると、同名ローテー
-      // ションで旧トークンだけ失効し、新しい生値は得られないまま終わる
-      // (置き換え対象の CI トークンを壊すだけの最悪の失敗形)
+      // --show-token prints the issued PAT's raw value to the terminal
+      // (AUTH_SPEC §6's "one place of terminal display at issuance" —
+      // ruling CK). The displayability is judged by the same fail-closed
+      // two-layer gate as value display (ADR-0016 decision 7), **before
+      // any communication**: on an environment where it is refused, a
+      // completed browser approval would revoke only the old token through
+      // a same-name rotation and end with no new raw value obtained (the
+      // worst failure shape — just breaking the CI token to be replaced)
       if (values["show-token"]) {
         yield* ensureValueDisplayAllowed;
       }
@@ -3530,9 +3623,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         origin,
         tokenName,
         showToken: values["show-token"],
-        // 既定名の判定は解決後の実名で行う(明示的に cli:<hostname> を渡した
-        // 場合も既定名扱い — 素の再ログインが同名ローテーションになる事実で
-        // 分岐する。裁定 CM)
+        // The default-name judgment uses the resolved actual name
+        // (explicitly passing cli:<hostname> also counts as the default
+        // name — the branch keys on the fact that a plain re-login becomes
+        // a same-name rotation. Ruling CM)
         tokenNameIsDefault: tokenName === `cli:${hostname()}`,
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
         ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
@@ -3566,7 +3660,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const rotationDismiss = Command.make("dismiss", rotationDismissConfig, (values) =>
     Effect.gen(function* () {
-      // 対象の形式はネットワークより先に検査する
+      // The targets' format is checked before any network
       const environmentId = values.env;
       if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
         return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
@@ -3577,7 +3671,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           usageError("Invalid variableId (see `maruhi rotation list` for the current targets)"),
         );
       }
-      // 要求の形(--all と変数 id の矛盾・対象の欠落)も通信より前に確定する
+      // The request's shape (an --all / variable-id contradiction, a missing target) is settled before communication too
       const request = yield* parseDismissRequest({
         all: values.all,
         environmentId: environmentId ?? null,
@@ -3606,19 +3700,20 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // list / dismiss とも master 鍵を要求しない(フラグは非機密メタデータで、
-  // 名前解決も検証済みステートメントの読み取りのみ — project verify と同じ
-  // 鍵なしクラス)。dismiss の権限(admin 以上 × admin スコープ)はサーバー側が
-  // 強制する
+  // Neither list nor dismiss requires the master key (the flags are
+  // non-secret metadata, and the name resolution is only reading verified
+  // statements — the same keyless class as project verify). dismiss's
+  // authority (admin or above × admin scope) is enforced server-side
   const rotation = Command.make("rotation").pipe(
     Command.withDescription("Manage rotation flags (list / dismiss)"),
     Command.withSubcommands([rotationList, rotationDismiss]),
   );
 
   /**
-   * audit list の本体(bare `maruhi audit` と `maruhi audit list` が共有する)。
-   * master 鍵を要求しない(監査行は非機密メタデータ — rotation list と同じ
-   * 鍵なしクラス)。可視性クラス・invite.* の権限軸はサーバー側が強制する。
+   * audit list's body (shared by bare `maruhi audit` and `maruhi audit
+   * list`). The master key is not required (audit rows are non-secret
+   * metadata — the same keyless class as rotation list). The visibility
+   * class and the invite.* authority axis are enforced server-side.
    */
   const runAuditList = (values: {
     readonly server?: string | undefined;
@@ -3703,10 +3798,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // **bare `maruhi audit` = list**(現行仕様の維持 — 第 3 段階の裁定)。
-  // 親自身が list の宣言とハンドラを持つ(実測: ハンドラ付き親 +
-  // withSubcommands で、bare 親はハンドラを実行し、サブコマンド指定時は
-  // 子だけが走る。不明なサブコマンドは UnknownSubcommand で exit 2)
+  // **bare `maruhi audit` = list** (keeping the current spec — stage 3's
+  // ruling). The parent itself carries list's declaration and handler
+  // (measured: a handler-carrying parent + withSubcommands runs the
+  // handler on the bare parent, and only the child runs when a subcommand
+  // is given. An unknown subcommand is UnknownSubcommand = exit 2)
   const audit = Command.make("audit", auditListConfig, runAuditList).pipe(
     Command.withDescription(
       "View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list",
@@ -3754,7 +3850,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
     Effect.gen(function* () {
-      // 書き方の誤りはセッション解決(ネットワーク)より前に落とす
+      // A misspelling drops before the session resolution (network)
       if (values.handoff && values.passkey) {
         return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
       }
@@ -4085,15 +4181,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const projectAnchor = Command.make("anchor", projectAnchorConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      // 前段は verify と同じ鍵なしクラス(チェーン同期 + §6.3 検査 + 床 +
-      // 招待アンカーの機械照合)— アンカーは検証済みビューからだけ作る
+      // The prologue is the same keyless class as verify (chain sync +
+      // §6.3 checks + floor + the invite anchor's mechanical matching) —
+      // the anchor is built only from the verified view
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,
       });
-      // stdout はコマンドの出力(アンカー JSON)だけ(決定 9): リダイレクトで
-      // そのままリポジトリへコミットできる。内容は非機密(ハッシュ・連番・
-      // エポック番号のみ — anchor.ts)
+      // stdout is only the command's output (the anchor JSON) (decision
+      // 9): a redirect can commit it into a repository as-is. The content
+      // is non-secret (hashes, serials, epoch numbers only — anchor.ts)
       yield* io.log(formatRepositoryAnchor(buildRepositoryAnchor(context.verified)).trimEnd());
     }),
   ).pipe(
@@ -4129,11 +4226,13 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const projectCheckpoint = Command.make("checkpoint", projectCheckpointConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      // 発行はチェーン追記(Ed25519 署名)を伴うので master 鍵を要求する。
-      // 検証済みビューの構築(全環境の検証済み pull)はチェックポイントの
-      // 材料そのもの — 値の取得は var.read として正しく記録される(明示操作)
+      // Issuance accompanies a chain append (an Ed25519 signature), so it
+      // requires the master key. Building the verified view (the verified
+      // pull of every environment) is the checkpoint's material itself —
+      // the value fetches are correctly recorded as var.read (an explicit
+      // operation)
       const context = yield* openProject({ server: values.server, project: values.project });
-      // 環境床ハンドルは先に解決しておく(issueCheckpoint の R を CliIo に保つ)
+      // The environment-floor handle is resolved ahead (keeps issueCheckpoint's R at CliIo)
       const floors = new Map<string, FloorHandle>();
       for (const environmentId of context.verified.state.environments.keys()) {
         floors.set(environmentId, yield* floorHandleFor(context, environmentId));
@@ -4187,7 +4286,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const ciRun = Command.make("run", ciRunConfig, (values) =>
     Effect.gen(function* () {
       const { command: parsed, ...flags } = values;
-      // 通信・鍵生成より前(コマンド本体の先頭)で落とす(run と同じ `--` 規律)
+      // Drops before communication / key generation (at the command body's head) (the same `--` discipline as run)
       const command = yield* commandAfterTerminator(parsed);
       onExitCode(yield* ciRunCommand({ ...flags, command }));
     }),
@@ -4214,8 +4313,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const store = yield* ConfigStore;
       const configKey = yield* requireConfigKey(values.key);
       const config = yield* store.load;
-      // stdout はコマンドの出力(値)だけ: `V=$(maruhi config get server)` が
-      // 値以外を捕まえない(決定 9)
+      // stdout is only the command's output (the value): `V=$(maruhi
+      // config get server)` captures nothing besides the value (decision 9)
       yield* io.log(config[configKey] ?? "");
     }),
   ).pipe(Command.withDescription("Print one non-secret setting to stdout"));
@@ -4225,18 +4324,19 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const io = yield* CliIo;
       const store = yield* ConfigStore;
       const configKey = yield* requireConfigKey(values.key);
-      // 閉集合の値を持つキーは宣言時に検査する(誤記を黙って保存しない)
+      // A key holding a closed-set value is checked at declaration (a typo is never silently stored)
       if (configKey === "identityBacking" && asIdentityBacking(values.value) === null) {
         return yield* Effect.fail(
           usageError(`identityBacking must be one of: ${IDENTITY_BACKINGS.join(" | ")}`),
         );
       }
-      // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
-      // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
-      // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す。
-      // 作り直してよいのは**内容の破損**のみ: 読み取り自体の失敗
-      // (EACCES / EISDIR / EIO 等)は読めなかっただけの既存設定を黙って
-      // 置換することになるため、そのまま失敗させる
+      // A broken config file is recreatable via set (it holds only
+      // non-secrets so it may be discarded — never make it unrecoverable
+      // from inside the CLI). But since it loses the existing config, it is
+      // never swallowed silently — a warning is emitted. Recreatable is
+      // **content corruption** only: a read failure itself (EACCES /
+      // EISDIR / EIO etc.) would silently replace an existing config that
+      // merely could not be read, so it fails as-is
       const config = yield* store.load.pipe(
         Effect.catch((error) =>
           error instanceof ConfigFileCorruptError
@@ -4264,10 +4364,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const schemaSet = Command.make("set", schemaSetConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      // 欄指定の解釈はネットワークより先(部分更新 §1-2 — 未指定 = keep、
-      // 空へ戻すのは明示フラグのみ)
+      // Interpreting the column specifications precedes the network
+      // (partial update §1-2 — unspecified = keep, only an explicit flag
+      // returns to empty)
       const updates = yield* parseSchemaFieldUpdates(values);
-      // エントロピー警告(裁定 CW — fail-closed)は通信・署名より前に判定する
+      // The entropy warning (ruling CW — fail-closed) is judged before communication / signing
       yield* ensureEntropyAcknowledged({
         fields: [
           { field: "name", text: values.name },
@@ -4300,15 +4401,18 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const schemaImport = Command.make("import", schemaImportConfig, (values) =>
     Effect.gen(function* () {
-      // 儀式ゲート(ADR-0016 決定 7 の儀式系 deny の類型)は**どの通信・ファイル
-      // 読み取りよりも前**に判定する: 変数ごとの対話承認が儀式の核であり、
-      // 一括 --yes は存在しない。既知エージェント検出 + 非対話端末の両層とも
-      // ここで止まる(判定材料は Stdio / AgentProfileRef サービス経由)
+      // The ceremony gate (the ceremony-family deny archetype of ADR-0016
+      // decision 7) is judged **before any communication or file read**:
+      // the per-variable interactive approval is the ceremony's core, and
+      // no bulk --yes exists. Both layers — known-agent detection and the
+      // non-interactive terminal — stop here (the judgment material goes
+      // through the Stdio / AgentProfileRef services)
       yield* ensureImportCeremonyAllowed;
       const { file, ...flags } = values;
-      // ファイルはクライアント側でのみ読む(値は parseEnvFile が読み取り直後に
-      // Redacted で包む — env-file.ts)。読めない場合は内容・OS エラー詳細を
-      // 出さずパスだけで報告する
+      // The file is read only on the client side (a value is wrapped in
+      // Redacted right after parseEnvFile reads it — env-file.ts). When
+      // unreadable, only the path is reported — never the content or the
+      // OS error detail
       const content = yield* Effect.tryPromise({
         try: () => readFile(file, "utf8"),
         catch: () =>
@@ -4339,10 +4443,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // export / verify-snapshot / lint は schema(表示)と同じ
-  // 読み取り・値ゼロの鍵なしクラス(openMetadataEnvironment — MARUHI_TOKEN の
-  // セッションで動く = 利用者の CI から実行できる)。agent-gate は適用しない
-  // (許可側 — ADR-0016 決定 7 の適用対象は「値を表示する系」のみ。テストで固定)
+  // export / verify-snapshot / lint share schema (display)'s
+  // read-only, zero-value, keyless class (openMetadataEnvironment — works
+  // under a MARUHI_TOKEN session = runnable from a user's CI). The
+  // agent-gate does not apply (the permissive side — ADR-0016 decision
+  // 7's scope is "value-displaying" commands only. Pinned by a test)
   const schemaExport = Command.make("export", schemaExportConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openMetadataEnvironment(values);
@@ -4366,8 +4471,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     (values) =>
       Effect.gen(function* () {
         const { file, ...flags } = values;
-        // ファイルはネットワークより先に読む(パスの誤りを 1 往復の前に落とす)。
-        // 内容・OS エラー詳細は出さずパスだけで報告する(schema import と同じ規律)
+        // The file is read before any network (a wrong path drops before a
+        // round trip). Only the path is reported — never the content or
+        // the OS error detail (same discipline as schema import)
         const fileContent = yield* Effect.tryPromise({
           try: () => readFile(file, "utf8"),
           catch: () =>
@@ -4392,7 +4498,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const schemaLint = Command.make("lint", schemaLintConfig, (values) =>
     Effect.gen(function* () {
-      // 走査はネットワークより先(パスの誤り・読めないツリーを 1 往復の前に落とす)
+      // The scan precedes the network (a wrong path / an unreadable tree drops before a round trip)
       const scan = yield* scanPaths(values.paths);
       const context = yield* openMetadataEnvironment(values);
       yield* schemaLintOp({
@@ -4411,7 +4517,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
+  // **bare `maruhi schema` = display** (design doc §1-1 — a handler-carrying parent like audit)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
       "Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes",
@@ -4462,7 +4568,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const envCreate = Command.make("create", envCreateConfig, (values) =>
     Effect.gen(function* () {
-      // 形式は宣言(NonBlank)を通った後の追加検査。ネットワークより前に見る
+      // The format is an additional check after the declaration (NonBlank). Seen before the network
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
         "`maruhi env create dev`",
@@ -4508,8 +4614,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         "`maruhi env diff dev prod`",
       );
       if (otherEnvironmentId === environmentId) {
-        // 同じ環境どうしの比較は必ず空になる = 要求そのものが書き間違い。
-        // 指定値は出さない(位置引数には値が書かれうる)
+        // Comparing an environment with itself is always empty = the
+        // request itself is a misspelling. The given values are not shown
+        // (a positional could carry a value)
         return yield* Effect.fail(
           usageError(
             "The same environment ID was written twice. Specify two different environments to compare",
@@ -4524,8 +4631,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
-  // 入れ子のサブコマンドにより、「その操作に適用されないオプション」の拒否を
-  // 自前で書く必要がない
+  // The nested subcommands remove the need to hand-write the refusal of
+  // "an option that does not apply to that operation"
   const env = Command.make("env").pipe(
     Command.withDescription("Manage environments (create / rotate / diff)"),
     Command.withSubcommands([envCreate, envRotate, envDiff]),
@@ -4763,7 +4870,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         sourceFloor: opened.sourceFloor,
         receiptsEnvironment: opened.config.receiptsEnvironment as EnvironmentId,
         receiptsFloor: opened.receiptsFloor,
-        // レシートの署名(§4.1): writer = 自分の内部 user_id、鍵 = master sig 鍵
+        // The receipt's signature (§4.1): writer = my internal user_id, key = the master sig key
         writerUserId: opened.context.session.userId,
         signingKey: opened.context.masterKeys.sigKeyPair.privateKey,
         yes: values.yes,
@@ -4815,7 +4922,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   return Command.make("maruhi").pipe(
-    // bare `maruhi` / `maruhi --help` の冒頭に製品の一文を置く(裁定 F)
+    // The product's one-liner sits at the top of bare `maruhi` / `maruhi --help` (ruling F)
     Command.withDescription(
       "Diskless secrets manager: values are encrypted end-to-end and decrypted only in memory, never written to disk",
     ),
@@ -4848,16 +4955,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* ランナー                                                                    */
+/* Runner                                                                     */
 /* -------------------------------------------------------------------------- */
 
 /**
- * 引数層が使う Effect の環境のうち、**maruhi が使わない**もの。
- *
- * ファイル・端末・子プロセスは maruhi 自身のサービス(ConfigStore /
- * CliIo.promptLine / ProcessRunner)が受け持つ。引数層へ実装を渡すと、
- * 宣言していない対話経路・出力経路(Prompt / wizard)が動く余地を残すので、
- * ここでは**死ぬ実装**を置く(決定 5 と同じ理由)。
+ * Of the Effect environments the argument layer uses, the ones **maruhi
+ * never uses**. Files, the terminal, and child processes are carried by
+ * maruhi's own services (ConfigStore / CliIo.promptLine / ProcessRunner).
+ * Passing implementations to the argument layer would leave room for
+ * undeclared interaction/output paths (Prompt / wizard) to move, so a
+ * **dying implementation** is placed here (same reason as decision 5).
  */
 const unusedEnvironment = Layer.mergeAll(
   FileSystem.layerNoop({}),
@@ -4885,12 +4992,12 @@ const unusedEnvironment = Layer.mergeAll(
 );
 
 /**
- * ヘルプ・診断の宛先。**全メソッド**を `CliIo.logError`(= stderr)へ寄せる
- * (決定 9)。log / error だけの部分上書きだと、上流が描画メソッドを増やした
- * ときに実 stdout へ素通りする穴ができる。
- *
- * `Console` のメソッドは同期(`void`)なので、ここでは行を溜めて実行後に
- * `CliIo` へ流す(Effect を `runSync` で割り込ませない)。
+ * The destination of help / diagnostics. **Every method** is bent toward
+ * `CliIo.logError` (= stderr) (decision 9). A partial override of just
+ * log / error would open a hole where a future upstream render method
+ * passes through to the real stdout. Since `Console`'s methods are
+ * synchronous (`void`), lines are accumulated here and flushed to `CliIo`
+ * after the run (never interrupt an Effect via `runSync`).
  */
 function collectingConsole(lines: string[]): Console.Console {
   const collect = (...args: ReadonlyArray<unknown>) => {
@@ -4920,32 +5027,33 @@ function collectingConsole(lines: string[]): Console.Console {
 }
 
 /**
- * argv を `Stdio` へ載せ替える。
- *
- * runCli は argv を引数で受け取る(テストが実行ごとに argv を差し替えるため)
- * ので、`--` の判定(`commandAfterTerminator`)が見る `Stdio.args` も**同じ
- * 配列**にする。本番の `Stdio.args` は `process.argv.slice(2)` = bin.ts が
- * runCli へ渡すものと同一なので、値は変わらず出所だけが 1 つになる。
+ * Re-mounts argv onto `Stdio`. runCli takes argv as an argument (a test
+ * swaps argv per run), so the `Stdio.args` the `--` judgment
+ * (`commandAfterTerminator`) reads is **the same array**. Production's
+ * `Stdio.args` is `process.argv.slice(2)` = what bin.ts passes to runCli,
+ * so the value never changes — only the source is unified.
  */
 function withArgs(stdio: Stdio.Stdio, argv: readonly string[]): Stdio.Stdio {
   return Stdio.make({ ...stdio, args: Effect.succeed([...argv]) });
 }
 
-/** 実行の失敗を maruhi の語彙で 1 行にする(上流の英文を素通しにしない)。 */
+/** Puts a run failure into one line of maruhi vocabulary (never pass through an upstream English sentence raw). */
 function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effect<void> {
   const failure: unknown = Cause.squash(cause);
-  // ShowHelp は effect 側が Formatter 経由で描画済み(Console → stderr)
+  // ShowHelp was already rendered by the effect side via Formatter (Console → stderr)
   if (failure instanceof EffectCliError.ShowHelp) {
     return Effect.void;
   }
   if (failure instanceof CliError) {
     return io.logError(formatNotice("error", failure.message, io.colorEnabled()));
   }
-  // defect(バグ)や上流の未知エラー。**message は出さない**: 打たれた値を
-  // 埋め込んだ文面(`Invalid value: <平文>`)でも到達しうるので、制御文字の
-  // 中和だけでは規律(打たれた値を診断に出さない)を守れない。無言では飲まず
-  // (CLAUDE.md)、型の名前だけを添える(failure.ts の internalErrorKind —
-  // cli.ts の defect 経路と同じ形)
+  // A defect (a bug) or an upstream unknown error. **The message is never
+  // shown**: it could arrive embedding a typed-in value (`Invalid value:
+  // <plaintext>`), so control-character neutralization alone cannot keep
+  // the discipline (never surface a typed-in value in diagnostics). Never
+  // swallowed silently (CLAUDE.md) — only the type's name is attached
+  // (failure.ts's internalErrorKind — the same shape as cli.ts's defect
+  // path)
   return io.logError(
     formatNotice("error", `internal error (${internalErrorKind(failure)})`, io.colorEnabled()),
   );
@@ -4955,8 +5063,9 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
  * Runs one of the migrated commands (`pull` / `run` / `env create`) through
  * `effect/unstable/cli` and returns the process exit code.
  *
- * `commandKey` は runCli の振り分けが決めた**解決済みのコマンド段**で、診断の
- * 宛先(どの宣言を名指しするか)に使う。
+ * `commandKey` is the **resolved command stage** decided by runCli's
+ * dispatch, used as the diagnostics' destination (which declaration to
+ * name).
  */
 export async function runEffectCli(
   commandKey: string,
@@ -4968,23 +5077,25 @@ export async function runEffectCli(
   const root = makeRootCommand((code) => {
     commandExitCode = code;
   });
-  // ヘルプの分量だけを決める(`--help` を明示した実行は全文、書き方の誤りに
-  // 添えるのは使い方 1 行 — 決定 3)。引数の**検査**には一切使わない。
-  // `--` の後ろは**子プロセスの引数**なので見ない: `maruhi run stray -- cmd -h`
-  // の `-h` は cmd のもので、maruhi へのヘルプ要求ではない
+  // Decides only the amount of help (a run with an explicit `--help` gets
+  // the full text; a misspelling gets a 1-line usage — decision 3). Never
+  // used for any argument **check**. What follows `--` is **the child
+  // process's arguments**, so it is not inspected: `maruhi run stray --
+  // cmd -h`'s `-h` belongs to cmd, not a help request to maruhi
   const terminator = argv.indexOf("--");
   const ownArgs = terminator < 0 ? argv : argv.slice(0, terminator);
-  // **bare `maruhi`(引数なし)はヘルプ要求として扱う**(第 3 段階の裁定 —
-  // ADR-0016 追記):
-  // 使い方 + コマンド一覧を exit 0 で出す。出力先は stderr
-  // (決定 9: stdout はコマンドの出力だけ — `maruhi --help` と同じ扱い)。
-  // bare の**サブコマンド段**(`maruhi env` 単体)はこれに含めない: そちらは
-  // 書き方の誤り(exit 2)で、teardown が読み分ける
+  // **Bare `maruhi` (no arguments) is treated as a help request** (the
+  // stage-3 ruling — ADR-0016 appendix): usage + the command list with
+  // exit 0. The destination is stderr (decision 9: stdout is for the
+  // command's output only — the same treatment as `maruhi --help`). A
+  // bare **subcommand stage** (`maruhi env` alone) is not covered: that
+  // is a misspelling (exit 2), and the teardown tells them apart
   const bareRoot = ownArgs.length === 0;
   const helpRequested = bareRoot || ownArgs.includes("--help") || ownArgs.includes("-h");
   const versionRequested = ownArgs.includes("--version") || ownArgs.includes("-v");
-  // teardown の読み分け材料(cli-teardown.ts): ヘルプ・バージョンの明示が
-  // なければ、errors 空の ShowHelp(親コマンド単体)は書き方の誤り(2)
+  // The teardown's discrimination material (cli-teardown.ts): without an
+  // explicit help / version, an errors-empty ShowHelp (a bare parent
+  // command) is a misspelling (2)
   const infoRequested = helpRequested || versionRequested;
 
   const program = Effect.gen(function* () {
@@ -4993,19 +5104,20 @@ export async function runEffectCli(
     const exit = yield* Command.runWith(root, { version: CLI_VERSION })([...argv]).pipe(
       Effect.provideService(Stdio.Stdio, withArgs(stdio, argv)),
       Effect.provideService(Console.Console, collectingConsole(diagnostics)),
-      // 色は stderr の接頭辞・ヘルプの見出しだけ(notice.ts — 判定は CliIo 経由)
+      // Color applies only to stderr's prefixes and help headings (notice.ts — judged via CliIo)
       Effect.provide(formatterLayer(commandKey, COMMAND_SPECS, helpRequested, io.colorEnabled())),
-      // 組み込みグローバルフラグは --help / --version だけ(決定 5)
+      // Built-in global flags are only --help / --version (decision 5)
       Effect.provide(CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] })),
       Effect.provide(unusedEnvironment),
       Effect.exit,
     );
     for (const line of diagnostics) {
-      // `--version` の出力だけは**コマンドの出力**(stdout)。`V=$(maruhi
-      // --version)` はスクリプトの正当な使い方で、ヘルプ・診断(stderr)とは
-      // 役割が違う。失敗した実行(書き方の誤りとの併記)は stderr のまま。
-      // `--help` が併記された実行は上流で Help が勝つ = 集めた行はヘルプ本文
-      // なので stdout へ流さない
+      // Only `--version`'s output is **the command's output** (stdout).
+      // `V=$(maruhi --version)` is a legitimate script use, a different
+      // role than help / diagnostics (stderr). A failed run (when written
+      // alongside a misspelling) stays on stderr. A run where `--help` is
+      // also given makes upstream's Help win = the collected lines are the
+      // help body, so they are not flushed to stdout
       yield* versionRequested && !helpRequested && Exit.isSuccess(exit)
         ? io.log(line)
         : io.logError(line);
@@ -5018,20 +5130,22 @@ export async function runEffectCli(
 
   const exit = await Effect.runPromise(
     program.pipe(
-      // 同一文面の Note / Warning は 1 実行あたり 1 回(notice.ts — 台帳は実行ごと)
+      // An identical-worded Note / Warning fires once per run (notice.ts — the ledger is per-run)
       Effect.provideService(NoticeLedger, new Set<string>()),
       Effect.provide(layer),
     ),
   );
 
   let exitCode = 0;
-  // 本番もテストも同じ teardown を通す(ShowHelp の exit 1 → 2 の読み替えが
-  // 片方でしか効かない形を作らない — cli-teardown.ts)
+  // Production and tests go through the same teardown (never build a
+  // shape where ShowHelp's exit 1 → 2 re-read works on only one side —
+  // cli-teardown.ts)
   maruhiTeardown(infoRequested)(exit, (code) => {
     exitCode = code;
   });
-  // `maruhi run` は子プロセスの終了コードを引き継ぐ。`Command.runWith` は
-  // ハンドラの返り値を捨てるため、成功した実行の終了コードだけは持ち出す
-  // (エラーではないので Runtime.errorExitCode には載せられない)
+  // `maruhi run` inherits the child process's exit code. Since
+  // `Command.runWith` discards the handler's return value, only a
+  // successful run's exit code is carried out (not an error, so it cannot
+  // ride Runtime.errorExitCode)
   return exitCode === 0 ? commandExitCode : exitCode;
 }

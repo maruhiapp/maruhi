@@ -1,28 +1,44 @@
-// `maruhi device` グループ(CRYPTO_SPEC §3 / §6.2「端末鍵」、AUTH_SPEC §13-11 — 2026-09-19
-// DK。設計録 dk-design.md §9 K4-5 / K4-6 / K4-7 / K4-13 / K4-18)。
+// The `maruhi device` group (CRYPTO_SPEC §3 / §6.2 "device keys",
+// AUTH_SPEC §13-11 — 2026-09-19 DK. Design record dk-design.md §9 K4-5 /
+// K4-6 / K4-7 / K4-13 / K4-18).
 //
-// - `device add [--label] [--replace]`(新端末側): 端末鍵を生成して要求を出し、保存してから
-//   FP(hex + 12 語)を表示して待つ(`--replace` も「生成 → 要求 → ガードつき差し替え」—
-//   DK K13-8)。待機の合図は登録簿(advisory)、完了の確認は各プロジェクトの検証済み
-//   チェーン(K4-5)。同じビューで、載ったプロジェクトの鍵の到達(自分宛の DEK が全エポックに
-//   あるか — DK K12)と失効した鍵を確かめて報告する。鍵が既にあれば、生きた要求なら待機を
-//   再開し、無ければ要求を作らずにチェーン上の立場(`device-standing.ts`)で分ける
-//   (DK K13-2 — K4-21 (c) の改訂)。ゲートなし(DK-D — 要求側は何も足さない)
-// - `device approve <fp|words> [--cap] [--env…]`(登録済み端末側): 儀式ゲート(TTY +
-//   非エージェント — agent-gate.ts)→ 要求一覧の公開鍵から FP を**再計算**して照合(K4-6)
-//   → 各プロジェクトを開いて判定(既に載っている鍵の cap が今回の cap と違えば何も書かずに
-//   止まる — K10-1)→ 各プロジェクトへ `add_device` → バックフィル → ローカル記録(approved)→ 登録簿へ
-//   PUT(合図)→ 要求の取消(PUT が成功したときだけ — 失敗なら要求を残す: K9-1)
-// - `device list [--project]`: チェーン(真実)・登録簿(server-reported)・ローカル記録
-//   (出所)を突き合わせて表示する。値ゼロ・鍵不要・ゲートなし
-// - `device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`: 参照は FP の
-//   接頭辞(8 文字以上・一意)か登録簿の表示名(自分のみ — FP を併記して確認)。確認表 →
-//   yes → 各プロジェクトへ `revoke_device` → sweep 第 5 種(K4-8)→ ローカル記録に revoked
-//   → 登録簿の行を削除 → トークン失効の提案(K4-13 — `--revoke-token` の明示のみ自動)
+// - `device add [--label] [--replace]` (the new device): generates a device
+//   key, issues a request, saves, then prints the FP (hex + 12 words) and
+//   waits (`--replace` is also "generate → request → guarded replacement" —
+//   DK K13-8). The wait signal is the registry (advisory); the completion
+//   check is each project's verified chain (K4-5). In the same view it
+//   verifies and reports the keys' arrival on the registered projects
+//   (whether a DEK addressed to this device exists on every epoch — DK K12)
+//   and revoked keys. If the key already exists, a live request resumes the
+//   wait, and without one it branches on the chain standing
+//   (`device-standing.ts`) without creating a request (DK K13-2 — the
+//   revision of K4-21 (c)). No gate (DK-D — the requesting side adds
+//   nothing)
+// - `device approve <fp|words> [--cap] [--env…]` (an already-registered
+//   device): the ceremony gate (TTY + non-agent — agent-gate.ts) → FP is
+//   **recomputed** from the public key of a request-list row and matched
+//   (K4-6) → each project is opened and judged (if the cap of an
+//   already-registered key differs from this run's cap, stop without
+//   writing anything — K10-1) → `add_device` to each project → backfill →
+//   local record (approved) → PUT to the registry (the signal) → cancel
+//   the request (only when the PUT succeeded — on failure the request is
+//   left: K9-1)
+// - `device list [--project]`: cross-checks the chain (the truth), the
+//   registry (server-reported), and the local records (provenance) to
+//   display. No values, no keys needed, no gate
+// - `device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`:
+//   the reference is an FP prefix (8+ chars, unique) or the registry's
+//   display name (only your own — confirm with the FP shown alongside).
+//   Confirmation table → yes → `revoke_device` to each project → sweep
+//   kind 5 (K4-8) → local record revoked → delete the registry row →
+//   propose token revocation (K4-13 — automatic only with an explicit
+//   `--revoke-token`)
 //
-// 登録簿は表示・合図にしか使わない: 承認する鍵は要求行の公開鍵から再計算した FP が
-// 人の運んだ FP と一致するものだけ、失効する端末はチェーン上の端末だけ、ローカル記録は
-// 封印・承認・観測の 3 経路だけが書く(K4-3)。
+// The registry is only ever used for display and the signal: a key is
+// approved only when the FP recomputed from the request row's public key
+// matches the FP the human carried; a device is revoked only when it is on
+// the chain; the local records are written only by the 3 paths — sealing,
+// approval, observation (K4-3).
 
 import {
   DEVICE_ADD_REQUEST_TTL_MS,
@@ -102,7 +118,7 @@ import {
 import { sweepRotateFor } from "./sweep-rotate.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
-/** 登録簿 1 行(server-reported)。 */
+/** One registry row (server-reported). */
 interface RegistryRow {
   readonly keyFingerprintHex: string;
   readonly encPubHex: string;
@@ -116,7 +132,7 @@ const FULL_FINGERPRINT = /^[0-9a-f]{32}$/;
 const FINGERPRINT_PREFIX = /^[0-9a-f]{8,32}$/;
 const WORD_COUNT = 12;
 
-/** 公開鍵から FP を再計算する(登録簿・要求行の申告 FP を信用しない — §13-11)。 */
+/** Recomputes the FP from the public key (the claimed FP of a registry or request row is never trusted — §13-11). */
 function recomputeFingerprint(
   encPubHex: string,
   sigPubHex: string,
@@ -132,7 +148,7 @@ function recomputeFingerprint(
   }).pipe(Effect.map((result) => (result.ok ? encodeHex(result.value) : null)));
 }
 
-/** 登録簿の取得(読めない場合は null — 表示・合図にしか使わないので失敗させない)。 */
+/** Fetches the registry (null when unreadable — used only for display and the signal, so never fails). */
 function fetchRegistry(client: MaruhiClient): Effect.Effect<readonly RegistryRow[] | null, never> {
   return client.devices.list({}).pipe(
     Effect.map((response) => response.devices as readonly RegistryRow[]),
@@ -140,7 +156,7 @@ function fetchRegistry(client: MaruhiClient): Effect.Effect<readonly RegistryRow
   );
 }
 
-/** プロジェクト集合の解決: `--project` があればそれだけ、無ければ所属一覧(申告 = 発見用)。 */
+/** Resolves the project set: `--project` only when given, otherwise the membership list (claimed = for discovery). */
 function resolveProjectIds(
   client: MaruhiClient,
   project: string | undefined,
@@ -156,19 +172,22 @@ function resolveProjectIds(
 // device add
 // ---------------------------------------------------------------------------
 
-/** 待機の間隔(登録簿のポーリング — K4-5。テストは短縮する)。 */
+/** The wait interval (registry polling — K4-5. Tests shorten it). */
 const DEVICE_ADD_POLL_INTERVAL_MS = 3_000;
 
 /**
- * 待機の途中で 1 度だけ出す案内の閾値(K7-3): 要求の作成からこの時間が経っても合図が
- * 無ければ「承認側の出力を確認せよ」を出す。承認が全プロジェクトで失敗すると合図は
- * 来ない(K4-31)ので、15 分黙って待たせない。経過は要求の期限から逆算する
- * (再開した待機でも要求の年齢で判定)。docs(`devices.mdx`)が「five minutes」と
- * 写しているので、値は `cli-vocabulary.test.ts` の釘で留める。
+ * The threshold of the guidance shown once mid-wait (K7-3): if this time
+ * has passed since the request's creation with no signal, "check the
+ * approving device's output" is printed. When approval fails on every
+ * project the signal never comes (K4-31), so we never wait silently for
+ * 15 minutes. Elapsed is derived backwards from the request's expiry (even
+ * a resumed wait judges by the request's age). Since docs (`devices.mdx`)
+ * transcribe it as "five minutes", the value is pinned by
+ * `cli-vocabulary.test.ts`.
  */
 export const DEVICE_ADD_WAIT_HINT_AFTER_MS = DEVICE_ADD_REQUEST_TTL_MS / 3;
 
-/** `maruhi device add [--label <name>] [--replace]`(新端末側)。 */
+/** `maruhi device add [--label <name>] [--replace]` (the new device). */
 export function deviceAddOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -181,9 +200,11 @@ export function deviceAddOp(input: {
     const entryName = masterKeyEntryName(input.session.origin, input.session.userId);
     const existing = yield* keychain.get(entryName);
     if (existing !== null && !input.replace) {
-      // 既存の鍵(DK K13-2 — K4-21 (c) の改訂 K13-9): 生きた要求があれば待機を再開し、
-      // 無ければチェーン上の立場で分ける。どちらの経路も要求を作りに行かない(サーバーは
-      // 衝突の検査より前に 1 時間 5 回の窓を消費する。再開の期限は照会の応答にある)
+      // An existing key (DK K13-2 — K4-21 (c)'s revision K13-9): a live
+      // request resumes the wait; without one the branch follows the chain
+      // standing. Neither path goes to create a request (the server
+      // consumes the 1-hour/5-attempt window before the collision check.
+      // The resume expiry lives in the lookup response)
       const keys = yield* loadMasterKeys(input.session);
       const pending = yield* pendingRequestOf(input.client, keys.fingerprintHex);
       if (pending !== null) {
@@ -196,15 +217,17 @@ export function deviceAddOp(input: {
     }
     const started = yield* startWithNewKey(input, entryName, existing);
     if (started.request.kind === "already-registered") {
-      // 新しい鍵の FP に登録簿の行がある(FP の衝突でしか起きない)。待っていた要求は
-      // 無いので「Approved」とは言わず、チェーンの立場で報告する(DK K13-3 — 穴 5 の防御)
+      // The new key's FP already has a registry row (only possible via an
+      // FP collision). There is no request we were waiting for, so we don't
+      // say "Approved" — report by chain standing (DK K13-3 — hole 5's
+      // defense)
       return yield* settleExistingKey(input, started.keys);
     }
     return yield* awaitApproval(input, started.keys, started.request.expiresAtMs);
   });
 }
 
-/** この鍵の生きた要求(無ければ null。404 以外の照会の失敗は伝える — K4-33)。 */
+/** This key's live request (null if none. A lookup failure other than 404 is reported — K4-33). */
 function pendingRequestOf(
   client: MaruhiClient,
   fingerprintHex: string,
@@ -216,7 +239,7 @@ function pendingRequestOf(
   );
 }
 
-/** 待機の前の表示(FP は保存した鍵についてだけ出す — 保存していない鍵を承認させない: K13-8)。 */
+/** The pre-wait display (the FP is shown only for a saved key — never let an unsaved key be approved: K13-8). */
 function announceFingerprint(keys: MasterKeys): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -226,7 +249,7 @@ function announceFingerprint(keys: MasterKeys): Effect.Effect<void, CliError, Cl
   });
 }
 
-/** 要求の合図(登録簿の行)を待ち、合図の後にチェーンで確かめる(K4-5)。 */
+/** Waits for the request's signal (a registry row), then confirms on the chain (K4-5). */
 function awaitApproval(
   input: {
     readonly session: CliSession;
@@ -256,9 +279,11 @@ function awaitApproval(
       fingerprintHex: keys.fingerprintHex,
     });
     if (!signalled) {
-      // 期限切れ: 承認側の出力を条件にした 2 分岐(K7-1 / K9-3)は保つ — 期限ぎりぎりに
-      // 始まった承認がまだ追記前でありうる(競合)。そのうえで、この時点のチェーンの事実を
-      // 時点つきで足す(DK K13-4 — K9-3 3-c の部分回収)
+      // Expiry: the 2 branches conditioned on the approver's output
+      // (K7-1 / K9-3) stay — an approval started just before the deadline
+      // may not have been appended yet (a race). On top of that, the
+      // chain's facts at this moment are added with a timestamp
+      // (DK K13-4 — the partial reclaim of K9-3 3-c)
       return yield* Effect.fail(
         cliError(
           `The device-add request expired before this machine saw the completion signal (requests live 15 minutes). Check the output on the approving device: if it registered nothing, run \`maruhi device add --replace\` on this machine — this key (${keys.fingerprintHex}) is registered nowhere, so discarding it loses nothing — and approve the new fingerprint it prints from a registered device with \`maruhi device approve\`. If it registered this device but could not list it in your device registry, keep this key: it is already registered on the projects that output lists (\`maruhi device list\` on this machine shows where), and only its row in your device registry is missing. ${describeChainsNow(standings)}`,
@@ -266,7 +291,7 @@ function awaitApproval(
       );
     }
     if (standings.listFailure !== null) {
-      // 一覧が取れなければ数えられない(「0 projects」は事実でない — K13-3)
+      // If the list can't be fetched nothing can be counted ("0 projects" is not a fact — K13-3)
       yield* io.log(
         "Approved: the approving device gave the completion signal (this device is listed in your device registry)",
       );
@@ -279,13 +304,14 @@ function awaitApproval(
     yield* io.log(
       `Approved: this device is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
     );
-    // 完了の文は立場が分かった時点で出し、鍵の到達の確認(環境ごとの取得)はその後に回す
-    // (K12-14。出力の順序は K12-3 のまま)
+    // The completion sentence is emitted once the standing is known; the
+    // key-arrival checks (per-environment fetches) come after (K12-14. The
+    // output order stays K12-3's)
     yield* reportStandings(groups, keys, { approved: true });
   });
 }
 
-/** 期限切れの文に足す、この時点のチェーンの事実(DK K13-4 — 条件は消さない)。 */
+/** The chain facts at this moment appended to the expiry sentence (DK K13-4 — the conditions stay). */
 function describeChainsNow(standings: KeyStandings): string {
   if (standings.listFailure !== null) {
     return `maruhi could not check the project chains just now (your projects could not be listed: ${standings.listFailure}); re-running \`maruhi device add\` on this machine checks them again without a new request`;
@@ -306,8 +332,9 @@ function describeChainsNow(standings: KeyStandings): string {
 }
 
 /**
- * 数の文の範囲(Bugbot 指摘 — K13-16): 同期できなかったプロジェクトがあれば、数は確かめた
- * 分だけの下限なので、その件数を添える(全部が同期できなければ「0」は事実でない)。
+ * The count sentence's range (Bugbot's catch — K13-16): when a project
+ * could not be synced the count is a lower bound over what was checked, so
+ * its count accompanies it ("0" is not a fact when none synced).
  */
 function describeUnchecked(groups: StandingGroups): string {
   return groups.unsynced.length === 0
@@ -315,16 +342,19 @@ function describeUnchecked(groups: StandingGroups): string {
     : `, and ${countNoun(groups.unsynced.length, "project")} could not be checked`;
 }
 
-/** プロジェクト id の並び(文言用)。 */
+/** The listing of project ids (for wording). */
 function projectList(projectIds: readonly string[]): string {
   return projectIds.map(displayText).join(", ");
 }
 
 /**
- * 既存の鍵で生きた要求が無いときの分岐(DK K13-2 — 設計録 §18 の表)。exit 0 は「どの
- * プロジェクトでも `add_device` で足された有効な鍵」だけ(観測の記録からの登録で pre-DK の
- * 鍵も `add_device` になりうるので、1 つでも最初の鍵なら人に委ねる — 穴 1)。有効ゼロの
- * ときは、同期できず → 失効あり → どこにも無い の順に、断言の範囲を言って止まる。
+ * The branch when an existing key has no live request (DK K13-2 — the
+ * design record §18 table). exit 0 only for "a valid key added via
+ * `add_device` on some project" (since pre-DK keys can also become
+ * `add_device` via a registration from an observation record, a first key
+ * defers to a human — hole 1). With zero valid, stop in the order: could
+ * not sync → revoked somewhere → on nothing, stating the assertion's
+ * range.
  */
 function settleExistingKey(
   input: { readonly session: CliSession; readonly client: MaruhiClient },
@@ -340,7 +370,7 @@ function settleExistingKey(
   });
 }
 
-/** 有効なプロジェクトがある既存の鍵: 最初の鍵なら 2 択で止まり、そうでなければ報告して 0。 */
+/** An existing key with a valid project: a first key stops with 2 choices; otherwise report and exit 0. */
 function reportActiveKey(
   client: MaruhiClient,
   keys: MasterKeys,
@@ -363,7 +393,7 @@ function reportActiveKey(
     );
     const registry = yield* fetchRegistry(client);
     if (registry !== null && !registry.some((row) => row.keyFingerprintHex === fingerprintHex)) {
-      // T3(承認側の登録簿 PUT が落ちた — K9-3): 表示の補足だけ(登録簿は分岐に使わない)
+      // T3 (the approver's registry PUT failed — K9-3): a display note only (the registry never drives branching)
       yield* logNote(
         "this key has no row in your device registry (an approval whose registry write failed leaves it so). The registry only labels devices, so nothing else is needed; `maruhi device list` shows this key without a label",
       );
@@ -373,8 +403,9 @@ function reportActiveKey(
 }
 
 /**
- * 有効ゼロの既存の鍵の止まり方(同期できず → 失効あり → どこにも無い の順)。どの文も
- * 断言の範囲を言う(同期できなければ断言しない — K13-2)。
+ * How an existing key with zero valid stops (in the order: could not sync
+ * → revoked somewhere → on nothing). Every sentence states the assertion's
+ * range (no assertion when it could not sync — K13-2).
  */
 function refusalWithoutActiveKey(
   keys: MasterKeys,
@@ -409,9 +440,10 @@ function refusalWithoutActiveKey(
 }
 
 /**
- * 案 B(DK K13-7 — 情報のみ): この端末の床にあるが一覧に無いプロジェクト。床はサーバー・
- * アカウントで分かれないので判定には使わず、「どこにも無い」の断言の範囲を補うだけ。
- * 読めなければ何も足さない。
+ * Option B (DK K13-7 — informational only): projects in this device's
+ * floor but absent from the list. The floor is not separated by server or
+ * account, so it is not used for judgment — it only supplements the
+ * "on nothing" assertion's range. Unreadable = nothing added.
  */
 function unlistedFloorProjects(standings: KeyStandings): Effect.Effect<string, never, CliServices> {
   return Effect.gen(function* () {
@@ -428,7 +460,7 @@ function unlistedFloorProjects(standings: KeyStandings): Effect.Effect<string, n
   });
 }
 
-/** 検証に失敗したチェーン(改ざんの兆候 — ネットワークの失敗と同じ Note にしない)。 */
+/** A chain that failed verification (a sign of tampering — not folded into the same Note as a network failure). */
 function warnEvidence(unsynced: StandingGroups["unsynced"]): Effect.Effect<void, never, CliIo> {
   return Effect.forEach(
     unsynced.filter((project) => project.evidence),
@@ -441,9 +473,11 @@ function warnEvidence(unsynced: StandingGroups["unsynced"]): Effect.Effect<void,
 }
 
 /**
- * 立場の報告(完了の文・「registered on N」の文の後 — 鍵の到達 → 失効 → 同期できず →
- * 未登録の順。K12-3)。`approved` = 待っていた要求の合図の後か(承認側の筋書きはそのとき
- * だけ真 — K13-3)。
+ * The standing report (after the completion sentence / the "registered on
+ * N" sentence — in the order: key arrival → revoked → could not sync →
+ * unregistered. K12-3). `approved` = whether it follows the awaited
+ * request's signal (the approver-side narrative is only true then —
+ * K13-3).
  */
 function reportStandings(
   groups: StandingGroups,
@@ -458,7 +492,7 @@ function reportStandings(
       }
     }
     if (groups.revoked.length > 0) {
-      // このチェーンに載った失効の事実と足し直しの手順を言う(承認側の筋書きでなく — K12-6)
+      // State the revocation fact on this chain and the re-add procedure (not the approver-side narrative — K12-6)
       yield* logNote(
         `this key was revoked on ${groups.revoked.map(displayText).join(", ")}, so it is not registered there again. To put this machine back there, ${reAddDeviceRoute("this machine")}${groups.active.length > 0 ? `. This keychain then no longer holds this key, so revoke it on ${groups.active.map((project) => displayText(project.projectId)).join(", ")}, where it is still registered (\`maruhi device revoke ${keys.fingerprintHex}\` from a registered device)` : ""}`,
       );
@@ -466,7 +500,7 @@ function reportStandings(
     yield* warnEvidence(groups.unsynced);
     const unsyncedNotes = groups.unsynced.filter((project) => !project.evidence);
     for (const project of unsyncedNotes) {
-      // 同期できなかったプロジェクトは「無い」と言わない(K13-3)
+      // Never say "none" about a project that could not be synced (K13-3)
       yield* logNote(
         `${displayText(project.projectId)}: could not sync this project (${project.message}), so whether this key is registered there is unknown; \`maruhi device list\` checks again`,
       );
@@ -476,18 +510,22 @@ function reportStandings(
     }
     const absent = groups.absent.map(displayText).join(", ");
     if (options.approved) {
-      // 合図(登録簿の行)は承認側がプロジェクトのループの後に置くので、ここに来た時点で
-      // 承認側の作業は終わっており、要求は取り消し済み(K4-31)。不足分を登録するのは
-      // 「cap がそこを覆う端末」が**そのプロジェクトを対象に**打つ鍵付きコマンド(`device-sync.ts`
-      // — 前段は 1 コマンド 1 プロジェクト: DK K10-5。cap 起因の skip は承認側の再同期では
-      // 直らない: K6-V 補 2 / K7-2)。承認は失敗を `failed` に畳むので、一部成功の合図の後には
-      // failed のプロジェクトも混じる(K7-15)。失効・同期できずはここに入れない(K12-6 / K13-3)
+      // The signal (a registry row) is PUT after the approver's project
+      // loop, so by the time we get here the approver's work is done and
+      // the request is cancelled (K4-31). Registering the deficit is done
+      // by a keyed command that "a device whose cap covers it" issues
+      // **targeting that project** (`device-sync.ts` — the prologue is one
+      // project per command: DK K10-5. A cap-caused skip cannot be fixed
+      // by the approver re-syncing: K6-V supplement 2 / K7-2). Approval
+      // folds a failure into `failed`, so a partial-success signal may
+      // still carry failed projects (K7-15). Revoked / could-not-sync
+      // never enter here (K12-6 / K13-3)
       yield* logNote(
         `not registered yet on ${absent} — the approving device skipped or failed on them (its output says which, and why: its cap does not cover them, you are not a member there, or the append failed there), or you approved with --project. The request is used up. A device of yours whose cap covers them registers this key on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance) — the approving device itself if its cap was not the cause, another device otherwise, once it has synced a project that did register this key. \`maruhi device list\` shows where this key is registered`,
       );
       return;
     }
-    // 承認は起きていない(既存の鍵の経路)ので承認側の筋書きを言わない
+    // No approval happened (the existing-key path), so the approver-side narrative is not stated
     yield* logNote(
       `this key is not registered on ${absent}. A device of yours whose cap covers them registers it on each of them when it runs a keyed command on that project at a terminal (\`maruhi pull --project <id>\`, for instance), once it has synced a project that has this key. \`maruhi device list\` shows where this key is registered`,
     );
@@ -495,10 +533,12 @@ function reportStandings(
 }
 
 /**
- * 新しい鍵で要求を始める(鍵が無いとき・`--replace`)。順序は「生成 → 要求の作成 →
- * 成功したらガードつきで保存 / 差し替え」(DK K13-8): 要求の作成が失敗(上限・満杯・
- * ネットワーク)しても、キーチェーンは何も変わらない(古い鍵は残り、鍵が無ければ無いまま)。
- * `--replace` では、捨てる鍵の立場を差し替えの前に表示する(止めない — 明示の同意: K4-18)。
+ * Starts a request with a new key (when there is no key, or `--replace`).
+ * The order is "generate → create the request → save / replace guarded on
+ * success" (DK K13-8): if request creation fails (limit, full, network),
+ * the keychain changes nothing (the old key stays, and no key stays no
+ * key). With `--replace`, the discarded key's standing is displayed before
+ * the replacement (no stop — the explicit consent: K4-18).
  */
 function startWithNewKey(
   input: {
@@ -548,7 +588,7 @@ function startWithNewKey(
   });
 }
 
-/** `--replace` で捨てる鍵の立場(表示だけ — DK K13-8)。 */
+/** The standing of the key discarded by `--replace` (display only — DK K13-8). */
 function describeReplacedKey(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -587,7 +627,7 @@ function describeReplacedKey(input: {
   });
 }
 
-/** 1 環境の鍵の到達の確認で報告する事実(DK K12-3 — 届いていれば何も運ばない)。 */
+/** The facts reported by one environment's key-arrival check (DK K12-3 — if it arrived, nothing is carried). */
 type KeyReachIssue =
   | {
       readonly kind: "missing";
@@ -596,17 +636,20 @@ type KeyReachIssue =
     }
   | {
       readonly kind: "unchecked";
-      /** null = 環境の列挙そのものに失敗した。 */
+      /** null = enumerating the environments itself failed. */
       readonly environmentId: string | null;
       readonly message: string;
     };
 
 /**
- * この端末宛の DEK が、承認側が配ったはずの各環境(`deviceEnvironmentsOf` — バックフィルと
- * 同じ集合)の全エポックに届いているか(DK K12-2): 値付き pull と同じ取得口
- * (`environmentKeysFor` — §5.1 / §5.2 の検証と開封)と同じ欠けの判定(`missingEpochsOf`)。
- * 開いた DEK は判定にだけ使い、ここから出さない。失敗は事実に畳む(`device add` の成否を
- * 変えない — K12-4)。
+ * Whether a DEK addressed to this device reached every epoch of each
+ * environment the approver should have distributed (`deviceEnvironmentsOf`
+ * — the same set as the backfill) (DK K12-2): the same fetch path as the
+ * value-carrying pull (`environmentKeysFor` — the §5.1 / §5.2 verification
+ * and unsealing) and the same absence judgment (`missingEpochsOf`). The
+ * opened DEKs are used only for the judgment and never leave here. A
+ * failure is folded into a fact (never changes `device add`'s outcome —
+ * K12-4).
  */
 function checkKeyReach(input: {
   readonly context: ProjectContextBase;
@@ -650,7 +693,7 @@ function checkKeyReach(input: {
   });
 }
 
-/** 鍵の到達の確認の 1 件(欠けは pull と同じ警告の文言 — K12-3。確認の失敗は Note)。 */
+/** One entry of the key-arrival check (an absence uses the pull's warning wording — K12-3. A check failure is a Note). */
 function reportKeyReachIssue(
   projectId: string,
   issue: KeyReachIssue,
@@ -668,12 +711,12 @@ function reportKeyReachIssue(
   );
 }
 
-/** 要求の作成の結果: 待機中の要求(期限つき)か、登録簿に既に載っている鍵か。 */
+/** The result of creating the request: a pending request (with expiry) or a key already on the registry. */
 type RequestState =
   | { readonly kind: "pending"; readonly expiresAtMs: number }
   | { readonly kind: "already-registered" };
 
-/** 要求の作成(409 は再開 — request-exists / device-registered)。 */
+/** Creating the request (a 409 is a resumption — request-exists / device-registered). */
 function createOrResumeRequest(
   input: { readonly client: MaruhiClient; readonly label: string },
   keys: MasterKeys,
@@ -696,11 +739,13 @@ function createOrResumeRequest(
           if (error instanceof DeviceRegistryConflictError) {
             const conflict: DeviceRegistryConflictError = error;
             if (conflict.reason === "device-registered") {
-              // 登録簿に既に自分の行がある = 合図は立っている(要求行は無い)
+              // The registry already carrying my row = the signal is up (there is no request row)
               return { kind: "already-registered" } satisfies RequestState;
             }
-            // 同じ鍵の要求が生きている = 待機の再開(K4-5 第 2 巡)。照会の失敗は
-            // 握り潰さず伝える(「失効した」と誤って案内しない — 409 は生存の証)
+            // The same key's request being live = resuming the wait
+            // (K4-5 round 2). A lookup failure is reported, never
+            // swallowed (never falsely guide "it was revoked" — a 409 is
+            // proof of life)
             const request = yield* input.client.devices
               .requestGet({ params: { fp: keys.fingerprintHex } })
               .pipe(Effect.mapError(toCliError));
@@ -723,10 +768,11 @@ function createOrResumeRequest(
 }
 
 /**
- * 登録簿に自分の FP の行が現れるまで待つ(TTL まで)。true = 現れた。
- * `hintAfterMs` があれば、要求の作成(= 期限 − TTL)からその時間が経った最初の巡で
- * 1 度だけ「承認側の出力を確認せよ」を出す(K7-3 — 合図が無いという事実だけを言い、
- * 原因は承認側の画面に委ねる)。
+ * Waits until my FP's row appears in the registry (up to the TTL). true =
+ * it appeared. When `hintAfterMs` is set, on the first round where that
+ * time passed since the request's creation (= expiry − TTL), "check the
+ * approving device's output" is printed once (K7-3 — state only the fact
+ * that there is no signal; the cause is left to the approver's screen).
  */
 function waitForRegistryRow(input: {
   readonly client: MaruhiClient;
@@ -765,7 +811,7 @@ function waitForRegistryRow(input: {
 // device approve
 // ---------------------------------------------------------------------------
 
-/** `<fp-or-words>` の解釈(K4-6: hex 32 文字の全長、または 12 語。接頭辞は受けない)。 */
+/** Interpreting `<fp-or-words>` (K4-6: the full 32 hex chars, or 12 words. Prefixes are not accepted). */
 export type ApproveRef =
   | { readonly kind: "hex"; readonly fingerprintHex: string }
   | { readonly kind: "words"; readonly words: readonly string[] };
@@ -786,7 +832,7 @@ export function parseApproveRef(raw: string): Effect.Effect<ApproveRef, CliError
   );
 }
 
-/** 要求 1 行(承認候補 — FP は再計算済み)。 */
+/** One request row (an approval candidate — the FP is recomputed). */
 interface ApprovableRequest {
   readonly fingerprintHex: string;
   readonly encPubHex: string;
@@ -795,7 +841,7 @@ interface ApprovableRequest {
   readonly expiresAtMs: number;
 }
 
-/** 要求一覧から人の運んだ参照に一致する行を選ぶ(応答の FP は使わず再計算する)。 */
+/** Picks the request-list row matching the reference the human carried (the response's FP is not used — recomputed). */
 function matchRequest(
   client: MaruhiClient,
   ref: ApproveRef,
@@ -839,8 +885,9 @@ function matchRequest(
       );
     }
     if (matches.length > 1) {
-      // 同じ鍵の要求が複数(サーバーは FP で一意にするはず)。どれかを黙って選んで
-      // チェーン権限を与えるより、止めて示す
+      // Multiple requests for the same key (the server is supposed to
+      // dedupe by FP). Rather than silently picking one and granting chain
+      // authority, stop and show them
       return yield* Effect.fail(
         cliError(
           `${countNoun(matches.length, "pending device-add request")} carry the same key fingerprint ${match.fingerprintHex} (labels: ${matches.map((item) => displayText(item.label)).join(", ")}). The server should hold at most one request per fingerprint, so refusing to pick one. Wait for them to expire (15 minutes), re-run \`maruhi device add\` on the new device and approve the single new request`,
@@ -851,7 +898,7 @@ function matchRequest(
   });
 }
 
-/** 1 プロジェクトでの承認の結果。 */
+/** The approval result on one project. */
 export interface ProjectApproveOutcome {
   readonly projectId: string;
   readonly state: "registered" | "already" | "skipped" | "failed";
@@ -859,7 +906,7 @@ export interface ProjectApproveOutcome {
   readonly message: string | null;
 }
 
-/** `maruhi device approve <fp|words> [--cap <role>] [--env …|--all-envs|--no-envs] [--project]`。 */
+/** `maruhi device approve <fp|words> [--cap <role>] [--env …|--all-envs|--no-envs] [--project]`. */
 export function deviceApproveOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -869,7 +916,7 @@ export function deviceApproveOp(input: {
 }): Effect.Effect<readonly ProjectApproveOutcome[], CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 儀式ゲートは要求一覧の取得より前(K4-6 反例 3)
+    // The ceremony gate precedes fetching the request list (K4-6 counterexample 3)
     yield* ensureDeviceApproveAllowed;
     const request = yield* matchRequest(input.client, input.ref);
     const masterKeys = yield* loadMasterKeys(input.session);
@@ -886,16 +933,20 @@ export function deviceApproveOp(input: {
       `Approving device ${request.fingerprintHex} (label "${displayText(request.label)}", cap ${describeCap(input.cap)})`,
     );
     yield* io.log(`fp words: ${formatWordList(words)}`);
-    // FP の出所の規律(K7-7 — docs `devices.mdx` と同じ主張): 要求を置けるのは
-    // `ensureKeyMaterialAccess`(`*` × admin のトークン)なので、盗んだトークンで要求を
-    // 置き FP を送って承認させる経路は、yes ではなく「追加する機械の画面から読む」で止まる
+    // The FP-provenance discipline (K7-7 — the same claim as docs
+    // `devices.mdx`): only `ensureKeyMaterialAccess` (a `*` × admin token)
+    // can place a request, so the path of placing a request with a stolen
+    // token and getting a conveyed FP approved is stopped not by the yes
+    // but by "read it from the screen of the machine being added"
     yield* io.log(
       "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours, and approving it adds their key to your projects",
     );
     const projectIds = yield* resolveProjectIds(input.client, input.project);
-    // 2 相(DK K10-4): 先に全プロジェクトを開いて決着と「既に載っている cap」を集め、
-    // cap の食い違いがあれば**どこにも追記せずに**止まる(追記しながら判定すると、
-    // 未登録のプロジェクトへ今回の cap で足した後で気づく)。開いた文脈は第 2 相で使う
+    // 2-phase (DK K10-4): open every project first to collect the
+    // outcomes and the "caps already registered"; if a cap disagrees, stop
+    // without appending anywhere (judging while appending means noticing
+    // only after this run's cap was added to an unregistered project). The
+    // opened contexts are used in phase 2
     const plans: ProjectApprovePlan[] = [];
     for (const projectId of projectIds) {
       plans.push(
@@ -923,16 +974,18 @@ export function deviceApproveOp(input: {
             }),
       );
     }
-    // どのプロジェクトにも載らなかった(全部 failed / skipped)なら、後段(記録・登録簿・
-    // 要求の取消)を行わない: 記録すると初回同期が同じ失敗を繰り返し、登録簿の行は
-    // 要求側に偽の合図を送り、要求の取消は再実行の材料を消す(Bugbot 指摘)
+    // If it landed on no project (all failed / skipped), the later stages
+    // (record, registry, request cancellation) do not run: recording makes
+    // the first sync repeat the same failure, the registry row sends the
+    // requester a false signal, and cancelling the request erases the
+    // re-run's material (Bugbot's catch)
     if (!outcomes.some((item) => item.state === "registered" || item.state === "already")) {
       yield* logWarning(
         "the device was not registered on any project, so nothing was recorded and the request was left in place. Fix the cause reported above and re-run `maruhi device approve` with the same fingerprint (the request stays valid until it expires)",
       );
       return outcomes;
     }
-    // ローカル記録(approved — K4-3 の書き手 (2))。承認者の端末 FP を出所として残す
+    // The local record (approved — writer (2) of K4-3). The approver's device FP is kept as provenance
     const store = yield* OwnDeviceStore;
     const entry: OwnDeviceEntry = {
       keyFingerprintHex: request.fingerprintHex,
@@ -948,9 +1001,12 @@ export function deviceApproveOp(input: {
       revokedAtMs: null,
     };
     yield* store.record(input.session.origin, input.session.userId, entry);
-    // 登録簿へ PUT(合図 — 最後に行う)。成否は値で取り出し、取消の条件にする(DK K9-1):
-    // 合図を出せなかったのに要求を消すと、承認側の再実行が要求を見つけられず、合図を
-    // 出し直す手が無くなる。失敗の種類は問わない(K9-2 — 種類は文言だけが見る)
+    // The registry PUT (the signal — done last). The result is taken as a
+    // value and becomes the cancellation condition (DK K9-1): deleting a
+    // request after failing to send the signal leaves the approver's
+    // re-run unable to find the request, with no way to resend the signal.
+    // The failure kind doesn't matter (K9-2 — only the wording sees the
+    // kind)
     const listed = yield* Effect.result(
       input.client.devices.register({
         params: { fp: request.fingerprintHex },
@@ -962,11 +1018,14 @@ export function deviceApproveOp(input: {
       }),
     );
     if (Result.isFailure(listed)) {
-      // 要求は残す(期限まで)。再実行は全プロジェクト already(失敗していた分は再試行)→
-      // PUT → 取消で収束する。期限を過ぎると登録簿の行を書く経路が無い(K9-3 の T3)
+      // The request is left (until its expiry). A re-run converges via
+      // all-projects already (the previously failed ones retry) → PUT →
+      // cancellation. Past the expiry there is no path that writes the
+      // registry row (K9-3's T3)
       const retry = `The request is left in place until ${formatUtcMinutes(request.expiresAtMs)}:`;
-      // 打ち直しは同じ cap で(K10-1 — 違う cap は拒否される。フラグなしの再実行は既定の
-      // owner / all になるので、コマンドをそのまま出す)
+      // The re-run uses the same cap (K10-1 — a different cap is refused.
+      // A flagless re-run becomes the default owner / all, so the command
+      // is issued as-is)
       const rerun = approveCommandOf(request.fingerprintHex, input.cap, input.project);
       const afterwards =
         "After that the device stays registered on the chains above but unlisted in your device registry";
@@ -986,9 +1045,10 @@ export function deviceApproveOp(input: {
 }
 
 /**
- * 第 1 相の結果(DK K10-4): 決着済み(skipped / already / failed)か、第 2 相で追記する
- * プロジェクトの文脈か。`chainCap` はこの鍵がこのチェーンに既に載っていればその cap
- * (署名する端末の有無と関係なくチェーンの事実 — K10-2 第 3 巡)。
+ * The phase-1 result (DK K10-4): settled (skipped / already / failed), or
+ * the context of a project to append to in phase 2. `chainCap` is this
+ * key's cap if it is already on this chain (a chain fact regardless of
+ * whether a signing device exists — K10-2 round 3).
  */
 type ProjectApprovePlan =
   | {
@@ -1003,7 +1063,7 @@ type ProjectApprovePlan =
       readonly chainCap: null;
     };
 
-/** 1 プロジェクトを開いて決着を判定する(失敗は結果に畳む — 1 つの失敗で止めない)。 */
+/** Opens one project and judges its outcome (a failure is folded into the result — one failure doesn't stop the rest). */
 function planApproveOnProject(input: {
   readonly session: CliSession;
   readonly projectId: string;
@@ -1031,9 +1091,11 @@ function planApproveOnProject(input: {
       present === undefined ? null : { roleCap: present.roleCap, scope: present.scope };
     const signer = findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
     if (signer === undefined) {
-      // 要求なしに承認し直す経路は無い(登録済みの鍵は要求を作り直せない — DK K10-5)。
-      // 登録するのは、このプロジェクトに載っている自分の端末の同期(`device-sync.ts` の
-      // 観測 → 登録)で、前段はこのプロジェクトを対象にした鍵付きコマンドだけが開く
+      // There is no path to re-approve without a request (a registered
+      // key cannot recreate one — DK K10-5). What registers it is this
+      // project's own-device sync (`device-sync.ts`'s observe → register),
+      // whose prologue opens only via a keyed command targeting this
+      // project
       return settled(
         "skipped",
         `this machine's key is not one of your registered devices here, so it cannot register devices here. A device of yours that is registered here adds the new device (and this machine) when it runs a keyed command on this project at a terminal (\`maruhi pull --project ${displayText(input.projectId)}\`, for instance), if its cap covers them and it has synced a project that has them`,
@@ -1043,7 +1105,7 @@ function planApproveOnProject(input: {
     if (present !== undefined) {
       return settled("already", null, chainCap);
     }
-    // 通信前判定(K4-3 反例 3 / 4): 単調性と `listed` の環境の存在
+    // Pre-communication judgment (K4-3 counterexamples 3 / 4): monotonicity and the existence of `listed` environments
     if (!capWithinSignerCap(input.cap, signer)) {
       return settled(
         "skipped",
@@ -1055,14 +1117,15 @@ function planApproveOnProject(input: {
   }).pipe(Effect.catch((error) => Effect.succeed(settled("failed", error.message))));
 }
 
-/** cap の一致(role と scope — scope は集合として比べる)。 */
+/** Cap equality (role and scope — scope is compared as a set). */
 function sameCap(a: DeviceCap, b: DeviceCap): boolean {
   return a.roleCap === b.roleCap && sameScope(a.scope, b.scope);
 }
 
 /**
- * `device approve` を同じ cap で打ち直すコマンド(DK K10-1)。フラグの字面は help golden
- * (`--cap` / `--env` / `--all-envs` / `--no-envs` / `--project`)から写す。
+ * The command to re-run `device approve` with the same cap (DK K10-1).
+ * The flag spellings are transcribed from the help golden (`--cap` /
+ * `--env` / `--all-envs` / `--no-envs` / `--project`).
  */
 function approveCommandOf(
   fingerprintHex: string,
@@ -1082,10 +1145,13 @@ function approveCommandOf(
 }
 
 /**
- * 再実行の cap の規律(DK K10-1 / K10-2): 訪れるプロジェクトのどれかのチェーンにこの鍵が
- * 既に載っていて、その cap が今回の cap と違えば、何も追記・記録せず要求を残して止まる。
- * 端末の cap は最初の承認で決まり変えられないので、再実行(PUT の失敗後・中断後)は最初の
- * 承認の続きでしかない。比べる相手はチェーン(真実)だけで、ローカル記録は読まない(K4-5)。
+ * The re-run cap discipline (DK K10-1 / K10-2): if this key is already on
+ * the chain of any visited project and its cap differs from this run's,
+ * stop without appending or recording anything, leaving the request. A
+ * device's cap is fixed at its first approval and cannot change, so a
+ * re-run (after a PUT failure, after an interruption) is only ever a
+ * continuation of the first approval. The comparison is against the chain
+ * (the truth) only — the local records are never read (K4-5).
  */
 function refuseCapMismatch(input: {
   readonly plans: readonly ProjectApprovePlan[];
@@ -1117,7 +1183,7 @@ function refuseCapMismatch(input: {
   );
 }
 
-/** 第 2 相: 第 1 相で開いた文脈で `add_device` + バックフィル(失敗は結果に畳む)。 */
+/** Phase 2: `add_device` + backfill in the contexts opened in phase 1 (failures fold into the result). */
 function appendOnProject(input: {
   readonly session: CliSession;
   readonly plan: Extract<ProjectApprovePlan, { readonly kind: "append" }>;
@@ -1166,13 +1232,14 @@ function appendOnProject(input: {
   }).pipe(Effect.catch((error) => Effect.succeed(outcome("failed", error.message))));
 }
 
-/** 承認結果の報告(effect-cli が呼ぶ)。 */
+/** Reporting the approval result (called by effect-cli). */
 export function reportApproveOutcomes(
   outcomes: readonly ProjectApproveOutcome[],
 ): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
-    // どこにも載らなかった(全部 skipped / failed — 記録も要求の取消も行っていない)
-    // 承認は失敗として終える(skipped だけでも 0 にしない)
+    // It landed nowhere (all skipped / failed — no record or request
+    // cancellation happened). The approval ends as a failure (not 0 even
+    // when everything was only skipped)
     let exitCode = outcomes.some((item) => item.state === "registered" || item.state === "already")
       ? 0
       : 1;
@@ -1185,14 +1252,14 @@ export function reportApproveOutcomes(
   });
 }
 
-/** バックフィルの要約(括弧書き。null = バックフィルなし)。 */
+/** The backfill summary (in parentheses. null = no backfill). */
 export function describeBackfill(backfill: DeviceBackfillOutcome | null): string {
   return backfill === null
     ? ""
     : ` (backfilled ${countNoun(backfill.registered, "DEK wrap")}, ${backfill.alreadyRegistered} already present, ${countNoun(backfill.environments, "environment")})`;
 }
 
-/** 1 プロジェクトの承認結果(終了コード: バックフィル失敗・失敗は 1)。 */
+/** One project's approval result (exit code: a backfill failure or a failure is 1). */
 function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number, never, CliIo> {
   const label = displayText(item.projectId);
   switch (item.state) {
@@ -1205,8 +1272,9 @@ function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number
             ? "registered the device"
             : "the device was already registered",
         backfill: item.backfill,
-        // `already` はバックフィルしないので、承認の再実行は欠けを補わない(DK K11 — 補うのは
-        // 兄弟端末の pull。K10-12 の cap の拒否にも当たらない)
+        // `already` does not backfill, so re-running the approval fills no
+        // gap (DK K11 — the sibling devices' pull fills it. Also avoids
+        // K10-12's cap refusal)
         rerun: (environmentId) => describeGapFillRoute(item.projectId, environmentId),
       });
     case "skipped":
@@ -1216,12 +1284,12 @@ function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number
   }
 }
 
-/** 登録(済み)行 + バックフィル失敗の警告(承認と復元で共有 — 失敗があれば 1)。 */
+/** The registered(-already) row + a backfill-failure warning (shared by approve and restore — 1 when there is a failure). */
 export function reportRegisteredDevice(input: {
   readonly label: string;
   readonly action: string;
   readonly backfill: DeviceBackfillOutcome | null;
-  /** 失敗した環境を補う経路の案内(DK K11-5 — 字面は device-gaps.ts が作る)。 */
+  /** Guidance for the path that fills the failed environments (DK K11-5 — the wording is built by device-gaps.ts). */
   readonly rerun: (environmentId: string) => string;
 }): Effect.Effect<number, never, CliIo> {
   return Effect.gen(function* () {
@@ -1241,13 +1309,13 @@ export function reportRegisteredDevice(input: {
 // device list
 // ---------------------------------------------------------------------------
 
-/** 表示行の材料: FP → チェーン上の出現(プロジェクトごとの 1 行)と、同期できたチェーン。 */
+/** The display rows' material: FP → on-chain appearances (one row per project) and the synced chains. */
 interface ListRows {
   readonly rows: Map<string, { readonly projectId: string; readonly line: string }[]>;
   readonly chains: readonly { readonly projectId: string; readonly verified: VerifiedProject }[];
 }
 
-/** 各プロジェクトのチェーンから自分の端末を集める(同期できないプロジェクトは Note)。 */
+/** Collects my device from each project's chain (a project that cannot sync is a Note). */
 function collectChainRows(input: {
   readonly session: CliSession;
   readonly projectIds: readonly string[];
@@ -1287,8 +1355,9 @@ function collectChainRows(input: {
 }
 
 /**
- * 1 端末のチェーン上の出現: 有効な行(cap・出所)と、失効したプロジェクトの行(立場の
- * 判定は `keyStandingIn` — `device add` と同じ述語: DK K13-6)。
+ * One device's on-chain appearance: the valid rows (cap, provenance) and
+ * the revoked-project rows (the standing judgment is `keyStandingIn` — the
+ * same predicate as `device add`: DK K13-6).
  */
 function chainLinesOf(input: {
   readonly listed: ListRows;
@@ -1308,7 +1377,7 @@ function chainLinesOf(input: {
   return [...active, ...revoked];
 }
 
-/** 1 端末の見出し(登録簿の表示名・トークン id は server-reported、ローカル記録は出所)。 */
+/** One device's heading (the registry's display name and token id are server-reported; the local record is provenance). */
 function describeListRow(input: {
   readonly fingerprintHex: string;
   readonly ownFingerprintHex: string | null;
@@ -1335,7 +1404,7 @@ function describeListRow(input: {
   return `${input.fingerprintHex}${tags.length === 0 ? "" : `\t${tags.join(", ")}`}`;
 }
 
-/** `maruhi device list [--project]`(値ゼロ・鍵不要・ゲートなし)。 */
+/** `maruhi device list [--project]` (no values, no keys needed, no gate). */
 export function deviceListOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -1347,7 +1416,7 @@ export function deviceListOp(input: {
     const registry = yield* fetchRegistry(input.client);
     const lookup = yield* store.load(input.session.origin, input.session.userId);
     const local = lookup.state === "loaded" ? lookup.devices : [];
-    // プロジェクト一覧が取れなくても、登録簿とローカル記録は出せるので落とさない(DK K13-6)
+    // Even when the project list cannot be fetched, the registry and local records can still be shown, so it isn't dropped (DK K13-6)
     const projectIds = yield* resolveProjectIds(input.client, input.project).pipe(
       Effect.catch((error) =>
         logNote(
@@ -1358,11 +1427,12 @@ export function deviceListOp(input: {
     const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
       Effect.succeed<MasterKeys | null>(null),
     );
-    // FP → 表示行(チェーンが真実。登録簿とローカル記録は注記として並べる)
+    // FP → display rows (the chain is the truth. The registry and local records sit alongside as annotations)
     const listed = yield* collectChainRows({ session: input.session, projectIds });
     const active = local.filter((entry) => entry.revokedAtMs === null);
-    // この端末の鍵は、どのチェーンにも・登録簿にも・有効な記録にも無くても出す(失効した
-    // 端末のエラーが「`maruhi device list` で確認」と委ねる先 — DK K13-6)
+    // This device's key is printed even when absent from every chain,
+    // the registry, and every valid record (the place a revoked device's
+    // error defers to with "check with `maruhi device list`" — DK K13-6)
     const fingerprints = [
       ...new Set([
         ...listed.rows.keys(),
@@ -1401,13 +1471,14 @@ export function deviceListOp(input: {
 }
 
 /**
- * 1 端末のチェーン上の出現(無ければ、表示した範囲を言ってその旨 — DK K13-6)。同期できな
- * かったプロジェクトについては「無い」と言わない(Bugbot 指摘 — K13-16)。
+ * One device's on-chain appearances (when none, say the shown range to
+ * that effect — DK K13-6). Never says "none" about a project that could
+ * not be synced (Bugbot's catch — K13-16).
  */
 function printChainLines(input: {
   readonly lines: readonly string[];
   readonly project: string | undefined;
-  /** 同期できなかったプロジェクトの数(`collectChainRows` が Note を出したもの)。 */
+  /** The count of projects that could not be synced (the ones `collectChainRows` noted). */
   readonly unsynced: number;
 }): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
@@ -1436,7 +1507,7 @@ function describeNoChainLines(project: string | undefined, unsynced: number): st
 // device revoke
 // ---------------------------------------------------------------------------
 
-/** 参照の解釈(K4-7: FP の接頭辞 8 文字以上、または登録簿の表示名 — 自分のみ)。 */
+/** Interpreting the references (K4-7: an FP prefix of 8+ chars, or the registry's display name — your own only). */
 function resolveRevokeRefs(input: {
   readonly refs: readonly string[];
   readonly registry: readonly RegistryRow[] | null;
@@ -1473,7 +1544,7 @@ function resolveRevokeRefs(input: {
   });
 }
 
-/** 1 プロジェクトの失効計画(確認表の 1 段)。 */
+/** One project's revocation plan (one stage of the confirmation table). */
 interface ProjectRevokePlan {
   readonly context: ProjectContext;
   readonly target: ChainMember;
@@ -1482,29 +1553,29 @@ interface ProjectRevokePlan {
   readonly warnings: readonly string[];
 }
 
-/** 1 プロジェクトでの失効結果(effect-cli が報告する)。 */
+/** The revocation result on one project (reported by effect-cli). */
 export interface ProjectRevokeOutcome {
   readonly projectId: string;
   readonly revoked: readonly string[];
   readonly sweep: DeviceSweepOutcome | null;
   readonly skipped: string | null;
-  /** `revoke_device` の追記が失敗した(何も失効していない)。 */
+  /** The `revoke_device` append failed (nothing was revoked). */
   readonly failed: string | null;
-  /** 追記は受理されたが、受理後の再同期か sweep が失敗した(失効は載っている)。 */
+  /** The append was accepted, but the post-acceptance resync or sweep failed (the revocation is on the chain). */
   readonly sweepFailed: string | null;
 }
 
-/** `device revoke` 全体の結果。 */
+/** The overall result of `device revoke`. */
 export interface DeviceRevokeSummary {
   readonly projects: readonly ProjectRevokeOutcome[];
-  /** 提案したが失効していないトークン(名前・期限 — K4-13)。 */
+  /** Tokens proposed but not revoked (name, expiry — K4-13). */
   readonly tokenProposal: readonly string[];
 }
 
-/** 参照の解決結果(表示名経由かどうかを確認表に載せる)。 */
+/** The reference-resolution result (whether it came via a display name goes on the confirmation table). */
 type RevokeRef = { readonly ref: string; readonly prefix: string; readonly viaLabel: boolean };
 
-/** 確認表(K4-7): プロジェクトごとの失効 FP(全長)と残る端末、導いた警告。 */
+/** The confirmation table (K4-7): per-project revoked FPs (full) and remaining devices, and the derived warnings. */
 function printRevokePlans(input: {
   readonly targetUserId: string;
   readonly plans: readonly ProjectRevokePlan[];
@@ -1529,7 +1600,7 @@ function printRevokePlans(input: {
   });
 }
 
-/** 自分の端末を失効させた後始末: ローカル記録に revoked、登録簿の行を削除(advisory)。 */
+/** The cleanup after revoking your own device: revoked in the local record, delete the registry row (advisory). */
 function finishOwnRevocation(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -1537,7 +1608,7 @@ function finishOwnRevocation(input: {
 }): Effect.Effect<void, CliError, OwnDeviceStore> {
   return Effect.gen(function* () {
     const store = yield* OwnDeviceStore;
-    // ローカル記録に revoked(再登録を防ぐ — K4-3 反例 1)
+    // revoked in the local record (prevents re-registering — K4-3 counterexample 1)
     yield* store.markRevoked(input.session.origin, input.session.userId, input.revoked, Date.now());
     for (const fp of input.revoked) {
       yield* input.client.devices.remove({ params: { fp } }).pipe(
@@ -1548,7 +1619,7 @@ function finishOwnRevocation(input: {
   });
 }
 
-/** `maruhi device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`。 */
+/** `maruhi device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`. */
 export function deviceRevokeOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -1614,7 +1685,7 @@ export function deviceRevokeOp(input: {
   });
 }
 
-/** 参照の解決に要る材料(自分の端末なら登録簿と予備鍵の記録、他人なら FP だけ)。 */
+/** The material needed to resolve a reference (for your own device the registry and reserve-key records; for others' just the FP). */
 function prepareRevokeRefs(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -1639,7 +1710,7 @@ function prepareRevokeRefs(input: {
   });
 }
 
-/** 各プロジェクトで失効を実行し、結果を積む。戻り値 = 失効した FP の和集合。 */
+/** Executes the revocation on each project and accumulates the results. Return value = the union of revoked FPs. */
 function executeRevokeAll(input: {
   readonly session: CliSession;
   readonly plans: readonly ProjectRevokePlan[];
@@ -1665,7 +1736,7 @@ function executeRevokeAll(input: {
   });
 }
 
-/** 各プロジェクトの失効計画(飛ばしたプロジェクトは結果に skipped として先に積む)。 */
+/** Each project's revocation plan (a skipped project is accumulated into the result as skipped first). */
 function planRevokeAll(input: {
   readonly session: CliSession;
   readonly projectIds: readonly string[];
@@ -1700,7 +1771,7 @@ function planRevokeAll(input: {
   });
 }
 
-/** yes の確認(`--yes` で省略 — 失効は儀式ではない。K4-7)。 */
+/** The yes confirmation (skipped by `--yes` — a revocation is not a ceremony. K4-7). */
 function confirmRevoke(yes: boolean): Effect.Effect<void, CliError, CliIo> {
   if (yes) {
     return Effect.void;
@@ -1714,7 +1785,7 @@ function confirmRevoke(yes: boolean): Effect.Effect<void, CliError, CliIo> {
   });
 }
 
-/** ローカル記録の予備鍵(失効していないもの)の FP 集合(確認表の警告材料 — K4-7)。 */
+/** The FP set of the local records' reserve keys (the non-revoked ones) (warning material for the confirmation table — K4-7). */
 function recordedReserveFingerprints(
   session: CliSession,
 ): Effect.Effect<ReadonlySet<string>, CliError, OwnDeviceStore> {
@@ -1729,7 +1800,7 @@ function recordedReserveFingerprints(
   });
 }
 
-/** 参照に一致する現端末(接頭辞は一意でなければ usage エラー)。 */
+/** The current devices matching a reference (a non-unique prefix is a usage error). */
 function matchRevokeTargets(input: {
   readonly projectId: string;
   readonly devices: readonly ChainDevice[];
@@ -1757,7 +1828,7 @@ function matchRevokeTargets(input: {
   });
 }
 
-/** 残る端末の cap から導く警告(K4-7 / K4-8 / §2-bis)。 */
+/** Warnings derived from the remaining devices' caps (K4-7 / K4-8 / §2-bis). */
 function revokeWarnings(input: {
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
@@ -1801,7 +1872,7 @@ function revokeWarnings(input: {
   return warnings;
 }
 
-/** 確認表の材料を 1 プロジェクトぶん組み立てる(string = 飛ばす理由)。 */
+/** Assembles one project's worth of confirmation-table material (string = the skip reason). */
 function planRevoke(input: {
   readonly session: CliSession;
   readonly projectId: string;
@@ -1850,7 +1921,7 @@ function planRevoke(input: {
   });
 }
 
-/** 対象の scope 内で、残る端末のどれも実効 scope に含まない環境(K4-7 の警告材料)。 */
+/** Within the target scope, the environments no remaining device's effective scope includes (K4-7's warning material). */
 function uncoveredEnvironments(
   verified: VerifiedProject,
   target: ChainMember,
@@ -1866,7 +1937,7 @@ function uncoveredEnvironments(
     .toSorted(compareCodePoints);
 }
 
-/** 1 プロジェクトで `revoke_device` → sweep(失敗は結果に畳む)。 */
+/** `revoke_device` → sweep on one project (a failure folds into the result). */
 function executeRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
@@ -1892,8 +1963,10 @@ function executeRevoke(input: {
       fingerprintsHex: input.plan.revoking.map((device) => device.keyFingerprintHex),
     });
     const { revoked } = appended;
-    // 追記の受理後は失効が載っている: 再同期・sweep の失敗は「失効の失敗」に畳まず、
-    // 失効は残したまま sweep の失敗として報告する(ローカル記録・登録簿の後段を飛ばさない)
+    // After the append is accepted the revocation is on the chain: a
+    // resync / sweep failure is not folded into "revocation failed" — the
+    // revocation stays and it is reported as a sweep failure (never skip
+    // the local-record / registry aftermath)
     return yield* sweepAfterRevoke({ ...input, appended }).pipe(
       Effect.map((sweep) => ({ ...base, revoked, sweep })),
       Effect.catch((error) =>
@@ -1907,7 +1980,7 @@ function executeRevoke(input: {
   }).pipe(Effect.catch((error) => Effect.succeed({ ...base, failed: error.message })));
 }
 
-/** 受理後の再同期と sweep(失敗はそのまま返す — 呼び出し側が sweepFailed に畳む)。 */
+/** The post-acceptance resync and sweep (failures are returned as-is — the caller folds them into sweepFailed). */
 function sweepAfterRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
@@ -1917,8 +1990,10 @@ function sweepAfterRevoke(input: {
 }): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {
   const { context } = input.plan;
   return Effect.gen(function* () {
-    // 受理後の再同期(追記前のビューには失効の義務が無い — sweep は掲載を確認した
-    // ビューで導出する。member remove と同じ規律: サーバー申告を真実源にしない)
+    // The post-acceptance resync (the pre-append view has no revocation
+    // duty — the sweep is derived on the view that confirmed the listing.
+    // Same discipline as member remove: the server's claim is never the
+    // source of truth)
     const verified =
       input.appended.revoked.length === 0
         ? input.appended.verified
@@ -1928,7 +2003,7 @@ function sweepAfterRevoke(input: {
       self === undefined
         ? undefined
         : findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
-    // 自分の端末自身を失効させた場合、sweep はこの端末では履行できない(K4-7 反例 5)
+    // When this device revoked itself, the sweep cannot be fulfilled from this device (K4-7 counterexample 5)
     return actorDevice === undefined
       ? null
       : yield* sweepAfterDeviceRevoke({
@@ -1943,9 +2018,11 @@ function sweepAfterRevoke(input: {
 }
 
 /**
- * トークン失効の提案(K4-13): 候補 = 登録簿の `tokenId`、無ければ名前 `cli:<label>`。
- * `--revoke-token` なら失効、対話なら yes を聞き、非対話(`--yes`)では提案だけ返す。
- * 一覧が 403(admin でないトークン)なら事実だけ伝える。
+ * Proposing token revocation (K4-13): the candidate is the registry's
+ * `tokenId`, else the name `cli:<label>`. With `--revoke-token` it revokes;
+ * interactively it asks for yes; non-interactively (`--yes`) it only
+ * returns the proposal. A 403 on the list (a non-admin token) reports only
+ * the fact.
  */
 function proposeTokenRevocation(input: {
   readonly client: MaruhiClient;
@@ -2013,7 +2090,7 @@ function proposeTokenRevocation(input: {
   });
 }
 
-/** トークン候補の 1 行(id・名前・期限 — K4-13 の提案表示)。 */
+/** One token-candidate row (id, name, expiry — K4-13's proposal display). */
 function describeToken(token: {
   readonly id: string;
   readonly name: string;
@@ -2022,7 +2099,7 @@ function describeToken(token: {
   return `${displayText(token.id)} (${displayText(token.name)}, expires ${token.expiresAtMs === null ? "never" : formatUtcMinutes(token.expiresAtMs)})`;
 }
 
-/** cap の組み立て(`--cap <role>` + scope フラグ)。 */
+/** Assembling the cap (`--cap <role>` + the scope flags). */
 export function parseCapRole(raw: string | undefined): Effect.Effect<Role, CliError> {
   if (raw === undefined) {
     return Effect.succeed("owner");
