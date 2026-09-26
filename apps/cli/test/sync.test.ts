@@ -48,6 +48,7 @@ function chainResponse(projectId: string, built: BuiltChain): MockResponse {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   };
 }
@@ -125,6 +126,7 @@ describe("syncProject (§6.3)", () => {
           entries: tampered,
           headSeq: 2,
           headHashHex: built.hashes[1],
+          attestations: [],
         },
       })),
     ]);
@@ -162,6 +164,7 @@ describe("syncProject (§6.3)", () => {
           entries: built.entries,
           headSeq: 1,
           headHashHex: built.hashes[0],
+          attestations: [],
         },
       })),
     ]);
@@ -183,6 +186,7 @@ describe("syncProject (§6.3)", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: "ab".repeat(32),
+          attestations: [],
         },
       })),
     ]);

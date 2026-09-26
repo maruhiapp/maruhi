@@ -578,7 +578,7 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
             deleteDekWrapsProgram(
               actor(OWNER),
               ENV,
-              [{ epoch: 7, recipientUserId: STRANGER }],
+              [{ epoch: 7, recipientUserId: STRANGER, recipientEncPubHex: "ab".repeat(32) }],
               cache,
             ),
           ),

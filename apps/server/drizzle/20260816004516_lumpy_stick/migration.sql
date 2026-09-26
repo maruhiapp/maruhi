@@ -1,1 +1,0 @@
-CREATE INDEX `oae_project` ON `org_audit_events` (`project_id`,`seq`);

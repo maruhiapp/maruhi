@@ -30,6 +30,7 @@ import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
+import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
 
 /** Where the record came from (the three DK-D conditions). */
 export type OwnDeviceSource = "reserve" | "approved" | "observed";
@@ -105,13 +106,8 @@ interface OwnDevicesFile {
 
 const HEX_32 = /^[0-9a-f]{32}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
-const BOOK_KEY = /^[A-Za-z0-9]\S{0,1023}$/;
 const ROLES: readonly Role[] = ["reader", "member", "admin", "owner"];
 const SOURCES: readonly OwnDeviceSource[] = ["reserve", "approved", "observed"];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -254,24 +250,8 @@ function decodeUsers(value: unknown): Record<string, Record<string, OwnDeviceRec
 
 /** 厳格デコード(部分読みしない — pins / 指紋帳と同じ)。 */
 function decodeFile(json: string): OwnDevicesFile | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || value["v"] !== 1 || !isRecord(value["known"])) {
-    return null;
-  }
-  const known: Record<string, Record<string, Record<string, OwnDeviceRecord>>> = {};
-  for (const [origin, rawUsers] of Object.entries(value["known"])) {
-    const users = BOOK_KEY.test(origin) ? decodeUsers(rawUsers) : null;
-    if (users === null) {
-      return null;
-    }
-    known[origin] = users;
-  }
-  return { v: 1, known };
+  const known = decodeOriginBook(json, 1, decodeUsers);
+  return known === null ? null : { v: 1, known };
 }
 
 /** File-backed own-devices store at `path` (used by both production and tests). */

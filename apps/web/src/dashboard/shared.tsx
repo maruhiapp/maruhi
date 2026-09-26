@@ -132,9 +132,8 @@ const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
   project: "The server reports no such project for your account.",
   invitation: "The server reports no such invitation for this project.",
   token: "The server reports no such token for your account.",
-  // 旧サーバー(`devices` グループ無し)の 404 — 空状態には畳まない(K5-9)
-  "device registry":
-    "The server reports no device registry for your account (older servers do not have one).",
+  // 404 は空状態には畳まない(K5-9)
+  "device registry": "The server reports no device registry for your account.",
 };
 
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */
@@ -396,23 +395,13 @@ export function HexText({
 
 /**
  * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー
- * 申告の expiresAtMs(過去判定のみクライアント時計との比較)。null は移行
- * (AUTH_SPEC §6 裁定 CE-c′)前の旧無期限行で、検証側が期限切れとして扱う
- * (fail-closed)ため表示も Expired + no expiry recorded とする — 仕様が定める
- * 挙動の写しであり、クライアントの捏造ではない。
+ * 申告の expiresAtMs(過去判定のみクライアント時計との比較)。
  */
-export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): ReactNode {
-  const expired = expiresAtMs === null || expiresAtMs <= Date.now();
+export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number }): ReactNode {
   return (
     <HStack gap={2} align="center" wrap="wrap">
-      {expiresAtMs === null ? (
-        <Text type="supporting" size="sm">
-          no expiry recorded
-        </Text>
-      ) : (
-        <ServerTime ms={expiresAtMs} />
-      )}
-      {expired ? <Token label="Expired" size="sm" color="red" /> : null}
+      <ServerTime ms={expiresAtMs} />
+      {expiresAtMs <= Date.now() ? <Token label="Expired" size="sm" color="red" /> : null}
     </HStack>
   );
 }

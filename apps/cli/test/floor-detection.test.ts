@@ -217,6 +217,7 @@ function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
         entries: built.entries,
         headSeq: built.entries.length,
         headHashHex: built.hashes[built.hashes.length - 1],
+        attestations: [],
       },
     };
   });
@@ -236,6 +237,7 @@ function pullHandlerFor(payload: PullPayload): MockHandler {
         ...payload,
         variables: payload.variables.map((variable) => variable.statement),
       }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -261,6 +263,7 @@ function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
         variables: payload.variables,
         deletedVariables: payload.deletedVariables ?? [],
         manifest: await manifestOf(payload),
+        schemaPolicy: "enabled" as const,
       },
     }),
   );

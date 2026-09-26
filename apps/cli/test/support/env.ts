@@ -425,6 +425,8 @@ export function seedSession(env: TestEnv, origin: string, user: TestUser): void 
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
+    // 2100-01-01(期限接近の警告の窓の外)
+    expiresAtMs: 4_102_444_800_000,
   };
   const master: StoredMasterKey = {
     suite: "maruhi/v1",

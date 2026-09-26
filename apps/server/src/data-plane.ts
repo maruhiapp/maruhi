@@ -67,14 +67,13 @@ export interface DekWrapInput {
 
 /**
  * 保存済みラップの参照(§12-6 の修復経路の削除単位)。`recipientEncPubHex` は端末軸
- * (2026-09-19 DK — スロットは端末ごと)。省略時は当該 (epoch, 受信者) のスロットが
- * ちょうど 1 つのときだけ消す(複数なら 422 duplicate-recipient — 設計録 §8 K3-3)。
+ * (2026-09-19 DK — スロットは端末ごと)。
  */
 export interface DekWrapRefInput {
   readonly epoch: number;
   readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
-  readonly recipientEncPubHex?: string;
+  readonly recipientEncPubHex: string;
 }
 
 /**
@@ -335,9 +334,9 @@ export interface EnvironmentPullValue {
   /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
   readonly schemaPolicy: SchemaPolicy;
   /**
-   * 最新の環境マニフェスト(§12-7)。undefined はマニフェスト
-   * 導入前に作成された環境の移行完了までの過渡状態のみ(保存行があれば必ず
-   * 同梱する — クライアント側は欠落 = 一律拒否 §6.3)。
+   * 最新の環境マニフェスト(§12-7)。保存行があれば必ず同梱する(環境作成が
+   * manifest_version 1 を同梱するので、作成済みの環境では常にある — クライアント側は
+   * 欠落 = 一律拒否 §6.3)。
    */
   readonly manifest?: DistributedEnvManifestValue;
   /**

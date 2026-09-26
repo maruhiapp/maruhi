@@ -177,7 +177,12 @@ function masterRecordJson(overrides: Record<string, string>): string {
 describe("キーチェーン往復は伏字保存で壊れていない", () => {
   it("serializeStoredToken は生値を書く(JSON.stringify の伏字保存を踏んでいない)", () => {
     const record = parseStoredToken(
-      JSON.stringify({ token: "maruhi_pat_real", userId: "u1", tokenId: "t1" }),
+      JSON.stringify({
+        token: "maruhi_pat_real",
+        userId: "u1",
+        tokenId: "t1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     if (record === null) throw new Error("expected a parsed record");
     const serialized = serializeStoredToken(record);
@@ -290,7 +295,14 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 原因を取り違えた診断になり、真因(保存側)へ辿り着けない
     for (const placeholder of ["<redacted>", "<redacted:maruhi-token>"]) {
       expect(
-        parseStoredToken(JSON.stringify({ token: placeholder, userId: "u1", tokenId: "t1" })),
+        parseStoredToken(
+          JSON.stringify({
+            token: placeholder,
+            userId: "u1",
+            tokenId: "t1",
+            expiresAtMs: 4_102_444_800_000,
+          }),
+        ),
       ).toBeNull();
     }
     expect(
@@ -302,7 +314,14 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 正常なレコードは通る(検出が過剰に効いていない陽性対照)
     expect(parseStoredMasterKey(masterRecordJson({}))).not.toBeNull();
     expect(
-      parseStoredToken(JSON.stringify({ token: "maruhi_pat_x", userId: "u1", tokenId: "t1" })),
+      parseStoredToken(
+        JSON.stringify({
+          token: "maruhi_pat_x",
+          userId: "u1",
+          tokenId: "t1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
+      ),
     ).not.toBeNull();
   });
 
@@ -312,7 +331,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 上書き防止ガードに阻まれる)ので、文言もそこで分ける
     expect(
       hasRedactedPlaceholder(
-        JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+        JSON.stringify({
+          token: "<redacted:maruhi-token>",
+          userId: "u1",
+          tokenId: "t1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       ),
     ).toBe(true);
     expect(hasRedactedPlaceholder(masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }))).toBe(
@@ -324,7 +348,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
     // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
     expect(redactedPlaceholderTokenMessage("os-keychain")).toContain(
-      "`maruhi login` overwrites it correctly",
+      "`maruhi login` overwrites it",
     );
     expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("The keychain record");
     // agent セッションでは実在しないキーチェーンを指さない(直し方は同じ)
@@ -419,7 +443,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 直列化の剥がし忘れ(= 保存側のバグ)を再現する
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+      JSON.stringify({
+        token: "<redacted:maruhi-token>",
+        userId: "u1",
+        tokenId: "t1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     const exit = await Effect.runPromiseExit(
       resolveSession(maruhi.origin).pipe(Effect.provide(env.layer)),
@@ -620,7 +649,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     // 保存確認プロンプト(表示されたコードの最終グループ)へ遅延評価で答える
     env.setPromptResponses([

@@ -199,8 +199,8 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           deks: pulled.deks,
           // schemaPolicy の advisory 同梱(§12-7 / §12-11)
           schemaPolicy: pulled.schemaPolicy,
-          // 最新マニフェスト(§12-7 — 保存行があれば必ず同梱。欠落 = 移行前の
-          // 過渡状態のみで、クライアント側は一律拒否する — CRYPTO_SPEC §6.3)
+          // 最新マニフェスト(§12-7 — 保存行があれば必ず同梱。欠落はクライアント側が
+          // 一律拒否する — CRYPTO_SPEC §6.3)
           ...(pulled.manifest === undefined ? {} : { manifest: pulled.manifest }),
           // チェックポイント時点の値スナップショット(§12-7 — 基準 checkpoint の
           // 保存行があれば必ず同梱。クライアント規則 2 の材料 — CRYPTO_SPEC §6.3)

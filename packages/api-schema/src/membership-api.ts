@@ -18,7 +18,6 @@ import { devicesGroup } from "./devices-api.ts";
 import {
   AttestationRateLimitedError,
   AttestationRegressionError,
-  ApprovalNotAcceptedError,
   AttestationRejectedError,
   AuditHeadNotReadyError,
   ChainCapacityExceededError,
@@ -29,7 +28,6 @@ import {
   CompositeRequiredError,
   DataLimitExceededError,
   DeviceLimitError,
-  DeviceOpsNotAcceptedError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
@@ -82,17 +80,15 @@ export const DistributedHeadAttestationSchema = Schema.Struct({
 /**
  * Full chain as stored by the project DO (entries in seq order).
  *
- * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1)。
- * optionalKey なのは新 CLI × 旧サーバーの応答に欠けるため —
- * **欠落は拒否にしない**(配布の省略は CRYPTO_SPEC §6.3 の規範的非保証 = G8。
- * 欠落拒否の分岐は攻撃検出を足さず、旧サーバーとの併用だけを壊す)。
+ * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1)。配布の省略は
+ * CRYPTO_SPEC §6.3 の規範的非保証(G8)なので、空の集合は拒否にしない。
  */
 export const ChainSnapshotSchema = Schema.Struct({
   projectId: ProjectIdSchema,
   entries: Schema.Array(ChainEntrySchema),
   headSeq: PositiveInt,
   headHashHex: Sha256Hex,
-  attestations: Schema.optionalKey(Schema.Array(DistributedHeadAttestationSchema)),
+  attestations: Schema.Array(DistributedHeadAttestationSchema),
 });
 
 /**
@@ -198,17 +194,11 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // audit-head-unknown / stale を判定しない(fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
-        // 四眼の 4 op(PF1): K5 以降のサーバーは受理する。ApprovalNotAccepted は
-        // K5 より前のサーバーが返す型(errors/chain.ts — ワイヤ互換のため宣言を残す)。
         // ProposalLimit は propose の受理ポリシー(AUTH_SPEC §12-8 — pending 32 件・
         // expires_at_ms の上界 30 日。合意規則ではない)
-        ApprovalNotAcceptedError,
         ProposalLimitError,
-        // 端末鍵の 2 op(2026-09-19 DK): K3(2026-09-20)以降のサーバーは受理する。
-        // DeviceOpsNotAccepted は K3 より前のサーバーが返す型(errors/chain.ts —
-        // ワイヤ互換のため宣言を残す)。DeviceLimit は add_device の受理ポリシー
+        // DeviceLimit は add_device の受理ポリシー
         // (AUTH_SPEC §12-8 — 有効な端末 16 / メンバー / プロジェクト。合意規則ではない)
-        DeviceOpsNotAcceptedError,
         DeviceLimitError,
         ForbiddenError,
         // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
