@@ -11,6 +11,8 @@
 // 暗号的事実(B の中身)で行い、ローカル状態や申告で行わない。一致しなくても、開いた B が
 // 検証済みチェーン上でどこかの最初の鍵(別の端末から見た pre-DK の複製)か失効した鍵なら
 // 同じく止める(DK K14-4 — `key recover` / `key recovery` と同じ判定 `reserveVerdictOf`)。
+// サーバーが一覧から隠したプロジェクトで最初の鍵だった鍵も、この端末の観測の記録にあれば同じく
+// 止める(DK K15 — `recorded-first-key`)。
 
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -18,7 +20,7 @@ import type { HttpClient } from "effect/unstable/http";
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";
 import { type LedgerKeyCheck, ledgerKeyVerdictOf, type ReserveVerdict } from "./device-standing.ts";
-import { describeProjects } from "./display.ts";
+import { describeProjects, describeRecordedFirstKey } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import type { StoredMasterKey } from "./keychain.ts";
@@ -65,12 +67,21 @@ function ledgerHoldsDeviceKeyMessage(command: string): string {
  */
 function ledgerKeyUnusableMessage(
   fingerprintHex: string,
-  verdict: Extract<ReserveVerdict, { readonly kind: "first-key" | "revoked" }>,
+  verdict: Extract<
+    ReserveVerdict,
+    { readonly kind: "first-key" | "recorded-first-key" | "revoked" }
+  >,
   command: string,
 ): string {
-  return verdict.kind === "first-key"
-    ? `The recovery ledger holds key ${fingerprintHex}, your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with): a copy of a device key from an install before device keys, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`${command}\``
-    : `The recovery ledger holds key ${fingerprintHex}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Run \`maruhi key recovery\` first: it seals a new reserve key in its place. Then re-run \`${command}\``;
+  const separate = `Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`${command}\``;
+  switch (verdict.kind) {
+    case "first-key":
+      return `The recovery ledger holds key ${fingerprintHex}, your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with): a copy of a device key from an install before device keys, not a separate reserve key. ${separate}`;
+    case "recorded-first-key":
+      return `The recovery ledger holds key ${fingerprintHex}. This machine's records show it ${describeRecordedFirstKey(verdict.projectId)}: a copy of a device key from an install before device keys, not a separate reserve key. ${separate}`;
+    case "revoked":
+      return `The recovery ledger holds key ${fingerprintHex}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Run \`maruhi key recovery\` first: it seals a new reserve key in its place. Then re-run \`${command}\``;
+  }
 }
 
 /** 確かめられなかった範囲(同期できないプロジェクト、または一覧の失敗)の句(K14-13 — 写しを作らない)。 */
@@ -152,7 +163,11 @@ export function settleLedgerKeyForChange(input: {
     // 手元の鍵と一致しなくても、チェーンで予備鍵として働かないと分かる鍵は記録せずに止める
     // (`key recovery` と同じ判定 — 複製を reserve と記録すると、rotate / --replace が元の
     // 端末を黙って失効させる入力になる)
-    if (verdict.kind === "first-key" || verdict.kind === "revoked") {
+    if (
+      verdict.kind === "first-key" ||
+      verdict.kind === "recorded-first-key" ||
+      verdict.kind === "revoked"
+    ) {
       yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
       return yield* Effect.fail(
         cliError(ledgerKeyUnusableMessage(fingerprintHex, verdict, input.command)),

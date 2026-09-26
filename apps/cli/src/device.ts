@@ -80,7 +80,7 @@ import {
   keyStandingsOf,
   type StandingGroups,
 } from "./device-standing.ts";
-import { countNoun, displayText, formatUtcMinutes } from "./display.ts";
+import { countNoun, describeListed, displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { FloorStore } from "./floor.ts";
@@ -318,11 +318,6 @@ function describeUnchecked(groups: StandingGroups): string {
 /** プロジェクト id の並び(文言用)。 */
 function projectList(projectIds: readonly string[]): string {
   return projectIds.map(displayText).join(", ");
-}
-
-/** 「サーバーが一覧に出した N 件」の範囲(断言の範囲を言う — K13-2)。 */
-function describeListed(count: number): string {
-  return `no project the server lists for you (${count === 0 ? "none" : count} listed)`;
 }
 
 /**

@@ -638,7 +638,7 @@ describe("maruhi key recover(復元)", () => {
     expect(env.prompts).toEqual(["Enter your recovery code: "]);
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(0);
     expect(env.errors.join("\n")).toContain(
-      `Note: the opened key ${user.fingerprintHex} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
+      `Note: the opened key ${user.fingerprintHex} is on no project the server lists for you (none listed), so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
     );
     // 新しい端末鍵は発行されている(台帳の鍵そのものは保存しない)
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).not.toBe(user.encPubHex);
