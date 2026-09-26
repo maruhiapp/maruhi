@@ -41,26 +41,28 @@ function isExempt(path, exemptions) {
   return exemptions.some((e) => (e.endsWith("/") ? path.startsWith(e) : path === e));
 }
 
-function changedFiles() {
+function mergeBaseWith(candidate) {
+  try {
+    return git(`merge-base ${candidate} HEAD`);
+  } catch {
+    return null;
+  }
+}
+
+function mergeBase() {
   const baseRef = process.env.GITHUB_BASE_REF || "main";
-  let mergeBase;
   for (const candidate of [`origin/${baseRef}`, "origin/main", "main"]) {
-    try {
-      mergeBase = git(`merge-base ${candidate} HEAD`);
-      break;
-    } catch {
-      continue;
-    }
+    const mb = mergeBaseWith(candidate);
+    if (mb) return mb;
   }
-  if (!mergeBase) {
-    console.error(
-      "check-english: could not find a merge base; pass --all or fetch the base branch",
-    );
-    process.exit(2);
-  }
+  console.error("check-english: could not find a merge base; pass --all or fetch the base branch");
+  process.exit(2);
+}
+
+function changedFiles() {
   // Working-tree diff against the merge base covers both committed branch
   // changes (CI) and not-yet-committed local edits (bun run check pre-commit)
-  return git(`diff --name-only ${mergeBase}`).split("\n").filter(Boolean);
+  return git(`diff --name-only ${mergeBase()}`).split("\n").filter(Boolean);
 }
 
 const files = (ALL ? git("ls-files").split("\n") : changedFiles()).filter((path) =>
