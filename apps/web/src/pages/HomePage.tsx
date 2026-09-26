@@ -21,7 +21,7 @@ export function HomePage() {
         <a href={spaPaths.dashboard()} data-testid="to-dashboard">
           Open the dashboard
         </a>{" "}
-        — a read-only view of your projects (sign-in required).
+        — your projects' metadata (sign-in required).
       </p>
       <p>
         Docs, installation, and the product overview live at{" "}

@@ -133,7 +133,11 @@ interface ServerState {
     sigPubHex: string;
     label: string;
     createdAtMs: number;
+    /** 登録簿の行が運ぶ発行トークンの id(K4-13 のトークン失効の提案の照合キー)。 */
+    tokenId?: string;
   }[];
+  /** `DELETE /auth/tokens/:tokenId` で失効を要求されたトークン id(呼び出し順)。 */
+  readonly tokenRevokes: string[];
   readonly registryPuts: { fp: string; body: Record<string, unknown> }[];
   readonly registryDeletes: string[];
   readonly requestCancels: string[];
@@ -150,6 +154,10 @@ async function makeServer(input: {
   readonly requests?: readonly Record<string, unknown>[];
   readonly registryRows?: readonly ServerState["registry"][number][];
   readonly tokensStatus?: number;
+  /** `GET /auth/tokens` が返すトークンの行(既定: 空 — `tokensStatus` が 403 ならそちらが優先)。 */
+  readonly tokens?: readonly Record<string, unknown>[];
+  /** `DELETE /auth/tokens/:tokenId` の応答コード(既定 204。404 = TokenNotFound)。 */
+  readonly tokenRevokeStatus?: number;
   /** 追加のハンドラ(MockServer は起動時に列を写すので、後から push できない)。 */
   readonly extra?: readonly MockHandler[];
   /** 環境一覧 GET の応答コード(既定 200。500 = 受理後の sweep を失敗させる)。 */
@@ -202,6 +210,7 @@ async function makeServer(input: {
   const registryPuts: ServerState["registryPuts"] = [];
   const registryDeletes: string[] = [];
   const requestCancels: string[] = [];
+  const tokenRevokes: string[] = [];
   const registryPutStatuses = [...(input.registryPutStatuses ?? [])];
   const ownWrap: WireRecipientDek | null = input.withEnvironment
     ? await wrapDekFor({
@@ -352,8 +361,19 @@ async function makeServer(input: {
     onRequest("GET", "/auth/tokens", () =>
       input.tokensStatus === 403
         ? { status: 403, json: { _tag: "Forbidden", reason: "insufficient-scope" } }
-        : { status: 200, json: { tokens: [] } },
+        : { status: 200, json: { tokens: input.tokens ?? [] } },
     ),
+    (request: MockRequest) => {
+      const match = /^\/auth\/tokens\/([^/]+)$/.exec(request.path);
+      if (match === null || request.method !== "DELETE") {
+        return null;
+      }
+      tokenRevokes.push(decodeURIComponent(match[1] ?? ""));
+      const status = input.tokenRevokeStatus ?? 204;
+      return status === 204
+        ? { status }
+        : { status, json: { _tag: status === 404 ? "TokenNotFound" : "Internal" } };
+    },
     async (request: MockRequest) => {
       if (
         request.method !== "POST" ||
@@ -395,6 +415,7 @@ async function makeServer(input: {
       registryPuts,
       registryDeletes,
       requestCancels,
+      tokenRevokes,
       paths: () => server.requests.map((request) => `${request.method} ${request.path}`),
     },
   };
@@ -1442,6 +1463,156 @@ describe("maruhi device revoke", () => {
     );
     expect(state.appended).toEqual([]);
     expect(await runCli(["device", "revoke", "abc", "--yes"], env.layer)).toBe(2);
+  });
+});
+
+/** トークン目録の 1 行(`GET /auth/tokens` の応答 — K4-13 の照合対象)。 */
+function tokenRow(id: string, name: string): Record<string, unknown> {
+  return {
+    id,
+    name,
+    tokenPrefix: "maruhi_pat_Xy",
+    scopes: [{ project: "*", permission: "admin" }],
+    createdAtMs: 1,
+    lastUsedAtMs: null,
+    expiresAtMs: null,
+  };
+}
+
+describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
+  /** dev2 を登録済みの端末として持つチェーン・登録簿・ローカル記録を用意する。 */
+  async function setup(input: {
+    readonly registryTokenId?: string;
+    readonly tokens: readonly Record<string, unknown>[];
+    readonly tokenRevokeStatus?: number;
+  }): Promise<{ state: ServerState; env: TestEnv }> {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      registryRows: [
+        {
+          keyFingerprintHex: dev2.fingerprintHex,
+          encPubHex: dev2.encPubHex,
+          sigPubHex: dev2.sigPubHex,
+          label: "old-laptop",
+          createdAtMs: 1,
+          ...(input.registryTokenId === undefined ? {} : { tokenId: input.registryTokenId }),
+        },
+      ],
+      tokens: input.tokens,
+      ...(input.tokenRevokeStatus === undefined
+        ? {}
+        : { tokenRevokeStatus: input.tokenRevokeStatus }),
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    await recordOwnDevice(env, server.origin, dev2, "approved");
+    return { state, env };
+  }
+
+  it("登録簿の tokenId で照合し、--yes だけなら提案を出して失効は送らない", async () => {
+    const { state, env } = await setup({
+      registryTokenId: "tok_lost",
+      // 名前が cli:<label> でも tokenId がある行は tokenId だけで照合する
+      tokens: [tokenRow("tok_lost", "ci"), tokenRow("tok_other", "cli:old-laptop")],
+    });
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain(
+      "The revoked devices' API tokens are still valid (the match is server-reported): tok_lost (ci, expires never)",
+    );
+    expect(logs).not.toContain("tok_other");
+    expect(env.errors.join("\n")).toContain("tokens were left as they are");
+    expect(state.tokenRevokes).toEqual([]);
+    expect(env.prompts).toEqual([]);
+  });
+
+  it("登録簿の行に tokenId が無ければ名前 cli:<label> で照合する", async () => {
+    const { state, env } = await setup({
+      tokens: [tokenRow("tok_named", "cli:old-laptop"), tokenRow("tok_other", "cli:desktop")],
+    });
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes", "--revoke-token"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(env.logs.join("\n")).toContain("tok_named (cli:old-laptop, expires never)");
+    expect(env.logs.join("\n")).not.toContain("tok_other");
+    expect(state.tokenRevokes).toEqual(["tok_named"]);
+  });
+
+  it("--revoke-token は照合したトークンの失効を送り、報告する", async () => {
+    const { state, env } = await setup({
+      registryTokenId: "tok_lost",
+      tokens: [tokenRow("tok_lost", "cli:old-laptop")],
+    });
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes", "--revoke-token"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.tokenRevokes).toEqual(["tok_lost"]);
+    expect(env.logs.join("\n")).toContain("Revoked token tok_lost (cli:old-laptop, expires never)");
+    expect(env.errors.join("\n")).not.toContain("tokens were left as they are");
+  });
+
+  it("対話では失効の確認の後にトークンの失効を聞き、yes なら失効を送る", async () => {
+    const { state, env } = await setup({
+      registryTokenId: "tok_lost",
+      tokens: [tokenRow("tok_lost", "cli:old-laptop")],
+    });
+    env.setPromptResponses(["yes", "yes"]);
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(env.prompts).toEqual(["Type yes to revoke: ", "Revoke these tokens too? Type yes: "]);
+    expect(state.appended.map((entry) => entry.op)).toEqual(["revoke_device"]);
+    expect(state.tokenRevokes).toEqual(["tok_lost"]);
+  });
+
+  it("対話でトークンの失効を断れば送らず、後で失効する手順を案内する(端末の失効は残る)", async () => {
+    const { state, env } = await setup({
+      registryTokenId: "tok_lost",
+      tokens: [tokenRow("tok_lost", "cli:old-laptop")],
+    });
+    env.setPromptResponses(["yes", "no"]);
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.appended.map((entry) => entry.op)).toEqual(["revoke_device"]);
+    expect(state.tokenRevokes).toEqual([]);
+    expect(env.errors.join("\n")).toContain("revoke them later with `maruhi token revoke <id>`");
+  });
+
+  it("失効の送信が TokenNotFound(既に失効済み)でも失敗にしない", async () => {
+    const { state, env } = await setup({
+      registryTokenId: "tok_lost",
+      tokens: [tokenRow("tok_lost", "cli:old-laptop")],
+      tokenRevokeStatus: 404,
+    });
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes", "--revoke-token"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.tokenRevokes).toEqual(["tok_lost"]);
+  });
+
+  it("照合できるトークンが無ければ token list へ案内する", async () => {
+    const { state, env } = await setup({
+      tokens: [tokenRow("tok_other", "cli:desktop")],
+    });
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes", "--revoke-token"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(env.errors.join("\n")).toContain("No token could be matched to the revoked devices");
+    expect(state.tokenRevokes).toEqual([]);
   });
 });
 

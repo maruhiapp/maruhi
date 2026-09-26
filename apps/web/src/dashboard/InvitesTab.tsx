@@ -22,6 +22,7 @@ import {
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
+  formatServerTime,
   HexText,
   LoadingRow,
   RevokeButton,
@@ -85,8 +86,16 @@ function isRevocable(row: InviteRow): boolean {
   return REVOCABLE_STATUSES.includes(row.status);
 }
 
+/**
+ * 招待行の Revoke の読み上げ名。表に見えている列(状態・役割・招待者・期限)で行を
+ * 同定する(招待 id は表に出ていないので使わない)。
+ */
+function inviteRevokeName(row: InviteRow): string {
+  return `Revoke ${row.status} ${row.role} invitation from ${row.inviterUserId}, expires ${formatServerTime(row.expiresAtMs)}`;
+}
+
 function buildInviteColumns(
-  revocation: RevocationState,
+  isLocked: boolean,
   onArm: (id: string | undefined) => void,
 ): TableColumn<InviteRow>[] {
   return [
@@ -127,7 +136,11 @@ function buildInviteColumns(
       width: pixel(200),
       renderCell: (row: InviteRow) =>
         isRevocable(row) ? (
-          <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
+          <RevokeButton
+            onArm={() => onArm(row.id)}
+            isLocked={isLocked}
+            accessibleName={inviteRevokeName(row)}
+          />
         ) : null,
     },
   ];
@@ -146,11 +159,11 @@ function InviteNotes(): ReactNode {
 
 function InvitesTable({
   invitations,
-  revocation,
+  isLocked,
   onArm,
 }: {
   invitations: ReadonlyArray<InvitationSummary>;
-  revocation: RevocationState;
+  isLocked: boolean;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
   if (invitations.length === 0) {
@@ -165,7 +178,7 @@ function InvitesTable({
   return (
     <Table
       data={invitations.map(toInviteRow)}
-      columns={buildInviteColumns(revocation, onArm)}
+      columns={buildInviteColumns(isLocked, onArm)}
       idKey="id"
       density="balanced"
       hasHover
@@ -186,11 +199,16 @@ function InvitesResource({
   reload: () => void;
   state: ResourceState<InvitationList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)
+  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、行の Revoke は
+  // 実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <InvitesTable invitations={state.value.invitations} revocation={revocation} onArm={onArm} />
+    <InvitesTable
+      invitations={state.value.invitations}
+      isLocked={revocation.pendingId !== undefined || state.refreshing}
+      onArm={onArm}
+    />
   );
 }
 
@@ -213,6 +231,7 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
         revocation={revocation}
         title="Revoke this invitation?"
         description="The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it."
+        successMessage="Invitation revoked."
         subject="invitation"
         arm={arm}
         confirm={confirm}

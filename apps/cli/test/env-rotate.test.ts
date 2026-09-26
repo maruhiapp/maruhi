@@ -3626,7 +3626,7 @@ describe("maruhi env rotate", () => {
     // `--reason "$UNSET_VAR"` の形。未指定と同一視すると、退職者削除の
     // スクリプトが「新エポックができた」と受け取ったまま何も送られない。
     // 空文字列は共通の引数検査が usage エラー(2)で落とす(「未指定」と
-    // 区別できない値を既定へフォールバックさせない — args.ts)
+    // 区別できない値を既定へフォールバックさせない — ADR-0016 決定 2 の NonBlank 宣言)
     for (const empty of [["--reason", ""], ["--reason="]]) {
       expect(await runCli(["env", "rotate", ENV_ID, ...empty], env.layer)).toBe(2);
       expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");

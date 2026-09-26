@@ -1361,6 +1361,52 @@ export interface VerifiedEnvironmentMetadata {
   readonly warnings: readonly string[];
 }
 
+/**
+ * メタ操作の同梱マニフェスト(§12-5)の発行材料: 検証済みメタデータ pull の
+ * 直前マニフェスト・現在のメタ集合(active / declared / tombstone 込み — §4.3 の
+ * ダイジェストは全ステートメントを覆う)・環境メタの最新形。
+ */
+export interface ManifestIssueBase {
+  readonly previous: {
+    readonly manifestVersion: number;
+    readonly signedBytesHashHex: string;
+  };
+  /** 現在のメタ集合(tombstone 込み)— 新変数のエントリは呼び出し側が試行ごとに足す。 */
+  readonly entries: readonly ManifestDigestEntry[];
+  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+}
+
+/**
+ * 検証済みメタデータ pull からマニフェスト発行材料を組む(push の create / activate
+ * と schema set / var rm が共有 — サーバー申告値ではなく検証済みビューから組む)。
+ */
+export function manifestIssueBaseOf(metadata: VerifiedEnvironmentMetadata): ManifestIssueBase {
+  return {
+    previous: {
+      manifestVersion: metadata.manifest.manifestVersion,
+      signedBytesHashHex: metadata.manifest.signedBytesHashHex,
+    },
+    entries: [
+      ...metadata.variables.map((statement) => ({
+        variableId: statement.variableId,
+        status: statement.status,
+        metaVersion: statement.metaVersion,
+        metaSigHashHex: statement.metaSigHashHex,
+      })),
+      ...metadata.tombstones.map((tombstone) => ({
+        variableId: tombstone.variableId,
+        status: "deleted" as const,
+        metaVersion: tombstone.metaVersion,
+        metaSigHashHex: tombstone.metaSigHashHex,
+      })),
+    ],
+    envMeta: {
+      metaVersion: metadata.environment.metaVersion,
+      sigHashHex: metadata.environment.metaSigHashHex,
+    },
+  };
+}
+
 interface MetadataPullWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly DistributedVariableMetaStatement[];

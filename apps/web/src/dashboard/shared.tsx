@@ -26,12 +26,13 @@ import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import * as stylex from "@stylexjs/stylex";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
 import { useReportSessionExpired } from "./session-expiry.ts";
-import type { ChainRole, ForbiddenReason } from "./types.ts";
+import type { ChainRole, ForbiddenReason, TokenList, TokenSummary } from "./types.ts";
+import type { ResourceState } from "./use-api-resource.ts";
 import type { RevocationState } from "./use-revocation.ts";
 
 /**
@@ -422,19 +423,28 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
  * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
  * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
  * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
- * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は対象の名詞を
- * 添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で使う。
+ * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は見える文言で、
+ * 対象の名詞を添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で
+ * 使う。`accessibleName` は行の同定を含む読み上げ名(表の中で "Revoke" が並ぶと支援技術の
+ * ボタン一覧で区別できない)。Astryx Button は children が label と異なるとき label を
+ * aria-label にするので、label = 読み上げ名、children = 見える文言で渡す。
  */
 export function RevokeButton({
   onArm,
   isLocked,
+  accessibleName,
   label = "Revoke",
 }: {
   onArm: () => void;
   isLocked: boolean;
+  accessibleName: string;
   label?: string;
 }): ReactNode {
-  return <Button label={label} variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
+  return (
+    <Button label={accessibleName} variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked}>
+      {label}
+    </Button>
+  );
 }
 
 /**
@@ -473,14 +483,38 @@ function RevokeDialog({
 }
 
 /**
+ * 失効の成功の告知(Banner status="success" = role="status")。失効した行は再取得で
+ * 消える・ボタンを失うため、ダイアログが戻したフォーカスはその行ごと失われる。出現時に
+ * Banner 自身へフォーカスを移し(tabIndex -1)、読み上げと次の操作の起点をここに置く。
+ */
+function RevocationSuccess({ message }: { message: string }): ReactNode {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, [message]);
+  return (
+    <Banner
+      ref={ref}
+      tabIndex={-1}
+      status="success"
+      title={message}
+      data-testid="revocation-success"
+    />
+  );
+}
+
+/**
  * 失効の結果面(S8 / S9 / S11 で共用 — DK K5 で 3 画面目が出たので昇格): 武装中は
  * `RevokeDialog`、直近の失敗は一覧の下の追記形(裁定 B-b — 再操作は行から行えるので
- * Retry なし)。`arm(undefined)` / `confirm(id)` は use-revocation.ts の操作をそのまま渡す。
+ * Retry なし)、直近の成功は `RevocationSuccess`。`arm(undefined)` / `confirm(id, …)` は
+ * use-revocation.ts の操作をそのまま渡す。`successMessage` は確認時点の対象名で作る
+ * (再取得後の一覧に対象が残らないことがある)。
  */
 export function RevocationOutcome({
   revocation,
   title,
   description,
+  successMessage,
   subject,
   arm,
   confirm,
@@ -488,9 +522,10 @@ export function RevocationOutcome({
   revocation: RevocationState;
   title: string;
   description: string;
+  successMessage: string;
   subject: FailureSubject;
   arm: (id: string | undefined) => void;
-  confirm: (id: string) => void;
+  confirm: (id: string, successMessage: string) => void;
 }): ReactNode {
   return (
     <>
@@ -501,11 +536,14 @@ export function RevocationOutcome({
         isPending={revocation.pendingId !== undefined}
         onCancel={() => arm(undefined)}
         onConfirm={() => {
-          if (revocation.armedId !== undefined) confirm(revocation.armedId);
+          if (revocation.armedId !== undefined) confirm(revocation.armedId, successMessage);
         }}
       />
       {revocation.failure !== undefined ? (
         <FailureNotice failure={revocation.failure} subject={subject} />
+      ) : null}
+      {revocation.succeeded !== undefined ? (
+        <RevocationSuccess message={revocation.succeeded} />
       ) : null}
     </>
   );
@@ -523,4 +561,30 @@ export function ServerReportedNote(): ReactNode {
       <Text type="code">maruhi audit verify</Text> on your own machine.
     </Text>
   );
+}
+
+/** 武装中のトークン(一覧にあれば)。 */
+function armedToken(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): TokenSummary | undefined {
+  return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
+}
+
+/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
+export function armedTokenName(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): string {
+  const token = armedToken(tokens, armedId);
+  return token === undefined ? "this token" : `token "${token.name}"`;
+}
+
+/** 失効成功の告知文(確認時点の名前 — 再取得後の一覧には残らない)。 */
+export function tokenRevokedMessage(
+  tokens: ResourceState<TokenList>,
+  armedId: string | undefined,
+): string {
+  const token = armedToken(tokens, armedId);
+  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
 }

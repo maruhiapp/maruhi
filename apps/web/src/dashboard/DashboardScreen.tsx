@@ -180,13 +180,18 @@ function ProjectsFooter({
   nextAfter: string | undefined;
   onLoadMore: () => void;
 }): ReactNode {
-  if (isLoading) return <LoadingRow label="Loading projects" />;
-  if (nextAfter === undefined) return null;
+  // 読込中もボタンを差し替えない(フォーカスを保つ — AuditEventList の LoadMoreRow と同じ形)。
+  // isInterruptible = native disabled を付けない。二重読込はハンドラ側で弾く
+  if (nextAfter === undefined && !isLoading) return null;
   return (
     <Button
       label="Load more"
       variant="secondary"
-      onClick={onLoadMore}
+      isLoading={isLoading}
+      isInterruptible
+      onClick={() => {
+        if (!isLoading) onLoadMore();
+      }}
       data-testid="load-more-projects"
     />
   );

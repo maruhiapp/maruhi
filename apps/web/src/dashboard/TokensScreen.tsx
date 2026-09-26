@@ -29,6 +29,8 @@ import {
   LoadingRow,
   RevokeButton,
   RevocationOutcome,
+  armedTokenName,
+  tokenRevokedMessage,
   SectionBlock,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
@@ -78,7 +80,7 @@ function toTokenRow(token: TokenSummary): TokenRow {
 }
 
 function buildTokenColumns(
-  revocation: RevocationState,
+  isLocked: boolean,
   onArm: (id: string | undefined) => void,
 ): TableColumn<TokenRow>[] {
   return [
@@ -128,7 +130,11 @@ function buildTokenColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
-        <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
+        <RevokeButton
+          onArm={() => onArm(row.id)}
+          isLocked={isLocked}
+          accessibleName={`Revoke token "${row.name}"`}
+        />
       ),
     },
   ];
@@ -148,11 +154,11 @@ function TokenNotes(): ReactNode {
 
 function TokensTable({
   tokens,
-  revocation,
+  isLocked,
   onArm,
 }: {
   tokens: ReadonlyArray<TokenSummary>;
-  revocation: RevocationState;
+  isLocked: boolean;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
   if (tokens.length === 0) {
@@ -169,7 +175,7 @@ function TokensTable({
   return (
     <Table
       data={tokens.map(toTokenRow)}
-      columns={buildTokenColumns(revocation, onArm)}
+      columns={buildTokenColumns(isLocked, onArm)}
       idKey="id"
       density="balanced"
       hasHover
@@ -190,18 +196,19 @@ function TokensResource({
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)
+  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、
+  // 行の Revoke は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
   }
-  return <TokensTable tokens={state.value.tokens} revocation={revocation} onArm={onArm} />;
-}
-
-/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
-function armedName(state: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
-  return token === undefined ? "this token" : `token "${token.name}"`;
+  return (
+    <TokensTable
+      tokens={state.value.tokens}
+      isLocked={revocation.pendingId !== undefined || state.refreshing}
+      onArm={onArm}
+    />
+  );
 }
 
 export function TokensScreen(): ReactNode {
@@ -225,8 +232,9 @@ export function TokensScreen(): ReactNode {
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
         <RevocationOutcome
           revocation={revocation}
-          title={`Revoke ${armedName(state, revocation.armedId)}?`}
+          title={`Revoke ${armedTokenName(state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
+          successMessage={tokenRevokedMessage(state, revocation.armedId)}
           subject="token"
           arm={arm}
           confirm={confirm}

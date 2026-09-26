@@ -60,13 +60,14 @@ import {
   type VerifiedSchemaFields,
 } from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
-import type { ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema-statement.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
+  type ManifestIssueBase,
+  manifestIssueBaseOf,
   pullVerifiedEnvironment,
   pullVerifiedEnvironmentMetadata,
   type VerifiedPulledValue,
@@ -122,20 +123,6 @@ function prevHashOf(target: PushTarget): string {
   return target.kind === "push" ? target.latest.signedBytesHashHex : "";
 }
 
-/**
- * 変数作成の同梱マニフェスト(§12-5)の発行材料(検証済みメタデータ pull 由来)。
- * 既存変数への push はマニフェストを発行しない(発行契機の限定 — §4.3)ため null。
- */
-interface ManifestIssueBase {
-  readonly previous: {
-    readonly manifestVersion: number;
-    readonly signedBytesHashHex: string;
-  };
-  /** 現在のメタ集合(tombstone 込み)— 新変数のエントリは試行ごとに足す。 */
-  readonly entries: readonly ManifestDigestEntry[];
-  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-}
-
 interface ResolvedTarget {
   readonly target: PushTarget;
   /** pull 検証で前進していることがあるビュー(future head の有界再同期)。 */
@@ -185,33 +172,10 @@ function resolveTarget(input: {
         ),
       );
     }
-    // メタ操作(create / activate)の同梱マニフェスト(§12-5)の材料: 検証済み
-    // メタデータ pull の直前マニフェスト・現在の集合(declared / tombstone
-    // 込み — §4.3 のダイジェストは全ステートメントを覆う)・環境メタの最新形
-    const issueBase: ManifestIssueBase = {
-      previous: {
-        manifestVersion: metadata.manifest.manifestVersion,
-        signedBytesHashHex: metadata.manifest.signedBytesHashHex,
-      },
-      entries: [
-        ...metadata.variables.map((statement) => ({
-          variableId: statement.variableId,
-          status: statement.status,
-          metaVersion: statement.metaVersion,
-          metaSigHashHex: statement.metaSigHashHex,
-        })),
-        ...metadata.tombstones.map((tombstone) => ({
-          variableId: tombstone.variableId,
-          status: "deleted" as const,
-          metaVersion: tombstone.metaVersion,
-          metaSigHashHex: tombstone.metaSigHashHex,
-        })),
-      ],
-      envMeta: {
-        metaVersion: metadata.environment.metaVersion,
-        sigHashHex: metadata.environment.metaSigHashHex,
-      },
-    };
+    // メタ操作(create / activate)の同梱マニフェスト(§12-5)の材料(検証済み
+    // メタデータ pull 由来)。既存 active 変数への push はマニフェストを発行しない
+    // (発行契機の限定 — §4.3)ので、その解決では issueBase を null にする
+    const issueBase = manifestIssueBaseOf(metadata);
     const existing = matches[0];
     if (existing === undefined) {
       return {

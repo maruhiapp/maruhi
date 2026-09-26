@@ -92,7 +92,7 @@ export function resolveProjectId(
     );
   }
   if (!isProjectId(value)) {
-    // 指定値そのものは返さない(フラグにも値が書かれうる — args.ts の規律)。
+    // 指定値そのものは返さない(フラグにも値が書かれうる — ADR-0016 決定 2 の Flag 宣言と同じ規律)。
     // 出所で分ける: コマンドラインなら書き方の誤り(2)、config なら直す先は
     // 設定ファイルなので実行の失敗(1)として、どこを直すかを言う
     const shape = "Invalid project ID (64 hex digits)";

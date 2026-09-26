@@ -556,6 +556,38 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("login-card").waitFor();
     const signIn = page.getByTestId("sign-in-link");
     await expect(signIn.getAttribute("href")).resolves.toBe("/auth/github/start");
+    // SPA の画面ごとの document.title(静的シェルの <title> は "maruhi" 固定)
+    await expect.poll(() => page.title()).toBe("Sign in — maruhi");
+    // AppShell の外でも main ランドマークがある(Center に role="main")。初回表示では
+    // フォーカスを奪わない
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
+    await expect(page.getByRole("main").getByTestId("login-card").count()).resolves.toBe(1);
+    await expect(
+      page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+    ).resolves.toBe(false);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("titles the session-check frames (loading / failure) per state", async () => {
+    // セッション確認中・失敗時のフレーム(StatusFrame)も document.title を持つ
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/auth/me", async (route) => {
+      await gate;
+      return fulfillJson(route, 500, { _tag: "InternalError" });
+    });
+    await page.goto(`${BASE}/dashboard`);
+    await page.getByText("Checking your session").first().waitFor();
+    await expect.poll(() => page.title()).toBe("Checking your session — maruhi");
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
+    release?.();
+    await expect.poll(() => page.title()).toBe("Session check failed — maruhi");
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -601,6 +633,60 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("login-card").waitFor();
     expect(sawCsrfHeader).toBe("1");
     await expect(page.getByText("You are signed out.").count()).resolves.toBeGreaterThan(0);
+    // サインアウト直後はサインイン画面の見出しにフォーカスが移る
+    await expect
+      .poll(() =>
+        page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+      )
+      .toBe(true);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("keeps the focused Load more button mounted while the next page loads", async () => {
+    // 読込中に Load more を LoadingRow へ差し替えるとフォーカス中の要素が消えて body へ
+    // 落ちる。ボタンは isLoading(aria-busy)のまま残し、二重読込はハンドラで弾く
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let secondPageRequests = 0;
+    await routeSession(page);
+    await page.route(
+      (url) => url.pathname === "/projects",
+      async (route) => {
+        const after = new URL(route.request().url()).searchParams.get("after");
+        if (after === PROJECT_1) {
+          secondPageRequests += 1;
+          await gate;
+          return fulfillJson(route, 200, {
+            projects: [{ projectId: PROJECT_2, role: "reader" }],
+            nextAfter: PROJECT_2,
+          });
+        }
+        if (after === PROJECT_2) return fulfillJson(route, 200, { projects: [] });
+        return fulfillJson(route, 200, projectsPage1);
+      },
+    );
+    await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await page.getByTestId("project-list").waitFor();
+    const loadMore = page.getByTestId("load-more-projects");
+    await loadMore.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe("true");
+    await expect(loadMore.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
+    await expect(loadMore.isDisabled()).resolves.toBe(false);
+    // 読込中の再押下は新しい読込を始めない
+    await page.keyboard.press("Enter");
+    await loadMore.click();
+    expect(secondPageRequests).toBe(1);
+    release?.();
+    await page.getByText(PROJECT_2).waitFor();
+    await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe(null);
+    await expect(loadMore.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
+    expect(secondPageRequests).toBe(1);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -672,8 +758,21 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     const colleagueRow = members.getByRole("row").filter({ hasText: "user_colleague" });
     await expect(colleagueRow.getByText("1", { exact: true }).count()).resolves.toBe(1);
     await page.getByTestId("env-table").waitFor();
-    await page.getByText("Variable names", { exact: true }).click();
+    // ディスクロージャー: 閉じている間は aria-expanded=false・aria-controls なし、開くと
+    // 表の下の変数名の節(id)を指す
+    const namesToggle = page.getByRole("button", { name: "Variable names", exact: true });
+    await expect(namesToggle.getAttribute("aria-expanded")).resolves.toBe("false");
+    await expect(namesToggle.getAttribute("aria-controls")).resolves.toBeNull();
+    await namesToggle.click();
     await page.getByTestId("variable-list").waitFor();
+    const hideToggle = page.getByRole("button", { name: "Hide names", exact: true });
+    await expect(hideToggle.getAttribute("aria-expanded")).resolves.toBe("true");
+    const controls = await hideToggle.getAttribute("aria-controls");
+    expect(controls).not.toBeNull();
+    await expect(page.getByTestId("variables-region").getAttribute("id")).resolves.toBe(controls);
+    await expect(
+      page.getByTestId("variables-region").getByTestId("variable-list").count(),
+    ).resolves.toBe(1);
     await expect(page.getByText("DATABASE_URL").count()).resolves.toBeGreaterThan(0);
 
     // S6 監査: 規定文言 + admin 応答由来の seq 列(応答適応)
@@ -779,6 +878,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
     await page.getByTestId("home-heading").waitFor();
     expect(apiRequests).toEqual([]);
+    // RSC ページ(Home)は静的シェルの <title> のまま
+    await expect(page.title()).resolves.toBe("maruhi");
     await page.close();
   });
 
@@ -831,11 +932,25 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
     await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
+    // 読み上げ名は表に見える列(状態・役割・招待者)で行を同定する。見える文言は "Revoke"
+    const pendingRevoke = page.getByRole("button", {
+      name: /^Revoke pending member invitation from user_e2e, expires /,
+    });
+    await expect(pendingRevoke.count()).resolves.toBe(1);
+    await expect(pendingRevoke.textContent()).resolves.toBe("Revoke");
+    await expect(
+      page
+        .getByRole("button", { name: /^Revoke accepted reader invitation from user_e2e, expires / })
+        .count(),
+    ).resolves.toBe(1);
     // 2 段階確認(裁定 CO — DP3 改訂 4 で AlertDialog に): 行の Revoke → モーダルの Revoke で実行
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
     // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
     await page.getByText("revoked", { exact: true }).waitFor();
+    await expect(page.getByTestId("revocation-success").textContent()).resolves.toContain(
+      "Invitation revoked.",
+    );
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
@@ -861,6 +976,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
     await page.getByText("The server reports this invitation as completed.").waitFor();
+    await expect(page.getByTestId("revocation-success").count()).resolves.toBe(0);
     await page.close();
   });
 
@@ -893,6 +1009,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("no expiry recorded", { exact: true }).count()).resolves.toBe(1);
     // lastUsedAtMs null は "never"(2 行)
     await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(2);
+    // 行の Revoke は見える文言 "Revoke" のまま、読み上げ名に行の同定(トークン名)を含む
+    const table = page.getByTestId("token-table");
+    for (const name of ["ci", "old-laptop", "legacy"]) {
+      const button = table.getByRole("button", { name: `Revoke token "${name}"`, exact: true });
+      await expect(button.count()).resolves.toBe(1);
+      await expect(button.textContent()).resolves.toBe("Revoke");
+    }
     // 発行 UI・生値表示は置かない — CLI ログインへの静的案内のみ
     await expect(page.getByTestId("token-notes").textContent()).resolves.toContain("maruhi login");
     expect(violations).toEqual([]);
@@ -905,10 +1028,19 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     let revoked = false;
     let deleteMethod: string | null = null;
     let deleteCsrf: string | null = null;
+    // 失効後の再取得を保留し、その間も直前の一覧が残る(LoadingRow に置き換わらない)ことを見る
+    let releaseRefetch: (() => void) | undefined;
+    const refetchGate = new Promise<void>((resolve) => {
+      releaseRefetch = resolve;
+    });
     await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
-      (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
+      async (route) => {
+        if (!revoked) return fulfillJson(route, 200, tokensFixture);
+        await refetchGate;
+        return fulfillJson(route, 200, tokensAfterRevoke);
+      },
     );
     await page.route(
       (url) => url.pathname === "/auth/tokens/tok-active",
@@ -923,12 +1055,26 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
-    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
-    // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
-    // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
+    // 成功は role="status" の Banner で告げ、フォーカスをそこへ移す(失効した行は消える)
+    const success = page.getByTestId("revocation-success");
+    await success.waitFor();
+    await expect(success.getAttribute("role")).resolves.toBe("status");
+    await expect(success.textContent()).resolves.toContain('Token "ci" revoked.');
+    await expect.poll(() => success.evaluate((el) => el === document.activeElement)).toBe(true);
+    // 再取得中は直前の一覧が残り(置換しない)、行の Revoke は無効
+    await expect(page.getByText("Loading tokens").count()).resolves.toBe(0);
+    await expect(
+      page.getByTestId("token-table").getByText("ci", { exact: true }).count(),
+    ).resolves.toBe(1);
+    await expect
+      .poll(() => page.getByTestId("token-table").getByRole("button").first().isDisabled())
+      .toBe(true);
+    releaseRefetch?.();
+    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
+    await expect(success.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
@@ -971,8 +1117,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(dialog.count()).resolves.toBe(1);
     const rowRevoke = page
       .getByTestId("token-table")
-      .getByRole("button", { name: "Revoke", exact: true })
-      .first();
+      .getByRole("button", { name: 'Revoke token "old-laptop"', exact: true });
     await expect.poll(() => rowRevoke.isDisabled()).toBe(true);
     release?.();
     // 完了 → ダイアログが閉じ、再取得で行が消え、残る行の Revoke は再び有効
@@ -980,7 +1125,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect
-      .poll(() => page.getByRole("button", { name: "Revoke", exact: true }).first().isDisabled())
+      .poll(() =>
+        page.getByRole("button", { name: 'Revoke token "old-laptop"', exact: true }).isDisabled(),
+      )
       .toBe(false);
     await page.close();
   });
@@ -1095,6 +1242,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await page.getByTestId("project-list").waitFor();
     expect(sessionChecks).toBe(1);
+    // document.title は画面の h1 に追随する(SPA 遷移でも更新される)
+    await expect.poll(() => page.title()).toBe("Projects — maruhi");
     const userItem = page.getByTestId("signed-in-user");
     await userItem.evaluate((el) => {
       (el as HTMLElement).dataset["shellProbe"] = "mounted";
@@ -1106,6 +1255,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(
       page.getByRole("link", { name: "API tokens" }).getAttribute("aria-current"),
     ).resolves.toBe("page");
+    await expect.poll(() => page.title()).toBe("API tokens — maruhi");
     expect(sessionChecks).toBe(1);
     await expect(page.getByText("Checking your session").count()).resolves.toBe(0);
     await expect(
@@ -1117,6 +1267,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe(
       "Account audit",
     );
+    await expect.poll(() => page.title()).toBe("Account audit — maruhi");
     expect(sessionChecks).toBe(1);
     expect(violations).toEqual([]);
     await page.close();
@@ -1135,6 +1286,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("You are signed out.").count()).resolves.toBe(1);
     await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
     expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
+    // 切替で消えた要素から body へ落ちたフォーカスは、サインイン画面の見出しへ移る
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
+    await expect
+      .poll(() =>
+        page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+      )
+      .toBe(true);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -1204,8 +1362,15 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       table.getByText("not among your tokens (revoked or expired?)", { exact: true }).count(),
     ).resolves.toBe(1);
     await expect(table.getByText("none linked", { exact: true }).count()).resolves.toBe(1);
-    // 失効の入口は突合できた行だけ("Revoke token" — 端末の失効ではない)
+    // 失効の入口は突合できた行だけ("Revoke token" — 端末の失効ではない)。読み上げ名は
+    // トークン名と端末名で行を同定する
     await expect(table.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(1);
+    const deviceRevoke = table.getByRole("button", {
+      name: 'Revoke token "ci" of device macbook',
+      exact: true,
+    });
+    await expect(deviceRevoke.count()).resolves.toBe(1);
+    await expect(deviceRevoke.textContent()).resolves.toBe("Revoke token");
     // 登録・削除・承認の操作は無い。紛失時の導線は CLI の device revoke → トークン失効
     await expect(
       page.getByRole("button", { name: /register|approve|remove device/i }).count(),
@@ -1264,6 +1429,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       .nth(1)
       .waitFor();
     await expect(page.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(0);
+    await expect(page.getByTestId("revocation-success").textContent()).resolves.toContain(
+      'Token "ci" revoked.',
+    );
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(deviceFetches).toBe(2);

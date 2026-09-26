@@ -199,6 +199,19 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     await page.close();
   });
 
+  it("leaves the terminal samples as plain preformatted text (no aria-label on a generic role)", async () => {
+    // <pre> は generic role で、aria-label は支援技術により読まれたり読まれなかったりする。
+    // 端末の例はすべて同じ扱い(本文をそのまま読ませる)に揃える
+    const page = await browser.newPage();
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    const terminals = page.locator("pre.terminal");
+    await expect(terminals.count()).resolves.toBeGreaterThan(1);
+    await expect(
+      terminals.evaluateAll((els) => els.filter((el) => el.hasAttribute("aria-label")).length),
+    ).resolves.toBe(0);
+    await page.close();
+  });
+
   it("renders in Archivo (headings, body) and Martian Mono (code)", async () => {
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });

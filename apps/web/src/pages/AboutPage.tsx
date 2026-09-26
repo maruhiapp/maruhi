@@ -16,8 +16,9 @@ export function AboutPage() {
     <main>
       <h1 data-testid="about-heading">about maruhi</h1>
       <p>
-        This is a maruhi server with its read-only dashboard. Values and keys never reach this
-        origin in plaintext; everything else happens in the CLI. Source and license:{" "}
+        This is a maruhi server with its dashboard, which shows metadata and can revoke credentials.
+        Values and keys never reach this origin in plaintext; everything else happens in the CLI.
+        Source and license:{" "}
         <a href="https://github.com/maruhiapp/maruhi">github.com/maruhiapp/maruhi</a>.
       </p>
       <h2>Diagnostics</h2>

@@ -35,14 +35,18 @@ import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedSchemaFields, VerifiedTombstone } from "./floor-check.ts";
 import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
-import type { ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { generateVariableId } from "./meta-statement.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
 import { type VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
+import {
+  type ManifestIssueBase,
+  manifestIssueBaseOf,
+  pullVerifiedEnvironmentMetadata,
+  type VerifiedEnvironmentMetadata,
+} from "./values.ts";
 
 /* -------------------------------------------------------------------------- */
 /* 表示(maruhi schema)                                                       */
@@ -240,11 +244,7 @@ export interface SchemaSetState {
   readonly target: VerifiedVariableStatement | null;
   /** 検証済み tombstone(var rm の「削除済み」判定材料 — 名前を保持する §4.2)。 */
   readonly tombstones: readonly VerifiedTombstone[];
-  readonly manifestBase: {
-    readonly previous: { readonly manifestVersion: number; readonly signedBytesHashHex: string };
-    readonly entries: readonly ManifestDigestEntry[];
-    readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-  };
+  readonly manifestBase: ManifestIssueBase;
   readonly advisorySchemaPolicy: SchemaPolicy | null;
   readonly warnings: readonly string[];
 }
@@ -279,30 +279,7 @@ export function resolveSchemaTarget(
       verified: metadata.verified,
       target: matches[0] ?? null,
       tombstones: metadata.tombstones,
-      manifestBase: {
-        previous: {
-          manifestVersion: metadata.manifest.manifestVersion,
-          signedBytesHashHex: metadata.manifest.signedBytesHashHex,
-        },
-        entries: [
-          ...metadata.variables.map((statement) => ({
-            variableId: statement.variableId,
-            status: statement.status,
-            metaVersion: statement.metaVersion,
-            metaSigHashHex: statement.metaSigHashHex,
-          })),
-          ...metadata.tombstones.map((tombstone) => ({
-            variableId: tombstone.variableId,
-            status: "deleted" as const,
-            metaVersion: tombstone.metaVersion,
-            metaSigHashHex: tombstone.metaSigHashHex,
-          })),
-        ],
-        envMeta: {
-          metaVersion: metadata.environment.metaVersion,
-          sigHashHex: metadata.environment.metaSigHashHex,
-        },
-      },
+      manifestBase: manifestIssueBaseOf(metadata),
       advisorySchemaPolicy: metadata.advisorySchemaPolicy,
       warnings: metadata.warnings,
     };

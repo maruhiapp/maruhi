@@ -12,6 +12,14 @@ on:
   # (複製すると ci.yml の修正がリリース側に反映されず古いまま残るため)
   workflow_call:
 
+# 同じ PR への連続 push では古い run を取り消す(結果の出ない run に runner を使わない)。
+# PR 以外(main への push・release.yml からの workflow_call)は run ごとに別グループにして
+# 取り消しも待機列の置き換えも起こさない: 同一グループの pending は新しい run に置き換えられる
+# ため、main の push を共有グループに入れると途中のコミットの CI が黙って消える
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # 既定の緩い権限に頼らない。テスト実行に必要なのは checkout のみ
 permissions:
   contents: read
@@ -188,9 +196,16 @@ jobs:
         # fail-closed: 解決失敗時の bun --print は "undefined" を exit 0 で返すため、
         # 検証しないとキーが playwright-shell-Linux-undefined に固定され、以後の
         # バージョン更新でキャッシュが自己修復しなくなる(レビュー指摘)
+        # 導入ステップは apps/web の版だけを入れるが、site e2e(9b)も同じブラウザを使う。
+        # 両者のピンが割れたら、ここで理由つきで止める(後段の browser-not-installed より先に)
         run: |
           version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')
           case "$version" in "" | undefined) echo "::error::could not resolve the pinned playwright version"; exit 1 ;; esac
+          site_version=$(bun --print 'require("./apps/site/package.json").devDependencies.playwright')
+          if [ "$site_version" != "$version" ]; then
+            echo "::error::playwright pins differ: apps/web $version, apps/site $site_version (keep them equal)"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # restore / save を分離: 一体型 actions/cache の保存は post ステップ

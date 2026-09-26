@@ -10,18 +10,27 @@
 // - 状態は一覧リソースの再取得をまたいで生存させる(呼び出し側は一覧の外 —
 //   画面レベル — で本フックを持つ): 再取得中のアンマウントで失敗表示が
 //   消えない
+// - 成功は呼び出し側が確認時に渡す文言(対象名入り — 再取得後の一覧には対象が
+//   残らないことがあるため確認時点で決める)を `succeeded` に残し、一覧の下に
+//   role="status" の Banner で告げる。次の武装で消える
 import { useCallback, useRef, useState } from "react";
 
 import { apiDelete, type ApiFailure } from "./api.ts";
 
-/** 失効操作の画面状態(武装・実行中・直近の失敗)。 */
+/** 失効操作の画面状態(武装・実行中・直近の失敗・直近の成功の文言)。 */
 export interface RevocationState {
   readonly armedId: string | undefined;
   readonly pendingId: string | undefined;
   readonly failure: ApiFailure | undefined;
+  readonly succeeded: string | undefined;
 }
 
-const IDLE: RevocationState = { armedId: undefined, pendingId: undefined, failure: undefined };
+const IDLE: RevocationState = {
+  armedId: undefined,
+  pendingId: undefined,
+  failure: undefined,
+  succeeded: undefined,
+};
 
 /** 2 段階失効の状態と操作(revokePath は id → DELETE パスのビルダー)。 */
 export function useRevocation(
@@ -30,7 +39,7 @@ export function useRevocation(
 ): {
   revocation: RevocationState;
   arm: (id: string | undefined) => void;
-  confirm: (id: string) => void;
+  confirm: (id: string, successMessage: string) => void;
 } {
   const [revocation, setRevocation] = useState<RevocationState>(IDLE);
   // in-flight ガード: DELETE の実行中は arm / confirm を
@@ -41,19 +50,19 @@ export function useRevocation(
   const pendingRef = useRef(false);
   const arm = useCallback((id: string | undefined) => {
     if (pendingRef.current) return;
-    setRevocation({ armedId: id, pendingId: undefined, failure: undefined });
+    setRevocation({ ...IDLE, armedId: id });
   }, []);
   const confirm = useCallback(
-    (id: string) => {
+    (id: string, successMessage: string) => {
       if (pendingRef.current) return;
       pendingRef.current = true;
-      setRevocation({ armedId: id, pendingId: id, failure: undefined });
+      setRevocation({ ...IDLE, armedId: id, pendingId: id });
       void apiDelete(revokePath(id)).then((result) => {
         pendingRef.current = false;
         setRevocation({
-          armedId: undefined,
-          pendingId: undefined,
+          ...IDLE,
           failure: result.kind === "ok" ? undefined : result,
+          succeeded: result.kind === "ok" ? successMessage : undefined,
         });
         reload();
       });

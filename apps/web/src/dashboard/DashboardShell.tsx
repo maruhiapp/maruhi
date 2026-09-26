@@ -44,6 +44,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -121,6 +122,25 @@ function useShellNav(destination: ShellDestination, project: CurrentProject | un
           : { id: projectId, label: projectLabel },
     });
   }, [setNav, destination, projectId, projectLabel]);
+}
+
+// 静的シェル(Root.tsx)の <title>。ダッシュボードを離れる(RSC の Home / About へ SPA 遷移
+// する)ときはこの値へ戻す
+const BASE_DOCUMENT_TITLE = "maruhi";
+
+/**
+ * 画面ごとの document.title(`<画面名> — maruhi`)。SPA 遷移では静的シェルの <title> が
+ * 変わらないため、支援技術・タブ・履歴で画面を区別できるよう client 側で設定する。
+ * アンマウント時は静的シェルの値へ戻す(同一コミット内では旧画面のクリーンアップが
+ * 新画面の設定より先に走るので、遷移先の値が上書きされることはない)。
+ */
+function useDocumentTitle(title: string): void {
+  useEffect(() => {
+    document.title = `${title} — ${BASE_DOCUMENT_TITLE}`;
+    return () => {
+      document.title = BASE_DOCUMENT_TITLE;
+    };
+  }, [title]);
 }
 
 type AuthState =
@@ -226,10 +246,21 @@ function DashboardSideNav({
   );
 }
 
-/** サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。 */
+/**
+ * サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。
+ * AppShell の外に描くので、main ランドマークは Center(div)に role で与える。
+ * `signedOutNow`(サインアウト直後・画面の 401 でその場で切り替わった)のときは、
+ * 直前にフォーカスしていた要素が消えて body に落ちるため、見出しへフォーカスを移す
+ * (初回表示〔セッション無しで開いた〕では奪わない)。
+ */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
+  useDocumentTitle("Sign in");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (signedOutNow) headingRef.current?.focus();
+  }, [signedOutNow]);
   return (
-    <Center axis="both" padding={6} minHeight="100dvh">
+    <Center axis="both" padding={6} minHeight="100dvh" role="main">
       <VStack gap={4} align="center" width="100%" maxWidth={400}>
         <VStack gap={2} align="center">
           <img src={LOGO_INVERTED_SRC} alt="" width={SIGN_IN_LOGO_PX} height={SIGN_IN_LOGO_PX} />
@@ -240,9 +271,11 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
         <Card padding={8} width="100%" data-testid="login-card">
           <VStack gap={4} align="stretch">
             <VStack gap={1} align="center">
-              <Heading level={1}>Sign in</Heading>
+              <Heading level={1} ref={headingRef} tabIndex={-1} data-testid="sign-in-heading">
+                Sign in
+              </Heading>
               <Text type="body" color="secondary" size="sm" justify="center">
-                A read-only view of your projects, as reported by the server.
+                Your projects' metadata, as reported by the server.
               </Text>
             </VStack>
             {signedOutNow ? (
@@ -355,10 +388,14 @@ interface PageProps {
   children: ReactNode;
 }
 
-/** セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。 */
-function StatusFrame({ children }: { children: ReactNode }): ReactNode {
+/**
+ * セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。AppShell の
+ * 外なので main ランドマークは Center(div)に role で与える。`title` は document.title。
+ */
+function StatusFrame({ title, children }: { title: string; children: ReactNode }): ReactNode {
+  useDocumentTitle(title);
   return (
-    <Center axis="both" padding={6} minHeight="100dvh">
+    <Center axis="both" padding={6} minHeight="100dvh" role="main">
       <VStack width="100%" maxWidth={480}>
         {children}
       </VStack>
@@ -376,7 +413,7 @@ export function DashboardLayout(): ReactNode {
   const { auth, reload, signOut, expire } = useSession();
   if (auth.status === "loading") {
     return (
-      <StatusFrame>
+      <StatusFrame title="Checking your session">
         <LoadingRow label="Checking your session" />
       </StatusFrame>
     );
@@ -384,7 +421,7 @@ export function DashboardLayout(): ReactNode {
   if (auth.status === "signed-out") return <SignInScreen signedOutNow={auth.signedOutNow} />;
   if (auth.status === "failed") {
     return (
-      <StatusFrame>
+      <StatusFrame title="Session check failed">
         <FailureNotice failure={auth.failure} onRetry={reload} />
       </StatusFrame>
     );
@@ -434,6 +471,7 @@ export function DashboardShell({
   children,
 }: PageProps): ReactNode {
   useShellNav(destination, project);
+  useDocumentTitle(title);
   return (
     <Layout
       height="auto"

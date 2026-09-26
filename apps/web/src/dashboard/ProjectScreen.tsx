@@ -21,7 +21,7 @@ import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton
 import { Token } from "@astryxdesign/core/Token";
 import { useRouteParams } from "@funstack/router";
 import * as stylex from "@stylexjs/stylex";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
@@ -547,9 +547,14 @@ function VariablesSection({
   return <VariableNames pull={state.value} />;
 }
 
+/**
+ * 環境表の列。Variables 列のボタンは表の下に変数名の節を開閉するディスクロージャー
+ * (aria-expanded + 開いている間は aria-controls で節の id を指す — 閉じた節は DOM に無い)。
+ */
 function buildEnvironmentColumns(
   selectedEnvironmentId: string | undefined,
   onToggle: (environmentId: string) => void,
+  variablesRegionId: string,
 ): TableColumn<EnvironmentRow>[] {
   return [
     {
@@ -592,6 +597,8 @@ function buildEnvironmentColumns(
             variant="ghost"
             size="sm"
             onClick={() => onToggle(row.id)}
+            aria-expanded={row.id === selectedEnvironmentId}
+            aria-controls={row.id === selectedEnvironmentId ? variablesRegionId : undefined}
           />
         ),
     },
@@ -606,6 +613,7 @@ function EnvironmentsBody({
   environments: ReadonlyArray<EnvironmentSummary>;
 }): ReactNode {
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>(undefined);
+  const variablesRegionId = useId();
   const onToggle = (environmentId: string) =>
     setSelectedEnvironmentId(environmentId === selectedEnvironmentId ? undefined : environmentId);
   const rows = environments.map(toEnvironmentRow);
@@ -623,7 +631,7 @@ function EnvironmentsBody({
       ) : (
         <Table
           data={rows}
-          columns={buildEnvironmentColumns(selectedEnvironmentId, onToggle)}
+          columns={buildEnvironmentColumns(selectedEnvironmentId, onToggle, variablesRegionId)}
           idKey="id"
           density="balanced"
           hasHover
@@ -632,7 +640,9 @@ function EnvironmentsBody({
         />
       )}
       {selectedEnvironmentId !== undefined ? (
-        <VariablesSection projectId={projectId} environmentId={selectedEnvironmentId} />
+        <VStack id={variablesRegionId} data-testid="variables-region">
+          <VariablesSection projectId={projectId} environmentId={selectedEnvironmentId} />
+        </VStack>
       ) : null}
     </SectionBlock>
   );

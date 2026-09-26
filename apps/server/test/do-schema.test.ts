@@ -8,8 +8,10 @@
 // テストのプロジェクト DO と storage を共有しない。
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { DataStore, dataStoreLayer } from "../src/data-store.ts";
 import type { ProjectDoMigration } from "../src/do-schema.ts";
 import {
   applyProjectDoMigrations,
@@ -195,6 +197,74 @@ describe("project DO schema migrations", () => {
       expect(readProjectDoSchemaVersion(sql)).toBe(before);
       expect(sql.exec(`SELECT COUNT(*) AS n FROM chain_entries`).toArray()[0]?.n).toBe(1);
       sql.exec(`DELETE FROM chain_entries`);
+    });
+  });
+
+  it("dek_wraps の受信者索引 dw_recipient を持ち、再追加時掃除がそれを引く(EXPLAIN QUERY PLAN)", async () => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
+      dropAllUserTables(sql);
+      ensureProjectDoTables(storage);
+      const definition = sql
+        .exec(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'dw_recipient'`)
+        .toArray()[0]?.["sql"];
+      expect(String(definition)).toContain("dek_wraps (recipient_user_id, recipient_class)");
+
+      const insertWrap = (userId: string, epoch: number, encPub: string, recipientClass: string) =>
+        sql.exec(
+          `INSERT INTO dek_wraps
+             (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex,
+              ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint, created_at,
+              recipient_class)
+           VALUES ('env-dw', ?, ?, 's', ?, 'e', 'c', 'sig', 'signer', 'fp', 1, ?)`,
+          epoch,
+          userId,
+          encPub,
+          recipientClass,
+        );
+      insertWrap("user-a", 1, "old", "member");
+      insertWrap("user-a", 2, "keep", "member");
+      insertWrap("user-b", 1, "old", "member");
+      insertWrap("user-a", 3, "old", "server");
+
+      // data-store の実クエリを捕捉して同じ文を EXPLAIN に流す(文の複製による
+      // 検証器ドリフトを避ける — audit-index.test.ts と同じ手法)
+      const captured: { query: string; bindings: unknown[] }[] = [];
+      const wrapped = new Proxy(sql, {
+        get(target, property) {
+          if (property === "exec") {
+            return (query: string, ...bindings: unknown[]) => {
+              captured.push({ query, bindings });
+              return target.exec(query, ...(bindings as (string | number | null)[]));
+            };
+          }
+          return Reflect.get(target, property, target);
+        },
+      });
+      const store = Effect.runSync(
+        Effect.gen(function* () {
+          return yield* DataStore;
+        }).pipe(Effect.provide(dataStoreLayer(wrapped))),
+      );
+      const stale = store.write.deleteStaleMemberWraps("user-a", "keep");
+
+      expect(stale).toEqual([{ environmentId: "env-dw", epoch: 1 }]);
+      expect(
+        sql
+          .exec(`SELECT recipient_user_id, epoch FROM dek_wraps ORDER BY recipient_user_id, epoch`)
+          .toArray()
+          .map((row) => `${String(row["recipient_user_id"])}/${String(row["epoch"])}`),
+      ).toEqual(["user-a/2", "user-a/3", "user-b/1"]);
+      expect(captured).toHaveLength(2); // SELECT → DELETE
+      for (const { query, bindings } of captured) {
+        const plan = sql
+          .exec(`EXPLAIN QUERY PLAN ${query}`, ...(bindings as (string | number)[]))
+          .toArray()
+          .map((row) => String(row["detail"]))
+          .join("\n");
+        expect(plan, query).toContain("USING INDEX dw_recipient");
+      }
+      sql.exec(`DELETE FROM dek_wraps`);
     });
   });
 });

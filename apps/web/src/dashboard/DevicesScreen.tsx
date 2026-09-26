@@ -30,6 +30,8 @@ import {
   LoadingRow,
   RevokeButton,
   RevocationOutcome,
+  armedTokenName,
+  tokenRevokedMessage,
   SectionBlock,
   ServerTime,
 } from "./shared.tsx";
@@ -121,7 +123,7 @@ function UnmatchedTokenCell({
 }
 
 function buildDeviceColumns(
-  revocation: RevocationState,
+  isLocked: boolean,
   onArm: (id: string | undefined) => void,
 ): TableColumn<DeviceRow>[] {
   return [
@@ -163,8 +165,9 @@ function buildDeviceColumns(
         return (
           <RevokeButton
             label="Revoke token"
+            accessibleName={`Revoke token "${linked.token.name}" of device ${row.label}`}
             onArm={() => onArm(linked.token.id)}
-            isLocked={revocation.pendingId !== undefined}
+            isLocked={isLocked}
           />
         );
       },
@@ -190,12 +193,12 @@ function DeviceNotes(): ReactNode {
 function DevicesTable({
   devices,
   tokens,
-  revocation,
+  isLocked,
   onArm,
 }: {
   devices: ReadonlyArray<DeviceSummary>;
   tokens: ResourceState<TokenList>;
-  revocation: RevocationState;
+  isLocked: boolean;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
   if (devices.length === 0) {
@@ -212,13 +215,23 @@ function DevicesTable({
   return (
     <Table
       data={devices.map((device) => toDeviceRow(device, tokens))}
-      columns={buildDeviceColumns(revocation, onArm)}
+      columns={buildDeviceColumns(isLocked, onArm)}
       idKey="id"
       density="balanced"
       hasHover
       dividers="rows"
       data-testid="device-table"
     />
+  );
+}
+
+/** 行の Revoke token を無効化するか: 失効の実行中、または失効後の再取得中(直前の値を描いている)。 */
+function isRowActionLocked(
+  revocation: RevocationState,
+  resources: ReadonlyArray<{ readonly kind: string; readonly refreshing?: boolean }>,
+): boolean {
+  return (
+    revocation.pendingId !== undefined || resources.some((resource) => resource.refreshing === true)
   );
 }
 
@@ -235,7 +248,9 @@ function DevicesResource({
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
-  // 置換形(裁定 B-a)。404 は旧サーバー(登録簿の無い面)の文言(K5-9)
+  // 置換形(裁定 B-a)。404 は旧サーバー(登録簿の無い面)の文言(K5-9)。失効後の
+  // 再取得(refreshing — 登録簿・トークン一覧のどちらか)中は直前の表を残し、行の
+  // Revoke token は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading devices" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="device registry" />;
@@ -244,17 +259,10 @@ function DevicesResource({
     <DevicesTable
       devices={state.value.devices}
       tokens={tokens}
-      revocation={revocation}
+      isLocked={isRowActionLocked(revocation, [state, tokens])}
       onArm={onArm}
     />
   );
-}
-
-/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
-function armedName(tokens: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token =
-    tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
-  return token === undefined ? "this token" : `token "${token.name}"`;
 }
 
 export function DevicesScreen(): ReactNode {
@@ -295,8 +303,9 @@ export function DevicesScreen(): ReactNode {
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名はトークン一覧から引く */}
         <RevocationOutcome
           revocation={revocation}
-          title={`Revoke ${armedName(tokens.state, revocation.armedId)}?`}
+          title={`Revoke ${armedTokenName(tokens.state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. This does not revoke the device key on the project chains — do that from the CLI."
+          successMessage={tokenRevokedMessage(tokens.state, revocation.armedId)}
           subject="token"
           arm={arm}
           confirm={confirm}

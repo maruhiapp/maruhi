@@ -556,3 +556,97 @@ describe("スナップショット保存規律の経路同一性(§16-2 — 部�
     expect(mirrors.length).toBe(2);
   });
 });
+
+describe("スナップショット列挙の置換省略(values digest 一致 — §6.4 の保存状態は不変)", () => {
+  /** 環境の列挙行の rowid(置換 = DELETE + 再 INSERT が起きたかの観測材料)。 */
+  async function snapshotRowids(environmentId: string): Promise<readonly number[]> {
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT rowid AS rid FROM checkpoint_snapshot_values WHERE environment_id = ? ORDER BY variable_id",
+      environmentId,
+    );
+    return rows.map((row) => Number(row["rid"]));
+  }
+
+  async function storedTupleRow(
+    environmentId: string,
+  ): Promise<{ chainSeq: number; entryHashHex: string; valuesDigestHex: string }> {
+    const row = (
+      await queryProjectDo(
+        projectId,
+        "SELECT chain_seq, entry_hash_hex, values_digest_hex FROM environment_checkpoints WHERE environment_id = ?",
+        environmentId,
+      )
+    )[0];
+    expect(row).toBeDefined();
+    return {
+      chainSeq: Number(row?.["chain_seq"]),
+      entryHashHex: String(row?.["entry_hash_hex"]),
+      valuesDigestHex: String(row?.["values_digest_hex"]),
+    };
+  }
+
+  it("keeps the enumeration rows on an unchanged digest (tuple row still advances) and replaces them on a changed one", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, "var-skip-0001", "DATABASE_URL", "postgres://alpha");
+    const first = await sendStandaloneCheckpoint({
+      actorUserId: MEMBER,
+      environments: [await matchingTuple(ENV)],
+    });
+    expect(first.response.status).toBe(200);
+    const firstValues = await storedSnapshotEnumeration(ENV);
+    expect(firstValues.length).toBe(1);
+    const firstTuple = await storedTupleRow(ENV);
+    // 他環境の行で rowid の最大値を押し上げる(置換が起きれば ENV の行は新しい
+    // rowid を得る — 観測を確実にするための標識。最後に消す)
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO checkpoint_snapshot_values (environment_id, variable_id, version, value_sig_hash_hex)
+       VALUES ('env-marker-0001', 'var-marker-0001', 1, '00')`,
+    );
+    const rowidsBefore = await snapshotRowids(ENV);
+
+    // (1) 値が変わらないまま再 checkpoint: 列挙は同一なので置換しない
+    const unchanged = await sendStandaloneCheckpoint({
+      actorUserId: MEMBER,
+      environments: [await matchingTuple(ENV)],
+    });
+    expect(unchanged.response.status).toBe(200);
+    const unchangedTuple = await storedTupleRow(ENV);
+    expect(unchangedTuple.valuesDigestHex).toBe(firstTuple.valuesDigestHex);
+    // タプル座標の行は常に更新される(最新包含 checkpoint = 今回の seq / hash)
+    expect(unchangedTuple.chainSeq).toBe(unchanged.entry.seq);
+    expect(unchangedTuple.chainSeq).not.toBe(firstTuple.chainSeq);
+    expect(unchangedTuple.entryHashHex).not.toBe(firstTuple.entryHashHex);
+    expect(await storedSnapshotEnumeration(ENV)).toEqual(firstValues);
+    expect(await snapshotRowids(ENV)).toEqual(rowidsBefore);
+    const pulled = await pullBody(ENV);
+    expect(pulled.checkpointSnapshot?.chainSeq).toBe(unchanged.entry.seq);
+    expect(pulled.checkpointSnapshot?.entryHashHex).toBe(unchangedTuple.entryHashHex);
+    expect(pulled.checkpointSnapshot?.values).toEqual(firstValues);
+
+    // (2) 値が変わってから再 checkpoint: digest が変わり列挙は全置換される
+    await createVariableOk(dek, "var-skip-0002", "REDIS_URL", "redis://beta");
+    const changed = await sendStandaloneCheckpoint({
+      actorUserId: MEMBER,
+      environments: [await matchingTuple(ENV)],
+    });
+    expect(changed.response.status).toBe(200);
+    const changedTuple = await storedTupleRow(ENV);
+    expect(changedTuple.chainSeq).toBe(changed.entry.seq);
+    expect(changedTuple.valuesDigestHex).not.toBe(firstTuple.valuesDigestHex);
+    const changedValues = await storedSnapshotEnumeration(ENV);
+    expect(changedValues.map((value) => value.variableId)).toEqual([
+      "var-skip-0001",
+      "var-skip-0002",
+    ]);
+    // 保存列挙の digest = タプル行の digest(省略判定の前提となる不変条件)
+    expect(await valuesDigestOf(changedValues)).toBe(changedTuple.valuesDigestHex);
+    expect((await pullBody(ENV)).checkpointSnapshot?.values).toEqual(changedValues);
+
+    await queryProjectDo(
+      projectId,
+      "DELETE FROM checkpoint_snapshot_values WHERE environment_id = 'env-marker-0001'",
+    );
+  });
+});
