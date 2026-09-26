@@ -1,271 +1,295 @@
-# deepsec 残課題（2026-08-22 全体レビュー）— クローズ済み
+# deepsec open items (2026-08-22 full review) — closed
 
-> **2026-08-24 追記 2(クローズ)**: ローカルで再 scan / process / revalidate を実施し、
-> 本文書の 17 論点は決着した。fixed 16 レコード、false-positive 2(M3 / B11)、
-> 未解消 2 論点(M2 の残り・M4)。現行の残課題は
-> [`DEEPSEC_FINDINGS_2026-08-24.md`](./DEEPSEC_FINDINGS_2026-08-24.md) を参照。
-> 以下は履歴として残す。
+> **2026-08-24 addendum 2 (closed)**: A local re-run of scan / process / revalidate
+> settled the 17 points in this document. fixed 16 records, false-positive 2 (M3 / B11),
+> 2 unresolved points (the remainder of M2, M4). For the current open items see
+> [`DEEPSEC_FINDINGS_2026-08-24.md`](./DEEPSEC_FINDINGS_2026-08-24.md).
+> The rest is kept as history.
 
-> **2026-08-24 追記**: 残り 18 レコード(17 論点)は、本追記を含む修正 PR で
-> すべて実装済み。各論点の対応内容はコミット履歴(`fix …deepsec…`)と PR の
-> 説明を参照。deepsec の再実行(再検証)は Cloud 環境に資格情報がないため
-> 未実施 — ローカルでの再スキャンで close すること(「Cloud 作業時の規律」6)。
+> **2026-08-24 addendum**: The remaining 18 records (17 points) are all implemented in
+> the fix PR containing this addendum. See the commit history (`fix …deepsec…`) and the
+> PR description for what each point received. The deepsec re-run (revalidation) is
+> not done — the Cloud environment has no credentials — so close this out with a local
+> re-scan ("rules for working in Cloud" 6).
 
 
-## 位置づけ
+## Positioning
 
-deepsec の生成データは `.deepsec/data/` 配下にあり、gitignore 対象なので Cloud
-環境や別チャットには引き継がれない。この文書を、再検証済み finding の追跡用
-ハンドオフとする。
+deepsec's generated data lives under `.deepsec/data/` and is gitignored, so it does not
+carry over to Cloud environments or other chats. This document is the handoff for
+tracking revalidated findings.
 
-- 対象: 116 ファイル
+- Scope: 116 files
 - `process` run: `20260822050846-d58d658d7e9901fe`
 - `revalidate` run: `20260822054606-13d8b765ba4462b8`
-- モデル: Claude Opus 5、thinking `medium`
-- 再検証結果: true-positive 20、false-positive 3
-- 2026-08-24 時点: 空 `claimConstraints` の重複 2 レコードを実装修正済み
-- 残り: true-positive **18 レコード、17 論点**
-  - MEDIUM 5 レコード
-  - BUG 13 レコード
-  - M3 と B11 は同じ `/auth/device/exchange` 問題の重複
+- Model: Claude Opus 5, thinking `medium`
+- Revalidation result: true-positive 20, false-positive 3
+- As of 2026-08-24: the 2 duplicate records of empty `claimConstraints` fixed in code
+- Remaining: true-positive **18 records, 17 points**
+  - MEDIUM 5 records
+  - BUG 13 records
+  - M3 and B11 are duplicates of the same `/auth/device/exchange` problem
 
-deepsec は修正後に再実行していないため、ローカル生成レポート上では、修正済みの
-2 レコードも true-positive のままである。
+Because deepsec has not been re-run after the fixes, even the 2 already-fixed records
+still show as true-positive in the locally generated report.
 
-## Cloud 作業時の規律
+## Rules for working in Cloud
 
-1. 1 論点または密接な同型だけを 1 PR にする。着手前に現行コード、仕様、ADR を
-   読み、scanner の提案をそのまま実装しない。
-2. `packages/crypto` の B12、B13 は、人間レビューとテストベクターを先に用意する。
-   `docs/CRYPTO_SPEC.md` にない暗号操作を追加しない。
-3. Drizzle を触る M4、B8、B9 はリポジトリサービス境界を守る。スキーマ変更が
-   必要なら drizzle migration の手順に従う。
-4. 平文 secret、鍵素材、外部 provider ID をログや append-only 監査 actor に
-   追加しない。攻撃 PoC をリポジトリへ置かない。
-5. ユーザー向け文言は英語。完了時は固定 Bun(`.bun-version`。現行 1.4.0)で `bun run check` を通す。
-6. Cloud 環境には Claude Max のローカル認証がない。修正と通常テストは Cloud で
-   できるが、deepsec の再検証は資格情報を別途用意しない限りローカルで行う。
+1. Put one point, or only closely related same-shape ones, in one PR. Before starting,
+   read the current code, the spec, and the ADR; do not implement the scanner's
+   suggestion as-is.
+2. For `packages/crypto`'s B12 and B13, prepare the human review and the test vectors
+   first. Do not add a crypto operation that is not in `docs/CRYPTO_SPEC.md`.
+3. M4, B8, and B9 touch Drizzle — keep the repository-service boundary. If a schema
+   change is needed, follow the drizzle migration procedure.
+4. Do not add plaintext secrets, key material, or external provider IDs to logs or to
+   append-only audit actors. Do not place attack PoCs in the repository.
+5. User-facing text is English. When done, pass `bun run check` on the pinned Bun
+   (`.bun-version`. Currently 1.4.0).
+6. The Cloud environment has no local Claude Max auth. Fixes and ordinary tests can be
+   done in Cloud, but deepsec revalidation runs locally unless separate credentials
+   are provided.
 
-## 修正済み（残り18件には含めない）
+## Already fixed (not counted in the remaining 18)
 
-### F0. 空 `claimConstraints` が fail-open になる
+### F0. Empty `claimConstraints` fails open
 
-元の finding は `apps/server/src/lease-policy.ts` と
-`packages/api-schema/src/lease-api.ts` に対する重複 2 レコード。
+The original finding was 2 duplicate records against `apps/server/src/lease-policy.ts`
+and `packages/api-schema/src/lease-api.ts`.
 
-実装済み:
+Implemented:
 
-- CLI は各 policy 要素の `claimConstraints` を必須かつ非空として拒否する
-- server は既存チェーンに空要素があっても不一致として扱う
-- AUTH_SPEC に fail-closed の評価意味論を記載する
-- CLI と workerd の回帰テストを追加する
-- CRYPTO_SPEC のチェーン形状と `packages/crypto` は変更しない
+- The CLI rejects each policy element's `claimConstraints` unless present and non-empty
+- The server treats an existing chain with an empty element as a mismatch
+- AUTH_SPEC records the fail-closed evaluation semantics
+- Regression tests added for both CLI and workerd
+- The CRYPTO_SPEC chain shapes and `packages/crypto` are unchanged
 
-## MEDIUM（5レコード）
+## MEDIUM (5 records)
 
-### M1. GitHub Actions OIDC の bearer token を未検証 URL へ送る
+### M1. GitHub Actions OIDC bearer token sent to an unverified URL
 
-- 場所: `apps/cli/src/oidc-github.ts:34,78-86`
+- Location: `apps/cli/src/oidc-github.ts:34,78-86`
 - deepsec slug: `ssrf`
-- 状態: confirmed、confidence low
-- 問題: `ACTIONS_ID_TOKEN_REQUEST_URL` を文字列として受け取り、既定の redirect
-  follow で bearer token を送る。`https:`、host、redirect を検査していない。
-- 推奨: URL を parse し、`https:` と許可 host を検証して
-  `redirect: "manual"` を使う。GitHub Hosted Runner と GHES の host 規則を
-  決めてから実装する。
+- Status: confirmed, confidence low
+- Problem: takes `ACTIONS_ID_TOKEN_REQUEST_URL` as a string and sends the bearer
+  token with the default redirect follow. `https:`, host, and redirects are not
+  checked.
+- Recommendation: parse the URL, verify `https:` and an allowed host, and use
+  `redirect: "manual"`. Decide the host rules for GitHub Hosted Runners and GHES
+  before implementing.
 
-### M2. `maruhi run` の実行制御 env denylist に抜けがある
+### M2. `maruhi run` execution-control env denylist has gaps
 
-- 場所: `apps/cli/src/run.ts:33,58-59,106`
+- Location: `apps/cli/src/run.ts:33,58-59,106`
 - deepsec slug: `other-execution-control-env-injection`
-- 状態: confirmed、confidence medium
-- 問題: secret の変数名と値が子プロセス環境を上書きできる。現行 denylist は
-  `HOME`、`PROMPT_COMMAND`、`NODE_REPL_EXTERNAL_MODULE`、`PYTHONINSPECT`、
-  Windows の `PATHEXT` / `COMSPEC` / `SYSTEMROOT` などを拒否しない。
-- 推奨: 不足する名前と prefix を追加し、POSIX と Windows の回帰テストを追加する。
-  `NODE_` / `PYTHON_` / `BUN_` の prefix 拒否は互換性を確認して決める。
+- Status: confirmed, confidence medium
+- Problem: a secret's variable name and value can overwrite the child process
+  environment. The current denylist does not reject `HOME`, `PROMPT_COMMAND`,
+  `NODE_REPL_EXTERNAL_MODULE`, `PYTHONINSPECT`, Windows `PATHEXT` / `COMSPEC` /
+  `SYSTEMROOT`, etc.
+- Recommendation: add the missing names and prefixes, with regression tests for POSIX
+  and Windows. Decide prefix rejection for `NODE_` / `PYTHON_` / `BUN_` after checking
+  compatibility.
 
-### M3. 未認証 device exchange が GitHub OAuth App の共有 quota を消費する
+### M3. Unauthenticated device exchange consumes the GitHub OAuth App's shared quota
 
-- 場所: `apps/server/src/auth.package/github.ts:110,115,190-192`
-- 関連: B11 `packages/api-schema/src/auth-api.ts`
+- Location: `apps/server/src/auth.package/github.ts:110,115,190-192`
+- Related: B11 `packages/api-schema/src/auth-api.ts`
 - deepsec slug: `rate-limit-bypass`
-- 状態: confirmed、confidence medium
-- 問題: 未認証の `/auth/device/exchange` が、形式上妥当な token ごとに GitHub の
-  check-token API を呼ぶ。共有 quota の枯渇で全ユーザーの CLI login が止まる。
-- 補足: token の prefix / length 検査と `docs/SELF_HOSTING.md` の WAF 推奨は既に
-  あるが、既定デプロイでは rate limit を強制しない。
-- 要判断: maruhi 側の短命 device code へ exchange を束縛するか、Cloudflare Rate
-  Limiting を既定構成にするかを先に決める。B11 と同じ PR で扱う。
+- Status: confirmed, confidence medium
+- Problem: unauthenticated `/auth/device/exchange` calls GitHub's check-token API for
+  every formally valid token. Depleting the shared quota stops CLI login for all
+  users.
+- Note: token prefix / length checks and the WAF recommendation in
+  `docs/SELF_HOSTING.md` already exist, but the default deployment enforces no rate
+  limit.
+- Needs decision: first decide whether to bind exchange to a short-lived maruhi-side
+  device code, or make Cloudflare Rate Limiting part of the default config. Handle in
+  the same PR as B11.
 
-### M4. `auth.login_failed` の global cap が監査を失明させる
+### M4. `auth.login_failed`'s global cap blinds the audit log
 
-- 場所: `apps/server/src/db.package/audit.ts:81-82,271-285`
+- Location: `apps/server/src/db.package/audit.ts:81-82,271-285`
 - deepsec slug: `other-audit-suppression`
-- 状態: confirmed、confidence medium
-- 問題: 1時間100件の上限を全 actor で共有するため、匿名の失敗で枠を使い切ると
-  後続の targeted failure が記録されない。
-- 要判断: limiter 用の別状態で粗い発信元単位に分けるか、上限到達時に
-  `auth.login_failed_suppressed` のような集約イベントを残す。外部 provider ID や
-  IP を append-only actor に書く案は採らない。AUDIT_SPEC の改訂要否も確認する。
+- Status: confirmed, confidence medium
+- Problem: the 100-per-hour cap is shared across all actors, so once anonymous failures
+  exhaust it, later targeted failures are not recorded.
+- Needs decision: either split by coarse origin in separate limiter state, or leave an
+  aggregate event like `auth.login_failed_suppressed` when the cap is reached. Do not
+  take the option of writing external provider IDs or IPs into the append-only actor.
+  Also confirm whether AUDIT_SPEC needs a revision.
 
-### M5. lease endpoint が任意の有効 project ID で Durable Object を生成できる
+### M5. The lease endpoint can create a Durable Object for any valid project ID
 
-- 場所: `apps/server/src/handlers-lease.ts:96,119-121`
+- Location: `apps/server/src/handlers-lease.ts:96,119-121`
 - deepsec slug: `rate-limit-bypass`
-- 状態: confirmed、confidence medium
-- 問題: 有効な GitHub OIDC token があれば、多数の異なる64桁 hex project ID で
-  DO を生成できる。各 DO の constructor は table を作り、回収経路がない。
-- 補足: `ProjectIdSchema` の形式検査は既にある。元 recommendation の
-  「projectId を検証する」は不要。
-- 推奨: `projectStub` を呼ぶ前の request-level rate limit を設計する。DO 内の
-  per-project counter では新規 DO 生成を止められない。
+- Status: confirmed, confidence medium
+- Problem: with a valid GitHub OIDC token, a DO can be created for many different
+  64-hex project IDs. Each DO's constructor creates a table, and there is no
+  collection path.
+- Note: `ProjectIdSchema` format checking already exists. The original
+  recommendation's "validate projectId" is not needed.
+- Recommendation: design a request-level rate limit before `projectStub` is called.
+  A per-project counter inside the DO cannot stop new DO creation.
 
-## BUG（13レコード）
+## BUG (13 records)
 
-### B1. 不正な audit timestamp で CLI が RangeError になる
+### B1. CLI hits RangeError on a malformed audit timestamp
 
-- 場所: `apps/cli/src/audit.ts:188,264,348,412`
+- Location: `apps/cli/src/audit.ts:188,264,348,412`
 - deepsec slug: `other-unhandled-exception`
-- 状態: confirmed、confidence medium
-- 問題: server の無制限 `serverTs` を `Date#toISOString` に渡すため、
-  `maruhi audit` 系が Effect の typed error ではなく defect で終了する。
-- 推奨: wire schema で finite / Date 範囲を検証するか、formatter を total にする。
-  B4、B5 と同型なので、共通方針を決めてから修正する。
+- Status: confirmed, confidence medium
+- Problem: the server's unbounded `serverTs` is passed to `Date#toISOString`, so the
+  `maruhi audit` family exits with a defect instead of an Effect typed error.
+- Recommendation: validate finite / Date range in the wire schema, or make the
+  formatter total. Same shape as B4 and B5 — decide a common policy before fixing.
 
-### B2. config load が ENOENT 以外の read error も空設定として扱う
+### B2. Config load treats non-ENOENT read errors as empty config
 
-- 場所: `apps/cli/src/config.ts:98-103`
+- Location: `apps/cli/src/config.ts:98-103`
 - deepsec slug: `other-error-swallowing`
-- 状態: confirmed、confidence high
-- 問題: EACCES、EISDIR、EIO も `{}` に変換する。`config set` が既存設定を警告なしで
-  置換する可能性がある。
-- 推奨: ENOENT だけを初回扱いにし、それ以外は typed `CliError` へ変換する。
+- Status: confirmed, confidence high
+- Problem: EACCES, EISDIR, and EIO are also converted to `{}`. `config set` may
+  replace existing config without warning.
+- Recommendation: treat only ENOENT as first-run; convert the rest to a typed
+  `CliError`.
 
-### B3. device flow の `expires_in` と `interval` に上限がない
+### B3. No upper bound on device flow's `expires_in` and `interval`
 
-- 場所: `apps/cli/src/device-flow.ts:110-135`
+- Location: `apps/cli/src/device-flow.ts:110-135`
 - deepsec slug: `other-logic-bug`
-- 状態: confirmed、confidence medium
-- 問題: hostile または誤設定の endpoint が非常に大きい値を返すと、deadline の
-  確認前に長時間 sleep する。
-- 推奨: RFC 8628 と GHES の実値を確認して上限を定め、sleep 前にも deadline を
-  検査する。
+- Status: confirmed, confidence medium
+- Problem: a hostile or misconfigured endpoint returning very large values makes it
+  sleep for a long time before the deadline check.
+- Recommendation: confirm the real values in RFC 8628 and GHES, set caps, and check
+  the deadline before sleeping.
 
-### B4. invite timestamp で CLI が RangeError になる
+### B4. CLI hits RangeError on an invite timestamp
 
-- 場所: `apps/cli/src/invite.ts:254,267-268,734`
+- Location: `apps/cli/src/invite.ts:254,267-268,734`
 - deepsec slug: `other-unhandled-defect`
-- 状態: confirmed、confidence high
-- 問題: server の `createdAtMs` / `expiresAtMs` が Date 範囲外だと invite create /
-  list が defect で終了する。
-- 推奨: B1 と同じ境界検証または total formatter を使う。
+- Status: confirmed, confidence high
+- Problem: if the server's `createdAtMs` / `expiresAtMs` is outside the Date range,
+  invite create / list exits with a defect.
+- Recommendation: use the same boundary check or total formatter as B1.
 
-### B5. `maruhi key show` が不正 timestamp で RangeError になる
+### B5. `maruhi key show` hits RangeError on a malformed timestamp
 
-- 場所: `apps/cli/src/keygen.ts:159,171-172`
+- Location: `apps/cli/src/keygen.ts:159,171-172`
 - deepsec slug: `other-unhandled-defect`
-- 状態: confirmed、confidence high
-- 問題: recovery status の `updatedAtMs` が Date 範囲外だと、ローカル鍵表示まで
-  非ゼロ終了になる。
-- 推奨: B1 と同じ境界検証を使い、recovery status は degraded display にする。
+- Status: confirmed, confidence high
+- Problem: if recovery status's `updatedAtMs` is outside the Date range, even local
+  key display exits non-zero.
+- Recommendation: use the same boundary check as B1; make recovery status a degraded
+  display.
 
-### B6. keychain write timeout 後に書き込みが完了し得る
+### B6. A write can still complete after the keychain write timeout
 
-- 場所: `apps/cli/src/live.ts:40-51`
+- Location: `apps/cli/src/live.ts:40-51`
 - deepsec slug: `other-race-condition`
-- 状態: confirmed、confidence medium
-- 問題: Effect の timeout は進行中の `Bun.secrets.set` Promise を cancel できない。
-  CLI が失敗を報告した後に key が保存され、次回の overwrite guard にかかり得る。
-- 推奨: timeout 時に「保存された可能性がある」と明示し、確認・復旧手順を示す。
-  post-timeout read も block し得るため、実装前に Bun keychain の挙動を検証する。
+- Status: confirmed, confidence medium
+- Problem: an Effect timeout cannot cancel the in-flight `Bun.secrets.set` Promise.
+  The key may be saved after the CLI reports failure, tripping the overwrite guard
+  next time.
+- Recommendation: on timeout, state explicitly that the write "may have been saved"
+  and show confirmation / recovery steps. A post-timeout read can also block, so
+  verify Bun keychain behavior before implementing.
 
-### B7. push 成功表示がローカル署名値ではなく server echo を使う
+### B7. The push success display uses the server echo, not the locally signed value
 
-- 場所: `apps/cli/src/push.ts:951-953`
+- Location: `apps/cli/src/push.ts:951-953`
 - deepsec slug: `other-trust-boundary`
-- 状態: confirmed、confidence medium
-- 問題: 表示する variable ID / version / epoch を server response から返す。一方、
-  floor 更新は意図どおりローカル計算値を使っている。
-- 推奨: ローカルで署名した値を返し、server echo が異なれば typed error にする。
+- Status: confirmed, confidence medium
+- Problem: the displayed variable ID / version / epoch come back from the server
+  response. Meanwhile the floor update correctly uses locally computed values.
+- Recommendation: return the locally signed values, and make a differing server echo
+  a typed error.
 
-### B8. audit read が D1 の全 NULL row を UPDATE する
+### B8. An audit read UPDATEs every NULL row in D1
 
-- 場所: `apps/server/src/db.package/audit.ts:180,185,250-252`
+- Location: `apps/server/src/db.package/audit.ts:180,185,250-252`
 - deepsec slug: `other-write-amplification`
-- 状態: confirmed、confidence medium
-- 問題: 取得 page に NULL `row_id` が1件あると、table 全体の NULL row を更新する。
-  複数 reader や rollback 中の旧 worker と競合し得る。
-- 推奨: page で観測した seq / row だけへ UPDATE を限定し、workerd + D1 テストで
-  1 read あたりの更新件数を固定する。
+- Status: confirmed, confidence medium
+- Problem: if a fetched page has one NULL `row_id`, it updates every NULL row in the
+  table. It can race with multiple readers or an old worker mid-rollback.
+- Recommendation: restrict the UPDATE to just the seq / rows observed in the page, and
+  pin the update count per read in a workerd + D1 test.
 
-### B9. recovery fetch counter が read-modify-write race を持つ
+### B9. The recovery fetch counter has a read-modify-write race
 
-- 場所: `apps/server/src/db.package/repos.ts:579,594,607,614,618`
+- Location: `apps/server/src/db.package/repos.ts:579,594,607,614,618`
 - deepsec slug: `other-race-condition`
-- 状態: confirmed、revalidation 後 BUG
-- 問題: 並行 request が同じ count を読み、複数成功しても count が1しか増えない。
-  invite counter にも同型がある。
-- 推奨: 条件付きの相対 UPDATE と `RETURNING` を1文で実行する。並行 workerd テストを
-  先に作り、invite counter を同じ PR に含めるかは差分量で決める。
+- Status: confirmed, BUG after revalidation
+- Problem: concurrent requests read the same count, so even when several succeed the
+  count goes up by only 1. The invite counter has the same shape.
+- Recommendation: run the conditional relative UPDATE and `RETURNING` in one
+  statement. Build the concurrent workerd test first; decide by diff size whether the
+  invite counter goes in the same PR.
 
-### B10. member user ID と server fingerprint の衝突で wrap count が満たせない
+### B10. A member user ID / server fingerprint collision makes the wrap count unsatisfiable
 
-- 場所: `apps/server/src/dek-wraps.ts:46,56,129,231`
+- Location: `apps/server/src/dek-wraps.ts:46,56,129,231`
 - deepsec slug: `other-logic-bug`
-- 状態: confirmed、confidence medium
-- 問題: expected count は member と server grant を別々に数えるが、storage key は
-  recipient class を含めない。ID が衝突すると duplicate または missing になり、
-  environment 作成と rotation が止まる。
-- 推奨: member ID と in-scope server fingerprint の deduplicated union から expected
-  count を求める。internal user ID の形式変更は AUTH_SPEC と既存チェーン互換性を
-  確認せず行わない。
+- Status: confirmed, confidence medium
+- Problem: the expected count counts members and server grants separately, but the
+  storage key does not include the recipient class. On an ID collision this becomes
+  duplicate or missing, stopping environment creation and rotation.
+- Recommendation: derive the expected count from the deduplicated union of member IDs
+  and in-scope server fingerprints. Do not change the internal user ID format without
+  checking AUTH_SPEC and existing-chain compatibility.
 
-### B11. `/auth/device/exchange` に request rate limit がない
+### B11. `/auth/device/exchange` has no request rate limit
 
-- 場所: `packages/api-schema/src/auth-api.ts:151,159-162`
+- Location: `packages/api-schema/src/auth-api.ts:151,159-162`
 - deepsec slug: `rate-limit-bypass`
-- 状態: confirmed、revalidation 後 BUG
-- 問題と対応: M3 と同じ根本原因。同じ PR で閉じ、2つの finding を重複として扱う。
+- Status: confirmed, BUG after revalidation
+- Problem and handling: same root cause as M3. Close it in the same PR and treat the
+  two findings as duplicates.
 
-### B12. 未知の chain `op` で verifier が TypeError を投げる
+### B12. The verifier throws TypeError on an unknown chain `op`
 
-- 場所: `packages/crypto/src/internal.package/chain-verify.ts:102,247-248,551`
+- Location: `packages/crypto/src/internal.package/chain-verify.ts:102,247-248,551`
 - deepsec slug: `other-uncaught-exception`
-- 状態: confirmed、confidence high
-- 問題: `PAYLOAD_SHAPES[entry.op]` の membership を確認せず呼ぶ。公開 verifier の
-  「不正入力は `invalid-payload` を返し throw しない」という契約に反する。
-- 到達性: 現行 production API は `ChainEntrySchema` で先に op を絞るため、
-  defense-in-depth の契約不備であり、直接の exploit 経路は確認されていない。
-- 制約: `packages/crypto` 変更。人間レビューを受け、未知 op のテストベクターを
-  実装より先に追加する。
+- Status: confirmed, confidence high
+- Problem: calls `PAYLOAD_SHAPES[entry.op]` without checking membership. This violates
+  the public verifier's contract that "invalid input returns `invalid-payload`, never
+  throws".
+- Reachability: current production APIs narrow the op via `ChainEntrySchema` first, so
+  this is a defense-in-depth contract gap; no direct exploit path has been confirmed.
+- Constraint: a `packages/crypto` change. Receives human review, and the unknown-op
+  test vector is added before the implementation.
 
-### B13. value-sign context が空 `variableId` を拒否しない
+### B13. The value-sign context does not reject an empty `variableId`
 
-- 場所: `packages/crypto/src/internal.package/value-sign.ts:100,107,116`
+- Location: `packages/crypto/src/internal.package/value-sign.ts:100,107,116`
 - deepsec slug: `other-missing-validation`
-- 状態: confirmed、confidence high
-- 問題: project / environment / writer は非空検査するが variable ID だけ漏れている。
-  API schema は空を拒否するため、外部からの forgery 経路ではなく caller bug の
-  防御不足。
-- 制約: `packages/crypto` 変更。`meta-sign.ts` と同じ期待値を先にテストベクターへ
-  追加し、人間レビュー後に実装する。
+- Status: confirmed, confidence high
+- Problem: project / environment / writer are checked non-empty but the variable ID
+  alone is missed. The API schema rejects empty, so this is not a forgery path from
+  outside — it is missing defense against caller bugs.
+- Constraint: a `packages/crypto` change. Add the same expectation as `meta-sign.ts`
+  to the test vectors first, implement after human review.
 
-## 対象外
+## Out of scope
 
-再検証で false-positive になった次の3件は残課題に数えない。
+The following 3, which became false-positive on revalidation, do not count as open
+items:
 
-- `requestOrigin()` と Host header
-- `invalidValueMessage` の substring 判定
-- `computeVariablesDigest` の UTF-16 / UTF-8 duplicate 判定
+- `requestOrigin()` and the Host header
+- `invalidValueMessage`'s substring check
+- `computeVariablesDigest`'s UTF-16 / UTF-8 duplicate check
 
-将来の hardening として扱う場合も、deepsec の true-positive 修正とは分ける。
+If any are taken up as future hardening, keep them separate from deepsec
+true-positive fixes.
 
-## 推奨する着手順
+## Recommended order of attack
 
-1. B2、B3、B7。局所的で仕様判断が少ない。
-2. B1、B4、B5。server timestamp の共通境界方針を決め、同型として直す。
-3. M1、M2。外部 runtime と子プロセス環境の互換性テストを伴う。
-4. B8、B9、B10。D1 / wrap invariant の回帰テストを先に置く。
-5. M3 + B11、M4、M5、B6。運用またはアーキテクチャ判断を先に行う。
-6. B12、B13。crypto の独立 PR とし、テストベクター先行・人間レビュー必須。
+1. B2, B3, B7. Localized, with few spec decisions.
+2. B1, B4, B5. Decide the common boundary policy for server timestamps, fix as the
+   same shape.
+3. M1, M2. Come with compatibility tests against the external runtime and the child
+   process environment.
+4. B8, B9, B10. Put D1 / wrap-invariant regression tests in place first.
+5. M3 + B11, M4, M5, B6. Make the operational or architectural decision first.
+6. B12, B13. Separate crypto PRs; test vectors first, human review mandatory.
