@@ -54,7 +54,6 @@ const CREDENTIAL_HEX = "3cb8db37e0370e63a3849be601db91faf1306f83dcfb24c6428da106
 const WRAP_ID = "01JMKWRAP000000000000PASSK";
 const OTHER_WRAP_ID = "01JMKWRAP000000000000THER0";
 
-const RESERVE_QUESTION = "Type yes to record it as your reserve key (anything else = no): ";
 const RECOVERY_CODE_AGENT_REFUSAL =
   "Refused to read a recovery code because an AI agent environment was detected (the code is key material; run the recovery on a human interactive terminal)";
 const RECOVERY_CODE_TERMINAL_REFUSAL =
@@ -195,6 +194,8 @@ function serializedRecordOf(user: TestUser): string {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
+    // テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)。それ以外は端末鍵
+    ...(user === reserve ? { kind: "reserve" as const } : {}),
   });
 }
 
@@ -319,18 +320,18 @@ describe("maruhi key seal passkey(登録)", () => {
     expect(stderr).toContain(
       `opened the reserve key (fingerprint ${reserve.fingerprintHex}) for this change`,
     );
-    // プロジェクト一覧が読めない(このサーバーは配らない)= 確かめられない: 封印は進むが、
-    // 開いた鍵を reserve と記録しない(DK K14-13 — rotate だけは止まる K14-15)
-    expect(stderr).toContain(
-      `could not list your projects to check the opened key ${reserve.fingerprintHex} (`,
-    );
-    expect(stderr).toContain(
-      "so this change goes ahead, but the key is not recorded on this machine as your reserve key",
-    );
+    // プロジェクト一覧が読めない(このサーバーは配らない)= 確かめられないが、開いた鍵には予備鍵の
+    // 印があるので、封印して予備鍵として記録する(DK K16-6 — 印のある鍵は端末鍵になりえない)
+    expect(stderr).not.toContain("could not list your projects");
     const recorded = await Effect.runPromise(
       makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath)).load(server.origin, owner.userId),
     );
-    expect(recorded.state === "loaded" ? recorded.devices : []).toEqual([]);
+    expect(
+      (recorded.state === "loaded" ? recorded.devices : []).map((row) => [
+        row.keyFingerprintHex,
+        row.source,
+      ]),
+    ).toEqual([[reserve.fingerprintHex, "reserve"]]);
     expect(stderr).toContain("Open this page in your browser");
     expect(stderr).toContain(env.browserOpens[0]);
     expect(stderr).not.toContain(PRF_HEX);
@@ -646,8 +647,8 @@ describe("maruhi key recover --passkey(復元)", () => {
       ],
     });
     expect(seen.fetchesAtCeremony).toBe(0);
-    // 儀式の後の対話は判定の事実を見せた確認の 1 問だけ(コード入力は無い)
-    expect(env.prompts).toEqual([RESERVE_QUESTION]);
+    // 儀式の後の対話は無い(コード入力は無く、予備鍵の印がある鍵は問わずに記録する — DK K16-3)
+    expect(env.prompts).toEqual([]);
     expect(env.errors.join("\n")).toContain(
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
     );

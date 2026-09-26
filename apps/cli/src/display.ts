@@ -144,6 +144,11 @@ export function describeListedScope(count: number): string {
   return `the ${countNoun(count, "project")} the server lists for you`;
 }
 
+/** 予備鍵の印の無い台帳の鍵の句(DK K16-6 — CRYPTO_SPEC §8)。 */
+export function describeUnmarkedLedgerKey(): string {
+  return "was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one)";
+}
+
 /**
  * この端末の観測の記録にある「最初の鍵だった」の句(DK K15-1 — 判定の値 `recorded-first-key`)。
  * 出所(この端末の記録)と、今のチェーンが示さないことを言う。

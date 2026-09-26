@@ -101,6 +101,8 @@ function recordOf(user: TestUser): StoredMasterKey {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
+    // テストの `reserve` は CLI が生成した予備鍵(印つき — DK K16)。それ以外は端末鍵
+    ...(user === reserve ? { kind: "reserve" as const } : {}),
   };
 }
 

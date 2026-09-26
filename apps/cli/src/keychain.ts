@@ -90,6 +90,11 @@ export interface StoredMasterKey {
   readonly encSkHex: Redacted.Redacted<string>;
   readonly sigPubHex: string;
   readonly sigSkSeedHex: Redacted.Redacted<string>;
+  /**
+   * `"reserve"` = the client created this key as the reserve key (CRYPTO_SPEC §8 — DK K16).
+   * Carried inside the sealed ledger blob only; a keychain never holds such a record.
+   */
+  readonly kind?: "reserve";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -446,7 +451,9 @@ export function parseStoredMasterKey(json: string): StoredMasterKey | null {
       !isRedactedPlaceholder(value["encSkHex"]) &&
       nonEmptyString(value["sigPubHex"]) &&
       nonEmptyString(value["sigSkSeedHex"]) &&
-      !isRedactedPlaceholder(value["sigSkSeedHex"])
+      !isRedactedPlaceholder(value["sigSkSeedHex"]) &&
+      // 印(DK K16)は無いか "reserve" だけ。知らない値は壊れたレコードとして扱う
+      (value["kind"] === undefined || value["kind"] === "reserve")
     ) {
       return {
         suite: value["suite"],
@@ -454,6 +461,7 @@ export function parseStoredMasterKey(json: string): StoredMasterKey | null {
         encSkHex: Redacted.make(value["encSkHex"], { label: "master-enc-sk" }),
         sigPubHex: value["sigPubHex"],
         sigSkSeedHex: Redacted.make(value["sigSkSeedHex"], { label: "master-sig-seed" }),
+        ...(value["kind"] === "reserve" ? { kind: "reserve" as const } : {}),
       };
     }
     return null;
@@ -478,5 +486,6 @@ export function serializeStoredMasterKey(record: StoredMasterKey): string {
     encSkHex: Redacted.value(record.encSkHex),
     sigPubHex: record.sigPubHex,
     sigSkSeedHex: Redacted.value(record.sigSkSeedHex),
+    ...(record.kind === undefined ? {} : { kind: record.kind }),
   });
 }
