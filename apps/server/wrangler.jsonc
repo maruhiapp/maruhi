@@ -128,8 +128,8 @@
   // The hosted environment (the operator's deploy —
   // docs/notes/hosted-ops.md §2-F).
   // `wrangler deploy --env hosted`. The self-host default (top
-  // level) is left unchanged, so an account without the R2
-  // contract's `wrangler deploy` one-shot still works.
+  // level) is left unchanged, so a one-shot `wrangler deploy` on an
+  // account without an R2 contract still works.
   // Non-inheritable keys (durable_objects / d1_databases /
   // ratelimits / r2_buckets) must be re-declared per wrangler's
   // rules — drift from the top level is checked by
