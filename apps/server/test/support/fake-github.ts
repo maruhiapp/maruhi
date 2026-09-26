@@ -1,26 +1,31 @@
-// miniflare の outboundService に差すフェイク GitHub(Node 側で実行される)。
+// Fake GitHub plugged into miniflare's outboundService (runs on the Node side).
 //
-// worker からのアウトバウンド fetch(実 GitHub 宛)をここで横取りする。
-// 本番コード(src/)にはスタブ分岐が存在せず、テストは実装の実経路を通る。
-// 実ネットワークへは一切出ない(想定外の宛先は 500 で落として検知する)。
+// It intercepts outbound fetches from the worker (destined for real GitHub).
+// Production code (src/) has no stub branch — tests go through the
+// implementation's real path. Nothing ever reaches the real network
+// (unexpected destinations are killed with a 500 so they are detected).
 //
-// 実 GitHub の挙動への忠実性(実装の退行をフェイクが隠さないため):
-// - api.github.com は User-Agent 必須(なければ 403)
-// - トークン交換は Accept: application/json がないとフォームエンコード文字列を返す
-// - check-token(POST /applications/{client_id}/token)は Basic 認証 + 自 App 発行
-//   トークンのみ 200(それ以外 404)
+// Fidelity to real GitHub behavior (so the fake does not hide implementation
+// regressions):
+// - api.github.com requires a User-Agent (403 without one)
+// - The token exchange returns a form-encoded string unless
+//   Accept: application/json is present
+// - check-token (POST /applications/{client_id}/token) requires Basic auth +
+//   only tokens issued by the same App return 200 (everything else 404)
 //
-// 決定論的な対応: code-<n> → gho_test<n> → GitHub user { id: n, login: user<n> }
-// (実 GitHub の OAuth トークンと同じ `gho_` プレフィックス形)。
-// メール応答は ID 帯で分岐(§3-3 の verified/primary フィルタを判別可能にする):
-//   通常        → [{ primary: true, verified: true }]
-//   666         → verified: false のみ
-//   667         → primary: false のみ
-//   668         → /user/emails が 404(user:email スコープなし相当)
-// 自 App 外トークン: gho_otherapp<n>(/user では有効、check-token では 404)。
+// Deterministic correspondence: code-<n> → gho_test<n> → GitHub user
+// { id: n, login: user<n> } (same `gho_` prefix shape as real GitHub OAuth
+// tokens).
+// Email responses branch by ID band (to make the §3-3 verified/primary
+// filter distinguishable):
+//   normal      → [{ primary: true, verified: true }]
+//   666         → verified: false only
+//   667         → primary: false only
+//   668         → /user/emails returns 404 (equivalent to no user:email scope)
+// Non-own-App tokens: gho_otherapp<n> (valid on /user, 404 on check-token).
 //
-// GitHub Actions の OIDC issuer(AUTH_SPEC §14-1 のリース経路)も同じ
-// outboundService が受ける — discovery / JWKS は support/oidc-issuer.ts。
+// The GitHub Actions OIDC issuer (the lease path of AUTH_SPEC §14-1) is also
+// served by the same outboundService — discovery / JWKS is support/oidc-issuer.ts.
 
 import { fakeOidcIssuer } from "./oidc-issuer.ts";
 
@@ -38,7 +43,7 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** 実 GitHub: Accept が JSON でなければフォームエンコード文字列を返す。 */
+/** Real GitHub: unless Accept is JSON it returns a form-encoded string. */
 function formEncodedFallback(request: OutboundRequest): Response | null {
   if ((request.headers.get("accept") ?? "").includes("application/json")) {
     return null;
@@ -48,7 +53,7 @@ function formEncodedFallback(request: OutboundRequest): Response | null {
   });
 }
 
-/** RFC 6749 §4.1.3: ボディは form-urlencoded(JSON を送る実装退行はここで割れる)。 */
+/** RFC 6749 §4.1.3: the body is form-urlencoded (an implementation regression that sends JSON breaks here). */
 function wrongContentType(request: OutboundRequest): Response | null {
   const contentType = request.headers.get("content-type") ?? "";
   return contentType.includes("application/x-www-form-urlencoded")
@@ -58,7 +63,7 @@ function wrongContentType(request: OutboundRequest): Response | null {
 
 function exchangeCodeResponse(params: URLSearchParams): Response {
   const match = /^code-(\d+)$/.exec(params.get("code") ?? "");
-  // GitHub は不正 code でも 200 + error ボディを返す(実挙動に合わせる)
+  // GitHub returns 200 + an error body even for an invalid code (match the real behavior)
   return match === null
     ? json({ error: "bad_verification_code" })
     : json({ access_token: `gho_test${match[1]}` });
@@ -72,7 +77,7 @@ async function exchangeCode(request: OutboundRequest): Promise<Response> {
   return exchangeCodeResponse(new URLSearchParams(await request.text()));
 }
 
-/** Bearer トークンから GitHub ユーザー ID を引く(other-app トークンも /user では有効)。 */
+/** Pull the GitHub user ID from the Bearer token (other-app tokens are also valid on /user). */
 function githubUserId(request: OutboundRequest): number | null {
   const auth = request.headers.get("authorization") ?? "";
   const match = /^Bearer gho_(?:test|otherapp)(\d+)$/.exec(auth);
@@ -102,11 +107,12 @@ function emailEntries(userId: number): { body: unknown; status: number } {
 }
 
 /**
- * Basic 認証を検証する: パスの {client_id} と Basic 側の client_id が一致し、
- * secret が非空であること(実装の配線 = 「自分の client_id/secret で照会している」を
- * 検査する。env の実値には依存しない — テストの注入元は vitest.config.ts の
- * miniflare bindings、wrangler dev は .dev.vars と環境で異なるため、値そのものを
- * 固定すると環境で割れる)。
+ * Verify Basic auth: the path's {client_id} must match the Basic-side
+ * client_id and the secret must be non-empty (checking the implementation's
+ * wiring = "it queried with its own client_id/secret". It does not depend on
+ * the env's actual values — the injection source for tests is the miniflare
+ * bindings in vitest.config.ts, and wrangler dev differs per environment via
+ * .dev.vars, so pinning the values themselves would break per environment).
  */
 function decodeBasicPair(auth: string): readonly [string, string] | null {
   if (!auth.startsWith("Basic ")) {
@@ -122,7 +128,7 @@ function basicAuthMatches(request: OutboundRequest, clientIdFromPath: string): b
   return pair !== null && pair[0] === clientIdFromPath && pair[1] !== "";
 }
 
-/** §4-4 の audience 検証: 自 App 発行(other-app でない)トークンのみ 200 + user を返す。 */
+/** The §4-4 audience check: only tokens issued by the same App (not other-app) get 200 + user. */
 function checkAppToken(
   request: OutboundRequest,
   clientIdFromPath: string,
@@ -133,7 +139,7 @@ function checkAppToken(
   }
   const match = /^gho_test(\d+)$/.exec(body.access_token ?? "");
   if (match === null) {
-    // 他 App 発行・不正トークンはいずれも 404(実 GitHub の挙動)
+    // Other-App-issued and invalid tokens alike get 404 (real GitHub behavior)
     return json({ message: "Not Found" }, 404);
   }
   const id = Number(match[1]);
@@ -169,7 +175,7 @@ function bearerApiResponse(request: OutboundRequest, url: URL): Response {
   );
 }
 
-/** 実 GitHub: api.github.com は User-Agent 必須。 */
+/** Real GitHub: api.github.com requires a User-Agent. */
 function missingUserAgent(request: OutboundRequest): Response | null {
   if ((request.headers.get("user-agent") ?? "") !== "") {
     return null;
@@ -201,8 +207,9 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
 }
 
 /**
- * 運用基盤のトリップワイヤ通知 webhook(vitest.config.ts の OPS_ALERT_WEBHOOK_URL)。
- * 受け口は 204 を返すだけ(本文の検査は OpsNotifier の差し替えで — ops-alerts.test.ts)。
+ * The ops-infrastructure tripwire notification webhook (OPS_ALERT_WEBHOOK_URL
+ * in vitest.config.ts). The receiver just returns 204 (the body is checked
+ * via the OpsNotifier substitution — ops-alerts.test.ts).
  */
 function fakeOpsWebhook(url: URL): Response | null {
   return url.hostname === "ops-webhook.test" ? new Response(null, { status: 204 }) : null;

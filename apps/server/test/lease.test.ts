@@ -1,16 +1,22 @@
-// ワークロードリース API(AUTH_SPEC §14 = CRYPTO_SPEC §9.1)の統合テスト —
-// 発行(§14-2)と OIDC 検証段(§14-1 の 401)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// Integration tests for the workload-lease API (AUTH_SPEC §14 =
+// CRYPTO_SPEC §9.1) — issuance (§14-2) and the OIDC verification stage
+// (§14-1's 401s).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
 //
-// リース系スイートの分担(共有ヘルパは support/lease-scenario.ts。分割の動機は
-// support/membership-scenario.ts 冒頭を参照):
-// - lease.test.ts(本ファイル): 発行と OIDC 検証。リースラップが info に
-//   claims_digest を束縛し、別ワークロード文脈では開けないこと(CRYPTO_SPEC
-//   §9.1)。応答に平文値・DEK が現れないこと
-// - lease-authz.test.ts: 認可と存在秘匿(§14-1 / §11-2 — 一律 404)
-// - lease-policy.test.ts: 503 と監査(§14-3 / AUDIT_SPEC §3.5)・サーバー鍵
-//   未設定・受理ポリシー
-// - lease-binding.test.ts: 先着束縛(§14-1)と発信元 IP レート制限
+// How the lease suites are split (shared helpers in
+// support/lease-scenario.ts; for the split's motivation see the top of
+// support/membership-scenario.ts):
+// - lease.test.ts (this file): issuance and OIDC verification. That the
+//   lease wrap binds claims_digest into info and cannot be opened under
+//   a different workload context (CRYPTO_SPEC §9.1). That no plaintext
+//   value or DEK appears in the response
+// - lease-authz.test.ts: authorization and existence hiding (§14-1 /
+//   §11-2 — a uniform 404)
+// - lease-policy.test.ts: 503 and auditing (§14-3 / AUDIT_SPEC §3.5),
+//   unset server key, acceptance policy
+// - lease-binding.test.ts: first-come binding (§14-1) and source-IP
+//   rate limits
 
 import { decryptVariable, encodeHex } from "@maruhi/crypto";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -45,7 +51,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () => {
+describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () => {
   it("issues a lease the workload can open with the same epoch DEK (the server never decrypts a value)", async () => {
     const { dek } = await readyProject();
     const workload = await workloadKeyPair();
@@ -56,22 +62,24 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     expect(response.status).toBe(200);
     const body = (await response.json()) as LeaseBody;
 
-    // 応答はチェーンを同梱する(非メンバーはチェーン API から 404 — §11-2)。
-    // 長さはフィクスチャから正確に決まるので値で固定する
+    // The response bundles the chain (non-members get a 404 from the
+    // chain API — §11-2). The length is exactly determined by the
+    // fixture, so pin it by value
     const stored = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries");
     expect(body.chain.length).toBe(stored[0]?.["n"]);
     expect(body.headSeq).toBe(body.chain.length);
     expect(body.currentEpoch).toBe(1);
 
-    // 最新の環境マニフェスト + issuer 情報を同梱する(§14-2 — ワークロードの
-    // 検証義務 §9.1 (5) の材料)
+    // Bundles the latest environment manifest + issuer info (§14-2 —
+    // material for the workload's verification obligation §9.1 (5))
     expect(
       (body as { manifest?: { manifestVersion: number; epoch: number; issuerUserId: string } })
         .manifest,
     ).toMatchObject({ manifestVersion: 2, epoch: 1 });
 
-    // リースラップは登録署名も署名者情報も持たない(サーバー生成・応答スコープ
-    // であり、チェーン上の署名者が存在しえない — §9.1)
+    // The lease wrap carries no registered signature or signer info
+    // (server-generated and response-scoped — no signer can exist on
+    // the chain — §9.1)
     expect(body.leases.length).toBe(1);
     const lease = requireFirst(body.leases, "lease");
     expect(Object.keys(lease).toSorted()).toEqual(["ciphertextHex", "encHex", "epoch", "suite"]);
@@ -82,7 +90,7 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
       claimsDigestHex: await claimsDigestOf(),
     });
     expect(opened.ok).toBe(true);
-    // リースした DEK は元のエポック DEK そのもの(サーバーは仲介しただけ)
+    // The leased DEK is the original epoch DEK itself (the server only intermediated)
     expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
   });
 
@@ -101,8 +109,10 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
         readonly values: readonly unknown[];
       };
     };
-    // 供給源は checkpoint 受理時の保存行そのもの(§16-2 — 環境作成の境界
-    // checkpoint が誕生時からの基準。作成後の変数はその列挙に含まれない)
+    // The supply source is the stored row from checkpoint acceptance
+    // itself (§16-2 — the environment creation's boundary checkpoint is
+    // the baseline from birth. A variable created after it is not in
+    // that enumeration)
     const stored = await queryProjectDo(
       projectId,
       "SELECT chain_seq, entry_hash_hex FROM environment_checkpoints WHERE environment_id = ?",
@@ -152,14 +162,14 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     const opened = await openLease({
       lease: requireFirst(body.leases, "lease"),
       workloadKeyPair: workload.pair,
-      // 同一 issuer / audience の別 subject(別ブランチ)= 別ワークロード文脈
+      // A different subject under the same issuer / audience (a different branch) = a different workload context
       claimsDigestHex: await claimsDigestOf("repo:maruhi-test/demo:ref:refs/heads/feature-x"),
     });
     expect(opened.ok).toBe(false);
   });
 
   it("leases every epoch the response's latest values use, plus the current epoch (§14-2)", async () => {
-    // epoch 1 に値を作り、rotate で epoch 2 へ。値は未再暗号化のまま epoch 1
+    // Create a value at epoch 1, then rotate to epoch 2. The value remains at epoch 1, not re-encrypted
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
@@ -178,7 +188,7 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
   });
 });
 
-describe("ワークロードリース: OIDC 検証(§14-1 の認証段 — 401)", () => {
+describe("workload leases: OIDC verification (§14-1's authentication stage — 401)", () => {
   beforeEach(async () => {
     await readyProject();
   });
@@ -238,8 +248,9 @@ describe("ワークロードリース: OIDC 検証(§14-1 の認証段 — 401)"
   }
 
   it("rejects a multi-audience token with ambiguous-audience, not missing-claim", async () => {
-    // `aud` は存在する(複数あるだけ)。運用者が理由コードを頼りに存在する
-    // claim を探しに行かないよう別語彙にしてある
+    // `aud` does exist (there are merely several). Kept as a separate
+    // vocabulary so an operator guided by the reason code does not go
+    // looking for a claim that exists
     const workload = await workloadKeyPair();
     const response = await requestLease({
       oidcToken: await makeOidcToken({ audience: [LEASE_AUDIENCE, "https://other.example"] }),
@@ -263,8 +274,9 @@ describe("ワークロードリース: OIDC 検証(§14-1 の認証段 — 401)"
   });
 
   it("rejects a token whose alg is outside the allowlist even with a valid signature", async () => {
-    // `none` は Schema の compact JWS 形(3 セグメント)を満たしたうえで
-    // alg 許可リストで落ちる — ヘッダーの alg を信じる実装はここで割れる
+    // `none` satisfies Schema's compact-JWS shape (3 segments) and
+    // then falls at the alg allowlist — an implementation that trusts
+    // the header's alg breaks here
     const workload = await workloadKeyPair();
     const response = await requestLease({
       oidcToken: await makeOidcToken({ alg: "none" }),

@@ -1,10 +1,12 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — 環境管理(§12-4 複合
-// リクエスト)・複合作成の DEK ラップ検証(§12-6)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
-// エポックとローテーション・境界 checkpoint の複合内整合は
-// data-environment-rotation.test.ts(分割の動機は
-// support/membership-scenario.ts 冒頭を参照)。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — environment
+// management (the §12-4 composite request) and the creation composite's
+// DEK-wrap verification (§12-6).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// The shared fixture and helpers live in support/data-scenario.ts.
+// Epochs/rotation and the in-composite consistency of boundary
+// checkpoints live in data-environment-rotation.test.ts (for the split's
+// motivation see the top of support/membership-scenario.ts).
 
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -49,7 +51,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("環境管理(§12-4 複合リクエスト)", () => {
+describe("environment management (the §12-4 composite request)", () => {
   it("creates an environment atomically: chain entry + epoch-1 wrap set + name in one request", async () => {
     const headBefore = fixture.head;
     const dek = makeDek();
@@ -61,7 +63,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // 正例はラップした DEK 自身のコミットメントを渡す
+    // For the positive case, pass the wrapped DEK's own commitment
     const created = await createEnvironmentWith(
       fixture,
       ENV,
@@ -78,18 +80,18 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     };
     expect(body.environmentId).toBe(ENV);
     expect(body.currentEpoch).toBe(1);
-    // 複合は create(H+1)+ 境界 checkpoint(H+2)の 2 エントリを追記する(§12-4)
+    // The composite appends two entries: create (H+1) + boundary checkpoint (H+2) (§12-4)
     expect(body.headSeq).toBe(headBefore.seq + 2);
 
-    // チェーンに create_environment + checkpoint の 2 エントリが追記されている
-    // (複合の原子性の片翼)
+    // Two entries, create_environment + checkpoint, have been appended to
+    // the chain (one half of the composite's atomicity)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: { op: string; seq: number }[] };
     expect(chainBody.entries.at(-2)?.op).toBe("create_environment");
     expect(chainBody.entries.at(-1)?.op).toBe("checkpoint");
     expect(chainBody.entries.at(-1)?.seq).toBe(body.headSeq);
 
-    // 環境一覧は裸 name でなく最新ステートメント + author 情報を返す(§12-2)
+    // The environment list returns not a bare name but the latest statement + author info (§12-2)
     const list = await requestJson("GET", "/environments", token(READER));
     expect(list.status).toBe(200);
     const listBody = (await list.json()) as {
@@ -137,7 +139,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // ID の一意性は合意規則(CRYPTO_SPEC §6.2)
+    // ID uniqueness is a consensus rule (CRYPTO_SPEC §6.2)
     const response = await createEnvironmentWith(fixture, ENV, "App2", deks);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { seq: number; reason: string };
@@ -151,8 +153,9 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
 
-    // 変数・変数ステートメント・バージョン・ラップは即時削除、環境行は
-    // tombstone(§12-4)。環境自身のステートメント連鎖(deleted 込み)は残る
+    // Variables, variable statements, versions, and wraps are deleted
+    // immediately; the environment row becomes a tombstone (§12-4). The
+    // environment's own statement chain (including deleted) remains
     for (const table of [
       "variables",
       "variable_meta_statements",
@@ -169,7 +172,8 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(404);
 
-    // チェーンは削除を観測しないため、再作成は合意規則(履歴全体一意)で拒否される
+    // The chain does not observe deletions, so re-creation is rejected
+    // by the consensus rule (uniqueness across the whole history)
     // (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
     const recreated = await createEnvironmentWith(fixture, ENV, "App3", []);
     expect(recreated.status).toBe(422);
@@ -178,7 +182,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
   });
 
   it("rejects create_environment / rotate_epoch on the generic chain append (422 CompositeRequired)", async () => {
-    // AUTH_SPEC §6 / §12-4: 複合エンドポイントの原子性を汎用経路で迂回させない
+    // AUTH_SPEC §6 / §12-4: do not let the generic path bypass the composite endpoint's atomicity
     const { entry: createEntry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
@@ -218,15 +222,17 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     expect(rotateResponse.status).toBe(422);
     expect((await rotateResponse.json()) as { op: string }).toMatchObject({ op: "rotate_epoch" });
 
-    // どちらもチェーンに追記されていない
+    // Neither was appended to the chain
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { headSeq: number };
     expect(chainBody.headSeq).toBe(fixture.head.seq);
   });
 
-  it("retries a composite creation after a head CAS conflict (409 ChainHeadConflict → 再署名 → 200)", async () => {
-    // §12-4: 親ヘッド CAS 失敗はチェーンエントリの再署名(prev 変更)を要する。
-    // 古い親(genesis 相当)で送ると 409 + 現ヘッドが返り、正しい親で再試行できる
+  it("retries a composite creation after a head CAS conflict (409 ChainHeadConflict → re-sign → 200)", async () => {
+    // §12-4: a parent-head CAS failure requires re-signing the chain
+    // entry (a changed prev). Sending with a stale parent (genesis-level)
+    // returns a 409 + the current head, and a retry with the correct
+    // parent can proceed
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -242,7 +248,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       name: "App",
       deks,
       dekCommitmentHex,
-      parentHeadHashHex: projectId, // genesis ハッシュ = 2 世代前のヘッド
+      parentHeadHashHex: projectId, // the genesis hash = a head two generations stale
     });
     expect(stale.status).toBe(409);
     const staleBody = (await stale.json()) as {
@@ -251,11 +257,11 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     };
     expect(staleBody.currentHeadSeq).toBe(fixture.head.seq);
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
-    // 何も書かれていない(原子性: CAS 失敗はチェーンにもデータにも痕跡を残さない)
+    // Nothing was written (atomicity: a CAS failure leaves no trace on chain or data)
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
 
-    // 再試行の正例はラップした DEK 自身のコミットメント
+    // The retried positive case passes the wrapped DEK's own commitment
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -282,7 +288,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const body = (await duplicate.json()) as { reason: string };
     expect(body.reason).toBe("duplicate-name");
 
-    // 受理(200)まで進む正例はラップした DEK のコミットメント
+    // For the positive case that proceeds to acceptance (200), pass the wrapped DEK's commitment
     const second = await createEnvironmentWith(
       fixture,
       "env-app-0002",
@@ -333,7 +339,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
   });
 
   it("rejects a composite whose entry actor differs from the principal (403 actor-mismatch)", async () => {
-    // §12-4: チェーンエントリの actor は呼び出し主体と厳密一致(§11-1 と同じ規律)
+    // §12-4: the chain entry's actor must strictly equal the calling principal (the same discipline as §11-1)
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -352,8 +358,8 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
         payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
       },
     });
-    // 境界 checkpoint も同じ actor(OWNER)で署名する — Schema を通し、actor
-    // 一致検査(403)へ到達させる
+    // The boundary checkpoint is also signed by the same actor (OWNER) —
+    // to pass Schema and reach the actor-equality check (403)
     const { entry: checkpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
@@ -395,8 +401,10 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       const body = (await response.json()) as { projectId: string };
       expect(body.projectId).toBe(projectId);
     }
-    // 削除(ステートメント必須)も非メンバーには 404。STRANGER はベクター鍵を
-    // 持たないため未署名ダミーで送る(存在秘匿は署名検証より前 — §12-3)
+    // Deletion (which requires a statement) is also a 404 for
+    // non-members. STRANGER holds no vector key, so it is sent as an
+    // unsigned dummy (existence hiding precedes signature verification —
+    // §12-3)
     const removal = await requestJson("DELETE", `/environments/${ENV}`, token(STRANGER), {
       statement: {
         suite: "maruhi/v1",
@@ -420,7 +428,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
   });
 });
 
-describe("環境作成の DEK ラップ検証(§12-6)", () => {
+describe("DEK-wrap verification at environment creation (§12-6)", () => {
   it("rejects a wrap set missing a current member (422 recipient-missing)", async () => {
     const deks = await wrapsFor(ENV, [OWNER, MEMBER]);
     const response = await createEnvironmentWith(fixture, ENV, "App", deks);
@@ -429,17 +437,19 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
     expect(body.reason).toBe("recipient-missing");
   });
 
-  it("rejects an empty wrap set atomically (§12-4: エポック 1 の完全集合の同梱は必須)", async () => {
-    // 空集合はエポック単位の検査をすり抜けて
-    // 「誰も DEK を持てない環境」を作れてしまう。個数 = 現メンバー数の明示検査で塞ぐ
+  it("rejects an empty wrap set atomically (§12-4: bundling the epoch-1 complete set is mandatory)", async () => {
+    // An empty set would slip past the per-epoch check and create "an
+    // environment no one can hold a DEK for". Closed by the explicit
+    // check that count = current member count
     const response = await createEnvironmentWith(fixture, ENV, "App", []);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("recipient-missing");
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
-    // 複合の原子性(§12-4): ラップ検査で落ちた複合はチェーンエントリも追記しない
-    // (「コミットメントはあるがラップがない」中間状態を作らない)
+    // Composite atomicity (§12-4): a composite that failed the wrap
+    // check appends no chain entry either (no "commitment exists but
+    // wraps do not" intermediate state)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { headSeq: number };
     expect(chainBody.headSeq).toBe(fixture.head.seq);
@@ -472,7 +482,7 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
       epoch: 1,
       dek: makeDek(),
       recipientUserId: READER,
-      // チェーン上の READER の鍵ではなく MEMBER の鍵へラップ(ゴーストメンバー相当)
+      // Wrapped to MEMBER's key instead of READER's on-chain key (equivalent to a ghost member)
       recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
       signerUserId: OWNER,
     });
@@ -489,7 +499,7 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
     expect(dupResponse.status).toBe(422);
     expect(((await dupResponse.json()) as { reason: string }).reason).toBe("duplicate-recipient");
 
-    // 環境作成時の現エポックは常に 1(§12-4)。epoch 2 宛は範囲外
+    // The current epoch at environment creation is always 1 (§12-4). Epoch 2 is out of range
     const epoch2 = await wrapsFor(ENV, ALL_MEMBERS, 2);
     const epochResponse = await createEnvironmentWith(fixture, ENV, "App", epoch2);
     expect(epochResponse.status).toBe(422);
