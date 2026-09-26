@@ -558,6 +558,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(signIn.getAttribute("href")).resolves.toBe("/auth/github/start");
     // SPA の画面ごとの document.title(静的シェルの <title> は "maruhi" 固定)
     await expect.poll(() => page.title()).toBe("Sign in — maruhi");
+    // AppShell の外でも main ランドマークがある(Center に role="main")。初回表示では
+    // フォーカスを奪わない
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
+    await expect(page.getByRole("main").getByTestId("login-card").count()).resolves.toBe(1);
+    await expect(
+      page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+    ).resolves.toBe(false);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -577,8 +584,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard`);
     await page.getByText("Checking your session").first().waitFor();
     await expect.poll(() => page.title()).toBe("Checking your session — maruhi");
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
     release?.();
     await expect.poll(() => page.title()).toBe("Session check failed — maruhi");
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -624,6 +633,12 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("login-card").waitFor();
     expect(sawCsrfHeader).toBe("1");
     await expect(page.getByText("You are signed out.").count()).resolves.toBeGreaterThan(0);
+    // サインアウト直後はサインイン画面の見出しにフォーカスが移る
+    await expect
+      .poll(() =>
+        page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+      )
+      .toBe(true);
     expect(violations).toEqual([]);
     await page.close();
   });
@@ -1164,6 +1179,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("You are signed out.").count()).resolves.toBe(1);
     await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
     expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
+    // 切替で消えた要素から body へ落ちたフォーカスは、サインイン画面の見出しへ移る
+    await expect(page.getByRole("main").count()).resolves.toBe(1);
+    await expect
+      .poll(() =>
+        page.getByTestId("sign-in-heading").evaluate((el) => el === document.activeElement),
+      )
+      .toBe(true);
     expect(violations).toEqual([]);
     await page.close();
   });

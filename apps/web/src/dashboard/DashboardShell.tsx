@@ -44,6 +44,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -245,11 +246,21 @@ function DashboardSideNav({
   );
 }
 
-/** サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。 */
+/**
+ * サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。
+ * AppShell の外に描くので、main ランドマークは Center(div)に role で与える。
+ * `signedOutNow`(サインアウト直後・画面の 401 でその場で切り替わった)のときは、
+ * 直前にフォーカスしていた要素が消えて body に落ちるため、見出しへフォーカスを移す
+ * (初回表示〔セッション無しで開いた〕では奪わない)。
+ */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   useDocumentTitle("Sign in");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (signedOutNow) headingRef.current?.focus();
+  }, [signedOutNow]);
   return (
-    <Center axis="both" padding={6} minHeight="100dvh">
+    <Center axis="both" padding={6} minHeight="100dvh" role="main">
       <VStack gap={4} align="center" width="100%" maxWidth={400}>
         <VStack gap={2} align="center">
           <img src={LOGO_INVERTED_SRC} alt="" width={SIGN_IN_LOGO_PX} height={SIGN_IN_LOGO_PX} />
@@ -260,7 +271,9 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
         <Card padding={8} width="100%" data-testid="login-card">
           <VStack gap={4} align="stretch">
             <VStack gap={1} align="center">
-              <Heading level={1}>Sign in</Heading>
+              <Heading level={1} ref={headingRef} tabIndex={-1} data-testid="sign-in-heading">
+                Sign in
+              </Heading>
               <Text type="body" color="secondary" size="sm" justify="center">
                 A read-only view of your projects, as reported by the server.
               </Text>
@@ -376,13 +389,13 @@ interface PageProps {
 }
 
 /**
- * セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。
- * `title` は document.title。
+ * セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。AppShell の
+ * 外なので main ランドマークは Center(div)に role で与える。`title` は document.title。
  */
 function StatusFrame({ title, children }: { title: string; children: ReactNode }): ReactNode {
   useDocumentTitle(title);
   return (
-    <Center axis="both" padding={6} minHeight="100dvh">
+    <Center axis="both" padding={6} minHeight="100dvh" role="main">
       <VStack width="100%" maxWidth={480}>
         {children}
       </VStack>
