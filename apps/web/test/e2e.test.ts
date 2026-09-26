@@ -758,8 +758,21 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     const colleagueRow = members.getByRole("row").filter({ hasText: "user_colleague" });
     await expect(colleagueRow.getByText("1", { exact: true }).count()).resolves.toBe(1);
     await page.getByTestId("env-table").waitFor();
-    await page.getByText("Variable names", { exact: true }).click();
+    // ディスクロージャー: 閉じている間は aria-expanded=false・aria-controls なし、開くと
+    // 表の下の変数名の節(id)を指す
+    const namesToggle = page.getByRole("button", { name: "Variable names", exact: true });
+    await expect(namesToggle.getAttribute("aria-expanded")).resolves.toBe("false");
+    await expect(namesToggle.getAttribute("aria-controls")).resolves.toBeNull();
+    await namesToggle.click();
     await page.getByTestId("variable-list").waitFor();
+    const hideToggle = page.getByRole("button", { name: "Hide names", exact: true });
+    await expect(hideToggle.getAttribute("aria-expanded")).resolves.toBe("true");
+    const controls = await hideToggle.getAttribute("aria-controls");
+    expect(controls).not.toBeNull();
+    await expect(page.getByTestId("variables-region").getAttribute("id")).resolves.toBe(controls);
+    await expect(
+      page.getByTestId("variables-region").getByTestId("variable-list").count(),
+    ).resolves.toBe(1);
     await expect(page.getByText("DATABASE_URL").count()).resolves.toBeGreaterThan(0);
 
     // S6 監査: 規定文言 + admin 応答由来の seq 列(応答適応)
