@@ -534,17 +534,18 @@ export function ensureNoStoredMasterKey(
 export function storeMasterKeyGuarded(
   entryName: string,
   serialized: string,
+  concurrentMessage: string = concurrentMasterKeyWrite,
 ): Effect.Effect<void, CliError, Keychain> {
   return Effect.gen(function* () {
     const keychain = yield* Keychain;
     const appeared = yield* keychain.get(entryName);
     if (appeared !== null) {
-      return yield* Effect.fail(cliError(concurrentMasterKeyWrite));
+      return yield* Effect.fail(cliError(concurrentMessage));
     }
     yield* keychain.set(entryName, serialized);
     const stored = yield* keychain.get(entryName);
     if (stored !== serialized) {
-      return yield* Effect.fail(cliError(concurrentMasterKeyWrite));
+      return yield* Effect.fail(cliError(concurrentMessage));
     }
   });
 }
@@ -563,22 +564,23 @@ function replaceMasterKeyGuarded(input: {
     const keychain = yield* Keychain;
     const current = yield* keychain.get(input.entryName);
     if (current !== input.previous) {
-      return yield* Effect.fail(cliError(concurrentDeviceKeyReplace));
+      return yield* Effect.fail(cliError(concurrentDeviceAddWrite));
     }
     yield* keychain.set(input.entryName, input.serialized);
     const stored = yield* keychain.get(input.entryName);
     if (stored !== input.serialized) {
-      return yield* Effect.fail(cliError(concurrentDeviceKeyReplace));
+      return yield* Effect.fail(cliError(concurrentDeviceAddWrite));
     }
   });
 }
 
 /**
- * 差し替えの途中で別の書き込みを見つけたときの文言。新しい鍵の FP はまだ画面に出して
- * いないので承認されず、その要求は期限で消える(DK K13-8)。
+ * `device add` の保存・差し替えの途中で別の書き込みを見つけたときの文言(鍵が無いときの
+ * 保存と `--replace` の差し替えで共通)。要求は保存の前に作ってあるが、新しい鍵の FP は
+ * まだ画面に出していないので承認されず、その要求は期限で消える(DK K13-8 / K13-14)。
  */
-const concurrentDeviceKeyReplace =
-  "Another process changed this machine's device key while `maruhi device add --replace` was running, so the new key was not stored and the key now in the keychain was left as it is. The request made for the new key is never approved (its fingerprint was not shown) and expires in 15 minutes. Run `maruhi key show` to see which key is stored now, then re-run `maruhi device add` alone" as const;
+const concurrentDeviceAddWrite =
+  "Another process wrote this machine's device key while `maruhi device add` was running, so the new key was not stored and the key now in the keychain was left as it is. The request made for the new key is never approved (its fingerprint was not shown) and expires in 15 minutes. Run `maruhi key show` to see which key is stored now, then re-run `maruhi device add` alone" as const;
 
 /**
  * 並行書き込みを検出したときの文言。控えるべき情報が無いのが要点: この鍵は
@@ -599,15 +601,24 @@ export function storeMasterKeyAndReport(input: {
   /** 何をしたか(文頭)。例: "Generated your master key" */
   readonly action: string;
   readonly fingerprintHex: string;
-  /** 置き換える鍵の保存値(`device add --replace` — 一致するときだけ置き換える)。 */
-  readonly previous?: string | undefined;
+  /**
+   * `device add` からの保存か(同時書き込みの文言を `device add` のものにする — 要求は
+   * 作成済み: DK K13-14)。`previous` は置き換える鍵の保存値(`--replace` — 一致する
+   * ときだけ置き換える)。
+   */
+  readonly deviceAdd?: { readonly previous: string | null } | undefined;
 }): Effect.Effect<void, CliError, Keychain | CliIo> {
   return Effect.gen(function* () {
-    yield* input.previous === undefined
-      ? storeMasterKeyGuarded(input.entryName, input.serialized)
+    const previous = input.deviceAdd?.previous ?? null;
+    yield* previous === null
+      ? storeMasterKeyGuarded(
+          input.entryName,
+          input.serialized,
+          input.deviceAdd === undefined ? concurrentMasterKeyWrite : concurrentDeviceAddWrite,
+        )
       : replaceMasterKeyGuarded({
           entryName: input.entryName,
-          previous: input.previous,
+          previous,
           serialized: input.serialized,
         });
     const keychain = yield* Keychain;

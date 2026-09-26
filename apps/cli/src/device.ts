@@ -534,7 +534,7 @@ function startWithNewKey(
       serialized: serializeStoredMasterKey(record),
       action: previous === null ? "Generated this device's key" : "Generated this device's new key",
       fingerprintHex: validated.fingerprintHex,
-      previous: previous ?? undefined,
+      deviceAdd: { previous },
     });
     if (previous !== null) {
       yield* logNote("replaced the previous key in this machine's keychain (--replace)");

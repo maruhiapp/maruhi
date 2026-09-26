@@ -2185,12 +2185,38 @@ describe("maruhi device add — 既存の鍵のチェーン上の立場(DK K13)"
     expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
     expect(env.keychain.get(entry)).toBe(intruder);
     expect(env.errors.join("\n")).toContain(
-      "Another process changed this machine's device key while `maruhi device add --replace` was running, so the new key was not stored and the key now in the keychain was left as it is",
+      "Another process wrote this machine's device key while `maruhi device add` was running, so the new key was not stored and the key now in the keychain was left as it is. The request made for the new key is never approved (its fingerprint was not shown) and expires in 15 minutes",
     );
     expect(env.logs.join("\n")).not.toContain("This device's key fingerprint:");
     expect(env.errors.join("\n")).not.toContain(
       "replaced the previous key in this machine's keychain",
     );
+  });
+
+  it("鍵の無い端末の保存で同時書き込みを見つけたら、要求が作成済みであることを言い、key generate の文を出さない(K13-14)", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    let env: TestEnv | null = null;
+    let entry = "";
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      extra: [
+        onRequest("POST", "/auth/devices/requests", () => {
+          env?.keychain.set(entry, "written-by-another-process");
+          return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
+        }),
+      ],
+    });
+    env = await startEnvWithoutKey(server.origin, built.projectId);
+    entry = masterKeyEntryName(server.origin, owner.userId);
+    expect(await runCli(["device", "add"], env.layer)).toBe(1);
+    expect(env.keychain.get(entry)).toBe("written-by-another-process");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "Another process wrote this machine's device key while `maruhi device add` was running, so the new key was not stored",
+    );
+    expect(errors).not.toContain("nothing was left behind");
+    expect(env.logs.join("\n")).not.toContain("This device's key fingerprint:");
   });
 });
 
