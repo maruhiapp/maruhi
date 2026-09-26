@@ -78,7 +78,7 @@ function toTokenRow(token: TokenSummary): TokenRow {
 }
 
 function buildTokenColumns(
-  revocation: RevocationState,
+  isLocked: boolean,
   onArm: (id: string | undefined) => void,
 ): TableColumn<TokenRow>[] {
   return [
@@ -128,7 +128,7 @@ function buildTokenColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
-        <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
+        <RevokeButton onArm={() => onArm(row.id)} isLocked={isLocked} />
       ),
     },
   ];
@@ -148,11 +148,11 @@ function TokenNotes(): ReactNode {
 
 function TokensTable({
   tokens,
-  revocation,
+  isLocked,
   onArm,
 }: {
   tokens: ReadonlyArray<TokenSummary>;
-  revocation: RevocationState;
+  isLocked: boolean;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
   if (tokens.length === 0) {
@@ -169,7 +169,7 @@ function TokensTable({
   return (
     <Table
       data={tokens.map(toTokenRow)}
-      columns={buildTokenColumns(revocation, onArm)}
+      columns={buildTokenColumns(isLocked, onArm)}
       idKey="id"
       density="balanced"
       hasHover
@@ -190,18 +190,39 @@ function TokensResource({
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)
+  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、
+  // 行の Revoke は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
   }
-  return <TokensTable tokens={state.value.tokens} revocation={revocation} onArm={onArm} />;
+  return (
+    <TokensTable
+      tokens={state.value.tokens}
+      isLocked={revocation.pendingId !== undefined || state.refreshing}
+      onArm={onArm}
+    />
+  );
+}
+
+/** 武装中のトークン(一覧にあれば)。 */
+function armedToken(
+  state: ResourceState<TokenList>,
+  armedId: string | undefined,
+): TokenSummary | undefined {
+  return state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
 }
 
 /** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
 function armedName(state: ResourceState<TokenList>, armedId: string | undefined): string {
-  const token = state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
+  const token = armedToken(state, armedId);
   return token === undefined ? "this token" : `token "${token.name}"`;
+}
+
+/** 失効成功の告知文(確認時点の名前 — 再取得後の一覧には残らない)。 */
+function revokedMessage(state: ResourceState<TokenList>, armedId: string | undefined): string {
+  const token = armedToken(state, armedId);
+  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
 }
 
 export function TokensScreen(): ReactNode {
@@ -227,6 +248,7 @@ export function TokensScreen(): ReactNode {
           revocation={revocation}
           title={`Revoke ${armedName(state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
+          successMessage={revokedMessage(state, revocation.armedId)}
           subject="token"
           arm={arm}
           confirm={confirm}

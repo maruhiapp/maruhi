@@ -86,7 +86,7 @@ function isRevocable(row: InviteRow): boolean {
 }
 
 function buildInviteColumns(
-  revocation: RevocationState,
+  isLocked: boolean,
   onArm: (id: string | undefined) => void,
 ): TableColumn<InviteRow>[] {
   return [
@@ -126,9 +126,7 @@ function buildInviteColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: InviteRow) =>
-        isRevocable(row) ? (
-          <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
-        ) : null,
+        isRevocable(row) ? <RevokeButton onArm={() => onArm(row.id)} isLocked={isLocked} /> : null,
     },
   ];
 }
@@ -146,11 +144,11 @@ function InviteNotes(): ReactNode {
 
 function InvitesTable({
   invitations,
-  revocation,
+  isLocked,
   onArm,
 }: {
   invitations: ReadonlyArray<InvitationSummary>;
-  revocation: RevocationState;
+  isLocked: boolean;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
   if (invitations.length === 0) {
@@ -165,7 +163,7 @@ function InvitesTable({
   return (
     <Table
       data={invitations.map(toInviteRow)}
-      columns={buildInviteColumns(revocation, onArm)}
+      columns={buildInviteColumns(isLocked, onArm)}
       idKey="id"
       density="balanced"
       hasHover
@@ -186,11 +184,16 @@ function InvitesResource({
   reload: () => void;
   state: ResourceState<InvitationList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)
+  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、行の Revoke は
+  // 実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
   if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <InvitesTable invitations={state.value.invitations} revocation={revocation} onArm={onArm} />
+    <InvitesTable
+      invitations={state.value.invitations}
+      isLocked={revocation.pendingId !== undefined || state.refreshing}
+      onArm={onArm}
+    />
   );
 }
 
@@ -213,6 +216,7 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
         revocation={revocation}
         title="Revoke this invitation?"
         description="The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it."
+        successMessage="Invitation revoked."
         subject="invitation"
         arm={arm}
         confirm={confirm}

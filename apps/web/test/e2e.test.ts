@@ -924,6 +924,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await confirmRevoke(page);
     // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
     await page.getByText("revoked", { exact: true }).waitFor();
+    await expect(page.getByTestId("revocation-success").textContent()).resolves.toContain(
+      "Invitation revoked.",
+    );
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
@@ -949,6 +952,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
     await page.getByText("The server reports this invitation as completed.").waitFor();
+    await expect(page.getByTestId("revocation-success").count()).resolves.toBe(0);
     await page.close();
   });
 
@@ -993,10 +997,19 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     let revoked = false;
     let deleteMethod: string | null = null;
     let deleteCsrf: string | null = null;
+    // 失効後の再取得を保留し、その間も直前の一覧が残る(LoadingRow に置き換わらない)ことを見る
+    let releaseRefetch: (() => void) | undefined;
+    const refetchGate = new Promise<void>((resolve) => {
+      releaseRefetch = resolve;
+    });
     await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
-      (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
+      async (route) => {
+        if (!revoked) return fulfillJson(route, 200, tokensFixture);
+        await refetchGate;
+        return fulfillJson(route, 200, tokensAfterRevoke);
+      },
     );
     await page.route(
       (url) => url.pathname === "/auth/tokens/tok-active",
@@ -1011,12 +1024,26 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await confirmRevoke(page);
-    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
-    // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
-    // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
+    // 成功は role="status" の Banner で告げ、フォーカスをそこへ移す(失効した行は消える)
+    const success = page.getByTestId("revocation-success");
+    await success.waitFor();
+    await expect(success.getAttribute("role")).resolves.toBe("status");
+    await expect(success.textContent()).resolves.toContain('Token "ci" revoked.');
+    await expect.poll(() => success.evaluate((el) => el === document.activeElement)).toBe(true);
+    // 再取得中は直前の一覧が残り(置換しない)、行の Revoke は無効
+    await expect(page.getByText("Loading tokens").count()).resolves.toBe(0);
+    await expect(
+      page.getByTestId("token-table").getByText("ci", { exact: true }).count(),
+    ).resolves.toBe(1);
+    await expect
+      .poll(() => page.getByTestId("token-table").getByRole("button").first().isDisabled())
+      .toBe(true);
+    releaseRefetch?.();
+    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
+    await expect(success.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
@@ -1363,6 +1390,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       .nth(1)
       .waitFor();
     await expect(page.getByRole("button", { name: "Revoke token" }).count()).resolves.toBe(0);
+    await expect(page.getByTestId("revocation-success").textContent()).resolves.toContain(
+      'Token "ci" revoked.',
+    );
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(deviceFetches).toBe(2);

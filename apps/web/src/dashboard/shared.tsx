@@ -26,7 +26,7 @@ import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import * as stylex from "@stylexjs/stylex";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
@@ -473,14 +473,38 @@ function RevokeDialog({
 }
 
 /**
+ * 失効の成功の告知(Banner status="success" = role="status")。失効した行は再取得で
+ * 消える・ボタンを失うため、ダイアログが戻したフォーカスはその行ごと失われる。出現時に
+ * Banner 自身へフォーカスを移し(tabIndex -1)、読み上げと次の操作の起点をここに置く。
+ */
+function RevocationSuccess({ message }: { message: string }): ReactNode {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, [message]);
+  return (
+    <Banner
+      ref={ref}
+      tabIndex={-1}
+      status="success"
+      title={message}
+      data-testid="revocation-success"
+    />
+  );
+}
+
+/**
  * 失効の結果面(S8 / S9 / S11 で共用 — DK K5 で 3 画面目が出たので昇格): 武装中は
  * `RevokeDialog`、直近の失敗は一覧の下の追記形(裁定 B-b — 再操作は行から行えるので
- * Retry なし)。`arm(undefined)` / `confirm(id)` は use-revocation.ts の操作をそのまま渡す。
+ * Retry なし)、直近の成功は `RevocationSuccess`。`arm(undefined)` / `confirm(id, …)` は
+ * use-revocation.ts の操作をそのまま渡す。`successMessage` は確認時点の対象名で作る
+ * (再取得後の一覧に対象が残らないことがある)。
  */
 export function RevocationOutcome({
   revocation,
   title,
   description,
+  successMessage,
   subject,
   arm,
   confirm,
@@ -488,9 +512,10 @@ export function RevocationOutcome({
   revocation: RevocationState;
   title: string;
   description: string;
+  successMessage: string;
   subject: FailureSubject;
   arm: (id: string | undefined) => void;
-  confirm: (id: string) => void;
+  confirm: (id: string, successMessage: string) => void;
 }): ReactNode {
   return (
     <>
@@ -501,11 +526,14 @@ export function RevocationOutcome({
         isPending={revocation.pendingId !== undefined}
         onCancel={() => arm(undefined)}
         onConfirm={() => {
-          if (revocation.armedId !== undefined) confirm(revocation.armedId);
+          if (revocation.armedId !== undefined) confirm(revocation.armedId, successMessage);
         }}
       />
       {revocation.failure !== undefined ? (
         <FailureNotice failure={revocation.failure} subject={subject} />
+      ) : null}
+      {revocation.succeeded !== undefined ? (
+        <RevocationSuccess message={revocation.succeeded} />
       ) : null}
     </>
   );
