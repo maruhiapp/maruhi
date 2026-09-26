@@ -853,13 +853,6 @@ const envRotateConfig = {
     "new-epoch",
     "Always create a new epoch, even when incomplete re-encryption could be resumed instead",
   ),
-  // 移行専用: マニフェスト導入前に作成された環境の
-  // manifest_version 1 初期化。許容するのは**欠落**のみで、配布された
-  // マニフェストの検証は緩和しない(manifest.ts)
-  "init-manifest": singleFlag(
-    "init-manifest",
-    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves",
-  ),
   // 明示されたときだけ同期レシートを進める(既定パスへの
   // 暗黙の探索はしない — rotate はリポジトリの外からも打たれ、設定は cwd 依存)
   config: singleValued(
@@ -1840,7 +1833,6 @@ function envRotateCommand(
   flags: CommonFlags & {
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
-    readonly initManifest?: boolean | undefined;
     readonly config?: string | undefined;
   },
   environmentId: EnvironmentId,
@@ -1871,7 +1863,6 @@ function envRotateCommand(
       // 防衛線として残る)
       reason: flags.reason,
       forceNewEpoch: flags.newEpoch === true,
-      initManifest: flags.initManifest === true,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
@@ -4472,18 +4463,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         values["environment-id"],
         "`maruhi env rotate dev`",
       );
-      const {
-        reason,
-        "new-epoch": newEpoch,
-        "init-manifest": initManifest,
-        config: syncConfig,
-        ...flags
-      } = values;
+      const { reason, "new-epoch": newEpoch, config: syncConfig, ...flags } = values;
       onExitCode(
-        yield* envRotateCommand(
-          { ...flags, reason, newEpoch, initManifest, config: syncConfig },
-          environmentId,
-        ),
+        yield* envRotateCommand({ ...flags, reason, newEpoch, config: syncConfig }, environmentId),
       );
     }),
   ).pipe(

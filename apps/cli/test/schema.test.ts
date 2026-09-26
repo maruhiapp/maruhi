@@ -149,6 +149,7 @@ function chainHandler(): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -208,6 +209,7 @@ function pullHandler(overrides?: {
         ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
         deks: [wrap1],
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     };
   });
@@ -224,10 +226,6 @@ interface MetadataOverrides {
     body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
     readonly base: readonly WireDistributedVariableStatement[];
   };
-}
-
-function metadataPolicyField(overrides?: MetadataOverrides): Record<string, unknown> {
-  return overrides?.schemaPolicy === undefined ? {} : { schemaPolicy: overrides.schemaPolicy };
 }
 
 /** 受理済みメタ操作の配布(base + 受理ステートメント + 受理マニフェスト)。 */
@@ -256,7 +254,7 @@ function echoMetadataJson(
       issuerUserId: owner.userId,
       issuerKeyFingerprintHex: owner.fingerprintHex,
     },
-    ...metadataPolicyField(overrides),
+    schemaPolicy: overrides?.schemaPolicy ?? "enabled",
   };
 }
 
@@ -283,7 +281,7 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
     variables,
     deletedVariables: [],
     manifest,
-    ...metadataPolicyField(overrides),
+    schemaPolicy: overrides?.schemaPolicy ?? "enabled",
   };
 }
 
@@ -915,6 +913,7 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
                   issuerUserId: owner.userId,
                   issuerKeyFingerprintHex: owner.fingerprintHex,
                 },
+                schemaPolicy: "enabled" as const,
               },
             };
           }
@@ -929,6 +928,7 @@ describe("maruhi push の activation(declared への最初の値 push — §12-5
               variables: first ? [] : [declaredRequired],
               deletedVariables: [],
               manifest: first ? emptyManifest : declaredManifest,
+              schemaPolicy: "enabled" as const,
             },
           };
         },

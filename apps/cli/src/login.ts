@@ -134,8 +134,7 @@ function flowExpiredMessage(window: string): string {
  * - **誤操作ガードであって認可ではない**(受理の正はサーバー — CLI ログインは
  *   アカウントを作らない〔裁定 DH〕ため、アカウント不在者はブラウザ脚の
  *   サインアップ案内ページで必ず止まる。ここで止めるのは無駄なブラウザ往復)
- * - advisory の取得失敗・フィールド欠落(旧サーバー)では止めずに進む
- *   (advisory の欠落で login を壊さない — AUTH_SPEC §3)
+ * - advisory の取得失敗では止めずに進む(advisory の欠落で login を壊さない — AUTH_SPEC §3)
  * - 対話確認(既存アカウント保持の自己申告)は「対話端末 × 非エージェント」の
  *   ときのみ。判定材料は Stdio / AgentProfileRef サービス経由(ADR-0016 決定 7 の
  *   既存サービスの流用 — process.* を直に読まない)。非対話環境は案内の表示のみで

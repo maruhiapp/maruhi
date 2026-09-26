@@ -203,6 +203,7 @@ function chainHandler(): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -251,6 +252,7 @@ function pullHandler(overrides?: {
     deks: wraps as readonly unknown[],
     digestDeclared: undefined as readonly unknown[] | undefined,
     ...overrides,
+    schemaPolicy: "enabled" as const,
   };
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
     // マニフェスト(§12-7)は**配布する集合そのもの**から計算する(override で
@@ -282,6 +284,7 @@ function pullHandler(overrides?: {
           : { declaredVariables: resolved.declaredVariables }),
         deks: resolved.deks,
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     };
   });
@@ -686,6 +689,7 @@ describe("maruhi pull", () => {
               envStatement: fixture.envStatement,
               statements: [fixture.entryAlpha.statement, fixture.entryBeta.statement],
             }),
+            schemaPolicy: "enabled" as const,
           },
         }),
       ),
@@ -743,6 +747,7 @@ describe("maruhi pull", () => {
           variables: [ghostEntry],
           deletedVariables: [],
           deks: [ghostWrap],
+          schemaPolicy: "enabled",
         },
       })),
     ]);
@@ -853,6 +858,7 @@ describe("maruhi pull", () => {
         envStatement: historicEnvStatement,
         statements: [historicEntry.statement],
       }),
+      schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -862,6 +868,7 @@ describe("maruhi pull", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -1001,6 +1008,7 @@ describe("maruhi pull", () => {
       variables: [await pullEntry(built.projectId, "vf", "FORGED", forged, owner)],
       deletedVariables: [],
       deks: [wrap],
+      schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -1010,6 +1018,7 @@ describe("maruhi pull", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -1094,6 +1103,7 @@ describe("maruhi pull", () => {
         envStatement: newcomerEnvStatement,
         statements: [newcomerEntry.statement],
       }),
+      schemaPolicy: "enabled" as const,
     };
     let chainCalls = 0;
     const server = await MockServer.start([
@@ -1107,6 +1117,7 @@ describe("maruhi pull", () => {
             entries: source.entries,
             headSeq: source.entries.length,
             headHashHex: source.hashes[source.hashes.length - 1],
+            attestations: [],
           },
         };
       }),
@@ -1144,6 +1155,7 @@ describe("maruhi pull", () => {
           entries,
           headSeq: entries.length,
           headHashHex: built.hashes[entries.length - 1],
+          attestations: [],
         },
       };
     });
@@ -1195,6 +1207,7 @@ describe("maruhi pull", () => {
           entries: source.entries,
           headSeq: source.entries.length,
           headHashHex: source.hashes[source.hashes.length - 1],
+          attestations: [],
         },
       };
     });
@@ -1446,6 +1459,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
         envStatement: historicEnvStatement,
         statements: [historicStatement],
       }),
+      schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -1455,6 +1469,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -1527,6 +1542,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       variables: [{ variableId: "vf", statement: forgedStatement, value }],
       deletedVariables: [],
       deks: [wrap],
+      schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -1536,6 +1552,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -1579,6 +1596,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
           entries,
           headSeq: entries.length,
           headHashHex: built.hashes[entries.length - 1],
+          attestations: [],
         },
       };
     });

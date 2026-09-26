@@ -53,7 +53,7 @@ function listedVariablesOf(
     : null;
 }
 
-/** 集約形 var.read の判定: イベント名 + variableId 欠落(旧形は列に持つ)+ 列挙。 */
+/** 集約形 var.read の判定: イベント名 + variableId 欠落 + 列挙。 */
 export function aggregatedReadVariables(
   event: Pick<AuditEvent, "event" | "variableId" | "payload">,
 ): ReadonlyArray<ListedReadVariable> | null {

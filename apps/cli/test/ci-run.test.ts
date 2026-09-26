@@ -328,6 +328,7 @@ async function leaseResponseFor(
       await wrapFor(2, dek2),
       ...(await Promise.all(resolved.extraLeases.map((extra) => wrapFor(extra.epoch, extra.dek)))),
     ],
+    schemaPolicy: "enabled" as const,
   };
 }
 
@@ -689,7 +690,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     const { env, server } = await startCiEnv([
       flakyLeaseHandler(99, {
         status: 429,
-        json: { _tag: "LeaseRateLimited", retryAfterSeconds: 1800 },
+        json: { _tag: "LeaseRateLimited", retryAfterSeconds: 1800, scope: "project-window" },
       }),
     ]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
@@ -975,6 +976,7 @@ describe("maruhi project anchor", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
     ]);

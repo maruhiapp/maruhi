@@ -16,7 +16,7 @@
 //
 // 提出(submitHeadAttestationIfAdvanced): チェーン同期 + 検証の成功後、検証済み
 // ヘッドが前回申告より前進していれば署名して提出する(SHOULD — 失敗は非失敗の
-// 警告。旧サーバーには PUT が存在しない — SELF_HOSTING.md の更新順)。前回申告の
+// 警告)。前回申告の
 // 追跡は床の join 格子外の非機密ローカル状態(floor.ts の loadAttestedHead —
 // 喪失は同一 seq 再提出でサーバーの冪等 204 が吸収する)。
 //
@@ -231,8 +231,7 @@ export function reconcileDistributedAttestations(input: {
 /**
  * 検証済みヘッドの申告提出(§6.3 ヘッドゴシップ — SHOULD)。前回申告より前進して
  * いる場合のみ署名して PUT し、成功したら追跡を更新する。**いかなる失敗も
- * コマンドを失敗させない**(黙殺はしない — 警告 1 行に落とす): 旧サーバー
- * (PUT 未実装 = 404 等)との併用を壊さないため。409(AttestationRegression)は
+ * コマンドを失敗させない**(黙殺はしない — 警告 1 行に落とす — SHOULD の付随)。409(AttestationRegression)は
  * 自ビューの後退 = 床破損・並行 CLI の徴候として区別して警告する。
  */
 export function submitHeadAttestationIfAdvanced(input: {

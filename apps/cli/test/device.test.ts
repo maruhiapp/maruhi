@@ -241,7 +241,13 @@ async function makeServer(input: {
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
-      json: { projectId, entries, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
+      json: {
+        projectId,
+        entries,
+        headSeq: entries.length,
+        headHashHex: hashes[hashes.length - 1],
+        attestations: [],
+      },
     })),
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
@@ -267,6 +273,7 @@ async function makeServer(input: {
                 envStatement === null
                   ? []
                   : [{ environmentId: ENV_ID, currentEpoch: 1, statement: envStatement }],
+              schemaPolicy: "enabled",
             },
           },
     ),
@@ -313,6 +320,7 @@ async function makeServer(input: {
                 entries: broken.built.entries,
                 headSeq: broken.built.entries.length + 1,
                 headHashHex: broken.built.hashes[broken.built.hashes.length - 1],
+                attestations: [],
               },
             },
       ),

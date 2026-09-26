@@ -5,8 +5,7 @@
 //  1. `maruhi pull` は同梱のラップの行から、同じ人の他の有効な端末のうちその環境の受信者で
 //     あるものの欠けたエポックを導き、**そのエポックだけ**を兄弟の鍵宛に包み、この端末の
 //     登録署名で登録する(登録された行は兄弟の鍵で開け、§5.1 の署名が通る)
-//  2. 欠けが無い・旧サーバーの行(`recipientEncPubHex` 無し)・受信者でない端末(実効 scope の
-//     外)では登録しない
+//  2. 欠けが無い・受信者でない端末(実効 scope の外)では登録しない
 //  3. この端末も開けないエポックは包まず報告する。登録の失敗は Note で、pull は 0 のまま
 
 import {
@@ -88,12 +87,8 @@ afterEach(async () => {
 });
 
 /** 端末鍵宛の配布行(新サーバーの形 — `recipientEncPubHex` つき)。 */
-async function rowFor(
-  device: TestUser,
-  epoch: number,
-  options: { readonly withRecipientKey?: boolean } = {},
-): Promise<WireRecipientDek & { readonly recipientEncPubHex?: string }> {
-  const wrap = await wrapDekFor({
+async function rowFor(device: TestUser, epoch: number): Promise<WireRecipientDek> {
+  return wrapDekFor({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch,
@@ -101,9 +96,6 @@ async function rowFor(
     recipient: device,
     signer: owner,
   });
-  return options.withRecipientKey === false
-    ? wrap
-    : { ...wrap, recipientEncPubHex: device.encPubHex };
 }
 
 interface Posted {
@@ -145,6 +137,7 @@ async function start(input: {
         entries: built.entries,
         headSeq: built.entries.length,
         headHashHex: built.hashes[built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -157,6 +150,7 @@ async function start(input: {
         deletedVariables: [],
         deks: input.rows,
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     })),
     onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/deks`, (request) => {
@@ -230,7 +224,7 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     );
   });
 
-  it("欠けが無い・旧サーバーの行・受信者でない端末の欠けでは登録しない", async () => {
+  it("欠けが無い・受信者でない端末の欠けでは登録しない", async () => {
     const complete = await start({
       rows: [
         await rowFor(owner, 1),
@@ -241,17 +235,6 @@ describe("maruhi pull が同じ人の他の端末の欠けたエポックを補�
     });
     expect(await runCli(["pull"], complete.env.layer)).toBe(0);
     expect(complete.posted).toEqual([]);
-
-    // 旧サーバー(行に `recipientEncPubHex` が無い = 帰属が分からない)は導かない
-    const legacy = await start({
-      rows: [
-        await rowFor(owner, 1, { withRecipientKey: false }),
-        await rowFor(owner, 2, { withRecipientKey: false }),
-      ],
-    });
-    expect(await runCli(["pull"], legacy.env.layer)).toBe(0);
-    expect(legacy.posted).toEqual([]);
-    expect(legacy.env.errors.join("\n")).not.toContain("had no keys for");
   });
 
   it("この端末も開けないエポックは包まず報告し、登録の失敗は Note に留めて pull は 0", async () => {

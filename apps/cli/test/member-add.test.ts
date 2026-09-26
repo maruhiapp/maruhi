@@ -141,9 +141,8 @@ async function makeAddServer(input: {
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
   /**
-   * スロット → 保存済み受信者 enc 公開鍵(hex)。指定したスロットの 409 は
-   * `storedRecipientEncPubHex` を運ぶ(AUTH_SPEC §12-6 追補後のサーバー)。
-   * 未指定のスロットはフィールドなしの 409(追補以前のサーバー)。
+   * スロット → 保存済み受信者 enc 公開鍵(hex — 409 の `storedRecipientEncPubHex`、
+   * AUTH_SPEC §12-6)。未指定のスロットは登録しようとした鍵と同じ鍵が占有している形。
    */
   readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
@@ -183,6 +182,7 @@ async function makeAddServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -219,6 +219,7 @@ async function makeAddServer(input: {
           currentEpoch: input.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     onDeksRoute(projectId, "GET", () => ({ status: 200, json: { deks: input.ownDeks } })),
@@ -241,8 +242,7 @@ async function makeAddServer(input: {
             _tag: "DekWrapExists",
             epoch: conflict.epoch,
             recipientUserId: conflict.recipientUserId,
-            // AUTH_SPEC §12-6 追補後のサーバーだけが載せる(省略可フィールド)
-            ...(storedEncPub === undefined ? {} : { storedRecipientEncPubHex: storedEncPub }),
+            storedRecipientEncPubHex: storedEncPub ?? conflict.recipientEncPubHex,
           },
         };
       }
@@ -575,6 +575,7 @@ describe("maruhi member add", () => {
         }),
       ],
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
+      occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
       // 呼び出し順: 0 = 一括(409)→ 1 = epoch1 単発(409)→ 削除 → 2 = 再登録
       onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
     });
@@ -678,7 +679,7 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
-    // 同一鍵の在籍では削除(修復)を発動しない — 鍵履歴ゲート
+    // 同一鍵の在籍では削除(修復)を発動しない(409 の保存済み鍵 = 受諾鍵)
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("already a member with the same key");
@@ -719,6 +720,7 @@ describe("maruhi member add", () => {
       ],
       // 旧在籍時の旧鍵ラップが epoch 1 のスロットを占有している
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
+      occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
     });
     const env = await startAddEnv(state, built.projectId);
 
@@ -752,8 +754,7 @@ describe("maruhi member add", () => {
 
   it("409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
     // 「過去に別鍵で在籍 + 直前の member add が現行鍵で部分完了」の再実行。
-    // 鍵履歴ヒューリスティックは stale を疑う(旧判定なら誤削除)が、409 が
-    // 保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で登録済みと判定できる
+    // 409 が保存済み enc 公開鍵(= 現行鍵)を運ぶため、厳密比較で登録済みと判定できる
     // (AUTH_SPEC §12-6 追補)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
@@ -804,10 +805,9 @@ describe("maruhi member add", () => {
     expect(logs).not.toContain("old-key wraps repaired");
   });
 
-  it("409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
-    // 鍵履歴に別鍵はない(ヒューリスティックは stale を疑わない)が、409 の
-    // フィールドが別鍵を申告する形。フィールドがヒューリスティックに**優先**
-    // することを固定する(比較を外して推定へ戻す変異でこのテストだけが落ちる)
+  it("409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する", async () => {
+    // 鍵履歴に別鍵はないが、409 のフィールドが別鍵を申告する形。判定は鍵履歴に依らず
+    // フィールドとの厳密比較で決まる
     const strangerKeys = await makeTestUser("user-someone-else");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },

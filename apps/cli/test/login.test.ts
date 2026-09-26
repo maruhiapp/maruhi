@@ -301,14 +301,7 @@ describe("maruhi login", () => {
       expect(env.errors.join("\n")).not.toContain("invite-only");
     });
 
-    it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも進む(advisory の欠落で login を壊さない)", async () => {
-      // 未申告: フィールドなしの 200
-      const withoutField = handoffWithConfig({});
-      const oldServer = await start(withoutField.handlers);
-      const env1 = await makeTestEnv();
-      await seedConfig(env1, { server: oldServer.origin });
-      expect(await runCli(["login", ...FAST_POLL], env1.layer)).toBe(0);
-      expect(env1.prompts).toHaveLength(0);
+    it("/auth/config が取れなくても進む(advisory の欠落で login を壊さない)", async () => {
       // 不在: /auth/config ハンドラなし(404)— fakeHandoff 素のまま
       const bare = fakeHandoff();
       const bareServer = await start(bare.handlers);

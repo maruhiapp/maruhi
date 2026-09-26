@@ -817,7 +817,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)。端末失効の変種は
     // "device revoked: <userId> (chain seq N)"(K5-5 — seq で Audit のミラー行へ辿れる)、
-    // trigger の無い旧行は従来の推定のまま
+    // remove_member は除名の字面
     await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
     await expect(

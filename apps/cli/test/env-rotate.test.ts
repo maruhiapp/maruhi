@@ -380,6 +380,7 @@ function makeServer(options: ServerOptions): ServerState {
       deks.push({
         suite: wrap.suite,
         epoch: wrap.epoch,
+        recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
         signatureHex: wrap.signatureHex,
@@ -469,6 +470,7 @@ function makeServer(options: ServerOptions): ServerState {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         }
       );
@@ -489,6 +491,7 @@ function makeServer(options: ServerOptions): ServerState {
             manifest: await serveManifest(),
             // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
             ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
+            schemaPolicy: "enabled" as const,
           },
         }
       );
@@ -1606,6 +1609,7 @@ describe("maruhi env rotate", () => {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         };
       }),
@@ -1627,6 +1631,7 @@ describe("maruhi env rotate", () => {
             envStatement,
             statements: [],
           }),
+          schemaPolicy: "enabled" as const,
         },
       })),
       onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/rotate`, (request) => {
@@ -2046,6 +2051,7 @@ describe("maruhi env rotate", () => {
             entries: granted.entries.slice(0, count),
             headSeq: count,
             headHashHex: granted.hashes[count - 1],
+            attestations: [],
           },
         };
       }),
@@ -2067,6 +2073,7 @@ describe("maruhi env rotate", () => {
             envStatement: futureEnvStatement,
             statements: variables.map((variable) => variable.statement),
           }),
+          schemaPolicy: "enabled" as const,
         },
       })),
       (request) => {
@@ -2281,6 +2288,7 @@ describe("maruhi env rotate", () => {
             entries: built.entries,
             headSeq: built.entries.length,
             headHashHex: built.hashes[built.hashes.length - 1],
+            attestations: [],
           },
         };
       }),
@@ -2305,6 +2313,7 @@ describe("maruhi env rotate", () => {
               envStatement,
               statements: variables.map((variable) => variable.statement),
             }),
+            schemaPolicy: "enabled" as const,
           },
         }),
       ),
@@ -2563,96 +2572,6 @@ describe("maruhi env rotate", () => {
       epoch: 2,
     });
     expect(floor?.intents).toEqual([]);
-  });
-
-  it("--init-manifest が不要で再開だけの実行は、次版の再発行を言わない(M1-B2)", async () => {
-    // 中断復旧の形(エポック 2・最新値は epoch 1 のまま)+ 不要な --init-manifest。
-    // 経路は resume = rotate 複合を送らない = 「次版を再発行する」と言うのは嘘
-    const variables = [
-      await variableAt({
-        built: chainRotated,
-        variableId: "vaa",
-        name: "DATABASE_URL",
-        dek: dek1,
-        epoch: 1,
-        version: 1,
-        plaintext: "postgres://example",
-        headSeq: 2,
-      }),
-    ];
-    const wraps = [
-      await wrapDekFor({
-        projectId: chainBase.projectId,
-        environmentId: ENV_ID,
-        epoch: 1,
-        dek: dek1,
-        recipient: owner,
-        signer: owner,
-      }),
-      await wrapDekFor({
-        projectId: chainBase.projectId,
-        environmentId: ENV_ID,
-        epoch: 2,
-        dek: dek2,
-        recipient: owner,
-        signer: owner,
-      }),
-    ];
-    const state = makeServer({
-      built: chainRotated,
-      variables,
-      deks: wraps,
-      currentEpoch: 2,
-    });
-    const env = await startEnv(state.handlers, owner);
-
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("The flag is not needed");
-    expect(errors).toContain(
-      "only resumes the incomplete re-encryption and issues no new manifest",
-    );
-    expect(errors).not.toContain("re-issues the next manifestVersion");
-    // 実際に rotate 複合は送っていない(resume は push のみ)
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest が不要で確認だけの実行は、何も発行しないと言う(M1-B2)", async () => {
-    const variables = [
-      await variableAt({
-        built: chainBase,
-        variableId: "vaa",
-        name: "DATABASE_URL",
-        dek: dek1,
-        epoch: 1,
-        version: 1,
-        plaintext: "postgres://example",
-        headSeq: 2,
-      }),
-    ];
-    const state = makeServer({
-      built: chainBase,
-      variables,
-      deks: [
-        await wrapDekFor({
-          projectId: chainBase.projectId,
-          environmentId: ENV_ID,
-          epoch: 1,
-          dek: dek1,
-          recipient: owner,
-          signer: owner,
-        }),
-      ],
-      currentEpoch: 1,
-    });
-    const env = await startEnv(state.handlers, owner);
-
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("The flag is not needed");
-    expect(errors).toContain("issues nothing");
-    expect(errors).not.toContain("re-issues the next manifestVersion");
-    expect(state.rotateBodies).toHaveLength(0);
   });
 
   it("削除済み環境への rotate(404)は確定した拒否として扱い、再実行を勧めない", async () => {
@@ -4324,6 +4243,7 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
                   entries: chainBase.entries,
                   headSeq: chainBase.entries.length,
                   headHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                  attestations: [],
                 },
               }
             : undefined,

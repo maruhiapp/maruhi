@@ -126,16 +126,14 @@ export interface Env {
   /**
    * 未認証 CLI ログイン start の発信元 IP レート制限(AUTH_SPEC §4-1 (1) —
    * wrangler.jsonc の ratelimits。無記録 start なので DB 保護ではなく CPU 保護)。
-   * 旧設定のままの self-host デプロイでは undefined になりうるため optional
-   * (不在は制限なしで従来挙動)。
    */
-  readonly CLI_START_RATE_LIMIT?: RateLimit;
+  readonly CLI_START_RATE_LIMIT: RateLimit;
   /**
    * 未認証 CLI ログイン poll の発信元 IP レート制限(AUTH_SPEC §4-1 (5) —
    * ポーリング間隔の下限 5 秒 = 12 回/分を正常系が下回るよう、start より緩い
    * 上限にする。超過ポーリングの 429 拒否は仕様が明示的に許す)。
    */
-  readonly CLI_POLL_RATE_LIMIT?: RateLimit;
+  readonly CLI_POLL_RATE_LIMIT: RateLimit;
   /**
    * 未認証 OAuth callback の発信元 IP レート制限。callback はリクエストごとに
    * GitHub の token endpoint を叩き、OAuth App 単位の共有クォータを消費する。
@@ -144,13 +142,13 @@ export interface Env {
    * だけ。ブラウザの対話ログイン(CLI ブラウザ脚含む)は共有 egress で束になるため、
    * start より緩い上限にする(docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
    */
-  readonly OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
+  readonly OAUTH_CALLBACK_RATE_LIMIT: RateLimit;
   /**
    * lease 発行の発信元 IP レート制限。DO は名前指定で暗黙生成されるため、有効な
    * OIDC token だけで任意の project ID の DO を量産できる — projectStub 到達前の
    * request-level 制限で生成レートを有界にする。
    */
-  readonly LEASE_RATE_LIMIT?: RateLimit;
+  readonly LEASE_RATE_LIMIT: RateLimit;
   /**
    * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
    * (AUTH_SPEC §3)。コード付き start は事前検証の D1 読みを伴う未認証面
@@ -158,7 +156,7 @@ export interface Env {
    * 制限は資源保護)。プレーンな start は従来どおり制限なし(ログイン導線 —
    * サーバー側の状態・外部呼び出しを持たない 302 のみ)。
    */
-  readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
+  readonly SIGNUP_START_RATE_LIMIT: RateLimit;
   /**
    * DO → R2 退避の保管先(docs/notes/hosted-ops.md §2-D / §2-F)。hosted 環境
    * (`wrangler deploy --env hosted`)のみが持つ optional バインディング。不在 =

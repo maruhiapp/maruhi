@@ -478,10 +478,7 @@ function myShareHandler(
     readonly encHex: string;
     readonly ciphertextHex: string;
   }[],
-  options: { readonly legacy?: boolean } = {},
 ): MockHandler {
-  const head = rows[0];
-  if (head === undefined) throw new Error("at least one row");
   return onRequest("GET", `/auth/guardian/shares/${GROUP_ID}`, () => ({
     status: 200,
     json: {
@@ -489,9 +486,7 @@ function myShareHandler(
       wardUserId: ward.userId,
       mode: "any",
       shareIndex: 1,
-      encHex: head.encHex,
-      ciphertextHex: head.ciphertextHex,
-      ...(options.legacy === true ? {} : { deviceShares: rows }),
+      deviceShares: rows,
     },
   }));
 }
@@ -556,49 +551,6 @@ describe("maruhi guardian approve <code>(承認者)", () => {
     expect(logs).not.toContain(encodeHex(kek));
     expect(logs).not.toContain(alice.encSkHex);
     expect(env.errors.join("\n")).not.toContain(alice.encSkHex);
-  });
-
-  it("保護者: 旧サーバー(deviceShares 無し)は先頭行をこの端末の分片として開く", async () => {
-    const requester = await makeRequester();
-    const kek = generateMasterWrapKek();
-    let approved: ApproveBody | null = null;
-    const { env, server } = await start([
-      lookupHandler(requester.requestId, lookupOf(ward, "ward-login")),
-      myShareHandler(
-        [
-          {
-            guardianKeyFingerprintHex: alice.fingerprintHex,
-            guardianEncPubHex: alice.encPubHex,
-            ...(await sealedShareFor(alice, kek)),
-          },
-        ],
-        { legacy: true },
-      ),
-      approveHandler(requester.requestId, (body) => {
-        approved = body;
-      }),
-    ]);
-    seedSession(env, server.origin, alice);
-    env.setPromptResponses(["yes"]);
-    expect(await runCli(["guardian", "approve", requester.code], env.layer)).toBe(0);
-    const body = approved as ApproveBody | null;
-    if (body === null) throw new Error("no approval");
-    const opened = await openHandoffValue({
-      ephemeralKeyPair: requester.keyPair,
-      wrapped: { enc: hex(body.encHex), ciphertext: hex(body.ciphertextHex) },
-      context: {
-        userId: ward.userId,
-        requestId: requester.requestId,
-        source: GROUP_ID,
-        shareIndex: 1,
-        approverUserId: alice.userId,
-      },
-    });
-    if (!opened.ok) throw new Error("open");
-    expect(opened.value).toEqual(kek);
-    expect(env.logs.join("\n")).toContain(
-      `Handoff request from ward-login (${ward.userId}) — you are their guardian`,
-    );
   });
 
   it("保護者: この端末宛の分片行が無ければ何も送らない", async () => {

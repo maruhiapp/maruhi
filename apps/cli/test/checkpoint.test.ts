@@ -120,7 +120,13 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
-      json: { projectId, entries, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
+      json: {
+        projectId,
+        entries,
+        headSeq: entries.length,
+        headHashHex: hashes[hashes.length - 1],
+        attestations: [],
+      },
     })),
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
       status: 200,
@@ -130,6 +136,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
           currentEpoch: 1,
           statement: environment.statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     onRequest("GET", "/auth/me", () => ({
@@ -194,6 +201,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
           deletedVariables: [],
           deks: [],
           manifest: environment.manifest,
+          schemaPolicy: "enabled" as const,
         },
       };
     }),

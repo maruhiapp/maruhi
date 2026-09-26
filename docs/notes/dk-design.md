@@ -3510,3 +3510,31 @@ K16-2 と K16-4 は、印の無い既存の予備鍵の利用者を止めない�
 - **文言**:
   - CLI: 伏字レコードの「older maruhi」、checkpoint のスナップショット欠落の「server predates」、ヘッド申告の「previous release」。
   - web: 登録簿 404 の「older servers」。
+
+### 22-3. 第 2 群: ワイヤとサーバーの互換
+
+- **必須にしたワイヤの欄**(旧サーバー / 旧クライアントのための省略可を外した):
+  - 応答: `ChainSnapshot.attestations`・`AuthConfig.signupPolicy`・環境一覧 / pull / メタのみ pull の `schemaPolicy`・`RotationFlag.trigger`・`RecipientDek.recipientEncPubHex`・`DekWrapExists.storedRecipientEncPubHex`・`LeaseRateLimited.scope`・`GuardianShareResult.deviceShares`(先頭行を写した上位の `encHex` / `ciphertextHex` は削除)。
+  - 要求: `DekWrapRef.recipientEncPubHex`。端末鍵を省略した参照を「スロットがちょうど 1 つなら消す」経路(K3-3 の 422 `duplicate-recipient`)を削除した。
+- **削除した型**: `ApprovalNotAccepted`(K5 前のサーバー)・`DeviceOpsNotAccepted`(K3 前のサーバー)。
+- **CLI のフォールバック**:
+  - 409 の保存済み鍵が無いときの鍵履歴の推し量り(`staleWrapSuspected`)。再追加の案内の Note は残した。
+  - `recipientEncPubHex` の無い行を自分宛と読む扱い、端末の欠けの導出の打ち切り。
+  - `trigger` の無い行の表示。
+- **マニフェストの移行経路**: `env rotate --init-manifest` と `allowMissingManifest` を削除した。マニフェストの欠落は常に拒否する。検証済み pull の `manifest` は null を取らなくなり、床の `manifest-omitted` の違反種別も消えた。
+  - サーバーの「保存行が無ければ最新 0 から v1」は、環境作成の複合が使うので残した(移行の注釈だけを消した)。
+- **監査の旧形 `var.read`**(1 変数 1 行)の読み取り(Q3 の列値の枝)を削除した。§7 の `variable_id` フィルタの列一致は、`var.created` などの他のイベントのために残る。
+- **文言**: schemaPolicy の「旧検証者保護」の理由付けを CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5 / §12-11 から除いた。ゲートは機能として残す(所有者裁定)。AUTH_SPEC §12-6 の `storedRecipientEncPubHex` は MUST にした。
+
+### 22-4. 第 3 群: デプロイ・DB
+
+- 済み:
+  - レート制限の binding(5 つ)を必須にし、binding の無い旧 `wrangler.jsonc` 向けの fail-open と warn を削除した。
+  - client_id のプレースホルダ検出(旧テンプレートのフォーク向け)を削除した。
+  - `docs/SELF_HOSTING.md` の "Updates" から、リリースごとの移行手順を削除した。
+- **保留(所有者判断)**: 次のものは運営のデプロイ(`env.hosted`)の D1 / DO に既にある行とスキーマ版に依存する。コードだけ消すと、次のデプロイで壊れうる。
+  - D1 マイグレーション(18)と DO SQLite マイグレーション(14)の畳み込み。wrangler の適用記録と DO のスキーマ版(`migrations.length` 超過は起動拒否)が既存の版を持つ。
+  - `expires_at` の null 許容(裁定 CE 前の無期限トークン行)。
+  - `recovery_wraps` の旧列、`row_id` の遅延バックフィル。
+  - rotation-detect の K3 前の保存行の補完。
+  - 運営の DB を作り直す(データを捨てる)か、前進マイグレーションで既存行を直してから消すかを決めてもらう。

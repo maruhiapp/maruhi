@@ -247,15 +247,6 @@ function buildTuples(
       );
       view = pulled.verified;
       warnings.push(...pulled.warnings);
-      if (pulled.manifest === null) {
-        // 通常経路の pull は欠落を拒否する(§6.3)ため到達しないが、型の上の
-        // null を「マニフェストなしの公証」に潰さない(fail-closed)
-        return yield* Effect.fail(
-          cliError(
-            `Environment ${displayText(environmentId)} has no verified manifest — run \`maruhi env rotate ${displayText(environmentId)} --init-manifest --reason <text>\` first (migration path)`,
-          ),
-        );
-      }
       pulls.set(environmentId, {
         manifestVersion: pulled.manifest.manifestVersion,
         manifestSigHashHex: pulled.manifest.signedBytesHashHex,

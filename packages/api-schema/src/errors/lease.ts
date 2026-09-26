@@ -122,8 +122,7 @@ export const LeaseRateLimitScopeSchema = Schema.Literals(["project-window", "sou
 
 /**
  * 429: a lease rate limit is exhausted (AUTH_SPEC §14-3)。`retryAfterSeconds`
- * は窓の残り秒数(§13-3 の先例と同型)。`scope` は上記 2 窓の判別
- * (省略時 = 旧サーバー応答 = project-window 相当)。
+ * は窓の残り秒数(§13-3 の先例と同型)。`scope` は上記 2 窓の判別。
  *
  * プロジェクト窓の判定は認可の**後**に行う: 先に置くと未認可の呼び出し元にも
  * 429 が返り、「そのプロジェクトは実在する」が漏れる(§11-2 違反)。認可後に
@@ -135,7 +134,7 @@ export class LeaseRateLimitedError extends Schema.TaggedError<LeaseRateLimitedEr
   "LeaseRateLimited",
   {
     retryAfterSeconds: Schema.Number,
-    scope: Schema.optionalKey(LeaseRateLimitScopeSchema),
+    scope: LeaseRateLimitScopeSchema,
   },
   { httpApiStatus: 429 },
 ) {}

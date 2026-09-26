@@ -51,15 +51,14 @@ export class DekWrapRejectedError extends Schema.TaggedError<DekWrapRejectedErro
  * re-added member's backfill compares it against the accepted key to decide
  * between "already registered" (equal) and the delete-then-re-register repair
  * path (different) — decryptability of an HPKE wrap is equivalent to enc-key
- * equality, so this comparison is exact. Optional: servers predating the
- * addendum omit it, and clients then fall back to key-history heuristics.
+ * equality, so this comparison is exact.
  */
 export class DekWrapExistsError extends Schema.TaggedError<DekWrapExistsError>()(
   "DekWrapExists",
   {
     epoch: Schema.Number,
     recipientUserId: Schema.String,
-    storedRecipientEncPubHex: Schema.optionalKey(EncPubHex),
+    storedRecipientEncPubHex: EncPubHex,
   },
   { httpApiStatus: 409 },
 ) {}

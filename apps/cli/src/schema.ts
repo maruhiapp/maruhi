@@ -245,7 +245,7 @@ export interface SchemaSetState {
   /** 検証済み tombstone(var rm の「削除済み」判定材料 — 名前を保持する §4.2)。 */
   readonly tombstones: readonly VerifiedTombstone[];
   readonly manifestBase: ManifestIssueBase;
-  readonly advisorySchemaPolicy: SchemaPolicy | null;
+  readonly advisorySchemaPolicy: SchemaPolicy;
   readonly warnings: readonly string[];
 }
 

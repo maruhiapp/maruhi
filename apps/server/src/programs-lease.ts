@@ -258,7 +258,7 @@ export const leaseProgram = (
     // ワークロードのマニフェストダイジェスト再計算〔§9.1 (5)〕の材料)
     const declaredVariables = yield* store.declaredVariableStatements(environmentId);
     // 最新マニフェスト(§14-2 — ワークロードの検証義務 §9.1 (5) の
-    // 材料。null は移行前の過渡状態のみ — 受信側は欠落を一律拒否する)
+    // 材料。受信側は欠落を一律拒否する)
     const manifest = yield* store.environmentManifest(environmentId);
     // チェックポイント時点の値スナップショット(§14-2 — §12-7 と同じ材料。
     // 基準を持たない環境では null = 載せない)

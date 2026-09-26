@@ -227,9 +227,8 @@ const requirePullContext = (
     if (statement === null) {
       return yield* Effect.die(new Error("environment meta statement row missing"));
     }
-    // 最新マニフェスト(§12-7 の同梱材料)。null はマニフェスト導入前に作成
-    // された環境の移行完了までの過渡状態のみ(初期化後の環境は全メタ操作 /
-    // rotate が原子的に upsert するため必ず存在する)
+    // 最新マニフェスト(§12-7 の同梱材料)。環境作成・全メタ操作・rotate が原子的に
+    // upsert するため、作成済みの環境では必ず存在する
     const manifest = yield* store.environmentManifest(environmentId);
     return { state, store, statement, manifest };
   });
