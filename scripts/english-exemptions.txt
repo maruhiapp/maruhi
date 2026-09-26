@@ -15,6 +15,7 @@ apps/web/public/fonts/OFL-NotoSansCJK.txt
 # handle); transliteration is the owner's call, not a translator's.
 LICENSE.md
 apps/cli/LICENSE
+apps/server/LICENSE.md
 apps/web/LICENSE.md
 packages/api-schema/LICENSE
 packages/core/LICENSE
