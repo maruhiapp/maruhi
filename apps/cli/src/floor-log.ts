@@ -24,7 +24,15 @@
 // 互換読みし、最初の追記でスナップショットレコードとしてログへ移行する
 // (旧ファイルはフォレンジック材料としてそのまま残す — 追記専用の規律)。
 
-import { mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
@@ -62,7 +70,7 @@ import {
  */
 const DEFAULT_COMPACTION_THRESHOLD = 256;
 
-/** 1 論理 append の全長書き直し再試行の上限(short write — appendRecords)。 */
+/** 1 論理 append の全長書き直し再試行の上限(short write — appendAll)。 */
 const MAX_APPEND_WRITE_ATTEMPTS = 3;
 
 /** スナップショットレコードの中身(= fold 結果。conflicts / intents 込み)。 */
@@ -825,6 +833,31 @@ function isFileMissingError(error: unknown): boolean {
   );
 }
 
+/**
+ * O_APPEND で開いたハンドルへ payload を 1 論理 append として書き、datasync まで待つ
+ * (床ログ・証拠ログの追記の物理規律)。
+ *
+ * 1 論理 append = 1 write syscall(O_APPEND の原子性が及ぶ単位)。short write の
+ * **残りを継ぎ足さない**: 継ぎ足しの 2 回目の write は別プロセスの追記と交錯し、
+ * 1 レコードが 2 つの不正断片に分裂して無言で失われる(成功を返してはならない形)。
+ * 断片は改行前置で隔離済みの torn 行として読み手が捨てるので、payload **全体**を
+ * 先頭から書き直す。書き切れないまま尽きたら(0 バイト書き込みを含む)投げる。
+ */
+async function appendAll(handle: FileHandle, payload: Buffer, logName: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    const result = await handle.write(payload, 0, payload.length);
+    if (result.bytesWritten === payload.length) {
+      break;
+    }
+    if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
+      throw new Error(
+        `short write on the ${logName} (${result.bytesWritten}/${payload.length} bytes)`,
+      );
+    }
+  }
+  await handle.datasync();
+}
+
 function encodeRecord(record: FloorLogRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
@@ -914,25 +947,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         }
       }
       const payload = Buffer.from(`\n${lines.map(encodeRecord).join("")}`, "utf8");
-      // 1 論理 append = 1 write syscall(O_APPEND の原子性が及ぶ単位)。short
-      // write の**残りを継ぎ足さない**: 継ぎ足しの 2 回目の write は別プロセスの
-      // 追記と交錯し、1 レコードが 2 つの不正断片に分裂して無言で失われる
-      // (成功を返してはならない形)。断片は改行前置で隔離済みの torn 行として
-      // fold が捨てるので、payload **全体**を先頭から書き直す — join は冪等な
-      // ため重複レコードは無害。書き切れないまま尽きたら失敗として投げる
-      // (mutate が床エラーへ変換し、呼び出し側は「永続化済み」と扱わない)
-      for (let attempt = 1; ; attempt += 1) {
-        const result = await handle.write(payload, 0, payload.length);
-        if (result.bytesWritten === payload.length) {
-          break;
-        }
-        if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
-          throw new Error(
-            `short write on the floor log (${result.bytesWritten}/${payload.length} bytes)`,
-          );
-        }
-      }
-      await handle.datasync();
+      // 書き切れないまま尽きたら失敗として投げる(mutate が床エラーへ変換し、
+      // 呼び出し側は「永続化済み」と扱わない)。重複レコードは join の冪等性で無害
+      await appendAll(handle, payload, "floor log");
     } finally {
       await handle.close();
     }
@@ -1001,26 +1018,15 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
   /**
    * 証拠の追記(床ログと同じ規律: O_APPEND + 改行前置 + datasync まで待つ)。
    * 床ログの appendRecords と分かれているのは、あちらが床レコード型と旧形式
-   * 移行に固有だから — 追記の物理規律(改行前置・short write の全長書き直し)は
-   * 同じ形を写す。
+   * 移行に固有だから — 追記の物理規律(short write の全長書き直し + datasync)は
+   * 共有の appendAll が担う。
    */
   const appendJsonLine = async (path: string, value: AttestationEvidenceRecord): Promise<void> => {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const handle = await open(path, "a", 0o600);
     try {
       const payload = Buffer.from(`\n${JSON.stringify(value)}\n`, "utf8");
-      for (let attempt = 1; ; attempt += 1) {
-        const result = await handle.write(payload, 0, payload.length);
-        if (result.bytesWritten === payload.length) {
-          break;
-        }
-        if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
-          throw new Error(
-            `short write on the attestation-evidence log (${result.bytesWritten}/${payload.length} bytes)`,
-          );
-        }
-      }
-      await handle.datasync();
+      await appendAll(handle, payload, "attestation-evidence log");
     } finally {
       await handle.close();
     }
