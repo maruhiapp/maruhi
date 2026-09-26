@@ -132,6 +132,27 @@ export function describeProjects(projectIds: readonly string[]): string {
 }
 
 /**
+ * 「サーバーが一覧に出した N 件」の範囲(無いことを言う文 — DK K13-2。`device add` と台帳の鍵の
+ * 判定が共有する — K15-3)。
+ */
+export function describeListed(count: number): string {
+  return `no project the server lists for you (${count === 0 ? "none" : count} listed)`;
+}
+
+/** 確かめた範囲(全部そうであることを言う文 — DK K15-3): サーバーが一覧に出した N 件。 */
+export function describeListedScope(count: number): string {
+  return `the ${countNoun(count, "project")} the server lists for you`;
+}
+
+/**
+ * この端末の観測の記録にある「最初の鍵だった」の句(DK K15-1 — 判定の値 `recorded-first-key`)。
+ * 出所(この端末の記録)と、今のチェーンが示さないことを言う。
+ */
+export function describeRecordedFirstKey(projectId: string): string {
+  return `was your first key on project ${displayText(projectId)} (the key you created or joined that project with) when this machine synced that project's verified chain, although the projects the server lists for you now do not show it`;
+}
+
+/**
  * Escapes everything outside printable ASCII as `\u{...}` (hex, at least four
  * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /
  * `\"`, so the rendered text is exactly reconstructible.

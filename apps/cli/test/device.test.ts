@@ -203,6 +203,11 @@ async function makeServer(input: {
     readonly built: BuiltChain;
     readonly mode: "unavailable" | "tampered";
   }[];
+  /**
+   * サーバーが一覧から隠すプロジェクト(DK K15): チェーンの GET / 追記は配るが `GET /projects` に
+   * 出さない(`--project` で名指せば同期できる — 隠す前に同期した端末を組むため)。
+   */
+  readonly unlistedProjects?: readonly BuiltChain[];
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -314,7 +319,7 @@ async function makeServer(input: {
             },
       ),
     ),
-    ...(input.extraProjects ?? []).flatMap((built) =>
+    ...[...(input.extraProjects ?? []), ...(input.unlistedProjects ?? [])].flatMap((built) =>
       appendableProjectHandlers(built, (entry) =>
         appendedTo.push({ projectId: built.projectId, entry }),
       ),
@@ -486,6 +491,8 @@ async function recordOwnDevice(
   device: TestUser,
   source: OwnDeviceSource,
   revokedAtMs: number | null = null,
+  /** 観測したプロジェクト(観測の行 — 書き手が必ず書く形。DK K15-6)。 */
+  observedProjectId: string | null = null,
 ): Promise<void> {
   const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
   await Effect.runPromise(
@@ -498,7 +505,7 @@ async function recordOwnDevice(
       source,
       label: source === "reserve" ? "reserve" : null,
       addedByFingerprintHex: null,
-      observedProjectId: null,
+      observedProjectId,
       recordedAtMs: 1_700_000_000_000,
       revokedAtMs,
     }),
@@ -2618,7 +2625,7 @@ describe("maruhi key reserve rotate(再実行 — Bugbot 指摘)", () => {
     const added = state.appended.find((entry) => entry.op === "add_device");
     expect(added).toBeDefined();
     expect(env.logs.join("\n")).toContain(
-      `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on every project`,
+      `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on the 1 project the server lists for you`,
     );
     // ローカル記録: O と N1 は失効、新鍵だけが有効な予備鍵
     const recorded = await readOwnDevices(env, origin);
@@ -2765,6 +2772,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       readonly mode: "unavailable";
     }[];
     readonly answers?: readonly string[];
+    readonly unlistedProjects?: readonly BuiltChain[];
   }): Promise<{ env: TestEnv; state: ServerState; origin: string }> {
     const ledger = await ledgerHandlerFor(
       storedMasterRecord(input.ledgerKey),
@@ -2777,6 +2785,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       extra: [ledger.handler],
       ...(input.extraProjects === undefined ? {} : { extraProjects: input.extraProjects }),
       ...(input.brokenProjects === undefined ? {} : { brokenProjects: input.brokenProjects }),
+      ...(input.unlistedProjects === undefined ? {} : { unlistedProjects: input.unlistedProjects }),
     });
     const env = await startEnvWithoutKey(server.origin, input.built.projectId);
     env.setPromptResponses([ledger.code, ...(input.answers ?? [])]);
@@ -2793,6 +2802,9 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       readonly built: BuiltChain;
       readonly mode: "unavailable";
     }[];
+    readonly unlistedProjects?: readonly BuiltChain[];
+    /** 追加のハンドラ(隠す前の同期に使う invite create の発行など)。 */
+    readonly extra?: readonly MockHandler[];
   }): Promise<{ env: TestEnv; state: ServerState; origin: string; ledgerPuts: unknown[] }> {
     const ledger = await ledgerHandlerFor(
       storedMasterRecord(input.ledgerKey),
@@ -2822,9 +2834,11 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
             guardianGroups: [],
           },
         })),
+        ...(input.extra ?? []),
       ],
       ...(input.extraProjects === undefined ? {} : { extraProjects: input.extraProjects }),
       ...(input.brokenProjects === undefined ? {} : { brokenProjects: input.brokenProjects }),
+      ...(input.unlistedProjects === undefined ? {} : { unlistedProjects: input.unlistedProjects }),
     });
     const env = await startEnv(server.origin, input.built.projectId, input.device);
     env.setPromptResponses([
@@ -2857,7 +2871,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
     expect(env.prompts).toEqual([CODE_PROMPT, QUESTION]);
     expect(env.logs.join("\n")).toContain(
-      `The opened key ${reserve.fingerprintHex} is registered on 1 project (${built.projectId}), and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it`,
+      `The opened key ${reserve.fingerprintHex} is registered on 1 project (${built.projectId}), and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it. maruhi checked the 1 project the server lists for you; a project the server does not list is not checked`,
     );
     expect(env.errors.join("\n")).toContain(
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
@@ -2936,7 +2950,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
     expect(env.prompts).toEqual([CODE_PROMPT]);
     expect(env.errors.join("\n")).toContain(
-      `Note: the opened key ${reserve.fingerprintHex} was not recorded as your reserve key: 1 project could not be checked (${p2.projectId}), and maruhi records it only when every project shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
+      `Note: the opened key ${reserve.fingerprintHex} was not recorded as your reserve key: 1 project could not be checked (${p2.projectId}), and maruhi records it only when every project the server lists for you shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([]);
   });
@@ -2951,7 +2965,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `${built.projectId}: the opened key is not registered on this project, so this device could not be added there`,
     );
     expect(errors).toContain(
-      `Note: the opened key ${reserve.fingerprintHex} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
+      `Note: the opened key ${reserve.fingerprintHex} is on no project the server lists for you (1 listed), so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([]);
     expect(state.appended).toEqual([]);
@@ -3392,12 +3406,17 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
     );
     expect(revoked).not.toContain(owner.fingerprintHex);
-    // 誤った reserve の行は、有効な p3 の立場で観測の行に直る
+    // 誤った reserve の行は、有効な p3 の立場で観測の行に直り(K14-4 4-g)、続く rotate の p1 の
+    // 同期で、p1 の履歴(最初の鍵)による証人に書き直される(失効の印つき — DK K15-12)
     const row = (await readOwnDevices(env, origin)).find(
       (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
     );
-    expect(row?.source).toBe("observed");
-    expect(row?.observedProjectId).toBe(p3.projectId);
+    expect(row).toMatchObject({
+      source: "observed",
+      addedByFingerprintHex: null,
+      observedProjectId: p1.projectId,
+    });
+    expect(row?.revokedAtMs).not.toBeNull();
   });
 
   it("key recovery: どこでも add_device 出所の予備鍵は従来どおり再封印し、記録を復元する", async () => {
@@ -3438,5 +3457,355 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     );
     expect(ledgerPuts).toHaveLength(1);
     expect(await reserveRowsOf(env, origin)).toEqual([]);
+  });
+
+  describe("サーバーが一覧から隠したプロジェクト(DK K15)", () => {
+    // 典型の場面(設計録 §20 事実 6 (iv)): pre-DK の利用者の端末 M1(鍵 = owner の鍵 K)が DK の
+    // 端末 D2(dev2)を p1 で承認した。D2 は p1 を同期して K を観測し(最初の鍵)、招待で p3 に
+    // 参加して K を p3 へ add_device した。台帳は K(pre-DK)。サーバーは p1 を一覧から隠す
+    async function hiddenFirstKeyScene(): Promise<{ p1: BuiltChain; p3: BuiltChain }> {
+      const p1 = await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: addDeviceOp(dev2) },
+      ]);
+      const p3 = await buildChain([
+        { actor: member, operation: genesisOp(member) },
+        { actor: member, operation: addMemberOp(dev2, "owner") },
+        { actor: dev2, operation: addDeviceOp(owner) },
+      ]);
+      return { p1, p3 };
+    }
+
+    /** 隠される前に p1 を同期した(鍵ありの前段を通るコマンド — 観測が K の行を書く)。 */
+    async function syncBeforeHidden(env: TestEnv, p1: BuiltChain): Promise<void> {
+      expect(
+        await runCli(
+          ["invite", "create", "--role", "member", "--project", p1.projectId],
+          env.layer,
+        ),
+        env.errors.join("\n"),
+      ).toBe(0);
+      env.errors.length = 0;
+      env.logs.length = 0;
+    }
+
+    function revokedFingerprints(state: ServerState): readonly string[] {
+      return state.appendedTo.flatMap(({ entry }) =>
+        entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
+      );
+    }
+
+    const recordedFirstKey = (projectId: string) =>
+      `was your first key on project ${projectId} (the key you created or joined that project with) when this machine synced that project's verified chain, although the projects the server lists for you now do not show it`;
+
+    it("rotate: 隠されたプロジェクトで最初の鍵だった台帳の鍵を、この端末の観測の記録で止め、何も変えない", async () => {
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+        extra: [inviteHandler(p1)],
+      });
+      await syncBeforeHidden(env, p1);
+      // 観測の経路が書いた証人(出所 observed・出所の端末なし・観測したプロジェクト p1)
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+      });
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}: a copy of a device key from an install before device keys, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key reserve rotate\``,
+      );
+      // 台帳・記録・チェーンのどれも変えない(K は p3 で使用中の端末鍵のまま)
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+      expect(await reserveRowsOf(env, origin)).toEqual([]);
+      const row = (await readOwnDevices(env, origin)).find(
+        (entry) => entry.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(row?.source).toBe("observed");
+    });
+
+    it("rotate: 見えるプロジェクトで失効済みでも、証人の最初の鍵を失効済みより先に言う(判定の順序 — K15-1 反例 3)", async () => {
+      // K は p4 で失効済み(案内どおり)・p3 で有効・p1(隠された)で最初の鍵。証人が `revoked` の
+      // 後ろにあると、チェーンの判定は「失効」になり、失効の門が p3 の K を通しうる
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      // p3 と genesis を分ける(プロジェクト ID は genesis のハッシュ)
+      const other = await makeTestUser("user-other-0015");
+      const p4 = await buildChain([
+        { actor: other, operation: genesisOp(other) },
+        { actor: other, operation: addMemberOp(dev2, "owner") },
+        { actor: dev2, operation: addDeviceOp(owner) },
+        { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+      ]);
+      expect(p4.projectId).not.toBe(p3.projectId);
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        extraProjects: [p4],
+        unlistedProjects: [p1],
+        extra: [inviteHandler(p1), inviteHandler(p4)],
+      });
+      await syncBeforeHidden(env, p1);
+      // p4 の同期で、証人の行に失効の印が付く(最初の鍵だった事実は失効の後も真 — K15-6)
+      await syncBeforeHidden(env, p4);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness?.revokedAtMs).not.toBeNull();
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}`,
+      );
+      expect(errors).not.toContain("which is revoked on");
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+    });
+
+    it("key recovery: 隠されたプロジェクトで最初の鍵だった台帳の鍵は、証人で複製として分離し、予備鍵と記録しない", async () => {
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const { env, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+        extra: [inviteHandler(p1)],
+      });
+      await syncBeforeHidden(env, p1);
+      expect(await runCli(["key", "recovery"], env.layer), env.errors.join("\n")).toBe(0);
+      expect(env.logs.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}: a copy of a device key from an install before device keys, not a reserve key. Separating: creating a reserve key and sealing it instead`,
+      );
+      expect(env.errors.join("\n")).toContain(
+        `Note: the key ${owner.fingerprintHex} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${owner.fingerprintHex}\``,
+      );
+      expect(ledgerPuts).toHaveLength(1);
+      // 記録されたのは新しい予備鍵だけ(K は証人の行のまま)
+      const reserves = await reserveRowsOf(env, origin);
+      expect(reserves).toHaveLength(1);
+      expect(reserves).not.toContain(owner.fingerprintHex);
+    });
+
+    it("key recover: キーチェーンだけを失った端末は、証人があれば問わずに記録しない", async () => {
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const { env, origin } = await recoverFixture({
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+        answers: ["yes"],
+      });
+      // 以前この端末が p1 を同期して K を観測した記録(設定ディレクトリは残っている)
+      await recordOwnDevice(env, origin, owner, "observed", null, p1.projectId);
+      expect(await runCli(["key", "recover"], env.layer), env.errors.join("\n")).toBe(0);
+      expect(env.prompts).toEqual([CODE_PROMPT]);
+      expect(env.errors.join("\n")).toContain(
+        `Warning: this machine's records show that the opened key ${owner.fingerprintHex} ${recordedFirstKey(p1.projectId)}, so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${owner.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
+      );
+      expect(await reserveRowsOf(env, origin)).toEqual([]);
+    });
+
+    it("正規のサーバーで無関係な手がかり(床・別サーバーの記録・観測したプロジェクトの無い行)があっても、正しい予備鍵の rotate は止まらない(K13-7)", async () => {
+      const built = await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: addDeviceOp(reserve) },
+      ]);
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: owner,
+        ledgerKey: reserve,
+        built,
+      });
+      // 床(サーバー・アカウントで分かれない)に一覧に無いプロジェクト
+      await mkdir(env.floorDir, { recursive: true });
+      await writeFile(join(env.floorDir, `${"ab".repeat(32)}.jsonl`), "");
+      // 別のサーバーの記録では、同じ FP が最初の鍵として観測されている(混ざらない)
+      const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
+      await Effect.runPromise(
+        store.record("https://other.example", owner.userId, {
+          keyFingerprintHex: reserve.fingerprintHex,
+          encPubHex: reserve.encPubHex,
+          sigPubHex: reserve.sigPubHex,
+          roleCap: "owner",
+          scope: { kind: "all" },
+          source: "observed",
+          label: null,
+          addedByFingerprintHex: null,
+          observedProjectId: "cd".repeat(32),
+          recordedAtMs: 1_700_000_000_000,
+          revokedAtMs: null,
+        }),
+      );
+      // このサーバーの観測の行でも、観測したプロジェクトの無い形は証人にしない(K15-6)
+      await recordOwnDevice(env, origin, reserve, "observed");
+      expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
+      expect(ledgerPuts).toHaveLength(1);
+      expect(revokedFingerprints(state)).toEqual([reserve.fingerprintHex]);
+      expect(env.errors.join("\n")).not.toContain("This machine's records show");
+    });
+
+    it("先に add_device として観測した鍵も、後で最初の鍵のプロジェクトを同期すれば証人になる(観測の順序に依らない — K15-11)", async () => {
+      // D2 はまず p3(K は D2 の add_device)を同期し、p4(K は失効済み — 行に失効の印)を経て、
+      // p1(K は最初の鍵)を同期した
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const other = await makeTestUser("user-other-0016");
+      const p4 = await buildChain([
+        { actor: other, operation: genesisOp(other) },
+        { actor: other, operation: addMemberOp(dev2, "owner") },
+        { actor: dev2, operation: addDeviceOp(owner) },
+        { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+      ]);
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1, p4],
+        extra: [inviteHandler(p3), inviteHandler(p1), inviteHandler(p4)],
+      });
+      await syncBeforeHidden(env, p3);
+      const first = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(first).toMatchObject({
+        addedByFingerprintHex: dev2.fingerprintHex,
+        observedProjectId: p3.projectId,
+      });
+      await syncBeforeHidden(env, p4);
+      const marked = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(marked?.revokedAtMs).not.toBeNull();
+      await syncBeforeHidden(env, p1);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+        recordedAtMs: first?.recordedAtMs,
+        // 失効の印は保つ(消すと失効した鍵が他のプロジェクトへ登録し直される — K4-3)
+        revokedAtMs: marked?.revokedAtMs,
+      });
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}`,
+      );
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+    });
+
+    it("最初の鍵だったプロジェクトで既に失効した鍵も、そのチェーンの履歴で証人になる(判定と同じ述語 — K15-12)", async () => {
+      // p1 で K は最初の鍵だったが、案内どおり失効済み(p1 の有効な端末ではない)。p3 では有効
+      const p1 = await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: addDeviceOp(dev2) },
+        { actor: dev2, operation: revokeDeviceOp(owner, [owner]) },
+      ]);
+      const { p3 } = await hiddenFirstKeyScene();
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+        extra: [inviteHandler(p3), inviteHandler(p1)],
+      });
+      await syncBeforeHidden(env, p3);
+      await syncBeforeHidden(env, p1);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+      });
+      // 同じ同期の (b) が付けた失効の印を、証人の書き直しが消さない
+      expect(witness?.revokedAtMs).not.toBeNull();
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The recovery ledger holds key ${owner.fingerprintHex}. This machine's records show it ${recordedFirstKey(p1.projectId)}`,
+      );
+      expect(ledgerPuts).toEqual([]);
+      expect(revokedFingerprints(state)).toEqual([]);
+    });
+
+    it("既に証人の行は、別の最初の鍵のプロジェクトの同期で書き直さない(最初の証人を保つ — K15-12)", async () => {
+      // K は p1(genesis)と p5(add_member)の両方で最初の鍵。D2 は p3 → p1 → p5 の順に同期した
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const other = await makeTestUser("user-other-0017");
+      const p5 = await buildChain([
+        { actor: other, operation: genesisOp(other) },
+        { actor: other, operation: addMemberOp(owner, "owner") },
+        { actor: owner, operation: addDeviceOp(dev2) },
+      ]);
+      const { env, origin } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1, p5],
+        extra: [inviteHandler(p3), inviteHandler(p1), inviteHandler(p5)],
+      });
+      await syncBeforeHidden(env, p3);
+      await syncBeforeHidden(env, p1);
+      await syncBeforeHidden(env, p5);
+      const witness = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === owner.fingerprintHex,
+      );
+      expect(witness).toMatchObject({
+        addedByFingerprintHex: null,
+        observedProjectId: p1.projectId,
+      });
+    });
+
+    it("承認した端末以外で観測した予備鍵(出所の端末つきの観測の行)は証人にならず、rotate は失効させる", async () => {
+      // dev2 は予備鍵を封印した端末ではない: 予備鍵は owner の端末が add_device し、dev2 は同期で
+      // 観測した(出所 observed・出所の端末 = owner の鍵)
+      const built = await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: addDeviceOp(dev2) },
+        { actor: owner, operation: addDeviceOp(reserve) },
+      ]);
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: reserve,
+        built,
+        extra: [inviteHandler(built)],
+      });
+      await syncBeforeHidden(env, built);
+      const observed = (await readOwnDevices(env, origin)).find(
+        (row) => row.keyFingerprintHex === reserve.fingerprintHex,
+      );
+      expect(observed).toMatchObject({
+        source: "observed",
+        addedByFingerprintHex: owner.fingerprintHex,
+        observedProjectId: built.projectId,
+      });
+      expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
+      expect(ledgerPuts).toHaveLength(1);
+      expect(revokedFingerprints(state)).toEqual([reserve.fingerprintHex]);
+    });
+
+    it("非対話の拒否は変わらない: 証人があっても rotate は台帳を取る前に止まり、何も変えない", async () => {
+      const { p1, p3 } = await hiddenFirstKeyScene();
+      const { env, state, origin, ledgerPuts } = await recoveryFixture({
+        device: dev2,
+        ledgerKey: owner,
+        built: p3,
+        unlistedProjects: [p1],
+      });
+      await recordOwnDevice(env, origin, owner, "observed", null, p1.projectId);
+      env.setTerminal({ stdin: false, stdout: true, stderr: true });
+      expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
+      expect(env.prompts).toEqual([]);
+      expect(state.paths()).not.toContain("GET /auth/recovery");
+      expect(ledgerPuts).toEqual([]);
+      expect(state.appendedTo).toEqual([]);
+    });
   });
 });

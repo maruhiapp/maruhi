@@ -9,14 +9,21 @@
 // の登録は同期を二重にしない)。`keyStandingsOf` はプロジェクト一覧(サーバー申告 — 発見用)の各プロジェクトを
 // 鍵なしの前段で同期して純関数を呼び、一覧・同期の失敗はコマンドを落とさず事実に畳む
 // (改ざんの兆候は `evidence` で運ぶ)。文言は作らない(報告側が作る — K12-10)。
+//
+// 一覧はサーバー申告で完全性の証人にならない(DK K15 — 設計録 §20)。台帳の鍵の判定は、この端末の
+// 観測の記録(このサーバー・このアカウントの own-devices.json の、検証済みチェーンで最初の鍵として
+// 観測した行)を、止める向きにだけ足す(`recorded-first-key`)。
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
-import { deviceProvenanceOf, revokedFingerprintsOf } from "./device-key.ts";
+import { deviceProvenanceOf, revokedFingerprintsOf, wasFirstKeyOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
+import type { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
+import { OwnDeviceStore } from "./own-devices.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
@@ -72,30 +79,6 @@ export function keyStandingIn(
   return revokedFingerprintsOf(verified, userId).has(fingerprintHex)
     ? { kind: "revoked", firstKey }
     : { kind: "absent", firstKey };
-}
-
-/**
- * The device's keys were the first key of `userId` in some tenure on this chain
- * (an applied genesis or `add_member` carrying them). Applied operations outlive
- * the tenure, so a key re-added with `add_device` after a re-invite still counts.
- */
-function wasFirstKeyOf(
-  verified: VerifiedProject,
-  userId: string,
-  device: { readonly encPubHex: string; readonly sigPubHex: string },
-): boolean {
-  const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
-    keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
-  return verified.applied.some(({ operation, actorUserId }) => {
-    if (operation.op === "genesis") {
-      return actorUserId === userId && carries(operation.payload);
-    }
-    return (
-      operation.op === "add_member" &&
-      operation.payload.targetUserId === userId &&
-      carries(operation.payload)
-    );
-  });
 }
 
 /** 1 プロジェクトの立場(同期できなければその事実 — 「無い」と混同しない)。 */
@@ -245,13 +228,21 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
  * `add_device` で載り(K4-30)、DK 以前の端末鍵の複製はその人の最初の鍵(genesis /
  * `add_member`)になる。上から順に最初に当たるもの: どこか 1 つでも最初の鍵(失効・無いの立場の
  * 以前の最初の鍵を含む — K14-18)→ `first-key`
- * (同期できないプロジェクトがあっても — 正の事実 1 つで足りる)/ どこかで失効 → `revoked` /
+ * (同期できないプロジェクトがあっても — 正の事実 1 つで足りる)/ 今のチェーンは示さないが、
+ * この端末の観測の記録に最初の鍵だったとある → `recorded-first-key`(サーバーが一覧から隠した
+ * プロジェクトを補う — DK K15-1。`revoked` より前: 見えるプロジェクトで失効済みでも失効の門を
+ * 通さない)/ どこかで失効 → `revoked` /
  * 同期できないプロジェクトがある・一覧が取れない → `unchecked` / どこにも有効でない →
  * `nowhere` / 有効な所がすべて `add_device` 出所 → `added`(予備鍵と記録してよいのは
  * これだけ)。文言は作らない(報告側 — K12-10)。
  */
 export type ReserveVerdict =
   | { readonly kind: "first-key"; readonly projectIds: readonly string[] }
+  | {
+      readonly kind: "recorded-first-key";
+      /** この端末が最初の鍵として観測したプロジェクト(観測の行の `observedProjectId`)。 */
+      readonly projectId: string;
+    }
   | {
       readonly kind: "revoked";
       readonly projectIds: readonly string[];
@@ -270,9 +261,14 @@ export type ReserveVerdict =
 export function reserveVerdictOf(
   groups: StandingGroups,
   listFailure: string | null,
+  /** この端末の観測の記録にある、この鍵が最初の鍵だったプロジェクト(`recordedFirstKeysOf`)。 */
+  recordedFirstKey: string | null,
 ): ReserveVerdict {
   if (groups.firstKeyProjects.length > 0) {
     return { kind: "first-key", projectIds: groups.firstKeyProjects };
+  }
+  if (recordedFirstKey !== null) {
+    return { kind: "recorded-first-key", projectId: recordedFirstKey };
   }
   const activeProjectIds = groups.active.map((entry) => entry.projectId);
   if (groups.revoked.length > 0) {
@@ -300,7 +296,10 @@ export interface LedgerKeyCheck {
 }
 
 /** 1 つの鍵の立場から、台帳の鍵の判定を作る(純関数)。 */
-function ledgerKeyCheckFrom(standings: KeyStandings): LedgerKeyCheck {
+function ledgerKeyCheckFrom(
+  standings: KeyStandings,
+  recordedFirstKey: string | null,
+): LedgerKeyCheck {
   const groups = groupStandings(standings);
   const unchecked =
     groups.unsynced.length > 0 || standings.listFailure !== null
@@ -310,7 +309,47 @@ function ledgerKeyCheckFrom(standings: KeyStandings): LedgerKeyCheck {
           listFailure: standings.listFailure,
         }
       : null;
-  return { verdict: reserveVerdictOf(groups, standings.listFailure), groups, unchecked };
+  return {
+    verdict: reserveVerdictOf(groups, standings.listFailure, recordedFirstKey),
+    groups,
+    unchecked,
+  };
+}
+
+/**
+ * この端末の観測の記録にある「最初の鍵だった」(DK K15-1 / K15-6): このサーバー・このアカウントの
+ * 記録のうち、出所 observed で出所の端末が無く(`deviceProvenanceOf` の最初の鍵)、観測した
+ * プロジェクトを持つ行 — 書き手は検証済みチェーンの観測(と K14 の訂正)だけ。失効の印は問わない
+ * (最初の鍵だった事実は失効の後も真)。FP → プロジェクト。止める向きにだけ使う: 記録が無い・
+ * 壊れている・読めないときは空(K14 の判定のまま — 読めない失敗は Note)。
+ */
+export function recordedFirstKeysOf(
+  session: CliSession,
+): Effect.Effect<ReadonlyMap<string, string>, never, OwnDeviceStore | CliIo> {
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    const loaded = yield* store.load(session.origin, session.userId);
+    const witnesses = new Map<string, string>();
+    if (loaded.state !== "loaded") {
+      return witnesses;
+    }
+    for (const row of loaded.devices) {
+      if (
+        row.source === "observed" &&
+        row.addedByFingerprintHex === null &&
+        row.observedProjectId !== null
+      ) {
+        witnesses.set(row.keyFingerprintHex, row.observedProjectId);
+      }
+    }
+    return witnesses;
+  }).pipe(
+    Effect.catch((error) =>
+      logNote(
+        `could not read this machine's own-devices record (${error.message}); the key is checked on the project chains only`,
+      ).pipe(Effect.as(new Map<string, string>())),
+    ),
+  );
 }
 
 /**
@@ -323,10 +362,16 @@ export function ledgerKeyChecksOf(input: {
   readonly client: MaruhiClient;
   readonly fingerprintsHex: readonly string[];
 }): Effect.Effect<ReadonlyMap<string, LedgerKeyCheck>, never, CliServices> {
-  return Effect.map(
-    keyStandingsForKeys(input),
-    (byKey) => new Map([...byKey].map(([fp, standings]) => [fp, ledgerKeyCheckFrom(standings)])),
-  );
+  return Effect.gen(function* () {
+    const byKey = yield* keyStandingsForKeys(input);
+    const recorded = yield* recordedFirstKeysOf(input.session);
+    return new Map(
+      [...byKey].map(([fp, standings]) => [
+        fp,
+        ledgerKeyCheckFrom(standings, recorded.get(fp) ?? null),
+      ]),
+    );
+  });
 }
 
 /** 1 つの鍵の `ledgerKeyChecksOf`。 */
@@ -338,6 +383,7 @@ export function ledgerKeyVerdictOf(input: {
   return Effect.map(
     ledgerKeyChecksOf({ ...input, fingerprintsHex: [input.fingerprintHex] }),
     (checks) =>
-      checks.get(input.fingerprintHex) ?? ledgerKeyCheckFrom({ projects: [], listFailure: null }),
+      checks.get(input.fingerprintHex) ??
+      ledgerKeyCheckFrom({ projects: [], listFailure: null }, null),
   );
 }

@@ -215,6 +215,32 @@ export function deviceProvenanceOf(
 }
 
 /**
+ * The device's keys were the first key of `userId` in some tenure on this chain
+ * (an applied genesis or `add_member` carrying them). Applied operations outlive
+ * the tenure, so a key re-added with `add_device` after a re-invite still counts.
+ * 台帳の鍵の判定(device-standing.ts — DK K14-1 1-f / K14-18)と、観測の記録の証人
+ * (device-sync.ts — DK K15-12)が共有する 1 つの述語。
+ */
+export function wasFirstKeyOf(
+  verified: VerifiedProject,
+  userId: string,
+  device: { readonly encPubHex: string; readonly sigPubHex: string },
+): boolean {
+  const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
+    keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
+  return verified.applied.some(({ operation, actorUserId }) => {
+    if (operation.op === "genesis") {
+      return actorUserId === userId && carries(operation.payload);
+    }
+    return (
+      operation.op === "add_member" &&
+      operation.payload.targetUserId === userId &&
+      carries(operation.payload)
+    );
+  });
+}
+
+/**
  * The fingerprints revoked for `userId` on this verified chain (the union of
  * applied `revoke_device` entries). 記録からの登録の候補を除く述語(`device-sync.ts`)と、
  * `device add` が「このプロジェクトでは失効した」と言う述語(DK K12-6)が共有する。

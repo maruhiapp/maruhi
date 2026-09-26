@@ -52,12 +52,20 @@ import {
   type LedgerKeyCheck,
   ledgerKeyChecksOf,
   ledgerKeyVerdictOf,
+  recordedFirstKeysOf,
   type ReserveVerdict,
   reserveVerdictOf,
   type StandingGroups,
 } from "./device-standing.ts";
 import { describeBackfill, reportRegisteredDevice } from "./device.ts";
-import { countNoun, describeProjects, displayText } from "./display.ts";
+import {
+  countNoun,
+  describeListed,
+  describeListedScope,
+  describeProjects,
+  describeRecordedFirstKey,
+  displayText,
+} from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { requestHandoffReserve } from "./handoff.ts";
@@ -262,6 +270,8 @@ function settleOpenedKey(input: {
   readonly reserve: ReserveKeys;
   readonly verdict: ReserveVerdict;
   readonly groups: StandingGroups;
+  /** サーバーが一覧に出したプロジェクトの数(確かめた範囲 — DK K15-3)。 */
+  readonly listedCount: number;
 }): Effect.Effect<void, CliError, CliIo | OwnDeviceStore> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -277,7 +287,7 @@ function settleOpenedKey(input: {
     switch (verdict.kind) {
       case "added": {
         yield* io.log(
-          `The opened key ${fp} is registered on ${describeProjects(verdict.projectIds)}, and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it`,
+          `The opened key ${fp} is registered on ${describeProjects(verdict.projectIds)}, and on each of them it was added by one of your devices (add_device), never as your first key. That is how a reserve key is registered; a copy of a device key from an install before device keys is your first key on the projects you created or joined with it. maruhi checked ${describeListedScope(input.listedCount)}; a project the server does not list is not checked`,
         );
         const answer = yield* io.promptLine({
           prompt: "Type yes to record it as your reserve key (anything else = no): ",
@@ -295,17 +305,21 @@ function settleOpenedKey(input: {
         return yield* logWarning(
           `the opened key ${fp} is your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${fp}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
         );
+      case "recorded-first-key":
+        return yield* logWarning(
+          `this machine's records show that the opened key ${fp} ${describeRecordedFirstKey(verdict.projectId)}, so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${fp}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
+        );
       case "revoked":
         return yield* logWarning(
           `the opened key ${fp} is revoked on ${describeProjects(verdict.projectIds)}, so it was not recorded as your reserve key. Run \`maruhi key recovery\`: it seals a new reserve key in its place`,
         );
       case "unchecked":
         return yield* logNote(
-          `the opened key ${fp} was not recorded as your reserve key: ${countNoun(verdict.projectIds.length, "project")} could not be checked (${verdict.projectIds.map(displayText).join(", ")}), and maruhi records it only when every project shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
+          `the opened key ${fp} was not recorded as your reserve key: ${countNoun(verdict.projectIds.length, "project")} could not be checked (${verdict.projectIds.map(displayText).join(", ")}), and maruhi records it only when every project the server lists for you shows it was added by one of your devices. Once they sync, re-run \`maruhi key recover --resume\`: it checks again`,
         );
       case "nowhere":
         return yield* logNote(
-          `the opened key ${fp} is not registered on any of your projects, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
+          `the opened key ${fp} is on ${describeListed(input.listedCount)}, so maruhi cannot tell from the chains whether it is your reserve key, and it was not recorded as one. If it is, \`maruhi key recovery\` records it (and reissues its recovery code)`,
         );
     }
   });
@@ -349,11 +363,15 @@ function finishRecovery(input: {
       projects: outcomes.map(({ projectId, standing }) => ({ projectId, standing })),
       listFailure: null,
     });
+    // 一覧はサーバー申告: 隠されたプロジェクトで最初の鍵だった鍵は、この端末の観測の記録で補う
+    // (キーチェーンだけを失い設定の残った端末 — DK K15-1)
+    const recorded = yield* recordedFirstKeysOf(input.session);
     yield* settleOpenedKey({
       session: input.session,
       reserve: input.reserve,
-      verdict: reserveVerdictOf(groups, null),
+      verdict: reserveVerdictOf(groups, null, recorded.get(input.reserve.fingerprintHex) ?? null),
       groups,
+      listedCount: projects.length,
     });
     // B の秘密はここで役目を終える(参照を手放す。保存経路は型で閉じている — reserve.ts)
     yield* logNote(
@@ -553,6 +571,15 @@ function separateUnusableLedgerKey(input: {
           `the key ${fp} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${fp}\``,
         );
         return "separated";
+      case "recorded-first-key":
+        yield* io.log(
+          `The recovery ledger holds key ${fp}. This machine's records show it ${describeRecordedFirstKey(verdict.projectId)}: a copy of a device key from an install before device keys, not a reserve key. Separating: creating a reserve key and sealing it instead`,
+        );
+        yield* sealNewReserve({ session: input.session, client: input.client });
+        yield* logNote(
+          `the key ${fp} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${fp}\``,
+        );
+        return "separated";
       case "revoked":
         yield* io.log(
           `The recovery ledger holds key ${fp}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
@@ -601,7 +628,7 @@ function replaceReserveWithoutOpening(input: {
       ),
     );
     yield* logWarning(
-      `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project, except any that the project chains show to be a device key or that cannot be checked on every project (each is named below)${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
+      `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project the server lists for you, except any that those chains or this machine's records show to be a device key or that cannot be checked on every listed project (each is named below)${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
     );
     const next = yield* generateReserveKeys();
     const recorded = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
@@ -677,10 +704,10 @@ function registerReserveAndRetire(input: {
       input.retiring,
       Date.now(),
     );
-    yield* io.log(
-      `Sealed the new reserve key ${input.next.fingerprintHex}; registering it${input.retiring.length === 0 ? "" : ` and revoking the previous reserve ${input.retiring.length === 1 ? "key" : "keys"} ${input.retiring.join(", ")}`} on every project`,
-    );
     const projects = yield* fetchProjectMemberships(input.client);
+    yield* io.log(
+      `Sealed the new reserve key ${input.next.fingerprintHex}; registering it${input.retiring.length === 0 ? "" : ` and revoking the previous reserve ${input.retiring.length === 1 ? "key" : "keys"} ${input.retiring.join(", ")}`} on ${describeListedScope(projects.length)}`,
+    );
     let exitCode = 0;
     for (const project of projects) {
       const outcome = yield* rotateReserveOnProject({
@@ -893,6 +920,11 @@ function confirmRetiring(input: {
         yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
         yield* logWarning(
           `not revoking ${fingerprintHex}: it is your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with), so it is a device key, not a previous reserve key`,
+        );
+      } else if (verdict.kind === "recorded-first-key") {
+        // サーバーが一覧から隠したプロジェクトの最初の鍵(この端末の観測の記録 — DK K15-1)
+        yield* logWarning(
+          `not revoking ${fingerprintHex}: this machine's records show it ${describeRecordedFirstKey(verdict.projectId)}, so it is a device key, not a previous reserve key`,
         );
       } else if (unchecked !== null) {
         // 失効は全プロジェクトを確かめたときだけ(判定の値が revoked でも — K14-14)
