@@ -1,14 +1,21 @@
-// ES + PF1 K5 — 四眼の受理面(CRYPTO_SPEC §6.4「スコープと四眼の受理」/ AUTH_SPEC
-// §11-1 / §12-8 / §15-2 / AUDIT_SPEC §3.4。設計録 docs/notes/es-design.md §11)。
+// ES + PF1 K5 — the four-eyes acceptance surface (CRYPTO_SPEC §6.4
+// "acceptance of scope and four-eyes" / AUTH_SPEC §11-1 / §12-8 /
+// §15-2 / AUDIT_SPEC §3.4. Design record docs/notes/es-design.md
+// §11).
 //
-// 固定する規則:
-//   - 受理ポリシー(DO — appendProgram): `expires_at_ms` の上界(受理時サーバー時計 +
-//     30 日)→ pending 上限 32(期限切れは数えない・withdraw で解放)。型付き 422
-//     `ProposalLimit`(reason + limit)。失効済み提案の拒否はしない(K5-C)
-//   - 完成した approve の受理副作用は内側 op を直接受理した場合と同一・同一受理
-//     タスク: 要ローテーション検出(trigger = 内側 op・triggerChainSeq = approve の
-//     seq)、申告行の削除、招待の completed 突合、membership 投影
-//   - 未完成の approve / propose / withdraw / set_approval_policy は副作用を持たない
+// Rules pinned:
+//   - acceptance policy (DO — appendProgram): the `expires_at_ms`
+//     upper bound (server clock at acceptance + 30 days) → the
+//     pending cap of 32 (expired ones do not count; withdraw frees a
+//     slot). Typed 422 `ProposalLimit` (reason + limit). Expired
+//     proposals are not rejected (K5-C)
+//   - a completed approve's acceptance side effects are identical to
+//     accepting the inner op directly, in the same acceptance task:
+//     rotation-needed detection (trigger = the inner op,
+//     triggerChainSeq = the approve's seq), attestation-row deletion,
+//     invite completed matching, and membership projection
+//   - an incomplete approve / propose / withdraw /
+//     set_approval_policy carries no side effects
 
 import type { ApprovalTargetOp, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
@@ -41,7 +48,7 @@ import { queryProjectDo, readAuditEvents } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** 2 人目の owner(ベクター鍵 user-owner-0014)。四眼の有効化条件 = owner ≥ required。 */
+/** The second owner (vector key user-owner-0014). Four-eyes enablement requires owner ≥ required. */
 const OWNER2 = "user-owner-0014";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -60,7 +67,7 @@ async function readFlags(): Promise<readonly WireRotationFlag[]> {
   return ((await response.json()) as { flags: readonly WireRotationFlag[] }).flags;
 }
 
-/** 署名 + 汎用追記(受理可否を呼び出し側で判定する版)。受理時は fixture のヘッドを進める。 */
+/** Sign + generic append (the variant where the caller judges acceptance). Advances the fixture head on acceptance. */
 async function appendRaw(
   actorUserId: string,
   operation: ChainOperation,
@@ -81,7 +88,7 @@ async function appendRaw(
   return { response, hash };
 }
 
-/** owner 2 名 + 方針(ops, required = 2)を確立する。 */
+/** Establish two owners + a policy (ops, required = 2). */
 async function enableFourEyes(ops: readonly ApprovalTargetOp[]): Promise<void> {
   await seedMemberToken(fixture, OWNER2, 9014);
   await appendOperation(fixture, OWNER, addMemberOperation(OWNER2, "owner"));
@@ -101,7 +108,7 @@ const removeMemberOp = (targetUserId: string): ProposableOperation => ({
   payload: { targetUserId },
 });
 
-/** 提案を受理させ、提案エントリの hash(approve / withdraw の参照先)を返す。 */
+/** Get a proposal accepted and return the proposal entry's hash (the reference approve / withdraw point at). */
 async function propose(actorUserId: string, inner: ProposableOperation, expiresAtMs: number) {
   const { response, hash } = await appendRaw(actorUserId, proposeOp(inner, expiresAtMs));
   expect(response.status).toBe(200);
@@ -123,14 +130,14 @@ type AuditRow = Record<string, unknown>;
 const payloadOf = (row: AuditRow): Record<string, unknown> =>
   JSON.parse(String(row["payload"])) as Record<string, unknown>;
 
-/** chain_seq の nth 行(無ければ失敗)。 */
+/** The nth row for a chain_seq (fails if absent). */
 function rowAt(rows: readonly AuditRow[], chainSeq: number, nth = 0): AuditRow {
   const row = rows.filter((candidate) => candidate["chain_seq"] === chainSeq)[nth];
   if (row === undefined) throw new Error(`no audit row #${nth} for chain_seq=${chainSeq}`);
   return row;
 }
 
-/** 完成した approve の副作用のうち、監査行の形(chain.approved + 適用行 + 検出行の順)。 */
+/** The audit-row shape among a completed approve's side effects (order: chain.approved + applied row + detection row). */
 function expectAppliedRemoval(
   rows: readonly AuditRow[],
   input: { readonly proposalSeq: number; readonly approveSeq: number },
@@ -149,14 +156,14 @@ function expectAppliedRemoval(
   expect(appliedRow["target_user_id"]).toBe(MEMBER);
   expect(appliedRow["chain_seq"]).toBe(input.approveSeq);
   expect(payloadOf(appliedRow)).toEqual({ viaProposalSeq: input.proposalSeq });
-  // 検出(rotation.recommended)はミラー行 → 適用行の後に書かれる(同一受理タスク)
+  // The detection row (rotation.recommended) is written after the mirror row → the applied row (same acceptance task)
   const recommended = rows.find((row) => row["event"] === "rotation.recommended");
   if (recommended === undefined) throw new Error("no rotation.recommended row");
   expect(Number(recommended["seq"])).toBeGreaterThan(Number(appliedRow["seq"]));
   expect(payloadOf(recommended)).toMatchObject({ trigger: "remove_member" });
 }
 
-/** attester の鍵で §6.6 の申告を署名して提出する(attestation.test.ts と同じ材料)。 */
+/** Sign and submit a §6.6 attestation with the attester's key (the same material as attestation.test.ts). */
 async function submitAttestation(attesterUserId: string): Promise<void> {
   const keys = vectorKeys[attesterUserId];
   if (keys === undefined) throw new Error(`no vector keys for ${attesterUserId}`);
@@ -203,7 +210,7 @@ async function projectionRowsFor(userId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 上限)", () => {
+describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pending cap)", () => {
   it("rejects an expiry beyond the server clock + 30 days with 422 ProposalLimit (proposal-lifetime) before CAS / verifyChain", async () => {
     await enableFourEyes(["remove_member"]);
     const head = { ...fixture.head };
@@ -217,11 +224,11 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
       reason: "proposal-lifetime",
       limit: MAX_PROPOSAL_LIFETIME_MS,
     });
-    // 受理前の拒否 — ヘッドは動かず、ミラー行も増えない
+    // A pre-acceptance rejection — the head does not move and no mirror row is added
     expect(fixture.head).toEqual(head);
     const rows = await readAuditEvents(projectId);
     expect(rows.filter((row) => row["event"] === "chain.proposed")).toHaveLength(0);
-    // 上界の内側は受理する(等号ちょうどは proposal-policy.test.ts で固定)
+    // Inside the bound it is accepted (the exact-equality boundary is pinned in proposal-policy.test.ts)
     const { response: atBound } = await appendRaw(
       OWNER,
       proposeOp(removeMemberOp(MEMBER), Date.now() + MAX_PROPOSAL_LIFETIME_MS - DAY_MS),
@@ -239,8 +246,10 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
     );
     expect(rejected.status).toBe(422);
     expect(fixture.head).toEqual(head);
-    // 拒否は CAS / verifyChain の前で、導出状態にも保存状態にも痕跡を残さない: 同じ
-    // 親ヘッドでの次の追記が通り、pending は元の 1 件のまま(approve が完成する)
+    // The rejection precedes CAS / verifyChain and leaves no trace in
+    // derived or stored state: the next append on the same parent head
+    // passes, and pending stays at the original 1 (the approve
+    // completes)
     const { response: approved } = await appendRaw(OWNER2, approveOp(live));
     expect(approved.status).toBe(200);
     const chain = (await (await requestJson("GET", "/chain", token(OWNER))).json()) as {
@@ -252,8 +261,9 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
 
   it("caps live pending proposals at 32 (expired ones do not count; withdraw frees a slot)", async () => {
     await enableFourEyes(["remove_member"]);
-    // 作成時点で失効済みの提案(expires_at_ms が過去)は受理され(K5-C)、上限には
-    // 数えない — 誰も承認できず枠も占有しない
+    // A proposal already expired at creation (expires_at_ms in the
+    // past) is accepted (K5-C) but does not count toward the cap —
+    // nobody can approve it and it occupies no slot
     const expired = await propose(OWNER, removeMemberOp(MEMBER), 1);
     for (let index = 0; index < MAX_PENDING_PROPOSALS; index += 1) {
       await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
@@ -268,7 +278,7 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
       reason: "pending-proposals",
       limit: MAX_PENDING_PROPOSALS,
     });
-    // 失効済み提案を閉じても枠は空かない(数えていなかった)
+    // Closing the expired proposal frees no slot (it was never counted)
     const { response: withdrawExpired } = await appendRaw(OWNER, withdrawOp(expired));
     expect(withdrawExpired.status).toBe(200);
     const { response: stillFull } = await appendRaw(
@@ -276,8 +286,9 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
       proposeOp(removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS),
     );
     expect(stillFull.status).toBe(422);
-    // 期限内の提案を 1 つ withdraw すると 1 枠空く(直前の受理は withdraw なので、
-    // 期限内の提案の hash はチェーンから引く)
+    // Withdrawing one in-term proposal frees one slot (the
+    // immediately-preceding acceptance was a withdraw, so the in-term
+    // proposal's hash is resolved from the chain)
     const proposedRows = (await readAuditEvents(projectId)).filter(
       (row) => row["event"] === "chain.proposed",
     );
@@ -305,11 +316,11 @@ describe("propose の受理ポリシー(AUTH_SPEC §12-8 — 上界 → pending 
   });
 });
 
-describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC §3.4 / §4.1)", () => {
+describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUDIT_SPEC §3.4 / §4.1)", () => {
   it("applies remove_member at the approve seq: rotation detection, attestation cleanup, projection removal, applied mirror row", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER が値を読む(basis = read の根拠)+ ヘッド申告を持つ
+    // MEMBER reads the value (grounds for basis = read) and holds a head attestation
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(MEMBER));
     expect(pull.status).toBe(200);
     await submitAttestation(MEMBER);
@@ -317,19 +328,19 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect(await projectionRowsFor(MEMBER)).toBe(1);
 
     await enableFourEyes(["remove_member"]);
-    // 直接追記は approval-required(合意規則)で拒否される — 四眼が効いている
+    // A direct append is rejected with approval-required (a consensus rule) — four-eyes is in effect
     const direct = await appendRaw(OWNER, removeMemberOp(MEMBER));
     expect(direct.response.status).toBe(422);
     await expect(direct.response.json()).resolves.toMatchObject({ reason: "approval-required" });
 
     const proposalHash = await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
     const proposalSeq = fixture.head.seq;
-    // 提案時点では何も起きない(適用前 — 裁定 P7 / P21)
+    // Nothing happens at proposal time (pre-application — rulings P7 / P21)
     expect(await readFlags()).toHaveLength(0);
     expect(await attestationRowsFor(MEMBER)).toBe(1);
     expect(await projectionRowsFor(MEMBER)).toBe(1);
 
-    // owner の提案 = 1 票。2 人目の owner の approve で定足数 2 に到達 = 適用
+    // An owner's proposal = 1 vote. The second owner's approve reaches quorum 2 = application
     const { response: approved } = await appendRaw(OWNER2, approveOp(proposalHash));
     expect(approved.status).toBe(200);
     const approveSeq = fixture.head.seq;
@@ -348,7 +359,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     ]);
     expect(await attestationRowsFor(MEMBER)).toBe(0);
     expect(await projectionRowsFor(MEMBER)).toBe(0);
-    // 削除されたメンバーはもう読めない(§11-2)
+    // The removed member can no longer read (§11-2)
     const denied = await requestJson("GET", "/chain", token(MEMBER));
     expect(denied.status).toBe(404);
 
@@ -374,7 +385,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
       },
     };
     const proposalHash = await propose(OWNER, addStranger, Date.now() + 7 * DAY_MS);
-    // 提案時点では突合も投影もしない
+    // At proposal time neither the match nor the projection happens
     expect((await inviteRow(matched.id))?.status).toBe("accepted");
     expect(await projectionRowsFor(STRANGER)).toBe(0);
 
@@ -382,7 +393,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect(response.status).toBe(200);
     expect((await inviteRow(matched.id))?.status).toBe("completed");
     expect(await projectionRowsFor(STRANGER)).toBe(1);
-    // 新メンバーはチェーンを読める(適用 = approve の seq で在籍開始)
+    // The new member can read the chain (application = membership starts at the approve's seq)
     const asStranger = await requestJson("GET", "/chain", token(STRANGER));
     expect(asStranger.status).toBe(200);
     const applied = (await readAuditEvents(projectId)).filter(
@@ -400,8 +411,9 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
   it("cleans the stale-key wraps of a member re-added via a proposal (dek.deleted with triggerChainSeq = approve seq)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER は epoch 1 のラップ(現行鍵宛)を持つ。remove(方針オフなので直接追記)は
-    // ラップを消さない(§12-6 — 同一鍵での復帰に備える)
+    // MEMBER holds the epoch-1 wrap (addressed to the current key).
+    // The removal (a direct append since the policy is off) does not
+    // erase the wrap (§12-6 — kept for a return under the same key)
     await appendOperation(fixture, OWNER, removeMemberOp(MEMBER));
     const wrapsBefore = await queryProjectDo(
       projectId,
@@ -411,7 +423,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect(Number(wrapsBefore[0]?.["n"])).toBe(1);
 
     await enableFourEyes(["add_member"]);
-    // 別の鍵(ベクター鍵 user-prodreader-0012 を借用)で MEMBER を再追加する提案
+    // A proposal to re-add MEMBER under a different key (borrowing vector key user-prodreader-0012)
     const rekeyed = vectorKeyOf("user-prodreader-0012");
     const readd: ProposableOperation = {
       op: "add_member",
@@ -425,7 +437,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
       },
     };
     const proposalHash = await propose(OWNER, readd, Date.now() + 7 * DAY_MS);
-    // 提案時点では掃除しない
+    // No sweeping at proposal time
     const wrapsPending = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id = ?",
@@ -452,7 +464,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect(row["target_user_id"]).toBe(MEMBER);
     expect(row["environment_id"]).toBe(ENV);
     expect(payloadOf(row)).toEqual({ cause: "member-readded", triggerChainSeq: approveSeq });
-    // 掃除は適用行(chain.member_added)の後(同一受理タスク)
+    // The sweep runs after the applied row (chain.member_added) (same acceptance task)
     const applied = rowAt(await readAuditEvents(projectId), approveSeq, 1);
     expect(applied["event"]).toBe("chain.member_added");
     expect(Number(row["seq"])).toBeGreaterThan(Number(applied["seq"]));
@@ -466,7 +478,7 @@ describe("完成した approve の受理副作用(CRYPTO_SPEC §6.4 / AUDIT_SPEC
     expect(await projectionRowsFor(MEMBER)).toBe(1);
     expect(await readFlags()).toHaveLength(0);
     const rows = await readAuditEvents(projectId);
-    // 各エントリ 1 行(適用行なし)
+    // One row per entry (no applied rows)
     const chainSeqs = rows
       .map((row) => row["chain_seq"])
       .filter((seq): seq is number => typeof seq === "number");

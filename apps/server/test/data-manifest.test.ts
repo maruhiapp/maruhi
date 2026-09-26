@@ -1,11 +1,15 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — 環境マニフェストの複合受理
-// (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.3)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — composite
+// acceptance of the environment manifest (AUTH_SPEC §12-5 = CRYPTO_SPEC
+// §4.3).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
 //
-// 固定する性質: メタ操作との複合受理 /
-// manifestVersion CAS(409 は最新番号のみ)/ サーバーのダイジェスト再計算 /
-// 保持は最新 1 通のみ / pull 両モードへの同梱(tombstone 込み)/ 環境削除
-// カスケード / 移行経路(マニフェスト導入前の環境の rotate による v1 初期化)。
+// What is pinned: composite acceptance together with meta ops /
+// manifestVersion CAS (the 409 carries only the latest number) /
+// server-side digest recomputation / retention of only the latest one
+// copy / bundling into both pull modes (tombstones included) / cascade
+// on environment deletion / the migration path (v1 initialization via a
+// rotate for a pre-manifest environment).
 
 import { describe, expect, it } from "vitest";
 
@@ -76,10 +80,10 @@ async function manifestRows(): Promise<readonly Record<string, unknown>[]> {
   );
 }
 
-describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", () => {
+describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC §4.3)", () => {
   it("issues v1 on creation and re-issues on every meta op, keeping only the latest row (§12-5 / §12-8)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // 作成直後: manifestVersion 1・変数空集合・epoch 1
+    // Right after creation: manifestVersion 1, empty variable set, epoch 1
     expect(await manifestRows()).toEqual([
       {
         environment_id: ENV,
@@ -90,20 +94,20 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       },
     ]);
 
-    // 変数作成 → v2(集合に新変数)。行は置き換わり蓄積しない(保持は最新 1 通)
+    // Variable creation → v2 (the new variable joins the set). The row is replaced, not accumulated (retention is the latest copy only)
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const afterCreate = await manifestRows();
     expect(afterCreate.length).toBe(1);
     expect(afterCreate[0]).toMatchObject({ manifest_version: 2, epoch: 1, issuer_user_id: MEMBER });
 
-    // rename → v3、削除 → v4(tombstone 込みダイジェスト)、環境 rename → v5
+    // rename → v3, delete → v4 (tombstone-including digest), environment rename → v5
     expect((await renameVariableRequest(VAR, "DB_URL", MEMBER)).status).toBe(204);
     expect((await deleteVariableRequest(VAR, MEMBER)).status).toBe(204);
     expect((await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER)).status).toBe(204);
     const rows = await manifestRows();
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({ manifest_version: 5, epoch: 1 });
-    // v4 以降のダイジェストは tombstone を含む集合(サーバー再計算と一致した申告)
+    // The digest from v4 onward is the tombstone-including set (an attestation that matched the server's recomputation)
     const recorded = fixture.manifests.get(ENV);
     if (recorded === undefined) throw new Error("missing recorded manifest");
     expect(recorded.entries).toEqual([
@@ -125,7 +129,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 3,
-        // tombstone 込みの集合のダイジェスト(§12-7 — 両モード同水準)
+        // The digest of the tombstone-including set (§12-7 — the same level in both modes)
         variablesDigestHex: fixture.manifests.get(ENV)?.manifest.variablesDigestHex,
         issuerUserId: MEMBER,
       });
@@ -137,7 +141,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
   it("recomputes the digest server-side: omitting the new variable or the tombstone is 422 manifest-digest-mismatch (§12-5 (7))", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
 
-    // 変数作成のマニフェストが新変数のエントリを含まない(空集合のまま)
+    // The variable-creation manifest does not contain the new variable's entry (left as the empty set)
     const statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const emptyDigest = await nextEnvironmentManifest(fixture, {
       environmentId: ENV,
@@ -157,7 +161,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       _tag: "ManifestRejected",
       reason: "manifest-digest-mismatch",
     });
-    // 原子性: 変数行・ステートメント行・マニフェスト行のいずれも進まない
+    // Atomicity: none of the variable row, statement row, or manifest row advances
     const rows = await queryProjectDo(
       projectId,
       "SELECT 1 FROM variables WHERE environment_id = ? AND variable_id = ?",
@@ -167,7 +171,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect(rows.length).toBe(0);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1 });
 
-    // 削除のマニフェストが tombstone を落とす(空集合へ戻す)
+    // The deletion manifest drops the tombstone (back to the empty set)
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const last = varStatements.get(VAR);
     if (last === undefined) throw new Error("missing recorded statement");
@@ -197,8 +201,9 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
 
   it("rejects a manifest bound to a stale env-meta statement (422 manifest-digest-mismatch — §12-5 (7))", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 環境 rename のマニフェストが旧 envMeta(metaVersion 1)を写している形は、
-    // rename 適用後の再計算(metaVersion 2)と一致しない
+    // A form where the environment-rename manifest copies the old
+    // envMeta (metaVersion 1) does not match the recomputation after the
+    // rename is applied (metaVersion 2)
     const staleEnvMeta = await nextEnvironmentManifest(fixture, {
       environmentId: ENV,
       epoch: 1,
@@ -237,7 +242,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     const staleEpoch = await signEnvManifestAs(MEMBER, projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
-      // 現エポックは 1 — 2 を焼き込んだマニフェストはエポック整合で落ちる
+      // The current epoch is 1 — a manifest baking in 2 fails the epoch-consistency check
       epoch: 2,
       manifestVersion: 2,
       variablesDigestHex: await digestOf([
@@ -273,8 +278,9 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
   it("enforces the manifestVersion CAS with the number only (409 §12-5 (6))", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 最新は 2。申告 4(prev はダミー)→ 409 currentManifestVersion 2。
-    // 勝者のハッシュは載せない(§12-5 の 409 規律)
+    // The latest is 2. Attesting 4 (with a dummy prev) → 409
+    // currentManifestVersion 2. The winner's hash is not carried (the
+    // §12-5 409 discipline)
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -306,7 +312,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       currentManifestVersion: 2,
     });
     expect(Object.keys(body).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
-    // metaVersion CAS と同一トランザクション: ステートメント行も進まない
+    // In the same transaction as the metaVersion CAS: the statement row does not advance either
     const rows = await queryProjectDo(
       projectId,
       "SELECT meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? ORDER BY meta_version",
@@ -320,7 +326,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     await createEnvironmentOk(fixture, ENV, "App");
     const statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const { manifest } = await manifestForStatement(statement, OWNER);
-    // OWNER が署名したマニフェストを MEMBER が持ち込む → 検証鍵は呼び出し主体
+    // MEMBER carries in a manifest signed by OWNER → the verification key is the calling principal
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement,
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -335,13 +341,13 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
 
   it("requires the manifest on every meta-op path (400 schema) and checks its coordinates (422)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // マニフェスト欠落はワイヤ Schema の 400
+    // A missing manifest is a wire-Schema 400
     const missing = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(missing.status).toBe(400);
-    // 座標不一致(manifestEnvironmentId)は worker の自己整合検査の 422
+    // A coordinate mismatch (manifestEnvironmentId) is a 422 from the worker's self-consistency check
     const wrongEnv = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -353,7 +359,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
 
   it("re-issues the manifest with the new epoch on rotation and retries after a head-CAS conflict (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 親ヘッド CAS 失敗(409): マニフェストは受理されず記録も進まない
+    // Parent-head CAS failure (409): the manifest is not accepted and the record does not advance
     const conflicted = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -371,11 +377,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect(conflicted.status).toBe(409);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 1 });
 
-    // 再試行(エントリとマニフェストの両方を現ヘッドで再署名 — フィクスチャが担う)
+    // Retry (both the entry and the manifest are re-signed against the current head — the fixture handles it)
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 2, epoch: 2 });
 
-    // rotate 複合のマニフェスト epoch が new_epoch と食い違う形は複合内整合検査で 422
+    // A rotate composite whose manifest epoch disagrees with new_epoch is a 422 at the in-composite consistency check
     const mismatched = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 3,
@@ -401,11 +407,12 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect(((await mismatched.json()) as { field: string }).field).toBe("manifestEpoch");
   });
 
-  it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (移行経路)", async () => {
+  it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (migration path)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // マニフェスト・checkpoint 導入前に作成された環境をシミュレートする:
-    // チェーン末尾の境界 checkpoint を取り除き(旧世代チェーンにはタプルが
-    // 存在しない — §4.3 (2) の束縛対象なし)、マニフェスト保存行も削除する
+    // Simulate an environment created before manifests/checkpoints were
+    // introduced: strip the trailing boundary checkpoint from the chain
+    // (an old-generation chain has no tuple — nothing for §4.3 (2) to
+    // bind to) and delete the stored manifest row too
     await stripTrailingCheckpoint(fixture, ENV);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await queryProjectDo(
@@ -413,11 +420,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
-    // pull はマニフェストなしで応答する(過渡状態 — クライアント側が拒否を担う)
+    // pull answers without a manifest (a transitional state — the client side carries the rejection)
     const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect((await pulled.json()) as WireManifestBody).not.toHaveProperty("manifest");
 
-    // rotate 複合が manifestVersion 1(prev 空)を確立する(CAS 初期値 = 0)
+    // The rotate composite establishes manifestVersion 1 (prev empty) (CAS initial value = 0)
     const entries = fixture.manifests.get(ENV)?.entries ?? [];
     fixture.manifests.delete(ENV);
     const manifest = await nextEnvironmentManifest(fixture, {
@@ -429,10 +436,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       head: fixture.head,
     });
     expect(manifest.manifestVersion).toBe(1);
-    // 単一の DEK をラップとコミットメントの両方に使う(別々の makeDek() では、
-    // サーバーは member 宛ラップの平文を開けないため
-    // 受理するが、配布される新エポック DEK がチェーンのコミットメントと
-    // 一致せず、peer CLI が拒否する形をテストが固定してしまう)
+    // Use a single DEK for both the wrap and the commitment (with
+    // separate makeDek()s the server cannot open the member-directed
+    // wrap's plaintext and would still accept, but the distributed
+    // new-epoch DEK would not match the chain's commitment — pinning a
+    // shape a peer CLI would reject)
     const nextDek = makeDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -462,9 +470,10 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       manifestVersion: 1,
       epoch: 2,
     });
-    // サーバーの 200 で終わらせない: 配布されたラップを受信者(READER)として
-    // Open し、§5.2 のコミットメント照合 — チェーンが配布した rotate_epoch の
-    // dek_commitment_hex との一致 — まで通す(peer CLI の受信経路の固定)
+    // Don't stop at the server's 200: open the distributed wrap as the
+    // recipient (READER) and carry through the §5.2 commitment match —
+    // equality with the dek_commitment_hex of the rotate_epoch the chain
+    // distributed (pinning the peer CLI's receive path)
     const epoch2Wrap = afterInitBody.deks.find((wrap) => wrap.epoch === 2);
     if (epoch2Wrap === undefined) throw new Error("missing epoch-2 wrap in pull");
     const openedDek = await unwrapDistributedDek({
@@ -487,14 +496,17 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
   });
 
   it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6))", async () => {
-    // v1 は保存済みマニフェストなし(最新 0)から受理されるため、宣言ヘッド後に
-    // ローテーションが挟まっても manifestVersion CAS が 409 で落とせない —
-    // 非複合経路の v1 は宣言ヘッド = 受理時点の現ヘッドを要求し、rotate 前の
-    // ヘッドに epoch 1 を焼き込んだブートストラップ(stale アンカー)を塞ぐ
+    // Since a v1 is accepted with no stored manifest (latest 0), the
+    // manifestVersion CAS cannot drop a request at 409 even when a
+    // rotation intervenes after the declared head — so a v1 on the
+    // non-composite path requires declared head = the current head at
+    // acceptance, closing off a bootstrap that baked epoch 1 into a
+    // pre-rotate head (a stale anchor)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // マニフェスト・checkpoint 導入前に作成された環境をシミュレートする(チェーンに
-    // タプルを残さない — 上の移行経路テストと同じ理由)。create / rotate 両複合の
-    // 境界 checkpoint をそれぞれ末尾から取り除く
+    // Simulate an environment created before manifests/checkpoints were
+    // introduced (leaving no tuple on the chain — the same reason as the
+    // migration-path test above). Strip both the create and the rotate
+    // composites' boundary checkpoints from the tail
     await stripTrailingCheckpoint(fixture, ENV);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const staleHead = fixture.head;
@@ -521,9 +533,10 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
         metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
       },
     ];
-    // rotate 前のヘッド(epoch 1 が現エポックだった位置)を宣言した v1 =
-    // stale エポックの焼き込み。エポック整合(宣言ヘッド時点)は通る形だが、
-    // ヘッドのピン留めが先に落とす
+    // A v1 declaring the pre-rotate head (the position where epoch 1
+    // was current) = baking in a stale epoch. The epoch-consistency
+    // check (at the declared head) would pass this shape, but the head
+    // pinning drops it first
     const stale = await requestJson(
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
@@ -543,8 +556,9 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     expect(stale.status).toBe(422);
     expect(((await stale.json()) as { field: string }).field).toBe("manifestChainHead");
 
-    // 受理時点の現ヘッド + 現エポックを宣言した v1 は受理される(非複合経路の
-    // ブートストラップ自体は移行のため有効なまま)
+    // A v1 declaring the current head + current epoch at acceptance is
+    // accepted (the non-composite-path bootstrap itself stays valid for
+    // migration)
     const pinned = await requestJson(
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
@@ -566,10 +580,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
   });
 
   it("routes a stale v1 against an initialized environment to the CAS 409, not the bootstrap pin", async () => {
-    // ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ。初期化済み
-    // 環境(最新 2)への stale v1 は 422(manifestChainHead)ではなく CAS の 409
-    // (currentManifestVersion 付き)へ落とし、正当クライアントの再取得・再署名
-    // ループに合流させる
+    // The pin applies only to a v1 with no anchor established (no stored
+    // manifest). A stale v1 against an initialized environment (latest
+    // 2) falls not to the 422 (manifestChainHead) but to the CAS 409
+    // (carrying currentManifestVersion), joining the legitimate client's
+    // re-fetch / re-sign loop
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({
@@ -587,7 +602,7 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       envMetaVersion: 1,
       envMetaSigHashHex: "cd".repeat(32),
       prevManifestSigHashHex: "",
-      // 宣言ヘッドは現ヘッドより古い位置(作成前のベースチェーンのヘッド)
+      // The declared head is a position older than the current head (the base chain's head from before creation)
       chainHeadHashHex: projectId,
       chainHeadSeq: 1,
     });

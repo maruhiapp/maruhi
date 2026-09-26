@@ -1,6 +1,7 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — 受信者クラス server
-// (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)と expectedWrapRecipientCount。
-// スイート全体の分担は data-dek.test.ts 冒頭を参照。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — recipient
+// class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9) and
+// expectedWrapRecipientCount.
+// See the top of data-dek.test.ts for how the suite is split.
 
 import type { ChainState } from "@maruhi/crypto";
 import {
@@ -39,8 +40,9 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-// デプロイメントのサーバー enc 公開鍵(ダミー。X25519 公開鍵は任意の 32 バイトで
-// 形式上有効 — サーバーはラップの中身を検証できず、受理判定は同定と署名のみ)
+// The deployment's server enc public key (a dummy — an X25519 public key
+// is formally valid as any 32 bytes; the server cannot verify a wrap's
+// contents, so acceptance is judged on identification and signature only)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 
 async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<string> {
@@ -49,8 +51,8 @@ async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<str
   return encodeHex(fp.value);
 }
 
-describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
-  /** owner が grant_server を追記する(汎用チェーン API — AUTH_SPEC §6 の admin op)。 */
+describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
+  /** The owner appends a grant_server (the generic chain API — an admin op of AUTH_SPEC §6). */
   async function grantServer(scope: readonly string[]): Promise<string> {
     const fpHex = await serverFingerprintHex();
     await appendOperation(fixture, OWNER, {
@@ -84,9 +86,10 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     });
   }
 
-  it("backfills server wraps for all existing epochs right after the grant (§12-6 の grant 直後バックフィル)", async () => {
-    // grant 前に epoch 1 / 2 を確立(完全集合はメンバーのみ)→ grant → owner が
-    // スコープ内全エポックのサーバー宛ラップを追記経路で一括登録する
+  it("backfills server wraps for all existing epochs right after the grant (the §12-6 post-grant backfill)", async () => {
+    // Establish epochs 1 / 2 before the grant (the complete set is
+    // members only) → grant → the owner bulk-registers server-directed
+    // wraps for every in-scope epoch via the append path
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     const fpHex = await grantServer([ENV]);
@@ -99,7 +102,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     });
     expect(response.status).toBe(204);
 
-    // 保存行は recipient_class = 'server'、識別子列にはサーバー鍵 FP
+    // The stored rows are recipient_class = 'server' with the server-key FP in the identifier column
     const rows = await queryProjectDo(
       projectId,
       "SELECT epoch, recipient_user_id FROM dek_wraps WHERE environment_id = ? AND recipient_class = 'server' ORDER BY epoch",
@@ -110,8 +113,9 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
       [2, fpHex],
     ]);
 
-    // dek.registered は受信者ごとに 1 行、server 行は target_key_fingerprint に FP
-    // (user_id 列に鍵識別子を混ぜない — AUDIT_SPEC §3.3 / §2)
+    // dek.registered is one row per recipient; a server row carries the
+    // FP in target_key_fingerprint (never mix a key identifier into the
+    // user_id column — AUDIT_SPEC §3.3 / §2)
     const events = await queryProjectDo(
       projectId,
       "SELECT epoch, target_user_id, target_key_fingerprint, actor_key_fingerprint FROM audit_events WHERE event = 'dek.registered' AND target_key_fingerprint IS NOT NULL ORDER BY epoch",
@@ -121,13 +125,13 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(events[0]?.["target_key_fingerprint"]).toBe(fpHex);
     expect(events[0]?.["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // 配布(listMine)に server 行は混ざらない(配布は本人宛のみ — §12-6)
+    // No server row leaks into distribution (listMine) (distribution is to oneself only — §12-6)
     const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(OWNER));
     const body = (await mine.json()) as { deks: readonly { epoch: number }[] };
     expect(body.deks.length).toBe(2);
   });
 
-  it("rejects a duplicate server wrap with 409 (上書き禁止はクラス共通)", async () => {
+  it("rejects a duplicate server wrap with 409 (the no-overwrite rule is class-agnostic)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
     const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
@@ -146,7 +150,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
   it("rejects a server wrap for an out-of-scope environment with 422 (scope-out-of-range)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
-    // grant 後に作る環境はスコープ外なので複合の完全集合はメンバーのみ(§12-4)
+    // An environment created after the grant is out of scope, so the composite's complete set is members only (§12-4)
     const outDek = await createEnvironmentOk(fixture, "env-out-0002", "Out");
     const wrap = await serverWrap({
       environmentId: "env-out-0002",
@@ -164,7 +168,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
 
   it("rejects a server wrap without a matching grant with 422 (recipient-not-granted)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
-    const fpHex = await serverFingerprintHex(); // grant は追記しない
+    const fpHex = await serverFingerprintHex(); // no grant is appended
     const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
     const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [wrap],
@@ -177,7 +181,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
   it("rejects a server wrap whose enc pub differs from the grant with 422 (recipient-key-mismatch)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
-    // FP は grant と一致・enc 公開鍵だけ別(FP + enc pub の両方一致の要求 — §12-6)
+    // The FP matches the grant but the enc public key differs (both FP + enc pub must match — §12-6)
     const wrap = await serverWrap({
       epoch: 1,
       dek: dek1,
@@ -204,7 +208,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // サーバー鍵宛を欠いた完全集合は 422 recipient-missing
+    // A complete set missing the server-key direction is a 422 recipient-missing
     const missing = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -216,7 +220,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     const body = (await missing.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("recipient-missing");
 
-    // サーバー鍵宛を含めた完全集合は受理される(ローテーション実行者が署名 — §7)
+    // A complete set including the server-key direction is accepted (signed by the rotation's executor — §7)
     const full = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -234,12 +238,14 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
 
-    // add_member の対象 user_id は意図的に存在検証されない自由文字列(AUTH_SPEC
-    // §11-1)なので、admin は「user_id = 有効 grant のサーバー鍵 FP」という
-    // メンバーをチェーンに追加できる。保存行の主キーは端末軸
-    // (environment, epoch, recipient_user_id, recipient_enc_pub_hex — 2026-09-19 DK K3)
-    // なので、鍵が違えば member としての fpHex 宛と server としての fpHex 宛は
-    // 別スロットに両方書ける(設計録 §8 K3-4 第 2 巡)
+    // add_member's target user_id is intentionally a free-form string
+    // with no existence check (AUTH_SPEC §11-1), so an admin can add a
+    // member whose "user_id = the server-key FP of a valid grant" to the
+    // chain. The stored row's primary key is the device axis
+    // (environment, epoch, recipient_user_id, recipient_enc_pub_hex —
+    // 2026-09-19 DK K3), so with different keys, both the fpHex-directed
+    // wrap as a member and the fpHex-directed wrap as a server can be
+    // written to separate slots (design notes §8 K3-4, second round)
     const encPair = await generateEncryptionKeyPair();
     const sigPair = await generateSigningKeyPair();
     const sockEncPubHex = encodeHex(await exportEncryptionPublicKey(encPair.publicKey));
@@ -297,10 +303,13 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
       { recipient_class: "server", recipient_enc_pub_hex: SERVER_ENC_PUB_HEX },
     ]);
 
-    // 同じ id **かつ同じ鍵**(member の enc 公開鍵 = サーバー鍵)は依然 1 スロット:
-    // 期待数は保存キー粒度で重複除去し、両クラス宛を送ると受理前の検査で 422
-    // (duplicate-recipient)に倒れる(受理段を通過させると書き込みフェーズの主キー
-    // 違反 = defect〔500〕になる)
+    // The same id **and the same key** (the member's enc public key =
+    // the server key) is still one slot: the expected count is
+    // deduplicated at the stored-key granularity, and sending both-class
+    // wraps falls over at the pre-acceptance check with 422
+    // (duplicate-recipient) (letting it through the acceptance stage
+    // would hit a primary-key violation in the write phase = defect
+    // [500])
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: fpHex },
@@ -356,8 +365,8 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     );
     expect(rows[0]?.["n"]).toBe(0);
 
-    // 運用復旧: 衝突メンバーを remove_member すれば完全集合が再び充足可能になり、
-    // ローテーションが通る
+    // Operational recovery: remove_member on the colliding member makes
+    // the complete set satisfiable again, and the rotation goes through
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: fpHex },
@@ -375,7 +384,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(recovered.status).toBe(200);
   });
 
-  it("repairs a server wrap through delete → re-register (§12-6 の修復経路)", async () => {
+  it("repairs a server wrap through delete → re-register (the §12-6 repair path)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
     const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
@@ -399,14 +408,14 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(deleted[0]?.["target_user_id"]).toBeNull();
     expect(deleted[0]?.["target_key_fingerprint"]).toBe(fpHex);
 
-    // 追記経路での再登録(エポックにメンバー宛が残っているため初回完全一致ではない)
+    // Re-registration via the append path (not a first-time complete-match since the epoch still has member-directed wraps)
     const reRegistered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [wrap],
     });
     expect(reRegistered.status).toBe(204);
   });
 
-  it("rejects a server wrap for a revoked grant with 422 (失効済み grant は not-granted)", async () => {
+  it("rejects a server wrap for a revoked grant with 422 (a revoked grant is not-granted)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
     await appendOperation(fixture, OWNER, {
@@ -422,18 +431,20 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(body["reason"]).toBe("recipient-not-granted");
   });
 
-  it("rejects a wrap deletion whose recipientClass does not match the stored row (監査列の操縦を塞ぐ)", async () => {
+  it("rejects a wrap deletion whose recipientClass does not match the stored row (closing manipulation of the audit columns)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // member のラップを server クラスで指す削除: 保存行の class と不一致 = 404。
-    // 素通しにすると member の ULID が target_key_fingerprint 列へ載り、
-    // (target_user_id, seq) 索引からこの削除が消える(AUDIT_SPEC §1-2)
+    // A deletion that points at a member wrap as class server: it
+    // mismatches the stored row's class = 404. If passed through, the
+    // member's ULID would land on the target_key_fingerprint column and
+    // this deletion would vanish from the (target_user_id, seq) index
+    // (AUDIT_SPEC §1-2)
     const crossClass = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientClass: "server", recipientUserId: OWNER }],
     });
     expect(crossClass.status).toBe(404);
     expect(((await crossClass.json()) as Record<string, unknown>)["_tag"]).toBe("DekWrapNotFound");
 
-    // 逆方向: server のラップを member クラス(省略時既定)で指す削除も 404
+    // The reverse direction: deleting a server wrap by pointing at it as class member (the default when omitted) is also a 404
     const fpHex = await grantServer([ENV]);
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
@@ -444,7 +455,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     });
     expect(reverse.status).toBe(404);
 
-    // どちらの試行も削除・監査行を残していない(検証フェーズで全体が拒否される)
+    // Neither attempt left a deletion or an audit row (the verification phase rejects the whole request)
     const deleted = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
@@ -458,10 +469,12 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => 
     expect(rows[0]?.["n"]).toBe(ALL_MEMBERS.length + 1);
   });
 
-  it("rejects class-only-differing refs in one deletion request (1 行に監査 2 行を積ませない)", async () => {
+  it("rejects class-only-differing refs in one deletion request (never stack 2 audit rows on 1 row)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 同一 (epoch, recipient) を member / server の両クラスで指す: 重複検出は
-    // クラス込みキーで通過するが、server 側が保存行と不一致 = 404 で全体拒否
+    // Pointing at the same (epoch, recipient) as both member and server
+    // classes: duplicate detection passes on the class-including key, but
+    // the server side mismatches the stored row = 404, rejecting the
+    // whole request
     const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         { epoch: 1, recipientUserId: OWNER },
@@ -484,7 +497,7 @@ const memberOf = (userId: string) =>
       userId,
       role: "member",
       scope: { kind: "all" },
-      // 最初の鍵 1 つ = 端末 1 つ(cap は構造的に (owner, all) — CRYPTO_SPEC §6.2 DK)
+      // One initial key = one device (the cap is structurally (owner, all) — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
           "33".repeat(16),
@@ -517,11 +530,14 @@ const grantOf = (
   ] as const;
 
 describe("expectedWrapRecipientCount", () => {
-  it("(id, 鍵) の保存キー粒度で重複除去した和集合で数える(端末軸 — K3)", () => {
-    // add_member の対象 user_id は存在検証されない自由文字列(AUTH_SPEC §11-1)
-    // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーは端末軸
-    // (id, enc 公開鍵)なので、鍵が違えば別スロット(2 と数える)、同じ id かつ同じ
-    // 鍵なら 1 スロット — 期待数もこの粒度で数えないと完全集合検査が恒久に失敗する
+  it("counts the union deduplicated at the (id, key) stored-key granularity (the device axis — K3)", () => {
+    // add_member's target user_id is a free-form string with no existence
+    // check (AUTH_SPEC §11-1), so a member with the same string as the
+    // server-key FP can be created. The stored key is the device axis
+    // (id, enc public key), so different keys are separate slots (counted
+    // as 2); the same id and same key is one slot — the expected count
+    // must be computed at this granularity or the complete-set check
+    // fails permanently
     const collidingFp = "ab".repeat(16);
     const otherFp = "cd".repeat(16);
     const state: ChainState = {
@@ -537,14 +553,14 @@ describe("expectedWrapRecipientCount", () => {
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-a: {user-1, collidingFp(member 鍵), collidingFp(server 鍵), otherFp} — 4 スロット
+    // env-a: {user-1, collidingFp (member key), collidingFp (server key), otherFp} — 4 slots
     expect(expectedWrapRecipientCount(state, "env-a")).toBe(4);
-    // env-b: in-scope な grant は otherFp のみ
+    // env-b: the only in-scope grant is otherFp
     expect(expectedWrapRecipientCount(state, "env-b")).toBe(3);
-    // スコープ外の環境は member のみ
+    // Out-of-scope environments are members only
     expect(expectedWrapRecipientCount(state, "env-c")).toBe(2);
 
-    // 同じ id かつ同じ鍵(member の enc 公開鍵 = サーバー鍵)は 1 スロット
+    // The same id and same key (the member's enc public key = the server key) is one slot
     const sameKey: ChainState = {
       ...state,
       serverGrants: new Map([grantOf(collidingFp, ["env-a"], "11".repeat(32))]),

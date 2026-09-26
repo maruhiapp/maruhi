@@ -1,27 +1,41 @@
-// 要ローテーション検出(AUDIT_SPEC §4.1)+ フラグビュー / 取り下げ(§6 / §7)+
-// 受信者鍵の整合(AUTH_SPEC §12-6 の B1a 追補 — 409 の保存済み受信者 enc 公開鍵と
-// 再追加時掃除)の統合テスト。@cloudflare/vitest-plugin(workerd 実環境)で SELF
-// 経由の HttpApi と DO SQLite を検証する。
+// Integration tests for rotation-needed detection (AUDIT_SPEC
+// §4.1) + the flag view / dismissals (§6 / §7) + recipient-key
+// consistency (the B1a addendum to AUTH_SPEC §12-6 — a 409 carrying
+// the stored recipient enc public key of the occupied wrap, and the
+// re-add sweep). Verifies the HttpApi and DO SQLite via SELF on
+// @cloudflare/vitest-plugin (the real workerd environment).
 //
-// このスイートが固定するもの(変異検証の対応):
-// - 候補集合 = 在籍区間 × 存在期間の重なり(区間外の変数の除外・削除済み変数の
-//   包含・再追加の区間和)
-// - 根拠ランク: 在籍区間内の var.read = read / それ以外 = readable
-// - rotation.recommended の記録細則(§3.3): 1 対 1 行・actor = system・
-//   chain_seq 列は使わない・payload の basis / triggerChainSeq・ミラーと同一
-//   受理の直後 seq
-// - 解消導出(§4.1-5): マーカーなし push と dismissed は解消、再暗号化マーカー
-//   付き push は解消しない、解消は seq 順(取り下げ後の再検出は生き返る)
-// - 可視性(§6): フラグビューはクラス 1(reader 可)、非メンバー 404。
-//   取り下げは admin 以上(member = 403)・有効フラグなし 404・all-or-nothing・
-//   重複対の畳み込み・空列挙 400
-// - revoke_server 変種: 候補 = grant スコープ内のみ、(a) = 区間内の
-//   server.lease_issued(発行時点のアクティブ変数)、拡大再 grant は
-//   「環境ごとの開示窓」(拡大 seq 起点 — 最初のスコープ固定でも区間開始への
-//   繰り上げでもない)
-// - 受信者鍵の整合(§12-6 の B1a 追補): 409 が占有ラップの保存済み enc 公開鍵を
-//   運ぶ / add_member 受理時の旧鍵宛ラップ掃除(dek.deleted actor = system +
-//   原因 payload。同一鍵の再追加は掃除しない・他メンバーのラップは触らない)
+// What this suite pins (mapped to the mutated claims):
+// - the candidate set = the overlap of membership intervals and
+//   existence windows (variables outside the interval are excluded;
+//   deleted variables are included; re-added memberships union
+//   intervals)
+// - the basis rank: var.read inside the membership interval = read;
+//   everything else = readable
+// - the rotation.recommended recording rules (§3.3): one row per
+//   pair, actor = system, the chain_seq column is not used, the
+//   payload carries basis / triggerChainSeq, and the row lands at
+//   the seq right after the mirror's same acceptance
+// - resolution derivation (§4.1-5): a markerless push and a
+//   dismissal resolve, a push carrying the re-encryption marker
+//   does not, resolution is seq-ordered (re-detection after a
+//   dismissal revives)
+// - visibility (§6): the flag view is class 1 (reader allowed), a
+//   non-member gets 404. Dismissal requires admin or above (member
+//   = 403), no live flag → 404, all-or-nothing, duplicate pairs
+//   fold, empty list = 400
+// - the revoke_server variant: candidates are within the grant
+//   scope only; (a) is an in-interval server.lease_issued (the
+//   active variables at issuance); an expanded re-grant is a
+//   "per-environment disclosure window" (starting at the widening
+//   seq — neither pinned to the first scope nor brought forward to
+//   the interval's start)
+// - recipient-key consistency (the §12-6 B1a addendum): a 409
+//   carries the stored enc public key of the occupied wrap /
+//   accepting add_member sweeps wraps addressed to the old key
+//   (dek.deleted with actor = system + a cause payload; a re-add
+//   under the same key sweeps nothing and other members' wraps are
+//   untouched)
 
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -80,7 +94,7 @@ interface WireRotationFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
-  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES — 3 変種すべて)。 */
+  /** AUDIT_SPEC §3.3's trigger (2026-09-14 ES — all 3 variants). */
   readonly trigger?: "remove_member" | "change_role" | "revoke_server";
 }
 
@@ -90,7 +104,7 @@ async function readFlags(asUserId: string = READER): Promise<readonly WireRotati
   return ((await response.json()) as { flags: readonly WireRotationFlag[] }).flags;
 }
 
-/** remove_member をチェーンへ追記し、その chain seq を返す。 */
+/** Append remove_member to the chain and return its chain seq. */
 async function removeMember(targetUserId: string): Promise<number> {
   await appendOperation(fixture, OWNER, {
     op: "remove_member",
@@ -99,7 +113,7 @@ async function removeMember(targetUserId: string): Promise<number> {
   return fixture.head.seq;
 }
 
-/** ベクター固定鍵での再追加(同一鍵の再参加)。 */
+/** Re-add under the vector-pinned keys (re-joining with the same keys). */
 async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"): Promise<void> {
   const keys = vectorKeyOf(targetUserId);
   await appendOperation(fixture, OWNER, {
@@ -115,13 +129,13 @@ async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"
   });
 }
 
-/** 対象メンバーとしての一括 pull(var.read の記録経路 — §12-7)。 */
+/** A bulk pull as the target member (the var.read recording path — §12-7). */
 async function pullAs(userId: string): Promise<void> {
   const response = await requestJson("GET", `/environments/${ENV}/pull`, token(userId));
   expect(response.status).toBe(200);
 }
 
-/** OWNER が任意環境に変数を作る(createVariableOk は writer = MEMBER 固定のため)。 */
+/** OWNER creates a variable in an arbitrary environment (since createVariableOk pins writer = MEMBER). */
 async function createVariableAsOwner(input: {
   readonly dek: Uint8Array;
   readonly environmentId: string;
@@ -169,7 +183,7 @@ async function createVariableAsOwner(input: {
   return statement;
 }
 
-/** OWNER による VAR の v(N) push(値署名の prev 連鎖込み)。 */
+/** OWNER's v(N) push on VAR (including the value signature's prev chain). */
 async function pushNextVersion(input: {
   readonly dek: Uint8Array;
   readonly version: number;
@@ -192,11 +206,12 @@ async function pushNextVersion(input: {
   return value;
 }
 
-describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () => {
-  it("在籍区間内に読んだ変数は read、読んでいない候補は readable として 1 対 1 行を記録する", async () => {
+describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
+  it("records one row per pair — read for a variable read inside the interval, readable for unread candidates", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER が暗号文を取得(var.read の記録)してから、読んでいない 2 本目を作る
+    // MEMBER fetches the ciphertext (records var.read), then a
+    // second, unread variable is created
     await pullAs(MEMBER);
     await createVariableOk(dek, "var-api-key", "API_KEY", "sk-alpha");
     const removalSeq = await removeMember(MEMBER);
@@ -219,7 +234,8 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       trigger: "remove_member",
     });
 
-    // 記録細則(§3.3): actor = system、chain_seq 列は使わない(payload に運ぶ)
+    // Recording rules (§3.3): actor = system; the chain_seq column
+    // is not used (carried in the payload)
     const events = await readAuditEvents(projectId);
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
     expect(recommended).toHaveLength(2);
@@ -232,7 +248,8 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       expect(payload["triggerChainSeq"]).toBe(removalSeq);
       expect(["read", "readable"]).toContain(payload["basis"]);
     }
-    // 検出行はミラー(chain.member_removed)の直後 seq(同一受理の追記 — §4.1-4)
+    // The detection rows sit at the seq right after the mirror
+    // (chain.member_removed) (a same-acceptance append — §4.1-4)
     const mirror = events.find((event) => event["event"] === "chain.member_removed");
     expect(mirror).toBeDefined();
     expect(Math.min(...recommended.map((event) => Number(event["seq"])))).toBe(
@@ -240,18 +257,20 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
     );
   });
 
-  it("削除済み変数も候補に含め、dismissed だけが解消し、取り下げ後の再検出は生き返る(§4.1-2 / -5)", async () => {
+  it("deleted variables are still candidates, only dismissal resolves, and re-detection after a dismissal revives (§4.1-2 / -5)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await pullAs(MEMBER);
-    // 変数を消しても過去の閲覧可能性は消えない(上流 credential は失効しない)
+    // Deleting the variable does not erase past readability (the
+    // upstream credential is not revoked)
     expect((await deleteVariableRequest(VAR, OWNER)).status).toBe(204);
     await removeMember(MEMBER);
     const flags = await readFlags();
     expect(flags).toHaveLength(1);
     expect(flags[0]).toMatchObject({ variableId: VAR, basis: "read" });
 
-    // 削除済み変数は push できない — 唯一の解消経路が取り下げ(admin)
+    // A deleted variable cannot be pushed — the only resolution
+    // path is dismissal (admin)
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });
@@ -267,18 +286,20 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       variable_id: VAR,
     });
 
-    // 解消は seq 順(§4.1-5): 取り下げ後の再追加 → 再削除の検出は生き返る
+    // Resolution is seq-ordered (§4.1-5): detection on the post-
+    // dismissal re-add → re-remove revives
     await readdWithSameKeys(MEMBER, "member");
     await removeMember(MEMBER);
     expect(await readFlags()).toHaveLength(1);
   });
 
-  it("再追加の区間和: 全区間の候補を含み、どの区間とも重ならない変数は含まない(§4.1-1 / -2)", async () => {
+  it("the interval union of a re-add: candidates cover every interval; a variable overlapping none is excluded (§4.1-1 / -2)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
 
-    // 不在の間だけ存在した変数(OWNER が作成し、再追加前に削除)
+    // A variable that existed only during the absence (created by
+    // OWNER, deleted before the re-add)
     const gapVar = "var-gap-secret";
     const gapStatement = await createVariableAsOwner({
       dek,
@@ -317,24 +338,26 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
     ).toBe(204);
     fixture.manifests.set(ENV, gapDelete.state);
 
-    // 再追加(同一鍵)→ 再削除
+    // Re-add (same keys) → re-remove
     await readdWithSameKeys(MEMBER, "member");
     await removeMember(MEMBER);
 
     const flags = await readFlags();
-    // VAR は両方の削除で検出される(1 対に有効フラグ 2 行 — 区間の和)。
-    // gap 変数はどの在籍区間とも重ならないため 1 行も検出されない
+    // VAR is detected at both removals (2 live flag rows on one
+    // pair — the interval union). The gap variable overlaps no
+    // membership interval and is never detected
     expect(flags.filter((flag) => flag.variableId === VAR)).toHaveLength(2);
     expect(flags.filter((flag) => flag.variableId === gapVar)).toHaveLength(0);
   });
 
-  it("解消導出: マーカーなし push は解消し、再暗号化マーカー付き push は解消しない(§4.1-5)", async () => {
+  it("resolution derivation: a markerless push resolves, a re-encryption-marked push does not (§4.1-5)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
     expect(await readFlags()).toHaveLength(1);
 
-    // 再暗号化マーカー付き(義務ローテーションの再 push 相当)は解消しない
+    // A push carrying the re-encryption marker (equivalent to
+    // re-pushing the mandated rotation) does not resolve
     const v2 = await pushNextVersion({
       dek,
       version: 2,
@@ -342,7 +365,7 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       reencryption: true,
     });
     expect(await readFlags()).toHaveLength(1);
-    // マーカーは監査 payload に写る(AUDIT_SPEC §3.3)
+    // The marker lands in the audit payload (AUDIT_SPEC §3.3)
     const events = await readAuditEvents(projectId);
     const markedPush = events.find(
       (event) => event["event"] === "var.version_pushed" && Number(event["version"]) === 2,
@@ -351,7 +374,8 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       reencryption: true,
     });
 
-    // マーカーなし push(= 上流をローテーションして新しい値を入れた)は解消する
+    // A markerless push (= rotated the upstream credential and
+    // stored a new value) resolves
     await pushNextVersion({
       dek,
       version: 3,
@@ -360,32 +384,36 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
     expect(await readFlags()).toHaveLength(0);
   });
 
-  it("可視性: フラグビューはクラス 1(reader 可)・非メンバーには 404(§6 / §11-2)", async () => {
+  it("visibility: the flag view is class 1 (reader allowed); a non-member gets 404 (§6 / §11-2)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
-    // reader も見える(検出の目的は全員への促し — admin 限定では機能しない)
+    // Readers can see it too (detection's purpose is prompting
+    // everyone — limiting it to admins would not work)
     expect(await readFlags(READER)).toHaveLength(1);
     const stranger = await requestJson("GET", "/rotation/flags", token(STRANGER));
     expect(stranger.status).toBe(404);
   });
 });
 
-describe("取り下げ操作(AUDIT_SPEC §3.3 / §7)", () => {
-  it("admin 未満は 403、有効フラグの無い対は 404 で all-or-nothing、重複対は 1 行に畳む", async () => {
+describe("the dismissal operation (AUDIT_SPEC §3.3 / §7)", () => {
+  it("denies below admin with 403, rejects any pair without a live flag with 404 and all-or-nothing, and folds duplicate pairs into one row", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER を残したまま READER を削除(取り下げ権限の検査に member が要る)
+    // Remove READER while keeping MEMBER (the dismissal-permission
+    // check needs a member)
     await removeMember(READER);
     expect(await readFlags(OWNER)).toHaveLength(1);
 
-    // チェーン role member は取り下げられない(admin 以上 — ラップ削除と同水準)
+    // A chain-role member cannot dismiss (admin or above — the same
+    // level as wrap deletion)
     const asMember = await requestJson("POST", "/rotation/dismissals", token(MEMBER), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });
     expect(asMember.status).toBe(403);
 
-    // 有効フラグの無い対を含むリクエストは全体を 404 で拒否(黙って成功させない)
+    // A request containing a pair with no live flag rejects the
+    // whole thing with 404 (no silent success)
     const mixed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [
         { environmentId: ENV, variableId: VAR },
@@ -397,12 +425,14 @@ describe("取り下げ操作(AUDIT_SPEC §3.3 / §7)", () => {
       _tag: "RotationFlagNotFound",
       variableId: "var-not-flagged",
     });
-    // all-or-nothing: 有効だった対も取り下げられず、監査にも 1 行も積まれない
+    // all-or-nothing: even the live pair is not dismissed and no
+    // audit row is appended
     expect(await readFlags(OWNER)).toHaveLength(1);
     const before = await readAuditEvents(projectId);
     expect(before.filter((event) => event["event"] === "rotation.dismissed")).toHaveLength(0);
 
-    // 同一対の重複列挙は 1 行に畳む(対単位の冪等)
+    // Duplicate entries of the same pair fold to one row
+    // (idempotent per pair)
     const deduped = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [
         { environmentId: ENV, variableId: VAR },
@@ -414,15 +444,16 @@ describe("取り下げ操作(AUDIT_SPEC §3.3 / §7)", () => {
     expect(after.filter((event) => event["event"] === "rotation.dismissed")).toHaveLength(1);
     expect(await readFlags(OWNER)).toHaveLength(0);
 
-    // 空列挙は Schema 検証の 400(呼び出し形として意味がない)
+    // An empty list is a Schema-validation 400 (a call shape with
+    // no meaning)
     const empty = await requestJson("POST", "/rotation/dismissals", token(OWNER), { targets: [] });
     expect(empty.status).toBe(400);
   });
 });
 
-describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)", () => {
-  it("候補は grant スコープ内のみ、リース発行時点のアクティブ変数が read になる", async () => {
-    // ENV(スコープ内)と env-out(スコープ外)を用意する
+describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1)", () => {
+  it("candidates stay within the grant scope; the variables active at lease issuance become read", async () => {
+    // Prepare ENV (in scope) and env-out (out of scope)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const outEnv = "env-out-of-scope";
@@ -453,7 +484,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       name: "OUT_SECRET",
     });
 
-    // grant(スコープ = ENV のみ)+ サーバー宛バックフィル + リース発行
+    // grant (scope = ENV only) + server-bound backfill + lease issuance
     const key = await deploymentKey();
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
@@ -495,10 +526,12 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
     );
     expect(lease.status).toBe(200);
 
-    // リース発行より後に作られた変数(発行時点で存在しない → readable)
+    // A variable created after the lease issuance (nonexistent at
+    // issuance → readable)
     await createVariableOk(dek, "var-after-lease", "AFTER_LEASE", "later-secret");
 
-    // 失効 → 検出(変種): スコープ内のみ・(a) はリース発行時点のアクティブ変数
+    // Revocation → detection (the variant): in-scope only, and (a)
+    // is the variables active at lease issuance
     await appendOperation(fixture, OWNER, {
       op: "revoke_server",
       payload: { serverKeyFingerprintHex: key.fingerprintHex },
@@ -519,16 +552,18 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       basis: "readable",
       trigger: "revoke_server",
     });
-    // スコープ外の環境の変数は候補にならない(§4.1 変種の手順 2)
+    // Variables in the out-of-scope environment are not candidates
+    // (step 2 of the §4.1 variant)
     expect(byVariable.has(outVar)).toBe(false);
-    // member 変種の列(target_user_id)は使わない
+    // The member variant's column (target_user_id) is not used
     expect(flags.every((flag) => flag.targetUserId === undefined)).toBe(true);
   });
 
-  it("拡大再 grant で加わった環境は「拡大 seq からの開示窓」で検出される(§4.1 変種)", async () => {
+  it("an environment added by an expanded re-grant is detected under a 'disclosure window from the widening seq' (the §4.1 variant)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 拡大で後から加わる環境と、拡大**前**に削除される変数を用意する
+    // Prepare an environment that joins via widening later, and a
+    // variable deleted **before** the widening
     const widenEnv = "env-widened";
     const widenDek = makeDek();
     const widenDeks = await wrapDekForAll({
@@ -574,7 +609,8 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
         leasePolicy,
       },
     });
-    // 最初の grant の後・拡大の前に preVar を削除(存在期間が窓の手前で閉じる)
+    // Delete preVar after the first grant and before the widening
+    // (its existence window closes just short of the window)
     const preDelete = await signMetaStatementAs(OWNER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: widenEnv,
@@ -605,7 +641,8 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       ).status,
     ).toBe(204);
     fixture.manifests.set(widenEnv, preDeleteManifest.state);
-    // 拡大再 grant(チェーン合意規則は同一鍵 FP への拡大のみ受理 — CRYPTO_SPEC §6.2)
+    // The expanded re-grant (the chain's consensus rule accepts
+    // only a widening to the same key FP — CRYPTO_SPEC §6.2)
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
       payload: {
@@ -615,7 +652,7 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
         leasePolicy,
       },
     });
-    // 窓の内側で生きている変数(拡大後に作成)
+    // A variable living inside the window (created after the widening)
     const widenVar = "var-in-window";
     await createVariableAsOwner({
       dek: widenDek,
@@ -630,24 +667,28 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
 
     const flags = await readFlags(OWNER);
     const byVariable = new Map(flags.map((flag) => [flag.variableId, flag]));
-    // 拡大で加わった環境の変数は検出される(最初のスコープへの固定は fail open)
+    // A variable in the widened environment is detected (pinning
+    // to the first scope would fail open)
     expect(byVariable.get(widenVar)).toMatchObject({
       environmentId: widenEnv,
       basis: "readable",
       targetServerKeyFingerprintHex: key.fingerprintHex,
     });
-    // 最初のスコープの環境は従来どおり検出される
+    // The first scope's environment is detected as before
     expect(byVariable.get(VAR)).toMatchObject({ environmentId: ENV, basis: "readable" });
-    // 拡大前に削除された変数は窓と重ならない(窓を区間開始まで繰り上げない —
-    // 繰り上げると grant #1 と拡大の間に存在した preVar へ誤検出が出る)
+    // A variable deleted before the widening does not overlap the
+    // window (the window is not brought forward to the interval's
+    // start — doing so would wrongly detect preVar, which existed
+    // between grant #1 and the widening)
     expect(byVariable.has(preVar)).toBe(false);
   });
 });
 
-describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
-  it("上書き禁止 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ", async () => {
+describe("recipient-key consistency (AUTH_SPEC §12-6 — the B1a addendum)", () => {
+  it("an overwrite-forbidden 409 carries the occupied wrap's stored recipient enc public key", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 既存スロット (ENV, 1, MEMBER) への追記は 409 + 保存済み enc 公開鍵
+    // Appending to the existing slot (ENV, 1, MEMBER) is 409 + the
+    // stored enc public key
     const duplicate = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -668,7 +709,7 @@ describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
     });
   });
 
-  it("鍵を変えた再追加の受理時に旧鍵宛ラップを掃除し、dek.deleted(system + 原因)を記録する", async () => {
+  it("accepting a re-add under different keys sweeps the old-key wraps and records dek.deleted (system + cause)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await rotateEnvironmentOk(fixture, OWNER, ENV, 2);
     await removeMember(MEMBER);
@@ -679,7 +720,9 @@ describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
     );
     expect(Number(wrapsBefore[0]?.["n"])).toBe(2);
 
-    // 別鍵での再追加(受諾鍵が変わった再参加)— 旧鍵宛の 2 ラップは受理時に消える
+    // A re-add under a different key (re-joining after the
+    // acceptance key changed) — the 2 wraps addressed to the old key
+    // are deleted at acceptance
     await appendOperation(fixture, OWNER, {
       op: "add_member",
       payload: {
@@ -698,7 +741,8 @@ describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
       MEMBER,
     );
     expect(Number(wrapsAfter[0]?.["n"])).toBe(0);
-    // 他メンバーの正当なラップは触らない(上書き禁止の不変条件は不変)
+    // Other members' legitimate wraps are untouched (the
+    // overwrite-forbidden invariant holds)
     const others = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id != ?",
@@ -719,7 +763,7 @@ describe("受信者鍵の整合(AUTH_SPEC §12-6 — B1a 追補)", () => {
     }
   });
 
-  it("同一鍵での再追加は掃除しない(既存ラップがそのまま有効に復帰する)", async () => {
+  it("a re-add under the same key sweeps nothing (the existing wraps return to live use as-is)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await removeMember(READER);
     await readdWithSameKeys(READER, "reader");

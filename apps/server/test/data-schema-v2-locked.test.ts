@@ -1,7 +1,9 @@
-// レイアウト v2 — 値なしスキーマのサーバー受理面の統合テスト —
-// schema-locked(§12-11 作成時の一回検査)・description の受理検査(§12-8)・
-// 未対応レイアウト(§12-2 裁定 CR)。スイート全体の分担は data-schema-v2.test.ts
-// 冒頭、共有ヘルパは support/schema-v2-scenario.ts を参照。
+// Layout v2 — integration tests of the valueless schema's server-side
+// acceptance surface — schema-locked (the §12-11 one-time check at
+// creation), the description acceptance check (§12-8), and unsupported
+// layouts (§12-2 ruling CR). See the top of data-schema-v2.test.ts for
+// how the suite is split and support/schema-v2-scenario.ts for the
+// shared helpers.
 
 import { describe, expect, it } from "vitest";
 
@@ -38,11 +40,11 @@ import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
 
 registerDataScenario();
 
-describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
-  it("locked: v1 作成・varType なしの v2 作成は 422 schema-required、varType ありは受理", async () => {
+describe("schema-locked (§12-11 — the one-time check at creation)", () => {
+  it("locked: v1 creation and v2 creation without varType are 422 schema-required; with varType is accepted", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
-    // v1 作成(layoutVersion 1)
+    // v1 creation (layoutVersion 1)
     const v1Statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const v1Value = await encryptValue(
       dek,
@@ -61,7 +63,7 @@ describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
       _tag: "SchemaPolicyRejected",
       reason: "schema-required",
     });
-    // varType なしの v2 宣言
+    // A v2 declaration without varType
     const untyped = await declareVariableRequest({
       variableId: VAR,
       name: "API_KEY",
@@ -73,7 +75,7 @@ describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
       _tag: "SchemaPolicyRejected",
       reason: "schema-required",
     });
-    // varType ありは宣言・値同梱とも受理
+    // With varType, both declaration and the value-bundled path are accepted
     await declareVariableOk({ variableId: VAR, name: "API_KEY", schema: { varType: "string" } });
     const typedCreate = await createVariableV2Request({
       variableId: "var-typed",
@@ -85,7 +87,7 @@ describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
     expect(typedCreate.status).toBe(200);
   });
 
-  it("locked: スキーマ再発行で varType を空へ戻すことは妨げない(作成時の一回検査 — 継続不変条件ではない)", async () => {
+  it("locked: re-issuing the schema with varType empty is not prevented (a one-time check at creation — not an ongoing invariant)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
     await createVariableV2Request({
@@ -114,7 +116,7 @@ describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
     record();
   });
 
-  it("locked: enabled 期に varType なしで作られた declared の activation は遡及されず受理される", async () => {
+  it("locked: activation of a declared created without varType during the enabled period is not retroacted and is accepted", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY", schema: { varType: "" } });
@@ -129,15 +131,15 @@ describe("schema-locked(§12-11 — 作成時の一回検査)", () => {
   });
 });
 
-describe("description の受理検査(§12-8)", () => {
-  it("1024 コードポイントは受理、超過は 422 too-long(サロゲートペアもコードポイントで数える)", async () => {
+describe("the description acceptance check (§12-8)", () => {
+  it("1024 code points are accepted; beyond that is 422 too-long (surrogate pairs count as code points)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    // アストラル面(UTF-16 で 2 単位)× 1024 = 1024 コードポイント → 受理
+    // An astral-plane char (2 UTF-16 units) × 1024 = 1024 code points → accepted
     await declareVariableOk({
       variableId: VAR,
       name: "API_KEY",
-      schema: { description: "𠮷".repeat(MAX_SCHEMA_DESCRIPTION_CODEPOINTS) },
+      schema: { description: "𠮷".repeat(MAX_SCHEMA_DESCRIPTION_CODEPOINTS) }, // english-exempt: non-BMP codepoint test data
     });
     const rejected = await declareVariableRequest({
       variableId: "var-too-long",
@@ -152,7 +154,7 @@ describe("description の受理検査(§12-8)", () => {
     });
   });
 
-  it("制御文字(改行・ANSI エスケープの ESC)は 422 control-characters(単一行に固定)", async () => {
+  it("control characters (newlines, ANSI-escape ESC) are 422 control-characters (pinned to a single line)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     for (const description of ["line one\nline two", "colored \u001b[31mred\u001b[0m"]) {
@@ -171,7 +173,7 @@ describe("description の受理検査(§12-8)", () => {
   });
 });
 
-/** サポート外レイアウトの宣言作成(署名 API では作れないためゼロ署名)。 */
+/** Build a declaration of an unsupported layout (zero signature, since the signing API cannot produce one). */
 function unsupportedLayoutStatement(): Record<string, unknown> {
   return {
     suite: "maruhi/v1",
@@ -189,8 +191,8 @@ function unsupportedLayoutStatement(): Record<string, unknown> {
   };
 }
 
-describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
-  it("layoutVersion 3 は 422 unsupported-layout の型付き拒否(署名不正・500 に潰さない)", async () => {
+describe("unsupported layouts (§12-2 — ruling CR)", () => {
+  it("layoutVersion 3 is a typed 422 unsupported-layout rejection (not crushed into a bad-signature 500)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
@@ -204,10 +206,11 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     });
   });
 
-  it("サポート範囲検査は schemaPolicy より前(disabled / locked でも誤誘導エラーにしない)", async () => {
-    // v3 クライアントへの正直な応答は常に「server update required」であり、
-    // schema-policy-disabled(enabled 化しても直らない)や schema-required
-    // (varType を足しても直らない)を先に返さない(裁定 CR の趣旨)
+  it("the support-range check precedes schemaPolicy (no misleading error under disabled / locked either)", async () => {
+    // The honest answer to a v3 client is always "server update
+    // required"; schema-policy-disabled (unchanged by enabling) or
+    // schema-required (unchanged by adding varType) must not be returned
+    // first (the intent of ruling CR)
     await createEnvironmentOk(fixture, ENV, "App");
     for (const policy of ["disabled", "locked"] as const) {
       await setSchemaPolicyOk(policy, OWNER);
@@ -223,10 +226,10 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     }
   });
 
-  it("サポート範囲検査は作成の前段検査(重複名)より前(名前衝突の v3 に duplicate-name を返さない)", async () => {
+  it("the support-range check precedes creation's pre-checks (duplicate name) (no duplicate-name for a name-colliding v3)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    // v3 宣言と同名の既存変数を先に作り、名前衝突の状況を用意する
+    // Create an existing variable with the same name as the v3 declaration first, setting up a name collision
     await createVariableOk(dek, "var-existing", "API_KEY", "occupied");
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: unsupportedLayoutStatement(),
@@ -239,12 +242,12 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     });
   });
 
-  it("サポート範囲検査は削除の直前一致・メタ CAS の判定より前(rename / 削除経路)", async () => {
+  it("the support-range check precedes deletion's just-before match and the meta CAS judgment (the rename / delete paths)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // v3 の後続ステートメント(rename 形・stale な metaVersion でも
-    // unsupported-layout が CAS 409 より先に確定する)
+    // A v3 successor statement (even in rename form with a stale
+    // metaVersion, unsupported-layout settles before the CAS 409)
     const successor = {
       suite: "maruhi/v1",
       environmentId: ENV,
@@ -270,7 +273,7 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
-    // v3 の削除(直前一致 payload-mismatch でなく unsupported-layout)
+    // A v3 deletion (unsupported-layout, not the just-before-match payload-mismatch)
     const removed = await requestJson(
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
@@ -285,8 +288,9 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
-    // v3 の activation(status / name ガード・値 CAS でなく unsupported-layout —
-    // activate 経路も rename / 削除と同じ巻き上げ)
+    // A v3 activation (unsupported-layout, not the status/name guard or
+    // value CAS — the activate path takes the same hoisting as rename /
+    // delete)
     const activated = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/activate`,

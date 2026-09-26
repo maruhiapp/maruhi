@@ -1,8 +1,11 @@
-// リカバリーブロブ API の統合テスト(AUTH_SPEC §13。CRYPTO_SPEC §8 のサーバー面)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の実経路を検証する。
+// Integration tests for the recovery-blob API (AUTH_SPEC §13; the
+// server side of CRYPTO_SPEC §8).
+// Verifies the real path via SELF on @cloudflare/vitest-plugin (real
+// workerd environment).
 //
-// ブロブはサーバーから見て不透明な暗号文なので、内容は任意の hex フィクスチャで
-// よい(復号可能性はクライアント側 = CLI のテストが担う)。
+// The blob is opaque ciphertext to the server, so any hex fixture
+// suffices for the content (decryptability is the client side's job —
+// covered by the CLI tests).
 
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -52,10 +55,11 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     expect(typeof body["updatedAtMs"]).toBe("number");
   });
 
-  it("rejects a session principal for both PUT and GET (§5 能力制限 — §13-2 の表 = トークンのみ)", async () => {
+  it("rejects a session principal for both PUT and GET (the §5 capability restriction — the §13-2 table = tokens only)", async () => {
     const session = await loginSession(502);
-    // 登録・取得ともセッションからの正当な導線がない(W0 裁定)。
-    // CSRF ヘッダー込みでも 403 session-not-allowed
+    // Neither registration nor fetch has a legitimate path from a
+    // session (W0 ruling). Even with the CSRF header it is 403
+    // session-not-allowed
     const put = await putWrap(sessionHeaders(session));
     expect(put.status).toBe(403);
     expect(((await put.json()) as Record<string, unknown>)["reason"]).toBe("session-not-allowed");
@@ -70,22 +74,25 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     const token = await cliToken(507);
     expect((await putWrap(bearer(token))).status).toBe(204);
     const session = await loginSession(507);
-    // Lax クッキーだけが同送されるクロスサイト遷移の形(カスタムヘッダーなし)。
-    // 能力判定(§5)は CSRF 検査に先行し、拒否理由はヘッダーの有無で揺れない
+    // The shape of a cross-site navigation where only the Lax cookie
+    // rides along (no custom header). The capability judgment (§5)
+    // precedes the CSRF check, so the rejection reason does not vary
+    // with the header's presence
     const get = await SELF.fetch(`${BASE}/auth/recovery`, {
       headers: { cookie: sessionHeaders(session)["cookie"] ?? "" },
     });
     expect(get.status).toBe(403);
     const body = (await get.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("session-not-allowed");
-    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
+    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
     expect(row?.fetch_count ?? 0).toBe(0);
   });
 
-  it("re-registration replaces the previous blob (再発行 = 置換。§13-1)", async () => {
+  it("re-registration replaces the previous blob (re-issuance = replacement; §13-1)", async () => {
     const token = await cliToken(503);
     expect((await putWrap(bearer(token))).status).toBe(204);
     const reissued = "cd".repeat(64);
@@ -93,23 +100,23 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
 
     const get = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     const body = (await get.json()) as Record<string, unknown>;
-    // 旧ブロブは残らない(user 単位で高々 1 行)
+    // The old blob does not survive (at most one row per user)
     expect(body["ciphertextHex"]).toBe(reissued);
   });
 
-  it("rejects a project-scoped admin token with 403 (§13-2 の鍵素材管理条件)", async () => {
+  it("rejects a project-scoped admin token with 403 (§13-2's key-material management condition)", async () => {
     const token = await cliToken(504, [{ project: "f0".repeat(32), permission: "admin" }]);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(403);
   });
 
-  it("rejects a * × write token with 403 (admin 未満)", async () => {
+  it("rejects a * × write token with 403 (below admin)", async () => {
     const token = await cliToken(505, [{ project: "*", permission: "write" }]);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(403);
   });
 
-  it("rejects malformed wraps with 400 (nonce 長・hex 形式は Schema 検証)", async () => {
+  it("rejects malformed wraps with 400 (nonce length and hex format are Schema-validated)", async () => {
     const token = await cliToken(506);
     const bad = await SELF.fetch(`${BASE}/auth/recovery`, {
       method: "PUT",
@@ -136,7 +143,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect(get.status).toBe(404);
   });
 
-  it("rejects a scope-limited token with 403 (要監視操作の遮断)", async () => {
+  it("rejects a scope-limited token with 403 (blocks a watched operation)", async () => {
     const token = await cliToken(512, [{ project: "*", permission: "read" }]);
     const get = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(get.status).toBe(403);
@@ -157,7 +164,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect(typeof body["retryAfterSeconds"]).toBe("number");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
 
-    // 再発行(置換)は取得窓をリセットする(新ブロブに旧試行履歴を引き継がない)
+    // Re-issuance (replacement) resets the fetch window (the new blob does not inherit old attempt history)
     expect((await putWrap(bearer(token), "ef".repeat(64))).status).toBe(204);
     const afterReissue = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(afterReissue.status).toBe(200);
@@ -166,8 +173,10 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches", async () => {
     const token = await cliToken(516);
     expect((await putWrap(bearer(token))).status).toBe(204);
-    // 上限越えの同時リクエスト: 計数は条件付き相対 UPDATE(1 文)なので、
-    // どの並び方でも成功はちょうど上限件・保存 count は上限で止まる
+    // Over-limit concurrent requests: since counting is a
+    // conditional relative UPDATE (a single statement), exactly the
+    // limit succeeds under any interleaving and the stored count
+    // stops at the limit
     const responses = await Promise.all(
       Array.from({ length: RECOVERY_FETCH_LIMIT + 3 }, () =>
         SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) }),
@@ -177,13 +186,15 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     const limited = responses.filter((response) => response.status === 429).length;
     expect(succeeded).toBe(RECOVERY_FETCH_LIMIT);
     expect(limited).toBe(3);
-    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
+    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
     expect(row?.fetch_count).toBe(RECOVERY_FETCH_LIMIT);
-    // 監査行(auth.recovery_blob_fetched)は許可された取得と 1:1(§5.2 の同一
-    // トランザクション原則を保ったまま)
+    // The audit rows (auth.recovery_blob_fetched) are 1:1 with
+    // permitted fetches (the §5.2 same-transaction principle
+    // preserved)
     const audit = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.recovery_blob_fetched'",
     ).first<{ n: number }>();
@@ -193,25 +204,28 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   it("rejects an unknown stored suite without consuming the fetch window", async () => {
     const token = await cliToken(515);
     expect((await putWrap(bearer(token))).status).toBe(204);
-    // v1 の書き込み経路では作れない行を直接作る(将来バージョンの書き込み /
-    // DB 破損の想定)。黙って v1 として配布しない(500)+ 窓を消費しない
+    // Create a row the v1 write path cannot produce, directly (the
+    // assumption of a future-version write / DB corruption). It must
+    // not be silently distributed as v1 (500) and must not consume
+    // the window
     await env.DB.prepare("UPDATE recovery_wraps SET suite = 'maruhi/v2'").run();
     const broken = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(broken.status).toBe(500);
-    // KL3(AUTH_SPEC §13-8)以降、取得計数は種別合算の窓 key_wrap_windows にある
+    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
+    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
     expect(row?.fetch_count ?? 0).toBe(0);
   });
 
-  it("does not count 404s toward the fetch window (未登録は計数外)", async () => {
+  it("does not count 404s toward the fetch window (unregistered does not count)", async () => {
     const token = await cliToken(514);
     for (let i = 0; i < RECOVERY_FETCH_LIMIT + 2; i += 1) {
       const notFound = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
       expect(notFound.status).toBe(404);
     }
-    // 登録後は上限いっぱいまで取得できる(404 が窓を消費していない)
+    // After registration the fetches run to the limit (the 404s did not consume the window)
     expect((await putWrap(bearer(token))).status).toBe(204);
     const first = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(first.status).toBe(200);
@@ -219,15 +233,17 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
 });
 
 describe("GET /auth/recovery/status(§13-2)", () => {
-  it("reports registration state to any authenticated principal (ブロブは運ばない)", async () => {
+  it("reports registration state to any authenticated principal (the blob is not carried)", async () => {
     const token = await cliToken(521, [{ project: "*", permission: "read" }]);
     const before = await SELF.fetch(`${BASE}/auth/recovery/status`, { headers: bearer(token) });
     expect(before.status).toBe(200);
     expect(await before.json()).toEqual({ registered: false, updatedAtMs: null });
 
-    // 登録は同一ユーザーの別名トークンで行う(セッションは §5 の能力制限で
-    // 登録不可。同名トークンの再発行はローテーションで既存トークンを
-    // 失効させてしまうため、別名で併存させる)
+    // Registration is done under a differently-named token for the
+    // same user (a session cannot register under §5's capability
+    // restriction. Re-issuing a same-named token would revoke the
+    // existing token on rotation, so a different name keeps both
+    // alive)
     const adminToken = await cliToken(521, undefined, "recovery-secondary");
     expect((await putWrap(bearer(adminToken))).status).toBe(204);
 

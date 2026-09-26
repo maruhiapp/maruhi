@@ -1,6 +1,9 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — 変数の push→pull→クライアント復号とメタデータのみモード(AUTH_SPEC §12-5 / §12-7)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — variable
+// push→pull→client-side decrypt and the metadata-only mode (AUTH_SPEC
+// §12-5 / §12-7).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// The shared fixture and helpers live in support/data-scenario.ts.
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -51,7 +54,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", () => {
+describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
   it("round-trips a value end to end: encrypt → create → pull → unwrap DEK → decrypt", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -80,7 +83,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(body.currentEpoch).toBe(1);
     expect(body.variables.length).toBe(1);
     expect(body.deks.length).toBe(1);
-    // pull は裸 name でなくステートメント + author 情報を運ぶ(§12-2 / §12-7)
+    // pull carries the statement + author info, not a bare name (§12-2 / §12-7)
     expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
     expect(body.deletedVariables).toEqual([]);
     const [variable] = body.variables;
@@ -96,7 +99,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       authorKeyFingerprintHex: vectorKeyOf(MEMBER).key_fingerprint_hex,
     });
 
-    // reader のクライアント側復号(E2EE のラウンドトリップ)
+    // The reader's client-side decryption (the E2EE round trip)
     const plaintext = await unwrapAndDecrypt({
       recipientUserId: READER,
       wrapped: wrappedDek,
@@ -106,8 +109,8 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     });
     expect(plaintext).toBe("postgres://alpha");
 
-    // 新バージョンを push すると pull は最新のみ返す(prev = v1 の signed_bytes
-    // ハッシュへ連鎖 — §4.1)
+    // Pushing a new version makes pull return only the latest (prev
+    // chains to v1's signed_bytes hash — §4.1)
     const v1 = variable.value;
     const v2 = await encryptValue(
       dek,
@@ -171,7 +174,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // 既知の version(1)を再申告 → 409 currentVersion 1
+    // Re-attesting a known version (1) → 409 currentVersion 1
     const stale = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -179,13 +182,14 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       { value: await fakePayload(MEMBER, aadFor(1, 1)) },
     );
     expect(stale.status).toBe(409);
-    // 409 は currentVersion(番号)のみを返す — 勝者の signed_bytes ハッシュは
-    // 載せない(未検証値への連鎖署名の禁止 — §12-5)
+    // The 409 returns only currentVersion (the number) — the winner's
+    // signed_bytes hash is not carried (no chain-signing onto an
+    // unverified value — §12-5)
     const staleBody = (await stale.json()) as Record<string, unknown>;
     expect(staleBody).toMatchObject({ currentVersion: 1 });
     expect(Object.keys(staleBody).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
 
-    // 飛び番(3)も拒否
+    // A skipped number (3) is also rejected
     const skipped = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -236,7 +240,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       await expect(response.json()).resolves.toMatchObject({ currentVersion: 2 });
     }
 
-    // 欠損・交錯なし: バージョン行は 1,2 のみ、latest は 2、勝者の暗号文が保存されている
+    // No gaps or interleaving: version rows are only 1,2; latest is 2; the winner's ciphertext is stored
     const rows = await queryProjectDo(
       projectId,
       "SELECT version, ciphertext_hex FROM variable_versions WHERE environment_id = ? AND variable_id = ? ORDER BY version",
@@ -306,7 +310,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // member の read スコープ: pull 可・push 不可(403 insufficient-permission)
+    // A member's read scope: pull allowed, push denied (403 insufficient-permission)
     const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
     const readToken = await cliToken(9002, readScope);
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, readToken);
@@ -320,7 +324,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(push.status).toBe(403);
     expect(((await push.json()) as { reason: string }).reason).toBe("insufficient-permission");
 
-    // reader の write スコープ: スコープが足りてもチェーン role が束縛(403 insufficient-role)
+    // A reader's write scope: even with sufficient scope the chain role binds (403 insufficient-role)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const readerWrite = await cliToken(9003, writeScope);
     const readerPush = await requestJson(
@@ -332,14 +336,15 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(readerPush.status).toBe(403);
     expect(((await readerPush.json()) as { reason: string }).reason).toBe("insufficient-role");
 
-    // スコープ外プロジェクトは存在秘匿(404)
+    // An out-of-scope project is existence-hidden (404)
     const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
     const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull`, scoped);
     expect(concealed.status).toBe(404);
 
-    // 環境削除は admin スコープが必要(write では 403。スコープ検査は署名検証より
-    // 前 — §12-3 — なので未署名ダミーのステートメントで足りる)
+    // Environment deletion requires the admin scope (403 under write.
+    // The scope check precedes signature verification — §12-3 — so an
+    // unsigned dummy statement suffices)
     const memberWrite = await cliToken(9001, writeScope);
     const removal = await requestJson("DELETE", `/environments/${ENV}`, memberWrite, {
       statement: {
@@ -378,7 +383,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
 
-    // 作成側の申告 AAD 不一致(§12-2): ステートメントの variableId と aad の不一致は 422
+    // AAD mismatch on the attestation at creation (§12-2): a mismatch between the statement's variableId and the aad is a 422
     const createMismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables`,
@@ -392,7 +397,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(createMismatch.status).toBe(422);
     expect(((await createMismatch.json()) as { field: string }).field).toBe("variableId");
 
-    // 改名も名前一意性の対象(§12-1)
+    // Rename is also subject to name uniqueness (§12-1)
     await createVariableOk(dek, "var-other", "OTHER", "other-value");
     const renameConflict = await renameVariableRequest("var-other", "DATABASE_URL", MEMBER);
     expect(renameConflict.status).toBe(409);
@@ -411,7 +416,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     );
     expect(versions.length).toBe(0);
 
-    // 削除済み ID の再利用は拒否(§12-1)
+    // Reuse of a deleted ID is rejected (§12-1)
     const retired = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "REBORN"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -420,7 +425,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(retired.status).toBe(409);
     expect(((await retired.json()) as { reason: string }).reason).toBe("retired");
 
-    // 削除済み変数への push は 404
+    // A push to a deleted variable is a 404
     const pushDeleted = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -448,9 +453,11 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   it("caps versions per variable (422 §12-8)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 1,000 回の実 push は非現実的なので latest_version を直接引き上げ、
-    // 上限直前の version 行(prev 検査の predecessor)をシードする
-    // (数量ポリシーは値署名の後 — 裁定 D — のため署名検証を通る形が要る)
+    // Since 1,000 real pushes are unrealistic, raise latest_version
+    // directly and seed a version row just below the cap (the
+    // predecessor the prev check needs) (the quantity policy sits after
+    // the value signature — ruling D — so a shape that passes signature
+    // verification is required)
     const seededHash = "aa".repeat(32);
     await queryProjectDo(
       projectId,
@@ -496,13 +503,13 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   });
 
   it("caps cumulative project ciphertext bytes (422 §12-8, unit + plumbing)", async () => {
-    // 純関数の判定(1 GiB を実生成しない)
+    // The pure-function judgment (do not actually generate 1 GiB)
     expect(projectBytesExceeded(MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES, 1)).toBe(true);
     expect(projectBytesExceeded(MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES - 10, 10)).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 保存済みバイト数だけを上限相当へ引き上げてプラミングを検証する
+    // Verify the plumbing by raising only the stored byte count to the cap's level
     await queryProjectDo(
       projectId,
       "UPDATE variable_versions SET ciphertext_bytes = ? WHERE environment_id = ? AND variable_id = ?",
@@ -528,7 +535,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   });
 });
 
-describe("メタデータのみモード(§12-7 — 値・DEK を返さない)", () => {
+describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
   it("returns the statement-only material: environment + active + tombstones, no values, no deks", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -562,8 +569,9 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
     expect(body.environmentId).toBe(ENV);
     expect(body.currentEpoch).toBe(1);
     expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
-    // アクティブ変数は最新ステートメントのみ(rename 後 = metaVersion 2)。
-    // 値(暗号文)の断片がどこにも同梱されない
+    // Active variables carry only the latest statement (after the
+    // rename = metaVersion 2). No fragment of a value (ciphertext) is
+    // bundled anywhere
     expect(body.variables).toEqual([
       expect.objectContaining({
         variableId: VAR,
@@ -583,8 +591,9 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
       expect(raw).not.toContain(forbidden);
     }
 
-    // 配布されたステートメントは §6.3 のクライアント検証を通る(検証材料の
-    // 同梱義務は値付き pull と同一 — §12-7)
+    // The distributed statement passes the §6.3 client-side
+    // verification (the obligation to bundle verification material is
+    // the same as the valued pull — §12-7)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -616,13 +625,13 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // reader(チェーン role)+ read スコープで取得可(pull と同一行 — §12-3)
+    // Obtainable with reader (chain role) + read scope (the same row as pull — §12-3)
     const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
     const readToken = await cliToken(9003, readScope);
     const allowed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
     expect(allowed.status).toBe(200);
 
-    // 非メンバーは 404(存在秘匿 — §11-2)
+    // Non-members get a 404 (existence hiding — §11-2)
     const stranger = await requestJson(
       "GET",
       `/environments/${ENV}/pull/metadata`,
@@ -630,14 +639,15 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
     );
     expect(stranger.status).toBe(404);
 
-    // スコープ外プロジェクトも 404(存在秘匿はスコープ検査が先行)
+    // An out-of-scope project is also 404 (existence hiding precedes via the scope check)
     const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
     const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, scoped);
     expect(concealed.status).toBe(404);
 
-    // 削除済み環境は 404(pull と同じ)。READER のトークンは readToken の
-    // 再発行で置換済みのため、以後は readToken を使う
+    // A deleted environment is a 404 (same as pull). Since READER's
+    // token was replaced by readToken's re-issuance, readToken is used
+    // from here on
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
     const gone = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
@@ -645,16 +655,18 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
   });
 });
 
-describe("セッション主体の値付き一括 pull の拒否(§5 能力制限 — W2b。§12-7)", () => {
+describe("rejection of session-principal valued bulk pulls (the §5 capability restriction — W2b; §12-7)", () => {
   it("rejects session pulls with values regardless of the CSRF header; bearer and metadata-only stay open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
 
-    // 値付き一括 pull は §5 の明示拒否面(W2b — セッション経由の監査証跡汚染 =
-    // SECURITY_REVIEW L-1 の発生面自体を消す)。能力判定が CSRF 検査に先行するため、
-    // CSRF ヘッダーがなくても一様に session-not-allowed になる
+    // A valued bulk pull is §5's explicit rejection surface (W2b —
+    // audit-trail contamination via a session = eliminate the very
+    // surface SECURITY_REVIEW L-1 occurs on). Since the capability
+    // judgment precedes the CSRF check, it is uniformly
+    // session-not-allowed even without a CSRF header
     const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });
@@ -662,23 +674,24 @@ describe("セッション主体の値付き一括 pull の拒否(§5 能力制�
     const body = (await withoutCsrf.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("session-not-allowed");
 
-    // CSRF ヘッダーを自分で付けても同じ(同一オリジン XSS はヘッダーを付けられる
-    // — 設計文書 §6。この面を閉じるのが W2b の目的)
+    // Attaching a CSRF header yourself gives the same (same-origin XSS
+    // can attach headers — design document §6. Closing this surface is
+    // W2b's purpose)
     const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as Record<string, unknown>)["reason"]).toBe(
       "session-not-allowed",
     );
 
-    // 拒否された pull は var.read を 1 行も記録しない(読んでいないものを
-    // 読んだと記録しない — AUDIT_SPEC §3.3)
+    // A rejected pull records not a single var.read row (do not record
+    // as read what was not read — AUDIT_SPEC §3.3)
     const reads = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
     );
     expect(reads[0]?.["n"]).toBe(0);
 
-    // Bearer(トークン主体)は影響を受けない(§5 — CLI・maruhi ui はトークン主体)
+    // Bearer (token principal) is unaffected (§5 — the CLI and maruhi ui are token principals)
     const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(bearerPull.status).toBe(200);
     const readsAfter = await queryProjectDo(
@@ -687,8 +700,9 @@ describe("セッション主体の値付き一括 pull の拒否(§5 能力制�
     );
     expect(readsAfter[0]?.["n"]).toBe(1);
 
-    // メタデータのみモードは §5 の許可列挙(読み取り)に含まれ、var.read を
-    // 記録しないため CSRF ヘッダーも不要(セッション + ヘッダーなしで 200)
+    // Metadata-only mode is in §5's allowed enumeration (reads) and
+    // records no var.read, so no CSRF header is needed either (session
+    // + headerless is a 200)
     const metadata = await SELF.fetch(dataUrl(`/environments/${ENV}/pull/metadata`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });

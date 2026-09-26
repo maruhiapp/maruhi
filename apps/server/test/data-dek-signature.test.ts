@@ -1,6 +1,6 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — DEK ラップの登録署名
-// (AUTH_SPEC §12-6 / CRYPTO_SPEC §5.1)。スイート全体の分担は
-// data-dek.test.ts 冒頭を参照。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — the
+// registration signature on DEK wraps (AUTH_SPEC §12-6 / CRYPTO_SPEC
+// §5.1). See the top of data-dek.test.ts for how the suite is split.
 
 import {
   encodeHex,
@@ -49,12 +49,13 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
-  it("rejects wraps signed by someone other than the caller (422 signature-invalid, 登録 API 経路)", async () => {
-    // 登録 API は修復再登録・バックフィル専用(§12-6)。修復経路で
-    // エポック 1 の全ラップを削除し、OWNER が署名した完全集合を MEMBER が
-    // 持ち込む → 呼び出し主体 = 署名者の厳密一致に反するため拒否。
-    // 何も挿入されず監査行も残らない
+describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)", () => {
+  it("rejects wraps signed by someone other than the caller (422 signature-invalid, the registration API path)", async () => {
+    // The registration API is only for repair re-registration and
+    // backfill (§12-6). Via the repair path, delete all epoch-1 wraps and
+    // have MEMBER carry in a complete set signed by OWNER → rejected
+    // because it violates the strict equality of caller = signer.
+    // Nothing is inserted and no audit row remains
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
@@ -90,9 +91,10 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(auditsAfter[0]?.["n"]).toBe(auditsBefore[0]?.["n"]);
   });
 
-  it("rejects a transplanted signature on environment creation (422 signature-invalid, 同梱経路)", async () => {
-    // 同じ署名者(OWNER)による正しい署名でも、別ラップ(別受信者)の署名の
-    // 移植は signed_bytes が異なるため検証に失敗する
+  it("rejects a transplanted signature on environment creation (422 signature-invalid, the bundled path)", async () => {
+    // Even a correct signature by the same signer (OWNER) fails
+    // verification when transplanted from a different wrap (a different
+    // recipient), because the signed_bytes differ
     const deks = await wrapsFor(ENV, ALL_MEMBERS);
     const [first, second, third] = deks;
     if (first === undefined || second === undefined || third === undefined) {
@@ -102,12 +104,12 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     const response = await createEnvironmentWith(fixture, ENV, "App", transplanted);
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
-    // 環境は作られない(署名検証は書き込みフェーズより前)
+    // The environment is not created (signature verification precedes the write phase)
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
   });
 
-  it("rejects wraps without a signature (400 Schema, 両経路)", async () => {
+  it("rejects wraps without a signature (400 Schema, both paths)", async () => {
     const deks = await wrapsFor(ENV, ALL_MEMBERS);
     const stripped = deks.map(({ signatureHex: _signatureHex, ...rest }) => rest);
     const { entry } = await signEntryAt({
@@ -131,7 +133,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       deks: stripped,
     });
     expect(created.status).toBe(400);
-    // 登録 API 経路も同じ Schema(WrappedDekSchema)で 400
+    // The registration API path is also a 400 under the same Schema (WrappedDekSchema)
     await createEnvironmentOk(fixture, ENV, "App");
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: stripped,
@@ -139,7 +141,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(registered.status).toBe(400);
   });
 
-  it("rejects malformed signatures with 400 (Schema: 大文字 hex / 長さ不正 / 非 hex)", async () => {
+  it("rejects malformed signatures with 400 (Schema: uppercase hex / bad length / non-hex)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const [wrap] = await wrapsFor(ENV, [OWNER], 1, MEMBER);
     if (wrap === undefined) throw new Error("missing wrap");
@@ -156,13 +158,16 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   });
 
   it("rejects third-party re-submission into a deleted slot (signer mismatch)", async () => {
-    // CRYPTO_SPEC §5.1 の名指しシナリオ: 削除済みスロットへ「他人の署名済み
-    // ラップ」を第三者が再投入する経路は署名者不一致で塞がる。
-    // 最強形「MEMBER の鍵一式を流用したソック垢(STRANGER)」(鍵一致・user_id
-    // 不一致)は §6.2 のメンバー鍵一意性によりチェーン追記の時点で成立しない
-    // (下の chain-level テストと membership.test.ts の authz ベクターループが
-    // 固定する)。鍵一致のまま signer_user_id だけが異なる署名の拒否は
-    // ベクター negative `transplant-signer` が crypto 層で固定する
+    // The scenario named in CRYPTO_SPEC §5.1: the path where a third
+    // party re-submits "a wrap signed by someone else" into a deleted
+    // slot is closed by signer mismatch.
+    // The strongest form — "a sock account (STRANGER) reusing MEMBER's
+    // whole key set" (key match, user_id mismatch) — cannot even be
+    // established at chain append because of §6.2's member-key
+    // uniqueness (pinned by the chain-level test below and the authz
+    // vector loop in membership.test.ts). Rejecting a signature whose
+    // signer_user_id alone differs while the key matches is pinned in
+    // the crypto layer by the negative vector `transplant-signer`
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
@@ -181,8 +186,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     });
     expect(registered.status).toBe(204);
 
-    // STRANGER(自前の鍵で正規にメンバー化)が MEMBER 署名のラップをそのまま
-    // 再投入 → 呼び出し主体 = 署名者の厳密一致(§12-6)に反するため 422
+    // STRANGER (properly made a member with their own keys) re-submits a
+    // MEMBER-signed wrap verbatim → a 422 for violating the strict
+    // equality of caller = signer (§12-6)
     const encPair = await generateEncryptionKeyPair();
     const sigPair = await generateSigningKeyPair();
     await appendOperation(fixture, OWNER, {
@@ -215,12 +221,13 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
   });
 
   it("rejects the key-reuse sock puppet at the chain layer (422 duplicate-member-key)", async () => {
-    // 「MEMBER の鍵一式を流用した STRANGER の add_member」は、§6.2 の
-    // メンバー鍵一意性(合意規則)によりチェーン追記の
-    // 時点で拒否される(帰属付け替えの根本原因の解消 — 防衛の多層化)。
-    // ベクター固定チェーンに対する網羅は membership.test.ts の authz ループ
-    // (authz-add-member-duplicate-key ほか 2 件)が担い、ここではデータプレーンの
-    // fixture チェーンでも成立することを固定する
+    // "STRANGER's add_member reusing MEMBER's whole key set" is rejected
+    // at chain-append time by §6.2's member-key uniqueness (a consensus
+    // rule) — removing the root cause of re-attribution (defense in
+    // depth). Coverage against the vector-fixed chain is carried by
+    // membership.test.ts's authz loop (authz-add-member-duplicate-key
+    // plus 2 more); here we pin that it also holds on the data-plane
+    // fixture chain
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
@@ -247,9 +254,11 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(body.seq).toBe(fixture.head.seq + 1);
   });
 
-  it("accepts the original signer re-registering the identical wrap and signature (§5.1 の意味論の対)", async () => {
-    // 署名は帰属であり鮮度証明ではない: 削除後、元署名者自身による同一内容 +
-    // 同一署名の再登録は有効(タイムスタンプ・ノンスを含めない設計の positive 側)
+  it("accepts the original signer re-registering the identical wrap and signature (the counterpart of §5.1's semantics)", async () => {
+    // A signature is attribution, not a freshness proof: after deletion,
+    // re-registration by the original signer with identical content +
+    // identical signature is valid (the positive side of a design with
+    // no timestamps or nonces)
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -259,7 +268,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // 正例はラップした DEK 自身のコミットメントを渡す
+    // For the positive case, pass the wrapped DEK's own commitment
     const created = await createEnvironmentWith(
       fixture,
       ENV,
@@ -283,10 +292,12 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(body.deks[0]?.signatureHex).toBe(readerWrap.signatureHex);
   });
 
-  it("rejects an empty registration list with 400 (§12-6: 削除側の空列挙と同じ規律)", async () => {
-    // 空の deks: [] は呼び出し形として意味のあるユースケースがなく、silent
-    // no-op(204)はクライアントバグ(空配列の送信を登録完了と誤認)を隠すため、
-    // 削除側の空 wraps 400 と同じ minItems 1 の Schema 検証で拒否する
+  it("rejects an empty registration list with 400 (§12-6: the same discipline as an empty deletion list)", async () => {
+    // An empty deks: [] has no meaningful use case as a call shape, and a
+    // silent no-op (204) would hide a client bug (mistaking sending an
+    // empty array for a completed registration), so it is rejected by the
+    // same minItems-1 Schema validation as the deletion side's empty
+    // wraps 400
     await createEnvironmentOk(fixture, ENV, "App");
     const before = await queryProjectDo(
       projectId,
@@ -323,7 +334,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       if (wrap === undefined) throw new Error("missing distributed wrap");
       expect(wrap.signerUserId).toBe(OWNER);
       expect(wrap.signerKeyFingerprintHex).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-      // クライアント検証(CRYPTO_SPEC §5.1): 自分の座標 + 署名者のチェーン鍵で検証
+      // Client-side verification (CRYPTO_SPEC §5.1): verify with one's own coordinates + the signer's chain key
       await expect(
         verifyDistributedWrapSignature({
           projectId,
@@ -333,7 +344,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
           wrap,
         }),
       ).resolves.toBe(true);
-      // 座標を偽ると検証失敗(クライアント側の移植検出)
+      // Verification fails on forged coordinates (client-side transplant detection)
       await expect(
         verifyDistributedWrapSignature({
           projectId,
@@ -343,8 +354,9 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
           wrap,
         }),
       ).resolves.toBe(false);
-      // サーバーが署名者を偽って申告しても検証失敗(signer_user_id も署名対象 —
-      // CRYPTO_SPEC §5.1。ベクター transplant-signer の統合レベルの対)
+      // Verification fails even if the server declares a forged signer
+      // (signer_user_id is part of the signed data — CRYPTO_SPEC §5.1;
+      // the integration-level counterpart of the transplant-signer vector)
       await expect(
         verifyDistributedWrapSignature({
           projectId,
@@ -357,15 +369,17 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     }
   });
 
-  it("accepts a caller-signed poison wrap: 署名は帰属であり内容検証ではない(§5.1 の意味論)", async () => {
+  it("accepts a caller-signed poison wrap: a signature is attribution, not content verification (§5.1 semantics)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
     });
     expect(removed.status).toBe(204);
-    // 中身が復号不能なフェイクでも、呼び出し主体(MEMBER)の署名が正しければ
-    // 受理される(サーバーはラップの中身を検証できない — E2EE)。ただし帰属は
-    // 署名 + dek.registered の FP でサーバー不信のまま MEMBER に固定される
+    // Even a fake whose contents cannot be decrypted is accepted as long
+    // as the calling principal's (MEMBER's) signature is correct (the
+    // server cannot verify a wrap's contents — E2EE). Attribution,
+    // however, is pinned to MEMBER via the signature + the dek.registered
+    // FP without trusting the server
     const poison = await signWrapAs(MEMBER, projectId, ENV, {
       suite: "maruhi/v1",
       epoch: 1,
@@ -388,10 +402,10 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(rows[0]?.["signer_user_id"]).toBe(MEMBER);
   });
 
-  it("attributes repair-path re-registration via the signer fingerprint (削除 → 署名付き再登録 → 突合)", async () => {
+  it("attributes repair-path re-registration via the signer fingerprint (delete → signed re-register → cross-check)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const payload = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // admin(owner)が毒ラップ想定の READER 宛を削除 → MEMBER が自署名で再登録
+    // The admin (owner) deletes the READER-directed wrap as the hypothetical poison wrap → MEMBER re-registers with a self-signature
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
     });
@@ -409,7 +423,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     });
     expect(registered.status).toBe(204);
 
-    // 保存行の署名者は MEMBER(user_id + FP)
+    // The stored row's signer is MEMBER (user_id + FP)
     const rows = await queryProjectDo(
       projectId,
       `SELECT signer_user_id, signer_key_fingerprint FROM dek_wraps
@@ -422,8 +436,10 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       signer_key_fingerprint: vectorKeyOf(MEMBER).key_fingerprint_hex,
     });
 
-    // dek.registered の署名者 FP で帰属を突合できる(AUDIT_SPEC §3.3):
-    // 初回登録(環境作成の同梱 = OWNER 署名)→ 再登録(MEMBER 署名)の順
+    // Attribution can be cross-checked via the signer FP of
+    // dek.registered (AUDIT_SPEC §3.3): in order, the initial
+    // registration (bundled with environment creation = OWNER-signed) →
+    // the re-registration (MEMBER-signed)
     const audits = await queryProjectDo(
       projectId,
       `SELECT actor_user_id, actor_key_fingerprint FROM audit_events
@@ -441,7 +457,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       },
     ]);
 
-    // READER は再登録されたラップの署名を検証してから復号できる
+    // READER can verify the re-registered wrap's signature before decrypting it
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     const body = (await pull.json()) as {
       variables: { value: WireEncryptedPayload }[];

@@ -1,6 +1,9 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — suite の永続化・数量ポリシー・判定順・エラー契約導出(AUTH_SPEC §12-2 / §12-3 / §12-8)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — suite
+// persistence, quantity policy, judgment order, and error-contract
+// derivation (AUTH_SPEC §12-2 / §12-3 / §12-8).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// The shared fixture and helpers live in support/data-scenario.ts.
 
 import {
   auditGroup,
@@ -60,7 +63,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("suite の永続化とワイヤ(§12-2 / CRYPTO_SPEC §2 設計原則 4)", () => {
+describe("suite persistence and the wire (§12-2 / CRYPTO_SPEC §2 design principle 4)", () => {
   it("stores the suite on versions and wraps and returns it on every distribution path", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -125,8 +128,8 @@ describe("suite の永続化とワイヤ(§12-2 / CRYPTO_SPEC §2 設計原則 4
   });
 });
 
-describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数)", () => {
-  // 実生成は非現実的なため、行を SQL で直接シードして判定のプラミングを検証する
+describe("quantity policy (the rest of §12-8: environment / variable / wrap counts)", () => {
+  // Since real generation is unrealistic, rows are seeded directly via SQL to verify the judgment plumbing
   it("caps active environments (422 environments)", async () => {
     await queryProjectDo(
       projectId,
@@ -205,7 +208,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
 
   it("caps DEK wraps per request (422 dek-wraps-per-request)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 件数上限は受信者検証・署名検証より先に判定されるため、構造だけ正しいフェイクで足りる
+    // The count cap is judged before recipient verification and signature verification, so a structurally-correct fake suffices
     const deks = Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
       suite: "maruhi/v1",
       epoch: 1,
@@ -226,12 +229,12 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
   });
 
   it("caps cumulative dek-wrap rows across every insertion path (422 §12-8, unit + plumbing)", async () => {
-    // 純関数の判定(100 万行の実登録は非現実的 — projectBytesExceeded と同じ形)
+    // The pure-function judgment (registering a million rows is unrealistic — same shape as projectBytesExceeded)
     expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS, 1)).toBe(true);
     expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS - 3, 3)).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // 既存 3 行(エポック 1 の完全集合)+ シードで上限ちょうどまで埋める
+    // Fill to exactly the cap: the existing 3 rows (the epoch-1 complete set) + seeded rows
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
@@ -242,8 +245,9 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
       MAX_PROJECT_DEK_WRAP_ROWS - 3,
     );
 
-    // 経路 1: 複合ローテーション(§12-4)の同梱集合も上限に束縛され、超過なら
-    // チェーンエントリごと拒否される(原子性)
+    // Path 1: the bundled set of a composite rotation (§12-4) is also
+    // bound by the cap; on overflow the chain entry itself is rejected
+    // (atomicity)
     const headBefore = fixture.head;
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -266,7 +270,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
 
-    // 経路 2: 複合の環境作成(エポック 1 の同梱集合)も同じ上限に束縛される
+    // Path 2: the composite environment creation (the bundled epoch-1 set) is bound by the same cap
     const created = await createEnvironmentWith(
       fixture,
       "env-wrap-limit",
@@ -279,12 +283,12 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
       limit: MAX_PROJECT_DEK_WRAP_ROWS,
     });
 
-    // 経路 3: 登録 API(修復再登録 — §12-6)も同じ上限に束縛される
+    // Path 3: the registration API (repair re-registration — §12-6) is bound by the same cap
     const removedOne = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
     });
     expect(removedOne.status).toBe(204);
-    // 3 行解放 → 上限まで 3 行の余裕。4 行(シード +1)を足して再び上限超過にする
+    // Releasing 3 rows → headroom of 3 rows to the cap. Add 4 rows (seed +1) to exceed the cap again
     await queryProjectDo(
       projectId,
       `INSERT INTO dek_wraps
@@ -309,7 +313,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
       limit: MAX_PROJECT_DEK_WRAP_ROWS,
     });
 
-    // 削除(修復経路)は行を解放する: 追加シード分を消せば完全集合が再び通る
+    // Deletion (the repair path) frees rows: removing the extra seed lets the complete set through again
     await queryProjectDo(
       projectId,
       "DELETE FROM dek_wraps WHERE recipient_user_id = 'u-seed-extra'",
@@ -321,12 +325,14 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
   });
 });
 
-describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
-  it("AAD 自己整合検査(422)は存在秘匿(404)に先行する(§12-3 の例外規定)", async () => {
+describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
+  it("the AAD self-consistency check (422) precedes existence hiding (404) (the §12-3 exception provision)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 非メンバーでも、AAD がリクエスト自身と食い違うなら 422(存在情報を運ばない)。
-    // どちらも認可判定で止まり値署名の検証には到達しない(§12-3 の判定順)ため
-    // 未署名フェイクで足りる(STRANGER はベクター鍵を持たない)
+    // Even a non-member gets a 422 when the AAD disagrees with the
+    // request itself (carries no existence information). Both stop at
+    // authorization judgment and never reach value-signature
+    // verification (§12-3 judgment order), so an unsigned fake suffices
+    // (STRANGER holds no vector key)
     const mismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -334,7 +340,7 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       { value: unsignedPayload(aadFor(1, 2, { variableId: "var-other" })) },
     );
     expect(mismatch.status).toBe(422);
-    // AAD が自己整合していれば非メンバーには 404(§11-2)
+    // If the AAD is self-consistent, a non-member gets a 404 (§11-2)
     const consistent = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -345,8 +351,9 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
   });
 
   it("rejects a malformed composite parentHeadHashHex with 400 (Schema)", async () => {
-    // CAS の親ヘッド形式は Sha256Hex で固定: 不正形式は
-    // 409(ChainHeadConflict)へ到達せず schema 境界の 400 で落ちる
+    // The CAS parent-head format is pinned as Sha256Hex: a malformed
+    // one never reaches 409 (ChainHeadConflict) and falls at the schema
+    // boundary's 400
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
@@ -379,15 +386,17 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
 
   it("rejects malformed ids and payloads with 400 (Schema)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 不正な environment_id(先頭ハイフン / 65 文字)は 400
+    // A malformed environment_id (leading hyphen / 65 chars) is a 400
     for (const badId of ["-bad", "a".repeat(65)]) {
       const response = await requestJson("GET", `/environments/${badId}/pull`, token(READER));
       expect(response.status).toBe(400);
     }
-    // 複合 create のエントリ内 environment_id にも §12-1 の受理ポリシー形式を
-    // 強制する(400): 複合化で ID の運搬がチェーンエントリ内へ移り URL 座標を
-    // 持たないため、緩い形式を通すと URL param を持つ後続エンドポイント
-    // (rotate / rename / delete / pull)から到達不能な環境が生まれる
+    // The §12-1 acceptance-policy format is enforced on the
+    // environment_id inside a composite create's entry too (400): since
+    // compositing moved the ID's carriage inside a chain entry and it
+    // has no URL coordinate, a laxer format would give rise to
+    // environments unreachable from the later endpoints that take a URL
+    // param (rotate / rename / delete / pull)
     for (const badId of ["-bad", "a".repeat(65), "my env/💥"]) {
       const { entry } = await signEntryAt({
         seq: fixture.head.seq + 1,
@@ -401,8 +410,10 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       const response = await requestJson("POST", "/environments", token(OWNER), {
         parentHeadHashHex: fixture.head.hashHex,
         entry,
-        // ステートメント側も同じ受理ポリシー形式(EnvironmentIdSchema)で 400 に
-        // なる(entry と揃えて Schema 境界を固定)。署名検証には到達しない
+        // The statement side is also a 400 under the same
+        // acceptance-policy format (EnvironmentIdSchema) (kept aligned
+        // with the entry to pin the Schema boundary). Signature
+        // verification is never reached
         statement: {
           suite: "maruhi/v1",
           environmentId: badId,
@@ -418,9 +429,11 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       });
       expect(response.status).toBe(400);
     }
-    // 不正な EncryptedPayload: suite 不一致 / 大文字 hex nonce / タグ未満の暗号文 /
-    // 署名ブロックの形式違反(大文字署名 / prev 長不正 / head hash 長不正 /
-    // chainHeadSeq 0)— いずれも Schema の 400(署名検証より前)
+    // Malformed EncryptedPayloads: suite mismatch / uppercase-hex nonce
+    // / ciphertext shorter than the tag / signature-block format
+    // violations (uppercase signature / bad prev length / bad head-hash
+    // length / chainHeadSeq 0) — all are Schema 400s (before signature
+    // verification)
     const base = unsignedPayload(aadFor(1, 1));
     const badPayloads = [
       { ...base, suite: "maruhi/v2" },
@@ -446,10 +459,11 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
 const rejectedOutcome = (rejection: DataRejection) => ({ kind: "rejected", rejection }) as const;
 
 /**
- * エンドポイントの宣言エラーのタグ集合。実行時判定(Schema.is)から独立な
- * 経路として identifier 注釈(Schema.TaggedError がタグと同値で付与)から
- * 読む。effect 更新で注釈の形が変わったらここで明示的に落とし、契約導出の
- * 再検証を促す。
+ * The tag set of an endpoint's declared errors. Read from the
+ * identifier annotation (Schema.TaggedError grants it identical to the
+ * tag) as a path independent of the runtime judgment (Schema.is). If an
+ * effect update changes the annotation's shape, fail here explicitly to
+ * prompt re-verification of the contract derivation.
  */
 const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
   new Set(
@@ -468,16 +482,19 @@ const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
     }),
   );
 
-describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome)", () => {
-  // DO 拒否はエンドポイントの契約宣言(api-schema の error: [...])から導出した
-  // 集合で選別される(手書きの allowed 列は存在しない)。ここでは宣言との
-  // 対応関係そのものを写像単体で固定する。dek-wrap-exists は現行チェーン規則
-  // (duplicate-environment / エポック単調性)の下では複合 create / rotate から
-  // 実際には到達しないため、HTTP 統合ではなくこの単体で契約を検証する
+describe("deriving the error contract from declarations (data-http.ts unwrapDataOutcome)", () => {
+  // DO rejections are screened by a set derived from the endpoint's
+  // contract declarations (api-schema's error: [...]) — no hand-written
+  // allowed list exists. Here the correspondence to the declarations
+  // itself is pinned at the mapping level. dek-wrap-exists is in fact
+  // unreachable from composite create / rotate under the current chain
+  // rules (duplicate-environment / epoch monotonicity), so the contract
+  // is verified in this unit rather than via HTTP integration
 
-  it("dek-wrap-exists は create / rotate の契約エラー(409 DekWrapExists)として返る", () => {
-    // 宣言に無いとチェーン規則が緩んだ瞬間に defect(500)へ落ちる構造になる
-    // ため、宣言に含めて 409 の型付きエラーとして返す
+  it("dek-wrap-exists is returned as a contract error of create / rotate (409 DekWrapExists)", () => {
+    // If it were absent from the declarations, the structure would fall
+    // to defect (500) the moment the chain rules loosen — so it is
+    // included in the declarations and returned as a typed 409 error
     for (const endpoint of [
       environmentsGroup.endpoints.create,
       environmentsGroup.endpoints.rotate,
@@ -497,8 +514,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
         ),
       );
       expect(error).toBeInstanceOf(DekWrapExistsError);
-      // 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ(AUTH_SPEC §12-6 —
-      // 再追加バックフィルの修復判定の材料)
+      // The 409 carries the occupying wrap's stored recipient enc
+      // public key (AUTH_SPEC §12-6 — material for the re-add backfill's
+      // repair judgment)
       expect(error).toMatchObject({
         epoch: 2,
         recipientUserId: READER,
@@ -507,9 +525,10 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     }
   });
 
-  it("契約外の拒否は defect(500)のまま(不変条件違反を型付きエラーに漏らさない)", () => {
-    // variables.pull の宣言は ProjectNotFound / Forbidden / EnvironmentNotFound
-    // のみ。version-conflict の拒否が漏れてきたら実装バグとして die する
+  it("an out-of-contract rejection stays a defect (500) (invariant violations never leak into typed errors)", () => {
+    // variables.pull's declarations are only ProjectNotFound / Forbidden
+    // / EnvironmentNotFound. If a version-conflict rejection ever leaks,
+    // it dies as an implementation bug
     const exit = Effect.runSyncExit(
       unwrapDataOutcome(
         rejectedOutcome({ kind: "version-conflict", currentVersion: 3 }),
@@ -520,7 +539,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
   });
 
-  it("§11-2 の存在秘匿の畳み込み(not-member → 404 ProjectNotFound)も宣言内", () => {
+  it("the §11-2 existence-hiding fold (not-member → 404 ProjectNotFound) is also within the declarations", () => {
     const error = Effect.runSync(
       Effect.flip(
         unwrapDataOutcome(
@@ -533,9 +552,10 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     expect(error).toMatchObject({ _tag: "ProjectNotFound", projectId });
   });
 
-  // kind ごとの代表拒否(全フィールドが Schema の語彙内の有効値)。
-  // satisfies で DataRejection の全 kind の網羅を型強制する — kind が増えたら
-  // ここに足さない限りコンパイルが落ちる
+  // A representative rejection per kind (every field a valid value
+  // within the Schema vocabulary). `satisfies` type-forces coverage of
+  // all DataRejection kinds — adding a kind fails compilation unless it
+  // is added here
   const representativeRejections = {
     "not-initialized": { kind: "not-initialized" },
     "not-member": { kind: "not-member" },
@@ -609,8 +629,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
   };
 
-  // kind → 期待エラータグのゴールデン表(data-http.ts rejectionErrors の写像の
-  // 固定)。satisfies で全 kind の網羅を型強制する
+  // The golden table of kind → expected error tag (pinning the
+  // rejectionErrors mapping of data-http.ts). `satisfies` type-forces
+  // coverage of all kinds
   const expectedTagByKind = {
     "not-initialized": "ProjectNotFound",
     "not-member": "ProjectNotFound",
@@ -651,9 +672,10 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "audit-head-not-ready": "AuditHeadNotReady",
   } as const satisfies Record<DataRejection["kind"], string>;
 
-  // 全データプレーン + チェーンエンドポイント × 全拒否 kind の組み合わせ
-  // (チェーン API — membership — の拒否も DataRejection で届き、同じ
-  // unwrapDataOutcome を通る。worker ↔ DO の対応はこの表が固定する)
+  // Every data-plane + chain endpoint × every rejection kind (the chain
+  // API — membership — also reports rejections as DataRejection and goes
+  // through the same unwrapDataOutcome. The worker ↔ DO correspondence
+  // is what this table pins)
   const contractCases = Object.entries({
     membership: membershipGroup,
     environments: environmentsGroup,
@@ -661,8 +683,10 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     deks: deksGroup,
     rotation: rotationGroup,
     schemaPolicy: schemaPolicyGroup,
-    // audit.self は DO を経由しない(D1 のみ)が、写像と宣言の対応表としては
-    // 同じ規律で固定する(宣言に無い拒否はすべて die 判定になる)
+    // audit.self does not go through the DO (D1 only), but as a
+    // mapping/declaration correspondence table it is pinned under the
+    // same discipline (every rejection absent from the declarations
+    // becomes a die judgment)
     audit: auditGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
@@ -674,7 +698,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     ),
   );
 
-  /** 1 組み合わせの実測 / 期待判定("label: fail|die" の形。toEqual の diff 用)。 */
+  /** The measured / expected judgment of one combination (in the form "label: fail|die"; for the toEqual diff). */
   const judgeContractCase = (contractCase: (typeof contractCases)[number]) => {
     const { endpoint, rejection, endpointLabel } = contractCase;
     const label = `${endpointLabel} ← ${rejection.kind}`;
@@ -683,7 +707,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     );
     const died = Exit.isFailure(exit) && Cause.hasDies(exit.cause);
     if (!died) {
-      // 契約内なら返る失敗値そのものも写像どおりのタグであること
+      // When within the contract, the returned failure value itself also carries the tag the mapping prescribes
       const failed = Effect.runSync(
         Effect.flip(unwrapDataOutcome(rejectedOutcome(rejection), projectId, endpoint)),
       );
@@ -695,7 +719,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     };
   };
 
-  it("DataRejection → エラークラスの写像(rejectionErrors)はゴールデン表どおり", () => {
+  it("the DataRejection → error-class mapping (rejectionErrors) follows the golden table", () => {
     for (const rejection of Object.values(representativeRejections)) {
       expect(dataRejectionError(rejection, projectId), rejection.kind).toMatchObject({
         _tag: expectedTagByKind[rejection.kind],
@@ -703,16 +727,17 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     }
   });
 
-  it("全データプレーンエンドポイント × 全拒否 kind で fail / die 判定が宣言と厳密一致する", () => {
-    // effect 更新(Schema.is / endpoint.error の意味変化)へのドリフト検出器
+  it("the fail / die judgments of every data-plane endpoint × every rejection kind strictly match the declarations", () => {
+    // A drift detector against effect updates (changes in the meaning of Schema.is / endpoint.error)
     const results = contractCases.map(judgeContractCase);
-    // toEqual の diff で不一致の (endpoint, kind) がそのまま読めるようにする
+    // Make mismatched (endpoint, kind) pairs directly readable in the toEqual diff
     expect(results.map((result) => result.observed)).toEqual(
       results.map((result) => result.expected),
     );
-    // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
-    // 追加したらこの数を更新する(membership 5 / environments 5 / variables 7 /
-    // deks 3 / rotation 2 / schemaPolicy 2 / audit 4)
+    // The defense line against a broken enumeration spinning freely
+    // (an unconditional pass). Update this count when endpoints are
+    // added (membership 5 / environments 5 / variables 7 / deks 3 /
+    // rotation 2 / schemaPolicy 2 / audit 4)
     expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(28);
   });
 });

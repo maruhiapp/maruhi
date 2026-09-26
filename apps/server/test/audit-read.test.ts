@@ -1,17 +1,21 @@
-// 監査イベント読み取り API(AUDIT_SPEC §6 / §7)の統合テスト。
+// Integration tests for the audit-event read API (AUDIT_SPEC §6 / §7).
 //
-// 固定する性質:
-//  1. 可視性クラス(§6): admin 未満はクラス 1 の行 + 本人が actor の行のみ。
-//     クラス 2(var.read / dek.registered / dek.deleted)は結果・ページング・
-//     カーソルのどこにも現れない(「存在しないかのように振る舞う」)。admin
-//     可視は「チェーン role admin × トークンスコープ admin」(min 規律 —
-//     read スコープの admin ユーザーにも開示しない)
-//  2. actor_user_id フィルタの他人指定は admin 未満に対して 403(§6 の
-//     「他人が actor の行の横断検索はクラス 2」)。本人指定は許可
+// Properties being pinned:
+//  1. Visibility classes (§6): below admin, only class-1 rows + rows
+//     where the user themself is the actor. Class 2 (var.read /
+//     dek.registered / dek.deleted) appears nowhere — not in results,
+//     paging, or cursors ("behaves as though it did not exist"). Admin
+//     visibility is "chain role admin × token scope admin" (the min
+//     discipline — not disclosed even to an admin user holding a
+//     read-scope token)
+//  2. Specifying someone else in the actor_user_id filter is a 403 for
+//     below-admin (§6: "cross-searching rows whose actor is someone else
+//     is class 2"). Specifying oneself is allowed
 //
-// ページング境界・invite.*・self の読み取りは audit-read-paging.test.ts
-// (共有ヘルパは support/audit-read-scenario.ts。分割の動機は
-// support/membership-scenario.ts 冒頭を参照)。
+// Paging bounds, invite.*, and self reads live in
+// audit-read-paging.test.ts (shared helpers in
+// support/audit-read-scenario.ts; see the top of
+// support/membership-scenario.ts for the split's motivation).
 
 import { auditReadVariablesOf } from "@maruhi/core";
 import { describe, expect, it } from "vitest";
@@ -37,12 +41,12 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("可視性クラス(§6)の強制", () => {
-  it("admin 未満はクラス 1 + 本人が actor の行のみを見る(クラス 2 は件数にも漏れない)", async () => {
+describe("enforcing the visibility classes (§6)", () => {
+  it("below admin sees only class 1 + rows where the user themself is the actor (class 2 does not leak even via counts)", async () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(READER), { limit: "200" });
     expect(status).toBe(200);
-    // クラス 1 の行は全部見える
+    // All class-1 rows are visible
     expect(eventNames(events)).toEqual(
       expect.arrayContaining([
         "chain.genesis",
@@ -52,18 +56,19 @@ describe("可視性クラス(§6)の強制", () => {
         "var.created",
       ]),
     );
-    // 本人の var.read は見える(クラスに依らず本人閲覧可)
+    // One's own var.read is visible (self-read regardless of class)
     expect(
       events.some((event) => event.event === "var.read" && event.actor.userId === READER),
     ).toBe(true);
-    // 他人の var.read・dek.registered(クラス 2)は 1 行も現れない
+    // Other people's var.read / dek.registered (class 2) — not a single row appears
     expect(events.some((event) => event.event === "dek.registered")).toBe(false);
     expect(
       events.some((event) => event.event === "var.read" && event.actor.userId !== READER),
     ).toBe(false);
-    // 可視条件そのもの(allowlist ∨ 本人)を全行で検査する。admin 未満の
-    // 応答は seq(無欠番採番の序数)を運ばず、行識別子は不透明な row id のみ
-    // (AUDIT_SPEC §7 — 序数からのクラス 2 件数推論の遮断)
+    // Check the visibility condition itself (allowlist ∨ self) on every
+    // row. A below-admin response carries no seq (the ordinal of gapless
+    // numbering); row identifiers are only the opaque row id (AUDIT_SPEC
+    // §7 — blocking inference of class-2 counts from ordinals)
     for (const event of events) {
       expect(isClass1Event(event.event) || event.actor.userId === READER).toBe(true);
       expect(event.seq).toBeUndefined();
@@ -71,11 +76,11 @@ describe("可視性クラス(§6)の強制", () => {
     }
   });
 
-  it("チェーン role admin × admin スコープは全行を見る", async () => {
+  it("chain role admin × admin scope sees every row", async () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(OWNER), { limit: "200" });
     expect(status).toBe(200);
-    // クラス 2: 全メンバー宛の dek.registered と両者の var.read が見える
+    // Class 2: dek.registered addressed to every member and both users' var.read are visible
     const dekTargets = events
       .filter((event) => event.event === "dek.registered")
       .map((event) => event.targetUserId)
@@ -86,40 +91,42 @@ describe("可視性クラス(§6)の強制", () => {
       .map((event) => event.actor.userId)
       .toSorted();
     expect(readActors).toEqual([MEMBER, READER].toSorted());
-    // admin 可視の応答には保存 seq が載る(§6 の「欠番 = 削除の痕跡」検知の材料)
+    // The admin-visible response carries the stored seq (material for §6's "a gap = a trace of deletion" detection)
     for (const event of events) {
       expect(event.seq).toBeGreaterThan(0);
     }
   });
 
-  it("read スコープのトークンでは admin ユーザーも他人のクラス 2 を見ない(min(スコープ, role))", async () => {
+  it("with a read-scope token, even an admin user does not see others' class-2 rows (min(scope, role))", async () => {
     await seedProjectActivity();
-    // OWNER(チェーン role owner)の read スコープ限定トークン。同名ローテーション
-    // (AUTH_SPEC §6)で fixture のトークンを失効させないよう別名にする
+    // A read-scope-limited token for OWNER (chain role owner). Given a
+    // distinct name so same-name rotation (AUTH_SPEC §6) does not revoke
+    // the fixture's token
     const readToken = await scopedToken(9001, "read-only-audit", [
       { project: projectId, permission: "read" },
     ]);
     const { status, events } = await fetchEvents(readToken, { limit: "200" });
     expect(status).toBe(200);
-    // 他人が actor のクラス 2(READER / MEMBER の var.read)は見えない —
-    // admin スコープのトークン(前のテスト)では見えるのと対
+    // Class-2 rows whose actor is someone else (READER's / MEMBER's
+    // var.read) are invisible — the opposite of the admin-scope token
+    // (previous test), which sees them
     expect(events.some((event) => event.event === "var.read")).toBe(false);
-    // 本人が actor の行(dek.registered — 署名者 = OWNER)はクラスに依らず
-    // 本人閲覧可のまま(§6)
+    // Rows where the user themself is the actor (dek.registered — the
+    // signer is OWNER) stay self-readable regardless of class (§6)
     expect(
       events.some((event) => event.event === "dek.registered" && event.actor.userId === OWNER),
     ).toBe(true);
   });
 
-  it("非メンバーには 404(存在秘匿 — §11-2)", async () => {
+  it("a non-member gets a 404 (existence hiding — §11-2)", async () => {
     await seedProjectActivity();
     const { status } = await fetchEvents(token(STRANGER));
     expect(status).toBe(404);
   });
 });
 
-describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
-  it("event / environmentId / variableId / targetUserId で絞れる", async () => {
+describe("filters (the §7 vocabulary) and the permission of the actor filter", () => {
+  it("can filter by event / environmentId / variableId / targetUserId", async () => {
     await seedProjectActivity();
     const byEvent = await fetchEvents(token(OWNER), { event: "var.created" });
     expect(eventNames(byEvent.events)).toEqual(["var.created"]);
@@ -132,15 +139,16 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     for (const event of byVariable.events) {
       expect(event.environmentId).toBe(ENV);
       if (event.event === "var.read") {
-        // 集約形の var.read(§3.3)は変数 ID を列に持たず、payload の列挙が
-        // 当該変数を含む行がフィルタに一致する(§7 / Q4)
+        // The aggregated form of var.read (§3.3) has no variable ID
+        // column; rows whose payload enumeration contains that variable
+        // match the filter (§7 / Q4)
         expect(event.variableId).toBeUndefined();
         expect(auditReadVariablesOf(event.payload)?.map((v) => v.variableId)).toContain(VAR);
       } else {
         expect(event.variableId).toBe(VAR);
       }
     }
-    // 旧形の列一致(var.created 等)と集約形の payload 一致の両方が返る
+    // Both the legacy column match (var.created etc.) and the aggregated payload match are returned
     expect(eventNames(byVariable.events)).toEqual(
       expect.arrayContaining(["var.created", "var.version_pushed", "var.read"]),
     );
@@ -153,7 +161,7 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("eventPrefix は名前空間ごと絞る(ミラー検証の全取得)", async () => {
+  it("eventPrefix narrows to a whole namespace (full retrieval for mirror verification)", async () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(OWNER), {
       eventPrefix: "chain.",
@@ -161,7 +169,7 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     });
     expect(status).toBe(200);
     expect(events.length).toBeGreaterThan(0);
-    // 名前空間の全行が返り、外の行(env.* / var.* / dek.*)は 1 行も混じらない
+    // Every row of the namespace is returned; no outside rows (env.* / var.* / dek.*) are mixed in
     for (const event of events) {
       expect(event.event.startsWith("chain.")).toBe(true);
     }
@@ -169,10 +177,11 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     expect(events.length).toBe(all.events.filter((e) => e.event.startsWith("chain.")).length);
   });
 
-  it("写像に無い chain.* 行も admin 未満に届く(§6 は名前空間全体をクラス 1 とする)", async () => {
-    // verify は admin を要求しない(全メンバーが実行できる)。可視性述語が
-    // 写像済みの名前だけを許すと、偽造行はサーバー側で落ちて reader の verify に
-    // 1 行も届かず、偽造方向の被覆漏れが非 admin では残る
+  it("a chain.* row absent from the mapping still reaches below-admin readers (§6 makes the whole namespace class 1)", async () => {
+    // verify does not require admin (every member can run it). If the
+    // visibility predicate admitted only mapped names, a forged row would
+    // be dropped server-side and never reach a reader's verify, leaving a
+    // coverage hole on the forgery side for non-admins
     await seedProjectActivity();
     await queryProjectDo(
       projectId,
@@ -188,8 +197,9 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
       expect(status).toBe(200);
       expect(eventNames(events)).toContain("chain.role_granted");
     }
-    // クラス 2(他人の var.read / dek.registered)は admin 未満に見えないまま —
-    // 名前空間の前置許可がクラス 2 の穴になっていないこと
+    // Class 2 (others' var.read / dek.registered) stays invisible to
+    // below-admin — the namespace's prefix allowance must not become a
+    // class-2 hole
     const readerAll = await fetchEvents(token(READER), { limit: "200" });
     expect(readerAll.events.some((event) => event.event === "dek.registered")).toBe(false);
     for (const event of readerAll.events) {
@@ -197,7 +207,7 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("chain_seq を名乗る非 chain.* 行も全メンバーの検証用フィルタへ届く", async () => {
+  it("a non-chain.* row claiming a chain_seq also reaches every member's verification filter", async () => {
     await seedProjectActivity();
     await queryProjectDo(
       projectId,
@@ -231,15 +241,15 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     expect(claims[0]?.chainSeq).toBe(2);
   });
 
-  it("chainSeqPresent は literal true 以外を wire schema で拒否する", async () => {
+  it("chainSeqPresent rejects anything but literal true via the wire schema", async () => {
     await seedProjectActivity();
     const response = await requestJson("GET", "/audit/events?chainSeqPresent=false", token(OWNER));
     expect(response.status).toBe(400);
   });
 
-  it("eventPrefix はワイルドカード意味論を持たない(LIKE ではなく前置比較)", async () => {
+  it("eventPrefix has no wildcard semantics (a prefix comparison, not LIKE)", async () => {
     await seedProjectActivity();
-    // LIKE 実装なら "%" は全一致・"_" は 1 文字ワイルドカードとして働いてしまう
+    // If it were a LIKE implementation, "%" would match everything and "_" would act as a one-char wildcard
     for (const eventPrefix of ["%", "_hain.", "chain%"]) {
       const { status, events } = await fetchEvents(token(OWNER), { eventPrefix, limit: "200" });
       expect(status).toBe(200);
@@ -247,9 +257,9 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("admin 未満の actorUserId フィルタは本人のみ(他人指定は 403)", async () => {
+  it("a below-admin actorUserId filter is limited to oneself (naming someone else is a 403)", async () => {
     await seedProjectActivity();
-    // 本人指定は許可され、本人の行(クラス 2 の var.read 含む)だけが返る
+    // Specifying oneself is allowed and returns only one's own rows (including the class-2 var.read)
     const self = await fetchEvents(token(MEMBER), { actorUserId: MEMBER, limit: "200" });
     expect(self.status).toBe(200);
     expect(self.events.length).toBeGreaterThan(0);
@@ -257,10 +267,10 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
       expect(event.actor.userId).toBe(MEMBER);
     }
     expect(self.events.some((event) => event.event === "var.read")).toBe(true);
-    // 他人指定はデータ非依存の 403(§6: 他人が actor の行の横断検索はクラス 2)
+    // Specifying someone else is a data-independent 403 (§6: cross-searching rows whose actor is someone else is class 2)
     const other = await fetchEvents(token(MEMBER), { actorUserId: READER });
     expect(other.status).toBe(403);
-    // admin は他人指定で横断検索できる
+    // An admin can cross-search by naming someone else
     const admin = await fetchEvents(token(OWNER), { actorUserId: READER, limit: "200" });
     expect(admin.status).toBe(200);
     expect(admin.events.some((event) => event.event === "var.read")).toBe(true);
@@ -269,13 +279,13 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
-  it("admin 未満のクラス 2 イベント種別フィルタは本人の行だけを返す(空でも 403 にしない)", async () => {
+  it("a below-admin class-2 event-kind filter returns only one's own rows (empty is not a 403)", async () => {
     await seedProjectActivity();
-    // READER の dek.registered は存在しない(署名者は OWNER)— 空で返る
+    // READER has no dek.registered (the signer is OWNER) — it returns empty
     const hidden = await fetchEvents(token(READER), { event: "dek.registered" });
     expect(hidden.status).toBe(200);
     expect(hidden.events).toEqual([]);
-    // 本人の var.read はイベント種別フィルタでも見える
+    // One's own var.read stays visible through the event-kind filter
     const own = await fetchEvents(token(READER), { event: "var.read" });
     expect(own.status).toBe(200);
     expect(own.events.length).toBeGreaterThan(0);

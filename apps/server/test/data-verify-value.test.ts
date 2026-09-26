@@ -1,6 +1,9 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — 値署名の受理検証(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 共有フィクスチャ・ヘルパは support/data-scenario.ts。
+// Integration tests for the data-plane API (AUTH_SPEC §12) —
+// acceptance verification of value signatures (AUTH_SPEC §12-5 =
+// CRYPTO_SPEC §4.1 / §6.4).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// The shared fixture and helpers live in support/data-scenario.ts.
 
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -51,7 +54,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** 拒否時の無副作用の検査: 変数・バージョン・latest・監査のいずれも変わらない。 */
+/** Check side-effect-freeness on rejection: variables, versions, latest, and audits do not change. */
 async function expectNoVersionSideEffects(expectedVersions: readonly number[]): Promise<void> {
   const rows = await queryProjectDo(
     projectId,
@@ -67,12 +70,14 @@ async function expectNoVersionSideEffects(expectedVersions: readonly number[]): 
   expect(pushedAudits[0]?.["n"]).toBe(expectedVersions.length);
 }
 
-describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
+describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   it("rejects a value signed by someone other than the caller (422 signature-invalid)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // OWNER が正しく署名した値を MEMBER が持ち込む → 検証鍵は呼び出し主体
-    // (MEMBER)の受理時点チェーン鍵なので失敗する(他人の署名の持ち込み拒否)
+    // MEMBER carries in a value correctly signed by OWNER → the
+    // verification key is the calling principal's (MEMBER's)
+    // acceptance-time chain key, so it fails (refusing to carry
+    // someone else's signature)
     const ownerSigned = await encryptValue(
       dek,
       { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
@@ -94,7 +99,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     await expectNoVersionSideEffects([1]);
   });
 
-  it("rejects creation with a tampered signature and writes nothing (作成経由の検証迂回は不可)", async () => {
+  it("rejects creation with a tampered signature and writes nothing (no bypassing verification via the create path)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const value = await encryptValue(
       dek,
@@ -112,7 +117,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
-    // 変数行・ステートメント行・バージョン行・監査のいずれも残らない
+    // No variable row, statement row, version row, or audit remains
     for (const table of ["variables", "variable_meta_statements"]) {
       const rows = await queryProjectDo(
         projectId,
@@ -132,7 +137,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   it("rejects unknown declared heads (422 chain-head-unknown): hash mismatch and future seq", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 実在 seq × 不一致 hash(有効署名)— exact pair の存在が受理条件
+    // An existent seq × mismatched hash (valid signature) — existence of the exact pair is the acceptance condition
     const mismatched = await signValueAs(
       MEMBER,
       {
@@ -155,7 +160,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     expect(hashMismatch.status).toBe(422);
     expect(((await hashMismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    // 自チェーンより先の seq(サーバーには存在しない)も chain-head-unknown
+    // A seq beyond the local chain (nonexistent on the server) is also chain-head-unknown
     const future = await signValueAs(
       MEMBER,
       {
@@ -188,7 +193,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     const entries = ((await chain.json()) as { entries: { seq: number }[] }).entries;
     expect(entries.length).toBe(fixture.head.seq);
 
-    // (a) writer が member になる前のヘッド(seq 1 = genesis)の宣言
+    // (a) Declaring a head from before the writer became a member (seq 1 = genesis)
     const beforeMembership = await signValueAs(
       MEMBER,
       {
@@ -213,8 +218,10 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
       "chain-head-state-mismatch",
     );
 
-    // (b) 環境作成前のヘッド(ベースチェーンの seq 3)の宣言 — エポックが未定義の
-    // ヘッドを既定値で補う実装の禁止(§12-5 の 4 後段)
+    // (b) Declaring a head from before the environment's creation
+    // (base-chain seq 3) — forbids an implementation that backfills an
+    // epoch-undefined head with a default (the second half of §12-5
+    // item 4)
     const beforeCreate = await signValueAs(
       MEMBER,
       {
@@ -244,8 +251,9 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   it("rejects prev-chain mismatches (422 chain-head-state-mismatch): wrong prev and non-empty v1 prev", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // version 2 の prev が保存済み version 1 の signed_bytes ハッシュと不一致
-    // (署名は有効 — Ed25519 failure に潰されないことの固定)
+    // version 2's prev disagrees with the stored version 1's
+    // signed_bytes hash (the signature is valid — pinning that it is
+    // not crushed into an Ed25519 failure)
     const wrongPrev = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -257,8 +265,9 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
       "chain-head-state-mismatch",
     );
 
-    // version 1 に非空 prev(署名は有効な形を低水準 API で作る — signValue は
-    // 結合違反の署名を拒否するため)
+    // A non-empty prev on version 1 (build the validly-signed shape
+    // via the low-level API — signValue refuses to sign a binding
+    // violation)
     const context = {
       suite: "maruhi/v1",
       projectId,
@@ -335,10 +344,10 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     expect(pulled.value.chainHeadSeq).toBe(headAtWrite.seq);
     expect(pulled.value.chainHeadHashHex).toBe(headAtWrite.hashHex);
     expect(pulled.value.prevValueSigHashHex).toBe("");
-    // サーバー再計算の signed_bytes ハッシュは配布されない(§12-2)
+    // The server-recomputed signed_bytes hash is not distributed (§12-2)
     expect("signedBytesHashHex" in pulled.value).toBe(false);
 
-    // クライアント検証(§6.3): 取得チェーンの履歴索引に対する期待座標での検証
+    // Client-side verification (§6.3): verification at the expected coordinates against the fetched chain's history index
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -368,8 +377,10 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   it("keeps distributing a removed writer's stored value, verifiable at its in-tenure head", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // writer(MEMBER)を削除。保存済み値の writer 情報は受理時点のまま配布される
-    // (現メンバー集合から再導出しない — 削除済み writer の過去値の検証可能性)
+    // Remove the writer (MEMBER). The stored value's writer info is
+    // distributed as of acceptance time (not re-derived from the
+    // current member set — verifiability of a removed writer's past
+    // values)
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
@@ -388,7 +399,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     if (pulled === undefined) throw new Error("missing pulled variable");
     expect(pulled.value.writerUserId).toBe(MEMBER);
 
-    // 削除後の全チェーンでも、宣言ヘッドが在籍区間内なので検証は通る(§6.3-1/3)
+    // Even on the full chain after removal, verification passes because the declared head lies within the membership interval (§6.3-1/3)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -414,8 +425,10 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     });
     expect(result.ok).toBe(true);
 
-    // 削除済み writer による新規 push(削除後のヘッド宣言)は受理段階で拒否される
-    // (呼び出し主体が現メンバーでない → 404 存在秘匿が先に立つ — §11-2)
+    // A new push by the removed writer (declaring a post-removal
+    // head) is rejected at the acceptance stage (the calling principal
+    // is not a current member → the 404 existence hiding takes
+    // precedence — §11-2)
     const rejected = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -426,20 +439,24 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   });
 
   it("rejects a re-added member declaring a head from their old tenure (422 chain-head-state-mismatch)", async () => {
-    // remove → 別鍵 re-add した主体が旧在籍区間のヘッドを宣言する形は、署名が
-    // 有効でも「宣言ヘッド時点の束縛鍵 = 受理時点の鍵」で落ちる(§12-5 の 3)。
-    // crypto ベクター key-from-other-tenure のサーバー API レベルの対
+    // A principal that was removed and re-added with a different key
+    // declaring a head from the old membership interval fails even
+    // with a valid signature at "key bound at the declared head = key
+    // at acceptance" (§12-5 item 3). The server-API-level counterpart
+    // of the crypto vector key-from-other-tenure
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 旧在籍区間(現ヘッド)の hash を控えてから MEMBER を削除
+    // Snapshot the old-tenure (current) head's hash, then remove MEMBER
     const oldTenureHead = { ...fixture.head };
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
     });
-    // 同一 user_id(MEMBER)を新鮮な鍵で re-add する(旧鍵・他メンバー鍵との
-    // 重複は §6.2 のメンバー鍵一意性で弾かれるため、新規生成鍵を使う)。
-    // 受理時点の MEMBER の束縛鍵は新鍵になり、旧在籍区間のヘッド宣言は落ちる
+    // Re-add the same user_id (MEMBER) under a fresh key (reusing the
+    // old key or another member's key is rejected by §6.2 member-key
+    // uniqueness, so a newly generated key is used). MEMBER's
+    // acceptance-time bound key becomes the new key, and a declaration
+    // of an old-tenure head fails
     const newEncPair = await generateEncryptionKeyPair();
     const newSigPair = await generateSigningKeyPair();
     const rejoin = await signEntryAt({
@@ -464,13 +481,16 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     });
     expect(rejoined.status).toBe(200);
     fixture.head = { seq: rejoin.entry.seq, hashHex: rejoin.hash };
-    // 受理時点の MEMBER の束縛鍵は新鍵。サーバーはその鍵で署名検証し署名対象の
-    // writer_user_id にも MEMBER を用いる。攻撃者は新鍵で署名した上で旧在籍区間の
-    // ヘッドを宣言する(署名は有効 → ヘッド時点の束縛鍵 = 旧鍵 ≠ 受理時点の新鍵で
-    // 落ちる)。context を手で組んで新鍵で署名する
-    // prev は保存済み v1 の実 signed-bytes ハッシュにする(ダミーだと
-    // prev-hash-mismatch が同じ 422 理由を返して tenure 検査の変異が隠れる)。
-    // tenure 検査(head 時点状態)が prev 検査より先
+    // MEMBER's acceptance-time bound key is the new key. The server
+    // verifies the signature with that key and uses MEMBER as the
+    // signed writer_user_id. The attacker signs with the new key yet
+    // declares a head from the old tenure (the signature is valid →
+    // the key bound at the head = old key ≠ the new key at acceptance,
+    // so it fails). Hand-build the context and sign with the new key.
+    // prev must be the stored v1's real signed-bytes hash (with a
+    // dummy, prev-hash-mismatch returns the same 422 reason and hides
+    // the tenure check's mutation). The tenure check (state at the
+    // head) precedes the prev check
     const context = {
       suite: "maruhi/v1" as const,
       projectId,
@@ -517,7 +537,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     await expectNoVersionSideEffects([1]);
   });
 
-  it("stores the signature block and server-computed hash on the version row (§12-5 の保存行)", async () => {
+  it("stores the signature block and server-computed hash on the version row (the §12-5 stored row)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const headAtWrite = { ...fixture.head };
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

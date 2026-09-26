@@ -1,15 +1,25 @@
-// ES K3 — 要ローテーション検出の環境別アクセス窓と change_role 変種(AUDIT_SPEC §3.3 /
-// §3.4 / §4.1 / §4.2 Q1 = CRYPTO_SPEC §7。設計録 docs/notes/es-design.md §9 K3-E)。
+// ES K3 — the rotation-needed detection's per-environment access
+// windows and the change_role variants (AUDIT_SPEC §3.3 / §3.4 /
+// §4.1 / §4.2 Q1 = CRYPTO_SPEC §7. Design record
+// docs/notes/es-design.md §9 K3-E).
 //
-// 固定する規則:
-//   - 候補集合 = 環境別のアクセス窓(§4.1 手順 2): remove_member の候補は対象が
-//     scope に持っていた環境の変数だけ(scope 外の環境は候補にならない)
-//   - change_role 変種: 縮小 = 縮小分の環境、降格 = 対象 scope の全環境、昇格 /
-//     拡大は検出なし。trigger = change_role、起点 = 当該 change_role の seq
-//   - remove の候補は在籍区間内の全窓(縮小で閉じた過去の窓を含む — 同対の複数行)
-//   - 窓の復元はチェーンミラーの payload(scopeKind / scopeEnvironmentIds / newRole —
-//     §3.4)だけから成立する(§4.2 Q1 — role_changed を含む)
-//   - 3 変種すべての rotation.recommended が trigger を持ち、K3 前の行は target から補完する
+// Rules pinned:
+//   - candidate set = per-environment access windows (§4.1 step 2):
+//     remove_member's candidates are only the variables of the
+//     environments the target held in scope (environments outside
+//     scope are not candidates)
+//   - change_role variants: narrowing = the removed environments,
+//     demotion = every environment of the target's scope, promotion /
+//     widening = no detection. trigger = change_role, origin = that
+//     change_role's seq
+//   - a removal's candidates are every window within the membership
+//     interval (including past windows a narrowing closed — multiple
+//     rows for the same pair)
+//   - window reconstruction works from the chain mirror's payload
+//     alone (scopeKind / scopeEnvironmentIds / newRole — §3.4)
+//     (§4.2 Q1 — including role_changed)
+//   - every variant's rotation.recommended carries trigger; pre-K3
+//     rows are backfilled from target
 
 import { describe, expect, it } from "vitest";
 
@@ -68,7 +78,7 @@ async function pullAs(userId: string, environmentId: string): Promise<void> {
   expect(response.status).toBe(200);
 }
 
-/** OWNER が任意環境に変数を作る(値 v1 + ステートメント + マニフェスト)。 */
+/** OWNER creates a variable in any environment (value v1 + statement + manifest). */
 async function createVariableAsOwner(input: {
   readonly environmentId: string;
   readonly dek: Uint8Array;
@@ -116,8 +126,9 @@ async function createVariableAsOwner(input: {
 }
 
 /**
- * 2 環境 + 各 1 変数を作り、DEV を member・listed{scope} で追加する。
- * 返り値はチェーン上の add_member の seq。
+ * Create 2 environments + 1 variable each, and add DEV as member,
+ * listed{scope}.
+ * The return value is the add_member's seq on the chain.
  */
 async function setupTwoEnvironments(scope: readonly string[]): Promise<number> {
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
@@ -150,8 +161,8 @@ async function removeDev(): Promise<number> {
 const byPair = (flags: readonly WireRotationFlag[]) =>
   new Map(flags.map((flag) => [`${flag.environmentId}/${flag.variableId}`, flag]));
 
-describe("要ローテーション検出: 環境別アクセス窓(§4.1 手順 2 — remove_member)", () => {
-  it("listed{ENV} のメンバー削除は ENV の変数だけを候補にし、scope 外の環境は候補にしない", async () => {
+describe("rotation-needed detection: per-environment access windows (§4.1 step 2 — remove_member)", () => {
+  it("removing a listed{ENV} member candidates only ENV's variables — environments outside scope are not candidates", async () => {
     await setupTwoEnvironments([ENV]);
     await pullAs(DEV, ENV);
     const removalSeq = await removeDev();
@@ -167,7 +178,7 @@ describe("要ローテーション検出: 環境別アクセス窓(§4.1 手順 
     });
   });
 
-  it("縮小で閉じた過去の窓も remove の候補に含める(縮小時の行と remove 時の行が同対に並ぶ)", async () => {
+  it("a removal's candidates include past windows closed by a narrowing (the narrowing's row and the removal's row sit on the same pair)", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     const narrowSeq = await changeRole("member", [ENV]);
     const removalSeq = await removeDev();
@@ -184,8 +195,8 @@ describe("要ローテーション検出: 環境別アクセス窓(§4.1 手順 
   });
 });
 
-describe("要ローテーション検出: change_role 変種(§4.1 — 降格・縮小)", () => {
-  it("縮小は縮小分の環境だけを候補にし、trigger = change_role・起点 = 当該 change_role の seq、read / readable を区別する", async () => {
+describe("rotation-needed detection: the change_role variants (§4.1 — demotion / narrowing)", () => {
+  it("narrowing candidates only the removed environments, with trigger = change_role and origin = that change_role's seq, distinguishing read / readable", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     await pullAs(DEV, OTHER);
     const narrowSeq = await changeRole("member", [ENV]);
@@ -199,7 +210,7 @@ describe("要ローテーション検出: change_role 変種(§4.1 — 降格・
       triggerChainSeq: narrowSeq,
       trigger: "change_role",
     });
-    // 記録細則(§3.3): actor = system、payload に trigger、ミラー行の直後 seq
+    // Recording details (§3.3): actor = system, trigger in the payload, seq right after the mirror row
     const events = await readAuditEvents(projectId);
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
     expect(recommended).toHaveLength(1);
@@ -214,7 +225,7 @@ describe("要ローテーション検出: change_role 変種(§4.1 — 降格・
     expect(Number(recommended[0]?.["seq"])).toBe(Number(mirror?.["seq"]) + 1);
   });
 
-  it("降格(member → reader)は対象 scope の全環境を候補にする(reader として DEK を受け取り続けても検出する)", async () => {
+  it("demotion (member → reader) candidates every environment of the target's scope (detected even while the member keeps receiving DEKs as a reader)", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     const demoteSeq = await changeRole("reader", [ENV, OTHER]);
     const flags = byPair(await readFlags());
@@ -227,12 +238,12 @@ describe("要ローテーション検出: change_role 変種(§4.1 — 降格・
         trigger: "change_role",
       });
     }
-    // 降格者は在籍を続ける: その後の削除で同じ環境が再び候補になる(窓は閉じていない)
+    // The demoted member stays enrolled: a later removal makes the same environments candidates again (the window did not close)
     await removeDev();
     expect((await readFlags()).filter((flag) => flag.trigger === "remove_member")).toHaveLength(2);
   });
 
-  it("昇格・拡大・scope 不変の role 変更は検出しない。拡大後に縮小すれば拡大 seq からの窓で検出する", async () => {
+  it("promotion, widening, and scope-unchanged role changes are not detected; a narrowing after widening is detected on the window from the widening's seq", async () => {
     await setupTwoEnvironments([ENV]);
     const widenSeq = await changeRole("admin", [ENV, OTHER]);
     expect(await readFlags()).toHaveLength(0);
@@ -251,7 +262,7 @@ describe("要ローテーション検出: change_role 変種(§4.1 — 降格・
     expect(narrowSeq).toBeGreaterThan(widenSeq);
   });
 
-  it("降格と縮小が同時でも 1 (variable × environment) 1 行(§3.3 の粒度)", async () => {
+  it("a simultaneous demotion and narrowing still yields 1 row per (variable × environment) (§3.3's granularity)", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     await changeRole("reader", [ENV]);
     const flags = await readFlags();
@@ -260,8 +271,8 @@ describe("要ローテーション検出: change_role 変種(§4.1 — 降格・
   });
 });
 
-describe("窓の復元材料(AUDIT_SPEC §3.4 のミラー payload / §4.2 Q1)", () => {
-  it("chain.member_added / chain.role_changed のミラー行が scope を写す(検出はこの payload だけを読む)", async () => {
+describe("the window-reconstruction material (AUDIT_SPEC §3.4's mirror payload / §4.2 Q1)", () => {
+  it("the chain.member_added / chain.role_changed mirror rows copy the scope (detection reads only this payload)", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     await changeRole("member", [ENV]);
     const rows = await queryProjectDo(
@@ -284,7 +295,7 @@ describe("窓の復元材料(AUDIT_SPEC §3.4 のミラー payload / §4.2 Q1)",
 });
 
 // ---------------------------------------------------------------------------
-// 純関数のユニットテスト(DO なし): 窓導出の fail-safe と trigger の補完
+// Pure-function unit tests (no DO): the window derivation's fail-safes and trigger backfill
 // ---------------------------------------------------------------------------
 
 function fakeRead(input: {
@@ -305,7 +316,7 @@ function fakeRead(input: {
   };
 }
 
-/** revoke_server 変種の純関数テスト用: grant 区間とリース発行行だけを持つ読み取り面。 */
+/** For the revoke_server variant's pure-function tests: a read surface holding only grant intervals and lease-issuance rows. */
 const grantRead = (
   events: readonly {
     seq: number;
@@ -327,8 +338,8 @@ const grantRead = (
   rotationFlagEvents: () => [],
 });
 
-describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
-  it("scope を読めない member_added 行は all として窓を開く(検出は見逃さない側 — K3-F)", () => {
+describe("the window derivation's fail-safes and trigger backfill (pure functions)", () => {
+  it("a member_added row whose scope cannot be read opens a window as `all` (detection errs on the side of not missing — K3-F)", () => {
     const events = detectMemberRemoval({
       read: fakeRead({
         membership: [
@@ -350,7 +361,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     }
   });
 
-  it("listed の窓は scope の遷移点で開閉し、窓の外の読み取りは read に数えない", () => {
+  it("a listed window opens/closes at scope transitions; reads outside the window do not count as read", () => {
     const events = detectRoleChange({
       read: fakeRead({
         membership: [
@@ -377,7 +388,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
           { seq: 3, event: "var.created", environmentId: "env-b", variableId: "w" },
           { seq: 4, event: "var.created", environmentId: "env-a", variableId: "v" },
         ],
-        // seq 5 の読み取りは env-b の窓(8〜12)の外 = K3 前の行 / 不正な行の想定
+        // the seq 5 read is outside env-b's window (8-12) = assumed a pre-K3 / malformed row
         reads: [
           { seq: 5, environmentId: "env-b", variableId: "w" },
           { seq: 9, environmentId: "env-b", variableId: "w" },
@@ -395,7 +406,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     });
   });
 
-  it("再追加を跨ぐ窓は別区間: 不在の間の読み取りは数えず、両区間の候補を含む(§4.1 手順 1)", () => {
+  it("windows across a re-addition are separate intervals: reads during the absence do not count, and both intervals' candidates are included (§4.1 step 1)", () => {
     const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
     const events = detectMemberRemoval({
       read: fakeRead({
@@ -407,7 +418,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
         ],
         lifecycles: [
           { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
-          // 不在の間だけ存在した変数(どの窓とも重ならない)
+          // a variable that existed only during the absence (overlaps no window)
           { seq: 5, event: "var.created", environmentId: "env-a", variableId: "gap" },
           { seq: 5, event: "var.deleted", environmentId: "env-a", variableId: "gap" },
         ],
@@ -421,7 +432,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events[0]).toMatchObject({ variableId: "v", payload: { basis: "readable" } });
   });
 
-  it("Q3 には選んだ窓の包絡(最小 start 〜 最大 end の開区間)を渡し、結果は絞らない場合と同一", () => {
+  it("Q3 receives the envelope of the chosen windows (the open interval min-start to max-end), and the result equals the unfiltered case", () => {
     const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
     const reads = [
       { seq: 1, environmentId: "env-a", variableId: "v" },
@@ -458,10 +469,10 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
       });
     const bounded = run(true);
     const unbounded = run(false);
-    // 窓 = (2, 4) と (6, 10) — 包絡は (2, 10)
+    // windows = (2, 4) and (6, 10) — the envelope is (2, 10)
     expect(ranges[0]).toEqual({ afterSeq: 2, beforeSeq: 10 });
     expect(bounded).toEqual(unbounded);
-    // v は窓 (2, 4) 内の seq 3 で read、late は窓の外(5 = 不在の間・12 = 削除後)だけ
+    // v was read at seq 3 inside window (2, 4); late only outside windows (5 = during the absence, 12 = after removal)
     expect(
       bounded.map((event) => [event.variableId, (event.payload as { basis: string }).basis]),
     ).toEqual([
@@ -470,7 +481,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     ]);
   });
 
-  it("在籍区間の外に現れた role_changed は open として窓を開く(壊れた入力でも見逃さない側)", () => {
+  it("a role_changed that appears outside any membership interval opens a window as open (on broken input still err on the side of not missing)", () => {
     const events = detectMemberRemoval({
       read: fakeRead({
         membership: [
@@ -491,7 +502,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events.map((event) => event.variableId)).toEqual(["v"]);
   });
 
-  it("role が読めない role_changed は降格として扱う(見逃さない側)", () => {
+  it("a role_changed whose role cannot be read is treated as a demotion (err on the side of not missing)", () => {
     const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
     const events = detectRoleChange({
       read: fakeRead({
@@ -508,8 +519,8 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events.map((event) => event.variableId)).toEqual(["v"]);
   });
 
-  it("revoke_server 変種: 失効 → 再 grant → 再失効は別の窓、縮小する再 grant は窓を閉じない(和集合)", () => {
-    // 失効中(seq 5)のリースは数えない → readable
+  it("the revoke_server variant: revoke → re-grant → revoke are separate windows; a narrowing re-grant does not close a window (union)", () => {
+    // leases during the revocation (seq 5) do not count → readable
     const regranted = detectServerRevocation({
       read: grantRead(
         [
@@ -527,7 +538,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(regranted.map((event) => [event.variableId, event.payload?.["basis"]])).toEqual([
       ["v", "readable"],
     ]);
-    // 縮小する再 grant(合意規則は拒否するが検出側は fail-safe): env-b の窓は失効まで開いたまま
+    // a narrowing re-grant (the consensus rules would reject it, but detection is fail-safe): env-b's window stays open until revocation
     const narrowed = detectServerRevocation({
       read: grantRead(
         [
@@ -549,7 +560,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     ]);
   });
 
-  it("scope を読めない grant 行を含む区間は全環境として窓を開く(grant 軸も見逃さない側)", () => {
+  it("an interval containing a grant row whose scope cannot be read opens windows for all environments (the grant axis also errs on the side of not missing)", () => {
     const events = detectServerRevocation({
       read: grantRead(
         [
@@ -565,7 +576,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events.map((event) => event.variableId).toSorted()).toEqual(["v", "w"]);
   });
 
-  it("契機行の scope が読めない change_role は縮小分を特定できないため契機直前の全窓を候補にする", () => {
+  it("a change_role whose trigger row's scope cannot be read cannot identify the removed part, so all pre-trigger windows become candidates", () => {
     const events = detectRoleChange({
       read: fakeRead({
         membership: [
@@ -586,7 +597,7 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events.map((event) => event.variableId)).toEqual(["v"]);
   });
 
-  it("K3 前の rotation.recommended 行(trigger なし)は target 列から補完する", () => {
+  it("pre-K3 rotation.recommended rows (no trigger) are backfilled from the target column", () => {
     const base = {
       serverTs: 1,
       event: "rotation.recommended",

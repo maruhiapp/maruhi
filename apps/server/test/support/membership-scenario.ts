@@ -1,24 +1,29 @@
-// メンバーシップログ統合テストの共有シナリオ(data-scenario.ts と同じ
-// 「共有 fixture + register」パターン)。
+// Shared scenario for membership-log integration tests (the same
+// "shared fixture + register" pattern as data-scenario.ts).
 //
-// 分割の経緯: vitest-pool-workers 0.22.0 には SELF.fetch のリクエスト単価が
-// 累積リクエスト数に比例して増えるハーネス側の不具合があり(workers-sdk#15092 /
-// #15446)、ファイルごとに workerd が作り直されることを利用して describe 単位で
-// 割り、劣化をリセットしていた。不具合は @cloudflare/vitest-plugin 1.1.2 で修正され
-// (移行済み)、現在この分割は性能上必須ではない。ファイル間の並列度(コア数ぶん)と
-// 可読性のために維持している。
+// History of the split: vitest-pool-workers 0.22.0 had a harness-side bug
+// where the per-request cost of SELF.fetch grows in proportion to the
+// cumulative request count (workers-sdk#15092 / #15446); the split by
+// describe exploited the fact that workerd is rebuilt per file to reset the
+// degradation. The bug was fixed in @cloudflare/vitest-plugin 1.1.2
+// (already migrated), so this split is no longer required for performance.
+// It is kept for cross-file parallelism (one per core) and readability.
 //
-// テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
-// - 正常系 seq 1〜12 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT
-//   認証。create_environment / rotate_epoch は複合エンドポイント経由 — §12-4)。
-//   複合は境界 checkpoint(H+2)を挿入するため、最初の複合以降はベクターの固定
-//   seq / prev からヘッドがずれる。以降のエントリは op /
-//   payload / actor を保って実ヘッドで再署名して追従する(バイト固定は crypto 層の
-//   4 実行環境テストが担い、ここでは同じ op 列の API 受理を固定する)
-// - 認可系 negative 全件を拒否テストとして再生する(同じく実ヘッドで再署名)
+// Reuse of the test vectors (packages/crypto/test-vectors/chain-entries.json):
+// - Replay the happy path seq 1-12 as server acceptance tests (each actor's
+//   real PAT auth. create_environment / rotate_epoch go through the
+//   composite endpoint — §12-4). Because the composite inserts a boundary
+//   checkpoint (H+2), the head drifts from the vector's fixed seq / prev
+//   after the first composite. Subsequent entries keep op / payload / actor
+//   and are re-signed at the real head to follow it (byte pinning is the job
+//   of the crypto layer's 4-runtime tests; here we pin that the same op
+//   sequence is accepted by the API)
+// - Replay all authz negatives as rejection tests (re-signed at the real
+//   head in the same way)
 //
-// 認証は実発行経路(CLI ログインハンドオフ)で PAT を取得する。ベクターの固定 user_id は
-// D1 への直接シード(users + linked_identities)で整合させる(AUTH_SPEC §11-1 裁定)。
+// Auth obtains PATs via the real issuance path (CLI login handoff). The
+// vectors' fixed user_ids are aligned by seeding D1 directly (users +
+// linked_identities) (AUTH_SPEC §11-1 ruling).
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
@@ -66,7 +71,7 @@ const GITHUB_IDS: Record<string, number> = {
   "user-owner-0001": 9001,
   "user-member-0002": 9002,
   "user-admin-0003": 9003,
-  // 2026-09-14 ES + PF1: 正規チェーン seq 13〜19 で加わる listed / all のメンバーと owner
+  // 2026-09-14 ES + PF1: the listed / all members and owner joining at seq 13-19 of the canonical chain
   "user-devmember-0010": 9010,
   "user-devadmin-0011": 9011,
   "user-prodreader-0012": 9012,
@@ -113,25 +118,28 @@ export const getChain = (projectId: string, headers?: Record<string, string>): P
   });
 
 /**
- * ベクターの (environment, epoch) のダミー DEK(実計算のコミットメントと対)。
- * negative の不正座標(存在しないエポック等)にはベクター DEK がないため乱数で
- * 代替する — それらの拒否はラップ内容に依存しない(合意規則・判定順で落ちる)。
+ * The vector's dummy DEK for (environment, epoch) (paired with the
+ * computed commitment). For a negative's invalid coordinates (a
+ * nonexistent epoch etc.) there is no vector DEK, so a random value
+ * substitutes — their rejection does not depend on wrap contents (they fail
+ * on consensus rules / check order).
  */
 function vectorDek(environmentId: string, epoch: number): Uint8Array {
   const dekHex = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_hex;
   return dekHex === undefined ? makeDek() : hexBytes(dekHex);
 }
 
-/** 有効 grant の追跡(replayVectorChain 用): FP → enc 公開鍵 + 開示スコープ。 */
+/** Tracking of valid grants (for replayVectorChain): FP → enc public key + disclosure scope. */
 interface TrackedServerGrant {
   readonly encPubHex: string;
   readonly scope: readonly string[];
 }
 
 /**
- * 環境ごとの最新マニフェスト追跡(複合の manifestVersion CAS / prev 連鎖の
- * 材料 — §12-5)。replayVectorChain の開始でクリアする(各テストは replay から
- * 始まる)。envMeta は複合作成の同梱ステートメント(metaVersion 1)で固定。
+ * Latest-manifest tracking per environment (material for the composite's
+ * manifestVersion CAS / prev chain — §12-5). Cleared at the start of
+ * replayVectorChain (every test begins with a replay). envMeta is pinned
+ * by the creation composite's bundled statement (metaVersion 1).
  */
 const replayManifests = new Map<
   string,
@@ -143,8 +151,8 @@ const replayManifests = new Map<
 >();
 
 /**
- * 複合のラップ集合(現メンバー全員 + 開示スコープ内の有効 grant のサーバー鍵宛 —
- * AUTH_SPEC §12-4 の完全集合)。
+ * The composite's wrap set (all current members + the server keys of valid
+ * grants in the disclosure scope — the complete set of AUTH_SPEC §12-4).
  */
 async function compositeWraps(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
@@ -179,11 +187,14 @@ async function compositeWraps(
 }
 
 /**
- * 複合の同梱ステートメント(作成のみ)+ envMeta + マニフェスト(§12-4 / §12-5):
- * 宣言ヘッドは追記前の現ヘッド、epoch は同梱エントリが確立するエポック。
- * negative(未作成環境への rotate 等)で追跡が無い場合はダミー envMeta の v1
- * (拒否は先行検査で確定する)。作成複合はワイヤ形が manifestVersion 1・prev 空を
- * 固定する(negative の重複作成でも同じ形で送り、拒否は合意規則が担う)。
+ * The composite's bundled statement (creation only) + envMeta + manifest
+ * (§12-4 / §12-5): the declared head is the current head before the
+ * append; epoch is the one the bundled entry establishes. When there is no
+ * tracking in a negative (e.g. rotate on a never-created environment), a
+ * dummy-envMeta v1 is used (the rejection is decided by earlier checks).
+ * The creation composite pins the wire shape at manifestVersion 1 with
+ * empty prev (a negative's duplicate creation is sent in the same shape;
+ * the rejection is the consensus rule's job).
  */
 async function compositeManifestParts(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
@@ -240,10 +251,11 @@ async function compositeManifestParts(
 }
 
 /**
- * create_environment / rotate_epoch のベクターエントリを複合エンドポイント
- * (AUTH_SPEC §12-4)へ送る。汎用 append は 2 op を CompositeRequired で拒否する
- * ため、再生・negative とも複合経由になる。ラップ集合はベクターのダミー DEK を
- * 現メンバー集合(recipients)へ実 HPKE でラップし、actor 自身が署名する。
+ * Send a create_environment / rotate_epoch vector entry to the composite
+ * endpoint (AUTH_SPEC §12-4). The generic append rejects the two ops with
+ * CompositeRequired, so both replay and negatives go through the
+ * composite. The wrap set wraps the vector's dummy DEK to the current
+ * member set (recipients) with real HPKE, signed by the actor itself.
  */
 export async function submitComposite(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
@@ -271,8 +283,9 @@ export async function submitComposite(
     environmentId,
     epoch,
   );
-  // 境界 checkpoint(H+2 — §12-4 の必須同梱)。メンバーシップ系テストはデータ
-  // プレーンの変数を作らないため values_digest は常に空集合の列挙
+  // Boundary checkpoint (H+2 — the mandatory bundled item of §12-4).
+  // Membership tests create no data-plane variables, so values_digest is
+  // always the empty set's enumeration
   const { entry: checkpoint } = await signEntryAt({
     seq: entry.seq + 1,
     prevHashHex: await computeChainEntryHash(entry),
@@ -308,7 +321,7 @@ export async function submitComposite(
   return response;
 }
 
-/** 再生の op を追いながら現メンバー / 有効 grant を更新する(複合のラップ集合の導出)。 */
+/** Update the current members / valid grants while tracking the replayed ops (deriving the composite's wrap set). */
 function trackReplayState(
   entry: ReturnType<typeof toWireEntry>,
   members: string[],
@@ -331,7 +344,7 @@ function trackReplayState(
   }
 }
 
-/** 再生後の実ヘッド(複合の境界 checkpoint 挿入でベクターの固定 seq とずれる)。 */
+/** The real head after a replay (it drifts from the vector's fixed seq because the composite inserts a boundary checkpoint). */
 export interface ReplayHead {
   readonly seq: number;
   readonly hashHex: string;
@@ -343,25 +356,30 @@ export interface ReplayResult {
 }
 
 /**
- * ベクターの seq 1..upTo をサーバーへ再生する(init + append + 複合。actor ごとの
- * PAT)。複合のラップ集合が要る現メンバー集合は op を追いながら導出する。
+ * Replay the vector's seq 1..upTo against the server (init + append +
+ * composite, with each actor's PAT). The current member set needed for a
+ * composite's wrap set is derived while tracking the ops.
  *
- * 複合は境界 checkpoint(H+2)を挿入するため、最初の複合以降のヘッドはベクターの
- * 固定 seq / prev からずれる。以降のエントリは op /
- * payload / actor を保ったまま実ヘッドで再署名して追従する(正規チェーンの
- * バイト固定は crypto 層の 4 実行環境テストが担い、ここでは「同じ op 列を API が
- * 受理する」ことを固定する)。
+ * Because the composite inserts a boundary checkpoint (H+2), the head
+ * drifts from the vector's fixed seq / prev after the first composite.
+ * Subsequent entries keep op / payload / actor and are re-signed at the
+ * real head to follow it (byte pinning of the canonical chain is the job
+ * of the crypto layer's 4-runtime tests; here we pin that "the same op
+ * sequence is accepted by the API").
  */
 /**
- * 提案 hash の写像(ベクターの propose エントリの entry_hash → 実ヘッドで再署名した
- * 同エントリの entry_hash)。境界 checkpoint の挿入で seq / prev がずれると propose の
- * hash も変わるため、approve / withdraw が参照する `proposal_hash_hex`(§6.2 — 提案
- * エントリの entry_hash)を再生時の実 hash へ付け替える。未知の hash(negative の
- * 存在しない提案)は写像に無いのでそのまま(意味論を保つ)
+ * Mapping of proposal hashes (the entry_hash of a vector's propose entry
+ * → the entry_hash of the same entry re-signed at the real head). Because
+ * inserting a boundary checkpoint drifts seq / prev and changes propose
+ * hashes too, the `proposal_hash_hex` referenced by approve / withdraw
+ * (§6.2 — the proposal entry's entry_hash) is remapped to the real hash
+ * at replay time. An unknown hash (a nonexistent proposal in a negative)
+ * is not in the mapping and passes through unchanged (preserving the
+ * semantics)
  */
 const replayProposalHashes = new Map<string, string>();
 
-/** approve / withdraw の参照先を再生時の実 hash へ付け替える(propose 以外はそのまま)。 */
+/** Remap the reference target of approve / withdraw to the real hash at replay time (anything but propose passes through). */
 export function remapProposalRef(entry: ChainEntry): ChainEntry {
   if (entry.op !== "approve" && entry.op !== "withdraw") {
     return entry;
@@ -370,7 +388,7 @@ export function remapProposalRef(entry: ChainEntry): ChainEntry {
   return actual === undefined ? entry : { ...entry, payload: { proposalHashHex: actual } };
 }
 
-/** ベクターと実ヘッドの整合を保った再署名(参照先の付け替え → 再署名 → propose の hash 記録)。 */
+/** Re-sign while keeping consistency between the vector and the real head (remap the reference → re-sign → record the propose hash). */
 async function resignForReplay(
   vector: VectorEntry,
   head: ReplayHead,
@@ -390,7 +408,7 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
   const members: string[] = [];
   const serverGrants = new Map<string, TrackedServerGrant>();
   let head: ReplayHead = { seq: 0, hashHex: "" };
-  // マニフェスト・提案 hash の追跡は再生ごとにやり直す(beforeEach が DO を消すため)
+  // Manifest / proposal-hash tracking is redone per replay (beforeEach wipes the DO)
   replayManifests.clear();
   replayProposalHashes.clear();
   for (const vector of vectorEntries) {
@@ -405,7 +423,7 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
       head = { seq: 1, hashHex: vector.entry_hash_hex };
       continue;
     }
-    // ヘッドがベクターどおりならエントリは原本バイトのまま(再署名は決定的に同一)
+    // When the head matches the vector, the entry stays the original bytes (re-signing is deterministically identical)
     const { entry, hash } = await resignForReplay(vector, head);
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       const environmentId = entry.payload.environmentId;
@@ -427,10 +445,12 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
 }
 
 /**
- * 認可 negative の前提チェーンを再生する: chain 指定つきは正規チェーンの
- * base_seq までを再生した後、派生チェーン(extended_chains)のエントリを
- * 汎用 append で受理させる(受理されること自体も §6.2 の許容側の固定。実ヘッドが
- * ベクターとずれた分は再署名で追従する — replayVectorChain と同じ規律)。
+ * Replay the precondition chain of an authz negative: when a chain is
+ * specified, replay the canonical chain up to base_seq, then have the
+ * derived chain's (extended_chains) entries accepted via the generic
+ * append (the fact that they are accepted is itself a pinning of §6.2's
+ * allowed side; the part where the real head drifted from the vector is
+ * followed by re-signing — the same discipline as replayVectorChain).
  */
 export async function replayNegativePrefix(negative: {
   readonly entry: { readonly seq: number };
@@ -455,12 +475,14 @@ export async function replayNegativePrefix(negative: {
 }
 
 /**
- * 各テストファイルの冒頭で 1 回呼ぶ: フィクスチャの beforeEach を登録する。
+ * Called once at the top of each test file: registers the fixture's
+ * beforeEach.
  *
- * この @cloudflare/vitest-plugin 構成のストレージ分離単位はワーカー(isolate:
- * false — apps/server/vitest.config.ts)で、DO SQLite / D1 はファイル内のテスト間
- * だけでなく、同じワーカーが処理する他のファイルからも持ち越される。テストごとに
- * 明示的に空へ戻し、ベクターユーザーをシードして PAT を取り直す。
+ * The storage-isolation unit of this @cloudflare/vitest-plugin config is
+ * the worker (isolate: false — apps/server/vitest.config.ts), so DO
+ * SQLite / D1 carry over not only across tests in a file but also from
+ * other files processed by the same worker. Every test explicitly resets
+ * to empty, re-seeds the vector users, and re-issues the PATs.
  */
 export function registerMembershipScenario(): void {
   beforeEach(async () => {

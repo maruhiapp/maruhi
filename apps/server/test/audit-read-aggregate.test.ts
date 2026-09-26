@@ -1,17 +1,23 @@
-// `var.read` の集約形(AUDIT_SPEC §3.3 — 監査ログの成長密度対策 ②)の
-// テスト。@cloudflare/vitest-plugin(workerd 実環境)。
+// Tests for the aggregated form of `var.read` (AUDIT_SPEC §3.3 —
+// audit-log growth-density countermeasure ②). @cloudflare/vitest-plugin
+// (real workerd environment).
 //
-// 固定するもの:
-// - 記録形: 値付き一括 pull 1 回 = 環境単位 1 行。variable_id / epoch / version
-//   列は NULL、payload = { variables: [{ variableId, epoch, version }, …] }
-//   (variableId 昇順)。返した変数が 0 の pull は行を書かない
-// - 密度: 100 変数の環境を 1 回 pull → 監査行 1 行。行 + 索引の
-//   バイト数の実測(仕様 §3.3 / AUTH_SPEC §12-8 余裕の会計の数値の出所)
-// - 要ローテーション検出の同値性(§4.1 手順 3 の (a)): 旧形のみ / 集約形のみ /
-//   混在の 3 形で detectMemberRemoval の basis が一致する(集約は検出の入力を
-//   欠損させない — 裁定 CZ の線引き)。区間外の読み取りは両形とも数えない
-// - §7 の variable_id フィルタ(Q4): 旧形の列一致と集約形の payload 一致の
-//   和集合。ページング(カーソル・limit)が 2 クエリ合流でも seq 降順・重複なし
+// What is pinned:
+// - Recorded shape: one bulk pull with values = one row per environment.
+//   The variable_id / epoch / version columns are NULL, and payload =
+//   { variables: [{ variableId, epoch, version }, …] } (variableId
+//   ascending). A pull that returned zero variables writes no row
+// - Density: one pull of a 100-variable environment → 1 audit row. The
+//   byte count of rows + indexes is measured (the source of the numbers
+//   in the §3.3 / AUTH_SPEC §12-8 headroom accounting)
+// - Equivalence of rotation-needed detection (§4.1 step 3 (a)): the
+//   detectMemberRemoval basis agrees across the three shapes — legacy
+//   only / aggregated only / mixed (aggregation must not lose detection
+//   inputs — the ruling CZ line). Reads outside the interval are not
+//   counted by either shape
+// - The §7 variable_id filter (Q4): the union of the legacy column match
+//   and the aggregated payload match. Paging (cursor / limit) stays
+//   seq-descending with no duplicates across the 2-query union
 
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -51,10 +57,10 @@ function varReadRows(events: readonly Record<string, unknown>[]): Record<string,
   return events.filter((event) => event["event"] === "var.read");
 }
 
-describe("集約形の記録(§3.3)", () => {
-  it("値付き pull は環境単位 1 行 — 変数粒度の列は NULL、payload に昇順の列挙", async () => {
+describe("recording the aggregated form (§3.3)", () => {
+  it("a pull with values is one row per environment — variable-grained columns are NULL, payload carries an ascending enumeration", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // 作成順を昇順と逆にして、列挙が variableId 昇順に固定されることを見る
+    // Create in the reverse of ascending order to verify the enumeration is pinned to variableId ascending
     await createVariableOk(dek, "var-zeta", "ZETA", "z");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek, "var-alpha", "ALPHA", "a");
@@ -72,7 +78,7 @@ describe("集約形の記録(§3.3)", () => {
     expect(read["version"]).toBeNull();
     expect(read["target_user_id"]).toBeNull();
     expect(read["actor_key_fingerprint"]).toBeNull();
-    // 保存バイト列(row_digest の入力)まで固定: キー順 variableId → epoch → version
+    // Pinned down to the stored bytes (the input of row_digest): key order is variableId → epoch → version
     expect(String(read["payload"])).toBe(
       JSON.stringify({
         variables: [
@@ -82,7 +88,7 @@ describe("集約形の記録(§3.3)", () => {
         ],
       }),
     );
-    // 共有ヘルパの往復(サーバーの書き手と CLI の読み手が同一実装)
+    // Round-trip through the shared helper (the server's writer and the CLI's reader are the same implementation)
     expect(auditReadVariablesOf(JSON.parse(String(read["payload"])))).toEqual([
       { variableId: "var-alpha", epoch: 1, version: 1 },
       { variableId: VAR, epoch: 1, version: 1 },
@@ -90,13 +96,13 @@ describe("集約形の記録(§3.3)", () => {
     ]);
   });
 
-  it("返した変数が 0 の pull は行を書かない(記録条件 = 暗号文の配布)", async () => {
+  it("a pull that returned zero variables writes no row (the recording condition = distribution of ciphertext)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await pullAs(READER);
     expect(varReadRows(await readAuditEvents(projectId))).toHaveLength(0);
   });
 
-  it("100 変数の環境を 1 回 pull → 監査行 1 行。列挙は 100 件", async () => {
+  it("one pull of a 100-variable environment → 1 audit row. The enumeration has 100 entries", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     for (let index = 0; index < 100; index += 1) {
       await createVariableOk(
@@ -120,7 +126,7 @@ describe("集約形の記録(§3.3)", () => {
   });
 });
 
-/** 集約形 / 旧形の行を直接シードする(検出の同値性・密度の実測用)。 */
+/** Seed aggregated / legacy rows directly (for detection equivalence and density measurement). */
 function aggregatedRead(
   actorUserId: string,
   environmentId: string,
@@ -155,13 +161,13 @@ function legacyRead(
   };
 }
 
-describe("密度の実測(行 + 索引のバイト数 — §3.3 / AUTH_SPEC §12-8 の会計)", () => {
-  it("集約形は 1 pull 1 行で、100 変数でも旧形 100 行より小さい", async () => {
+describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 accounting)", () => {
+  it("the aggregated form is 1 row per pull, and even at 100 variables it is smaller than the legacy 100 rows", async () => {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-read-density-test"));
     const measured = await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
       const store = makeAuditStore(sql);
-      // 識別子は CLI の実発行形(`v` + 24 hex = 25 文字 — meta-statement.ts)に揃える
+      // Identifiers match the CLI's real issuance shape (`v` + 24 hex = 25 chars — meta-statement.ts)
       const variables = Array.from(
         { length: 100 },
         (_v, i) => `v${i.toString(16).padStart(24, "0")}`,
@@ -201,17 +207,17 @@ describe("密度の実測(行 + 索引のバイト数 — §3.3 / AUTH_SPEC §12
     console.log(
       `var.read density — legacy ${measured.legacyPerRow.toFixed(1)} B/row; aggregated ${base.toFixed(1)} B/row + ${perVariable.toFixed(1)} B/variable (1 var ${measured.aggregated1PerRow.toFixed(1)} B, 100 vars ${measured.aggregated100PerRow.toFixed(1)} B)`,
     );
-    // 100 変数の pull: 旧形 100 行 vs 集約形 1 行 — バイトでも小さい
+    // A pull of 100 variables: legacy 100 rows vs aggregated 1 row — smaller in bytes too
     expect(measured.aggregated100PerRow).toBeLessThan(measured.legacyPerRow * 100);
     expect(perVariable).toBeGreaterThan(0);
   });
 });
 
-describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧形 / 集約形 / 混在)", () => {
+describe("equivalence of rotation-needed detection (§4.1 step 3 (a) — legacy / aggregated / mixed)", () => {
   const TARGET = "user-target-0001";
   const E = "env-equiv-0001";
 
-  /** 在籍区間(genesis 〜 member_removed)と変数 V1〜V3 の存在、区間外の読み取りを共通に持つ列。 */
+  /** A column sharing the membership interval (genesis through member_removed), the existence of variables V1–V3, and out-of-interval reads. */
   function scenario(readsInside: readonly AuditEventInput[]): readonly AuditEventInput[] {
     const ts = 1_700_000_000_000;
     return [
@@ -247,7 +253,7 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
         environmentId: E,
         variableId: "v3",
       },
-      // 在籍区間の前の読み取り(数えない — 両形とも)
+      // Reads before the membership interval (not counted — by either shape)
       aggregatedRead(TARGET, E, ["v3"]),
       legacyRead(TARGET, E, "v3"),
       {
@@ -294,7 +300,7 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
     });
   }
 
-  it("旧形のみ・集約形のみ・混在で basis が一致する(v1 / v2 = read, v3 = readable)", async () => {
+  it("the basis agrees across legacy-only, aggregated-only, and mixed (v1 / v2 = read, v3 = readable)", async () => {
     const expected = { [`${E}/v1`]: "read", [`${E}/v2`]: "read", [`${E}/v3`]: "readable" };
     const legacyOnly = await basisOf(
       scenario([legacyRead(TARGET, E, "v1"), legacyRead(TARGET, E, "v2")]),
@@ -308,7 +314,7 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
     expect(mixed).toEqual(expected);
   });
 
-  it("他人の集約行は数えない(actor 列で照合 — 可視性・本人判定と同じ列)", async () => {
+  it("other people's aggregated rows are not counted (matched on the actor column — the same column as visibility / self-detection)", async () => {
     const basis = await basisOf(scenario([aggregatedRead(MEMBER, E, ["v1", "v2"])]));
     expect(basis).toEqual({
       [`${E}/v1`]: "readable",
@@ -318,15 +324,15 @@ describe("要ローテーション検出の同値性(§4.1 手順 3 (a) — 旧�
   });
 });
 
-describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形の payload 一致)", () => {
-  it("集約行は列挙が当該変数を含むときだけ一致し、削除後の pull は含まない", async () => {
+describe("the §7 variable_id filter (Q4 — legacy column match + aggregated payload match)", () => {
+  it("an aggregated row matches only when its enumeration contains that variable, and a pull after deletion is not included", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek, "var-second", "SECOND", "two");
     await pullAs(READER);
     await pullAs(MEMBER);
     expect((await deleteVariableRequest(VAR, OWNER)).status).toBe(204);
-    // 削除後の pull は var-second だけを列挙する
+    // The pull after deletion enumerates only var-second
     await pullAs(READER);
 
     const forVar = await fetchEvents(token(OWNER), { variableId: VAR, limit: "200" });
@@ -340,7 +346,7 @@ describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形
     expect(forVar.events.map((event) => event.event)).toEqual(
       expect.arrayContaining(["var.created", "var.version_pushed", "var.deleted", "var.read"]),
     );
-    // 列一致の行は当該変数の行だけ
+    // The column-match rows are only that variable's rows
     for (const event of forVar.events.filter((e) => e.event !== "var.read")) {
       expect(event.variableId).toBe(VAR);
     }
@@ -352,7 +358,7 @@ describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形
     expect(forAbsent.events).toHaveLength(0);
   });
 
-  it("ページングは 2 クエリ合流でも seq 降順・重複なし・全件到達", async () => {
+  it("paging stays seq-descending with no duplicates across the 2-query union, reaching all rows", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek, "var-second", "SECOND", "two");
@@ -377,7 +383,7 @@ describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形
     expect(new Set(seqs).size).toBe(seqs.length);
   });
 
-  it("admin 未満(class1-or-self)では本人の集約行だけがフィルタに現れる", async () => {
+  it("below admin (class1-or-self), only one's own aggregated rows appear in the filter", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await pullAs(READER);
@@ -390,7 +396,7 @@ describe("§7 の variable_id フィルタ(Q4 — 旧形の列一致 + 集約形
   });
 });
 
-/** 実行された SQL を捕捉する SqlStorage の包み(EXPLAIN・クエリ形の固定用)。 */
+/** A SqlStorage wrapper that captures the SQL executed (for pinning EXPLAIN / query shape). */
 function capturing(sql: SqlStorage): { readonly sql: SqlStorage; readonly queries: string[] } {
   const queries: string[] = [];
   const proxy = new Proxy(sql, {
@@ -407,19 +413,19 @@ function capturing(sql: SqlStorage): { readonly sql: SqlStorage; readonly querie
   return { sql: proxy, queries };
 }
 
-/** 行の環境 ID を差し替える(複数環境に同じ変数 ID がある形のシード用)。 */
+/** Rewrite a row's environment ID (for seeding the shape where multiple environments hold the same variable ID). */
 function inEnv(row: AuditEventInput, environmentId: string): AuditEventInput {
   return { ...row, environmentId };
 }
 
-/** var.read 行の環境 ID 列(seq 降順のまま)。 */
+/** The environment-ID column of var.read rows (still seq-descending). */
 function readEnvironments(
   rows: readonly { event: string; environmentId: string | null }[],
 ): readonly (string | null)[] {
   return rows.filter((row) => row.event === "var.read").map((row) => row.environmentId);
 }
 
-describe("variable_id フィルタの走査範囲(判定前に消費する共有資源の有界化)", () => {
+describe("scan range of the variable_id filter (bounding the shared resource consumed before judging)", () => {
   const E = "env-scan-0001";
   const ts = 1_700_000_000_000;
 
@@ -469,7 +475,7 @@ describe("variable_id フィルタの走査範囲(判定前に消費する共有
     version: 1,
   });
 
-  it("値を一度も持たない(declared のみの)変数は集約側の payload 検査を走らせない", async () => {
+  it("a variable that never held a value (declared only) does not run the aggregated-side payload check", async () => {
     const result = await withScanDo(
       [
         created("v-declared"),
@@ -505,7 +511,7 @@ describe("variable_id フィルタの走査範囲(判定前に消費する共有
     expect(result.activeScans).toBe(1);
   });
 
-  it("存在区間は環境ごとの和 — 環境 A で削除済みでも環境 B の集約行を取りこぼさない", async () => {
+  it("the existence interval is a per-environment union — even when deleted in environment A, environment B's aggregated rows are not missed", async () => {
     const B = "env-scan-0002";
     const result = await withScanDo(
       [
@@ -522,7 +528,7 @@ describe("variable_id フィルタの走査範囲(判定前に消費する共有
           environmentId: E,
           variableId: "v-shared",
         },
-        // A の削除後の B の pull — 変数単位の MAX(deleted) を上限にすると落ちる行
+        // B's pull after A's deletion — a row that would be dropped if a per-variable MAX(deleted) were used as the upper bound
         aggregatedRead(READER, B, ["v-shared"]),
       ],
       (store) => {
@@ -555,7 +561,7 @@ describe("variable_id フィルタの走査範囲(判定前に消費する共有
     expect(result.onlyB).toEqual([B]);
   });
 
-  it("admin 未満の集約側クエリは本人の actor 行に束縛される(他人の pull 履歴を走査しない)", async () => {
+  it("a below-admin aggregated-side query is bound to one's own actor rows (it does not scan other people's pull history)", async () => {
     const result = await withScanDo(
       [
         created("v-active"),

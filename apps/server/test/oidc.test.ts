@@ -1,13 +1,19 @@
-// OIDC 検証と JWKS キャッシュ(AUTH_SPEC §14-1)の単体テスト。
+// Unit tests for OIDC verification and the JWKS cache (AUTH_SPEC
+// §14-1).
 //
-// リースの統合テスト(lease.test.ts)が実経路の判定順を固定するのに対し、
-// ここは「実経路では作りにくい状況」を固定する:
-//   - JWKS が取得できない = 署名検証を実行できないときの fail-closed と、
-//     その応答が 401 ではなく 503 `oidc-jwks-unavailable` であること
-//   - TTL 内の再利用 / 未知 kid の強制リフレッシュ / クールダウン(鍵ローテーション追随)
-//   - discovery ドキュメントの自己申告検査(issuer 一致・jwks_uri の同一オリジン)
+// Where the lease integration tests (lease.test.ts) pin the
+// real-path judgment order, this file pins "situations that are
+// hard to create on the real path":
+//   - fail-closed when the JWKS cannot be fetched = signature
+//     verification cannot run, and that the response is not 401
+//     but 503 `oidc-jwks-unavailable`
+//   - reuse within the TTL / a forced refresh on an unknown kid /
+//     the cooldown (following key rotation)
+//   - the self-declaration checks of the discovery document
+//     (issuer match, same-origin jwks_uri)
 //
-// fetch はテスト内で差し替えて呼び出し回数を数える(実ネットワークへは出ない)。
+// fetch is swapped out inside the test and its call count is
+// tallied (no traffic to the real network).
 
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,8 +40,8 @@ function json(value: unknown, status = 200): Response {
 }
 
 /**
- * discovery / JWKS を返す fetch スタブ。`jwks` を差し替えると鍵ローテーションを、
- * `failJwks` を立てると issuer 側の障害を模せる。
+ * A fetch stub returning discovery / JWKS. Swap `jwks` to simulate
+ * key rotation; set `failJwks` to simulate an issuer-side outage.
  */
 function stubFetch(
   options: {
@@ -61,7 +67,7 @@ function stubFetch(
   return log;
 }
 
-/** 成否をタグ付き値に畳む(Effect v4 beta には Effect.either がない)。 */
+/** Fold the outcome into a tagged value (Effect v4 beta has no Effect.either). */
 const run = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.runPromise(
     Effect.match(effect, {
@@ -70,7 +76,7 @@ const run = <A, E>(effect: Effect.Effect<A, E>) =>
     }),
   );
 
-describe("JWKS キャッシュ(§14-1)", () => {
+describe("JWKS cache (§14-1)", () => {
   it("caches the discovery document and the JWKS across calls", async () => {
     const log = stubFetch();
     const cache = makeJwksCache();
@@ -78,7 +84,8 @@ describe("JWKS キャッシュ(§14-1)", () => {
       const resolved = await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID));
       expect(resolved).not.toBeNull();
     }
-    // 3 回の解決で往復は discovery 1 + JWKS 1 のみ(TTL 内は再利用)
+    // 3 resolutions make just 1 discovery + 1 JWKS round trips
+    // (reused within the TTL)
     expect(log.urls.length).toBe(2);
   });
 
@@ -90,22 +97,23 @@ describe("JWKS キャッシュ(§14-1)", () => {
     let currentMs = 1_000_000;
     const cache = makeJwksCache(() => currentMs);
 
-    // 既知 kid で温める(discovery + JWKS)
+    // Warm up with a known kid (discovery + JWKS)
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
     const afterWarmup = log.urls.length;
 
-    // issuer 側で鍵がローテーションされた。未知 kid は 1 回だけ取り直す
+    // The issuer rotated its keys. An unknown kid is re-fetched
+    // exactly once
     rotated = true;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "rotated-in"))).not.toBeNull();
     expect(log.urls.length).toBe(afterWarmup + 1);
 
-    // クールダウン内の未知 kid は取り直さない(存在しない kid の連打で
-    // issuer を叩き続けない)
+    // An unknown kid within the cooldown is not re-fetched (a
+    // nonexistent kid must not hammer the issuer)
     const afterRefresh = log.urls.length;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "never-existed"))).toBeNull();
     expect(log.urls.length).toBe(afterRefresh);
 
-    // クールダウンを越えればもう一度だけ取り直す
+    // Past the cooldown it is re-fetched once more
     currentMs += 61_000;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "still-missing"))).toBeNull();
     expect(log.urls.length).toBe(afterRefresh + 1);
@@ -130,16 +138,18 @@ describe("JWKS キャッシュ(§14-1)", () => {
     const log = stubFetch({ failJwks: () => failing });
     const cache = makeJwksCache();
 
-    // 既知 kid で温める(discovery + JWKS)
+    // Warm up with a known kid (discovery + JWKS)
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
 
-    // issuer 側の障害中に未知 kid(攻撃者が自由に指定できる)が強制
-    // リフレッシュを誘発しても、TTL 内の旧ドキュメントを失わない:
-    // 未知 kid は 401(null)、既知 kid は 503 に落ちず検証できたまま
+    // Even if an unknown kid (which an attacker can choose freely)
+    // triggers a forced refresh while the issuer is down, the old
+    // in-TTL document is not lost: the unknown kid is 401 (null),
+    // while a known kid never drops to 503 and still verifies
     failing = true;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "never-existed"))).toBeNull();
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
-    // 失敗した強制リフレッシュもクールダウンの起点になる(issuer を叩き続けない)
+    // A failed forced refresh also starts the cooldown (the issuer
+    // is not hammered)
     const afterFailure = log.urls.length;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "still-missing"))).toBeNull();
     expect(log.urls.length).toBe(afterFailure);
@@ -152,13 +162,14 @@ describe("JWKS キャッシュ(§14-1)", () => {
     const cache = makeJwksCache(() => currentMs);
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
 
-    // good 値が無い状態でも失敗クールダウン中は叩き直さない(cold + issuer 障害
-    // でも「1 リクエスト = 1 fetch」にしない)。この間は即座に失敗する
+    // Even with no good value, nothing is re-fetched during the
+    // failure cooldown (cold + issuer outage must not become "1
+    // request = 1 fetch"). Failures are immediate during this window
     failing = false;
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
     expect(log.urls.filter((url) => url.endsWith("/jwks")).length).toBe(1);
 
-    // クールダウン明けには取り直し、失敗が居座っていないことが確かめられる
+    // After the cooldown it re-fetches, proving the failure did not stick
     currentMs += 61_000;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
     expect(log.urls.filter((url) => url.endsWith("/jwks")).length).toBe(2);
@@ -171,40 +182,43 @@ describe("JWKS キャッシュ(§14-1)", () => {
     const cache = makeJwksCache(() => currentMs);
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
 
-    // TTL(15 分)を越え、かつ issuer が落ちている状態
+    // Past the TTL (15 minutes) with the issuer still down
     failing = true;
     currentMs += 20 * 60 * 1000;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
 
-    // 猶予窓(6 時間)を越えたら、もう受理しない
+    // Past the grace window (6 hours) it is no longer accepted
     currentMs += 6 * 60 * 60 * 1000;
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
   });
 
-  it("does not re-fetch on every request while the issuer stays down (増幅の遮断)", async () => {
-    // TTL 切れ + issuer 障害では `isUsable` が TTL の分岐で false を返し、
-    // 強制リフレッシュのクールダウンには到達しない。失敗側に独立の間隔が
-    // ないと、猶予窓の残り(最長 6 時間弱)にわたって「未認証リクエスト 1 本 =
-    // 外向き fetch 1 回」が続く
+  it("does not re-fetch on every request while the issuer stays down (cuts off amplification)", async () => {
+    // On TTL expiry + issuer outage, `isUsable` returns false at the
+    // TTL branch, so the forced-refresh cooldown is never reached.
+    // Without an independent interval on the failure side, "1
+    // unauthenticated request = 1 outbound fetch" would persist for
+    // the remainder of the grace window (just under 6 hours)
     let failing = false;
     const log = stubFetch({ failJwks: () => failing });
     let currentMs = 1_000_000;
     const cache = makeJwksCache(() => currentMs);
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
 
-    // TTL(15 分)を越え、issuer が落ちる
+    // Past the TTL (15 minutes), the issuer goes down
     failing = true;
     currentMs += 20 * 60 * 1000;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
     const afterFirstFailure = log.urls.length;
 
-    // 障害中の後続リクエストは stale で応じ、issuer を叩き直さない
+    // Subsequent requests during the outage are served stale; the
+    // issuer is not re-hit
     for (let attempt = 0; attempt < 5; attempt += 1) {
       expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
     }
     expect(log.urls.length).toBe(afterFirstFailure);
 
-    // クールダウン(60 秒)明けには 1 回だけ再試行し、復旧を拾う
+    // After the cooldown (60 seconds) it retries once and picks up
+    // the recovery
     currentMs += 61_000;
     failing = false;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
@@ -212,8 +226,9 @@ describe("JWKS キャッシュ(§14-1)", () => {
   });
 
   it("aborts a hanging JWKS fetch instead of holding the request open", async () => {
-    // 未認証経路から誘発される外部 fetch なので、応答しない issuer に
-    // リクエストを張り付かせない(AbortSignal.timeout)
+    // An external fetch inducible via an unauthenticated path, so an
+    // unresponsive issuer must not hold the request open
+    // (AbortSignal.timeout)
     globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
@@ -233,22 +248,23 @@ describe("OIDC verifier(§14-1)", () => {
     const verifier = makeOidcVerifier(makeJwksCache());
     const result = await run(verifier.verify(await makeOidcToken(), nowMs()));
     expect(result.ok).toBe(false);
-    // 一過性の障害を「資格情報が不正(401)」と伝えない — CI ジョブが
-    // リトライ不能な失敗として扱ってしまうため(errors/lease.ts)
+    // A transient outage must not be reported as "bad credentials
+    // (401)" — a CI job would treat it as a non-retryable failure
+    // (errors/lease.ts)
     expect(result.ok === false && result.error).toMatchObject({
       _tag: "LeaseUnavailable",
       reason: "oidc-jwks-unavailable",
     });
   });
 
-  it("checks the issuer allowlist before any outbound fetch (未認証面からの増幅の遮断)", async () => {
+  it("checks the issuer allowlist before any outbound fetch (cuts off amplification from the unauthenticated surface)", async () => {
     const log = stubFetch();
     const verifier = makeOidcVerifier(makeJwksCache());
     const result = await run(
       verifier.verify(await makeOidcToken({ issuer: "https://evil.example" }), nowMs()),
     );
     expect(result.ok === false && result.error).toMatchObject({ reason: "unsupported-issuer" });
-    // 許可リスト外の issuer では 1 度も外へ出ない
+    // With an issuer outside the allowlist it never goes out even once
     expect(log.urls.length).toBe(0);
   });
 
@@ -269,9 +285,9 @@ describe("OIDC verifier(§14-1)", () => {
     const verifier = makeOidcVerifier(makeJwksCache());
     const expSeconds = Math.floor(Date.now() / 1000) - 30;
     const token = await makeOidcToken({ expSeconds });
-    // exp が 30 秒前 = skew 内なのでまだ有効
+    // exp 30 seconds ago = within skew, so still valid
     expect((await run(verifier.verify(token, Date.now()))).ok).toBe(true);
-    // 同じトークンを skew を越えた時刻で検証すると期限切れ
+    // Verifying the same token at a time beyond the skew is expired
     const later = await run(verifier.verify(token, Date.now() + 90_000));
     expect(later.ok === false && later.error).toMatchObject({ reason: "token-expired" });
   });
@@ -279,7 +295,7 @@ describe("OIDC verifier(§14-1)", () => {
   it("rejects a token whose payload is not a JSON object", async () => {
     stubFetch();
     const verifier = makeOidcVerifier(makeJwksCache());
-    // header.payload.signature の形は満たすが payload が JSON 配列
+    // The header.payload.signature shape holds but the payload is a JSON array
     const segment = btoa("[1,2,3]").replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
     const header = btoa(JSON.stringify({ alg: "ES256", kid: OIDC_KID }))
       .replaceAll("+", "-")
@@ -290,9 +306,10 @@ describe("OIDC verifier(§14-1)", () => {
   });
 
   it("rejects a JWS that declares a crit extension (RFC 7515 §4.1.11)", async () => {
-    // crit は「理解できないなら受理してはならない拡張」の宣言であり、本実装は
-    // 拡張を 1 つも持たないためいかなる crit 値も拒否する。この検査の欠落は
-    // 2025〜2026 に Authlib / PyJWT / fast-jwt で CVE になっている
+    // crit declares "extensions that must not be accepted unless
+    // understood"; this implementation supports no extensions, so
+    // every crit value is rejected. The missing check became CVEs in
+    // Authlib / PyJWT / fast-jwt in 2025–2026
     stubFetch();
     const verifier = makeOidcVerifier(makeJwksCache());
     const token = await makeOidcToken({ crit: ["exp"] });

@@ -1,19 +1,28 @@
-// セッション主体の能力制限の固定テスト(AUTH_SPEC §5)。
+// Pinned tests for the session principal's capability restriction
+// (AUTH_SPEC §5).
 //
-// 全エンドポイント × セッション主体の許可 / 拒否マトリクスを、api-schema の
-// エンドポイント列挙(maruhiApi.groups — メソッド・パス・AuthMiddleware 有無)
-// から**機械的に導出**して workerd 実経路で検証する — 手書きのエンドポイント
-// 列挙を持たない(宣言漏れ・許可判定の焼き込み失効・新設面のゲート素通りを
-// 構造的に検出する。§12-10 (1) の strict 固定テストと同じ「注釈・宣言の存在で
-// なく拒否の挙動をテストする」規律)。
+// The allow / deny matrix of every endpoint × the session principal
+// is **mechanically derived** from api-schema's endpoint
+// enumeration (maruhiApi.groups — method, path, whether
+// AuthMiddleware is present) and verified over the real workerd
+// path — no hand-written endpoint list (structurally detects an
+// undeclared surface, a stale baked-in allow decision, or a newly
+// added surface slipping past the gate; the same "test the denial's
+// behavior, not the presence of annotations/declarations"
+// discipline as the §12-10 (1) strict pin).
 //
-// - 許可列挙(SESSION_ALLOWED_ENDPOINTS)外の認証必須面: セッション +
-//   CSRF ヘッダー込みでも一様に 403 `session-not-allowed`
-// - 許可列挙内の面: session-not-allowed が返らない(エンドポイント固有の
-//   意味論 — 404 / 400 等 — は各既存スイートが担う)
-// - トークン主体: どの面でも session-not-allowed が返らない(CLI 無影響の回帰)
-// - 未認証面(UNAUTHENTICATED_ENDPOINTS)との分類整合は api-schema のロード時
-//   スイープが import 時点で検査済み(本ファイルの import 自体がその実行)
+// - authenticated surfaces outside the allowed enumeration
+//   (SESSION_ALLOWED_ENDPOINTS): a uniform 403
+//   `session-not-allowed`, even with the CSRF header
+// - surfaces inside the allowed enumeration: no session-not-allowed
+//   is returned (endpoint-specific semantics — 404 / 400 etc. — are
+//   covered by each existing suite)
+// - token principals: no surface ever returns session-not-allowed
+//   (the CLI unaffected regression)
+// - classification consistency with the unauthenticated surfaces
+//   (UNAUTHENTICATED_ENDPOINTS) is already checked by api-schema's
+//   load-time sweep at import (this file's very import is that
+//   execution)
 
 import {
   AuthMiddleware,
@@ -38,7 +47,7 @@ interface EndpointInfo {
   readonly authenticated: boolean;
 }
 
-/** api-schema の登録済み全エンドポイントの機械列挙(構造型で groups を歩く)。 */
+/** Mechanical enumeration of every endpoint registered in api-schema (walks groups via the structural type). */
 function listEndpoints(): EndpointInfo[] {
   const api = maruhiApi as unknown as {
     readonly groups: {
@@ -69,14 +78,17 @@ function listEndpoints(): EndpointInfo[] {
 }
 
 /**
- * パスパラメータの具現化。実在プロジェクト(fixture — OWNER はチェーン owner)を
- * 使い、許可面の検証がスコープ検査(404)でなくエンドポイント本体まで届くように
- * する。未知のパラメータ名は fail-loud(新設面はここへの追記を強制される)。
+ * Concretizing path parameters. Uses the real project (the fixture
+ * — OWNER is the chain owner) so that verifying an allowed surface
+ * reaches the endpoint body rather than stopping at the scope check
+ * (404). An unknown parameter name is fail-loud (a newly added
+ * surface is forced to append here).
  */
 /**
- * パスパラメータの置換表。実在しなくてよいものは 404 = 非 session-not-allowed で
- * 十分(tokenId / wrapId / groupId = ULID 形、requestId = ハンドオフ要求 id〔SHA-256
- * hex — AUTH_SPEC §13-7〕、fp = 端末鍵フィンガープリント〔§13-11〕)。
+ * The path-parameter substitution table. Ones that need not exist
+ * are fine at 404 = not session-not-allowed (tokenId / wrapId /
+ * groupId = ULID shape; requestId = handoff-request id [SHA-256 hex
+ * — AUTH_SPEC §13-7]; fp = device-key fingerprint [§13-11]).
  */
 const PATH_PARAM_SUBSTITUTIONS: Readonly<Record<string, () => string>> = {
   projectId: () => projectId,
@@ -105,9 +117,11 @@ function requestInit(method: string, headers: Record<string, string>): RequestIn
   if (method === "GET" || method === "HEAD") {
     return { method, headers };
   }
-  // body はダミーで足りる: 能力判定(ミドルウェア)は payload decode より前に
-  // 走るため、拒否面は body の中身に依存しない。許可面・トークン面は 400 等の
-  // 非 session-not-allowed 応答で十分(正常系は既存スイートが担う)
+  // A dummy body suffices: the capability judgment (middleware)
+  // runs before payload decode, so a denied surface does not depend
+  // on the body's content. For allowed / token surfaces, a 400 or
+  // other non-session-not-allowed response is enough (the happy
+  // paths are covered by existing suites)
   return { method, headers: { ...JSON_HEADERS, ...headers }, body: "{}" };
 }
 
@@ -126,32 +140,34 @@ const allowedKeys = new Set(SESSION_ALLOWED_ENDPOINTS.map(([g, e]) => `${g}.${e}
 const unauthenticatedKeys = new Set(UNAUTHENTICATED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
 
 /**
- * §5 が明示拒否として列挙する実装済み面(仕様本文との突合ピン)。導出マトリクス
- * とは独立に、これらが許可列挙へ紛れ込む退行をテキストレベルで固定する。
+ * The implemented surfaces §5 enumerates as explicit denials (a pin
+ * against the spec text). Independent of the derived matrix, this
+ * pins at text level any regression where these slip into the
+ * allowed enumeration.
  */
 const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
-  ["variables", "pull"], // 値付き一括 pull(§12-7)
-  ["deks", "register"], // DEK の登録(§12-6)
-  ["deks", "listMine"], // DEK の取得(§12-6)
-  ["deks", "remove"], // DEK の削除(§12-6 — 署名を伴わない唯一の破壊系)
-  ["membership", "init"], // チェーン init(§11)
-  ["membership", "append"], // チェーン追記(§11)
+  ["variables", "pull"], // the bulk pull carrying values (§12-7)
+  ["deks", "register"], // DEK registration (§12-6)
+  ["deks", "listMine"], // DEK fetching (§12-6)
+  ["deks", "remove"], // DEK deletion (§12-6 — the only destructive op with no signature)
+  ["membership", "init"], // chain init (§11)
+  ["membership", "append"], // chain append (§11)
   ["environments", "create"],
   ["environments", "rotate"],
   ["environments", "rename"],
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
-  ["variables", "activate"], // activation 複合(§12-5 — 変数の mutation クラス)
+  ["variables", "activate"], // the activation composite (§12-5 — a variable mutation class)
   ["variables", "rename"],
   ["variables", "remove"],
-  ["invites", "issue"], // 招待の発行(§15-2)
-  ["invites", "accept"], // 招待の受諾(§15-2)
-  ["rotation", "dismiss"], // rotation dismiss(AUDIT_SPEC §7)
-  ["auth", "recoveryPut"], // リカバリーブロブの登録(§13-2)
-  ["auth", "recoveryGet"], // リカバリーブロブの取得(§13-2)
-  ["schemaPolicy", "set"], // schemaPolicy の変更(§12-11 — セッション主体は拒否と明記)
-  ["devices", "register"], // 端末登録簿の登録(§13-11 — セッションは一覧のみ)
+  ["invites", "issue"], // invite issuance (§15-2)
+  ["invites", "accept"], // invite acceptance (§15-2)
+  ["rotation", "dismiss"], // rotation dismiss (AUDIT_SPEC §7)
+  ["auth", "recoveryPut"], // recovery-blob registration (§13-2)
+  ["auth", "recoveryGet"], // recovery-blob fetch (§13-2)
+  ["schemaPolicy", "set"], // schemaPolicy change (§12-11 — session principals are stated to be denied)
+  ["devices", "register"], // device-registry registration (§13-11 — sessions may only list)
   ["devices", "remove"],
   ["devices", "requestCreate"],
   ["devices", "requestList"],
@@ -159,8 +175,8 @@ const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
   ["devices", "requestCancel"],
 ];
 
-describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 機械導出)", () => {
-  it("§5 の明示拒否面は許可列挙に含まれない(仕様本文との突合ピン)", () => {
+describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanically derived)", () => {
+  it("§5's explicitly denied surfaces are not in the allowed enumeration (a pin against the spec text)", () => {
     for (const [group, name] of SPEC_EXPLICIT_DENIALS) {
       expect(allowedKeys.has(`${group}.${name}`), `${group}.${name} must not be allowed`).toBe(
         false,
@@ -168,7 +184,7 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     }
   });
 
-  it("認証必須面と未認証面の分割が全エンドポイントを覆う(導出の完全性)", () => {
+  it("the authenticated/unauthenticated split covers every endpoint (derivation completeness)", () => {
     const endpoints = listEndpoints();
     expect(endpoints.length).toBeGreaterThan(0);
     for (const endpoint of endpoints) {
@@ -180,15 +196,16 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     }
   });
 
-  it("許可列挙外の全認証必須面はセッション主体に一様 403 session-not-allowed(CSRF ヘッダー込みでも)", async () => {
+  it("every authenticated surface outside the allowed enumeration is a uniform 403 session-not-allowed for a session principal (even with the CSRF header)", async () => {
     const denied = listEndpoints().filter(
       (endpoint) =>
         endpoint.authenticated && !allowedKeys.has(`${endpoint.group}.${endpoint.name}`),
     );
-    // fail-closed の対象が空でないこと(導出が壊れて全許可に倒れた形の検出)
+    // The fail-closed target set is not empty (detects the shape
+    // where the derivation broke and collapsed to allow-all)
     expect(denied.length).toBeGreaterThanOrEqual(SPEC_EXPLICIT_DENIALS.length);
-    // 拒否面はセッションを失効させられない(全面が拒否される)ため 1 セッションを
-    // 使い回す
+    // Reuse one session, since denied surfaces cannot revoke it
+    // (every surface is denied)
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
     for (const endpoint of denied) {
@@ -205,13 +222,15 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     }
   });
 
-  it("許可列挙の全面はセッション主体に session-not-allowed を返さない", async () => {
+  it("no surface in the allowed enumeration returns session-not-allowed to a session principal", async () => {
     const allowed = listEndpoints().filter((endpoint) =>
       allowedKeys.has(`${endpoint.group}.${endpoint.name}`),
     );
-    // 許可列挙の宣言(api-schema)と登録面の突合はロード時スイープ済み。ここでは
-    // 実挙動側: ゲートが誤って許可面まで拒否していないこと。logout はセッションを
-    // 失効させるため、面ごとに新しいセッションを張る
+    // The load-time sweep already reconciled the allowed
+    // enumeration's declaration (api-schema) against the registered
+    // surfaces. Here the behavioral side: the gate must not deny an
+    // allowed surface by mistake. A fresh session per surface, since
+    // logout revokes the session
     expect(allowed.length).toBe(SESSION_ALLOWED_ENDPOINTS.length);
     for (const endpoint of allowed) {
       const session = await loginSession(9001);
@@ -224,16 +243,18 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
         await isSessionDenied(response),
         `${key} must not be rejected by the §5 capability gate`,
       ).toBe(false);
-      // 許可面がゲート以外の理由で全滅していないことの粗い健全性(401 は
-      // セッション解決の退行を示す)
+      // A coarse sanity check that allowed surfaces are not all
+      // failing for other reasons (a 401 would mean session
+      // resolution regressed)
       expect(response.status, `${key} must authenticate the session`).not.toBe(401);
     }
   });
 
-  it("トークン主体はどの面でも session-not-allowed を受けない(CLI 無影響の回帰)", async () => {
+  it("a token principal never gets session-not-allowed on any surface (the CLI unaffected regression)", async () => {
     const authenticated = listEndpoints().filter((endpoint) => endpoint.authenticated);
-    // auth.revokeToken は提示トークン自身を失効させるため最後に回し、他の面の
-    // 検証を生きたトークンで行う
+    // auth.revokeToken revokes the presented token itself, so it
+    // goes last and the other surfaces are verified with a live
+    // token
     const endpoints = [
       ...authenticated.filter((endpoint) => !isRevokeToken(endpoint)),
       ...authenticated.filter(isRevokeToken),
@@ -252,17 +273,19 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     }
   });
 
-  it("能力判定は CSRF 検査に先行する(拒否面はヘッダー欠落でも session-not-allowed)", async () => {
+  it("the capability judgment precedes the CSRF check (a denied surface is session-not-allowed even without the header)", async () => {
     const session = await loginSession(9001);
     const cookieOnly = { cookie: sessionHeaders(session)["cookie"] ?? "" };
-    // 拒否面(書き込み): CSRF ヘッダーなしでも一様に session-not-allowed
+    // A denied surface (a write): a uniform session-not-allowed even
+    // without the CSRF header
     const deniedWrite = await SELF.fetch(
       concreteUrl("/projects/:projectId/rotation/dismissals"),
       requestInit("POST", cookieOnly),
     );
     expect(deniedWrite.status).toBe(403);
     expect(((await deniedWrite.json()) as { reason?: string }).reason).toBe("session-not-allowed");
-    // 許可面(書き込み = logout)では CSRF 検査が生きている(撤去していない)
+    // On an allowed surface (a write = logout) the CSRF check is
+    // alive (not removed)
     const allowedWrite = await SELF.fetch(`${BASE}/auth/logout`, {
       method: "POST",
       headers: cookieOnly,
@@ -273,26 +296,27 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     );
   });
 
-  it("許可面の代表(読み取り)はセッションで実際に成功する(positive control)", async () => {
+  it("representative allowed surfaces (reads) actually succeed under a session (positive control)", async () => {
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
-    // チェーン取得(§11)— fixture の OWNER はチェーン導出メンバー
+    // Chain fetch (§11) — the fixture's OWNER is a chain-derived member
     const chain = await SELF.fetch(concreteUrl("/projects/:projectId/chain"), { headers });
     expect(chain.status).toBe(200);
-    // プロジェクト一覧(§11-5)
+    // Project list (§11-5)
     const projectList = await SELF.fetch(`${BASE}/projects`, { headers });
     expect(projectList.status).toBe(200);
-    // 環境一覧(§12-4)
+    // Environment list (§12-4)
     const environments = await SELF.fetch(concreteUrl("/projects/:projectId/environments"), {
       headers,
     });
     expect(environments.status).toBe(200);
-    // 要ローテーションフラグ(AUDIT_SPEC §4.1)
+    // Rotation-needed flags (AUDIT_SPEC §4.1)
     const flags = await SELF.fetch(concreteUrl("/projects/:projectId/rotation/flags"), {
       headers,
     });
     expect(flags.status).toBe(200);
-    // fixture.head が読めていること(セッションでの読み取りがトークンと同じ形)
+    // fixture.head is readable (a session read takes the same shape
+    // as a token's)
     const body = (await chain.json()) as { headSeq: number };
     expect(body.headSeq).toBe(fixture.head.seq);
   });
