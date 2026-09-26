@@ -37,14 +37,25 @@ const defined = (value: string | undefined): value is string => value !== undefi
 /** 節の中で `--flag` で始まる行は FLAGS / GLOBAL FLAGS のものだけ(他の節は語で始まる)。 */
 function parseSection(lines: readonly string[]): CommandSpec {
   const flags = lines.map((line) => /^\s+(--[a-z][a-z-]*)/.exec(line)?.[1]).filter(defined);
-  const valuedFlags = lines
-    .map((line) => /^\s+(--[a-z][a-z-]*)(?:, -[a-z])?\s+[a-z]+\s{2,}/.exec(line)?.[1])
-    .filter(defined);
   const isGroup = lines.includes("SUBCOMMANDS") && !lines.includes("ARGUMENTS");
+  return {
+    flags: new Set(flags),
+    valuedFlags: new Set(lines.map(valuedFlagOf).filter(defined)),
+    isGroup,
+    requiredArgs: requiredArgsOf(lines),
+  };
+}
+
+/** FLAGS の行のうち型名(`string` 等)を添えた、値を取るフラグ。 */
+function valuedFlagOf(line: string): string | undefined {
+  return /^\s+(--[a-z][a-z-]*)(?:, -[a-z])?\s+[a-z]+\s{2,}/.exec(line)?.[1];
+}
+
+/** USAGE 行の `<…>` のうち、`[...]` の外かつ `--` より前のもの。 */
+function requiredArgsOf(lines: readonly string[]): number {
   const usage = lines[lines.indexOf("USAGE") + 1] ?? "";
-  const beforeSeparator = usage.split(" -- ")[0] ?? "";
-  const requiredArgs = beforeSeparator.replace(/\[[^\]]*\]/g, "").match(/<[^>]+>/g)?.length ?? 0;
-  return { flags: new Set(flags), valuedFlags: new Set(valuedFlags), isGroup, requiredArgs };
+  const [beforeSeparator = ""] = usage.split(" -- ");
+  return [...beforeSeparator.replace(/\[[^\]]*\]/g, "").matchAll(/<[^>]+>/g)].length;
 }
 
 /** help golden の各節から、コマンド経路 → その宣言。 */
@@ -152,17 +163,15 @@ function problemsOf(call: Invocation): string[] {
 
 /** 位置引数の数(`#` のコメント・行継続の `\\`・`--` で止め、フラグとその値は除く)。 */
 function positionalCount(call: Invocation, spec: CommandSpec): number {
-  let count = 0;
-  for (let i = 0; i < call.tokens.length; i++) {
-    const token = call.tokens[i] ?? "";
-    if (token === "--" || token === "\\" || token.startsWith("#")) break;
-    if (token.startsWith("--")) {
-      if (spec.valuedFlags.has(token)) i++;
-      continue;
-    }
-    count++;
-  }
-  return count;
+  const words = until(call.tokens, call.tokens.findIndex(endsArguments));
+  const flagValues = new Set(
+    words.flatMap((word, i) => (spec.valuedFlags.has(word) ? [i + 1] : [])),
+  );
+  return words.filter((word, i) => !word.startsWith("--") && !flagValues.has(i)).length;
+}
+
+function endsArguments(token: string): boolean {
+  return token === "--" || token === "\\" || token.startsWith("#");
 }
 
 /** ```sh ブロックの呼び出しが USAGE の必須位置引数を欠いている点(無ければ空)。 */
@@ -192,12 +201,15 @@ describe("docs quote the CLI vocabulary of apps/cli/test/golden/help.txt", () =>
     expect(commands.get("guardian add")?.flags.has("--passkey")).toBe(false);
     expect(commands.get("device")?.isGroup).toBe(true);
     expect(commands.get("device revoke")?.isGroup).toBe(false);
-    expect(commands.get("env create")?.requiredArgs).toBe(1);
-    expect(commands.get("env diff")?.requiredArgs).toBe(2);
-    expect(commands.get("member add")?.requiredArgs).toBe(0);
-    expect(commands.get("run")?.requiredArgs).toBe(0);
-    expect(commands.get("push")?.valuedFlags).toContain("--env");
-    expect(commands.get("push")?.valuedFlags.has("--no-sync")).toBe(false);
+  });
+
+  it("indexes required arguments and flags that take a value", () => {
+    const required = ["env create", "env diff", "member add", "run"].map(
+      (path) => commands.get(path)?.requiredArgs,
+    );
+    expect(required).toEqual([1, 2, 0, 0]);
+    const push = commands.get("push")?.valuedFlags ?? new Set<string>();
+    expect([push.has("--env"), push.has("--no-sync")]).toEqual([true, false]);
   });
 
   it.each(pages)("%s names only commands and flags the CLI has", (page) => {
