@@ -99,7 +99,10 @@ beforeAll(async () => {
       { cause },
     );
   }
-  browser = await chromium.launch();
+  // ブラウザのダウンロードができない環境(Claude Code on the web 等)では、
+  // プリインストール Chromium のパスを PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH で受け取る
+  const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
+  browser = await chromium.launch(executablePath ? { executablePath } : {});
 });
 
 afterAll(async () => {
