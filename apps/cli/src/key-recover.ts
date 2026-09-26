@@ -64,6 +64,7 @@ import { generateKeyRecord } from "./key-record.ts";
 import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keychain.ts";
 import { recoveryRegistered } from "./keygen.ts";
 import {
+  describeUncheckedLedgerKey,
   type LedgerOpenVia,
   openLedgerReserve,
   openLedgerReserveForChange,
@@ -497,17 +498,20 @@ export function keyRecoveryOp(input: {
     // 手元の端末鍵と一致しなくても、台帳の鍵が予備鍵として働かないことはチェーンで分かる:
     // 復元した後の端末(端末鍵は新しい)の pre-DK の複製と、失効した鍵(DK K14-4 —
     // `key recover` と同じ判定)
-    const separated = yield* separateUnusableLedgerKey({ ...input, opened });
-    if (separated) {
+    const verdict = yield* separateUnusableLedgerKey({ ...input, opened });
+    if (verdict === "separated") {
       return 0;
     }
-    // 予備鍵の再封印(同じ B・新しいコード)+ 記録の復元
+    // 予備鍵の再封印(同じ B・新しいコード)+ 記録の復元。記録は正の判定のときだけ(確かめ
+    // られないときは再発行だけ — 記録は後の rotate / --replace の失効の入力になる。K14-13)
     yield* issueRecoveryCodeOp({
       session: input.session,
       client: input.client,
       record: opened.record,
     });
-    yield* recordReserveLocally(input.session, opened);
+    if (verdict === "record") {
+      yield* recordReserveLocally(input.session, opened);
+    }
     yield* logNote(
       `reissued the recovery code for your reserve key (fingerprint ${opened.fingerprintHex}); the previous code no longer works`,
     );
@@ -517,15 +521,16 @@ export function keyRecoveryOp(input: {
 
 /**
  * 台帳の鍵がチェーン上で予備鍵として働かないなら、新しい予備鍵を封印して分離する(DK K14-4)。
- * どこかで最初の鍵(pre-DK の端末鍵の複製)か、どこかで失効した鍵が対象。確かめられない
- * プロジェクトがあれば、その範囲を Note で言って再封印へ進ませる(コードの再発行を無関係の
- * 障害で止めない — K4-38 と同じ判断)。分離したら true。
+ * どこかで最初の鍵(pre-DK の端末鍵の複製)か、どこかで失効した鍵が対象(→ "separated")。
+ * 確かめられないプロジェクトがあれば、その範囲を Note で言い、再発行へは進ませるが記録は
+ * させない(→ "reissue-only" — コードの再発行を無関係の障害で止めず、判定できない鍵を
+ * 失効の入力に載せない。K14-13)。それ以外は再封印と記録(→ "record")。
  */
 function separateUnusableLedgerKey(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly opened: ReserveKeys;
-}): Effect.Effect<boolean, CliError, CliServices> {
+}): Effect.Effect<"separated" | "reissue-only" | "record", CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fp = input.opened.fingerprintHex;
@@ -544,7 +549,7 @@ function separateUnusableLedgerKey(input: {
         yield* logNote(
           `the key ${fp} stays registered as a device key. If no machine of yours holds it any more, revoke it: \`maruhi device revoke ${fp}\``,
         );
-        return true;
+        return "separated";
       case "revoked":
         yield* io.log(
           `The recovery ledger holds key ${fp}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
@@ -555,15 +560,15 @@ function separateUnusableLedgerKey(input: {
             `the key ${fp} is still registered on ${describeProjects(verdict.activeProjectIds)}; revoke it there too: \`maruhi device revoke ${fp}\``,
           );
         }
-        return true;
+        return "separated";
       case "unchecked":
         yield* logNote(
-          `${verdict.listFailure === null ? `could not check the opened key ${fp} on ${describeProjects(verdict.projectIds)}` : `could not list your projects to check the opened key ${fp} (${verdict.listFailure})`}, so its recovery code is reissued without them. If it is your first key on one of them (a copy of a device key from an install before device keys), re-run \`maruhi key recovery\` once they can be checked: it separates it then`,
+          `${describeUncheckedLedgerKey(`the opened key ${fp}`, verdict)}, so its recovery code is reissued, but it is not recorded on this machine as your reserve key. Once they can be checked, re-run \`maruhi key recovery\`: it separates the key if it is your first key on one of them (a copy of a device key from an install before device keys), and records it otherwise`,
         );
-        return false;
+        return "reissue-only";
       case "added":
       case "nowhere":
-        return false;
+        return "record";
     }
   });
 }
@@ -596,13 +601,15 @@ function replaceReserveWithoutOpening(input: {
       `replacing the recovery ledger without opening it: the previous recovery code stops working, and the reserve keys recorded on this machine are revoked on every project${describeSealedRows(status)}. A previous reserve key that is not recorded here stays registered until you revoke it with \`maruhi device revoke <fingerprint>\` (\`maruhi device list\` shows your devices)`,
     );
     const next = yield* generateReserveKeys();
+    const recorded = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
+    // 失効させる鍵は台帳を書き換える前に確かめる(K14-13 — 記録の行を無検査で失効させない)
+    const retiring = yield* confirmRetiring({ ...input, fingerprintsHex: recorded });
     yield* issueRecoveryCodeOp({
       session: input.session,
       client: input.client,
       record: next.record,
     });
-    const retiring = yield* staleReserveFingerprints(input.session, null, next.fingerprintHex);
-    if (retiring.length === 0) {
+    if (recorded.length === 0) {
       yield* logWarning(
         "no previous reserve key is recorded on this machine, so none was revoked. Check `maruhi device list` and revoke any reserve device you do not recognise with `maruhi device revoke <fingerprint>`",
       );
@@ -848,6 +855,39 @@ function reportReserveSweep(
 }
 
 /**
+ * 失効の直前の門(DK K14-13): rotate / `--replace` が失効させる旧予備鍵を 1 つずつ全プロジェクトの
+ * チェーンで判定し、失効させてよい鍵だけを返す。最初の鍵(端末鍵 — 決して失効させない。この
+ * 端末の誤った reserve の行は観測の行に直す)と、確かめられない鍵は残して Warning で言う。
+ * 失効させるのは `added` / `nowhere` / `revoked`(中断した rotate の続き)だけ。記録の行の
+ * 出所が何であっても(以前の CLI の誤った行でも)、失効はチェーンの事実を要する。
+ */
+function confirmRetiring(input: {
+  readonly session: CliSession;
+  readonly client: MaruhiClient;
+  readonly fingerprintsHex: readonly string[];
+}): Effect.Effect<readonly string[], never, CliServices> {
+  return Effect.gen(function* () {
+    const kept: string[] = [];
+    for (const fingerprintHex of input.fingerprintsHex) {
+      const { verdict, groups } = yield* ledgerKeyVerdictOf({ ...input, fingerprintHex });
+      if (verdict.kind === "first-key") {
+        yield* retractReserveRecord({ session: input.session, fingerprintHex, verdict, groups });
+        yield* logWarning(
+          `not revoking ${fingerprintHex}: it is your first key on ${describeProjects(verdict.projectIds)} (the key you created or joined that project with), so it is a device key, not a previous reserve key`,
+        );
+      } else if (verdict.kind === "unchecked") {
+        yield* logWarning(
+          `not revoking ${fingerprintHex}: ${describeUncheckedLedgerKey("it", verdict)}, so maruhi cannot confirm it is not one of your device keys. Once they can be checked, revoke it if it is a previous reserve key: \`maruhi device revoke ${fingerprintHex}\``,
+        );
+      } else {
+        kept.push(fingerprintHex);
+      }
+    }
+    return kept;
+  });
+}
+
+/**
  * 失効させる旧予備鍵の FP 集合(昇順): 開封した B と、ローカル記録で出所 "reserve" の
  * 行すべて(revoked の印の有無を問わない — 前回の中断で印だけ先に付いた鍵を拾う)から
  * 新鍵を除いたもの。
@@ -931,20 +971,24 @@ export function keyReserveRotateOp(input: {
       command: "maruhi key reserve rotate",
     });
     const next = yield* generateReserveKeys();
+    // 失効対象 = 開封した B + ローカル記録上の予備鍵(失効済みの印を含む)のうち新鍵以外。
+    // 中断した前回の実行が台帳だけ差し替えて終わっていた場合、B は前回の新鍵で、
+    // 元の予備鍵は記録に revoked として残るがチェーンにはまだ載っている(Bugbot 指摘)。
+    // appendRevokeDevice はチェーン上で有効な端末だけを失効させる(冪等)。失効させる鍵は
+    // 台帳を書き換える前にチェーンで確かめる(K14-13)
+    const retiring = yield* confirmRetiring({
+      ...input,
+      fingerprintsHex: yield* staleReserveFingerprints(
+        input.session,
+        old.fingerprintHex,
+        next.fingerprintHex,
+      ),
+    });
     yield* issueRecoveryCodeOp({
       session: input.session,
       client: input.client,
       record: next.record,
     });
-    // 失効対象 = 開封した B + ローカル記録上の予備鍵(失効済みの印を含む)のうち新鍵以外。
-    // 中断した前回の実行が台帳だけ差し替えて終わっていた場合、B は前回の新鍵で、
-    // 元の予備鍵は記録に revoked として残るがチェーンにはまだ載っている(Bugbot 指摘)。
-    // appendRevokeDevice はチェーン上で有効な端末だけを失効させる(冪等)
-    const retiring = yield* staleReserveFingerprints(
-      input.session,
-      old.fingerprintHex,
-      next.fingerprintHex,
-    );
     return yield* registerReserveAndRetire({ ...input, next, retiring });
   });
 }

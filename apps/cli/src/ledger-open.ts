@@ -72,6 +72,16 @@ function ledgerKeyUnusableMessage(
     : `The recovery ledger holds key ${fingerprintHex}, which is revoked on ${describeProjects(verdict.projectIds)}, so it cannot serve as your reserve key. Run \`maruhi key recovery\` first: it seals a new reserve key in its place. Then re-run \`${command}\``;
 }
 
+/** 確かめられなかった範囲(同期できないプロジェクト、または一覧の失敗)の句(K14-13 — 写しを作らない)。 */
+export function describeUncheckedLedgerKey(
+  key: string,
+  verdict: Extract<ReserveVerdict, { readonly kind: "unchecked" }>,
+): string {
+  return verdict.listFailure === null
+    ? `could not check ${key} on ${describeProjects(verdict.projectIds)}`
+    : `could not list your projects to check ${key} (${verdict.listFailure})`;
+}
+
 /**
  * Opens the ledger for a change (passkey sealing / guardian designation / reserve
  * rotation): refuses a pre-DK ledger (B = this device's key, or — from the
@@ -108,11 +118,14 @@ export function openLedgerReserveForChange(input: {
       );
     }
     if (verdict.kind === "unchecked") {
+      // 台帳の操作は進めるが、判定できない鍵は記録しない(記録は rotate / --replace の失効の
+      // 入力になる — K14-13)
       yield* logNote(
-        `${verdict.listFailure === null ? `could not check the opened key ${fingerprintHex} on ${describeProjects(verdict.projectIds)}` : `could not list your projects to check the opened key ${fingerprintHex} (${verdict.listFailure})`}, so this change goes ahead without them. If it is your first key on one of them (a copy of a device key from an install before device keys), run \`maruhi key recovery\` once they can be checked: it separates it`,
+        `${describeUncheckedLedgerKey(`the opened key ${fingerprintHex}`, verdict)}, so this change goes ahead, but the key is not recorded on this machine as your reserve key. Once they can be checked, run \`maruhi key recovery\`: it separates the key if it is your first key on one of them (a copy of a device key from an install before device keys), and records it otherwise`,
       );
+    } else {
+      yield* recordReserveLocally(input.session, reserve);
     }
-    yield* recordReserveLocally(input.session, reserve);
     yield* logNote(
       `opened the reserve key (fingerprint ${reserve.fingerprintHex}) for this change`,
     );
