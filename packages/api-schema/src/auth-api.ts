@@ -133,8 +133,7 @@ export const AuthConfigSchema = Schema.Struct({
 /**
  * One API token in the self-inventory listing (AUTH_SPEC §6 — W3a).
  * 生値・token_hash は**構造ごと存在しない**(スキーマに列がない = 実装が
- * 誤って返す経路を型で塞ぐ)。`expiresAtMs` の null は移行(裁定 CE)前の
- * 旧無期限行で、検証時には期限切れと同じ 401 で扱われる(fail-closed)。
+ * 誤って返す経路を型で塞ぐ)。
  */
 export const TokenSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -143,7 +142,7 @@ export const TokenSummarySchema = Schema.Struct({
   scopes: Schema.Array(TokenScopeSchema),
   createdAtMs: Schema.Number,
   lastUsedAtMs: Schema.NullOr(Schema.Number),
-  expiresAtMs: Schema.NullOr(Schema.Number),
+  expiresAtMs: Schema.Number,
 });
 
 /** GET /auth/tokens: the caller's own tokens (AUTH_SPEC §6 — W3a). */

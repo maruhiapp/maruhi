@@ -38,7 +38,7 @@ export function tokenListOp(input: {
     yield* io.log("id\tname\tprefix\tscopes\tcreated\tlast used\texpires");
     for (const token of [...tokens].toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
       yield* io.log(
-        `${displayText(token.id)}\t${displayText(token.name)}\t${displayText(token.tokenPrefix)}\t${token.scopes.map((scope) => `${displayText(scope.project)}:${scope.permission}`).join(",")}\t${formatUtcMinutes(token.createdAtMs)}\t${token.lastUsedAtMs === null ? "never" : formatUtcMinutes(token.lastUsedAtMs)}\t${token.expiresAtMs === null ? "never" : formatUtcMinutes(token.expiresAtMs)}`,
+        `${displayText(token.id)}\t${displayText(token.name)}\t${displayText(token.tokenPrefix)}\t${token.scopes.map((scope) => `${displayText(scope.project)}:${scope.permission}`).join(",")}\t${formatUtcMinutes(token.createdAtMs)}\t${token.lastUsedAtMs === null ? "never" : formatUtcMinutes(token.lastUsedAtMs)}\t${formatUtcMinutes(token.expiresAtMs)}`,
       );
     }
   });

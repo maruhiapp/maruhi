@@ -2003,9 +2003,9 @@ function proposeTokenRevocation(input: {
 function describeToken(token: {
   readonly id: string;
   readonly name: string;
-  readonly expiresAtMs: number | null;
+  readonly expiresAtMs: number;
 }): string {
-  return `${displayText(token.id)} (${displayText(token.name)}, expires ${token.expiresAtMs === null ? "never" : formatUtcMinutes(token.expiresAtMs)})`;
+  return `${displayText(token.id)} (${displayText(token.name)}, expires ${formatUtcMinutes(token.expiresAtMs)})`;
 }
 
 /** cap の組み立て(`--cap <role>` + scope フラグ)。 */

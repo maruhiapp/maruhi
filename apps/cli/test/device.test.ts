@@ -1463,7 +1463,8 @@ function tokenRow(id: string, name: string): Record<string, unknown> {
     scopes: [{ project: "*", permission: "admin" }],
     createdAtMs: 1,
     lastUsedAtMs: null,
-    expiresAtMs: null,
+    // 2026-01-01 00:00 UTC
+    expiresAtMs: 1_767_225_600_000,
   };
 }
 
@@ -1513,7 +1514,7 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
     ).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain(
-      "The revoked devices' API tokens are still valid (the match is server-reported): tok_lost (ci, expires never)",
+      "The revoked devices' API tokens are still valid (the match is server-reported): tok_lost (ci, expires 2026-01-01 00:00 UTC)",
     );
     expect(logs).not.toContain("tok_other");
     expect(env.errors.join("\n")).toContain("tokens were left as they are");
@@ -1529,7 +1530,9 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
       await runCli(["device", "revoke", dev2.fingerprintHex, "--yes", "--revoke-token"], env.layer),
       env.errors.join("\n"),
     ).toBe(0);
-    expect(env.logs.join("\n")).toContain("tok_named (cli:old-laptop, expires never)");
+    expect(env.logs.join("\n")).toContain(
+      "tok_named (cli:old-laptop, expires 2026-01-01 00:00 UTC)",
+    );
     expect(env.logs.join("\n")).not.toContain("tok_other");
     expect(state.tokenRevokes).toEqual(["tok_named"]);
   });
@@ -1544,7 +1547,9 @@ describe("maruhi device revoke — トークン失効の提案(K4-13)", () => {
       env.errors.join("\n"),
     ).toBe(0);
     expect(state.tokenRevokes).toEqual(["tok_lost"]);
-    expect(env.logs.join("\n")).toContain("Revoked token tok_lost (cli:old-laptop, expires never)");
+    expect(env.logs.join("\n")).toContain(
+      "Revoked token tok_lost (cli:old-laptop, expires 2026-01-01 00:00 UTC)",
+    );
     expect(env.errors.join("\n")).not.toContain("tokens were left as they are");
   });
 

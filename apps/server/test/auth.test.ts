@@ -494,7 +494,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     // 残り 99 本ぶんを直接シードして上限到達状態を作る
     const rows = Array.from({ length: 99 }, (_, i) =>
       env.DB.prepare(
-        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', NULL, 1, NULL)",
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', 9999999999999, 1, NULL)",
       ).bind(`tok-${i}`, seed.userId, `filler-${i}`, `hash-${i}`, "maruhi_pat_x"),
     );
     await env.DB.batch(rows);
@@ -525,7 +525,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     await env.DB.batch(
       Array.from({ length: 98 }, (_, index) =>
         env.DB.prepare(
-          "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', NULL, 1, NULL)",
+          "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', 9999999999999, 1, NULL)",
         ).bind(
           `race-seed-${index}`,
           userId,

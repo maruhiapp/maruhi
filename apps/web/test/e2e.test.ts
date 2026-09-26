@@ -994,7 +994,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
+  it("lists tokens with server-reported expiry: Expired, never (S9)", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await routeSession(page);
@@ -1004,14 +1004,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
-    // 期限切れ(過去)+ 移行前 null 行(fail-closed — 裁定 CQ)の両方が Expired
-    await expect(page.getByText("Expired", { exact: true }).count()).resolves.toBe(2);
-    await expect(page.getByText("no expiry recorded", { exact: true }).count()).resolves.toBe(1);
-    // lastUsedAtMs null は "never"(2 行)
-    await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(2);
+    // 期限切れ(過去)は Expired(裁定 CQ)
+    await expect(page.getByText("Expired", { exact: true }).count()).resolves.toBe(1);
+    // lastUsedAtMs null は "never"
+    await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(1);
     // 行の Revoke は見える文言 "Revoke" のまま、読み上げ名に行の同定(トークン名)を含む
     const table = page.getByTestId("token-table");
-    for (const name of ["ci", "old-laptop", "legacy"]) {
+    for (const name of ["ci", "old-laptop"]) {
       const button = table.getByRole("button", { name: `Revoke token "${name}"`, exact: true });
       await expect(button.count()).resolves.toBe(1);
       await expect(button.textContent()).resolves.toBe("Revoke");

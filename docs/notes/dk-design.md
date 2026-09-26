@@ -3532,9 +3532,23 @@ K16-2 と K16-4 は、印の無い既存の予備鍵の利用者を止めない�
   - レート制限の binding(5 つ)を必須にし、binding の無い旧 `wrangler.jsonc` 向けの fail-open と warn を削除した。
   - client_id のプレースホルダ検出(旧テンプレートのフォーク向け)を削除した。
   - `docs/SELF_HOSTING.md` の "Updates" から、リリースごとの移行手順を削除した。
-- **保留(所有者判断)**: 次のものは運営のデプロイ(`env.hosted`)の D1 / DO に既にある行とスキーマ版に依存する。コードだけ消すと、次のデプロイで壊れうる。
-  - D1 マイグレーション(18)と DO SQLite マイグレーション(14)の畳み込み。wrangler の適用記録と DO のスキーマ版(`migrations.length` 超過は起動拒否)が既存の版を持つ。
-  - `expires_at` の null 許容(裁定 CE 前の無期限トークン行)。
-  - `recovery_wraps` の旧列、`row_id` の遅延バックフィル。
-  - rotation-detect の K3 前の保存行の補完。
-  - 運営の DB を作り直す(データを捨てる)か、前進マイグレーションで既存行を直してから消すかを決めてもらう。
+- **DB の状態に依存する互換(所有者裁定 2026-09-26: 運営の D1 と DO を作り直す — データは捨てる)**:
+  - D1 マイグレーション 18 本を、現行スキーマの 1 本(`drizzle/…_init`)に畳んだ。drizzle-kit で生成した。旧 18 本を順に当てた結果との差は、意図した 4 点だけであることを確かめた:
+    - `recovery_wraps.fetch_window_start` / `fetch_count` の削除
+    - `api_tokens.expires_at` の NOT NULL 化
+    - `user_audit_events.row_id` / `org_audit_events.row_id` の NOT NULL 化
+  - DO SQLite マイグレーション 12 ステップを 1 ステップに畳んだ。旧ステップを順に当てた結果との差は `audit_events.row_id` の NOT NULL 化だけ(列の並びも同じ)。
+  - 消した読み手:
+    - D1 監査行の `row_id` の遅延バックフィル
+    - トークンの `expires_at` が null の行を期限切れとして読む扱い(サーバー・ワイヤ・CLI・web の "no expiry recorded")
+    - rotation-detect の K3 前の保存行の `trigger` の補完(`trigger` の無い行は破損として defect にする)
+    - 監査の旧形 `var.read`(§22-3。Pullfrog の指摘で一度は差し戻しを提案したが、作り直しの裁定で不要になった)
+- **デプロイの順序(守らないと壊れるが、黙っては壊れない)**:
+  - 運営の D1 と DO を作り直してから、このコードをデプロイする。
+  - 作り直さずにデプロイした場合:
+    - D1: `wrangler d1 migrations apply` が新しい `…_init` を既存の表に当てようとして `CREATE TABLE` で失敗し、`bun run deploy` はデプロイ前に止まる。
+    - DO: 既存の DO はスキーマ版 12 を持ち、コードの 1 より新しいので、コンストラクタが開くのを拒否する(`applyProjectDoMigrations`)。
+- **作り直しの手順(運営が実行する。この環境には Cloudflare の資格情報が無いので、Claude は実行していない)**:
+  1. D1: `wrangler d1 export` で念のため退避する(ops-backup と同じ)。`wrangler d1 delete` → `wrangler d1 create` をし、`env.hosted` の `database_id` を新しい ID に差し替える。
+  2. DO: `ProjectChainDO` の名前空間を消して作り直す。Cloudflare の現行の手順は `exports` の `"state": "deleted"` の墓標で、`migrations` 配列からの移行は一方向。実行時に現行のドキュメントで確かめること(https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)。削除は取り消せない(Trash が無い)。
+  3. 新しいコードを `bun run deploy`(migrate → deploy)でデプロイする。

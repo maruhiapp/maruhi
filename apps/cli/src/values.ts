@@ -476,7 +476,7 @@ interface PullWire {
    * 不在 = declared なし。
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
+  /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3)。 */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
    * チェックポイント時点の値スナップショット列挙(§12-7 — 規則 2 の材料。

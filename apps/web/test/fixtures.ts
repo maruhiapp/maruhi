@@ -364,17 +364,6 @@ export const tokensFixture: TokenList = {
       lastUsedAtMs: null,
       expiresAtMs: PAST_MS,
     },
-    // 移行(AUTH_SPEC §6 裁定 CE)前の旧無期限行 — 検証側は期限切れ扱い
-    // (fail-closed)。表示は Expired + no expiry recorded(裁定 CQ)
-    {
-      id: "tok-legacy",
-      name: "legacy",
-      tokenPrefix: "maruhi_pat_qrstuvwx",
-      scopes: [],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: null,
-    },
   ],
 };
 

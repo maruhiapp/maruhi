@@ -448,7 +448,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       store.appendSync(seqTestEvent("test.one"));
       // チャンク 2(7 行目以降)の途中 seq に衝突行を直接挿入して失敗を誘発する
       sql.exec(
-        "INSERT INTO audit_events (seq, server_ts, event, actor_type) VALUES (?, ?, ?, ?)",
+        "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type) VALUES (?, lower(hex(randomblob(16))), ?, ?, ?)",
         base + 9,
         1,
         "test.direct",
