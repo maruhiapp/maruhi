@@ -1,13 +1,17 @@
-// 裏付け元 `github-signing-keys`(CRYPTO_SPEC §6.5 — IV2)の単体・コマンドテスト。
+// Unit + command tests for the backing source `github-signing-keys`
+// (CRYPTO_SPEC §6.5 — IV2).
 //
-// 固定する性質:
-//  1. checkSigningKeyBacking: 送るのは login だけ・ホスト固定・fail-closed(失敗も
-//     不能も型で返し、CliError にしない)・ssh-ed25519 以外は読み飛ばす
-//  2. `key publish`: OpenSSH 行の印字(stdout は鍵行のみ)と `--gh` の gh 呼び出し
-//     (stdin = 鍵行・GH_ENV)、gh の失敗は手動手順つきのエラー
-//  3. 登録の導線(裁定 G ⑥): `key generate` 直後の yes で登録、非対話・no・
-//     エージェント・`identityBacking = none` では聞かない / 案内のみ
-//  4. `config set identityBacking` の受理検査
+// Properties pinned down:
+//  1. checkSigningKeyBacking: sends only the login, fixed host, fail-closed
+//     (failures and impossibility come back as types, never as CliError),
+//     and skips anything that isn't ssh-ed25519
+//  2. `key publish`: prints the OpenSSH line (stdout is the key line alone)
+//     and `--gh` calls gh (stdin = the key line, GH_ENV); a gh failure is
+//     an error carrying the manual steps
+//  3. The registration path forward (ruling G (6)): `yes` right after `key
+//     generate` registers; non-interactive / no / agent / `identityBacking
+//     = none` never ask, or only print guidance
+//  4. `config set identityBacking` acceptance checks
 
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -58,7 +62,7 @@ function loggedIn(env: TestEnv, origin: string, user: TestUser): void {
   );
 }
 
-/** リカバリーコードの保存確認への正答(表示済み stderr から最終グループ)。 */
+/** The correct answer to the recovery-code save confirmation (the final group from the shown stderr). */
 function saveConfirmation(env: TestEnv): () => string {
   return () => {
     const line = env.errors.find((item) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4})+$/.test(item));
@@ -77,8 +81,8 @@ function recoveryHandlers(): MockHandler[] {
   ];
 }
 
-describe("checkSigningKeyBacking(裏付け元の問い合わせ)", () => {
-  it("名指しした login の署名鍵一覧に対象の鍵がバイト一致で含まれれば match", async () => {
+describe("checkSigningKeyBacking (querying the backing source)", () => {
+  it("is a match when the named login's signing-key list contains the key byte-for-byte", async () => {
     const requests: string[] = [];
     const github = await start([
       (request) => {
@@ -93,11 +97,11 @@ describe("checkSigningKeyBacking(裏付け元の問い合わせ)", () => {
     const env = await makeTestEnv();
     env.setVendorOrigin("api.github.com", github.origin);
     expect(await verdictOf(env, "bob", bob.sigPubHex)).toEqual({ kind: "match" });
-    // 送るのは login だけ(クエリ・本文なし)
+    // Only the login is sent (no query, no body)
     expect(requests).toEqual(["GET /users/bob/ssh_signing_keys"]);
   });
 
-  it("鍵が無い / login が無い / 取得不能 / 形が違う を型で区別し、決して失敗させない", async () => {
+  it("distinguishes key-absent / login-absent / fetch-failed / wrong-shape as types and never fails", async () => {
     const github = await start([
       githubSigningKeysHandler("bob", [sshLineOf(alice)]),
       githubSigningKeysHandler("ghost", [], 404),
@@ -113,13 +117,14 @@ describe("checkSigningKeyBacking(裏付け元の問い合わせ)", () => {
     expect(await verdictOf(env, "ghost", bob.sigPubHex)).toEqual({ kind: "no-user" });
     expect((await verdictOf(env, "limited", bob.sigPubHex)).kind).toBe("unavailable");
     expect((await verdictOf(env, "odd", bob.sigPubHex)).kind).toBe("unavailable");
-    // login の形が不正なら問い合わせ自体をしない(不能扱い)
+    // A malformed login never even issues the query (treated as
+    // impossible)
     expect((await verdictOf(env, "-bad-", bob.sigPubHex)).kind).toBe("unavailable");
   });
 });
 
 describe("maruhi key publish", () => {
-  it("OpenSSH 行を stdout に 1 行だけ出し、手順を stderr に出す", async () => {
+  it("prints exactly one OpenSSH line to stdout and the steps to stderr", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     seedSession(env, maruhi.origin, bob);
@@ -132,7 +137,7 @@ describe("maruhi key publish", () => {
     expect(env.execCalls).toHaveLength(0);
   });
 
-  it("--gh は gh ssh-key add を stdin = 鍵行で呼び、失敗は手動手順つきで報告する", async () => {
+  it("--gh calls gh ssh-key add with stdin = the key line, and reports failures with the manual steps", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     seedSession(env, maruhi.origin, bob);
@@ -169,8 +174,8 @@ describe("maruhi key publish", () => {
   });
 });
 
-describe("鍵生成直後の登録の導線(裁定 G ⑥)", () => {
-  it("yes で gh 経由の登録まで済ませ、no / EOF は案内だけ出す(生成は成立したまま)", async () => {
+describe("the registration path forward right after key generation (ruling G (6))", () => {
+  it("yes completes registration via gh; no / EOF only print guidance (the generation itself stands)", async () => {
     const maruhi = await start(recoveryHandlers());
     const env = await makeTestEnv();
     loggedIn(env, maruhi.origin, bob);
@@ -191,7 +196,7 @@ describe("鍵生成直後の登録の導線(裁定 G ⑥)", () => {
     expect(env2.errors.join("\n")).toContain("register it later with `maruhi key publish`");
     expect(env2.keychain.get(masterKeyEntryName(maruhi.origin, bob.userId))).toBeDefined();
 
-    // EOF(応答の枯渇)も「登録しない」
+    // EOF (answers exhausted) also means "do not register"
     const env3 = await makeTestEnv();
     loggedIn(env3, maruhi.origin, bob);
     await seedConfig(env3, { server: maruhi.origin });
@@ -201,12 +206,13 @@ describe("鍵生成直後の登録の導線(裁定 G ⑥)", () => {
     expect(env3.errors.join("\n")).toContain("register it later with `maruhi key publish`");
   });
 
-  it("非対話端末では案内だけ、identityBacking = none では何も出さない", async () => {
+  it("prints only guidance on non-interactive terminals and nothing with identityBacking = none", async () => {
     const maruhi = await start(recoveryHandlers());
     const env = await makeTestEnv();
     loggedIn(env, maruhi.origin, bob);
     await seedConfig(env, { server: maruhi.origin });
-    // エージェント環境: リカバリーコードの発行も登録の問いかけも代行しない(案内のみ)
+    // Agent environment: it performs neither recovery-code issuance nor
+    // the registration prompt on your behalf (guidance only)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(0);
@@ -226,7 +232,7 @@ describe("鍵生成直後の登録の導線(裁定 G ⑥)", () => {
 });
 
 describe("config identityBacking", () => {
-  it("閉集合の値だけを受理し、get は設定値を返す", async () => {
+  it("accepts only the closed set of values and get returns the configured value", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "identityBacking", "none"], env.layer)).toBe(0);
     expect(await runCli(["config", "get", "identityBacking"], env.layer)).toBe(0);

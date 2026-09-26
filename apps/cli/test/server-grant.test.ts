@@ -1,6 +1,8 @@
-// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6)の統合テスト。
-// サーバー鍵確認の儀式・grant_server 追記(4 フィールド payload)・全環境 ×
-// 全エポックのバックフィル・中断復旧(409 = 登録済み)を wire レベルで固定する。
+// Integration tests for `maruhi server grant` (CRYPTO_SPEC §9 /
+// AUTH_SPEC §12-6). Pins at wire level: the server-key confirmation
+// ceremony, the grant_server append (a 4-field payload), the backfill
+// across every environment × every epoch, and mid-run recovery
+// (409 = already registered).
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -34,7 +36,8 @@ let member: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
-// デプロイメントのサーバー鍵(公開面のみ — grant はサーバー秘密鍵を要しない)
+// The deployment's server key (public side only — grant never needs the
+// server secret key)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 let serverFpHex: string;
 let serverFpWords: readonly string[];
@@ -70,8 +73,9 @@ interface GrantServerState {
 }
 
 /**
- * grant フロー用の状態つきモック: チェーン(追記受理)・/auth/config・
- * 環境ごとの listMine(自分宛ラップ)・deks 登録(捕捉 + 応答差し替え)。
+ * The stateful mock for grant flows: the chain (accepts appends),
+ * /auth/config, per-environment listMine (your own wraps), and deks
+ * registration (capture + response replacement).
  */
 async function makeGrantServer(input: {
   readonly built: Awaited<ReturnType<typeof buildChain>>;
@@ -155,7 +159,7 @@ async function startGrantEnv(
   return env;
 }
 
-/** 正規チェーン: create(epoch 1)→ rotate(epoch 2)。バックフィル対象 2 エポック。 */
+/** The canonical chain: create (epoch 1) → rotate (epoch 2). Two epochs to backfill. */
 async function builtWithTwoEpochs() {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -173,7 +177,7 @@ async function ownWraps(projectId: string) {
 }
 
 describe("maruhi server grant", () => {
-  it("儀式(--expect-fingerprint)→ grant_server 追記(4 フィールド)→ 全エポックのバックフィルを行う", async () => {
+  it("runs the ceremony (--expect-fingerprint) → grant_server append (4 fields) → backfill of every epoch", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({
       built,
@@ -188,7 +192,8 @@ describe("maruhi server grant", () => {
       ),
     ).toBe(0);
 
-    // 追記された grant_server payload(§6.2 の 4 フィールド構造化形)
+    // The appended grant_server payload (§6.2's 4-field structured
+    // form)
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "grant_server") throw new Error("grant entry missing");
@@ -197,7 +202,8 @@ describe("maruhi server grant", () => {
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID]);
     expect(entry.payload.leasePolicy).toEqual([]);
 
-    // バックフィル: 全エポック(1・2)のサーバー宛ラップを 1 リクエストで登録
+    // Backfill: the server-bound wraps of every epoch (1 and 2)
+    // registered in one request
     expect(state.registerBodies).toHaveLength(1);
     const wraps = state.registerBodies[0]?.deks as readonly {
       recipientClass?: string;
@@ -212,12 +218,13 @@ describe("maruhi server grant", () => {
 
     const logs = env.logs.join("\n");
     expect(logs).toContain("Backfill: 2 newly registered, 0 already registered");
-    // §9: 開示中の常時明示(Note — stderr)+ ワード表示
+    // §9: the always-on disclosure notice (Note — stderr) + the word
+    // display
     expect(env.errors.join("\n")).toContain("disclosed to the server");
     expect(logs).toContain(serverFpWords[11] ?? "");
   });
 
-  it("中断復旧: 同一内容の有効 grant があれば追記せず、409 をエポック単位の登録済みとして収束する", async () => {
+  it("mid-run recovery: a live grant with identical content is not appended again, and a 409 converges as per-epoch already-registered", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -239,8 +246,9 @@ describe("maruhi server grant", () => {
       built,
       deksByEnvironment: { [ENV_ID]: await ownWraps(built.projectId) },
     });
-    // epoch 1 は登録済み(中断した前回実行の途中状態): 一括は 409、単発は
-    // epoch 1 だけ 409
+    // epoch 1 is already registered (the interrupted previous run's
+    // mid-state): the batch gets 409, and of the per-epoch calls only
+    // epoch 1 gets 409
     state.registerResponder.respond = (body) => {
       const epochs = (body.deks as readonly { epoch: number }[]).map((wrap) => wrap.epoch);
       if (epochs.includes(1)) {
@@ -259,7 +267,7 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(0);
-    // 追記なし(同一内容)・一括 409 → エポック単位 2 リクエスト
+    // No append (identical content) · batch 409 → 2 per-epoch requests
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies.map((body) => body.deks.length)).toEqual([2, 1, 1]);
     const logs = env.logs.join("\n");
@@ -267,7 +275,7 @@ describe("maruhi server grant", () => {
     expect(logs).toContain("Backfill: 1 newly registered, 1 already registered");
   });
 
-  it("対話の儀式: 12 語の最終語の再入力で確認する(誤入力 3 回で中止・追記なし)", async () => {
+  it("the interactive ceremony: confirmed by retyping the last of 12 words (3 mistypes abort with no append)", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({
       built,
@@ -278,7 +286,7 @@ describe("maruhi server grant", () => {
     expect(await runCli(["server", "grant", "--environments", ENV_ID], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
 
-    // 誤入力 3 回 → 中止(追記なし)
+    // 3 mistypes → abort (no append)
     const state2 = await makeGrantServer({
       built: await builtWithTwoEpochs(),
       deksByEnvironment: {},
@@ -290,7 +298,7 @@ describe("maruhi server grant", () => {
     expect(env2.errors.join("\n")).toContain("Server key fingerprint confirmation failed");
   });
 
-  it("--expect-fingerprint の不一致は儀式で中止する(追記なし)", async () => {
+  it("an --expect-fingerprint mismatch aborts in the ceremony (no append)", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
     const env = await startGrantEnv(state, built.projectId, owner);
@@ -307,7 +315,7 @@ describe("maruhi server grant", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("AI エージェント環境では対話の儀式を拒否する(--expect-fingerprint を案内)", async () => {
+  it("refuses the interactive ceremony in an AI-agent environment (guides toward --expect-fingerprint)", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
     const env = await startGrantEnv(state, built.projectId, owner);
@@ -317,7 +325,7 @@ describe("maruhi server grant", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("サーバー鍵未設定(/auth/config にフィールドなし)は SELF_HOSTING を案内する", async () => {
+  it("a server without a configured key (no field in /auth/config) is guided to SELF_HOSTING", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({
       built,
@@ -334,13 +342,16 @@ describe("maruhi server grant", () => {
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 
-  it("/auth/config の FP と enc 公開鍵の再計算 FP が一致しなければ中止する(儀式の前提の自己整合)", async () => {
+  it("aborts when /auth/config's FP and the recomputed FP of the enc public key disagree (the ceremony's self-consistency premise)", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({
       built,
       deksByEnvironment: {},
-      // FP は本物・enc 公開鍵は別物: 悪意あるサーバーが「利用者が控えで確認済みの
-      // FP」に任意の鍵を組み合わせる形。再計算照合が落とさなければ儀式が無意味になる
+      // The FP is genuine but the enc public key is something else: the
+      // shape where a malicious server pairs an arbitrary key with "the
+      // FP the user already verified from the record". If the
+      // recomputation check didn't catch it the ceremony would be
+      // meaningless
       authConfig: {
         githubClientId: "dummy-client-id",
         serverKeyFingerprintHex: serverFpHex,
@@ -361,7 +372,7 @@ describe("maruhi server grant", () => {
     expect(state.registerBodies).toHaveLength(0);
   });
 
-  it("複数環境のスコープは全環境 × 全エポックをバックフィルする", async () => {
+  it("a multi-environment scope backfills every environment × every epoch", async () => {
     const ENV_B = "env-app-2";
     const dekB = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -398,7 +409,8 @@ describe("maruhi server grant", () => {
     if (entry?.op !== "grant_server") throw new Error("grant entry missing");
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID, ENV_B]);
 
-    // 環境ごとに 1 リクエスト × 各 1 エポックのサーバー宛ラップ
+    // One request per environment × the server-bound wrap of its single
+    // epoch
     const byEnvironment = new Map(
       state.registerBodies.map((body) => [body.environmentId, body.deks]),
     );
@@ -412,7 +424,7 @@ describe("maruhi server grant", () => {
     expect(env.logs.join("\n")).toContain("Backfill: 2 newly registered, 0 already registered");
   });
 
-  it("owner 以外は拒否する(§6.2)", async () => {
+  it("non-owners are refused (§6.2)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       {
@@ -442,7 +454,7 @@ describe("maruhi server grant", () => {
     expect(env.errors.join("\n")).toContain("Only an owner can run grant_server");
   });
 
-  it("再 grant のスコープ縮小は revoke を案内して拒否する(二層規則 — §6.3)", async () => {
+  it("a re-grant narrowing the scope guides toward revoke and refuses (the two-layer rule — §6.3)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -477,7 +489,7 @@ describe("maruhi server grant", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--lease-policy の JSON を正規化(制約の昇順ソート)して payload に載せる", async () => {
+  it("normalizes --lease-policy's JSON (ascending sort of constraints) onto the payload", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({
       built,
@@ -492,7 +504,8 @@ describe("maruhi server grant", () => {
         {
           issuerUrl: "https://token.actions.githubusercontent.com",
           audience: "https://maruhi.example.com",
-          // 書いた順(repository → ref)に依らずコードポイント昇順で正規化される
+          // Regardless of written order (repository → ref), it's
+          // normalized to ascending code points
           claimConstraints: { repository: "acme-dummy/app", ref: "refs/heads/main" },
         },
       ]),
@@ -528,7 +541,7 @@ describe("maruhi server grant", () => {
     expect(env.logs.join("\n")).toContain("lease_policy has 1 element");
   });
 
-  it("--lease-policy の各要素で claimConstraints を必須かつ非空にする", async () => {
+  it("requires a non-empty claimConstraints on every --lease-policy element", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
     const env = await startGrantEnv(state, built.projectId, owner);
@@ -578,7 +591,7 @@ describe("maruhi server grant", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--environments は必須(最小開示の既定)・不正な JSON ファイルは usage エラー", async () => {
+  it("--environments is required (minimal-disclosure default) and a malformed JSON file is a usage error", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
     const env = await startGrantEnv(state, built.projectId, owner);

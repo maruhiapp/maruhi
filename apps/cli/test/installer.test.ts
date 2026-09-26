@@ -1,10 +1,11 @@
-// install script(packaging/install.sh)と Homebrew formula の、対象表・命名規約に
-// 対する追従を固定する。
+// Pins the install script (packaging/install.sh) and the Homebrew formula
+// to the target table and the naming conventions.
 //
-// 実インストールの検証は packaging/install-test.sh(実 OS 4 種 ×
-// .github/workflows/installer.yml)が行う。ここで押さえるのは、そこへ届く前に
-// 静かにズレうる「表の複製」— shared.ts の TARGETS、build-binaries.ts の
-// アーカイブ命名、formula のプラットフォーム対応付け — の 3 点。
+// Real-install verification is done by packaging/install-test.sh (4 real
+// OSes × .github/workflows/installer.yml). What this file holds down is the
+// three "copies of the table" that can drift silently before ever reaching
+// there — shared.ts's TARGETS, build-binaries.ts's archive naming, and the
+// formula's platform mapping.
 
 import { readFileSync } from "node:fs";
 
@@ -28,38 +29,39 @@ const exampleFormula = read("packaging/homebrew/maruhi.example.rb");
 
 const unixTargets = TARGETS.filter((target) => !target.name.startsWith("windows"));
 
-describe("install script(packaging/install.sh)", () => {
-  it("対応対象が TARGETS(windows を除く)と一致する", () => {
+describe("install script (packaging/install.sh)", () => {
+  it("the supported set matches TARGETS (minus windows)", () => {
     const declared = /^SUPPORTED_TARGETS="([^"]+)"$/m.exec(installScript)?.[1];
-    expect(declared, "install.sh の SUPPORTED_TARGETS を読めない").toBeDefined();
+    expect(declared, "could not read install.sh's SUPPORTED_TARGETS").toBeDefined();
     expect(declared?.split(" ")).toEqual(unixTargets.map((target) => target.name));
   });
 
-  it("アーカイブ名の規約が build-binaries.ts と揃っている", () => {
-    // 生成側(build-binaries.ts)と取得側(install.sh)で命名がズレると、
-    // 実 OS テストで初めて 404 として現れる。両方の組み立て行を固定する
+  it("the archive naming convention matches build-binaries.ts", () => {
+    // If the producer (build-binaries.ts) and the fetcher (install.sh)
+    // disagree on the naming, it first surfaces as a 404 in the real-OS
+    // tests. Pin both assembly lines
     expect(buildScript).toContain("`maruhi-${target.name}.tar.gz`");
     expect(installScript).toContain('ARCHIVE="maruhi-${TARGET}.tar.gz"');
   });
 
-  it("windows は install script の対象にしない(README の手動手順へ誘導する)", () => {
+  it("windows is not an install-script target (directed to the manual steps in the README)", () => {
     expect(installScript).not.toMatch(/TARGET="windows/);
     expect(installScript).toContain("Windows is not supported by this script");
   });
 
-  it("`mh` は maruhi への相対 symlink として張る(ADR-0015 裁定 7)", () => {
+  it("`mh` is installed as a relative symlink to maruhi (ADR-0015 ruling 7)", () => {
     expect(installScript).toContain("ln -s maruhi");
   });
 });
 
-describe("Homebrew formula の生成", () => {
+describe("Homebrew formula generation", () => {
   const checksums = parseChecksums(exampleChecksums);
 
-  it("例の checksums から packaging/homebrew/maruhi.example.rb を再現する", () => {
+  it("reproduces packaging/homebrew/maruhi.example.rb from the example checksums", () => {
     expect(renderFormula("1.2.3", checksums)).toBe(exampleFormula);
   });
 
-  it("unix 4 対象の url / sha256 を載せ、windows は載せない", () => {
+  it("carries the url / sha256 of the 4 unix targets and not windows", () => {
     const formula = renderFormula("1.2.3", checksums);
     for (const target of unixTargets) {
       expect(formula).toContain(`maruhi-${target.name}.tar.gz`);
@@ -68,7 +70,7 @@ describe("Homebrew formula の生成", () => {
     expect(formula.match(/^ {6}sha256 "[0-9a-f]{64}"$/gm)).toHaveLength(unixTargets.length);
   });
 
-  it("`mh` の symlink と --version 一致の test do を含む", () => {
+  it("includes the `mh` symlink and a `test do` asserting --version agreement", () => {
     const formula = renderFormula("1.2.3", checksums);
     expect(formula).toContain('bin.install_symlink "maruhi" => "mh"');
     expect(formula).toContain(
@@ -77,19 +79,19 @@ describe("Homebrew formula の生成", () => {
     expect(formula).toContain('license "MIT"');
   });
 
-  it("対象のアーカイブが checksums.txt に無ければ生成しない", () => {
+  it("does not generate when a target's archive is missing from checksums.txt", () => {
     const partial = new Map(checksums);
     partial.delete("maruhi-darwin-arm64.tar.gz");
     expect(() => renderFormula("1.2.3", partial)).toThrow("maruhi-darwin-arm64.tar.gz");
   });
 
-  it("壊れた checksums.txt を受け取らない", () => {
-    expect(() => parseChecksums("not-a-checksum-line\n")).toThrow("sha256sum 形式");
-    expect(() => parseChecksums(`${exampleChecksums}${exampleChecksums}`)).toThrow("重複");
-    expect(() => parseChecksums("")).toThrow("空です");
+  it("rejects a broken checksums.txt", () => {
+    expect(() => parseChecksums("not-a-checksum-line\n")).toThrow("sha256sum format");
+    expect(() => parseChecksums(`${exampleChecksums}${exampleChecksums}`)).toThrow("duplicate");
+    expect(() => parseChecksums("")).toThrow("empty");
   });
 
-  it("版を正規化し、プレリリースを見分ける", () => {
+  it("normalizes versions and detects pre-releases", () => {
     expect(normalizeVersion("v0.1.0")).toEqual({ version: "0.1.0", tag: "v0.1.0" });
     expect(normalizeVersion("0.1.0")).toEqual({ version: "0.1.0", tag: "v0.1.0" });
     expect(() => normalizeVersion("01.2.3")).toThrow("SemVer");

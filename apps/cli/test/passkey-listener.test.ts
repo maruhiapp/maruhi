@@ -1,11 +1,15 @@
-// パスキー PRF リスナー(passkey-listener.ts)とページ資産(passkey-page.ts)の検査。
+// Checks for the passkey PRF listener (passkey-listener.ts) and the page
+// assets (passkey-page.ts).
 //
-// 固定する性質(integration-options.md 補足 20 裁定 A / C — 人間レビュー箇所):
-//  1. トークン不一致・Host 不一致・Origin 不一致・本文不正・content-type 違いは
-//     すべて理由を出さない一様 404
-//  2. 正しい POST は 1 回だけ受理(204)し、以後は 404。close で接続は拒否される
-//  3. ページは inline script / inline style / イベント属性 / 第三者 URL を持たず、
-//     HTML 応答に CSP(script-src 'self' 基調)が付く
+// Properties pinned down (integration-options.md supplement 20 rulings A /
+// C — human-review points):
+//  1. Token mismatch, Host mismatch, Origin mismatch, malformed body, and
+//     wrong content-type are all the same reason-free 404
+//  2. A correct POST is accepted exactly once (204); afterwards it's 404.
+//     After close the connection is refused
+//  3. The page has no inline script / inline style / event attributes /
+//     third-party URLs, and the HTML response carries a CSP (script-src
+//     'self' baseline)
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -56,8 +60,8 @@ function post(
   });
 }
 
-describe("PRF リスナーの認証(裁定 A)", () => {
-  it("URL は http://localhost:<port>/<token>/ で、ページ資産はトークン配下だけに出る", async () => {
+describe("PRF listener authentication (ruling A)", () => {
+  it("the URL is http://localhost:<port>/<token>/ and page assets are served only under the token", async () => {
     const listener = await start();
     expect(listener.url).toMatch(/^http:\/\/localhost:\d+\/[A-Za-z0-9_-]{43}\/$/);
     const page = await fetch(listener.url);
@@ -81,7 +85,7 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     });
   });
 
-  it("末尾スラッシュ無しの /<token> は /<token>/ へ寄せる(相対参照の資産が引けるように)", async () => {
+  it("a trailing-slashless /<token> is redirected to /<token>/ (so relatively-referenced assets resolve)", async () => {
     const listener = await start();
     const bare = await fetch(listener.url.slice(0, -1), { redirect: "manual" });
     expect(bare.status).toBe(302);
@@ -89,13 +93,14 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     const followed = await fetch(listener.url.slice(0, -1));
     expect(followed.status).toBe(200);
     expect(await followed.text()).toBe(PRF_PAGE_HTML);
-    // 寄せるのは正しいトークンだけ(別トークンは 404 のまま)
+    // The redirect only happens for the right token (a different token
+    // stays 404)
     expect(
       (await fetch(`${originOf(listener)}/${"x".repeat(43)}`, { redirect: "manual" })).status,
     ).toBe(404);
   });
 
-  it("トークン不一致・Host 不一致(127.0.0.1)・未知の資産は一様 404", async () => {
+  it("token mismatch, Host mismatch (127.0.0.1), and unknown assets all get the same 404", async () => {
     const listener = await start();
     const wrongToken = await fetch(`${originOf(listener)}/${"x".repeat(43)}/`);
     expect(wrongToken.status).toBe(404);
@@ -106,7 +111,7 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     expect((await fetch(`${listener.url}other.js`)).status).toBe(404);
   });
 
-  it("POST は Origin 完全一致 + application/json + 正しい本文のときだけ受理する", async () => {
+  it("a POST is accepted only with an exact-Origin match + application/json + the right body", async () => {
     const listener = await start();
     const good = JSON.stringify({ code: CODE, credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX });
     expect((await post(listener, good, {})).status).toBe(404);
@@ -133,7 +138,8 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     expect((await post(listener, JSON.stringify({ code: CODE, error: "made-up" }))).status).toBe(
       404,
     );
-    // 確認コード無し / 不一致は 404(消費しない — 下の正しい POST が通る)
+    // Missing / mismatched confirmation code is a 404 (not consumed —
+    // the correct POST below still passes)
     expect(
       (await post(listener, JSON.stringify({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX })))
         .status,
@@ -146,7 +152,7 @@ describe("PRF リスナーの認証(裁定 A)", () => {
         )
       ).status,
     ).toBe(404);
-    // 大きすぎる本文は読まずに切る(応答が無いか 404)
+    // A too-large body is cut unread (no response, or 404)
     await post(
       listener,
       JSON.stringify({
@@ -159,13 +165,14 @@ describe("PRF リスナーの認証(裁定 A)", () => {
       (response) => expect(response.status).toBe(404),
       () => undefined,
     );
-    // 不正な POST はリスナーを閉じない: 正しい POST がまだ通る
+    // A malformed POST doesn't close the listener: a correct POST still
+    // passes
     const accepted = await post(listener, good);
     expect(accepted.status).toBe(204);
     expect(await listener.outcome).toEqual({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX });
   });
 
-  it("受理は 1 回限り: 2 回目の正しい POST は 404、close 後は接続できない", async () => {
+  it("acceptance is one-shot: a second correct POST is a 404, and after close connections fail", async () => {
     const listener = await start();
     const good = JSON.stringify({ code: CODE, credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX });
     expect((await post(listener, good)).status).toBe(204);
@@ -177,7 +184,7 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     await expect(fetch(listener.url)).rejects.toThrow();
   });
 
-  it("理由コードの POST も(コード付きなら)1 回で確定する", async () => {
+  it("a reason-code POST also settles in one shot (as long as the code is attached)", async () => {
     const listener = await start();
     expect(
       (await post(listener, JSON.stringify({ code: CODE, error: "prf-unsupported" }))).status,
@@ -185,7 +192,7 @@ describe("PRF リスナーの認証(裁定 A)", () => {
     expect(await listener.outcome).toEqual({ error: "prf-unsupported" });
   });
 
-  it("確認コードの不一致が上限に達したら儀式ごと打ち切る(総当たりの fail-closed)", async () => {
+  it("once code mismatches hit the cap, the whole ceremony is aborted (fail-closed against brute force)", async () => {
     const listener = await start();
     const forged = (code: string) =>
       JSON.stringify({ code, credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX });
@@ -193,13 +200,13 @@ describe("PRF リスナーの認証(裁定 A)", () => {
       expect((await post(listener, forged(guess))).status).toBe(404);
     }
     expect(await listener.outcome).toEqual({ error: "too-many-code-attempts" });
-    // 打ち切り後は正しいコードでも通らない
+    // After the abort, even the correct code doesn't pass
     expect((await post(listener, forged(CODE))).status).toBe(404);
   });
 });
 
 describe("parsePrfPost", () => {
-  it("確認コード + 成功形 / 理由コードだけを受け、余分なキー・形式違いは null", () => {
+  it("accepts only a confirmation code + success shape / a reason code; extra keys and wrong shapes are null", () => {
     const withCode = (body: Record<string, unknown>) => JSON.stringify({ code: CODE, ...body });
     expect(parsePrfPost(withCode({ credentialIdHex: "ab", prfHex: PRF_HEX }))).toEqual({
       code: CODE,
@@ -214,7 +221,8 @@ describe("parsePrfPost", () => {
     expect(parsePrfPost(withCode({ credentialIdHex: "AB", prfHex: PRF_HEX }))).toBeNull();
     expect(parsePrfPost(withCode({ credentialIdHex: "", prfHex: PRF_HEX }))).toBeNull();
     expect(parsePrfPost(withCode({ credentialIdHex: "ab", prfHex: PRF_HEX.slice(1) }))).toBeNull();
-    // コードは 6 桁の数字の文字列のみ(無し・短い・数値型は null)
+    // The code is a 6-digit numeric string only (absent, short, or a
+    // numeric type are all null)
     expect(parsePrfPost(JSON.stringify({ credentialIdHex: "ab", prfHex: PRF_HEX }))).toBeNull();
     expect(
       parsePrfPost(JSON.stringify({ code: "12345", credentialIdHex: "ab", prfHex: PRF_HEX })),
@@ -228,8 +236,8 @@ describe("parsePrfPost", () => {
   });
 });
 
-describe("ページ資産の不変条件(裁定 C — CSP script-src 'self' 基調)", () => {
-  it("HTML は別ファイルの app.js だけを読み、inline script / style・イベント属性・javascript: を持たない", () => {
+describe("page-asset invariants (ruling C — CSP script-src 'self' baseline)", () => {
+  it("the HTML loads only the separate app.js and has no inline script / style, event attributes, or javascript:", () => {
     const scripts = PRF_PAGE_HTML.match(/<script\b[^>]*>/g) ?? [];
     expect(scripts).toEqual(['<script src="./app.js">']);
     expect(PRF_PAGE_HTML).not.toMatch(/<style\b/i);
@@ -237,12 +245,13 @@ describe("ページ資産の不変条件(裁定 C — CSP script-src 'self' 基�
     expect(PRF_PAGE_HTML).not.toMatch(/javascript:/i);
     expect(PRF_PAGE_HTML).not.toMatch(/\sstyle\s*=/i);
     expect(PRF_PAGE_HTML).toContain('<link rel="stylesheet" href="./style.css">');
-    // 確認コードの入力欄はページに置く(値は POST に同梱されるだけで DOM に鍵素材は出ない)
+    // The confirmation-code input field lives on the page (the value only
+    // rides the POST — no key material enters the DOM)
     expect(PRF_PAGE_HTML).toContain('<input id="code"');
     expect(PRF_PAGE_JS).toContain("code: code");
   });
 
-  it("HTML / JS / CSS は第三者の URL を持たず、JS は eval / Function / innerHTML を使わない", () => {
+  it("HTML / JS / CSS carry no third-party URLs, and the JS uses no eval / Function / innerHTML", () => {
     for (const asset of [PRF_PAGE_HTML, PRF_PAGE_JS, PRF_PAGE_CSS]) {
       expect(asset).not.toMatch(/https?:\/\//);
       expect(asset).not.toMatch(/\/\/[a-z0-9-]+\.[a-z]{2,}/i);
@@ -250,14 +259,16 @@ describe("ページ資産の不変条件(裁定 C — CSP script-src 'self' 基�
     expect(PRF_PAGE_JS).not.toMatch(/\beval\s*\(/);
     expect(PRF_PAGE_JS).not.toMatch(/new\s+Function\b/);
     expect(PRF_PAGE_JS).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-    // WebAuthn は UV 必須(UV 無しの認証器では PRF が黙って欠ける — spike-prf.md §2)
+    // WebAuthn requires UV (on authenticators without UV, PRF silently
+    // goes missing — spike-prf.md §2)
     expect(PRF_PAGE_JS.match(/userVerification: "required"/g)).toHaveLength(3);
     expect(PRF_PAGE_JS).not.toMatch(/userVerification: "(preferred|discouraged)"/);
-    // 相対パスの fetch は同一オリジンの 2 つだけ(config.json と prf)
+    // The relative-path fetches are exactly the two same-origin ones
+    // (config.json and prf)
     expect(PRF_PAGE_JS.match(/fetch\(/g)).toHaveLength(2);
   });
 
-  it("CSP は inline も第三者も許さない", () => {
+  it("the CSP permits neither inline nor third-party", () => {
     expect(PRF_PAGE_CSP).toContain("default-src 'none'");
     expect(PRF_PAGE_CSP).toContain("script-src 'self'");
     expect(PRF_PAGE_CSP).not.toContain("unsafe-inline");

@@ -1,15 +1,21 @@
-// 既存コマンドの自動提案化(CRYPTO_SPEC §6.2 — PF1 K6。設計録 es-design.md §12 K6-A / D / I / N)。
+// Auto-proposal of existing commands (CRYPTO_SPEC §6.2 — PF1 K6. Design note
+// es-design.md §12 K6-A / D / I / N).
 //
-// 固定する性質:
-//  1. 方針が内側 op を対象にしていれば、`member remove` / `change-role` / `add`・`server grant` /
-//     `revoke` は直接追記の代わりに `propose` を追記し、何も履行しない(rotate / バックフィル
-//     なし — 裁定 P7)。表示は「Proposed … nothing has been applied yet」
-//  2. 冪等性: 同じ内側 op の pending 提案が既にあれば新たに提案しない(K6-A)
-//  3. 方針が対象にしていない op は従来どおり直接追記(既存テストが固定)。CAS 競合の再同期で
-//     方針が変わっていれば fail-closed(再実行)
-//  4. `member add`: 儀式(--expect-fingerprint)の後で提案し、鍵 FP の再登録には警告(K6-I)
-//  5. 提案化の経路では自己 remove を拒否しない(履行者 = 承認者 — K6-N)
-//  6. `--expires` の不備は usage(2)
+// Properties pinned down:
+//  1. When the policy targets the inner op, `member remove` / `change-role` /
+//     `add` / `server grant` / `revoke` append a `propose` instead of a direct
+//     append and fulfill nothing (no rotate / backfill — ruling P7). The
+//     display is "Proposed … nothing has been applied yet"
+//  2. Idempotency: if a pending proposal for the same inner op already
+//     exists, do not propose anew (K6-A)
+//  3. Ops the policy does not target keep the direct append (pinned by
+//     existing tests). If a CAS-conflict resync finds the policy changed,
+//     fail closed (re-run)
+//  4. `member add`: propose after the ceremony (--expect-fingerprint), and
+//     warn on key-FP re-registration (K6-I)
+//  5. The proposal path does not refuse a self-remove (the fulfiller is the
+//     approver — K6-N)
+//  6. A malformed `--expires` is usage (2)
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -76,7 +82,7 @@ async function startEnv(
 
 type PolicyOp = Parameters<typeof setApprovalPolicyOp>[0][number];
 
-/** owner 2 名・member 1 名・環境 1 つ・方針(ops, required 2)。 */
+/** 2 owners, 1 member, 1 environment, policy (ops, required 2). */
 function baseSteps(ops: readonly PolicyOp[]) {
   return [
     { actor: owner, operation: genesisOp(owner) },
@@ -87,8 +93,8 @@ function baseSteps(ops: readonly PolicyOp[]) {
   ];
 }
 
-describe("既存コマンドの自動提案化(K6-A)", () => {
-  it("member remove: 方針が対象なら propose を追記し、rotate は走らない。再実行は同じ提案を報告する(冪等)", async () => {
+describe("auto-proposal of existing commands (K6-A)", () => {
+  it("member remove: appends propose when the policy targets it and rotate does not run; re-running reports the same proposal (idempotent)", async () => {
     const built = await buildChain(baseSteps(["remove_member"]));
     const state = await makeFourEyesServer({
       built,
@@ -121,7 +127,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
       op: "remove_member",
       payload: { targetUserId: target.userId },
     });
-    // 48h ≈ 期限(署名時刻 + 48h)
+    // 48h ≈ the expiry (signing time + 48h)
     const lifetime = proposed.payload.expiresAtMs - proposed.timestampMs;
     expect(lifetime).toBeGreaterThan(48 * 3_600_000 - 10_000);
     expect(lifetime).toBeLessThanOrEqual(48 * 3_600_000);
@@ -132,15 +138,17 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     expect(logs).toContain("needs 1 more owner approval (1 of 2 recounted so far)");
     expect(logs).toContain("maruhi approval approve");
 
-    // 再実行: 同じ内側 op の pending があるので提案を増やさない
+    // Re-run: a pending entry for the same inner op exists, so no new
+    // proposal is added
     env.logs.length = 0;
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
     expect(env.logs.join("\n")).toContain("The same operation is already proposed");
   });
 
-  it("member remove: 提案化の経路では自己 remove を拒否しない(履行者は承認者 — K6-N)", async () => {
-    // owner 3 名(到達可能性: owner2 を除いても required 2 に届く — 提案時の quorum 検査を通す)
+  it("member remove: the proposal path does not refuse a self-remove (the fulfiller is the approver — K6-N)", async () => {
+    // 3 owners (reachability: even without owner2, required 2 is met — passes
+    // the quorum check at propose time)
     const owner3 = await makeTestUser("user-owner-3333");
     const steps = baseSteps(["remove_member"]);
     const built = await buildChain([
@@ -150,15 +158,16 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     ]);
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
-    // owner2 が自分の remove を提案: CLI は「自己 remove」だけで止めない(履行者は承認者)
+    // owner2 proposes their own remove: the CLI doesn't stop merely on
+    // "self-remove" (the fulfiller is the approver)
     const code = await runCli(["member", "remove", owner2.userId], env.layer);
     expect(code).toBe(0);
     expect(state.appendedEntries.map((entry) => entry.op)).toEqual(["propose"]);
-    // K6-N′: 適用後の帰結を本人に見せる(拒否ではない)
+    // K6-N': show the person the consequence once applied (not a refusal)
     expect(env.errors.join("\n")).toContain("this proposal removes you");
   });
 
-  it("member change-role: 対象 op なら提案(省略側は提案時の現状で解決)。対象外は直接追記", async () => {
+  it("member change-role: proposes when the op is targeted (the omitted side resolves to the current state at propose time); untargeted appends directly", async () => {
     const built = await buildChain(baseSteps(["change_role"]));
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);
@@ -178,7 +187,8 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     });
     expect(state.rotateBodies).toHaveLength(0);
 
-    // 方針が remove_member だけなら change_role は直接追記(owner の確立は常時対象)
+    // If the policy only targets remove_member, change_role is a direct
+    // append (owner establishment is always targeted)
     const other = await buildChain(baseSteps(["remove_member"]));
     const otherState = await makeFourEyesServer({ built: other, environments: {}, actor: owner });
     const otherEnv = await startEnv(otherState, other.projectId, owner);
@@ -194,7 +204,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     expect(otherEnv.logs.join("\n")).toContain(`Proposed change_role ${target.userId} to owner`);
   });
 
-  it("server revoke: 対象なら提案し、全環境の rotate は走らない", async () => {
+  it("server revoke: proposes when targeted, and rotate across all environments does not run", async () => {
     const grant = await grantServerOp([ENV_ID], [], SERVER_ENC_PUB_HEX);
     const built = await buildChain([
       ...baseSteps(["revoke_server"]),
@@ -213,7 +223,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     expect(env.logs.join("\n")).toContain(`Proposed revoke_server key ${serverFpHex}`);
   });
 
-  it("server grant: 儀式(--expect-fingerprint)の後で提案し、サーバー宛バックフィルは走らない", async () => {
+  it("server grant: proposes after the ceremony (--expect-fingerprint); the server-destined backfill does not run", async () => {
     const built = await buildChain(baseSteps(["grant_server"]));
     const state = await makeFourEyesServer({
       built,
@@ -239,7 +249,8 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
       payload: { serverKeyFingerprintHex: serverFpHex, scopeEnvironmentIds: [ENV_ID] },
     });
     expect(state.registerBodies).toHaveLength(0);
-    // 儀式を飛ばした(フラグなし・非対話)実行は提案の前に止まる
+    // A run that skips the ceremony (no flag, non-interactive) stops before
+    // proposing
     const bare = await makeFourEyesServer({
       built,
       environments: {},
@@ -256,7 +267,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     expect(bare.counters.appendAttempts).toBe(0);
   });
 
-  it("CAS 競合の再同期で方針が変わっていたら fail-closed で止まる(再実行で新しい形へ)", async () => {
+  it("stops fail-closed when the policy changed on a CAS-conflict resync (re-run lands the new shape)", async () => {
     const steps = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -264,7 +275,8 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
       { actor: owner, operation: addMemberOp(target, "member") },
     ];
     const built = await buildChain(steps);
-    // 送信と並行して方針が有効化された(remove_member が対象に)
+    // The policy was activated concurrently with the submission
+    // (remove_member became targeted)
     const concurrent = await buildChain([
       ...steps,
       { actor: owner, operation: setApprovalPolicyOp(["remove_member"], 2) },
@@ -294,7 +306,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--expires の不備は usage(2)で通信前に落ちる", async () => {
+  it("a malformed --expires fails as usage (2) before any communication", async () => {
     const built = await buildChain(baseSteps(["remove_member"]));
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);
@@ -308,7 +320,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
   });
 });
 
-describe("member add の提案化と鍵 FP 再登録の警告(K6-D / K6-I)", () => {
+describe("member add proposal and the key-FP re-registration warning (K6-D / K6-I)", () => {
   async function invitationFor(projectId: string, invitee: TestUser) {
     const issued = await issueInviteFixture({
       inviter: owner,
@@ -332,7 +344,7 @@ describe("member add の提案化と鍵 FP 再登録の警告(K6-D / K6-I)", () 
     };
   }
 
-  it("方針が add_member を対象にしていれば、儀式の後に propose を追記してバックフィルしない", async () => {
+  it("appends propose after the ceremony and does not backfill when the policy targets add_member", async () => {
     const built = await buildChain(baseSteps(["add_member"]));
     const state = await makeFourEyesServer({
       built,
@@ -364,7 +376,7 @@ describe("member add の提案化と鍵 FP 再登録の警告(K6-D / K6-I)", () 
     );
   });
 
-  it("受諾鍵が過去の在籍区間(同一 user_id)に現れれば警告する(拒否ではない — K5-K)", async () => {
+  it("warns when the acceptance key appeared in a past membership interval (same user_id) — a warning, not a refusal (K5-K)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -403,8 +415,8 @@ describe("member add の提案化と鍵 FP 再登録の警告(K6-D / K6-I)", () 
   });
 });
 
-describe("提案経由で適用された操作の再開(K6-C)", () => {
-  it("提案経由で削除された対象へ `member remove` を再実行すると、削除記録として認め sweep を再開する", async () => {
+describe("resuming an operation applied via a proposal (K6-C)", () => {
+  it("re-running `member remove` on a target removed via a proposal accepts it as the removal record and resumes the sweep", async () => {
     const steps = baseSteps(["remove_member"]);
     const proposed = await buildChain([
       ...steps,

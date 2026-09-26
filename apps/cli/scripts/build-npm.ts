@@ -1,10 +1,11 @@
-// npm 配布物(unscoped `maruhi`)のステージングを組み立てる(既定: apps/cli/dist-npm/)。
-// 方針は ADR-0015: Bun 前提の単一バンドル JS を配る。workspace 依存
-// (@maruhi/core など未 publish)と effect beta はバンドルへ畳み、利用者の
-// 依存グラフに伝播させない。publish 自体は release workflow が npm CLI で行う
-// (provenance。bun publish は未対応 — oven-sh/bun#15601)。
+// Assembles the npm distribution staging (unscoped `maruhi`; default:
+// apps/cli/dist-npm/). The policy is ADR-0015: ship a single bundled JS that
+// assumes Bun. Workspace dependencies (@maruhi/core etc., unpublished) and the
+// effect beta are folded into the bundle so they don't leak into users'
+// dependency graphs. The publish itself is done by the release workflow via
+// the npm CLI (provenance — bun publish is unsupported, oven-sh/bun#15601).
 //
-// 引数: 出力ディレクトリ(省略時 dist-npm。テストが一時ディレクトリを渡す)
+// Argument: output directory (default dist-npm; tests pass a temp dir)
 
 import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
@@ -20,10 +21,10 @@ const workspaceManifest = JSON.parse(await readFile(join(cliRoot, "package.json"
   version: string;
 };
 const version = workspaceManifest.version;
-// タグ照合(release.yml)と npm の版形式の前提。壊れた版を publish 直前より
-// 手前で止める
+// Preconditions for tag matching (release.yml) and npm's version format. Stop
+// a broken version before it gets as far as publish
 if (!SEMVER_PATTERN.test(version)) {
-  throw new Error(`apps/cli/package.json の version が SemVer ではない: ${version}`);
+  throw new Error(`apps/cli/package.json version is not SemVer: ${version}`);
 }
 
 const bunVersion = (await readFile(join(cliRoot, "../../.bun-version"), "utf8")).trim();
@@ -34,9 +35,10 @@ await mkdir(outDir, { recursive: true });
 run("bun", ["build", "--target=bun", "src/bin.ts", "--outfile", join(outDir, "bin.js")], cliRoot);
 
 const bundle = await readFile(join(outDir, "bin.js"), "utf8");
-// shebang(#!/usr/bin/env bun)は bin 実行の要。bun build が落とす退行に気づけるよう検査する
+// The shebang (#!/usr/bin/env bun) is essential for bin execution; check it so
+// a regression where bun build drops it gets noticed
 if (!bundle.startsWith("#!/usr/bin/env bun\n")) {
-  throw new Error("バンドル先頭に bun の shebang がない(bin 実行が壊れる)");
+  throw new Error("bundle does not start with the bun shebang (bin execution would break)");
 }
 
 await writeFile(
@@ -49,9 +51,9 @@ await writeFile(
         "Diskless, end-to-end encrypted secrets manager CLI. Requires the Bun runtime (https://bun.sh).",
       license: "MIT",
       type: "module",
-      // `./` 接頭辞を付けない: npm 11 は publish 時の正規化で `./bin.js` を
-      // invalid と判定し bin エントリごと黙って削除する(v0.1.0-rc.1 で実測。
-      // コマンドが 1 本も入らないパッケージが出るところだった)
+      // No `./` prefix: npm 11's publish-time normalization judges `./bin.js`
+      // invalid and silently deletes the whole bin entry (observed in
+      // v0.1.0-rc.1 — nearly shipped a package with zero commands)
       bin: { maruhi: "bin.js", mh: "bin.js" },
       engines: { bun: `>=${bunVersion}` },
       repository: {
@@ -87,4 +89,4 @@ Documentation: https://github.com/maruhiapp/maruhi
 );
 await chmod(join(outDir, "bin.js"), 0o755);
 
-console.log(`npm ステージング完成: ${outDir}(maruhi@${version}, engines.bun >=${bunVersion})`);
+console.log(`npm staging complete: ${outDir} (maruhi@${version}, engines.bun >=${bunVersion})`);

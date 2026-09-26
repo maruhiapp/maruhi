@@ -1,17 +1,21 @@
-// チェックポイント整合のクライアント規則 2(CRYPTO_SPEC §6.3 — 値の非後退。
-// session-27 §13-5 のスナップショット同梱検証)の結線テスト。
+// Wiring tests for client rule 2 of checkpoint integrity (CRYPTO_SPEC §6.3 —
+// value non-regression; session-27 §13-5's bundled snapshot verification).
 //
-// 検証の柱:
-//  1. 受理正例: 列挙一致・checkpoint 後の前進 version(基準 epoch 以上)・
-//     tombstone で説明される消失・checkpoint 後の新規作成(新エポック)
-//  2. 全拒否経路: 列挙欠落(基準あり)・digest 不一致・version 後退・同版
-//     ハッシュ不一致・前進 version の旧エポック・tombstone なしの消失・
-//     スナップショット外変数の旧エポック作成・locator 偽装
-//  3. locator の 2 分類(裁定 S): 申告 seq > 自ヘッド = 有界再同期(pull)/
-//     lease は自己矛盾として即時拒否
-//  4. cross-layer(裁定 W): 規則 2 を通過する配布でも床の規則 (a) は独立に落とす
-//     (チェーンの粗い基準がローカルの細かい基準を短絡しない)
-//  5. lease 経路: 同一実装の到達 + 基準なし環境の値付き配布での警告(SHOULD)
+// Pillars verified:
+//  1. Accepting positive cases: matching enumeration, post-checkpoint
+//     advanced versions (at or above the baseline epoch), disappearances
+//     explained by tombstones, and post-checkpoint new creations (new epoch)
+//  2. Every rejection path: missing enumeration (with a baseline), digest
+//     mismatch, version regression, same-version hash mismatch, an advanced
+//     version on an old epoch, disappearance without a tombstone, an old-epoch
+//     creation of a variable outside the snapshot, and locator forgery
+//  3. The two locator classes (ruling S): attested seq > own head = bounded
+//     resync (pull) / on a lease it's an immediate self-contradiction
+//  4. Cross-layer (ruling W): even a distribution that passes rule 2 is
+//     dropped independently by floor rule (a) (the chain's coarse baseline
+//     must not short-circuit the local finer one)
+//  5. Lease path: reaches the same implementation + warns on a valued
+//     distribution for a baseline-less environment (SHOULD)
 
 import type { ChainOperation } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -50,29 +54,29 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "prod";
-/** 基準 checkpoint の位置(baseSteps 3 エントリ + checkpoint = seq 4)。 */
+/** Position of the baseline checkpoint (baseSteps' 3 entries + checkpoint = seq 4). */
 const CHECKPOINT_SEQ = 4;
 
 let owner: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** [genesis, create ENV(epoch 1), rotate(epoch 2)](checkpoint なし)。 */
+/** [genesis, create ENV (epoch 1), rotate (epoch 2)] (no checkpoint). */
 let baseChain: BuiltChain;
-/** baseChain + 末尾に ENV を覆う checkpoint(規則 2 の基準)。 */
+/** baseChain + a checkpoint covering ENV appended (rule 2's baseline). */
 let chain: BuiltChain;
 let projectId: string;
 let envStatement: WireDistributedEnvironmentStatement;
 let stmtA: WireDistributedVariableStatement;
 let stmtB: WireDistributedVariableStatement;
-/** va v2 epoch 2(checkpoint 時点の最新)。 */
+/** va v2 epoch 2 (latest as of the checkpoint). */
 let valueA: WireDistributedValue;
-/** vb v1 epoch 1(ローテーション後・再暗号化前の正当な状態 — §12-7)。 */
+/** vb v1 epoch 1 (the legitimate state after rotation, before re-encryption — §12-7). */
 let valueB: WireDistributedValue;
-/** チェーン上の checkpoint と対応する正しい列挙(サーバー保存行のモデル)。 */
+/** The correct enumeration corresponding to the checkpoint on the chain (model of the server-stored rows). */
 let snapshot: WireCheckpointSnapshot;
-/** checkpoint タプルが束縛する mv1 マニフェスト([A active, B active])。 */
+/** The mv1 manifest the checkpoint tuple binds ([A active, B active]). */
 let manifestMain: WireDistributedManifest;
-/** ENV を覆う checkpoint op(良性競合テストが第 2 の checkpoint として再利用)。 */
+/** A checkpoint op covering ENV (the benign-race test reuses it as a second checkpoint). */
 let checkpointOperation: ChainOperation;
 let wraps: WireRecipientDek[];
 let servers: MockServer[] = [];
@@ -86,9 +90,10 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
   ];
-  // 2 パス構築: 署名(Ed25519)・timestamp とも決定的なので、同一 steps の
-  // 再構築は同一エントリ列になる(先に base を組んで配布物のヘッド・digest を
-  // 確定し、その値を焼き込んだ checkpoint を末尾に足して組み直す)
+  // Two-pass construction: signing (Ed25519) and timestamps are
+  // deterministic, so rebuilding the same steps yields the same entry list
+  // (build base first to fix the distributed head / digest, then rebuild
+  // with a checkpoint carrying those baked-in values appended)
   baseChain = await buildChain(baseSteps);
   projectId = baseChain.projectId;
   const genesisHead = { seq: 1, hashHex: projectId };
@@ -202,7 +207,7 @@ interface PullOverrides {
   }[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly manifest?: WireDistributedManifest;
-  /** null = 列挙を配らない(欠落 negative)。省略 = 正しい列挙。 */
+  /** null = distribute no enumeration (missing-enumeration negative). Omitted = the correct enumeration. */
   readonly checkpointSnapshot?: WireCheckpointSnapshot | null;
 }
 
@@ -240,7 +245,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
   return env;
 }
 
-/** 同一 TestEnv(= 同一の床)へのフェーズ切り替え(floor-detection と同じ流儀)。 */
+/** Phase switch within the same TestEnv (= the same floor) — same idiom as floor-detection. */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<void> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -252,7 +257,7 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
   });
 }
 
-/** mv2 マニフェスト(prev = mv1 の実ハッシュ。served 集合の変わる負例・正例用)。 */
+/** The mv2 manifest (prev = mv1's real hash; for negatives/positives where the served set changes). */
 async function manifestNext(
   statements: readonly WireDistributedVariableStatement[],
 ): Promise<WireDistributedManifest> {
@@ -269,13 +274,13 @@ async function manifestNext(
   });
 }
 
-describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () => {
-  it("checkpoint 時点そのままの配布 + 一致する列挙を受理する", async () => {
+describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", () => {
+  it("accepts a distribution identical to checkpoint time plus a matching enumeration", async () => {
     const env = await startEnv([chainHandler(chain), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("checkpoint 後の前進 version(基準 epoch 以上)を受理する", async () => {
+  it("accepts a post-checkpoint advanced version (at or above the baseline epoch)", async () => {
     const advanced = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -299,7 +304,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("スナップショットの変数の消失は、検証済み tombstone で説明されれば受理する", async () => {
+  it("accepts a snapshot variable's disappearance when a verified tombstone explains it", async () => {
     const tombstoneB = await statementFor({
       projectId,
       environmentId: ENV_ID,
@@ -321,7 +326,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("スナップショットにない新規変数は、エポックが基準以上なら checkpoint 後の作成として受理する", async () => {
+  it("accepts a new variable absent from the snapshot as a post-checkpoint creation when its epoch is at or above baseline", async () => {
     const stmtC = await statementFor({
       projectId,
       environmentId: ENV_ID,
@@ -355,7 +360,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("基準を持たない環境(チェーンに checkpoint なし)は列挙なしをそのまま受理する", async () => {
+  it("accepts a missing enumeration as-is for an environment with no baseline (no checkpoint on the chain)", async () => {
     const env = await startEnv([
       chainHandler(baseChain),
       pullHandler({ checkpointSnapshot: null, manifest: manifestMain }),
@@ -363,10 +368,11 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("申告 seq が自ヘッドより先の列挙は有界再同期で解決する(§6.3-2b と同型 — 裁定 S)", async () => {
-    // チェーン取得は 1 回目 = checkpoint 未着のビュー、以後 = 延長された全体。
-    // pull 応答は新しい checkpoint の列挙を運ぶ(応答生成の直前に checkpoint が
-    // 着地した良性の競合のモデル化)
+  it("resolves an enumeration attested at a seq beyond the own head via bounded resync (same shape as §6.3-2b — ruling S)", async () => {
+    // The first chain fetch = a view without the checkpoint; later fetches =
+    // the extended whole. The pull response carries the new checkpoint's
+    // enumeration (models a benign race where the checkpoint landed right
+    // before the response was built)
     let chainCalls = 0;
     const staleChain: MockHandler = (request) => {
       if (request.method !== "GET" || request.path !== `/projects/${projectId}/chain`) {
@@ -390,7 +396,7 @@ describe("規則 2 の受理正例(§6.3 チェックポイント整合 2)", () 
   });
 });
 
-describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済みデータとチェーン公証の矛盾)", () => {
+describe("rule 2's rejection paths (session-27 §13-5 — every one a contradiction between verified data and the chain's notarization)", () => {
   async function expectRejected(
     overrides: PullOverrides,
     fragment: string,
@@ -401,11 +407,11 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     expect(env.errors.join("\n")).toContain(fragment);
   }
 
-  it("基準あり + 列挙なし = 拒否(MUST — 省略を規則 2 のスキップに落とさせない)", async () => {
+  it("baseline present + no enumeration = reject (MUST — an omission must not degrade into skipping rule 2)", async () => {
     await expectRejected({ checkpointSnapshot: null }, "omitted the checkpoint value snapshot");
   });
 
-  it("列挙の再計算ダイジェストがチェーンの values_digest と不一致なら拒否する", async () => {
+  it("rejects when the enumeration's recomputed digest differs from the chain's values_digest", async () => {
     const first = snapshot.values[0];
     if (first === undefined) throw new Error("fixture snapshot is empty");
     await expectRejected(
@@ -419,7 +425,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("スナップショット未満への version 後退を拒否する", async () => {
+  it("rejects a version regression below the snapshot", async () => {
     const rolledBack = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -442,8 +448,9 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("同版で signed bytes が異なる配布を拒否する(checkpoint との equivocation)", async () => {
-    // 同一座標 (va, v2, epoch 2) の別暗号文(nonce が変わるため signed bytes も変わる)
+  it("rejects a distribution with different signed bytes at the same version (equivocation vs the checkpoint)", async () => {
+    // A different ciphertext at the same coordinates (va, v2, epoch 2) — the
+    // nonce differs so the signed bytes differ too
     const substituted = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -466,7 +473,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("前進 version の旧エポック(基準未満)を拒否する(床規則 (c) のチェックポイント版)", async () => {
+  it("rejects an advanced version on an old epoch (below baseline) — the checkpoint version of floor rule (c)", async () => {
     const injected = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -476,7 +483,8 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
       version: 3,
       plaintext: "alpha-forged",
       writer: owner,
-      // epoch 1 が現エポックだった位置の宣言ヘッド(署名検証は通る形)
+      // A declared head positioned where epoch 1 was current (still passes
+      // signature verification)
       head: headOf(baseChain, 2),
     });
     await expectRejected(
@@ -490,7 +498,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("tombstone なしの消失を拒否する(checkpoint 済み値の説明のない欠落)", async () => {
+  it("rejects a disappearance with no tombstone (an unexplained omission of a checkpointed value)", async () => {
     await expectRejected(
       {
         variables: [{ variableId: "va", statement: stmtA, value: valueA }],
@@ -500,7 +508,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("スナップショット外変数の旧エポック作成を拒否する(backdated 作成)", async () => {
+  it("rejects an old-epoch creation of a variable outside the snapshot (a backdated creation)", async () => {
     const stmtC = await statementFor({
       projectId,
       environmentId: ENV_ID,
@@ -533,14 +541,14 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("locator の hash 偽装(seq ≤ 自ヘッド・チェーンと不一致)を拒否する", async () => {
+  it("rejects a forged locator hash (seq ≤ own head, disagreeing with the chain)", async () => {
     await expectRejected(
       { checkpointSnapshot: { ...snapshot, entryHashHex: "ef".repeat(32) } },
       "does not match the verified chain",
     );
   });
 
-  it("最新包含 checkpoint と別位置を主張する列挙を拒否する", async () => {
+  it("rejects an enumeration claiming a position other than the latest containing checkpoint", async () => {
     await expectRejected(
       {
         checkpointSnapshot: {
@@ -553,7 +561,7 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
     );
   });
 
-  it("基準なしのチェーンに列挙(seq ≤ 自ヘッド)を配る応答を拒否する", async () => {
+  it("rejects a response that distributes an enumeration (seq ≤ own head) to a chain with no baseline", async () => {
     await expectRejected(
       {
         checkpointSnapshot: { ...snapshot, chainSeq: 2, entryHashHex: baseChain.hashes[1] ?? "" },
@@ -565,13 +573,14 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
   });
 });
 
-describe("良性競合の分類(取得ビュー後の基準前進は evidence にしない)", () => {
-  it("再同期の窓に第 2 の checkpoint が着地した正直な応答は、証拠ではなく retriable として拒否する", async () => {
-    // fetch 時のビュー = baseChain(checkpoint なし)。応答は checkpoint(seq 4)の
-    // 列挙を運ぶが、再同期後のチェーンには第 2 の checkpoint(seq 5)まで載って
-    // いる — 応答の locator(4)は最新基準(5)と一致しないが、基準は取得ビュー
-    // (head 3)より後に前進しており、正直な応答でも起きる形。証拠(再実行では
-    // 解消しない)へ格上げせず、再 pull の案内で拒否する
+describe("classifying a benign race (baseline advancing after the fetch view is not evidence)", () => {
+  it("rejects an honest response where a second checkpoint landed inside the resync window as retriable, not evidence", async () => {
+    // The view at fetch = baseChain (no checkpoint). The response carries
+    // checkpoint (seq 4)'s enumeration, but the post-resync chain includes a
+    // second checkpoint (seq 5) — the response's locator (4) disagrees with
+    // the latest baseline (5), yet the baseline advanced after the fetch view
+    // (head 3), which an honest response can produce. Don't escalate to
+    // evidence (which a re-run cannot clear); reject with re-pull guidance
     const doubleChain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -604,7 +613,7 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
     expect(errors).not.toContain("stale or fabricated");
   });
 
-  it("基準前進の分類は取得ビュー基準(fetchedAtHeadSeq)で行う(unit)", async () => {
+  it("the baseline-advance classification is keyed on the fetch view (fetchedAtHeadSeq) (unit)", async () => {
     const verified = await Effect.runPromise(
       verifyChainSnapshot({
         projectId: projectId as never,
@@ -613,7 +622,8 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
         claimedHeadHashHex: chain.hashes[chain.hashes.length - 1] ?? "",
       }),
     );
-    // 列挙なし + 基準は取得ビュー(head 3)より後に着地 → retriable
+    // No enumeration + baseline landed after the fetch view (head 3) →
+    // retriable
     const missingAfterFetch = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: ENV_ID,
@@ -623,7 +633,8 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
       fetchedAtHeadSeq: 3,
     });
     expect(missingAfterFetch).toMatchObject({ kind: "rejected", evidence: false });
-    // 列挙なし + 基準は取得ビュー時点で保存済み → MUST の evidence 拒否
+    // No enumeration + baseline already stored at the fetch view → MUST
+    // evidence rejection
     const missingStored = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: ENV_ID,
@@ -633,7 +644,8 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
       fetchedAtHeadSeq: CHECKPOINT_SEQ,
     });
     expect(missingStored).toMatchObject({ kind: "rejected", evidence: true });
-    // 旧位置の列挙 + 基準は取得ビュー時点で保存済み → stale 配布の evidence 拒否
+    // An enumeration at the old position + baseline already stored at the
+    // fetch view → stale-distribution evidence rejection
     const staleStored = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: ENV_ID,
@@ -646,9 +658,10 @@ describe("良性競合の分類(取得ビュー後の基準前進は evidence �
   });
 });
 
-describe("cross-layer: 規則 2 は床の規則 (a) を代替しない(裁定 W)", () => {
-  it("checkpoint 基準以上・床未満の値配布は床が拒否する", async () => {
-    // フェーズ 1: va v3(基準 v2 より前進・epoch 2)で床を確立する
+describe("cross-layer: rule 2 does not substitute for floor rule (a) (ruling W)", () => {
+  it("the floor rejects a value distribution at/above the checkpoint baseline but below the floor", async () => {
+    // Phase 1: establish the floor with va v3 (advanced past baseline v2,
+    // epoch 2)
     const v3 = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -672,15 +685,16 @@ describe("cross-layer: 規則 2 は床の規則 (a) を代替しない(裁定 W)
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: checkpoint 時点の va v2 へ巻き戻す。規則 2(v2 = スナップ
-    // ショットと同版・同ハッシュ)は通るが、床の規則 (a)(v3 未満)が落とす
+    // Phase 2: roll back to checkpoint-time va v2. Rule 2 passes (v2 = same
+    // version and hash as the snapshot), but floor rule (a) drops it (below
+    // v3)
     await startPhase(env, [chainHandler(chain), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("value-version rollback");
   });
 });
 
-describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", () => {
+describe("the lease path (§14-2 — reaching the same implementation and the baseline-less warning)", () => {
   async function verifiedOf(built: BuiltChain) {
     return Effect.runPromise(
       verifyChainSnapshot({
@@ -697,7 +711,8 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
   function leaseWire(overrides: PullOverrides = {}): LeaseWire {
     const served =
       overrides.checkpointSnapshot === undefined ? snapshot : overrides.checkpointSnapshot;
-    // テストの Wire* 構造型は api-schema の配布型と構造一致(support/crypto.ts)
+    // The test's Wire* structural types match the api-schema distribution
+    // types structurally (support/crypto.ts)
     return {
       statement: envStatement,
       variables: overrides.variables ?? [
@@ -727,7 +742,7 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
     expect(JSON.stringify(exit)).toContain(fragment);
   }
 
-  it("基準あり + 列挙なしの lease 応答を拒否する(pull と同一規則)", async () => {
+  it("rejects a lease response with a baseline and no enumeration (same rule as pull)", async () => {
     await expectLeaseRejected(
       chain,
       { checkpointSnapshot: null },
@@ -735,7 +750,7 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
     );
   });
 
-  it("同梱チェーンより先の checkpoint を主張する列挙は自己矛盾として即時拒否する(再同期しない)", async () => {
+  it("immediately rejects as self-contradictory an enumeration claiming a checkpoint beyond the bundled chain (no resync)", async () => {
     await expectLeaseRejected(
       baseChain,
       { manifest: manifestMain },
@@ -743,7 +758,7 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
     );
   });
 
-  it("基準を持たない環境の値付き lease 応答は受理しつつ警告する(§6.3 SHOULD)", async () => {
+  it("accepts but warns on a valued lease response for a baseline-less environment (§6.3 SHOULD)", async () => {
     const verified = await verifiedOf(baseChain);
     const result = await Effect.runPromise(
       verifyLeaseDistribution({
@@ -756,7 +771,7 @@ describe("lease 経路(§14-2 — 同一実装の到達と基準なし警告)", 
     expect(result.warnings.join("\n")).toContain("No checkpoint on the verified chain covers");
   });
 
-  it("基準ありで列挙が一致する lease 応答は警告なしで受理する", async () => {
+  it("accepts a lease response with a baseline and matching enumeration without warning", async () => {
     const verified = await verifiedOf(chain);
     const result = await Effect.runPromise(
       verifyLeaseDistribution({

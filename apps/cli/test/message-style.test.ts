@@ -1,16 +1,20 @@
-// ユーザーに見える文言の規約を機械検査にする(DP5 追補 E — 用語集を「守る」から
-// 「壊れたら落ちる」へ)。対象は apps/cli/src の cliError / usageError /
-// evidenceError / io.log / io.logError / logNote / logWarning に直接渡された
-// 文字列リテラル(テンプレートリテラルを含む)。
+// Turns the user-visible wording conventions into a mechanical check (DP5
+// supplement E — from "keeping" the glossary to "failing when it's
+// broken"). In scope: string literals (including template literals) passed
+// directly to cliError / usageError / evidenceError / io.log / io.logError
+// / logNote / logWarning in apps/cli/src.
 //
-// 加えて、SCREAMING_SNAKE_CASE の定数へ代入された文字列リテラル(名前付き
-// 定数に切り出された文面 — `cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)` の形)も
-// 同じ規約に掛ける。整形関数の中で組み立てる文面までは追わない(割り切り)。
+// Additionally, string literals assigned to SCREAMING_SNAKE_CASE constants
+// (wording factored out into a named constant — the
+// `cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)` shape) are subject to the same
+// conventions. Wording assembled inside formatting functions is not
+// followed (a deliberate cutoff).
 //
-// 規約(裁定録 E):
-//   1. 末尾ピリオド無し(複文は文中のピリオドで区切り、最後には付けない)
-//   2. コマンド名(`maruhi <command>`)は常にバッククォートで囲む
-//   3. Markdown の強調(`**`)を端末に出さない
+// Conventions (ruling record E):
+//   1. No trailing period (compound sentences separate with an in-text
+//      period but end without one)
+//   2. Command names (`maruhi <command>`) are always wrapped in backquotes
+//   3. Markdown emphasis (`**`) is never shown on the terminal
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,23 +25,25 @@ import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/effect-cli.ts";
 
 const SRC_DIR = join(import.meta.dirname, "..", "src");
 
-// トップレベルのコマンド名は宣言(COMMAND_SPECS)から導く — 手書きの写しを持つと、
-// コマンドを足したときに規約 (2) がその名前を黙って見逃す
+// Top-level command names are derived from the declaration
+// (COMMAND_SPECS) — a handwritten copy would let convention (2) silently
+// miss a name when a command is added
 const COMMANDS = Object.keys(COMMAND_SPECS)
   .filter((key) => key !== ROOT_SPEC_KEY && !key.includes(" "))
   .join("|");
 
-/** 文言を運ぶ呼び出しの直後の文字列リテラル(エスケープ付きの引用符を跨がない)。 */
+/** The string literal right after a wording-carrying call (does not span escaped quotes). */
 const MESSAGE_CALL =
   /(cliError|usageError|evidenceError|io\.log|io\.logError|logNote|logWarning)\(\s*(["`])((?:\\.|(?!\2).)*)\2/gs;
 
-/** 名前付き定数(SCREAMING_SNAKE_CASE)へ代入された文字列リテラル。 */
+/** A string literal assigned to a named constant (SCREAMING_SNAKE_CASE). */
 const MESSAGE_CONST =
   /(?:const|let)\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*(["`])((?:\\.|(?!\2).)*)\2/gs;
 
 /**
- * ファイルへ書く本文(スナップショットのヘッダー・エクスポートのコメント行)は
- * 端末の 1 行ではなく文書なので、文末のピリオドは正当 — 名前の接尾辞で除く。
+ * A body written to a file (a snapshot's header, an export's comment line)
+ * is a document rather than a terminal line, so a sentence-final period is
+ * legitimate — excluded via a name suffix.
  */
 const FILE_CONTENT_SUFFIX = /_(?:HEADER|COMMENT)$/;
 
@@ -71,14 +77,14 @@ async function collectMessages(): Promise<Hit[]> {
 
 const label = (hit: Hit) => `${hit.file}:${hit.line}: ${hit.text.slice(0, 80)}`;
 
-describe("ユーザーに見える文言の規約(apps/cli/src)", () => {
-  it("十分な数の文言を拾っている(検査が空回りしていない)", async () => {
+describe("user-visible wording conventions (apps/cli/src)", () => {
+  it("collects a sufficient number of messages (the check isn't idling)", async () => {
     const hits = await collectMessages();
     expect(hits.filter((hit) => hit.kind === "call").length).toBeGreaterThan(300);
     expect(hits.filter((hit) => hit.kind === "const").length).toBeGreaterThan(20);
   });
 
-  it("1. 末尾にピリオドを付けない", async () => {
+  it("1. no trailing period", async () => {
     const offenders = (await collectMessages()).filter((hit) => {
       const trimmed = hit.text.trimEnd();
       return trimmed.endsWith(".") && !trimmed.endsWith("...");
@@ -86,15 +92,16 @@ describe("ユーザーに見える文言の規約(apps/cli/src)", () => {
     expect(offenders.map(label)).toEqual([]);
   });
 
-  it("2. コマンド名はバッククォートで囲む", async () => {
-    // 直前が バッククォート・英数字・`/` `-` `.`・エスケープの `\\` のどれでもない
-    // `maruhi <command>` = 素のまま prose に置かれたコマンド名
+  it("2. command names are wrapped in backquotes", async () => {
+    // `maruhi <command>` not preceded by a backquote, alphanumeric,
+    // `/` `-` `.`, or the escape `\\` = a bare command name placed in
+    // prose
     const bare = new RegExp(String.raw`(?<![\`\w/\-.\\])maruhi (?:${COMMANDS})\b`);
     const offenders = (await collectMessages()).filter((hit) => bare.test(hit.text));
     expect(offenders.map(label)).toEqual([]);
   });
 
-  it("3. Markdown の強調を端末に出さない", async () => {
+  it("3. no Markdown emphasis is emitted to the terminal", async () => {
     const offenders = (await collectMessages()).filter((hit) => hit.text.includes("**"));
     expect(offenders.map(label)).toEqual([]);
   });

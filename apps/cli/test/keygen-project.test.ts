@@ -1,4 +1,4 @@
-// key generate / show と project init(genesis)/ verify のテスト。
+// Tests for key generate / show and project init (genesis) / verify.
 
 import { computeChainEntryHash, verifyChain, type ChainEntry } from "@maruhi/crypto";
 import { Redacted } from "effect";
@@ -33,7 +33,7 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   return env;
 }
 
-/** リカバリー登録状態の応答(key show / generate の後段が呼ぶ)。 */
+/** The recovery-registration status response (called by the tail of key show / generate). */
 function recoveryStatusHandler(registered: boolean): MockHandler {
   return onRequest("GET", "/auth/recovery/status", () => ({
     status: 200,
@@ -41,14 +41,15 @@ function recoveryStatusHandler(registered: boolean): MockHandler {
   }));
 }
 
-/** リカバリーラップ登録の受理(generate / recovery の PUT)。 */
+/** Accepts the recovery-wrap registration (the PUT of generate / recovery). */
 function recoveryPutHandler(): MockHandler {
   return onRequest("PUT", "/auth/recovery", () => ({ status: 204 }));
 }
 
 /**
- * リカバリーコード行(4 文字 × 13 グループ)を stderr 出力から取り出す。
- * コードは鍵素材なので stdout(リダイレクトされうる)には出ない。
+ * Extracts the recovery-code line (4 chars × 13 groups) from the stderr
+ * output. Being key material, the code never goes to stdout (which can be
+ * redirected).
  */
 function displayedRecoveryCode(env: TestEnv): string {
   const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
@@ -58,7 +59,7 @@ function displayedRecoveryCode(env: TestEnv): string {
   return line.trim();
 }
 
-/** 保存確認プロンプトへの正答(コードの最終グループ)を遅延評価でキューする。 */
+/** Lazily queues the correct answer (the code's final group) to the save-confirmation prompt. */
 function queueSaveConfirmation(env: TestEnv): void {
   env.setPromptResponses([
     () => {
@@ -69,7 +70,7 @@ function queueSaveConfirmation(env: TestEnv): void {
 }
 
 describe("maruhi key", () => {
-  it("generate は鍵をキーチェーンに保存し、FP を表示する(秘密鍵は表示しない)", async () => {
+  it("generate stores the key in the keychain and displays the FP (never the secret key)", async () => {
     const maruhi = await start([recoveryStatusHandler(false), recoveryPutHandler()]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
     queueSaveConfirmation(env);
@@ -80,20 +81,22 @@ describe("maruhi key", () => {
     expect(record).not.toBeNull();
     if (record === null) throw new Error("expected a parsed master-key record");
     expect(record.suite).toBe("maruhi/v1");
-    // 秘密側は Redacted。生値の検査(長さ・出力への非混入)は剥がして行う
+    // The secret side is a Redacted. Inspecting the raw value (length, no
+    // leakage into output) unwraps it first
     const encSkHex = Redacted.value(record.encSkHex);
     const sigSkSeedHex = Redacted.value(record.sigSkSeedHex);
     expect(encSkHex).toHaveLength(64);
-    // 伏字が保存されていない = 鍵を復元できるレコードが書かれている
+    // No redaction was stored = a record capable of restoring the key was
+    // written
     expect(stored).toContain(encSkHex);
-    // 出力に秘密鍵素材が漏れない
+    // No secret-key material leaks into the output
     const output = env.logs.join("\n");
     expect(output).toContain("key fingerprint:");
     expect(output).not.toContain(encSkHex);
     expect(output).not.toContain(sigSkSeedHex);
   });
 
-  it("既存鍵の上書きを拒否する", async () => {
+  it("refuses to overwrite an existing key", async () => {
     const maruhi = await start([recoveryStatusHandler(false), recoveryPutHandler()]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
     queueSaveConfirmation(env);
@@ -102,7 +105,7 @@ describe("maruhi key", () => {
     expect(env.errors.join("\n")).toContain("already exists");
   });
 
-  it("未知スイートの master 鍵レコードを拒否する", async () => {
+  it("rejects a master-key record of an unknown suite", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
@@ -118,16 +121,19 @@ describe("maruhi key", () => {
     );
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const message = env.errors.join("\n");
-    // 原因(どのスイートか)は名指しする
+    // It names the cause (which suite)
     expect(message).toContain("maruhi/v2");
-    // 破損と違い**消してはいけない**: 将来版が書いた鍵を消させると恒久喪失に
-    // なる。上書き防止ガード(ensureNoStoredMasterKey)側と同じ案内を出す
+    // Unlike corruption, it must **not** be deleted: letting a user delete
+    // a key a future version wrote means permanent loss. Show the same
+    // guidance as the overwrite-prevention guard
+    // (ensureNoStoredMasterKey)
     expect(message).toContain("keep this record");
-    // 逃げ道は**可逆**な形(値を控えてから消す)でのみ示す
+    // The escape hatch is shown only in its **reversible** form (copy the
+    // value down before deleting)
     expect(message).toContain("Copy down the value first");
   });
 
-  it("show は公開鍵と FP のみ表示し、リカバリー登録状態を出す", async () => {
+  it("show displays only the public key and FP, plus the recovery registration status", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
@@ -141,9 +147,10 @@ describe("maruhi key", () => {
     expect(output).not.toContain(user.sigSkSeedHex);
   });
 
-  it("show はリカバリー状態を取得できなくても失敗しない(オフラインで使える)", async () => {
+  it("show does not fail when the recovery status can't be fetched (usable offline)", async () => {
     const user = await makeTestUser("user-0001");
-    // recovery/status ハンドラなし = サーバー側が応答しない状況
+    // No recovery/status handler = the situation where the server does
+    // not respond
     const maruhi = await start([]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -153,7 +160,7 @@ describe("maruhi key", () => {
     expect(env.errors.join("\n")).toContain("recovery registration status could not be checked");
   });
 
-  it("show はリカバリー未登録なら発行を促す(保管リマインダ)", async () => {
+  it("show nudges issuance when recovery is unregistered (the safekeeping reminder)", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([recoveryStatusHandler(false)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
@@ -163,7 +170,7 @@ describe("maruhi key", () => {
     expect(env.errors.join("\n")).toContain("create one with `maruhi key recovery`");
   });
 
-  it("show は制御文字を含む userId をサニタイズする", async () => {
+  it("show sanitizes a userId containing control characters", async () => {
     const user = await makeTestUser("user\u001b[31m-0001");
     const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
@@ -185,7 +192,7 @@ function meHandler(userId: string, orgs: readonly { orgId: string; slug: string 
   }));
 }
 
-/** genesis を受理し、実サーバーと同じく entry ハッシュを ID として返す。 */
+/** Accepts genesis and returns the entry hash as the ID, like the real server. */
 function initHandler(record: (body: { orgId: string; entry: ChainEntry }) => void): MockHandler {
   return async (request) => {
     if (request.method !== "POST" || request.path !== "/projects") {
@@ -199,7 +206,7 @@ function initHandler(record: (body: { orgId: string; entry: ChainEntry }) => voi
 }
 
 describe("maruhi project init", () => {
-  it("genesis を署名して送信し、予見したプロジェクト ID と応答を突合する", async () => {
+  it("signs and sends genesis, then cross-checks the response against the foreseen project ID", async () => {
     const user = await makeTestUser("user-0001");
     let submitted: { orgId: string; entry: ChainEntry } | null = null;
     const maruhi = await start([
@@ -213,8 +220,8 @@ describe("maruhi project init", () => {
     seedSession(env, maruhi.origin, user);
 
     expect(await runCli(["project", "init"], env.layer)).toBe(0);
-    // パーソナル org が自動選択され(表示層で org を出さない — §9-1)、
-    // 送信された genesis はそれ自体で検証可能
+    // The personal org is auto-selected (the display layer doesn't show
+    // org — §9-1), and the submitted genesis is verifiable on its own
     const body = submitted as { orgId: string; entry: ChainEntry } | null;
     expect(body?.orgId).toBe("org_personal");
     const verified = await verifyChain([body?.entry as ChainEntry]);
@@ -223,7 +230,7 @@ describe("maruhi project init", () => {
     expect(env.logs.join("\n")).toContain(`Created project ${hash}`);
   });
 
-  it("サーバーが genesis hashと異なる ID を返したら失敗する", async () => {
+  it("fails when the server returns an ID differing from the genesis hash", async () => {
     const user = await makeTestUser("user-0001");
     const bogus = "ab".repeat(32);
     const maruhi = await start([
@@ -240,7 +247,7 @@ describe("maruhi project init", () => {
     expect(env.errors.join("\n")).toContain("does not match the genesis hash");
   });
 
-  it("org が空の場合は状態異常として正確に報告する(「複数所属」と言わない)", async () => {
+  it("reports an empty org precisely as a state anomaly (never says 'multiple memberships')", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([meHandler(user.userId, [])]);
     const env = await makeTestEnv();
@@ -252,7 +259,7 @@ describe("maruhi project init", () => {
     expect(errors).not.toContain("multiple orgs");
   });
 
-  it("複数 org は --org 必須。slug 指定で作成できる", async () => {
+  it("multiple orgs require --org. A slug can create it", async () => {
     const user = await makeTestUser("user-0001");
     let submittedOrgId = "";
     const maruhi = await start([
@@ -277,7 +284,7 @@ describe("maruhi project init", () => {
 });
 
 describe("maruhi project verify", () => {
-  it("チェーンを検証してメンバーとエポックを表示する", async () => {
+  it("verifies the chain and displays members and epochs", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const member = await makeTestUser("user-member-2222");
     const built = await buildChain([

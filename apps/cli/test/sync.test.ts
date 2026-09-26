@@ -1,5 +1,6 @@
-// クライアント同期検査(§6.3)のテスト: verifyChain 委譲・genesis hash =
-// プロジェクト ID 検証・ヘッド整合・鍵履歴索引(削除済みメンバー含む)。
+// Tests for the client-side sync check (§6.3): verifyChain delegation,
+// genesis-hash = project-ID verification, head consistency, and the key
+// history index (including removed members).
 
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -69,7 +70,7 @@ function failureMessage(exit: Awaited<ReturnType<typeof runSync>>): string {
 }
 
 describe("syncProject (§6.3)", () => {
-  it("有効なチェーンを検証し、削除済みメンバーの鍵も履歴索引に残す", async () => {
+  it("verifies a valid chain and keeps removed members' keys in the history index", async () => {
     const dek1 = crypto.getRandomValues(new Uint8Array(32));
     const dek2 = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -90,24 +91,25 @@ describe("syncProject (§6.3)", () => {
       return;
     }
     const verified = exit.value;
-    // 現メンバーは owner のみ(member は削除済み)
+    // The only live member is owner (member is removed)
     expect([...verified.state.members.keys()]).toEqual([owner.userId]);
-    // 環境集合はチェーン導出(§6.2): 現エポック・作成 seq・エポック開始 seq・
-    // エポックごとのコミットメントまで導出される
+    // The environment set is chain-derived (§6.2): current epoch,
+    // creation seq, epoch-start seq, and per-epoch commitments
     const prod = verified.state.environments.get("prod");
     expect(prod?.currentEpoch).toBe(2);
     expect(prod?.createdAtSeq).toBe(3);
     expect(prod?.epochStartSeqs.get(1)).toBe(3);
     expect(prod?.epochStartSeqs.get(2)).toBe(4);
     expect(prod?.dekCommitments.get(2)).toMatch(/^[0-9a-f]{64}$/);
-    // §5.1 の鍵履歴: 削除済みメンバーの当時の鍵が引ける(append-only)
+    // The §5.1 key history: a removed member's key-at-the-time resolves
+    // (append-only)
     const bindings = verified.keyHistory.get(member.userId);
     expect(bindings).toHaveLength(1);
     expect(bindings?.[0]?.sigPubHex).toBe(member.sigPubHex);
     expect(bindings?.[0]?.keyFingerprintHex).toBe(member.fingerprintHex);
   });
 
-  it("署名改竄チェーンを拒否する(verifyChain 委譲)", async () => {
+  it("rejects a signature-forged chain (verifyChain delegation)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
@@ -133,10 +135,11 @@ describe("syncProject (§6.3)", () => {
     expect(failureMessage(exit)).toContain("Chain verification failed");
   });
 
-  it("genesis hashがプロジェクト ID と一致しない差し替えを拒否する(§6.4)", async () => {
+  it("rejects a substitution whose genesis hash doesn't match the project ID (§6.4)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // 有効だが「別プロジェクト」(member が作成者の genesis)のチェーンを、
-    // 要求したプロジェクト ID で配布する = サーバーによる差し替え
+    // Serving a valid but different project's chain (member is the
+    // creator's genesis) under the requested project ID = a server-side
+    // substitution
     const other = await buildChain([{ actor: member, operation: genesisOp(member) }]);
     expect(other.projectId).not.toBe(built.projectId);
     const server = await startServer([
@@ -149,7 +152,7 @@ describe("syncProject (§6.3)", () => {
     expect(failureMessage(exit)).toContain("genesis hash");
   });
 
-  it("サーバー申告ヘッドと導出ヘッドの不一致を拒否する", async () => {
+  it("rejects a disagreement between the server's declared head and the derived head", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
@@ -170,7 +173,7 @@ describe("syncProject (§6.3)", () => {
     expect(failureMessage(exit)).toContain("chain head");
   });
 
-  it("seq は正しいがハッシュだけ虚偽の申告ヘッドも拒否する", async () => {
+  it("also rejects a declared head whose seq is right but whose hash is false", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },

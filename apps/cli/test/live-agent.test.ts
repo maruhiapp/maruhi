@@ -1,8 +1,10 @@
-// `maruhi agent` の本番経路(live.ts の runAgentSession — Bun.spawn とシグナル
-// の据え置き、agent.ts の後始末)を実プロセスで固定する。vitest は Node で
-// 走るため、`bun` で bin.ts を起動して外から観測する(live-exec.test.ts と同じ
-// 手口)。対話的なシグナル配送は検査しない — 検査するのは「子が終われば agent も
-// 終わり、終了コードを引き継ぎ、ソケットのディレクトリが消える」こと。
+// Pins `maruhi agent`'s production path (live.ts's runAgentSession —
+// Bun.spawn and signal passthrough, plus agent.ts's teardown) with a real
+// process. Since vitest runs under Node, `bun` launches bin.ts and we
+// observe from outside (same trick as live-exec.test.ts). Interactive
+// signal delivery is not checked — what is checked is "when the child
+// exits, agent exits too, inherits the exit code, and the socket's
+// directory is gone".
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -30,11 +32,12 @@ function scratchDir(prefix: string): string {
   return dir;
 }
 
-describeUnix("maruhi agent(live — 実プロセス)", () => {
-  it("子の間だけ agent が聞き、終了コードを引き継ぎ、ソケットのディレクトリを消す", () => {
+describeUnix("maruhi agent (live — a real process)", () => {
+  it("agent listens only while the child lives, inherits its exit code, and removes the socket directory", () => {
     const configDir = scratchDir("maruhi-agent-live-cfg-");
     const runtimeDir = scratchDir("maruhi-agent-live-run-");
-    // 子: ソケットのパスを stdout に出し、セッションの中から status を取り、7 で終わる
+    // Child: prints the socket path to stdout, fetches status from inside
+    // the session, exits with 7
     const script = [
       'printf "sock=%s\\n" "$MARUHI_AGENT_SOCK"',
       `bun "${BIN}" agent status`,
@@ -54,11 +57,11 @@ describeUnix("maruhi agent(live — 実プロセス)", () => {
     const socketPath = /^sock=(.+)$/m.exec(result.stdout)?.[1] ?? "";
     expect(socketPath.startsWith(`${runtimeDir}/maruhi-agent-`)).toBe(true);
     expect(socketPath.endsWith("/agent.sock")).toBe(true);
-    // セッションの中の status は agent に届いている(まだ何も持っていない)
+    // status from inside the session reaches agent (it holds nothing yet)
     expect(result.stdout).toContain(`socket:      ${socketPath}`);
     expect(result.stdout).toContain("holding:     nothing yet");
     expect(result.stderr).toContain("Agent session started");
-    // 子が終わればソケットもディレクトリも残らない
+    // Once the child exits, neither socket nor directory remains
     expect(existsSync(socketPath)).toBe(false);
     expect(existsSync(join(socketPath, ".."))).toBe(false);
   });

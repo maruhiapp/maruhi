@@ -1,14 +1,19 @@
-// `maruhi agent`(KL2 — セッション内メモリ鍵保持)のテスト。
+// Tests for `maruhi agent` (KL2 — in-session memory key holding).
 //
-// - プロトコル(改行区切り JSON)の解釈と拒否(版違い・壊れた要求)
-// - サーバーとクライアント(Keychain 実装)を実 unix ソケットで往復する
-//   (node:net — vitest の Node でも本番の Bun でも同じ経路)
-// - 権限: ディレクトリ 0700・ソケット 0600。終了後にソケットが消える
-// - `maruhi agent -- <cmd>`: 子に MARUHI_AGENT_SOCK が渡り、その間だけ agent が
-//   聞いている。子の終了コードを引き継ぐ。入れ子は拒否。`--` 無しは usage
-// - 復元経路の配線: `key recover` の着地先が agent のメモリになり、成功文言が
-//   保存先を正しく言う(recovery.test.ts の復元ケースを agent 側で再現)
-// - `maruhi run` の子には MARUHI_AGENT_SOCK が渡らない(既存規則の帰結)
+// - Protocol (newline-delimited JSON) parsing and rejection (version mismatch,
+//   malformed requests)
+// - Server and client (the Keychain implementation) round-trip over a real
+//   unix socket (node:net — the same path under vitest's Node and production
+//   Bun)
+// - Permissions: directory 0700, socket 0600; the socket disappears after exit
+// - `maruhi agent -- <cmd>`: the child gets MARUHI_AGENT_SOCK and the agent
+//   listens only while it lives; the child's exit code is inherited. Nesting
+//   is refused; no `--` is a usage error
+// - Restore-path wiring: `key recover` lands in the agent's memory and the
+//   success message names the right destination (reproduces recovery.test.ts's
+//   restore case on the agent side)
+// - A `maruhi run` child does NOT get MARUHI_AGENT_SOCK (corollary of the
+//   existing rule)
 
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
@@ -43,8 +48,9 @@ import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-// unix ドメインソケットは Windows では別物(名前付きパイプ)。本体も win32 を
-// 明示エラーにしているので、ソケット経路のテストはそこでは走らせない
+// Unix domain sockets are a different thing on Windows (named pipes). The
+// implementation already makes win32 an explicit error, so the socket-path
+// tests don't run there
 const describeSocket = platform() === "win32" ? describe.skip : describe;
 
 let cleanups: (() => Promise<void>)[] = [];
@@ -71,8 +77,8 @@ async function exists(path: string): Promise<boolean> {
   );
 }
 
-describe("agent プロトコル(改行区切り JSON)", () => {
-  it("要求の解釈: get / set / remove を版と形で受け付け、それ以外は null", () => {
+describe("agent protocol (newline-delimited JSON)", () => {
+  it("request parsing: accepts get / set / remove by version and shape; anything else is null", () => {
     expect(parseAgentRequest('{"v":1,"op":"get","name":"token::x"}')).toEqual({
       v: 1,
       op: "get",
@@ -89,21 +95,21 @@ describe("agent プロトコル(改行区切り JSON)", () => {
       op: "remove",
       name: "a",
     });
-    // 版違いは黙って解釈しない
+    // Version mismatches are not silently parsed
     expect(parseAgentRequest('{"v":2,"op":"get","name":"a"}')).toBeNull();
     expect(parseAgentRequest('{"op":"get","name":"a"}')).toBeNull();
-    // set に value が無い / 名前が空 / 未知の op / JSON でない / 配列
+    // set without value / empty name / unknown op / not JSON / an array
     expect(parseAgentRequest('{"v":1,"op":"set","name":"a"}')).toBeNull();
     expect(parseAgentRequest('{"v":1,"op":"get","name":""}')).toBeNull();
     expect(parseAgentRequest('{"v":1,"op":"dump","name":"a"}')).toBeNull();
     expect(parseAgentRequest("not json")).toBeNull();
     expect(parseAgentRequest("[1]")).toBeNull();
-    // list は名前を取らない(status 用)
+    // list takes no name (for status)
     expect(parseAgentRequest('{"v":1,"op":"list"}')).toEqual({ v: 1, op: "list" });
     expect(parseAgentRequest('{"v":2,"op":"list"}')).toBeNull();
   });
 
-  it("応答の解釈: ok/value と ok:false/error だけを受け付ける", () => {
+  it("response parsing: accepts only ok/value and ok:false/error", () => {
     expect(parseAgentResponse('{"ok":true,"value":"x"}')).toEqual({ ok: true, value: "x" });
     expect(parseAgentResponse('{"ok":true,"value":null}')).toEqual({ ok: true, value: null });
     expect(parseAgentResponse('{"ok":false,"error":"nope"}')).toEqual({
@@ -120,13 +126,13 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     expect(parseAgentResponse("{")).toBeNull();
   });
 
-  it("ワイヤ形は 1 行 1 メッセージ(末尾に改行)", () => {
+  it("the wire form is one message per line (trailing newline)", () => {
     expect(encodeAgentRequest({ v: 1, op: "get", name: "a" })).toBe(
       '{"v":1,"op":"get","name":"a"}\n',
     );
   });
 
-  it("保持の意味論: 無ければ null、set の後は読め、remove の後は消える", () => {
+  it("storage semantics: absent reads null, set then reads back, remove then is gone", () => {
     const store = new Map<string, string>();
     expect(handleAgentRequest(store, { v: 1, op: "get", name: "a" })).toEqual({
       ok: true,
@@ -150,7 +156,7 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     });
   });
 
-  it("list は名前だけを返す(値は運ばない)", () => {
+  it("list returns only names (values are not carried)", () => {
     const store = new Map<string, string>([
       ["token::https://a", "secret-1"],
       ["master::https://a::u1", "secret-2"],
@@ -160,7 +166,7 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     expect(JSON.stringify(listed)).not.toContain("secret");
   });
 
-  it("--key-ttl: master 鍵エントリだけを期限で忘れ、トークンは残す(set で期限が延びる)", () => {
+  it("--key-ttl: forgets only master-key entries on expiry, keeps tokens (set extends the deadline)", () => {
     let clock = 1_000;
     const store = makeAgentStore({ keyTtlMs: 100, now: () => clock });
     const token = tokenEntryName("https://a");
@@ -169,18 +175,19 @@ describe("agent プロトコル(改行区切り JSON)", () => {
     store.apply({ v: 1, op: "set", name: master, value: "m" });
     clock = 1_099;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m" });
-    // 取り直し(set)は新しい期限を持つ
+    // Re-setting (set) carries a fresh deadline
     store.apply({ v: 1, op: "set", name: master, value: "m2" });
     clock = 1_150;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m2" });
     clock = 1_198;
     expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token, master] });
-    // 期限到来(1099 + 100): 鍵は消え、トークンは残る(status の一覧からも消える)
+    // Deadline reached (1099 + 100): the key is gone, the token remains (gone
+    // from status's list too)
     clock = 1_199;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: null });
     expect(store.apply({ v: 1, op: "get", name: token })).toEqual({ ok: true, value: "t" });
     expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token] });
-    // TTL 無しなら期限は付かない
+    // Without a TTL no deadline is attached
     const forever = makeAgentStore({ now: () => clock });
     forever.apply({ v: 1, op: "set", name: master, value: "m" });
     clock = Number.MAX_SAFE_INTEGER;
@@ -188,8 +195,8 @@ describe("agent プロトコル(改行区切り JSON)", () => {
   });
 });
 
-describeSocket("agent サーバーとクライアント(実 unix ソケット)", () => {
-  it("Keychain 実装として get / set / remove が往復し、ソケットは 0600", async () => {
+describeSocket("agent server and client (real unix socket)", () => {
+  it("round-trips get / set / remove as a Keychain implementation; the socket is 0600", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
@@ -202,13 +209,13 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
     expect(await Effect.runPromise(keychain.get("token::x"))).toBeNull();
     await Effect.runPromise(keychain.set("token::x", '{"token":"maruhi_pat_a"}'));
     expect(await Effect.runPromise(keychain.get("token::x"))).toBe('{"token":"maruhi_pat_a"}');
-    // 別のエントリは独立
+    // Other entries are independent
     expect(await Effect.runPromise(keychain.get("master::x::u"))).toBeNull();
     await Effect.runPromise(keychain.remove("token::x"));
     expect(await Effect.runPromise(keychain.get("token::x"))).toBeNull();
   });
 
-  it("壊れた要求・版違いは ok:false で拒み、接続は閉じる(黙って解釈しない)", async () => {
+  it("rejects malformed requests and version mismatches with ok:false and closes the connection (no silent parsing)", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
@@ -233,7 +240,7 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
       ok: false,
       error: "malformed request (protocol version mismatch?)",
     });
-    // 分割到着でも 1 行が揃えば応答する
+    // Responds once a full line has arrived even if it arrives split
     const { createConnection: connect } = await import("node:net");
     const split = await new Promise<string>((resolve, reject) => {
       const socket = connect(server.socketPath);
@@ -252,7 +259,7 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
     expect(parseAgentResponse(split.trim())).toEqual({ ok: true, value: null });
   });
 
-  it("close で保持内容を捨て、ソケットは聞かなくなる(クライアントは終了を名指しする)", async () => {
+  it("close drops the held contents and the socket stops listening (the client names the session as ended)", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     const keychain = makeAgentKeychain(server.socketPath);
@@ -265,17 +272,18 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
     expect(message).toContain("maruhi agent -- <shell>");
   });
 
-  it("要求を送らずに繋いだままの相手がいても close は待たされない(後始末が走る)", async () => {
+  it("close is not held up by a peer that stays connected without sending a request (cleanup runs)", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     const { createConnection } = await import("node:net");
-    // 1 行を送らずに黙る相手(壊れた・敵対的なクライアント)
+    // A peer that stays silent without sending a line (broken / hostile client)
     const idle = createConnection(server.socketPath);
     await new Promise<void>((resolve) => idle.once("connect", () => resolve()));
     const clientClosed = new Promise<void>((resolve) => idle.once("close", () => resolve()));
     const started = Date.now();
-    // server.close は全接続の自然終了を待つだけなので、切らないと戻らない
-    // (5 秒の idle timeout より前に、close 自身が切ることを確かめる)
+    // server.close only waits for every connection to end naturally, so it
+    // doesn't return unless they are cut (verify close itself cuts them, ahead
+    // of the 5-second idle timeout)
     await server.close();
     await Promise.race([
       clientClosed,
@@ -286,7 +294,7 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
-  it("ソケットの無いパスは同じ終了メッセージ(古い MARUHI_AGENT_SOCK)", async () => {
+  it("a path with no socket gives the same ended message (stale MARUHI_AGENT_SOCK)", async () => {
     const dir = await privateDir();
     const keychain = makeAgentKeychain(join(dir, "gone.sock"));
     const exit = await Effect.runPromiseExit(keychain.get("token::x"));
@@ -295,13 +303,14 @@ describeSocket("agent サーバーとクライアント(実 unix ソケット)",
 });
 
 describeSocket("maruhi agent -- <command>", () => {
-  it("子に MARUHI_AGENT_SOCK を渡し、子が生きている間だけ agent が聞き、終了コードを引き継ぐ", async () => {
+  it("passes MARUHI_AGENT_SOCK to the child, the agent listens only while the child lives, and the exit code is inherited", async () => {
     const env = await makeTestEnv();
     let socketPath = "";
     let seenInside: string | null = null;
     env.setSessionHandler(async (call) => {
       socketPath = call.env[AGENT_SOCKET_ENV] ?? "";
-      // 子の立場で agent へ接続する(本番では子の maruhi が live.ts でこの経路を選ぶ)
+      // Connect to the agent as the child would (in production the child's
+      // maruhi chooses this path in live.ts)
       const inside = makeAgentKeychain(socketPath);
       await Effect.runPromise(inside.set("token::https://maruhi.test", "record"));
       seenInside = await Effect.runPromise(inside.get("token::https://maruhi.test"));
@@ -314,21 +323,24 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.sessionCalls[0]?.command).toEqual(["bash", "-l"]);
     expect(socketPath.endsWith("/agent.sock")).toBe(true);
     expect(seenInside).toBe("record");
-    // 子が終わればソケットもディレクトリも消え、メモリの記録は届かない
+    // Once the child exits, the socket and directory are gone and the memory
+    // record is unreachable
     expect(await exists(socketPath)).toBe(false);
     expect(await exists(join(socketPath, ".."))).toBe(false);
     const after = await Effect.runPromiseExit(
       makeAgentKeychain(socketPath).get("token::https://maruhi.test"),
     );
     expect(Exit.isFailure(after)).toBe(true);
-    // 案内は stderr(子の stdout を汚さない)。鍵素材は出ない
+    // Guidance goes to stderr (doesn't dirty the child's stdout). No key
+    // material is printed
     expect(env.errors.join("\n")).toContain("stay in memory only");
     expect(env.logs).toEqual([]);
-    // agent 自身は環境変数を通してのみ子へ渡す(親の agent は不在)
+    // The agent itself is handed to the child only via the env var (no parent
+    // agent present)
     expect(env.sessionCalls[0]?.env).toEqual({ [AGENT_SOCKET_ENV]: socketPath });
   });
 
-  it("XDG_RUNTIME_DIR があればその下に置く", async () => {
+  it("places the socket under XDG_RUNTIME_DIR when set", async () => {
     const env = await makeTestEnv();
     const runtime = await privateDir();
     env.setEnvVar("XDG_RUNTIME_DIR", runtime);
@@ -341,7 +353,7 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(socketPath.startsWith(`${runtime}/maruhi-agent-`)).toBe(true);
   });
 
-  it("入れ子(MARUHI_AGENT_SOCK が生きている agent を指す)は拒否し、子を起動しない", async () => {
+  it("refuses nesting (MARUHI_AGENT_SOCK pointing at a live agent) and does not spawn the child", async () => {
     const dir = await privateDir();
     const outer = await startAgentServer(dir);
     cleanups.push(() => outer.close());
@@ -352,9 +364,9 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.errors.join("\n")).toContain("Already inside an agent session");
   });
 
-  it("終わったセッションの残骸(MARUHI_AGENT_SOCK が指す先に誰もいない)なら新しく始める", async () => {
-    // 親の agent が先に死んでシェルだけ残った形。「新しく始めろ」と「入れ子は
-    // 拒む」で行き止まりにしない
+  it("starts fresh when the session leftover (MARUHI_AGENT_SOCK pointing nowhere) is stale", async () => {
+    // The shape where the parent agent died first and only the shell remains —
+    // "start a new one" and "refuse nesting" must not deadlock
     const dir = await privateDir();
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, join(dir, "agent.sock"));
@@ -369,39 +381,39 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.errors.join("\n")).toContain("has already ended; starting a new one");
   });
 
-  it("MARUHI_AGENT_SOCK の指す先を疑う: ソケットでない・他人も触れる物には平文を書かない", async () => {
+  it("distrusts what MARUHI_AGENT_SOCK points at: no plaintext to a non-socket or a world-accessible one", async () => {
     const { writeFile } = await import("node:fs/promises");
     const { chmod } = await import("node:fs/promises");
     const dir = await privateDir();
-    // ただのファイル(誰かが差し込んだ宛先)
+    // A plain file (a destination someone swapped in)
     const file = join(dir, "not-a-socket");
     await writeFile(file, "");
     const asFile = await Effect.runPromiseExit(makeAgentKeychain(file).set("token::x", "v"));
     expect(JSON.stringify(asFile)).toContain("it is not a socket");
-    // 本物のソケットでも、他ユーザーが触れる権限なら使わない
+    // Even a real socket is refused if other users can touch it
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
     await chmod(server.socketPath, 0o666);
     const loose = await Effect.runPromiseExit(makeAgentKeychain(server.socketPath).get("token::x"));
     expect(JSON.stringify(loose)).toContain("other users can access it");
-    // 0600 に戻せば通る(自分の agent が作る形)
+    // Back to 0600 and it passes (the shape your own agent makes)
     await chmod(server.socketPath, 0o600);
     expect(
       await Effect.runPromise(makeAgentKeychain(server.socketPath).get("token::x")),
     ).toBeNull();
   });
 
-  it("`--` の後ろに実行対象が無い形は書き方の誤り(2)", async () => {
+  it("no run target after `--` is a usage error (2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent"], env.layer)).toBe(2);
     expect(await runCli(["agent", "--", ""], env.layer)).toBe(2);
-    // `--` の前に位置引数を置いた形も run と同じ診断
+    // A positional argument before `--` is diagnosed the same as run
     expect(await runCli(["agent", "sh", "--", "bash"], env.layer)).toBe(2);
     expect(env.sessionCalls).toEqual([]);
     expect(env.errors.join("\n")).toContain("after `--`");
   });
 
-  it("--key-ttl は数 + s/m/h だけを受け、案内を stderr に出す(書式違いは 2)", async () => {
+  it("--key-ttl accepts only number + s/m/h and prints guidance to stderr (format error is 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent", "--key-ttl", "90", "--", "bash"], env.layer)).toBe(2);
     expect(await runCli(["agent", "--key-ttl", "0m", "--", "bash"], env.layer)).toBe(2);
@@ -412,19 +424,20 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.sessionCalls).toHaveLength(1);
     const ttlHint = env.errors.join("\n");
     expect(ttlHint).toContain("This device's key is forgotten 2h after it is stored");
-    // 導線(K7-4): 消えた端末鍵は新しい端末として登録し直し、忘れた鍵は失効(復元ではない)
+    // Path forward (K7-4): a vanished device key is re-registered as a new
+    // device, and the forgotten key is revoked (not recovered)
     expect(ttlHint).toContain("`maruhi device add`");
     expect(ttlHint).toContain("`maruhi device revoke`");
     expect(ttlHint).not.toContain("`maruhi key recover`");
   });
 
-  it("`agent -- status` は子コマンドの実行であってサブコマンドではない(`--` を跨がない)", async () => {
+  it("`agent -- status` runs the child command, not a subcommand (does not span `--`)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent", "--", "status"], env.layer)).toBe(0);
     expect(env.sessionCalls[0]?.command).toEqual(["status"]);
   });
 
-  it("`maruhi run` の子には MARUHI_AGENT_SOCK が渡らない(MARUHI_* を渡さない既存規則)", () => {
+  it("a `maruhi run` child does not get MARUHI_AGENT_SOCK (the existing rule that MARUHI_* is not passed)", () => {
     expect(
       buildChildEnvironment({ PATH: "/usr/bin", [AGENT_SOCKET_ENV]: "/run/x/agent.sock" }, {}),
     ).toEqual({ PATH: "/usr/bin" });
@@ -432,7 +445,7 @@ describeSocket("maruhi agent -- <command>", () => {
 });
 
 describeSocket("maruhi agent status", () => {
-  it("セッションの中では保持しているエントリ名を出し、値は出さない", async () => {
+  it("inside a session it lists held entry names and no values", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
@@ -443,7 +456,7 @@ describeSocket("maruhi agent status", () => {
     );
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
-    // origin が `::` を含む(IPv6 loopback)場合も区切りを取り違えない
+    // An origin containing `::` (IPv6 loopback) must not break the delimiter
     await Effect.runPromise(
       agent.set(masterKeyEntryName("http://[::1]:8787", "user-0002"), "master-secret-2"),
     );
@@ -456,7 +469,7 @@ describeSocket("maruhi agent status", () => {
     expect(output).not.toContain("secret");
   });
 
-  it("壊れた master 鍵の記録に当たったら、キーチェーンではなくセッションの作り直しを案内する", async () => {
+  it("on a broken master-key record, guides toward recreating the session rather than the keychain", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
@@ -467,7 +480,8 @@ describeSocket("maruhi agent status", () => {
         JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
       ),
     );
-    // 現行の形は揃っているが hex が壊れている = 破損側の案内
+    // The current shape is complete but the hex is broken = the corruption
+    // side's guidance
     await Effect.runPromise(
       agent.set(
         masterKeyEntryName("https://maruhi.test", "user-0001"),
@@ -486,19 +500,20 @@ describeSocket("maruhi agent status", () => {
     expect(await runCli(["key", "show"], layer)).toBe(1);
     const message = env.errors.join("\n");
     expect(message).toContain("held by this agent session");
-    // 可逆にできないので、順序(抜けずに更新)と条件(コードがあるときだけ抜ける)
+    // Since it cannot be made reversible: the ordering (re-enter without
+    // exiting) and the condition (can only exit while the code exists)
     expect(message).toContain("re-run inside this session");
     expect(message).toContain(
       "only if you still have another device of yours or your recovery code",
     );
     expect(message).toContain("exit the session");
     expect(message).toContain("maruhi agent -- <shell>");
-    // OS キーチェーンの手順(実行できない)を案内しない
+    // Does not print the OS-keychain procedure (which cannot be run here)
     expect(message).not.toContain("by hand");
     expect(message).not.toContain("OS keychain");
   });
 
-  it("何も無ければその旨と次の一手を出す", async () => {
+  it("when empty, says so and suggests the next step", async () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
@@ -508,7 +523,7 @@ describeSocket("maruhi agent status", () => {
     expect(env.logs.join("\n")).toContain("nothing yet (run `maruhi login` in this session)");
   });
 
-  it("セッションの外では失敗し、古いソケットはセッション終了として報告する", async () => {
+  it("fails outside a session, and reports a stale socket as an ended session", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent", "status"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Not inside an agent session");
@@ -518,14 +533,14 @@ describeSocket("maruhi agent status", () => {
     expect(env.errors.join("\n")).toContain("The agent session has ended");
   });
 
-  it("status のフラグの誤りは書き方の誤り(2)", async () => {
+  it("a wrong flag to status is a usage error (2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent", "status", "--bogus"], env.layer)).toBe(2);
   });
 });
 
 /* -------------------------------------------------------------------------- */
-/* 復元経路の配線(補足 12: 取得 → 復号 → L2 のメモリへ)                         */
+/* Restore-path wiring (supplement 12: fetch → decrypt → into L2 memory)       */
 /* -------------------------------------------------------------------------- */
 
 function storedMasterRecord(user: TestUser): StoredMasterKey {
@@ -538,7 +553,7 @@ function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
-/** 既知の secret でラップ済みブロブを作り、GET /auth/recovery で配る(recovery.test.ts と同形)。 */
+/** Builds a blob wrapped with a known secret and serves it at GET /auth/recovery (same shape as recovery.test.ts). */
 async function wrappedBlobHandler(
   user: TestUser,
   secret: Uint8Array,
@@ -564,16 +579,17 @@ async function wrappedBlobHandler(
   return { handler, code: Redacted.value(formatRecoveryCode(Redacted.make(secret))) };
 }
 
-describeSocket("key recover は agent セッションの中でメモリへ着地する", () => {
-  it("発行した新しい端末鍵は agent にだけ入り、テスト用キーチェーンには何も残らない", async () => {
-    // DK: 台帳から開いた予備鍵 B は端末鍵の発行にだけ使い、保存しない(§8.1)。
-    // 保存されるのは新しい端末鍵で、その着地先が agent のメモリであることを固定する
+describeSocket("key recover lands in memory inside an agent session", () => {
+  it("the newly issued device key goes only into the agent; nothing remains in the test keychain", async () => {
+    // DK: the reserve key B opened from the ledger is used only to issue the
+    // device key and is not stored (§8.1). What gets stored is the new device
+    // key — pin down that its destination is the agent's memory
     const user = await makeTestUser("user-agent-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await MockServer.start([
       handler,
-      // 復元の後段が走査するプロジェクト一覧(AUTH_SPEC §11-5)— 空
+      // The project list the restore tail scans (AUTH_SPEC §11-5) — empty
       onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } })),
     ]);
     cleanups.push(() => maruhi.close());
@@ -582,7 +598,8 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
     const agent = makeAgentKeychain(server.socketPath);
-    // ログイン済み状態を agent 側に置く(本番では `maruhi login` が同じ経路で書く)
+    // Place the logged-in state on the agent side (in production `maruhi
+    // login` writes via the same path)
     await Effect.runPromise(
       agent.set(
         tokenEntryName(maruhi.origin),
@@ -592,20 +609,24 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
 
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // コードだけ(プロジェクトが無いので予備鍵の確認は出ない — DK K14-2 の nowhere)
+    // Just the code (no projects, so no reserve-key confirmation appears — DK
+    // K14-2's nowhere)
     env.setPromptResponses([code]);
-    // live.ts が MARUHI_AGENT_SOCK で行う差し替えと同じ: Keychain だけ agent 実装へ
+    // Same swap live.ts does on MARUHI_AGENT_SOCK: only Keychain goes to the
+    // agent implementation
     const layer = Layer.merge(env.layer, Layer.succeed(Keychain, agent));
     expect(await runCli(["key", "recover"], layer)).toBe(0);
 
-    // 着地先は agent のメモリ。テスト用(OS 相当)キーチェーンには何も無い
+    // The destination is the agent's memory. The test (OS-equivalent) keychain
+    // has nothing
     expect(env.keychain.size).toBe(0);
     const stored = await Effect.runPromise(
       agent.get(masterKeyEntryName(maruhi.origin, user.userId)),
     );
     const device = parseStoredMasterKey(stored ?? "");
     if (device === null) throw new Error("expected the new device key in the agent");
-    // 入っているのは新しい端末鍵。台帳の予備鍵 B はどこにも保存されない
+    // What is stored is the new device key. The ledger's reserve key B is
+    // stored nowhere
     expect(device.encPubHex).not.toBe(user.encPubHex);
     expect(serializeStoredMasterKey(device)).not.toBe(
       serializeStoredMasterKey(storedMasterRecord(user)),
@@ -623,7 +644,7 @@ describeSocket("key recover は agent セッションの中でメモリへ着地
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(code);
 
-    // 同じセッションの後続コマンドは agent の鍵を読む(key show)
+    // Later commands in the same session read the agent's key (key show)
     const status = onRequest("GET", "/auth/recovery/status", () => ({
       status: 200,
       json: { registered: true, updatedAtMs: 1754006400000 },

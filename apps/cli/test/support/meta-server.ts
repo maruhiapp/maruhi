@@ -1,11 +1,13 @@
-// メタ操作(宣言作成・activation・削除)を受理して状態を進める、テスト用の
-// 「正直なインメモリ環境」ハンドラ群。schema import(複数変数の直列登録 —
-// O(N) 往復の固定)と var rm(tombstone への遷移と 1-E′ 確認)のテストが、
-// 受理のたびに echo の base を手で組み替えずに済むようにする。
+// Test "honest in-memory environment" handlers that accept meta operations
+// (declaration create, activation, removal) and advance the state. Lets the
+// schema import (serial registration of many variables — pins down the O(N)
+// round trips) and var rm (transition to tombstone + the 1-E′ confirmation)
+// tests run without hand-editing the echo base on every acceptance.
 //
-// 受理はクライアントが署名したステートメント・マニフェストをそのまま保存して
-// author / issuer 情報(所有者)を付けて配布する — 検証(§6.3)はクライアント
-// 側の実装が行う(このモックは wire 形の整合だけを保つ)。
+// Acceptance stores the client-signed statement / manifest verbatim and
+// distributes it with author / issuer info (the owner) attached — verification
+// (§6.3) is done by the client implementation (this mock only keeps the wire
+// shape consistent).
 
 import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import {
@@ -20,13 +22,13 @@ import {
 } from "./crypto.ts";
 import type { MockHandler, MockRequest } from "./server.ts";
 
-/** モックが進める環境状態(検査用に公開)。 */
+/** The environment state the mock advances (exposed for assertions). */
 export interface MetaEnvironmentState {
   variables: WireDistributedVariableStatement[];
   tombstones: WireDistributedVariableStatement[];
-  /** 受理済みの最新マニフェスト(null = まだ初期形を配る)。 */
+  /** The latest accepted manifest (null = still serving the initial form). */
   manifest: WireDistributedManifest | null;
-  /** 受理したメタ操作リクエスト(検査用 — 種別つき)。 */
+  /** Accepted meta-operation requests (for assertions — with kind). */
   mutations: { kind: "create" | "activate" | "remove"; request: MockRequest }[];
 }
 
@@ -37,10 +39,10 @@ export interface MetaEnvironmentServerInput {
   readonly envStatement: WireDistributedEnvironmentStatement;
   readonly initialVariables?: readonly WireDistributedVariableStatement[];
   readonly initialTombstones?: readonly WireDistributedVariableStatement[];
-  /** 自分宛 DEK ラップ(activation の値 push に要る。省略 = deks 未配線)。 */
+  /** Self-addressed DEK wrap (needed for activation's value push; omitted = deks not wired). */
   readonly wrap?: WireRecipientDek;
   readonly schemaPolicy?: "disabled" | "enabled" | "locked";
-  /** 削除(DELETE)を受理しても状態を進めない(1-E′ の失敗経路の再現用)。 */
+  /** Accepts removals (DELETE) without advancing state (reproduces the 1-E′ failure path). */
   readonly ignoreRemovals?: boolean;
 }
 
@@ -50,7 +52,7 @@ interface MutationBody {
   readonly manifest: WireDistributedManifest;
 }
 
-/** author / issuer 情報を付けた配布形へ写す(受理時のサーバー挙動の再現)。 */
+/** Copies into the distributed form with author / issuer info attached (reproduces the server's acceptance behavior). */
 function distributed<T>(record: T, owner: TestUser, kind: "author" | "issuer"): T {
   return {
     ...record,
@@ -88,13 +90,13 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
   };
 
   const handlers: MockHandler[] = [
-    // チェーン配布(全長)
+    // Chain distribution (full length)
     chainHandlerOf(input.chain),
-    // 自分宛 DEK(activation の値 push。wrap 未配線なら 404 のまま)
+    // Self-addressed DEK (activation's value push; stays 404 if wrap is not wired)
     ...(input.wrap === undefined
       ? []
       : [deksHandlerOf(input.chain.projectId, input.environmentId, [input.wrap])]),
-    // メタデータのみ pull(§12-7 — declared は variables に混在)
+    // Metadata-only pull (§12-7 — declared entries are mixed into variables)
     async (request) => {
       if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {
         return null;
@@ -123,7 +125,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
         },
       };
     },
-    // 変数作成(値同梱 / declared — §12-5)
+    // Variable creation (value attached / declared — §12-5)
     (request) => {
       if (request.method !== "POST" || request.path !== `${base}/variables`) {
         return null;
@@ -140,7 +142,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
         },
       };
     },
-    // activation(declared → active — §12-5)
+    // activation (declared → active — §12-5)
     (request) => {
       const match = request.path.match(activatePattern);
       if (request.method !== "POST" || match === null) {
@@ -151,7 +153,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       acceptStatement(body);
       return { status: 200, json: { variableId: match[1], version: 1, epoch: 1 } };
     },
-    // 削除(tombstone への遷移 — §12-5)
+    // Removal (transition to tombstone — §12-5)
     (request) => {
       const match = request.path.match(removePattern);
       if (request.method !== "DELETE" || match === null) {

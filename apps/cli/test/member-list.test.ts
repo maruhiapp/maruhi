@@ -1,11 +1,14 @@
-// `maruhi member list`(2026-09-15 ES K4 — 設計録 es-design.md 裁定 M / K4-E)の統合テスト。
+// Integration tests for `maruhi member list` (2026-09-15 ES K4 — design
+// note es-design.md ruling M / K4-E).
 //
-// 固定する性質:
-//  1. 検証済みチェーンから user id・role・scope(all / 環境 id 列 / no environments)・
-//     鍵 FP を表示する(user id 昇順)。`--json` は 1 文書
-//  2. 値ゼロなので agent-gate 非適用: エージェント検出 + 非 TTY でも成功する
-//     (`maruhi schema` と同じ許可側)。master 鍵も要求しない(鍵なしクラス)
-//  3. `project verify` の member 行にも同じ scope 列が出る
+// Properties pinned down:
+//  1. From the verified chain, displays user id, role, scope (all /
+//     environment-id list / no environments), and key FP (user-id
+//     ascending). `--json` is a single document
+//  2. Zero values means the agent gate does not apply: it succeeds with
+//     agent detection + non-TTY (the same permissive side as `maruhi
+//     schema`). It also doesn't require a master key (the keyless class)
+//  3. `project verify`'s member rows carry the same scope column
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -70,7 +73,7 @@ async function startEnv(user: TestUser): Promise<TestEnv & { readonly server: Mo
 }
 
 describe("maruhi member list", () => {
-  it("検証済みチェーンのメンバーを user id・role・scope・鍵 FP で表示する(id 昇順)", async () => {
+  it("displays the verified chain's members with user id, role, scope, and key FP (ascending id)", async () => {
     const env = await startEnv(owner);
     expect(await runCli(["member", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
@@ -88,7 +91,7 @@ describe("maruhi member list", () => {
     expect(logs.indexOf(noneReader.userId)).toBeLessThan(logs.indexOf(owner.userId));
   });
 
-  it("--json は 1 文書(userId / role / scope / devices / deviceKeyFingerprintsHex)を stdout に出す", async () => {
+  it("--json prints a single document (userId / role / scope / devices / deviceKeyFingerprintsHex) to stdout", async () => {
     const env = await startEnv(devMember);
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
     const document = JSON.parse(env.logs.join("\n")) as {
@@ -111,7 +114,8 @@ describe("maruhi member list", () => {
     });
     expect(document.members[1]?.scope).toEqual({ kind: "listed", environmentIds: [] });
     expect(document.members[2]?.scope).toEqual({ kind: "all" });
-    // 端末一覧(DK K4-20): FP + cap。連結した keyFingerprintHex は撤去
+    // Device list (DK K4-20): FP + cap. The concatenated
+    // keyFingerprintHex was removed
     expect(document.members[2]?.devices).toEqual([
       { keyFingerprintHex: owner.fingerprintHex, roleCap: "owner", scope: { kind: "all" } },
     ]);
@@ -119,18 +123,19 @@ describe("maruhi member list", () => {
     expect(document.members[2]?.deviceKeyFingerprintsHex).toEqual([owner.fingerprintHex]);
   });
 
-  it("値ゼロなので agent-gate は掛からない: エージェント検出 + 非 TTY + 鍵なしでも成功する", async () => {
+  it("zero values means the agent-gate doesn't apply: succeeds with agent detection + non-TTY + keyless", async () => {
     const env = await startEnv(noneReader);
     env.setAgent({ isAgent: true, name: "testbot" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
-    // master 鍵なし(MARUHI_TOKEN 実行相当 — 鍵なしクラスで動く)
+    // No master key (equivalent to a MARUHI_TOKEN run — works in the
+    // keyless class)
     env.keychain.delete(masterKeyEntryName(env.server.origin, noneReader.userId));
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain(`"userId": "${owner.userId}"`);
     expect(env.errors.join("\n")).not.toContain("Refused to display values");
   });
 
-  it("project verify の member 行にも scope 列が出る(裁定 M)", async () => {
+  it("project verify's member rows carry the scope column too (ruling M)", async () => {
     const env = await startEnv(owner);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");

@@ -1,14 +1,20 @@
-// `maruhi approval list / show / approve / withdraw` と `maruhi project policy approvals`
-// (CRYPTO_SPEC §6.2 / §7 — PF1 K6。設計録 es-design.md §12)の統合テスト。
+// Integration tests for `maruhi approval list / show / approve / withdraw` and
+// `maruhi project policy approvals` (CRYPTO_SPEC §6.2 / §7 — PF1 K6. Design
+// note es-design.md §12).
 //
-// 固定する性質:
-//  1. list / show は検証済みチェーンの pending から出し、票数は再集計する(K5-M / K2 の
-//     実装メモ)。agent-gate を掛けない(値ゼロ — K6-E)
-//  2. approve: 通信前検査(duplicate-approval / proposal-expired / 自己義務)→ 追記 →
-//     再同期で完成を知る(K6-B)。完成させた承認者が sweep(remove)/ バックフィル
-//     (add_member)を履行する(承認項目 22)。他 owner が先に完成させていれば追記しない
-//  3. withdraw: 提案者 / owner。owner が他人の提案を閉じるときは Note
-//  4. policy: 有効化(owner ≥ required の予告・可用性の案内)、有効中の変更は提案
+// Properties pinned down:
+//  1. list / show read from the verified chain's pending and recount the vote
+//     counts (K5-M / K2 implementation memo). No agent-gate (zero values —
+//     K6-E)
+//  2. approve: pre-flight checks (duplicate-approval / proposal-expired /
+//     self-obligation) → append → learn completion on resync (K6-B). The
+//     approver who completes it fulfills the sweep (remove) / backfill
+//     (add_member) (approval item 22). If another owner completed it first,
+//     do not append
+//  3. withdraw: proposer / owner. A Note is required when an owner closes
+//     someone else's proposal
+//  4. policy: activation (pre-announce owner ≥ required, availability
+//     guidance); changes while active go through a proposal
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -82,7 +88,7 @@ function wrapFor(projectId: string, user: TestUser): Promise<WireRecipientDek> {
   });
 }
 
-/** owner 2 名(+ 任意で 3 名目)・member 1 名・方針(remove_member, required 2)+ owner の提案。 */
+/** 2 owners (+ optional third), 1 member, policy (remove_member, required 2), plus owner's proposal. */
 function prefixSteps(options?: {
   readonly thirdOwner?: boolean;
   readonly ops?: readonly ("remove_member" | "add_member" | "change_role")[];
@@ -112,7 +118,7 @@ async function proposedChain(
 }
 
 describe("maruhi approval list / show", () => {
-  it("pending 提案を再集計した票数つきで一覧し、--json は 1 文書(agent-gate なし)", async () => {
+  it("lists pending proposals with recounted vote tallies; --json emits one document (no agent-gate)", async () => {
     const { built, hash } = await proposedChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
@@ -144,7 +150,7 @@ describe("maruhi approval list / show", () => {
     });
   });
 
-  it("show は提案者・内側 op・期限・投票者と「あなたは approve できるか」を出す", async () => {
+  it("show prints proposer, inner op, expiry, voters, and 'can you approve'", async () => {
     const { built, hash } = await proposedChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
@@ -156,13 +162,14 @@ describe("maruhi approval list / show", () => {
     expect(logs).toContain("approvals:       1 of 2 required");
     expect(logs).toContain("you:             can approve — your approval completes it");
 
-    // 提案者本人には duplicate-approval を予告する(自己承認は重複)
+    // The proposer themself is shown a duplicate-approval preview (self-
+    // approval counts as a duplicate)
     const proposerEnv = await startEnv(state, built.projectId, owner);
     expect(await runCli(["approval", "show", hash.slice(0, 8)], proposerEnv.layer)).toBe(0);
     expect(proposerEnv.logs.join("\n")).toContain("cannot approve — you proposed this as an owner");
   });
 
-  it("未知 / 短すぎる id は型付きに拒否する", async () => {
+  it("rejects unknown / too-short ids with typed errors", async () => {
     const { built } = await proposedChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
@@ -174,7 +181,7 @@ describe("maruhi approval list / show", () => {
 });
 
 describe("maruhi approval approve", () => {
-  it("定足数に達する approve を追記し、完成させた承認者が remove の sweep を履行する(承認項目 22)", async () => {
+  it("appends the quorum-reaching approve, and the completing approver fulfills the remove sweep (approval item 22)", async () => {
     const { built, hash } = await proposedChain();
     const state = await makeFourEyesServer({
       built,
@@ -191,7 +198,8 @@ describe("maruhi approval approve", () => {
     const approve = state.appendedEntries[0];
     if (approve?.op !== "approve") throw new Error("approve entry missing");
     expect(approve.payload.proposalHashHex).toBe(hash);
-    // §7: 削除対象を除く現メンバー全員へ新エポックのラップ(reason = member-removed)
+    // §7: wrap the new epoch to every current member except the removal
+    // target (reason = member-removed)
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
@@ -204,15 +212,16 @@ describe("maruhi approval approve", () => {
     );
   });
 
-  it("定足数に届かない approve は票を記録し、何も履行しない", async () => {
+  it("an approve short of quorum only records the vote and fulfills nothing", async () => {
     const steps = [
       ...prefixSteps({ thirdOwner: true }),
       { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["remove_member"], 3))) },
     ];
     const built = await buildChain(steps);
     const policyHash = built.hashes[built.hashes.length - 1] ?? "";
-    // required 3 に上げる提案(owner の 1 票)を owner2 が完成させる(現方針 required 2)→
-    // その後の remove 提案は 3 票必要
+    // owner2 completes the proposal to raise to required 3 (owner's single
+    // vote, under the current required-2 policy) → subsequent remove
+    // proposals need 3 votes
     const raised = await buildChain([
       ...steps,
       { actor: owner2, operation: approveOp(policyHash) },
@@ -230,7 +239,7 @@ describe("maruhi approval approve", () => {
     );
   });
 
-  it("提案者(owner)の自己承認は通信前に duplicate-approval で止まる", async () => {
+  it("the proposer's (owner's) self-approval stops pre-flight with duplicate-approval", async () => {
     const { built, hash } = await proposedChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);
@@ -239,7 +248,7 @@ describe("maruhi approval approve", () => {
     expect(state.counters.appendAttempts).toBe(0);
   });
 
-  it("自分の時計で期限切れの提案は通信前に proposal-expired を予告する(K5-C の UX)", async () => {
+  it("a proposal expired on your own clock previews proposal-expired pre-flight (K5-C UX)", async () => {
     const { built, hash } = await proposedChain({ expiresAtMs: 1_000 });
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
@@ -251,7 +260,7 @@ describe("maruhi approval approve", () => {
     expect(env.logs.join("\n")).toContain("[EXPIRED]");
   });
 
-  it("自分を削除する提案は承認者として完成させられない(履行者が消える — K6-N)", async () => {
+  it("a proposal that removes you cannot be completed by you as approver (the fulfiller would vanish — K6-N)", async () => {
     const steps = [
       ...prefixSteps({ thirdOwner: true }),
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(owner2))) },
@@ -265,7 +274,7 @@ describe("maruhi approval approve", () => {
     expect(state.counters.appendAttempts).toBe(0);
   });
 
-  it("自分の scope を縮める(owner → admin listed{})提案も承認者として完成させられない(Cursor Bugbot 指摘)", async () => {
+  it("a proposal narrowing your own scope (owner → admin listed{}) likewise cannot be completed by you as approver (Cursor Bugbot flag)", async () => {
     const steps = [
       ...prefixSteps({ thirdOwner: true, ops: ["change_role"] }),
       {
@@ -282,7 +291,7 @@ describe("maruhi approval approve", () => {
     expect(state.counters.appendAttempts).toBe(0);
   });
 
-  it("CAS 競合の再同期で他 owner が先に完成させていたら追記せず「履行者ではない」と案内する", async () => {
+  it("when a CAS-conflict resync finds another owner completed it first, does not append and says 'you are not the fulfiller'", async () => {
     const { steps, built, hash } = await proposedChain({ thirdOwner: true });
     const concurrent = await buildChain([...steps, { actor: owner3, operation: approveOp(hash) }]);
     const state = await makeFourEyesServer({
@@ -310,7 +319,7 @@ describe("maruhi approval approve", () => {
     expect(env.logs.join("\n")).toContain("already completed by another owner's approval");
   });
 
-  it("add_member の提案を完成させた承認者が新メンバー宛のバックフィルを履行する(§12-6 の 5 番目の経路)", async () => {
+  it("the approver who completes an add_member proposal fulfills the backfill for the new member (the fifth path in §12-6)", async () => {
     const steps = [
       ...prefixSteps({ ops: ["add_member"] }),
       { actor: owner, operation: proposeOp(innerOf(addMemberOp(newbie, "member"))) },
@@ -339,8 +348,8 @@ describe("maruhi approval approve", () => {
   });
 });
 
-describe("maruhi approval show — 鍵 FP 再登録の警告(K6-I′)", () => {
-  it("過去の在籍と同じ鍵での add_member 提案には、承認者側にも警告を出す", async () => {
+describe("maruhi approval show — key-FP re-registration warning (K6-I')", () => {
+  it("warns the approver side too on an add_member proposal reusing a key from a past membership", async () => {
     const steps = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(owner2, "owner") },
@@ -361,7 +370,7 @@ describe("maruhi approval show — 鍵 FP 再登録の警告(K6-I′)", () => {
 });
 
 describe("maruhi approval withdraw", () => {
-  it("owner は他人の提案を閉じられる(Note つき)。非 owner の非提案者は拒否", async () => {
+  it("an owner can close someone else's proposal (with a Note); a non-owner non-proposer is refused", async () => {
     const { built, hash } = await proposedChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
@@ -389,7 +398,7 @@ describe("maruhi project policy approvals", () => {
     ]);
   }
 
-  it("フラグなしは現方針の表示、--required 2 は直接追記し、owner = required の可用性を警告する", async () => {
+  it("no flags shows the current policy; --required 2 appends directly and warns about owner = required availability", async () => {
     const built = await plainChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);
@@ -409,7 +418,7 @@ describe("maruhi project policy approvals", () => {
     expect(errors).toContain("make sure every owner has a recovery registered");
   });
 
-  it("owner 数 < required は通信前に拒否し、方針が有効な間の変更 / オフは提案になる", async () => {
+  it("refuses owner count < required pre-flight, and changes / disabling while the policy is active become proposals", async () => {
     const built = await plainChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);
@@ -435,7 +444,7 @@ describe("maruhi project policy approvals", () => {
     expect(activeEnv.logs.join("\n")).toContain("Proposed set_approval_policy off");
     expect(activeEnv.logs.join("\n")).toContain("needs 1 more owner approval");
 
-    // 同じ設定の再指定は no-op
+    // Re-specifying the same setting is a no-op
     activeEnv.logs.length = 0;
     expect(
       await runCli(
@@ -447,7 +456,7 @@ describe("maruhi project policy approvals", () => {
     expect(activeState.appendedEntries).toHaveLength(1);
   });
 
-  it("CAS 競合の再同期で同じ方針が既に適用されていれば、冗長な提案を追記しない(Cursor Bugbot 指摘)", async () => {
+  it("does not append a redundant proposal when a CAS-conflict resync finds the same policy already applied (Cursor Bugbot flag)", async () => {
     const base = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(owner2, "owner") },
@@ -455,7 +464,8 @@ describe("maruhi project policy approvals", () => {
       { actor: owner, operation: setApprovalPolicyOp(["remove_member"], 2) },
     ];
     const built = await buildChain(base);
-    // 送信と並行して、同じ変更(required 2 → ops を change_role に)が提案 + 承認で適用された
+    // Concurrently with the submission, the same change (required 2 → ops
+    // change_role) was applied via proposal + approval
     const proposed = await buildChain([
       ...base,
       { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["change_role"], 2))) },
@@ -496,7 +506,7 @@ describe("maruhi project policy approvals", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--ops の typo と --expires の不備は usage(2)で落ちる", async () => {
+  it("a typo in --ops and a malformed --expires fail as usage (2)", async () => {
     const built = await plainChain();
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner });
     const env = await startEnv(state, built.projectId, owner);

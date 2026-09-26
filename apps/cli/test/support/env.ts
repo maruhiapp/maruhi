@@ -1,6 +1,7 @@
-// テスト用のサービス層: インメモリキーチェーン・出力捕捉 CliIo・記録型
-// ProcessRunner・一時ディレクトリの設定ストア・実 fetch の HttpClient。
-// 実キーチェーン(Bun.secrets)は CI に存在しないため結合しない(タスク指示)。
+// Service layer for tests: in-memory keychain, output-capturing CliIo,
+// recording ProcessRunner, temp-dir config store, real-fetch HttpClient.
+// The real keychain (Bun.secrets) doesn't exist in CI, so it is not wired in
+// (per task instructions).
 
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,26 +63,27 @@ export interface TestEnv {
   readonly logs: string[];
   readonly errors: string[];
   readonly runnerCalls: RunnerCall[];
-  /** ベンダー CLI の駆動記録(sync — argv / cwd / env / stdin)。 */
+  /** Recorded vendor-CLI invocations (sync — argv / cwd / env / stdin). */
   readonly execCalls: ExecCall[];
-  /** `maruhi agent` の子の起動記録(argv と、渡された追加の環境変数)。 */
+  /** Recorded `maruhi agent` child launches (argv and the extra env vars passed). */
   readonly sessionCalls: SessionCall[];
   readonly configPath: string;
-  /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
+  /** Directory of the local floor (§6.3) (<configDir>/floor). */
   readonly floorDir: string;
-  /** 招待ピン(§6.3 (a) アンカー + 発行ピン)のディレクトリ(<configDir>/invites)。 */
+  /** Directory of invite pins (§6.3 (a) anchor + issue pins) (<configDir>/invites). */
   readonly pinsDir: string;
-  /** 検証済み指紋帳(KF)のファイルパス(<configDir>/known-fingerprints.json)。 */
+  /** File path of the verified fingerprint book (KF) (<configDir>/known-fingerprints.json). */
   readonly fingerprintBookPath: string;
-  /** promptLine に表示されたプロンプト文字列(検査用)。 */
+  /** Prompt strings shown via promptLine (for assertions). */
   readonly prompts: string[];
-  /** openBrowser に渡された URL(login のブラウザ自動起動分岐の検査用)。 */
+  /** URLs passed to openBrowser (for asserting login's auto-browser-launch branch). */
   readonly browserOpens: string[];
   setStdin(bytes: Uint8Array): void;
   /**
-   * 端末判定(`Stdio`)の偽装。値の表示可否の**一次境界**なので、既定は
-   * 「人間の対話端末」= stdin / stdout / stderr が端末。パイプ・リダイレクト・
-   * CI・未知のエージェントを再現するときに false を渡す。
+   * Fakes the terminal detection (`Stdio`). It is the **primary boundary** for
+   * whether values may be displayed, so the default is "a human's interactive
+   * terminal" = stdin / stdout / stderr are all terminals. Pass false to
+   * reproduce pipes, redirects, CI, or unknown agents.
    */
   setTerminal(input: {
     readonly stdin?: boolean;
@@ -89,65 +91,69 @@ export interface TestEnv {
     readonly stderr?: boolean;
   }): void;
   /**
-   * promptLine が順に返す応答をキューする(枯渇後は失敗 = EOF 相当)。
-   * 関数は応答時点で評価される(表示済みログから値を導く応答のため —
-   * リカバリーコードの保存確認等)。
+   * Queues the responses promptLine returns in order (failure once exhausted =
+   * EOF equivalent). Functions are evaluated at response time (for answers
+   * derived from already-printed logs — e.g. confirming a recovery code was
+   * stored).
    */
   setPromptResponses(lines: readonly (string | (() => string))[]): void;
   setAgent(profile: AgentProfile): void;
-  /** stderr の接頭辞の色(notice.ts)。既定は無色 — 断言を素の文字列で書けるように。 */
+  /** Color of the stderr prefix (notice.ts). Default is uncolored — so assertions can be plain strings. */
   setColor(enabled: boolean): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
   /**
-   * ベンダー CLI の駆動結果を偽装する(既定は exit 0・出力なし)。呼び出しごとに
-   * 判定できるよう関数で受ける(N 回目だけ失敗させる等)。
+   * Fakes the vendor CLI's outcome (default: exit 0, no output). Taken as a
+   * function so the result can differ per call (e.g. fail only the Nth call).
    */
   setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome | CliError): void;
-  /** openBrowser の成否を偽装する(既定は成功)。 */
+  /** Fakes whether openBrowser succeeds (default: succeeds). */
   setBrowserOpenSucceeds(succeeds: boolean): void;
   /**
-   * openBrowser をブラウザの代わりに務める(passkey — 補足 20 裁定 J)。ハンドラは
-   * CLI がページの POST を待っている間に走るので、渡された URL へ fetch で応答
-   * できる。戻り値は「開けたか」。設定すると setBrowserOpenSucceeds より優先
+   * Stands in for the browser in place of openBrowser (passkey — supplement 20
+   * ruling J). The handler runs while the CLI is waiting for the page's POST,
+   * so it can answer the passed URL via fetch. The return value is "did it
+   * open". When set, takes precedence over setBrowserOpenSucceeds.
    */
   setBrowserOpenHandler(handler: (url: string) => Promise<boolean>): void;
   /**
-   * `maruhi agent` の子を偽装する(既定は exit 0)。ハンドラは子が生きている
-   * 間に走る = agent のソケットが聞いている間なので、ここから接続して
-   * 保持先を検査できる。
+   * Fakes the `maruhi agent` child (default: exit 0). The handler runs while
+   * the child is alive = while the agent socket is listening, so it can connect
+   * from here and assert the destination.
    */
   setSessionHandler(handler: (call: SessionCall) => Promise<number>): void;
-  /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
+  /** Makes keychain writes fail (for asserting login's revocation fallback). */
   failKeychainWrites(): void;
   /**
-   * 受理された push の床コミットだけを失敗させる(読み取り・pull コミットは
-   * 通す)。床は SHOULD であり、書けなかった場合でも検出が床だけに依存して
-   * いないことを固定するために使う。
+   * Fails only the floor commit of an accepted push (reads and pull commits
+   * still pass). The floor is a SHOULD; used to pin down that detection does
+   * not rely on the floor alone when it cannot be written.
    */
   failFloorPushCommits(): void;
   /**
-   * intent(3-F)の追記だけを失敗させる。journal-before-send は床の書き込みで
-   * 唯一の fail-closed(永続化に失敗したら送信しない)であり、fail-open へ
-   * 巻かれる退行を「サーバーへ 1 リクエストも飛ばないこと」で固定するために使う。
+   * Fails only intent (3-F) appends. journal-before-send is the only
+   * fail-closed floor write (no send when persisting fails); used to pin down
+   * a regression toward fail-open as "not a single request reaches the
+   * server".
    */
   failFloorIntentAppends(): void;
-  /** defect 経路の検査用: 設定読込を throw(非 CliError)にする。 */
+  /** For testing the defect path: makes config load throw (a non-CliError). */
   breakConfigLoadWithDefect(): void;
   /**
-   * ベンダー API(`maruhi sync` の http ドライバ)の宛先を偽サーバーへ向ける。
-   * 本番コードはプリセットの固定ホスト(`https://api.vercel.com` 等)だけを知り、
-   * 差し替える口を持たない — 差し替えは HttpClient の層(テストの境界)で行う。
+   * Redirects the vendor API (`maruhi sync`'s http driver) targets to a fake
+   * server. Production code only knows the preset fixed hosts
+   * (`https://api.vercel.com` etc.) and offers no override point — the swap
+   * happens at the HttpClient layer (the test boundary).
    */
   setVendorOrigin(host: string, origin: string): void;
 }
 
-/** 既定の `maruhi agent` の子(何もせず exit 0)。 */
+/** The default `maruhi agent` child (does nothing, exits 0). */
 function sessionExitsZero(): Promise<number> {
   return Promise.resolve(0);
 }
 
-/** 既定のベンダー CLI の応答(成功・出力なし)。 */
+/** The default vendor-CLI response (success, no output). */
 function execSucceeds(): ExecOutcome {
   return { exitCode: 0, output: "" };
 }
@@ -172,7 +178,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
   let colorEnabled = false;
-  // 既定は「人間が対話端末で実行した」形(値の表示が許される唯一の形)
+  // Default is the "a human ran this at an interactive terminal" shape (the
+  // only shape where displaying values is allowed)
   let stdinIsTerminal = true;
   let stdoutIsTerminal = true;
   let stderrIsTerminal = true;
@@ -191,13 +198,15 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const fingerprintBookPath = fingerprintBookPathOf(configPath);
   const fingerprintBook = makeFileFingerprintBook(fingerprintBookPath);
   const layer = Layer.mergeAll(
-    // argv は runCli が実行ごとに渡す(effect-cli.ts が Stdio へ載せ替える)。
-    // ここで固定するのは端末判定 — 値の表示可否の一次境界(agent-gate.ts)
+    // argv is passed per run by runCli (effect-cli.ts remounts it onto Stdio).
+    // What gets fixed here is terminal detection — the primary boundary for
+    // whether values may be displayed (agent-gate.ts)
     Stdio.layerTest({
       stdinIsTerminal: Effect.sync(() => stdinIsTerminal),
       stdoutIsTerminal: Effect.sync(() => stdoutIsTerminal),
     }),
-    // 二次層(既知エージェントの検出結果)。本番は live.ts が std-env から供給する
+    // The secondary layer (known-agent detection result); in production
+    // live.ts supplies it from std-env
     Layer.sync(AgentProfileRef, () => agent),
     Layer.succeed(PinStore, pinStore),
     Layer.succeed(FingerprintBook, fingerprintBook),
@@ -210,20 +219,20 @@ export async function makeTestEnv(): Promise<TestEnv> {
         Effect.suspend(() =>
           floorPushCommittable
             ? floorStore.commitPush(projectId, commit)
-            : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
+            : Effect.fail(cliError("cannot write to the local floor (test injection)")),
         ),
       commitMetadata: (projectId, commit) => floorStore.commitMetadata(projectId, commit),
       commitManifest: (projectId, commit) =>
         Effect.suspend(() =>
           floorPushCommittable
             ? floorStore.commitManifest(projectId, commit)
-            : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
+            : Effect.fail(cliError("cannot write to the local floor (test injection)")),
         ),
       appendIntent: (projectId, intent) =>
         Effect.suspend(() =>
           floorIntentAppendable
             ? floorStore.appendIntent(projectId, intent)
-            : Effect.fail(cliError("ローカル床に intent を書き込めません(テスト注入)")),
+            : Effect.fail(cliError("cannot write the intent to the local floor (test injection)")),
         ),
       resolveIntent: (projectId, intentId, outcome) =>
         floorStore.resolveIntent(projectId, intentId, outcome),
@@ -239,7 +248,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
       set: (name, value) =>
         Effect.suspend(() => {
           if (!keychainWritable) {
-            return Effect.fail(cliError("キーチェーンに書き込めません(テスト注入)"));
+            return Effect.fail(cliError("キーチェーンに書き込めません(テスト注入)")); // english-exempt: asserts literal text owned by apps/cli/test/login.test.ts
           }
           keychain.set(name, value);
           return Effect.void;
@@ -273,7 +282,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
           prompts.push(prompt);
           const next = promptResponses.shift();
           return next === undefined
-            ? Effect.fail(cliError("対話入力を読み取れません(テスト: 応答キューが空)"))
+            ? Effect.fail(cliError("cannot read interactive input (test: response queue is empty)"))
             : Effect.succeed(typeof next === "function" ? next() : next);
         }),
       envVar: (name) => envVars.get(name),
@@ -284,10 +293,11 @@ export async function makeTestEnv(): Promise<TestEnv> {
         Effect.promise(async () => {
           browserOpens.push(url);
           if (browserOpenHandler !== null) {
-            // ブラウザ役はページの POST を CLI の待機中に行う必要があるので、
-            // 完了を待たずに「開いた」を返す。ハンドラの reject は握らない
-            // (vitest が unhandled rejection としてテストを落とす — 5 分の
-            // タイムアウト待ちにしない)。openBrowser 自体は本番でも起動の成否しか返さない
+            // The browser stand-in must POST to the page while the CLI is
+            // waiting, so return "opened" without awaiting completion. The
+            // handler's rejection is not swallowed (vitest would fail the test
+            // as an unhandled rejection — don't wait out the 5-minute timeout).
+            // openBrowser itself only reports launch success in production too
             void browserOpenHandler(url);
             return true;
           }
@@ -302,8 +312,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
         }),
       exec: (input: ExecInput) =>
         Effect.suspend(() => {
-          // 偽の子プロセス: stdin に届いたバイト列を記録する(値がどこへ行ったかの
-          // 検査材料。本番の live.ts では Bun.spawn の stdin)
+          // Fake child process: records the bytes that arrived on stdin
+          // (evidence for where the value went; in production live.ts this is
+          // Bun.spawn's stdin)
           const call: ExecCall = {
             command: input.command,
             cwd: input.cwd,
@@ -312,7 +323,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
           };
           execCalls.push(call);
           const outcome = execHandler(call, execCalls.length - 1);
-          // 起動失敗(未導入 — live.ts の execStartFailure)の偽装は型付きエラーで返す
+          // A faked spawn failure (unimplemented — live.ts's execStartFailure)
+          // is returned as a typed error
           return outcome instanceof CliError ? Effect.fail(outcome) : Effect.succeed(outcome);
         }),
       runSession: ({ command, env }) =>
@@ -322,11 +334,12 @@ export async function makeTestEnv(): Promise<TestEnv> {
             sessionCalls.push(call);
             return sessionHandler(call);
           },
-          catch: () => cliError("agent セッションの子を起動できません(テスト注入)"),
+          catch: () => cliError("cannot spawn the agent session child (test injection)"),
         }),
     }),
-    // 実 fetch の HttpClient。ベンダー API の固定ホストだけを偽サーバーへ写す
-    // (maruhi サーバー向けのリクエストは既に origin が偽サーバー)
+    // Real-fetch HttpClient; only the vendor APIs' fixed hosts are remapped to
+    // the fake server (requests to the maruhi server already have the fake
+    // origin)
     Layer.effect(
       HttpClient.HttpClient,
       Effect.map(HttpClient.HttpClient, (client) =>
@@ -418,10 +431,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
   };
 }
 
-/** ログイン済み + master 鍵保存済みの状態をキーチェーンへシードする。 */
+/** Seeds the keychain into a logged-in + master-key-stored state. */
 export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
-    // 実サーバーの形式(maruhi_pat_ + Base62 乱数)に寄せたフィクスチャ
+    // Fixture shaped like the real server's format (maruhi_pat_ + Base62 random)
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
@@ -433,14 +446,16 @@ export function seedSession(env: TestEnv, origin: string, user: TestUser): void 
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
   };
-  // JSON.stringify(token) は使えない — Redacted.toJSON() が伏字を返し、
-  // 「シードしたのに認証できない」テストになる(本番の login.ts と同じ罠)
+  // JSON.stringify(token) cannot be used — Redacted.toJSON() returns a redacted
+  // string, producing a "seeded but cannot authenticate" test (the same trap as
+  // production login.ts)
   env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
-  // master 鍵も JSON.stringify は使えない(秘密側が伏字で保存され復号不能になる)
+  // JSON.stringify cannot be used for the master key either (the secret side
+  // would be stored redacted and become undecryptable)
   env.keychain.set(masterKeyEntryName(origin, user.userId), serializeStoredMasterKey(master));
 }
 
-/** config.json に server(+ 任意の既定)を書いた状態を作る。 */
+/** Creates the state where config.json has server (+ any defaults) written. */
 export async function seedConfig(
   env: TestEnv,
   config: Readonly<Record<string, string>>,

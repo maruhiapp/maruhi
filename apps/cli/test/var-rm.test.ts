@@ -1,14 +1,20 @@
-// `maruhi var rm`(S4 — 変数削除)のテスト。
+// Tests for `maruhi var rm` (S4 — variable removal).
 //
-// 固定する不変条件:
-//  1. **v2 変数の削除はスキーマ欄・レイアウトの直前 byte-exact 保持**
-//     (CRYPTO_SPEC §4.2 の削除規約)、**v1 変数の削除は v1 形のまま**
-//     (v2 フィールドを持たない — レイアウトを勝手に上げない)
-//  2. 削除は終端: active の削除は対話の明示確認(変数名の再入力)を必須にし、
-//     非対話では --force なしに拒否(fail-closed)。declared も黙っては消さない
-//  3. メタ操作の既存規律: 3-F intent(journal-before-send)+ 1-E′ 効果確認
-//     (tombstone の検証済み配布)+ 床の tombstone 前進
-//  4. 削除済み・未存在の名前は署名・送信より前に型付きエラー
+// Invariants pinned down:
+//  1. **Removing a v2 variable keeps the schema fields and layout
+//     byte-exact from just before** (CRYPTO_SPEC §4.2's removal
+//     convention); **removing a v1 variable stays in v1 form** (no v2
+//     fields — don't silently upgrade the layout)
+//  2. Removal is terminal: removing an active variable requires explicit
+//     interactive confirmation (retyping the variable name), and in a
+//     non-interactive environment it's refused without --force
+//     (fail-closed). A declared variable isn't silently removed either
+//  3. The existing discipline of metadata operations: 3-F intent
+//     (journal-before-send) + 1-E' effect confirmation (verified
+//     distribution of the tombstone) + the floor's advance to the
+//     tombstone
+//  4. Already-removed or nonexistent names are typed errors before any
+//     signing or sending
 
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -41,11 +47,11 @@ const DESCRIPTION = "Primary endpoint of the shop";
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** v2 declared(url 型・required・description 付き)。 */
+/** v2 declared (url type, required, with a description). */
 let declaredV2: WireDistributedVariableStatement;
-/** v2 active(スキーマ欄付き)。 */
+/** v2 active (with schema fields). */
 let activeV2: WireDistributedVariableStatement;
-/** v1 active(スキーマ欄なし — 従来形)。 */
+/** v1 active (no schema fields — the traditional shape). */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -126,15 +132,15 @@ function lastServer(): MockServer {
   return server;
 }
 
-/** 床(観測ログの fold)を読む。 */
+/** Reads the floor (the fold of the observation log). */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
   const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
   expect(loaded.floor).not.toBeNull();
   return loaded.floor as ProjectFloor;
 }
 
-describe("maruhi var rm(削除ステートメントの形)", () => {
-  it("v2 declared の削除はスキーマ欄・レイアウトを byte-exact に保持する(§4.2)", async () => {
+describe("maruhi var rm (the removal statement's shape)", () => {
+  it("removing a v2 declared variable keeps the schema fields and layout byte-exact (§4.2)", async () => {
     const { env, state } = await startRmEnv();
     env.setPromptResponses(["SHOP_URL"]);
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(0);
@@ -145,20 +151,24 @@ describe("maruhi var rm(削除ステートメントの形)", () => {
     };
     expect(body.statement["status"]).toBe("deleted");
     expect(body.statement["metaVersion"]).toBe(2);
-    // name は直前の名前をそのまま保持(削除で空にしない — §4.2)
+    // name keeps the previous name verbatim (removal doesn't empty it —
+    // §4.2)
     expect(body.statement["name"]).toBe("SHOP_URL");
-    // スキーマ欄・レイアウトは直前ステートメントの値を byte-exact に保持
+    // Schema fields and layout hold the previous statement's values
+    // byte-exact
     expect(body.statement["layoutVersion"]).toBe(2);
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe(DESCRIPTION);
     expect(body.statement["prevMetaSigHashHex"]).not.toBe("");
-    // マニフェストは tombstone を含む集合で再発行される(§4.3)
+    // The manifest is re-issued over the set including the tombstone
+    // (§4.3)
     expect(body.manifest["manifestVersion"]).toBe(2);
     const output = env.logs.join("\n");
     expect(output).toContain("Deleted SHOP_URL");
     expect(output).toContain("declared only");
-    // 床は tombstone へ前進する(削除の無断取り消しの検出材料)
+    // The floor advances to the tombstone (the material for detecting a
+    // removal silently revoked)
     const floor = await loadFloor(env);
     expect(floor.environments[ENV_ID]?.variables["v-declared"]).toMatchObject({
       status: "deleted",
@@ -166,7 +176,7 @@ describe("maruhi var rm(削除ステートメントの形)", () => {
     });
   });
 
-  it("v1 変数の削除は v1 形のまま(v2 フィールドを持たない)", async () => {
+  it("removing a v1 variable stays in v1 form (no v2 fields)", async () => {
     const { env, state } = await startRmEnv();
     env.setPromptResponses(["LEGACY_KEY"]);
     expect(await runCli(["var", "rm", "LEGACY_KEY"], env.layer)).toBe(0);
@@ -181,18 +191,19 @@ describe("maruhi var rm(削除ステートメントの形)", () => {
   });
 });
 
-describe("削除の明示確認(fail-closed)", () => {
-  it("対話環境では変数名の再入力を要求し、不一致なら署名・送信しない", async () => {
+describe("explicit confirmation of removal (fail-closed)", () => {
+  it("an interactive environment requires retyping the variable name, and on mismatch signs and sends nothing", async () => {
     const { env, state } = await startRmEnv();
     env.setPromptResponses(["WRONG_NAME"]);
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("the typed name did not match");
     expect(state.mutations).toEqual([]);
-    // 確認前に何も送っていない(解決の metadata pull と chain 同期だけ)
+    // Nothing was sent before confirmation (just the resolution's
+    // metadata pull and chain sync)
     expect(lastServer().requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
   });
 
-  it("削除の帰結(active = 全バージョン消滅・終端)を確認前に明示する", async () => {
+  it("makes the removal's consequences explicit before confirming (active = every version disappears, terminal)", async () => {
     const { env } = await startRmEnv();
     env.setPromptResponses(["PORT"]);
     expect(await runCli(["var", "rm", "PORT"], env.layer)).toBe(0);
@@ -201,7 +212,7 @@ describe("削除の明示確認(fail-closed)", () => {
     expect(errors).toContain("Deletion is terminal");
   });
 
-  it("非対話環境では --force なしに拒否する", async () => {
+  it("a non-interactive environment is refused without --force", async () => {
     const { env, state } = await startRmEnv();
     env.setTerminal({ stdout: false });
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
@@ -209,7 +220,7 @@ describe("削除の明示確認(fail-closed)", () => {
     expect(state.mutations).toEqual([]);
   });
 
-  it("--force は確認を省くが、事実は可視化する(非対話でも通る)", async () => {
+  it("--force skips confirmation but still surfaces the facts (passes non-interactively)", async () => {
     const { env, state } = await startRmEnv();
     env.setTerminal({ stdin: false, stdout: false });
     expect(await runCli(["var", "rm", "SHOP_URL", "--force"], env.layer)).toBe(0);
@@ -219,8 +230,8 @@ describe("削除の明示確認(fail-closed)", () => {
   });
 });
 
-describe("対象の解決(署名・送信より前の型付きエラー)", () => {
-  it("削除済みの名前は「already deleted(終端)」で拒否する", async () => {
+describe("target resolution (typed errors before signing / sending)", () => {
+  it("an already-removed name is refused with 'already deleted (terminal)'", async () => {
     const tombstone = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -240,7 +251,7 @@ describe("対象の解決(署名・送信より前の型付きエラー)", () =>
     expect(state.mutations).toEqual([]);
   });
 
-  it("存在しない名前は明示エラー", async () => {
+  it("a nonexistent name is an explicit error", async () => {
     const { env, state } = await startRmEnv();
     expect(await runCli(["var", "rm", "NO_SUCH", "--force"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not exist in this environment");
@@ -248,11 +259,12 @@ describe("対象の解決(署名・送信より前の型付きエラー)", () =>
   });
 });
 
-describe("CAS リトライと確認済み対象の束縛", () => {
-  it("再解決が別の variableId を返したら型付きエラーで止まる(確認していない変数を消さない)", async () => {
-    // 確認後の 409(並行メタ操作)→ 再解決で、同じ名前に**別の変数**が載って
-    // いる形(並行削除 + 同名の新規作成)。確認は variableId を束縛するので、
-    // このリトライは進んではならない
+describe("the CAS retry and the binding to the confirmed target", () => {
+  it("when re-resolution returns a different variableId, it stops with a typed error (never removes an unconfirmed variable)", async () => {
+    // The post-confirmation 409 (a concurrent metadata op) →
+    // re-resolution finds **a different variable** under the same name
+    // (a concurrent removal + a same-named creation). Since the
+    // confirmation binds the variableId, this retry must not proceed
     const replacement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -272,8 +284,9 @@ describe("CAS リトライと確認済み対象の束縛", () => {
       envStatement,
       statements: [declaredV2],
     });
-    // 2 回目以降の配布は「置き換え後」の集合(マニフェストは prev 連鎖で前進 —
-    // 同版異ハッシュの equivocation 拒否と混同させない)
+    // The second-and-later distributions give the post-replacement set
+    // (the manifest advances by prev-chaining — don't confuse this with
+    // the same-version different-hash equivocation refusal)
     const secondManifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -332,14 +345,15 @@ describe("CAS リトライと確認済み対象の束縛", () => {
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("different variable than the one you confirmed");
-    // 409 で拒否された 1 回だけ — 別 variableId への DELETE は送っていない
+    // Only the single 409-refused call — no DELETE was sent toward the
+    // other variableId
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0]?.path.endsWith("/variables/v-declared")).toBe(true);
   });
 });
 
-describe("効果確認(1-E′ — §12-10 (3))", () => {
-  it("204 を受けても tombstone が検証済み配布に現れなければ失敗し、床は前進しない", async () => {
+describe("effect confirmation (1-E' — §12-10 (3))", () => {
+  it("even on a 204, if the tombstone doesn't show up in the verified distribution it fails and the floor doesn't advance", async () => {
     const { env, state } = await startRmEnv({ ignoreRemovals: true });
     env.setPromptResponses(["SHOP_URL"]);
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
@@ -347,7 +361,8 @@ describe("効果確認(1-E′ — §12-10 (3))", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("variable deletion");
     expect(errors).toContain("unconfirmed");
-    // 床は tombstone へ前進していない(自分の思い込みを床に書かない)
+    // The floor hasn't advanced to the tombstone (don't write your own
+    // assumption onto the floor)
     const floor = await loadFloor(env);
     expect(floor.environments[ENV_ID]?.variables["v-declared"]).toBeUndefined();
   });

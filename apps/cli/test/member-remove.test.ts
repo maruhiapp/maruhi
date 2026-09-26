@@ -1,15 +1,20 @@
-// `maruhi member remove` / `maruhi member change-role`(CRYPTO_SPEC §6.2 / §7)の
-// 統合テスト。
+// Integration tests for `maruhi member remove` / `maruhi member
+// change-role` (CRYPTO_SPEC §6.2 / §7).
 //
-// 固定する性質:
-//  1. remove_member の追記 + 全環境の強制ローテーション(reason=member-removed)。
-//     新エポックのラップ完全集合に削除対象が**含まれない**
-//  2. 中断復旧: 追記済み(対象が既に非メンバー)→ 追記せず sweep 再開 /
-//     削除後にローテーション済みなら確認のみ(チェーン導出 — 進捗ファイルなし)
-//  3. 自己削除・自己降格(member 未満)の拒否(§7 の義務の履行者が消える)
-//  4. change-role: member 未満への降格は sweep(reason=role-demoted)、昇格は
-//     sweep なし。最初から reader のメンバーへの no-op 再実行は義務なし
-//  5. admin / owner 対象の操作は owner のみ(§6.2 の早期検査)
+// Properties pinned down:
+//  1. Appending remove_member + forced rotation of every environment
+//     (reason=member-removed). The new epoch's complete wrap set does
+//     **not** include the removed target
+//  2. Interruption recovery: already appended (target already a
+//     non-member) → don't append, resume the sweep / already rotated
+//     after removal → confirmation only (chain-derived — no progress file)
+//  3. Refusing self-removal and self-demotion below member (the fulfiller
+//     of the §7 mandate would vanish)
+//  4. change-role: demotion below member sweeps (reason=role-demoted);
+//     promotion doesn't. A no-op re-run on a born-reader carries no
+//     mandate
+//  5. Operations targeting an admin / owner are owner-only (§6.2's early
+//     check)
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -74,9 +79,9 @@ interface RotateBody {
     };
   };
   readonly deks: readonly WrappedDek[];
-  /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
+  /** The bundled manifest (§12-4 — issued form. issuer is contracted to be the calling principal). */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  /** The boundary checkpoint (H+2 — §12-4's required bundle). */
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
@@ -84,27 +89,28 @@ interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: RotateBody[];
-  /** dek_wraps 登録(change-role の拡大分バックフィル — §12-6)。 */
+  /** dek_wraps registrations (the change-role widening backfill — §12-6). */
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
 }
 
 /**
- * remove / change-role フロー用の状態つきモック(server-revoke テストの縮約版):
- * チェーン GET / 追記 POST・環境一覧・pull(変数なし)・rotate 複合の受理。
+ * A stateful mock for the remove / change-role flows (a slimmed-down
+ * server-revoke test mock): chain GET / append POST, environment list,
+ * pull (no variables), and accepting the rotate composite.
  */
 async function makeRemoveServer(input: {
   readonly built: BuiltChain;
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
+  /** An insert into the chain append (409 etc.). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
+  /** When onAppend inserts, swap subsequent chains to this form (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
-  /** rotate 複合を送る実行者(既定 = owner)。受理したマニフェストの issuer と保存する自分宛ラップの受信者。 */
+  /** The principal sending the rotate composite (default = owner). Issuer of accepted manifests and recipient of the self-destined wrap it stores. */
   readonly rotator?: TestUser;
-  /** 一覧に status = "deleted" のメタステートメントで載せる環境(検証済み削除)。 */
+  /** Environments listed with a status = "deleted" meta statement (verified deletion). */
   readonly deletedEnvironments?: readonly string[];
 }): Promise<RemoveServerState> {
   const rotator = input.rotator ?? owner;
@@ -116,9 +122,9 @@ async function makeRemoveServer(input: {
   const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
-  /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
+  /** Per-environment stored latest manifest (lazily issued on first pull → replaced on rotate acceptance). */
   const manifests = new Map<string, WireDistributedManifest>();
-  /** 環境ごとの保存済みチェックポイントスナップショット(§16-2 — 変数なし = 空列挙)。 */
+  /** Per-environment stored checkpoint snapshot (§16-2 — no variables = empty enumeration). */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
   const deletedEnvironments = input.deletedEnvironments ?? [];
   const listedStatements = await Promise.all(
@@ -129,7 +135,7 @@ async function makeRemoveServer(input: {
         name: environmentId,
         author: owner,
         head: headOf(input.built, 1),
-        // 削除は tombstone(status deleted・metaVersion + 1 — §12-5)
+        // Deletion is a tombstone (status deleted, metaVersion + 1 — §12-5)
         ...(deletedEnvironments.includes(environmentId)
           ? { status: "deleted" as const, metaVersion: 2 }
           : {}),
@@ -216,7 +222,8 @@ async function makeRemoveServer(input: {
           deletedVariables: [],
           deks: environment.deks,
           manifest,
-          // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
+          // Always bundle the baseline checkpoint's stored row when one
+          // exists (§12-7 — rule 2's material)
           ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
         },
       };
@@ -235,20 +242,22 @@ async function makeRemoveServer(input: {
       }
       const body = request.body as RotateBody;
       rotateBodies.push(body);
-      // rotate + 境界 checkpoint の 2 エントリ受理(§12-4)
+      // Two entries accepted: rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);
       hashes.push(
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // 受理と同一トランザクションのスナップショット保存(§16-2 — 変数なし = 空)
+      // Snapshot stored in the same transaction as acceptance (§16-2 — no
+      // variables = empty)
       checkpointSnapshots.set(environmentId, {
         chainSeq: entries.length,
         entryHashHex: hashes[hashes.length - 1] ?? "",
         values: [],
       });
       environment.currentEpoch = body.entry.payload.newEpoch;
-      // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
+      // The accepted bundled manifest (§12-4) becomes the stored latest
+      // fed to distribution (§12-5)
       manifests.set(environmentId, {
         ...body.manifest,
         issuerUserId: rotator.userId,
@@ -279,7 +288,8 @@ async function makeRemoveServer(input: {
       };
     },
   ];
-  // dek_wraps(自分宛の取得 = バックフィルの入力 / 登録 = 拡大分の出力)
+  // dek_wraps (fetching your own = the backfill's input / registering =
+  // the widening's output)
   handlers.push((request) => {
     const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/deks$`).exec(
       request.path,
@@ -327,7 +337,7 @@ async function ownerWrap(
 }
 
 describe("maruhi member remove", () => {
-  it("remove_member を追記し、全環境を reason=member-removed で強制ローテーションする(削除対象へラップしない)", async () => {
+  it("appends remove_member and force-rotates every environment with reason=member-removed (no wrap to the removed target)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -349,8 +359,9 @@ describe("maruhi member remove", () => {
     if (entry?.op !== "remove_member") throw new Error("remove entry missing");
     expect(entry.payload.targetUserId).toBe(target.userId);
 
-    // §7: 強制ローテーション。ラップ完全集合 = 削除後の現メンバー全員(実行者
-    // だけでなく継続メンバー admin2 も含む)。削除対象は含まれない
+    // §7: forced rotation. The complete wrap set = every current member
+    // after the removal (including continuing member admin2, not just the
+    // caller). The removed target is excluded
     expect(state.rotateBodies).toHaveLength(1);
     const rotate = state.rotateBodies[0];
     if (rotate === undefined) throw new Error("rotate body missing");
@@ -367,13 +378,14 @@ describe("maruhi member remove", () => {
     );
   });
 
-  it("ChainHeadConflict(409)の再同期で並行削除を検出したら、追記せず sweep へ進む(§12-4)", async () => {
+  it("on detecting a concurrent removal during the ChainHeadConflict (409) resync, doesn't append and proceeds to the sweep (§12-4)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: addMemberOp(target, "member") },
     ]);
-    // 送信と並行して別の owner 端末が同じ対象を削除していた(延長チェーン)
+    // Concurrently with the send, another owner device had removed the
+    // same target (an extension chain)
     const concurrent = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -401,16 +413,17 @@ describe("maruhi member remove", () => {
     const env = await startEnv(state, built.projectId, owner);
 
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
-    // 追記の試行は 1 回(409)のみ — 再同期で削除済みを検出し、二重追記しない
+    // The append was attempted once (409) only — the resync detected the
+    // removal and no double-append happens
     expect(state.counters.appendAttempts).toBe(1);
     expect(state.appendedEntries).toHaveLength(0);
-    // §7 の義務(sweep)は自分の分として履行する
+    // The §7 mandate (sweep) is fulfilled as one's own share
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
   });
 
-  it("中断復旧: 対象が既に非メンバー(remove 記録あり)なら追記せず sweep を再開する", async () => {
+  it("interruption recovery: when the target is already a non-member (remove on record), doesn't append and resumes the sweep", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -430,13 +443,14 @@ describe("maruhi member remove", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
-    // 収束系コマンドでは未収束義務の常時警告(rotation-sweep.ts)を出さない:
-    // このチェーンは同期時点で未収束(remove 後の rotate なし)だが、自分の
-    // sweep 報告が同じ事実をより正確に伝えるため二重に警告しない
+    // A converging command doesn't emit the always-on warning about an
+    // unconverged mandate (rotation-sweep.ts): this chain is unconverged at
+    // sync time (no rotate after the remove), but our own sweep report
+    // conveys the same fact more precisely — don't double-warn
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });
 
-  it("中断復旧: 削除後にローテーション済み・再暗号化完了なら確認のみで何も変えない(冪等)", async () => {
+  it("interruption recovery: already rotated and re-encrypted after removal → confirmation only, nothing changes (idempotent)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -458,7 +472,7 @@ describe("maruhi member remove", () => {
     expect(env.logs.join("\n")).toContain("Already rotated (epoch newer than the mandate entry");
   });
 
-  it("自分自身の削除は拒否する(§7 の義務を本人が履行できない)", async () => {
+  it("refuses removing yourself (you can't fulfil the §7 mandate yourself)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(target, "member") },
@@ -471,7 +485,7 @@ describe("maruhi member remove", () => {
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("admin による admin の削除は owner のみ・未知の対象はエラー(§6.2 の早期検査)", async () => {
+  it("an admin removing an admin is owner-only; an unknown target is an error (§6.2's early check)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(admin2, "admin") },
@@ -493,7 +507,7 @@ describe("maruhi member remove", () => {
 });
 
 describe("maruhi member change-role", () => {
-  it("member 未満への降格は追記 + 全環境ローテーション(reason=role-demoted)", async () => {
+  it("demotion below member appends + rotates every environment (reason=role-demoted)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -516,14 +530,15 @@ describe("maruhi member change-role", () => {
     expect(entry.payload).toEqual({
       targetUserId: target.userId,
       newRole: "reader",
-      // K2 の CLI は対象の現 scope(all)を据え置く(--env は K4)
+      // The K2 CLI keeps the target's current scope (all) (--env arrived
+      // in K4)
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
-    // 降格者は reader として新エポックのラップを受け取り続ける(§7 — 機密性では
-    // なくエポックアンカーの健全性の義務)
+    // The demoted member keeps receiving the new epoch's wrap as a reader
+    // (§7 — the mandate is epoch-anchor soundness, not confidentiality)
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, target.userId].toSorted(),
     );
@@ -532,7 +547,7 @@ describe("maruhi member change-role", () => {
     );
   });
 
-  it("昇格(reader → member)はローテーション義務なし", async () => {
+  it("promotion (reader → member) carries no rotation mandate", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -556,7 +571,7 @@ describe("maruhi member change-role", () => {
     );
   });
 
-  it("最初から reader のメンバーへの no-op 再実行は追記も sweep もしない", async () => {
+  it("a no-op re-run on a born-reader member neither appends nor sweeps", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -580,7 +595,7 @@ describe("maruhi member change-role", () => {
     );
   });
 
-  it("中断復旧: 降格エントリ追記済み・ローテーション未了なら、追記せず sweep を再開する", async () => {
+  it("interruption recovery: demotion already appended but rotation unfinished → don't append, resume the sweep", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -615,10 +630,11 @@ describe("maruhi member change-role", () => {
     expect(env.logs.join("\n")).toContain("The target already has the specified role");
   });
 
-  it("born-reader への no-op 再実行は、他人の未収束義務があっても sweep を拾わない(対象スコープの基準)", async () => {
-    // target は最初から reader(自身の降格義務なし)。他人(admin2)の remove が
-    // 後段にあり、そのローテーションは未収束 — 大域基準だと
-    // この no-op が admin2 の義務を拾って全環境ローテーションを開始してしまう
+  it("a no-op re-run on a born-reader doesn't pick up a sweep even with someone's unconverged mandate (the target-scope criterion)", async () => {
+    // target was born a reader (no demotion mandate of its own). Someone
+    // else's (admin2's) remove follows, and its rotation is unconverged —
+    // under a global criterion this no-op would pick up admin2's mandate
+    // and kick off a rotation of every environment
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -644,7 +660,7 @@ describe("maruhi member change-role", () => {
     );
   });
 
-  it("自分自身の member 未満への降格は拒否する(§7 の義務を本人が履行できない)", async () => {
+  it("demoting oneself below member is refused (the person can't fulfill the §7 mandate themselves)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(admin2, "owner") },
@@ -661,13 +677,14 @@ describe("maruhi member change-role", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 環境スコープ(2026-09-15 ES K4 — CRYPTO_SPEC §6.2 / §7、設計録 es-design.md §10)
+// Environment scope (2026-09-15 ES K4 — CRYPTO_SPEC §6.2 / §7, design
+// record es-design.md §10)
 // ---------------------------------------------------------------------------
 
 const ENV_DEV = "env-dev";
 const ENV_PROD = "env-prod";
 
-/** dev / prod の 2 環境(エポック 1)を持つモックの環境集合(owner 宛ラップつき)。 */
+/** A mock's environment set holding the two envs dev / prod (epoch 1), with owner-bound wraps. */
 async function twoEnvironments(
   projectId: string,
 ): Promise<Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>> {
@@ -677,8 +694,8 @@ async function twoEnvironments(
   };
 }
 
-describe("環境スコープ(ES K4): 義務の環境集合と change-role --env", () => {
-  it("listed{dev} のメンバー削除は dev だけを rotate する(remove = 対象の現 scope — §7)", async () => {
+describe("environment scope (ES K4): the mandate's environment set and change-role --env", () => {
+  it("removing a listed{dev} member rotates only dev (remove = the target's current scope — §7)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -699,7 +716,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     );
   });
 
-  it("change-role --env で縮小すると縮小分だけを reason=scope-narrowed で rotate し、新 DEK は対象へラップしない(R(E))", async () => {
+  it("narrowing via change-role --env rotates only the narrowed portion with reason=scope-narrowed, and the new DEK is not wrapped to the target (R(E))", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -717,7 +734,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     ).toBe(0);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "change_role") throw new Error("change_role entry missing");
-    // role は据え置き(--role 省略)、scope は全置換(§6.2)
+    // role stays as-is (--role omitted); scope is fully replaced (§6.2)
     expect(entry.payload).toEqual({
       targetUserId: target.userId,
       newRole: "member",
@@ -726,7 +743,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     });
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_PROD]);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("scope-narrowed");
-    // 新エポックの完全集合 = R(prod) = { owner }(縮小した対象を含まない — §6.3)
+    // The new epoch's complete set = R(prod) = { owner } (excludes the
+    // narrowed target — §6.3)
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
     expect(state.registerBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
@@ -737,7 +755,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     );
   });
 
-  it("change-role --all-envs で拡大すると拡大分の全エポックを対象へバックフィルし、rotate はしない(§12-6)", async () => {
+  it("widening via change-role --all-envs backfills the widened portion's every epoch to the target without rotating (§12-6)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -760,7 +778,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
       scopeEnvironmentIds: [],
     });
     expect(state.rotateBodies).toHaveLength(0);
-    // 拡大分 = prod のみ(dev は既に持つ)。受信者 = 対象、エポック 1
+    // The widened portion = prod only (dev is already held). Recipient =
+    // the target, epoch 1
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
     expect(state.registerBodies[0]?.deks.map((wrap) => [wrap.epoch, wrap.recipientUserId])).toEqual(
       [[1, target.userId]],
@@ -770,7 +789,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(logs).toContain("Done: the role / scope was changed (no rotation mandate)");
   });
 
-  it("中断復旧: 縮小エントリ追記済み・rotate 未了なら、同じフラグの再実行が追記せず縮小分だけを rotate する", async () => {
+  it("interruption recovery: the narrowing entry already appended but rotate unfinished → re-running the same flags doesn't append and rotates only the narrowed portion", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -792,14 +811,15 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(env.logs.join("\n")).toContain("nothing was appended");
   });
 
-  it("CAS リトライは据え置き側(role / scope)を再同期後のビューから解決し、並行の変更を上書きしない(Cursor Bugbot)", async () => {
+  it("a CAS retry resolves the kept side (role / scope) from the post-resync view and doesn't overwrite a concurrent change (Cursor Bugbot)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
       { actor: owner, operation: addMemberOp(target, "reader") },
     ]);
-    // 送信と並行して別の owner 端末が対象を member へ昇格していた(延長チェーン)
+    // Concurrently with the send, another owner device had promoted the
+    // target to member (an extension chain)
     const concurrent = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -825,7 +845,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     });
     const env = await startEnv(state, built.projectId, owner);
 
-    // scope だけを変える実行: 再署名は並行昇格後の role(member)を据え置く
+    // A run that only changes scope: the re-sign keeps the post-promotion
+    // role (member)
     expect(
       await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
     ).toBe(0);
@@ -841,7 +862,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(entry.seq).toBe(6);
   });
 
-  it("入力規則: 変更なし・--env と --all-envs の併用・owner への --env は usage エラー(通信前)", async () => {
+  it("input rules: no-change, combining --env with --all-envs, and --env on an owner are usage errors (before any traffic)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -857,7 +878,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
       expect(state.appendedEntries, argv.join(" ")).toHaveLength(0);
     }
-    // 未知の環境 id はチェーン上の存在検査で止まる(unknown-environment の手前判定)
+    // An unknown environment ID stops at the on-chain existence check
+    // (the pre-judgement for unknown-environment)
     const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, owner);
     expect(
@@ -867,7 +889,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("値付き pull は scope 外を通信前に拒否し、メタのみ(schema)は scope を問わない(§6.3 / §12-7 — 裁定 G-2)", async () => {
+  it("a valued pull refuses out-of-scope before traffic, while a meta-only one (schema) doesn't care about scope (§6.3 / §12-7 — ruling G-2)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -891,8 +913,9 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(env.errors.join("\n")).toContain(`your scope: ${ENV_DEV}`);
     expect(server.requests.filter((request) => request.path.includes("/pull"))).toHaveLength(0);
 
-    // メタのみ pull(`maruhi schema`)は scope 外でも要求を出す(モックは持たないので
-    // 404 で終わるが、scope の拒否文言では止まらない)
+    // A meta-only pull (`maruhi schema`) issues the request even outside
+    // scope (the mock doesn't have it so it ends in 404, but it doesn't
+    // stop on the scope-refusal wording)
     const schemaEnv = await makeTestEnv();
     seedSession(schemaEnv, server.origin, target);
     await seedConfig(schemaEnv, { server: server.origin, defaultProject: built.projectId });
@@ -903,13 +926,14 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     ).toHaveLength(1);
   });
 
-  it("中断復旧: 拡大バックフィルの中断後に第三者の change_role が挟まっても、履歴全体から拡大分を再導出して再開する(pullfrog)", async () => {
+  it("interruption recovery: even with a third party's change_role after a widening backfill stalls, re-derive the widened portion from the whole history and resume (pullfrog)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
-      // 拡大(バックフィル中断)→ 第三者が role だけを変える change_role を追記
+      // Widening (backfill interrupted) → a third party appends a
+      // change_role that only changes the role
       { actor: owner, operation: changeRoleOp(target, "member", null) },
       { actor: owner, operation: changeRoleOp(target, "admin", null) },
     ]);
@@ -925,7 +949,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.rotateBodies).toHaveLength(0);
   });
 
-  it("自分自身の scope の縮小は拒否する(§7 の義務を本人が履行できない)", async () => {
+  it("refuses narrowing your own scope (you can't fulfil the §7 mandate yourself)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -941,7 +965,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("--role owner は listed の対象でも scope を all に全置換し、拡大分をバックフィルする(§6.2 owner = all)", async () => {
+  it("--role owner fully replaces a listed target's scope with all and backfills the widened portion (§6.2 owner = all)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -962,7 +986,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
   });
 
-  it("--no-envs は listed{}(環境ゼロ)へ置換し、旧 scope の全環境を縮小分として rotate する(§6.2 の空 listed)", async () => {
+  it("--no-envs replaces the scope with listed{} (zero environments) and rotates every environment of the old scope as the narrowed portion (§6.2's empty listed)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -986,7 +1010,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("scope-narrowed");
   });
 
-  it("change-role の --env は重複・不正形式を usage(2)で通信前に落とす", async () => {
+  it("change-role --env drops duplicates and malformed forms as usage (2) before traffic", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1004,10 +1028,11 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     }
   });
 
-  it("実行者の scope 外に残る他人の義務環境は rotate せず注記し、自分の義務は履行する(§7 — 独立レビュー S2)", async () => {
+  it("someone-else's mandate environments outside the caller's scope aren't rotated but are noted, while one's own mandate is fulfilled (§7 — independent review S2)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // owner が target を {dev, prod} → {dev} に縮めたが prod の rotate は未収束。dev 専任
-    // admin が target を reader へ降格する(対称差 ∅・旧 ∪ 新 = {dev} ⊆ {dev})
+    // owner narrowed target from {dev, prod} to {dev} but prod's rotate is
+    // unconverged. A dev-only admin demotes target to reader (symmetric
+    // difference ∅ · old ∪ new = {dev} ⊆ {dev})
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1016,7 +1041,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV, ENV_PROD]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV]) },
     ]);
-    // 配布される自分宛ラップは実行者(devAdmin)宛(モックは受信者で絞らないため差し替える)
+    // The distributed self-destined wraps are for the caller (devAdmin)
+    // (the mock doesn't filter by recipient, so swap them)
     const environments = {
       [ENV_DEV]: {
         currentEpoch: 1,
@@ -1045,10 +1071,11 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     );
   });
 
-  it("他人の拡大の未収束分が自分の scope 外だけなら、バックフィル無しでも注記を出して 0 で終わる(Cursor Bugbot)", async () => {
+  it("when the unconverged portion of someone else's widening lies only outside your scope, it notes it and exits 0 with no backfill (Cursor Bugbot)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // owner が target を {dev} → {dev, prod} に広げたが prod のバックフィルは未収束。
-    // dev 専任 admin が同じ scope で再実行(対称差 ∅ = 追記済みの再開)
+    // owner widened target from {dev} to {dev, prod} but prod's backfill
+    // is unconverged. A dev-only admin re-runs with the same scope
+    // (symmetric difference ∅ = a resume of an already-appended entry)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1072,10 +1099,11 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     );
   });
 
-  it("検証済み削除の環境は拡大分から外れ、scope 外の注記にも出ない(pullfrog 指摘)", async () => {
+  it("a verified-deleted environment leaves the widened portion and doesn't appear in the out-of-scope note (pullfrog)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // 上のケースと同じ「他人の拡大が未収束」だが、prod は後から削除されている。
-    // 誰も埋められない環境なので注記自体を出さない(§12-6 の義務は削除で消える)
+    // Same "someone else's widening is unconverged" as the case above, but
+    // prod has since been deleted. No one can fill it, so no note is
+    // emitted (the §12-6 mandate vanishes with the deletion)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1101,7 +1129,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
   });
 
-  it("listed の admin は自分の scope 外の対象を remove できない(原則 1 の手前判定 — pullfrog)", async () => {
+  it("a listed admin cannot remove a target outside their scope (principle 1's pre-judgement — pullfrog)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -1117,7 +1145,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     expect(state.appendedEntries).toHaveLength(0);
   });
 
-  it("listed の admin は自分の scope 外に触れる change_role を追記できない(原則 1 の手前判定)", async () => {
+  it("a listed admin cannot append a change_role touching outside their scope (principle 1's pre-judgement)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -1126,7 +1154,8 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
       { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
       { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
     ]);
-    // 対称差 {prod} ⊄ {dev}: dev 専任 admin は prod からの縮小を署名できない
+    // Symmetric difference {prod} ⊄ {dev}: a dev-only admin cannot sign a
+    // narrowing away from prod
     const narrow = await makeRemoveServer({ built, environments: {} });
     const narrowEnv = await startEnv(narrow, built.projectId, devAdmin);
     expect(
@@ -1134,7 +1163,7 @@ describe("環境スコープ(ES K4): 義務の環境集合と change-role --env"
     ).toBe(1);
     expect(narrowEnv.errors.join("\n")).toContain("scope-not-contained");
     expect(narrow.appendedEntries).toHaveLength(0);
-    // role が変わる場合は 旧 ∪ 新 = {dev, prod} ⊄ {dev}
+    // When the role changes, old ∪ new = {dev, prod} ⊄ {dev}
     const promote = await makeRemoveServer({ built, environments: {} });
     const promoteEnv = await startEnv(promote, built.projectId, devAdmin);
     expect(
