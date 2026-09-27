@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# packaging/install.sh の実走テスト(正例 + 改竄の負例)。
+# A live-run test of packaging/install.sh (positive cases + tampered
+# negative cases).
 #
-#   bun run --filter @maruhi/cli build:binaries   # 先に成果物を作る
+#   bun run --filter @maruhi/cli build:binaries   # build the artifacts first
 #   packaging/install-test.sh --dist apps/cli/dist --target linux-x64 --version 0.1.0-rc.1
 #
-# 実リリースには依存しない: install.sh の MARUHI_BASE_URL を使い、
-# ローカルの成果物(build:binaries の出力)を http://127.0.0.1 と file:// の
-# 両方から入れる。CI(.github/workflows/installer.yml)は release.yml の smoke と
-# 同じ unix 4 対象の実 runner でこれを回す。
+# It does not depend on a real release: it uses install.sh's
+# MARUHI_BASE_URL to install the local artifacts (build:binaries'
+# output) from both http://127.0.0.1 and file://.
+# CI (.github/workflows/installer.yml) runs this on the same real
+# runners for the unix 4 targets as release.yml's smoke.
 #
-# 負例は「checksums.txt を 1 文字改竄」「アーカイブを 1 バイト改竄」「アセット
-# 不在」「置き換え先が通常ファイルでない」「版の不一致」の 5 種。いずれも非 0 終了で、
-# インストール先に部分ファイルを残さないことまで検査する(検証をすり抜けても
-# 気づけない形を作らない)。
+# The negative cases are 5: "one character of checksums.txt tampered",
+# "one byte of the archive tampered", "asset missing", "replacement
+# destination not a regular file", and "version mismatch". Each must
+# exit non-zero, and the test checks all the way down to no partial
+# files left at the install destination (never building a shape whose
+# bypassing verification would go unnoticed).
 set -euo pipefail
 
 DIST=""
@@ -28,12 +32,12 @@ INSTALL_SH="${SCRIPT_DIR}/install.sh"
 
 usage() {
   cat <<EOF
-使い方: install-test.sh --dist <dir> --target <name> --version <x.y.z>
+Usage: install-test.sh --dist <dir> --target <name> --version <x.y.z>
 
-  --dist     maruhi-<target>.tar.gz と checksums.txt があるディレクトリ
-  --target   検査する対象(例: linux-x64)。この runner で install.sh が
-             検出する対象と一致している必要がある
-  --version  期待する \`maruhi --version\` の出力(v なし)
+  --dist     The directory holding maruhi-<target>.tar.gz and checksums.txt
+  --target   The target under test (example: linux-x64). Must match
+             the target install.sh detects on this runner
+  --version  The expected \`maruhi --version\` output (no v prefix)
 EOF
 }
 
@@ -56,7 +60,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "不明な引数: $1" >&2
+      echo "unknown argument: $1" >&2
       usage >&2
       exit 2
       ;;
@@ -71,16 +75,17 @@ done
 DIST="$(cd "${DIST}" && pwd)"
 ARCHIVE="maruhi-${TARGET}.tar.gz"
 [[ -f "${DIST}/${ARCHIVE}" ]] || {
-  echo "成果物がありません: ${DIST}/${ARCHIVE}" >&2
+  echo "artifact missing: ${DIST}/${ARCHIVE}" >&2
   exit 2
 }
 [[ -f "${DIST}/checksums.txt" ]] || {
-  echo "成果物がありません: ${DIST}/checksums.txt" >&2
+  echo "artifact missing: ${DIST}/checksums.txt" >&2
   exit 2
 }
-# ローカルの http fixture 用(install.sh 自体は curl / tar / sha256 系だけを要求する)
+# For the local http fixture (install.sh itself requires only curl /
+# tar / sha256-family tools)
 command -v python3 >/dev/null || {
-  echo "python3 が必要です(ローカルの http fixture を立てるため)" >&2
+  echo "python3 is required (to bring up the local http fixture)" >&2
   exit 2
 }
 
@@ -93,7 +98,8 @@ trap cleanup EXIT
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maruhi-install-test.XXXXXX")"
 mkdir -p "${WORK}/serve"
 
-# 素の成果物(正例)。以降のケースはこれを複製して改竄する
+# The pristine artifacts (the positive case). Every later case
+# duplicates and tampers these
 new_case() {
   local name="$1"
   local dir="${WORK}/serve/${name}"
@@ -104,10 +110,12 @@ new_case() {
 
 start_server() {
   local log="${WORK}/server.log"
-  # port 0 = OS 任せの空きポート(並列実行での衝突を作らない)。
-  # `python3 -m http.server` の起動メッセージは解析しない — stdout がファイルへ
-  # 向くとブロックバッファされ、文言も版で変わる(CI で実際に踏んだ)。
-  # ポートは自分で取って flush して出す
+  # port 0 = an OS-assigned free port (no collisions under parallel
+  # runs).
+  # `python3 -m http.server`'s startup message is not parsed — stdout
+  # aimed at a file is block-buffered, and the wording varies by
+  # version (actually hit on CI).
+  # Take the port ourselves and print it flushed
   python3 -u -c '
 import functools, http.server, socketserver, sys
 
@@ -117,8 +125,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
     httpd.serve_forever()
 ' "${WORK}/serve" >"${log}" 2>&1 &
   SERVER_PID=$!
-  # 後始末の kill で bash が「Terminated」の非同期通知を出し、python プログラム
-  # 全体がログ末尾に流れる(実 runner で確認)。ジョブ表から外して黙らせる
+  # The cleanup kill makes bash emit an asynchronous "Terminated"
+  # notice and the whole python program flows into the log tail
+  # (confirmed on real runners). Disown it from the job table to
+  # silence it
   disown "${SERVER_PID}" 2>/dev/null || true
   local i
   for ((i = 0; i < 100; i++)); do
@@ -129,7 +139,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
   done
   PORT=""
   cat "${log}" >&2
-  echo "http サーバーを起動できません" >&2
+  echo "could not start the http server" >&2
   exit 2
 }
 
@@ -139,27 +149,30 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
-# check <ラベル> <コマンド...>: コマンドの終了状態で ok / NG を数える。
-# `A && pass || fail` 形は A が真でも pass が失敗すれば fail が走る形なので使わない
+# check <label> <command...>: count ok / NG by the command's exit
+# status.
+# The `A && pass || fail` shape is not used — a failing pass would
+# still run fail even when A is true
 check() {
   local label="$1"
   shift
   if "$@"; then pass "${label}"; else fail "${label}"; fi
 }
 
-# インストール先に何も残っていないこと(部分ファイル・空でない中身を許さない)
+# That nothing remains at the install destination (no partial files,
+# no non-empty contents)
 assert_clean_dest() {
   local dest="$1" label="$2"
   if [[ ! -e ${dest} ]]; then
-    pass "${label}: インストール先を作っていない"
+    pass "${label}: never created the install destination"
     return
   fi
   local leftovers
   leftovers="$(ls -A "${dest}")"
   if [[ -z ${leftovers} ]]; then
-    pass "${label}: インストール先が空のまま"
+    pass "${label}: install destination stayed empty"
   else
-    fail "${label}: 途中状態が残った: ${leftovers}"
+    fail "${label}: intermediate state left behind: ${leftovers}"
   fi
 }
 
@@ -169,64 +182,66 @@ run_install() {
   MARUHI_BASE_URL="${base}" sh "${INSTALL_SH}" --dir "${dest}" "$@" 2>&1
 }
 
-# ---- 正例 1: http 経由で入り、mh が同じバイナリを指す --------------------------
+# ---- Positive case 1: installs over http; mh points at the same binary --
 case_http_ok() {
   local dest out
   new_case http-ok >/dev/null
   dest="${WORK}/dest/http-ok"
   if ! out="$(run_install "http://127.0.0.1:${PORT}/http-ok" "${dest}" --version "${VERSION}")"; then
-    fail "http 正例: 失敗した"
+    fail "http positive: failed"
     echo "${out}" >&2
     return
   fi
-  check "http 正例: maruhi を設置した" test -x "${dest}/maruhi"
-  check "http 正例: --version が ${VERSION}" test "$("${dest}/maruhi" --version)" = "${VERSION}"
-  check "http 正例: mh は maruhi への相対 symlink" test "$(readlink "${dest}/mh")" = "maruhi"
-  check "http 正例: mh も起動する" test "$("${dest}/mh" --version)" = "${VERSION}"
+  check "http positive: installed maruhi" test -x "${dest}/maruhi"
+  check "http positive: --version is ${VERSION}" test "$("${dest}/maruhi" --version)" = "${VERSION}"
+  check "http positive: mh is a relative symlink to maruhi" test "$(readlink "${dest}/mh")" = "maruhi"
+  check "http positive: mh starts too" test "$("${dest}/mh" --version)" = "${VERSION}"
 }
 
-# ---- 正例 2: file:// 経由(内部ミラー・ローカル成果物の経路)-------------------
+# ---- Positive case 2: via file:// (the internal-mirror / local-artifact path) --
 case_file_ok() {
   local dir dest out
   dir="$(new_case file-ok)"
   dest="${WORK}/dest/file-ok"
   if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
-    fail "file 正例: 失敗した"
+    fail "file positive: failed"
     echo "${out}" >&2
     return
   fi
-  check "file 正例: maruhi を設置した" test -x "${dest}/maruhi"
-  check "file 正例: mh も張られる" test "$(readlink "${dest}/mh")" = "maruhi"
+  check "file positive: installed maruhi" test -x "${dest}/maruhi"
+  check "file positive: mh is created too" test "$(readlink "${dest}/mh")" = "maruhi"
 }
 
-# ---- 正例 3: 再インストール(冪等)+ 他人の mh を潰さない ----------------------
+# ---- Positive case 3: reinstall (idempotent) + does not crush someone else's mh --
 case_reinstall_and_foreign_mh() {
   local dir dest out
   dir="$(new_case reinstall)"
   dest="${WORK}/dest/reinstall"
   mkdir -p "${dest}"
-  # 別ツールの mh を置いておく(symlink ではない実体)
+  # Leave another tool's mh in place (a real file, not a symlink)
   printf '#!/bin/sh\necho other\n' >"${dest}/mh"
   chmod 755 "${dest}/mh"
   if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
-    fail "再インストール: 失敗した"
+    fail "reinstall: failed"
     echo "${out}" >&2
     return
   fi
-  check "再インストール: 他人の mh を残した" test "$("${dest}/mh")" = "other"
-  check "再インストール: mh について警告した" grep -q "already exists (not a symlink)" <<<"${out}"
-  # 2 回目(既存の maruhi を上書き)
+  check "reinstall: kept the foreign mh" test "$("${dest}/mh")" = "other"
+  check "reinstall: warned about mh" grep -q "already exists (not a symlink)" <<<"${out}"
+  # Second run (overwrites the existing maruhi)
   if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
-    fail "再インストール: 2 回目が失敗した"
+    fail "reinstall: second run failed"
     echo "${out}" >&2
     return
   fi
-  check "再インストール: 上書きできる" test "$("${dest}/maruhi" --version)" = "${VERSION}"
+  check "reinstall: overwrites" test "$("${dest}/maruhi" --version)" = "${VERSION}"
 }
 
-# ---- 正例 4: 既存の mh が「他人を指す symlink」なら張り替えない -----------------
-# link_alias で `ln -sf` に到達しうる唯一の分岐。通常ファイルの分岐(正例 3)とは
-# 別経路なので個別に踏む
+# ---- Positive case 4: an existing mh that is "a symlink to
+# something else" is not relinked ------------------------------------------------
+# The only branch of link_alias that can reach `ln -sf`. A different
+# path than the regular-file branch (positive case 3), so it is
+# exercised separately
 case_foreign_mh_symlink() {
   local dir dest out
   dir="$(new_case foreign-mh-symlink)"
@@ -236,21 +251,23 @@ case_foreign_mh_symlink() {
   chmod 755 "${dest}/other-tool"
   ln -s other-tool "${dest}/mh"
   if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
-    fail "他人の mh symlink: 失敗した"
+    fail "foreign mh symlink: failed"
     echo "${out}" >&2
     return
   fi
-  check "他人の mh symlink: 張り替えていない" test "$(readlink "${dest}/mh")" = "other-tool"
-  check "他人の mh symlink: 警告した" grep -q "does not point to maruhi" <<<"${out}"
-  check "他人の mh symlink: maruhi 自体は入る" test -x "${dest}/maruhi"
+  check "foreign mh symlink: not relinked" test "$(readlink "${dest}/mh")" = "other-tool"
+  check "foreign mh symlink: warned" grep -q "does not point to maruhi" <<<"${out}"
+  check "foreign mh symlink: maruhi itself installs" test -x "${dest}/maruhi"
 }
 
-# ---- 負例 1: checksums.txt を 1 文字改竄(変異検証の本体)----------------------
+# ---- Negative case 1: one character of checksums.txt tampered (the body of the mutation verification) --
 case_tampered_checksums() {
   local dir dest out
   dir="$(new_case tampered-checksums)"
-  # 自対象の行の hex 先頭 1 文字だけを別の hex 桁に差し替える。形式(64 桁 + 空白
-  # 2 個)は保つ = 形式チェックではなく SHA-256 の比較そのものを踏ませる
+  # Replace only the first hex character of our own target's line
+  # with a different hex digit. The format (64 digits + 2 spaces) is
+  # kept = exercises the SHA-256 comparison itself, not the format
+  # check
   awk -v target="${ARCHIVE}" '
     $2 == target {
       first = substr($1, 1, 1)
@@ -261,98 +278,101 @@ case_tampered_checksums() {
     { print }
   ' "${DIST}/checksums.txt" >"${dir}/checksums.txt"
   if diff -q "${DIST}/checksums.txt" "${dir}/checksums.txt" >/dev/null; then
-    fail "改竄 checksums: 改竄できていない(テスト自体の不備)"
+    fail "tampered checksums: could not tamper (a defect in the test itself)"
     return
   fi
   if ! grep -qE "^[0-9a-f]{64}  ${ARCHIVE}\$" "${dir}/checksums.txt"; then
-    fail "改竄 checksums: 形式が壊れた(SHA 比較を踏まないテストになる)"
+    fail "tampered checksums: the format broke (the test no longer exercises the SHA comparison)"
     return
   fi
   dest="${WORK}/dest/tampered-checksums"
   if out="$(run_install "http://127.0.0.1:${PORT}/tampered-checksums" "${dest}" --version "${VERSION}")"; then
-    fail "改竄 checksums: インストールが成功してしまった"
+    fail "tampered checksums: the install succeeded"
     echo "${out}" >&2
     return
   fi
-  pass "改竄 checksums: 非 0 で終了した"
-  check "改竄 checksums: 検証失敗として報告した" grep -q "SHA-256" <<<"${out}"
-  assert_clean_dest "${dest}" "改竄 checksums"
+  pass "tampered checksums: exited non-zero"
+  check "tampered checksums: reported as a verification failure" grep -q "SHA-256" <<<"${out}"
+  assert_clean_dest "${dest}" "tampered checksums"
 }
 
-# ---- 負例 2: アーカイブを 1 バイト改竄 ----------------------------------------
+# ---- Negative case 2: one byte of the archive tampered ------------------------
 case_tampered_archive() {
   local dest out
   local dir
   dir="$(new_case tampered-archive)"
-  # 負例 1 と同じく条件分岐で決定的に改竄する。固定文字の上書きだと、その位置の
-  # 元バイトが偶然同じ文字のとき(1/256)に「改竄できていない」で落ちる flake になる
+  # Tamper deterministically with a conditional like negative case 1.
+  # Overwriting with a fixed character would flake on "could not
+  # tamper" (1/256) when the original byte at that position happens
+  # to be the same character
   local orig repl
   orig="$(dd if="${dir}/${ARCHIVE}" bs=1 skip=1024 count=1 2>/dev/null || true)"
   repl="$([ "${orig}" = "X" ] && echo "Y" || echo "X")"
   printf '%s' "${repl}" | dd of="${dir}/${ARCHIVE}" bs=1 seek=1024 conv=notrunc 2>/dev/null
   if cmp -s "${DIST}/${ARCHIVE}" "${dir}/${ARCHIVE}"; then
-    fail "改竄アーカイブ: 改竄できていない(テスト自体の不備)"
+    fail "tampered archive: could not tamper (a defect in the test itself)"
     return
   fi
   dest="${WORK}/dest/tampered-archive"
   if out="$(run_install "http://127.0.0.1:${PORT}/tampered-archive" "${dest}" --version "${VERSION}")"; then
-    fail "改竄アーカイブ: インストールが成功してしまった"
+    fail "tampered archive: the install succeeded"
     echo "${out}" >&2
     return
   fi
-  pass "改竄アーカイブ: 非 0 で終了した"
-  check "改竄アーカイブ: 検証失敗として報告した" grep -q "SHA-256" <<<"${out}"
-  assert_clean_dest "${dest}" "改竄アーカイブ"
+  pass "tampered archive: exited non-zero"
+  check "tampered archive: reported as a verification failure" grep -q "SHA-256" <<<"${out}"
+  assert_clean_dest "${dest}" "tampered archive"
 }
 
-# ---- 負例 3: アセット不在(404)-----------------------------------------------
+# ---- Negative case 3: asset missing (404) -------------------------------------
 case_missing_asset() {
   local dir dest out
   dir="$(new_case missing-asset)"
   rm -f "${dir}/${ARCHIVE}"
   dest="${WORK}/dest/missing-asset"
   if out="$(run_install "http://127.0.0.1:${PORT}/missing-asset" "${dest}" --version "${VERSION}")"; then
-    fail "アセット不在: インストールが成功してしまった"
+    fail "asset missing: the install succeeded"
     echo "${out}" >&2
     return
   fi
-  pass "アセット不在: 非 0 で終了した"
-  check "アセット不在: 取得失敗として報告した" grep -q "download failed" <<<"${out}"
-  assert_clean_dest "${dest}" "アセット不在"
+  pass "asset missing: exited non-zero"
+  check "asset missing: reported as a fetch failure" grep -q "download failed" <<<"${out}"
+  assert_clean_dest "${dest}" "asset missing"
 }
 
-# ---- 負例 4: 置き換え先が通常ファイルでない(mv が中へ潜り込む形を塞ぐ)--------
+# ---- Negative case 4: the replacement destination is not a regular file
+# (blocks the shape where mv slips inside it) ---------------------------------
 case_dest_not_a_file() {
   local dir dest out
   dir="$(new_case dest-not-a-file)"
   dest="${WORK}/dest/dest-not-a-file"
   mkdir -p "${dest}/maruhi"
   if out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
-    fail "置き換え先が非ファイル: インストールが成功してしまった"
+    fail "destination not a file: the install succeeded"
     echo "${out}" >&2
     return
   fi
-  pass "置き換え先が非ファイル: 非 0 で終了した"
-  check "置き換え先が非ファイル: 理由を報告した" grep -q "is not a regular file" <<<"${out}"
-  check "置き換え先が非ファイル: 中へ潜り込んでいない" test -z "$(ls -A "${dest}/maruhi")"
+  pass "destination not a file: exited non-zero"
+  check "destination not a file: reported the reason" grep -q "is not a regular file" <<<"${out}"
+  check "destination not a file: did not slip inside" test -z "$(ls -A "${dest}/maruhi")"
 }
 
-# ---- 負例 5: 版の不一致(アセット取り違えの検出)-------------------------------
+# ---- Negative case 5: version mismatch (detects mixed-up assets) --------------
 case_version_mismatch() {
   local dir dest out
   dir="$(new_case version-mismatch)"
   dest="${WORK}/dest/version-mismatch"
   if out="$(run_install "file://${dir}" "${dest}" --version "99.99.99")"; then
-    fail "版の不一致: インストールが成功してしまった"
+    fail "version mismatch: the install succeeded"
     echo "${out}" >&2
     return
   fi
-  pass "版の不一致: 非 0 で終了した"
-  check "版の不一致: 版の不一致として報告した" grep -q "version mismatch" <<<"${out}"
-  assert_clean_dest "${dest}" "版の不一致"
+  pass "version mismatch: exited non-zero"
+  check "version mismatch: reported as a version mismatch" grep -q "version mismatch" <<<"${out}"
+  assert_clean_dest "${dest}" "version mismatch"
 }
 
-echo "install.sh 実走テスト(target=${TARGET} version=${VERSION})"
+echo "install.sh live-run test (target=${TARGET} version=${VERSION})"
 start_server
 echo "http fixture: http://127.0.0.1:${PORT}/"
 
@@ -367,7 +387,7 @@ case_dest_not_a_file
 case_version_mismatch
 
 if [[ ${FAILURES} -gt 0 ]]; then
-  echo "失敗: ${FAILURES} 件" >&2
+  echo "failures: ${FAILURES}" >&2
   exit 1
 fi
-echo "すべて通過"
+echo "all passed"

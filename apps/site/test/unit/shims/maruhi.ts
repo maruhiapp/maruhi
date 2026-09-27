@@ -40,8 +40,9 @@ if (executable === undefined) {
   console.error("maruhi shim: a command is required after `--`");
   process.exit(2);
 }
-// RECIPE_TEST_XTRACE: レシピ内の `sh -c '…'` にも xtrace を効かせる(xtrace は子シェルに継承されないため、
-// 検査側が `sh` を `sh -x` として起動する — 値がトレースに出ないことの検査)
+// RECIPE_TEST_XTRACE: apply xtrace to the recipe's inner `sh -c '…'` too (xtrace is not
+// inherited by child shells, so the check side launches `sh` as `sh -x` — checking that no
+// value appears in the trace)
 const traced = process.env["RECIPE_TEST_XTRACE"] !== undefined && executable === "sh";
 const child = spawnSync(executable, traced ? ["-x", ...args] : args, {
   env: { ...process.env, ...values },

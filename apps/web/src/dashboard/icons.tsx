@@ -1,11 +1,14 @@
-// サイドバー用のアイコン(Heroicons 2 outline — MIT、© Tailwind Labs)。ライセンス本文は
-// 同ディレクトリの MIT-heroicons.txt(MIT は写しに本文と著作権表示を伴わせることを求める —
-// フォントの OFL-*.txt と同じく、写した資産の隣に置く)。
+// Sidebar icons (Heroicons 2 outline — MIT, © Tailwind Labs). The
+// license text lives in MIT-heroicons.txt in the same directory (MIT
+// requires copies to carry the text and the copyright notice — placed
+// next to the copied asset, same as the fonts' OFL-*.txt).
 //
-// Astryx のテンプレート(`astryx template shell-side-nav` / `SideNavWithHeaderMenu`)は
-// @heroicons/react を使うか SVG をインラインで持つ。依存を増やさない方針(CLAUDE.md)に
-// 従い、後者と同じ形で 6 つだけをここに置く。パスは heroicons の optimized/24/outline を
-// そのまま写したもの。Icon / SideNavItem の `icon` に渡すと size / color が適用される。
+// Astryx's templates (`astryx template shell-side-nav` /
+// `SideNavWithHeaderMenu`) either use @heroicons/react or carry inline
+// SVGs. Per the no-new-dependencies policy (CLAUDE.md), the six we need
+// are placed here in the latter's shape. The paths are verbatim copies
+// of heroicons' optimized/24/outline. Passing one to Icon /
+// SideNavItem's `icon` applies size / color.
 import type { SVGProps } from "react";
 
 function outline(path: string) {

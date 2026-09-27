@@ -1,12 +1,19 @@
-// docs/deploy-targets.mdx のレシピ(docs/notes/integration-options.md §3 裁定 H)を**ページの本文から
-// そのまま切り出して実行**し、DP5 の golden と同じく「書いた文言」と「検査対象」を一致させ、docs の漂流を
-// 構造で防ぐ。固定するのは:
-//   1. 平文の値は外部コマンドの argv に一切現れず、`set -x` のトレースにも出ない(`ps` / シェル履歴 — 裁定 C)
-//   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel / gh = 変数ごとに値 + 改行)
-//   3. 名前に値が無いときは何も送らずに失敗する(wrangler の JSON null = 削除を決して作らない)
-//   4. POSIX sh で書かれている(dash / bash / zsh のうち導入済みのもので同じ結果)
-// ベンダー CLI と maruhi は shims/ の偽コマンド(argv と stdin を記録するだけ)。実アカウントでの通し確認は
-// 所有者の人間タスク。jq が無い環境ではスキップする(CI の ubuntu には入っている)。
+// Executes the recipes of docs/deploy-targets.mdx (the ruling H of
+// docs/notes/integration-options.md §3) **verbatim as cut from the page
+// body**, so that — like DP5's golden — "the written wording" and "the
+// checked target" coincide and doc drift is prevented structurally. What
+// is pinned:
+//   1. no plaintext value ever appears on an external command's argv or in
+//      a `set -x` trace (`ps` / shell history — ruling C)
+//   2. values reach only the vendor CLI's stdin (wrangler = one JSON
+//      object; vercel / gh = value + newline per variable)
+//   3. a name without a value fails sending nothing (wrangler's JSON null
+//      must never create a delete)
+//   4. written in POSIX sh (same result under whichever of dash / bash /
+//      zsh is installed)
+// The vendor CLIs and maruhi are fake commands in shims/ (they only record
+// argv and stdin). End-to-end verification against real accounts is the
+// owner's human task. Environments without jq skip it (CI's ubuntu has it).
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,8 +31,9 @@ function shellBlocks(markdown: string): string[] {
 }
 
 const allBlocks = shellBlocks(page);
-// レシピ = `maruhi run --env production -- ` で始まるブロック(`maruhi sync` の使い方の
-// ```sh も同じページにあるので、本文の順ではなく形で選ぶ)
+// A recipe is a block starting with `maruhi run --env production -- `
+// (the `maruhi sync` usage ```sh blocks are on the same page, so select by
+// shape, not document order)
 const RECIPE_PREFIX = "maruhi run --env production -- ";
 const blocks = allBlocks.filter((b) => b.startsWith(RECIPE_PREFIX));
 const workersRecipe = blocks.find((b) => b.includes("wrangler secret bulk"));
@@ -89,7 +97,8 @@ function runRecipe(
     RECIPE_TEST_LOG: log,
     RECIPE_TEST_VALUES: valuesFile,
   };
-  // xtrace: 外側のシェルを -x で起動し、偽 maruhi にはレシピ内の `sh -c` も -x にするよう伝える
+  // xtrace: start the outer shell with -x and tell the fake maruhi to
+  // make the recipe's inner `sh -c` run with -x too
   const args = ["-c", recipe];
   if (options.xtrace === true) {
     args.unshift("-x");
@@ -133,12 +142,13 @@ function expectValuesOffCommandLines(calls: Call[]): void {
  * tracing happened is a line starting with `+` that shows the outer `maruhi run` command.
  */
 function expectValuesOffTrace(stderr: string): void {
-  // パイプラインの両側(maruhi run … | wrangler …)は別プロセスで、dash は
-  // トレースを語ごとに書くため、負荷の下では両側の語が同じ stderr で任意に
-  // 交互に並ぶ(実測: `+ maruhi+  run --env production …` /
-  // `  maruhiwrangler run --env secret production bulk`)。語の並びには依存せず、
-  // 「トレースが出た」の証拠は `+` で始まる行があり、外側のコマンドの各語が
-  // 現れること
+  // The two sides of the pipeline (maruhi run … | wrangler …) are separate
+  // processes, and dash writes the trace word by word, so under load the
+  // words of both sides interleave arbitrarily on the same stderr
+  // (observed: `+ maruhi+  run --env production …` /
+  // `  maruhiwrangler run --env secret production bulk`). Do not depend on
+  // word order — the evidence that "a trace came out" is a line starting
+  // with `+` plus each word of the outer command appearing
   expect(stderr).toMatch(/^\+/m);
   for (const word of ["maruhi", "run", "--env", "production"]) {
     expect(stderr).toContain(word);
@@ -154,11 +164,13 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
     expect(workersRecipe).toBeDefined();
     expect(vercelRecipe).toBeDefined();
     expect(githubRecipe).toBeDefined();
-    // `maruhi sync` の使い方のブロック(env create / plan / apply)も同じページにある
+    // The `maruhi sync` usage blocks (env create / plan / apply) live on
+    // the same page
     expect(allBlocks.some((b) => b.includes("maruhi sync apply"))).toBe(true);
     for (const block of allBlocks) {
-      // 値を argv に載せるフラグ・ディスクに置く形(/dev/null と fd 以外へのリダイレクト)・取得しに行く形を
-      // 書かない(不変条件 — レシピにも sync の例にも)
+      // Never write the shapes that put a value on argv, place it on disk
+      // (redirects to anywhere but /dev/null and fds), or go fetch it
+      // (invariant — applies to the recipes and the sync examples alike)
       expect(block).not.toMatch(
         /--value|--env-file|--body|\.env\b|npx|bunx|>(?!\s*\/dev\/null|&)|tee\b/,
       );
@@ -170,14 +182,16 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
   });
 
   it("has jq in CI, so the Workers recipe is never skipped there", () => {
-    // 手元で jq が無いときは Workers の 2 態をスキップするが、CI では静かな劣化にしない
+    // Locally without jq the two Workers cases are skipped, but CI must
+    // not silently degrade
     if (process.env["CI"] === undefined) return;
     expect(hasJq, "install jq on the CI runner: the Workers recipe check needs it").toBe(true);
   });
 
   it("has every shell the page names in CI (bash, zsh, dash), so none is silently skipped there", () => {
-    // ページは「bash, zsh, and dash run them unchanged」と約束している。手元では導入済みのものだけを回し、
-    // CI(ci.yml が zsh を入れる)では 4 シェルすべての存在を断言する
+    // The page promises "bash, zsh, and dash run them unchanged". Locally
+    // only the installed ones run; in CI (ci.yml installs zsh) the presence
+    // of all four shells is asserted
     if (process.env["CI"] === undefined) return;
     expect(shells, "install bash, zsh, and dash on the CI runner").toEqual([
       "sh",
@@ -195,7 +209,7 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
         expect(status).toBe(0);
         const maruhi = maruhiCall(calls);
         expect(maruhi.flags).toEqual({ "--env": "production" });
-        // maruhi run の子は jq だけ。wrangler は maruhi run の外で走る
+        // maruhi run's only child is jq. wrangler runs outside maruhi run
         expect(maruhi.command[0]).toBe("jq");
         const [wrangler, ...rest] = vendorCalls(calls);
         expect(rest).toEqual([]);
@@ -247,9 +261,11 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
       });
       expect(status).toBe(0);
       expect(vendorCalls(calls)).toHaveLength(2);
-      // 内側の sh も -x で走った証拠(名前ごとの printenv がトレースに出る)。
-      // `printenv "$name" | vercel …` の両側は別プロセスで語が交互に並びうるので、
-      // 語の並びには依存しない(上の expectValuesOffTrace と同じ理由)
+      // Evidence the inner sh also ran with -x (the per-name printenv
+      // appears in the trace). The two sides of `printenv "$name" |
+      // vercel …` are separate processes whose words may interleave, so do
+      // not depend on word order (same reason as expectValuesOffTrace
+      // above)
       expect(stderr).toContain("printenv");
       expect(stderr).toContain("STRIPE_SECRET_KEY");
       expectValuesOffTrace(stderr);

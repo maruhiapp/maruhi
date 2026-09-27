@@ -1,23 +1,31 @@
-// ビルド後に Workers Static Assets 用の _headers を生成する。
-// funstack-static はブートストラップとしてインライン <script id="_R_"> を index.html に埋め込む
-// (RSC ペイロードのマニフェスト設定 + エントリの動的 import)。内容はビルドごとに変わる
-// (ペイロードのコンテンツハッシュを含む)ため、CSP は 'unsafe-inline' ではなく
-// そのスクリプトの SHA-256 ハッシュのみを許可する。これで「実質 script-src 'self'」を保つ。
-// 検証メモ: docs/notes/spike-a.md
+// Generates the _headers for Workers Static Assets after the build.
+// funstack-static embeds an inline <script id="_R_"> bootstrap into
+// index.html (RSC-payload manifest setup + dynamic import of the entry).
+// Because its contents change every build (it embeds the payload's
+// content hash), the CSP permits only that script's SHA-256 hash instead
+// of 'unsafe-inline'. This keeps "effectively script-src 'self'".
+// Verification notes: docs/notes/spike-a.md
 //
-// あわせて /invite(招待リンク着地ページ — AUTH_SPEC §15-3 / ADR-0018 改訂 2・5 項)の
-// 不変条件「スクリプトを一切持たない・フラグメントを解釈しない」を、
-//   (1) 配信物 invite.html への機械検査(script ゼロ・meta CSP あり・外部リソースなし)
-//   (2) per-path CSP `script-src 'none'` の _headers への書き込みと最終成果物の確認
-//   (3) near-miss パス(大小変種・深いパス)を /invite へ正規化する _redirects の生成
-// で構成として固定する。違反はビルド失敗(throw)にする — 検査は品質ゲート
-// (CI の web ビルドステップ)の経路に載る。裁定の経緯は docs/notes/session-41.md。
+// It also fixes /invite (the invite-link landing page — AUTH_SPEC §15-3 /
+// ADR-0018 amendment 2, item 5) structurally on its invariant "carries no
+// scripts at all, never interprets the fragment" via:
+//   (1) a mechanical check of the shipped invite.html (zero script, meta
+//       CSP present, no external resources)
+//   (2) writing the per-path CSP `script-src 'none'` into _headers and
+//       verifying the final artifact
+//   (3) generating a _redirects that normalizes near-miss paths (case
+//       variants, deeper paths) to /invite
+// Violations fail the build (throw) — the checks ride the quality-gate
+// path (the web build step in CI). Ruling history: docs/notes/session-41.md.
 //
-// スクリプトなしページ(/invite + サーバー配信の儀式ページ — DP4)の共通スタイルは
-// public/pages.css(自己配信)で、ブランド値は theme/maruhi.css(`astryx theme build` の
-// 生成物 = ブランドの正の生成物)を **無変換で /theme.css として同梱**して var() で読む
-// (裁定 DP4-B — docs/notes/web-design-pass.md §5。生成スクリプトも写しも持たない:
-// 配信物 = テーマファイルそのもの)。同梱は本スクリプトが行い、バイト等価を検査する。
+// The shared styles of the script-free pages (/invite + the server-served
+// ceremony pages — DP4) live in public/pages.css (self-hosted), and the
+// brand values are read via var() from theme/maruhi.css (`astryx theme
+// build` output = the generated source of truth of the brand), which is
+// **bundled verbatim as /theme.css** (ruling DP4-B —
+// docs/notes/web-design-pass.md §5; there is no generator script and no
+// copy: the shipped file IS the theme file). This script does the
+// bundling and checks byte equality.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,10 +33,12 @@ import { join } from "node:path";
 const publicDir = join(import.meta.dirname, "..", "dist", "public");
 const themeSource = join(import.meta.dirname, "..", "theme", "maruhi.css");
 
-// ---- /theme.css: ブランドテーマの無変換同梱(DP4 裁定 B) ----
-// vite は theme/maruhi.css を SPA の CSS バンドル(コンテンツハッシュ名)に取り込むため、
-// 静的 HTML / サーバー描画 HTML から安定して参照できる名前が無い。同じ生成物を
-// 固定名で置く(二重管理ではなく同一バイトの複製 — 下の等価検査で固定する)
+// ---- /theme.css: verbatim bundling of the brand theme (DP4 ruling B) ----
+// vite folds theme/maruhi.css into the SPA CSS bundle (content-hash
+// name), so static HTML / server-rendered HTML have no stable name to
+// reference. Put the same artifact under a fixed name (not duplicate
+// management — a copy of identical bytes, pinned by the equality check
+// below)
 writeFileSync(join(publicDir, "theme.css"), readFileSync(themeSource));
 const html = readFileSync(join(publicDir, "index.html"), "utf8");
 
@@ -39,7 +49,7 @@ const inlineScripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
 if (inlineScripts.length !== 1) {
   throw new Error(
     `expected exactly 1 inline bootstrap script, found ${inlineScripts.length}. ` +
-      "funstack-static の出力形式が変わった可能性がある。CSP 生成ロジックを見直すこと",
+      "funstack-static's output format may have changed. Re-check the CSP generation logic",
   );
 }
 
@@ -59,38 +69,45 @@ const csp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-// ---- /invite: 配信物の機械検査(固定検査 1) ----
-// 検査対象はソースでなくビルド出力(dist/public/invite.html)。配信されるバイトに
-// script が紛れ込む経路(ビルド変換・コピー漏れ)ごと検査する。
-// 配信バイト全体を検査する(HTML コメントも除去しない — コメント内の字面も含めて
-// script 開始タグをゼロに保つ。e2e 側の検査と同じ強度)
+// ---- /invite: mechanical check of the shipped file (pinning check 1) ----
+// The checked target is not the source but the build output
+// (dist/public/invite.html). Every path by which a script could slip
+// into the served bytes (build transform, copy omission) is checked.
+// The whole served bytes are checked (HTML comments are not stripped —
+// the literal text of a script opening tag stays at zero even inside a
+// comment. Same strength as the e2e-side check)
 const inviteHtml = readFileSync(join(publicDir, "invite.html"), "utf8");
 
 if (/<script/i.test(inviteHtml)) {
   throw new Error(
-    "invite.html に <script> がある。/invite はスクリプトを一切持たない(AUTH_SPEC §15-3)",
+    "invite.html contains a <script>. /invite carries no scripts at all (AUTH_SPEC §15-3)",
   );
 }
 if (/\bon[a-z]+\s*=\s*["']/i.test(inviteHtml)) {
-  throw new Error("invite.html にインラインイベントハンドラ属性がある(AUTH_SPEC §15-3)");
+  throw new Error("invite.html has an inline event-handler attribute (AUTH_SPEC §15-3)");
 }
 if (/javascript:/i.test(inviteHtml)) {
-  throw new Error("invite.html に javascript: URL がある(AUTH_SPEC §15-3)");
+  throw new Error("invite.html has a javascript: URL (AUTH_SPEC §15-3)");
 }
-// meta CSP(配信バイト内蔵の強制)が存在し script-src 'none' を含むこと。
-// _headers の per-path CSP(配信層)と独立に効く二重化であり、配信層の挙動差
-// (デタッチ構文の production 実装等)に依らずスクリプト実行ゼロを保つ
+// The meta CSP (enforcement built into the served bytes) must exist and
+// contain script-src 'none'. It is a second layer independent of the
+// _headers per-path CSP (the serving layer), keeping script execution at
+// zero regardless of serving-layer behavior differences (e.g. the
+// production implementation of detached syntax)
 const metaCspMatch = inviteHtml.match(
   /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"/i,
 );
 if (metaCspMatch?.[1] === undefined || !metaCspMatch[1].includes("script-src 'none'")) {
-  throw new Error("invite.html に meta CSP(script-src 'none')が無い(AUTH_SPEC §15-3)");
+  throw new Error("invite.html lacks a meta CSP (script-src 'none') (AUTH_SPEC §15-3)");
 }
-// 外部リソース読み込みなし(全アセット自己配信 — スタイルシート / ロゴ SVG / favicon は
-// ルート相対)。href 属性に限り、自リポジトリの GitHub(CLI 導入への導線のナビゲーション
-// リンク)を許可する。実行時の強制は CSP(default-src 'none' 基調)が担い、この検査は
-// ビルド時に早く落とすための二重化
-// (プロトコル相対 `//` はルート相対と区別して弾く)
+// No external resource loading (every asset self-hosted — stylesheet /
+// logo SVG / favicon are root-relative). Only the href attribute may
+// point at this repo's GitHub (a navigation link funneling to CLI
+// installation). Runtime enforcement is the CSP's job (default-src
+// 'none' baseline); this check is a second layer to fail earlier at
+// build time
+// (protocol-relative `//` is rejected, distinguished from
+// root-relative)
 const allowedExternalNavPrefix = "https://github.com/maruhiapp/maruhi";
 for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
   const ok =
@@ -99,44 +116,52 @@ for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
       url.startsWith("#") ||
       (attr === "href" && url.startsWith(allowedExternalNavPrefix)));
   if (!ok) {
-    throw new Error(`invite.html が外部リソース/URL を参照している: ${attr}="${url}"`);
+    throw new Error(`invite.html references an external resource/URL: ${attr}="${url}"`);
   }
 }
-// 複製忠実性(裁定 BH): vite publicDir のコピーが無変換であること(= レビューした
-// ソースの字面がそのまま配信バイトであること)をバイト等価で固定する。将来の
-// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する。/theme.css は
-// 上で本スクリプト自身が無変換に書いており(vite を経由しない)、同じ実行内で比べても
-// 常に一致するため対象にしない(代わりに下のトークン解決検査が /theme.css の契約を担う)
+// Copy fidelity (ruling BH): pin by byte equality that the vite
+// publicDir copy is untransformed (= the reviewed source text is the
+// served bytes as-is). Detects, fastest, a future build plugin that
+// starts transforming HTML/CSS. /theme.css is out of scope: this script
+// itself writes it verbatim above (not via vite), so it always matches
+// within the same run (the token-resolution check below carries the
+// /theme.css contract instead)
 const sourceDir = join(import.meta.dirname, "..", "public");
 for (const asset of ["invite.html", "pages.css"]) {
   if (
     readFileSync(join(sourceDir, asset), "utf8") !== readFileSync(join(publicDir, asset), "utf8")
   ) {
     throw new Error(
-      `${asset} がソースとビルド出力で一致しない(publicDir の無変換コピーの前提が破れた)`,
+      `${asset} differs between source and build output (the assumption of an untransformed publicDir copy is broken)`,
     );
   }
 }
 
-// ---- pages.css のトークン解決検査(DP4 改訂 1) ----
-// スクリプトなしページが読むトークン源は /theme.css(= theme/maruhi.css)だけで、
-// ダッシュボードが追加で読む Astryx core の stylesheet(reset.css / astryx.css)は
-// 届かない。theme/maruhi.css は Astryx core のトークン(font-weight 系)を**参照する
-// だけで定義しない**ものを含むため、pages.css の `var(--…)` が theme/maruhi.css で
-// 定義されないと、未解決の var() が invalid at computed-value time で無言に落ちる
-// (初版はこれで全 font-weight が消えていた)。参照が**値まで**解決することをビルドで
-// 固定する: 名前の存在だけでは足りない — theme/maruhi.css には「定義はあるが値が Astryx
-// core のトークンを var() で参照する」ものが 16 種以上あり(`--text-heading-1-weight:
-// var(--font-weight-semibold)` 等)、それを pages.css が使うと名前の検査は通って値だけ
-// 落ちる(推移的に辿り、未定義に当たったら経路つきで落とす)。
-// フォールバック付き `var(--x, …)` は pages.css で使わない(改訂 1 の裁定)ので考慮しない
+// ---- pages.css token-resolution check (DP4 amendment 1) ----
+// The only token source the script-free pages read is /theme.css (=
+// theme/maruhi.css); the Astryx core stylesheets the dashboard
+// additionally loads (reset.css / astryx.css) never reach them. Because
+// theme/maruhi.css contains tokens that **reference but never define**
+// Astryx-core tokens (the font-weight family), a `var(--…)` in pages.css
+// that theme/maruhi.css does not define silently falls as an unresolved
+// var() — invalid at computed-value time (the first version lost every
+// font-weight that way). The build pins that references resolve **to a
+// value**: name existence is not enough — theme/maruhi.css has 16+
+// tokens that are "defined, but whose value references an Astryx-core
+// token via var()" (`--text-heading-1-weight: var(--font-weight-semibold)`
+// etc.); if pages.css uses one, the name check passes while the value
+// fails (walk transitively and fail with the path when hitting an
+// undefined token).
+// Fallback-bearing `var(--x, …)` is not used in pages.css (amendment 1
+// ruling), so it is not considered
 const pagesCss = readFileSync(join(sourceDir, "pages.css"), "utf8");
 const themeCss = readFileSync(themeSource, "utf8");
 const TOKEN_REF = /var\(\s*(--[a-z0-9-]+)/g;
 const tokenDefinitions = new Map<string, string>();
 for (const m of themeCss.matchAll(/(--[a-z0-9-]+)\s*:([^;{}]*);/g)) {
-  // 同名の再宣言(variant スコープの var() 参照)は先勝ち: 最初の宣言が astryx-base /
-  // astryx-theme のブランド値で、参照側もそれで解決できれば足りる
+  // A same-name redeclaration (a var() reference in a variant scope) is
+  // first-wins: the first declaration is the astryx-base / astryx-theme
+  // brand value, and resolving the reference to it is enough
   if (!tokenDefinitions.has(m[1]!)) tokenDefinitions.set(m[1]!, m[2]!);
 }
 const unresolvedPaths: string[] = [];
@@ -154,28 +179,35 @@ function resolveToken(token: string, path: readonly string[]): void {
 for (const m of pagesCss.matchAll(TOKEN_REF)) resolveToken(m[1]!, [m[1]!]);
 if (unresolvedPaths.length > 0) {
   throw new Error(
-    "pages.css のトークン参照が theme/maruhi.css で値まで解決しない: " +
+    "pages.css token references do not resolve to a value in theme/maruhi.css: " +
       `${[...new Set(unresolvedPaths)].join(", ")}` +
-      "(スクリプトなしページは /theme.css 以外のトークン源を読まない)",
+      "(script-free pages read no token source other than /theme.css)",
   );
 }
 
-// ---- SPA バンドルのフラグメント非読取検査(裁定 BG) ----
-// near-miss 正規化(下の _redirects)から漏れる語中タイポ(/invte 等)は SPA シェルに
-// 落ちる。その無害性の根拠「SPA はフラグメントを読まない」を、規約でなく配信物への
-// 機械検査にする: 配信される全 JS + index.html(インラインブートストラップ含む)に
-// **識別子・プロパティ・文字列としての語 `hash` が一切現れない**ことを要求する
-// (location.hash / {hash} 分割代入 / ["hash"] の全字面形を被覆。現行バンドルで 0 件)。
-// これは字面のトリップワイヤであり、対象はドリフト(将来の機能追加でフラグメント
-// 読取が紛れ込むこと)。`location.href` の手動 `#` パースや難読化(charCodeAt(35) 等)
-// は検知対象外 — `#` 系の字面検査は正当用途(色パーサの startsWith(`#`)・Intl 数値
-// パターン・RSC ランタイムのモジュール参照 "path#export" の分割)と原理的に区別
-// できず誤検知するため棄却した(実測は session-41 裁定 BG)。正当な `hash` 利用が
-// 将来必要になったら、この検査が落ちて明示的な裁定を強制する(「インライン script は
-// 厳密に 1 本」検査と同じ、上流変化で意図的に割れる型)
-// 走査は publicDir 全体の再帰列挙: assets/ 直下・非再帰に
-// 固定すると、ビルドの出力レイアウト変更(サブディレクトリ・.mjs 化)で検査が
-// 落ちずに被覆だけ縮む。再帰なら被覆が自己維持される
+// ---- check that the SPA bundle never reads the fragment (ruling BG) ----
+// Mid-word typos that escape the near-miss normalization (the _redirects
+// below), like /invte, fall to the SPA shell. The basis of their
+// harmlessness — "the SPA never reads the fragment" — is made a
+// mechanical check of the shipped files rather than a convention:
+// require that **the word `hash` as an identifier, property, or string
+// never appears** in every shipped JS + index.html (including the inline
+// bootstrap) (covers all literal shapes: location.hash / {hash}
+// destructuring / ["hash"]; zero hits in the current bundle).
+// This is a literal tripwire whose target is drift (a future feature
+// slipping fragment-reading in). Manual `#` parsing of `location.href`
+// or obfuscation (charCodeAt(35) etc.) is out of detection — a `#`-based
+// literal check was rejected because it cannot in principle be told
+// apart from legitimate uses (a color parser's startsWith(`#`), Intl
+// number patterns, the RSC runtime's "path#export" module-reference
+// split) and would false-positive (measured in session-41 ruling BG).
+// If a legitimate `hash` use is ever needed, this check fails and forces
+// an explicit ruling (same shape as the "exactly one inline script"
+// check — a type that intentionally breaks on upstream change)
+// The scan enumerates publicDir recursively: pinning it to non-recursive
+// assets/ would let a build output-layout change (subdirectories, .mjs)
+// shrink coverage without failing the check. Recursive enumeration keeps
+// coverage self-maintaining
 const bundleFiles = [
   join(publicDir, "index.html"),
   ...readdirSync(publicDir, { recursive: true, encoding: "utf8" })
@@ -186,15 +218,16 @@ for (const file of bundleFiles) {
   const content = readFileSync(file, "utf8");
   if (/\bhash\b/i.test(content)) {
     throw new Error(
-      `${file} が語 "hash" を含む。SPA バンドルはフラグメントを読まない(AUTH_SPEC §15-3 — ` +
-        "正当な利用を足す場合は docs/notes/session-41.md 裁定 BG を改訂すること)",
+      `${file} contains the word "hash". The SPA bundle never reads the fragment (AUTH_SPEC §15-3 — ` +
+        "to add a legitimate use, amend docs/notes/session-41.md ruling BG)",
     );
   }
 }
 
-// /invite の per-path CSP: script-src 'none' で「フラグメントを解釈しない」を構成で強制。
-// ページが使うのは自己配信のスタイル(/theme.css + /pages.css)とロゴ SVG のみ。
-// それ以外は全面 'none'(サーバー配信の儀式ページの CSP — cli-pages.ts — と同じ形)
+// /invite's per-path CSP: `script-src 'none'` enforces "never interprets
+// the fragment" structurally. The page uses only self-hosted styles
+// (/theme.css + /pages.css) and the logo SVG. Everything else is 'none'
+// (same shape as the server-served ceremony pages' CSP — cli-pages.ts)
 const inviteCsp = [
   "default-src 'none'",
   "script-src 'none'",
@@ -205,17 +238,19 @@ const inviteCsp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-// HSTS: workers.dev はプリロード済みだが、routes で
-// custom domain を割り当てた場合の初回接続ダウングレードを塞ぐ。includeSubDomains
-// は付けない(_headers はこのアプリの応答にしか効かず、デプロイ先ゾーンの
-// サブドメイン構成はセルフホスト側の管轄のため、越権のリスクだけがある)
+// HSTS: workers.dev is preloaded, but this closes the first-connection
+// downgrade when a custom domain is assigned via routes. includeSubDomains
+// is not set (_headers only affects this app's responses; the subdomain
+// structure of the deploy-target zone is the self-hosting side's
+// jurisdiction — including it would be overreach)
 //
-// /invite ブロック: `! Content-Security-Policy` で /* の CSP をデタッチしてから
-// 置き換える(デタッチしないと 2 本の CSP が併記され、どちらも強制される —
-// 安全側だが意図が読めない)。/* の他ヘッダー(nosniff / Referrer-Policy / HSTS)は
-// /invite にもそのまま効く。html_handling 既定(auto-trailing-slash)により
-// /invite.html・/invite/ へのリクエストは /invite へ正規化されるため、
-// per-path ルールは /invite の 1 本でよい(配信挙動は e2e で固定)
+// /invite block: `! Content-Security-Policy` detaches the /* CSP before
+// replacing it (without detaching, two CSPs would be listed together and
+// both enforced — the safe side, but unreadable intent). The other /*
+// headers (nosniff / Referrer-Policy / HSTS) still apply to /invite.
+// With the html_handling default (auto-trailing-slash), requests to
+// /invite.html and /invite/ are normalized to /invite, so one per-path
+// rule for /invite suffices (serving behavior is pinned by e2e)
 const headers = `/*
   Content-Security-Policy: ${csp}
   X-Content-Type-Options: nosniff
@@ -229,33 +264,41 @@ const headers = `/*
 
 writeFileSync(join(publicDir, "_headers"), headers);
 
-// ---- _headers の最終成果物確認(固定検査 2) ----
-// 「_headers に /invite の per-path CSP が存在する」を書き込み後の実ファイルで確認する
-// (この script の将来の編集で書き込みが落ちた場合もビルドが失敗する)
+// ---- _headers final-artifact verification (pinning check 2) ----
+// Confirm on the written file that "_headers carries the /invite
+// per-path CSP" (if a future edit of this script drops the write, the
+// build still fails)
 const written = readFileSync(join(publicDir, "_headers"), "utf8");
 const inviteBlock = written.split(/^(?=\/)/m).find((block) => block.startsWith("/invite\n"));
 if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
-  throw new Error("_headers に /invite の per-path CSP(script-src 'none')が無い");
+  throw new Error("_headers lacks the /invite per-path CSP (script-src 'none')");
 }
 
-// ---- _redirects: near-miss パスの /invite への正規化 ----
-// 資産キー照合は大文字小文字を区別するため、`/Invite` 等の大小変種はアセットに一致せず
-// SPA フォールバック(script を持つシェル)へ落ちる。系統的な発生源(モバイルの
-// 自動大文字化・貼り付け時の末尾ゴミ〔小文字パスに落ちる〕)を含む
-// 「大小変種 × 任意の末尾続き」のクラス全体を、機械生成した _redirects で /invite へ
-// 301 正規化して閉じる(フラグメントはブラウザがリダイレクト越しに保持する)。
+// ---- _redirects: normalize near-miss paths to /invite ----
+// Asset-key matching is case-sensitive, so case variants like `/Invite`
+// match no asset and fall to the SPA fallback (a shell that carries
+// scripts). The whole class of "case variant x any trailing continuation"
+// — including systematic sources (mobile auto-capitalization, trailing
+// paste junk [which lands on the lowercase path]) — is closed by
+// 301-normalizing to /invite with a machine-generated _redirects (the
+// browser keeps the fragment across a redirect).
 //
-// 構成(先勝ちマッチを利用): ① 正規パスの 200 リライト(自分自身へのリライト =
-// 素通し)を盾として前置 → ② 大小変種 63 本の末尾スプラット
-// `/{Variant}* /invite 301` → ③ 小文字総取り `/invite* /invite 301` を最後に。
-// 盾が先にあるため ③ が正規パス自身(自己ループ)に誤爆しない(スタイルシートは
-// DP4 で /pages.css へ移り /invite* の外に出たため、旧 /invite.css の盾は不要)。
-// 全ルールが動的扱いで上限 100 本(超過行は黙って落ちる — 実測)のため
-// 計 65 本に収める。想定外の失敗モードは「盾だけ落ちて ③ が残る」= /invite の
-// リダイレクトループ(可用性の喪失。秘匿には影響せず、開けば即分かる)だが、
-// wrangler dev と production は同一のアセットワーカー実装であり選択的欠落の根拠は
-// 無い。挙動全体は e2e が固定する。残余は語中タイポ(/invte 等)のみ = 任意の
-// 404 パスと同じクラス(SPA 側に fragment を読むコードは無い)
+// Layout (exploiting first-match-wins): ① the canonical path's 200
+// rewrite (a rewrite to itself = pass-through) placed first as a shield
+// → ② the 63 case-variant trailing splats `/{Variant}* /invite 301` →
+// ③ the lowercase catch-all `/invite* /invite 301` last. With the shield
+// first, ③ cannot misfire on the canonical path itself (a self-loop)
+// (the stylesheet moved to /pages.css under DP4 and is now outside
+// /invite*, so the old /invite.css shield is unneeded).
+// All rules count as dynamic with a limit of 100 (excess lines are
+// silently dropped — measured), so keep the total at 65. The
+// conceivable failure mode is "only the shield drops and ③ survives" = a
+// redirect loop for /invite (loss of availability; no confidentiality
+// impact, and obvious the moment it is opened), but wrangler dev and
+// production share the same assets-worker implementation, so there is no
+// basis for selective omission. The e2e pins the whole behavior. The
+// residue is only mid-word typos (/invte etc.) — the same class as any
+// 404 path (the SPA side has no code that reads the fragment)
 const inviteRedirectRules: string[] = ["/invite /invite 200"];
 for (let bits = 1; bits < 1 << "invite".length; bits++) {
   let variant = "";
@@ -268,18 +311,22 @@ for (let bits = 1; bits < 1 << "invite".length; bits++) {
 inviteRedirectRules.push("/invite* /invite 301");
 writeFileSync(join(publicDir, "_redirects"), `${inviteRedirectRules.join("\n")}\n`);
 
-// 固定検査: 書き出した _redirects に正規化ルールが実在し、かつ盾(200 リライト)が
-// 総取り(/invite*)より前にあること(先勝ちマッチのループ安全性の順序不変条件)
+// Pinning check: the written _redirects actually contains the
+// normalization rules, and the shield (the 200 rewrite) precedes the
+// catch-all (/invite*) (the ordering invariant for loop safety under
+// first-match-wins)
 const writtenRedirects = readFileSync(join(publicDir, "_redirects"), "utf8");
 for (const required of ["/invite /invite 200", "/Invite* /invite 301", "/invite* /invite 301"]) {
   if (!writtenRedirects.includes(required)) {
-    throw new Error(`_redirects に正規化ルールが無い: ${required}`);
+    throw new Error(`_redirects lacks the normalization rule: ${required}`);
   }
 }
 if (
   writtenRedirects.indexOf("/invite /invite 200") > writtenRedirects.indexOf("/invite* /invite 301")
 ) {
-  throw new Error("_redirects の順序が壊れている: 200 リライトの盾が /invite* 総取りより後にある");
+  throw new Error(
+    "_redirects ordering is broken: the 200-rewrite shield sits after the /invite* catch-all",
+  );
 }
 
 console.log(

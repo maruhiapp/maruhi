@@ -1,16 +1,22 @@
-// 認証済み画面(S3〜S9・S11)のスクリーンショット取得(DP3 裁定 F — docs/notes/web-design-pass.md §5)。
+// Screenshot capture for the authenticated screens (S3-S9, S11)
+// (DP3 ruling F — docs/notes/web-design-pass.md §5).
 //
-// 配信物にプレビュー用ルートやモックデータを混ぜず、e2e と同じ page.route で API だけを
-// 差し替えて実配信(wrangler dev)を Chromium で描く。light / dark / mobile(390px)の
-// 3 態で撮り、CSP 違反があれば失敗する。各集合の空状態(`empty`)も撮る — fixtures は
-// 全件非空なので、空状態はここで明示しない限り一度も描かれない(見出し階層が変わる)。
+// No preview routes or mock data are mixed into the shipped app: only
+// the API is swapped via the same page.route as e2e, and the real
+// serving (wrangler dev) is rendered by Chromium. Shot in 3 modes —
+// light / dark / mobile (390px) — and fails on any CSP violation. The
+// empty state (`empty`) of each collection is also shot — every
+// fixture is non-empty, so the empty states are never rendered unless
+// flagged here (the heading hierarchy changes).
 //
 //   bun run --filter @maruhi/web build
-//   bun run --filter @maruhi/web preview   # 別ターミナル(port 8788)
-//   bun run --filter @maruhi/web screenshots [--only <名前の一部>]
+//   bun run --filter @maruhi/web preview   # separate terminal (port 8788)
+//   bun run --filter @maruhi/web screenshots [--only <name fragment>]
 //
-// 出力先は SCREENSHOT_DIR(既定 apps/web/screenshots/ — .gitignore 済み)。
-// PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH は e2e と同じ扱い(未設定なら Playwright 既定)。
+// Output goes to SCREENSHOT_DIR (default apps/web/screenshots/ —
+// .gitignore'd).
+// PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is handled the same way as e2e
+// (Playwright's default when unset).
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -47,9 +53,12 @@ function before(route: Route): string | null {
 }
 
 /**
- * 全消費面のモック。admin=false は監査 invites 軸 / S8 が 403(役割文言)になる。
- * empty=true は各集合を空で返す(空状態 — 見出し階層は集合があるときと変わるので、
- * axe / 目視の対象に含める。空状態は fixtures だけでは決して描かれない)。
+ * Mocks every consumed surface. admin=false makes the audit invites
+ * axis / S8 return 403 (role wording).
+ * empty=true returns each collection empty (the empty state — the
+ * heading hierarchy differs from when a collection exists, so it is
+ * part of the axe / visual review target. The empty states are never
+ * drawn by fixtures alone).
  */
 async function mockApi(
   page: Page,
@@ -81,15 +90,17 @@ async function mockApi(
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/environments/production/pull/metadata`,
-    // empty モードでも空にしない: 変数名は環境行を開いたときだけ取得され、環境が空なら
-    // 開く行が無い(変数名の空状態は empty モードでは描けない — SHOTS の注記)
+    // Never emptied even in empty mode: the variable names are fetched
+    // only when an environment row is opened, and with no environments
+    // there is no row to open (the empty state of variable names
+    // cannot be drawn in empty mode — see the SHOTS note)
     (r) => json(r, 200, metadataPullFixture),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/audit/events`,
     (r) => {
       if (opts.empty || before(r) !== null) return json(r, 200, { events: [] });
-      // admin 未満の応答には seq が載らない(AUDIT_SPEC §7)
+      // A response below admin carries no seq (AUDIT_SPEC §7)
       const events = opts.admin
         ? projectAuditEvents.events
         : projectAuditEvents.events.map(({ seq: _seq, ...event }) => event);
@@ -136,7 +147,7 @@ interface Shot {
   act?: (page: Page) => Promise<void>;
   signedIn?: boolean;
   admin?: boolean;
-  /** 集合を空で描く(空状態の見出し階層・文言の確認用)。 */
+  /** Draws the collection empty (for checking the empty state's heading hierarchy and wording). */
   empty?: boolean;
 }
 
@@ -157,7 +168,8 @@ const SHOTS: ReadonlyArray<Shot> = [
     act: async (page) => {
       await page.getByText("Variable names", { exact: true }).click();
       await page.locator("[data-testid=variable-list]").waitFor();
-      // 表の横スクロール位置をクリック前に戻す(クリックで 4 列目へスクロールする)
+      // Return the table's horizontal scroll position before clicking
+      // (the click scrolls to the 4th column)
       await page.locator("[data-testid=env-table]").evaluate((table) => {
         table.parentElement?.scrollTo({ left: 0 });
       });
@@ -203,8 +215,10 @@ const SHOTS: ReadonlyArray<Shot> = [
     ready: "[data-testid=member-table]",
     act: async (page) => {
       await openTab(page, "Invites", "[data-testid=invite-table]");
-      // 失効の確認モーダル(AlertDialog — 改訂 4)を写す。mount / アニメーションと競合しない
-      // よう dialog の出現を待つ(待たないと素の表を写して黙って通る)
+      // Capture the revocation confirmation modal (AlertDialog —
+      // amendment 4). Wait for the dialog to appear so it does not
+      // race the mount / animation (without the wait it would silently
+      // capture the bare table)
       await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
       await page.getByRole("alertdialog").waitFor();
     },
@@ -221,8 +235,11 @@ const SHOTS: ReadonlyArray<Shot> = [
   },
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
   { name: "s11-devices", path: "/dashboard/devices", ready: "[data-testid=device-table]" },
-  // 空状態(見出しの無い箱では空状態の見出しが h2 — shared.tsx の EmptyNotice)。
-  // 変数名の空状態(環境はあるが変数が無い)は empty モードでは描けない(環境も空になる)
+  // Empty states (in a box without a heading the empty state's
+  // heading is h2 — shared.tsx's EmptyNotice).
+  // The empty state of variable names (an environment exists but has
+  // no variables) cannot be drawn in empty mode (environments become
+  // empty too)
   {
     name: "s4-projects-empty",
     path: "/dashboard",
@@ -312,7 +329,7 @@ try {
       await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle" });
       await page.locator(shot.ready).first().waitFor();
       if (shot.act) await shot.act(page);
-      // フォーカスリングや遷移アニメーションが落ち着くのを待つ
+      // Let the focus ring and transition animations settle
       await page.waitForTimeout(300);
       const file = join(OUT, `${shot.name}-${mode.name}.png`);
       await page.screenshot({ path: file, fullPage: true });

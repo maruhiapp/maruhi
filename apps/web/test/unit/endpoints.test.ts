@@ -1,9 +1,11 @@
-// ダッシュボード消費面のスイープ(裁定 BW — docs/notes/session-43.md §11)。
+// The sweep of the dashboard's consumed surfaces (ruling BW —
+// docs/notes/session-43.md §11).
 //
-// 目録(src/dashboard/endpoints.ts)を登録済み HttpApi(api-schema — 値 import は
-// テストプロセスのみ)と突合し、「パス整合」と「セッション許可」を fail-loud に
-// する。serving-topology.test.ts(サーバー側の run_worker_first 被覆)の
-// クライアント側対応物。
+// The catalog (src/dashboard/endpoints.ts) is collated against the
+// registered HttpApi (api-schema — value imports are allowed only in
+// the test process) to make "path agreement" and "session allowance"
+// fail-loud. The client-side counterpart of serving-topology.test.ts
+// (the server-side run_worker_first coverage).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
@@ -19,10 +21,10 @@ import {
   SAMPLE_TOKEN_ID,
 } from "../../src/dashboard/endpoints.ts";
 
-/** 登録エンドポイント 1 面の構造スライス。 */
+/** The structural slice of one registered endpoint surface. */
 interface RegisteredEndpoint {
   readonly path: string;
-  /** クエリ Schema(未宣言のエンドポイントでは undefined)。 */
+  /** The query Schema (undefined on an endpoint that does not declare one). */
   readonly query?: {
     readonly ast?: {
       readonly propertySignatures?: ReadonlyArray<{ readonly name: PropertyKey }>;
@@ -30,7 +32,7 @@ interface RegisteredEndpoint {
   };
 }
 
-/** 検査対象の構造スライス(session-capability.ts の SweepableApi と同じ理由の構造型)。 */
+/** The structural slice under inspection (a structural type for the same reason as session-capability.ts's SweepableApi). */
 interface PathedApi {
   readonly groups: {
     readonly [group: string]: {
@@ -44,8 +46,9 @@ interface PathedApi {
 const api = maruhiApi as unknown as PathedApi;
 
 /**
- * パステンプレートの `:param` を目録と同じサンプル値で具体化する。未知の
- * パラメータ名はそのまま残り、等値比較が落ちて目録の改訂を強制する(fail-loud)。
+ * Materializes a path template's `:param` with the same sample values
+ * the catalog uses. An unknown parameter name stays in place, fails
+ * the equality comparison, and forces a catalog revision (fail-loud).
  */
 function substituteTemplate(template: string): string {
   return template
@@ -55,7 +58,7 @@ function substituteTemplate(template: string): string {
     .replace(/:id/g, SAMPLE_INVITE_ID);
 }
 
-describe("dashboard endpoint sweep (裁定 BW)", () => {
+describe("dashboard endpoint sweep (ruling BW)", () => {
   it("binds every consumed path builder to a real api-schema endpoint", () => {
     for (const { group, endpoint, sample } of DASHBOARD_ENDPOINTS) {
       const registered = api.groups[group]?.endpoints[endpoint];
@@ -65,9 +68,11 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
   });
 
   it("classifies every consumed endpoint's auth surface correctly (AUTH_SPEC §5)", () => {
-    // access: "session" はセッション許可列挙内(列挙外 API を呼ぶ画面は実行時
-    // 403 でなくここで割れる)。access: "unauthenticated" は未認証面の列挙内
-    // (認証必須の面をナビゲーション導線として消費する形もここで割れる)
+    // access: "session" must be inside the session-allowance
+    // enumeration (a screen calling an unlisted API fails here, not
+    // as a runtime 403). access: "unauthenticated" must be inside the
+    // unauthenticated-surface enumeration (consuming an
+    // auth-required surface as a navigation funnel also fails here)
     const unauthenticated = new Set(UNAUTHENTICATED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
     for (const { group, endpoint, access } of DASHBOARD_ENDPOINTS) {
       if (access === "session") {
@@ -89,10 +94,11 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("declares every consumed cursor query in the endpoint's query schema (裁定 CB)", () => {
-    // withCursor が付けるカーソル名が api-schema のクエリ Schema に宣言されて
-    // いること: パラメータ名のリネームは「ページングが黙って無反応になる」で
-    // なくここで割れる(サーバーは未知クエリを無視するため実行時エラーが出ない)
+  it("declares every consumed cursor query in the endpoint's query schema (ruling CB)", () => {
+    // The cursor name withCursor attaches must be declared in
+    // api-schema's query Schema: renaming the parameter fails here,
+    // not as "paging silently going unresponsive" (the server ignores
+    // an unknown query, so no runtime error ever surfaces)
     for (const { group, endpoint, cursor } of DASHBOARD_ENDPOINTS) {
       if (cursor === undefined) continue;
       expect(
@@ -102,10 +108,11 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     }
   });
 
-  it("appends the declared cursor name from inside the paged builders (裁定 CB)", () => {
-    // 呼び出し側は名前に触れない(取り違えは構文上あり得ない)。ビルダーが
-    // 実際に付ける名前をここで固定する: 期待値のリテラルは意図的
-    // (ビルダー同士の同語反復を避ける)
+  it("appends the declared cursor name from inside the paged builders (ruling CB)", () => {
+    // Callers never touch the name (a mix-up is impossible
+    // syntactically). The name the builders actually attach is pinned
+    // here: the expected-value literals are deliberate (avoid
+    // tautological repetition between builders)
     expect(apiPaths.projects("x")).toBe("/projects?after=x");
     expect(apiPaths.auditEvents(SAMPLE_PROJECT_ID, "y")).toBe(
       `/projects/${SAMPLE_PROJECT_ID}/audit/events?before=y`,
@@ -117,11 +124,13 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
   });
 
   it("keeps path literals out of screen code (builders are the only source)", () => {
-    // ソーストリップワイヤ(裁定 BY / CA): 目録の網羅性は「画面が使うパスは
-    // すべてビルダー経由」(API = endpoints.ts、SPA = routes.ts)という規律に
-    // 依存する。ここでは src/ 配下(両ビルダー置き場を除く)に API 前置・
-    // /dashboard 前置のパスリテラルが現れないことを機械検査し、ビルダーを
-    // 迂回する消費面の混入をドリフトとして落とす
+    // Source tripwire (rulings BY / CA): the catalog's completeness
+    // rests on the discipline that "every path a screen uses goes
+    // through a builder" (API = endpoints.ts, SPA = routes.ts). Here
+    // we mechanically check that no API-prefixed or /dashboard-
+    // prefixed path literal appears under src/ (excluding the two
+    // builder homes), and drop the mixing-in of a builder-bypassing
+    // consumer as drift
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(
@@ -133,32 +142,39 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     ).toEqual([]);
   });
 
-  it("keeps effect / api-schema imports type-only in bundle sources (裁定 BR/CD)", () => {
-    // 裁定 BR「Effect / Schema の実行コードをバンドル(= TCB)へ持ち込まない」は
-    // 規約でしかなかった: 値 import はビルドも実行も黙って通り、バンドルと
-    // 供給網だけが静かに太る。verbatimModuleSyntax の下では type-only import が
-    // `import type` 構文で明示されるため、値 import の混入を機械検査できる
+  it("keeps effect / api-schema imports type-only in bundle sources (rulings BR/CD)", () => {
+    // Ruling BR — "no Effect / Schema executable code enters the
+    // bundle (= the TCB)" — used to be a mere convention: a value
+    // import passed both build and run silently while the bundle and
+    // the supply chain quietly grew. Under verbatimModuleSyntax a
+    // type-only import is spelled `import type`, so a value import
+    // mixing in is mechanically checkable
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(
         srcRoot,
-        // サブパス import(effect/schema 等 — 本リポジトリの主流形)も対象。
-        // 行頭アンカー(m): import 文はトップレベル宣言で行頭に現れる —
-        // アンカーなしだとコメント中の語「import」から実 import 文の from 句
-        // までを 1 マッチに繋げて誤検知する(api.ts の裁定 CN 注記コメントが
-        // 最初の踏み抜き)。再 export(`export { X } from …` /
-        // `export * from …`)も同じ実行コードをバンドルへ引き込むため対象
+        // Subpath imports (effect/schema etc. — this repository's
+        // mainstream form) are in scope.
+        // The line-start anchor (m): an import statement is a
+        // top-level declaration appearing at the start of a line —
+        // without the anchor a match would bridge from the word
+        // "import" in a comment to a real import's from clause and
+        // false-positive (the ruling-CN note comment in api.ts was the
+        // first trip). Re-exports (`export { X } from …` /
+        // `export * from …`) pull the same executable code into the
+        // bundle, so they are in scope too
         /^(?:import|export)\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
         new Set(),
       ),
-      "value import of effect / @maruhi/api-schema in bundle source — use `import type` (裁定 BR)",
+      "value import of effect / @maruhi/api-schema in bundle source — use `import type` (ruling BR)",
     ).toEqual([]);
   });
 
-  it("keeps route() declarations inside the SPA route catalog (裁定 BZ/CA)", () => {
-    // SPA_ROUTES の権威性は「route() の宣言は routes.ts のみ」という規律に
-    // 依存する(App.tsx へのインライン route() は非交差スイープを黙って
-    // 狭める)。bindRoute( は別名なので誤検知しない
+  it("keeps route() declarations inside the SPA route catalog (rulings BZ/CA)", () => {
+    // SPA_ROUTES's authority rests on the discipline that "route()
+    // declarations live only in routes.ts" (an inline route() in
+    // App.tsx would silently narrow the non-intersection sweep).
+    // bindRoute( is a different name and never false-positives
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(srcRoot, /\broute\(/, new Set([join(srcRoot, BUILDER_SPA_MODULE)])),
@@ -167,25 +183,26 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
   });
 });
 
-/** ビルダー置き場(トリップワイヤの除外対象)— 解決済みパスで一意に指す。 */
+/** The builder homes (excluded from the tripwire) — identified uniquely by resolved path. */
 const BUILDER_API_MODULE = "dashboard/endpoints.ts";
 const BUILDER_SPA_MODULE = "dashboard/routes.ts";
 
-/** 登録エンドポイントの取得(不在は fail-loud — パス整合テストと同じ前提)。 */
+/** Fetches a registered endpoint (absence is fail-loud — the same premise as the path-agreement test). */
 function requireEndpoint(group: string, endpoint: string): RegisteredEndpoint {
   const registered = api.groups[group]?.endpoints[endpoint];
   if (registered === undefined) throw new Error(`${group}.${endpoint} is not registered`);
   return registered;
 }
 
-/** クエリ Schema の宣言プロパティ名(未宣言は空)。 */
+/** The query Schema's declared property names (empty when undeclared). */
 function queryKeys(registered: RegisteredEndpoint): PropertyKey[] {
   return (registered.query?.ast?.propertySignatures ?? []).map((p) => p.name);
 }
 
 /**
- * トリップワイヤの走査対象: TS/TSX ソース(除外は解決済みパスで比較 —
- * ファイル名比較だと別ディレクトリの同名ファイルが黙って免除される)。
+ * The tripwire's scan target: TS/TSX sources (exclusions are compared
+ * by resolved path — a filename comparison would silently exempt a
+ * same-named file in another directory).
  */
 function isSweepTarget(
   entry: { isFile(): boolean; name: string },
@@ -196,11 +213,13 @@ function isSweepTarget(
 }
 
 /**
- * src/ 配下で pattern にかかるファイルを列挙する共通走査(excluded は
- * 解決済みパスの集合)。パスリテラル検査はダブル/シングルクォートの文字列
- * のみ対象 — バッククォートはコメント内のパス例(`/auth/me` 等)と衝突する
- * ため対象外で、迂回可能性は許容する(word-hash トリップワイヤと同じ
- * 「善意のドリフト検出」の位置づけ — session-41 BG)。
+ * The shared scan listing src/ files that hit pattern (excluded is a
+ * set of resolved paths). The path-literal check covers only
+ * double/single-quoted strings — backticks are out of scope because
+ * they collide with path examples inside comments (`/auth/me` etc.),
+ * and the resulting evasion gap is accepted (the same "good-faith
+ * drift detection" standing as the word-hash tripwire — session-41
+ * BG).
  */
 function findSourceOffenders(
   srcRoot: string,
@@ -219,26 +238,31 @@ function findSourceOffenders(
 }
 
 // ---------------------------------------------------------------------------
-// 消費面の envelope 型のスイープ(DK K8-2 / K8-7)。
+// The sweep of the consumption surfaces' envelope types (DK K8-2 /
+// K8-7).
 //
-// 裁定 BR は「ダッシュボードのワイヤ型は api-schema の Schema からの導出だけで持つ」
-// (types.ts)。手書きの写しは api-schema の改訂で黙って古くなる(K7-8 の上位互換)。
-// 主張は 2 つで、どちらも件数を件数と比べる(数え直し不要)。対象が消えれば
-// readFileSync / 件数 0 で落ちる(空虚に通らない)。type-only import の規律は上の
-// 「keeps effect / api-schema imports type-only」が src/ 全体で持つので、ここでは
-// 繰り返さない(主張は 1 か所 — K6-R)。
+// Ruling BR says "the dashboard's wire types are only ever derived
+// from api-schema's Schemas" (types.ts). A hand-written copy silently
+// goes stale when api-schema is revised (backward compatible in the
+// K7-8 sense). There are two claims, and both compare counts to
+// counts (no recounting needed). If the target disappears, a
+// readFileSync / 0-count fails (never passes vacuously). The
+// type-only-import discipline is already held across all of src/ by
+// "keeps effect / api-schema imports type-only" above, so it is not
+// repeated here (one claim in one place — K6-R).
 // ---------------------------------------------------------------------------
 
 const TYPES_MODULE = "dashboard/types.ts";
 
-/** コメントを落とした本文(ブロック / JSDoc / 行コメント)。 */
+/** The body with comments stripped (block / JSDoc / line comments). */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
 /**
- * `<` の直後から対応する `>` までの型引数(ネストした `<…>` / `{…}` を跨ぐ —
- * 正規表現 `[^<>]+` はネストで当たらず、手書きの envelope を見逃す)。
+ * The type arguments from just after a `<` to the matching `>` (spans
+ * nested `<…>` / `{…}` — a `[^<>]+` regexp never survives nesting and
+ * would miss a hand-written envelope).
  */
 function typeArgumentAt(source: string, start: number): string {
   let depth = 1;
@@ -256,7 +280,7 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
 
   it("keeps types.ts to `typeof XxxSchema.Type` derivations only (no interface, no literal)", () => {
     expect(typesSource.match(/^(?:export )?interface\s/gm), "hand-written interface").toBeNull();
-    // 折り返し(oxfmt が `=` の後で改行しうる)を跨いで数える
+    // Count across a wrap (oxfmt may break after `=`)
     const derived = typesSource.match(/^export type \w+\s*=\s*typeof \w+Schema\.Type;/gm) ?? [];
     expect(exportedNames.length, "types.ts must export at least one type").toBeGreaterThan(0);
     expect(derived.length, "every exported type must be `typeof XxxSchema.Type`").toBe(
@@ -265,11 +289,14 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
   });
 
   it("names a types.ts export at every consumption site (no inline envelope in screens)", () => {
-    // 消費面の入口(apiGet / useApiResource / ApiResult / ResourceState)の型引数を
-    // 全 src/ から集め、どれも types.ts の export 名であることを要求する —
-    // 検査の射程を types.ts の 1 ファイルから消費面全体へ広げる(pullfrog の指摘)
+    // Collect the type arguments of the consumption entrances
+    // (apiGet / useApiResource / ApiResult / ResourceState) across all
+    // of src/ and require each to be a types.ts export name —
+    // widening the check's reach from the single types.ts file to the
+    // whole consumption surface (pullfrog's point)
     const known = new Set(exportedNames);
-    // 入口を宣言する 2 モジュール(`<T>` / `<void>`)と types.ts 自身は対象外
+    // Out of scope: the 2 modules that declare the entrances (`<T>` /
+    // `<void>`) and types.ts itself
     const entranceModules = new Set(
       [TYPES_MODULE, "dashboard/api.ts", "dashboard/use-api-resource.ts"].map((p) =>
         join(srcRoot, p),
@@ -301,27 +328,30 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// RSC(サーバーグラフ)からの dashboard import の境界。
+// The boundary on dashboard imports from the RSC (server graph).
 //
-// CLAUDE.md「RSC は静的シェルのみ」: サーバーグラフのファイル(App.tsx / Root.tsx /
-// "use client" を持たない pages/*.tsx)が src/dashboard/* を import するとき、対象は
-// "use client" 境界のモジュール(クライアント参照に置き換わる)か、サーバー側で評価
-// されてよいと分かっている許可リスト(routes.ts — ルート定義とパス定数のみ)に限る。
-// 境界の無い dashboard モジュール(api.ts 等)を直接 import すると、その本体が
-// ビルド時 RSC で評価される。type-only import は消去されるので対象外。routes.ts 自身が
-// 相対 import を持つと許可リスト経由で任意のモジュールがサーバーグラフへ入るので、
-// routes.ts には相対 import を置かせない。
+// CLAUDE.md "RSC is the static shell only": when a server-graph file
+// (App.tsx / Root.tsx / a pages/*.tsx without "use client") imports
+// src/dashboard/*, the target is limited to a module behind a
+// "use client" boundary (replaced by a client reference) or the
+// allowlist known to be safe to evaluate server-side (routes.ts —
+// route definitions and path constants only). Directly importing a
+// dashboard module without a boundary (api.ts etc.) gets its body
+// evaluated by the build-time RSC. A type-only import is erased, so it
+// is out of scope. If routes.ts itself had a relative import, any
+// module could enter the server graph via the allowlist, so routes.ts
+// is not allowed to carry a relative import.
 // ---------------------------------------------------------------------------
 
-/** サーバーグラフから import してよい "use client" でない dashboard モジュール。 */
+/** The dashboard modules without "use client" that the server graph may import. */
 const SERVER_GRAPH_DASHBOARD_ALLOWLIST: ReadonlySet<string> = new Set(["dashboard/routes.ts"]);
 
-/** コメントを除いた本文の先頭が "use client" ディレクティブか。 */
+/** Whether the comment-stripped body begins with the "use client" directive. */
 function hasUseClientDirective(source: string): boolean {
   return /^\s*(["'])use client\1/.test(stripComments(source));
 }
 
-/** 値としての import / re-export の指定子(`import type` / `export type` は除く)。 */
+/** The specifiers of value imports / re-exports (`import type` / `export type` excluded). */
 function valueImportSpecifiers(source: string): string[] {
   const stripped = stripComments(source);
   return [
@@ -331,16 +361,18 @@ function valueImportSpecifiers(source: string): string[] {
     .map((match) => match[3] ?? "");
 }
 
-/** 相対指定子を srcRoot 相対のパス(区切りは "/")へ解決する。相対でなければ undefined。 */
+/** Resolves a relative specifier to a path relative to srcRoot ("/"-separated). undefined when not relative. */
 function resolveRelative(fromFile: string, specifier: string): string | undefined {
   if (!specifier.startsWith(".")) return undefined;
   return join(dirname(fromFile), specifier).split(sep).join("/");
 }
 
 /**
- * サーバーグラフのファイル(srcRoot 相対)ごとに、境界違反の dashboard import を返す。
- * `read` は srcRoot 相対パス → 本文(存在しなければ undefined)。純関数にして下の
- * 否定の自己テストで同じ検査器を偽のソースに当てる。
+ * For each server-graph file (srcRoot-relative), returns its
+ * boundary-violating dashboard imports.
+ * `read` maps a srcRoot-relative path → its body (undefined when
+ * absent). Kept a pure function so the negative self-test below can
+ * run the same checker against fake sources.
  */
 function serverGraphDashboardOffenders(
   serverGraphFiles: ReadonlyArray<string>,
@@ -354,7 +386,7 @@ function serverGraphDashboardOffenders(
   );
 }
 
-/** dashboard 配下で、許可リスト外かつ "use client" 境界が確認できない import 先か。 */
+/** Whether an import target under dashboard/ is outside the allowlist and has no confirmable "use client" boundary. */
 function isUnboundedDashboardImport(
   target: string,
   read: (relativePath: string) => string | undefined,
@@ -365,11 +397,12 @@ function isUnboundedDashboardImport(
   return !hasUseClientDirective(read(target) ?? "");
 }
 
-describe("server-graph imports of src/dashboard stay behind a client boundary (RSC は静的シェルのみ)", () => {
+describe("server-graph imports of src/dashboard stay behind a client boundary (RSC is the static shell only)", () => {
   const srcRoot = join(import.meta.dirname, "../../src");
   const read = (relativePath: string): string | undefined => {
     const filePath = join(srcRoot, relativePath);
-    // 解決できない import 先は「境界が確認できない」として検査器が offender にする
+    // An unresolvable import target is made an offender by the
+    // checker as "no confirmable boundary"
     return existsSync(filePath) ? readFileSync(filePath, "utf8") : undefined;
   };
   const pageFiles = readdirSync(join(srcRoot, "pages"))
@@ -397,7 +430,8 @@ describe("server-graph imports of src/dashboard stay behind a client boundary (R
   it("keeps the allowlisted routes.ts free of relative imports", () => {
     const routes = read("dashboard/routes.ts");
     expect(routes, "dashboard/routes.ts not found").toBeDefined();
-    // type-only の相対 import も許可リストを経由した依存の入口になりうるので禁じる
+    // Even a type-only relative import could be the entry of a
+    // dependency via the allowlist, so it is banned
     expect(stripComments(routes ?? "")).not.toMatch(/\b(?:from|import)\s+["']\./);
   });
 
@@ -427,10 +461,12 @@ describe("server-graph imports of src/dashboard stay behind a client boundary (R
       "pages/Fake.tsx -> dashboard/helper.ts",
       "pages/Fake.tsx -> dashboard/missing.ts",
     ]);
-    // "use client" 判定: 後続行のディレクティブ風の文は境界にならない
+    // The "use client" check: a directive-looking statement on a later
+    // line is not a boundary
     expect(hasUseClientDirective('const x = 1;\n"use client";')).toBe(false);
     expect(hasUseClientDirective("'use client';\nexport {}")).toBe(true);
-    // routes.ts の相対 import 検査も偽のソースで割れる
+    // The routes.ts relative-import check also fails against fake
+    // sources
     expect(stripComments('import { x } from "./api.ts";')).toMatch(/\b(?:from|import)\s+["']\./);
   });
 });

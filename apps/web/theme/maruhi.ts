@@ -1,22 +1,32 @@
-// maruhi ブランドテーマ(ADR-0013: ブランド定義の唯一の置き場所)。
-// 配信は `astryx theme build` で静的 CSS 化したもの(<Theme> のランタイム注入はインライン
-// <style> を挿入するため、style-src 'self' と両立しない — docs/notes/spike-a.md)。
+// The maruhi brand theme (ADR-0013: the only place brand definitions
+// live). What ships is static CSS produced by `astryx theme build`
+// (the <Theme> runtime injection inserts an inline <style>, which is
+// incompatible with style-src 'self' — docs/notes/spike-a.md).
 //
-// 色の裁定は docs/notes/web-design-pass.md §1-1 / §1-2 と §3「DP1 実装時の裁定録」(A・B)。
-// ここに現れる生 hex は「朱」の 2 値 + on-accent の 2 値のみで、他はすべて HCT 導出に任せる。
+// The color rulings are docs/notes/web-design-pass.md §1-1 / §1-2 and
+// §3 "rulings recorded while implementing DP1" (A / B).
+// The only raw hex values here are the two "vermilion" values plus the
+// two on-accent values; everything else is left to HCT derivation.
 import { defineTheme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral";
 
-// 朱(vermilion)— ㊙ 印の赤。SVG ロゴ(apps/web/public/logo*.svg・favicon)の fill と同値。
-// HCT: hue 44 / chroma 76 / tone 44。danger(--color-error = crimson、hue 28)と色相で 16° 離す。
-// light 側の値がブランドの正(単色ロゴはこの色で描く)。
+// Vermilion — the red of the ㊙ mark. Same value as the fill of the SVG
+// logo (apps/web/public/logo*.svg, favicon).
+// HCT: hue 44 / chroma 76 / tone 44. Kept 16° of hue away from danger
+// (--color-error = crimson, hue 28).
+// The light-side value is the brand's source of truth (single-color
+// logos are drawn in this color).
 const VERMILION_LIGHT = "#C1330B";
-// dark 側は同じ色相・同じ彩度で tone 63 に上げたもの(dark body 上で 6.6:1、popover 上で 4.6:1)。
-// Astryx の seed 導出は dark accent を tone 80 の pastel(彩度 ≈ 31)に固定するため、
-// 「彩度を落とさない」(§1-1)を満たすには tokens での明示が必要(裁定 A)。
+// The dark side is the same hue and chroma raised to tone 63 (6.6:1 on
+// the dark body, 4.6:1 on a popover).
+// Astryx's seed derivation pins the dark accent to a tone-80 pastel
+// (chroma ≈ 31), so meeting "do not lower the chroma" (§1-1) requires
+// stating it in tokens (ruling A).
 const VERMILION_DARK = "#FF693C";
-// on-accent。light は白(5.6:1)。dark は warm neutral の tone 10(= 導出される dark surface と
-// 同値。6.0:1)— seed 導出の PD[20](#780000)は 4.1:1 で AA に届かないため明示する。
+// on-accent. light is white (5.6:1). dark is warm-neutral tone 10 (=
+// the same value as the derived dark surface. 6.0:1) — the seed-
+// derived PD[20] (#780000) is 4.1:1 and does not reach AA, so it is
+// stated explicitly.
 const ON_VERMILION_LIGHT = "#FFFFFF";
 const ON_VERMILION_DARK = "#241915";
 
@@ -24,14 +34,18 @@ export const maruhiTheme = defineTheme({
   name: "maruhi",
   extends: neutralTheme,
   color: {
-    // seed タプル: neutral(warm)の色相・--color-on-accent 以外の導出パレットを朱の色相で揃える
+    // seed tuple: align the derived palettes — neutral (warm) hue and
+    // everything but --color-on-accent — on the vermilion hue
     accent: [VERMILION_LIGHT, VERMILION_DARK],
     neutralStyle: "warm",
   },
   tokens: {
-    // 導出値(light tone 40 / dark tone 80)を朱の確定値で置き換える。
-    // --color-accent-muted / --color-text-accent / --color-icon-accent は var(--color-accent)
-    // 参照で生成されるため追随する。--color-on-accent だけは seed から焼き込まれるので同期して上書きする
+    // Replace the derived values (light tone 40 / dark tone 80) with the
+    // settled vermilion values.
+    // --color-accent-muted / --color-text-accent / --color-icon-accent
+    // follow automatically, being generated as var(--color-accent)
+    // references. Only --color-on-accent is baked from the seed, so it is
+    // overridden in step
     "--color-accent": [VERMILION_LIGHT, VERMILION_DARK],
     "--color-on-accent": [ON_VERMILION_LIGHT, ON_VERMILION_DARK],
   },

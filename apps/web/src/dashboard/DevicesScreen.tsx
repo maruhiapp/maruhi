@@ -1,18 +1,28 @@
 "use client";
 
-// S11 端末登録簿(読み取りのみ — AUTH_SPEC §13-11 / DK K5。設計録 dk-design.md §10 K5-7〜K5-10)。
+// S11 device registry (read-only — AUTH_SPEC §13-11 / DK K5. Design
+// record dk-design.md §10 K5-7 through K5-10).
 //
-// - 対象は本人の登録簿(user 軸 — S9 と同じ独立ルート /dashboard/devices)。登録簿は
-//   **advisory**(表示名・トークンの対応の置き場)であり、端末鍵の真実源は各プロジェクトの
-//   チェーン(`maruhi device list` が検証する)。全表示はサーバー申告
-// - **登録・削除・要求の承認は置かない**(セッション主体は拒否される API — §13-11。
-//   チェーンの `revoke_device` も Web からは行わない — ADR-0018 改訂 2)。置くのは
-//   紛失時の導線 = 既存のトークン失効(`DELETE /auth/tokens/:tokenId` — 資格を減らす方向)
-// - `tokenId` は `GET /auth/tokens` の一覧と id で突合して名前 + prefix を出す(K5-8)。
-//   一覧に無ければ id だけ(失効済み / 期限切れの可能性)。一覧の取得だけ失敗しても
-//   登録簿は描く(部分失敗で画面を落とさない)。読込中は何も主張しない(id だけ — K5-14)
-// - 表示名 / FP / tokenId はサーバー由来の文字列としてテキストノードにだけ描く。href に
-//   埋めるのは `apiPaths.tokenRevoke(tokenId)`(encodeURIComponent)のみ
+// - The audience is your own registry (the user axis — same kind of
+//   separate route as S9, /dashboard/devices). The registry is
+//   **advisory** (the home of display names and token
+//   correspondence); the device keys' source of truth is each
+//   project's chain (`maruhi device list` verifies it). Every display
+//   is as reported by the server
+// - **No registration / deletion / request approval here** (the API
+//   rejects a session principal — §13-11. The chain's `revoke_device`
+//   is never performed from the web either — ADR-0018 amendment 2).
+//   What is here is the lost-device funnel = revoking the existing
+//   token (`DELETE /auth/tokens/:tokenId` — the direction that reduces
+//   a credential)
+// - `tokenId` is matched by id against the `GET /auth/tokens` listing
+//   to show the name + prefix (K5-8). If absent from the listing, only
+//   the id (possibly revoked / expired). If only the listing fetch
+//   fails the registry still renders (a partial failure does not drop
+//   the screen). While loading it asserts nothing (id only — K5-14)
+// - The display name / FP / tokenId are rendered only as text nodes,
+//   as server-issued strings. The only thing an href receives is
+//   `apiPaths.tokenRevoke(tokenId)` (encodeURIComponent)
 import { VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -39,14 +49,14 @@ import type { DeviceList, DeviceSummary, TokenList, TokenSummary } from "./types
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
 import { type RevocationState, useRevocation } from "./use-revocation.ts";
 
-/** 登録簿の行の tokenId が指すトークン(一覧との突合結果 — K5-8)。 */
+/** The token a registry row's tokenId points to (the result of matching against the listing — K5-8). */
 type LinkedToken =
   | { kind: "none" }
   | { kind: "found"; token: TokenSummary }
   | { kind: "not-listed"; tokenId: string }
-  /** トークン一覧をまだ読んでいる(何も主張しない — id だけ出す。K5-14)。 */
+  /** The token listing is still loading (asserts nothing — only the id is shown. K5-14). */
   | { kind: "pending"; tokenId: string }
-  /** トークン一覧の取得に失敗した(id だけ出し、一覧が無いと言う)。 */
+  /** The token listing failed to load (only the id is shown, and that there is no listing). */
   | { kind: "unresolved"; tokenId: string };
 
 interface DeviceRow extends Record<string, unknown> {
@@ -57,13 +67,13 @@ interface DeviceRow extends Record<string, unknown> {
   linked: LinkedToken;
 }
 
-/** 取得済みの一覧との突合(あれば found、無ければ not-listed)。 */
+/** Matching against the fetched listing (found if present, not-listed if absent). */
 function linkedFromList(tokenId: string, tokens: TokenList): LinkedToken {
   const token = tokens.tokens.find((t) => t.id === tokenId);
   return token === undefined ? { kind: "not-listed", tokenId } : { kind: "found", token };
 }
 
-/** tokenId → 一覧の行(読込中は pending、取れなければ unresolved — どちらも id だけを出す)。 */
+/** tokenId → the listing's row (pending while loading, unresolved if it fails — both show only the id). */
 function linkedTokenOf(tokenId: string | undefined, tokens: ResourceState<TokenList>): LinkedToken {
   if (tokenId === undefined) return { kind: "none" };
   if (tokens.kind === "ok") return linkedFromList(tokenId, tokens.value);
@@ -80,7 +90,7 @@ function toDeviceRow(device: DeviceSummary, tokens: ResourceState<TokenList>): D
   };
 }
 
-/** Token 列: 名前 + prefix(突合できたとき)/ id だけ(一覧に無い・一覧が取れない)/ none。 */
+/** The Token column: name + prefix (when matched) / id only (absent from the listing or the listing failed) / none. */
 function LinkedTokenCell({ linked }: { linked: LinkedToken }): ReactNode {
   if (linked.kind === "none") {
     return (
@@ -102,7 +112,7 @@ function LinkedTokenCell({ linked }: { linked: LinkedToken }): ReactNode {
   return <UnmatchedTokenCell linked={linked} />;
 }
 
-/** 突合できなかった id(読込中は何も主張しない — K5-14)。 */
+/** The id that could not be matched (asserts nothing while loading — K5-14). */
 function UnmatchedTokenCell({
   linked,
 }: {
@@ -175,7 +185,7 @@ function buildDeviceColumns(
   ];
 }
 
-/** 紛失時の導線(CLI の `device revoke` → ここでトークン失効)+ 登録の案内。 */
+/** The lost-device funnel (the CLI's `device revoke` → revoke the token here) + registration guidance. */
 function DeviceNotes(): ReactNode {
   return (
     <Callout title="Lost a device?" headingLevel={2} testId="device-notes">
@@ -206,7 +216,7 @@ function DevicesTable({
       <EmptyNotice
         title="No devices registered"
         description="Devices you register from the CLI (maruhi device add) appear here, as reported by the server."
-        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        // The list's box has no heading (the page h1 doubles as it), so h2
         headingLevel={2}
         testId="device-empty"
       />
@@ -225,7 +235,7 @@ function DevicesTable({
   );
 }
 
-/** 行の Revoke token を無効化するか: 失効の実行中、または失効後の再取得中(直前の値を描いている)。 */
+/** Whether a row's Revoke token is disabled: while a revocation is running, or during the post-revocation re-fetch (rendering the previous values). */
 function isRowActionLocked(
   revocation: RevocationState,
   resources: ReadonlyArray<{ readonly kind: string; readonly refreshing?: boolean }>,
@@ -248,9 +258,11 @@ function DevicesResource({
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
 }): ReactNode {
-  // 置換形(裁定 B-a)。404 は登録簿の名詞の文言(K5-9)。失効後の
-  // 再取得(refreshing — 登録簿・トークン一覧のどちらか)中は直前の表を残し、行の
-  // Revoke token は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
+  // Replacement form (ruling B-a). A 404 gets the registry noun's
+  // wording (K5-9). During the post-revocation re-fetch (refreshing —
+  // either of the registry or the token listing) the previous table
+  // stays, and each row's Revoke token is disabled the same as when one
+  // is in flight (prevents a double revocation on a pre-refetch row)
   if (state.kind === "loading") return <LoadingRow label="Loading devices" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="device registry" />;
@@ -270,13 +282,15 @@ export function DevicesScreen(): ReactNode {
   const tokens = useApiResource<TokenList>(apiPaths.tokens());
   const reloadDevices = devices.reload;
   const reloadTokens = tokens.reload;
-  // 失効後は両方を再取得する(登録簿の tokenId 欄は advisory で残るので、一覧から消えた
-  // トークンは「not among your tokens」へ落ちる — K5-8 反例 4)
+  // After a revocation both are re-fetched (the registry's tokenId
+  // column stays as advisory, so a token gone from the listing falls
+  // into "not among your tokens" — K5-8 counterexample 4)
   const reloadBoth = useCallback(() => {
     reloadDevices();
     reloadTokens();
   }, [reloadDevices, reloadTokens]);
-  // 失効状態は一覧リソースの外に持つ(use-revocation.ts のヘッダーコメント)
+  // The revocation state lives outside the list resource (the header
+  // comment of use-revocation.ts)
   const { revocation, arm, confirm } = useRevocation(apiPaths.tokenRevoke, reloadBoth);
   return (
     <DashboardShell
@@ -300,7 +314,7 @@ export function DevicesScreen(): ReactNode {
             onArm={arm}
           />
         </SectionBlock>
-        {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名はトークン一覧から引く */}
+        {/* Confirmation is modal (AlertDialogAsyncAction template). The target's name is drawn from the token listing */}
         <RevocationOutcome
           revocation={revocation}
           title={`Revoke ${armedTokenName(tokens.state, revocation.armedId)}?`}

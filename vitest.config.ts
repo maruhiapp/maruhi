@@ -1,16 +1,20 @@
 import { defineConfig } from "vitest/config";
 
-// crypto / core / cli は通常環境、server は @cloudflare/vitest-plugin(workerd 実環境)。
-// web(ダッシュボード)と site(LP + docs — Blume)の e2e はビルド済み dist 前提の独立ステップ。
+// crypto / core / cli run in the normal environment; server uses
+// @cloudflare/vitest-plugin (a real workerd environment).
+// The web (dashboard) and site (LP + docs — Blume) e2e are separate
+// steps that assume a built dist.
 export default defineConfig({
   test: {
     projects: [
       "packages/*/vitest.config.ts",
       "apps/cli/vitest.config.ts",
       "apps/server/vitest.config.ts",
-      // web の e2e はビルド済み dist 前提で独立ステップ(CI 9)のまま。unit のみ統合
+      // web's e2e stays a separate step assuming a built dist (CI 9).
+      // Only unit is integrated
       "apps/web/vitest.unit.config.ts",
-      // site の e2e も同様に独立ステップ(CI 9b)。unit(テーマ生成物の漂流検知)のみ統合
+      // site's e2e is likewise a separate step (CI 9b). Only unit
+      // (drift detection of the generated theme) is integrated
       "apps/site/vitest.unit.config.ts",
     ],
   },

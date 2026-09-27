@@ -1,13 +1,16 @@
-// ダッシュボードのルート定義(共有モジュール — 裁定 BO: docs/notes/session-43.md)。
+// The dashboard's route definitions (a shared module — ruling BO:
+// docs/notes/session-43.md).
 //
-// パス空間は /dashboard 前置に固定し、API のパス空間(/auth・/projects 前置 —
-// server の run_worker_first 列挙)と素で分離する。component は App.tsx が
-// bindRoute で結合し、クライアント側は本モジュールを import して useRouteParams の
-// 型を得る(funstack-router の部分ルート定義)。
+// The path space is pinned to the /dashboard prefix, plainly separated
+// from the API's path space (the /auth, /projects prefixes — the
+// server's run_worker_first enumeration). App.tsx binds each component
+// with bindRoute; the client side imports this module to get the
+// useRouteParams types (funstack-router's partial route definitions).
 //
-// パス文字列は下の定数が単一の置き場(裁定 CA — session-43 §13): route() と
-// spaPaths ビルダーが同じ定数を読むため、リネームは全リンク・全ナビゲーションへ
-// 同時に波及する(endpoints.ts の apiPaths と対をなす SPA 側の目録)。
+// The path strings' single home is the constants below (ruling CA —
+// session-43 §13): route() and the spaPaths builders read the same
+// constants, so a rename propagates to every link and every navigation
+// at once (the SPA-side counterpart to apiPaths in endpoints.ts).
 import { route } from "@funstack/router/server";
 
 const HOME_PATH = "/";
@@ -30,28 +33,31 @@ export const dashboardRoute = route({ id: "dashboard", path: DASHBOARD_PATH });
 /** S6 self axis: the signed-in user's account events. */
 export const accountAuditRoute = route({ id: "dashboard-account", path: ACCOUNT_AUDIT_PATH });
 
-/** S9 token management (user axis — 裁定 CP, docs/notes/session-45.md). */
+/** S9 token management (user axis — ruling CP, docs/notes/session-45.md). */
 export const tokensRoute = route({ id: "dashboard-tokens", path: TOKENS_PATH });
 
-/** S11 device registry (user axis — DK K5, 設計録 dk-design.md §10 K5-7). */
+/** S11 device registry (user axis — DK K5, design record dk-design.md §10 K5-7). */
 export const devicesRoute = route({ id: "dashboard-devices", path: DEVICES_PATH });
 
 /** S5 overview / S6 project audit / S7 rotation flags for one project. */
 export const projectRoute = route({ id: "dashboard-project", path: PROJECT_PATH });
 
 /**
- * 認証が要る画面(S4〜S9)の親ルート(pathless — パス名を消費しない)。App.tsx が
- * `DashboardLayout`(セッション状態 + AppShell + SideNav + Outlet)を結合し、上の 5 ルートを
- * 子にする。シェルは遷移をまたいで 1 回だけマウントされ、`GET /auth/me` の再取得と
- * サイドバーの再生成が起きない。パスを持たないので
- * SPA_ROUTES(非交差スイープの目録 — 全件パス付き)には載せない。
+ * The parent route of the authenticated screens (S4–S9) (pathless —
+ * consumes no path segment). App.tsx binds `DashboardLayout` (session
+ * state + AppShell + SideNav + Outlet) to it and makes the five routes
+ * above its children. The shell mounts once across navigations — no
+ * `GET /auth/me` re-fetch and no sidebar regeneration happens. Having
+ * no path, it is not listed in SPA_ROUTES (the catalog for the
+ * non-intersection sweep — every entry has a path).
  */
 export const dashboardShellRoute = route({ id: "dashboard-shell" });
 
 /**
- * 内部ナビゲーションのパスビルダー(裁定 CA)。画面の href / navigateTo は
- * すべてここを経由する — ソーストリップワイヤ(test/unit/endpoints.test.ts)が
- * /dashboard 前置のリテラルを本モジュール外から締め出す。
+ * The path builders for internal navigation (ruling CA). Every screen
+ * href / navigateTo goes through here — the source tripwire
+ * (test/unit/endpoints.test.ts) excludes any /dashboard-prefixed
+ * literal outside this module.
  */
 export const spaPaths = {
   home: () => HOME_PATH,
@@ -64,12 +70,14 @@ export const spaPaths = {
 } as const;
 
 /**
- * 全 SPA ルート(裁定 BZ — docs/notes/session-43.md §12)。ユニットテストが
- * この列挙を wrangler.jsonc の run_worker_first と突合し、「SPA のルート空間は
- * Worker に飲まれない」(裁定 BO の分離)を実ルート定義から導出して検査する。
- * ルートを追加したらここに載せる — 本モジュール外の route() 宣言は
- * ソーストリップワイヤ(test/unit/endpoints.test.ts)が締め出すため、
- * 目録から漏れうるのは本モジュール内で SPA_ROUTES への追記を忘れた場合だけ。
+ * All SPA routes (ruling BZ — docs/notes/session-43.md §12). A unit
+ * test collates this enumeration against wrangler.jsonc's
+ * run_worker_first and verifies, derived from the real route
+ * definitions, that "the SPA's route space is not swallowed by the
+ * Worker" (ruling BO's separation). Add new routes here — a route()
+ * declaration outside this module is excluded by the source tripwire
+ * (test/unit/endpoints.test.ts), so the only way to fall out of the
+ * catalog is forgetting the SPA_ROUTES entry inside this module.
  */
 export const SPA_ROUTES = [
   homeRoute,

@@ -1,12 +1,14 @@
 "use client";
 
-// S4 プロジェクト一覧(設計文書 §3)。S3(サインイン)とセッション状態は
-// DashboardShell(DP3 裁定 A)へ移した — 本画面は ok 状態の本文のみ。
+// S4 project list (design document §3). S3 (sign-in) and the session
+// state moved into DashboardShell (DP3 ruling A) — this screen is only
+// the ok-state body.
 //
-// - GET /projects(AUTH_SPEC §11-5 — 応答は projectId + チェーン導出 role の
-//   サーバー申告値のみ)。nextAfter カーソルの Load more。プロジェクト ID
-//   (genesis ハッシュ = capability)直入力の補助経路を正式に置く(設計文書 §3 S4
-//   の暫定縮退の昇格)
+// - GET /projects (AUTH_SPEC §11-5 — the response carries only the
+//   server-reported projectId + chain-derived role). A nextAfter-cursor
+//   Load more. The auxiliary path of typing a project ID (the genesis
+//   hash = the capability) directly is formally in place (the promotion
+//   of design document §3 S4's provisional reduction)
 import { Button } from "@astryxdesign/core/Button";
 import { Grid } from "@astryxdesign/core/Grid";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
@@ -34,7 +36,8 @@ import {
 } from "./shared.tsx";
 import type { ProjectList } from "./types.ts";
 
-// 形式エラー(クライアント側の判定 — サーバーには問い合わせない)。TextInput の status に載せる
+// A format error (client-side judgment — the server is not asked).
+// Carried on the TextInput's status
 const FORMAT_ERROR = {
   type: "error",
   message: "A project ID is 64 lowercase hex characters.",
@@ -51,8 +54,9 @@ interface ProjectsState {
 }
 
 /**
- * プロジェクト ID 直入力(`settings` テンプレートの 2 列 = 見出し + 説明 | 入力)。
- * 狭い幅では Grid が 1 列に畳む。
+ * Direct project-ID input (the `settings` template's two columns =
+ * heading + description | input). On narrow widths the Grid folds to
+ * one column.
  */
 function OpenByIdSection(): ReactNode {
   const [projectId, setProjectId] = useState("");
@@ -71,7 +75,7 @@ function OpenByIdSection(): ReactNode {
         title="Open a project by ID"
         description="A project ID works like a bookmark: paste one to open its overview directly."
       />
-      {/* 形式エラーは TextInput 自身の status(detached — 入力の下に出る)。Enter でも Open */}
+      {/* The format error rides TextInput's own status (detached — appears below the input). Enter also Opens */}
       <HStack gap={2} align="start" wrap="wrap">
         <TextInput
           label="Project ID"
@@ -93,7 +97,7 @@ function OpenByIdSection(): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// S4: プロジェクト一覧
+// S4: the project list
 // ---------------------------------------------------------------------------
 
 const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
@@ -116,8 +120,9 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
 ];
 
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
-  // 敵対的・壊れたサーバーが同一 projectId を繰り返しても行と React key を
-  // 増やさないよう、追加分は既出行で除重する
+  // Dedupe additions against already-rendered rows so a hostile or
+  // broken server repeating the same projectId cannot grow rows and
+  // React keys
   const rows = current === undefined ? [] : [...current.rows];
   const seen = new Set(rows.map((row) => row.id));
   for (const project of page.projects) {
@@ -128,17 +133,21 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
   return { rows, nextAfter: page.nextAfter };
 }
 
-/** 空ページの自動追跡の上限 — 毎回新しいカーソルを返すサーバーへの資源上限。超えると「load more」に委ねる */
+/** The cap on auto-following empty pages — a resource bound against a server that returns a fresh cursor every time. Past it, control defers to "load more" */
 const MAX_EMPTY_PAGE_HOPS = 10;
 
 /**
- * 空ページはリストの終端ではない(AUTH_SPEC §11-5): 候補ページは ghost 除外・
- * 確認失敗の省略で `{ projects: [], nextAfter }` になりうる。行が増えるか
- * nextAfter が尽きるまでカーソルを進める(深さは候補ページ数で有界)。既出
- * カーソルの再出現(壊れた・敵対的なサーバー — 交互カーソルを含む)は終端
- * 扱いにして追跡を打ち切る。追跡回数は相異なるカーソル数「と」固定上限
- * (MAX_EMPTY_PAGE_HOPS)の小さい方で有界 — 毎回新規カーソルを出すサーバー
- * があっても GET と Set の増大に天井を張る(超過時は手動の load more)
+ * An empty page is not the end of the list (AUTH_SPEC §11-5): a
+ * candidate page can become `{ projects: [], nextAfter }` via ghost
+ * exclusion or confirmation-failure omission. Advance the cursor until
+ * a row appears or nextAfter runs out (depth is bounded by the number
+ * of candidate pages). A cursor already seen reappearing (a broken or
+ * hostile server — including alternating cursors) is treated as the end
+ * and the following stops. The follow count is bounded by the smaller
+ * of the distinct-cursor count "and" the fixed cap
+ * (MAX_EMPTY_PAGE_HOPS) — even a server that mints a new cursor every
+ * time has a ceiling on GETs and the Set's growth (past it: manual
+ * load more)
  */
 function shouldFollowCursor(
   page: ProjectList,
@@ -152,7 +161,7 @@ function shouldFollowCursor(
   );
 }
 
-/** カーソルを追跡可能なら記録して true(既出・上限超過なら false)。 */
+/** If the cursor may be followed, records it and returns true (false when already seen or over the cap). */
 function consumeCursor(visitedCursors: Set<string>, cursor: string): boolean {
   if (visitedCursors.has(cursor) || visitedCursors.size >= MAX_EMPTY_PAGE_HOPS) return false;
   visitedCursors.add(cursor);
@@ -180,8 +189,10 @@ function ProjectsFooter({
   nextAfter: string | undefined;
   onLoadMore: () => void;
 }): ReactNode {
-  // 読込中もボタンを差し替えない(フォーカスを保つ — AuditEventList の LoadMoreRow と同じ形)。
-  // isInterruptible = native disabled を付けない。二重読込はハンドラ側で弾く
+  // Never swap the button out while loading (preserves focus — same
+  // shape as AuditEventList's LoadMoreRow).
+  // isInterruptible = no native disabled. Double-loading is blocked on
+  // the handler side
   if (nextAfter === undefined && !isLoading) return null;
   return (
     <Button
@@ -218,7 +229,7 @@ function ProjectsTableView({
         hasHover
         dividers="rows"
       />
-      {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
+      {/* Appended form (ruling B-b): the Load more failure is added below the already-rendered list */}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <ProjectsFooter
         isLoading={isLoading}
@@ -251,7 +262,7 @@ function ProjectListSection(): ReactNode {
   }, [loadPage]);
 
   if (projects === undefined) {
-    // 置換形(裁定 B-a): 初回ページが取れるまでは本体の代わりに描く
+    // Replacement form (ruling B-a): rendered in place of the body until the first page arrives
     return failure !== undefined ? (
       <FailureNotice failure={failure} onRetry={() => void loadPage(undefined)} />
     ) : (
@@ -263,7 +274,7 @@ function ProjectListSection(): ReactNode {
       <EmptyNotice
         title="No projects"
         description="Projects you are a member of appear here, as reported by the server. Create one with the maruhi CLI."
-        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        // The list's box has no heading (the page h1 doubles as it), so h2
         headingLevel={2}
         testId="project-empty"
       />
@@ -280,7 +291,7 @@ function ProjectListSection(): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// 画面本体
+// The screen body
 // ---------------------------------------------------------------------------
 
 export function DashboardScreen(): ReactNode {
@@ -295,8 +306,8 @@ export function DashboardScreen(): ReactNode {
         </Text>
       }
     >
-      {/* ページ見出しが一覧の見出しを兼ねる(1 領域に主見出しは 1 つ — Astryx layout docs)。
-          節見出しを持つのは 2 つ目の節(Open a project by ID)だけ */}
+      {/* The page heading doubles as the list's heading (one main heading per region — Astryx layout docs).
+          Only the second section (Open a project by ID) carries a section heading */}
       <VStack gap={SECTION_GAP}>
         <SectionBlock>
           <ProjectListSection />
