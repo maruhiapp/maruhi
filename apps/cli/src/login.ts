@@ -1,16 +1,19 @@
-// maruhi login / logout(AUTH_SPEC §4 / §6)。
+// maruhi login / logout (AUTH_SPEC §4 / §6).
 //
-// login はサーバー仲介の web-flow ハンドオフ(§4):
-// start → verificationUrl と userCode の表示(対話端末 × 非エージェントのみ
-// ブラウザ自動起動を試みる)→ poll。CLI はアイデンティティプロバイダと直接
-// 通信しない。
+// login is a server-mediated web-flow handoff (§4):
+// start → display verificationUrl and userCode (the browser auto-launch
+// is attempted only on interactive terminals × non-agent) → poll. The
+// CLI never talks to the identity provider directly.
 //
-// - flowToken は CLI 専用の bearer 資格情報(§4-1 (1))。ローカル変数にのみ
-//   存在し、表示・ログ・保存をしない(poll の payload にのみ載る)
-// - 永続化するのは maruhi 発行トークンのみ、保存先は OS キーチェーンのみ
-// - login の再実行は同名トークンのローテーション(§6): サーバー側で旧トークンが
-//   自動失効する
-// - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
+// - flowToken is a CLI-only bearer credential (§4-1 (1)). It exists only
+//   as a local variable and is never displayed, logged, or saved (it
+//   rides only on poll's payload)
+// - What is persisted is only the maruhi-issued token, and only to the
+//   OS keychain
+// - Re-running login rotates the same-named token (§6): the old token
+//   auto-revokes server-side
+// - logout revokes one's own token (§6's v1 scope) + removes it from the
+//   keychain
 
 import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
 import { Duration, Effect, Option, Redacted, Stdio } from "effect";
@@ -38,17 +41,19 @@ import {
 import { logNote } from "./notice.ts";
 import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
-// サーバー申告値の運用上限: 敵対的・誤設定
-// サーバーの巨大値で deadline 検査に到達しないまま長時間 sleep しない。実値
-// (サーバーの TTL 15 分・間隔 5 秒)に余裕を持たせた丸め
+// Operational caps for server-declared values: never sleep a long time
+// on a hostile / misconfigured server's huge value without reaching the
+// deadline check. Rounded with slack above the real values (the server's
+// TTL of 15 minutes, interval of 5 seconds)
 const MAX_POLL_INTERVAL_SECONDS = 900;
 const DEFAULT_EXPIRES_IN_SECONDS = 900;
 const MAX_EXPIRES_IN_SECONDS = 1800;
 
 /**
- * ポーリング間隔を [下限, 上限] に丸める(下限はワイヤ共有の
- * MIN_CLI_POLL_INTERVAL_SECONDS — §4-1 (5)。テストのみ短縮可)。0・負値・非数は
- * 下限へ(ビジースピンしない)。下限が上限を越える場合は下限が勝つ。
+ * Clamps the polling interval into [min, max] (the minimum is the
+ * wire-shared MIN_CLI_POLL_INTERVAL_SECONDS — §4-1 (5). Only tests may
+ * shorten it). 0 / negative / non-numeric go to the minimum (no busy
+ * spin). When the minimum exceeds the maximum, the minimum wins.
  */
 function clampInterval(seconds: number, minSeconds: number): number {
   if (!Number.isFinite(seconds) || seconds < minSeconds) {
@@ -58,11 +63,13 @@ function clampInterval(seconds: number, minSeconds: number): number {
 }
 
 /**
- * ブラウザ自動起動に渡してよい URL か(fail-closed)。verificationUrl は
- * サーバー応答由来の untrusted 入力で、表示側は displayText で中和している —
- * OS の opener に渡す側も同様に生値を信頼しない。OS の URL ハンドラは任意
- * スキームをディスパッチするため http(s) のみ許可し、パース不能値も拒否する。
- * 不合格は自動起動のスキップ = 手動オープン案内(表示済みの URL)への縮退。
+ * Whether the URL may be handed to the browser auto-launch (fail-closed).
+ * verificationUrl is untrusted input from the server's response and the
+ * display side neutralizes it with displayText — the side passing it to
+ * the OS opener likewise never trusts the raw value. Since the OS's URL
+ * handler dispatches arbitrary schemes, only http(s) is allowed, and
+ * unparseable values are refused. A failure skips the auto-launch =
+ * degrades to the manual-open guidance (the URL already displayed).
  */
 function isOpenableUrl(raw: string): boolean {
   if (!URL.canParse(raw)) {
@@ -73,11 +80,12 @@ function isOpenableUrl(raw: string): boolean {
 }
 
 /**
- * ブラウザ自動起動の UX 分岐(§4-1 (2) — ADR-0016 決定 7 の既存サービスを
- * 流用する分岐であって新しいセキュリティゲートではない)。「対話端末 ×
- * 非エージェント × URL 検証合格(isOpenableUrl)」のときのみ試みる。失敗・
- * 非対象・検証不合格のいずれも表示 + ポーリングで完走する — 縮退経路は
- * この 1 本で全環境を覆う。
+ * The browser auto-launch UX branch (§4-1 (2) — a branch reusing
+ * ADR-0016 decision 7's existing services, not a new security gate).
+ * Attempted only for "interactive terminal × non-agent × URL check
+ * passed (isOpenableUrl)". Failure, non-target, or a failed check all
+ * complete via display + polling — this one fallback path covers every
+ * environment.
  */
 function maybeOpenBrowser(
   io: CliIoShape,
@@ -92,8 +100,10 @@ function maybeOpenBrowser(
       return;
     }
     const opened = yield* io.openBrowser(verificationUrl);
-    // 案内は stderr(裁定 D-2: 対話の案内はプロンプトと同じ経路。stdout は
-    // ログインの結果だけ)。開けなかったときも黙らない — 表示済みの URL へ誘導する
+    // The guidance goes to stderr (ruling D-2: interactive guidance takes
+    // the same path as prompts. stdout carries only the login's result).
+    // Not silent when the open fails either — steer to the URL already
+    // displayed
     yield* io.logError(
       opened
         ? "Opened your browser. If nothing appeared, open the URL above manually"
@@ -102,7 +112,7 @@ function maybeOpenBrowser(
   });
 }
 
-/** expiresInSeconds を (0, 上限] に丸める(非数・非有限・非正は既定値)。 */
+/** Clamps expiresInSeconds into (0, max] (non-numeric / non-finite / non-positive → the default). */
 function clampExpires(seconds: number): number {
   return Number.isFinite(seconds) && seconds > 0
     ? Math.min(seconds, MAX_EXPIRES_IN_SECONDS)
@@ -110,35 +120,43 @@ function clampExpires(seconds: number): number {
 }
 
 /**
- * フローの有効期間の表示(裁定 D-1)。値はサーバー応答の expiresInSeconds
- * (clampExpires 後 = deadline 判定と同じ値)から導く — CLI に定数を持たない
- * (サーバーの TTL を変えても CLI の案内が食い違わない)。分単位で切り捨て、
- * 1 分未満だけ秒で言う。
+ * Displaying the flow's validity window (ruling D-1). The value is
+ * derived from the server response's expiresInSeconds (after
+ * clampExpires = the same value the deadline judgment uses) — the CLI
+ * holds no constant of its own (changing the server's TTL never makes
+ * the CLI's guidance disagree). Floors to minutes; only sub-minute
+ * values are spoken in seconds.
  */
 function describeWindow(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   return minutes >= 1 ? countNoun(minutes, "minute") : countNoun(Math.floor(seconds), "second");
 }
 
-/** 期限切れの文面(サーバー申告の期間を添え、次の一手を 1 文で言う)。 */
+/** The expiry wording (carries the server-declared window and states the next step in one sentence). */
 function flowExpiredMessage(window: string): string {
   return `The sign-in request expired (it was valid for ${window}). Run \`maruhi login\` again`;
 }
 
 /**
- * login の事前 fail-fast(AUTH_SPEC §3 / hosted-design.md §2-2 (i)(ii))。
- * `POST /auth/cli/start` を呼ぶ**前**に `GET /auth/config` の
- * `signupPolicy` advisory を確認し、`invite` / `closed` のサーバーでは新規希望者に
- * 「Web でサインアップしてから `maruhi login`」の案内を出す。
+ * login's pre-flight fail-fast (AUTH_SPEC §3 / hosted-design.md §2-2
+ * (i)(ii)). Before calling `POST /auth/cli/start`, check `GET
+ * /auth/config`'s `signupPolicy` advisory, and on an `invite` / `closed`
+ * server show would-be new users the guidance "sign up on the web, then
+ * `maruhi login`".
  *
- * - **誤操作ガードであって認可ではない**(受理の正はサーバー — CLI ログインは
- *   アカウントを作らない〔裁定 DH〕ため、アカウント不在者はブラウザ脚の
- *   サインアップ案内ページで必ず止まる。ここで止めるのは無駄なブラウザ往復)
- * - advisory の取得失敗では止めずに進む(advisory の欠落で login を壊さない — AUTH_SPEC §3)
- * - 対話確認(既存アカウント保持の自己申告)は「対話端末 × 非エージェント」の
- *   ときのみ。判定材料は Stdio / AgentProfileRef サービス経由(ADR-0016 決定 7 の
- *   既存サービスの流用 — process.* を直に読まない)。非対話環境は案内の表示のみで
- *   進む(プロンプトで CI・エージェントの login を吊るさない)
+ * - **A misuse guard, not authorization** (the server is the source of
+ *   truth for acceptance — a CLI login never creates an account [ruling
+ *   DH], so someone without an account always stops at the browser
+ *   leg's sign-up guidance page. What is stopped here is a wasted
+ *   browser round trip)
+ * - An advisory fetch failure proceeds without stopping (a missing
+ *   advisory must not break login — AUTH_SPEC §3)
+ * - The interactive confirmation (the self-report of holding an
+ *   existing account) only on "interactive terminal × non-agent". The
+ *   judgment material comes via the Stdio / AgentProfileRef services
+ *   (reusing ADR-0016 decision 7's existing services — never reading
+ *   process.* directly). A non-interactive environment proceeds with
+ *   just the displayed guidance (no prompt suspends a CI / agent login)
  */
 function signupPolicyPreflight(
   client: MaruhiClient,
@@ -150,21 +168,23 @@ function signupPolicyPreflight(
     if (policy !== "invite" && policy !== "closed") {
       return;
     }
-    // 案内は stderr(裁定 D-2)
+    // The guidance goes to stderr (ruling D-2)
     yield* io.logError(
       policy === "invite"
         ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
         : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
     );
-    // 非対話環境では確認を挟まず進む(ガードの目的は善意の無駄打ちの遮断と
-    // 案内 UX — 認可ではない。アカウント不在ならサーバー側の案内ページで止まる)
+    // On a non-interactive environment proceed without the confirmation
+    // (the guard's purpose is blocking a well-meaning waste and the
+    // guidance UX — it is not authorization. Without an account the
+    // server-side guidance page stops them)
     if (yield* interactiveHumanTerminal) {
       yield* confirmExistingAccount(io);
     }
   });
 }
 
-/** 対話端末 × 非エージェントか(ADR-0016 決定 7 の既存サービスの流用)。 */
+/** Whether interactive terminal × non-agent (reusing ADR-0016 decision 7's existing services). */
 const interactiveHumanTerminal: Effect.Effect<boolean, never, Stdio.Stdio> = Effect.gen(
   function* () {
     const agent = yield* AgentProfileRef;
@@ -175,7 +195,7 @@ const interactiveHumanTerminal: Effect.Effect<boolean, never, Stdio.Stdio> = Eff
   },
 );
 
-/** 既存アカウント保持の自己申告確認(no が既定 — 新規希望者を start 前に止める)。 */
+/** The self-report confirmation of holding an existing account (no is the default — stops a would-be new user before start). */
 function confirmExistingAccount(io: CliIoShape): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
     const answer = yield* io.promptLine({
@@ -192,7 +212,7 @@ function confirmExistingAccount(io: CliIoShape): Effect.Effect<void, CliError> {
   });
 }
 
-/** poll 1 回の帰結(レート制限は失敗ではなく次回間隔の調整として扱う)。 */
+/** One poll's outcome (a rate limit is not a failure — it adjusts the next interval). */
 type PollOutcome =
   | { readonly kind: "pending" }
   | { readonly kind: "backoff"; readonly retryAfterSeconds: number }
@@ -220,17 +240,18 @@ function pollOnce(
       }
       return Effect.succeed({ kind: "pending" });
     }),
-    // 期限切れ(型付き — §4-2)はポーリングをやめて再ログインを案内する
+    // An expiry (typed — §4-2) stops polling and steers to re-login
     Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(flowExpiredMessage(window)))),
-    // 一様拒否(§4-2): 資格不一致・消費済みフローの再 poll 等。理由は
-    // 出し分けられない(サーバーがオラクルを作らない)ので再ログインを案内する
+    // Uniform rejection (§4-2): a credential mismatch, re-polling a
+    // consumed flow, etc. The reason cannot be told apart (the server
+    // builds no oracle), so steer to re-login
     Effect.catchTag("CliFlowRejected", () =>
       Effect.fail(
         cliError("The sign-in flow was rejected by the server. Run `maruhi login` again"),
       ),
     ),
-    // 429 は失敗ではない(§4-1 (5) — サーバーは超過ポーリングを拒否してよい)。
-    // 案内された待ち時間だけ下がって続ける
+    // A 429 is not a failure (§4-1 (5) — the server may refuse excessive
+    // polling). Back off by the indicated wait and continue
     Effect.catchTag("AuthRateLimited", (error) =>
       Effect.succeed<PollOutcome>({ kind: "backoff", retryAfterSeconds: error.retryAfterSeconds }),
     ),
@@ -243,22 +264,25 @@ export function loginOp(input: {
   readonly origin: string;
   readonly tokenName: string;
   /**
-   * 発行した PAT の生値を端末へ 1 度だけ表示する(AUTH_SPEC §6 の「発行時の
-   * 端末表示 1 箇所」— 裁定 CK。リース非対応環境の MARUHI_TOKEN 供給用)。
-   * 表示可否のゲート(ADR-0016 決定 7 — fail-closed 2 層)は呼び出し側が
-   * **通信より前**に通している前提。
+   * Display the issued PAT's raw value on the terminal exactly once
+   * (AUTH_SPEC §6's "one terminal display at issuance" — ruling CK. For
+   * feeding MARUHI_TOKEN on a lease-less environment). Assumes the
+   * caller has already passed the displayability gate (ADR-0016 decision
+   * 7 — the fail-closed two layers) **before communicating**.
    */
   readonly showToken: boolean;
   /**
-   * tokenName がこの端末の既定名(`cli:<hostname>`)か(裁定 CM — 既定名の
-   * 真実源は呼び出し側の引数層なのでここでは判定しない)。身元スワップ注記の
-   * 分岐に使う: 既定名で供給した場合に「素の再ログイン」を勧めると、同名
-   * ローテーションが**いま表示したトークン自体を失効させる**。
+   * Whether tokenName is this machine's default name (`cli:<hostname>`)
+   * (ruling CM — the default name's source of truth is the caller's
+   * argument layer, so it is not judged here). Used to branch the
+   * identity-swap note: when provisioned under the default name,
+   * recommending "a plain re-login" makes the same-name rotation **revoke
+   * the very token just displayed**.
    */
   readonly tokenNameIsDefault: boolean;
-  /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
+  /** The explicit TTL (days. AUTH_SPEC §6 — W3a. Omitted = the server default of 90 days). */
   readonly expiresInDays?: number;
-  /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
+  /** The polling interval's floor (seconds. Shortened only by tests). */
   readonly minIntervalSeconds?: number;
 }): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient | Stdio.Stdio> {
   return Effect.gen(function* () {
@@ -266,10 +290,10 @@ export function loginOp(input: {
     const keychain = yield* Keychain;
     const client = yield* makeApiClient({ baseUrl: input.origin });
 
-    // 事前 fail-fast(AUTH_SPEC §3 — signupPolicy advisory の確認。start より前)
+    // The pre-flight fail-fast (AUTH_SPEC §3 — the signupPolicy advisory check. Before start)
     yield* signupPolicyPreflight(client, io);
 
-    // 開始(§4-1 (1) — サーバーは無記録。フロー資格はここで得る 2 識別子のみ)
+    // Starting (§4-1 (1) — the server records nothing. The flow's credentials are only the two identifiers obtained here)
     const started = yield* client.authCli
       .cliStart({
         payload: {
@@ -279,14 +303,16 @@ export function loginOp(input: {
       })
       .pipe(Effect.mapError(toCliError));
 
-    // 有効期間はサーバー応答から導く(裁定 D-1 — deadline 判定と同じ丸め値)
+    // The validity window is derived from the server's response (ruling D-1 — the same clamped value the deadline judgment uses)
     const expiresInSeconds = clampExpires(started.expiresInSeconds);
     const window = describeWindow(expiresInSeconds);
-    // 対話の案内は stderr(裁定 D-2: プロンプトと同じ経路。`maruhi login >
-    // file` でも案内が見える)。stdout に出るのはログインの**結果**だけ。
-    // verificationUrl / userCode はサーバー由来の外部文字列。制御文字・ANSI を
-    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ(DP4)
-    // (cli-pages.ts)と揃える: "Confirmation code" / 「一致するときだけ承認」
+    // Interactive guidance goes to stderr (ruling D-2: the same path as
+    // prompts. Visible even under `maruhi login > file`). Only the
+    // login's **result** goes to stdout. verificationUrl / userCode are
+    // server-sourced external strings — no control characters / ANSI are
+    // streamed raw to the terminal (neutralized via displayText). The
+    // vocabulary matches the approval page (DP4) (cli-pages.ts):
+    // "Confirmation code" / "approve only on a match"
     yield* io.logError("Open this URL in your browser to approve the sign-in:");
     yield* io.logError("");
     yield* io.logError(`    ${displayText(started.verificationUrl)}`);
@@ -301,8 +327,9 @@ export function loginOp(input: {
     yield* maybeOpenBrowser(io, started.verificationUrl);
     yield* io.logError("Waiting for approval\u2026");
 
-    // 取得(§4-1 (5))。deadline は sleep の**前**に検査する(次のポーリング
-    // 時刻が deadline を越えるならフローは待っている間に失効する)
+    // Acquisition (§4-1 (5)). The deadline is checked **before** the
+    // sleep (when the next polling time passes the deadline the flow
+    // expires during the wait)
     const minInterval = input.minIntervalSeconds ?? MIN_CLI_POLL_INTERVAL_SECONDS;
     const deadlineMs = Date.now() + expiresInSeconds * 1000;
     const initialInterval = clampInterval(started.pollIntervalSeconds, minInterval);
@@ -330,15 +357,18 @@ export function loginOp(input: {
       token: issuedToken,
       userId: approved.userId,
       tokenId: approved.tokenId,
-      // 期限接近の事前警告(裁定 CL)のローカル判定材料
+      // The local judgment material for the approaching-expiry advance warning (ruling CL)
       expiresAtMs: approved.expiresAtMs,
     };
-    // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
-    // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)
+    // Never use JSON.stringify(record) — Redacted.toJSON() returns a
+    // redaction and "<redacted>" would be written to the keychain
+    // (keychain.ts's note)
     yield* keychain.set(tokenEntryName(input.origin), serializeStoredToken(record)).pipe(
-      // 保存できないなら発行済みトークンを孤児化させない: サーバー側の失効を
-      // 試みてから失敗させる(元エラー = キーチェーン不達を優先しつつ、失効の
-      // 成否を正確に報告する — 失効成功を無条件に主張しない)
+      // If it cannot be saved, do not orphan the issued token: attempt
+      // the server-side revocation before failing (the original error =
+      // the keychain's failure takes precedence, while the revocation's
+      // success or failure is reported accurately — never unconditionally
+      // claim a successful revocation)
       Effect.catch((setError) =>
         Effect.gen(function* () {
           const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
@@ -360,36 +390,42 @@ export function loginOp(input: {
       `Signed in as ${displayText(approved.userId)}. The token is stored in ${describeStore(keychain.kind)}`,
     );
     if (input.showToken) {
-      // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
-      // 剥がすのはこの表示のためだけで、値は保存済み(上のキーチェーン)以外へ
-      // 流れない。呼び出し側の値表示ゲート(fail-closed 2 層)通過が前提で、
-      // 対話端末以外(パイプ・CI・エージェント)ではここへ到達しない。
-      // token はワイヤ上無制約の Schema.String(サーバーが全バイトを選べる)
-      // なので中和して出す — ただしコピーする値なので displayText(U+FFFD への
-      // 破壊的置換)でなく escapeText(allow-list — 正直な Base62 値は素通し、
-      // 注入は可視のエスケープ列になる)を使う
+      // The raw value's only display point (AUTH_SPEC §6 "one terminal
+      // display at issuance" — ruling CK). It is unwrapped only for this
+      // display, and the value flows nowhere besides the save above (the
+      // keychain). It presumes the caller's value-display gate (the
+      // fail-closed two layers) passed; on anything but an interactive
+      // terminal (pipes / CI / agents) this point is never reached.
+      // token is an unconstrained Schema.String on the wire (the server
+      // may choose every byte), so emit it neutralized — but since the
+      // value is copied, use escapeText (an allow-list — an honest Base62
+      // value passes through, an injection becomes a visible escape
+      // sequence), not displayText (a destructive replacement to U+FFFD)
       yield* io.log("");
       yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
       yield* io.log("");
       yield* io.log(
         "This value is not shown again (signing in again rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
       );
-      // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
-      // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
-      // 復し方は発行名で分岐する: 既定名で発行した場合に
-      // 「素の再ログイン」を勧めると、同名ローテーションが**いま表示した
-      // トークン自体を失効させ**、貼り付け先の環境を切断する。既定名なら
-      // 「別名で発行し直す」が正しい復し方
+      // Surfacing the provisioned login's identity swap (ruling CM):
+      // since the keychain's slot is per origin, this issuance also
+      // replaced this machine's active token. The recovery instruction
+      // branches on the issuance name: under the default name,
+      // recommending "a plain re-login" makes the same-name rotation
+      // **revoke the very token just displayed** and cut off the pasted
+      // environment. Under the default name, "issue again under a
+      // distinct name" is the right recovery
       yield* logNote(
         input.tokenNameIsDefault
           ? "this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
           : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
       );
     }
-    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
-    // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
-    // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
-    // Date#toISOString へ直接渡さない)
+    // The expiry is fixed at issuance (AUTH_SPEC §6's default TTL —
+    // W3a). Since it becomes a 401 on expiry, make when re-login is
+    // needed visible at issuance time. The display goes through
+    // display.ts's total formatter (the server's declared unbounded
+    // number is never passed to Date#toISOString directly)
     yield* io.log(
       `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Signing in again with the same token name (${input.tokenName}) rotates it and revokes the old one`,
     );
@@ -398,9 +434,11 @@ export function loginOp(input: {
 }
 
 /**
- * ログイン後の次の一歩の案内(デバイス追加・保管リマインダ — CRYPTO_SPEC §8 の
- * フローの入口)。補助線なので、状態確認の失敗でログイン成功を失敗に変えない。
- * ただし無言では飲まない(CLAUDE.md): 失敗時はスキップした旨を 1 行で明示する。
+ * The guidance for the next step after login (device addition / storage
+ * reminder — the entry to CRYPTO_SPEC §8's flow). Auxiliary, so a status
+ * check failure never turns a successful login into a failure. Still,
+ * never swallow it silently (CLAUDE.md): on failure, state the skip in
+ * one line.
  */
 function nextStepHint(
   origin: string,
@@ -433,10 +471,12 @@ function nextStepHint(
 }
 
 /**
- * ログアウト後に MARUHI_TOKEN が残っていることの案内(残らないなら null)。
+ * The guidance for MARUHI_TOKEN being left set after logout (null when
+ * none remains).
  *
- * `active` 以外はどれも**キーチェーンへ落ちずに失敗する**状態だが、直し方は
- * 別々(貼り直す・足す・合わせる)なので、原因ごとに言い分ける。
+ * Every state besides `active` **fails without reaching the keychain**,
+ * but the fixes differ (re-paste / add / match), so each cause gets its
+ * own wording.
  */
 function envTokenNotice(status: EnvTokenStatus): string | null {
   switch (status.kind) {
@@ -447,7 +487,7 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
     case "placeholder":
       return `${redactedPlaceholderEnvTokenMessage} (the next command will fail as-is)`;
     case "originInvalid":
-      // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
+      // The reason reuses the resolution side's wording as-is (rephrasing would disagree with the next failure)
       return `MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN cannot be used, so the token is not used for authentication (${status.reason}). The next command will fail as-is — unset the env vars or fix the reported problem`;
     case "originMissing":
       return "MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN is not set, so the token is not used for authentication (the next command will fail as-is — unset MARUHI_TOKEN or set MARUHI_TOKEN_ORIGIN to the target server's origin)";
@@ -474,7 +514,7 @@ export function logoutOp(input: {
     }
     const record = parseStoredToken(stored);
     if (record === null) {
-      // 壊れたレコードは失効を呼べないが、残しても使えないため削除する
+      // A corrupt record cannot call the revocation, but leaving it is unusable either — delete it
       const redacted = hasRedactedPlaceholder(stored);
       yield* keychain.remove(entryName);
       return yield* Effect.fail(
@@ -486,24 +526,28 @@ export function logoutOp(input: {
       );
     }
     const client = yield* makeApiClient({ baseUrl: input.origin, token: record.token });
-    // キーチェーン削除を失効「より先」に行う: 失効後に削除が失敗すると、
-    // サーバーが無効化済みのトークンをキーチェーンに残し、以後の全コマンドが
-    // その死んだトークンで 401 になる(手動でしか復旧できない)。削除が先なら
-    // 最悪でもサーバー側に生きたトークンが残るだけで、再ログインで回収できる
+    // The keychain removal happens **before** the revocation: if removal
+    // failed after revoking, the keychain would keep a token the server
+    // already invalidated and every later command would 401 on that dead
+    // token (recoverable only manually). With removal first, at worst a
+    // live token remains server-side, collectable by re-login
     yield* keychain.remove(entryName);
     yield* client.auth.revokeToken({}).pipe(
-      // 既に失効済み(401)は成功として扱う。それ以外(ネットワーク等)は
-      // 失敗させ、サーバー側に生きたトークンが残りうることを利用者へ伝える
+      // An already-revoked (401) counts as success. Anything else (the
+      // network etc.) fails and tells the user a live token may remain
+      // server-side
       Effect.catchTag("Unauthorized", () => Effect.void),
       Effect.mapError(toCliError),
     );
     yield* io.log(
       `Signed out. The token was revoked and removed from ${describeStore(keychain.kind)}`,
     );
-    // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
-    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
-    // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
-    // 違う結論(空白だけの値・origin 不一致でも「認証されます」)を出してしまう
+    // resolveSession prefers MARUHI_TOKEN over the keychain
+    // (session.ts). A leftover env var means "logged out yet the CLI
+    // keeps working", so surface it. The judgment is delegated to
+    // envTokenStatus: a bespoke check here would reach a different
+    // conclusion from session resolution ("you are authenticated" even
+    // on a whitespace-only value or an origin mismatch)
     const notice = envTokenNotice(yield* envTokenStatus(input.origin));
     if (notice !== null) {
       yield* logNote(notice);

@@ -1,27 +1,36 @@
-// ヘッドゴシップのクライアント面(CRYPTO_SPEC §6.3 ヘッドゴシップ / §6.6、
-// AUTH_SPEC §16-1)。
+// The client side of head gossip (CRYPTO_SPEC §6.3 head gossip / §6.6,
+// AUTH_SPEC §16-1).
 //
-// 照合(reconcileDistributedAttestations): チェーン取得応答に同梱された
-// 他メンバーの申告を §6.6 で検証した上で自ビューと照合する。
-//   (a) 申告 seq ≤ 自ヘッドでハッシュ不一致 = 分岐(equivocation)または
-//       attester 鍵漏洩の**硬い証拠** — 当該同期の成果物の使用を中断して警告し、
-//       証拠(申告 + 自ビューのチェーンダイジェスト)を追記専用の非機密ローカル
-//       状態へ保存する(§14.2-5 の証拠化 — floor-evidence 様式)
-//   (b) 申告 seq > 自ヘッド = 自分のチェーンが古いだけの可能性 — 既存の有界
-//       再同期(sync.ts の resyncExtended — 1 回)で延長として解決すれば正常、
-//       解決しなければ (a) と同じ扱い
-// 検証に失敗した申告(署名・履歴外 attester 等)は**照合材料にしない**(偽申告に
-// よる警告誘発 DoS の排除 — §6.6)。現メンバーでない attester の申告も同様
-// (§6.6 (1) — サーバーは remove 時に行を削除するはずで、配布自体が逸脱)。
+// Reconciliation (reconcileDistributedAttestations): verifies the other
+// members' attestations bundled with the chain-fetch response per §6.6,
+// then reconciles them against the local view.
+//   (a) attested seq ≤ own head with a hash mismatch = **hard evidence**
+//       of a fork (equivocation) or a leaked attester key — interrupt use
+//       of that sync's artifacts, warn, and save the evidence (the
+//       attestation + the local view's chain digest) to append-only,
+//       non-confidential local state (the evidencing of §14.2-5 —
+//       floor-evidence format)
+//   (b) attested seq > own head = possibly just a stale local chain —
+//       resolved as an extension by the existing bounded resync
+//       (sync.ts's resyncExtended — once) it is fine; if it does not
+//       resolve, treat it like (a)
+// Attestations that fail verification (signature, out-of-history attester,
+// etc.) are **not made reconciliation material** (eliminates
+// warning-induction DoS via forged attestations — §6.6). Attestations by
+// an attester who is not a current member are excluded the same way
+// (§6.6 (1) — the server should delete the row at remove, so the
+// distribution itself is a deviation).
 //
-// 提出(submitHeadAttestationIfAdvanced): チェーン同期 + 検証の成功後、検証済み
-// ヘッドが前回申告より前進していれば署名して提出する(SHOULD — 失敗は非失敗の
-// 警告)。前回申告の
-// 追跡は床の join 格子外の非機密ローカル状態(floor.ts の loadAttestedHead —
-// 喪失は同一 seq 再提出でサーバーの冪等 204 が吸収する)。
+// Submission (submitHeadAttestationIfAdvanced): after chain sync +
+// verification succeed, if the verified head has advanced past the last
+// attestation, sign and submit it (SHOULD — a failure is a non-fatal
+// warning). Tracking the last attestation is non-confidential local
+// state outside the floor's join lattice (floor.ts's loadAttestedHead —
+// its loss is absorbed by the server's idempotent 204 on a same-seq
+// re-submission).
 //
-// ci run(lease 経路)はゴシップに参加しない(§6.6 / §14-2 — lease 応答は申告を
-// 同梱せず、ワークロードは署名鍵を持たない)。
+// ci run (the lease path) does not join gossip (§6.6 / §14-2 — the lease
+// response bundles no attestations and the workload has no signing key).
 
 import { AttestationRegressionError } from "@maruhi/api-schema";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
@@ -37,7 +46,7 @@ import { logNote, logWarning } from "./notice.ts";
 import type { DistributedAttestationWire, VerifiedProject } from "./sync.ts";
 import { resyncExtended } from "./sync.ts";
 
-/** 1 申告の照合結果(内部)。 */
+/** The reconciliation outcome of one attestation (internal). */
 type MatchOutcome =
   | { readonly kind: "ok" }
   | { readonly kind: "skip" }
@@ -45,18 +54,22 @@ type MatchOutcome =
   | { readonly kind: "mismatch" };
 
 /**
- * 1 申告の §6.6 検証 + 自ビュー照合。検証失敗は skip(照合材料にしない)、
- * ヘッド束縛の 2 種(§6.3-2)だけを future / mismatch として返す。
+ * §6.6 verification of one attestation + reconciliation against the local
+ * view. Verification failures are skip (not reconciliation material); only
+ * the two head-binding kinds (§6.3-2) come back as future / mismatch.
  */
 async function matchAttestation(
   view: VerifiedProject,
   attestation: DistributedAttestationWire,
 ): Promise<MatchOutcome> {
-  // §6.6 (1) 前半: attester(user_id + 鍵 FP)が自ビューの現メンバーであること。
-  // 現メンバーでない申告は照合材料にしない(サーバーは remove 時に行を削除する —
-  // §6.4。配布されても在籍区間内の過去申告に警告価値はない)
+  // First half of §6.6 (1): the attester (user_id + key FP) must be a
+  // current member in the local view. An attestation by a non-current member
+  // is not reconciliation material (the server deletes the row at remove —
+  // §6.4; even when distributed, a past attestation within the membership
+  // interval has no warning value)
   const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
-  // 申告 FP は attester の現在有効な端末の 1 つ(2026-09-19 DK — 端末単位の同定)
+  // The attested FP is one of the attester's currently valid devices
+  // (2026-09-19 DK — per-device identification)
   if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
     return { kind: "skip" };
   }
@@ -82,8 +95,9 @@ async function matchAttestation(
     return { kind: "future" };
   }
   if (verified.error.reason === "chain-head-mismatch") {
-    // 署名・鍵選択は検証済み(検査順 — §6.6)なので、この不一致は申告自体が
-    // 証拠になる(捨てる skip とは区別する)
+    // Signature and key selection are already verified (check order — §6.6),
+    // so this mismatch makes the attestation itself evidence (distinct from a
+    // discarded skip)
     return { kind: "mismatch" };
   }
   return { kind: "skip" };
@@ -135,7 +149,7 @@ function evidenceRecordOf(
   };
 }
 
-/** 証拠の保存(追記専用)+ 警告 + 当該同期の成果物の使用中断(fail)。 */
+/** Save the evidence (append-only) + warn + stop using that sync's artifacts (fail). */
 function failWithEvidence(
   projectId: string,
   view: VerifiedProject,
@@ -151,8 +165,9 @@ function failWithEvidence(
     );
     let evidencePath = "(could not be written)";
     for (const record of evidence) {
-      // 証拠保存自体の失敗は検出を握り潰さない(警告本文が証拠を含む — 保存は
-      // 追加の保全であり、失敗しても中断・警告は変わらない)
+      // A failure to save the evidence itself does not swallow the detection
+      // (the warning body carries the evidence — saving is additional
+      // preservation; the interruption and warning are unchanged if it fails)
       const written = yield* store
         .appendAttestationEvidence(projectId, record)
         .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -167,10 +182,12 @@ function failWithEvidence(
 }
 
 /**
- * 配布された申告集合の検証・照合(モジュール冒頭コメントの (a)(b))。future 申告が
- * あれば 1 回だけ有界再同期し(resyncExtended — 延長でなければそこで拒否)、
- * 前進後のビューで自ビューの申告集合 + 未解決分を再照合する。解決しなければ (a)。
- * 成功時は照合済みのビュー(再同期で前進していることがある)を返す。
+ * Verify and reconcile the distributed attestation set ((a)/(b) in the module
+ * header comment). If any future attestations exist, run one bounded resync
+ * (resyncExtended — anything that is not an extension is refused there), then
+ * re-reconcile the advanced view's own attestation set plus the unresolved
+ * ones. If unresolved: (a). On success, returns the reconciled view (it may
+ * have advanced via the resync).
  */
 export function reconcileDistributedAttestations(input: {
   readonly projectId: string;
@@ -189,19 +206,24 @@ export function reconcileDistributedAttestations(input: {
     if (first.future.length === 0) {
       return input.view;
     }
-    // (b): 有界再同期(1 回)。延長検査(resyncExtended)は別チェーンへの
-    // 差し替えをここで落とす
+    // (b): bounded resync (once). The extension check (resyncExtended) drops
+    // a substitution to a different chain right there
     const advanced = yield* resyncExtended(input.resync, input.view);
-    // 再同期後のビュー自身の申告集合と、未解決だった future 分を再照合する
-    // (future 分は新集合で同 attester のより新しい申告に置き換わっているのが
-    // 正常形だが、置き換わらず消えた場合も元申告の解決可否で判定する)。
-    // 和集合は同一申告(attester が再申告していなければ新集合にも同じレコードが
-    // 現れる)を重複排除する — 証拠 JSONL・警告に同内容が 2 回並ぶと「2 人の
-    // メンバーが矛盾している」ように読める。
-    // キーはワイヤの全フィールド: 部分キーだと、悪意あるサーバーが 1 フィールド
-    // だけ書き換えたレコードを新集合に混ぜて本物の持ち越し分(first.future)を
-    // キー衝突で捨てさせられる(偽側は署名検証で無言 skip → 持ち越し照合が
-    // 空振りし、session-37 裁定 AA が閉じた omission bypass が再び開く)
+    // Re-reconcile the post-resync view's own attestation set plus the
+    // unresolved future ones (the normal shape is that a future entry is
+    // replaced in the new set by a newer attestation from the same attester,
+    // but if it simply vanished, judge by whether the original attestation
+    // resolved).
+    // The union dedupes identical attestations (when the attester has not
+    // re-attested, the same record appears in the new set) — the same content
+    // listed twice in the evidence JSONL / warning would read as "two members
+    // contradicting each other".
+    // The key is every wire field: with a partial key, a malicious server
+    // could mix a one-field-rewritten record into the new set and make a
+    // genuine carried-over entry (first.future) get dropped on a key
+    // collision (the forged side is silently skipped at signature
+    // verification → the carried-over reconciliation misses, reopening the
+    // omission bypass that the session-37 ruling AA closed)
     const seen = new Set<string>();
     const union = [...advanced.attestations, ...first.future].filter((attestation) => {
       const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
@@ -229,10 +251,13 @@ export function reconcileDistributedAttestations(input: {
 }
 
 /**
- * 検証済みヘッドの申告提出(§6.3 ヘッドゴシップ — SHOULD)。前回申告より前進して
- * いる場合のみ署名して PUT し、成功したら追跡を更新する。**いかなる失敗も
- * コマンドを失敗させない**(黙殺はしない — 警告 1 行に落とす — SHOULD の付随)。409(AttestationRegression)は
- * 自ビューの後退 = 床破損・並行 CLI の徴候として区別して警告する。
+ * Submit an attestation for the verified head (§6.3 head gossip —
+ * SHOULD). Only when it has advanced past the last attestation is it
+ * signed and PUT; on success the tracking is updated. **No failure
+ * fails the command** (not ignored either — reduced to a one-line
+ * warning — the SHOULD's accompaniment). A 409 (AttestationRegression)
+ * is a local-view regression = warned separately as a sign of floor
+ * damage or a concurrent CLI.
  */
 export function submitHeadAttestationIfAdvanced(input: {
   readonly client: MaruhiClient;
@@ -248,13 +273,16 @@ export function submitHeadAttestationIfAdvanced(input: {
       .loadAttestedHead(input.projectId)
       .pipe(Effect.catch(() => Effect.succeed(null)));
     if (attested !== null && head.seq <= attested.seq && head.hashHex === attested.hashHex) {
-      // 前進していない**同一ヘッド**の再申告だけを抑制する(SHOULD の契機は
-      // 「前進していれば」— 提出もレート窓消費も行わない)。seq だけで判定
-      // しないのは、床が missing / corrupt の初回・破損時に同一 seq・異ハッシュの
-      // 別チェーン(equivocation)を見せられた場合、この端末の申告経由で他
-      // メンバーが分岐を検出する経路まで閉じてしまうため。seq 後退(必然的に
-      // 異ハッシュ)も提出し、サーバーの 409 AttestationRegression が床破損・
-      // 並行 CLI の徴候として警告に浮かぶ
+      // Suppress only re-attesting the **identical head** that has not
+      // advanced (the SHOULD's trigger is "if advanced" — no submission, no
+      // rate-window consumption). It is not judged by seq alone because when
+      // the floor is missing / corrupt — first run or damaged — and we are
+      // shown a different chain at the same seq with a different hash
+      // (equivocation), the path by which other members detect the fork via
+      // this device's attestation would close too. A seq regression
+      // (necessarily a different hash) is submitted too, so the server's 409
+      // AttestationRegression surfaces as a warning sign of floor damage or
+      // a concurrent CLI
       return;
     }
     const signed = yield* Effect.promise(() =>
@@ -275,8 +303,9 @@ export function submitHeadAttestationIfAdvanced(input: {
       );
       return;
     }
-    // `_tag` 直読みは oxlint が禁止 — 判定は instanceof(failure.ts の規律)、
-    // 診断名は internalErrorKind(型名のみ — 応答断片を運ばない)
+    // Reading `_tag` directly is banned by oxlint — the discrimination is
+    // instanceof (the failure.ts discipline); the diagnostic name is
+    // internalErrorKind (the type name only — carries no response fragment)
     const submitted = yield* input.client.membership
       .attest({
         params: { projectId: input.projectId },
@@ -307,7 +336,7 @@ export function submitHeadAttestationIfAdvanced(input: {
         );
       return;
     }
-    // 提出失敗は非失敗(SHOULD)だが黙殺しない — 1 行の警告に落とす
+    // A submission failure is non-fatal (SHOULD) but not ignored — reduced to a one-line warning
     if (submitted === "regression") {
       yield* logWarning(
         "the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",

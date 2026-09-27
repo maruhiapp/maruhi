@@ -1,30 +1,43 @@
-// 検証済み指紋帳(KF — ROADMAP / integration-options.md §3 補足 17 第 A 巡)。
+// The verified-fingerprint ledger (KF — ROADMAP /
+// integration-options.md §3 supplement 17, turn A).
 //
-// 鍵は**端末に属し、権限は人に属する**(CRYPTO_SPEC §3 — 2026-09-19 DK)ので、一度
-// 12 語の儀式で帯域外確認した相手の端末鍵の指紋は、その鍵が失効しない限り有効で
-// あり続ける。相手は端末鍵の**集合**を持つため、帳の 1 人分は指紋の集合(設計録
-// dk-design.md §9 K4 — (origin, user_id) → { FP → 確認時刻 })。CLI が
-// 「自分が確認した (origin, user_id) → 指紋集合」を非機密設定として保持すれば
-// (SSH の known_hosts と同じ発想)、同じ相手が関わる次の儀式では 12 語の
-// 帯域外読み上げの**再実施**を免除できる。ただし帳の一致は「以前この鍵を
-// 確認した」ことしか意味せず、**この受諾・付与への人間の同意を代替しない**:
-// ヒット時も受諾単位の明示確認(yes 入力)を残し、エージェント環境では帳を
-// auto-pass に使わない(フラグ必須のまま)。さらに帳を使えるのは stdin /
-// stdout が対話端末のときだけ(ADR-0016 決定 7 の一次境界と同じ allow-list —
-// yes 確認は 12 語儀式と違い盲目的なパイプで通るため、パイプ・CI・未検出
-// エージェントでは帳を無効化して完全な儀式へ戻す)。招待リンクは無記名
-// (bearer)で受諾者の同一性を運ばないため、帳の一致だけで付与まで自動化
-// しない(CRYPTO_SPEC §6.5 の相互確認 UX の範囲内に留める)。
+// Because keys **belong to devices and permissions to people**
+// (CRYPTO_SPEC §3 — 2026-09-19 DK), the fingerprint of a counterparty's
+// device key confirmed out of band once via the 12-word ceremony stays
+// valid until that key is revoked. Since a counterparty holds a **set**
+// of device keys, one person's row in the ledger is a set of
+// fingerprints (design record dk-design.md §9 K4 — (origin, user_id) →
+// { FP → confirmed-at }). When the CLI keeps "the (origin, user_id) →
+// fingerprint set I confirmed" as non-sensitive config (the same idea as
+// SSH's known_hosts), the next ceremony involving the same person can
+// skip **re-running** the 12-word out-of-band read-out. However a ledger
+// match only means "this key was verified before" and **never substitutes
+// for the human's consent to this acceptance / grant**: even on a hit,
+// the per-acceptance explicit confirmation (typing yes) stays, and an
+// agent environment never uses the ledger as an auto-pass (the flag
+// stays required). Further, the ledger is usable only when stdin /
+// stdout are interactive terminals (the same allow-list as ADR-0016
+// decision 7's first boundary — unlike the 12-word ceremony, a yes
+// confirmation passes a blind pipe, so under pipes / CI / undetected
+// agents the ledger is disabled and the full ceremony returns). Since an
+// invite link is bearer and carries no invitee identity, a ledger match
+// alone never automates up to granting (kept within CRYPTO_SPEC §6.5's
+// mutual-confirmation UX).
 //
-// - 内容は公開情報(鍵フィンガープリント)のみ — ディスクレス不変条件と両立
-// - **不一致は絶対に自動で通さない**(警告 + 通常の儀式へフォールバック)。
-//   鍵の正当な再生成(`maruhi key generate`)があり得るため自動失敗にもしない
-// - プロジェクト単位の pins(invites/<projectId>.json)と違い、ユーザー単位・
-//   プロジェクト横断が目的なので単一ファイル(<config dir>/known-fingerprints.json)
-// - fail-open: ファイル不在 = 記録なし、破損 = 記録なし + 区別可能な警告
-//   (呼び出し側が出す)。記録の書き込み失敗も儀式の成立を妨げない(SHOULD 水準)。
-//   ローカル状態を消せる攻撃者は帳の守備範囲外(消えても儀式へ戻るだけで
-//   fail-closed — pins より安全側)
+// - The content is public information only (key fingerprints) —
+//   compatible with the diskless invariant
+// - **A mismatch is never auto-passed** (warning + fall back to the
+//   normal ceremony). It is also never an automatic failure, since a
+//   legitimate key regeneration (`maruhi key generate`) is possible
+// - Unlike per-project pins (invites/<projectId>.json), the goal is
+//   per-user, cross-project, so a single file (<config
+//   dir>/known-fingerprints.json)
+// - fail-open: a missing file = no records, corrupt = no records + a
+//   distinguishable warning (emitted by the caller). A failed record
+//   write also never blocks the ceremony's establishment (SHOULD level).
+//   An attacker who can delete local state is outside the ledger's
+//   coverage (deletion only returns you to the ceremony — fail-closed,
+//   safer than pins)
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -39,29 +52,29 @@ import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
 
-/** 帯域外で検証済みの相手 1 人分の記録。 */
+/** One person's records verified out of band. */
 export interface KnownFingerprint {
-  /** ユーザー鍵 FP(16 バイト hex 32 文字 — CRYPTO_SPEC §3)。 */
+  /** The user key FP (16-byte hex, 32 characters — CRYPTO_SPEC §3). */
   readonly fingerprintHex: string;
-  /** 人間が帯域外確認を行った時刻(ヒットでは更新しない — 検証の事実の記録)。 */
+  /** When the human performed the out-of-band confirmation (not refreshed on a hit — a record of the verification's fact). */
   readonly verifiedAtMs: number;
 }
 
-/** 1 人分: 確認済み指紋の集合(FP → 確認時刻)。 */
+/** One person: the set of confirmed fingerprints (FP → confirmed-at). */
 interface KnownUser {
   readonly fingerprints: Readonly<Record<string, { readonly verifiedAtMs: number }>>;
 }
 
 /**
- * ファイル全体(known-fingerprints.json)。キーは origin → user_id → 指紋集合(v2 —
- * DK)。
+ * The whole file (known-fingerprints.json). Keys are origin → user_id →
+ * fingerprint set (v2 — DK).
  */
 interface FingerprintBookFile {
   readonly v: 2;
   readonly known: Readonly<Record<string, Readonly<Record<string, KnownUser>>>>;
 }
 
-/** 参照結果。corrupt は miss と区別する(呼び出し側が警告を出す)。 */
+/** The lookup result. corrupt is distinguished from miss (the caller emits the warning). */
 export type FingerprintLookup =
   | { readonly state: "hit"; readonly entries: readonly KnownFingerprint[] }
   | { readonly state: "miss" }
@@ -69,10 +82,10 @@ export type FingerprintLookup =
 
 /** Lookup / record boundary for the verified-fingerprint book. */
 export interface FingerprintBookShape {
-  /** 表示用のファイルパス(エントリ削除で儀式を強制再実行できる導線)。 */
+  /** The file path for display (the path that lets deleting an entry force the ceremony to re-run). */
   readonly filePath: string;
   readonly lookup: (origin: string, userId: string) => Effect.Effect<FingerprintLookup, CliError>;
-  /** read-merge-write の追記(同じ人の集合に指紋を足す。同じ指紋は確認時刻を更新)。 */
+  /** A read-merge-write append (adds a fingerprint to the same person's set; the same fingerprint refreshes its confirmation time). */
   readonly record: (
     origin: string,
     userId: string,
@@ -84,42 +97,50 @@ export class FingerprintBook extends Context.Service<FingerprintBook, Fingerprin
   "cli/FingerprintBook",
 ) {}
 
-/** 帳の置き場所(設定と同系: <config.json の親>/known-fingerprints.json)。 */
+/** Where the ledger lives (same family as the config: <parent of config.json>/known-fingerprints.json). */
 export function fingerprintBookPathOf(configPath: string): string {
   return join(dirname(configPath), "known-fingerprints.json");
 }
 
-/** 儀式前の照会の結果(呼び出し側の分岐材料)。 */
+/** The result of the pre-ceremony consultation (the caller's branching material). */
 export interface FingerprintBookConsult {
   /**
-   * 帳の一致エントリ(null = ヒットなし・不一致・破損 = 従来どおり儀式か
-   * フラグが必要)。ヒットは confirmKnownFingerprint(受諾単位の明示確認)へ
-   * 渡す。フラグ(明示指定)が帳より優先される規律・エージェント環境の拒否は
-   * 呼び出し側が保つ(帳はどちらも迂回しない)。
+   * The matching ledger entry (null = no hit / mismatch / corrupt =
+   * needs the usual ceremony or a flag). A hit goes to
+   * confirmKnownFingerprint (the per-acceptance explicit confirmation).
+   * The discipline that the flag (an explicit designation) beats the
+   * ledger and the agent-environment refusal are kept by the caller (the
+   * ledger bypasses neither).
    */
   readonly hit: KnownFingerprint | null;
-  /** 表示用のファイルパス(エントリ削除で儀式を強制再実行できる導線)。 */
+  /** The file path for display (the path that lets deleting an entry force the ceremony to re-run). */
   readonly filePath: string;
   /**
-   * 帳の記録と提示指紋の**不一致**の警告(一致・記録なしでは no-op)。フラグ
-   * 経路の判定**後**に呼ぶ — フラグが提示指紋と一致していて帳だけが古い場合
-   * (正当な鍵更新の直後にフラグで回す等)に「the out-of-band check is
-   * required again」がフラグ成功と矛盾して出るのを避けるため。
+   * The warning for a **mismatch** between the ledger's records and the
+   * presented fingerprint (a no-op on match or no records). Called
+   * **after** the flag path is decided — when the flag matches the
+   * presented fingerprint but only the ledger is stale (e.g. running via
+   * the flag right after a legitimate key update), this prevents "the
+   * out-of-band check is required again" from contradicting the flag's
+   * success.
    */
   readonly warnIfChanged: Effect.Effect<void, never, CliIo>;
   /**
-   * 儀式 / フラグ照合の**成功後**に呼ぶ追記。書き込み失敗は警告に落とす
-   * (fail-open — 帳は SHOULD 水準で、儀式の成立を妨げない)。
+   * The append called **after** the ceremony / flag check succeeds. A
+   * write failure degrades to a warning (fail-open — the ledger is
+   * SHOULD-level and never blocks the ceremony's establishment).
    */
   readonly record: Effect.Effect<void, never, CliIo>;
 }
 
 /**
- * 儀式前の帳の照会(member add の受諾鍵確認・invite accept の招待者確認の共有):
- * 一致 = 12 語の帯域外読み上げの再実施を免除できる(受諾単位の明示確認は
- * confirmKnownFingerprint が要求する)、不一致 = 警告して儀式へフォールバック
- * (**自動失敗にしない** — `maruhi key generate` による正当な鍵更新があり得る)、
- * 破損 = 警告して記録なしとして扱う。
+ * The pre-ceremony ledger consultation (shared by member add's
+ * acceptance-key check and invite accept's inviter check): a match =
+ * the 12-word out-of-band read-out may be skipped (the per-acceptance
+ * explicit confirmation is still required by confirmKnownFingerprint);
+ * a mismatch = warn and fall back to the ceremony (**never an automatic
+ * failure** — a legitimate key update via `maruhi key generate` is
+ * possible); corrupt = warn and treat as no records.
  */
 export function consultFingerprintBook(input: {
   readonly origin: string;
@@ -162,14 +183,18 @@ export function consultFingerprintBook(input: {
 }
 
 /**
- * 帳のヒットを実際に使えるか(フラグなし + 非エージェント + stdin / stdout が
- * 対話端末)を判定し、使えるヒットだけを返す。端末条件だけで使えない場合は
- * その旨を note で説明する(完全な儀式へ戻る理由の提示)。
+ * Judges whether a ledger hit may actually be used (no flag + non-agent
+ * + stdin / stdout interactive terminals) and returns only a usable hit.
+ * When a hit is unusable on terminal grounds alone, a note explains so
+ * (showing the reason the full ceremony returns).
  *
- * 端末条件を課す理由(ADR-0016 決定 7 の一次境界と同じ allow-list): 12 語
- * 儀式は実行ごとの最終語再入力が要るため盲目的なパイプでは通らないが、yes
- * 確認はそうではない。パイプ・CI・未検出エージェントで帳が非対話の成立条件を
- * フラグ専用から緩めない(fail-closed — 非端末は帳なしと同じ挙動に戻る)。
+ * Why terminal conditions are imposed (the same allow-list as ADR-0016
+ * decision 7's first boundary): the 12-word ceremony requires re-typing
+ * the last word on each run so a blind pipe cannot pass it, but a yes
+ * confirmation is not so. On pipes / CI / undetected agents the ledger
+ * must not loosen the non-interactive establishment condition beyond
+ * flag-only (fail-closed — a non-terminal returns to behaving as if the
+ * ledger did not exist).
  */
 export function usableBookHit(input: {
   readonly book: FingerprintBookConsult;
@@ -184,7 +209,7 @@ export function usableBookHit(input: {
     const stdinIsTerminal = yield* stdio.stdinIsTerminal;
     const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
     if (!stdinIsTerminal || !stdoutIsTerminal) {
-      // 落ちた側を名指しする(DP5 追補 G の規律 — describeNonTerminal)
+      // Name the side that failed (the DP5 supplement G discipline — describeNonTerminal)
       yield* logNote(
         `the verified-fingerprint book was not used: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} — the full 12-word read-out is required here`,
       );
@@ -195,18 +220,21 @@ export function usableBookHit(input: {
 }
 
 /**
- * 帳のヒット時の受諾単位の明示確認: 12 語の帯域外読み上げの再実施は免除する
- * が、**この操作(付与 / 受諾)への同意そのものは省略しない** — 帳は「以前この
- * 鍵を帯域外確認した」記録であって、今回の操作の意図を代替しないため。
- * `prompt` は対象と操作を名指しする文言(呼び出し側が与える)。yes 以外は
- * 中止し、完全な儀式へ戻す導線(エントリ削除)を示す。
+ * The per-acceptance explicit confirmation on a ledger hit: re-running
+ * the 12-word out-of-band read-out is waived, but **the consent to this
+ * operation (granting / accepting) itself is never omitted** — the
+ * ledger is a record that "this key was verified out of band before" and
+ * does not substitute for the intent of this operation. `prompt` is the
+ * wording naming the target and operation (given by the caller). Any
+ * answer but yes aborts and shows the way back to the full ceremony
+ * (deleting the entry).
  */
 export function confirmKnownFingerprint(input: {
   readonly entry: KnownFingerprint;
   readonly filePath: string;
-  /** `: ` の直前までのプロンプト本文(例: "Type yes to add … as …")。 */
+  /** The prompt body up to just before `: ` (e.g. "Type yes to add … as …"). */
   readonly prompt: string;
-  /** 中止時の先頭文(例: "add_member was cancelled.")。 */
+  /** The leading sentence on abort (e.g. "add_member was cancelled."). */
   readonly cancelText: string;
 }): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -231,7 +259,7 @@ function validTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** 1 人分(`{ fingerprints: { FP: { verifiedAtMs } } }`)。 */
+/** One person's record (`{ fingerprints: { FP: { verifiedAtMs } } }`). */
 function decodeUser(value: unknown): KnownUser | null {
   if (!isRecord(value) || !isRecord(value["fingerprints"])) {
     return null;
@@ -246,7 +274,7 @@ function decodeUser(value: unknown): KnownUser | null {
   return { fingerprints };
 }
 
-/** 1 origin 分(user_id → 集合)のデコード(1 件でも不正なら全体拒否)。 */
+/** Decoding one origin's worth (user_id → set) (one invalid entry rejects the whole). */
 function decodeUsers(value: unknown): Record<string, KnownUser> | null {
   if (!isRecord(value)) {
     return null;
@@ -262,13 +290,13 @@ function decodeUsers(value: unknown): Record<string, KnownUser> | null {
   return users;
 }
 
-/** 厳格デコード(v2)。1 件でも不正なら全体を破損扱い(部分読みしない — pins と同じ)。 */
+/** Strict decode (v2). One invalid entry treats the whole as corrupt (no partial reads — same as pins). */
 function decodeBook(json: string): FingerprintBookFile | null {
   const known = decodeOriginBook(json, 2, decodeUsers);
   return known === null ? null : { v: 2, known };
 }
 
-/** 集合 → 参照結果のエントリ列(FP 昇順)。 */
+/** The set → the lookup result's entry list (ascending FP). */
 function entriesOf(user: KnownUser): readonly KnownFingerprint[] {
   return Object.entries(user.fingerprints)
     .map(([fingerprintHex, { verifiedAtMs }]) => ({ fingerprintHex, verifiedAtMs }))
@@ -286,9 +314,11 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
     try {
       json = await readFile(path, "utf8");
     } catch (error) {
-      // 未作成(ENOENT)**だけ**を「なし」に畳む。EACCES / EISDIR / EIO 等を
-      // 「なし」に畳むと record が空の帳簿で上書きして検証済み FP を黙って失わせ、
-      // lookup は miss を返して変更警告を黙らせる(pins.ts / config.ts と同じ規律)
+      // **Only** uncreated (ENOENT) folds into "none". Folding EACCES /
+      // EISDIR / EIO etc. into "none" would let record overwrite with an
+      // empty book and silently lose verified FPs, and let lookup return
+      // miss, silencing the change warning (the same discipline as
+      // pins.ts / config.ts)
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return { state: "missing" };
       }
@@ -317,7 +347,7 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
           if (loaded.state === "corrupt") {
             return { state: "corrupt" };
           }
-          // own-property 参照(floor.ts の規律 — prototype 経由の値を拾わない)
+          // own-property lookup (floor.ts's discipline — never pick up a value via the prototype)
           const users = floorRecordGet(loaded.book.known, origin);
           const user = users === undefined ? undefined : floorRecordGet(users, userId);
           const entries = user === undefined ? [] : entriesOf(user);
@@ -328,15 +358,17 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
     record: (origin, userId, fingerprintHex) =>
       Effect.tryPromise({
         try: async () => {
-          // 形式外キーを書くと次回ロードが全体破損になる(厳格デコード)ため
-          // 手前で拒否する(呼び出し側は警告に落とす — fail-open)
+          // Writing an off-form key would make the next load wholly
+          // corrupt (strict decode), so refuse beforehand (the caller
+          // degrades to a warning — fail-open)
           if (!BOOK_KEY.test(origin) || !BOOK_KEY.test(userId) || !HEX_32.test(fingerprintHex)) {
             throw new Error("key form");
           }
           const loaded = await loadRaw();
           if (loaded.state === "corrupt") {
-            // 破損ファイルへの上書きは拒否(pins の merge と同じ規律 — 意図しない
-            // 変更の痕跡を黙って消さない)
+            // Refuse to overwrite a corrupt file (the same discipline as
+            // pins' merge — never silently erase the traces of an
+            // unintended change)
             throw new Error("corrupt");
           }
           const base: FingerprintBookFile =

@@ -1,47 +1,54 @@
-// `maruhi agent` — セッション内メモリ鍵保持(KL2。ssh-agent 型)。
+// `maruhi agent` — in-session in-memory key holding (KL2; ssh-agent style).
 //
-// OS キーチェーンが無い環境(Codespaces / devcontainer / WSL / 素の Linux)で、
-// maruhi トークンと master 秘密鍵を**このプロセスのメモリにだけ**持つ。
-// `maruhi agent -- <command>` は子(通常はシェル)を起動し、その子とその子孫の
-// maruhi は unix ドメインソケット越しにこのプロセスへ読み書きする。子が終われば
-// メモリを捨ててソケットを消し、子の終了コードで終わる(ssh-agent の
-// `ssh-agent <command>` 形。デタッチして残る形は採らない — 親を失った常駐は
-// 生存期間の上限が無い漏れ方になる。KL1 のレシピ `dbus-run-session -- bash` と
-// 同じ入れ子シェルの形に揃える)。
+// In environments without an OS keychain (Codespaces / devcontainer / WSL /
+// bare Linux), holds the maruhi token and the master secret key **only in this
+// process's memory**. `maruhi agent -- <command>` starts a child (usually a
+// shell), and that child's and its descendants' maruhi read and write to this
+// process over a unix domain socket. When the child ends it discards the
+// memory, removes the socket, and exits with the child's exit code (the
+// `ssh-agent <command>` form of ssh-agent — the detached, lingering form is
+// not taken: an orphaned resident process leaks with no upper bound on its
+// lifetime. It matches the same nested-shell shape as the KL1 recipe
+// `dbus-run-session -- bash`).
 //
-// 設計裁定(integration-options.md 補足 12 の L2 + L3):
-// - **Keychain サービスの差し替え**として実装する。`MARUHI_AGENT_SOCK` が
-//   あれば live 層は OS キーチェーンの代わりに {@link makeAgentKeychain} を
-//   採用する(live.ts)。よって login / key generate / key recover / pull /
-//   run / push は無変更でこのメモリへ着地する — 「取得 → 復号 → L2 のメモリへ」
-//   は recovery.ts を変えずに配線される。既存の制約(リカバリーブロブ取得の
-//   レート制限・コード入力は人間の対話端末のみ)もそのまま効く
-// - **ディスクに書かない**: 置くのはソケット(inode であってデータではない)
-//   だけ。ソケットは `$XDG_RUNTIME_DIR`(無ければ os.tmpdir())配下の
-//   mkdtemp ディレクトリ(0700)+ `agent.sock`(0600)。権限境界は同一ユーザー
-//   = OS キーチェーン(Secret Service も同一ユーザーの D-Bus)と同等で、
-//   これより強い境界はこの層には無い(同一ユーザーのプロセスは本プロセスの
-//   メモリも読める)
-// - **暗号操作を足さない**: ソケットを流れるのは Keychain サービスと同じ
-//   レコード文字列。ローカル・同一ユーザー・ディスクを通らない経路なので、
-//   仕様(CRYPTO_SPEC)に無い封緘を発明しない
-// - **生存期間 = 子の寿命**。TTL フラグは付けない(`key recover` の取得制限
-//   〔1 時間 5 回〕と衝突して再復元を強いる)。失効はシェルを抜ける
-//   (メモリごと消える)か `maruhi logout`(agent から消し、サーバーで失効)
-// - **エージェント環境(ADR-0016 決定 7)のゲートは足さない**: agent は保持
-//   機構であって値の表示経路ではない。表示・儀式のゲートは各コマンド側に
-//   据え置く。`maruhi run` の子が `MARUHI_*` を受け取らない既存規則
-//   (run.ts)により `MARUHI_AGENT_SOCK` も子へ渡らない(決定 5 と同じ帰結)
+// Design rulings (L2 + L3 of integration-options.md supplement 12):
+// - Implemented **as a Keychain service substitution**. When
+//   `MARUHI_AGENT_SOCK` is set, the live layer adopts {@link makeAgentKeychain}
+//   instead of the OS keychain (live.ts). So login / key generate /
+//   key recover / pull / run / push land on this memory unchanged —
+//   "fetch → decrypt → into L2's memory" is wired without touching
+//   recovery.ts. The existing constraints (the rate limit on recovery-blob
+//   fetches, code entry only on a human interactive terminal) keep working
+//   as-is
+// - **Writes nothing to disk**: what is placed is only the socket (an inode,
+//   not data). The socket is `agent.sock` (0600) inside an mkdtemp directory
+//   (0700) under `$XDG_RUNTIME_DIR` (os.tmpdir() when unset). The permission
+//   boundary is same-user — equal to the OS keychain (Secret Service is
+//   likewise the same user's D-Bus); this layer has no stronger boundary
+//   (a same-user process can also read this process's memory)
+// - **Adds no cryptographic operations**: what flows over the socket is the
+//   same record string as the Keychain service's. The path is local,
+//   same-user, and never touches disk, so no sealing that the spec
+//   (CRYPTO_SPEC) does not have is invented
+// - **Lifetime = the child's lifespan**. No TTL flag (it would collide with
+//   `key recover`'s fetch limit [5 per hour] and force re-restoration).
+//   Revocation is exiting the shell (the memory vanishes with it) or
+//   `maruhi logout` (removes it from the agent, revokes it on the server)
+// - **Adds no agent-environment (ADR-0016 decision 7) gate**: the agent is a
+//   holding mechanism, not a value-display path. The display and ceremony
+//   gates stay on each command's side. By the existing rule that `maruhi run`
+//   children receive no `MARUHI_*` (run.ts), `MARUHI_AGENT_SOCK` likewise
+//   does not reach the child (same conclusion as decision 5)
 //
-// プロトコル(1 接続 1 要求。改行区切り JSON):
-//   要求  {"v":1,"op":"get"|"remove","name":"…"} / {"v":1,"op":"set","name":"…","value":"…"}
-//         {"v":1,"op":"list"}(保持しているエントリ名 — `maruhi agent status` 用。値は運ばない)
-//   応答  {"ok":true,"value":"…"|null} / {"ok":true,"names":[…]} / {"ok":false,"error":"…"}
-// 版が合わない・壊れた要求は `ok:false` で返す(黙って解釈しない)。
+// Protocol (one request per connection; newline-delimited JSON):
+//   request  {"v":1,"op":"get"|"remove","name":"…"} / {"v":1,"op":"set","name":"…","value":"…"}
+//            {"v":1,"op":"list"} (the held entry names — for `maruhi agent status`; values are not carried)
+//   response {"ok":true,"value":"…"|null} / {"ok":true,"names":[…]} / {"ok":false,"error":"…"}
+// A version-mismatched or malformed request gets `ok:false` (never silently reinterpreted).
 //
-// ソケットは node:net(Bun / Node の両方で unix ソケットの listen / connect が
-// 動くことを実測)。vitest(Node)でサーバーとクライアントを実ソケットで
-// 検査できる。判定材料(環境変数)は CliIo 経由で受け取る。
+// The socket is node:net (unix-socket listen / connect verified working on
+// both Bun and Node). vitest (Node) can exercise server and client over a
+// real socket. Decision inputs (environment variables) arrive via CliIo.
 
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
@@ -65,13 +72,13 @@ export const AGENT_SOCKET_ENV = "MARUHI_AGENT_SOCK";
 const AGENT_PROTOCOL_VERSION = 1;
 
 /**
- * 1 要求 / 1 応答の上限。運ぶのはキーチェーンのレコード(トークン ≈ 200 B、
- * master 鍵 ≈ 500 B)なので桁で余裕がある。上限が無いと壊れた相手に
- * メモリを食い潰される。
+ * Cap on one request / one response. What is carried is a keychain record
+ * (token ≈ 200 B, master key ≈ 500 B), so there is headroom by orders of
+ * magnitude. Without a cap a broken peer could eat memory away.
  */
 const MAX_MESSAGE_BYTES = 64 * 1024;
 
-/** 接続・応答待ちの上限(応答しない agent で CLI をハングさせない)。 */
+/** Cap on connect / response wait (an unresponsive agent must not hang the CLI). */
 const IO_TIMEOUT_MS = 5_000;
 
 const SOCKET_FILE_NAME = "agent.sock";
@@ -159,8 +166,9 @@ function encodeAgentResponse(response: AgentResponse): string {
 }
 
 /**
- * Applies one request to the in-memory store. 純関数に切り出してあるのは、
- * ソケットの都合(分割到着・切断)と意味論を分けて検査するため。
+ * Applies one request to the in-memory store. It is factored out as a pure
+ * function so the semantics can be tested apart from socket concerns
+ * (split arrivals, disconnects).
  */
 export function handleAgentRequest(
   store: Map<string, string>,
@@ -176,26 +184,27 @@ export function handleAgentRequest(
       store.delete(request.name);
       return { ok: true, value: null };
     case "list":
-      // 名前だけ(`token::<origin>` / `master::<origin>::<userId>`)。値は運ばない
+      // Names only (`token::<origin>` / `master::<origin>::<userId>`); values are not carried
       return { ok: true, names: [...store.keys()] };
   }
 }
 
 /**
- * 保持先(`--key-ttl` — integration-options.md 補足 19-3 (c))。master 鍵の
- * エントリだけを期限で忘れ、トークンは残す(再ログイン不要。鍵は
- * `maruhi key recover` で取り直す)。期限は set のたびに延びる(取り直した
- * 鍵は新しい期限を持つ)。時計は差し替え可能(テスト)。
+ * The holding store (`--key-ttl` — integration-options.md supplement 19-3
+ * (c)). Only master-key entries are forgotten on expiry; the token stays (no
+ * re-login needed — the key is re-fetched with `maruhi key recover`). The
+ * deadline extends on every set (a re-fetched key gets a fresh deadline). The
+ * clock is substitutable (tests).
  */
 export interface AgentStore {
-  /** 1 要求を適用する(期限切れの掃除 → 適用 → 期限の記録)。 */
+  /** Applies one request (sweep expired → apply → record the deadline). */
   readonly apply: (request: AgentRequest) => AgentResponse;
-  /** 保持内容をすべて捨てる。 */
+  /** Discards everything held. */
   readonly clear: () => void;
 }
 
 export interface AgentStoreOptions {
-  /** master 鍵エントリの寿命(ms)。未指定 = 子の寿命(従来どおり)。 */
+  /** Lifetime of master-key entries (ms). Unset = the child's lifespan (as before). */
   readonly keyTtlMs?: number | undefined;
   readonly now?: (() => number) | undefined;
 }
@@ -235,11 +244,11 @@ export function makeAgentStore(options: AgentStoreOptions = {}): AgentStore {
   };
 }
 
-/** `--key-ttl` の書式(数 + s / m / h。1 単位)。 */
+/** The `--key-ttl` notation (a number + s / m / h; one unit). */
 const KEY_TTL_PATTERN = /^(\d+)([smh])$/;
 const KEY_TTL_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000 } as const;
 
-/** `--key-ttl` の値を ms に読む(書式違い・0 は書き方の誤り)。 */
+/** Reads a `--key-ttl` value into ms (a malformed or zero value is a usage error). */
 export function parseKeyTtl(text: string): Effect.Effect<number, CliError> {
   const match = KEY_TTL_PATTERN.exec(text.trim());
   const amount = match === null ? 0 : Number(match[1]);
@@ -253,7 +262,7 @@ export function parseKeyTtl(text: string): Effect.Effect<number, CliError> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* サーバー(agent プロセス側)                                                 */
+/* Server (the agent process side)                                            */
 /* -------------------------------------------------------------------------- */
 
 /** A running agent socket. */
@@ -264,11 +273,12 @@ export interface AgentServer {
 }
 
 /**
- * 1 接続を 1 要求として処理し、応答して閉じる。
+ * Handles one connection as one request, answers it, and closes it.
  *
- * 要求の 1 行が揃わないまま黙る相手は {@link IO_TIMEOUT_MS} で切る: 切らないと
- * `server.close()`(全接続の終了を待つ)が戻らず、子が終わっても agent が
- * 残る(後始末が走らず、子の終了コードも返せない)。
+ * A peer that stays silent without completing its request line is cut off at
+ * {@link IO_TIMEOUT_MS}: without that, `server.close()` (which waits for every
+ * connection to end) never returns and the agent stays after the child exits
+ * (cleanup never runs, and the child's exit code is never returned).
  */
 function serveConnection(store: AgentStore, socket: Socket): void {
   let buffered = "";
@@ -301,11 +311,12 @@ function serveConnection(store: AgentStore, socket: Socket): void {
         : store.apply(request),
     );
   });
-  // 相手側(CLI)の切断・書き込み失敗。報告先が無い: 失敗したのは相手の要求で
-  // あり、相手は自分の側の失敗を自分で報告する(makeAgentKeychain)。agent の
-  // stderr は子シェルと共有する端末なので、ここで書くと利用者の画面を汚す
-  // だけになる。無視ではなく「相手が報告する」ので、リスナーは接続を閉じる
-  // ことだけを担う
+  // The peer's (CLI's) disconnect / write failure. There is nobody to report
+  // to: what failed is the peer's request, and the peer reports its own
+  // side's failure itself (makeAgentKeychain). The agent's stderr shares the
+  // terminal with the child shell, so writing here would only dirty the
+  // user's screen. It is not ignored — "the peer reports it" — so the
+  // listener's only job is to close the connection
   socket.on("error", () => {
     socket.destroy();
   });
@@ -321,8 +332,9 @@ export function startAgentServer(
 ): Promise<AgentServer> {
   const socketPath = join(dir, SOCKET_FILE_NAME);
   const store = makeAgentStore(options);
-  // 開いている接続の台帳。close はこれを切ってから server.close を待つ
-  // (server.close は自然に閉じるのを待つだけで、切ってはくれない)
+  // The ledger of open connections. close severs these first, then waits on
+  // server.close (server.close only waits for them to close naturally — it
+  // never severs them)
   const connections = new Set<Socket>();
   const server: Server = createServer({ allowHalfOpen: false }, (socket) => {
     connections.add(socket);
@@ -335,22 +347,25 @@ export function startAgentServer(
     server.once("error", reject);
     server.listen(socketPath, () => {
       server.off("error", reject);
-      // listen の直後に絞る(umask に依存しない)。ディレクトリが 0700 なので
-      // この間に他ユーザーが接続できる窓は無い
+      // Tighten right after listen (independent of umask). The directory is
+      // 0700, so there is no window in which another user could connect
       chmod(socketPath, 0o600).then(
         () =>
           resolve({
             socketPath,
             close: () =>
               new Promise<void>((done) => {
-                // 保持していた記録を先に捨てる(以降の接続は空を見る)。JS の
-                // 文字列はゼロ化できないので、参照を切ることが上限
+                // Discard the held records first (later connections see an
+                // empty store). JS strings cannot be zeroed, so dropping the
+                // references is the most we can do
                 store.clear();
                 server.close(() => {
                   done();
                 });
-                // 待たずに切る: 終了は子の退出で決まっており、途中の要求を
-                // 完了させる義務は無い(相手は自分の側の失敗を自分で報告する)
+                // Sever without waiting: termination is decided by the
+                // child's exit, and there is no obligation to complete
+                // in-flight requests (the peer reports its own side's
+                // failure itself)
                 for (const socket of connections) {
                   socket.destroy();
                 }
@@ -366,27 +381,28 @@ export function startAgentServer(
 }
 
 /* -------------------------------------------------------------------------- */
-/* クライアント(セッション内の CLI 側 = Keychain サービスの実装)              */
+/* Client (the session's CLI side = the Keychain service implementation)    */
 /* -------------------------------------------------------------------------- */
 
-/** 接続はできたが会話が成立しない(応答なし・壊れた応答・版違い)。 */
+/** The connect succeeded but the conversation cannot be held (no answer, malformed answer, version mismatch). */
 class AgentProtocolError extends Error {}
 
-/** ソケットが無い・誰も聞いていない(セッションが終わっている)。 */
+/** No socket or nobody is listening (the session has ended). */
 class AgentGoneError extends Error {}
 
-/** 環境変数が指す先が、自分の agent が作った形をしていない(使わない)。 */
+/** What the env var points to does not look like a socket our agent made (do not use it). */
 class AgentSocketRejectedError extends Error {}
 
 const GONE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
 
 /**
- * 接続する前に、環境変数が指す先を疑う。`MARUHI_AGENT_SOCK` は誰でも
- * (`devcontainer.json` の remoteEnv・`.envrc`・Makefile)差し込めるので、
- * 素直に信じるとトークンと master 鍵の平文をその宛先へ書いてしまう。
- * 自分の agent が作るソケットは「ソケット・自分の所有・0600」で必ず通り、
- * 他ユーザーの物・誰でも触れる物・ただのファイルはここで止まる
- * (同一ユーザーの攻撃者は止められない — OS キーチェーンと同じ境界)。
+ * Before connecting, distrust what the env var points to. Anyone can plant
+ * `MARUHI_AGENT_SOCK` (devcontainer.json's remoteEnv, `.envrc`, a Makefile),
+ * so trusting it blindly would write the token and master key's plaintext to
+ * that destination. A socket our agent made always passes "is a socket ·
+ * owned by you · 0600"; another user's, a world-accessible one, or a plain
+ * file stops here (a same-user attacker cannot be stopped — the same
+ * boundary as the OS keychain).
  */
 async function assertTrustedSocket(socketPath: string): Promise<void> {
   const reason = socketRejectionReason(await lstatAgentSocket(socketPath));
@@ -395,31 +411,33 @@ async function assertTrustedSocket(socketPath: string): Promise<void> {
   }
 }
 
-/** lstat の失敗を接続側と同じ語彙(終わった / 会話不能)に写す。 */
+/** Maps lstat failures into the same vocabulary as the connect side (gone / cannot talk). */
 async function lstatAgentSocket(socketPath: string): Promise<Stats> {
   try {
     return await lstat(socketPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code ?? "lstat";
-    // 接続側と同じ分類: 無い・辿れない(EACCES 等)は「セッションが終わった」、
-    // それ以外は会話が成立しない側。同じ状態が経路で違う話にならないように
+    // Same classification as the connect side: missing / unreachable (EACCES
+    // etc.) is "the session has ended", everything else is the cannot-talk
+    // side — so the same state does not become a different story by path
     throw GONE_CODES.has(code) ? new AgentGoneError(code) : new AgentProtocolError(code);
   }
 }
 
-/** 使ってはいけない理由(利用者向けの語)。問題なければ null。 */
+/** The reason it must not be used (in user-facing words); null when fine. */
 function socketRejectionReason(stat: Stats): string | null {
   if (!stat.isSocket()) {
     return "it is not a socket";
   }
-  // 自分の uid は `process.getuid`(システムコールのみ)で取る。`os.userInfo()` は
-  // passwd を引くので、数値 uid だけのコンテナ(まさにこの機能の対象環境)では
-  // 例外になり、本物のソケットまで拒んでしまう。uid を持たないプラットフォーム
-  // (Windows は getuid 自体が無い)では所有者の検査を飛ばす — agent の起動は
-  // win32 を拒むが、環境変数だけ持ち込まれた場合は live.ts がどの OS でも
-  // この実装を選ぶので、ここは到達しうる。`process.*` を読むのは判定材料
-  // (端末・エージェント — ADR-0016 決定 7)ではなく所有者の同一性なので、
-  // サービス経由にせずここで読む
+  // Our uid comes from `process.getuid` (just the syscall). `os.userInfo()`
+  // reads passwd, so in a container with only a numeric uid — precisely this
+  // feature's target environment — it throws and would reject even a genuine
+  // socket. On platforms without a uid (Windows has no getuid at all) the
+  // ownership check is skipped — the agent's startup refuses win32, but when
+  // only the env var is carried in, live.ts picks this implementation on any
+  // OS, so this is reachable. Reading `process.*` here is not decision input
+  // (terminal · agent — ADR-0016 decision 7) but owner identity, so it is
+  // read here rather than via a service
   const uid = process.getuid?.() ?? -1;
   if (uid >= 0 && stat.uid !== uid) {
     return "it is not owned by you";
@@ -476,7 +494,7 @@ async function sendAgentRequest(socketPath: string, request: AgentRequest): Prom
         ),
       );
     });
-    // 応答行の前に閉じられた(agent が落ちた等)
+    // Closed before the response line (the agent died, etc.)
     socket.once("close", () => settle(() => reject(new AgentProtocolError("closed"))));
   });
 }
@@ -500,9 +518,10 @@ function agentRequestError(error: unknown): CliError {
 }
 
 /**
- * 環境変数が指す agent が生きているか(入れ子判定用)。ソケットが無い・誰も
- * 聞いていないは「終わったセッションの残骸」= 新しく作ってよい。それ以外の
- * 失敗(信用できない宛先・版違い)は理由ごと利用者へ返す。
+ * Whether the agent the env var points to is alive (for the nesting check).
+ * No socket / nobody listening is "the remains of an ended session" = fine
+ * to start a new one. Other failures (an untrusted destination, a version
+ * mismatch) are returned to the user with their reason.
  */
 function probeAgent(socketPath: string): Effect.Effect<"live" | "gone", CliError> {
   return Effect.tryPromise({
@@ -518,7 +537,7 @@ function probeAgent(socketPath: string): Effect.Effect<"live" | "gone", CliError
   );
 }
 
-/** 1 要求を送り、`ok:false`(agent が拒んだ = 版違い)も型付きの失敗に写す。 */
+/** Sends one request, mapping even `ok:false` (the agent refused = version mismatch) into a typed failure. */
 function askAgent(
   socketPath: string,
   request: AgentRequest,
@@ -528,7 +547,7 @@ function askAgent(
     catch: agentRequestError,
   }).pipe(
     Effect.flatMap((response) =>
-      // agent が拒む要求はこの実装からは出ない(版違いの agent だけ)
+      // A request the agent would refuse never leaves this implementation (only a version-mismatched agent)
       response.ok ? Effect.succeed(response) : Effect.fail(cliError(agentProtocolMessage)),
     ),
   );
@@ -544,7 +563,7 @@ export function makeAgentKeychain(socketPath: string): KeychainShape {
       Effect.flatMap((response) =>
         "value" in response
           ? Effect.succeed(response.value)
-          : // 値の応答以外(names)はこの要求には来ない = 版違いの agent
+          : // A non-value response (names) cannot arrive for this request = a version-mismatched agent
             Effect.fail(cliError(agentProtocolMessage)),
       ),
     );
@@ -557,17 +576,18 @@ export function makeAgentKeychain(socketPath: string): KeychainShape {
 }
 
 /* -------------------------------------------------------------------------- */
-/* コマンド本体                                                                 */
+/* Command body                                                             */
 /* -------------------------------------------------------------------------- */
 
-/** `maruhi agent` に実行対象が無い(書き方の誤り)。 */
+/** `maruhi agent` has nothing to run (a usage error). */
 export const AGENT_COMMAND_REQUIRED =
   "Write the command to run inside the agent session after `--` (example: `maruhi agent -- bash`)";
 
 /**
- * ソケットの置き場の親。`$XDG_RUNTIME_DIR` はユーザー専用の tmpfs(0700・
- * ログアウトで消える)なので最適。無ければ os.tmpdir() — 作るディレクトリ
- * 自体を 0700 にするので、共有 /tmp でも他ユーザーからは見えない。
+ * The parent of where the socket goes. `$XDG_RUNTIME_DIR` is ideal — a
+ * per-user tmpfs (0700, removed at logout). Without it, os.tmpdir() — the
+ * directory we make is itself 0700, so even a shared /tmp hides it from
+ * other users.
  */
 function socketBaseDir(envVar: (name: string) => string | undefined): string {
   const runtime = envVar("XDG_RUNTIME_DIR");
@@ -581,13 +601,13 @@ function socketBaseDir(envVar: (name: string) => string | undefined): string {
  */
 export function agentOp(input: {
   readonly command: readonly string[];
-  /** `--key-ttl`(ms)。未指定 = master 鍵も子の寿命まで保持する。 */
+  /** `--key-ttl` (ms). Unset = the master key is held for the child's lifespan too. */
   readonly keyTtl?: { readonly ms: number; readonly text: string } | undefined;
 }): Effect.Effect<number, CliError, CliIo | ProcessRunner> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const runner = yield* ProcessRunner;
-    // run と同じ: 「引数が 1 つある」ことと「実行対象がある」ことは別
+    // Same as run: "there is one argument" and "there is something to run" are different things
     if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
       return yield* Effect.fail(usageError(AGENT_COMMAND_REQUIRED));
     }
@@ -598,11 +618,12 @@ export function agentOp(input: {
         ),
       );
     }
-    // 入れ子は拒む: 外側の agent が既に鍵を持っており、内側を作っても空の
-    // 保持先が 1 つ増えて「どちらに入ったか」が分からなくなるだけ。ただし
-    // **生きている agent だけ**を入れ子とみなす: 親が先に死んでシェルだけ残る
-    // (端末多重化・再親化)と環境変数は残骸になり、「新しく始めろ」と
-    // 「入れ子は拒む」で行き止まりになる。残骸なら新しく始めてよい
+    // Nesting is refused: the outer agent already holds the keys, and an
+    // inner one would only add an empty holding store and make "which one it
+    // went into" unknowable. But **only a live agent** counts as nesting: if
+    // the parent died first and only the shell remains (terminal
+    // multiplexing, reparenting), the env var is a leftover, and "start a new
+    // one" + "refuse nesting" would dead-end. Leftovers may be replaced
     const existing = io.envVar(AGENT_SOCKET_ENV);
     if (existing !== undefined && existing.length > 0) {
       const state = yield* probeAgent(existing);
@@ -624,8 +645,9 @@ export function agentOp(input: {
           "Cannot create a private directory for the agent socket (under XDG_RUNTIME_DIR, or the temp directory when it is unset)",
         ),
     });
-    // 消せなくてもセッションの結果(子の終了コード)は捨てない: ディレクトリは
-    // 空か、ソケットの inode だけ(値は入っていない)。無言では飲まず警告する
+    // Even when removal fails the session's result (the child's exit code)
+    // is not thrown away: the directory is empty or holds only the socket's
+    // inode (no values in it). Not swallowed silently — warned
     const removeDir = Effect.tryPromise({
       try: () => rm(dir, { recursive: true, force: true }),
       catch: () =>
@@ -641,8 +663,9 @@ export function agentOp(input: {
       }).pipe(Effect.onError(() => removeDir)),
       (server) =>
         Effect.gen(function* () {
-          // 案内は stderr(子の stdout を汚さない — `maruhi agent -- make` の
-          // ような使い方でも出力が混ざらない)
+          // The notice goes to stderr (does not dirty the child's stdout —
+          // output does not interleave even under uses like
+          // `maruhi agent -- make`)
           yield* io.logError(
             "Agent session started: tokens and keys you sign in with or recover here stay in memory only, and are discarded when the command exits",
           );
@@ -662,9 +685,10 @@ export function agentOp(input: {
 }
 
 /**
- * `maruhi agent status`: この agent セッションが何を保持しているかを名前で示す
- * (値は運ばない・出さない)。セッションの外では失敗し、古い
- * `MARUHI_AGENT_SOCK` はクライアントの終了メッセージがそのまま出る。
+ * `maruhi agent status`: shows by name what this agent session is holding
+ * (values are neither carried nor printed). Outside a session it fails, and
+ * a stale `MARUHI_AGENT_SOCK` surfaces the client's session-ended message
+ * as-is.
  */
 export function agentStatusOp(): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -681,7 +705,7 @@ export function agentStatusOp(): Effect.Effect<void, CliError, CliIo> {
     if (!("names" in response)) {
       return yield* Effect.fail(cliError(agentProtocolMessage));
     }
-    // パスは自分のプロセスが作った物だが、環境変数経由なので表示前に中和する
+    // The path is one our own process made, but it arrives via an env var, so neutralize it before display
     yield* io.log(`socket:      ${displayText(socketPath)}`);
     if (response.names.length === 0) {
       yield* io.log("holding:     nothing yet (run `maruhi login` in this session)");
@@ -694,16 +718,17 @@ export function agentStatusOp(): Effect.Effect<void, CliError, CliIo> {
 }
 
 /**
- * エントリ名(keychain.ts の tokenEntryName / masterKeyEntryName)を読める形に
- * する。origin と userId はサーバー由来の自由文字列なので中和して出す。
+ * Renders an entry name (keychain.ts's tokenEntryName / masterKeyEntryName)
+ * readable. origin and userId are server-supplied free strings, so they are
+ * neutralized on output.
  */
 function describeEntryName(name: string): string {
   const token = /^token::(.+)$/.exec(name);
   if (token !== null) {
     return `token:       ${displayText(token[1] ?? "")}`;
   }
-  // 区切りは**最後の** `::`(origin は `http://[::1]:8787` のように `::` を含みうる。
-  // userId はサーバー発行の識別子で `::` を含まない)
+  // The separator is the **last** `::` (an origin like `http://[::1]:8787`
+  // can contain `::`; userId is a server-issued identifier without `::`)
   const master = /^master::(.+)::(.+)$/.exec(name);
   if (master !== null) {
     return `device key:  ${displayText(master[1] ?? "")} (user ${displayText(master[2] ?? "")})`;

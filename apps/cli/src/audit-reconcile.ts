@@ -1,30 +1,40 @@
-// `maruhi audit reconcile` — admin の監査突合(AUDIT_SPEC §6)。
+// `maruhi audit reconcile` — the admin's audit reconciliation (AUDIT_SPEC §6).
 //
-// 「発行時未検証の公証」(§6)の検証側: 全監査行から累積ハッシュ列を再計算し、
-// 検証済みチェーン上の公証あり checkpoint それぞれについて
-//   (a) 所属 — 公証ヘッドが再計算列に現れること
-//   (b) 非後退 — 出現位置が公証 checkpoint 間で後退しないこと
-//   (c) 位置下限 — 出現位置が直前 checkpoint(公証の有無を問わない)自身の
-//       ミラー行(chain.checkpointed — chain_seq で同定)以上であること
-//       (直前が存在しない初回は課さない — 受理検査と同一述語・同一基底)
-// を検査する。違反は 2 区分で報告する(§6):
-//   - 所属違反 (a) = 行改竄の証拠(公証済み接頭辞の事後改竄・削除)
-//   - 位置違反 (b)(c) = 受理ポリシー(CRYPTO_SPEC §6.4 の位置下限)を執行しない
-//     サーバーの証拠 — 陳腐化リプレイ(古い実在ヘッドの返し続け)が可能な状態
+// The verification side of the "notarizations unverified at issuance" (§6):
+// recompute the cumulative hash column from every audit row, and for each
+// notarizing checkpoint on the verified chain check
+//   (a) membership — the notarized head appears in the recomputed column
+//   (b) non-regression — the position does not regress between notarizing
+//       checkpoints
+//   (c) position floor — the position is at or above the mirror row
+//       (chain.checkpointed — identified by chain_seq) of the immediately
+//       preceding checkpoint itself (notarized or not)
+//       (not enforced on the first checkpoint, which has no predecessor —
+//       the same predicate and base as the acceptance check)
+// Violations are reported in two categories (§6):
+//   - membership violation (a) = evidence of row tampering (post-hoc
+//     alteration or deletion inside the notarized prefix)
+//   - position violation (b)(c) = evidence of a server that does not enforce
+//     the acceptance policy (CRYPTO_SPEC §6.4's position floor) — a state in
+//     which stale replay (keep returning an old real head) is possible
 //
-// 前提は実効権限 admin(チェーン role admin 以上 × トークンスコープ admin):
-// 突合は §7 の `seq`(admin 可視)による欠番検査(欠番 = 削除の痕跡)を含み、
-// 全行の取得もクラス 2 を含む admin 可視でなければ完全でない。role は検証済み
-// ビュー、スコープは /auth/me から事前判定し、未満は明確なエラーにする
-// (403 を踏まない — checkpoint 発行の事前判定と同じ規律)。
+// The precondition is effective admin (chain role admin or higher × token
+// scope admin): the reconciliation includes the gap check via §7's `seq`
+// (admin-visible; a gap = the trace of a deletion), and the full-row fetch is
+// not complete unless admin-visible including class 2. The role is pre-judged
+// from the verified view, the scope from /auth/me, and anything below ends in
+// a clear error (never trips a 403 — the same pre-judgment discipline as
+// checkpoint issuance).
 //
-// 再計算の入力(AuditHeadRow.payloadText)はワイヤの payload(JSON)を
-// JSON.stringify で直列化して得る。保存 TEXT はサーバー自身の JSON.stringify が
-// 書いたものであり(audit-store.ts — 書き手はサーバーのみ)、識別子キーのみの
-// オブジェクトは parse → stringify のラウンドトリップでバイト安定なため、
-// 正直なサーバーでは再計算列が保存列と一致する。ここが食い違う場合、受信行は
-// サーバーが列計算に使った行と異なる = 応答の自己矛盾であり、監査ログは
-// サーバー管理データ(§6)なので改竄・破損の証拠として扱ってよい。
+// The recomputation input (AuditHeadRow.payloadText) is obtained by
+// serializing the wire payload (JSON) with JSON.stringify. The stored TEXT
+// was written by the server's own JSON.stringify (audit-store.ts — the server
+// is the only writer), and an object with identifier-only keys is byte-stable
+// across a parse → stringify round trip, so an honest server yields a
+// recomputed column matching the stored column. When they disagree, the
+// received rows differ from the rows the server used to compute the column =
+// a self-contradicting response; the audit log is server-managed data (§6),
+// so it may be treated as evidence of tampering or corruption.
 
 import { MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import { scopePermissionFor } from "@maruhi/core";
@@ -43,19 +53,21 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 
-/** 取得の進捗表示の間隔(ページ数)。巨大ログでの無反応・非停止を可視化する。 */
+/** Interval (in pages) of the fetch progress display — makes unresponsiveness and non-termination on huge logs visible. */
 const FETCH_PROGRESS_PAGES = 50;
 
-/** 違反の 2 区分(AUDIT_SPEC §6 の報告区分)+ 取得整合の失敗。 */
+/** The two violation categories (AUDIT_SPEC §6's report categories) + a fetch-integrity failure. */
 interface ReconcileViolation {
   readonly category: "row-tampering" | "acceptance-policy";
   readonly detail: string;
 }
 
 /**
- * 実効権限 admin(min(トークンスコープ, チェーン role) — AUTH_SPEC §9-2)の
- * 事前判定。未満は突合を始めずに明確なエラーで終える(§6 の突合は admin 可視の
- * `seq` と全行取得を要し、未満で走らせると欠番検査が可視性の穴を削除と誤断する)。
+ * Pre-judgment of effective admin (min(token scope, chain role) — AUTH_SPEC
+ * §9-2). Anything below ends in a clear error without starting the
+ * reconciliation (§6's reconciliation needs the admin-visible `seq` and the
+ * full-row fetch; run below admin, the gap check would misread a visibility
+ * hole as a deletion).
  */
 function ensureEffectiveAdmin(context: ProjectContextBase): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
@@ -83,17 +95,21 @@ function ensureEffectiveAdmin(context: ProjectContextBase): Effect.Effect<void, 
 }
 
 /**
- * 全監査行の取得(§7 のページング — admin 可視・フィルタなし・新しい順)。
+ * Fetching every audit row (§7 paging — admin-visible, unfiltered,
+ * newest-first).
  *
- * 整合戦略(session-38 裁定 AJ): カーソルは行 id、重複 id と `seq` の非厳密減少
- * (ページ内・ページ間とも)をサーバー応答の自己矛盾として中止する。admin 応答の
- * `seq` は正の整数で厳密減少を強制するため、総行数は先頭ページの最大 seq に
- * 束縛され、ページングは必ず停止する。取得中に追記された行は先頭ページの
- * カーソルより新しく、以後のページに現れない — 取得集合は先頭ページ時点の
- * スナップショットとして閉じる(監査ヘッドの申告はこのスナップショットの
- * **前**に取るので、所属検査の母集合はスナップショットで覆われる)。
+ * Integrity strategy (session-38 ruling AJ): the cursor is a row id, and a
+ * duplicate id or a non-strictly-decreasing `seq` (within a page or across
+ * pages) aborts as a self-contradicting server response. Because `seq` in an
+ * admin response is a positive integer forced strictly decreasing, the total
+ * row count is bounded by the first page's maximum seq and paging always
+ * terminates. Rows appended during the fetch are newer than the first page's
+ * cursor and never appear in later pages — the fetched set closes as a
+ * snapshot of the first page's point in time (the audit-head declaration is
+ * taken **before** this snapshot, so the membership check's population is
+ * covered by the snapshot).
  */
-/** 行ごとの整合検査(seq 必須・重複 id なし・seq 厳密減少)。null = 問題なし。 */
+/** Per-row integrity check (seq required, no duplicate ids, seq strictly decreasing). null = no problem. */
 function reconcileRowProblem(
   row: WireAuditEvent,
   seenIds: ReadonlySet<string>,
@@ -122,8 +138,9 @@ function fetchAllAuditRows(
     let pages = 0;
     yield* paginateAuditEvents({
       pageLimit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
-      // 静的ページ上限なし: onRow の seq 厳密減少(正の整数)が総行数を先頭
-      // ページの最大 seq に束縛し、停止性を担う(audit.ts の engine doc)
+      // No static page bound: onRow's strictly-decreasing seq (positive
+      // integers) bounds the total row count by the first page's maximum seq
+      // and carries termination (the engine doc in audit.ts)
       bound: null,
       fetchPage: (before) =>
         Effect.gen(function* () {
@@ -159,12 +176,12 @@ function fetchAllAuditRows(
   });
 }
 
-/** ワイヤの optionalKey(欠落 = 保存 NULL)→ 計算入力の null。 */
+/** Wire optionalKey (absent = stored NULL) → null in the computation input. */
 function orNull<T>(value: T | undefined): T | null {
   return value === undefined ? null : value;
 }
 
-/** ワイヤ行 → 累積ハッシュ計算の入力形(AUDIT_SPEC §5.1 の 17 列)。 */
+/** Wire row → the input shape of the cumulative-hash computation (AUDIT_SPEC §5.1's 17 columns). */
 function toHeadRow(event: WireAuditEvent, seq: number): AuditHeadRow {
   return {
     seq,
@@ -183,20 +200,21 @@ function toHeadRow(event: WireAuditEvent, seq: number): AuditHeadRow {
     epoch: orNull(event.epoch),
     version: orNull(event.version),
     chainSeq: orNull(event.chainSeq),
-    // 保存 TEXT の再構成(冒頭コメントのラウンドトリップ前提)。payload なし = NULL
+    // Reconstructing the stored TEXT (the header comment's round-trip premise). No payload = NULL
     payloadText: event.payload === undefined ? null : JSON.stringify(event.payload),
   };
 }
 
-/** 再計算の結果: 位置索引(headHex → 監査 seq)と最終ヘッド。 */
+/** The recomputation result: a position index (headHex → audit seq) and the final head. */
 interface RecomputedColumn {
   readonly positions: ReadonlyMap<string, number>;
   readonly finalHeadHex: string;
 }
 
 /**
- * 累積ハッシュ列の再計算(§5.1 — 正規実装は @maruhi/crypto。audit-head.json の
- * ベクターがサーバー実装と同一の h_n を固定する)。入力は seq 昇順の全行。
+ * Recompute the cumulative hash column (§5.1 — the canonical implementation
+ * is @maruhi/crypto; the audit-head.json vectors pin the same h_n as the
+ * server implementation). Input is every row in seq ascending order.
  */
 function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<RecomputedColumn, CliError> {
   return Effect.tryPromise({
@@ -212,15 +230,15 @@ function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<Recompute
           throw new Error(`recomputation failed at seq ${row.seq}: ${next.error.kind}`);
         }
         head = next.value;
-        // SHA-256 の衝突は実際上ないが、万一の重複は先勝ち(最初の出現位置)
+        // SHA-256 collisions do not occur in practice, but a stray duplicate keeps the first (earliest position)
         if (!positions.has(head)) {
           positions.set(head, row.seq);
         }
       }
       return { positions, finalHeadHex: head };
     },
-    // エラー値は seq と理由コードのみ(秘密を含まない)だが、規律どおり
-    // 識別子だけの固定文面に写す
+    // The error value is only a seq and a reason code (no secrets), but per
+    // the discipline it is mapped to a fixed wording of identifiers only
     catch: (error) =>
       cliError(
         `Failed to recompute the audit-head hash column (${error instanceof Error ? displayText(error.message) : "unknown"})`,
@@ -228,7 +246,7 @@ function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<Recompute
   });
 }
 
-/** 欠番検査(§6 — 欠番 = 削除の痕跡)。rows は seq 昇順。 */
+/** Gap check (§6 — a gap = the trace of a deletion). rows are seq ascending. */
 function gapViolations(sortedSeqs: readonly number[]): readonly ReconcileViolation[] {
   const violations: ReconcileViolation[] = [];
   let expected = 1;
@@ -245,7 +263,7 @@ function gapViolations(sortedSeqs: readonly number[]): readonly ReconcileViolati
   return violations;
 }
 
-/** chain.checkpointed ミラー行の索引(chain_seq → 監査 seq の列)。 */
+/** Index of the chain.checkpointed mirror rows (chain_seq → list of audit seqs). */
 function checkpointMirrorIndex(rows: readonly WireAuditEvent[]): ReadonlyMap<number, number[]> {
   const index = new Map<number, number[]>();
   for (const row of rows) {
@@ -256,7 +274,7 @@ function checkpointMirrorIndex(rows: readonly WireAuditEvent[]): ReadonlyMap<num
   return index;
 }
 
-/** 公証位置と検査文脈(直前 checkpoint・直前の公証位置)。 */
+/** A notarized position and its check context (previous checkpoint · previous notarized position). */
 interface NotarizedContext {
   readonly chainSeq: number;
   readonly position: number;
@@ -264,7 +282,7 @@ interface NotarizedContext {
   readonly lastNotarized: { readonly chainSeq: number; readonly position: number } | null;
 }
 
-/** (b) 非後退: 公証 checkpoint 間で出現位置が後退しないこと。null = 問題なし。 */
+/** (b) non-regression: the position must not regress between notarizing checkpoints. null = no problem. */
 function regressionViolation(context: NotarizedContext): ReconcileViolation | null {
   if (context.lastNotarized === null || context.position >= context.lastNotarized.position) {
     return null;
@@ -276,10 +294,12 @@ function regressionViolation(context: NotarizedContext): ReconcileViolation | nu
 }
 
 /**
- * (c) 位置下限: 出現位置が直前 checkpoint(公証の有無を問わない)自身の
- * ミラー行(chain.checkpointed — chain_seq で同定)以上であること。直前が
- * 存在しない初回は課さない(空虚に真)。ミラー行の欠落・重複は §3.4 の
- * 全単射の破れ = 行改竄側の証拠として報告する。
+ * (c) position floor: the position must be at or above the mirror row
+ * (chain.checkpointed — identified by chain_seq) of the immediately
+ * preceding checkpoint itself (notarized or not). Not enforced on the first
+ * checkpoint, which has no predecessor (vacuously true). A missing or
+ * duplicated mirror row is a broken §3.4 bijection = reported as
+ * row-tampering evidence.
  */
 function floorViolation(
   context: NotarizedContext,
@@ -312,8 +332,8 @@ function floorViolation(
 }
 
 /**
- * 公証あり checkpoint の所属 (a) + 位置 (b)(c) 検査(AUDIT_SPEC §6)。
- * entries は検証済みチェーン(seq 昇順)。
+ * Membership (a) + position (b)(c) checks of the notarizing checkpoints
+ * (AUDIT_SPEC §6). entries is the verified chain (seq ascending).
  */
 function checkpointViolations(input: {
   readonly entries: readonly ChainEntry[];
@@ -333,9 +353,10 @@ function checkpointViolations(input: {
       notarized += 1;
       const position = input.positions.get(head);
       if (position === undefined) {
-        // (a) 所属違反: 公証時点でサーバーが「この累積ハッシュだった」と主張した
-        // 事実は署名済み・チェーン上に固定されている。再計算列に現れない =
-        // 公証済み接頭辞のどこかの行が後から改竄・削除された(§6)
+        // (a) membership violation: the fact that the server asserted "the
+        // cumulative hash was this" at notarization time is signed and fixed
+        // on the chain. Not appearing in the recomputed column = some row
+        // inside the notarized prefix was altered or deleted afterwards (§6)
         violations.push({
           category: "row-tampering",
           detail: `checkpoint at chain seq ${entry.seq} notarizes an audit head that does not appear in the column recomputed from the current rows (membership check (a))`,
@@ -360,7 +381,7 @@ function checkpointViolations(input: {
   return { violations, notarized };
 }
 
-/** 申告ヘッドの所属検査(session-38 裁定 AK — 公証を待たない虚偽申告の検出)。 */
+/** Membership check of the declared head (session-38 ruling AK — detecting a false declaration that does not wait for notarization). */
 function declaredHeadViolations(
   declaredHeadHex: string,
   column: RecomputedColumn,
@@ -385,9 +406,11 @@ const CATEGORY_LABEL: Record<ReconcileViolation["category"], string> = {
 };
 
 /**
- * `maruhi audit reconcile`: admin の監査突合(AUDIT_SPEC §6)。実効権限 admin を
- * 事前判定 → 申告ヘッド取得 → 全行取得 → 欠番検査 → 累積列の再計算 → 公証あり
- * checkpoint の所属 (a) + 位置 (b)(c) 検査 → 2 区分で報告(違反あり = 終了コード 1)。
+ * `maruhi audit reconcile`: the admin's audit reconciliation (AUDIT_SPEC
+ * §6). Pre-judge effective admin → fetch the declared head → fetch all rows
+ * → gap check → recompute the cumulative column → membership (a) + position
+ * (b)(c) checks of notarizing checkpoints → report in two categories (any
+ * violation = exit code 1).
  */
 export function auditReconcileOp(
   context: ProjectContextBase,
@@ -395,17 +418,20 @@ export function auditReconcileOp(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* ensureEffectiveAdmin(context);
-    // 申告は全行取得の**前**に取る(裁定 AK): 申告時点の列は取得スナップ
-    // ショットの接頭辞なので、所属検査の母集合がスナップショットで必ず覆われる
+    // The declaration is taken **before** fetching all rows (ruling AK):
+    // the column at declaration time is a prefix of the fetched snapshot, so
+    // the membership check's population is always covered by the snapshot
     const declaredHeadHex = yield* fetchAuditHead(context.client, context.projectId);
     const rows = yield* fetchAllAuditRows(context);
     const ascending = [...rows].toSorted((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
     const seqs = ascending.map((row) => row.seq ?? 0);
     const gaps = gapViolations(seqs);
     if (gaps.length > 0) {
-      // 欠番があると h_n の連鎖は欠番以降のすべてで食い違い、後段の所属検査が
-      // 「全公証が違反」という誤解を招く派生報告になる。最強の証拠(削除の痕跡)
-      // だけを報告して打ち切る(fail-closed — 誤帰属の量産をしない)
+      // With a gap, the h_n chaining mismatches on everything past the gap,
+      // and the downstream membership check would produce the misleading
+      // derived report "every notarization is a violation". Report only the
+      // strongest evidence (the trace of a deletion) and stop (fail-closed —
+      // do not mass-produce misattributions)
       for (const violation of gaps) {
         yield* io.logError(
           `Reconciliation failure [${CATEGORY_LABEL[violation.category]}]: ${violation.detail}`,
@@ -428,8 +454,10 @@ export function auditReconcileOp(
     ];
     const summary = `${countNoun(rows.length, "audit row")} recomputed, ${countNoun(checkpoints.notarized, "notarized checkpoint")} checked against the verified chain`;
     if (violations.length === 0) {
-      // 成功文言は証明した内容に忠実にする: 公証ゼロでは (a)(b)(c) は空虚に真で、実証したのは欠番なし + 申告所属
-      // だけ。無条件の「checks passed」を出さない
+      // Keep the success wording faithful to what was proved: with zero
+      // notarizations, (a)(b)(c) are vacuously true and what was demonstrated
+      // is only gap-free + declared-head membership. Do not print an
+      // unconditional "checks passed"
       if (checkpoints.notarized === 0) {
         yield* io.log(
           `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run \`maruhi project checkpoint\` — AUDIT_SPEC §6)`,
@@ -439,8 +467,9 @@ export function auditReconcileOp(
       yield* io.log(
         `Audit reconciliation OK: ${summary} — membership (a) and position (b)(c) checks passed (AUDIT_SPEC §6)`,
       );
-      // §6 の明示的な残余: 公証済み接頭辞の外(最後の公証以降の行)は本突合の
-      // 保護対象外 — 次の公証で前進する
+      // §6's explicit residual: outside the notarized prefix (rows after the
+      // last notarization) is not covered by this reconciliation — coverage
+      // advances with the next notarization
       yield* logNote(
         "rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
       );

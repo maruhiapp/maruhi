@@ -1,21 +1,31 @@
-// ローテーション義務(CRYPTO_SPEC §7)の走査の共有実装。
+// The shared implementation of sweeping rotation mandates (CRYPTO_SPEC
+// §7).
 //
-// revoke_server(server-revoke)と remove_member / member 未満への降格 / scope の
-// 縮小(member remove / change-role)は、いずれも「義務の環境集合のうち、チェーン上の
-// 基準 seq より後に現エポックが始まっていない環境は強制ローテーション、それ以外は
-// 検証パス(未完了の再暗号化の再開 or 完了確認)」という同じ中断復旧構造を持つ。
-// 進捗ファイルは持たず、チェーン導出状態だけから対象を決める(別デバイス・
-// 別メンバーからの再開もそのまま成立する — server-revoke の規律の共有化)。
+// revoke_server (server-revoke) and remove_member / demotion below
+// member / scope narrowing (member remove / change-role) all share the
+// same interruption-recovery structure: "of the mandate's environment
+// set, an environment whose current epoch has not begun after the
+// on-chain baseline seq gets a forced rotation; the rest get a
+// verification pass (resuming an unfinished re-encryption or confirming
+// completion)". No progress file is kept — the targets are decided from
+// chain-derived state alone (resuming from another device or member
+// just works — the sharing of server-revoke's discipline).
 //
-// **義務の環境集合(2026-09-15 ES K4 — 設計録 K4-J)**: remove = 対象の現 scope(削除
-// 直前)、降格 = 対象の新 scope、縮小 = 旧 scope \ 新 scope、revoke_server = 全環境
-// (不変 — 設計録 §6)、端末失効(2026-09-19 DK — 設計録 dk-design.md §9 K4-8)=
-// 失効した各端末の**実効 scope**(人 ∩ 端末、失効直前 seq−1)の和集合。`all` は義務 seq 時点で存在した環境集合に具体化する(後に
-// 作成された環境の DEK を対象は持ちえない)。1 対象に複数の義務(縮小の後の remove)が
-// あれば、環境ごとに最大の基準 seq を採る。
+// **The mandate's environment set (2026-09-15 ES K4 — design record
+// K4-J)**: remove = the target's current scope (just before removal),
+// demotion = the target's new scope, narrowing = old scope \ new scope,
+// revoke_server = all environments (invariant — design record §6),
+// device revocation (2026-09-19 DK — design record dk-design.md §9
+// K4-8) = the union of each revoked device's **effective scope** (person
+// ∩ device, at seq−1 just before revocation). `all` is concretized to
+// the environment set that existed at the mandate's seq (a target cannot
+// hold a DEK for an environment created later). When one target carries
+// several mandates (a narrowing followed by a remove), take the maximum
+// baseline seq per environment.
 //
-// 削除済み環境の除外は**検証済みの削除ステートメント**のみを根拠とする
-// (サーバーの 404 申告だけで黙ってスキップしない — §7)。
+// Excluding a deleted environment is grounded only in a **verified
+// deletion statement** (never silently skipped on the server's 404 claim
+// alone — §7).
 
 import {
   ALL_SCOPE,
@@ -41,37 +51,39 @@ import { compareCodePoints, environmentsOfScopeAt, scopeChangeAt } from "./scope
 import type { VerifiedProject } from "./sync.ts";
 import { verifiedDeletedEnvironments } from "./values.ts";
 
-/** ローテーション注入のモード: force = 新エポック必須 / verify = 再開・確認のみ。 */
+/** The injected rotation's mode: force = a new epoch is mandatory / verify = resume-or-confirm only. */
 export type SweepRotateMode = "force" | "verify";
 
-/** 1 環境のローテーションの注入(cli.ts が envRotateOp を床付きで包んで渡す)。 */
+/** Injection of one environment's rotation (cli.ts passes envRotateOp wrapped with a floor). */
 export type SweepRotate<R> = (
   environmentId: string,
   mode: SweepRotateMode,
 ) => Effect.Effect<RotationSummary, CliError, R>;
 
-/** 全環境走査の結果(revoke / remove / 降格 / 縮小で共通の報告材料)。 */
+/** The all-environment sweep's result (the reporting material shared by revoke / remove / demotion / narrowing). */
 export interface SweepOutcome {
-  /** ローテーション(強制 or 再開)を実行した環境(環境 ID → 結果)。 */
+  /** Environments where a rotation (forced or resumed) ran (environment ID → result). */
   readonly rotated: readonly {
     readonly environmentId: string;
     readonly summary: RotationSummary;
-    /** 新エポックを要求した実行か(true = 強制 / false = 検証パスの再開)。 */
+    /** Whether the run demanded a new epoch (true = forced / false = a verification-pass resumption). */
     readonly forcedNewEpoch: boolean;
   }[];
-  /** ローテーションに失敗した環境(§7 — 黙ってスキップしない)。 */
+  /** Environments whose rotation failed (§7 — never silently skipped). */
   readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
-  /** 基準より後のエポックで、未完了の再暗号化がないことを**確認済み**の環境。 */
+  /** Environments **confirmed** to have an epoch after the baseline and no unfinished re-encryption. */
   readonly alreadyRotated: readonly string[];
 }
 
-/** 環境 → 義務の基準 seq(複数の義務があれば最大)。 */
+/** Environment → the mandate's baseline seq (the maximum when several mandates apply). */
 export type EnvironmentBaselines = ReadonlyMap<string, number>;
 
 /**
- * 義務エントリ列から「環境 → 基準 seq」を畳む(sweep と未収束判定の共通入力)。
- * 同じ環境に複数の義務があれば最大の seq(最後の義務の後にローテーションされて
- * いれば、それ以前の義務も同時に閉じる — エポックは環境単位)。
+ * Folds a mandate list into "environment → baseline seq" (the shared
+ * input of the sweep and the unconverged judgment). Several mandates on
+ * the same environment take the maximum seq (if it rotated after the
+ * last mandate, every earlier mandate closes with it — epochs are
+ * per-environment).
  */
 export function baselinesOf(mandates: readonly RotationMandate[]): EnvironmentBaselines {
   const baselines = new Map<string, number>();
@@ -86,20 +98,23 @@ export function baselinesOf(mandates: readonly RotationMandate[]): EnvironmentBa
   return baselines;
 }
 
-/** sweep の対象と持ち越し(actor の履行範囲で分けた結果 — member 系と端末失効が共有)。 */
+/** The sweep's targets and carry-overs (split by the actor's fulfillment range — shared by the member family and device revocation). */
 export interface SweepPartition {
-  /** actor が履行できる義務環境 → 基準 seq。 */
+  /** Mandate environments the actor can fulfill → baseline seq. */
   readonly baselines: EnvironmentBaselines;
-  /** actor の(実効)scope 外で未削除・未収束の義務環境(注記 — 他の履行者に委ねる)。 */
+  /** Mandate environments outside the actor's (effective) scope that are undeleted and unconverged (noted — left to other fulfillers). */
   readonly outOfScope: readonly string[];
-  /** 対象のうち検証済み削除で飛ばす環境。 */
+  /** Of the targets, environments skipped as verified-deleted. */
   readonly skippedDeleted: readonly string[];
 }
 
 /**
- * 義務の環境集合を「actor が履行できる範囲」で分ける(CRYPTO_SPEC §7 — 実行者も scope
- * 外なら rotate できない。独立レビュー S2 / S7): 注記は「scope 外 ∧ 未削除 ∧ 未収束」に
- * 限る(常時警告と同じ判定)。`actorScope` は署名端末の実効 scope(DK K4-17)。
+ * Splits the mandate's environment set by "the range the actor can
+ * fulfill" (CRYPTO_SPEC §7 — even the executor cannot rotate outside
+ * their scope. Independent review S2 / S7): the note is limited to
+ * "outside scope ∧ undeleted ∧ unconverged" (the same judgment as the
+ * standing warning). `actorScope` is the signing device's effective
+ * scope (DK K4-17).
  */
 export function partitionSweepBaselines(input: {
   readonly verified: VerifiedProject;
@@ -126,10 +141,12 @@ export function partitionSweepBaselines(input: {
 }
 
 /**
- * 環境 E が基準 seq について未収束か: E の現エポックの開始 seq が基準より前 = E の
- * 現 DEK は基準イベント(失効・削除・降格・縮小)の前に配られたまま。開始 seq が
- * 導出できない環境は fail-closed で未収束に含める(環境が黙って対象から外れる形に
- * しない)。
+ * Whether environment E is unconverged against a baseline seq: E's
+ * current epoch's start seq being before the baseline = E's current DEK
+ * was still distributed before the baseline event (revocation / removal
+ * / demotion / narrowing). An environment whose start seq cannot be
+ * derived is fail-closed into unconverged (never shaped so an
+ * environment silently leaves the target set).
  */
 function isPendingAt(
   verified: VerifiedProject,
@@ -145,11 +162,13 @@ function isPendingAt(
 }
 
 // ---------------------------------------------------------------------------
-// ローテーション義務の一般化導出(§7 の 4 種)と未収束の常時警告(B2 裁定 —
-// 「誰も見ない verify 限定の警告は検出にならない」。§9 の開示常時明示と同じ規律)
+// The generalized derivation of rotation mandates (§7's kinds) and the
+// standing warning for unconverged ones (the B2 ruling — "a
+// verify-only warning nobody sees is not detection". The same
+// discipline as §9's standing disclosure)
 // ---------------------------------------------------------------------------
 
-/** §7 のローテーション義務の種別(全 5 種 — DK K4 で `device-revoked` を追加)。 */
+/** §7's rotation mandate kinds (all 5 — `device-revoked` added in DK K4). */
 export type RotationMandateKind =
   | "member-removed"
   | "role-demoted"
@@ -157,37 +176,44 @@ export type RotationMandateKind =
   | "server-revoked"
   | "device-revoked";
 
-/** §7 のローテーション義務エントリ(全 5 種 — 2026-09-15 ES K4 で `scope-narrowed`、DK K4 で `device-revoked` を追加)。 */
+/** A §7 rotation mandate entry (all 5 kinds — `scope-narrowed` added in 2026-09-15 ES K4, `device-revoked` in DK K4). */
 export interface RotationMandate {
   readonly kind: RotationMandateKind;
-  /** member 系・device-revoked = 対象 user_id / server-revoked = サーバー鍵 FP。 */
+  /** The member family / device-revoked = the target user_id / server-revoked = the server key FP. */
   readonly target: string;
   readonly seq: number;
   /**
-   * 義務の環境集合(CRYPTO_SPEC §7 — seq 時点のチェーン導出環境集合に具体化。昇順)。
-   * remove = 対象の現 scope、降格 = 対象の新 scope、縮小 = 旧 \ 新、revoke = 全環境、
-   * device-revoked = 失効端末の実効 scope の和集合(K4-8)。
+   * The mandate's environment set (CRYPTO_SPEC §7 — concretized to the
+   * chain-derived environment set at seq. Ascending). remove = the
+   * target's current scope, demotion = the target's new scope, narrowing
+   * = old \ new, revoke = all environments, device-revoked = the union of
+   * the revoked devices' effective scopes (K4-8).
    */
   readonly environmentIds: readonly string[];
-  /** `device-revoked` のみ: 失効した端末の FP(昇順 — 表示・再登録判定用)。 */
+  /** `device-revoked` only: the revoked devices' FPs (ascending — for display and re-registration checks). */
   readonly deviceFingerprintsHex?: readonly string[];
 }
 
 /**
- * チェーン上の全ローテーション義務エントリ(§7): `remove_member`(常に)、
- * member 未満への降格 `change_role`(直前 role が member 以上 — 検証済み履歴の
- * memberStateAt で判定)、scope の縮小 `change_role`(旧 \ 新 ≠ ∅)、`revoke_server`
- * (常に)。member.ts の対象スコープ判定と未収束警告(下記)が同じ 1 導出を共有する
- * (判定のズレを構造的に防ぐ)。降格と縮小が同時なら 2 つの義務(同 seq)になる。
+ * Every rotation mandate entry on the chain (§7): `remove_member`
+ * (always), a `change_role` demoting below member (judged by whether
+ * the role just before was member or above — via the verified history's
+ * memberStateAt), a `change_role` narrowing the scope (old \ new ≠ ∅),
+ * and `revoke_server` (always). member.ts's target-scope judgment and
+ * the unconverged warning (below) share this single derivation
+ * (structurally preventing the judgments from drifting). A simultaneous
+ * demotion and narrowing produce two mandates (same seq).
  *
- * 入力は**適用済み操作列**(設計録 K6-C): 提案経由で適用された op は定足数に達した
- * `approve` の seq で載る(裁定 P7 — 義務の起点 = 適用時点)。
+ * The input is the **applied operation list** (design record K6-C): an
+ * op applied via a proposal rides at the seq of the `approve` that
+ * reached quorum (ruling P7 — a mandate's origin = the moment of
+ * application).
  */
 export function rotationMandates(verified: VerifiedProject): readonly RotationMandate[] {
   return verified.applied.flatMap((applied) => mandatesOfApplied(verified, applied));
 }
 
-/** 1 適用済み操作が生む義務(0〜2 個 — 降格と縮小が同時なら 2 個)。 */
+/** The mandates one applied operation produces (0–2 — a simultaneous demotion and narrowing make 2). */
 function mandatesOfApplied(
   verified: VerifiedProject,
   applied: AppliedOperation,
@@ -195,7 +221,7 @@ function mandatesOfApplied(
   const { seq, operation } = applied;
   if (operation.op === "remove_member") {
     const before = verified.history.memberStateAt(operation.payload.targetUserId, seq - 1);
-    // 直前の状態が導出できなければ fail-closed で全環境(黙って縮めない)
+    // If the state just before cannot be derived, fail-closed to all environments (never silently narrowed)
     const scope: MemberScope = before?.scope ?? ALL_SCOPE;
     return [
       {
@@ -223,11 +249,15 @@ function mandatesOfApplied(
 }
 
 /**
- * 端末失効の義務(CRYPTO_SPEC §7「端末の失効」— 設計録 K4-8): 失効した各端末の
- * **実効 scope**(人の scope ∩ 端末の scope — 失効直前 seq−1 の `deviceStateAt`)を
- * seq 時点の環境集合に具体化し、和集合を採る。導出できない端末(履歴に無い FP)は
- * fail-closed で全環境(黙って縮めない — remove の分岐と同じ規律)。scope が空の端末
- * (票だけの端末)の失効は空集合 = 義務を伴わない(正本の字面)。
+ * A device revocation's mandate (CRYPTO_SPEC §7 "revoking a device" —
+ * design record K4-8): each revoked device's **effective scope** (the
+ * person's scope ∩ the device's scope — `deviceStateAt` at seq−1 just
+ * before revocation) is concretized to the environment set at seq, and
+ * their union is taken. A device that cannot be derived (a FP absent
+ * from history) fails closed to all environments (never silently
+ * narrowed — the same discipline as the remove branch). Revoking a
+ * device whose scope is empty (a votes-only device) yields the empty
+ * set = carries no mandate (the canonical text's literal reading).
  */
 function revokeDeviceMandate(
   verified: VerifiedProject,
@@ -251,15 +281,17 @@ function revokeDeviceMandate(
   };
 }
 
-/** change_role の義務: 降格(新 scope の全環境)と縮小(旧 \ 新)— 同時なら 2 個。 */
+/** change_role's mandates: demotion (all environments of the new scope) and narrowing (old \ new) — two when simultaneous. */
 function changeRoleMandates(
   verified: VerifiedProject,
   seq: number,
   entry: Extract<ProposableOperation, { readonly op: "change_role" }>,
 ): readonly RotationMandate[] {
   const before = verified.history.memberStateAt(entry.payload.targetUserId, seq - 1);
-  // 直前の状態が導出できなければ fail-closed(remove の分岐と同じ規律 — pullfrog 指摘):
-  // 「書き手だった・全環境を持っていた」側に倒して義務を落とさない
+  // If the state just before cannot be derived, fail closed (the same
+  // discipline as the remove branch — noted by pullfrog): fall to the
+  // "was a writer, held every environment" side rather than dropping the
+  // mandate
   const beforeScope: MemberScope = before?.scope ?? ALL_SCOPE;
   const wasWriter = before === undefined || ROLE_RANK[before.role] >= ROLE_RANK.member;
   const after = memberScopeOf(entry.payload);
@@ -284,18 +316,21 @@ function changeRoleMandates(
   return mandates;
 }
 
-/** 未収束の義務(義務エントリより後に現エポックが始まっていない環境が残る)。 */
+/** An unconverged mandate (environments remain whose current epoch has not begun after the mandate entry). */
 export interface UnconvergedMandate extends RotationMandate {
   readonly pendingEnvironmentIds: readonly string[];
 }
 
 /**
- * 未収束のローテーション義務の導出(チェーン導出のみ)。環境 E が義務 M に
- * ついて未収束 = E ∈ M の環境集合(M 時点で存在した scope 内の環境)で、E の現
- * エポックの開始 seq が M より前(= M 後のローテーションがまだ)。開始 seq が
- * 導出できない環境は fail-closed で未収束に含める。削除済み(検証済み)環境は除外。
- * なお「エポックは進んだが再暗号化が未完」はチェーンから見えない残余で、
- * その検出は各義務コマンドの再実行(sweep の検証パス)が担う。
+ * Deriving unconverged rotation mandates (chain-derived only).
+ * Environment E is unconverged for mandate M = E ∈ M's environment set
+ * (the environments inside the scope that existed at M) and E's current
+ * epoch's start seq is before M (= no rotation since M). An environment
+ * whose start seq cannot be derived is fail-closed into unconverged.
+ * Verified-deleted environments are excluded. Note that "the epoch
+ * advanced but the re-encryption is unfinished" is a remainder invisible
+ * from the chain — detecting it is the job of each mandate command's
+ * re-run (the sweep's verification pass).
  */
 function unconvergedMandates(
   verified: VerifiedProject,
@@ -315,20 +350,24 @@ function unconvergedMandates(
 }
 
 /**
- * 巻き戻された義務(対象が再追加・再昇格・再拡大・再 grant 済み)の案内。義務
- * コマンドの再実行を案内すると**現役の対象へ元の破壊的操作を再適用させてしまう**
- * ため、負っているのはローテーションだけであることを明示し、
- * 非破壊の env rotate へ誘導する。義務自体は残る(remove/降格の残余は
- * エポックアンカーの健全性 — §7 — であり、対象の復帰では消えない)。
+ * The guidance for a mandate that was rolled back (the target has been
+ * re-added / re-promoted / re-widened / re-granted). Guiding toward a
+ * re-run of the mandate command would **re-apply the original
+ * destructive operation to a now-active target**, so make explicit that
+ * what is owed is only the rotation and steer toward the non-destructive
+ * env rotate. The mandate itself survives (the remainder of a
+ * remove/demotion is the epoch anchors' soundness — §7 — and the
+ * target's return does not erase it).
  */
 function reversedAdvice(state: string): string {
   return `${state} — do not re-run the operation against the target; rotating the affected environment individually with \`maruhi env rotate <environment> --new-epoch --reason <text>\` converges the mandate`;
 }
 
 /**
- * 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。対象の現在
- * 状態を見て、巻き戻し済み(再追加・再昇格・再拡大・再 grant)なら破壊的操作の
- * 再実行を案内しない。
+ * Per-kind guidance for the converging command (an actionable warning —
+ * the B2 ruling). Looks at the target's current state; when it was
+ * rolled back (re-added / re-promoted / re-widened / re-granted), never
+ * guide toward re-running the destructive operation.
  */
 function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): string {
   switch (mandate.kind) {
@@ -350,8 +389,10 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
 }
 
 /**
- * 端末失効の義務の案内(K4-8 第 2 巡): 失効は再実行できる操作ではないので、常に
- * 非破壊の env rotate へ誘導する。失効端末が再登録されていれば言い分ける。
+ * The guidance for a device-revocation mandate (K4-8 turn 2): since a
+ * revocation is not an operation that can be re-run, always steer toward
+ * the non-destructive env rotate. If a revoked device has been
+ * re-registered, say so distinctly.
  */
 function deviceRevocationAdvice(
   member: ChainMember | undefined,
@@ -368,7 +409,7 @@ function deviceRevocationAdvice(
 
 function demotionAdvice(member: ChainMember | undefined, mandate: UnconvergedMandate): string {
   if (member === undefined) {
-    // 降格後に削除された対象へ change-role は再実行できない(現メンバー限定)
+    // change-role cannot be re-run against a target deleted after the demotion (current members only)
     return reversedAdvice("the target has been removed");
   }
   if (ROLE_RANK[member.role] >= ROLE_RANK.member) {
@@ -393,11 +434,14 @@ function narrowingAdvice(
 }
 
 /**
- * 未収束義務の解決: チェーン導出のみの前段判定が空なら通信ゼロで空を返し、
- * 候補があるときだけ削除済み環境の検証済みフィルタ(環境一覧の GET 1 回)を
- * 行う。取得・検証の失敗は null(= 判定不能。注意は出力済み)— 呼び出し側の
- * コマンドを失敗させない(チェーン検証自体は成功している)。
- * 常時警告(warnUnconvergedMandates)と project verify の詳細表示が共有する。
+ * Resolving unconverged mandates: when the chain-derived-only prologue
+ * judgment is empty, return empty with zero communication; only when
+ * candidates exist, run the verified filter for deleted environments
+ * (one GET of the environment list). A fetch / verification failure is
+ * null (= cannot judge. The caveat was already emitted) — never fails
+ * the caller's command (the chain verification itself succeeded).
+ * Shared by the standing warning (warnUnconvergedMandates) and project
+ * verify's detail display.
  */
 export function resolveUnconvergedMandates(input: {
   readonly client: MaruhiClient;
@@ -422,7 +466,7 @@ export function resolveUnconvergedMandates(input: {
   });
 }
 
-/** 1 義務ぶんの警告行(常時警告と project verify の詳細表示で共通)。 */
+/** One mandate's warning line (shared by the standing warning and project verify's detail display). */
 export function describeUnconvergedMandate(
   verified: VerifiedProject,
   mandate: UnconvergedMandate,
@@ -431,10 +475,12 @@ export function describeUnconvergedMandate(
 }
 
 /**
- * 未収束のローテーション義務の常時警告(B2 裁定)。全コマンドのチェーン同期後に
- * 呼ぶ(収束系コマンド — member remove / change-role / server revoke / env
- * rotate — は自分の sweep 報告が担うため呼ばない)。警告は SHOULD — 取得・
- * 検証の失敗でコマンド自体を止めない(その旨だけ告げて続行する)。
+ * The standing warning for unconverged rotation mandates (the B2
+ * ruling). Called after every command's chain sync (converging commands
+ * — member remove / change-role / server revoke / env rotate — do not
+ * call it, since their own sweep report carries it). The warning is a
+ * SHOULD — a fetch / verification failure never stops the command
+ * itself (it says so and continues).
  */
 export function warnUnconvergedMandates(input: {
   readonly client: MaruhiClient;
@@ -455,7 +501,7 @@ export function warnUnconvergedMandates(input: {
   });
 }
 
-/** 削除済み環境の検証済み集合(環境一覧の GET 1 回 + 削除ステートメント検証 — §7)。 */
+/** The verified set of deleted environments (one GET of the environment list + deletion-statement verification — §7). */
 export function verifiedDeletedEnvironmentSet(
   client: MaruhiClient,
   verified: VerifiedProject,
@@ -468,7 +514,7 @@ export function verifiedDeletedEnvironmentSet(
   });
 }
 
-/** 1 環境のローテーションの結果化(失敗は投げずに集める — §7 の全環境走査用)。 */
+/** Turning one environment's rotation into a result (failures are collected, not thrown — for §7's all-environment sweep). */
 function rotateOutcome<R>(
   rotate: SweepRotate<R>,
   environmentId: string,
@@ -486,16 +532,19 @@ function rotateOutcome<R>(
 }
 
 /**
- * §7 の義務環境の走査: 基準より前に現エポックが始まった環境は強制ローテーション、
- * それ以外は検証パス(未完了の再暗号化の再開 or 完了確認)。1 環境の失敗で残りを
- * 止めない(失敗は集めて報告し、再実行で続きから再開する)。対象は `baselines`
- * (義務の環境集合 → 基準 seq。baselinesOf)に限る — scope 外の環境を rotate の
- * 対象に含めない(CRYPTO_SPEC §7)。
+ * The sweep of §7's mandate environments: an environment whose current
+ * epoch began before the baseline gets a forced rotation; the rest get
+ * the verification pass (resuming an unfinished re-encryption or
+ * confirming completion). One environment's failure never stops the
+ * rest (failures are collected and reported; a re-run resumes where it
+ * left off). Targets are limited to `baselines` (the mandate's
+ * environment set → baseline seq. baselinesOf) — an environment outside
+ * the scope is never included among rotate's targets (CRYPTO_SPEC §7).
  */
 export function sweepRotations<R>(input: {
   readonly rotate: SweepRotate<R>;
   readonly verified: VerifiedProject;
-  /** 義務の環境集合 → 基準 seq(revoke / remove / 降格 / 縮小)。 */
+  /** The mandate's environment set → baseline seq (revoke / remove / demotion / narrowing). */
   readonly baselines: EnvironmentBaselines;
   readonly deletedVerified: ReadonlySet<string>;
 }): Effect.Effect<SweepOutcome, never, R> {
@@ -520,8 +569,9 @@ export function sweepRotations<R>(input: {
         failed.push({ environmentId, message: result.message });
       }
     }
-    // エポックは基準より後に始まっているが、その回の**再暗号化が完了したか**は
-    // チェーンからは分からない(§12-7 の過渡状態)。検証パスで確かめる
+    // The epoch began after the baseline, but whether that round's
+    // **re-encryption completed** is not knowable from the chain (§12-7's
+    // transitional state). Confirm it via the verification pass
     for (const environmentId of candidates.filter((id) => !isPending(id))) {
       const result = yield* rotateOutcome(input.rotate, environmentId, "verify");
       if (result.kind !== "ok") {
@@ -533,8 +583,9 @@ export function sweepRotations<R>(input: {
       ) {
         alreadyRotated.push(environmentId);
       } else {
-        // 再開した(または部分完了が残った)— 表示・終了コードは呼び出し側の
-        // reportRotation が RotationSummary から導く
+        // Resumed (or a partial completion remains) — the display and
+        // exit code are derived from RotationSummary by the caller's
+        // reportRotation
         rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: false });
       }
     }

@@ -1,12 +1,16 @@
-// 端末出力のサニタイズと表示整形。
+// Sanitizing and display formatting for terminal output.
 //
-// 変数の表示名・user_id 等はサーバー配布の非認証メタデータ(自由文字列)で、
-// 改行・ANSI エスケープを含められる。生のまま端末へ流すと偽行・誘導文の
-// 混入(端末インジェクション)になるため、制御文字を可視の代替文字に置換
-// してから表示する。値(--show)はサーバーに偽造できない(E2EE で書かれ、
-// 改変すれば復号に失敗する)が、共同編集者は書けるため別の脅威として同じ
-// 中和をかける。ただし値は利用者がコピーして使うものなので、中和が起きた
-// ときは「表示 = 実際の値」でないことを警告で明示する(showValues)。
+// A variable's display name, user_id, etc. are server-distributed,
+// unauthenticated metadata (free-form strings) that may contain newlines
+// and ANSI escapes. Streaming them raw to the terminal mixes fake lines
+// and steering text into it (terminal injection), so control characters
+// are replaced with a visible substitute before display. A value (--show)
+// cannot be forged by the server (it is written with E2EE and tampering
+// fails decryption), but a co-editor can write it, so the same
+// neutralization applies as a separate threat. However, a value is
+// something the user copies and uses, so when neutralization happens a
+// warning makes explicit that "displayed = actual value" does not hold
+// (showValues).
 
 import { Effect, Redacted, type Stdio } from "effect";
 
@@ -15,47 +19,62 @@ import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
 
-// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)に
-// 加えて、**行と並び順の整合性を壊す**もの:
-//   U+202A〜U+202E(双方向の埋め込み・上書き)/ U+2066〜U+2069(分離)
-//   U+200E / U+200F / U+061C(双方向マーク)
-//     — いずれも端末上で表示順を入れ替えられる。偽行・誘導文の混入と同じ脅威で、
-//       ANSI エスケープだけ潰しても閉じない
-//   U+200B(ゼロ幅スペース)/ U+FEFF(ゼロ幅非改行スペース)/ U+2060〜U+2064
-//   (単語結合子・不可視演算子)/ U+00AD(ソフトハイフン)/ U+180E
-//     — いずれも**見えないまま挿入できる**。API_KEY と API<U+FEFF>KEY が同じ
-//       見た目になり、綴りには要らない
-//   U+FFF9〜U+FFFB(行間注釈)— 本文と注釈の境界を作り、表示を分岐させられる
-//   U+2028 / U+2029(行・段落区切り)— 描画先によっては改行として扱われる
+// Unicode category Cc = C0 controls (NUL..US) + DEL + C1 controls
+// (including ANSI CSI), plus those that **break the integrity of lines and
+// ordering**:
+//   U+202A..U+202E (bidirectional embedding/override) / U+2066..U+2069
+//   (isolation)
+//   U+200E / U+200F / U+061C (bidirectional marks)
+//     — all can reorder the display on a terminal. Same threat as fake
+//       lines / steering text, and crushing ANSI escapes alone does not
+//       close it
+//   U+200B (zero-width space) / U+FEFF (zero-width non-breaking space) /
+//   U+2060..U+2064 (word joiner, invisible operators) / U+00AD (soft
+//   hyphen) / U+180E
+//     — all can be inserted **invisibly**. API_KEY and API<U+FEFF>KEY look
+//       the same, and spelling does not need them
+//   U+FFF9..U+FFFB (interlinear annotation) — creates a boundary between
+//     body and annotation, so the display can be forked
+//   U+2028 / U+2029 (line / paragraph separators) — some renderers treat
+//     them as newlines
 //
-// Cf(書式文字)を一括では潰さない: ZWNJ(U+200C)/ ZWJ(U+200D)はペルシア語・
-// デーヴァナーガリー・絵文字連結の**正当な表示に必要**(文字の結合そのものを
-// 決める)で、潰すと正しい名前を壊す。上に挙げたものは順序・可視性を操るだけで
-// 文字の綴りには要らないので、そこで線を引く。同じ理由で、絵文字の表示形を
-// 決める異体字セレクタ(U+FE00〜U+FE0F)とアラビア数字の書式接頭辞
-// (U+0600〜U+0605 等)も潰さない。
+// Cf (format characters) is not crushed wholesale: ZWNJ (U+200C) / ZWJ
+// (U+200D) are **required for legitimate display** of Persian, Devanagari,
+// and emoji joins (they decide the joining of characters itself), and
+// crushing them would break correct names. The ones listed above only
+// manipulate order and visibility and spelling does not need them, so the
+// line is drawn there. For the same reason, variation selectors that
+// decide emoji presentation (U+FE00..U+FE0F) and the format prefixes of
+// Arabic digits (U+0600..U+0605 etc.) are not crushed.
 //
-// これは**列挙(deny-list)であり閉じない** — 同形異字のように文字クラスでは
-// 区別できないものが残る。「表示された文字列 = 実際の文字列」を厳密に要求する
-// 場面では、この関数ではなく {@link escapeText} の許可制を使う。
+// This is **an enumeration (a deny-list) and does not close** — things a
+// character class cannot distinguish remain, like look-alike characters.
+// Where "the displayed string = the actual string" is strictly required,
+// use {@link escapeText}'s allow-list instead of this function.
 //
-// **変数名にこれを使うのは意図的な線引き**: `DАTАBАSЕ_URL`(А = U+0410 の
-// キリル文字)は `DATABASE_URL` と見分けが付かず、displayText では素通りする。
-// それでも許可制にしないのは、正当な非 ASCII の変数名・user_id をすべて
-// \u{...} に潰してしまい、一覧の可読性が失われるため。許可制は「その文字列を
-// 操作対象として指す」場面(キーチェーンのエントリ名)にだけ使い、一覧表示
-// では取らない。同形異字による名前の偽装は**未解決の既知の穴**であり、
-// 解くなら表示側ではなく名前の正規化・登録時検査の側に置く
+// **Using this on variable names is an intentional line**: `DАTАBАSЕ_URL`
+// (А = Cyrillic U+0410) is indistinguishable from `DATABASE_URL` and
+// passes displayText through. It still does not become an allow-list
+// because that would crush every legitimate non-ASCII variable name and
+// user_id into \u{...}, destroying the listing's readability. The
+// allow-list is used only where a string is pointed to as an operation
+// target (a keychain entry name), not in listings. Name forging via
+// look-alike characters is **a known open hole**; to solve it, the fix
+// belongs on the name-normalization / registration-time check side, not
+// the display side.
 //
-// 表示名(displayText)と値(displayValue)のどちらにも同じ危険があるので、この一覧は
-// **一箇所で持つ** — 別々に書くと、片方だけ足された状態で気づかれずに残る
+// The display name (displayText) and the value (displayValue) carry the
+// same danger, so this list is **held in one place** — written separately,
+// a one-sided addition would linger unnoticed
 const ORDER_BREAKING =
   "\\u00AD\\u061C\\u180E\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\u2028\\u2029\\uFEFF\\uFFF9-\\uFFFB";
 const CONTROL_CHARS = new RegExp(`\\p{Cc}|[${ORDER_BREAKING}]`, "gu");
-// escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
-// バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
-// バックスラッシュは可逆性(逃がした表記と元から同じ見た目の文字列が衝突しない)、
-// 引用符は引用符で囲んだ表示を閉じられないことに要る
+// The range escapeText passes through = printable ASCII
+// (U+0020..U+007E) minus backslash and the quotation mark. Everything else
+// is escaped uniformly. Backslash is needed for reversibility (an escaped
+// notation and a string that originally looked the same must not
+// collide); the quotation mark is needed so a display wrapped in
+// quotation marks cannot be closed early
 const ESCAPABLE = /[^\u0020-\u007E]|["\\]/gu;
 
 /** Replaces control and order-breaking characters for safe terminal display. */
@@ -64,25 +83,27 @@ export function displayText(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// サーバー申告 unix ms の total な表示
+// Total display of server-declared unix ms
 //
-// serverTs / createdAtMs / expiresAtMs / updatedAtMs はワイヤの無制限 number で、
-// ECMA-262 の Date 範囲(±8.64e15 ms)外を Date#toISOString に渡すと RangeError
-// の defect になり、audit / invite / key show が型付きエラーでなくクラッシュで
-// 終了する。表示は total にし、範囲外は「不正なタイムスタンプ」を明示する
-// 文字列へ劣化する(1 フィールドの不正で行全体・コマンド全体を落とさない)。
+// serverTs / createdAtMs / expiresAtMs / updatedAtMs are unbounded wire
+// numbers; passing something outside ECMA-262's Date range (±8.64e15 ms)
+// to Date#toISOString becomes a RangeError defect, ending audit / invite /
+// key show in a crash rather than a typed error. Display is made total:
+// out-of-range degrades to a string stating "invalid timestamp" (one bad
+// field must not drop the whole row or the whole command).
 // ---------------------------------------------------------------------------
 
-/** ECMA-262 が Date に許す unix ms の絶対値上限。 */
+/** The absolute ceiling of unix ms that ECMA-262 allows a Date. */
 const MAX_TIMESTAMP_MS = 8_640_000_000_000_000;
 
-// 標準形("YYYY-MM-DDTHH:mm:ss.sssZ")のみ受ける: Date 範囲内でも年が 0〜9999 の
-// 外だと toISOString は拡張年形式("+010000-…" / "-…")を返し、固定オフセットの
-// slice が黙って別の位置を切り出す(「明示劣化」の約束が崩れる)。形式で
-// 検査すれば slice の前提そのものを固定できる
+// Accepts only the standard form ("YYYY-MM-DDTHH:mm:ss.sssZ"): even inside
+// the Date range, a year outside 0..9999 makes toISOString return the
+// expanded-year form ("+010000-…" / "-…"), and a fixed-offset slice
+// silently cuts out a different position (the "explicit degradation"
+// promise breaks). Checking the form pins the slice's premise itself
 const STANDARD_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-/** 範囲内(年 0〜9999)なら標準形 ISO 文字列、それ以外は null。 */
+/** A standard-form ISO string when in range (year 0..9999), otherwise null. */
 function isoOf(ms: number): string | null {
   if (!Number.isFinite(ms) || Math.abs(ms) > MAX_TIMESTAMP_MS) {
     return null;
@@ -91,24 +112,24 @@ function isoOf(ms: number): string | null {
   return STANDARD_ISO.test(iso) ? iso : null;
 }
 
-/** 範囲外の値の表示(number 由来なので端末サニタイズ不要)。 */
+/** The display for an out-of-range value (derived from a number, so no terminal sanitizing needed). */
 function invalidTimestamp(ms: number): string {
   return `(invalid timestamp: ${ms})`;
 }
 
-/** unix ms → "YYYY-MM-DD HH:mm:ss UTC"(範囲外は明示表示 — total)。 */
+/** unix ms → "YYYY-MM-DD HH:mm:ss UTC" (explicit display when out of range — total). */
 export function formatUtcSeconds(ms: number): string {
   const iso = isoOf(ms);
   return iso === null ? invalidTimestamp(ms) : iso.slice(0, 19).replace("T", " ") + " UTC";
 }
 
-/** unix ms → "YYYY-MM-DD HH:mm UTC"(範囲外は明示表示 — total)。 */
+/** unix ms → "YYYY-MM-DD HH:mm UTC" (explicit display when out of range — total). */
 export function formatUtcMinutes(ms: number): string {
   const iso = isoOf(ms);
   return iso === null ? invalidTimestamp(ms) : iso.slice(0, 16).replace("T", " ") + " UTC";
 }
 
-/** unix ms → "YYYY-MM-DD"(範囲外は明示表示 — total)。 */
+/** unix ms → "YYYY-MM-DD" (explicit display when out of range — total). */
 export function formatUtcDate(ms: number): string {
   const iso = isoOf(ms);
   return iso === null ? invalidTimestamp(ms) : iso.slice(0, 10);
@@ -118,33 +139,35 @@ export function formatUtcDate(ms: number): string {
  * English count phrase with a regular plural: `countNoun(1, "variable")` →
  * "1 variable"、`countNoun(2, "variable")` → "2 variables"。
  *
- * ADR-0017 の英語化で件数を文面へ埋める箇所が増えた。テンプレートに複数形を
- * 直書きすると「1 variables」になる — 数える側がここを通ることで単複を揃える
- * (不規則変化の名詞が要るようになったら、その時に引数を増やす)。
+ * ADR-0017's switch to English increased the places that embed a count in
+ * the wording. Writing the plural directly into a template yields "1
+ * variables" — routing the counting side through here aligns singular and
+ * plural (if an irregular noun is ever needed, add arguments then).
  */
 export function countNoun(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
-/** 件数つきのプロジェクトの列挙(「2 projects (a, b)」— 台帳の鍵の判定の文が共有する)。 */
+/** Enumerating projects with the count ("2 projects (a, b)" — shared by the ledger-key decision sentences). */
 export function describeProjects(projectIds: readonly string[]): string {
   return `${countNoun(projectIds.length, "project")} (${projectIds.map(displayText).join(", ")})`;
 }
 
 /**
- * 「サーバーが一覧に出した N 件」の範囲(無いことを言う文 — DK K13-2。`device add` と台帳の鍵の
- * 判定が共有する — K15-3)。
+ * The range of "the N projects the server listed" (a sentence saying none
+ * exists — DK K13-2. Shared by `device add` and the ledger-key decision —
+ * K15-3).
  */
 export function describeListed(count: number): string {
   return `no project the server lists for you (${count === 0 ? "none" : count} listed)`;
 }
 
-/** 確かめた範囲(全部そうであることを言う文 — DK K15-3): サーバーが一覧に出した N 件。 */
+/** The verified range (a sentence saying all of them are so — DK K15-3): the N projects the server lists for you. */
 export function describeListedScope(count: number): string {
   return `the ${countNoun(count, "project")} the server lists for you`;
 }
 
-/** 予備鍵の印の無い台帳の鍵の句(DK K16-6 — CRYPTO_SPEC §8)。 */
+/** The phrase for a ledger key without the reserve-key mark (DK K16-6 — CRYPTO_SPEC §8). */
 export function describeUnmarkedLedgerKey(): string {
   return "was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it is not used as your reserve key";
 }
@@ -154,18 +177,23 @@ export function describeUnmarkedLedgerKey(): string {
  * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /
  * `\"`, so the rendered text is exactly reconstructible.
  *
- * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
- * 「この名前のエントリを消してください」のように文字列そのものを操作対象として
- * 案内する場面では潰してはいけない(消せない名前を案内することになる)ので、
- * 端末へ流しても危険のない形にエスケープしたうえで原文を保つ。
+ * {@link displayText} crushes characters into the replacement character,
+ * so **the user cannot reconstruct the original string**. Where the string
+ * itself is pointed to as an operation target — "delete the entry with
+ * this name" — it must not be crushed (that would guide a name that
+ * cannot be deleted), so it is escaped into a shape that is safe to
+ * stream to the terminal while keeping the original.
  *
- * **許可制(allow-list)にしている理由**: 危険な文字を列挙して逃がす形では
- * 閉じない。制御文字・書式文字・孤立サロゲート・行区切りと足していっても、
- * 最後に同形異字(Latin `a` U+0061 と Cyrillic `а` U+0430 など)が残り、これは
- * **見た目が同一なので文字クラスでは区別できない**。「表示された名前 = 実際の
- * 名前」を本当に成り立たせるには、安全と分かっている範囲だけを素通しし、
- * 残りを一律に逃がすしかない。非 ASCII の user_id は冗長な表記になるが、
- * この関数の目的は可読性ではなく**操作対象としての一致**なので、そちらを取る。
+ * **Why an allow-list**: enumerating dangerous characters and escaping
+ * them does not close. Adding control characters, format characters, lone
+ * surrogates, line separators still leaves look-alike characters (Latin
+ * `a` U+0061 vs Cyrillic `а` U+0430 etc.), which a character class cannot
+ * distinguish **because they look identical**. To truly establish
+ * "displayed name = actual name", the only option is to pass through only
+ * the range known to be safe and escape everything else uniformly. A
+ * non-ASCII user_id becomes a verbose notation, but this function's
+ * purpose is **identity as an operation target**, not readability — the
+ * former is taken.
  */
 export function escapeText(value: string): string {
   return value.replace(ESCAPABLE, (char) =>
@@ -175,13 +203,15 @@ export function escapeText(value: string): string {
   );
 }
 
-// 値の表示(pull --show)用: 端末インジェクションの媒介(ESC・BEL・C1・
-// CR 等)は中和しつつ、正当なシークレット(複数行 PEM 鍵など)を壊さないよう
-// タブ(\t)と改行(\n)だけは残す。値は共同編集者(正当な書き手)が保存する
-// ため、悪意ある値による他メンバーの端末改ざんを防ぐ(サーバー偽造とは別脅威)。
-// 順序を壊す文字({@link ORDER_BREAKING})も同じ脅威で、値だけ素通しにすると
-// 「表示された値 = 実際の値」が値の側で崩れる(綴りに要る ZWNJ / ZWJ は
-// displayText と同じく残す)
+// For displaying values (pull --show): neutralize the carriers of
+// terminal injection (ESC, BEL, C1, CR, etc.) while keeping only tab (\t)
+// and newline (\n) so legitimate secrets (multi-line PEM keys etc.) are
+// not broken. A value is stored by a co-editor (a legitimate writer), so
+// this prevents a malicious value tampering with other members' terminals
+// (a separate threat from server forgery). Order-breaking characters
+// ({@link ORDER_BREAKING}) are the same threat; passing only the value
+// through would break "displayed value = actual value" on the value side
+// (the ZWNJ / ZWJ that spelling needs are kept, same as displayText)
 const VALUE_CONTROL_CHARS = new RegExp(`[^\\P{Cc}\\t\\n]|[${ORDER_BREAKING}]`, "gu");
 
 /** Neutralizes injection-capable control chars in a secret value, keeping \t and \n. */
@@ -190,10 +220,10 @@ function displayValue(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// コマンド出力の整形ヘルパ
+// Formatting helpers for command output
 // ---------------------------------------------------------------------------
 
-/** pull 一覧行の対象(pull.ts の DecryptedVariable の表示部分)。 */
+/** The target of a pull listing row (the display portion of pull.ts's DecryptedVariable). */
 export interface DisplayableVariable {
   readonly name: string;
   readonly version: number;
@@ -202,18 +232,19 @@ export interface DisplayableVariable {
 }
 
 /**
- * pull のメタデータ一覧 1 行。
+ * One row of pull's metadata listing.
  *
- * 剥がす理由: **バイト長だけ**を読む(値は行に載せない)。この行は --show の
- * 有無に関わらず出るため値表示ゲートの手前にあり、ここで値そのものを出力に
- * 混ぜてはならない。
+ * Reason for unwrapping: reads **the byte length only** (the value does
+ * not go on the row). This row is emitted regardless of --show, so it sits
+ * before the value-display gate and must not mix the value itself into
+ * the output here.
  */
 export function formatPulledLine(variable: DisplayableVariable): string {
   const byteLength = Redacted.value(variable.value).byteLength;
   return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${byteLength} bytes)`;
 }
 
-/** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
+/** Displays the SHOULD warnings collected during verification (e.g. serving a non-NFC name — §12-1). */
 export function logWarnings(warnings: readonly string[]): Effect.Effect<void, never, CliIo> {
   return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
 }
@@ -221,43 +252,52 @@ export function logWarnings(warnings: readonly string[]): Effect.Effect<void, ne
 const strictValueDecoder = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * 値バイト列 → テキストの唯一のデコード方針(fatal)。不正 UTF-8 は null
- * (呼び出し側が変数名付きの明示エラーにする)。
+ * The only decoding policy for value bytes → text (fatal). Invalid UTF-8
+ * becomes null (the caller makes it an explicit error naming the
+ * variable).
  *
- * 方針の選定: run(環境変数注入)は fatal 必須であり、表示側だけ置換文字で
- * 通すと「--show では表示できるのに run では失敗する」非対称と、置換文字で
- * 静かに壊れた値のコピー事故を生む。両経路とも fatal に統一する。
+ * Choosing the policy: run (env-var injection) requires fatal; letting
+ * only the display side pass with replacement characters would produce
+ * the asymmetry "shows under --show but fails under run" and a copy
+ * accident of a value silently corrupted by a replacement character. Both
+ * paths are unified to fatal.
  */
 export function decodeValueText(value: Uint8Array): string | null {
   try {
     return strictValueDecoder.decode(value);
   } catch {
-    // fatal デコーダの例外は「不正 UTF-8」の判定値として扱う(値は運ばない)
+    // A fatal decoder's exception is treated as the "invalid UTF-8" verdict (the value is not carried)
     return null;
   }
 }
 
-/** 値の端末表示(pull --show)。表示可否は agent-gate.ts が拒否する。 */
+/** The terminal display of values (pull --show). agent-gate.ts refuses whether display is allowed. */
 export function showValues(
   variables: readonly DisplayableVariable[],
 ): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // コマンド入口(復号前)の検査が本線。復号後のこの検査は、showValues を
-    // 直接呼ぶ将来の経路が入口検査を欠いても表示に至らせない防衛線。
-    // **両方**を新しい gate(TTY 一次境界)に揃える — 片方を deny-list の
-    // まま残すと、防衛線側だけ未知のエージェントに素通りされる
+    // The check at the command entry (before decryption) is the mainline.
+    // This post-decryption check is a defensive line so a future path
+    // calling showValues directly cannot reach display without the entry
+    // check. **Both** are aligned to the new gate (the TTY primary
+    // boundary) — leaving one on the deny-list would let an unknown agent
+    // slip through on the defensive-line side
     yield* ensureValueDisplayAllowed;
-    // 全値のデコードを出力より前に完了させる(all-or-nothing)。1 値でも不正
-    // UTF-8 なら何も表示せず失敗し、部分出力(前半の値だけ画面に残る)を作らない
+    // Decoding of every value completes before any output
+    // (all-or-nothing). If even one value is invalid UTF-8, nothing is
+    // shown and it fails — no partial output (only the first values left
+    // on screen) is produced
     const lines: string[] = [];
-    // 中和で表示が原文と変わった変数(名前だけ集める。値は運ばない)
+    // Variables whose display was altered by neutralization (only names are collected; the value is not carried)
     const altered: string[] = [];
     for (const variable of variables) {
-      // 剥がす理由: 値の表示がこのコマンドの機能そのもの。**必ず上の
-      // ensureValueDisplayAllowed(TTY 一次境界 + エージェント二次層)を
-      // 通った後**で剥がす — ゲートより前に剥がすと、拒否される環境でも
-      // 平文がメモリ上の文字列として組み上がってしまう
+      // Reason for unwrapping: displaying the value is this command's
+      // very function. Unwrap **only after passing
+      // ensureValueDisplayAllowed above (the TTY primary boundary + the
+      // agent secondary layer)** — unwrapping before the gate would
+      // assemble the plaintext as an in-memory string even in an
+      // environment that refuses
       const text = decodeValueText(Redacted.value(variable.value));
       if (text === null) {
         return yield* Effect.fail(
@@ -275,33 +315,39 @@ export function showValues(
     for (const line of lines) {
       yield* io.log(line);
     }
-    // 中和は端末インジェクションを防ぐために必要だが、**黙って**行うと
-    // 「画面の文字列 = 実際の値」が崩れたことに気づけない(コピーして使うと
-    // 壊れた値を貼る)。中和が起きたときだけ、原文が別物であることと、
-    // 実際の値を渡す手段(run の環境変数注入)を stderr で名指しする
+    // Neutralization is needed to prevent terminal injection, but done
+    // **silently** the user cannot notice that "the on-screen string = the
+    // actual value" broke (copying it pastes a corrupted value). Only when
+    // neutralization happened, stderr names that the original is a
+    // different thing and the means to pass the actual value (run's
+    // env-var injection)
     if (altered.length > 0) {
       yield* logWarning(warnAlteredDisplay(altered));
     }
   });
 }
 
-/** 複数行の値の各行に付ける印(`NAME=` の行と見分けられる形にする)。 */
+/** The marker put on each line of a multi-line value (a shape distinguishable from a `NAME=` line). */
 const CONTINUATION = "| ";
 
 /**
- * 1 変数の表示行。
+ * One variable's display lines.
  *
- * 改行は正当な値(複数行 PEM 鍵など)に要るので潰さないが、**素のまま流すと
- * 値の側で行を偽造できる**: 値に `x\nDATABASE_URL=...` を書いた共同編集者は、
- * 存在しない変数の行を画面に作れる(値は E2EE なのでサーバーには偽造できない
- * が、書き手には書ける)。中和の対象にすると本物の複数行シークレットが壊れる
- * ため、潰す代わりに**枠に入れて出所を明示する** — 2 行目以降に印を付ければ、
- * どの行が値の続きかが表示だけで分かる。
+ * Newlines are needed by legitimate values (multi-line PEM keys etc.) and
+ * are not crushed, but **streamed raw they let the value side forge
+ * lines**: a co-editor who writes `x\nDATABASE_URL=...` into a value can
+ * fabricate a row for a variable that does not exist (the value is E2EE,
+ * so the server cannot forge it — but a writer can write it). Making it a
+ * neutralization target would break real multi-line secrets, so instead
+ * of crushing it is **framed with its provenance made explicit** — marking
+ * line 2 onward shows which lines continue the value from the display
+ * alone.
  */
 function renderValue(name: string, shown: string): readonly string[] {
-  // 末尾の改行は行を増やさない(`"a\nb\n"` は 2 行 + 末尾改行)。素朴に split
-  // すると空の 3 行目を作り、行数の申告も 1 つずれる。改行の有無は値の一部
-  // なので、捨てずに見出しで述べる
+  // A trailing newline does not add a line (`"a\nb\n"` is 2 lines + a
+  // trailing newline). A naive split would create an empty 3rd line and
+  // shift the declared line count by one. Whether a newline is present is
+  // part of the value, so it is stated in the heading rather than dropped
   const trailingNewline = shown.endsWith("\n");
   const parts = (trailingNewline ? shown.slice(0, -1) : shown).split("\n");
   if (parts.length === 1 && !trailingNewline) {
@@ -315,11 +361,14 @@ function renderValue(name: string, shown: string): readonly string[] {
 }
 
 /**
- * 中和で表示が変わった旨の警告(値そのものは載せない)。
+ * The warning that neutralization changed the display (the values
+ * themselves are not shown).
  *
- * 逃げ道として `maruhi run` を示すが、**万能とは書かない**: NUL を含む値は
- * 環境変数に載せられず run 自身が拒否する(run.ts)。ここで無条件に
- * 「run を使えば渡せます」と書くと、直後に拒否される手順へ送ることになる。
+ * `maruhi run` is shown as an escape route, but **it is not written as
+ * universal**: a value containing NUL cannot ride an env var and run
+ * itself refuses it (run.ts). Writing "use run and you can pass it"
+ * unconditionally here would send the user to a procedure that refuses
+ * them next.
  */
 function warnAlteredDisplay(names: readonly string[]): string {
   return `the values of these variables contain characters unusable in terminal output (control characters or ordering-manipulation characters), shown as \uFFFD instead. The displayed strings do not match the actual values — do not copy and use them. To pass the actual values to a process, use \`maruhi run -- <command>\` (though values containing NUL cannot be passed as env vars, so run rejects them too): ${names.join(", ")}`;
