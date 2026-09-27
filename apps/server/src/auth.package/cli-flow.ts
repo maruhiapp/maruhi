@@ -1,29 +1,33 @@
-// CLI ログインのフロー資格情報(AUTH_SPEC §4-1 (1) / §4-2)。
+// Flow credentials for CLI login (AUTH_SPEC §4-1 (1) / §4-2).
 //
-// start は無記録(裁定 DH)であり、フローの真正性は 2 系統の HMAC-SHA-256 で
-// 無状態に検証する:
+// start is unrecorded (ruling DH), and flow authenticity is verified
+// statelessly by two HMAC-SHA-256 lines:
 //
-// - flowToken: CLI 専用の bearer 資格情報。自己完結の署名形式
-//   `v1.<expMs>.<randHex>.<macHex>` で、**flowId を署名対象に含める**(§4-1 (1)
-//   の要件 — 「被害者の flowId + 自前の flowToken」の組み替えで他人のフローを
-//   poll する経路の遮断)。ブラウザチャネルには決して載せない
-// - vsig: verificationUrl のクエリ(flowId・期限・userCode・発行パラメータ)
-//   全体を覆うブラウザ脚用 MAC。URL の知識はポーリング資格を一切与えない
+// - flowToken: a CLI-only bearer credential. A self-contained signature
+//   format `v1.<expMs>.<randHex>.<macHex>` that **includes flowId in the
+//   signed content** (the §4-1 (1) requirement — closes the path of polling
+//   someone else's flow by recombining "the victim's flowId + one's own
+//   flowToken"). Never placed on the browser channel
+// - vsig: a browser-leg MAC covering the whole verificationUrl query
+//   (flowId, expiry, userCode, issued parameters). Knowledge of the URL
+//   grants no polling capability at all
 //
-// 2 系統は**用途タグでドメイン分離**し、署名入力は LP(長さ前置き)符号化で
-// 一意に復号可能にする(§4-2 — フィールド境界の曖昧さで別の入力列が同じ
-// バイト列に潰れない)。LP エンコーダは packages/crypto の既存実装を使う
-// (プリミティブの発明ではない)。この鍵は E2EE の鍵素材ではない
-// (CRYPTO_SPEC の対象外 — §4-2 に明記。短命なログインフロー資格の完全性のみ)。
+// The two lines are **domain-separated by purpose tags**, and signature
+// inputs are LP (length-prefixed) encoded to be uniquely decodable (§4-2 —
+// field-boundary ambiguity must not collapse different input sequences into
+// the same byte string). The LP encoder uses the existing implementation in
+// packages/crypto (not primitive invention). This key is not E2EE key
+// material (outside CRYPTO_SPEC's scope — stated in §4-2; integrity of
+// short-lived login-flow credentials only).
 
 import { decodeHex, encodeHex, encodeLengthPrefixed } from "@maruhi/crypto";
 
 import { constantTimeEqual } from "../ids.ts";
 
-/** フローの期限(AUTH_SPEC §4-1 (1) 起草値 15 分)。 */
+/** Flow lifetime (AUTH_SPEC §4-1 (1) drafted value: 15 minutes). */
 export const CLI_FLOW_TTL_MS = 15 * 60 * 1000;
 
-// ドメイン分離の用途タグ(§4-2 — 一方が他方として検証を通らない)
+// Purpose tags for domain separation (§4-2 — one must not pass verification as the other)
 const FLOW_TOKEN_DOMAIN = "maruhi/v1/cli-flow-token";
 const VSIG_DOMAIN = "maruhi/v1/cli-verify-url";
 
@@ -32,8 +36,9 @@ const SIGNING_KEY_BYTES = 32;
 const FLOW_TOKEN_RANDOM_BYTES = 32;
 
 /**
- * D1 保存の鍵素材(hex)を WebCrypto の HMAC 鍵へインポートする。形式不正は
- * defect(鍵は自分の生成経路 — FlowSigningKeyRepo — でしか書かれない)。
+ * Imports D1-stored key material (hex) as a WebCrypto HMAC key. Malformed
+ * input is a defect (the key is only ever written via our own generation
+ * path — FlowSigningKeyRepo).
  */
 export async function importFlowSigningKey(keyHex: string): Promise<CryptoKey> {
   const raw = decodeHex(keyHex);
@@ -59,14 +64,14 @@ async function macHex(
 }
 
 // ---------------------------------------------------------------------------
-// userCode(§4-1 (2) — 照合用の短い表示コード。秘密ではない)
+// userCode (§4-1 (2) — a short display code for human comparison. Not a secret)
 // ---------------------------------------------------------------------------
 
-// 視認混同の少ない 32 字(Crockford Base32 の字面)。256 % 32 = 0 なので
-// バイト値の mod にバイアスはない
+// 32 characters chosen for low visual ambiguity (the Crockford Base32
+// alphabet). Since 256 % 32 = 0, taking the mod of byte values is unbiased
 const USER_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/** 照合用コード(`XXXX-XXXX`)。CLI と承認ページの双方に表示する摩擦装置。 */
+/** Comparison code (`XXXX-XXXX`). A friction device shown on both the CLI and the approval page. */
 export function generateUserCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   let code = "";
@@ -80,10 +85,10 @@ export function generateUserCode(): string {
 }
 
 // ---------------------------------------------------------------------------
-// flowToken(§4-1 (1) — CLI 専用 bearer。ブラウザチャネル禁止)
+// flowToken (§4-1 (1) — CLI-only bearer. Never on the browser channel)
 // ---------------------------------------------------------------------------
 
-/** 自己完結の flowToken を発行する(256-bit 乱数 + flowId + 期限を MAC で覆う)。 */
+/** Issues a self-contained flowToken (a MAC covering 256-bit randomness + flowId + expiry). */
 export async function createFlowToken(
   key: CryptoKey,
   flowId: string,
@@ -95,10 +100,12 @@ export async function createFlowToken(
 }
 
 /**
- * poll の無状態検証(§4-1 (5)): MAC・**署名内 flowId と提示 flowId の組一致**・
- * 期限。判定順は MAC が先(期限は署名済みの自己申告値であり、MAC が通らない
- * トークンの期限は意味を持たない)。invalid = 一様拒否(CliFlowRejected)、
- * expired = 正当な保持者への型付き終了指示(CliFlowExpired — §4-2)。
+ * Stateless verification for poll (§4-1 (5)): MAC, **pairwise match of the
+ * flowId inside the signature and the presented flowId**, and expiry. The
+ * MAC is checked first (the expiry is a signed self-declared value; the
+ * expiry of a token whose MAC fails means nothing). invalid = uniform
+ * rejection (CliFlowRejected); expired = a typed termination instruction to
+ * a legitimate holder (CliFlowExpired — §4-2).
  */
 type FlowTokenVerdict = "valid" | "expired" | "invalid";
 
@@ -125,12 +132,13 @@ export async function verifyFlowToken(
 }
 
 // ---------------------------------------------------------------------------
-// vsig(§4-1 (1) — verificationUrl のブラウザ脚用 MAC)
+// vsig (§4-1 (1) — the browser-leg MAC for verificationUrl)
 // ---------------------------------------------------------------------------
 
 /**
- * verificationUrl が運ぶ vsig 済みパラメータ一式(§4-1 (1))。scopes は URL に
- * 載せた JSON 文字列そのままを署名・検証する(正規形の再解釈をしない)。
+ * The set of vsig'd parameters carried by verificationUrl (§4-1 (1)).
+ * scopes is signed and verified as the JSON string placed on the URL
+ * verbatim (no reinterpretation of the canonical form).
  */
 export interface CliVerifyParams {
   readonly flowId: string;
@@ -156,7 +164,7 @@ export async function computeVsig(key: CryptoKey, params: CliVerifyParams): Prom
   return macHex(key, VSIG_DOMAIN, vsigFields(params));
 }
 
-/** vsig 済みパラメータから verify URL のクエリを組む(start と案内リンクで共有)。 */
+/** Builds the verify URL query from the vsig'd parameters (shared by start and the guidance link). */
 export function verificationQuery(params: CliVerifyParams, vsig: string): URLSearchParams {
   const query = new URLSearchParams();
   query.set("flow", params.flowId);
@@ -169,7 +177,7 @@ export function verificationQuery(params: CliVerifyParams, vsig: string): URLSea
   return query;
 }
 
-/** ブラウザ脚が受け取る生クエリ(verify のクエリ / callback の cookie 復元)。 */
+/** The raw query the browser leg receives (verify's query / callback's cookie restore). */
 interface RawCliVerifyQuery {
   readonly flow?: string | undefined;
   readonly exp?: string | undefined;
@@ -181,9 +189,10 @@ interface RawCliVerifyQuery {
 }
 
 /**
- * verify 到達の無状態検証(§4-1 (3)): 欠落・改竄・期限切れはすべて null =
- * 一様なエラーページ(§4-2 — 出し分けない。GitHub へのリダイレクトが起きる
- * 前に fail-closed)。検証を通った場合のみ確定パラメータを返す。
+ * Stateless verification of a verify arrival (§4-1 (3)): missing, tampered,
+ * or expired all yield null = a uniform error page (§4-2 — no
+ * differentiation; fail-closed before any redirect to GitHub happens).
+ * Returns the settled parameters only when verification passes.
  */
 export async function verifyCliVerifyQuery(
   key: CryptoKey,

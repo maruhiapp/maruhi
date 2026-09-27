@@ -1,9 +1,11 @@
-// SessionService の本実装(AUTH_SPEC §5)。
+// The actual implementation of SessionService (AUTH_SPEC §5).
 //
-// - 生成: 256-bit 乱数(hex)。クライアントには生値、DB には SHA-256 ハッシュのみ
-// - 有効期限 30 日のスライディング更新。resolve のたびに期限を進める
-// - 失効: サーバー側の行削除で即時。resolve は失効・期限切れ・不明を匿名に畳む
-// - 生値・ハッシュをログに出さない(AUTH_SPEC §10)
+// - Generation: 256-bit random (hex). The client gets the raw value; the DB
+//   stores only the SHA-256 hash
+// - 30-day expiry with sliding renewal: each resolve advances the expiry
+// - Revocation: immediate via server-side row deletion; resolve folds
+//   revoked / expired / unknown into anonymous
+// - Raw values and hashes are never logged (AUTH_SPEC §10)
 
 import type { Principal, SessionServiceShape } from "@maruhi/core";
 import { anonymousPrincipal } from "@maruhi/core";
@@ -15,8 +17,9 @@ import { randomHex, sha256Hex } from "../ids.ts";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * スライディング更新の書き込み間引き: 前回の延長から 1 時間未満なら D1 UPDATE を
- * 省く(全リクエスト書き込みを避ける。30 日スライディングの意味論は保たれる)。
+ * Write-thinning for the sliding renewal: when less than 1 hour has passed
+ * since the last extension, the D1 UPDATE is skipped (avoids a write per
+ * request; the 30-day sliding semantics are preserved).
  */
 const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -30,7 +33,7 @@ function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effec
       return Effect.succeed(anonymousPrincipal);
     }
     if (record.expiresAtMs <= now) {
-      // 期限切れ行はここで掃除する(DB バックの失効可能性を保つ)
+      // Expired rows are swept here (keeps server-side revocability)
       return Effect.as(sessions.deleteByHash(idHash), anonymousPrincipal);
     }
     const principal = {
@@ -59,8 +62,9 @@ export function makeSessionService(sessions: SessionRepoShape): SessionServiceSh
       }),
     resolveSession: (rawValue) =>
       Effect.flatMap(hashOf(rawValue), (idHash) => resolveRecord(sessions, idHash)),
-    // 明示失効は監査イベント込みの revokeByHash(期限切れ掃除の deleteByHash と
-    // 区別する — AUDIT_SPEC §3.1 の auth.session_revoked は明示失効のみ)
+    // Explicit revocation goes through revokeByHash, which carries the
+    // audit event (distinct from the expiry sweep's deleteByHash —
+    // AUDIT_SPEC §3.1's auth.session_revoked covers explicit revocation only)
     revokeSession: (rawValue) =>
       Effect.flatMap(hashOf(rawValue), (idHash) => sessions.revokeByHash(idHash, Date.now())),
   };

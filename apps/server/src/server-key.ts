@@ -1,22 +1,30 @@
-// デプロイメント keypair(CRYPTO_SPEC §9)の導出、公開情報の提供、および
-// リース時の「自分宛ラップの開封 → ワークロード宛の再ラップ」(§9.1)。
+// Derivation of the deployment keypair (CRYPTO_SPEC §9), provision of
+// the public info, and at lease time the "unseal the wrap addressed
+// to itself → re-wrap for the workload" step (§9.1).
 //
-// Workers Secret `SERVER_ENC_KEY_IKM`(32 バイト hex)から RFC 9180
-// DeriveKeyPair で X25519 keypair を導出し、公開面(enc 公開鍵 + サーバー鍵 FP =
-// SHA-256(enc_pub)[:16])を `/auth/config` に載せる(AUTH_SPEC §4)。
+// From the Workers Secret `SERVER_ENC_KEY_IKM` (32-byte hex) it
+// derives an X25519 keypair via RFC 9180 DeriveKeyPair, and puts the
+// public face (enc public key + the server-key FP =
+// SHA-256(enc_pub)[:16]) on `/auth/config` (AUTH_SPEC §4).
 //
-// **秘密鍵も開封した DEK もこのモジュールのクロージャ外へ出さない**。公開する操作は
-// `reseal`(開封 + 再ラップを一体で行い、**リースラップだけを返す**)であり、
-// 平文 DEK を返す口は存在しない — 戻り値・RPC 境界・ログのどこにも DEK が
-// 現れないことを型で保証する(§10 の API 境界の不変条件のサーバー内版)。
-// サーバーが復号するのは DEK までで、変数値は復号しない(§9.1)。
+// **Neither the secret key nor an unsealed DEK leaves this module's
+// closure**. The only published operation is `reseal` (unsealing and
+// re-wrapping fused into one, **returning only the lease wrap**); no
+// interface returns a plaintext DEK — the type guarantees a DEK never
+// appears in a return value, across the RPC boundary, or in logs (the
+// server-side version of §10's API-boundary invariant).
+// The server decrypts down to the DEK only; it never decrypts
+// variable values (§9.1).
 //
-// secret 未設定は「選択的開示なしの純粋 E2EE デプロイメント」(正常な既定)。
-// 形式不正(hex でない・長さ不正)も未設定として扱う — /auth/config から
-// serverKeyFingerprintHex が消えるため、grant CLI 側が「サーバー鍵未設定」を
-// 明示エラーにする(トラブルシュートは docs/SELF_HOSTING.md)。GitHub OAuth の
-// 未設定(503 SetupIncomplete)と違い fail-closed にしないのは、サーバー鍵が
-// 任意機能でありログイン経路を塞ぐ理由がないため。
+// An unset secret is "a pure E2EE deployment without selective
+// disclosure" (the normal default). A malformed value (not hex,
+// wrong length) is treated as unset too — since
+// serverKeyFingerprintHex disappears from /auth/config, the grant CLI
+// side turns "server key not configured" into an explicit error
+// (troubleshooting in docs/SELF_HOSTING.md). Unlike an unset GitHub
+// OAuth (503 SetupIncomplete) it is not fail-closed, because the
+// server key is an optional feature and there is no reason to block
+// the login path.
 
 import {
   computeServerKeyFingerprint,
@@ -36,13 +44,13 @@ import type { WireSuite } from "./data-plane.ts";
 
 const IKM_BYTES = 32;
 
-/** デプロイメント keypair の公開面(/auth/config が配布する — AUTH_SPEC §4)。 */
+/** The public face of the deployment keypair (distributed by /auth/config — AUTH_SPEC §4). */
 export interface ServerKeyInfo {
   readonly serverEncPubHex: string;
   readonly serverKeyFingerprintHex: string;
 }
 
-/** 保存済みのサーバー宛ラップ(dek_wraps の 1 行 — §12-6)。 */
+/** A stored server-addressed wrap (one row of dek_wraps — §12-6). */
 export interface StoredServerWrap {
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -51,9 +59,10 @@ export interface StoredServerWrap {
 }
 
 /**
- * リースラップ 1 件(応答スコープ。永続化しない — §9.1)。suite は開封元の
- * 保存行から引き継ぐ: リースは「保存済みラップの再ラップ」であり、
- * 別スイートの材料を v1 として配布しない(CRYPTO_SPEC §2 設計原則 4)。
+ * One lease wrap (response scope; never persisted — §9.1). The suite
+ * is inherited from the stored row it was unsealed from: a lease is
+ * "a re-wrap of a stored wrap", and material of a different suite is
+ * not distributed as v1 (CRYPTO_SPEC §2 design principle 4).
  */
 export interface LeaseWrapOutput {
   readonly suite: WireSuite;
@@ -62,18 +71,20 @@ export interface LeaseWrapOutput {
   readonly ciphertextHex: string;
 }
 
-/** reseal の失敗理由(いずれもサーバー内部の不整合であり、応答に理由は出さない)。 */
+/** reseal failure reasons (all are server-internal inconsistencies; the reason is not exposed in the response). */
 export type ResealFailure = "not-configured" | "unwrap-failed" | "wrap-failed";
 
 export interface ServerKeyShape {
-  /** 設定済みなら公開面、未設定(または形式不正)なら null。 */
+  /** The public face if configured; null when unset (or malformed). */
   readonly info: Effect.Effect<ServerKeyInfo | null>;
   /**
-   * サーバー宛ラップを開封し、同じエポック DEK をワークロードの一時公開鍵へ
-   * 再ラップする(CRYPTO_SPEC §9.1)。開封した DEK はこの呼び出しの中に閉じ、
-   * 戻り値には**再ラップ済みのラップだけ**が載る。
+   * Unseals a server-addressed wrap and re-wraps the same epoch DEK
+   * to the workload's ephemeral public key (CRYPTO_SPEC §9.1). The
+   * unsealed DEK stays inside this call, and the return value carries
+   * **only the re-wrapped wrap**.
    *
-   * 失敗は理由コードのみを返す(暗号文・鍵素材の断片を運ばない)。
+   * A failure returns a reason code only (it carries no fragments of
+   * ciphertext or key material).
    */
   readonly reseal: (input: {
     readonly projectId: string;
@@ -86,7 +97,7 @@ export interface ServerKeyShape {
 
 export class ServerKey extends Context.Service<ServerKey, ServerKeyShape>()("ServerKey") {}
 
-/** 導出済みのサーバー鍵(公開面 + 開封に使う keypair)。 */
+/** The derived server key (the public face + the keypair used for unsealing). */
 interface DerivedServerKey {
   readonly info: ServerKeyInfo;
   readonly keyPair: EncryptionKeyPair;
@@ -119,17 +130,19 @@ async function derive(ikmHex: string | undefined): Promise<DerivedServerKey | nu
 }
 
 /**
- * 開封済み DEK のバッファをゼロ埋めする。JS では GC 前のコピーまでは消せない
- * ため暗号境界ではないが、長命な isolate のヒープに DEK がそのまま残る窓を
- * 縮める(多層防御)。
+ * Zero-fills the buffer of an unsealed DEK. In JS a copy made before
+ * GC cannot be erased, so this is not a cryptographic boundary — but
+ * it shrinks the window in which the DEK sits plainly on a long-lived
+ * isolate's heap (defense in depth).
  */
 function zeroize(bytes: Uint8Array): void {
   bytes.fill(0);
 }
 
 /**
- * worker / DO 起動時に一度だけ構築するサービス。導出は初回参照時に 1 回だけ
- * 行い、以後は isolate 内でキャッシュする(ikm と秘密鍵はクロージャに閉じる)。
+ * A service built once at worker / DO startup. Derivation happens
+ * once at first reference and is cached inside the isolate thereafter
+ * (the ikm and the secret key stay inside the closure).
  */
 export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
   let cached: Promise<DerivedServerKey | null> | undefined;
@@ -153,8 +166,9 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
           importEncryptionPublicKey(workloadPubBytes),
         );
         if (!workloadPublicKey.ok) {
-          // ワイヤ Schema(32 バイト hex)を通っていてもインポートは失敗しうる
-          // (点として不正な X25519 公開鍵)。呼び出し側が 400 相当へ写す
+          // Import can fail even through the wire Schema (32-byte
+          // hex) — an X25519 public key that is invalid as a point.
+          // The caller maps it to a 400-equivalent
           return yield* Effect.fail<ResealFailure>("wrap-failed");
         }
         const leases: LeaseWrapOutput[] = [];
@@ -172,13 +186,15 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
                 projectId: input.projectId,
                 environmentId: input.environmentId,
                 epoch: wrap.epoch,
-                // §9: サーバー宛ラップの info は recipient 位置にサーバー鍵 FP
+                // §9: a server-addressed wrap carries the server-key
+                // FP in the recipient position of its info
                 recipientUserId: key.info.serverKeyFingerprintHex,
               },
             }),
           );
           if (!dek.ok) {
-            // 復号不能な毒ラップ(§12-6 の修復経路の対象)。DEK は得られていない
+            // An undecryptable poisoned wrap (a target of §12-6's
+            // repair path). No DEK was obtained
             return yield* Effect.fail<ResealFailure>("unwrap-failed");
           }
           const context: LeaseWrapContext = {

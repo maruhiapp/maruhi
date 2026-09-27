@@ -1,17 +1,19 @@
-// 識別子・資格情報乱数の生成と照合(Web 標準 crypto のみ。Bun 固有 API 不使用)。
+// Generation and comparison of identifiers and credential randomness
+// (Web-standard crypto only; no Bun-specific APIs).
 //
-// ここにあるのは暗号プロトコルではなく ID / 乱数のエンコーディングのみ。
-// 暗号操作(ハッシュ)は WebCrypto に委譲する(CLAUDE.md: 独自プリミティブ禁止)。
+// This file holds only ID / randomness encodings, not cryptographic
+// protocols. Cryptographic operations (hashes) are delegated to
+// WebCrypto (CLAUDE.md: no hand-rolled primitives).
 
 import { encodeHex } from "@maruhi/crypto";
 
-// ULID は @maruhi/core の共有実装(CLI の台帳 id 採番と同じもの)
+// ULID is @maruhi/core's shared implementation (the same one used for the CLI's ledger id assignment)
 export { ulid } from "@maruhi/core";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /**
- * 256-bit 乱数の Base62 表現(43 文字固定、AUTH_SPEC §6 のトークン本体)。
+ * Base62 representation of a 256-bit nonce (43 chars fixed, the AUTH_SPEC §6 token body).
  */
 export function randomBase62(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -27,20 +29,21 @@ export function randomBase62(): string {
   return out.padStart(43, "0");
 }
 
-/** ランダム hex 文字列(`byteLength` バイト分)。セッション生値・OAuth state に使う。 */
+/** A random hex string (`byteLength` bytes). Used for session raw values and OAuth state. */
 export function randomHex(byteLength: number): string {
   return encodeHex(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
-/** SHA-256 の hex(小文字)。セッション / トークンの保存用ハッシュ(AUTH_SPEC §5 / §6)。 */
+/** SHA-256 in hex (lowercase). The storage hash for sessions / tokens (AUTH_SPEC §5 / §6). */
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return encodeHex(new Uint8Array(digest));
 }
 
 /**
- * タイミング安全な文字列比較(AUTH_SPEC §6)。長さが違っても全長を走査してから
- * 返す(比較対象はいずれも固定長ハッシュ hex)。
+ * Timing-safe string comparison (AUTH_SPEC §6). Scans the full length
+ * even when lengths differ before returning (all compared values are
+ * fixed-length hash hex).
  */
 export function constantTimeEqual(a: string, b: string): boolean {
   const length = Math.max(a.length, b.length);

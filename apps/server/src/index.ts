@@ -1,13 +1,18 @@
-// @maruhi/server — Workers + DO + D1。Effect v4 HttpApi(ADR-0005)。
-// サーバーコードは Web 標準 + Workers API のみ。Bun 固有 API(bun:*)は使用禁止。
+// @maruhi/server — Workers + DO + D1. Effect v4 HttpApi (ADR-0005).
+// Server code uses Web standards + the Workers API only. Bun-specific
+// APIs (bun:*) are forbidden.
 //
-// ソースは素の Workers API(export default { fetch } + DurableObject クラス)の
-// まま内部を Effect で実装する(ADR-0012: wrangler / Alchemy v2 両対応)。
+// The source keeps the plain Workers API shape (export default
+// { fetch } + DurableObject classes) while the internals are
+// implemented in Effect (ADR-0012: works under both wrangler and
+// Alchemy v2).
 //
-// リクエスト認証(AUTH_SPEC)の結線:
-//   - AuthMiddleware(api-schema 契約)の実装は auth.package/middleware.ts
-//   - SessionService / TokenService / リポジトリは env(D1 binding)から worker
-//     起動時に一度だけ構築し、リクエストコンテキストとして handler へ渡す
+// Wiring of request authentication (AUTH_SPEC):
+//   - The AuthMiddleware (api-schema contract) implementation is in
+//     auth.package/middleware.ts
+//   - SessionService / TokenService / repositories are built once at
+//     worker startup from env (the D1 binding) and passed to handlers
+//     as request context
 
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { SessionService, TokenService } from "@maruhi/core";
@@ -50,9 +55,10 @@ import { WorkerEnv } from "./worker-env.ts";
 export { ProjectChainDO } from "./chain-do.ts";
 export type { Env } from "./chain-do.ts";
 
-// spike-b の検証知見: HttpApiBuilder.layer は型上 HttpPlatform / FileSystem /
-// Etag.Generator / Path を要求する(JSON API だけなら実行時には呼ばれない)。
-// workerd には FS がないので FileSystem.layerNoop で型要求だけ満たす
+// Findings from spike-b: HttpApiBuilder.layer nominally requires
+// HttpPlatform / FileSystem / Etag.Generator / Path (for a pure JSON
+// API they are never invoked at runtime). workerd has no FS, so
+// FileSystem.layerNoop satisfies the type requirement only
 const platformContext = Layer.mergeAll(
   HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({}))),
   FileSystem.layerNoop({}),
@@ -73,7 +79,8 @@ function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
-    // GitHub token 請求の自前計数(ops-signals.ts。受理面の挙動は不変)
+    // In-house counting of GitHub token requests (ops-signals.ts —
+    // the acceptance surface's behavior is unchanged)
     Context.add(
       GitHubApi,
       countingGitHubApi(
@@ -82,8 +89,9 @@ function buildServices(env: Env): Context.Context<RequestServices> {
       ),
     ),
     Context.add(ServerKey, makeServerKey(env.SERVER_ENC_KEY_IKM)),
-    // OIDC verifier(AUTH_SPEC §14-1)。JWKS キャッシュを isolate 単位で
-    // 抱えるため env ごとに 1 つだけ作る(handlerCache と同じ寿命)
+    // The OIDC verifier (AUTH_SPEC §14-1). Since it holds the JWKS
+    // cache per isolate, exactly one is built per env (same lifetime
+    // as handlerCache)
     Context.add(OidcVerifier, makeOidcVerifier()),
     Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
     Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
@@ -94,9 +102,10 @@ interface EnvHandler {
   readonly handler: (request: Request) => Promise<Response>;
 }
 
-// env(isolate ごとに安定)単位で HttpApi の Layer 構築を 1 回に抑える。
-// ミドルウェアの requires(SessionService / TokenService)は Layer で静的に
-// 満たす必要があるため、webHandler は env ごとに構築する
+// Keep HttpApi Layer construction to once per env (stable per
+// isolate). The middleware's requires (SessionService / TokenService)
+// must be satisfied statically by a Layer, so webHandler is built per
+// env
 const handlerCache = new WeakMap<Env, EnvHandler>();
 
 function handlerFor(env: Env): EnvHandler {
@@ -123,12 +132,14 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(platformContext),
     Layer.provide(Layer.succeedContext(services)),
   );
-  // Effect の既定 HTTP ロガー(HttpMiddleware.logger — "Sent HTTP response" に
-  // `http.url` を注釈する)を無効化する。有効だと Workers Logs に
-  // /projects/:id(capability — AUTH_SPEC §11-2)がリクエストごとに残り、
-  // wrangler の `observability.logs.invocation_logs: false` で塞いだ穴が console
-  // 経路から開き直す(運用演習の Workers Logs 実データ確認で発見 —
-  // hosted-ops.md §5-3)。残す console 行は静的メッセージ + 集計値のみ(DC-2)
+  // Disable Effect's default HTTP logger (HttpMiddleware.logger —
+  // annotates `http.url` on "Sent HTTP response"). Left enabled,
+  // Workers Logs would record /projects/:id (a capability — AUTH_SPEC
+  // §11-2) per request, and the hole plugged by wrangler's
+  // `observability.logs.invocation_logs: false` would reopen via the
+  // console path (found by checking real Workers Logs data during an
+  // ops exercise — hosted-ops.md §5-3). The console lines that remain
+  // are static messages + aggregates only (DC-2)
   const webHandler = HttpRouter.toWebHandler(apiLive, { disableLogger: true });
   const built: EnvHandler = {
     handler: (request) => webHandler.handler(request, services),
@@ -137,7 +148,7 @@ function handlerFor(env: Env): EnvHandler {
   return built;
 }
 
-/** チャンク列を 1 本のバイト列へ連結する。 */
+/** Concatenates a chunk list into one byte string. */
 function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array {
   const body = new Uint8Array(total);
   let offset = 0;
@@ -149,9 +160,10 @@ function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array 
 }
 
 /**
- * ストリームを上限までバッファして返す(超過は null)。Content-Length は
- * クライアント申告値であり信用できない(欠落・偽装・chunked)ため、上限は
- * 実測で強制する。
+ * Buffers the stream up to the cap and returns it (over-cap → null).
+ * Content-Length is a client-declared value and cannot be trusted
+ * (missing, forged, or chunked), so the cap is enforced by
+ * measurement.
  */
 async function readStreamWithinLimit(
   stream: ReadableStream<Uint8Array>,
@@ -174,16 +186,18 @@ async function readStreamWithinLimit(
   }
 }
 
-/** Content-Length 申告値による安価な事前棄却(ヘッダー欠落は 0 扱い = 通す)。 */
+/** A cheap early rejection on the declared Content-Length (a missing header counts as 0 = passes). */
 function declaredLengthExceedsCap(request: Request): boolean {
   const declared = Number(request.headers.get("content-length"));
   return Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES;
 }
 
 /**
- * HTTP 境界の生ボディ上限(policy.ts)。JSON パース前のメモリ DoS 防御。
- * 超過は null(呼び出し側がスキーマ外の素の 413 で返す)。上限内のボディは
- * バッファ済みバイト列に置き換えて後段(JSON パース)へ渡す。
+ * The raw-body cap at the HTTP boundary (policy.ts). Memory-DoS
+ * defense ahead of JSON parsing. Over-cap returns null (the caller
+ * answers with a schema-less plain 413). An in-cap body is replaced
+ * by the buffered bytes and handed to the later stage (JSON
+ * parsing).
  */
 async function capRequestBody(request: Request): Promise<Request | null> {
   if (declaredLengthExceedsCap(request)) {
@@ -196,8 +210,9 @@ async function capRequestBody(request: Request): Promise<Request | null> {
   if (body === null) {
     return null;
   }
-  // GET / HEAD は Request コンストラクタが body 非 null を拒む(Fetch 仕様)。
-  // 読み取り自体は行った上で、後段が参照しないボディは再構築時に捨てる。
+  // The Request constructor refuses a non-null body for GET / HEAD
+  // (the Fetch spec). The read still happens; a body the later stages
+  // do not reference is discarded at reconstruction.
   const allowsBody = request.method !== "GET" && request.method !== "HEAD";
   return new Request(request.url, {
     method: request.method,
@@ -207,16 +222,19 @@ async function capRequestBody(request: Request): Promise<Request | null> {
 }
 
 /**
- * 全応答に付ける共通セキュリティヘッダー。
- * - `X-Content-Type-Options: nosniff` — JSON のみの API で HTML は返さないが、
- *   MIME スニッフィングの余地を将来の退行込みで塞ぐ
- * - `Cache-Control: no-store` — 応答にはトークン生値(device 交換)・暗号文・
- *   ラップが載る。経路上のキャッシュ(ブラウザ・共有プロキシ)に残さない。
- *   ルートが自前のキャッシュ方針を設定した場合はそちらを優先する(現状は皆無)
- * - `Strict-Transport-Security` — API worker も routes で custom domain を
- *   割り当てうる(セッションクッキー・OAuth フローを持つオリジン)ため、web の
- *   `_headers` と同様に初回接続ダウングレードを塞ぐ。includeSubDomains を
- *   付けない理由も web 側(write-headers.ts)と同じ
+ * Common security headers on every response.
+ * - `X-Content-Type-Options: nosniff` — this is a JSON-only API and
+ *   returns no HTML, but it forecloses MIME-sniffing room including
+ *   against future regressions
+ * - `Cache-Control: no-store` — responses carry raw token values
+ *   (device exchange), ciphertexts, and wraps. They must not remain in
+ *   caches along the path (browsers, shared proxies). If a route sets
+ *   its own cache policy that one wins (none do at present)
+ * - `Strict-Transport-Security` — the API worker can also get a
+ *   custom domain via routes (an origin carrying session cookies and
+ *   OAuth flows), so it blocks first-connection downgrade like web's
+ *   `_headers`. The reason for omitting includeSubDomains is the same
+ *   as web's (write-headers.ts)
  */
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -233,12 +251,13 @@ function withSecurityHeaders(response: Response): Response {
 }
 
 /**
- * 429 応答へ標準 `Retry-After` ヘッダーを付与する。型付き
- * エラー(TokenLimit / RecoveryRateLimited / InviteRateLimited / AuthRateLimited /
- * LeaseRateLimited)は retryAfterSeconds を JSON ボディで運ぶが、maruhi CLI 以外の
- * クライアント(curl・SDK の再試行ラッパー・RFC 9110 準拠のバックオフ)は
- * ヘッダーしか見ず、即時リトライで窓を消費し続ける。429 のみ(稀な経路)で
- * ボディを 1 回パースして写す。
+ * Adds the standard `Retry-After` header to 429 responses. The typed
+ * errors (TokenLimit / RecoveryRateLimited / InviteRateLimited /
+ * AuthRateLimited / LeaseRateLimited) carry retryAfterSeconds in the
+ * JSON body, but non-maruhi-CLI clients (curl, SDK retry wrappers,
+ * RFC 9110-compliant backoff) look only at the header and would keep
+ * consuming the window with immediate retries. Only on 429 (a rare
+ * path), the body is parsed once and copied.
  */
 async function withRetryAfterHeader(response: Response): Promise<Response> {
   if (response.status !== 429 || response.headers.has("retry-after")) {
@@ -249,11 +268,14 @@ async function withRetryAfterHeader(response: Response): Promise<Response> {
     seconds = ((await response.clone().json()) as { retryAfterSeconds?: unknown })
       .retryAfterSeconds;
   } catch {
-    // JSON ボディを持たない 429(将来の経路)はヘッダーなしのまま返す — ここは
-    // 表現の補強であり、パース不能を失敗に昇格させない(意図的な劣化)。ただし
-    // 無言では飲まない(CLAUDE.md): ヘッダー欠落は非 maruhi クライアントの
-    // 即時リトライを招くため、退行に気づける静的メッセージだけ Workers ログへ
-    // 残す(ipRateLimitAllowed の fail-open と同じ規律。ボディ内容は書かない)
+    // A 429 without a JSON body (a future path) is returned as-is
+    // without the header — this is a representation enhancement and
+    // must not promote an unparseable body into a failure (deliberate
+    // degradation). But it is not swallowed silently (CLAUDE.md):
+    // since a missing header invites immediate retries from non-maruhi
+    // clients, a static message that makes the regression noticeable
+    // is left in Workers Logs (same discipline as ipRateLimitAllowed's
+    // fail-open; the body content is not logged)
     console.warn("429 response body is not JSON; returning it without a Retry-After header");
     return response;
   }
@@ -276,21 +298,27 @@ export default {
       return withSecurityHeaders(new Response(null, { status: 413 }));
     }
     const response = await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest));
-    // disableLogger(handlerFor)は Effect のロガーの失敗分岐(cause 付き)も止めるため、
-    // 未処理の失敗・defect が Workers Logs に一切残らなくなる。代わりに識別子を含まない
-    // 静的 1 行だけを残す。503 SetupIncomplete 等の意図した
-    // 5xx は対象外 — 500 は HttpApi が型付きエラーへ写せなかった経路のみ
+    // Since disableLogger (handlerFor) also stops the Effect logger's
+    // failure branch (with cause), unhandled failures / defects would
+    // leave nothing in Workers Logs. Instead a single static line
+    // carrying no identifiers is left. Intended 5xx like 503
+    // SetupIncomplete are out of scope — 500 covers only paths where
+    // HttpApi could not map to a typed error
     if (response.status === 500) {
       console.error("unhandled failure at the HTTP boundary (500)");
     }
     return withSecurityHeaders(response);
   },
-  // 定期ジョブ(wrangler.jsonc の triggers.crons — cron 文字列で分岐):
-  // - 毎時(OPS_HOURLY_CRON): DO → R2 退避スイープ(ops-backup.ts。
-  //   バインディング無しなら no-op)→ トリップワイヤの評価と通知(ops-alerts.ts)
-  // - それ以外(日次): 期限切れセッション行の掃除。resolve 時の掃除
-  //   (auth.package/session.ts)は「提示された行」しか消せない。cron 文字列が
-  //   空の呼び出し(テストの createScheduledController())もこちら = 既存の契約
+  // Scheduled jobs (wrangler.jsonc's triggers.crons — branch on the
+  // cron string):
+  // - Hourly (OPS_HOURLY_CRON): the DO → R2 evacuation sweep
+  //   (ops-backup.ts; a no-op without the binding) → tripwire
+  //   evaluation and notification (ops-alerts.ts)
+  // - Otherwise (daily): cleanup of expired session rows. The
+  //   resolve-time cleanup (auth.package/session.ts) can only delete
+  //   "the row that was presented". A call with an empty cron string
+  //   (tests' createScheduledController()) also lands here = the
+  //   existing contract
   async scheduled(controller, env, _ctx): Promise<void> {
     const dbServices = makeDbServices(env.DB);
     if (controller.cron === OPS_HOURLY_CRON) {

@@ -1,9 +1,12 @@
-// DEK ラップの保存・配布・修復 API のハンドラ(AUTH_SPEC §12-6)。
+// Handlers for the DEK-wrap store / distribute / repair API
+// (AUTH_SPEC §12-6).
 //
-// 受信者検証(非メンバー宛・鍵不一致・欠落・重複・上書き)は DO 側
-// (programs-dek.ts + dek-wraps.ts)が ChainState 導出の現メンバー集合に対して行う。
-// 共通経路は data-http.ts の callProjectData。返しうるエラーの集合は各
-// エンドポイントの契約宣言(api-schema)から導出される(手書きの列挙は無い)。
+// Recipient validation (non-member recipients, key mismatch, missing,
+// duplicate, overwrite) is performed DO-side (programs-dek.ts +
+// dek-wraps.ts) against the current member set derived from ChainState.
+// The shared path is callProjectData in data-http.ts. The set of
+// returnable errors is derived from each endpoint's contract
+// declaration (api-schema) — no hand-written enumeration.
 
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
@@ -31,8 +34,9 @@ export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
       }).pipe(Effect.map((deks) => ({ deks }))),
     )
     .handle("remove", ({ params, payload, endpoint }) =>
-      // ラップ削除(§12-6 の修復経路)は環境削除と同水準:
-      // admin スコープ + チェーン role admin 以上(§12-3)
+      // Wrap deletion (the §12-6 repair path) is the same level as
+      // environment deletion: admin scope + chain role admin or above
+      // (§12-3)
       callProjectData<void>()({
         endpoint,
         projectId: params.projectId,

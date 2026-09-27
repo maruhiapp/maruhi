@@ -1,10 +1,13 @@
-// JWS compact serialization の base64url デコード(RFC 7515 Appendix C)。
+// base64url decoding for the JWS compact serialization (RFC 7515
+// Appendix C).
 //
-// atob は base64(`+` / `/` / `=`)しか受けないため、base64url の 62/63 文字を
-// 置換しパディングを補ってから渡す。**厳格に検査する**: 文字集合外・不正な長さ
-// (mod 4 == 1)は null を返し、寛容なデコードで「別のバイト列として通る」経路を
-// 作らない(署名対象は生の segment 文字列であり、デコードの寛容さは検証対象
-// バイト列と復元値のズレを生む)。
+// Since atob accepts only base64 (`+` / `/` / `=`), the base64url
+// 62nd/63rd characters are replaced and padding restored before
+// handing off. **Validated strictly**: characters outside the alphabet
+// and invalid lengths (mod 4 == 1) return null — a lenient decode must
+// not create a path that "passes as different bytes" (the signed
+// content is the raw segment strings, and lenient decoding would
+// create a gap between the verified bytes and the restored value).
 
 const BASE64URL = /^[A-Za-z0-9_-]*$/;
 

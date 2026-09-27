@@ -1,23 +1,33 @@
-// 環境マニフェストのサーバー受理(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.3 / §6.4)。
+// Server-side acceptance of environment manifests (AUTH_SPEC §12-5 =
+// CRYPTO_SPEC §4.3 / §6.4).
 //
-// メタは平文でありサーバーは完全検証できる(E2EE の制約がない — §4.3): 署名・
-// 宣言ヘッド・認可時点・エポック整合・prev 連鎖に加えて、**受理後のメタ状態
-// (同梱ステートメント適用後の全変数ステートメント + 環境メタステートメント)
-// から variablesDigestHex / envMetaVersion / envMetaSigHashHex を再計算して
-// 申告値との一致まで**受理条件とする(§12-5 (7))。不正クライアントの偽
-// マニフェスト持ち込みは受理段で全部落ちる。
+// Meta is plaintext, so the server can verify fully (no E2EE
+// constraint — §4.3): on top of signature, declared head,
+// authorization-at-head, epoch consistency, and the prev chain,
+// **recomputing variablesDigestHex / envMetaVersion /
+// envMetaSigHashHex from the post-acceptance meta state (all variable
+// statements + the environment meta statement, after applying the
+// bundled statement) and matching them against the declared values is
+// itself an acceptance condition** (§12-5 (7)). A forged manifest
+// brought by a malicious client is all dropped at the acceptance
+// stage.
 //
-// manifestVersion CAS(§12-5 (6))は保存済み最新マニフェスト(保持は最新 1 通 —
-// environment_manifests の PRIMARY KEY = environment_id)に対して判定し、同梱
-// される metaVersion CAS と同一トランザクション(DO permit 下の同一プログラム)で
-// 解決される。409 は最新 manifestVersion のみを返す(勝者のハッシュを載せない
-// 規律は metaVersion CAS と同一)。
+// The manifestVersion CAS (§12-5 (6)) is checked against the stored
+// latest manifest (only the latest one is kept —
+// environment_manifests's PRIMARY KEY = environment_id) and resolves
+// in the same transaction as the bundled metaVersion CAS (the same
+// program under the DO permit). A 409 returns only the latest
+// manifestVersion (same discipline as the metaVersion CAS — it does
+// not carry the winner's hash).
 //
-// 検証本体は @maruhi/crypto の verifyDistributedEnvManifest(サーバー / CLI の
-// 共有実装 — §4.3 の「正規形実装は 1 つだけ」)。エポック整合の複合形(宣言
-// ヘッドの次エントリがエポックを確立する — §12-5 (4) の「同梱エントリ適用後の
-// 状態」)は、複合プログラムが**エントリ適用後の履歴索引**を渡すことで同じ
-// 検証器がそのまま判定する。
+// The verification body is @maruhi/crypto's
+// verifyDistributedEnvManifest (the server / CLI shared
+// implementation — §4.3's "the canonical implementation exists only
+// once"). The composite form of epoch consistency (the entry after
+// the declared head establishes the epoch — §12-5 (4)'s "state after
+// applying the bundled entries") is judged by the same verifier
+// unchanged, because the composite program passes it the **history
+// index after applying the entries**.
 
 import type {
   ChainHistoryIndex,
@@ -33,8 +43,10 @@ import { rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 
 /**
- * crypto の詳細理由 → ワイヤ理由への写像(値・メタの 3 語彙共有 + マニフェスト
- * 固有 2 理由 — AUTH_SPEC §12-5)。網羅は Record 型が静的に強制する。
+ * Mapping of crypto's detailed reasons → the wire reasons (the 3
+ * vocabularies shared with values/meta + the 2 manifest-specific
+ * reasons — AUTH_SPEC §12-5). Exhaustiveness is statically enforced
+ * by the Record type.
  */
 const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRejectReason>> = {
   "signature-invalid": "signature-invalid",
@@ -44,30 +56,36 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
   "issuer-not-member-at-head": "chain-head-state-mismatch",
   "issuer-key-mismatch-at-head": "chain-head-state-mismatch",
   "issuer-role-insufficient-at-head": "chain-head-state-mismatch",
-  // §6.3 の 3′(2026-09-14 ES): 宣言ヘッド時点の issuer の scope 外(role 不足と同クラス)
+  // §6.3's 3′ (2026-09-14 ES): the issuer is out of scope at the
+  // declared head (same class as role insufficiency)
   "issuer-environment-out-of-scope-at-head": "chain-head-state-mismatch",
   "environment-not-created-at-head": "manifest-epoch-mismatch",
   "epoch-not-current-at-head": "manifest-epoch-mismatch",
-  // 旧エポックを焼き込んだ前進 manifestVersion(predecessor とのエポック後退)も
-  // エポック不整合として拒否する(§12-5 の 422 区分)
+  // A forward manifestVersion that baked in a stale epoch (an epoch
+  // regression against the predecessor) is also rejected as an epoch
+  // mismatch (§12-5's 422 classification)
   "epoch-regressed": "manifest-epoch-mismatch",
   "env-meta-mismatch": "manifest-digest-mismatch",
   "variables-digest-mismatch": "manifest-digest-mismatch",
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
-  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1)。ワイヤも
-  // 同名の理由で返す(複合の同梱物一致〔§12-4 の tuple ↔ manifest ハッシュ
-  // 一致〕は本束縛検査が一意に担う — §6.4 の「分担は実装 PR で一意化」)
+  // The checkpoint binding (CRYPTO_SPEC §4.3 (2) / §6.3 consistency
+  // rule 1). The wire also returns the same-named reason (the
+  // composite's bundled-payload match [§12-4's tuple ↔ manifest
+  // hash match] is uniquely owned by this binding check — §6.4's
+  // "the split is unified in the implementation PR")
   "checkpoint-binding-mismatch": "checkpoint-binding-mismatch",
   "checkpoint-equivocation": "checkpoint-equivocation",
   "checkpoint-regressed": "checkpoint-regressed",
 };
 
 /**
- * 受理後のメタ状態の変数ステートメント集合(tombstone 込み — §4.3)を組み立てる:
- * 保存済みの最新形に、今回の操作で受理されるステートメント(検証済み —
- * signedBytesHashHex はサーバー再計算)を適用した形。変数を伴わない操作
- * (環境 rename・rotate・環境作成)は override なし。
+ * Builds the set of variable statements in the post-acceptance meta
+ * state (tombstones included — §4.3): the stored latest shapes with
+ * this operation's accepted statement applied (verified —
+ * signedBytesHashHex is server-recomputed). Operations that carry
+ * no variable (environment rename, rotate, environment creation)
+ * take no override.
  */
 export const manifestDigestEntries = (
   environmentId: string,
@@ -95,10 +113,13 @@ export const manifestDigestEntries = (
   });
 
 /**
- * 保存済みの環境メタステートメントの最新形(metaVersion + サーバー再計算
- * ハッシュ)。環境メタを変えない操作(変数のメタ操作・rotate)のマニフェストが
- * 束縛すべき envMeta の期待値。行の欠落は不変条件違反(環境行とステートメントは
- * 複合受理で原子的に作られる)= defect。
+ * The latest shape of the stored environment meta statement
+ * (metaVersion + the server-recomputed hash). It is the envMeta
+ * expectation a manifest must bind for operations that do not
+ * change the environment meta (variable meta ops, rotate). A
+ * missing row is an invariant violation (the environment row and
+ * the statement are created atomically by composite acceptance) =
+ * defect.
  */
 export const storedEnvMeta = (environmentId: string) =>
   Effect.gen(function* () {
@@ -115,11 +136,14 @@ export const storedEnvMeta = (environmentId: string) =>
   });
 
 /**
- * 非複合のメタ操作(変数の作成・rename・削除、環境 rename)の共通形:
- * マニフェスト受理(§12-5)+ 書き込みフェーズ用のクロージャ。
- * `digestOverride` は同梱ステートメント適用後の当該変数エントリ(変数を
- * 伴わない操作は null)、`envMeta` 省略 = 保存済み環境メタ(環境 rename は
- * 適用後 = 同梱ステートメント自身を渡す)。
+ * The shared shape of the non-composite meta operations (variable
+ * create / rename / delete, environment rename): manifest
+ * acceptance (§12-5) + a closure for the write phase.
+ * `digestOverride` is the variable's entry after applying the
+ * bundled statement (null for operations carrying no variable);
+ * omitting `envMeta` = the stored environment meta (an environment
+ * rename passes the post-apply value = the bundled statement
+ * itself).
  */
 export const acceptManifestForMetaOp = (input: {
   readonly projectId: string;
@@ -136,18 +160,22 @@ export const acceptManifestForMetaOp = (input: {
   readonly envMeta?: EnvManifestEnvMeta;
 }) =>
   Effect.gen(function* () {
-    // v1 ブートストラップのヘッドピン留め(AUTH_SPEC §12-5 (6) の明確化):
-    // 保存済みマニフェストなし → v1 受理では、宣言ヘッド後にローテーションが
-    // 挟まっても manifestVersion
-    // CAS(最新 0 のまま)が 409 で落とせず、「受理時点の現エポック独立検査を
-    // 置かない」論証(§12-5)が v1 に限って成立しない。複合経路のピン留め
-    // (composite-programs.ts の manifestChainHead)と同型に、宣言ヘッド =
-    // 受理時点の現ヘッドを要求して stale エポックの焼き込みを塞ぐ(ハッシュの
-    // 一致は crypto のヘッド束縛検査が担う — ここは位置のみ)。
-    // **ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ**:
-    // 初期化済み環境への stale v1 はピンで 422 にせず、CAS の 409
-    // (currentManifestVersion 付き)へ落とす —
-    // 正当クライアントの再取得・再署名ループに合流させる
+    // The head pinning for v1 bootstrap (a clarification of
+    // AUTH_SPEC §12-5 (6)): when no manifest is stored, at v1
+    // acceptance a rotation slipped in after the declared head still
+    // leaves the manifestVersion CAS (latest stays 0) unable to drop
+    // it as a 409, and §12-5's argument "no independent
+    // current-epoch check at acceptance" does not hold for v1
+    // alone. Isomorphic to the composite path's pinning
+    // (manifestChainHead in composite-programs.ts), it requires the
+    // declared head = the current head at acceptance, closing off
+    // the baking-in of a stale epoch (the hash match is owned by
+    // crypto's head-binding check — this is position only).
+    // **The pin applies only to v1 with no anchor established (no
+    // stored manifest)**: a stale v1 against an initialized
+    // environment is not a 422 from the pin; it falls to the CAS's
+    // 409 (with currentManifestVersion) — joining the honest
+    // client's re-fetch / re-sign loop
     const pinAnchor = yield* Effect.flatMap(DataStore, (store) =>
       store.environmentManifestAnchor(input.environmentId),
     );
@@ -169,7 +197,7 @@ export const acceptManifestForMetaOp = (input: {
     });
     const store = yield* DataStore;
     return {
-      /** 書き込みフェーズ(単一の Effect.sync)内で呼ぶ — 最新 1 通の upsert(§12-8)。 */
+      /** Called inside the write phase (a single Effect.sync) — the latest-only upsert (§12-8). */
       writeSync: (nowMs: number): void => {
         store.write.upsertEnvironmentManifest(
           input.environmentId,
@@ -183,14 +211,20 @@ export const acceptManifestForMetaOp = (input: {
   });
 
 /**
- * マニフェストの受理列(§12-5 の (1)〜(7)): manifestVersion CAS(6。409 は
- * 最新番号のみ)→ 保存済み直前マニフェストのアンカー取得(prev 検査 (5) と
- * エポック単調性の predecessor)→ crypto の複合検証(署名者一致 (1)・ヘッド
- * 実在 (2)・認可時点 (3)・エポック整合 (4)・ダイジェスト / 環境メタ再計算 (7))。
- * 成功時はサーバー再計算の signed_bytes ハッシュを返す(保存行に書く)。
+ * The manifest acceptance column (§12-5's (1)–(7)): the
+ * manifestVersion CAS (6; a 409 carries only the latest number) →
+ * fetching the stored previous manifest's anchor (the predecessor
+ * for the prev check (5) and epoch monotonicity) → crypto's
+ * composite verification (signer match (1), head existence (2),
+ * authorization at head (3), epoch consistency (4), digest /
+ * environment-meta recomputation (7)).
+ * On success returns the server-recomputed signed_bytes hash
+ * (written to the stored row).
  *
- * `history` は非複合のメタ操作では受理時点のチェーン、複合(環境作成・rotate)
- * では**同梱エントリ適用後**の履歴索引(§12-5 (4) の判定基準)。
+ * `history` is the chain at acceptance time for non-composite meta
+ * operations, and the **post-bundled-entry-application** history
+ * index for composites (environment creation, rotate) — §12-5
+ * (4)'s judgment basis.
  */
 export const acceptEnvManifest = (input: {
   readonly projectId: string;
@@ -198,15 +232,16 @@ export const acceptEnvManifest = (input: {
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
   readonly manifest: EnvManifestInput;
-  /** 受理後のメタ状態から再構成した集合(manifestDigestEntries)。 */
+  /** The set reconstructed from the post-acceptance meta state (manifestDigestEntries). */
   readonly entries: readonly VariablesDigestEntry[];
-  /** 受理後の環境メタステートメントの最新形(metaVersion + サーバー再計算ハッシュ)。 */
+  /** The latest shape of the post-acceptance environment meta statement (metaVersion + the server-recomputed hash). */
   readonly envMeta: EnvManifestEnvMeta;
 }) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
     const anchor = yield* store.environmentManifestAnchor(input.environmentId);
-    // CAS(§12-5 (6)): 申告 == 最新 + 1 のみ。行なし(環境作成)は最新 0 から v1
+    // The CAS (§12-5 (6)): only declared == latest + 1. No row
+    // (environment creation) goes from latest 0 to v1
     const latestVersion = anchor?.manifestVersion ?? 0;
     if (input.manifest.manifestVersion !== latestVersion + 1) {
       return yield* rejectData({
@@ -219,7 +254,9 @@ export const acceptEnvManifest = (input: {
         history: input.history,
         context: {
           suite: input.manifest.suite,
-          // 座標はサーバー側の値から再構成する(§12-5 — ワイヤ申告値から組まない)
+          // The coordinates are reconstructed from server-side
+          // values (§12-5 — not assembled from wire-declared
+          // values)
           projectId: input.projectId,
           environmentId: input.environmentId,
           epoch: input.manifest.epoch,
@@ -228,8 +265,10 @@ export const acceptEnvManifest = (input: {
           envMetaVersion: input.manifest.envMetaVersion,
           envMetaSigHashHex: input.manifest.envMetaSigHashHex,
           prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
-          // issuer = 呼び出し主体(§12-5 (1))。検証鍵とヘッド時点の束縛一致は
-          // FP(受理時点のチェーン導出メンバー)で verifyDistributedEnvManifest が検査
+          // issuer = the caller (§12-5 (1)). The verification key
+          // and the bound-key match at head time are checked by
+          // verifyDistributedEnvManifest via the FP (the
+          // chain-derived member at acceptance time)
           issuerUserId: input.member.userId,
           chainHeadHashHex: input.manifest.chainHeadHashHex,
           chainHeadSeq: input.manifest.chainHeadSeq,
@@ -253,7 +292,9 @@ export const acceptEnvManifest = (input: {
         reason: MANIFEST_REJECT_REASONS[verified.error.reason],
       });
     }
-    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
-    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    // InvalidInput / KeyImportFailed are unreachable with a
+    // Schema-validated wire shape + keys derived from a verified
+    // chain (an implementation bug = defect; error values carry no
+    // secrets)
     return yield* Effect.die(new Error(`manifest verification failed: ${verified.error.kind}`));
   });

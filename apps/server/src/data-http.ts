@@ -1,9 +1,11 @@
-// データプレーンのハンドラ共通部(AUTH_SPEC §12)。
+// Common parts of the data-plane handlers (AUTH_SPEC §12).
 //
-// - DO の DataRejection → api-schema の型付きエラーへの写像
-// - 申告 AAD 構成要素と保存先座標の一致検査(§12-2。リクエスト内容のみに依存する
-//   自己整合検査であり、存在情報を運ばない)
-// - 値サイズの先行検査(§12-8。資源保護は意味論的判定に優先 — §12-3)
+// - Mapping of the DO's DataRejection onto api-schema typed errors
+// - Consistency check between the declared AAD's components and the
+//   destination coordinates (§12-2 — depends only on the request's
+//   contents and carries no existence information)
+// - Preliminary value-size check (§12-8 — resource protection precedes
+//   semantic checks; §12-3)
 
 import type { EncryptedPayload } from "@maruhi/api-schema";
 import {
@@ -66,12 +68,13 @@ import { roleAtLeast } from "./data-plane.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
-/** 204 応答(書き込み系エンドポイント共通)。 */
+/** The 204 response (shared by write endpoints). */
 export const noContent = HttpServerResponse.empty({ status: 204 });
 
 /**
- * EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部と署名
- * ブロック — CRYPTO_SPEC §4.1 — を運ぶ)。
+ * EncryptedPayload → the store input handed to the DO (carries verified
+ * coordinates, the state-dependent part, and the signature block —
+ * CRYPTO_SPEC §4.1).
  */
 export function toValueInput(payload: EncryptedPayload): ValueInput {
   return {
@@ -87,7 +90,7 @@ export function toValueInput(payload: EncryptedPayload): ValueInput {
   };
 }
 
-/** §12-8: 値の暗号文サイズの先行検査(hex は 1 バイト = 2 文字)。 */
+/** §12-8: preliminary check of the value's ciphertext size (hex: 1 byte = 2 chars). */
 export function checkValueSize(payload: EncryptedPayload): Effect.Effect<void, ValueTooLargeError> {
   return payload.ciphertextHex.length / 2 > MAX_VALUE_CIPHERTEXT_BYTES
     ? Effect.fail(new ValueTooLargeError({ limitBytes: MAX_VALUE_CIPHERTEXT_BYTES }))
@@ -114,8 +117,9 @@ function aadMismatchField(payload: EncryptedPayload, coordinates: AadCoordinates
 }
 
 /**
- * §12-2: 申告 AAD の座標成分(project / environment / variable)とリクエストの
- * 保存先座標の一致検査。epoch / version は状態依存のため DO 側で検査する。
+ * §12-2: match check between the declared AAD's coordinate components
+ * (project / environment / variable) and the request's destination
+ * coordinates. epoch / version are state-dependent, so the DO checks them.
  */
 export function checkAadCoordinates(
   payload: EncryptedPayload,
@@ -126,10 +130,13 @@ export function checkAadCoordinates(
 }
 
 /**
- * ステートメント申告座標とリクエスト保存先座標の一致検査(§12-5 の座標再構成の
- * 前提)。DO は URL / 保存先から署名対象を再構成するため、不一致な申告はどのみち
- * 署名検証で落ちるが、AAD 座標検査(§12-2 の 1a)と同じくリクエスト内容のみに
- * 依存する自己整合検査として worker で先行拒否し、食い違った座標を可視化する。
+ * Match check between a statement's declared coordinates and the
+ * request's destination coordinates (a premise of §12-5's coordinate
+ * reconstruction). Since the DO reconstructs the signed content from the
+ * URL / destination, a mismatched declaration fails signature
+ * verification anyway — but like the AAD coordinate check (§12-2 step
+ * 1a), the worker rejects early as a self-consistency check that depends
+ * only on the request's contents, surfacing the disagreeing coordinates.
  */
 export function checkStatementCoordinates(
   statement: { readonly environmentId: string; readonly variableId?: string },
@@ -145,8 +152,10 @@ export function checkStatementCoordinates(
 }
 
 /**
- * マニフェスト申告座標とリクエスト保存先座標の一致検査(checkStatementCoordinates
- * のマニフェスト版 — DO は URL / 保存先から署名対象を再構成する §12-5)。
+ * Match check between a manifest's declared coordinates and the request's
+ * destination coordinates (the manifest version of
+ * checkStatementCoordinates — §12-5, where the DO reconstructs the signed
+ * content from the URL / destination).
  */
 export function checkManifestCoordinates(
   manifest: { readonly environmentId: string },
@@ -157,7 +166,7 @@ export function checkManifestCoordinates(
     : Effect.fail(new PayloadMismatchError({ field: "manifestEnvironmentId" }));
 }
 
-/** ワイヤのマニフェスト → DO へ渡す保存入力(座標は検査済み — §12-5)。 */
+/** Wire manifest → the store input handed to the DO (coordinates already verified — §12-5). */
 export function toManifestInput(manifest: {
   readonly suite: "maruhi/v1";
   readonly epoch: number;
@@ -185,10 +194,11 @@ export function toManifestInput(manifest: {
 }
 
 /**
- * ワイヤのステートメント → DO へ渡す保存入力(座標は検査済み)。レイアウト v2
- * (§12-2)では layoutVersion とスキーマ欄が 4 フィールド揃って存在する —
- * ワイヤ Schema が結合を強制するため、layoutVersion の存在だけで分岐してよい
- * (欠けたスキーマ欄は Schema 400 で先に落ちる)。
+ * Wire statement → the store input handed to the DO (coordinates already
+ * verified). In layout v2 (§12-2) layoutVersion and the schema fields are
+ * present as a 4-field set — the wire Schema forces the coupling, so the
+ * branch may test layoutVersion's presence alone (missing schema fields
+ * fall earlier as a Schema 400).
  */
 export function toMetaStatementInput(statement: {
   readonly suite: "maruhi/v1";
@@ -230,13 +240,15 @@ export function toMetaStatementInput(statement: {
 }
 
 /**
- * DO の保存行 → ワイヤの DistributedEncryptedPayload(§12-2 / §12-7)。AAD は
- * 保存座標から再構成する(保存時に座標一致を検査済みなので、これは同値の
- * 自己記述表現)。suite は保存行の値を返す(CRYPTO_SPEC §2 設計原則 4)。
- * 署名ブロックと writer / ステートメント + author(受理時点の user_id + 鍵 FP)は
- * 保存行をそのまま返す — 現メンバー集合から再導出しない(削除済み writer /
- * author の過去データの検証可能性)。サーバー再計算の signed_bytes ハッシュは
- * 値・ステートメントとも配布しない。
+ * DO stored row → the wire's DistributedEncryptedPayload (§12-2 / §12-7).
+ * The AAD is reconstructed from the stored coordinates (a self-describing
+ * representation equivalent to what was coordinate-checked at store
+ * time). suite returns the stored row's value (CRYPTO_SPEC §2 design
+ * principle 4). The signature block and writer / statement + author (the
+ * user_id + key FP at acceptance time) are returned as stored — not
+ * re-derived from the current member set (verifiability of past data from
+ * removed writers / authors). The server-recomputed signed_bytes hash is
+ * distributed for neither values nor statements.
  */
 export function toWireVariable(
   projectId: string,
@@ -268,7 +280,7 @@ export function toWireVariable(
 }
 
 // ---------------------------------------------------------------------------
-// DataRejection → 型付きエラー
+// DataRejection → typed errors
 // ---------------------------------------------------------------------------
 
 type DataApiError =
@@ -308,15 +320,16 @@ type DataApiError =
   | RotationFlagNotFoundError
   | DataLimitExceededError;
 
-// kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)。
-// satisfies で網羅性を強制しつつ kind ごとの戻り値型を保つ(dataRejectionError の
-// 呼び出し側 — handlers-membership.ts のチェーン系写像 — が精密なエラー union を
-// 受け取れるように)
+// A small mapping per kind (§11-2: uninitialized and non-member are not
+// distinguished; both fold to 404). satisfies enforces exhaustiveness
+// while keeping a precise return type per kind (so callers of
+// dataRejectionError — the chain-side mapping in handlers-membership.ts —
+// receive a precise error union)
 const rejectionErrors = {
   "not-initialized": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "not-member": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "insufficient-role": () => new ForbiddenError({ reason: "insufficient-role" }),
-  // 環境 ∉ 呼び出し主体の scope(§9-2 / §12-3 — role 不足と同じ層・同じ型)
+  // Environment ∉ the caller's scope (§9-2 / §12-3 — same layer, same type as insufficient role)
   "insufficient-scope": () => new ForbiddenError({ reason: "insufficient-scope" }),
   "environment-not-found": (rejection) =>
     new EnvironmentNotFoundError({ environmentId: rejection.environmentId }),
@@ -325,17 +338,18 @@ const rejectionErrors = {
       environmentId: rejection.environmentId,
       reason: rejection.reason,
     }),
-  // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API の共有)
+  // Chain-acceptance kinds (shared by the composite request §12-4 and the generic chain API)
   "composite-required": (rejection) => new CompositeRequiredError({ op: rejection.op }),
-  // 端末数の受理ポリシー(AUTH_SPEC §12-8 — 2026-09-19 DK K3)
+  // Device-count acceptance policy (AUTH_SPEC §12-8 — 2026-09-19 DK K3)
   "device-limit": (rejection) => new DeviceLimitError({ limit: rejection.limit }),
-  // 四眼の propose の受理ポリシー(AUTH_SPEC §12-8 — K5)
+  // Acceptance policy for the four-eyes propose (AUTH_SPEC §12-8 — K5)
   "proposal-limit": (rejection) =>
     new ProposalLimitError({ reason: rejection.reason, limit: rejection.limit }),
   "checkpoint-state-mismatch": (rejection) =>
     new CheckpointStateMismatchError({ reason: rejection.reason }),
-  // 監査ヘッド派生列の有界伸長が未完了(retryable 503 — AUDIT_SPEC §5.1 /
-  // AUTH_SPEC §16-2。本文は空 — 件数非漏洩)
+  // Bounded extension of the audit-head derived column not yet complete
+  // (retryable 503 — AUDIT_SPEC §5.1 / AUTH_SPEC §16-2; empty body —
+  // no count leak)
   "audit-head-not-ready": () => new AuditHeadNotReadyError(),
   "chain-head-conflict": (rejection) =>
     new ChainHeadConflictError({
@@ -361,13 +375,13 @@ const rejectionErrors = {
   "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
   "value-rejected": (rejection) => new ValueSignatureRejectedError({ reason: rejection.reason }),
   "meta-rejected": (rejection) => new MetaStatementRejectedError({ reason: rejection.reason }),
-  // schemaPolicy の受理ゲート(AUTH_SPEC §12-11 / §12-5)
+  // The schemaPolicy acceptance gate (AUTH_SPEC §12-11 / §12-5)
   "schema-policy-rejected": (rejection) =>
     new SchemaPolicyRejectedError({ reason: rejection.reason }),
-  // declared 変数への通常 push(§12-5 — activation 複合を要求)
+  // A normal push to a declared variable (§12-5 — requires the activation composite)
   "activation-required": (rejection) =>
     new ActivationRequiredError({ variableId: rejection.variableId }),
-  // スキーマ description の受理検査(§12-8)
+  // Acceptance check of a schema description (§12-8)
   "description-rejected": (rejection) =>
     new SchemaDescriptionRejectedError({ reason: rejection.reason }),
   "meta-version-conflict": (rejection) =>
@@ -381,7 +395,7 @@ const rejectionErrors = {
     new DekWrapExistsError({
       epoch: rejection.epoch,
       recipientUserId: rejection.recipientUserId,
-      // 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)
+      // The occupying wrap's stored recipient enc public key (AUTH_SPEC §12-6)
       storedRecipientEncPubHex: rejection.storedRecipientEncPubHex,
     }),
   "dek-wrap-not-found": (rejection) =>
@@ -396,7 +410,7 @@ const rejectionErrors = {
     }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
-  // ヘッド申告(AUTH_SPEC §16-1)
+  // Head attestation (AUTH_SPEC §16-1)
 
   "attestation-rejected": (rejection) => new AttestationRejectedError({ reason: rejection.reason }),
   "attestation-regression": (rejection) =>
@@ -411,9 +425,10 @@ const rejectionErrors = {
 };
 
 /**
- * DataRejection → api-schema の型付きエラー(kind ごとの写像の唯一の置き場所)。
- * チェーン API ハンドラ(handlers-membership.ts)も RPC outcome の kind を
- * DataRejection の kind に揃えたうえでここを通す(写像の二重管理をしない)。
+ * DataRejection → api-schema typed errors (the single home of the
+ * per-kind mapping). The chain API handlers (handlers-membership.ts)
+ * also align their RPC outcome kind to the DataRejection kind and pass
+ * through here (no dual maintenance of mappings).
  */
 export function dataRejectionError<K extends DataRejection["kind"]>(
   rejection: Extract<DataRejection, { kind: K }>,
@@ -425,18 +440,21 @@ export function dataRejectionError<K extends DataRejection["kind"]>(
 }
 
 /**
- * エンドポイント契約(HttpApiEndpoint の error 宣言)のうち、DO 拒否の写像
- * (rejectionErrors)として現れうるエラー型。契約宣言に含まれる worker 先行検査
- * 専用のエラー(ValueTooLarge 等)は DataRejection から生成されないため除く。
+ * Among the endpoint contract (HttpApiEndpoint's error declaration), the
+ * error types that can appear as a mapping of a DO rejection
+ * (rejectionErrors). Errors dedicated to the worker's preliminary checks
+ * in the contract declaration (ValueTooLarge etc.) are excluded since
+ * they are not generated from a DataRejection.
  */
 type ContractDataError<Endpoint extends HttpApiEndpoint.Top> = Extract<
   HttpApiEndpoint.Error<Endpoint>["Type"],
   DataApiError
 >;
 
-// endpoint.error(宣言 Schema の集合。HttpApiEndpoint の公開プロパティ)から
-// 構成した「エラー値が契約に含まれるか」の判定列。エンドポイントはビルド時に
-// 固定される値なのでエンドポイントごとに 1 回だけ構成すればよい
+// The predicate list "is this error value in the contract?", built from
+// endpoint.error (the set of declared Schemas; a public property of
+// HttpApiEndpoint). An endpoint is a value fixed at build time, so this
+// needs to be built only once per endpoint
 const contractFilters = new WeakMap<object, ReadonlyArray<(error: DataApiError) => boolean>>();
 
 function contractFilterOf(
@@ -451,11 +469,13 @@ function contractFilterOf(
 }
 
 /**
- * DO の outcome をハンドラの成功値 / 型付きエラーへ写す。返してよいエラーの
- * 集合はエンドポイントの契約宣言(api-schema の error: [...])そのものから
- * 実行時(endpoint.error の Schema 判定)・型(Error 型引数)の両面で導出する
- * ため、宣言と写像がズレることはない。契約外の拒否はプログラム側の不変条件
- * 違反として defect(500)に落とす。テストから直接検証できるよう公開する。
+ * Maps a DO outcome to the handler's success value / typed error. Since
+ * the set of returnable errors is derived from the endpoint's contract
+ * declaration itself (api-schema's error: [...]) on both the runtime
+ * (Schema check on endpoint.error) and type (the Error type argument)
+ * sides, the declaration and the mapping cannot drift apart. A rejection
+ * outside the contract is dropped to a defect (500) as a program-side
+ * invariant violation. Exported so tests can verify it directly.
  */
 export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
   outcome: DataOutcome<T>,
@@ -472,14 +492,17 @@ export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
 }
 
 /**
- * データプレーンのハンドラ共通経路(§12-3 の判定順): 認証主体の解決 →
- * トークンスコープ(スコープ外 404 / 水準不足 403)→ DO RPC → outcome の写像。
- * ハンドラ固有の先行検査(値サイズ・AAD 座標)は呼び出し側がこの前に行う。
+ * The shared path of the data-plane handlers (the §12-3 check order):
+ * resolve the authenticated principal → token scope (out of scope 404 /
+ * insufficient level 403) → DO RPC → map the outcome. Handler-specific
+ * preliminary checks (value size, AAD coordinates) are performed by the
+ * caller before this.
  *
- * `endpoint` にはハンドラ引数の endpoint(処理中のエンドポイントそのもの)を
- * 渡す。契約上返しうるエラーはそこから導出されるため、手書きの列挙は無い。
- * カリー形なのは「T(RPC の値型)は明示、Endpoint は推論」を両立させるため
- * (TS は型引数の部分適用を許さない)。
+ * `endpoint` receives the handler's endpoint argument (the endpoint being
+ * processed itself). The errors returnable under the contract are derived
+ * from it, so there is no hand-written enumeration. The curried shape
+ * reconciles "T (the RPC's value type) is explicit while Endpoint is
+ * inferred" (TS does not allow partial type-argument application).
  */
 export const callProjectData =
   <T>() =>
@@ -503,11 +526,12 @@ export const callProjectData =
     });
 
 /**
- * D1 バックのプロジェクト配下エンドポイント共通の前段(招待 API — AUTH_SPEC
- * §15-2 — と invite.* 監査読み取り — AUDIT_SPEC §7 — が共用): トークンスコープ
- * admin(スコープ外 404 — §11-2)→ DO の memberRoleFor(非メンバー 404)→
- * チェーン role admin 以上(未満 403)。通過したら呼び出し主体と role を返す
- * (owner 限定判定用)。
+ * The common leading stage of the D1-backed per-project endpoints (shared
+ * by the invite API — AUTH_SPEC §15-2 — and the invite.* audit read —
+ * AUDIT_SPEC §7): token scope admin (out of scope 404 — §11-2) → the
+ * DO's memberRoleFor (non-member 404) → chain role admin or higher (below
+ * is 403). On pass, returns the caller and the role (for owner-only
+ * checks).
  */
 export const requireProjectChainAdmin = <Endpoint extends HttpApiEndpoint.Top>(
   projectId: string,

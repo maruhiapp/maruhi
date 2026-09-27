@@ -1,13 +1,18 @@
-// 要ローテーションフラグの Effect プログラム(AUDIT_SPEC §4.1 / §6 / §7)。
+// Effect programs for the needs-rotation flags (AUDIT_SPEC §4.1 / §6
+// / §7).
 //
-// - flags: §4.1 手順 5 の導出ビュー。可視性はクラス 1(チェーン role reader
-//   以上 = 全メンバー — §6。検出の目的は上流 credential のローテーション促し)
-// - dismiss: rotation.dismissed の専用操作(§7 — 生イベントの追記 API は
-//   作らない)。admin 以上(§3.3 — ラップ削除と同水準のガバナンス操作)。
-//   有効なフラグの無い対への取り下げは 404(黙って成功させない)
+// - flags: the derived view of §4.1 step 5. Visibility is class 1
+//   (chain role reader or above = all members — §6; detection's
+//   purpose is prompting upstream credential rotation)
+// - dismiss: a dedicated operation for rotation.dismissed (§7 — no
+//   raw-event append API is made). admin or above (§3.3 — a
+//   governance operation at the same level as wrap deletion).
+//   Dismissal to a pair with no active flag is a 404 (no silent
+//   success)
 //
-// permit 直列化の前提は他の programs-* と同じ。導出はイベント列の畳み込みのみ
-// (フラグを可変ストアに持たない — §4.1)。
+// The permit-serialization premise is the same as the other
+// programs-*. Derivation is a fold over the event sequence only (no
+// mutable store of flags — §4.1).
 
 import { Effect } from "effect";
 
@@ -19,7 +24,7 @@ import { MAX_ROTATION_DISMISSALS_PER_REQUEST } from "./policy.ts";
 import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 import { deriveEffectiveFlags } from "./rotation-detect.ts";
 
-/** 取り下げ対象(RPC 境界を渡る)。 */
+/** A dismissal target (crosses the RPC boundary). */
 export interface RotationDismissTargetInput {
   readonly environmentId: string;
   readonly variableId: string;
@@ -43,10 +48,13 @@ export const dismissRotationFlagsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    // 取り下げは環境座標を持つが scope を問わない(AUTH_SPEC §12-3 の表に無い
-    // ガバナンス操作 — AUDIT_SPEC §3.3 / §6: フラグのビューはクラス 1 で可視性
-    // 述語に環境軸を入れず、取り下げは admin の判断。設計録 §9 K3-C)。
-    // 環境座標を持つ経路で requireMemberState のまま残る唯一の書き込み
+    // Dismissal carries an environment coordinate but does not
+    // consult scope (a governance operation absent from AUTH_SPEC
+    // §12-3's table — AUDIT_SPEC §3.3 / §6: the flag view is class 1
+    // with no environment axis in the visibility predicate, and
+    // dismissal is an admin's decision; design record §9 K3-C).
+    // The only write that still keeps requireMemberState on a path
+    // carrying an environment coordinate
     yield* requireMemberState(actor.userId, "admin", cache);
     if (targets.length > MAX_ROTATION_DISMISSALS_PER_REQUEST) {
       return yield* rejectData({
@@ -59,8 +67,9 @@ export const dismissRotationFlagsProgram = (
     const live = new Set(
       deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()).map(pairKey),
     );
-    // 同一対の重複は 1 件に畳む(取り下げの意味論は対単位で冪等 — 1 リクエスト
-    // 1 対 1 イベント)。有効フラグの無い対は all-or-nothing で全体を拒否する
+    // Duplicate pairs are folded into one (dismissal semantics are
+    // idempotent per pair — one request, one event per pair). A pair
+    // with no active flag rejects the whole request all-or-nothing
     const deduped: RotationDismissTargetInput[] = [];
     const seen = new Set<string>();
     for (const target of targets) {
@@ -79,8 +88,9 @@ export const dismissRotationFlagsProgram = (
       deduped.push(target);
     }
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): rotation.dismissed を対ごとに 1 行
-    // (AUDIT_SPEC §3.3 — actor は取り下げた本人)
+    // The write phase (a single task): one rotation.dismissed row
+    // per pair (AUDIT_SPEC §3.3 — the actor is the dismisser
+    // themselves)
     yield* Effect.sync(() => {
       audit.appendManySync(
         deduped.map((target) =>
