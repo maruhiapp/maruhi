@@ -93,10 +93,10 @@ eventifying audit reads or aggregate-only views (breaks Q4 incident response)
 
 - **CRYPTO_SPEC 0.5-draft**: §3 FP word display / §6.2 lease_policy extension +
   `duplicate-server-key` / §6.3 two-layered re-grant + out-of-band anchors /
-  §6.5 invite-acceptance signature (resolves undecided #9) / §7・§9 resolving the line on server-bound wraps /
+  §6.5 invite-acceptance signature (resolves undecided #9) / §7 / §9 resolving the line on server-bound wraps /
   §9.1 workload leases / §11 vector supplement / §13 #4 partial realization / §14.3-3 addition
 - **AUTH_SPEC 0.9-draft**: §4 serverKeyFingerprintHex / §11-1 references to invites /
-  §12-4・§12-6 server-key-bound wraps (the complete decryption set + backfill right after grant) /
+  §12-4 / §12-6 server-key-bound wraps (the complete decryption set + backfill right after grant) /
   §14 the lease API / §15 the invite API
 - **AUDIT_SPEC 0.7-draft**: §3.2 invite.* (same D1 batch) / §3.5 the lease-family
   events (value_decrypted reserved) / §4.1 variant updates / §6 visibility classes
