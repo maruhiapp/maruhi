@@ -1,17 +1,20 @@
-// D1 側監査ログの追記と読み取り(AUDIT_SPEC §3.1〜§3.2 / §5.2 案 A / §7)。
+// Appends to and reads of the D1-side audit log (AUDIT_SPEC §3.1-§3.2 /
+// §5.2 option A / §7).
 //
-// - append-only(§1-4): この層は追記と読み取りのみを公開する(更新・削除の
-//   口を作らない)
-// - 主データ書き込みと同一トランザクションでの追記(§5.2 の採用理由 (2))は、
-//   各リポジトリが自分の batch へ挿入文(userAuditInsert / orgAuditInsert)を
-//   同梱することで実現する。単独追記(login_failed 等、主データ書き込みを
-//   伴わないイベント)だけが D1AuditRepo を使う
-// - 読み取り(§7)は invite.* の project_id スコープ(権限軸は worker が
-//   チェーン role admin で強制)と user 系の本人軸のみ。org admin 軸は org 管理
-//   API の導入時に同時実装する
-// - アイデンティティ規則(§1-2): actor / target は内部 user_id(+ maruhi 発行
-//   トークン id)と auth_method 種別名のみ。プロバイダ ID・login・メールを
-//   この層に持ち込まないこと
+// - append-only (§1-4): this layer exposes only append and read (no update
+//   or delete surface)
+// - Appending in the same transaction as the primary data write (the §5.2
+//   adoption rationale (2)) is realized by each repository bundling an
+//   insert statement (userAuditInsert / orgAuditInsert) into its own batch.
+//   Only standalone appends (login_failed and other events with no primary
+//   data write) use D1AuditRepo
+// - Reads (§7) are only the invite.* project_id scope (the permission axis
+//   is enforced by the worker via chain role admin) and the self axis of
+//   user-family events. The org admin axis ships together with the org
+//   management API
+// - Identity rule (§1-2): actor / target carry only the internal user_id
+//   (+ the maruhi-issued token id) and the auth_method kind name. Provider
+//   IDs, logins, and emails must not enter this layer
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
@@ -25,15 +28,16 @@ import { loginFailedWindows, orgAuditEvents, userAuditEvents } from "./schema.ts
 type Db = ReturnType<typeof drizzle>;
 
 /**
- * 監査アクター(AUDIT_SPEC §2)。共有の AuditActor(@maruhi/core — 認証主体
- * からの写像 auditActorOf の唯一の出口)からの派生で、userId のみ省略可にする:
- * 省略は「未認証の外部主体」(auth.login_failed のみ — 人はいるが特定できて
- * いない。type=system は主体のない内部処理用であり、外部からの失敗試行には
- * 使わない)。
+ * The audit actor (AUDIT_SPEC §2). Derived from the shared AuditActor
+ * (@maruhi/core — the sole exit of the auditActorOf mapping from an
+ * authenticated principal), with only userId made omittable: an omission
+ * means "an unauthenticated external principal" (auth.login_failed only —
+ * a person exists but is not identified. type=system is for internal
+ * processing with no principal, not for failed attempts from outside).
  */
 export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: string };
 
-/** 監査イベント 1 行の入力(列は schema.ts の共通列。未指定は NULL)。 */
+/** Input for one audit-event row (columns are the common columns of schema.ts; unspecified = NULL). */
 export interface D1AuditEventInput {
   readonly event: string;
   readonly actor: D1AuditActor;
@@ -43,11 +47,11 @@ export interface D1AuditEventInput {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-/** 挿入行への写像。auth_method は DO 側と同じく payload に載る(§2)。 */
+/** Mapping onto the inserted row. auth_method rides the payload, as on the DO side (§2). */
 function rowOf(event: D1AuditEventInput, serverTs: number) {
   const payload = auditPayloadWith(event.actor, event.payload);
   return {
-    // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id — §7 の不透明カーソル)
+    // The wire row identifier (AUDIT_SPEC §5.1 row_id — §7's opaque cursor)
     rowId: randomHex(16),
     serverTs,
     event: event.event,
@@ -61,17 +65,20 @@ function rowOf(event: D1AuditEventInput, serverTs: number) {
   };
 }
 
-/** 認証系イベント(§3.1)の挿入文。リポジトリの batch に同梱する。 */
+/** The insert statement for an auth-family event (§3.1). Bundled into a repository's batch. */
 export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInput) {
   return db.insert(userAuditEvents).values(rowOf(event, serverTs));
 }
 
 /**
- * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
- * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
- * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
- * 個別に書き写すと、行形状の変更時に黙って食い違う。
- * FROM・WHERE(ガード条件)と追加列(invites の project_id)は呼び出し側が持つ。
+ * The shared select columns for a `changes() = 1`-guarded INSERT…SELECT
+ * (AUDIT_SPEC §5.2 — insert the audit row only when the preceding
+ * conditional UPDATE took effect). The SELECT-side version of rowOf's
+ * column mapping — if the callers (the invites CAS, the recovery fetch
+ * count) each copied the column list by hand, they would silently diverge
+ * when the row shape changes.
+ * The caller owns the FROM, the WHERE (the guard condition), and the extra
+ * column (invites' project_id).
  */
 export function guardedAuditSelectColumns(input: {
   readonly event: string;
@@ -79,7 +86,7 @@ export function guardedAuditSelectColumns(input: {
   readonly nowMs: number;
   readonly targetUserId?: string | null;
   readonly payload?: Readonly<Record<string, unknown>>;
-  /** 保存行から組む動的 payload。指定時は静的 payload より優先する。 */
+  /** A dynamic payload built from the stored row. When given, it takes precedence over the static payload. */
   readonly payloadSql?: SQL<string | null>;
 }) {
   const payload = auditPayloadWith(input.actor, input.payload);
@@ -87,8 +94,9 @@ export function guardedAuditSelectColumns(input: {
     input.payloadSql ??
     sql<string | null>`${Object.keys(payload).length === 0 ? null : JSON.stringify(payload)}`;
   return {
-    // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。ガード付き挿入は高々 1 行なので、
-    // 文の構築時に採番した定数で足りる
+    // The wire row identifier (AUDIT_SPEC §5.1 row_id). A guarded insert
+    // produces at most one row, so a constant picked at statement-build
+    // time suffices
     rowId: sql<string>`${randomHex(16)}`.as("row_id"),
     serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
     event: sql<string>`${input.event}`.as("event"),
@@ -100,18 +108,20 @@ export function guardedAuditSelectColumns(input: {
   };
 }
 
-/** org 系イベント(§3.2)の挿入文。リポジトリの batch に同梱する。 */
+/** The insert statement for an org-family event (§3.2). Bundled into a repository's batch. */
 export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInput) {
   return db.insert(orgAuditEvents).values(rowOf(event, serverTs));
 }
 
 /**
- * auth.login_failed の記録上限(AUDIT_SPEC §3.1)。login_failed は唯一の
- * 未認証経路からの D1 書き込みであり、無効リクエストの洪水による書き込み増幅
- * (可用性・コスト面の攻撃)を有界にするため、固定窓の上限を超えた分は
- * 記録しない。上限は `auth_method + reason` 単位のバケットで数える:
- * 単一枠や method だけの枠だと、別経路・別理由の洪水が
- * 標的型失敗の reason まで消してしまう。
+ * The recording cap for auth.login_failed (AUDIT_SPEC §3.1). login_failed
+ * is the only D1 write reachable over the unauthenticated path; to bound
+ * the write amplification from a flood of invalid requests (an
+ * availability / cost attack), excess over a fixed-window cap is not
+ * recorded. The cap is counted in buckets of `auth_method + reason`: a
+ * single window or a method-only window would let a flood from a different
+ * path or for a different reason erase even the reason of a targeted
+ * failure.
  */
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
@@ -121,32 +131,36 @@ interface LoginFailedBucket {
   readonly reason: string;
 }
 
-/** mutable counter の主キー。外部 ID / IP は含めず、監査行が持つ分類だけを使う。 */
+/** The mutable counter's primary key. No external ID / IP — only the classification the audit row itself carries. */
 function loginFailedBucketKey(bucket: LoginFailedBucket): string {
   return JSON.stringify([bucket.authMethod, bucket.reason]);
 }
 
 /**
- * 上限到達の窓に残す集約マーカー(AUDIT_SPEC §3.1)。抑制が
- * **起きたこと**に加えて**量**も観測可能にするため、バケットの抑制件数が 10 の
- * 冪(1・10・100・…)に達した時点で 1 行残す — 書き込みは抑制件数に対して対数的
- * (洪水下でも窓あたり数行)。個別行と同じく actor は user_id なしの type=user
- * (外部 provider ID・IP を append-only actor に書かない — §1-2)。
+ * The aggregation marker left on a window that reached its cap
+ * (AUDIT_SPEC §3.1). To make not only the **fact** of suppression but also
+ * its **volume** observable, one row is left whenever the bucket's
+ * suppressed count reaches a power of ten (1, 10, 100, …) — writes are
+ * logarithmic in the suppressed count (a few rows per window even under a
+ * flood). As on the individual rows, actor is type=user with no user_id
+ * (no external provider ID or IP on an append-only actor — §1-2).
  */
 const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
 
 /**
- * auth.signup_denied の抑制マーカー(AUDIT_SPEC §3.1)。
- * login_failed と同じ固定窓・10 の冪規律で、バケットはイベント名 + reason。
+ * The suppression marker for auth.signup_denied (AUDIT_SPEC §3.1). Same
+ * fixed-window / power-of-ten discipline as login_failed; the bucket is
+ * event name + reason.
  */
 const SIGNUP_DENIED_SUPPRESSED_EVENT = "auth.signup_denied_suppressed";
 
-/** 抑制マーカーを残す件数か(1・10・100・… — 上の doc)。 */
+/** Whether the count is one that leaves a suppression marker (1, 10, 100, … — see the doc above). */
 function isSuppressionMilestone(suppressedCount: number): boolean {
   if (suppressedCount < 1) {
     return false;
   }
-  // 10 進の桁上がりちょうどか(log10 の丸め誤差を避けて整数の割り算で判定する)
+  // Exactly a decimal carry boundary (judged by integer division to avoid
+  // log10 rounding error)
   let remaining = suppressedCount;
   while (remaining % 10 === 0) {
     remaining /= 10;
@@ -155,23 +169,24 @@ function isSuppressionMilestone(suppressedCount: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// 読み取り面(AUDIT_SPEC §7)。seq カーソルページング(新しい順)。
+// The read surface (AUDIT_SPEC §7). seq-cursor paging (newest first).
 // ---------------------------------------------------------------------------
 
 /**
- * ページ指定(seq 降順)。beforeRowId は前ページ末尾行の row_id(§7 の不透明
- * カーソル)。解決は各読み取りの可視性述語つきで行い、述語外・不明な id は
- * 空ページとして振る舞う(存在オラクルにしない)。
+ * A page specification (descending seq). beforeRowId is the row_id of the
+ * previous page's last row (the §7 opaque cursor). Resolution happens under
+ * each read's visibility predicate; an out-of-predicate or unknown id
+ * behaves as an empty page (never an existence oracle).
  */
 interface D1AuditReadPage {
   readonly beforeRowId: string | null;
   readonly limit: number;
 }
 
-/** D1 監査行の読み取り形(共通列のうち §7 の応答が運ぶもの。NULL は null)。 */
+/** The read shape of a D1 audit row (the common columns the §7 response carries; NULL is null). */
 export interface D1StoredAuditEventRow {
   readonly seq: number;
-  /** ワイヤ行識別子(row_id — 16 バイト乱数 hex)。 */
+  /** The wire row identifier (row_id — a 16-byte random hex). */
   readonly rowId: string;
   readonly serverTs: number;
   readonly event: string;
@@ -184,18 +199,19 @@ export interface D1StoredAuditEventRow {
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
-/** invite ライフサイクルのイベント名(§3.2)。org 系イベントを混入させない。 */
+/** The invite lifecycle's event names (§3.2). Org-family events are not mixed in. */
 export const INVITE_AUDIT_EVENTS = ["invite.created", "invite.accepted", "invite.revoked"] as const;
 
 interface D1AuditRepoShape {
-  /** 単独イベントの追記(主データ書き込みを伴わないイベント用)。 */
+  /** Append a standalone event (for events with no primary data write). */
   readonly appendUserEvent: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
   /**
-   * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら個別行は
-   * 落とし、抑制マーカーだけ残す(SHOULD 記録 — AUDIT_SPEC §3.1)。
+   * The append dedicated to auth.login_failed. Once the fixed-window (one
+   * hour) recording cap is exceeded, individual rows are dropped and only
+   * the suppression marker is kept (a SHOULD record — AUDIT_SPEC §3.1).
    *
-   * `bucket` は上限を数える単位(auth_method + reason)。
-   * 発信元識別子を渡さないこと(§1-2 の線引き。理由は §3.1)。
+   * `bucket` is the unit the cap counts in (auth_method + reason).
+   * Do not pass a source identifier (the §1-2 line; the reason is §3.1).
    */
   readonly appendLoginFailed: (
     event: D1AuditEventInput,
@@ -203,10 +219,11 @@ interface D1AuditRepoShape {
     bucket: LoginFailedBucket,
   ) => Effect.Effect<void>;
   /**
-   * auth.signup_denied 専用の追記(AUDIT_SPEC §3.1)。
-   * login_failed と同じ固定窓上限規律で、バケットは reason 単位(拒否理由ごとに
-   * 独立の枠 — 別理由の洪水が標的型の拒否まで消さない)。提示された外部
-   * provider ID を渡さないこと(§1-2)。
+   * The append dedicated to auth.signup_denied (AUDIT_SPEC §3.1). Same
+   * fixed-window cap discipline as login_failed; the bucket is per reason
+   * (an independent window per denial reason — a flood for one reason must
+   * not erase a targeted denial for another). Do not pass the presented
+   * external provider ID (§1-2).
    */
   readonly appendSignupDenied: (
     event: D1AuditEventInput,
@@ -214,18 +231,20 @@ interface D1AuditRepoShape {
     reason: string,
   ) => Effect.Effect<void>;
   /**
-   * invite.* の project_id スコープ読み取り(§7 の例外規定)。権限軸(当該
-   * プロジェクトのチェーン role admin 以上 × トークンスコープ admin)は
-   * worker 側ハンドラが強制する — この層は述語のみを持つ。
+   * The project_id-scoped read of invite.* (the §7 exception clause). The
+   * permission axis (chain role admin-or-above on the project × token scope
+   * admin) is enforced by the worker-side handler — this layer carries only
+   * the predicate.
    */
   readonly readProjectInviteEvents: (
     projectId: string,
     page: D1AuditReadPage,
   ) => Effect.Effect<readonly D1StoredAuditEventRow[]>;
   /**
-   * user 系(§3.1)の本人軸読み取り(§6: 本人のみ)。actor または target が
-   * 本人の行だけを返す。auth.login_failed は actor user_id を持たない(§3.1)
-   * ため、どの本人軸にも現れない(運営者ビューの領分 — L-4)。
+   * The self-axis read of user-family events (§3.1) (§6: self only).
+   * Returns only rows whose actor or target is the user. auth.login_failed
+   * carries no actor user_id (§3.1), so it appears on no self axis (the
+   * operator view's remit — L-4).
    */
   readonly readUserEventsFor: (
     userId: string,
@@ -235,7 +254,7 @@ interface D1AuditRepoShape {
 
 export class D1AuditRepo extends Context.Service<D1AuditRepo, D1AuditRepoShape>()("D1AuditRepo") {}
 
-/** payload 列(JSON)の防御的 parse(壊れた行は null 扱い — 読み取りを defect にしない)。 */
+/** Defensive parse of the payload column (JSON) — a corrupted row is treated as null so the read is not turned into a defect. */
 function parseStoredPayload(value: string | null): Readonly<Record<string, unknown>> | null {
   if (value === null) {
     return null;
@@ -252,7 +271,7 @@ function parseStoredPayload(value: string | null): Readonly<Record<string, unkno
 
 type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
 
-/** selectAuditPage の生 1 回分の読み。 */
+/** One raw read of selectAuditPage. */
 async function readAuditPageRows(
   db: Db,
   table: D1AuditTable,
@@ -285,9 +304,11 @@ async function readAuditPageRows(
       actorUserId: table.actorUserId,
       actorApiTokenId: table.actorApiTokenId,
       targetUserId: table.targetUserId,
-      // org_id は本 PR の 2 経路では常に NULL(invite.* は意図的に持たず、
-      // user 系に書き手がいない)が、この helper は両テーブル汎用であり、
-      // 将来の org admin 軸で黙って欠落しないよう射影から落とさない
+      // org_id is always NULL on this PR's two paths (invite.*
+      // intentionally does not carry it, and the user family has no
+      // writer), but this helper is generic over both tables, so do not
+      // drop it from the projection — it must not silently go missing when
+      // the future org admin axis arrives
       orgId: table.orgId,
       projectId: table.projectId,
       payload: table.payload,
@@ -299,9 +320,11 @@ async function readAuditPageRows(
 }
 
 /**
- * ページ条件(seq 降順 + row_id カーソル)を述語に合成して読む。カーソルの
- * row_id → seq 解決は**同じ可視性述語つき**で行う(述語外の行の id を差しても
- * 「不明」と同一 = 空ページ。存在オラクルにしない — AUDIT_SPEC §7)。
+ * Read with the page condition (descending seq + a row_id cursor) composed
+ * into the predicate. The cursor's row_id → seq resolution happens under
+ * **the same visibility predicate** (pointing at a row outside the
+ * predicate is identical to "unknown" = an empty page. Never an existence
+ * oracle — AUDIT_SPEC §7).
  */
 async function selectAuditPage(
   db: Db,
@@ -314,16 +337,19 @@ async function selectAuditPage(
 }
 
 /**
- * 固定窓上限つきの未認証イベント追記(AUDIT_SPEC §3.1 — auth.login_failed と
- * auth.signup_denied の共通機構)。
+ * A fixed-window-capped append for unauthenticated events (AUDIT_SPEC
+ * §3.1 — the shared mechanism of auth.login_failed and
+ * auth.signup_denied).
  *
- * 窓の計数は監査ログの走査ではなく専用カウンタ行で行う:
- * append-only で伸び続ける user_audit_events を未認証経路の追記ごとに走査すると、
- * 有界にしたい洪水そのものがコスト増幅器になる。窓のリセット・加算・上限判定は
- * 1 文の条件付き UPSERT に畳み、RETURNING の新しい計数から判定を導く
- * (recovery 取得計数 — repos.ts — と同じ形)。カウンタテーブルは
- * loginFailedWindows を共有する(bucketKey が名前空間を分ける — 監査行ではない
- * 可変状態であり、テーブル名は導入時イベントの歴史名)。
+ * Window counting uses a dedicated counter row, not a scan of the audit
+ * log: scanning the ever-growing append-only user_audit_events on every
+ * unauthenticated-path append would make the very flood we want to bound
+ * into a cost amplifier. Window reset, increment, and cap judgment are
+ * folded into one conditional UPSERT statement, and the decision is
+ * derived from RETURNING's new counts (the same shape as the recovery
+ * fetch count — repos.ts). The counter table loginFailedWindows is shared
+ * (bucketKey separates the namespaces — it is mutable state, not an audit
+ * row; the table name is the historical name of the introducing event).
  */
 async function appendWithFixedWindow(
   db: Db,
@@ -332,7 +358,7 @@ async function appendWithFixedWindow(
   spec: {
     readonly bucketKey: string;
     readonly markerEvent: string;
-    /** マーカー payload の分類部(窓長・上限・抑制件数はここで足す)。 */
+    /** The classification part of the marker payload (window length, cap, and suppressed count are added here). */
     readonly markerBasePayload: Readonly<Record<string, unknown>>;
   },
 ): Promise<void> {
@@ -359,23 +385,28 @@ async function appendWithFixedWindow(
       suppressedCount: loginFailedWindows.suppressedCount,
     })
     .get();
-  // 窓内では recorded が上限まで伸びてから suppressed が伸びる(両方が
-  // 同時に進むことはない)。よって「上限に達していて、かつ抑制が 1 件以上」
-  // が抑制されたリクエストの十分条件になる — 上限ちょうどの**最後の許可**は
-  // suppressed = 0 のまま通る
+  // Within a window, recorded grows to the cap before suppressed grows
+  // (the two never advance together). So "the cap is reached and
+  // suppressed is at least 1" is a sufficient condition for a suppressed
+  // request — the **last allowed** one at exactly the cap still passes
+  // with suppressed = 0
   const recorded = counted?.recordedCount ?? 1;
   const suppressed = counted?.suppressedCount ?? 0;
   if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
-    // 個別行は落とすが、抑制を黙って行わない: 抑制件数が
-    // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
-    // 抑制の規模が読め、書き込みは件数に対して対数的に有界
+    // The individual row is dropped, but suppression does not happen
+    // silently: a marker row is left whenever the suppressed count reaches
+    // a power of ten. The rows' density and the last count reveal the
+    // suppression's scale, and writes stay logarithmically bounded in the
+    // count
     if (isSuppressionMilestone(suppressed)) {
       await userAuditInsert(db, serverTs, {
         event: spec.markerEvent,
         actor: {},
-        // 個別行の payload は運ばない(AUDIT_SPEC §3.1: マーカーの payload は
-        // 分類部・窓長・上限・抑制件数のみ)。マーカーはこの 1 件ではなく窓の
-        // 状態を表すものなので、最後の個別行を代表させない
+        // The individual row's payload is not carried (AUDIT_SPEC §3.1:
+        // a marker's payload is only the classification part, the window
+        // length, the cap, and the suppressed count). A marker describes
+        // the window's state, not this one request, so the last individual
+        // row does not represent it
         payload: {
           ...spec.markerBasePayload,
           windowMs: LOGIN_FAILED_WINDOW_MS,
@@ -406,8 +437,8 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
     appendSignupDenied: (event, serverTs, reason) =>
       Effect.promise(() =>
         appendWithFixedWindow(db, event, serverTs, {
-          // バケットの名前空間はイベント名で分ける(login_failed の
-          // [authMethod, reason] キーと衝突しない)
+          // The bucket namespaces are separated by event name (cannot
+          // collide with login_failed's [authMethod, reason] key)
           bucketKey: JSON.stringify(["auth.signup_denied", reason]),
           markerEvent: SIGNUP_DENIED_SUPPRESSED_EVENT,
           markerBasePayload: { authMethod: "github_oauth", reason },
@@ -418,9 +449,10 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
         selectAuditPage(
           db,
           orgAuditEvents,
-          // イベント名の絞りは invite.* のみ(§7): 同じ project_id を持つ org 系
-          // イベント(org.project_created 等)は org admin 軸の領分であり、
-          // プロジェクト監査の経路に混入させない
+          // The event-name narrowing is invite.* only (§7): org-family
+          // events with the same project_id (org.project_created etc.) are
+          // the org admin axis's remit and must not leak into the project
+          // audit path
           and(
             eq(orgAuditEvents.projectId, projectId),
             inArray(orgAuditEvents.event, [...INVITE_AUDIT_EVENTS]),
