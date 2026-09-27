@@ -1,13 +1,15 @@
-// GitHub との認証ダンス(AUTH_SPEC §3 / §4。ADR-0009: 直接実装)。
+// The authentication dance with GitHub (AUTH_SPEC §3 / §4; ADR-0009:
+// direct implementation).
 //
-// - GitHub のアクセストークンはリクエスト処理中のメモリにのみ存在し、保存しない
-//   (AUTH_SPEC §10: GitHub トークンの永続化禁止)
-// - 識別子は数値 ID(providerUserId)。login 名は表示用スナップショットのみ
-// - email はプロバイダ側で verified な primary のみ拾う(§3)
-// - トークンは常に自分の code 交換で得る(§3-2 / §4-1 (4))。外部持ち込み
-//   トークンの検証経路は持たない
-// - テストは miniflare の outboundService で GitHub をスタブする(実ネットワーク禁止)。
-//   本番コードにスタブ分岐は存在しない
+// - GitHub access tokens exist only in memory during request handling and
+//   are never stored (AUTH_SPEC §10: persisting GitHub tokens is forbidden)
+// - The identifier is the numeric ID (providerUserId); the login name is a
+//   display snapshot only
+// - email picks up only the primary one verified on the provider side (§3)
+// - Tokens are always obtained through our own code exchange (§3-2 / §4-1
+//   (4)); there is no verification path for externally carried-in tokens
+// - Tests stub GitHub via miniflare's outboundService (real network is
+//   forbidden). No stub branch exists in production code
 
 import { Context, Data, Effect } from "effect";
 
@@ -18,21 +20,22 @@ const API_BASE = "https://api.github.com";
 const API_USER_URL = `${API_BASE}/user`;
 const API_EMAILS_URL = `${API_BASE}/user/emails`;
 
-/** GitHub 認証ダンスの失敗(理由コードのみ。トークン値・外部 ID は運ばない)。 */
+/** Failure of the GitHub authentication dance (reason code only; token values and external IDs are not carried). */
 class GitHubAuthError extends Data.TaggedError("GitHubAuth")<{
   readonly reason: "code-exchange-failed" | "token-invalid";
 }> {}
 
-/** GitHub 認証ダンスの操作(装飾 — ops-signals.ts の計数 — のために公開)。 */
+/** GitHub authentication-dance operations (exposed for decoration — the counting in ops-signals.ts). */
 export interface GitHubApiShape {
-  /** Authorization Code を GitHub アクセストークンへ交換する(§3-2)。 */
+  /** Exchanges an Authorization Code for a GitHub access token (§3-2). */
   readonly exchangeCode: (
     code: string,
     redirectUri: string,
   ) => Effect.Effect<string, GitHubAuthError>;
   /**
-   * 自 App の code 交換で得たトークンからアイデンティティを取得する(§3-2)。
-   * トークンの出所が自明(直前の exchangeCode)な web フロー専用。
+   * Fetches the identity from a token obtained by our own App's code
+   * exchange (§3-2). Web flow only, where the token's provenance is
+   * self-evident (the immediately preceding exchangeCode).
    */
   readonly fetchIdentity: (accessToken: string) => Effect.Effect<VerifiedIdentity, GitHubAuthError>;
 }
@@ -54,7 +57,7 @@ interface EmailEntry {
   readonly verified?: boolean;
 }
 
-// github.com / api.github.com とも UA を要求しうるため常に付与する
+// Always attached since both github.com / api.github.com may require a UA
 const COMMON_HEADERS = { accept: "application/json", "user-agent": "maruhi" };
 const GITHUB_API_HEADERS = { accept: "application/vnd.github+json", "user-agent": "maruhi" };
 
@@ -64,7 +67,7 @@ async function exchangeCodeRequest(
   code: string,
   redirectUri: string,
 ): Promise<string | null> {
-  // RFC 6749 §4.1.3: トークンエンドポイントのボディは application/x-www-form-urlencoded
+  // RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded
   const response = await fetch(OAUTH_TOKEN_URL, {
     method: "POST",
     headers: { ...COMMON_HEADERS, "content-type": "application/x-www-form-urlencoded" },
@@ -101,7 +104,7 @@ function pickVerifiedPrimaryEmail(entries: readonly EmailEntry[]): string | null
   return typeof primary?.email === "string" ? primary.email : null;
 }
 
-/** primary かつ verified なメールのみ返す(§3-3。なければ null = 保存しない)。 */
+/** Returns only the primary-and-verified email (§3-3; null = not stored). */
 async function fetchVerifiedPrimaryEmail(accessToken: string): Promise<string | null> {
   const response = await fetch(API_EMAILS_URL, {
     headers: { ...GITHUB_API_HEADERS, authorization: `Bearer ${accessToken}` },
@@ -128,7 +131,7 @@ async function toIdentity(
   };
 }
 
-/** fetch 失敗(ネットワーク・GitHub 障害)も型付きエラーへ畳む。 */
+/** Folds fetch failures (network errors, GitHub outages) into the typed error too. */
 function attempt<T>(
   reason: "code-exchange-failed" | "token-invalid",
   evaluate: () => Promise<T | null>,
@@ -140,7 +143,7 @@ function attempt<T>(
   );
 }
 
-/** 本番実装: GitHub の OAuth / REST API を直接呼ぶ。 */
+/** Production implementation: calls GitHub's OAuth / REST API directly. */
 export function makeGitHubApi(clientId: string, clientSecret: string): GitHubApiShape {
   return {
     exchangeCode: (code, redirectUri) =>

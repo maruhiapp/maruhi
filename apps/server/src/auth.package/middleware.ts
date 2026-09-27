@@ -1,15 +1,18 @@
-// AuthMiddleware(@maruhi/api-schema)の本実装(AUTH_SPEC §5 / §11-1 / §11-4)。
+// The actual implementation of AuthMiddleware (@maruhi/api-schema)
+// (AUTH_SPEC §5 / §11-1 / §11-4).
 //
-// - 資格情報の優先順: `Authorization: Bearer maruhi_pat_…` → セッションクッキー。
-//   どちらも解決できなければ 401(認証必須エンドポイントにのみ適用される)
-// - セッション能力制限(§5): セッション主体は肯定列挙
-//   (@maruhi/api-schema の SESSION_ALLOWED_ENDPOINTS)の外の全エンドポイントで
-//   403 `session-not-allowed`。ミドルウェアが受け取る { group, endpoint } の
-//   識別子で判定する単一実装点であり、ハンドラごとの手動検査を持たない
-// - CSRF(§5): クッキー認証の書き込み系(GET / HEAD / OPTIONS 以外)は
-//   `x-maruhi-csrf: 1` を要求する。Authorization ヘッダーはクロスサイトの
-//   フォーム送信では付与できないため対象外
-// - 解決済み主体は RequestAuth としてハンドラへ提供する
+// - Credential precedence: `Authorization: Bearer maruhi_pat_…` → session
+//   cookie. When neither resolves: 401 (applied only to endpoints requiring
+//   authentication)
+// - Session capability restriction (§5): a session principal gets 403
+//   `session-not-allowed` on every endpoint outside the allow enumeration
+//   (@maruhi/api-schema's SESSION_ALLOWED_ENDPOINTS). This is the single
+//   implementation point, deciding on the { group, endpoint } identifiers
+//   the middleware receives; there is no per-handler manual check
+// - CSRF (§5): cookie-authenticated writes (anything other than GET / HEAD
+//   / OPTIONS) require `x-maruhi-csrf: 1`. The Authorization header cannot
+//   be attached by a cross-site form submission, so it is out of scope
+// - The resolved principal is provided to handlers as RequestAuth
 
 import {
   CSRF_HEADER_NAME,
@@ -25,25 +28,27 @@ import type { HttpApiMiddleware } from "effect/unstable/httpapi";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
 /**
- * CSRF 対抗ヘッダー。状態を持つ GET(値付き一括 pull・リカバリーブロブ取得)も
- * ハンドラ側で要求する(下の statefulGetCsrfViolated がヘッダー名ごと閉じ込める)。
- * 名前の真実源は api-schema の共有定数。
+ * The CSRF countermeasure header. Stateful GETs (bulk pull with values,
+ * recovery-blob fetch) also require it on the handler side
+ * (statefulGetCsrfViolated below confines that, header name included).
+ * The name's source of truth is api-schema's shared constant.
  */
 const CSRF_HEADER = CSRF_HEADER_NAME;
-// RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する
+// RFC 7235: auth-scheme is case-insensitive. Runs of whitespace are also tolerated
 const BEARER_PATTERN = /^bearer\s+(\S+)$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-/** Authorization ヘッダーから Bearer トークンを取り出す(解釈不能は null)。 */
+/** Extracts the Bearer token from the Authorization header (null when unparseable). */
 export function parseBearerToken(authorization: string): string | null {
   return BEARER_PATTERN.exec(authorization)?.[1] ?? null;
 }
 
 /**
- * 資格情報の優先順位(固定): Authorization ヘッダーが存在するならそれのみを見る
- * (Bearer として解釈できない・トークンが無効な場合もクッキーへフォールバック
- * しない — 「トークンを提示したのにセッションで認可された」を起こさない)。
- * Authorization がないときだけセッションクッキーを解決する。
+ * Credential precedence (fixed): when an Authorization header exists, only
+ * it is consulted (no fallback to the cookie even when it is unparseable as
+ * Bearer or the token is invalid — "presented a token yet authorized as the
+ * session" must not happen). The session cookie is resolved only when no
+ * Authorization is present.
  */
 function resolvePrincipal(
   request: HttpServerRequest.HttpServerRequest,
@@ -76,13 +81,14 @@ function csrfViolated(request: HttpServerRequest.HttpServerRequest, principal: P
 }
 
 /**
- * 状態を持つ GET のセッション主体 CSRF 検査(AUTH_SPEC §11-4 の明示規定一覧)。
- * ミドルウェアの検査(上の csrfViolated)は GET を免除するため、GET だが状態を
- * 持つエンドポイント — 値付き一括 pull(§12-7)・リカバリーブロブ取得(§13-2)—
- * はハンドラがこれを呼んで同じ 403(csrf-header-required)を返す。
- * `SameSite=Lax` のセッションクッキーはクロスサイトのトップレベル遷移でも
- * 同送されるが、カスタムヘッダーは CORS 不在のためクロスサイトから送れない
- * (§5)。Bearer はクロスサイトで付与できないため対象外。
+ * CSRF check for session principals on stateful GETs (AUTH_SPEC §11-4's
+ * explicit list). The middleware's check (csrfViolated above) exempts GET,
+ * so endpoints that are GET yet stateful — bulk pull with values (§12-7),
+ * recovery-blob fetch (§13-2) — have their handler call this and return the
+ * same 403 (csrf-header-required). A `SameSite=Lax` session cookie rides
+ * along on cross-site top-level navigations, but a custom header cannot be
+ * sent cross-site in the absence of CORS (§5). Bearer cannot be attached
+ * cross-site, so it is out of scope.
  */
 export function statefulGetCsrfViolated(
   principal: Principal,
@@ -92,10 +98,11 @@ export function statefulGetCsrfViolated(
 }
 
 /**
- * セッション認証の応答でクッキーの Max-Age を毎回更新する(§5 のスライディングを
- * ブラウザ側にも反映する — DB だけ延長してもクッキーが 30 日で失効しては意味が
- * ない)。ハンドラが同名クッキーを操作した応答(ログアウトの expire 等)には
- * 触れない。
+ * Refreshes the cookie's Max-Age on every session-authenticated response
+ * (reflects §5's sliding expiry on the browser side too — extending only
+ * the DB would be pointless when the cookie expires after 30 days). Does
+ * not touch responses where a handler manipulated the same-named cookie
+ * (logout's expire, etc.).
  */
 function refreshSessionCookie(
   response: HttpServerResponse.HttpServerResponse,
@@ -119,8 +126,9 @@ function refreshSessionCookie(
 }
 
 /**
- * AuthMiddleware の実装本体。index.ts が `Layer.succeed(AuthMiddleware, …)` で
- * 提供する。SessionService / TokenService は env ごとの Layer 経由。
+ * The implementation body of AuthMiddleware. index.ts provides it via
+ * `Layer.succeed(AuthMiddleware, …)`. SessionService / TokenService come
+ * via per-env Layers.
  */
 export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
   RequestAuth,
@@ -133,11 +141,14 @@ export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
     if (principal.kind === "anonymous") {
       return yield* Effect.fail(new UnauthorizedError());
     }
-    // セッション能力制限(AUTH_SPEC §5 — 肯定列挙外は fail-closed で 403)。
-    // 判定材料は (主体種別, グループ・エンドポイント識別子) のみで、プロジェクトの
-    // 存在・状態を一切参照しない一様応答 — §11-2 の存在秘匿と両立する(§12-3 の
-    // 認可先行例外と同じ論法)。CSRF 検査より先に置く: 許可外エンドポイントの
-    // 拒否理由が、攻撃者が自分で付けられるヘッダーの有無で揺れないようにする
+    // Session capability restriction (AUTH_SPEC §5 — outside the allow
+    // enumeration is fail-closed 403). The decision material is only
+    // (principal kind, group/endpoint identifier): a uniform response that
+    // never consults project existence or state — consistent with §11-2's
+    // existence hiding (same argument as §12-3's authorization-first
+    // exception). Placed before the CSRF check so that the denial reason
+    // for a disallowed endpoint does not vary with the presence of a header
+    // the attacker can attach themselves
     if (
       principal.kind === "session" &&
       !isSessionAllowedEndpoint(options.group.identifier, options.endpoint.identifier)

@@ -1,43 +1,66 @@
-// DO ストレージ総量ガード(AUTH_SPEC §12-8。hosted-design.md §3-3 / §8 gap 3)。
+// The DO storage-total guard (AUTH_SPEC §12-8; hosted-design.md
+// §3-3 / §8 gap 3).
 //
-// プロジェクト DO の SQLite 実測量(`SqlStorage.databaseSize`)に警告 / 拒否の
-// 2 段の閾値(policy.ts — 起草値 8 GB / 9 GB)を置き、10 GB の SQLITE_FULL
-// (読み取り可・書き込み不能の床)へ到達させない。プラットフォームは床でも素の
-// DELETE を通すが、maruhi の削除操作は tombstone・削除ステートメント・監査行の
-// INSERT を同一タスクで伴うため床では失敗する = テナント自身で解消不能。監査ログの
-// 無期限保持(AUDIT_SPEC §5.3)を覆う唯一の防衛線。削除で databaseSize が縮む
-// こと(workerd 実測 — auto-vacuum 相当。VACUUM はアプリから発行不可)が
-// 「削除で解放される」の根拠。
+// The project DO's measured SQLite size (`SqlStorage.databaseSize`)
+// is gated by two thresholds — warn / reject (policy.ts; draft values
+// 8 GB / 9 GB) — so it never reaches the 10 GB SQLITE_FULL floor
+// (readable but unwritable). The platform still passes a bare DELETE
+// at the floor, but maruhi's delete operations carry tombstone,
+// deletion-statement, and audit-row INSERTs in the same task, so they
+// fail at the floor = the tenant cannot recover on its own. This is
+// the sole line of defense covering the audit log's indefinite
+// retention (AUDIT_SPEC §5.3). The fact that deletion shrinks
+// databaseSize (workerd-measured — equivalent of auto-vacuum; VACUUM
+// cannot be issued from the app) is the basis for "freed by
+// deletion".
 //
-// - 判定は純関数(storageGuardDecision — 8〜9 GB の実生成は非現実的なため、
-//   ユニットテスト用に閾値を引数で受ける。quotas.ts の *Exceeded と同じ形)
-// - 実測量の取得は StorageMeter サービス経由(テストは固定サイズの meter を
-//   差し込み、受理経路の結線 — どの面が拒否され、どの面が拒否下でも通るか —
-//   を実プログラムに対して固定する)
-// - 拒否が効く面 = プロジェクト内容の成長面(§12-8 の列挙): 値 push・変数の
-//   作成 / activation / 改名 / スキーマ再発行・環境の改名・環境作成複合・DEK
-//   ラップ登録・add_member / grant_server、および退出・解放・是正に要らず監査行を
-//   積む schemaPolicy 変更。読み取り(var.read の監査追記を伴う一括 pull を含む —
-//   退出経路)・削除系(解放手段)・失効 / 権限縮小系・ローテーション複合・
-//   リース・ヘッド申告・standalone checkpoint・dismiss は**呼ばない**(拒否下でも
-//   受理し続ける面 — 同節)。唯一の例外は
-//   監査ヘッド派生列の実体化を要する読み取り(ensureStorageAdmitsAuditHead-
-//   Extension — 下記)。ensure* を呼ぶ側の列挙がその契約であり、
-//   storage-guard.test.ts が両方向を固定する
-// - 判定位置はメンバーシップ・role・存在(環境 / 変数)・レイアウトのサポート
-//   範囲の検査の後(§11-2 — 非メンバーへプロジェクト状態を返さない。存在検査は
-//   メンバー向けの 404 で、サポート範囲は「更新が必要」の正直なエラーを先に
-//   立てる裁定 CR)・CAS / 署名検証 / 数量ポリシー等の意味論的検査の前(資源
-//   保護は意味論に優先)
-// - 警告(8 GB)は運用ログに出す(集計とアラートは ops-backup の記録する storageLevel を
-//   ops-alerts.ts の storage_warn_projects / storage_reject_projects が拾う)。**静的メッセージ
-//   のみ**(§11-5 / hosted-design.md §5-1 — プロジェクト ID = capability 等の
-//   リクエスト由来識別子を書かない)。DO インスタンスの生存中に警告域・拒否域
-//   それぞれ 1 回(毎受理で出すとログが書き込み計数器になる)。運営側の特定は
-//   Workers Logs のイベント封筒(Durable Object id = idFromName の像)で行う。
-//   **観測点は成長面に加えて、監査行を書く読み取り面(値付き pull・リース)にも
-//   置く**(observeStorageLevel — 拒否はしない): pull 主体のプロジェクトは成長面の
-//   書き込みなしに閾値を通過するため、成長面だけでは警告が一度も出ない
+// - The check is a pure function (storageGuardDecision — generating
+//   8–9 GB for real is unrealistic, so unit tests pass the
+//   thresholds as arguments; the same shape as quotas.ts's
+//   *Exceeded)
+// - The measurement is fetched via the StorageMeter service (tests
+//   inject a fixed-size meter and pin the wiring of the acceptance
+//   paths — which surfaces get rejected, which still pass under
+//   rejection — against the real programs)
+// - The surfaces the refusal bites on = the project-content growth
+//   surfaces (§12-8's enumeration): value push, variable create /
+//   activation / rename / schema re-issue, environment rename,
+//   environment-create composite, DEK-wrap registration, add_member
+//   / grant_server, and the schemaPolicy change which needs no
+//   evacuation / release / remediation yet stacks an audit row.
+//   Reads (including the bulk pull that carries a var.read audit
+//   append — the evacuation path), deletions (the release means),
+//   revocation / permission-narrowing, rotation composites, leases,
+//   head declarations, standalone checkpoints, and dismiss do
+//   **not** call it (the surfaces that keep accepting under
+//   rejection — same section). The sole exception is a read that
+//   requires materializing the audit-head derived column
+//   (ensureStorageAdmitsAuditHeadExtension — below). The
+//   enumeration of which callers invoke ensure* is the contract,
+//   and storage-guard.test.ts pins both directions
+// - The check position is after the membership, role, existence
+//   (environment / variable), and layout-support-range checks
+//   (§11-2 — no project state to non-members; existence is the
+//   member-facing 404, and the support range is ruling CR, which
+//   puts the honest "update required" error first), and before the
+//   semantic checks like CAS / signature verification / quantity
+//   policy (resource protection takes priority over semantics)
+// - The warning (8 GB) goes to the ops log (aggregation and alerting
+//   are picked up by ops-alerts.ts's storage_warn_projects /
+//   storage_reject_projects from the storageLevel that ops-backup
+//   records). **Static messages only** (§11-5 / hosted-design.md
+//   §5-1 — no request-derived identifiers like the project ID =
+//   capability). Once each per warn band / reject band within a DO
+//   instance's lifetime (firing on every acceptance would make the
+//   log a write counter). Operator-side identification goes through
+//   the Workers Logs event envelope (the Durable Object id = the
+//   image of idFromName).
+//   **The observation point sits not only on the growth surfaces but
+//   also on the read surfaces that write audit rows (with-values
+//   pull, lease)** (observeStorageLevel — it does not refuse): a
+//   pull-dominated project crosses the threshold without any
+//   growth-surface write, so watching the growth surfaces alone
+//   would never warn
 
 import { Context, Effect, Layer } from "effect";
 
@@ -46,7 +69,7 @@ import type { DataRejectedError } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "./policy.ts";
 
-/** 実測量に対する判定(admit < warn < reject)。 */
+/** The decision for a measured size (admit < warn < reject). */
 export type StorageGuardDecision = "admit" | "warn" | "reject";
 
 export interface StorageGuardThresholds {
@@ -54,15 +77,16 @@ export interface StorageGuardThresholds {
   readonly rejectBytes: number;
 }
 
-/** policy.ts の起草値(§12-8 — 10 進 GB)。 */
+/** The draft values in policy.ts (§12-8 — decimal GB). */
 const STORAGE_GUARD_THRESHOLDS: StorageGuardThresholds = {
   warnBytes: DO_STORAGE_WARN_BYTES,
   rejectBytes: DO_STORAGE_REJECT_BYTES,
 };
 
 /**
- * §12-8: 実測量 → 判定の純関数。閾値は「以上」で判定する(拒否閾値ちょうどの
- * 実測は拒否 — 床へ近づく側に倒す)。
+ * §12-8: the pure function measured size → decision. Thresholds are
+ * inclusive (a measurement equal to the rejection threshold is a
+ * reject — tips toward the side approaching the floor).
  */
 export function storageGuardDecision(
   databaseSizeBytes: number,
@@ -77,29 +101,33 @@ export function storageGuardDecision(
   return "admit";
 }
 
-/** 運用ログの段(DO インスタンスごと各 1 回)。 */
+/** The ops-log bands (once each per DO instance). */
 type StorageGuardLogLevel = "warn" | "reject";
 
 interface StorageMeterShape {
-  /** DO SQLite の実測量(バイト)。SqlStorage.databaseSize の即時値(I/O なし)。 */
+  /** The DO SQLite's measured size in bytes. The instantaneous value of SqlStorage.databaseSize (no I/O). */
   readonly databaseSizeBytes: () => number;
   /**
-   * 運用ログの 1 回限りの発火記録。初回なら true(呼び出し側がログを出す)、
-   * 既出なら false。DO インスタンスの生存(メモリ)に束縛され、退去 → 再起動で
-   * リセットされる(再起動ごとに高々 1 回 — 監視の入力としては十分な密度)。
+   * Records a once-only ops-log firing. true on the first call
+   * (the caller emits the log), false when already emitted. Bound
+   * to the DO instance's lifetime (memory); reset on eviction →
+   * restart (at most once per restart — dense enough as monitoring
+   * input).
    */
   readonly noteLogged: (level: StorageGuardLogLevel) => boolean;
 }
 
 /**
- * 実測量の取得点(テストの注入点)。chain-do.ts が DO の SqlStorage で構成し、
- * storage-guard.test.ts は固定サイズの meter で実プログラムの結線を検査する。
+ * The measurement fetch point (the tests' injection point).
+ * chain-do.ts composes it over the DO's SqlStorage, and
+ * storage-guard.test.ts checks the real programs' wiring with a
+ * fixed-size meter.
  */
 export class StorageMeter extends Context.Service<StorageMeter, StorageMeterShape>()(
   "StorageMeter",
 ) {}
 
-/** meter の実体(SqlStorage 版・テストの固定サイズ版で共有する作り方)。 */
+/** The meter's substance (the construction shared by the SqlStorage version and the tests' fixed-size version). */
 export function makeStorageMeter(databaseSizeBytes: () => number): StorageMeterShape {
   const logged = new Set<StorageGuardLogLevel>();
   return {
@@ -118,23 +146,29 @@ export const storageMeterLayer = (sql: SqlStorage): Layer.Layer<StorageMeter> =>
   Layer.sync(StorageMeter, () => makeStorageMeter(() => sql.databaseSize));
 
 /**
- * 実測 → 判定 → 運用ログ(観測のみ — 拒否しない)。判定結果を返す。
+ * Measure → decide → ops log (observation only — does not refuse).
+ * Returns the decision.
  *
- * 成長面のガード(ensureStorageAdmitsGrowth)の前半であると同時に、**拒否しない
- * が監査行を書く読み取り面**(値付き pull の var.read・リースの server.* —
- * §12-8 の列挙 (a)(e))からも呼ぶ: 支配的な成長項が var.read であるプロジェクト
- * (SELF_HOSTING の記述どおり pull 主体のプロジェクト)は成長面の書き込みを
- * 伴わずに 8 GB → 9 GB を通過しうるため、警告の観測点を成長面だけに置くと
- * 「警告帯が運営の対応時間を買う」設計が pull 主体で成立しない。databaseSize は
- * 即時値で I/O を伴わないため、pull のホットパスに置いても費用は無視できる。
+ * It is the front half of the growth-surface guard
+ * (ensureStorageAdmitsGrowth), and is also called by **read
+ * surfaces that do not refuse but write audit rows** (with-values
+ * pull's var.read, lease's server.* — §12-8's enumeration (a)(e)):
+ * a project whose dominant growth term is var.read (pull-dominated
+ * projects, as SELF_HOSTING describes) can pass 8 GB → 9 GB with no
+ * growth-surface write, so placing the warning observation point
+ * only on growth surfaces would break the "the warning band buys
+ * the operator response time" design for pull-dominated projects.
+ * databaseSize is instantaneous and carries no I/O, so placing it
+ * on pull's hot path costs nothing.
  */
 export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, StorageMeter> =
   Effect.gen(function* () {
     const meter = yield* StorageMeter;
     const decision = storageGuardDecision(meter.databaseSizeBytes());
     if (decision === "warn" && meter.noteLogged("warn")) {
-      // 静的メッセージのみ(プロジェクト ID・サイズ等の可変値は書かない —
-      // サイズは監視の領分。ここは「到達した」という事実の 1 行)
+      // Static message only (no variable values like project ID or
+      // size — the size is the monitoring system's domain; this is
+      // the one line stating "it was reached")
       console.warn(
         "project storage crossed the warning threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are still accepted until the rejection threshold",
       );
@@ -148,10 +182,13 @@ export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, Sto
   });
 
 /**
- * 内容の成長面の受理プログラムが呼ぶガード(§12-8)。判定 = reject なら
- * limit-exceeded(resource `project-storage-bytes`、limit = 拒否閾値)で拒否し、
- * warn なら受理したまま運用ログを 1 回出す(observeStorageLevel)。呼ばない面
- * (読み取り・削除・失効・ローテーション等)の列挙は冒頭コメントと仕様の明示列挙。
+ * The guard the acceptance programs of content-growth surfaces
+ * call (§12-8). A reject decision refuses with limit-exceeded
+ * (resource `project-storage-bytes`, limit = the rejection
+ * threshold); a warn accepts while emitting one ops-log entry
+ * (observeStorageLevel). The enumeration of surfaces that do not
+ * call it (reads, deletions, revocations, rotations, etc.) is in
+ * the header comment and the spec's explicit enumeration.
  */
 export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, StorageMeter> =
   Effect.gen(function* () {
@@ -166,13 +203,19 @@ export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, S
   });
 
 /**
- * 監査ヘッド派生列(AUDIT_SPEC §5.1 — 遅延実体化)を読む経路のガード
- * (`GET /audit-head`・非空 audit_head_hash の checkpoint 公証)。読み取り形だが、
- * 列が MAX(seq) に未到達なら実体化 = **監査行数に比例する書き込み**(行あたり
- * ハッシュ 1 行 + 索引 — 監査表の数十 %)を伴い、拒否閾値〜床の 1 GB の余裕を
- * 単独で食い切りうる(未公証のまま 9 GB に達したプロジェクトの初回実体化)。
- * よって**実体化を要するときだけ**成長面として判定する — 列が最新なら読み取り
- * のみで、拒否下でも通る(§12-8 の列挙 (a) の例外注記)。
+ * The guard for paths that read the audit-head derived column
+ * (AUDIT_SPEC §5.1 — lazy materialization) (`GET /audit-head`,
+ * checkpoint notarization with a non-empty audit_head_hash).
+ * Read-shaped, but when the column is short of MAX(seq),
+ * materializing it carries **a write proportional to the audit
+ * row count** (one hash row + index per row — tens of percent of
+ * the audit table), and could eat the 1 GB of slack between the
+ * rejection threshold and the floor single-handedly (the first
+ * materialization of a project that reached 9 GB unnotarized).
+ * So it is judged as a growth surface **only when materialization
+ * is needed** — with the column up to date it is a pure read and
+ * passes even under rejection (§12-8's enumeration (a) exception
+ * note).
  */
 export const ensureStorageAdmitsAuditHeadExtension: Effect.Effect<
   void,

@@ -1,10 +1,12 @@
-// 存在ガードと数量ポリシー(AUTH_SPEC §12-8)。
+// Existence guards and quantity policies (AUTH_SPEC §12-8).
 //
-// - requireActive*: 環境・変数の存在(非 tombstone)ガード。プログラム層と
-//   複合リクエスト(composite-programs.ts)が共有する
-// - *Exceeded: 上限判定の純関数(上限行数の実生成は非現実的なため、判定は
-//   ユニットテスト用に公開する — chain-accept.ts の chainCapacityExceeded と同じ形)
-// - ensure*: 判定 + limit-exceeded 拒否への持ち上げ
+// - requireActive*: existence (non-tombstone) guards for
+//   environments and variables; shared by the program layer and
+//   composite requests (composite-programs.ts)
+// - *Exceeded: pure functions for cap checks (actually generating the
+//   cap row count is unrealistic, so the checks are exposed for unit
+//   tests — the same shape as chain-accept.ts's chainCapacityExceeded)
+// - ensure*: the check lifted into a limit-exceeded rejection
 
 import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -26,18 +28,21 @@ import {
 } from "./policy.ts";
 
 /**
- * AUTH_SPEC §11-3: org あたりのアクティブプロジェクト数上限。
- * 「この org に 1 件追加すると上限を超えるか」を数値のみで判定する純関数
- * (上限件数の実生成は重いため、判定はユニットテスト用に公開する — 他の
- * *Exceeded と同じ形)。判定材料の取得(D1 count)と判定点(init 受理 —
- * org 権限確認の後・DO init の前)は worker 側 handlers-membership.ts。
- * 上限到達時の扱い(DO への report-only 問い合わせで修復経路を塞がない)も同所。
+ * AUTH_SPEC §11-3: the cap on active projects per org.
+ * A pure function that decides, from numbers only, "does adding one
+ * project to this org exceed the cap" (actually generating the cap
+ * count is heavy, so the check is exposed for unit tests — the same
+ * shape as the other *Exceeded). Acquiring the inputs (a D1 count)
+ * and the check point (at init acceptance — after the org-permission
+ * check, before DO init) live in worker-side handlers-membership.ts.
+ * So does the treatment on reaching the cap (a report-only query to
+ * the DO that does not plug the repair path).
  */
 export function projectQuotaExceeded(activeProjectCount: number): boolean {
   return activeProjectCount + 1 > MAX_ACTIVE_PROJECTS_PER_ORG;
 }
 
-/** 現存(非 tombstone)の環境。存在しなければ environment-not-found。 */
+/** An extant (non-tombstone) environment. Absent → environment-not-found. */
 export const requireActiveEnvironment = (environmentId: string) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
@@ -48,7 +53,7 @@ export const requireActiveEnvironment = (environmentId: string) =>
     return environment;
   });
 
-/** 現存(非 tombstone)の変数。存在しなければ variable-not-found。 */
+/** An extant (non-tombstone) variable. Absent → variable-not-found. */
 export const requireActiveVariable = (environmentId: string, variableId: string) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
@@ -59,7 +64,7 @@ export const requireActiveVariable = (environmentId: string, variableId: string)
     return variable;
   });
 
-/** 環境数の数量ポリシー(§12-8。複合作成 — composite-programs.ts — から呼ぶ)。 */
+/** The quantity policy on environment count (§12-8; called from composite creation — composite-programs.ts). */
 export const ensureEnvironmentQuota = Effect.gen(function* () {
   const store = yield* DataStore;
   const counts = yield* store.countEnvironments;
@@ -79,7 +84,7 @@ export const ensureEnvironmentQuota = Effect.gen(function* () {
   }
 });
 
-/** 変数数・変数行数(tombstone 込み)の数量ポリシー(§12-8)。 */
+/** The quantity policy on variable count and variable-row count (tombstones included) (§12-8). */
 export const ensureVariableQuota = (environmentId: string) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
@@ -101,13 +106,17 @@ export const ensureVariableQuota = (environmentId: string) =>
   });
 
 /**
- * metaVersion 行数の上限(仮裁定 — §12-8 の「バージョン数 / 変数」と同値を
- * ステートメント行にも適用。rename 連打による DO ストレージ肥大の遮断)。
- * 削除(status deleted)は対象外: tombstone は連鎖の終端で追加行は高々 1 行
- * であり、上限で削除まで遮断すると上限到達リソースがどの role でも恒久的に
- * 削除不能になる(§12-8 の「削除で解放される」原則との衝突)。
- * 判定は保存済み状態(latest + 1)基準: CAS 前の stale な申告 metaVersion を
- * limit-exceeded と誤報せず、実際に上限へ達したときのみ 422 にする。
+ * The cap on metaVersion row count (interim ruling — applies the
+ * same value as §12-8's "versions / variable" to statement rows.
+ * Blocks DO storage bloat via rename spam).
+ * Deletion (status deleted) is out of scope: a tombstone is the
+ * chain's terminal and adds at most one row, and blocking even
+ * deletion at the cap would make a capped resource permanently
+ * undeletable under any role (a collision with §12-8's "freed by
+ * deletion" principle).
+ * The check is against the stored state (latest + 1): a stale,
+ * pre-CAS declared metaVersion is not misreported as limit-exceeded
+ * — it becomes a 422 only when the cap is actually reached.
  */
 export function metaVersionsExceeded(
   latestMetaVersion: number,
@@ -116,7 +125,7 @@ export function metaVersionsExceeded(
   return status !== "deleted" && latestMetaVersion + 1 > MAX_VERSIONS_PER_VARIABLE;
 }
 
-/** §12-8: 累積暗号文バイトの上限。追加分を含めて判定する純関数(ユニットテスト用に公開)。 */
+/** §12-8: the cap on accumulated ciphertext bytes. A pure function that includes the addition in the check (exposed for unit tests). */
 export function projectBytesExceeded(storedBytes: number, addedBytes: number): boolean {
   return storedBytes + addedBytes > MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES;
 }
@@ -135,14 +144,16 @@ export const ensureProjectCapacity = (addedBytes: number) =>
   });
 
 /**
- * §12-8: プロジェクト累積の DEK ラップ行数上限。追加分を含めて判定する純関数
- * (上限行数の実生成は非現実的なため、判定はユニットテスト用に公開する)。
+ * §12-8: the cap on accumulated DEK-wrap rows per project. A pure
+ * function that includes the addition in the check (actually
+ * generating the cap row count is unrealistic, so it is exposed for
+ * unit tests).
  */
 export function wrapRowsExceeded(storedRows: number, addedRows: number): boolean {
   return storedRows + addedRows > MAX_PROJECT_DEK_WRAP_ROWS;
 }
 
-/** ラップ挿入の全経路(DEK 登録・環境作成)で呼ぶ(§12-8)。 */
+/** Called on every wrap-insertion path (DEK registration, environment creation) (§12-8). */
 export const ensureWrapRowCapacity = (addedRows: number) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
@@ -157,30 +168,33 @@ export const ensureWrapRowCapacity = (addedRows: number) =>
   });
 
 // ---------------------------------------------------------------------------
-// 四眼の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則ではない。
-// 設計録 es-design.md §11 K5-B / K5-C)。判定材料は DO のチェーン導出状態
-// (pending 集合)とサーバー時計。判定順は上界(エントリ固有)→ pending 上限
-// (プロジェクト状態)— サイズ → 容量の既存順と同じ「エントリ固有 → 状態」。
-// 作成時点で既に失効している提案は拒否しない(K5-C: 上限の計算から除外される
-// だけで資源を占有せず、合意規則が承認を `proposal-expired` で閉じる)。
+// The acceptance policy for four-eyes proposals (AUTH_SPEC §12-8 /
+// CRYPTO_SPEC §6.4 — not consensus rules; design record es-design.md
+// §11 K5-B / K5-C). The inputs are the DO's chain-derived state (the
+// pending set) and the server clock. The check order is the upper
+// bound (entry-specific) → the pending cap (project state) — the same
+// "entry-specific → state" as the existing size → capacity order.
+// A proposal already expired at creation is not rejected (K5-C: it is
+// merely excluded from the cap computation, occupies no resource, and
+// the consensus rules close its approval as `proposal-expired`).
 // ---------------------------------------------------------------------------
 
-/** サーバー時計で期限内(= pending 上限の計算に数える)か。等号は期限内(§6.2 の `≤` と同じ向き)。 */
+/** Whether a proposal is within its lifetime on the server clock (= counted in the pending-cap computation). Equality counts as in-lifetime (same direction as §6.2's `≤`). */
 export function proposalIsLive(expiresAtMs: number, nowMs: number): boolean {
   return expiresAtMs >= nowMs;
 }
 
-/** §6.4: `expires_at_ms` が受理時サーバー時計 + 30 日を超えるか(純関数 — ユニットテスト用に公開)。 */
+/** §6.4: whether `expires_at_ms` exceeds the server clock at acceptance + 30 days (pure function — exposed for unit tests). */
 export function proposalLifetimeExceeded(expiresAtMs: number, nowMs: number): boolean {
   return expiresAtMs > nowMs + MAX_PROPOSAL_LIFETIME_MS;
 }
 
-/** §12-8: 期限内の pending 提案に 1 件足すと上限を超えるか(純関数 — ユニットテスト用に公開)。 */
+/** §12-8: whether adding one to the in-lifetime pending proposals exceeds the cap (pure function — exposed for unit tests). */
 export function pendingProposalsExceeded(livePendingCount: number): boolean {
   return livePendingCount + 1 > MAX_PENDING_PROPOSALS;
 }
 
-/** 現導出状態の pending 集合のうち、サーバー時計で期限内のものの数。 */
+/** The count of pending-set entries in the current derived state that are in-lifetime on the server clock. */
 export function countLivePendingProposals(
   pending: ReadonlyMap<string, PendingProposal>,
   nowMs: number,
@@ -195,8 +209,9 @@ export function countLivePendingProposals(
 }
 
 /**
- * `propose` の受理ポリシー(上界 → pending 上限)。呼び出しはメンバーシップ判定と
- * 成長ガードの後・CAS / verifyChain の前(chain-do.ts の appendProgram)。
+ * The acceptance policy of `propose` (upper bound → pending cap).
+ * Called after the membership check and the growth guard, before CAS
+ * / verifyChain (appendProgram in chain-do.ts).
  */
 export const ensureProposalAdmitted = (
   expiresAtMs: number,

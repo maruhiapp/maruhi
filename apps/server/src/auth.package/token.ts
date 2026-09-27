@@ -1,12 +1,15 @@
-// TokenService の本実装(AUTH_SPEC §6)。
+// The actual implementation of TokenService (AUTH_SPEC §6).
 //
-// - 形式: `maruhi_pat_` + Base62 乱数(256-bit 相当、43 文字)
-// - 検証: 提示トークンの SHA-256 を DB と照合し、タイミング安全比較で確認する
-// - 発行経路は CLI ログイン(§4)のみ(v1 線引き。管理系 = 自トークンの失効 +
-//   一覧・指定失効はハンドラが TokenRepo を直接使う)
-// - expires_at は発行時に固定(§6 の既定 TTL)。期限切れ・失効・不明は
-//   一様に匿名へ畳む(= 401。区別をワイヤに出さない)
-// - 生値・ハッシュをログに出さない(AUTH_SPEC §10)
+// - Format: `maruhi_pat_` + Base62 random (256-bit equivalent, 43 chars)
+// - Verification: the presented token's SHA-256 is checked against the DB
+//   and confirmed with a timing-safe comparison
+// - The only issuance path is CLI login (§4) (the v1 dividing line; the
+//   management surface — revoking one's own token, listing, targeted
+//   revocation — uses TokenRepo directly from the handlers)
+// - expires_at is fixed at issuance (§6's default TTL). Expired / revoked /
+//   unknown all fold uniformly into anonymous (= 401; no distinction on the
+//   wire)
+// - Raw values and hashes are never logged (AUTH_SPEC §10)
 
 import type { Principal, TokenServiceShape } from "@maruhi/core";
 import { anonymousPrincipal, TokenLimitReachedError } from "@maruhi/core";
@@ -18,10 +21,10 @@ import { constantTimeEqual, randomBase62, sha256Hex, ulid } from "../ids.ts";
 
 const TOKEN_PREFIX = "maruhi_pat_";
 
-/** ユーザーあたりのトークン本数上限(AUTH_SPEC §6)。 */
+/** Per-user cap on the number of tokens (AUTH_SPEC §6). */
 const MAX_TOKENS_PER_USER = 100;
 
-/** 表示用プレフィックス(例: `maruhi_pat_Ab12…`)。生値の先頭 4 文字まで。 */
+/** Display prefix (e.g. `maruhi_pat_Ab12…`). Up to the raw value's first 4 characters. */
 function displayPrefix(rawToken: string): string {
   return rawToken.slice(0, TOKEN_PREFIX.length + 4);
 }
@@ -29,17 +32,17 @@ function displayPrefix(rawToken: string): string {
 const hashOf = (rawToken: string): Effect.Effect<string> =>
   Effect.promise(() => sha256Hex(rawToken));
 
-/** ハッシュ照合済みレコードを主体へ写す(期限切れ・不一致は匿名)。 */
+/** Maps a hash-matched record onto a principal (expired / mismatched become anonymous). */
 function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: number): Principal {
   if (record === null || !constantTimeEqual(tokenHash, record.tokenHash)) {
     return anonymousPrincipal;
   }
-  // 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)
+  // Expiry check (AUTH_SPEC §6 — W3a ruling CE)
   const expiresAtMs = record.expiresAtMs;
   if (expiresAtMs <= nowMs) {
     return anonymousPrincipal;
   }
-  // 判定を通過した主体は常に非 null の期限を持つ(W3a 裁定 CI — /auth/me の自己開示)
+  // A principal that passed the check always carries a non-null expiry (W3a ruling CI — /auth/me self-disclosure)
   return {
     kind: "token",
     userId: record.userId,
@@ -49,7 +52,7 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
   };
 }
 
-/** last_used_at の書き込み間引き(全リクエスト D1 UPDATE を避ける。粒度 1 時間)。 */
+/** Write-thinning for last_used_at (avoids a D1 UPDATE per request; granularity 1 hour). */
 const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
 function resolveByHash(tokens: TokenRepoShape, tokenHash: string): Effect.Effect<Principal> {
@@ -74,13 +77,16 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();
         const createdAtMs = Date.now();
-        // expires_at は発行時に固定する(AUTH_SPEC §6 — セッション §5 の
-        // スライディング更新と意図的に非対称: トークンには定期再認証を強制する)
+        // expires_at is fixed at issuance (AUTH_SPEC §6 — deliberately
+        // asymmetric to the session §5 sliding renewal: tokens are forced
+        // through periodic re-authentication)
         const expiresAtMs = createdAtMs + ttlMs;
-        // 同一 (user, name) は再発行 = ローテーション(旧行の失効と新行の挿入を
-        // atomic batch で行う)。別名の新規発行は repo の条件付き INSERT で
-        // ユーザー上限と同じ文に畳む: サービス側の count → insert は
-        // 異名の並行発行が同じ under-limit を観測して上限を超えられる
+        // Same (user, name) = reissuance = rotation (the old row's
+        // revocation and the new row's insertion happen in one atomic
+        // batch). Fresh issuance under a different name is folded into the
+        // same statement as the user cap via the repo's conditional INSERT:
+        // a service-side count → insert could let concurrent differently
+        // named issuances observe the same under-limit state and exceed it
         const admitted = yield* tokens.issueForUserWithinLimit(
           {
             id: tokenId,
@@ -111,7 +117,7 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
           record === null || !constantTimeEqual(tokenHash, record.tokenHash)
             ? Effect.void
             : Effect.asVoid(
-                // 自己失効(CLI logout)では actor のトークン = 失効対象そのもの
+                // In self-revocation (CLI logout) the actor's token = the revocation target itself
                 tokens.revokeById(record.id, record.userId, Date.now(), {
                   userId: record.userId,
                   apiTokenId: record.id,

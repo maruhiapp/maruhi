@@ -1,18 +1,25 @@
-// master 鍵ラップ台帳 API のハンドラ(AUTH_SPEC §13-6〜13-10 — KL3。
-// CRYPTO_SPEC §8 のクラス S / G / H のサーバー面)。
+// Handlers for the master-key wrap ledger API (AUTH_SPEC §13-6–13-10 —
+// KL3; the server side of CRYPTO_SPEC §8's classes S / G / H).
 //
-// 認可(§13-7):
-//   - `status`: 認証済み主体すべて(セッション可 — §5 の許可列挙)。ラップ・分片・
-//     秘密のパラメータを運ばない
-//   - それ以外: 鍵素材クラスのトークン条件(`*` × admin — ensureKeyMaterialAccess。
-//     セッション主体は AuthMiddleware の宣言層が先に 403 を返す)
-//   - ハンドオフの照会 / 承認: 呼び出し主体が ward 本人か ward の保護者のときだけ
-//     要求が見える。それ以外・不明・失効は一様 404(§11-2 の存在秘匿と同じ規律)
+// Authorization (§13-7):
+//   - `status`: every authenticated principal (sessions allowed — §5's
+//     allowed enumeration). Carries no wraps, segments, or secret
+//     parameters
+//   - Everything else: the key-material-class token condition (`*` ×
+//     admin — ensureKeyMaterialAccess. A session principal gets a 403
+//     earlier from AuthMiddleware's declaration layer)
+//   - Handoff query / approval: a request is visible only when the
+//     caller is the ward themselves or one of the ward's guardians.
+//     Anything else — unknown or expired — is a uniform 404 (same
+//     discipline as §11-2's existence hiding)
 //
-// サーバーはラップ・分片の中身を解釈しない(不透明な暗号文の保存・配布のみ)。
-// 鍵の正しさ(保護者の enc 公開鍵がチェーン導出の鍵と一致するか)も検証しない —
-// 真実源は ward クライアントの確認(CRYPTO_SPEC §8.3)であり、二重の真実源を
-// 作らない。E.pub はワイヤに現れない(コードは人が運ぶ — §8.4)。
+// The server does not interpret the contents of wraps or segments
+// (storage and distribution of opaque ciphertext only). It also does
+// not verify key correctness (whether a guardian's enc public key
+// matches the chain-derived key) — the source of truth is the ward
+// client's confirmation (CRYPTO_SPEC §8.3), and no duplicate source of
+// truth is created. E.pub never appears on the wire (the code is
+// carried by humans — §8.4).
 
 import {
   HANDOFF_REQUEST_TTL_MS,
@@ -48,10 +55,11 @@ import type {
   KeyWrapWindowKind,
 } from "./key-wrap-domain.ts";
 
-/** 窓の拒否を型付き 429 へ写す。 */
+/** Maps a window refusal onto a typed 429. */
 function rateLimited(
-  // 台帳の 3 窓のみ(端末追加要求の窓 `device-request` は devices グループが自分の
-  // 型付き 429 へ写す — handlers-devices.ts)
+  // Only the ledger's 3 windows (the device-add-request window
+  // `device-request` is mapped onto its own typed 429 by the devices
+  // group — handlers-devices.ts)
   window: Exclude<KeyWrapWindowKind, "device-request">,
   decision: KeyWrapWindowDecision,
 ): Effect.Effect<void, KeyWrapRateLimitedError> {
@@ -62,7 +70,7 @@ function rateLimited(
       );
 }
 
-/** passkey 行の公開パラメータ(§13-9 — サーバーは書いた JSON をそのまま返す)。 */
+/** The public parameters of a passkey row (§13-9 — the server returns the JSON it wrote verbatim). */
 interface PasskeyParams {
   readonly credentialIdHex: string;
   readonly prfSaltHex: string;
@@ -71,8 +79,10 @@ interface PasskeyParams {
 }
 
 function parsePasskeyParams(json: string): PasskeyParams {
-  // 書き込みは本ファイルの passkeyRegister のみ(Schema 検証済みの値の JSON 化)。
-  // 解釈できない行は実装バグ / DB 破損であり、黙って別の形で配布しない
+  // The only writer is this file's passkeyRegister (JSON-ifying
+  // Schema-validated values). An unparseable row is an implementation
+  // bug / DB corruption — do not silently redistribute it in another
+  // shape
   const parsed: unknown = JSON.parse(json);
   if (
     typeof parsed !== "object" ||
@@ -92,12 +102,16 @@ function parsePasskeyParams(json: string): PasskeyParams {
 }
 
 /**
- * 分片集合の構造検査(§13-7 / §13-8 — 端末行。2026-09-19 DK / 設計録 §8 K3-10):
- * **論理分片** = distinct な share_index が 1..n をちょうど 1 回ずつ覆う・同じ
- * share_index は同じ保護者・保護者が論理分片を跨いで重複しない・ward 自身を含まない・
- * `all` は 2 人以上。端末行は同じ (share_index, 保護者) に端末鍵 FP が異なる行が
- * 複数並ぶ形で、(share_index, FP) の重複と 1 保護者あたりの端末行数(16 — §12-8)超過は
- * `duplicate-guardian` / `share-count`。
+ * Structural check of a segment set (§13-7 / §13-8 — device rows.
+ * 2026-09-19 DK / design record §8 K3-10):
+ * **logical segments** = distinct share_index values cover 1..n
+ * exactly once each; the same share_index means the same guardian; a
+ * guardian does not repeat across logical segments; the ward itself is
+ * not included; `all` requires at least 2 people. Device rows are a
+ * shape where multiple rows with different device-key FPs line up
+ * under the same (share_index, guardian); a duplicated
+ * (share_index, FP) or more than the per-guardian device-row count
+ * (16 — §12-8) is `duplicate-guardian` / `share-count`.
  */
 interface LogicalShareIndex {
   readonly guardianOfIndex: ReadonlyMap<number, string>;
@@ -105,8 +119,9 @@ interface LogicalShareIndex {
 }
 
 /**
- * 端末行を論理分片(share_index)ごとに畳む。同じ share_index に 2 人の保護者、または
- * 同じ (share_index, FP) が 2 行あれば `duplicate-guardian`。
+ * Folds device rows into logical segments (per share_index). Two
+ * guardians under the same share_index, or two rows of the same
+ * (share_index, FP), is `duplicate-guardian`.
  */
 function indexLogicalShares(
   shares: readonly {
@@ -166,10 +181,12 @@ function guardianPolicyViolation(input: {
 }
 
 /**
- * 要求の照会・承認で呼び出し主体が取れる役割(§13-7 — 2026-09-19 DK K4): ward
- * 本人は要求を照会できるが承認の役割を持たない(空 — 旧端末経路は撤去。予備鍵の
- * 復元は保護者の承認だけ)、ward の保護者 = 自分の分片。どちらでもなければ null
- * (一様 404)。
+ * The roles a caller may take for a request's query / approval
+ * (§13-7 — 2026-09-19 DK K4): the ward themselves may query the
+ * request but holds no approval role (empty — the old device path was
+ * removed; recovery of the spare key is guardians' approval only); a
+ * ward's guardian = their own segment. Anything else is null (uniform
+ * 404).
  */
 function rolesFor(
   repo: KeyWrapRepoShape,
@@ -183,7 +200,8 @@ function rolesFor(
     Effect.map((shares) =>
       shares.length === 0
         ? null
-        : // 役割は論理分片(グループ × share_index)ごと 1 つ — 端末行を畳む(DK)
+        : // One role per logical segment (group × share_index) —
+          // device rows are folded (DK)
           logicalShareRoles(shares),
     ),
   );
@@ -195,7 +213,7 @@ type HandoffRole = {
   readonly shareIndex: number;
 };
 
-/** 端末行の列 → 論理分片ごとの役割(同じ (group, share_index) は 1 つ)。 */
+/** Column of device rows → per-logical-segment roles (the same (group, share_index) appears once). */
 function logicalShareRoles(
   shares: readonly {
     readonly groupId: string;
@@ -216,9 +234,12 @@ function logicalShareRoles(
 }
 
 /**
- * 役割と承認 payload の整合(§13-7): 保護者は自分の (group, share_index) だけを
- * 承認できる。照合は保存行(roles)から行い、payload の申告値で認可しない。ward
- * 本人の役割は空なので、自分の要求は承認できない(旧端末経路の撤去 — DK K4)。
+ * Consistency between roles and the approval payload (§13-7): a
+ * guardian may approve only their own (group, share_index). Matching
+ * is done from the stored rows (roles); authorization never consults
+ * the payload's declared values. Since the ward's own role set is
+ * empty, they cannot approve their own request (removal of the old
+ * device path — DK K4).
  */
 function approvalPermitted(
   roles: readonly HandoffRole[],
@@ -229,14 +250,14 @@ function approvalPermitted(
   );
 }
 
-/** 削除系の共通応答: 消せたら 204、対象が無ければ 404。 */
+/** The shared response of deletion endpoints: 204 when removed, 404 when the target is absent. */
 function noContentOrNotFound(deleted: boolean) {
   return deleted
     ? Effect.succeed(HttpServerResponse.empty({ status: 204 }))
     : Effect.fail(new KeyWrapNotFoundError());
 }
 
-/** ward 本人か ward の保護者にだけ見える要求を解決する(それ以外は一様 404)。 */
+/** Resolves a request visible only to the ward themselves or a ward's guardian (anything else is a uniform 404). */
 function visibleRequest(
   repo: KeyWrapRepoShape,
   requestId: string,
@@ -289,7 +310,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
               wrapId: p.wrapId,
               label: params.label ?? null,
               credentialIdHex: params.credentialIdHex,
-              // 公開パラメータ(§13-7 2026-09-13 改訂): 復元は儀式の前に salt を要する
+              // Public parameters (§13-7, 2026-09-13 revision):
+              // recovery needs the salt before the ceremony
               prfSaltHex: params.prfSaltHex,
               updatedAtMs: p.updatedAtMs,
             };
@@ -303,7 +325,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        // wrap_id はクライアント採番(AAD が束縛する — CRYPTO_SPEC §8.1)
+        // wrap_id is client-assigned (the AAD binds it — CRYPTO_SPEC §8.1)
         const wrapId = payload.wrapId;
         const params: PasskeyParams = {
           credentialIdHex: payload.credentialIdHex,
@@ -335,7 +357,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        // 未登録 404 は窓を消費しない(§13-8)
+        // A not-registered 404 does not consume the window (§13-8)
         const record = yield* repo.passkeyFind(principal.userId, params.wrapId);
         if (record === null) {
           return yield* Effect.fail(new KeyWrapNotFoundError());
@@ -405,7 +427,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         if (missing.length > 0) {
           return yield* Effect.fail(new KeyWrapPolicyError({ reason: "unknown-guardian" }));
         }
-        // group_id はクライアント採番(AAD / 分片 info が束縛する — CRYPTO_SPEC §8.3)
+        // group_id is client-assigned (the AAD / segment info binds it — CRYPTO_SPEC §8.3)
         const groupId = payload.groupId;
         const decision = yield* repo.guardianCreate({
           userId: principal.userId,
@@ -486,7 +508,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const shares = yield* repo.sharesOfGuardian(principal.userId);
-        // 一覧は論理分片(グループ)ごと 1 行 — 端末行を畳む(2026-09-19 DK)
+        // The list is one row per logical segment (group) — device
+        // rows are folded (2026-09-19 DK)
         const seen = new Set<string>();
         return {
           wards: shares
@@ -515,14 +538,17 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const shares = yield* repo.sharesOfGuardian(principal.userId);
-        // 自分の端末行(FP 昇順 — repo が並べる)。全行が deviceShares(設計録 §8 K3-10)。
-        // グループの属性(ward・mode・shareIndex)は先頭行から取る
+        // The caller's own device rows (ascending FP — repo orders
+        // them). Every row is a deviceShares entry (design record §8
+        // K3-10). The group's attributes (ward, mode, shareIndex) come
+        // from the first row
         const deviceRows = shares.filter((s) => s.groupId === params.groupId);
         const share = deviceRows[0];
         if (share === undefined) {
           return yield* Effect.fail(new KeyWrapNotFoundError());
         }
-        // 分片の取得は承認窓で数える(§13-8)— 要監視イベント
+        // Segment fetches are counted in the approval window (§13-8)
+        // — a watch-list event
         yield* rateLimited(
           "approval",
           yield* repo.consumeWindow({
@@ -558,7 +584,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
         const nowMs = Date.now();
-        // 日和見削除(失効 + 猶予を過ぎた要求)
+        // Opportunistic deletion (requests past expiry + grace)
         yield* repo.handoffSweep(nowMs);
         yield* rateLimited(
           "handoff-request",
@@ -567,8 +593,10 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             kind: "handoff-request",
             limit: HANDOFF_REQUEST_LIMIT,
             nowMs,
-            // 要求の監査(auth.key_handoff_requested)は行の挿入と同一 batch
-            // (handoffCreate)で記録する — 409(既存 id)を要求として記録しない
+            // The request's audit (auth.key_handoff_requested) is
+            // recorded in the same batch as the row insert
+            // (handoffCreate) — a 409 (existing id) is not recorded as
+            // a request
           }),
         );
         const decision = yield* repo.handoffCreate({
@@ -626,8 +654,10 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             kind: "approval",
             limit: APPROVAL_LIMIT,
             nowMs,
-            // 承認自体の監査は挿入と同一 batch(handoffApprove)で記録する。窓の
-            // 消費は監査を伴わない(同じ承認を 2 度記録しない)
+            // The approval's own audit is recorded in the same batch
+            // as the insert (handoffApprove). The window consumption
+            // carries no audit (the same approval is not recorded
+            // twice)
           }),
         );
         const decision = yield* repo.handoffApprove({
@@ -662,7 +692,8 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const repo = yield* KeyWrapRepo;
         const nowMs = Date.now();
         const request = yield* repo.handoffFind(params.requestId, nowMs);
-        // 承認の取得は ward 本人のみ(保護者には一様 404)
+        // Fetching approvals is ward-only (guardians get the uniform
+        // 404)
         if (request === null || request.userId !== principal.userId) {
           return yield* Effect.fail(new HandoffNotFoundError());
         }

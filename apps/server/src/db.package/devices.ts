@@ -1,13 +1,19 @@
-// 端末登録簿と端末追加要求のリポジトリ(AUTH_SPEC §13-11 — 2026-09-19 DK K3)。
+// Repository of the device registry and device-add requests
+// (AUTH_SPEC §13-11 — 2026-09-19 DK K3).
 //
-// - advisory の帳簿: 表示名・トークンの対応・追加要求の公開鍵の置き場。検証・認可の
-//   入力にならない(真実源は各プロジェクトのチェーン)。監査イベントは持たない
-//   (§6 のトークン一覧と同じ規律 — 端末の追加・失効の記録はチェーンのミラー行)
-// - Drizzle の型・クエリはこのファイル(db.package 境界内)に閉じる。公開シェイプは
-//   ドメイン型と Effect のみ
-// - 要求行は状態列を持たない(行 = 未消費の要求。失効行は読み取りで隠し、作成・
-//   一覧で日和見削除 — 設計録 dk-design.md §8 K3-8)。レート窓は key_wrap_windows の
-//   種別 `device-request`(KeyWrapRepo.consumeWindow — 固定窓の実装を増やさない)
+// - An advisory ledger: where display labels, token associations, and
+//   request public keys live. Never an input to verification or
+//   authorization (the source of truth is each project's chain). No
+//   audit events (same discipline as §6's token listing — device
+//   additions and revocations are recorded as the chain's mirror rows)
+// - Drizzle types and queries stay inside this file (within the
+//   db.package boundary). The public shapes are domain types and Effect
+//   only
+// - Request rows carry no state column (a row = an unconsumed request;
+//   expired rows are hidden on reads and opportunistically deleted on
+//   create / list — design record dk-design.md §8 K3-8). The rate window
+//   uses key_wrap_windows with kind `device-request`
+//   (KeyWrapRepo.consumeWindow — no extra fixed-window implementation)
 
 import { and, count, eq, gt, lte, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -17,10 +23,10 @@ import { deviceAddRequests, devices } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-/** D1 の障害は defect(Effect.promise)。ドメイン上の分岐だけを値で返す。 */
+/** D1 failures are defects (Effect.promise). Only domain-level branches are returned as values. */
 const run = <A>(thunk: () => Promise<A>): Effect.Effect<A> => Effect.promise(thunk);
 
-/** 登録簿 1 行(§13-11)。 */
+/** One registry row (§13-11). */
 export interface DeviceRecord {
   readonly keyFingerprintHex: string;
   readonly encPubHex: string;
@@ -30,7 +36,7 @@ export interface DeviceRecord {
   readonly createdAtMs: number;
 }
 
-/** 端末追加要求 1 行(未失効のもののみ返す)。 */
+/** One device-add request row (only unexpired ones are returned). */
 export interface DeviceAddRequestRecord {
   readonly keyFingerprintHex: string;
   readonly encPubHex: string;
@@ -42,9 +48,11 @@ export interface DeviceAddRequestRecord {
 export interface DeviceRepoShape {
   readonly list: (userId: string) => Effect.Effect<readonly DeviceRecord[]>;
   /**
-   * 登録簿の登録・表示名の更新(upsert)。新規行は `limit` 未満のときだけ入る
-   * (条件付き INSERT — 並行登録が同じ under-limit を観測しても超えない)。既存行の
-   * 更新は上限に数えない。戻り値 false = 上限拒否。
+   * Register in the registry / update the display label (upsert). A new
+   * row enters only when under `limit` (a conditional INSERT — concurrent
+   * registrations observing the same under-limit cannot exceed it).
+   * Updating an existing row does not count toward the cap. Return value
+   * false = cap refusal.
    */
   readonly upsert: (input: {
     readonly userId: string;
@@ -56,11 +64,12 @@ export interface DeviceRepoShape {
     readonly limit: number;
     readonly nowMs: number;
   }) => Effect.Effect<boolean>;
-  /** 戻り値 = 実際に行が消えたか(false は呼び出し側の一様 404)。 */
+  /** Return value = whether a row actually disappeared (false → the caller's uniform 404). */
   readonly remove: (userId: string, keyFingerprintHex: string) => Effect.Effect<boolean>;
   /**
-   * 追加要求の作成。同じ FP の未失効の要求 = `request-exists`、登録簿の既存行 =
-   * `device-registered`(§13-11 の 409)。失効した同 FP の要求は置き換える。
+   * Create an add request. An unexpired request for the same FP =
+   * `request-exists`; an existing registry row = `device-registered`
+   * (§13-11's 409s). An expired request for the same FP is replaced.
    */
   readonly requestCreate: (input: {
     readonly userId: string;
@@ -71,7 +80,7 @@ export interface DeviceRepoShape {
     readonly nowMs: number;
     readonly ttlMs: number;
   }) => Effect.Effect<"created" | "request-exists" | "device-registered">;
-  /** 未失効の要求のみ。 */
+  /** Unexpired requests only. */
   readonly requestList: (
     userId: string,
     nowMs: number,
@@ -81,9 +90,9 @@ export interface DeviceRepoShape {
     keyFingerprintHex: string,
     nowMs: number,
   ) => Effect.Effect<DeviceAddRequestRecord | null>;
-  /** 戻り値 = 実際に行が消えたか(失効済みの行も消せる — 掃除を兼ねる)。 */
+  /** Return value = whether a row actually disappeared (expired rows can be removed too — doubles as cleanup). */
   readonly requestCancel: (userId: string, keyFingerprintHex: string) => Effect.Effect<boolean>;
-  /** 失効した要求の日和見削除(当該 user のみ — 作成・一覧の前に呼ぶ)。 */
+  /** Opportunistic deletion of expired requests (that user only — call before create / list). */
   readonly requestSweep: (userId: string, nowMs: number) => Effect.Effect<void>;
 }
 
@@ -123,11 +132,15 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
       }),
     upsert: ({ userId, keyFingerprintHex, encPubHex, sigPubHex, label, tokenId, limit, nowMs }) =>
       run(async () => {
-        // 1 文の上限付き INSERT … SELECT … ON CONFLICT DO UPDATE(TokenRepo と同じ形 —
-        // 並行登録の超過を許さない)。同じ (user, FP) の行が既にあれば表示名・トークン id
-        // だけを更新する(公開鍵は FP が同じなら同じ鍵対 = 不変)。存在する行は上限に
-        // 数えない(更新は WHERE の OR 側で通す)。同じ FP への並行した初回 PUT は片方が
-        // INSERT、もう片方が主キー衝突 → DO UPDATE に倒れ、どちらも冪等に 204 になる
+        // A single capped INSERT … SELECT … ON CONFLICT DO UPDATE
+        // statement (same shape as TokenRepo — concurrent registrations
+        // cannot overrun). If a row for the same (user, FP) exists, only
+        // the label and token id are updated (the public keys are the
+        // same key pair when the FP matches = immutable). Existing rows
+        // do not count toward the cap (updates pass on the WHERE's OR
+        // side). Concurrent first PUTs to the same FP split into one
+        // INSERT and one primary-key conflict → DO UPDATE; both end up
+        // an idempotent 204
         const upserted = await db
           .insert(devices)
           .select(
@@ -173,7 +186,8 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
         if ((registered?.n ?? 0) > 0) {
           return "device-registered";
         }
-        // 未失効の同 FP は衝突。失効済みは置き換える(ON CONFLICT … WHERE expires_at <= now)
+        // An unexpired same-FP row conflicts; an expired one is replaced
+        // (ON CONFLICT … WHERE expires_at <= now)
         const rows = await db
           .insert(deviceAddRequests)
           .values({

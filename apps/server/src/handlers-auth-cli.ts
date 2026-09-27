@@ -1,13 +1,17 @@
-// CLI ログイン(サーバー仲介 web-flow ハンドオフ — AUTH_SPEC §4)のハンドラ。
+// Handlers for CLI login (server-mediated web-flow handoff —
+// AUTH_SPEC §4).
 //
-// - `flowToken` は CLI 専用の bearer 資格情報。ブラウザチャネル(URL・ページ・
-//   リダイレクト)・ログ・エラーメッセージのいずれにも出さない(§4-1 (1))
-// - ブラウザ脚(cliVerify / callback の CLI 分岐 / cliApprove)の失敗は §4-2 の
-//   一様拒否規律に従い、同一のスクリプトなしエラーページで返す(フロー状態・
-//   拒否理由のオラクルを作らない)
-// - callback の CLI 分岐(handleCliCallback)は handlers-auth.ts の
-//   githubCallback から呼ばれる(GitHub の callback URL は §3 の単一 URL のまま —
-//   state の `cli.` プレフィックスで分岐する)
+// - `flowToken` is a CLI-only bearer credential. It appears on none of
+//   the browser channel (URL, pages, redirects), logs, or error
+//   messages (§4-1 (1))
+// - Failures on the browser leg (cliVerify / the callback's CLI branch
+//   / cliApprove) follow §4-2's uniform-refusal discipline and return
+//   the same scriptless error page (no oracle for flow state or
+//   refusal reasons)
+// - The callback's CLI branch (handleCliCallback) is called from
+//   githubCallback in handlers-auth.ts (GitHub's callback URL stays
+//   the single URL of §3 — branching happens on the state's `cli.`
+//   prefix)
 
 import {
   AuthRateLimitedError,
@@ -59,34 +63,39 @@ import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
 import { noteOpsCounter } from "./ops-signals.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
-/** 発行パラメータ省略時の既定トークン名(§6 の意味論は既定スコープと同じ扱い)。 */
+/** The default token name when issuance parameters are omitted (§6's semantics treat it the same as the default scope). */
 const DEFAULT_TOKEN_NAME = "cli-login";
 
-/** 省略時の既定スコープ(AUTH_SPEC §6: 省略時は * × admin)。 */
+/** The default scope when omitted (AUTH_SPEC §6: * × admin when omitted). */
 const DEFAULT_TOKEN_SCOPES: readonly TokenScope[] = [{ project: "*", permission: "admin" }];
 
 /**
- * フロー署名鍵の解決(AUTH_SPEC §4-2): 初回使用時に候補鍵を自動生成して D1 に
- * 保存する(冪等・先勝ち — 競合時は後着の候補を破棄して保存済みの鍵を使う)。
- * 鍵は isolate にキャッシュしない: フローは 15 分 TTL の低頻度面であり、
- * キャッシュ整合(手動ローテーション時の isolate 間ずれ)を持ち込む価値がない。
+ * Resolution of the flow-signing key (AUTH_SPEC §4-2): on first use a
+ * candidate key is generated and stored in D1 (idempotent,
+ * first-writer-wins — on contention the later candidate is discarded
+ * and the stored key is used). The key is not cached in the isolate:
+ * flows are a low-frequency 15-minute-TTL surface, and there is no
+ * value in bringing in cache coherency (cross-isolate drift on manual
+ * rotation).
  */
 const flowSigningKey: Effect.Effect<CryptoKey, never, FlowSigningKeyRepo> = Effect.gen(
   function* () {
     const repo = yield* FlowSigningKeyRepo;
     const keyHex = yield* repo.getOrCreate(randomHex(32), Date.now());
-    // 形式不正(自分の生成経路でしか書かれない)は defect
+    // Malformed form (only ever written by our own generation path) is a defect
     return yield* Effect.promise(() => importFlowSigningKey(keyHex));
   },
 );
 
 /**
- * スクリプトなし HTML ページの応答(§4-1 (4) — §15-3 の招待着地ページと同じ
- * 配信規律)。CSP はページ内 meta と二重化し(frame-ancestors はヘッダー側
- * のみ — meta では無効)、Referrer-Policy でページ URL の外部リーク(承認
- * ページからの遷移)も塞ぐ。X-Frame-Options は frame-ancestors 未対応の古い
- * ブラウザ向けの併記。サインアップ制御の案内ページ(handlers-auth.ts —
- * AUTH_SPEC §3)も同じ応答点を共用する。
+ * Response for scriptless HTML pages (§4-1 (4) — same delivery
+ * discipline as §15-3's invite landing page). CSP is duplicated in the
+ * page's meta (frame-ancestors on the header side only — ineffective
+ * in meta); Referrer-Policy also blocks external leaks of the page
+ * URL (navigations off the approval page). X-Frame-Options is kept
+ * alongside for old browsers without frame-ancestors. The signup
+ * control guidance pages (handlers-auth.ts — AUTH_SPEC §3) share the
+ * same response point.
  */
 export function htmlResponse(html: string, status: number): HttpServerResponse.HttpServerResponse {
   return HttpServerResponse.text(html, {
@@ -100,12 +109,12 @@ export function htmlResponse(html: string, status: number): HttpServerResponse.H
   });
 }
 
-/** 一様エラーページ(§4-2 — 失敗理由を HTTP 状態でも出し分けない)。 */
+/** The uniform error page (§4-2 — failure reasons are not differentiated even in HTTP status). */
 function uniformErrorPage(): HttpServerResponse.HttpServerResponse {
   return htmlResponse(renderCliErrorPage(), 400);
 }
 
-/** CLI 分岐の終端応答からフロー束縛クッキーを掃除する(単回使用)。 */
+/** Cleans the flow-binding cookie off the CLI branch's terminal responses (single use). */
 function withCliCookieExpired(
   response: HttpServerResponse.HttpServerResponse,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse> {
@@ -114,24 +123,28 @@ function withCliCookieExpired(
   );
 }
 
-/** GitHub の state が CLI ブラウザ脚のものか(callback の分岐判定 — §4-1 (3))。 */
+/** Whether GitHub's state belongs to the CLI browser leg (the callback's branch check — §4-1 (3)). */
 export function isCliCallbackState(state: string): boolean {
   return state.startsWith(CLI_STATE_PREFIX);
 }
 
-/** (i)-a の復元結果: 検証を通った束縛パラメータ、または一様拒否の区分。 */
+/** The (i)-a restore result: binding parameters that passed verification, or a uniform-refusal class. */
 type FlowBinding =
   | { readonly params: CliVerifyParams; readonly vsig: string }
   | "state-mismatch"
   | "invalid";
 
 /**
- * callback の CLI 分岐 (i)-a: フロー束縛クッキーの復元と検証。CLI 分岐は専用
- * クッキー(CLI_STATE_COOKIE)に state と vsig 済みパラメータ一式を運ぶ
- * (§4-1 (3) の「state に flow 束縛」— GitHub の state パラメータ自体は乱数のみ
- * とし、束縛の実体は同一ブラウザにしか無いクッキー側に置く)。state 照合の後、
- * vsig を再検証する(verify 到達時と同じ無状態検証 — クッキー値は改竄可能な
- * クライアント保持データであり、署名の通らないパラメータでフロー行を作らない)。
+ * The callback's CLI branch (i)-a: restore and verify the
+ * flow-binding cookie. The CLI branch carries the state and the
+ * vsig-signed parameter set on a dedicated cookie (CLI_STATE_COOKIE)
+ * (§4-1 (3)'s "flow binding on state" — GitHub's state parameter
+ * itself stays a bare nonce; the substance of the binding lives on
+ * the cookie side, which only the same browser holds). After matching
+ * the state, the vsig is re-verified (the same stateless verification
+ * as on verify's arrival — the cookie value is client-held data that
+ * can be tampered with, and no flow row is created for parameters
+ * that fail the signature).
  */
 function restoreFlowBinding(
   request: HttpServerRequest.HttpServerRequest,
@@ -165,10 +178,12 @@ function restoreFlowBinding(
 }
 
 /**
- * callback の CLI 分岐 (iii)〜(iv): フロー行の作成 CAS(create-or-match)と
- * 承認ページの描画。user_id・発行パラメータ・チケットは作成と同時に確定する
- * (中間状態が存在しない)。scopesJson は start が自ら JSON.stringify した値で
- * vsig 検証済み — parse 失敗は defect。
+ * The callback's CLI branch (iii)–(iv): creation CAS of the flow row
+ * (create-or-match) and rendering of the approval page. user_id, the
+ * issuance parameters, and the ticket are all fixed at creation (no
+ * intermediate state exists). scopesJson is a value start itself
+ * JSON.stringify'd and is vsig-verified — a parse failure is a
+ * defect.
  */
 function admitAndRenderApproval(
   params: CliVerifyParams,
@@ -193,18 +208,21 @@ function admitAndRenderApproval(
       },
       Date.now(),
     );
-    // rejected(別 user_id・期限切れ・終端状態)と capacity(全体上限)はどちらも
-    // 一様エラーページ(§4-1 (4) (iii) / §4-2 — チケットは回転していない)
+    // rejected (different user_id, expired, terminal state) and
+    // capacity (overall cap) both get the uniform error page
+    // (§4-1 (4) (iii) / §4-2 — the ticket is not rotated)
     if (admission === "capacity") {
-      // 上限到達は正規運用で起きない事象 = H3 のトリップワイヤ(hosted-ops.md §3 行 4)。
-      // 計数のみで応答は変えない
+      // Reaching the cap is an event that does not occur in normal
+      // operation = the H3 tripwire (hosted-ops.md §3 row 4). Counted
+      // only; the response is unchanged
       yield* noteOpsCounter("cli_flow_capacity");
     }
     if (admission === "rejected" || admission === "capacity") {
       return uniformErrorPage();
     }
-    // (iv): 承認ページ(スクリプトなし)。表示は認証済みアイデンティティ +
-    // 付与内容。チケット生値はこのページにのみ埋まる(常に最新 1 枚)
+    // (iv): the approval page (scriptless). Shows the authenticated
+    // identity + what is being granted. The raw ticket value is
+    // embedded only on this page (always the latest one)
     return htmlResponse(
       renderApprovalPage({
         userCode: params.userCode,
@@ -221,13 +239,17 @@ function admitAndRenderApproval(
 }
 
 /**
- * callback の CLI フロー分岐(AUTH_SPEC §4-1 (4) — 処理順は仕様で固定)。
- * (i) state 検証 + code 交換 + ユーザー情報取得(OAuth 完走の確定)→
- * (ii) アカウント照会(不在 = サインアップ案内で終了・副作用ゼロ)→
- * (iii) フロー行の作成 CAS(create-or-match)→ (iv) 承認ページ。
+ * The callback's CLI flow branch (AUTH_SPEC §4-1 (4) — the
+ * processing order is fixed by the spec).
+ * (i) state verification + code exchange + user-info fetch (confirms
+ * OAuth completion) →
+ * (ii) account lookup (absent = ends with signup guidance, zero side
+ * effects) →
+ * (iii) flow-row creation CAS (create-or-match) → (iv) approval page.
  *
- * 全終端がブラウザ向け HTML(型付きエラーを返さない)。呼び出し側
- * (githubCallback)は per-IP レート制限を通過済み。
+ * Every terminal is browser-facing HTML (no typed errors returned).
+ * The caller (githubCallback) has already passed per-IP rate
+ * limiting.
  */
 export function handleCliCallback(
   request: HttpServerRequest.HttpServerRequest,
@@ -238,7 +260,8 @@ export function handleCliCallback(
   WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo | OpsRepo
 > {
   return Effect.gen(function* () {
-    // (i)-a: フロー束縛クッキーの復元(state 照合 + vsig 再検証)
+    // (i)-a: restore the flow-binding cookie (state match + vsig
+    //    re-verification)
     const key = yield* flowSigningKey;
     const binding = yield* restoreFlowBinding(request, query.state, key);
     if (binding === "state-mismatch") {
@@ -249,8 +272,9 @@ export function handleCliCallback(
       return yield* withCliCookieExpired(uniformErrorPage());
     }
     const { params, vsig } = binding;
-    // (i)-b: code 交換 + ユーザー情報取得(§3 の 2 段目)。失敗したら以降の
-    // 処理は起きない(フロー行の作成が OAuth 完走の後にのみ起きる — §4-1 (4))
+    // (i)-b: code exchange + user-info fetch (§3's second stage). On
+    //    failure none of the later processing happens (the flow row is
+    //    created only after OAuth completes — §4-1 (4))
     const origin = requestOrigin(request);
     const github = yield* GitHubApi;
     const exchanged = yield* github
@@ -266,16 +290,19 @@ export function handleCliCallback(
       return yield* withCliCookieExpired(uniformErrorPage());
     }
     const identity = fetched.value;
-    // (ii): アカウント照会のみ(作成しない — 裁定 DH)。不在はサインアップ案内で
-    // 終了し、一切の不可逆な副作用を起こさない。再開リンクは verificationUrl
-    // (vsig 済みパラメータから復元)— このページ自身は再読込でフローを再開できない
+    // (ii): account lookup only (no creation — ruling DH). Absence
+    //    ends with signup guidance and triggers no irreversible side
+    //    effects at all. The resume link is verificationUrl (restored
+    //    from the vsig-signed parameters) — this page itself cannot
+    //    resume the flow on reload
     const identities = yield* IdentityRepo;
     const userId = yield* identities.lookupUser(identity);
     if (userId === null) {
       const verificationUrl = `${origin}/auth/cli/verify?${verificationQuery(params, vsig).toString()}`;
-      // 案内文言のみ signupPolicy(AUTH_SPEC §3)へ追随させる — invite 制下で
-      // プレーンなサインアップリンクを出すと拒否ページへ誘導するだけになる。
-      // 受理の正はサーバーゲート(§3 — Web サインアップ側)のまま
+      // Only the guidance wording follows signupPolicy (AUTH_SPEC §3)
+      // — under invite-only mode, showing a plain signup link would
+      // just lead to the refusal page. The source of truth for
+      // acceptance stays the server gate (§3 — the Web signup side)
       const signupPolicy = yield* identities.signupPolicy;
       return yield* withCliCookieExpired(
         htmlResponse(renderSignupGuidancePage(origin, verificationUrl, signupPolicy), 200),
@@ -293,15 +320,17 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
     .handle("cliStart", ({ payload, request }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // per-IP レート制限をハンドラ最初に置く(§4-1 (1) — 無記録化により DB
-        // 保護ではなく CPU 保護。旧 device 交換と同じ binding パターン)
+        // per-IP rate limiting placed first in the handler (§4-1 (1)
+        // — being record-free, this protects CPU rather than the DB;
+        // the same binding pattern as the old device exchange)
         const allowed = yield* ipRateLimitAllowed(env.CLI_START_RATE_LIMIT, request);
         if (!allowed) {
           return yield* Effect.fail(
             new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
           );
         }
-        // 未設定サーバーは GitHub に到達する前に fail-closed(§4-1 (1))
+        // An unconfigured server fails closed before reaching GitHub
+        // (§4-1 (1))
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const key = yield* flowSigningKey;
         const nowMs = Date.now();
@@ -315,8 +344,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
           scopesJson: JSON.stringify(payload.scopes ?? DEFAULT_TOKEN_SCOPES),
           expiresInDays: payload.expiresInDays ?? DEFAULT_TOKEN_TTL_DAYS,
         };
-        // サーバーはこの時点で何も保存しない(無記録 — 裁定 DH)。真正性は
-        // flowToken(flowId を署名対象に含む)と vsig の 2 系統 MAC が担う
+        // The server stores nothing at this point (record-free —
+        // ruling DH). Authenticity is carried by the two MAC systems:
+        // flowToken (whose signed content includes flowId) and vsig
         const flowToken = yield* Effect.promise(() => createFlowToken(key, flowId, expiresAtMs));
         const vsig = yield* Effect.promise(() => computeVsig(key, params));
         const origin = requestOrigin(request);
@@ -333,10 +363,12 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
     .handle("cliVerify", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // vsig・期限の無状態検証(§4-1 (3))。失敗は GitHub へのリダイレクトが
-        // 起きる前に一様エラーページで終了(でっち上げの flowId のために OAuth
-        // ダンスを走らせない — fail-closed)。未設定サーバーも同じページ(start が
-        // 503 で先に落ちるため、ここへの到達は URL の捏造か設定の喪失)
+        // Stateless verification of vsig and expiry (§4-1 (3)).
+        // Failure ends with the uniform error page before any GitHub
+        // redirect happens (do not run the OAuth dance for a
+        // fabricated flowId — fail-closed). An unconfigured server
+        // gets the same page (start has already failed with 503, so
+        // reaching here means a forged URL or lost configuration)
         const configured = yield* ensureGitHubOAuthConfigured(
           env.GITHUB_CLIENT_ID,
           env.GITHUB_CLIENT_SECRET,
@@ -349,9 +381,10 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         if (params === null || query.vsig === undefined) {
           return uniformErrorPage();
         }
-        // §3 の 1 段目(state 発行 → GitHub authorize へ 302)。state は
-        // `cli.` プレフィックスで callback に CLI 分岐を伝え、クッキーには
-        // state + vsig 済みパラメータ一式(flow 束縛)を運ぶ
+        // §3's first stage (issue state → 302 to GitHub authorize).
+        // The state carries the `cli.` prefix to tell callback this is
+        // the CLI branch; the cookie carries state + the vsig-signed
+        // parameter set (flow binding)
         const state = `${CLI_STATE_PREFIX}${randomHex(16)}`;
         const bound = verificationQuery(params, query.vsig);
         bound.set("state", state);
@@ -363,8 +396,10 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
     )
     .handle("cliApprove", ({ payload }) =>
       Effect.gen(function* () {
-        // 資格は承認チケットのみ(§4-1 (4) — セッションではない)。欠落・不明な
-        // decision は一様エラーページ(§4-2 — チケット照合と出し分けない)
+        // The credential is the approval ticket alone (§4-1 (4) — not
+        // a session). A missing or unknown decision gets the uniform
+        // error page (§4-2 — not differentiated from ticket
+        // verification)
         const { flowId, ticket, decision } = payload;
         if (
           flowId === undefined ||
@@ -375,9 +410,11 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         }
         const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
         const flows = yield* CliFlowRepo;
-        // awaiting → approved | denied の CAS。資格は最新 1 枚のチケット(不明・
-        // 期限切れ・使用済みは一様に false)。承認の auth.login_succeeded
-        // (authMethod cli_handoff)は CAS と同一 batch で記録される(repos)
+        // CAS of awaiting → approved | denied. The credential is the
+        // single latest ticket (unknown, expired, or used uniformly
+        // yields false). The approval's auth.login_succeeded
+        // (authMethod cli_handoff) is recorded in the same batch as the
+        // CAS (repos)
         const decided = yield* flows.decideCas(
           flowId,
           ticketHash,
@@ -390,8 +427,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         if (decision === "deny") {
           return htmlResponse(renderDeniedPage(), 200);
         }
-        // CAS 成功直後の行は必ず存在する(削除は期限 + 余裕後のみ)。表示用の
-        // userCode を引く(承認ページと同じ照合コードを完了ページにも見せる)
+        // The row just CAS-won always exists (deletion happens only
+        // after expiry + slack). Pulls the display userCode (shows the
+        // same match code as the approval page on the completion page)
         const row = yield* flows.findById(flowId);
         return htmlResponse(renderApprovedPage(row === null ? "" : row.userCode), 200);
       }),
@@ -405,9 +443,11 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
             new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
           );
         }
-        // 無状態検証(§4-1 (5)): MAC・期限・署名内 flowId と提示 flowId の
-        // 組一致。invalid = 一様拒否(組み替え・改竄 — 資格不一致)、expired =
-        // 正当な保持者への型付き終了指示(§4-2)
+        // Stateless verification (§4-1 (5)): MAC, expiry, and the
+        // signed flowId matching the presented flowId as a set.
+        // invalid = uniform refusal (recombination or tampering —
+        // credential mismatch); expired = a typed termination
+        // instruction to the legitimate holder (§4-2)
         const key = yield* flowSigningKey;
         const verdict = yield* Effect.promise(() =>
           verifyFlowToken(key, payload.flowId, payload.flowToken, Date.now()),
@@ -420,7 +460,8 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         }
         const flows = yield* CliFlowRepo;
         const row = yield* flows.findById(payload.flowId);
-        // 行なし = ブラウザ脚が未到達なだけ(無記録 start の正常系 — §4-1 (5))
+        // No row = the browser leg simply hasn't arrived yet (the
+        // normal case of a record-free start — §4-1 (5))
         if (row === null || row.status === "awaiting") {
           return { status: "pending" as const };
         }
@@ -428,20 +469,26 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
           return { status: "denied" as const };
         }
         if (row.status === "consumed") {
-          // 単回発行済みフローへの再 poll(CAS 敗者と同じ一様拒否 — §4-2)
+          // A re-poll of an already-issued flow (same uniform refusal
+          // as a CAS loser — §4-2)
           return yield* Effect.fail(new CliFlowRejectedError());
         }
-        // approved: consumed への CAS 勝者だけが発行する(単回 = 二重配布の
-        // 構造的排除。flowToken は 1 プロセスに束縛されない bearer であり並行
-        // poll は想定内の入力)。CAS 成功後の発行失敗は consumed のまま終わる
-        // (fail-closed — 半配布を残さない。CLI は再ログインする)
+        // approved: only the winner of the CAS into consumed issues
+        // (single-issuance = the structural exclusion of double
+        // distribution. flowToken is a bearer not bound to one
+        // process, so concurrent polls are expected input). A failed
+        // issuance after a successful CAS ends still consumed
+        // (fail-closed — no half-distribution left behind; the CLI
+        // logs in again)
         const won = yield* flows.consumeCas(payload.flowId);
         if (!won) {
           return yield* Effect.fail(new CliFlowRejectedError());
         }
         const tokens = yield* TokenService;
-        // §6 の発行(同名ローテーション・発行上限・auth.token_created 監査 —
-        // すべて既存規律のまま)。発行パラメータは行の保持値
+        // §6 issuance (same-name rotation, issuance cap,
+        // auth.token_created audit — all under the existing
+        // discipline). The issuance parameters are the row's stored
+        // values
         const ttlMs = row.expiresInDays * 24 * 60 * 60 * 1000;
         const issued = yield* tokens
           .issueToken(row.userId, row.tokenName, row.scopes, ttlMs)

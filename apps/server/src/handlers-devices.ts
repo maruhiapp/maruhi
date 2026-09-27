@@ -1,16 +1,23 @@
-// 端末登録簿と端末追加要求のハンドラ(AUTH_SPEC §13-11 — 2026-09-19 DK K3)。
+// Handlers for the device registry and device-add requests
+// (AUTH_SPEC §13-11 — 2026-09-19 DK K3).
 //
-// - 登録簿は advisory: 表示名・トークンの対応・追加要求の公開鍵の置き場であり、
-//   検証・認可の入力にならない(真実源は各プロジェクトのチェーン)。サーバーは
-//   `add_device` / `revoke_device` の受理でこの帳簿に触れず、`revoke_device` で
-//   トークンも失効させない(§6 / 設計録 dk-design.md §6 K1-15)
-// - 認可(§13-11 / §5): `list` は認証済み主体すべて(セッション主体も可 —
-//   SESSION_ALLOWED_ENDPOINTS)。それ以外は `*` × admin トークンのみ
-//   (ensureKeyMaterialAccess — §13-2 と同水準。セッション主体は拒否)
-// - FP は body の公開鍵から**サーバーが再計算**し、パスの `:fp` と一致しなければ
-//   400(登録簿・要求行に自分で導出しない FP を書かない)。承認クライアントも
-//   応答の公開鍵から FP を再計算して人が運んだ FP と照合する(すり替え対策)
-// - 監査イベントは持たない(§6 のトークン一覧と同じ規律)
+// - The registry is advisory: where display labels, token associations,
+//   and request public keys live — never an input to verification or
+//   authorization (the source of truth is each project's chain). The
+//   server does not touch this ledger on `add_device` /
+//   `revoke_device` acceptance, and `revoke_device` does not revoke the
+//   token (§6 / design record dk-design.md §6 K1-15)
+// - Authorization (§13-11 / §5): `list` is open to every authenticated
+//   principal (session principals included —
+//   SESSION_ALLOWED_ENDPOINTS). Everything else requires a `*` × admin
+//   token only (ensureKeyMaterialAccess — same level as §13-2; session
+//   principals are refused)
+// - The FP is **recomputed by the server** from the body's public keys
+//   and must match the path's `:fp` or 400 (the registry and request
+//   rows never get an FP the server did not derive itself). The
+//   approving client also recomputes the FP from the response's public
+//   keys and compares it against the human-carried FP (anti-swap)
+// - No audit events (same discipline as §6's token listing)
 
 import {
   DEVICE_ADD_REQUEST_TTL_MS,
@@ -35,8 +42,9 @@ import { DeviceRepo, KeyWrapRepo } from "./db.package/index.ts";
 const noContent = HttpServerResponse.empty({ status: 204 });
 
 /**
- * 端末鍵 FP の再計算(CRYPTO_SPEC §3 — SHA-256(enc ‖ sig) の先頭 16 バイト)。
- * ワイヤ Schema が固定長 hex を保証するため decode / 計算の失敗は defect。
+ * Recomputation of the device-key FP (CRYPTO_SPEC §3 — first 16 bytes
+ * of SHA-256(enc ‖ sig)). Since the wire Schema guarantees fixed-length
+ * hex, decode / computation failures are defects.
  */
 const fingerprintOf = (encPubHex: string, sigPubHex: string) =>
   Effect.gen(function* () {
@@ -52,7 +60,7 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string) =>
     return encodeHex(digest.value);
   });
 
-/** パスの `:fp` と body の公開鍵から再計算した FP の一致(不一致 = 400)。 */
+/** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */
 const ensureFingerprintMatches = (fp: string, encPubHex: string, sigPubHex: string) =>
   Effect.gen(function* () {
     const computed = yield* fingerprintOf(encPubHex, sigPubHex);
@@ -86,8 +94,10 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
   handlers
     .handle("list", () =>
       Effect.gen(function* () {
-        // 認証済み主体すべて(セッション主体は §5 の許可列挙を通過済み)。応答は
-        // 本人の行のみ(userId はサーバー導出 — 他人の登録簿を探れる面が構造的に無い)
+        // Every authenticated principal (session principals have
+        // already passed §5's allowed enumeration). The response is the
+        // caller's own rows only (userId is server-derived — there is
+        // structurally no surface to probe someone else's registry)
         const principal = yield* (yield* RequestAuth).principal;
         const repo = yield* DeviceRepo;
         const rows = yield* repo.list(principal.userId);
@@ -139,11 +149,14 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         yield* ensureKeyMaterialAccess(principal);
         const nowMs = Date.now();
         const repo = yield* DeviceRepo;
-        // 日和見削除(失効した自分の要求)
+        // Opportunistic deletion (the caller's own expired requests)
         yield* repo.requestSweep(principal.userId, nowMs);
-        // 固定窓 5 回 / 時 / user(§13-11)。窓の実装は台帳の固定窓と共有する
-        // (key_wrap_windows の種別 `device-request` — 設計録 §8 K3-8)。判定は
-        // 衝突検査より前(拒否の反復も窓を消費する — 台帳の窓と同じ規律)
+        // Fixed window of 5 per hour per user (§13-11). The window
+        // implementation is shared with the ledger's fixed windows
+        // (key_wrap_windows kind `device-request` — design record §8
+        // K3-8). The check precedes the collision check (repeated
+        // rejections also consume the window — same discipline as the
+        // ledger's windows)
         const decision = yield* (yield* KeyWrapRepo).consumeWindow({
           userId: principal.userId,
           kind: "device-request",

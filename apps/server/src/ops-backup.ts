@@ -1,15 +1,21 @@
-// DO → R2 退避スイープ(worker 側) — docs/notes/hosted-ops.md §2-D / §4-2 / §4-3。
+// The DO → R2 evacuation sweep (worker side) —
+// docs/notes/hosted-ops.md §2-D / §4-2 / §4-3.
 //
-// 毎時 cron(index.ts)から呼ばれ、D1 `projects` を id 昇順に列挙して各プロジェクト
-// DO の `opsBackup` RPC を呼ぶ。読み出し・書き込みは DO 自身が permit 下で行い
-// (do-snapshot.ts)、ここへ戻るのは集計値だけ(識別子は D1 の運用記録に閉じる)。
+// Called from the hourly cron (index.ts); enumerates D1 `projects` in
+// id order and calls each project DO's `opsBackup` RPC. Reads and
+// writes are performed by the DO itself under the permit
+// (do-snapshot.ts); only aggregates come back here (identifiers stay
+// inside D1's ops records).
 //
-// 有界化(§4-3): 壁時計予算・訪問数上限・カーソル継続。skip 規則(§2-D):
-// 前回成功のウォーターマーク(監査 seq・チェーン seq)と一致し、かつ前回成功から
-// OPS_BACKUP_REFRESH_MS 以内なら退避しない(census の size は毎回読む)。
+// Bounding (§4-3): a wall-clock budget, a visit-count cap, and cursor
+// continuation. The skip rule (§2-D): a project whose watermarks
+// (audit seq, chain seq) match its last success and whose last success
+// is within OPS_BACKUP_REFRESH_MS is not evacuated (the census size is
+// still read every time).
 //
-// バインディング(`OPS_BACKUP_BUCKET`)が無いデプロイ(セルフホストの既定)では
-// 何もしない — ただし無言にはせず isolate ごと 1 回の静的行を残す。
+// On a deployment without the binding (`OPS_BACKUP_BUCKET`) — the
+// self-hosted default — it does nothing, but not silently: it leaves
+// one static line per isolate.
 
 import { Effect } from "effect";
 
@@ -35,7 +41,7 @@ export interface BackupSweepResult {
   readonly skipped: number;
   readonly oversize: number;
   readonly failed: number;
-  /** 予算・上限で打ち切った(カーソルは途中を指す)。 */
+  /** Cut short by the budget or the cap (the cursor points mid-way). */
   readonly truncated: boolean;
 }
 
@@ -44,7 +50,7 @@ export interface BackupSweepOptions {
   readonly budgetMs?: number;
   readonly maxProjects?: number;
   readonly maxBytes?: number;
-  /** テスト用: multipart のパート長(既定は policy)。 */
+  /** For tests: the multipart part length (default is policy). */
   readonly partBytes?: number;
 }
 
@@ -69,12 +75,14 @@ function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
     case "upload-failed":
       return { kind: "failure", code: "upload-failed", storageLevel: outcome.storageLevel };
     case "no-bucket":
-      // DO 側にバインディングが無い(worker 側にはある)= 構成の不整合。RPC 失敗と同じ扱い
+      // No binding on the DO side (the worker side has one) = a
+      // configuration inconsistency; treated the same as an RPC
+      // failure
       return { kind: "failure", code: "rpc-failed", storageLevel: null };
   }
 }
 
-/** 1 プロジェクトの退避(RPC 失敗は failure として記録 — 次回再試行)。 */
+/** Evacuation of one project (an RPC failure is recorded as failure — retried next sweep). */
 function backupOne(
   env: Env,
   projectId: string,
@@ -110,7 +118,8 @@ function backupOne(
       Effect.map(toAttempt),
       Effect.catchCause(() =>
         Effect.sync((): OpsBackupAttempt => {
-          // 静的メッセージのみ(プロジェクト ID は書かない — 記録は D1 側)
+          // Static message only (no project ID — the record lives on
+          // the D1 side)
           console.warn("project backup RPC failed; the project is retried on the next sweep");
           return { kind: "failure", code: "rpc-failed", storageLevel: null };
         }),
@@ -143,7 +152,7 @@ function tally(result: MutableSweepResult, attempt: OpsBackupAttempt): void {
   }
 }
 
-/** 1 ページ分を訪ねる。戻り値 = 最後に訪ねたプロジェクト(予算切れなら途中)。 */
+/** Visits one page's worth. Return value = the last project visited (mid-page when the budget ran out). */
 function sweepPage(
   env: Env,
   page: readonly string[],
@@ -176,7 +185,7 @@ interface SweepLimits {
   readonly maxProjects: number;
 }
 
-/** カーソルから終端(または予算切れ)まで進み、次回のカーソルを保存する。 */
+/** Advances from the cursor to the end (or until the budget runs out), then saves the next cursor. */
 function sweepFromCursor(
   env: Env,
   result: MutableSweepResult,
@@ -197,7 +206,7 @@ function sweepFromCursor(
         break;
       }
       if (page.length < OPS_SWEEP_PAGE_SIZE) {
-        // 終端: 次回は先頭から
+        // The end: next time starts from the beginning
         cursor = null;
         break;
       }
@@ -216,7 +225,8 @@ function warnMissingBucketOnce(): void {
 }
 
 /**
- * スイープ本体。予算内でカーソルから進み、終端に達したらカーソルを先頭へ戻す。
+ * The sweep body. Advances from the cursor within the budget; on
+ * reaching the end, resets the cursor to the beginning.
  */
 export function runBackupSweep(
   env: Env,

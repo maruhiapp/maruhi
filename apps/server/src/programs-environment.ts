@@ -1,10 +1,14 @@
-// 環境管理と一括 pull の Effect プログラム(AUTH_SPEC §12-4 / §12-7)。
-// 作成・ローテーションは複合リクエスト(composite-programs.ts)。
+// Effect programs for environment management and bulk pull
+// (AUTH_SPEC §12-4 / §12-7).
+// Creation and rotation go through composite requests
+// (composite-programs.ts).
 //
-// 判定順(§12-3)と permit 直列化の前提は旧 data-programs.ts のとおり:
-// requireMemberState / requireEnvironmentAccess(role → scope — 2026-09-15 ES K3)→
-// 環境の存在 → 意味論的検査 → 数量ポリシー → 原子書き込み。環境一覧と
-// メタデータのみ pull は scope 不問(§12-3 の表 / §12-7)。
+// The check order (§12-3) and the permit-serialization premise are
+// the same as the former data-programs.ts:
+// requireMemberState / requireEnvironmentAccess (role → scope —
+// 2026-09-15 ES K3) → environment existence → semantic checks →
+// quantity policy → atomic write. The environment list and
+// metadata-only pull are scope-agnostic (§12-3's table / §12-7).
 
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
@@ -51,9 +55,12 @@ export const renameEnvironmentProgram = (
       cache,
     );
     const environment = yield* requireActiveEnvironment(environmentId);
-    // DO ストレージ総量ガード(§12-8 — H2): 環境の改名はステートメント行 +
-    // マニフェストを積む成長面(存在検査の後・NFC / 一意性 / CAS / 署名の前)。
-    // 削除(deleteEnvironmentProgram)は呼ばない — 解放手段を塞がない
+    // The DO storage-total guard (§12-8 — H2): renaming an
+    // environment stacks a statement row + a manifest, so it is a
+    // growth surface (after the existence check, before NFC /
+    // uniqueness / CAS / signature). Deletion
+    // (deleteEnvironmentProgram) does not call it — it must not plug
+    // the release path
     yield* ensureStorageAdmitsGrowth;
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
@@ -64,10 +71,13 @@ export const renameEnvironmentProgram = (
         reason: "duplicate-name",
       });
     }
-    // 判定順(値の裁定 D と同型): 上限 → CAS → ステートメント署名 →
-    // マニフェスト受理 → 原子書き込み。署名した端末はステートメント署名から解き
-    // (設計録 §8 K3-1)、第 2 段の認可(端末の実効権限 — member × 環境 ∈ 実効 scope)
-    // を通してからマニフェストを同じ端末で検証する
+    // The check order (isomorphic to the value ruling D): caps →
+    // CAS → statement signature → manifest acceptance → atomic
+    // write. The signing device is resolved from the statement
+    // signature (design record §8 K3-1), and the manifest is
+    // verified under the same device after passing the stage-2
+    // authorization (the device's effective permission — member ×
+    // environment ∈ effective scope)
     const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -82,9 +92,10 @@ export const renameEnvironmentProgram = (
         }),
     );
     yield* ensureDevicePermission(author, "member", environmentId);
-    // マニフェストの複合受理(§12-4 / §12-5): 環境 rename は新しい
-    // envMetaSigHashHex を写したマニフェスト(manifestVersion + 1)を同梱する。
-    // envMeta の期待値は rename 適用後 = 今回のステートメント自身
+    // Composite acceptance of the manifest (§12-4 / §12-5): an
+    // environment rename bundles a manifest (manifestVersion + 1)
+    // that copies in the new envMetaSigHashHex. The envMeta
+    // expectation is post-rename = this very statement
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
@@ -122,8 +133,10 @@ export const deleteEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    // 受理時点 admin × 環境 ∈ scope(§12-3)。宣言ヘッド時点 admin / scope は
-    // 署名検証(§12-3 の二重判定 — env × deleted の必要 role、3′)が検査する
+    // Admin × environment ∈ scope at acceptance time (§12-3). The
+    // admin / scope check at declared-head time is covered by
+    // signature verification (§12-3's dual check — the required role
+    // for env × deleted, 3′)
     const { history, member, projectId } = yield* requireEnvironmentAccess(
       actor.userId,
       "admin",
@@ -131,7 +144,8 @@ export const deleteEnvironmentProgram = (
       cache,
     );
     const environment = yield* requireActiveEnvironment(environmentId);
-    // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
+    // deleted's name preserves the immediately-prior active name
+    // (§4.2 — byte-exact)
     if (statement.name !== environment.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
@@ -148,17 +162,22 @@ export const deleteEnvironmentProgram = (
           statement,
         }),
     );
-    // 第 2 段(設計録 §8 K3-1): 署名した端末の実効権限で admin × 環境 ∈ 実効 scope
+    // Stage 2 (design record §8 K3-1): admin × environment ∈
+    // effective scope under the signing device's effective
+    // permission
     yield* ensureDevicePermission(author, "admin", environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     const variables = yield* store.listActiveVariables(environmentId);
-    // 書き込みフェーズ(単一タスク): tombstone + データ削除 + deleted ステート
-    // メント行と、存在区間を閉じる変数ごとの var.deleted(§12-4)+ env.deleted を
-    // 原子的に書く。カスケード削除される変数は個別のステートメントを持たない
-    // ため、var.deleted の FP は環境削除ステートメントの author FP を写す
-    // (「FP = 署名の証跡」の意味論 — この削除を認可した署名は env 側にある)
+    // The write phase (a single task): atomically writes the
+    // tombstone + data deletion + the deleted statement row, plus a
+    // per-variable var.deleted (§12-4) closing each existence
+    // interval, and env.deleted. Variables deleted by cascade carry
+    // no statement of their own, so their var.deleted's FP copies
+    // the environment-deletion statement's author FP (the semantics
+    // "FP = evidence of a signature" — the signature that authorized
+    // this deletion lives on the env side)
     yield* Effect.sync(() => {
       store.write.retireEnvironment(environmentId, now);
       store.write.insertEnvironmentMetaStatement(
@@ -190,25 +209,31 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
     const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
     const environments = yield* store.listEnvironmentStatements;
-    // 削除済み環境もチェーン上に create_environment を持つ(チェーンは削除を
-    // 観測しない — §6.2)ため、currentEpochOf は全行で導出可能
+    // Even a deleted environment carries create_environment on the
+    // chain (the chain does not observe deletion — §6.2), so
+    // currentEpochOf can be derived for every row
     return {
       environments: environments.map((environment): EnvironmentSummaryValue => ({
         environmentId: environment.environmentId,
         currentEpoch: currentEpochOf(state, environment.environmentId),
         statement: environment.statement,
       })),
-      // schemaPolicy の advisory 同梱(§12-7 / §12-11 — 検証規則の入力にしない)
+      // The advisory bundle of schemaPolicy (§12-7 / §12-11 — not
+      // an input to the verification rules)
       schemaPolicy: yield* store.schemaPolicy,
     } satisfies EnvironmentListValue;
   });
 
 /**
- * pull 系(値付き・メタデータのみ)共通の前段: reader 認可(値付きは
- * さらに環境 ∈ scope — §12-7。メタデータのみモードは scope 不問 = 平文メタは
- * 全メンバーに見える線 — CRYPTO_SPEC §6.3)・環境の存在・環境自身の最新
- * ステートメント(§12-7 の検証材料の同梱)。環境行はステートメントと原子的に
- * 作られる(複合受理)ため、欠落は不変条件違反 = defect。
+ * The shared front half of the pull family (with-values and
+ * metadata-only): reader authorization (with-values additionally
+ * requires environment ∈ scope — §12-7; the metadata-only mode is
+ * scope-agnostic = plaintext meta is visible to all members —
+ * CRYPTO_SPEC §6.3), environment existence, and the environment's
+ * own latest statement (bundled as §12-7 verification material).
+ * The environment row is created atomically with its statement
+ * (composite acceptance), so its absence is an invariant violation
+ * = defect.
  */
 const requirePullContext = (
   actor: DataActor,
@@ -227,8 +252,9 @@ const requirePullContext = (
     if (statement === null) {
       return yield* Effect.die(new Error("environment meta statement row missing"));
     }
-    // 最新マニフェスト(§12-7 の同梱材料)。環境作成・全メタ操作・rotate が原子的に
-    // upsert するため、作成済みの環境では必ず存在する
+    // The latest manifest (the material bundled per §12-7). Since
+    // environment creation, every meta operation, and rotate upsert
+    // it atomically, it always exists for a created environment
     const manifest = yield* store.environmentManifest(environmentId);
     return { state, store, statement, manifest };
   });
@@ -245,29 +271,38 @@ export const pullEnvironmentProgram = (
       "values",
       cache,
     );
-    // DO ストレージ総量ガードの観測のみ(§12-8 — 拒否しない): 値付き pull は
-    // var.read を書く読み取りで、pull 主体のプロジェクトの支配的な成長項。
-    // 警告帯(8〜9 GB)の運用ログがここでも出ないと、そのプロジェクトは一度も
-    // 警告されずに拒否帯へ入る。メンバーシップの後(requirePullContext)=
-    // 非メンバーには何も観測されない
+    // Observation only for the DO storage-total guard (§12-8 —
+    // does not refuse): a with-values pull is a read that writes
+    // var.read rows, and is the dominant growth term of a pull-heavy
+    // project. If the warning band (8–9 GB) never logs here either,
+    // that project enters the refusal band unwarned. After
+    // membership (requirePullContext) = nothing is observed by
+    // non-members
     yield* observeStorageLevel;
     const variables = yield* store.latestVersions(environmentId);
-    // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
-    // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
+    // The deleted statements of deleted variables keep being
+    // distributed (§12-5 — material for detecting denial of
+    // deletion / unauthorized resurrection; the ciphertext is
+    // already deleted so no value accompanies it)
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
-    // declared 変数はステートメントのみ配布する(§12-7 — 値・バージョンは
-    // 存在しない。マニフェストのダイジェスト再計算の材料として必須)
+    // declared variables distribute their statements only (§12-7 —
+    // no values or versions exist; required as material for the
+    // manifest's digest recomputation)
     const declaredVariables = yield* store.declaredVariableStatements(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
-    // チェックポイント時点の値スナップショット(§12-7): 当該環境を含む最新
-    // checkpoint の保存行(§16-2)があれば必ず同梱する。クライアント規則 2
-    // (CRYPTO_SPEC §6.3)は基準あり + 列挙なしを拒否する
+    // The value snapshot at the checkpoint (§12-7): the stored row
+    // of the newest checkpoint containing this environment (§16-2),
+    // always bundled when present. Client rule 2 (CRYPTO_SPEC §6.3)
+    // rejects a basis-present + enumeration-absent combination
     const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
-    // 監査(AUDIT_SPEC §3.3 — 集約形): 値付き一括 pull は環境単位 1 行で、
-    // 返した変数の列挙(variableId / epoch / version — 昇順)を payload に持つ
-    // (variable_id / epoch / version 列は NULL)。返した行に対して記録するため、
-    // 列挙と応答は常に一致する。返した変数が 0 なら記録しない(暗号文を配布
-    // していない — 記録条件は不変)
+    // Audit (AUDIT_SPEC §3.3 — the aggregate form): a with-values
+    // bulk pull is one row per environment, carrying the enumeration
+    // of returned variables (variableId / epoch / version —
+    // ascending) in the payload (the variable_id / epoch / version
+    // columns are NULL). Since it records against the returned rows,
+    // the enumeration and the response always agree. If zero
+    // variables were returned nothing is recorded (no ciphertext was
+    // distributed — the recording condition is unchanged)
     const audit = yield* AuditStore;
     const now = Date.now();
     if (variables.length > 0) {
@@ -292,7 +327,8 @@ export const pullEnvironmentProgram = (
       statement,
       variables,
       deletedVariables,
-      // declared 変数が無ければキー自体を置かない(optionalKey のワイヤ形)
+      // Without declared variables the key itself is omitted (the
+      // optionalKey wire shape)
       ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
       deks,
       schemaPolicy: yield* store.schemaPolicy,
@@ -301,10 +337,12 @@ export const pullEnvironmentProgram = (
   });
 
 /**
- * メタデータのみモード(§12-7): 値(暗号文)と DEK を返さず、§6.3 のメタ検証
- * 材料のみ返す。認可は一括 pull と同一(reader)。監査は**何も記録しない** —
- * var.read の記録条件は暗号文の配布であり、読んでいないものを読んだと記録し
- * ない(AUDIT_SPEC §3.3)。
+ * The metadata-only mode (§12-7): returns neither values
+ * (ciphertext) nor DEKs — only §6.3's meta-verification material.
+ * Authorization is identical to bulk pull (reader). It records
+ * **no audit** — var.read's recording condition is the
+ * distribution of ciphertext, and what was not read is not
+ * recorded as read (AUDIT_SPEC §3.3).
  */
 export const pullEnvironmentMetadataProgram = (
   actor: DataActor,
@@ -318,8 +356,9 @@ export const pullEnvironmentMetadataProgram = (
       "metadata-only",
       cache,
     );
-    // declared 変数のステートメントも variables に載る(削除済みでない全変数の
-    // 最新形 — §12-7。status が判別を担う)
+    // declared variables' statements also ride on variables (the
+    // latest shape of every non-deleted variable — §12-7; status
+    // does the discrimination)
     const variables = yield* store.activeVariableStatements(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
     return {
