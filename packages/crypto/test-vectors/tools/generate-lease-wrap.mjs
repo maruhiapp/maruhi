@@ -1,25 +1,32 @@
-// lease-wrap.json(CRYPTO_SPEC §9.1)の参照生成器。
-// dek-wrap.json と同じ理由で hpke-js を使う: 製品実装が採用する panva hpke とは
-// 独立の実装系であり、ekm による derandomize で Seal 方向を決定論的に固定できる
-// (panva では不可。docs/notes/spike-c.md)。
-// 使い捨ての参照ツールであり、製品コードではない。鍵・値はすべてダミー。
+// Reference generator for lease-wrap.json (CRYPTO_SPEC §9.1).
+// Uses hpke-js for the same reason as dek-wrap.json: an implementation
+// family independent of the panva hpke the product implementation adopts,
+// and the Seal direction can be pinned deterministically via ekm
+// derandomize (impossible with panva. docs/notes/spike-c.md).
+// A disposable reference tool, not product code. All keys and values are
+// dummies.
 //
-// dek-wrap.json を読み、その `server-basic`(サーバー鍵宛の永続ラップ)と
-// **同一の座標・同一の DEK** をワークロード一時鍵へ再ラップする形で生成する。
-// 「サーバーが自分宛ラップを開封し、同じ DEK をワークロードへ再ラップした」
-// という受け渡しがベクター上で追跡でき、レビュー時に文脈が閉じる(§9.1 の
-// 「サーバーは値を復号しない = DEK の仲介者」の実データ表現)。
+// Reads dek-wrap.json and generates by re-wrapping to the workload
+// ephemeral key with the **same coordinates and same DEK** as its
+// `server-basic` (the persistent wrap to the server key). The handoff of
+// "the server Opened its own wrap and re-wrapped the same DEK to the
+// workload" is traceable on the vector, closing the context at review
+// time (a concrete-data expression of §9.1's "the server does not decrypt
+// the value = the DEK's intermediary").
 //
-// 再生成: bun install && bun run generate(このディレクトリで実行。
-// generate-dek-wrap.mjs → 本ファイル → generate_reference.py の順が正)
+// Regenerate: bun install && bun run generate (run in this directory.
+// The correct order is generate-dek-wrap.mjs → this file →
+// generate_reference.py)
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 の長さプレフィックス付きエンコーディング
-// (generate-dek-wrap.mjs / generate_reference.py / verify_reference.mjs と同一定義。
-// tools/ は使い捨てのため、共有モジュール化せず各ファイルに独立の定義を置く既存慣行に従う)
+// CRYPTO_SPEC §2.1 length-prefixed encoding
+// (same definition as generate-dek-wrap.mjs / generate_reference.py /
+// verify_reference.mjs. tools/ is disposable, so per existing convention
+// each file carries its own independent definition rather than sharing a
+// module)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -49,7 +56,7 @@ const suite = new CipherSuite({
   aead: new Aes256Gcm(),
 });
 
-// --- dek-wrap.json から座標と DEK を引き継ぐ ---------------------------------
+// --- Inherit coordinates and DEK from dek-wrap.json --------------------
 const dekWrapDoc = JSON.parse(readFileSync(new URL("../dek-wrap.json", import.meta.url), "utf8"));
 const serverWrap = dekWrapDoc.vectors.find((v) => v.name === "server-basic");
 if (serverWrap === undefined) {
@@ -60,14 +67,16 @@ const environmentId = serverWrap.environment_id;
 const epoch = serverWrap.epoch;
 const dek = fromHex(serverWrap.dek_hex);
 
-// 応答内の過去エポック分(§14-2: 最新値が使用する全エポック + 現エポック)を
-// 表す 2 本目の正例。エポックごとに DEK は独立であることを実データで示す
+// A second positive representing the past-epoch portion inside the
+// response (§14-2: all epochs the latest value uses + the current epoch).
+// Shows in real data that the DEK is independent per epoch
 const priorEpoch = epoch - 1;
 const priorDek = pat(0xe0, 32);
 
-// --- ワークロードの一時鍵(§9.1: メモリ内生成・ジョブ終了で破棄)-------------
-// ベクターでは決定論のため固定 ikm からの DeriveKeyPair とする(実運用の一時鍵は
-// 毎回ランダム生成される — 決定論化はベクター固有の都合であり仕様ではない)
+// --- The workload ephemeral key (§9.1: generated in memory, discarded when the job ends) ---
+// The vector uses a DeriveKeyPair from a fixed ikm for determinism (in
+// production the ephemeral key is randomly generated each time —
+// determinism is a vector-specific convenience, not part of the spec)
 const ikmW = pat(0xd0, 32);
 const kpW = await suite.kem.deriveKeyPair(ikmW.slice().buffer);
 const pkWm = new Uint8Array(await suite.kem.serializePublicKey(kpW.publicKey));
@@ -80,8 +89,9 @@ const CLAIMS_DOMAIN = "maruhi/v1/lease-claims";
 const issuerUrl = "https://token.actions.githubusercontent.com";
 const audience = "https://maruhi.example";
 const subject = "repo:maruhi-example/demo:ref:refs/heads/main";
-// 別ワークロード文脈(同一 issuer / audience・別ブランチ)。リース応答の転用が
-// 復号失敗になることを固定する負例の材料
+// A different workload context (same issuer / audience, different
+// branch). Material for the negative that pins the reuse of a lease
+// response failing decryption
 const otherSubject = "repo:maruhi-example/demo:ref:refs/heads/feature-x";
 
 async function claimsDigest(sub) {
@@ -93,7 +103,7 @@ async function claimsDigest(sub) {
 const claims = await claimsDigest(subject);
 const otherClaims = await claimsDigest(otherSubject);
 
-// --- リースラップ(§9.1)------------------------------------------------------
+// --- The lease wrap (§9.1) ---------------------------------------------
 // info = LP("maruhi/v1/lease-wrap", project_id, environment_id, epoch, claims_digest_hex)
 const LEASE_DOMAIN = "maruhi/v1/lease-wrap";
 const DEK_WRAP_DOMAIN = "maruhi/v1/dek-wrap";
@@ -101,10 +111,10 @@ const leaseInfo = (proj, env, ep, digestHex) => lpEncode([LEASE_DOMAIN, proj, en
 
 const info = leaseInfo(projectId, environmentId, epoch, claims.digestHex);
 const priorInfo = leaseInfo(projectId, environmentId, priorEpoch, claims.digestHex);
-const aad = new Uint8Array(0); // §5 と同じ: 文脈束縛は info が担う。aad は空
+const aad = new Uint8Array(0); // Same as §5: context binding is carried by info; aad is empty
 
 const ikmE = pat(0xf0, 32);
-const ikmE2 = pat(0x40, 32); // Seal ごとに独立の ekm
+const ikmE2 = pat(0x40, 32); // an independent ekm per Seal
 
 async function seal(infoBytes, plaintext, ekm) {
   const sender = await suite.createSenderContext({
@@ -121,18 +131,18 @@ const { enc: priorEnc, ct: priorCt } = await seal(priorInfo, priorDek, ikmE2);
 
 const vector = {
   description:
-    "CRYPTO_SPEC §9.1: ワークロードリースのリースラップ(HPKE Base mode 単発 Seal、§5 と同一プリミティブ)。info に claims_digest を束縛し、リース応答の別ワークロード文脈への転用を復号失敗にする。Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)",
+    "CRYPTO_SPEC §9.1: the lease wrap of a workload lease (HPKE Base mode single Seal, same primitives as §5). info binds the claims_digest so that reusing a lease response in another workload context fails decryption. Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip)",
   info_fields_order: ["domain", "project_id", "environment_id", "epoch", "claims_digest_hex"],
   claims_digest_fields_order: ["domain", "issuer_url", "subject", "audience"],
   persistence_note:
-    "リースラップは永続化しない(dek_wraps に入らない — §9.1)。応答スコープのみに存在するため、§5.1 の登録署名は伴わない(署名者はチェーン上のメンバーであり、サーバー生成のラップに帰属署名は存在しえない)",
+    "A lease wrap is not persisted (never enters dek_wraps — §9.1). Because it exists only within the response scope, it carries no §5.1 registration signature (signers are on-chain members; a server-generated wrap cannot carry an attribution signature)",
   provenance_note:
-    "座標(project / environment / epoch)と basic の DEK は dek-wrap.json の server-basic と同一。サーバーが自分宛ラップを開封し、同じ DEK をワークロード一時鍵へ再ラップした形を実データで表す(§9.1 — サーバーは値を復号しない)",
+    "The coordinates (project / environment / epoch) and the DEK of basic are identical to dek-wrap.json's server-basic. Expresses in real data the shape of the server Opening its own wrap and re-wrapping the same DEK to the workload ephemeral key (§9.1 — the server does not decrypt the value)",
   workload_keypair: {
     ikmW_hex: hex(ikmW),
     skWm_hex: hex(skWm),
     pkWm_hex: hex(pkWm),
-    note: "ワークロードの一時 X25519 鍵。ベクターの決定論のため DeriveKeyPair(ikmW) で固定するが、実運用では毎回ランダム生成しジョブ終了とともに破棄する(§9.1)",
+    note: "The workload's ephemeral X25519 key. Fixed via DeriveKeyPair(ikmW) for vector determinism, but in production it is randomly generated each time and discarded when the job ends (§9.1)",
   },
   claims: {
     domain: CLAIMS_DOMAIN,
@@ -144,7 +154,7 @@ const vector = {
     other_subject: otherSubject,
     other_lp_hex: otherClaims.lpHex,
     other_claims_digest_hex: otherClaims.digestHex,
-    note: "claims_digest_hex = lower_hex(SHA-256(LP(domain, issuer_url, subject, audience)))。検証済み OIDC トークンの issuer / sub / aud から、サーバーとワークロードが独立に同じ値を計算する。other_* は同一 issuer / audience・別 subject(別ブランチ)の文脈で、info-claims-digest-mismatch の材料",
+    note: "claims_digest_hex = lower_hex(SHA-256(LP(domain, issuer_url, subject, audience))). The server and the workload independently compute the same value from the verified OIDC token's issuer / sub / aud. other_* is a same-issuer / same-audience, different-subject (different-branch) context — material for info-claims-digest-mismatch",
   },
   vectors: [
     {
@@ -160,7 +170,7 @@ const vector = {
       aad_hex: "",
       enc_hex: hex(enc),
       ciphertext_hex: hex(ct),
-      note: "現エポックのリースラップ。DEK は dek-wrap.json の server-basic と同一(サーバーが開封して再ラップした DEK)",
+      note: "The current-epoch lease wrap. The DEK is identical to dek-wrap.json's server-basic (the DEK the server Opened and re-wrapped)",
     },
     {
       name: "prior-epoch",
@@ -175,7 +185,7 @@ const vector = {
       aad_hex: "",
       enc_hex: hex(priorEnc),
       ciphertext_hex: hex(priorCt),
-      note: "同一リース応答に含まれる過去エポック分(§14-2: 最新値が使用する全エポック + 現エポック)。エポックごとに DEK も info も独立であることを固定する",
+      note: "The past-epoch portion included in the same lease response (§14-2: all epochs the latest value uses + the current epoch). Pins that both the DEK and info are independent per epoch",
     },
   ],
   negative: [
@@ -184,28 +194,28 @@ const vector = {
       base: "basic",
       open_info_hex: hex(leaseInfo("proj-0002", environmentId, epoch, claims.digestHex)),
       must_fail: true,
-      note: "別プロジェクトへの移植は Open 失敗",
+      note: "Transplanting to another project fails Open",
     },
     {
       name: "info-environment-mismatch",
       base: "basic",
       open_info_hex: hex(leaseInfo(projectId, "env-dev-0002", epoch, claims.digestHex)),
       must_fail: true,
-      note: "別環境への移植は Open 失敗(開示スコープを跨いだ再利用の遮断)",
+      note: "Transplanting to another environment fails Open (blocks reuse across the disclosure scope)",
     },
     {
       name: "info-epoch-mismatch",
       base: "basic",
       open_info_hex: hex(leaseInfo(projectId, environmentId, epoch + 1, claims.digestHex)),
       must_fail: true,
-      note: "別エポックへの移植は Open 失敗",
+      note: "Transplanting to another epoch fails Open",
     },
     {
       name: "info-claims-digest-mismatch",
       base: "basic",
       open_info_hex: hex(leaseInfo(projectId, environmentId, epoch, otherClaims.digestHex)),
       must_fail: true,
-      note: "別ワークロード文脈(同一 issuer / audience・別 subject)の claims_digest では Open 失敗。リース応答を別ジョブへ転用できないことの中核(§9.1)",
+      note: "A claims_digest of a different workload context (same issuer / audience, different subject) fails Open. The core of the fact that a lease response cannot be diverted to another job (§9.1)",
     },
     {
       name: "info-dek-wrap-domain",
@@ -214,7 +224,7 @@ const vector = {
         lpEncode([DEK_WRAP_DOMAIN, projectId, environmentId, epoch, claims.digestHex]),
       ),
       must_fail: true,
-      note: "ドメイン文字列を §5 の dek-wrap に差し替えた info では Open 失敗(永続ラップとリースラップのドメイン分離)",
+      note: "info with the domain string replaced by §5's dek-wrap fails Open (domain separation between the persistent wrap and the lease wrap)",
     },
   ],
 };

@@ -1,24 +1,32 @@
-// CRYPTO_SPEC §4.3(環境マニフェスト)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// 検証規則系(kind = "authorization")は「署名は有効だが §4.3 / §6.3 の履歴検証で
-// expected_reason により拒否される」ことを、verifyChainWithHistory で構築した
-// 履歴索引に対する verifyDistributedEnvManifest で固定する。
+// Checks for CRYPTO_SPEC §4.3 (the environment manifest).
+// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
+// verified byte-for-byte against the vectors too.
+// For the verification-rule kind (kind = "authorization"), pin that "the
+// signature is valid but is rejected by the §4.3 / §6.3 history verification
+// with expected_reason" via verifyDistributedEnvManifest against the history
+// index built by verifyChainWithHistory.
 //
-// マニフェスト固有の固定点(metadata-signature との差):
-// - variables_digest の LP 正規形(空集合・単一・tombstone・バイト昇順)を
-//   computeVariablesDigest が再現する(digests セクション)
-// - チェックポイント束縛のエポック整合(§4.3 (2)): 複合発行の positive(manifest-v1-create /
-//   manifest-rotate)は境界 checkpoint タプルを含む派生チェーン
-//   (chain-entries.json の checkpoint-boundary-*)に対して通り、checkpoint を
-//   欠く正規チェーンに対する同データは composite-head-without-checkpoint-* の
-//   negative で落ちる。束縛の完全一致(checkpoint-binding-mismatch)・同座標
-//   相違タプルの equivocation・整合規則 1(checkpoint-regressed)も negative
-// - epoch-regression(rotate 後に旧エポックを焼き込んだ前進 manifestVersion)が
-//   predecessor 込み検証で落ちる — 本機構の核となる negative
-// - digest-*(欠落・tombstone 隠し・順序違反)が verify 側集合での再計算で落ちる
-// - タプルの epoch フィールドがマニフェスト内容と矛盾する虚偽公証(ハッシュは
-//   一致)の拒否は、実行時署名チェーンで固定する(bindingEpochChecks —
-//   ハッシュ照合だけの実装はここで落ちる)
+// Manifest-specific pinning points (differences from metadata-signature):
+// - computeVariablesDigest reproduces the variables_digest LP canonical form
+//   (empty set, single, tombstone, byte ascending) (the digests section)
+// - Epoch consistency of the checkpoint binding (§4.3 (2)): the two
+//   composite-issuance positives (manifest-v1-create / manifest-rotate) pass
+//   against the derived chains that carry the boundary checkpoint tuples
+//   (checkpoint-boundary-* in chain-entries.json), while the same data
+//   against the canonical chain lacking a checkpoint is rejected by the
+//   composite-head-without-checkpoint-* negatives. Also negative: a binding
+//   with identical match (checkpoint-binding-mismatch), equivocation by
+//   differing tuples on the same coordinate, and consistency rule 1
+//   (checkpoint-regressed)
+// - epoch-regression (an advanced manifestVersion stamped with the old
+//   epoch after a rotate) is rejected under predecessor-included
+//   verification — the core negative of this mechanism
+// - digest-* (missing, tombstone hidden, order violation) is rejected by
+//   recomputation over the verify-side set
+// - Rejection of a false attestation whose tuple epoch field contradicts
+//   the manifest content (hash does match) is pinned with a runtime-signed
+//   chain (bindingEpochChecks — an implementation that only compares hashes
+//   fails here)
 
 import type {
   ChainEntry,
@@ -157,12 +165,12 @@ function predecessorOf(vector: ManifestVector) {
     : { signedBytesHashHex: base.signed_bytes_sha256_hex, epoch: base.context.epoch };
 }
 
-/** envMeta の期待値は context の自己一致(フィクスチャの環境メタは正 — negative は verify_env_meta で上書き)。 */
+/** The envMeta expectation self-matches the context (the fixture env meta is correct — negatives overwrite it via verify_env_meta). */
 function envMetaOf(context: EnvManifestContext) {
   return { metaVersion: context.envMetaVersion, sigHashHex: context.envMetaSigHashHex };
 }
 
-/** digests セクション: variables_digest の LP 正規形の固定(§4.3)。 */
+/** The digests section: pins the variables_digest LP canonical form (§4.3). */
 async function digestChecks(c: Checks): Promise<void> {
   for (const digestCase of manifestVectors.digests) {
     const computed = await computeVariablesDigest("maruhi/v1", entriesOf(digestCase.entries));
@@ -171,7 +179,8 @@ async function digestChecks(c: Checks): Promise<void> {
       computed.ok && computed.value === digestCase.variables_digest_hex,
       computed.ok ? undefined : JSON.stringify(computed.error),
     );
-    // 入力順に依らず正規形へ正規化される(バイト昇順は関数の内部規約)
+    // Normalized to canonical form regardless of input order (byte
+    // ascending is the function's internal convention)
     const reversed = await computeVariablesDigest(
       "maruhi/v1",
       entriesOf(digestCase.entries.toReversed()),
@@ -181,7 +190,8 @@ async function digestChecks(c: Checks): Promise<void> {
       reversed.ok && reversed.value === digestCase.variables_digest_hex,
     );
   }
-  // 重複 variable_id は「変数ごとに最新形 1 本」の不変条件違反 = InvalidInput
+  // A duplicate variable_id violates the "one latest form per variable"
+  // invariant = InvalidInput
   const single = manifestVectors.digests.find((d) => d.name === "single-entry");
   if (single !== undefined && single.entries.length === 1) {
     const duplicated = await computeVariablesDigest(
@@ -195,13 +205,14 @@ async function digestChecks(c: Checks): Promise<void> {
   }
 }
 
-/** サロゲート境界の判別性と数値・hex 境界の拒否(分担は session-34.md 裁定 G)。 */
+/** Discriminativeness of the surrogate boundary and rejection of the numeric/hex boundaries (the split of duties is ruling G of session-34.md). */
 async function digestBoundaryChecks(c: Checks): Promise<void> {
-  // サロゲートペア境界のベクターが実際に判別対であること(UTF-16 コード単位順
-  // = JS の素の文字列比較ではバイト昇順と異なる並びになる)。裁定 G
-  // (session-34.md)の唯一のメタチェックなので、ベクターの欠落はスキップで
-  // なく失敗にする(リネーム・削除が PASS 件数の減少だけで緑のまま通る形を
-  // 残さない)
+  // The surrogate-pair-boundary vector is actually a discriminating pair
+  // (UTF-16 code-unit order = JS plain string comparison orders differently
+  // from byte ascending). This is the only meta-check of ruling G
+  // (session-34.md), so a missing vector is a failure, not a skip (do not
+  // leave a shape where a rename or deletion stays green with only fewer
+  // PASSes)
   const surrogate = manifestVectors.digests.find((d) => d.name === "surrogate-boundary-order");
   if (surrogate === undefined) {
     c.push(
@@ -217,10 +228,12 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
       utf16Sorted.join(" ") !== canonicalIds.join(" "),
     );
   }
-  // 数値・hex 境界の拒否(JSON ベクターで表現しない分担は session-34.md の
-  // 裁定): 非整数 / MAX_SAFE_INTEGER + 1 の metaVersion、同じ
-  // 長さの大文字 hex(正規形は hex 小文字 — 受理して小文字化する実装は同一値に
-  // 複数の正規形を作るため、拒否が仕様の期待挙動)
+  // Rejection of numeric/hex boundaries (the split of duties that JSON
+  // vectors do not express is a session-34.md ruling): a non-integer /
+  // MAX_SAFE_INTEGER + 1 metaVersion, and same-length uppercase hex (the
+  // canonical form is lowercase hex — an implementation that accepts and
+  // lowercases would create multiple canonical forms for one value, so
+  // rejection is the spec's expected behavior)
   const validEntry: VariablesDigestEntry = {
     variableId: "var-bounds-0001",
     status: "active",
@@ -247,7 +260,7 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
   }
 }
 
-/** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
+/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -255,7 +268,8 @@ async function signAndVerifyChecks(
   signatureHex: string,
   issuerKeyFingerprintHex: string,
 ): Promise<void> {
-  // issuer の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  // Sign with the issuer's device (user_id, FP) seed (2026-09-19 DK —
+  // signers are per-device)
   const signer = await importVectorSigner(context.issuerUserId, issuerKeyFingerprintHex);
   if (signer === null) {
     c.push(`env-manifest ${name}: issuer keys`, false, "signer keys missing or failed to import");
@@ -274,18 +288,20 @@ async function signAndVerifyChecks(
   c.push(`env-manifest ${name}: raw signature verify`, verified.ok);
 }
 
-/** 検証の前提チェーン(名前 → 検証済み履歴索引)。 */
+/** Prerequisite chains for verification (name → verified history index). */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 /**
- * positive の複合発行 2 例はチェックポイント束縛(§4.3 (2))で検証されるため、
- * 照合先は境界 checkpoint タプルを含む派生チェーン。それ以外は正規チェーン
- * (strict — タプルなし)。
+ * The two composite-issuance positives are verified under checkpoint
+ * binding (§4.3 (2)), so the comparison targets are the derived chains that
+ * carry the boundary checkpoint tuples. Everything else uses the canonical
+ * chain (strict — no tuples).
  */
 const POSITIVE_CHAIN: Readonly<Record<string, string>> = {
   "manifest-v1-create": "checkpoint-boundary-create",
   "manifest-rotate": "checkpoint-boundary-rotate",
-  // 第 2 端末の発行(2026-09-19 DK): 照合先は端末鍵派生チェーン(strict 経路)
+  // Second-device issuance (2026-09-19 DK): the comparison target is the
+  // device-key derived chain (strict path)
   "manifest-second-device-issuer-in-scope": "device-ops",
 };
 
@@ -306,7 +322,8 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       `env-manifest ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    // ベクターの entries(正規形)からの再計算が署名済みダイジェストと一致する
+    // Recomputation from the vector's entries (canonical form) matches the
+    // signed digest
     const digest = await computeVariablesDigest(context.suite, entriesOf(vector.entries));
     c.push(
       `env-manifest ${vector.name}: digest recomputation`,
@@ -320,8 +337,9 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.issuer_key_fingerprint_hex,
     );
 
-    // 履歴ベースの複合検証(§4.3 / §6.3): prev_base があれば predecessor 込み。
-    // manifest-v1-create / manifest-rotate(複合発行のエポック整合)もここを通る
+    // History-based composite verification (§4.3 / §6.3): predecessor
+    // included when prev_base exists. manifest-v1-create / manifest-rotate
+    // (the epoch consistency of composite issuance) also pass through here
     const distributed = await verifyDistributedEnvManifest({
       history,
       context,
@@ -337,7 +355,7 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       distributed.ok ? undefined : JSON.stringify(distributed.error),
     );
   }
-  // tombstone 込みダイジェスト(§4.3)のデータ再確認
+  // Re-confirm the data of the tombstone-including digest (§4.3)
   const del = byName.get("manifest-var-delete");
   c.push(
     "env-manifest manifest-var-delete: digest includes the tombstone",
@@ -359,7 +377,8 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
       envMeta: envMetaOf(context),
       predecessor: predecessorOf(branch),
     });
-    // 分岐は単体では全検証を通る(防止は不能 — §14.2-5 の証拠化)
+    // Each branch passes all checks on its own (prevention is impossible —
+    // the evidence-recording of §14.2-5)
     c.push(`env-manifest fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
@@ -371,7 +390,7 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
-/** 検証側 envMeta(無指定はベクター context 自身の env_meta フィールド)。 */
+/** Verify-side envMeta (unset = the vector context's own env_meta field). */
 function verifyEnvMetaOf(negative: ManifestNegative, context: EnvManifestContext) {
   if (negative.verify_env_meta === undefined) {
     return envMetaOf(context);
@@ -382,7 +401,7 @@ function verifyEnvMetaOf(negative: ManifestNegative, context: EnvManifestContext
   };
 }
 
-/** 検証側 predecessor(床 / 保存済み直前マニフェストのアンカー — 無指定なら検査なし)。 */
+/** Verify-side predecessor (the floor / anchor of the stored previous manifest — unset means no check). */
 function predecessorAnchorOf(negative: ManifestNegative) {
   if (negative.predecessor === undefined) {
     return undefined;
@@ -393,9 +412,10 @@ function predecessorAnchorOf(negative: ManifestNegative) {
   };
 }
 
-// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
-// Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
-// META_REASON_COVERAGE と同型)。
+// Exhaustiveness pinning of the reason space (consideration 7 — checked by
+// support.ts's reasonCoverageChecks): the Record type enforces sync with the
+// union at compile time (same shape as META_REASON_COVERAGE in
+// metadata-signature.ts).
 const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "signature-invalid": true,
   "issuer-unknown": true,
@@ -417,7 +437,7 @@ const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "epoch-regressed": true,
 };
 
-/** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
+/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
@@ -439,8 +459,9 @@ async function ruleNegativeCheck(
     context,
     issuerKeyFingerprintHex: negative.issuer_key_fingerprint_hex ?? "",
     signatureHex: negative.signature_hex,
-    // verify_entries = 検証側が再計算に使う集合(欠落・tombstone 隠し・順序違反の
-    // 表現)。無指定はベクターの正規形集合
+    // verify_entries = the set the verify side recomputes with (expresses
+    // missing / tombstone-hidden / order-violating forms). Unset = the
+    // vector's canonical set
     entries: entriesOf(negative.verify_entries ?? negative.entries ?? []),
     envMeta: verifyEnvMetaOf(negative, context),
     predecessor: predecessorAnchorOf(negative),
@@ -455,7 +476,7 @@ async function ruleNegativeCheck(
   );
 }
 
-/** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
+/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
@@ -499,7 +520,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
+  // Pin the kind vocabulary (a third value would escape both sieves)
   c.push(
     "env-manifest negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
@@ -519,13 +540,14 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "bad manifest version", context: { ...baseContext, manifestVersion: 0 } },
     { name: "bad env meta version", context: { ...baseContext, envMetaVersion: 0 } },
     { name: "bad head seq", context: { ...baseContext, chainHeadSeq: 0 } },
-    // 数値境界: §2.1 の 10 進文字列化は非負の安全整数のみ
+    // Numeric boundary: §2.1 decimal-stringification is non-negative safe
+    // integers only
     { name: "fractional epoch", context: { ...baseContext, epoch: 1.5 } },
     {
       name: "unsafe integer manifest version",
       context: { ...baseContext, manifestVersion: Number.MAX_SAFE_INTEGER + 1 },
     },
-    // 同じ長さの大文字 hex(正規形は hex 小文字)
+    // Same-length uppercase hex (the canonical form is lowercase hex)
     {
       name: "uppercase digest",
       context: { ...baseContext, variablesDigestHex: "AB".repeat(32) },
@@ -558,7 +580,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // 署名側だけの結合検査(検証側は理由コードで拒否する非対称 — meta-sign と同型)
+  // A check only on the signing side (the verify side instead rejects
+  // asymmetrically with a reason code — same shape as meta-sign)
   const coupledPrev = await signEnvManifest({
     context: { ...baseContext, manifestVersion: 1, prevManifestSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,
@@ -614,18 +637,22 @@ async function roundtripChecks(c: Checks): Promise<void> {
 }
 
 /**
- * タプルの epoch フィールドがマニフェスト内容と矛盾する虚偽公証(ハッシュは
- * 一致)の拒否。ベクターでは表現できない形(タプルの epoch はチェーン合意規則で
- * エントリ時点の現エポックに固定されるため、矛盾させるには「rotate 後に旧
- * マニフェストのハッシュを新エポックで公証する」チェーンを組む必要がある)を、
- * ベクター鍵での実行時署名チェーンで固定する: (epoch, hash) の**両方**を
- * 照合しない実装 — ハッシュだけ比較する実装 — はここで落ちる。
+ * Rejection of a false attestation whose tuple epoch field contradicts the
+ * manifest content (the hash does match). A shape vectors cannot express
+ * (the tuple epoch is fixed by the chain consensus rules to the epoch
+ * current at entry time, so producing a contradiction requires building a
+ * chain that "re-attests the old manifest's hash under the new epoch after
+ * a rotate") is pinned with a runtime-signed chain of vector keys: an
+ * implementation that does not compare **both** (epoch, hash) — one that
+ * only compares hashes — fails here.
  */
 /**
- * bindingEpochChecks の材料: 正規チェーン seq 1〜3(create_environment まで)+
- * rotate(epoch 2)+「epoch 2・manifestVersion 1・hash(manifest-v1-create)」の
- * 虚偽公証 checkpoint を、ベクター鍵の実行時署名で組み立てて検証する。チェーン
- * 合意規則ではタプルの epoch がエントリ時点の現エポック(2)と一致するため有効。
+ * Material for bindingEpochChecks: canonical chain seq 1-3 (through
+ * create_environment) + rotate (epoch 2) + a false-attestation checkpoint
+ * of "epoch 2, manifestVersion 1, hash(manifest-v1-create)", assembled and
+ * verified with runtime signing of vector keys. Under the chain consensus
+ * rules the tuple epoch matches the epoch current at entry time (2), so it
+ * is valid.
  */
 async function falseAttestationHistory(
   manifestSigHashHex: string,
@@ -680,7 +707,8 @@ async function falseAttestationHistory(
           epoch: 2,
           manifestVersion: 1,
           manifestSigHashHex,
-          // タプル内容はチェーン検証で検証不能(§6.2)— 形式的に有効な 64 hex
+          // The tuple content is unverifiable by chain verification (§6.2)
+          // — a formally valid 64 hex
           valuesDigestHex: "ab".repeat(32),
         },
       ],

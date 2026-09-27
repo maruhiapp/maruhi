@@ -1,15 +1,19 @@
-// dek-wrap.json(CRYPTO_SPEC §5)の参照生成器。
-// 生成には hpke-js(@hpke/core + @hpke/dhkem-x25519)を使う: 製品実装が採用する
-// panva hpke とは独立の実装系であり、かつ ekm による derandomize で Seal 方向を
-// 決定論的に固定できる(panva では不可。docs/notes/spike-c.md)。
-// 使い捨ての参照ツールであり、製品コードではない。鍵・値はすべてダミー。
-// 再生成: bun install && bun run generate-dek-wrap.mjs(このディレクトリで実行)
+// Reference generator for dek-wrap.json (CRYPTO_SPEC §5).
+// Generation uses hpke-js (@hpke/core + @hpke/dhkem-x25519): an
+// implementation family independent of the panva hpke the product
+// implementation adopts, and the Seal direction can be pinned
+// deterministically via ekm derandomize (impossible with panva.
+// docs/notes/spike-c.md).
+// A disposable reference tool, not product code. All keys and values are
+// dummies.
+// Regenerate: bun install && bun run generate-dek-wrap.mjs (run in this
+// directory)
 import { writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 の長さプレフィックス付きエンコーディング(generate_reference.py と同一定義)
+// CRYPTO_SPEC §2.1 length-prefixed encoding (same definition as generate_reference.py)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -38,15 +42,17 @@ const suite = new CipherSuite({
   aead: new Aes256Gcm(),
 });
 
-// 受信者鍵は固定 ikm からの DeriveKeyPair(決定論的)
+// The recipient key is a DeriveKeyPair from a fixed ikm (deterministic)
 const ikmR = pat(0x70, 32);
 const kp = await suite.kem.deriveKeyPair(ikmR.slice().buffer);
 const pkRm = new Uint8Array(await suite.kem.serializePublicKey(kp.publicKey));
 const skRm = new Uint8Array(await suite.kem.serializePrivateKey(kp.privateKey));
 
-// 受信者クラス server(CRYPTO_SPEC §9。2026-08-12): サーバー(デプロイメント)鍵も
-// 固定 ikm からの DeriveKeyPair。info の recipient_user_id 位置にはサーバー鍵 FP
-// (SHA-256(server_enc_pub)[:16] の hex 小文字)を用いる(サーバーは user_id を持たない)
+// Recipient class server (CRYPTO_SPEC §9. 2026-08-12): the server
+// (deployment) key is also a DeriveKeyPair from a fixed ikm. The
+// recipient_user_id position of info carries the server key FP
+// (lowercase hex of SHA-256(server_enc_pub)[:16]) (a server has no
+// user_id)
 const ikmS = pat(0xb0, 32);
 const kpS = await suite.kem.deriveKeyPair(ikmS.slice().buffer);
 const pkSm = new Uint8Array(await suite.kem.serializePublicKey(kpS.publicKey));
@@ -65,8 +71,8 @@ const serverInfoFields = ["maruhi/v1/dek-wrap", projectId, environmentId, epoch,
 const serverInfo = lpEncode(serverInfoFields);
 const dek = pat(0x80, 32);
 const ikmE = pat(0x90, 32);
-const ikmE2 = pat(0xc0, 32); // サーバー宛 Seal 用(Seal ごとに独立の ekm)
-const aad = new Uint8Array(0); // §5: 文脈束縛は info が担う。aad は空
+const ikmE2 = pat(0xc0, 32); // for the server-bound Seal (an independent ekm per Seal)
+const aad = new Uint8Array(0); // §5: context binding is carried by info; aad is empty
 
 async function seal(infoBytes, recipientPk, ekm) {
   const sender = await suite.createSenderContext({
@@ -79,36 +85,36 @@ async function seal(infoBytes, recipientPk, ekm) {
 }
 
 const { enc, ct } = await seal(info, pkRm, ikmE);
-// 同一エポック DEK をサーバー鍵へもラップする(現実の受信者集合と同じ形:
-// 1 つの DEK × 複数受信者。§7 のラップ完全集合)
+// Also wrap the same-epoch DEK to the server key (same shape as a real
+// recipient set: one DEK x multiple recipients. The §7 wrap-complete set)
 const { enc: serverEnc, ct: serverCt } = await seal(serverInfo, pkSm, ikmE2);
 
 const tamperedEnc = enc.slice();
 tamperedEnc[0] ^= 0x01;
 
-// サーバー鍵 FP の 1 バイト目を反転した「別サーバー鍵の FP」(移植負例用)
+// The server key FP with its first byte flipped — "another server key's FP" (for the transplant negative)
 const wrongServerFp = `${(Number.parseInt(serverFpHex.slice(0, 2), 16) ^ 0x01)
   .toString(16)
   .padStart(2, "0")}${serverFpHex.slice(2)}`;
 
 const vector = {
   description:
-    "CRYPTO_SPEC §5: DEK ラップ(HPKE Base mode 単発 Seal、DHKEM(X25519,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM)。info は §2.1 エンコーディング。Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)",
+    "CRYPTO_SPEC §5: DEK wrap (HPKE Base mode single Seal, DHKEM(X25519,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM). info is the §2.1 encoding. Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip)",
   info_fields_order: ["domain", "project_id", "environment_id", "epoch", "recipient_user_id"],
   server_recipient_note:
-    "受信者クラス server(§9。2026-08-12): info の recipient_user_id 位置にサーバー鍵 FP(SHA-256(server_enc_pub)[:16] の hex 小文字)を用いる。server-basic とその負例が固定する",
+    "Recipient class server (§9. 2026-08-12): the recipient_user_id position of info carries the server key FP (lowercase hex of SHA-256(server_enc_pub)[:16]). Pinned by server-basic and its negatives",
   recipient_keypair: {
     ikmR_hex: hex(ikmR),
     skRm_hex: hex(skRm),
     pkRm_hex: hex(pkRm),
-    note: "DeriveKeyPair(ikmR) による決定論的生成。RFC 9180 ベクター(hpke/)でも同 API を検証済み",
+    note: "Deterministic generation via DeriveKeyPair(ikmR). The same API is verified by the RFC 9180 vectors (hpke/)",
   },
   server_keypair: {
     ikmS_hex: hex(ikmS),
     skSm_hex: hex(skSm),
     pkSm_hex: hex(pkSm),
     server_key_fingerprint_hex: serverFpHex,
-    note: "サーバー(デプロイメント)鍵。DeriveKeyPair(ikmS) による決定論的生成。FP = SHA-256(pkSm)[:16](§9 — enc 鍵のみのため §3 の enc||sig 定義は不適用)",
+    note: "The server (deployment) key. Deterministic generation via DeriveKeyPair(ikmS). FP = SHA-256(pkSm)[:16] (§9 — enc key only, so the §3 enc||sig definition does not apply)",
   },
   vectors: [
     {
@@ -139,7 +145,7 @@ const vector = {
       aad_hex: "",
       enc_hex: hex(serverEnc),
       ciphertext_hex: hex(serverCt),
-      note: "basic と同一のエポック DEK をサーバー鍵へラップした正例(受信者クラス server)。info の recipient 位置はサーバー鍵 FP",
+      note: "A positive case wrapping the same epoch DEK as basic to the server key (recipient class server). The recipient position of info is the server key FP",
     },
   ],
   negative: [
@@ -150,7 +156,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, 4, recipientUserId]),
       ),
       must_fail: true,
-      note: "epoch 差し替え(別エポックへの移植)は Open 失敗",
+      note: "Substituting the epoch (transplanting to another epoch) fails Open",
     },
     {
       name: "info-recipient-mismatch",
@@ -159,7 +165,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, epoch, "user-owner-0001"]),
       ),
       must_fail: true,
-      note: "受信者差し替え(別メンバー宛ラップの移植)は Open 失敗",
+      note: "Substituting the recipient (transplanting a member-bound wrap) fails Open",
     },
     {
       name: "info-environment-mismatch",
@@ -168,14 +174,14 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, "env-dev-0002", epoch, recipientUserId]),
       ),
       must_fail: true,
-      note: "環境差し替えは Open 失敗(環境モデルの文脈束縛)",
+      note: "Substituting the environment fails Open (context binding of the environment model)",
     },
     {
       name: "enc-tampered",
       base: "basic",
       enc_hex: hex(tamperedEnc),
       must_fail: true,
-      note: "enc(カプセル化公開鍵)の改竄は Open 失敗",
+      note: "Tampering with enc (the encapsulated public key) fails Open",
     },
     {
       name: "server-info-member-user-id",
@@ -184,7 +190,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, epoch, recipientUserId]),
       ),
       must_fail: true,
-      note: "サーバー宛ラップの recipient 位置にメンバー user_id を入れた info では Open 失敗(受信者クラス間の移植拒否)",
+      note: "info with a member user_id in the recipient position of a server-bound wrap fails Open (rejects transplant across recipient classes)",
     },
     {
       name: "server-info-fp-mismatch",
@@ -193,7 +199,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, epoch, wrongServerFp]),
       ),
       must_fail: true,
-      note: "別サーバー鍵の FP を recipient 位置に入れた info では Open 失敗(サーバー鍵間の移植拒否)",
+      note: "info with another server key's FP in the recipient position fails Open (rejects transplant between server keys)",
     },
     {
       name: "member-info-server-fp",
@@ -202,7 +208,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, epoch, serverFpHex]),
       ),
       must_fail: true,
-      note: "メンバー宛ラップの recipient 位置にサーバー鍵 FP を入れた info でも Open 失敗(逆方向の受信者クラス移植拒否)",
+      note: "info with a server key FP in the recipient position of a member-bound wrap also fails Open (rejects reverse-direction recipient-class transplant)",
     },
   ],
 };

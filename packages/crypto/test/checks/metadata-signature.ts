@@ -1,14 +1,20 @@
-// CRYPTO_SPEC §4.2(変数・環境メタデータの署名付きステートメント)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// 検証規則系(kind = "authorization")は「署名は有効だが §6.3 の履歴検証で
-// expected_reason により拒否される」ことを、verifyChainWithHistory で構築した
-// 履歴索引に対する verifyDistributedMetaStatement で固定する。
+// Checks for CRYPTO_SPEC §4.2 (signed statements of variable/environment
+// metadata).
+// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
+// verified byte-for-byte against the vectors too.
+// For the verification-rule kind (kind = "authorization"), pin that "the
+// signature is valid but is rejected by the §6.3 history verification with
+// expected_reason" via verifyDistributedMetaStatement against the history
+// index built by verifyChainWithHistory.
 //
-// メタ固有の固定点(value-signature との差):
-// - var-meta-head-before-env-create は **positive**(エポックアンカー不在 —
-//   環境の存在を検査しない意図された非対称。§14.3-5 / AUTH_SPEC §12-4)
-// - rename_fork(同一 metaVersion の分岐)と name_swap(名前入替は署名失敗)
-// - revive-after-delete(deleted な predecessor の後続は全拒否)
+// Metadata-specific pinning points (differences from value-signature):
+// - var-meta-head-before-env-create is a **positive** (no epoch anchor — an
+//   intentional asymmetry that does not check environment existence.
+//   §14.3-5 / AUTH_SPEC §12-4)
+// - rename_fork (a fork at the same metaVersion) and name_swap (a name
+//   swap fails signature verification)
+// - revive-after-delete (every successor of a deleted predecessor is
+//   rejected)
 
 import type {
   ChainHistoryIndex,
@@ -61,7 +67,7 @@ interface VectorContext {
 
 interface MetaVector {
   readonly name: string;
-  /** 照合先チェーン(無指定 = canonical。device-ops = 端末鍵派生 — 2026-09-19 DK)。 */
+  /** Comparison chain (unset = canonical. device-ops = the device-key derived chain — 2026-09-19 DK). */
   readonly chain?: string;
   readonly context: VectorContext;
   readonly author_key_fingerprint_hex: string;
@@ -104,8 +110,9 @@ function contextOf(v: VectorContext): MetaStatementContext {
     name: v.name,
     status: v.status as MetaStatementContext["status"],
     layoutVersion: v.layout_version,
-    // レイアウト v2 のスキーマ欄(var_type / required / description)は 3 欄
-    // 同時に存在する(§4.2 — required がベクター側の存在判定の代表)
+    // The layout-v2 schema fields (var_type / required / description)
+    // exist as all 3 fields at once (§4.2 — required represents presence
+    // on the vector side)
     schema:
       v.required === undefined
         ? undefined
@@ -124,7 +131,7 @@ function contextOf(v: VectorContext): MetaStatementContext {
 
 const positives: readonly MetaVector[] = metaVectors.vectors;
 
-/** 照合先チェーン(名前 → 検証済み履歴索引)。ベクターの `chain` 無指定は canonical。 */
+/** Comparison chains (name → verified history index). A vector with `chain` unset means canonical. */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 function historyFor(
@@ -145,12 +152,13 @@ function predecessorOf(vector: MetaVector) {
     : {
         signedBytesHashHex: base.signed_bytes_sha256_hex,
         status: base.context.status as MetaStatementContext["status"],
-        // MetaPredecessor 側は必須(fail-closed)。ベクターの省略 = v1
+        // Required on the MetaPredecessor side (fail-closed). A vector
+        // omission = v1
         layoutVersion: base.context.layout_version ?? 1,
       };
 }
 
-/** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
+/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -158,7 +166,8 @@ async function signAndVerifyChecks(
   signatureHex: string,
   authorKeyFingerprintHex: string,
 ): Promise<void> {
-  // author の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  // Sign with the author's device (user_id, FP) seed (2026-09-19 DK —
+  // signers are per-device)
   const signer = await importVectorSigner(context.authorUserId, authorKeyFingerprintHex);
   if (signer === null) {
     c.push(`meta-sig ${name}: author keys`, false, "signer keys missing or failed to import");
@@ -194,8 +203,9 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       `meta-sig ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    // 削除ステートメント(status deleted、metaVersion > 1)は正当に署名できる
-    // 必要があるため、削除ベクターも決定論的再署名まで検査する
+    // Deletion statements (status deleted, metaVersion > 1) must be
+    // signable legitimately, so deletion vectors are also checked through
+    // deterministic re-signing
     await signAndVerifyChecks(
       c,
       vector.name,
@@ -204,8 +214,9 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.author_key_fingerprint_hex,
     );
 
-    // 履歴ベースの複合検証(§6.3): prev_base があれば predecessor 込みで検査。
-    // var-meta-head-before-env-create(環境作成前ヘッド)もここを通る = positive
+    // History-based composite verification (§6.3): predecessor included
+    // when prev_base exists. var-meta-head-before-env-create (a pre-
+    // environment-creation head) also passes through here = positive
     const distributed = await verifyDistributedMetaStatement({
       history,
       context,
@@ -222,17 +233,17 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   deleteRetentionChecks(c);
 }
 
-/** 削除ステートメントの保持規約(§4.2)のデータ再確認。 */
+/** Re-confirm the data of the deletion-statement retention convention (§4.2). */
 function deleteRetentionChecks(c: Checks): void {
-  // 削除は直前 active 名を保持する
+  // A deletion retains the last active name
   const del = byName.get("var-delete");
   const rename = byName.get("var-rename");
   c.push(
     "meta-sig var-delete: keeps last active name",
     del?.context.status === "deleted" && del.context.name === rename?.context.name,
   );
-  // v2 の削除は name と同じ規約でスキーマ欄とレイアウトを直前ステートメントから
-  // 完全保持する(§4.2 レイアウト v2)
+  // A v2 deletion fully retains schema fields and layout from the previous
+  // statement under the same convention as name (§4.2 layout v2)
   const v2Delete = byName.get("var-v2-delete-keeps-schema");
   const v2Create = byName.get("var-v2-create-typed");
   c.push(
@@ -257,7 +268,8 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
       signatureHex: branch.signature_hex,
       predecessor: predecessorOf(branch),
     });
-    // 分岐は単体では全検証を通る(防止は不能 — §14.2-5 の証拠化)
+    // Each branch passes all checks on its own (prevention is impossible —
+    // the evidence-recording of §14.2-5)
     c.push(`meta-sig fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
@@ -270,7 +282,8 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
 }
 
 async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
-  // 正規 2 本は各々検証を通る(名前 ↔ ID の束縛は署名が担う)
+  // Each of the 2 canonical statements verifies on its own (the name ↔ ID
+  // binding is carried by the signature)
   for (const statement of metaVectors.name_swap.statements as readonly MetaVector[]) {
     const result = await verifyDistributedMetaStatement({
       history,
@@ -280,7 +293,8 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
     });
     c.push(`meta-sig name-swap ${statement.name}: verifies individually`, result.ok);
   }
-  // name フィールドだけを入れ替えたバイト列では元署名の検証に失敗する
+  // A byte string with only the name field swapped fails the original
+  // signature's verification
   for (const swapped of metaVectors.name_swap.swapped as readonly MetaNegative[]) {
     const context = contextOf(swapped.context);
     const bytesMatch = toHex(buildMetaSignedBytes(context)) === swapped.verify_signed_bytes_hex;
@@ -298,9 +312,11 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   }
 }
 
-// 理由空間の網羅固定(support.ts の reasonCoverageChecks で検査):
-// Record 型が union との同期を **コンパイル時に** 強制するため、新しい拒否規則を
-// 実装したのにベクター・ハーネスのどちらにも負例が無い、を型 + テストで捕まえる。
+// Exhaustiveness pinning of the reason space (checked by support.ts's
+// reasonCoverageChecks): the Record type enforces sync with the union
+// **at compile time**, so "implemented a new rejection rule but neither
+// the vectors nor the harness has a negative for it" is caught by type +
+// test.
 const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "signature-invalid": true,
   "author-unknown": true,
@@ -317,7 +333,7 @@ const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "layout-regression": true,
 };
 
-/** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
+/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: MetaNegative,
@@ -353,7 +369,7 @@ async function ruleNegativeCheck(
   );
 }
 
-/** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
+/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: MetaNegative,
@@ -383,14 +399,17 @@ async function tamperNegativeCheck(
 }
 
 /**
- * 構造違反系 negative(kind = invalid-input): 署名は当該バイト列に対して有効
- * (参照実装が確認済み)だが、ワイヤ形の構造違反(v1 の declared・v2 の空
- * required)として署名検証に到達する前に InvalidInput で拒否する(§4.2 /
- * 裁定 CS — 拒否は暗号検証によるものではない)。
+ * Structural-violation negatives (kind = invalid-input): the signature is
+ * valid over the given byte string (confirmed by the reference
+ * implementation), but as a wire-form structural violation (v1 declared,
+ * v2 empty required) it is rejected with InvalidInput before signature
+ * verification is reached (§4.2 / ruling CS — the rejection is not by
+ * cryptographic verification).
  */
 async function invalidInputNegativeCheck(c: Checks, negative: MetaNegative): Promise<void> {
   const context = contextOf(negative.context);
-  // エンコーダ自体は全域関数なのでベクターの signed_bytes を再現できることも固定
+  // The encoder itself is a total function, so also pin that it
+  // reproduces the vector's signed_bytes
   const bytesMatch = toHex(buildMetaSignedBytes(context)) === negative.signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
   if (!key.ok) {
@@ -430,7 +449,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると各ふるいから漏れる)
+  // Pin the kind vocabulary (a third value would escape every sieve)
   c.push(
     "meta-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every(
@@ -481,8 +500,10 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // 署名側だけの結合検査(検証側は理由コードで拒否する非対称 — value-sign と同型):
-  // metaVersion 1 に非空 prev、metaVersion 1 の status deleted(作成は active — §4.2)
+  // Checks only on the signing side (the verify side instead rejects
+  // asymmetrically with a reason code — same shape as value-sign): a
+  // non-empty prev on metaVersion 1, and status deleted on metaVersion 1
+  // (creation is active — §4.2)
   const coupledPrev = await signMetaStatement({
     context: { ...baseContext, metaVersion: 1, prevMetaSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,
@@ -511,8 +532,9 @@ async function invalidInputChecks(c: Checks): Promise<void> {
 }
 
 /**
- * レイアウト依存の構造違反(§4.2 — JSON ベクターで表現しない分担): v1 に
- * スキーマ欄、v2 のスキーマ欄欠落、var_type の閉集合違反、環境メタへの v2。
+ * Layout-dependent structural violations (§4.2 — the split of duties not
+ * expressed as JSON vectors): schema fields on v1, missing schema fields
+ * on v2, a var_type closed-set violation, v2 targeting environment meta.
  */
 async function layoutInvalidInputChecks(c: Checks): Promise<void> {
   const base = positives[0];
@@ -569,10 +591,12 @@ function isUnsupportedLayout(result: CryptoResult<unknown>, layoutVersion: numbe
 }
 
 /**
- * レイアウト選択(§4.2 / 裁定 CR — 拒否ケースに参照期待値が存在しないため
- * 規約 21 の分担どおりハーネス側で固定): サポート外の layoutVersion は
- * **署名検証より前に** UnsupportedMetaLayout で拒否する(署名不正・
- * InvalidInput に潰さない誠実な破壊様式)。明示 layoutVersion 1 は省略と同値。
+ * Layout selection (§4.2 / ruling CR — since no reference expectation
+ * exists for the rejection cases, pinned on the harness side per the
+ * convention-21 split of duties): an unsupported layoutVersion is
+ * rejected with UnsupportedMetaLayout **before signature verification**
+ * (an honest failure mode — not collapsed into invalid signature or
+ * InvalidInput). An explicit layoutVersion 1 is equivalent to omitted.
  */
 async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const base = byName.get("var-v2-create-typed");
@@ -589,8 +613,9 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
     authorPublicKey: pair.publicKey,
   });
   const hash = await computeMetaSignedBytesHash(future);
-  // 署名鍵の解決(author-unknown)にすら到達しない = 署名検証より前の拒否を、
-  // 履歴に存在しない FP を渡して固定する
+  // Never even reaches signing-key resolution (author-unknown) =
+  // rejection before signature verification; pin it by passing an FP that
+  // does not exist in the history
   const distributed = await verifyDistributedMetaStatement({
     history,
     context: future,
@@ -613,8 +638,8 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
     "meta-sig layout selection: distributed verify rejects before key resolution",
     isUnsupportedLayout(distributed, 3),
   );
-  // layoutVersion の構造違反(0 / 非整数)は InvalidInput(バージョン交渉でなく
-  // ワイヤ形の壊れ)
+  // Structural violations of layoutVersion (0 / non-integer) are
+  // InvalidInput (a broken wire form, not version negotiation)
   for (const bad of [0, 1.5]) {
     const result = await computeMetaSignedBytesHash({
       ...contextOf(base.context),
@@ -625,7 +650,8 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
       !result.ok && result.error.kind === "InvalidInput",
     );
   }
-  // 明示 layoutVersion 1 は省略と同値(§4.2 — 省略 = 1)
+  // An explicit layoutVersion 1 is equivalent to omitted (§4.2 — omitted
+  // = 1)
   const v1 = byName.get("var-create");
   if (v1 === undefined) {
     c.push("meta-sig layout selection: v1 base vector", false);
@@ -639,12 +665,15 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
 }
 
 /**
- * ドメイン分離の性質検査(§4.2 — 観点 7): 同一座標を v1 / v2 でエンコードした
- * signed_bytes は必ず異なる。混同ベクター(layout-confusion 双方向)は固定入力の
- * 例示だが、こちらは生成的な直接検査 — 実装がドメイン分離文字列を落としても
- * ベクター再生成で偶然一致しない限り騙せない。スキーマ欄が全て空文字列の退化 v2
- * でも v1 と衝突しないこと(分離が LP 構造でなくドメインタグに依存すること)まで
- * 固定する。
+ * Property check of domain separation (§4.2 — consideration 7):
+ * signed_bytes of the same coordinate encoded as v1 / v2 must always
+ * differ. The confusion vectors (both directions of layout-confusion)
+ * illustrate on fixed inputs, but this is a generative direct check — an
+ * implementation that drops the domain-separation string cannot fake it
+ * unless a vector regeneration happens to coincide. Also pins that a
+ * degenerate v2 with all schema fields empty still does not collide with
+ * v1 (that the separation depends on the domain tag, not the LP
+ * structure).
  */
 function layoutDomainSeparationChecks(c: Checks): void {
   const v2 = byName.get("var-v2-create-typed");
@@ -664,8 +693,9 @@ function layoutDomainSeparationChecks(c: Checks): void {
     "meta-sig domain separation: same coordinates encode differently across layouts",
     v1Bytes !== v2Bytes && v2Bytes === v2.signed_bytes_hex,
   );
-  // 退化ケース: スキーマ欄が全て空でもドメインタグにより v1 とは衝突しない
-  // (エンコーダは全域関数なので構造検証なしにバイト列を構成できる)
+  // Degenerate case: even with all schema fields empty, the domain tag
+  // prevents collision with v1 (the encoder is a total function, so it
+  // can build the byte string without structural checks)
   const degenerate: MetaStatementContext = {
     ...v2Context,
     schema: {
@@ -680,7 +710,7 @@ function layoutDomainSeparationChecks(c: Checks): void {
   );
 }
 
-/** deleted な predecessor の後続は status を問わず拒否する(§4.2 — tombstone は終端)。 */
+/** Any successor of a deleted predecessor is rejected regardless of status (§4.2 — a tombstone is terminal). */
 async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const deleted = byName.get("var-delete");
   const keys = vectorKeys["user-admin-0003"];
@@ -696,7 +726,8 @@ async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): 
     c.push("meta-sig deleted predecessor: key import", false);
     return;
   }
-  // deleted → deleted(削除の重ね書き)も revived-after-delete で拒否される
+  // deleted → deleted (overwriting a deletion) is also rejected as
+  // revived-after-delete
   const successor: MetaStatementContext = {
     ...contextOf(deleted.context),
     metaVersion: deleted.context.meta_version + 1,

@@ -1,7 +1,8 @@
-// ChainHistoryIndex(CRYPTO_SPEC §6.3 / session-14 裁定 A)のチェック。
-// 正規チェーン(chain-entries.json)と tenure 拡張チェーン
-// (value-signature.json の tenure_extension)に対して、seq → entry hash、
-// 宣言ヘッド時点(inclusive)のメンバー状態・環境状態、tenure の分離を固定する。
+// Checks for ChainHistoryIndex (CRYPTO_SPEC §6.3 / session-14 ruling A).
+// Against the canonical chain (chain-entries.json) and the tenure extension
+// chain (tenure_extension in value-signature.json), pins seq → entry hash,
+// member/environment state as of the declared head (inclusive), and tenure
+// separation.
 
 import type { ChainEntry, ChainHistoryIndex, MemberStateAtSeq } from "../../src/index.ts";
 import { soleDeviceOf, verifyChainWithHistory } from "../../src/index.ts";
@@ -19,12 +20,12 @@ const OWNER = "user-owner-0001";
 const MEMBER = "user-member-0002";
 const ADMIN = "user-admin-0003";
 const DEV_MEMBER = "user-devmember-0010";
-/** 正規チェーンのヘッド seq(chain-entries.json — 2026-09-14 ES + PF1 で 24)。 */
+/** Head seq of the canonical chain (chain-entries.json — 24 as of 2026-09-14 ES + PF1). */
 const HEAD_SEQ = 24;
-/** tenure_extension(value-signature.json)の re-add エントリの seq(= ヘッドの次)。 */
+/** seq of the re-add entry in tenure_extension (value-signature.json) (= head + 1). */
 const EXTENSION_SEQ = HEAD_SEQ + 1;
 
-/** tenure_extension のエントリ(seq 25 の新鍵 re-add)を型付きで得る。 */
+/** Returns the tenure_extension entry (the new-key re-add at seq 25), typed. */
 function tenureExtensionEntry(): ChainEntry {
   const raw = valueVectors.tenure_extension.entry;
   return toTypedEntry({
@@ -43,7 +44,7 @@ function tenureExtensionEntry(): ChainEntry {
   });
 }
 
-/** 正規 24 エントリチェーンの検証済み履歴索引。 */
+/** Verified history index of the canonical 24-entry chain. */
 export async function canonicalHistory(): Promise<ChainHistoryIndex> {
   const result = await verifyChainWithHistory(typedEntries);
   if (!result.ok) {
@@ -53,9 +54,10 @@ export async function canonicalHistory(): Promise<ChainHistoryIndex> {
 }
 
 /**
- * chain-entries.json の派生チェーン(extended_chains)の検証済み履歴索引。
- * チェックポイント束縛のマニフェスト検証(§4.3 (2) — env-manifest.ts)が
- * checkpoint-boundary-* を照合先チェーンとして使う。
+ * Verified history index of a chain-entries.json derived chain
+ * (extended_chains). Checkpoint-bound manifest verification (§4.3 (2) —
+ * env-manifest.ts) uses the checkpoint-boundary-* chains as comparison
+ * chains.
  */
 export async function extendedVectorChainHistory(name: string): Promise<ChainHistoryIndex> {
   const extended = vectorExtendedChains[name];
@@ -72,7 +74,7 @@ export async function extendedVectorChainHistory(name: string): Promise<ChainHis
   return result.value.history;
 }
 
-/** 正規 24 エントリ + seq 25 re-add の派生チェーンの検証済み履歴索引。 */
+/** Verified history index of the canonical 24 entries + the seq-25 re-add derived chain. */
 export async function extendedHistory(): Promise<ChainHistoryIndex> {
   const result = await verifyChainWithHistory([...typedEntries, tenureExtensionEntry()]);
   if (!result.ok) {
@@ -105,16 +107,18 @@ function entryHashChecks(c: Checks, history: ChainHistoryIndex): void {
 }
 
 function memberBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
-  // genesis 自身の seq で owner 有効(inclusive)
+  // The owner is valid at genesis's own seq (inclusive)
   c.push("history: owner valid at genesis seq", history.memberStateAt(OWNER, 1)?.role === "owner");
-  // add_member 自身の seq で対象有効(inclusive)。seq 1 では未加入
+  // The target is valid at add_member's own seq (inclusive). Not yet a
+  // member at seq 1
   c.push("history: member absent before add", history.memberStateAt(MEMBER, 1) === undefined);
   const memberAt2 = history.memberStateAt(MEMBER, 2);
   c.push(
     "history: member valid at its own add seq",
     memberAt2?.role === "member" && memberAt2.tenureStartSeq === 2,
   );
-  // remove_member 自身の seq で対象無効(inclusive)。直前 seq までは有効
+  // The target is invalid at remove_member's own seq (inclusive). Valid up
+  // to the preceding seq
   c.push(
     "history: member valid just before removal",
     history.memberStateAt(MEMBER, 4) !== undefined,
@@ -129,7 +133,7 @@ function memberBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-/** 在籍開始時の端末 = 最初の鍵 1 つ(cap は構造的に (owner, all) — §6.2)と端末の時点照会。 */
+/** The device at membership start = the single first key (cap is structurally (owner, all) — §6.2), plus point-in-time device lookups. */
 function memberDeviceChecks(c: Checks, history: ChainHistoryIndex): void {
   const memberDevice = soleDeviceAt(history, MEMBER, 2);
   const expected = vectorKeys[MEMBER];
@@ -148,7 +152,8 @@ function memberDeviceChecks(c: Checks, history: ChainHistoryIndex): void {
       memberDevice.scope.kind === "all" &&
       memberDevice.addedSeq === 2,
   );
-  // 端末の時点照会(§6.3-1): 同じ鍵は在籍区間の内側でのみ有効
+  // Point-in-time device lookup (§6.3-1): the same key is valid only inside
+  // its membership interval
   const deviceAt2 = history.deviceStateAt(MEMBER, expected.key_fingerprint_hex, 2);
   c.push(
     "history: member device state at its add seq carries the person's permission",
@@ -160,14 +165,15 @@ function memberDeviceChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-/** `seq` 時点のメンバーの唯一の端末(不在・複数は undefined)。 */
+/** The member's sole device as of `seq` (undefined when absent or multiple). */
 function soleDeviceAt(history: ChainHistoryIndex, userId: string, seq: number) {
   const member = history.memberStateAt(userId, seq);
   return member === undefined ? undefined : soleDeviceOf(member);
 }
 
 function roleChangeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
-  // change_role 自身の seq で新 role 有効(inclusive)。add 時は reader
+  // The new role is valid at change_role's own seq (inclusive). The role at
+  // add time is reader
   c.push("history: admin absent before add", history.memberStateAt(ADMIN, 5) === undefined);
   c.push(
     "history: admin is reader at its add seq",
@@ -183,17 +189,18 @@ function roleChangeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-/** (role, scope) の変化点(§6.2 — 2026-09-14 ES / PF1 の提案経由適用)。 */
-/** listed scope の環境 id 列(all / 不在は undefined)。 */
+/** Change points of (role, scope) (§6.2 — 2026-09-14 ES / PF1 application via proposal). */
+/** The environment id list of a listed scope (all / absent → undefined). */
 function listed(state: MemberStateAtSeq | undefined): readonly string[] | undefined {
   return state?.scope.kind === "listed" ? state.scope.environmentIds : undefined;
 }
 
 function scopeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
-  // genesis 由来の owner / 旧形式相当の add_member は scope = all
+  // A genesis-derived owner / an old-format-equivalent add_member has scope
+  // = all
   c.push("history: owner scope is all", history.memberStateAt(OWNER, 1)?.scope.kind === "all");
   c.push("history: admin scope is all", history.memberStateAt(ADMIN, 6)?.scope.kind === "all");
-  // seq 13: listed{dev} の member として加入(inclusive)
+  // seq 13: joins as member of listed{dev} (inclusive)
   c.push(
     "history: dev member absent before add",
     history.memberStateAt(DEV_MEMBER, 12) === undefined,
@@ -203,7 +210,8 @@ function scopeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
     "history: dev member listed{dev} at its add seq",
     at13?.role === "member" && listed(at13)?.join(",") === "env-dev-0002",
   );
-  // seq 17: change_role(scope だけ拡大 — {dev} → {dev, stage})は自身の seq で有効
+  // seq 17: change_role (widens only the scope — {dev} → {dev, stage}) is
+  // valid at its own seq
   c.push(
     "history: dev member scope unchanged just before change_role",
     listed(history.memberStateAt(DEV_MEMBER, 16))?.join(",") === "env-dev-0002",
@@ -215,10 +223,10 @@ function scopeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-/** 提案経由の適用(PF1): 変化点は定足数に達した approve エントリの seq(inclusive)。 */
+/** Application via proposal (PF1): the change point is the seq of the approve entry that reaches quorum (inclusive). */
 function proposalApplyBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
-  // seq 21 の propose は状態を変えず、seq 22 の approve(定足数到達)で内側 change_role
-  // (reader / listed{dev})が適用される
+  // The propose at seq 21 changes no state; the approve at seq 22 (quorum
+  // reached) applies the inner change_role (reader / listed{dev})
   const at21 = history.memberStateAt(DEV_MEMBER, 21);
   c.push(
     "history: propose does not change the target",
@@ -236,7 +244,8 @@ function proposalApplyBoundaryChecks(c: Checks, history: ChainHistoryIndex): voi
 }
 
 function environmentCreateRotateChecks(c: Checks, history: ChainHistoryIndex): void {
-  // create_environment 自身の seq でエポック 1 有効(inclusive)。前 seq は未作成
+  // Epoch 1 is valid at create_environment's own seq (inclusive). At the
+  // preceding seq the environment does not exist
   c.push(
     "history: environment absent before create",
     history.environmentStateAt("env-prod-0001", 2) === undefined,
@@ -246,7 +255,7 @@ function environmentCreateRotateChecks(c: Checks, history: ChainHistoryIndex): v
     "history: environment epoch 1 at its create seq",
     prodAt3?.createdAtSeq === 3 && prodAt3?.currentEpoch === 1,
   );
-  // rotate_epoch 自身の seq で新エポック有効(inclusive)
+  // The new epoch is valid at rotate_epoch's own seq (inclusive)
   c.push(
     "history: new epoch at its rotate seq",
     history.environmentStateAt("env-prod-0001", 4)?.currentEpoch === 2,
@@ -303,7 +312,8 @@ function keyLookupChecks(c: Checks, history: ChainHistoryIndex): void {
 function tenureBoundaryChecks(c: Checks, extended: ChainHistoryIndex): void {
   const rejoined = valueVectors.tenure_extension.rejoined_member;
   const oldKeys = vectorKeys[MEMBER];
-  // remove → re-add は別 tenure: 旧区間(seq 2〜4)は旧鍵、新区間(seq 25〜)は新鍵
+  // remove → re-add is a separate tenure: the old interval (seq 2-4) keeps
+  // the old key, the new interval (seq 25-) binds the new key
   c.push(
     "history: tenure 1 keeps the original key",
     soleDeviceAt(extended, MEMBER, 4)?.keyFingerprintHex === oldKeys?.key_fingerprint_hex &&
@@ -321,7 +331,7 @@ function tenureBoundaryChecks(c: Checks, extended: ChainHistoryIndex): void {
   );
 }
 
-/** 旧区間の鍵 × 新区間のヘッドは端末として無効(tenure 跨ぎ — §6.3-1)。 */
+/** An old-interval key x a new-interval head is not a valid device (crossing tenures — §6.3-1). */
 function tenureDeviceChecks(c: Checks, extended: ChainHistoryIndex): void {
   const rejoined = valueVectors.tenure_extension.rejoined_member;
   const oldFp = vectorKeys[MEMBER]?.key_fingerprint_hex ?? "";
@@ -338,7 +348,8 @@ function tenureDeviceChecks(c: Checks, extended: ChainHistoryIndex): void {
 function tenureKeyLookupChecks(c: Checks, extended: ChainHistoryIndex): void {
   const rejoined = valueVectors.tenure_extension.rejoined_member;
   const oldKeys = vectorKeys[MEMBER];
-  // 同じ user_id の両 tenure の鍵が FP で個別に引ける(dedupe で tenure を消さない)
+  // The keys of both tenures of the same user_id resolve individually by FP
+  // (dedupe must not erase tenure)
   c.push(
     "history: both tenures' keys resolvable by fingerprint",
     extended.sigKeyByFingerprint(MEMBER, oldKeys?.key_fingerprint_hex ?? "") ===
@@ -348,8 +359,10 @@ function tenureKeyLookupChecks(c: Checks, extended: ChainHistoryIndex): void {
 }
 
 // ---------------------------------------------------------------------------
-// 端末鍵(2026-09-19 DK — §6.2「端末の有効区間」/ §6.3「端末鍵の選択と実効権限」)。
-// 派生チェーン device-ops(base 24、seq 25〜37 — 規約 28)に対して固定する
+// Device keys (2026-09-19 DK — §6.2 "device validity interval" / §6.3
+// "device-key selection and effective permission").
+// Pinned against the derived chain device-ops (base 24, seq 25-37 —
+// convention 28)
 
 const ALL_MEMBER = "user-allmember-0013";
 const OWNER_3 = "user-owner-0015";
@@ -364,10 +377,10 @@ function deviceKey(label: string): { readonly fp: string; readonly sig: string }
 }
 
 function deviceIntervalChecks(c: Checks, history: ChainHistoryIndex): void {
-  const cibox = deviceKey("user-allmember-0013@ci-box"); // seq 27 追加、seq 37 失効
-  const first = deviceKey(ALL_MEMBER); // 最初の鍵(seq 16)
+  const cibox = deviceKey("user-allmember-0013@ci-box"); // added seq 27, revoked seq 37
+  const first = deviceKey(ALL_MEMBER); // the first key (seq 16)
   c.push("history: device-ops head seq", history.headSeq === 37);
-  // add_device 自身の seq で有効(inclusive)。直前は無効
+  // Valid at add_device's own seq (inclusive). Invalid just before
   c.push(
     "history: second device absent before its add_device seq",
     history.deviceStateAt(ALL_MEMBER, cibox.fp, 26) === undefined &&
@@ -382,7 +395,8 @@ function deviceIntervalChecks(c: Checks, history: ChainHistoryIndex): void {
       at27.tenureStartSeq === 16 &&
       history.memberStateAt(ALL_MEMBER, 27)?.devices.size === 2,
   );
-  // revoke_device 自身の seq で無効(inclusive)。人は在籍のまま、最初の鍵は残る
+  // Invalid at revoke_device's own seq (inclusive). The person stays a
+  // member; the first key remains
   c.push(
     "history: second device valid just before its revoke seq",
     history.deviceStateAt(ALL_MEMBER, cibox.fp, 36) !== undefined,
@@ -393,7 +407,8 @@ function deviceIntervalChecks(c: Checks, history: ChainHistoryIndex): void {
       history.deviceStateAt(ALL_MEMBER, first.fp, 37) !== undefined &&
       history.memberStateAt(ALL_MEMBER, 37)?.devices.size === 1,
   );
-  // 失効済み端末の鍵も FP で引ける(§6.3-1 の鍵選択は全区間 — 有効性は deviceStateAt)
+  // A revoked device's key also resolves by FP (§6.3-1 key selection spans
+  // all intervals — validity is deviceStateAt's job)
   c.push(
     "history: revoked device key stays resolvable by fingerprint",
     history.sigKeyByFingerprint(ALL_MEMBER, cibox.fp) === cibox.sig,
@@ -408,8 +423,8 @@ function deviceIntervalChecks(c: Checks, history: ChainHistoryIndex): void {
 function effectivePermissionChecks(c: Checks, history: ChainHistoryIndex): void {
   const cibox = deviceKey("user-allmember-0013@ci-box");
   const readerCap = deviceKey("user-owner-0015@reader-cap"); // cap (reader, all) — seq 29
-  const phone = deviceKey("user-owner-0001@phone"); // cap (owner, listed{}) — seq 26〜34
-  // (min(人の role, role_cap), 人の scope ∩ 端末 scope)
+  const phone = deviceKey("user-owner-0001@phone"); // cap (owner, listed{}) — seq 26-34
+  // (min(person role, role_cap), person scope ∩ device scope)
   const ciAt28 = history.deviceStateAt(ALL_MEMBER, cibox.fp, 28);
   c.push(
     "history: effective scope is the intersection with the device scope",
@@ -432,7 +447,8 @@ function effectivePermissionChecks(c: Checks, history: ChainHistoryIndex): void 
       phoneAt30.permission.scope.kind === "listed" &&
       phoneAt30.permission.scope.environmentIds.length === 0,
   );
-  // 最初の鍵の実効権限 = 人の権限(cap (owner, all) は上限なし)
+  // The first key's effective permission = the person's permission (cap
+  // (owner, all) means uncapped)
   const firstOwner2 = deviceKey(OWNER_2);
   c.push(
     "history: first key carries the person's full permission",

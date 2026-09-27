@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §4.3: 環境マニフェスト(Ed25519)。env_manifest_signed_bytes = LP(\"<suite>/env-manifest-sig\", project_id, environment_id, epoch, manifest_version, variables_digest_hex, env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex, issuer_user_id, chain_head_hash_hex, chain_head_seq)、variables_digest_hex = lower_hex(SHA-256(LP(\"<suite>/env-manifest-vars\", entry_1, …, entry_n)))、entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)(variable_id のバイト昇順。tombstone 込み。空集合可)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+  "description": "CRYPTO_SPEC §4.3: the environment manifest (Ed25519). env_manifest_signed_bytes = LP(\"<suite>/env-manifest-sig\", project_id, environment_id, epoch, manifest_version, variables_digest_hex, env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex, issuer_user_id, chain_head_hash_hex, chain_head_seq); variables_digest_hex = lower_hex(SHA-256(LP(\"<suite>/env-manifest-vars\", entry_1, …, entry_n))); entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex) (byte-ascending by variable_id; tombstones included; the empty set is allowed). The chain and keys reference chain-entries.json's canonical 12-entry chain",
   "manifest_signed_fields_order": [
     "domain",
     "project_id",
@@ -15,11 +15,11 @@
     "chain_head_seq"
   ],
   "digest_entry_fields_order": ["variable_id", "status", "meta_version", "meta_sig_hash_hex"],
-  "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
-  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に issuer-environment-out-of-scope-at-head を追加)",
-  "composite_epoch_rule": "エポック整合(§4.3 (2) — 2026-08-27 セッション 33 = PR-F3b でチェックポイント束縛へ改訂。旧 H+1 例外は廃止): 検証済みチェーン上に当該 (environment_id, manifest_version) の checkpoint タプルが存在する場合、その (epoch, manifest_sig_hash) と完全一致しなければならない(strict は代替経路にならない — checkpoint-binding-mismatch が negative)。同座標に (epoch, manifest_sig_hash) の異なるタプルが併存すれば equivocation の硬い証拠として拒否(checkpoint-equivocation)。タプルが存在しない場合のみ宣言ヘッド時点の現エポックとの strict 一致(epoch-not-current-at-head / environment-not-created-at-head が negative。複合発行形の manifest-v1-create / manifest-rotate は chain-entries.json の checkpoint-boundary-* 派生チェーンに対する positive で、checkpoint を欠くチェーンに対しては composite-head-without-checkpoint-* の negative)。さらにチェックポイント整合の規則 1(§6.3): manifestVersion・epoch は当該環境の最新 checkpoint 以上(checkpoint-regressed が negative)",
+  "binary_encoding": "hashes go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding). Numbers (epoch / manifest_version / env_meta_version / meta_version / chain_head_seq) are decimal-stringified. Each digest entry is embedded as one field containing the byte string of a nested LP (the same convention as scope_environments)",
+  "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, issuer keys = keys. The canonical chain is 24 entries (2026-09-14 ES + PF1 — the meaning of the positives is unchanged; the negatives gained issuer-environment-out-of-scope-at-head)",
+  "composite_epoch_rule": "epoch consistency (§4.3 (2) — revised to checkpoint binding in 2026-08-27 session 33 = PR-F3b; the old H+1 exception abolished): when a checkpoint tuple for the (environment_id, manifest_version) exists on the verified chain, it must match its (epoch, manifest_sig_hash) exactly (strict is not an alternative route — checkpoint-binding-mismatch is the negative). If tuples with different (epoch, manifest_sig_hash) coexist at the same coordinates, reject as hard evidence of equivocation (checkpoint-equivocation). Only when no tuple exists does strict matching against the current epoch at the declared-head time apply (epoch-not-current-at-head / environment-not-created-at-head are negatives; the compound-issue forms manifest-v1-create / manifest-rotate are positives against chain-entries.json's checkpoint-boundary-* derived chains, and negatives composite-head-without-checkpoint-* against a chain lacking the checkpoint). In addition, checkpoint consistency rule 1 (§6.3): manifestVersion and epoch must be at least the environment's latest checkpoint (checkpoint-regressed is the negative)",
   "statements": {
-    "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
+    "note": "the digest-input fixture (statements with identical inputs and hashes to metadata-signature.json's). The digest needs only (variable_id, status, meta_version, meta_sig_hash_hex) (§4.3)",
     "env_meta_v1": {
       "context": {
         "kind": "environment",
@@ -123,7 +123,7 @@
   },
   "extra_keys": {
     "ghost": {
-      "note": "issuer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+      "note": "for issuer-unknown-in-history (a key that exists nowhere in the chain history)",
       "enc_sk_seed_hex": "78797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091929394959697",
       "sig_sk_seed_hex": "88898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7",
       "enc_pub_hex": "7ea13ddfcbacd8a13542dece890886486fb8024d0d3cc7f95ed8bb4efad66b73",
@@ -132,7 +132,7 @@
     }
   },
   "tenure_extension": {
-    "note": "key-from-other-tenure 用の派生チェーン(value-signature.json / metadata-signature.json と同一内容): 正規チェーン(24 エントリ)の後に seq 25 で user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
+    "note": "the derived chain for key-from-other-tenure (identical contents to value-signature.json / metadata-signature.json's): after the canonical chain (24 entries), seq 25 re-adds user-member-0002 with new keys (remove → re-add = a different tenure). chain-entries.json itself is unchanged",
     "rejoined_member": {
       "user_id": "user-member-0002",
       "enc_sk_seed_hex": "7475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90919293",
@@ -173,7 +173,7 @@
       "entries": [],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273",
       "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
-      "note": "変数ゼロの環境では要素 0 の LP(空集合も有効なダイジェストを持つ — §4.3)"
+      "note": "an LP of 0 elements for an environment with zero variables (the empty set too has a valid digest — §4.3)"
     },
     {
       "name": "single-entry",
@@ -187,7 +187,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d7661727300000067000000107661722d6170692d6b65792d303030310000000661637469766500000001310000004062633535323666666334653266316163353766663135303739626263353261313166363664623262396233303964306531643335653666313332393164666430",
       "variables_digest_hex": "ad875de4aaa7acb68a51be7082fbf149ee867b5c52348873de2f18a6e36583f0",
-      "note": "entry = LP(variable_id, status, meta_version, meta_sig_hash_hex) を入れ子 LP の 1 フィールドとして埋め込む"
+      "note": "entry = LP(variable_id, status, meta_version, meta_sig_hash_hex) is embedded as one field of a nested LP"
     },
     {
       "name": "tombstone-entry",
@@ -207,7 +207,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d7661727300000068000000107661722d6170692d6b65792d303030310000000764656c6574656400000001330000004061666635306562383330306538343563643331616561336362343863656234653061663464313366366432346336386534626164376138626232646130616234000000660000000f7661722d6c65676163792d303030320000000661637469766500000001310000004037363130366163323431656231623639326336316166336539303733386238386338313535326564353335623866336337333764373535336637313439653732",
       "variables_digest_hex": "b34b1874b397be47761ae07b10f59ca1b757199557024442ed6a460bee02403b",
-      "note": "tombstone(status deleted)も全ステートメントの最新形として列挙に含む"
+      "note": "a tombstone (status deleted) is also enumerated as the latest form of every statement"
     },
     {
       "name": "byte-ascending-order",
@@ -227,7 +227,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273000000640000000d5a6574612d7661722d303030320000000661637469766500000001320000004030646539646337323034656163363539646232366539386134306464653462383037383139646339623333356161343337666264326431623266333837333761000000650000000e616c7068612d7661722d303030310000000661637469766500000001310000004065663732356138383166383130323364323632323666643131303438323165383937326431623835663736393764306534616539346164356666346639333331",
       "variables_digest_hex": "babcd47b7fdaae5fa6134ccbc2b7601a7af5b9e48c0cf337f2ff797a29a455ed",
-      "note": "順序は variable_id の**バイト**昇順(UTF-8): 'Zeta-var-0002'(Z = 0x5a)が 'alpha-var-0001'(a = 0x61)より先に来る(ロケール・大文字小文字非依存の固定)"
+      "note": "the order is **byte**-ascending by variable_id (UTF-8): 'Zeta-var-0002' (Z = 0x5a) comes before 'alpha-var-0001' (a = 0x61) (pins locale- and case-insensitivity-independence)"
     },
     {
       "name": "surrogate-boundary-order",
@@ -259,7 +259,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273000000610000000a7661722d7a2d303030310000000661637469766500000001310000004037316466303339376262363065386434306262626238343531363837656366636637363739656633643037313935326664326231666339363665343361356561000000630000000c7661722de38a992d303030310000000661637469766500000001310000004063363863343532323763643865336430616432393964653865326135633263383934633033333262616238316130366235626466353536373862623137633635000000640000000c7661722defbfa52d303030310000000764656c6574656400000001330000004033323666343037646233326138353038613363356638366161616636336534623936356630356463393837646636363861326434663434663263303833623634000000640000000d7661722df09f94912d303030310000000661637469766500000001320000004035306639663835616338616331646238393730393239346466383266333265393365396230396330326563363937313431663164666263303363626561633261",
       "variables_digest_hex": "0ba6ec45e6d2c2af11f0156262a45c9223589b20b00450d1a9ad3d0b567043de",
-      "note": "サロゲートペア境界の byte-ascending(session-31 M1-T2): 正規順は var-z-0001(0x7A)< var-㊙-0001(0xE3…)< var-￥-0001(U+FFE5 = 0xEF BF A5)< var-🔑-0001(U+1F511 = 0xF0 9F 94 91)。UTF-16 コード単位順(JS の素の文字列比較)はサロゲート(0xD83D)< U+FFE5 のため最後の 2 要素が逆転する — UTF-8 バイト順の実装だけがこのダイジェストに到達する"
+      "note": "byte-ascending across the surrogate-pair boundary (session-31 M1-T2): the canonical order is var-z-0001 (0x7A) < var-㊙-0001 (0xE3…) < var-￥-0001 (U+FFE5 = 0xEF BF A5) < var-🔑-0001 (U+1F511 = 0xF0 9F 94 91). The UTF-16 code-unit order (JS's plain string comparison) puts the surrogate (0xD83D) < U+FFE5, reversing the last 2 elements — only a UTF-8 byte-order implementation reaches this digest"
     },
     {
       "name": "declared-entry",
@@ -279,7 +279,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273000000660000000f7661722d6c65676163792d3030303200000006616374697665000000013100000040373631303661633234316562316236393263363161663365393037333862383863383135353265643533356238663363373337643735353366373134396537320000006d000000147661722d76322d6465636c617265642d30303132000000086465636c6172656400000001310000004034633862346639373633616332343135393762373633313661316237613464666565386665396265636264393764313636393537366466353566353432323738",
       "variables_digest_hex": "9cb46cfc504aa67677914bff2e4d42dfa51bbeab02b04dff9c9402c9c06bc6a3",
-      "note": "status = declared(§4.2 レイアウト v2)の entry も全ステートメントの最新形として列挙に含む。entry・ダイジェストのエンコーダは不変で、status に新しい文字列値が現れるだけ(§4.3 のスキーマ欄の被覆 — meta_sig_hash は v2 の signed_bytes〔metadata-signature.json の var-v2-declared-create〕から計算される)"
+      "note": "an entry with status = declared (§4.2 layout v2) is also enumerated as the latest form of every statement. The entry / digest encoders are unchanged; a new string value merely appears in status (§4.3's coverage of the schema fields — meta_sig_hash is computed from the v2 signed_bytes [metadata-signature.json's var-v2-declared-create])"
     }
   ],
   "vectors": [
@@ -305,7 +305,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000013100000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040623930633535616662303064333864333563386139396366336266393538666239313036343761613865633239333832613065656631333836643737656131300000000000000010757365722d6d656d6265722d3030303200000040636436643834343332316466653038666131323231346265633033356630393330333138613435656534643462393636323563323630396361396434306637350000000132",
       "signed_bytes_sha256_hex": "5a42a22d63210c5a31f512696011a6e504cb4b00848e8d8f6f41874ece8fc2d1",
       "signature_hex": "db6f07bab01ba028d812bb950620336ff1f817dd6057877f6178e3894167ba673809075ac2d89bf5a27cc79bd9e13efbbd01e4d6cd60c607ef2ed67919b5fc03",
-      "note": "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は未存在で、検証は境界 checkpoint タプル(chain-entries.json の checkpoint-boundary-create 派生チェーン seq 4)との完全一致による(§4.3 (2) — 2026-08-27 セッション 33 で旧 H+1 例外を廃止。checkpoint を欠く正規チェーンに対する同データは negative composite-head-without-checkpoint-create)"
+      "note": "the manifest bundled with the environment-creation compound (manifestVersion 1, empty variable set, epoch 1). The declared head is the current head before the append (seq 2 = the create_environment entry's prev — AUTH_SPEC §12-4). The environment does not exist at the declared-head time; verification is by exact match against the boundary checkpoint tuple (seq 4 of chain-entries.json's checkpoint-boundary-create derived chain) (§4.3 (2) — the old H+1 exception was abolished in session 33 on 2026-08-27. The same data against a canonical chain lacking the checkpoint is the negative composite-head-without-checkpoint-create)"
     },
     {
       "name": "manifest-rotate",
@@ -329,7 +329,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000132000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004062393063353561666230306433386433356338613939636633626639353866623931303634376161386563323933383261306565663133383664373765613130000000403561343261323264363332313063356133316635313236393630313161366535303463623462303038343865386438663666343138373465636538666332643100000010757365722d6d656d6265722d3030303200000040316363343538333635323733353632343162663439623939336130393032333133343563643839326234643332386563303861313665366532363930333538620000000133",
       "signed_bytes_sha256_hex": "614b93b784d5523847a1fd403882fd4a105717f53ff42d638b6b0c41054f0223",
       "signature_hex": "4c850ab62db221a017bd9c3004c49c2ade2aa513007df61228c540e9c70a8c607c2eb3273568bfc6ccd05489aae2afa929cf769ad4457e365017215314db6702",
-      "note": "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。検証は境界 checkpoint タプル(checkpoint-boundary-rotate 派生チェーン seq 6)との完全一致による(§4.3 (2)。checkpoint を欠く正規チェーンに対する同データは negative composite-head-without-checkpoint-rotate)",
+      "note": "the manifest bundled with a rotate compound (reflecting the epoch advance — re-issued even though the meta set is unchanged; §4.3). Verification is by exact match against the boundary checkpoint tuple (seq 6 of the checkpoint-boundary-rotate derived chain) (§4.3 (2); the same data against a canonical chain lacking the checkpoint is the negative composite-head-without-checkpoint-rotate)",
       "prev_base": "manifest-v1-create"
     },
     {
@@ -361,7 +361,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000133000000406662656134323931616130356465396336333164313562343962366631393439623064626433613661396664363464633566373036316638316464393434306100000001310000004062393063353561666230306433386433356338613939636633626639353866623931303634376161386563323933383261306565663133383664373765613130000000403631346239336237383464353532333834376131666434303338383266643461313035373137663533666634326436333862366230633431303534663032323300000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
       "signed_bytes_sha256_hex": "292ed5f3f2ff08b87154f1654a4b8708e91fb71cda40db53d53aa51d11035b41",
       "signature_hex": "a1eee0ccbc18280ba4ef87ffef3bd025e343107ee388c3eb7ab71ecbf3b91b42f71addec2b81c113fcb31ca4369b85b99290373b844fac6bf1f09d3ede7d9606",
-      "note": "seq 5 で削除済みの issuer による在籍区間内(head 4)の過去マニフェスト(変数 var-legacy-0002 の作成に伴う発行)。削除後も当時の鍵・当時の現エポック(head 4 時点 = 2)で検証できる(§6.3-1 の対応物)",
+      "note": "a past manifest inside the membership interval (head 4) by an issuer removed at seq 5 (issued with the creation of variable var-legacy-0002). It verifies under the key and the then-current epoch of that time (2 at head 4) even after the removal (the §6.3-1 counterpart)",
       "prev_base": "manifest-rotate"
     },
     {
@@ -399,7 +399,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040666465633138363864343163386165363938653037383733303963306166626531623133336263316134663230633439623965643434646665616163633136360000000131000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000040323932656435663366326666303862383731353466313635346134623837303865393166623731636461343064623533643533616135316431313033356234310000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "f662128af0f1073308f968a996b6a36316caf7af1f91defc4dec7bfc79d92893",
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
-      "note": "変数作成(var-api-key-0001)後のマニフェスト。ダイジェストは 2 変数を variable_id のバイト昇順で列挙する",
+      "note": "the manifest after creating variable var-api-key-0001. The digest enumerates the 2 variables in byte-ascending order of variable_id",
       "prev_base": "manifest-removed-issuer"
     },
     {
@@ -437,7 +437,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040363762633066373437323333643335326534623235666436333461396538396664393937313435313062346134373033326163363664323662646265653839360000000131000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000040663636323132386166306631303733333038663936386139393662366133363331366361663761663166393164656663346465633762666337396439323839330000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "0c3ba86a5293f082989ee1a126c97e4f91ca7bdf58a899412bfc8d2498845ee5",
       "signature_hex": "75f221f4beac46382289b4d6da60f032356f215938a63fac4a918d451c44543fcf4b84fae54d1809d66d7763d962190899c320a49d3c00cbb3c75730931f1907",
-      "note": "rename(metaVersion 2)後のマニフェスト。prev = manifest-var-create の signed_bytes の SHA-256(§4.3 の連鎖)",
+      "note": "the manifest after the rename (metaVersion 2). prev = SHA-256 of manifest-var-create's signed_bytes (the §4.3 chain)",
       "prev_base": "manifest-var-create"
     },
     {
@@ -475,7 +475,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013600000040623334623138373462333937626534373736316165303762313066353963613162373537313939353537303234343432656436613436306265653032343033620000000131000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000040306333626138366135323933663038323938396565316131323663393765346639316361376264663538613839393431326266633864323439383834356565350000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "166ce9a114098ddc0b4c73c7eb87303d49ed8bb36e5908df1c5a6bfe0db5554b",
       "signature_hex": "eeb822a6f32685693cbbafef710810afe75c0239c00e92861d8d748e149408c0e1689bc73d3722237efb0c7fe2ab05b850f8bb5f6516ee34fe57dea62ccfa407",
-      "note": "削除後のマニフェスト。ダイジェストは tombstone(status deleted、metaVersion 3)を含む(§4.3 — tombstone 隠しは digest-tombstone-omitted が negative で固定)",
+      "note": "the manifest after the deletion. The digest includes the tombstone (status deleted, metaVersion 3) (§4.3 — hiding a tombstone is pinned as a negative by digest-tombstone-omitted)",
       "prev_base": "manifest-var-rename"
     },
     {
@@ -500,7 +500,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d30303032000000013200000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040383234363533613362393238633039663565313433636364333266623666623633343334393037663236393162353263626531343531666238333635636236660000000000000013757365722d6465766d656d6265722d303031300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000023139",
       "signed_bytes_sha256_hex": "b69599bf77395484a95c469a83750fc6e03dd81fae6e2adaed9b432f72a53d2c",
       "signature_hex": "aaa674bbd953220dda1fd65d8cb4b30e1d3dc32eac17605b5ac444829dfe51d4c1c754369c6d7f76001f9d7c5052c004df52d77c3f5116492a139061a7669d09",
-      "note": "listed の issuer(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002 —エポック 2・manifestVersion 1・変数空集合)のマニフェストは通る(3′ の許容側。env-dev の checkpoint タプルは正規チェーンに無いため strict 経路)"
+      "note": "a manifest of an in-scope environment (env-dev-0002 — epoch 2, manifestVersion 1, empty variable set) by a listed issuer (member listed{dev, stage} at head 19) passes (the permissive side of 3′; the strict route since env-dev's checkpoint tuple is not on the canonical chain)"
     },
     {
       "name": "manifest-second-device-issuer-in-scope",
@@ -524,12 +524,12 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d30303032000000013200000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040383234363533613362393238633039663565313433636364333266623666623633343334393037663236393162353263626531343531666238333635636236660000000000000013757365722d616c6c6d656d6265722d303031330000004035343931383262656633356165623533373963616265386261353035373330356136623231373365336432373532393566613934343934393830336437303837000000023238",
       "signed_bytes_sha256_hex": "4946a04cc4d8d95eb66b29f160c7fcfb35df59d6979d04adee26b29bfc7d938b",
       "signature_hex": "2b45e7a0a3138778eb7e2c5be1f645ad8695f2258c2dd9f70243b347a0d0c07d2b9b21204ddbcbe29d86a8d62e7ae0f256bfcd68899e70ee370c4ae33bb1a702",
-      "note": "第 2 端末の正例: allmember-0013 の CI 箱 C(cap (member, listed{dev, stage}))による実効 scope 内の環境(env-dev-0002 — エポック 2・manifestVersion 1・変数空集合)のマニフェストは通る(strict 経路)",
+      "note": "a second-device positive: a manifest of an in-scope environment (env-dev-0002 — epoch 2, manifestVersion 1, empty variable set) by allmember-0013's CI box C (cap (member, listed{dev, stage})) passes (the strict route)",
       "chain": "device-ops"
     }
   ],
   "manifest_fork": {
-    "note": "同一座標(env-prod-0001 × manifestVersion 5)に対する内容の異なる 2 つの有効マニフェスト。各 branch は単体で §4.3 / §6.3 の全検証を通り(両方 verify 成功)、組として signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な証拠になる(§14.2-5。防止ではなく証拠化)",
+    "note": "two valid manifests with different contents on the same coordinates (env-prod-0001 × manifestVersion 5). Each branch alone passes all §4.3 / §6.3 checks (both verify successfully); as a pair, the difference in signed_bytes_sha256_hex becomes non-repudiable evidence of server equivocation (§14.2-5 — evidence, not prevention)",
     "branches": [
       {
         "name": "manifest-fork-a",
@@ -566,7 +566,7 @@
         "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040363762633066373437323333643335326534623235666436333461396538396664393937313435313062346134373033326163363664323662646265653839360000000131000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000040663636323132386166306631303733333038663936386139393662366133363331366361663761663166393164656663346465633762666337396439323839330000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "0c3ba86a5293f082989ee1a126c97e4f91ca7bdf58a899412bfc8d2498845ee5",
         "signature_hex": "75f221f4beac46382289b4d6da60f032356f215938a63fac4a918d451c44543fcf4b84fae54d1809d66d7763d962190899c320a49d3c00cbb3c75730931f1907",
-        "note": "manifestVersion 5 の分岐 A(admin が署名。rename 適用後の集合)",
+        "note": "manifestVersion-5 branch A (signed by the admin; the set after the rename is applied)",
         "prev_base": "manifest-var-create"
       },
       {
@@ -598,7 +598,7 @@
         "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040666265613432393161613035646539633633316431356234396236663139343962306462643361366139666436346463356637303631663831646439343430610000000131000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000040663636323132386166306631303733333038663936386139393662366133363331366361663761663166393164656663346465633762666337396439323839330000000f757365722d6f776e65722d303030310000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "317b2f6b2f8b1b1220ab4aa28ebbc6939d19de7a11bb4a2881953bab026094f2",
         "signature_hex": "981e98f50746e6044c7fa521992344da98128b1dc671d5db62b29f232c7b14b1ab25f32e0c30524683889926e08ba3574698e1a9f48d8be36cfd42709e320b01",
-        "note": "manifestVersion 5 の分岐 B(owner が署名。var-api-key-0001 を落とした集合)。A と同一座標・同一 prev でダイジェストが異なる",
+        "note": "manifestVersion-5 branch B (signed by the owner; the set with var-api-key-0001 dropped). Same coordinates and same prev as A but a different digest",
         "prev_base": "manifest-var-create"
       }
     ]
@@ -626,7 +626,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479700",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "tampered-digest",
@@ -650,7 +650,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "variables_digest_hex の差し替え(集合の改竄)は元署名の検証に失敗する(ダイジェストは署名対象 — §4.3)"
+      "note": "substituting variables_digest_hex (tampering with the set) fails verification of the original signature (the digest is signed — §4.3)"
     },
     {
       "name": "transplant-project",
@@ -674,7 +674,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別プロジェクトへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another project fails signature verification"
     },
     {
       "name": "transplant-environment",
@@ -698,7 +698,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別環境への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another environment fails signature verification"
     },
     {
       "name": "transplant-issuer",
@@ -722,7 +722,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "issuer_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.3 の issuer 焼き込み)"
+      "note": "substituting issuer_user_id fails verification even under the same key (protects against relabeling attribution — §4.3's issuer burning)"
     },
     {
       "name": "wrong-issuer-key",
@@ -746,7 +746,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "issuer 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+      "note": "verification fails under a non-issuer key (blocks verification under a different key via FP relabeling)"
     },
     {
       "name": "chain-head-swap",
@@ -770,7 +770,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)"
+      "note": "substituting chain_head_hash_hex (keeping seq) fails signature verification (protects against relabeling the authorization time)"
     },
     {
       "name": "chain-head-seq-mismatch",
@@ -794,7 +794,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)"
+      "note": "substituting chain_head_seq (keeping the hash) fails signature verification (both hash and seq are signed)"
     },
     {
       "name": "suite-mismatch",
@@ -818,7 +818,7 @@
       "signature_hex": "542f9806818e0c9266c34f5acd5375b1eed872c2c0cd0a97487b90cb92fc92cb3861b6ec00906df499459158b0583293669f43da2c0c2189446d277208479701",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "head-not-in-chain",
@@ -847,7 +847,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-mismatch",
       "must_fail": true,
-      "note": "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)または偽造の硬い証拠として即時拒否(§6.3-2a)"
+      "note": "seq 12 exists in the local view but the hash does not match = hard evidence of a chain fork (equivocation) or forgery — reject immediately (§6.3-2a)"
     },
     {
       "name": "head-beyond-local-seq",
@@ -876,7 +876,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-future",
       "must_fail": true,
-      "note": "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)"
+      "note": "seq 25 is beyond the local view's head (24) = the local chain may merely be stale. Resync first, accept if it matches as an extension, else it is evidence of a fork (§6.3-2b)"
     },
     {
       "name": "issuer-removed-at-head",
@@ -905,7 +905,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "issuer-not-member-at-head",
       "must_fail": true,
-      "note": "seq 5 で削除済みの issuer が削除後のヘッド(12)を宣言する形は拒否する(削除済みメンバーの鍵による新規マニフェストの遮断 — §6.3-3)"
+      "note": "reject the form where an issuer removed at seq 5 declares a post-removal head (12) (blocks fresh manifests by a removed member's key — §6.3-3)"
     },
     {
       "name": "issuer-role-insufficient",
@@ -934,7 +934,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "issuer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。マニフェストの発行契機はすべて member 以上のメタ操作 — reader 署名は拒否する(§4.3)"
+      "note": "at head 6, user-admin-0003 is a reader (the change_role is seq 7). Every issue trigger of a manifest is a member-or-above meta operation — a reader signature is rejected (§4.3)"
     },
     {
       "name": "key-from-other-tenure",
@@ -963,7 +963,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "issuer-key-mismatch-at-head",
       "must_fail": true,
-      "note": "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間のヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)"
+      "note": "the combination old-key (from the first membership interval) × new-interval head (25) under the user_id that went remove → re-add-with-different-keys (derived chain seq 25) is rejected (§6.3-1's head-time key binding)"
     },
     {
       "name": "issuer-unknown-in-history",
@@ -992,7 +992,7 @@
       "verify_key_hex": "03ff0e60c3634744bf45cec1833341ccdde192a3f66873422378bcbd46a32f1b",
       "expected_reason": "issuer-unknown",
       "must_fail": true,
-      "note": "チェーン履歴のどの時点にも存在しない issuer_user_id / 鍵 FP の組は検証鍵を選択できず拒否する(署名自体は本 negative の鍵で有効)"
+      "note": "an issuer_user_id / key FP pair that exists at no point in the chain history cannot select a verification key and is rejected (the signature itself is valid under this negative's key)"
     },
     {
       "name": "environment-not-created-at-head",
@@ -1021,7 +1021,7 @@
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "expected_reason": "environment-not-created-at-head",
       "must_fail": true,
-      "note": "env-stage-0003 の create_environment は seq 11。宣言ヘッド(seq 2)時点に環境は未存在で、次エントリ(seq 3)も当該環境のエポックを確立しない — 既定値へのフォールバック実装を禁止する(値署名の §6.3-4 後段と同型)"
+      "note": "env-stage-0003's create_environment is seq 11. The environment does not exist at the declared-head (seq 2) time, and the next entry (seq 3) also does not establish the environment's epoch — implementations must not fall back to a default value (the same form as the value signature's §6.3-4 latter part)"
     },
     {
       "name": "epoch-not-current-at-head",
@@ -1050,7 +1050,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "epoch-not-current-at-head",
       "must_fail": true,
-      "note": "head 12 時点の env-prod-0001 の現エポックは 2(rotate は seq 4)。旧エポック 1 を焼き込んだマニフェストは、宣言ヘッド時点のエポック整合で拒否する(§4.3 の核 — write 資格を失った鍵は現エポックのマニフェストを署名できない)"
+      "note": "at head 12, env-prod-0001's current epoch is 2 (the rotate is seq 4). A manifest burning the old epoch 1 is rejected by the declared-head-time epoch consistency (the core of §4.3 — a key that lost write authority cannot sign a manifest of the current epoch)"
     },
     {
       "name": "epoch-regression",
@@ -1079,7 +1079,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "epoch-regressed",
       "must_fail": true,
-      "note": "rotate(seq 4 → epoch 2)後に、在籍区間内の旧ヘッド(seq 3 — 当時の現エポック 1)を宣言して旧エポックを焼き込んだ前進 manifest_version(4)。宣言ヘッド時点のエポック整合は通るが、検証済みの直前マニフェスト(epoch 2)からのエポック後退として拒否する(§4.1 単調性のマニフェスト版 — 本設計の核となる negative)",
+      "note": "after the rotate (seq 4 → epoch 2), a forward manifest_version (4) burning the old epoch declares an old head inside the membership interval (seq 3 — the then-current epoch 1). The declared-head-time epoch consistency passes, but it is rejected as an epoch regression from the verified preceding manifest (epoch 2) (the manifest version of §4.1 monotonicity — the negative at the core of this design)",
       "predecessor": {
         "base": "manifest-removed-issuer",
         "signed_bytes_sha256_hex": "292ed5f3f2ff08b87154f1654a4b8708e91fb71cda40db53d53aa51d11035b41",
@@ -1113,7 +1113,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "manifestVersion 1 の prev_manifest_sig_hash_hex は空文字列でなければならない(§4.3)。predecessor を保持しない latest-only 検証でも形は必ず検査する"
+      "note": "manifestVersion 1's prev_manifest_sig_hash_hex must be the empty string (§4.3). The form is always checked even by a latest-only verification that keeps no predecessor"
     },
     {
       "name": "v2-empty-prev",
@@ -1142,7 +1142,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "manifestVersion > 1 の prev_manifest_sig_hash_hex は 64 文字 hex でなければならない(§4.3)"
+      "note": "manifestVersion > 1's prev_manifest_sig_hash_hex must be 64-char hex (§4.3)"
     },
     {
       "name": "prev-hash-mismatch",
@@ -1171,7 +1171,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-hash-mismatch",
       "must_fail": true,
-      "note": "既知の直前 manifestVersion(manifest-removed-issuer)の signed_bytes ハッシュと prev が一致しない連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰さない",
+      "note": "a chain inconsistency where prev does not match the known previous manifestVersion (manifest-removed-issuer)'s signed_bytes hash (§6.3-6). The signature is valid — do not crush it into an Ed25519 failure",
       "predecessor": {
         "base": "manifest-removed-issuer",
         "signed_bytes_sha256_hex": "292ed5f3f2ff08b87154f1654a4b8708e91fb71cda40db53d53aa51d11035b41",
@@ -1218,7 +1218,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "variables-digest-mismatch",
       "must_fail": true,
-      "note": "マニフェストは 2 変数のダイジェストを署名しているが、配布から var-api-key-0001 のステートメントを落とした集合での再計算は一致しない(ステートメントの欠落の検出 — §4.3 (3))",
+      "note": "the manifest signed a digest of 2 variables, but recomputation over the set that dropped var-api-key-0001's statement from the distribution does not match (detects a missing statement — §4.3 (3))",
       "verify_entries": [
         {
           "variable_id": "var-legacy-0002",
@@ -1268,7 +1268,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "variables-digest-mismatch",
       "must_fail": true,
-      "note": "tombstone(var-api-key-0001 の deleted ステートメント)を配布から隠した集合での再計算は一致しない(削除の隠蔽 = 無断復活の入口の検出 — §4.3 (3))",
+      "note": "recomputation over a set that hid the tombstone (var-api-key-0001's deleted statement) from the distribution does not match (detects concealment of a deletion = the entrance to unauthorized revival — §4.3 (3))",
       "verify_entries": [
         {
           "variable_id": "var-legacy-0002",
@@ -1318,7 +1318,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "variables-digest-mismatch",
       "must_fail": true,
-      "note": "昇順違反(降順)で計算されたダイジェストを署名したマニフェストは、正規形(バイト昇順)での再計算と一致しない(順序はダイジェストの正規形の一部 — §4.3)"
+      "note": "a manifest signed with a digest computed in an order violating ascending order (descending) does not match a recomputation in canonical form (byte-ascending) (the order is part of the digest's canonical form — §4.3)"
     },
     {
       "name": "env-meta-mismatch",
@@ -1347,7 +1347,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "env-meta-mismatch",
       "must_fail": true,
-      "note": "マニフェストの (env_meta_version, env_meta_sig_hash_hex) が検証済みの環境メタステートメントと一致しない(環境メタの差し替え・古い環境メタへの固定の検出 — AUTH_SPEC §12-5 (7) の再計算対象)",
+      "note": "the manifest's (env_meta_version, env_meta_sig_hash_hex) does not match the verified environment meta statement (detects substituting environment meta / pinning to a stale one — the recomputation target of AUTH_SPEC §12-5 (7))",
       "verify_env_meta": {
         "meta_version": 2,
         "meta_sig_hash_hex": "0111b5daee1a0604d4fb5f8b01b3113a3493beaf5003a93e7e94ad81beb18790"
@@ -1380,7 +1380,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "environment-not-created-at-head",
       "must_fail": true,
-      "note": "manifest-v1-create と同一データを checkpoint タプルを持たない正規チェーンに対して検証すると strict(宣言ヘッド時点)に落ち、宣言ヘッド(seq 2)時点で環境未存在として拒否する — 旧 H+1 例外(宣言ヘッドの次エントリでエポックが成立する複合形の無条件許容)の廃止の固定(§4.3 (2))"
+      "note": "verifying data identical to manifest-v1-create against the canonical chain lacking the checkpoint tuple degrades to strict (declared-head time) and is rejected as environment-not-yet-existing at the declared head (seq 2) — pins the abolition of the old H+1 exception (unconditional allowance of the compound form where the epoch is established by the entry after the declared head) (§4.3 (2))"
     },
     {
       "name": "composite-head-without-checkpoint-rotate",
@@ -1409,7 +1409,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "epoch-not-current-at-head",
       "must_fail": true,
-      "note": "manifest-rotate と同一データを checkpoint タプルを持たない正規チェーンに対して検証すると strict に落ち、宣言ヘッド(seq 3)時点の現エポック(1)との不一致で拒否する(旧 H+1 例外の廃止の rotate 側)"
+      "note": "verifying data identical to manifest-rotate against the canonical chain lacking the checkpoint tuple degrades to strict and is rejected for disagreeing with the current epoch (1) at the declared-head (seq 3) time (the rotate side of the old H+1 exception's abolition)"
     },
     {
       "name": "checkpoint-binding-mismatch",
@@ -1438,7 +1438,7 @@
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "expected_reason": "checkpoint-binding-mismatch",
       "must_fail": true,
-      "note": "検証済みチェーン上に (env-prod-0001, manifestVersion 1) の checkpoint タプルが存在する場合、マニフェストの signed_bytes ハッシュはタプルと完全一致しなければならない(strict は代替経路にならない — 選言禁止)。owner が署名した同座標の別内容マニフェスト(issuer が異なるためハッシュが異なる)は、署名・ヘッド・エポックが有効でも拒否する。latest checkpoint(manifestVersion 2)より古い版への照合でも束縛が先に判定される(検査順序: 束縛 (2) → 非後退 (4))"
+      "note": "when a checkpoint tuple for (env-prod-0001, manifestVersion 1) exists on the verified chain, the manifest's signed_bytes hash must match the tuple exactly (strict is not an alternative route — no disjunction). A different-content manifest at the same coordinates signed by the owner (a different hash because the issuer differs) is rejected even though the signature, head, and epoch are valid. The binding is also judged first when compared against a version older than the latest checkpoint (manifestVersion 2) (check order: binding (2) → no-regression (4))"
     },
     {
       "name": "checkpoint-equivocation",
@@ -1467,7 +1467,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "checkpoint-equivocation",
       "must_fail": true,
-      "note": "同一 (environment_id, manifest_version) に (epoch, manifest_sig_hash) の異なるcheckpoint タプルが検証済みチェーン上に併存する場合は、マニフェスト equivocation の硬い証拠として当該環境の配布を拒否する(§4.3 (2)。manifest-rotate 自体は正当でも、チェーンが矛盾タプルを運んだ時点で拒否)"
+      "note": "when checkpoint tuples with different (epoch, manifest_sig_hash) coexist for the same (environment_id, manifest_version) on the verified chain, reject distribution of that environment as hard evidence of manifest equivocation (§4.3 (2); even though manifest-rotate itself is legitimate, it is rejected the moment the chain carries contradictory tuples)"
     },
     {
       "name": "checkpoint-regressed",
@@ -1496,7 +1496,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "checkpoint-regressed",
       "must_fail": true,
-      "note": "チェックポイント整合の規則 1(§6.3 / §4.3 (4)): 配布マニフェストの manifestVersion は当該環境の最新 checkpoint(checkpoint-boundary-rotate では manifestVersion 2)以上でなければならない。タプル(manifestVersion 1)との完全一致を通る正当な旧マニフェストでも、基準より古い版の配布は巻き戻しとして拒否する(境界チェックポイントが供給する下限 — タプルを持つ版への照合の下方回避を塞ぐ)"
+      "note": "checkpoint consistency rule 1 (§6.3 / §4.3 (4)): a distributed manifest's manifestVersion must be at least the environment's latest checkpoint (manifestVersion 2 in checkpoint-boundary-rotate). Even a legitimate old manifest that passes the exact match against the tuple (manifestVersion 1) is rejected as a rollback when distributing a version older than the reference (the floor supplied by the boundary checkpoint — blocks undercutting the comparison by moving to a version the tuple has)"
     },
     {
       "name": "issuer-environment-out-of-scope",
@@ -1525,7 +1525,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "issuer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 のマニフェストは role を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する"
+      "note": "at head 19, user-devmember-0010 is member listed{dev, stage}. A manifest of out-of-scope env-prod-0001 is rejected by the declared-head-time scope check (3′) even when role is satisfied"
     },
     {
       "name": "issuer-role-precedes-scope",
@@ -1554,7 +1554,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "issuer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 24 時点の user-devmember-0010 は reader listed{dev}。role 不足 × scope 外の複合違反は role 検査(3)が scope 検査(3′)に先行する"
+      "note": "at head 24, user-devmember-0010 is reader listed{dev}. An insufficient-role × out-of-scope compound violation is judged with the role check (3) preceding the scope check (3′)"
     },
     {
       "name": "issuer-scope-precedes-prev",
@@ -1583,7 +1583,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "issuer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "scope 外 × prev の形違反(manifestVersion 4 で prev 空)の複合違反は scope 検査(3′)が prev 連鎖(§4.3 (1))に先行する"
+      "note": "an out-of-scope × prev-shape violation (empty prev at manifestVersion 4) compound is judged with the scope check (3′) preceding the prev chain (§4.3 (1))"
     },
     {
       "name": "issuer-device-revoked-at-head",
@@ -1612,7 +1612,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "issuer-key-mismatch-at-head",
       "must_fail": true,
-      "note": "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言したマニフェストは issuer-key-mismatch-at-head"
+      "note": "a manifest by device C — revoked at seq 37 — declaring a post-revocation head (37) is issuer-key-mismatch-at-head"
     },
     {
       "name": "issuer-device-role-insufficient",
@@ -1641,7 +1641,7 @@
       "verify_key_hex": "7f06222150f8782176dcf9d51b37751051b95f6421836e657a76379d2e616a1b",
       "expected_reason": "issuer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "owner-0015 の cap (reader, all) の端末 L の実効 role は reader。マニフェストの発行(member 以上)は拒否する"
+      "note": "the effective role of owner-0015's cap-(reader, all) device L is reader. Issuing a manifest (member or above) is rejected"
     },
     {
       "name": "issuer-device-environment-out-of-scope",
@@ -1670,7 +1670,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "issuer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "CI 箱 C の実効 scope {dev, stage} 外の env-prod-0001 のマニフェストは、人の scope が all でも拒否する"
+      "note": "a manifest of env-prod-0001 — outside CI box C's effective scope {dev, stage} — is rejected even though the person's scope is all"
     }
   ]
 }

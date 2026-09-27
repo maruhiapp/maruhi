@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §4.1: 値の書き込み署名(Ed25519)。value_signed_bytes = LP(\"<suite>/value-sig\", project_id, environment_id, epoch, variable_id, version, nonce_hex, ciphertext_hex, prev_value_sig_hash_hex, writer_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵・DEK は chain-entries.json の正規 12 エントリチェーンを参照",
+  "description": "CRYPTO_SPEC §4.1: the value-write signature (Ed25519). value_signed_bytes = LP(\"<suite>/value-sig\", project_id, environment_id, epoch, variable_id, version, nonce_hex, ciphertext_hex, prev_value_sig_hash_hex, writer_user_id, chain_head_hash_hex, chain_head_seq). The chain, keys, and DEKs reference chain-entries.json's canonical 12-entry chain",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -14,11 +14,11 @@
     "chain_head_hash_hex",
     "chain_head_seq"
   ],
-  "binary_encoding": "nonce / ciphertext / ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / version / chain_head_seq)は 10 進文字列化",
-  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、writer 鍵 = keys、DEK = environment_deks(ciphertext は実 AES-GCM 暗号文で、AAD は §4 の LP)。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に writer-environment-out-of-scope-at-head を追加)",
+  "binary_encoding": "nonce / ciphertext / hashes go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding). Numbers (epoch / version / chain_head_seq) are decimal-stringified",
+  "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, writer keys = keys, DEKs = environment_deks (ciphertexts are real AES-GCM ciphertexts with the §4 LP as AAD). The canonical chain is 24 entries (2026-09-14 ES + PF1 — the meaning of the positives is unchanged; the negatives gained writer-environment-out-of-scope-at-head)",
   "extra_keys": {
     "ghost": {
-      "note": "writer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+      "note": "for writer-unknown-in-history (a key that exists nowhere in the chain history)",
       "enc_sk_seed_hex": "78797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091929394959697",
       "sig_sk_seed_hex": "88898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7",
       "enc_pub_hex": "7ea13ddfcbacd8a13542dece890886486fb8024d0d3cc7f95ed8bb4efad66b73",
@@ -27,7 +27,7 @@
     }
   },
   "tenure_extension": {
-    "note": "key-from-other-tenure 用の派生チェーン: 正規チェーン(24 エントリ)の後に seq 25 で user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
+    "note": "the derived chain for key-from-other-tenure: after the canonical chain (24 entries), seq 25 re-adds user-member-0002 with new keys (remove → re-add = a different tenure). chain-entries.json itself is unchanged",
     "rejoined_member": {
       "user_id": "user-member-0002",
       "enc_sk_seed_hex": "7475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90919293",
@@ -90,7 +90,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000107661722d6170692d6b65792d303030310000000131000000186134613561366137613861396161616261636164616561660000004630343134373663316162323766613135316164633262313232646433633630383138373465616366663331663137356261366235623830646565373165393530333864643830000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "e48e7d3a4d1aa03f2112730e49fb95035f89a5b7cb8bde14750fabd793272b2c",
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
-      "note": "version 1(prev 空)。writer は head 12 時点の admin(member 以上)、env-prod-0001 の現エポック 2"
+      "note": "version 1 (empty prev). The writer is the admin at head 12 (member or above); env-prod-0001's current epoch is 2"
     },
     {
       "name": "v2-chained",
@@ -119,7 +119,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000107661722d6170692d6b65792d30303031000000013200000018613561366137613861396161616261636164616561666230000000463865336538363066383533323634633437643936616630613862396364373362623662333431376136653664353239653236623935666532336163366564393931303736316500000040653438653764336134643161613033663231313237333065343966623935303335663839613562376362386264653134373530666162643739333237326232630000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "b704c97cfbd1447a972d264fac020b0d972818218ecaa145a2329244f4aff884",
       "signature_hex": "d69ffca487a16ab5c4402af062815528b9c896df9bf1cba88fa90720c2175311ac170439e2075d8646767cdb250b0f8e86b403c77f998f171366d1629e04920f",
-      "note": "version 2。prev = v1-basic の value_signed_bytes の SHA-256(§4.1 の連鎖)",
+      "note": "version 2. prev = SHA-256 of v1-basic's value_signed_bytes (the §4.1 chain)",
       "prev_base": "v1-basic"
     },
     {
@@ -149,7 +149,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000131000000157661722d64617461626173652d75726c2d303030310000000131000000186136613761386139616161626163616461656166623062310000008631313737316532306261316461353662346665353364663162663032366366376132366237313633306566633561343339306132333561376437663864616239363339323861326661383033366239333363353239333838373262396539383862396130616562623534633761633031633665666263633430343364346263666531646133360000000000000010757365722d6d656d6265722d3030303200000040316363343538333635323733353632343162663439623939336130393032333133343563643839326234643332386563303861313665366532363930333538620000000133",
       "signed_bytes_sha256_hex": "9f5a605d97f5c85fbaa5bd7476ee38b521c5720a8bc4aa9f4e760dc2d33ab3f4",
       "signature_hex": "b88bf2582051d444eb3a0c0c4db07bb792855a8d062ea2f600b669d09ec0751d204c9d5bb36bf1a54d49fd602922cc6adee931035533bd5af6b2dcd966bcb204",
-      "note": "create_environment エントリ(seq 3)自身を宣言ヘッドにする直後 push(§6.3 の inclusive 規約): head 3 で env-prod-0001 は作成済み・エポック 1 有効、writer(member)も seq 2 の add 以降有効"
+      "note": "a push right after the create_environment entry (seq 3) itself, using it as the declared head (§6.3's inclusive convention): at head 3 env-prod-0001 is already created with epoch 1 valid, and the writer (member) is also valid since the seq-2 add"
     },
     {
       "name": "removed-writer-in-tenure",
@@ -178,7 +178,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000f7661722d6c65676163792d3030303200000001310000001861376138613961616162616361646165616662306231623200000046663565353239613539663531373665336239633631633635343564373061376635383265656531373336666662616166653837613532356139306265633338353862646339320000000000000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
       "signed_bytes_sha256_hex": "16c5eee51eeab1ac4b37cce246413afa62f31d6d8fd0204c123e55f6dd8a9186",
       "signature_hex": "5d38cfd037fb1fbf1a0e1c01e58690198e042d69884177483166e3c35963104c4625891eedb89a835e05c925186006b0f9a2ff6434a7047a9efd5867d516d906",
-      "note": "seq 5 で削除済みの writer による在籍区間内(head 4 = 自身の rotate_epoch エントリ)の過去値。rotate エントリ自身を宣言ヘッドにする再暗号化 push の座標(エポック 2 は head 4 で有効 — inclusive)であり、削除後も当時の鍵で検証できる(§6.3-1)"
+      "note": "a past value within the membership interval (head 4 = its own rotate_epoch entry) by a writer removed at seq 5. It is the coordinates of a re-encryption push declaring the rotate entry itself as head (epoch 2 is valid at head 4 — inclusive), and it verifies under the key of that time even after the removal (§6.3-1)"
     },
     {
       "name": "env-dev-v1",
@@ -207,7 +207,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000131000000167661722d736572766963652d746f6b656e2d303030330000000131000000186138613961616162616361646165616662306231623262330000004e373137326231663364343865646336393433613137613465646262356361383135316138366137666336626436326263623266336236636237366134623236353335663332313633373430323165000000000000000f757365722d61646d696e2d3030303300000040353236393639353365643161363865623738613433653238313437303936653066626634623030663235383263306230653936336636633530373333306130370000000138",
       "signed_bytes_sha256_hex": "2247967f16e5efb8931a3dba138bc035ce8866c9381fc78568284e2e2acb3b99",
       "signature_hex": "8ed9c3bde26bdd38245d3e84a22e95fabdfe9919398a1b815315763747e9176e3ddd21b317fc1c8da52dc31da29f1b2436c302ed918bb5fcb0ac3058713a4209",
-      "note": "env-dev-0002 の作成エントリ(seq 8)自身を宣言ヘッドにする version 1(エポック 1)"
+      "note": "version 1 (epoch 1) declaring env-dev-0002's own creation entry (seq 8) as the head"
     },
     {
       "name": "rotate-head-reencryption",
@@ -236,7 +236,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000167661722d736572766963652d746f6b656e2d303030330000000132000000186139616161626163616461656166623062316232623362340000004e34313061363837646664376466616237333065303339333930356436373961363731663733626337636662313130643936623762313561316264373963393235313561616162653631643738613600000040323234373936376631366535656662383933316133646261313338626330333563653838363663393338316663373835363832383465326532616362336239390000000f757365722d61646d696e2d303030330000004037363036663566353433653235393133636466396439383839316432343331653934383430343835633430363235353465323937396638636465393433333833000000023130",
       "signed_bytes_sha256_hex": "320728d56af3419ae8065f317488f75b35e05fd240c38585e0f73ab5c85f5342",
       "signature_hex": "a569c55f0760dcead808e0715a79fd8bedd3ba47aa6aec85ed8d36bcb61c3fe2ab01d8119c7c69f8cb96ad563406f93b4338ce64a988a2ac6a789fee8394c407",
-      "note": "ローテーション実行者による再暗号化 push(§7 = §4.1): rotate_epoch エントリ(seq 10)自身を宣言ヘッドにし、平文は同一のまま新エポック DEK で暗号化、prev は旧エポックの version 1 に連鎖(エポック単調性 2 ≥ 1)",
+      "note": "a re-encryption push by the rotation executor (§7 = §4.1): the rotate_epoch entry (seq 10) itself is the declared head, the plaintext is identical but encrypted under the new epoch's DEK, and prev chains to the old epoch's version 1 (epoch monotonicity 2 ≥ 1)",
       "prev_base": "env-dev-v1"
     },
     {
@@ -266,7 +266,7 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000137661722d6465762d73636f7065642d3030303600000001310000001861636164616561666230623162326233623462356236623700000046363030636339363430643034346534393366343831343737383837666562383765316662373933363066666338376664653233393234613533663531306333326565623131350000000000000013757365722d6465766d656d6265722d303031300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000023139",
       "signed_bytes_sha256_hex": "928067d59c88da24fab5d283547baf9990677c12cff5bf6c7bedf582186558ff",
       "signature_hex": "758ac167f7dbcbdeb589551453d1195fedaa2eb1f79a0ba12e58a4453d1a3d5f95bdcc5e0afac7c84fc987fba490b56fc3c05e2f8718455a187b3229f7a5c702",
-      "note": "listed の writer(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002)への push は通る(3′ の許容側)"
+      "note": "a push to an in-scope environment (env-dev-0002) by a listed writer (member listed{dev, stage} at head 19) passes (the permissive side of 3′)"
     },
     {
       "name": "second-device-writer-in-scope",
@@ -295,12 +295,12 @@
       "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000127661722d63692d73636f7065642d303030370000000131000000186164616561666230623162326233623462356236623762380000004435346461613630336131653564333436666138663130653636646231303661626531363663363364393432623461393332643235633364626432393566393064343234390000000000000013757365722d616c6c6d656d6265722d303031330000004035343931383262656633356165623533373963616265386261353035373330356136623231373365336432373532393566613934343934393830336437303837000000023238",
       "signed_bytes_sha256_hex": "225756014d766b5b7fae528fb6b712717a147bda797b8d686ff76431455197ab",
       "signature_hex": "a9aaacc4d2b1a81ba581f304c44dcce7edc608e7c59fa4f97d3ea250ed9b6a44a3a89b28bc61bfda25b36520773712003e53d2a652628a31278369b4f600070a",
-      "note": "第 2 端末の正例: allmember-0013(member, all)の CI 箱 C(cap (member, listed{dev, stage}) — seq 27)による実効 scope 内の環境(env-dev-0002)への push は通る(宣言ヘッド 28 は C の有効区間内)",
+      "note": "a second-device positive: a push to an in-scope environment (env-dev-0002) by allmember-0013's (member, all) CI box C (cap (member, listed{dev, stage}) — seq 27) passes (declared head 28 is inside C's validity interval)",
       "chain": "device-ops"
     }
   ],
   "fork_same_version": {
-    "note": "同一座標(var-api-key-0001 × version 3)に対する内容の異なる 2 つの有効署名。各 branch は単体で §6.3 の全検証を通り(両方 verify 成功)、組として signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な証拠になる(§14.2-5。防止ではなく証拠化 — 検出は同一座標の突合で行う)",
+    "note": "two valid signatures with different contents on the same coordinates (var-api-key-0001 × version 3). Each branch alone passes all §6.3 checks (both verify successfully); as a pair, the difference in signed_bytes_sha256_hex becomes non-repudiable evidence of server equivocation (§14.2-5 — evidence, not prevention; detection is by comparing the same coordinates)",
     "branches": [
       {
         "name": "fork-branch-a",
@@ -329,7 +329,7 @@
         "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000107661722d6170692d6b65792d30303031000000013300000018616161626163616461656166623062316232623362346235000000463361303461623261303132363735623939356161393231636161666566653563326335386362373438353730656334386136303766633436333366366462373034323064386200000040623730346339376366626431343437613937326432363466616330323062306439373238313832313865636161313435613233323932343466346166663838340000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "08bc653c1d5dc2352f32fd7df9d4d65220bafa9db128f450d61f71f908c9e851",
         "signature_hex": "268329379d2d90a08d89e7d82162a10a58cb78de52f5555f494719a94faa545a777dc6cc2693b8812947b44b8fbac1a6e1d50f8aa7ff21a360b1fcc6b63bb30c",
-        "note": "version 3 の分岐 A(admin が署名)",
+        "note": "version 3 branch A (signed by the admin)",
         "prev_base": "v2-chained"
       },
       {
@@ -359,7 +359,7 @@
         "signed_bytes_hex": "000000136d61727568692f76312f76616c75652d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000107661722d6170692d6b65792d30303031000000013300000018616261636164616561666230623162326233623462356236000000463564393961323039656537666463346263396631646533363739316331373235636437336630376131353933343730366534623538306463373737353032316662343362623000000040623730346339376366626431343437613937326432363466616330323062306439373238313832313865636161313435613233323932343466346166663838340000000f757365722d6f776e65722d303030310000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "2534704ff39df901fe4247843ac0d84e4526a4d34c3e3cb5cf2fa0131313ce77",
         "signature_hex": "bb085396f1266d1f9a0338927df18ad53e6adbdaa6a37a579d3e87a39d4a5b62e7a6cb1bcd1579d54b2889c120a2c0683f13d464b1af356e4c8eff300383340e",
-        "note": "version 3 の分岐 B(owner が署名)。A と同一座標・同一 prev で内容が異なる",
+        "note": "version 3 branch B (signed by the owner). Same coordinates and same prev as A but different contents",
         "prev_base": "v2-chained"
       }
     ]
@@ -387,7 +387,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22703",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "tampered-ciphertext",
@@ -411,7 +411,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "暗号文の末尾 1 bit 反転(タグ含む差し替え)は元署名の検証に失敗する"
+      "note": "flipping the last 1 bit of the ciphertext (a substitution including the tag) fails verification of the original signature"
     },
     {
       "name": "tampered-nonce",
@@ -435,7 +435,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "nonce の改竄は元署名の検証に失敗する(nonce も署名対象)"
+      "note": "tampering with the nonce fails verification of the original signature (the nonce is also signed)"
     },
     {
       "name": "transplant-project",
@@ -459,7 +459,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別プロジェクトへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another project fails signature verification"
     },
     {
       "name": "transplant-environment",
@@ -483,7 +483,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別環境への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another environment fails signature verification"
     },
     {
       "name": "transplant-epoch",
@@ -507,7 +507,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別エポックへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another epoch fails signature verification"
     },
     {
       "name": "transplant-variable",
@@ -531,7 +531,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別変数への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another variable fails signature verification"
     },
     {
       "name": "transplant-version",
@@ -555,7 +555,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別バージョンへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another version fails signature verification"
     },
     {
       "name": "transplant-signer",
@@ -579,7 +579,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "writer_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.1 の user_id 焼き込み)"
+      "note": "substituting writer_user_id fails verification even under the same key (protects against relabeling attribution — §4.1's user_id burning)"
     },
     {
       "name": "wrong-signer-key",
@@ -603,7 +603,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "署名者以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+      "note": "verification fails under a non-signer key (blocks verification under a different key via FP relabeling)"
     },
     {
       "name": "chain-head-swap",
@@ -627,7 +627,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)"
+      "note": "substituting chain_head_hash_hex (keeping seq) fails signature verification (protects against relabeling the authorization time)"
     },
     {
       "name": "chain-head-seq-mismatch",
@@ -651,7 +651,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)"
+      "note": "substituting chain_head_seq (keeping the hash) fails signature verification (both hash and seq are signed)"
     },
     {
       "name": "tampered-prev-hash",
@@ -675,7 +675,7 @@
       "signature_hex": "d69ffca487a16ab5c4402af062815528b9c896df9bf1cba88fa90720c2175311ac170439e2075d8646767cdb250b0f8e86b403c77f998f171366d1629e04920f",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "prev_value_sig_hash_hex の差し替えは元署名の検証に失敗する(連鎖の改竄は署名で固定される)"
+      "note": "substituting prev_value_sig_hash_hex fails verification of the original signature (chain tampering is pinned by the signature)"
     },
     {
       "name": "suite-mismatch",
@@ -699,7 +699,7 @@
       "signature_hex": "89b424db6e9c9715dba07a5ad43655983aa7823be2b339557ccf6c2297a8156f8971feedc130fa610513131f5706a7a6733c9352d747f4cd912e54d5d8e22702",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "head-not-in-chain",
@@ -727,7 +727,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-mismatch",
       "must_fail": true,
-      "note": "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)または偽造の硬い証拠として即時拒否(§6.3-2a)"
+      "note": "seq 12 exists in the local view but the hash does not match = hard evidence of a chain fork (equivocation) or forgery — reject immediately (§6.3-2a)"
     },
     {
       "name": "head-beyond-local-seq",
@@ -755,7 +755,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-future",
       "must_fail": true,
-      "note": "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。この理由コードは「即時拒否せず再同期を試みる」分岐の入口を固定する"
+      "note": "seq 25 is beyond the local view's head (24) = the local chain may merely be stale. Resync first, accept if it matches as an extension, else it is evidence of a fork (§6.3-2b). This reason code pins the entry of the 'do not reject immediately — try resyncing' branch"
     },
     {
       "name": "writer-role-insufficient",
@@ -783,7 +783,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "writer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。値の push は宣言ヘッド時点で member 以上が必要(§6.3-3)"
+      "note": "at head 6, user-admin-0003 is a reader (the change_role is seq 7). A value push needs member-or-above at the declared-head time (§6.3-3)"
     },
     {
       "name": "writer-removed-at-head",
@@ -811,7 +811,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "writer-not-member-at-head",
       "must_fail": true,
-      "note": "seq 5 で削除済みの writer が削除後のヘッド(12)を宣言する形は拒否する(削除済みメンバーの鍵による新規登録の遮断 — §6.3-3)"
+      "note": "reject the form where a writer removed at seq 5 declares a post-removal head (12) (blocks fresh writes by a removed member's key — §6.3-3)"
     },
     {
       "name": "epoch-not-current-at-head",
@@ -839,7 +839,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "epoch-not-current-at-head",
       "must_fail": true,
-      "note": "head 12 時点の env-prod-0001 の現エポックは 2。エポック 1 への署名は拒否する(削除済みメンバーの鍵で現エポックの値を偽造する経路の対偶 — §6.3-4)"
+      "note": "at head 12, env-prod-0001's current epoch is 2. A signature on epoch 1 is rejected (the contrapositive of the path that forges a current-epoch value with a removed member's key — §6.3-4)"
     },
     {
       "name": "head-before-environment-create",
@@ -867,7 +867,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "environment-not-created-at-head",
       "must_fail": true,
-      "note": "宣言ヘッド(seq 2)が env-prod-0001 の create_environment(seq 3)より前 = 環境未存在でエポックが定義されない。既定値へのフォールバック実装を禁止する(§6.3-4 後段)"
+      "note": "the declared head (seq 2) is before env-prod-0001's create_environment (seq 3) = the environment does not exist and no epoch is defined. Implementations must not fall back to a default value (§6.3-4 latter part)"
     },
     {
       "name": "key-from-other-tenure",
@@ -895,7 +895,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "writer-key-mismatch-at-head",
       "must_fail": true,
-      "note": "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間のヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛 — 同じ鍵の dedupe でtenure を消した実装はここで落ちる)"
+      "note": "the combination old-key (from the first membership interval) × new-interval head (25) under the user_id that went remove → re-add-with-different-keys (derived chain seq 25) is rejected (§6.3-1's head-time key binding — an implementation that erased tenure by deduping on the same key fails here)"
     },
     {
       "name": "writer-unknown-in-history",
@@ -923,7 +923,7 @@
       "verify_key_hex": "03ff0e60c3634744bf45cec1833341ccdde192a3f66873422378bcbd46a32f1b",
       "expected_reason": "writer-unknown",
       "must_fail": true,
-      "note": "チェーン履歴のどの時点にも存在しない writer_user_id / 鍵 FP の組は検証鍵を選択できず拒否する(署名自体は本 negative の鍵で有効)"
+      "note": "a writer_user_id / key FP pair that exists at no point in the chain history cannot select a verification key and is rejected (the signature itself is valid under this negative's key)"
     },
     {
       "name": "v1-nonempty-prev",
@@ -951,7 +951,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "version 1 の prev_value_sig_hash_hex は空文字列でなければならない(§4.1)。latest-only 検証でも必ず検査する形の規則(session-14 裁定 B)"
+      "note": "version 1's prev_value_sig_hash_hex must be the empty string (§4.1). A rule whose form must always be checked even in latest-only verification (session-14 ruling B)"
     },
     {
       "name": "v2-empty-prev",
@@ -979,7 +979,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "version > 1 の prev_value_sig_hash_hex は 64 文字 hex でなければならない(§4.1)。predecessor を保持しない latest-only 検証でも形は必ず検査する(裁定 B)"
+      "note": "version > 1's prev_value_sig_hash_hex must be 64-char hex (§4.1). The form is always checked even by a latest-only verification that keeps no predecessor (ruling B)"
     },
     {
       "name": "prev-hash-mismatch",
@@ -1007,7 +1007,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-hash-mismatch",
       "must_fail": true,
-      "note": "既知の直前 version(v1-basic)の signed_bytes ハッシュと prev が一致しない連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰してはならない(裁定 B)",
+      "note": "a chain inconsistency where prev does not match the known previous version (v1-basic)'s signed_bytes hash (§6.3-6). The signature is valid — it must not be crushed into an Ed25519 failure (ruling B)",
       "predecessor": {
         "base": "v1-basic",
         "signed_bytes_sha256_hex": "e48e7d3a4d1aa03f2112730e49fb95035f89a5b7cb8bde14750fabd793272b2c",
@@ -1040,7 +1040,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "epoch-regressed",
       "must_fail": true,
-      "note": "version 3 の epoch(1)が直前 version(v2-chained、epoch 2)より小さい = §4.1 のエポック単調性違反。head 3 は writer(member)の在籍区間内・エポック 1 が当時の現エポックで他の全検証を通る「前進 version への旧エポック注入」の形",
+      "note": "version 3's epoch (1) is smaller than the previous version (v2-chained, epoch 2) = a §4.1 epoch-monotonicity violation. head 3 is inside the writer (member)'s membership interval and epoch 1 was the current epoch then — the form 'injecting an old epoch onto a forward version' that passes all other checks",
       "predecessor": {
         "base": "v2-chained",
         "signed_bytes_sha256_hex": "b704c97cfbd1447a972d264fac020b0d972818218ecaa145a2329244f4aff884",
@@ -1073,7 +1073,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "writer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 への署名は、role(member 以上)を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する"
+      "note": "at head 19, user-devmember-0010 is member listed{dev, stage}. A signature on out-of-scope env-prod-0001 is rejected by the declared-head-time scope check (3′) even though role (member or above) is satisfied"
     },
     {
       "name": "writer-role-precedes-scope",
@@ -1101,7 +1101,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "writer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 24 時点の user-devmember-0010 は reader listed{dev}(seq 22 の適用)。role 不足 × scope 外の複合違反は role 検査(3)が scope 検査(3′)に先行する"
+      "note": "at head 24, user-devmember-0010 is reader listed{dev} (applied at seq 22). An insufficient-role × out-of-scope compound violation is judged with the role check (3) preceding the scope check (3′)"
     },
     {
       "name": "writer-scope-precedes-epoch",
@@ -1129,7 +1129,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "writer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "scope 外 × 旧エポック(1 — head 19 の現エポックは 2)の複合違反は scope 検査(3′)がエポック整合(4)に先行する"
+      "note": "an out-of-scope × old-epoch (1 — the current epoch at head 19 is 2) compound violation is judged with the scope check (3′) preceding epoch consistency (4)"
     },
     {
       "name": "writer-device-revoked-at-head",
@@ -1157,7 +1157,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "writer-key-mismatch-at-head",
       "must_fail": true,
-      "note": "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言した署名は writer-key-mismatch-at-head(端末の有効区間 = add_device 以後・revoke_device の直前まで。人〔allmember〕は在籍のまま — 在籍区間跨ぎと同じ既存の理由コード)"
+      "note": "a signature by device C — revoked at seq 37 — declaring a post-revocation head (37) is writer-key-mismatch-at-head (a device's validity interval = after add_device until just before revoke_device. The person [allmember] stays enrolled — the same existing reason code as a membership-interval crossing)"
     },
     {
       "name": "writer-device-role-insufficient",
@@ -1185,7 +1185,7 @@
       "verify_key_hex": "7f06222150f8782176dcf9d51b37751051b95f6421836e657a76379d2e616a1b",
       "expected_reason": "writer-role-insufficient-at-head",
       "must_fail": true,
-      "note": "owner-0015 の cap (reader, all) の端末 L(seq 29)の実効 role は min(owner, reader) = reader。人が owner でも、この端末による値の push は writer-role-insufficient-at-head"
+      "note": "the effective role of owner-0015's cap-(reader, all) device L (seq 29) is min(owner, reader) = reader. Even though the person is an owner, a value push by this device is writer-role-insufficient-at-head"
     },
     {
       "name": "writer-device-environment-out-of-scope",
@@ -1213,7 +1213,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "writer-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "CI 箱 C の実効 scope は all ∩ {dev, stage} = {dev, stage}。人(allmember)の scope が all でも、端末 scope 外の env-prod-0001 への署名は writer-environment-out-of-scope-at-head"
+      "note": "CI box C's effective scope is all ∩ {dev, stage} = {dev, stage}. Even though the person (allmember)'s scope is all, a signature on env-prod-0001 outside the device scope is writer-environment-out-of-scope-at-head"
     },
     {
       "name": "writer-device-unknown-before-add",
@@ -1241,7 +1241,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "writer-key-mismatch-at-head",
       "must_fail": true,
-      "note": "端末 C の add_device(seq 27)より前のヘッド(26)を宣言した C の署名は writer-key-mismatch-at-head(有効区間の開始境界 — 追加前の端末は人に束縛されていない)"
+      "note": "a signature by C declaring head 26 — before C's add_device (seq 27) — is writer-key-mismatch-at-head (the start boundary of the validity interval — a device not yet added is not bound to the person)"
     }
   ]
 }
