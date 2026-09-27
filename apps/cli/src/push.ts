@@ -1,35 +1,46 @@
-// 暗号化 + 値署名 + メタステートメント付き push(AUTH_SPEC §12-5 =
-// CRYPTO_SPEC §4.1 / §4.2。session-14 裁定 G の PR-3 拡張)。
+// A push with encryption + value signature + meta-statement (AUTH_SPEC §12-5
+// = CRYPTO_SPEC §4.1 / §4.2. The PR-3 extension of session-14 ruling G).
 //
-// - 名前 → variableId の解決は**検証済みステートメント経由が必須**(§4.2 /
-//   §12-7 — session-14 まで「非認証」と記録していた既知制約を閉じる)。
-//   解決は**メタデータのみ pull**(§12-7 — 値・DEK を運ばず var.read が記録
-//   されない。session-11 裁定 3)で行い、既存変数への push のみ値付き pull で
-//   検証済み最新値と同梱 DEK を取得する(listMine との二重取得はしない)。
-//   ルックアップキーは NFC 正規化してから byte-exact で照合する(§12-1)。
-//   同名 active の重複は検証側(values.ts)が拒否する
-// - 新規作成: `VariableMetaStatement`(metaVersion 1・active・prev 空)を自分の
-//   鍵で著者署名して version 1 の値と同梱する(§12-5)。名前は署名前に NFC
-//   正規化する(正規化の実施主体はクライアント — §4.2)
-// - 通常 push: 既存変数でも pull で取得した最新値を §6.3 で全検証し、自前で
-//   再構築した signed-bytes hash を prev にする(サーバー申告のハッシュに連鎖
-//   署名しない)。version = 検証済み latest + 1、宣言ヘッド = 最後に検証した
-//   チェーンヘッド、DEK は現エポックのコミットメント検証済み・nonce は fresh、
-//   署名は自分の user id + master sig 鍵
-// - 409 VersionConflict: currentVersion 番号だけで次 version / prev を決めない。
-//   bulk pull を再取得 → winner 特定(既存変数は stable id、create の
-//   duplicate-name race は現行 name の再解決)→ winner を値署名検証 → 自計算
-//   hash を prev → fresh nonce で再暗号・再署名。pull が 409 より古ければ
-//   不整合拒否、新しければ実 winner を採用。欠落・同一 version で異なる
-//   signed bytes(equivocation の証拠)は拒否。上限 5 回。
-//   **メタ側も同型の巻き戻し・fork 検査**(検証済み latest metaVersion からの
-//   後退拒否・同一 metaVersion の signed bytes 相違 = equivocation 拒否)を
-//   winner 採用時に行う。409 MetaVersionConflict(並行 rename との競合)は
-//   名前から解決し直す(値と同型: 再取得 → 検証 → 再署名。再暗号化なし)
-// - 409 EpochConflict: 延長検査付き再同期(サーバーの currentEpoch 申告を
-//   真実源にしない)→ chain-derived epoch とコミットメント検証済み DEK で
-//   再暗号・新ヘッドで再署名。prev は検証済み predecessor hash を維持
-// - 値は stdin から読み、argv に載せない。平文はメモリ上のみ
+// - Resolving a name → variableId must **go through verified statements**
+//   (§4.2 / §12-7 — closes the known constraint recorded as
+//   "unauthenticated" until session-14). Resolution uses a **metadata-only
+//   pull** (§12-7 — it carries no values or DEKs, so no var.read is recorded;
+//   session-11 ruling 3); only a push to an existing variable runs a
+//   value-carrying pull to get the verified latest value and the bundled DEK
+//   (no double fetch with listMine). The lookup key is NFC-normalized, then
+//   compared byte-exact (§12-1). Duplicate active statements with the same
+//   name are refused by the verification side (values.ts)
+// - Creation: author-sign a `VariableMetaStatement` (metaVersion 1, active,
+//   empty prev) with your own key and bundle it with the version-1 value
+//   (§12-5). The name is NFC-normalized before signing (the client is the
+//   one performing normalization — §4.2)
+// - Normal push: even for an existing variable, the latest value fetched by
+//   pull is fully verified under §6.3, and the self-rebuilt signed-bytes
+//   hash becomes prev (never chain-sign a server-claimed hash).
+//   version = verified latest + 1, declared head = the last verified chain
+//   head, the DEK is commitment-verified for the current epoch, the nonce is
+//   fresh, and the signature uses your own user id + master sig key
+// - 409 VersionConflict: the next version / prev is never decided from the
+//   currentVersion number alone. Re-fetch the bulk pull → identify the
+//   winner (an existing variable by its stable id; a create's duplicate-name
+//   race by re-resolving the current name) → verify the winner's value
+//   signature → set prev to the self-computed hash → re-encrypt and re-sign
+//   with a fresh nonce. If the pull is older than the 409, refuse as
+//   inconsistent; if newer, adopt the real winner. An omission or different
+//   signed bytes at the same version (evidence of equivocation) is refused.
+//   At most 5 attempts.
+//   **The meta side gets the same-shape rollback / fork check** (refusing a
+//   regression from the verified latest metaVersion, and different signed
+//   bytes at the same metaVersion = equivocation refusal) when the winner is
+//   adopted. A 409 MetaVersionConflict (a race with a concurrent rename) is
+//   re-resolved from the name (same shape as the value: re-fetch → verify →
+//   re-sign; no re-encryption)
+// - 409 EpochConflict: resync with the extension check (never take the
+//   server's currentEpoch claim as the source of truth) → re-encrypt with
+//   the chain-derived epoch and the commitment-verified DEK, re-sign at the
+//   new head. prev keeps the verified predecessor hash
+// - The value is read from stdin and never lands on argv. The plaintext
+//   lives in memory only
 
 import {
   ActivationRequiredError,
@@ -75,7 +86,7 @@ import {
 
 const MAX_ATTEMPTS = 5;
 
-/** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
+/** The stdin value: one trailing newline (LF / CRLF) is dropped (guards against `echo`-sourced contamination). */
 export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
   if (bytes.length > 0 && bytes[bytes.length - 1] === 0x0a) {
     const end = bytes.length > 1 && bytes[bytes.length - 2] === 0x0d ? -2 : -1;
@@ -89,25 +100,26 @@ export interface PushedVersion {
   readonly variableId: string;
   readonly version: number;
   readonly epoch: number;
-  /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — 呼び出し側が表示)。 */
+  /** SHOULD warnings collected during verification (a non-NFC name distribution, etc. — displayed by the caller). */
   readonly warnings: readonly string[];
 }
 
-/** activation(declared → active — §12-5)の直前ステートメント材料。 */
+/** The predecessor-statement material of an activation (declared → active — §12-5). */
 interface ActivationPrev {
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
-  /** 宣言時の名前(activation は改名を兼ねない — サーバーが 422 で強制 §12-5)。 */
+  /** The name at declaration time (an activation never doubles as a rename — the server enforces with 422, §12-5). */
   readonly name: string;
-  /** 宣言時のスキーマ欄(activation は byte-exact に引き継ぐ — 部分更新の原則)。 */
+  /** The schema column at declaration time (an activation takes it over byte-exact — the partial-update principle). */
   readonly schema: VerifiedSchemaFields;
 }
 
 /**
- * push 先の 3 形(§12-5): 新規作成(値 version 1 + metaVersion 1 の複合)、
- * activation(declared への最初の値 push — 値 version 1 + status active の v2
- * ステートメント〔metaVersion + 1〕+ マニフェストの複合)、既存 active への
- * 通常 push(メタに触れない)。
+ * The 3 shapes of a push target (§12-5): creation (a composite of value
+ * version 1 + metaVersion 1), activation (the first value push onto a
+ * declared variable — a composite of value version 1 + a v2 statement with
+ * status active [metaVersion + 1] + a manifest), and a normal push onto an
+ * existing active variable (meta untouched).
  */
 type PushTarget =
   | { readonly kind: "create"; readonly variableId: string }
@@ -115,7 +127,7 @@ type PushTarget =
   | { readonly kind: "push"; readonly variableId: string; readonly latest: VerifiedPulledValue };
 
 function nextVersionOf(target: PushTarget): number {
-  // create / activate はどちらも最初の値(declared は値・バージョンを持たない — §4.2)
+  // create and activate both write the first value (a declared variable has no value or version — §4.2)
   return target.kind === "push" ? target.latest.version + 1 : 1;
 }
 
@@ -125,31 +137,37 @@ function prevHashOf(target: PushTarget): string {
 
 interface ResolvedTarget {
   readonly target: PushTarget;
-  /** pull 検証で前進していることがあるビュー(future head の有界再同期)。 */
+  /** A view that may have advanced during pull verification (the bounded resync of a future head). */
   readonly verified: VerifiedProject;
   readonly warnings: readonly string[];
   /**
-   * 既存 active 変数の解決で行った値付き pull の同梱 DEK(create / activate
-   * 解決では null — declared は値を持たず値付き pull を要しない)。verified と
-   * 同じビューで検証・開封する前提の生ワイヤ形(§12-7 — listMine との二重取得の
-   * 解消: session-11 裁定 3)。
+   * The bundled DEK of the value-carrying pull made while resolving an
+   * existing active variable (null for a create / activate resolution — a
+   * declared variable has no value and needs no value-carrying pull). A raw
+   * wire shape, on the premise that it is verified and unwrapped under the
+   * same view as verified (§12-7 — eliminating the double fetch with
+   * listMine: session-11 ruling 3).
    */
   readonly deks: readonly RecipientDek[] | null;
-  /** create / activate 経路のみ: 同梱マニフェストの発行材料(通常 push は null)。 */
+  /** create / activate paths only: the issuing material of the bundled manifest (null on a normal push). */
   readonly issueBase: ManifestIssueBase | null;
 }
 
 /**
- * 表示名から push 先を解決する。解決はメタデータのみ pull(§12-7 — 値・DEK を
- * 運ばず、サーバーは var.read を記録しない)の検証済みステートメントに対する
- * byte-exact 比較で行う(ルックアップキーは呼び出し側で NFC 正規化済み —
- * §12-1。同名 active の重複は検証側が拒否済み)。
+ * Resolves the push target from a display name. The resolution is a
+ * byte-exact comparison against the verified statements of a metadata-only
+ * pull (§12-7 — it carries no values or DEKs, so the server records no
+ * var.read) (the lookup key is already NFC-normalized by the caller —
+ * §12-1; duplicate same-name actives are already refused by the
+ * verification side).
  *
- * 既存変数だった場合のみ値付き pull を行う: prev 連鎖(§4.1)は検証済み最新値の
- * signed-bytes ハッシュを要し、これは暗号文込みの取得なしに自計算できない
- * (var.read はこの取得に対して正しく記録される)。新規作成は値を一切読まない
- * (prev は空・version 1)ため var.read が記録されない — 「読んでいないものを
- * 読んだと記録しない」の CLI 側(session-11 裁定 3)。
+ * A value-carrying pull runs only when the target turns out to be an
+ * existing variable: the prev chain (§4.1) needs the verified latest
+ * value's signed-bytes hash, which cannot be computed without fetching the
+ * ciphertext (var.read is correctly recorded for this fetch). A creation
+ * reads no value at all (prev is empty, version 1), so no var.read is
+ * recorded — the CLI side of "don't record as read what was never read"
+ * (session-11 ruling 3).
  */
 function resolveTarget(input: {
   readonly client: MaruhiClient;
@@ -157,13 +175,15 @@ function resolveTarget(input: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3 — 解決に使う検証済み pull にも床検査〔+ 値付きは床コミット〕が掛かる)。 */
+  /** The local floor (§6.3 — the verified pulls used for resolution also go through the floor check [plus a floor commit for the value-carrying one]). */
   readonly floor: FloorHandle;
 }): Effect.Effect<ResolvedTarget, CliError> {
   return Effect.gen(function* () {
     const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    // 同名の重複(active / declared を問わず)は検証側が拒否済みだが、push 先の
-    // 同定が応答の並び順に依存しない防衛線として残す(§4.2 の解決拒否)
+    // A duplicate same-name pair (whether active / declared) is already
+    // refused by the verification side, but kept as a defensive line so the
+    // push-target identification does not depend on the response ordering
+    // (§4.2's resolution refusal)
     const matches = metadata.variables.filter((variable) => variable.name === input.name);
     if (matches.length > 1) {
       return yield* Effect.fail(
@@ -172,9 +192,10 @@ function resolveTarget(input: {
         ),
       );
     }
-    // メタ操作(create / activate)の同梱マニフェスト(§12-5)の材料(検証済み
-    // メタデータ pull 由来)。既存 active 変数への push はマニフェストを発行しない
-    // (発行契機の限定 — §4.3)ので、その解決では issueBase を null にする
+    // The material of the bundled manifest (§12-5) for a meta operation
+    // (create / activate) (from the verified metadata pull). A push to an
+    // existing active variable issues no manifest (the issuing triggers are
+    // limited — §4.3), so its resolution sets issueBase to null
     const issueBase = manifestIssueBaseOf(metadata);
     const existing = matches[0];
     if (existing === undefined) {
@@ -187,12 +208,14 @@ function resolveTarget(input: {
       };
     }
     if (existing.status === "declared") {
-      // declared への最初の値 push = activation 複合(§12-5)。値は存在しない
-      // ため値付き pull は行わない(var.read を汚さない — 読んでいない値を
-      // 読んだと記録させない)。スキーマ欄・名前は宣言時の値を byte-exact に
-      // 引き継ぐ(改名は rename 経路 — サーバーが 422 payload-mismatch で強制)
+      // The first value push onto a declared variable = the activation
+      // composite (§12-5). Since no value exists, no value-carrying pull is
+      // made (don't pollute var.read — don't let an unread value be recorded
+      // as read). The schema column and name take the declaration-time
+      // values over byte-exact (a rename goes through the rename path — the
+      // server enforces with 422 payload-mismatch)
       if (existing.schema === null) {
-        // declared はレイアウト v2 限定(§4.2)— v1 declared は検証段で拒否済み
+        // declared is layout-v2-only (§4.2) — a v1 declared is already refused at the verification stage
         return yield* Effect.fail(
           cliError(
             `Variable ${existing.variableId} is declared but carries no schema fields (internal inconsistency)`,
@@ -219,8 +242,10 @@ function resolveTarget(input: {
     const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
     const latest = pulled.variables.find((variable) => variable.variableId === existing.variableId);
     if (latest === undefined) {
-      // 解決と値取得の間の並行削除、または応答間の不整合(欠落は床検査でも
-      // 変数単位の証拠になる)。誤った prev で作成へ倒さず明示エラーにする
+      // A concurrent deletion between resolution and value fetch, or an
+      // inconsistency across responses (an omission is per-variable evidence
+      // at the floor check too). Refuse explicitly instead of falling back
+      // to a creation with a wrong prev
       return yield* Effect.fail(
         cliError(
           `The resolved variable ${existing.variableId} (${input.name}) is missing from the value-carrying pull (a concurrent deletion by another member, or an inconsistent server response). Re-run the command`,
@@ -228,9 +253,10 @@ function resolveTarget(input: {
       );
     }
     if (latest.name !== input.name) {
-      // 解決と値取得の間の並行 rename。入力した名前と別の名前へ変わった変数に
-      // push を向けない。latest.name は検証済みステートメントの name(§12-2)
-      // なので byte-exact 比較で足りる
+      // A concurrent rename between resolution and value fetch. Never aim a
+      // push at a variable that moved to a name different from the input.
+      // latest.name is the verified statement's name (§12-2), so a
+      // byte-exact comparison suffices
       return yield* Effect.fail(
         cliError(
           `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
@@ -242,18 +268,20 @@ function resolveTarget(input: {
       verified: pulled.verified,
       warnings: [...metadata.warnings, ...pulled.warnings],
       deks: pulled.deks,
-      // 既存 active 変数への push はメタ状態を変えない = マニフェストを発行しない(§4.3)
+      // A push to an existing active variable changes no meta state = issues no manifest (§4.3)
       issueBase: null,
     };
   });
 }
 
 /**
- * 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。
+ * Encryption (fresh nonce) + the §4.1 value signature. The declared head is
+ * the verified view's current head.
  *
- * ローテーションの再暗号化(env-rotate.ts)も同じ実装を通す: 再暗号化は
- * 「実行者が writer として署名する通常 push」(§7 / §4.1)であり、署名対象の
- * 組み立てが 2 実装に割れると片方だけが規律を失う。
+ * Rotation re-encryption (env-rotate.ts) goes through the same
+ * implementation: re-encryption is "a normal push the performer signs as
+ * writer" (§7 / §4.1), and splitting the signed-object assembly across two
+ * implementations would let only one of them lose the discipline.
  */
 export function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
@@ -276,8 +304,9 @@ export function encryptAndSignPayload(input: {
   };
   return Effect.gen(function* () {
     const encrypted = yield* Effect.tryPromise({
-      // 剥がす理由: 暗号化の入力(平文 → 暗号文)。産物は暗号文なので、
-      // 剥がした平文はこの呼び出しの外へ出ない
+      // Why it is unwrapped: the input of encryption (plaintext →
+      // ciphertext). The product is the ciphertext, so the unwrapped
+      // plaintext never leaves this call
       try: () =>
         encryptVariable({
           dek: Redacted.value(input.dek),
@@ -308,8 +337,9 @@ export function encryptAndSignPayload(input: {
     if (!signature.ok) {
       return yield* Effect.fail(cliError("Failed to create the value signature"));
     }
-    // 自分の署名対象の signed bytes ハッシュ(受理されたらローカル床に昇格する
-    // — サーバー申告ではなく自計算値。次 version の prev の根拠と同じ姿勢)
+    // The signed-bytes hash of my own signed object (promoted to the local
+    // floor once accepted — a self-computed value, not the server's claim;
+    // the same posture as the basis of the next version's prev)
     const signedBytesHash = yield* Effect.tryPromise({
       try: () => computeValueSignedBytesHash(signatureContext),
       catch: () => cliError("Failed to compute the value-signature signed-bytes hash"),
@@ -341,18 +371,20 @@ interface AcceptedPush {
     readonly version: number;
     readonly epoch: number;
   };
-  /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
+  /** The floor record of my accepted write (self-computed — not the server echo). */
   readonly floorVariable: VariableFloor;
   /**
-   * メタ操作経路(create / activate)のみ: 自分が発行したマニフェスト(自計算
-   * 値)。**床へは直接昇格しない** — メタ操作の成功は「検証可能な配布物での
-   * 効果確認」(§12-10 (3))を通過して初めて成立し、床のマニフェスト前進は
-   * 確認 pull の検証済み観測が担う。
+   * Meta-operation paths (create / activate) only: the manifest I issued
+   * (self-computed). **It is not promoted to the floor directly** — a meta
+   * operation's success only holds once it passes the "effect confirmation
+   * on a verifiable distributed object" (§12-10 (3)), and advancing the
+   * floor's manifest is the job of the confirmation pull's verified
+   * observation.
    */
   readonly selfManifest: ManifestFloor | null;
-  /** メタ操作経路のみ: 送信前に追記した intent(3-F)の id。効果確認が閉じる。 */
+  /** Meta-operation paths only: the id of the intent (3-F) appended before sending. The effect confirmation closes it. */
   readonly intentId: string | null;
-  /** 受理時点の状態(床コミットのヘッド・変数 ID の源)。 */
+  /** The state at acceptance time (the source of the floor commit's head and variable ID). */
   readonly state: PushState;
 }
 
@@ -361,7 +393,7 @@ type PushConflict =
   | { readonly kind: "epoch-conflict" }
   | { readonly kind: "variable-conflict" };
 
-/** CAS 競合(§12-5)のリトライ可能な分類。それ以外は null(定的エラー)。 */
+/** The retryable classification of CAS conflicts (§12-5). Anything else is null (a terminal error). */
 function classifyPushConflict(error: unknown): PushConflict | null {
   if (error instanceof VersionConflictError) {
     return { kind: "version-conflict", currentVersion: error.currentVersion };
@@ -375,13 +407,15 @@ function classifyPushConflict(error: unknown): PushConflict | null {
     error instanceof ManifestVersionConflictError ||
     error instanceof ActivationRequiredError
   ) {
-    // create の name 競合 / metaVersion 競合(並行作成・並行 rename)/
-    // manifestVersion 競合(並行メタ操作 — §12-5 (6))は名前から解決し直す
-    // (§12-5 の再試行 = 再取得 → 検証 → ステートメントとマニフェストの両方を
-    // 再署名。ID 競合は乱数 ID の衝突で実質起こらない)。
-    // ActivationRequired(通常 push が declared に当たった — §12-5)は再同期
-    // でなく activation への切替シグナル: 再解決が declared を見て activation
-    // 複合へ切り替える(設計文書 §3 S3 行)
+    // A create's name conflict / metaVersion conflict (concurrent creation,
+    // concurrent rename) / manifestVersion conflict (a concurrent meta
+    // operation — §12-5 (6)) is re-resolved from the name (§12-5's retry =
+    // re-fetch → verify → re-sign both the statement and the manifest. An
+    // ID conflict effectively never happens with random IDs).
+    // ActivationRequired (a normal push hit a declared variable — §12-5) is
+    // not a resync but a switch-to-activation signal: the re-resolution sees
+    // the declared variable and switches to the activation composite
+    // (design doc §3 row S3)
     return { kind: "variable-conflict" };
   }
   return null;
@@ -394,12 +428,12 @@ interface PushInput {
   readonly name: string;
   readonly value: Redacted.Redacted<Uint8Array>;
   readonly verified: VerifiedProject;
-  /** 再同期(チェーン全再検証)。呼び出し側は resyncExtended で延長検査を通す。 */
+  /** The resync (full chain re-verification). The caller runs it through resyncExtended's extension check. */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** 値署名の writer(自分の内部 user_id)と master sig 鍵(§4.1)。 */
+  /** The writer of the value signature (my internal user_id) and the master sig key (§4.1). */
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
-  /** ローカル床(§6.3 — 内部 pull の検査・コミットと、受理後の変数床前進)。 */
+  /** The local floor (§6.3 — the check and commit of internal pulls, and the variable-floor advance after acceptance). */
   readonly floor: FloorHandle;
 }
 
@@ -408,7 +442,7 @@ interface PushState {
   readonly epoch: number;
   readonly deks: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly target: PushTarget;
-  /** create / activate 経路のみ: 同梱マニフェストの発行材料(reresolveTarget が取り直す)。 */
+  /** create / activate paths only: the issuing material of the bundled manifest (reresolveTarget re-fetches it). */
   readonly issueBase: ManifestIssueBase | null;
   readonly warnings: readonly string[];
 }
@@ -417,10 +451,13 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveTarget(input);
     const verified = resolved.verified;
-    // 現エポック(チェーン導出値 — §6.2。環境未作成の push はここで止まる)と
-    // DEK 集合は同じ検証済みビューから一括導出する(deks.ts の environmentKeysFor)。
-    // DEK は 1 経路で 1 回だけ取得する(session-11 裁定 3 の二重取得解消):
-    // 既存変数 = 値付き pull の同梱分(prefetched)を検証・開封 / 新規作成 = listMine
+    // The current epoch (the chain-derived value — §6.2; a push against an
+    // uncreated environment stops here) and the DEK set are derived together
+    // from the same verified view (deks.ts's environmentKeysFor). The DEK is
+    // fetched exactly once per path (session-11 ruling 3's double-fetch
+    // elimination): for an existing variable the bundled share of the
+    // value-carrying pull (prefetched) is verified and unwrapped / for a
+    // creation, listMine
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified,
@@ -439,7 +476,7 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   });
 }
 
-/** 1 試行(暗号化・署名・送信)。競合の分類は retryOnConflict の classify が担う。 */
+/** One attempt (encrypt, sign, send). The conflict classification is retryOnConflict's classify's job. */
 function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AcceptedPush, unknown> {
   return Effect.gen(function* () {
     const dek = state.deks.get(state.epoch);
@@ -471,10 +508,12 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     if (state.target.kind === "create") {
-      // 作成 = version 1 の値 + metaVersion 1 のステートメント + 作成後の集合を
-      // 反映したマニフェストの同梱(§12-5)。宣言ヘッドは値署名と同じ「最後に
-      // 検証したチェーンヘッド」で、CAS リトライで検証ビューが進めば試行ごとに
-      // 三つとも作り直される(meta-statement.ts / manifest.ts の共有実装)
+      // Creation = bundling the version-1 value + the metaVersion-1
+      // statement + a manifest reflecting the post-creation set (§12-5).
+      // The declared head is the same "last verified chain head" as the
+      // value signature, and if a CAS retry advances the verified view all
+      // three are rebuilt per attempt (the shared implementations of
+      // meta-statement.ts / manifest.ts)
       const target = state.target;
       const issueBase = state.issueBase;
       if (issueBase === null) {
@@ -492,9 +531,10 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
       });
-      // 採番した variableId は乱数生成なので、検証済み集合に既に存在することは
-      // ない。もし存在したら握り潰して digest から落とさず(サーバーの 422 に
-      // 化けて原因が遠くなる)、内部不整合として明示的に失敗させる
+      // The assigned variableId is randomly generated, so it cannot already
+      // exist in the verified set. If it did, fail explicitly as an internal
+      // inconsistency instead of swallowing it and dropping it from the
+      // digest (which would surface as a server 422 with the cause far away)
       if (issueBase.entries.some((entry) => entry.variableId === target.variableId)) {
         return yield* Effect.fail(
           cliError(
@@ -502,10 +542,11 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           ),
         );
       }
-      // マニフェスト発行 + journal-before-send(3-F): security-critical
-      // mutation(メタ操作 — §12-10)の送信前に intent を追記する。永続化に
-      // 失敗したら送信しない(fail-closed)。クラッシュ・応答消失で失われるのは
-      // 「成功したという思い込み」ではなく「確認義務の記録」になる
+      // Manifest issuance + journal-before-send (3-F): append an intent
+      // before sending a security-critical mutation (a meta operation —
+      // §12-10). If persistence fails, do not send (fail-closed). What a
+      // crash or lost response loses is not "the belief that it succeeded"
+      // but "the record of the confirmation duty".
       const { manifest, intentId } = yield* issueManifestWithIntent({
         verified: state.verified,
         environmentId: input.environmentId,
@@ -536,8 +577,9 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           },
         })
         .pipe(
-          // サーバー自身のエラー本文で拒否された = 効果は生じていない(確定)—
-          // intent を閉じる(floor-check.ts の共有コールバック)
+          // Refused in the server's own error body = the effect never
+          // happened (decided) — close the intent (the shared callback of
+          // floor-check.ts)
           Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
         );
       return {
@@ -553,10 +595,12 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
       };
     }
     if (state.target.kind === "activate") {
-      // activation(declared → active — §12-5): 値 version 1 + status active の
-      // v2 ステートメント(metaVersion + 1)+ マニフェストの複合。name とスキーマ
-      // 欄は宣言時の値を byte-exact に引き継ぐ(改名は rename 経路 — サーバーが
-      // 422 payload-mismatch で強制。スキーマの変更は `maruhi schema set`)
+      // activation (declared → active — §12-5): a composite of value
+      // version 1 + a v2 statement with status active (metaVersion + 1) + a
+      // manifest. name and the schema column take the declaration-time
+      // values over byte-exact (a rename goes through the rename path — the
+      // server enforces with 422 payload-mismatch. Schema changes go
+      // through `maruhi schema set`)
       const target = state.target;
       const issueBase = state.issueBase;
       if (issueBase === null) {
@@ -580,7 +624,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
       });
-      // マニフェストは declared エントリを activation 後の形へ差し替える(§4.3)
+      // The manifest replaces the declared entry with the post-activation shape (§4.3)
       const previousEntry = issueBase.entries.find(
         (entry) => entry.variableId === target.variableId,
       );
@@ -591,7 +635,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           ),
         );
       }
-      // activation もメタ操作の複合(§12-10 (1)) — マニフェスト発行 + 3-F intent
+      // An activation is also a meta-operation composite (§12-10 (1)) — manifest issuance + a 3-F intent
       const { manifest, intentId } = yield* issueManifestWithIntent({
         verified: state.verified,
         environmentId: input.environmentId,
@@ -638,11 +682,13 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         state,
       };
     }
-    // 既存変数の push はメタを変更しない — 床のメタ記録は検証済み latest のまま
+    // A push to an existing variable changes no meta — the floor's meta record stays the verified latest
     const latest = state.target.latest;
-    // 既存変数への値 push は 1-E′ / 3-F の適用外(§12-10 (3) — 効果確認に使える
-    // 配布物が値 pull しかなく、書き込み経路へ var.read 監査を持ち込むため)。
-    // 成功は従来どおりサーバーの CAS + 値署名検証と自床の commitPush が担う
+    // A value push to an existing variable is out of 1-E′ / 3-F scope
+    // (§12-10 (3) — the only distributed object usable for effect
+    // confirmation is a value pull, which would bring var.read auditing
+    // into the write path). Success is carried by the server's CAS + value
+    // signature verification and our own floor's commitPush, as before
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
       payload: { value: signed.payload },
@@ -661,7 +707,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
   });
 }
 
-/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す(cached の意味論)。 */
+/** Re-fetches the DEK set only when the epoch changed (or is first seen) (the cached semantics). */
 function refreshEpochState(
   input: PushInput,
   state: PushState,
@@ -680,10 +726,13 @@ function refreshEpochState(
 }
 
 /**
- * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
- * 後退・equivocation・連鎖の整合検査。正直サーバーでは latest_version は単調増加
- * (バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後 404)なので
- * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。
+ * The winner's consistency check against the verified known latest (the
+ * value that passed this session's §6.3 verification): regression,
+ * equivocation, and chain integrity. On an honest server latest_version is
+ * monotonically increasing (no per-version-row deletion; a variable
+ * deletion is tombstone + delete-all-rows = 404 from then on), so every
+ * regression is evidence of a rollback or equivocation — no false
+ * rejection.
  */
 function winnerValueRegression(
   variableId: string,
@@ -692,23 +741,27 @@ function winnerValueRegression(
   currentVersion: number,
 ): string | null {
   if (currentVersion < known.version || winner.version < known.version) {
-    // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
-    // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
+    // A regression from this session's verified latest = evidence of a
+    // rollback. Adopting it and re-pointing prev would chain my own
+    // signature onto a rolled-back branch
     return `The 409 response / re-fetch for variable ${variableId} (version ${Math.min(currentVersion, winner.version)}) is older than the verified latest (version ${known.version}) — evidence of a version rollback`;
   }
   if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
-    // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
+    // Two valid signatures with different content at the same coordinates = cryptographic evidence of equivocation
     return `Variable ${variableId} version ${winner.version} was served with signed bytes different from the verified value (evidence of server equivocation)`;
   }
-  // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
-  // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
-  // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
-  // 受理順にエポック非減少なので誤拒否はない
+  // Epoch monotonicity (§4.1) is transitive, so once the winner is newer
+  // than the verified latest, epoch non-decrease is required regardless of
+  // version-number gaps (review loop 2 [low] — closes an old-epoch
+  // injection that bypasses the adjacent check via version-number choice).
+  // An honest server is epoch-non-decreasing in acceptance order, so no
+  // false rejection
   if (winner.version > known.version && winner.epoch < known.epoch) {
     return `Variable ${variableId} version ${winner.version} has an epoch (${winner.epoch}) that regressed from the verified predecessor version's (${known.epoch}) — an epoch-monotonicity violation (§4.1)`;
   }
-  // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
-  // (レビューループ 1 [中] — pull の latest-only 制約の例外)
+  // When the adjacent predecessor is held, §6.3-6's prev-existence match
+  // can be checked for free (review loop 1 [medium] — the exception to
+  // pull's latest-only constraint)
   if (
     winner.version === known.version + 1 &&
     winner.prevValueSigHashHex !== known.signedBytesHashHex
@@ -719,11 +772,13 @@ function winnerValueRegression(
 }
 
 /**
- * メタ側の同型の巻き戻し・fork 検査(§12-5 のメタ再試行の規律。値の
- * winnerValueRegression の PR-3 拡張): 検証済み latest metaVersion からの後退と、
- * 同一 metaVersion の signed bytes 相違 = equivocation を拒否する。正直サーバー
- * では latest_meta_version も単調増加(ステートメント行の個別削除なし)のため
- * 誤拒否はない。
+ * The meta-side same-shape rollback / fork check (§12-5's meta-retry
+ * discipline; the PR-3 extension of the value side's
+ * winnerValueRegression): refuses a regression from the verified latest
+ * metaVersion and different signed bytes at the same metaVersion =
+ * equivocation. On an honest server latest_meta_version is also
+ * monotonically increasing (no per-statement-row deletion), so no false
+ * rejection.
  */
 function winnerMetaRegression(
   variableId: string,
@@ -739,8 +794,9 @@ function winnerMetaRegression(
   ) {
     return `Variable ${variableId} metaVersion ${winner.metaVersion} was served with signed bytes different from the verified statement (evidence of server equivocation)`;
   }
-  // 隣接 predecessor を保持している場合は prev 連鎖の一致も無償で検査できる
-  // (winnerValueRegression の §6.3-6 検査の同型 — レビュー② [minor])
+  // When the adjacent predecessor is held, the prev-chain match can be
+  // checked for free (the same shape as winnerValueRegression's §6.3-6
+  // check — review ② [minor])
   if (
     winner.metaVersion === known.metaVersion + 1 &&
     winner.prevMetaSigHashHex !== known.metaSignedBytesHashHex
@@ -763,18 +819,22 @@ function winnerRegression(
 }
 
 /**
- * 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。
+ * The consistency check of a 409 winner (§12-5). null = adoptable,
+ * non-null = the reason to refuse.
  *
- * 検査は 2 層: (1) 応答間の整合(再取得の最新が「存在すると分かっている
- * version」より古い = サーバーの自己矛盾)、(2) 検証済み既知 latest からの
- * 後退・同一座標の signed bytes 相違・隣接 prev の不一致。**ローテーションの
- * 再暗号化(env-rotate.ts)も同じ検査を通す**: 勝者への prev 付け替えは push
- * 経路と同型であり、片方だけが分岐した履歴への連鎖署名を許すと、床(SHOULD・
- * 初回同期では不在)頼みの穴になる。
+ * The checks are 2-layered: (1) consistency across responses (the
+ * re-fetched latest being older than a version known to exist = the server
+ * contradicting itself), (2) regression from the verified known latest,
+ * different signed bytes at the same coordinates, and a mismatched
+ * adjacent prev. **Rotation re-encryption (env-rotate.ts) also goes
+ * through this check**: re-pointing prev at the winner is the same shape
+ * as the push path, and letting just one side chain-sign onto a diverged
+ * history would open a hole that relies on the floor (a SHOULD, absent on
+ * first sync).
  *
- * `currentVersion` の出所は経路で異なる(push = 409 の申告、ローテーション =
- * 409 の申告または**自分が受理させた version**)ため、文言は「既知の最新」で
- * 統一する。
+ * `currentVersion` comes from different places per path (push = the 409's
+ * claim; rotation = the 409's claim or **a version I got accepted**), so
+ * the wording is unified as "the known latest".
  */
 export function winnerInconsistency(
   variableId: string,
@@ -783,16 +843,17 @@ export function winnerInconsistency(
   currentVersion: number,
 ): string | null {
   if (winner.version < currentVersion) {
-    // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
+    // Only values older than the latest the 409 claimed are distributed = an inconsistency across responses
     return `The re-fetched pull's latest version (${winner.version}) is older than the known latest version (${currentVersion}) — inconsistent (the server response contradicts itself)`;
   }
   return known === null ? null : winnerRegression(variableId, known, winner, currentVersion);
 }
 
 /**
- * 409 VersionConflict 後の winner 再取得(§12-5 の再試行手順): bulk pull を
- * 再取得し、stable id で winner を特定して検証し、その signed-bytes hash へ
- * prev を付け替える。409 応答に勝者のハッシュを要求しない。
+ * The winner re-fetch after a 409 VersionConflict (§12-5's retry
+ * procedure): re-fetch the bulk pull, identify the winner by its stable
+ * id, verify it, and re-point prev at its signed-bytes hash. The 409
+ * response is never asked for the winner's hash.
  */
 function adoptConflictWinner(
   input: PushInput,
@@ -830,7 +891,7 @@ function adoptConflictWinner(
     return {
       ...refreshed,
       target: { kind: "push", variableId: state.target.variableId, latest: winner },
-      // winner の採用 = 既存変数への push(メタ状態を変えない — マニフェスト非発行)
+      // Adopting the winner = a push to an existing variable (meta state unchanged — no manifest issued)
       issueBase: null,
       warnings: [...state.warnings, ...pulled.warnings],
     };
@@ -840,9 +901,10 @@ function adoptConflictWinner(
 function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveTarget({ ...input, verified: state.verified });
-    // 再解決の DEK は既知エポックの手持ちを優先し、エポックが進んだ時のみ
-    // 取り直す(refreshEpochState)。resolved.deks は初回解決専用 — 競合
-    // リトライの稀な経路で開封をやり直さない
+    // The re-resolution's DEK prefers the on-hand set of a known epoch and
+    // is re-fetched only when the epoch advanced (refreshEpochState).
+    // resolved.deks is for the first resolution only — don't redo the
+    // unwrapping on the rare path of a conflict retry
     const refreshed = yield* refreshEpochState(input, state, resolved.verified);
     return {
       ...refreshed,
@@ -854,9 +916,10 @@ function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<Push
 }
 
 /**
- * 競合からの回復(§12-5 の再試行手順のドメイン固有部)。retryOnConflict の
- * recover として、最終試行後にも走る(定的エラー — equivocation の証拠・
- * サーバー応答とチェーンの矛盾 — の表面化)。
+ * Recovery from a conflict (the domain-specific part of §12-5's retry
+ * procedure). Runs as retryOnConflict's recover — and also after the last
+ * attempt (surfacing the terminal errors: equivocation evidence and
+ * contradictions between the server response and the chain).
  */
 function nextState(
   input: PushInput,
@@ -865,23 +928,27 @@ function nextState(
 ): Effect.Effect<PushState, CliError> {
   switch (outcome.kind) {
     case "version-conflict":
-      // create 経路への VersionConflict は「並行作成された」、activate 経路へは
-      // 「並行 activation で値 version 1 が先に着地した」を意味する(自分の
-      // 送信は保存されていない)。どちらも名前から解決し直す(再解決が active に
-      // なった変数は通常 push 経路 — 値付き pull で winner を検証 — へ入る)
+      // A VersionConflict on the create path means "a concurrent creation
+      // happened"; on the activate path it means "a value version 1 landed
+      // first via a concurrent activation" (my send was not stored). Both
+      // are re-resolved from the name (a variable the re-resolution sees as
+      // active enters the normal push path — the winner is verified via a
+      // value-carrying pull)
       if (state.target.kind !== "push") {
         return reresolveTarget(input, state);
       }
       return adoptConflictWinner(input, state, outcome.currentVersion);
     case "epoch-conflict":
-      // エポックの真実源はチェーン(§6.3)。延長検査付きで再同期して導出値を
-      // 使い、新エポックのコミットメント検証済み DEK を取得する。prev は
-      // 検証済み predecessor hash のまま(値は変わっていない — 変わっていれば
-      // 次の試行が VersionConflict になり上の手順へ入る)
+      // The epoch's source of truth is the chain (§6.3). Resync with the
+      // extension check and use the derived value, and get the
+      // commitment-verified DEK of the new epoch. prev stays the verified
+      // predecessor hash (the value has not changed — if it had, the next
+      // attempt becomes a VersionConflict and enters the procedure above)
       return Effect.gen(function* () {
         const verified = yield* resyncExtended(input.resync, state.verified);
-        // 現エポックと DEK は同じ再同期ビューから一括導出(手持ちの検証済み
-        // 集合に現エポックがあれば再取得しない — environmentKeysFor の cached)
+        // The current epoch and DEKs are derived together from the same
+        // resync view (no re-fetch when the on-hand verified set already
+        // has the current epoch — environmentKeysFor's cached)
         const keys = yield* environmentKeysFor({
           client: input.client,
           verified,
@@ -890,8 +957,9 @@ function nextState(
           cached: state.deks,
         });
         if (keys.currentEpoch === state.epoch) {
-          // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
-          // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)
+          // If the chain-derived epoch is unchanged after resyncing, the
+          // server's EpochConflict claim contradicts the chain (a retry
+          // cannot resolve it)
           return yield* Effect.fail(
             cliError(
               `The server reported an epoch conflict, but the chain-derived current epoch is still ${keys.currentEpoch} (the server response contradicts the chain)`,
@@ -906,12 +974,15 @@ function nextState(
 }
 
 /**
- * 変数作成 / activation(メタ操作)の効果確認(AUTH_SPEC §12-10 (3) — 1-E′)。
- * 共有実装は meta-confirm.ts — 経路差は「版が前進していた場合の効果の見え方」
- * のみ: 作成 = 自分の variableId(乱数採番 — 他者は生成できない)の存在、
- * activation = 発行 metaVersion 以上のステートメント / tombstone の存在
- * (発行版と同版で別ハッシュが勝った形 — 並行 activation に負けた 2xx — を
- * 効果ありと誤読しない)。
+ * The effect confirmation of a variable creation / activation (a meta
+ * operation) (AUTH_SPEC §12-10 (3) — 1-E′). The shared implementation is
+ * meta-confirm.ts — the only path difference is "how the effect looks when
+ * the version advanced": creation = the existence of my variableId
+ * (randomly assigned — nobody else can generate it), activation = the
+ * existence of a statement / tombstone at or above the issued metaVersion
+ * (don't misread the shape where a different hash won at the same issued
+ * version — a 2xx lost to a concurrent activation — as the effect having
+ * landed).
  */
 function confirmPushMetaMutation(input: {
   readonly push: PushInput;
@@ -921,10 +992,12 @@ function confirmPushMetaMutation(input: {
   const target = input.accepted.state.target;
   const variableId = target.variableId;
   const issued = input.accepted.floorVariable;
-  // 発行版と同版のステートメントは自分のハッシュとの一致まで要求する(同版・
-  // 異ハッシュ = 並行 activation に負けた形を「効果あり」と誤読しない)。
-  // 発行版より先へ進んだ形は latest-only の既知制約どおり祖先性を検査できない
-  // (作成経路の「乱数 ID の存在」と同じクラスの残余 — §14.3)
+  // A statement at the same version as the issued one must match my hash
+  // (same version, different hash = the shape of having lost to a
+  // concurrent activation — don't misread it as the effect having landed).
+  // A shape advanced past the issued version cannot have its ancestry
+  // checked under the latest-only known constraint (the same class of
+  // leftover as the create path's "existence of a random ID" — §14.3)
   const statementConfirms = (statement: {
     readonly metaVersion: number;
     readonly metaSigHashHex: string;
@@ -966,13 +1039,16 @@ function confirmPushMetaMutation(input: {
  * metaVersion-1 statement), and retry through the CAS conflicts (§12-5).
  * The chain — not the server's claim — stays the epoch authority.
  *
- * 変数作成は 1-E′ の効果確認(confirmVariableCreation)を通過して初めて成功と
- * する(§12-10 (3) — 床への記録とユーザーへの成功報告は確認通過後のみ)。
+ * A variable creation only counts as successful after passing the 1-E′
+ * effect confirmation (confirmVariableCreation) (§12-10 (3) — recording to
+ * the floor and reporting success to the user happen only after the
+ * confirmation passes).
  */
 export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, CliError> {
   return Effect.gen(function* () {
-    // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1): ルックアップキーと
-    // 新規作成時に署名する名前の両方を NFC 正規形にする
+    // The client is the one performing normalization, before signing
+    // (§4.2 / §12-1): both the lookup key and the name signed on creation
+    // are put in NFC normal form
     const normalized: PushInput = { ...input, name: input.name.normalize("NFC") };
     const initial = yield* initialState(normalized);
     const outcome = yield* retryOnConflict(initial, {
@@ -984,27 +1060,32 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     });
     const acceptedState = outcome.state;
     if (outcome.selfManifest !== null) {
-      // メタ操作(変数作成 / activation)の成功の定義 = 検証可能な配布物での
-      // 効果確認(1-E′)。**床への記録は確認通過後のみ**(§12-10 (3)): 2xx
-      // だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
-      // いなかった場合に「配布されない変数を床が要求し続ける」= 以後の pull が
-      // すべて variable-omitted で恒久拒否される(未確認の思い込みが
-      // equivocation 証拠に化ける)。env create が確認後にのみ v1 床を書くのと
-      // 同じ規律
+      // The definition of success for a meta operation (variable creation
+      // / activation) = effect confirmation on a verifiable distributed
+      // object (1-E′). **Recording to the floor happens only after the
+      // confirmation passes** (§12-10 (3)): planting my own write into the
+      // floor on 2xx alone would, if the server never actually stored it,
+      // leave the floor demanding a variable that is never distributed =
+      // every later pull permanently refused as variable-omitted (an
+      // unconfirmed belief turning into equivocation evidence). The same
+      // discipline as env create writing the v1 floor only after
+      // confirmation
       yield* confirmPushMetaMutation({
         push: normalized,
         accepted: outcome,
         selfManifest: outcome.selfManifest,
       });
     }
-    // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
-    // 書き込みの巻き戻しも検出できる。journal-before-release: 成功報告より先)。
-    // 既存変数への値 push は 1-E′ の適用外なので受理直後 = ここ、作成は上の
-    // 効果確認を通過した後。規則 (c) 基準は動かさない。push 自体は受理済み
-    // なので、床の書き込み失敗はその旨を明示する
+    // Promote my accepted write into the floor (§6.3 — later pulls can
+    // then detect even a rollback of my own write. journal-before-release:
+    // before reporting success). A value push to an existing variable is
+    // out of 1-E′ scope, so immediately after acceptance = here; a creation
+    // comes after the effect confirmation above. The rule (c) baseline does
+    // not move. Since the push itself was accepted, a floor write failure
+    // is reported as such
     yield* input.floor
       .commitPush(
-        // 床のキーは自分が署名した変数 ID(サーバー echo を信用しない)
+        // The floor key is the variable ID I signed (the server echo is not trusted)
         acceptedState.target.variableId,
         outcome.floorVariable,
         {
@@ -1013,12 +1094,14 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         },
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
-    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢)。
-    // サーバー echo は突合のみに使い、食い違えば型付きエラーで明示する(echo を
-    // 表示に昇格させると、サーバー申告の座標をユーザーが事実として引用しうる)
+    // The coordinates reported as success are **the locally signed values**
+    // (the same posture as the floor update). The server echo is used only
+    // for cross-checking, and a disagreement surfaces as a typed error
+    // (promoting the echo into the display would let the user cite
+    // server-claimed coordinates as fact)
     const floorVariable = outcome.floorVariable;
     if (floorVariable.status !== "active") {
-      // attemptOnce は常に active の床レコードを組む — ここに来たら内部不整合
+      // attemptOnce always builds an active floor record — reaching here is an internal inconsistency
       return yield* Effect.fail(
         cliError("The accepted push produced a non-active floor record (internal inconsistency)"),
       );
@@ -1036,8 +1119,9 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     ) {
       return yield* Effect.fail(
         cliError(
-          // 既存変数の variableId はサーバー配布のメタステートメント由来
-          // (非空以外の文字集合検査なし)なので、local 側も中和して表示する
+          // An existing variable's variableId comes from a
+          // server-distributed meta-statement (no character-set check beyond
+          // non-empty), so the local side is also neutralized for display
           `The push was accepted and recorded locally as ${displayText(local.variableId)} version=${local.version} epoch=${local.epoch}, but the server's response echoes different coordinates (${displayText(echo.variableId)} version=${echo.version} epoch=${echo.epoch}). The locally signed values are authoritative — verify the server with maruhi pull`,
         ),
       );
