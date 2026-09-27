@@ -231,7 +231,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
   mutually invisible the attack shapes the audit inherently has**. Attempts
   within the same reason carry no distinguishable target information to begin
   with; post-suppression volume is carried by the reason-marked marker below.
-  **Per-origin** (IP / a hash of it) counting remains not adopted — it would
+  **Per-origin** (IP / a hash of its prefix) counting remains not adopted — it would
   mean "holding origin identifiers in extra state for the limiter" and breaks
   §1-2's line
 - **`auth.signup_denied` recording discipline (2026-09-01 H1)**: follows the
@@ -341,7 +341,7 @@ CRYPTO_SPEC §4 identifiers.
 | `dek.registered` | environment_id, epoch, target_user_id (recipient), **actor_key_fingerprint (signer key FP)** | DEK-wrap registration (AUTH_SPEC §12-6. **Includes the bundled part of composite requests — epoch 1 of environment creation, the new epoch of rotation (same §12-4. 2026-08-03)**). actor_key_fingerprint copies the signer key FP of the registration signature (CRYPTO_SPEC §5.1) (for cross-check against the signature. Session 07 ruling B) |
 | `dek.deleted` | environment_id, epoch, target_user_id (recipient) | Deletion of a poisoned wrap by an admin (AUTH_SPEC §12-6's repair path) |
 | `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, payload = { basis, triggerChainSeq, **trigger** } | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
-| `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). 1 row per target |
+| `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). One row per (variable × environment) |
 | `project.schema_policy_changed` | payload = { old value, new value } | Change of the project setting `schemaPolicy` (AUTH_SPEC §12-11. 2026-08-30). The actor is the changer themself (type=user — a setting operation with no signature, so no FP). The setting value itself is distributed to all members advisory-ly in pull responses, so class 1 |
 
 - **`var.read`'s aggregate form (2026-09-02 owner decision — resolving open
@@ -582,8 +582,8 @@ On acceptance of `remove_member(M)`, inside the same project DO:
    upstream revocation; without the exclusion the mandatory sweep running
    right after step 4 would auto-resolve every flag — 2026-08-15 session 25
    owner ruling) or by `rotation.dismissed`. Resolution is judged in event
-   seq order (only resolution events at seq **after** the recommended count).
-   Resolution state is derived from the event sequence (the flag itself is not
+   seq order (only resolution events whose seq is **after** that of the
+   `rotation.recommended` event take effect). Resolution state is derived from the event sequence (the flag itself is not
    kept in a mutable store)
 
 **`revoke_server` variant**: same skeleton with these substitutions — step 1's
@@ -653,12 +653,12 @@ works by a query change alone (no schema change needed — unchanged)
 
 | # | Query | Required index |
 |---|---|---|
-| Q1 | user_id → membership intervals and per-environment access windows (columns of chain.genesis / member_added / role_changed / member_removed; the scope in member_added / role_changed payloads are the window's open/close points — §4.1 step 2. 2026-09-15 K3 correction: role_changed added to the enumeration), and device windows (columns of chain.device_added / device_revoked — the payload's FP and cap are the device window's open/close points. §4.1's `revoke_device` variant. 2026-09-19 DK. `chain.device_added`'s target is the actor themself) | (target_user_id, seq) (unchanged) |
-| Q2 | Existence intervals of (variable × environment) (columns of var.created / deleted) | (variable_id, environment_id, seq) |
+| Q1 | user_id → membership intervals and per-environment access windows (the sequence of chain.genesis / member_added / role_changed / member_removed events; the scope in member_added / role_changed payloads are the window's open/close points — §4.1 step 2. 2026-09-15 K3 correction: role_changed added to the enumeration), and device windows (the sequence of chain.device_added / device_revoked events — the payload's FP and cap are the device window's open/close points. §4.1's `revoke_device` variant. 2026-09-19 DK. `chain.device_added`'s target is the actor themself) | (target_user_id, seq) (unchanged) |
+| Q2 | Existence intervals of (variable × environment) (the sequence of var.created / deleted events) | (variable_id, environment_id, seq) |
 | Q3 | user_id × period → distinct set of read (variable × environment) | (actor_user_id, seq) + event kind. **The aggregate form of `var.read` (§3.3 — 2026-09-02) obtains the (variable × environment) set by expanding the payload's `variables` enumeration** (the index works on the per-actor rows, and the row count drops to 1/variable-count under aggregation) |
 | Q4 | (variable × environment) × period → list of principals who viewed / changed it (reverse lookup. For incident response) | Same index as Q2. **Because the aggregate `var.read` has no variable ID column**, environment-level rows (variable_id IS NULL, event = var.read) are narrowed to a seq range by the **value-existence interval (the first `var.version_pushed` to the last `var.deleted` in that environment)** before the payload's `variables` is inspected (a with-values pull returns all of the environment's active variables, so nearly every aggregate row in the interval contains the variable, and inspection is bounded by "page limit × payload length" — outside the interval not a single row is inspected. The lower bound is the value's first appearance, not `var.created`, because a declared variable that never held a value never appears in a pull — in that case the inspection itself is skipped). **Variable IDs are client-issued and the server's uniqueness unit is (environment, variable)**, so the interval is taken per environment and bounded by their union (don't miss the same ID deleted in environment A but alive in B; with an environment filter, only that environment's interval). §7's `variable_id` filter has the same shape (unioned with the column match of other events that carry variable_id as a column) |
 | Q5 | Currently effective rotation.recommended − resolution events | event kind + (variable_id, environment_id, seq) |
-| Q6 | server key FP → grant intervals and scope (columns of chain.server_granted / revoked), plus in-period server.lease_issued (matched by actor_key_fingerprint = server key FP. The main input of §4.1 variant's (a) — 2026-08-12) + server.value_decrypted (reserved — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
+| Q6 | server key FP → grant intervals and scope (the sequence of chain.server_granted / revoked events), plus in-period server.lease_issued (matched by actor_key_fingerprint = server key FP. The main input of §4.1 variant's (a) — 2026-08-12) + server.value_decrypted (reserved — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
 All of these **complete inside a single project DO** (no cross-DO joins). §5's
 placement choice prioritizes preserving this property above all else.
@@ -1019,8 +1019,8 @@ The read API is not built per §6–§7 (Phase 2).
   namespace by prefix**: an implementation allowing only mapped names would
   drop forged rows at the server-side visibility predicate, and no row would
   reach a below-admin verify (verify does not require admin, so a reader's
-  run would end "OK"). The class-1 judgment and this filter share the same
-  prefix comparison
+  run would end "OK"). The class-1 judgment and this filter **must** share the
+  same prefix comparison
 - **chain_seq-presence filter (2026-08-25 deepsec S1 response)**: the
   vocabulary includes `chain_seq_present=true`, returning only non-NULL rows.
   `maruhi audit verify` inspects the union by row_id of the `event_prefix=chain.`
