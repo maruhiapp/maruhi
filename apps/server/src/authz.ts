@@ -190,8 +190,8 @@ export function ensureSelfAuditAccess(
  * ensureSelfAuditAccess: an account-wide token inventory = reconnaissance
  * material must not be readable by an exposure-prone scoped token). The
  * decision is computable solely from the caller's credentials and carries
- * no information about the target token (ruling CG's ordering — a uniform
- * 403 before 404 leaks no existence information).
+ * no information about the target token (ruling CG's ordering — returning
+ * 403 before the uniform 404 still leaks no existence information).
  */
 export function ensureTokenManagementAccess(
   principal: AuthenticatedPrincipal,
