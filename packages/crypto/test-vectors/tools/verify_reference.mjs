@@ -116,7 +116,7 @@ const innerPayloadLp = (innerOp, innerPayload) =>
 // Nested LP for checkpoint's environment entries (§6.2 — same definition
 // as generate_reference.py):
 //   entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
-//              values_digest_hex)、environments_lp_hex = lower_hex(LP(entry...))
+//              values_digest_hex), environments_lp_hex = lower_hex(LP(entry...))
 function checkpointEnvironmentsLp(environments) {
   return lpEncode(
     environments.map((e) =>
