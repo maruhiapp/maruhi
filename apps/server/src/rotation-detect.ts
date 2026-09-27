@@ -23,10 +23,14 @@
 //   creation) there is a real-time window and "could have been obtained"
 //   holds (the actual fetch is sandwiched between events, so rank (a) is
 //   correctly empty)
-// - Dismissal derivation is a pure fold over the event sequence (flags do not
-//   live in a mutable store — §4.1). A var.version_pushed carrying the
-//   re-encryption marker does not count as dismissal (§4.1-5 — blocks a
-//   mandatory-rotation sweep from auto-dismissing everything by mistake)
+// - Resolution derivation is a pure fold over the event sequence (flags do not
+//   live in a mutable store — §4.1). It follows the value lineage (§4.1-5 —
+//   2026-09-27 VH): every pushed version carries a plaintext origin (its own
+//   push seq, or — for a push declaring sameValueAs — the origin of the version
+//   it names), and a flag is effective while the live value's origin predates
+//   it. A re-encryption therefore neither resolves nor un-resolves (blocks a
+//   mandatory-rotation sweep from auto-resolving everything), and a rollback to
+//   a pre-flag value re-opens a resolved flag. Dismissal is sticky
 
 import type {
   AuditEventInput,
@@ -67,6 +71,12 @@ export interface EffectiveRotationFlag {
   readonly triggerChainSeq: number;
   /** The op that triggered detection (the payload's trigger). */
   readonly trigger: RotationTrigger;
+  /**
+   * The version whose push restored a value from before this flag after the
+   * flag had been resolved (§4.1-5 / §7 — 2026-09-27 VH). Absent when the flag
+   * was never resolved.
+   */
+  readonly reopenedByVersion?: number;
 }
 
 /** A half-open interval on the audit seq (end = +Infinity means unclosed). */
@@ -666,34 +676,132 @@ function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
 }
 
 /**
- * Derivation of flag dismissal (§4.1 step 5): a fold in seq order. A
- * recommended stacks, and a later `rotation.dismissed` or a
- * `var.version_pushed` **without the re-encryption marker** clears the stack
- * for the same (variable × environment). Multiple effective recommendeds on
- * the same pair (a re-delete etc.) are all returned (the UI bundles them).
+ * The plaintext origin of a pushed version (§4.1-5 — 2026-09-27 VH): the
+ * version's own push seq, or — when the push declared `sameValueAs` (the
+ * writer's lineage declaration, AUTH_SPEC §12-5) — the origin of the version
+ * it names. A named version with no row falls to 0 (the oldest possible
+ * origin = the safe side: flags stay effective). The acceptance check keeps
+ * sameValueAs below the pushed version, so a named version was always pushed
+ * earlier in the same pair.
+ */
+function originOf(row: RotationFlagSourceRow, origins: ReadonlyMap<number, number>): number {
+  const sameValueAs = row.payload?.["sameValueAs"];
+  if (typeof sameValueAs === "number" && Number.isInteger(sameValueAs) && sameValueAs >= 1) {
+    return origins.get(sameValueAs) ?? 0;
+  }
+  return row.seq;
+}
+
+interface FlagState {
+  readonly seq: number;
+  readonly flag: EffectiveRotationFlag;
+  dismissed: boolean;
+  resolved: boolean;
+  reopenedByVersion: number | undefined;
+}
+
+interface PairState {
+  readonly flags: FlagState[];
+  /** version → plaintext origin (the seq of the push that first introduced that plaintext). */
+  readonly origins: Map<number, number>;
+}
+
+/**
+ * One var.version_pushed in the lineage fold: record the version's origin and
+ * move each non-dismissed flag between resolved and effective. A transition
+ * from resolved to effective is a re-exposure (a restore of a pre-flag value).
+ */
+function applyPush(pair: PairState, row: RotationFlagSourceRow): void {
+  const origin = originOf(row, pair.origins);
+  if (row.version !== null) {
+    pair.origins.set(row.version, origin);
+  }
+  for (const flag of pair.flags.filter((candidate) => !candidate.dismissed)) {
+    const effective = origin < flag.seq;
+    if (!effective) {
+      flag.reopenedByVersion = undefined;
+    } else if (flag.resolved) {
+      flag.reopenedByVersion = row.version ?? undefined;
+    }
+    flag.resolved = !effective;
+  }
+}
+
+/**
+ * The lineage fold shared by the flag view and the history's per-version
+ * count: one pass over the rows in seq order, grouped by (variable ×
+ * environment).
+ */
+function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairState> {
+  const pairs = new Map<string, PairState>();
+  for (const row of rows) {
+    const key = pairKey(row);
+    const pair: PairState = pairs.get(key) ?? { flags: [], origins: new Map() };
+    pairs.set(key, pair);
+    if (row.event === "rotation.recommended") {
+      // Every push so far precedes this row, so the live value's origin
+      // predates it: a new flag starts effective
+      pair.flags.push({
+        seq: row.seq,
+        flag: flagOf(row),
+        dismissed: false,
+        resolved: false,
+        reopenedByVersion: undefined,
+      });
+    } else if (row.event === "rotation.dismissed") {
+      // Sticky: covers every flag recorded before it (§4.1-5)
+      pair.flags.forEach((flag) => {
+        flag.dismissed = true;
+      });
+    } else {
+      applyPush(pair, row);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Derivation of flag resolution (§4.1 step 5 — the lineage derivation,
+ * 2026-09-27 VH): a flag is effective while it is not dismissed and the live
+ * value's plaintext origin predates it. Multiple effective recommendeds on
+ * the same pair (a re-delete, departures of different subjects) are all
+ * returned (the UI bundles them).
  */
 export function deriveEffectiveFlags(
   rows: readonly RotationFlagSourceRow[],
 ): readonly EffectiveRotationFlag[] {
-  const live = new Map<string, EffectiveRotationFlag[]>();
-  for (const row of rows) {
-    const key = pairKey(row);
-    if (row.event === "rotation.recommended") {
-      const flags = live.get(key);
-      if (flags === undefined) {
-        live.set(key, [flagOf(row)]);
-      } else {
-        flags.push(flagOf(row));
+  const effective: EffectiveRotationFlag[] = [];
+  for (const pair of foldPairs(rows).values()) {
+    for (const state of pair.flags) {
+      if (state.dismissed || state.resolved) {
+        continue;
       }
-      continue;
+      effective.push(
+        state.reopenedByVersion === undefined
+          ? state.flag
+          : { ...state.flag, reopenedByVersion: state.reopenedByVersion },
+      );
     }
-    if (row.event === "var.version_pushed" && row.payload?.["reencryption"] === true) {
-      // Re-encryption (re-push of the same plaintext on a new epoch —
-      // AUTH_SPEC §12-5) is not an upstream revocation, so it does not dismiss
-      // (§4.1-5)
-      continue;
-    }
-    live.delete(key);
   }
-  return [...live.values()].flat();
+  return effective;
+}
+
+/**
+ * The history's `flagsIfCurrent` (AUTH_SPEC §12-7 — 2026-09-27 VH): for each
+ * pushed version of one pair, the number of non-dismissed flags that are
+ * effective while that version's value is the live one (= flags whose seq is
+ * after the version's plaintext origin). `rows` are the pair's own rows in
+ * seq order.
+ */
+export function flagsIfCurrentByVersion(
+  rows: readonly RotationFlagSourceRow[],
+): ReadonlyMap<number, number> {
+  const counts = new Map<number, number>();
+  for (const pair of foldPairs(rows).values()) {
+    const live = pair.flags.filter((flag) => !flag.dismissed);
+    for (const [version, origin] of pair.origins) {
+      counts.set(version, live.filter((flag) => origin < flag.seq).length);
+    }
+  }
+  return counts;
 }

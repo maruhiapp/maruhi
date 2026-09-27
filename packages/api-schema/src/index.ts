@@ -91,6 +91,8 @@ export {
   type SchemaPolicy,
   SchemaPolicySchema,
   VariableAadSchema,
+  type VariableVersionHistoryEntry,
+  VariableVersionHistoryEntrySchema,
   type WrappedDek,
   WrappedDekSchema,
 } from "./data.ts";
@@ -120,8 +122,11 @@ export {
   RecipientDekListSchema,
   schemaPolicyGroup,
   SchemaPolicyResultSchema,
+  MAX_VERSION_VALUES_PAGE,
   variablesGroup,
+  VariableVersionHistorySchema,
   VariableVersionSchema,
+  VariableVersionValuesSchema,
 } from "./data-api.ts";
 export {
   InvitationListSchema,

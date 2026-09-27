@@ -313,6 +313,7 @@ function fakeRead(input: {
     variableReadsBy: () => input.reads ?? [],
     serverAccessEventsBy: () => [],
     rotationFlagEvents: () => [],
+    rotationFlagEventsFor: () => [],
   };
 }
 
@@ -336,6 +337,7 @@ const grantRead = (
   serverAccessEventsBy: () =>
     access.map((row) => ({ ...row, event: "server.lease_issued", variableId: null })),
   rotationFlagEvents: () => [],
+  rotationFlagEventsFor: () => [],
 });
 
 describe("the window derivation's fail-safes and trigger checks (pure functions)", () => {
@@ -606,6 +608,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           event: "rotation.recommended",
           environmentId: "env-a",
           variableId: "v",
+          version: null,
           targetUserId: "u",
           targetKeyFingerprintHex: null,
           payload: { basis: "read", triggerChainSeq: 3 },

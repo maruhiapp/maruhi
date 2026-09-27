@@ -93,6 +93,11 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "./programs-environment.ts";
+import type {
+  VariableVersionHistoryValue,
+  VariableVersionValuesValue,
+} from "./programs-history.ts";
+import { variableHistoryProgram, variableVersionValuesProgram } from "./programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
 import { leaseProgram } from "./programs-lease.ts";
 import type { RotationDismissTargetInput } from "./programs-rotation.ts";
@@ -875,10 +880,35 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     variableId: string,
     value: ValueInput,
-    reencryption: boolean,
+    sameValueAs: number | undefined,
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runData(
-      pushVersionProgram(actor, environmentId, variableId, value, reencryption, this.#stateCache),
+      pushVersionProgram(actor, environmentId, variableId, value, sameValueAs, this.#stateCache),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  variableHistory(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+  ): Promise<DataOutcome<VariableVersionHistoryValue>> {
+    // The version history (§12-7 — VH): metadata only, no var.read
+    return this.#runData(
+      variableHistoryProgram(actor, environmentId, variableId, this.#stateCache),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  variableVersionValues(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    fromVersion: number,
+  ): Promise<DataOutcome<VariableVersionValuesValue>> {
+    // The version value range (§12-7 — VH): records var.read
+    return this.#runData(
+      variableVersionValuesProgram(actor, environmentId, variableId, fromVersion, this.#stateCache),
     );
   }
 

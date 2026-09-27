@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { auditReadVariablesOf } from "../../../../packages/core/src/audit.ts";
 import {
   aggregatedReadVariables,
+  lineageLabel,
   listedReadVariableLabel,
   payloadWithoutVariables,
   readSummaryLabel,
@@ -89,13 +90,35 @@ describe("payloadWithoutVariables", () => {
 
 describe("labels", () => {
   it("the summary switches singular/plural by the count", () => {
-    expect(readSummaryLabel(1)).toBe("read 1 variable");
-    expect(readSummaryLabel(3)).toBe("read 3 variables");
+    const entry = (variableId: string, version: number) => ({ variableId, epoch: 1, version });
+    expect(readSummaryLabel([entry("a", 1)])).toBe("read 1 variable");
+    expect(readSummaryLabel([entry("a", 1), entry("b", 2), entry("c", 1)])).toBe(
+      "read 3 variables",
+    );
+    // The version value range (VH): several versions of one variable
+    expect(readSummaryLabel([entry("a", 2), entry("a", 3), entry("a", 4)])).toBe(
+      "read 3 versions of 1 variable",
+    );
   });
 
   it("the expanded row lists variableId · epoch · version", () => {
     expect(listedReadVariableLabel({ variableId: "var-a", epoch: 2, version: 5 })).toBe(
       "var-a · epoch 2 · v 5",
     );
+  });
+});
+
+describe("lineageLabel (AUDIT_SPEC §3.3 — VH)", () => {
+  it("derives re-encryption / rollback from sameValueAs and ignores everything else", () => {
+    const pushed = (version: number, payload?: Readonly<Record<string, number | string>>) => ({
+      event: "var.version_pushed",
+      version,
+      ...(payload === undefined ? {} : { payload }),
+    });
+    expect(lineageLabel(pushed(4, { sameValueAs: 3 }))).toBe("re-encryption of v 3");
+    expect(lineageLabel(pushed(4, { sameValueAs: 1 }))).toBe("rollback to v 1");
+    expect(lineageLabel(pushed(4))).toBeNull();
+    expect(lineageLabel(pushed(4, { sameValueAs: "1" }))).toBeNull();
+    expect(lineageLabel({ event: "var.read", version: 4, payload: { sameValueAs: 1 } })).toBeNull();
   });
 });

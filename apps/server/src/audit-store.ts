@@ -133,6 +133,8 @@ export interface RotationFlagSourceRow {
   readonly event: string;
   readonly environmentId: string;
   readonly variableId: string;
+  /** The version column (var.version_pushed only — the lineage fold's key; NULL otherwise). */
+  readonly version: number | null;
   readonly targetUserId: string | null;
   readonly targetKeyFingerprintHex: string | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
@@ -147,6 +149,11 @@ export interface AuditRotationRead {
   readonly variableReadsBy: (actorUserId: string, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
+  /** The same rows narrowed to one (variable × environment) pair (the history's flagsIfCurrent — ae_var). */
+  readonly rotationFlagEventsFor: (
+    environmentId: string,
+    variableId: string,
+  ) => readonly RotationFlagSourceRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,25 +1192,44 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   rotationFlagEvents: () =>
     sql
       .exec(
-        `SELECT seq, server_ts, event, environment_id, variable_id,
+        `SELECT seq, server_ts, event, environment_id, variable_id, version,
                 target_user_id, target_key_fingerprint, payload
          FROM audit_events
          WHERE event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
          ORDER BY seq`,
       )
       .toArray()
-      .map((row) => ({
-        seq: Number(row["seq"]),
-        serverTs: Number(row["server_ts"]),
-        event: String(row["event"]),
-        environmentId: String(row["environment_id"]),
-        variableId: String(row["variable_id"]),
-        targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
-        targetKeyFingerprintHex:
-          row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),
-        payload: parsePayload(row["payload"]),
-      })),
+      .map(rotationFlagSourceRow),
+  rotationFlagEventsFor: (environmentId: string, variableId: string) =>
+    sql
+      .exec(
+        `SELECT seq, server_ts, event, environment_id, variable_id, version,
+                target_user_id, target_key_fingerprint, payload
+         FROM audit_events
+         WHERE variable_id = ? AND environment_id = ?
+           AND event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
+         ORDER BY seq`,
+        variableId,
+        environmentId,
+      )
+      .toArray()
+      .map(rotationFlagSourceRow),
 });
+
+function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFlagSourceRow {
+  return {
+    seq: Number(row["seq"]),
+    serverTs: Number(row["server_ts"]),
+    event: String(row["event"]),
+    environmentId: String(row["environment_id"]),
+    variableId: String(row["variable_id"]),
+    version: row["version"] === null ? null : Number(row["version"]),
+    targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
+    targetKeyFingerprintHex:
+      row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),
+    payload: parsePayload(row["payload"]),
+  };
+}
 
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
   Layer.sync(AuditStore, () => makeAuditStore(sql));

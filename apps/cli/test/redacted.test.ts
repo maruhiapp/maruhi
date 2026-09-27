@@ -913,6 +913,8 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "sync-plan.ts": 3,
   // Parsing the receipt JSON (a name → version mapping. Not a secret value)
   "sync-receipt.ts": 1,
+  // The in-memory equality check of a rollback target and the current value (VH — no display)
+  "var-history.ts": 1,
 };
 
 // The match for the spelling (`Redacted` + `.value`). It crosses whitespace

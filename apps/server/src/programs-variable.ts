@@ -72,10 +72,11 @@ function variableIdUnavailable(
  * — signature, signed bytes, hash, nonce, and ciphertext never go on the
  * audit).
  *
- * `reencryption` is the writer-declared re-encryption marker (AUTH_SPEC
- * §12-5). Copied to the payload only when true (§3.3 — undeclared and false
- * are not written). It plays no part in the acceptance decision — the only
- * reader is the dismissal derivation of rotation-needed detection (§4.1-5).
+ * `sameValueAs` is the writer-declared value lineage (AUTH_SPEC §12-5 —
+ * 2026-09-27 VH: "this version's plaintext equals version k's"; the caller
+ * has already range-checked it). Copied to the payload only when declared
+ * (§3.3). It plays no other part in the acceptance decision — the only
+ * reader is the lineage derivation of rotation-needed detection (§4.1-5).
  */
 function writeVersionWithAudit(
   write: DataWriteOps,
@@ -85,7 +86,7 @@ function writeVersionWithAudit(
   environmentId: string,
   variableId: string,
   value: ValueInput,
-  reencryption: boolean,
+  sameValueAs: number | undefined,
   signedBytesHashHex: string,
   nowMs: number,
 ): void {
@@ -105,7 +106,7 @@ function writeVersionWithAudit(
       epoch: value.epoch,
       version: value.version,
       actorKeyFingerprintHex: writer.keyFingerprintHex,
-      ...(reencryption ? { payload: { reencryption: true } } : {}),
+      ...(sameValueAs === undefined ? {} : { payload: { sameValueAs } }),
     }),
   );
 }
@@ -367,7 +368,7 @@ export const createVariableProgram = (
           environmentId,
           input.variableId,
           acceptedValue.value,
-          false,
+          undefined,
           acceptedValue.signedBytesHashHex,
           now,
         );
@@ -386,7 +387,7 @@ export const pushVersionProgram = (
   environmentId: string,
   variableId: string,
   value: ValueInput,
-  reencryption: boolean,
+  sameValueAs: number | undefined,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -403,11 +404,18 @@ export const pushVersionProgram = (
       return yield* rejectData({ kind: "activation-required", variableId });
     }
     // The DO storage total guard (§12-8): after the existence and kind
-    // checks, before CAS / signature. A re-encryption push is also covered
+    // checks, before CAS / signature. A re-encryption / rollback push is also covered
     // (under rejection, no new value can be written — the consistent
     // consequence; (d) of the same section)
     yield* ensureStorageAdmitsGrowth;
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
+    // The lineage declaration names an earlier version of this variable
+    // (§12-5 — 2026-09-27 VH). Versions are contiguous from 1, so after the
+    // CAS "< version" is exactly "an existing earlier version". The claim
+    // itself is unverifiable (E2EE) and affects nothing else
+    if (sameValueAs !== undefined && sameValueAs >= value.version) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "sameValueAs" });
+    }
     // Check order (ruling D): epoch / version CAS → value signature
     // (signature → declared head → state at head → predecessor) → quantity
     // policy → atomic write. On non-acceptance, neither variable / version /
@@ -448,7 +456,7 @@ export const pushVersionProgram = (
         environmentId,
         variableId,
         value,
-        reencryption,
+        sameValueAs,
         signedBytesHashHex,
         now,
       );
@@ -592,7 +600,7 @@ export const activateVariableProgram = (
         environmentId,
         variableId,
         input.value,
-        false,
+        undefined,
         signedBytesHashHex,
         now,
       );

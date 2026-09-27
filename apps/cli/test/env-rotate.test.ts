@@ -261,8 +261,8 @@ interface ServerState {
   readonly pushes: {
     readonly variableId: string;
     readonly value: WireDistributedValue;
-    /** The request's re-encryption marker (AUTH_SPEC §12-5 — omitted is recorded as false). */
-    readonly reencryption: boolean;
+    /** The request's value-lineage declaration (AUTH_SPEC §12-5 — omitted is recorded as undefined). */
+    readonly sameValueAs: number | undefined;
   }[];
   /** The distribution chain's current form (for checking the standalone-checkpoint append). */
   readonly chainEntries: readonly ChainEntry[];
@@ -282,7 +282,11 @@ function makeServer(options: ServerOptions): ServerState {
   const deletedVariables = options.deletedVariables ?? [];
   const deks = options.deks;
   const rotateBodies: RotateBody[] = [];
-  const pushes: { variableId: string; value: WireDistributedValue; reencryption: boolean }[] = [];
+  const pushes: {
+    variableId: string;
+    value: WireDistributedValue;
+    sameValueAs: number | undefined;
+  }[] = [];
   let currentEpoch = options.currentEpoch;
   let rotateCalls = 0;
   let pushCalls = 0;
@@ -554,7 +558,7 @@ function makeServer(options: ServerOptions): ServerState {
       const variableId = request.path.slice(prefix.length, -"/versions".length);
       const body = request.body as {
         readonly value: WireDistributedValue;
-        readonly reencryption?: boolean;
+        readonly sameValueAs?: number;
       };
       const injected = options.onPush?.(pushCalls, variableId);
       pushCalls += 1;
@@ -567,7 +571,7 @@ function makeServer(options: ServerOptions): ServerState {
         writerUserId: owner.userId,
         writerKeyFingerprintHex: owner.fingerprintHex,
       };
-      pushes.push({ variableId, value: stored, reencryption: body.reencryption === true });
+      pushes.push({ variableId, value: stored, sameValueAs: body.sameValueAs });
       const index = variables.findIndex((variable) => variable.variableId === variableId);
       const target = variables[index];
       if (target !== undefined) {
@@ -1287,9 +1291,10 @@ describe("maruhi env rotate", () => {
     if (pushed === undefined) throw new Error("resume push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
-    // The re-encryption push carries the self-declaration marker (AUTH_SPEC
-    // §12-5 — so it is not counted as resolving the rotation-needed flag — AUDIT_SPEC §4.1-5)
-    expect(pushed.reencryption).toBe(true);
+    // The re-encryption push declares the lineage (sameValueAs = the previous
+    // version — AUTH_SPEC §12-5 — so it is not counted as resolving the
+    // rotation-needed flag — AUDIT_SPEC §4.1-5)
+    expect(pushed.sameValueAs).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("the requested rotation was not performed");
     // Never tell a run that requested nothing "switched without running the request"
@@ -1408,8 +1413,8 @@ describe("maruhi env rotate", () => {
     const pushed = state.pushes[0];
     if (pushed === undefined) throw new Error("push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 3, version: 2 });
-    // A forced rotation's re-encryption push also carries the self-declaration marker (§12-5)
-    expect(pushed.reencryption).toBe(true);
+    // A forced rotation's re-encryption push also declares the lineage (§12-5)
+    expect(pushed.sameValueAs).toBe(1);
     expect(env.logs.join("\n")).toContain("epoch 2 → 3");
   });
 

@@ -44,6 +44,7 @@ import {
   RenameVariableMetaStatementSchema,
   RenameVariableMetaStatementV2Schema,
   SchemaPolicySchema,
+  VariableVersionHistoryEntrySchema,
   WrappedDekSchema,
 } from "./data.ts";
 import {
@@ -127,6 +128,40 @@ export const VariableVersionSchema = Schema.Struct({
   version: Schema.Number,
   epoch: Schema.Number,
 });
+
+/**
+ * GET …/variables/:variableId/versions: every stored version of one variable,
+ * ascending (AUTH_SPEC §12-7 — 2026-09-27 VH). Metadata only — no ciphertext
+ * or DEK, so no var.read is recorded; server-declared (see
+ * VariableVersionHistoryEntrySchema). A declared variable has an empty list.
+ */
+export const VariableVersionHistorySchema = Schema.Struct({
+  variableId: VariableIdSchema,
+  versions: Schema.Array(VariableVersionHistoryEntrySchema),
+});
+
+/**
+ * GET …/variables/:variableId/versions/values?fromVersion=k: the distributed
+ * payloads of versions k … min(k + 99, latest), ascending (AUTH_SPEC §12-7 —
+ * 2026-09-27 VH). `latestVersion` tells the caller whether to page on. The
+ * caller trusts an old version only as an ancestor of the latest it verified
+ * through a bulk pull (prev chain + epoch monotonicity — CRYPTO_SPEC §4.1).
+ */
+export const VariableVersionValuesSchema = Schema.Struct({
+  variableId: VariableIdSchema,
+  latestVersion: PositiveInt,
+  values: Schema.Array(DistributedEncryptedPayloadSchema),
+});
+
+/** The page size of the version value range (AUTH_SPEC §12-7). */
+export const MAX_VERSION_VALUES_PAGE = 100;
+
+// The query-string version. Defined on NumberFromString to satisfy
+// QueryConstraint (encode to string)
+const VersionFromString = Schema.NumberFromString.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(1),
+);
 
 /**
  * One variable in a bulk pull: its latest version, self-describing via the
@@ -515,16 +550,17 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
       {
         params: variableParams,
-        // reencryption = re-encryption marker (AUTH_SPEC §12-5). The
-        // writer's self-declaration of "re-encryption of the same
-        // plaintext as the immediately preceding version onto the new
-        // epoch (CRYPTO_SPEC §7)"; it affects neither acceptance nor the
-        // value signature. Only the resolution derivation of
-        // rotation-needed detection (AUDIT_SPEC §4.1-5) reads it
+        // sameValueAs = the value-lineage declaration (AUTH_SPEC §12-5 —
+        // 2026-09-27 VH): the writer's self-declaration "this version's
+        // plaintext equals version k's" (version − 1 = the re-encryption
+        // of CRYPTO_SPEC §7; older = a rollback). Accepted only when
+        // < version (422 payload-mismatch otherwise); it affects neither
+        // the rest of acceptance nor the value signature. Only the lineage
+        // derivation of rotation-needed detection (AUDIT_SPEC §4.1-5) reads it
         payload: strictPayload(
           Schema.Struct({
             value: EncryptedPayloadSchema,
-            reencryption: Schema.optionalKey(Schema.Boolean),
+            sameValueAs: Schema.optionalKey(PositiveInt),
           }),
         ),
         success: VariableVersionSchema,
@@ -542,6 +578,47 @@ export const variablesGroup = HttpApiGroup.make("variables")
           ActivationRequiredError,
           ValueTooLargeError,
           DataLimitExceededError,
+        ],
+      },
+    ).middleware(AuthMiddleware),
+  )
+  .add(
+    // Version history (§12-7 — 2026-09-27 VH): metadata only.
+    // Authorization = the metadata-only mode's (reader, scope-agnostic);
+    // no var.read (no ciphertext is distributed — AUDIT_SPEC §3.3)
+    HttpApiEndpoint.get(
+      "history",
+      "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
+      {
+        params: variableParams,
+        success: VariableVersionHistorySchema,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          VariableNotFoundError,
+        ],
+      },
+    ).middleware(AuthMiddleware),
+  )
+  .add(
+    // Version value range (§12-7 — 2026-09-27 VH): authorization = the
+    // with-values pull's (reader × environment ∈ scope); records one
+    // var.read row enumerating every returned version. fromVersion
+    // outside 1 … latest (or a declared variable) is 422 payload-mismatch
+    HttpApiEndpoint.get(
+      "versionValues",
+      "/projects/:projectId/environments/:environmentId/variables/:variableId/versions/values",
+      {
+        params: variableParams,
+        query: { fromVersion: VersionFromString },
+        success: VariableVersionValuesSchema,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          VariableNotFoundError,
+          PayloadMismatchError,
         ],
       },
     ).middleware(AuthMiddleware),

@@ -421,7 +421,7 @@ function classifyPushConflict(error: unknown): PushConflict | null {
   return null;
 }
 
-interface PushInput {
+export interface PushInput {
   readonly client: MaruhiClient;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
@@ -435,6 +435,15 @@ interface PushInput {
   readonly signingKey: CryptoKey;
   /** The local floor (§6.3 — the check and commit of internal pulls, and the variable-floor advance after acceptance). */
   readonly floor: FloorHandle;
+  /**
+   * A rollback (`maruhi var rollback` — 2026-09-27 VH): the value is version
+   * `sameValueAs`'s plaintext, restored into this existing variable. The push
+   * declares the lineage (AUTH_SPEC §12-5), and every attempt — including a
+   * conflict retry that re-resolves the name — must land as a normal push to
+   * exactly this variable: a concurrent delete / rename / re-create never
+   * turns a rollback into a creation or a push elsewhere.
+   */
+  readonly restore?: { readonly variableId: string; readonly sameValueAs: number };
 }
 
 interface PushState {
@@ -477,8 +486,36 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
 }
 
 /** One attempt (encrypt, sign, send). The conflict classification is retryOnConflict's classify's job. */
+/**
+ * A rollback lands only as a normal push to the variable whose history was
+ * verified (VH): a retry that re-resolved the name to a creation, an
+ * activation, or another variable is refused before anything is signed.
+ */
+function ensureRestoreTarget(input: PushInput, state: PushState): Effect.Effect<void, CliError> {
+  const restore = input.restore;
+  if (
+    restore === undefined ||
+    (state.target.kind === "push" && state.target.variableId === restore.variableId)
+  ) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    cliError(
+      `The rollback target ${displayText(input.name)} no longer resolves to the variable whose history was verified (a concurrent delete, rename, or re-creation). Nothing was pushed — re-run the command`,
+    ),
+  );
+}
+
+/** A normal push's body: the signed value, plus a rollback's lineage declaration (AUTH_SPEC §12-5 — SHOULD). */
+function pushPayloadOf<T>(input: PushInput, value: T) {
+  return input.restore === undefined
+    ? { value }
+    : { value, sameValueAs: input.restore.sameValueAs };
+}
+
 function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AcceptedPush, unknown> {
   return Effect.gen(function* () {
+    yield* ensureRestoreTarget(input, state);
     const dek = state.deks.get(state.epoch);
     if (dek === undefined) {
       return yield* Effect.fail(
@@ -691,7 +728,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     // signature verification and our own floor's commitPush, as before
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
-      payload: { value: signed.payload },
+      payload: pushPayloadOf(input, signed.payload),
     });
     return {
       accepted,

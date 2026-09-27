@@ -1,0 +1,81 @@
+---
+title: Value history and rollback
+description: See every version a variable has had without revealing a value, and put a previous value back after a bad push. The rollback verifies the old version against the current one before restoring it, and it tells rotation flags what happened.
+sidebar:
+  order: 11
+---
+
+Every `maruhi push` adds a new version of a variable; the server keeps every version, each one signed by whoever wrote it and linked to the version before it. Two commands work with that history:
+
+| Task                                       | Command                                     |
+| ------------------------------------------ | ------------------------------------------- |
+| See who changed a variable, and when       | `maruhi var history <name>`                 |
+| Put a previous value back after a bad push | `maruhi var rollback <name> --to <version>` |
+
+Neither command prints a value. The history shows metadata only; the rollback decrypts the old version in memory, encrypts it again for the environment's current key, and pushes it as a **new** version. Nothing is rewound or deleted, so a rollback can itself be rolled back.
+
+## See the history
+
+```sh
+maruhi var history DATABASE_URL --env prod
+```
+
+```text
+History of DATABASE_URL (v-7f3c9a) in environment prod
+  v5	epoch=2	2026-09-27 10:14:03 UTC	writer=u_alice	fp=1a2b3c4d5e6f708192a3b4c5d6e7f809	current; rollback to v2; 1 rotation flag while this value is current (a former holder could read it)
+  v4	epoch=2	2026-09-27 09:58:41 UTC	writer=u_bob	fp=3c4d5e6f708192a3b4c5d6e7f8091a2b
+  v3	epoch=2	2026-09-20 16:02:10 UTC	writer=u_alice	fp=1a2b3c4d5e6f708192a3b4c5d6e7f809	re-encryption of v2; 1 rotation flag while this value is current (a former holder could read it)
+  v2	epoch=1	2026-09-12 08:30:55 UTC	writer=u_alice	fp=1a2b3c4d5e6f708192a3b4c5d6e7f809	1 rotation flag while this value is current (a former holder could read it)
+  v1	epoch=1	2026-09-01 11:00:00 UTC	writer=u_alice	fp=1a2b3c4d5e6f708192a3b4c5d6e7f809	1 rotation flag while this value is current (a former holder could read it)
+Server-declared metadata (not signature-verified). `maruhi var rollback <name> --to <version>` verifies its target against the latest value before restoring it
+```
+
+The newest version is on top. The last column notes:
+
+- **current**: the version in use now.
+- **re-encryption of vN**: the same value as the version before it, encrypted for a new epoch. Rotating an environment (`maruhi env rotate`, which also runs after a member is removed or a device is revoked) re-encrypts every value this way.
+- **rollback to vN**: a rollback restored the value of that version.
+- **N rotation flags while this value is current**: the value was readable by someone who has since lost access (a removed member, a revoked device, a revoked server key). If this value is the current one, those flags stay open. In the example, someone lost access after v2: v1 and v2 were readable to them, v3 and v5 carry v2's value, and only Bob's fresh v4 was never theirs to read. See [Rollback and rotation flags](#rollback-and-rotation-flags) below.
+
+The listing comes from the server as metadata. It is not signature-checked: a signature can only be checked together with the ciphertext, and the history deliberately fetches none. Use it to choose a version. The rollback itself trusts none of it. `--json` prints the same rows as one document, marked `"serverDeclared": true`.
+
+Reading the history records no read in the audit log, since no value leaves the server. Any member can run it, including members whose [environment scope](/docs/environment-scopes) doesn't cover the environment and AI agents: like `maruhi schema`, it holds no value.
+
+## Roll back
+
+```sh
+maruhi var rollback DATABASE_URL --env prod --to 3
+```
+
+Before anything is signed, the CLI:
+
+1. fetches the latest value the normal way and verifies it, as `maruhi pull` does;
+2. fetches versions 3 to the latest and verifies each one: its signature, its link to the version before it, and that epochs never go backwards. The last one must be exactly the latest it just verified. An old version is trusted only if the current value's own chain leads back to it. A version that is merely signed, for example by a key someone held before they were removed, is refused, and nothing is pushed;
+3. decrypts version 3 and the current value in memory, and stops if they are already equal;
+4. asks for confirmation (`Proceed with the rollback? [y/N]`). Without a terminal, for example in CI or an agent, it refuses unless you pass `--force`;
+5. pushes the old value as a new version, encrypted for the current epoch, and records which version it restored.
+
+As with `maruhi push`, deploy targets whose [sync config](/docs/deploy-targets) has `onPush` are synced afterwards; `--no-sync` skips that. The rollback appears in the audit log as an ordinary value push carrying "rollback to v3". In the dashboard's **Audit** tab the row reads `value rollback to v 3`.
+
+The value is never displayed, written to disk, or passed on a command line. You pick the version from the metadata, and the CLI does the rest in memory.
+
+## Rollback and rotation flags
+
+When someone loses access to an environment, maruhi raises a rotation flag for each variable they could read: rotate the upstream credential, then push the new value. `maruhi rotation list` shows them, and pushing a fresh value clears one. Re-encryption during rotation does not clear a flag, because the value is the same.
+
+A rollback can bring back a value from before the person left. In that case the value in use is one they could read, so the flag comes back:
+
+- Rolling back to a version from **before** a flag re-opens it, even if a fresh push had cleared it. `maruhi rotation list` shows it as "reopened by the rollback in version N", and the dashboard's **Rotation** tab shows "re-opened by the rollback in vN". The rollback's confirmation tells you this before you answer, and the history shows it for every version.
+- Rolling back to a version pushed **after** the flag changes nothing: nobody who left could read it.
+- A flag an admin **dismissed** stays dismissed. The dismissal accepted that the person knew this variable's value, and an older value doesn't change that.
+- Pushing a fresh value (after rotating the upstream credential) clears the flag again.
+
+So if the value you would restore was readable by someone who left, rotating the upstream credential and pushing the new value is usually better than rolling back.
+
+## What rollback doesn't do
+
+- It can't bring back a **deleted** variable. `maruhi var rm` destroys every stored version, and deletion is final.
+- It doesn't apply to a **declared** variable that has no value yet.
+- It restores one variable in one environment. Other environments keep their own histories.
+- A variable keeps at most 1,000 versions, and a rollback uses one like any push.
+- The history is only as honest as the server about metadata: a dishonest server could hide rows or change timestamps in the listing. It can't make the rollback restore a value the latest version's chain doesn't lead back to.

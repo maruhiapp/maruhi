@@ -122,6 +122,35 @@ export const DistributedEncryptedPayloadSchema = Schema.Struct({
 /** A distributed variable value with its writer identity. */
 export type DistributedEncryptedPayload = typeof DistributedEncryptedPayloadSchema.Type;
 
+/**
+ * One row of a variable's version history (AUTH_SPEC §12-7 — 2026-09-27 VH,
+ * docs/notes/vh-design.md ruling V3). **Metadata only and server-declared**:
+ * no ciphertext travels, so the value signature cannot be verified from this
+ * row and clients must not base a write on it (rollback verifies its target
+ * through the value range instead).
+ *
+ * - `pushedAtMs`: the acceptance time of the push
+ * - `sameValueAs`: the writer's lineage declaration (§12-5 — this version's
+ *   plaintext equals that version's). `version − 1` = a re-encryption, older =
+ *   a rollback. Absent = a fresh value
+ * - `flagsIfCurrent`: the number of non-dismissed rotation-needed flags on the
+ *   pair that are effective while this version's value is the live one
+ *   (AUDIT_SPEC §4.1 procedure 5's lineage derivation — computed server-side
+ *   because it compares audit seqs, which never go on the wire)
+ */
+export const VariableVersionHistoryEntrySchema = Schema.Struct({
+  version: PositiveInt,
+  epoch: PositiveInt,
+  writerUserId: BoundedUserId,
+  writerKeyFingerprintHex: KeyFingerprintHex,
+  pushedAtMs: Schema.Number,
+  sameValueAs: Schema.optionalKey(PositiveInt),
+  flagsIfCurrent: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+});
+
+/** A version-history row (metadata only — server-declared). */
+export type VariableVersionHistoryEntry = typeof VariableVersionHistoryEntrySchema.Type;
+
 // ---------------------------------------------------------------------------
 // Metadata statements (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
 // The author's Ed25519 signature binds the name ↔ ID correspondence and

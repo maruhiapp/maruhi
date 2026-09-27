@@ -23,7 +23,7 @@ import {
   type WireEncryptedPayload,
   type WireRecipientDek,
 } from "./crypto.ts";
-import type { MockHandler, MockRequest } from "./server.ts";
+import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
 
 /** One distributed variable (statement + latest version's value). */
 export interface StoredVariable {
@@ -40,6 +40,11 @@ export interface ValueEnvironmentState {
   manifest: WireDistributedManifest | null;
   /** Accepted writes (for assertions — with kind). */
   writes: { kind: "create" | "version"; request: MockRequest }[];
+  /**
+   * Every stored version per variable, ascending (the version history /
+   * value range — AUTH_SPEC §12-7, VH), with the lineage each push declared.
+   */
+  history: Map<string, { value: WireDistributedValue; sameValueAs?: number }[]>;
 }
 
 export interface ValueEnvironmentServerInput {
@@ -51,6 +56,16 @@ export interface ValueEnvironmentServerInput {
   readonly wrap: WireRecipientDek;
   readonly initialVariables?: readonly StoredVariable[];
   readonly initialDeclared?: readonly WireDistributedVariableStatement[];
+  /**
+   * The full version chain of some variables (ascending — the last entry
+   * must be that variable's `initialVariables` value). Without it a
+   * variable's history is just its current value.
+   */
+  readonly initialHistory?: ReadonlyMap<string, readonly WireDistributedValue[]>;
+  /** The server-derived flagsIfCurrent per (variable, version) (default 0). */
+  readonly flagsIfCurrent?: (variableId: string, version: number) => number;
+  /** Rewrites a value-range response before it is sent (forgery tests). */
+  readonly tamperRange?: (values: readonly WireDistributedValue[]) => WireDistributedValue[];
 }
 
 interface CreateBody {
@@ -61,6 +76,7 @@ interface CreateBody {
 
 interface VersionBody {
   readonly value: WireEncryptedPayload;
+  readonly sameValueAs?: number;
 }
 
 /**
@@ -77,9 +93,16 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
     declared: [...(input.initialDeclared ?? [])],
     manifest: null,
     writes: [],
+    history: new Map(
+      (input.initialVariables ?? []).map((entry) => [
+        entry.variableId,
+        (input.initialHistory?.get(entry.variableId) ?? [entry.value]).map((value) => ({ value })),
+      ]),
+    ),
   };
   const base = `/projects/${input.chain.projectId}/environments/${input.environmentId}`;
   const versionPattern = new RegExp(`^${base}/variables/([^/]+)/versions$`);
+  const valuesPattern = new RegExp(`^${base}/variables/([^/]+)/versions/values$`);
   const head = headOf(input.chain, input.chain.entries.length);
 
   const distributedValue = (value: WireEncryptedPayload): WireDistributedValue => ({
@@ -98,6 +121,24 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       envStatement: input.envStatement,
       statements: [...state.variables.map((entry) => entry.statement), ...state.declared],
     });
+
+  // The GET side of the version resource (VH): the matched variable's
+  // stored versions, a 404 for an unknown one, or null for another route
+  type Found = {
+    readonly variableId: string;
+    readonly versions: readonly { value: WireDistributedValue; sameValueAs?: number }[];
+  };
+  const historyFor = (request: MockRequest, pattern: RegExp): Found | MockResponse | null => {
+    const match = request.path.match(pattern);
+    if (request.method !== "GET" || match === null) {
+      return null;
+    }
+    const variableId = match[1] ?? "";
+    const versions = state.history.get(variableId);
+    return versions === undefined
+      ? { status: 404, json: { _tag: "VariableNotFound", variableId } }
+      : { variableId, versions };
+  };
 
   const handlers: MockHandler[] = [
     chainHandlerOf(input.chain),
@@ -157,6 +198,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
         ...state.variables.filter((entry) => entry.variableId !== statement.variableId),
         { variableId: statement.variableId, statement, value: distributedValue(body.value) },
       ];
+      state.history.set(statement.variableId, [{ value: distributedValue(body.value) }]);
       state.manifest = {
         ...body.manifest,
         issuerUserId: input.owner.userId,
@@ -180,9 +222,58 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       state.writes.push({ kind: "version", request });
       const body = request.body as VersionBody;
       stored.value = distributedValue(body.value);
+      state.history.set(variableId, [
+        ...(state.history.get(variableId) ?? []),
+        {
+          value: stored.value,
+          ...(body.sameValueAs === undefined ? {} : { sameValueAs: body.sameValueAs }),
+        },
+      ]);
       return {
         status: 200,
         json: { variableId, version: body.value.aad.version, epoch: 1 },
+      };
+    },
+    (request) => {
+      const found = historyFor(request, versionPattern);
+      if (found === null || !("versions" in found)) {
+        return found;
+      }
+      const { variableId, versions } = found;
+      return {
+        status: 200,
+        json: {
+          variableId,
+          versions: versions.map(({ value, sameValueAs }) => ({
+            version: value.aad.version,
+            epoch: value.aad.epoch,
+            writerUserId: value.writerUserId,
+            writerKeyFingerprintHex: value.writerKeyFingerprintHex,
+            pushedAtMs: 1_790_000_000_000 + value.aad.version * 60_000,
+            ...(sameValueAs === undefined ? {} : { sameValueAs }),
+            flagsIfCurrent: input.flagsIfCurrent?.(variableId, value.aad.version) ?? 0,
+          })),
+        },
+      };
+    },
+    (request) => {
+      const found = historyFor(request, valuesPattern);
+      if (found === null || !("versions" in found)) {
+        return found;
+      }
+      const { variableId, versions } = found;
+      const fromVersion = Number(request.query["fromVersion"]);
+      const selected = versions
+        .map((entry) => entry.value)
+        .filter((value) => value.aad.version >= fromVersion)
+        .slice(0, 100);
+      return {
+        status: 200,
+        json: {
+          variableId,
+          latestVersion: versions.at(-1)?.value.aad.version ?? 0,
+          values: input.tamperRange?.(selected) ?? selected,
+        },
       };
     },
   ];

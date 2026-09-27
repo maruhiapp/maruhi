@@ -81,8 +81,40 @@ export function payloadWithoutVariables(
 }
 
 /** The list summary (English — ADR-0017): "read 3 variables" / "read 1 variable". */
-export function readSummaryLabel(count: number): string {
-  return `read ${count} ${count === 1 ? "variable" : "variables"}`;
+export function readSummaryLabel(listed: ReadonlyArray<ListedReadVariable>): string {
+  const variables = new Set(listed.map((entry) => entry.variableId)).size;
+  const noun = variables === 1 ? "variable" : "variables";
+  // The version value range (AUTH_SPEC §12-7 — VH) lists several versions
+  // of one variable; a bulk pull lists each variable once
+  return listed.length === variables
+    ? `read ${variables} ${noun}`
+    : `read ${listed.length} versions of ${variables} ${noun}`;
+}
+
+/**
+ * The value-lineage label of a `var.version_pushed` row (AUDIT_SPEC §3.3 —
+ * 2026-09-27 VH): the kind is derived from `sameValueAs` (the previous
+ * version = a re-encryption, older = a rollback). null when the push
+ * declared none (a fresh value) or the payload is not well-formed.
+ */
+export function lineageLabel(
+  event: Pick<AuditEvent, "event" | "version" | "payload">,
+): string | null {
+  const sameValueAs = sameValueAsOf(event);
+  if (sameValueAs === null) {
+    return null;
+  }
+  const previous = (event.version ?? 0) - 1;
+  return `${sameValueAs === previous ? "re-encryption of" : "rollback to"} v ${sameValueAs}`;
+}
+
+/** The lineage declaration a var.version_pushed row recorded (null for any other row or shape). */
+function sameValueAsOf(event: Pick<AuditEvent, "event" | "payload">): number | null {
+  if (event.event !== "var.version_pushed") {
+    return null;
+  }
+  const value = event.payload?.["sameValueAs"];
+  return typeof value === "number" ? value : null;
 }
 
 /** The display shape of an expanded row: `var-id · epoch 1 · v 2`. */

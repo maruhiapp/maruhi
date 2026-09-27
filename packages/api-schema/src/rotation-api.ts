@@ -71,6 +71,13 @@ export const RotationFlagSchema = Schema.Struct({
   recommendedAtMs: Schema.Number,
   triggerChainSeq: PositiveInt,
   trigger: RotationFlagTriggerSchema,
+  /**
+   * Present when the flag had been resolved and is effective again because
+   * the push of this version restored a value from before the flag
+   * (AUDIT_SPEC §4.1 procedure 5's lineage derivation / §7 — 2026-09-27 VH).
+   * A later re-encryption of the restored value keeps it.
+   */
+  reopenedByVersion: Schema.optionalKey(PositiveInt),
 });
 
 /** GET /projects/:projectId/rotation/flags: the project's active rotation flags (AUDIT_SPEC §7). */
