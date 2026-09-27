@@ -1,20 +1,28 @@
-// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 —
-// 2026-09-13 IV 改訂)。
+// `maruhi invite create|accept|list|revoke` (AUTH_SPEC §15 / CRYPTO_SPEC
+// §6.5 — the 2026-09-13 IV revision).
 //
-// - create: 招待 id の採番 → リンク鍵(種 → Ed25519)の生成 → 発行文への発行署名
-//   (自分のチェーン sig 鍵)→ 発行(発行文をサーバーへ。秘密は送らない)→ §15-3
-//   リンクの組み立て(種 + 発行文 + 署名。アンカー = 発行時点の検証済みヘッド)
-//   → 発行ピンの保存(link_pub / role / 宛先 login — member add 時の追加突合)
-// - accept: リンク解釈 → 発行署名の検証(機械。失敗 = 受諾しない)→ 招待者 FP の
-//   相互確認(§6.5 受諾者側 — チェーンとの機械照合は add_member 後の初回同期 =
-//   context.ts)→ 鍵生成〔未生成時・ガード付き〕→ 受諾の共同署名(自分の sig 鍵 +
-//   リンク鍵)→ 受諾 → アンカーのピン留め(§6.3 (a) — 受諾成立後のみ)
-// - list: 発行文の検証(チェーン導出の招待者鍵)+ 受諾ブロックの §6.5 独立検証
-//   (受諾署名 + リンク署名)+ FP ワード表示 + 発行ピン突合
-// - revoke: 失効
+// - create: assign the invite id → generate the link key (seed → Ed25519)
+//   → sign the issuance with one's own chain sig key → issue (the
+//   issuance to the server; the secret is never sent) → assemble the
+//   §15-3 link (seed + issuance + signature; the anchor = the verified
+//   head at issuance) → save the issuance pin (link_pub / role /
+//   addressee login — an extra cross-check at member add)
+// - accept: interpret the link → verify the issue signature (mechanical;
+//   failure = no acceptance) → mutual confirmation of the inviter FP
+//   (§6.5, invitee side — the mechanical check against the chain happens
+//   on the first sync after add_member = context.ts) → key generation
+//   [when absent, guarded] → joint acceptance signature (one's own sig
+//   key + the link key) → accept → pinning the anchor (§6.3 (a) — only
+//   after the acceptance is established)
+// - list: verify the issuance (with the chain-derived inviter key) +
+//   independent §6.5 verification of the acceptance block (acceptance
+//   signature + link signature) + FP-word display + issuance-pin
+//   cross-check
+// - revoke: revocation
 //
-// リンク鍵の種はワイヤ(リンク)と表示にのみ存在し、永続化しない(発行ピンは
-// 公開鍵のみ)。サーバーは種を一度も受け取らない。
+// The link key's seed exists only on the wire (the link) and in display —
+// never persisted (the issuance pin holds only the public key). The
+// server never receives the seed.
 
 import {
   ForbiddenError,
@@ -77,13 +85,13 @@ import { describeScope, requireScopeEnvironmentsExist, sameScope, scopeContains 
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
 
-/** アンカーのピン留め失敗の警告(SHOULD 水準の劣化 — 受諾自体は成立済み)。 */
+/** The warning for a failed anchor pin (a SHOULD-level degradation — the acceptance itself is already established). */
 const warnUnpinned = (detail: string) =>
   logWarning(
     `could not pin the invite link anchor (${detail}). The machine check on first sync (CRYPTO_SPEC §6.3 (a)) will not run — be sure to perform the ceremony with the inviter (out-of-band FP word comparison)`,
   );
 
-/** 発行文(一覧応答の行 — §15-1。旧行は null)。 */
+/** The issuance (a listing response row — §15-1. An old row has null). */
 export interface InviteIssuance {
   readonly linkPubHex: string;
   readonly headHashHex: string;
@@ -91,7 +99,7 @@ export interface InviteIssuance {
   readonly issueSignatureHex: string;
 }
 
-/** 招待の受諾ブロック(一覧応答の行 — §15-1)。 */
+/** An invite's acceptance block (a listing response row — §15-1). */
 export interface InviteAcceptance {
   readonly inviteeUserId: string;
   readonly inviteeEncPubHex: string;
@@ -101,12 +109,12 @@ export interface InviteAcceptance {
   readonly acceptedAtMs: number;
 }
 
-/** 一覧応答の 1 行(api-schema の InvitationSummary と同形)。 */
+/** One row of the listing response (same shape as api-schema's InvitationSummary). */
 export interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
   readonly role: InviteRole;
-  /** 付与予定 scope(2026-09-14 ES — 発行文の一部。add_member はこの scope で署名する)。 */
+  /** The scope to grant (2026-09-14 ES — part of the issuance; add_member signs this scope). */
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly string[];
   readonly status: "pending" | "accepted" | "completed" | "revoked";
@@ -117,7 +125,7 @@ export interface InvitationRow {
   readonly acceptance: InviteAcceptance | null;
 }
 
-/** 招待一覧の取得(invite list / member add の共有プロローグ)。 */
+/** Fetching the invite list (the shared prologue of invite list / member add). */
 export function listInvitations(
   client: MaruhiClient,
   projectId: string,
@@ -128,16 +136,18 @@ export function listInvitations(
   );
 }
 
-/** 発行文の検証結果(理由は文言へ写す)。 */
+/** The issuance verification result (the reason is mapped to wording). */
 export type IssuanceVerdict =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "inviter-not-member" | "signature" };
 
 /**
- * 発行文の検証(CRYPTO_SPEC §6.5): 一覧行の発行文 + 発行署名を、**チェーン導出の
- * 招待者の現鍵**で検証する。招待者が自分なら自分の鍵で「自分が発行した行か」を
- * 確かめることになり(発行ピンに依存しない — 補足 21 裁定 A ⑦)、別の admin が
- * `member add` する場合も同じ検査で行のすり替えを検出できる。
+ * Verifying the issuance (CRYPTO_SPEC §6.5): the row's issuance + issue
+ * signature are verified under **the inviter's current key derived from
+ * the chain**. When the inviter is oneself this checks "is this a row I
+ * issued" under one's own key (independent of the issuance pin —
+ * supplement 21, ruling A ⑦), and a different admin running `member add`
+ * detects a swapped row by the same check.
  */
 export function verifyIssuance(input: {
   readonly verified: VerifiedProject;
@@ -149,9 +159,11 @@ export function verifyIssuance(input: {
     if (inviter === undefined) {
       return { ok: false, reason: "inviter-not-member" } as const;
     }
-    // 発行署名の検証鍵 = 招待者の**現端末のいずれか**(DK K4-16 — 発行文は端末の鍵対を
-    // 名指しするので、有効な端末を全部回して 1 つでも検証が通れば本物。失効した端末で
-    // 発行された行は通らない = 招待者が発行し直す)
+    // The issue signature's verification key = **any of the inviter's
+    // current devices** (DK K4-16 — the issuance names a device's key
+    // pair, so iterate all valid devices; if any verifies it is genuine.
+    // A row issued by a revoked device does not pass = the inviter
+    // reissues)
     for (const inviterDevice of devicesOf(inviter)) {
       const verified = yield* Effect.tryPromise({
         try: () =>
@@ -182,7 +194,7 @@ export function verifyIssuance(input: {
   });
 }
 
-/** 発行文の検証失敗の文言(list / member add で共用)。 */
+/** The wording for an issuance verification failure (shared by list / member add). */
 export function issuanceFailureText(
   reason: Exclude<IssuanceVerdict, { ok: true }>["reason"],
 ): string {
@@ -195,9 +207,11 @@ export function issuanceFailureText(
 }
 
 /**
- * 受諾ブロックの §6.5 独立検証: signed_bytes を一覧の材料 + 検証済み文脈の
- * projectId から**自分で再構成**し、受諾署名(宣言鍵)とリンク署名(発行文の
- * リンク公開鍵)を検証する(サーバー申告の検証結果を信用しない)。
+ * The acceptance block's independent §6.5 verification: **reconstruct**
+ * signed_bytes oneself from the listing's material + the verified
+ * context's projectId, and verify the acceptance signature (the declared
+ * key) and the link signature (the issuance's link public key) (never
+ * trusting the server's declared verification result).
  */
 export function verifyAcceptanceBlock(input: {
   readonly projectId: string;
@@ -252,7 +266,7 @@ export function verifyAcceptanceBlock(input: {
   });
 }
 
-/** 受諾ブロックの検証失敗の文言(list / member add で共用)。 */
+/** The wording for an acceptance-block verification failure (shared by list / member add). */
 export function acceptanceFailureText(which: "accept" | "link" | "keys"): string {
   switch (which) {
     case "link":
@@ -270,7 +284,7 @@ export function acceptanceFailureText(which: "accept" | "link" | "keys"): string
 
 export interface InviteCreateSummary {
   readonly id: string;
-  /** 発行リンク(リンク鍵の種を内包する — 表示以外の用途で剥がさない)。 */
+  /** The issued link (contains the link key's seed — never unwrapped except for display). */
   readonly link: Redacted.Redacted<string>;
   readonly role: InviteRole;
   readonly expiresAtMs: number;
@@ -289,7 +303,7 @@ function ensureInviteLinkDisplayAllowed(
   });
 }
 
-/** 発行の受理エラーの文言(理由コードを運用手順に翻訳する)。 */
+/** The wording for an issuance acceptance error (translates a reason code into an operational procedure). */
 function issueErrorToCliError(error: unknown): CliError {
   if (error instanceof InvitePendingLimitError) {
     return cliError(
@@ -302,7 +316,7 @@ function issueErrorToCliError(error: unknown): CliError {
     );
   }
   if (error instanceof InviteConflictError) {
-    // id / リンク鍵は乱数で、衝突は事実上起きない — 起きたら再実行で採番し直す
+    // id / link key are random, so a collision effectively never happens — if it does, re-running draws a fresh one
     return cliError(
       "The server already has an invite with the same id or link key (an astronomically unlikely collision). Re-run `maruhi invite create` to draw a new one",
     );
@@ -311,15 +325,19 @@ function issueErrorToCliError(error: unknown): CliError {
 }
 
 /**
- * 招待の発行 + 発行署名 + リンクの組み立て + 発行ピンの保存。発行の認可は
- * サーバーが強制するが、role 規則(§6.2 と同水準: 発行は admin 以上・role=admin は
- * owner のみ)は通信前に手前で落とす(明確な文言のため)。
+ * Issuing an invite + issue signature + link assembly + saving the
+ * issuance pin. Issuance authorization is enforced by the server, but the
+ * role rules (the same level as §6.2: issuing requires admin or above,
+ * role=admin requires owner) are dropped locally before communicating
+ * (for clear wording).
  */
 /**
- * 発行の前提検査(通信前): 招待者の role 規則(§6.2 と同水準: 発行は admin 以上・
- * role=admin は owner のみ)と、手元の master 鍵がチェーン上の自分の鍵と一致する
- * こと(一致しなければ、受諾者・自分の後段の検証が通らない発行文になる)。
- * 戻り値はチェーン上の自分(発行文の招待者鍵)。
+ * Pre-issuance checks (before communicating): the inviter's role rules
+ * (the same level as §6.2: issuing requires admin or above, role=admin
+ * requires owner) and that the local master key matches one's own key on
+ * the chain (otherwise the issuance fails the invitee's and one's own
+ * later verification). Returns oneself on the chain (the issuance's
+ * inviter key).
  */
 function ensureCanIssue(input: {
   readonly verified: VerifiedProject;
@@ -335,10 +353,12 @@ function ensureCanIssue(input: {
         cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
       );
     }
-    // 手元の鍵が招待者の端末鍵の 1 つであること(2026-09-19 DK — 署名者は端末単位)。
-    // 端末が引けて初めて実効権限(人 ∩ 端末 cap — §6.2)が定まるため、権限の検査は
-    // この後で行う(cap が絞られた端末からの発行は、受諾後の add_member が合意で
-    // 落ちる罠を儀式の両側に作る — 発行しない)
+    // The local key must be one of the inviter's device keys (2026-09-19
+    // DK — the signer is per device). Only once the device is resolved is
+    // the effective permission defined (person ∩ device cap — §6.2), so
+    // the permission check runs afterwards (issuing from a cap-narrowed
+    // device would create a trap on both sides of the ceremony where the
+    // post-acceptance add_member falls to consensus — do not issue)
     const device = ownDeviceByKeys(
       inviter,
       input.masterKeys.record.encPubHex,
@@ -364,12 +384,16 @@ function ensureCanIssue(input: {
         ),
       );
     }
-    // scope(2026-09-15 ES K4 — 設計録 K4-G): `--env` の各 id はチェーン上に存在し
-    // (`unknown-environment`)、実効 scope が招待 scope を包含する
-    // (`scope-not-contained` — 原則 1: add_member の権限変化の環境集合 = 新 scope)
-    // ことを通信前に検査する。サーバーは検査しない(AUTH_SPEC §15-2)が、通っても
-    // 受諾後の add_member が合意規則で落ちる = 受諾者を無駄に儀式へ進ませる罠なので
-    // 発行しない(逃げ道は置かない — scope = all の admin / owner に頼めばよい)
+    // scope (2026-09-15 ES K4 — design record K4-G): check before
+    // communicating that every `--env` id exists on the chain
+    // (`unknown-environment`) and that the effective scope contains the
+    // invite's scope (`scope-not-contained` — principle 1: the
+    // environment set whose permission add_member changes = the new
+    // scope). The server does not check (AUTH_SPEC §15-2), but even if it
+    // passed, the post-acceptance add_member would fall to a consensus
+    // rule = a trap sending the invitee through the ceremony for nothing,
+    // so do not issue (no escape hatch is kept — ask an all-scope admin /
+    // owner instead)
     yield* requireScopeEnvironmentsExist(input.verified, input.scope);
     if (!scopeContains(permission.scope, input.scope)) {
       return yield* Effect.fail(
@@ -382,7 +406,7 @@ function ensureCanIssue(input: {
   });
 }
 
-/** 発行文の材料(id・種・リンク公開鍵)と発行署名。 */
+/** The issuance's material (id, seed, link public key) and the issue signature. */
 interface SignedIssuance {
   readonly inviteId: string;
   readonly seed: Uint8Array;
@@ -390,7 +414,7 @@ interface SignedIssuance {
   readonly issueSignatureHex: string;
 }
 
-/** id の採番 → 種の生成 → リンク鍵の導出 → 発行署名(CRYPTO_SPEC §6.5)。 */
+/** Assign the id → generate the seed → derive the link key → issue signature (CRYPTO_SPEC §6.5). */
 function signIssuance(input: {
   readonly verified: VerifiedProject;
   readonly inviter: ChainMember;
@@ -439,7 +463,7 @@ function signIssuance(input: {
   });
 }
 
-/** 発行後の案内(リンクは stdout、説明は stderr)。 */
+/** The post-issuance guidance (the link to stdout, explanations to stderr). */
 function reportIssued(input: {
   readonly link: Redacted.Redacted<string>;
   readonly inviteId: string;
@@ -450,8 +474,10 @@ function reportIssued(input: {
 }): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 剥がす理由: リンクの表示がこのコマンドの機能そのもの。表示可否は
-    // inviteCreateOp 冒頭の TTY + エージェントゲートで判定済みで、剥がすのはその後ろ
+    // Reason for unwrapping: displaying the link is this command's very
+    // function. Displayability was already decided by the TTY + agent
+    // gate at the head of inviteCreateOp, and the unwrap happens behind
+    // it
     yield* io.log(Redacted.value(input.link));
     yield* io.logError(
       `Issued an invite (id=${displayText(input.inviteId)}, role=${input.role}, scope=${describeScope(input.scope)}, expires=${formatDateTimeUtc(input.expiresAtMs)})`,
@@ -468,36 +494,42 @@ function reportIssued(input: {
 }
 
 /**
- * 招待の発行 + 発行署名 + リンクの組み立て + 発行ピンの保存。発行の認可は
- * サーバーが強制するが、role 規則は通信前に手前で落とす(明確な文言のため)。
+ * Issuing an invite + issue signature + link assembly + saving the
+ * issuance pin. Issuance authorization is enforced by the server, but
+ * role rules are dropped locally before communicating (for clear
+ * wording).
  */
 export function inviteCreateOp(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly origin: string;
   readonly role: InviteRole;
-  /** 付与予定 scope(`--env` 反復 → listed、省略 = all — AUTH_SPEC §15-3 / 設計録 裁定 K)。 */
+  /** The scope to grant (`--env` repetition → listed, omitted = all — AUTH_SPEC §15-3 / design record ruling K). */
   readonly scope: MemberScope;
   readonly sessionUserId: string;
   readonly masterKeys: MasterKeys;
-  /** 宛先の GitHub login(`--github` — 裏付け元の照合先。発行ピンにのみ保持)。 */
+  /** The addressee's GitHub login (`--github` — the backing source's check target. Kept only on the issuance pin). */
   readonly expectedGithubLogin: string | null;
-  /** 自分の GitHub login(リンクの `il=` — 受諾者側の裏付け元照合の材料)。 */
+  /** One's own GitHub login (the link's `il=` — material for the invitee-side backing check). */
   readonly inviterLogin: string | null;
 }): Effect.Effect<InviteCreateSummary, CliError, CliIo | PinStore | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const pinStore = yield* PinStore;
-    // 招待リンクの種はリンクとして表示される(それが機能)が、AI エージェント
-    // 環境では表示 = トランスクリプトへの残留であり、人対人チャネルで渡す前に
-    // 第三者(エージェント基盤・ログ)へ漏れる経路になる。種は再表示不可の
-    // ため「発行して表示しない」形は取れない — 発行そのものを拒否する
+    // An invite link's seed is displayed as the link (that is the
+    // function), but under an AI agent environment display = persisting
+    // into the transcript, a path leaking to a third party (the agent
+    // platform, logs) before it is handed over a person-to-person
+    // channel. Since a seed cannot be re-displayed, "issue without
+    // displaying" is not an option — issuance itself is refused
     yield* ensureInviteLinkDisplayAllowed(io);
     const inviter = yield* ensureCanIssue(input);
-    // 発行文・発行 body・リンク・発行ピンの 4 か所に同じ scope を載せる(2026-09-15
-    // ES K4 — `--env` 反復 = listed、省略 = all。生成は昇順・重複なし — scope.ts)
+    // The same scope goes onto all four places: the issuance, the issue
+    // body, the link, and the issuance pin (2026-09-15 ES K4 — `--env`
+    // repetition = listed, omitted = all. Generated ascending with no
+    // duplicates — scope.ts)
     const scope: ScopePayloadFields = scopePayloadFieldsOf(input.scope);
-    // 発行する端末 = 手元の鍵(ensureCanIssue が招待者の端末鍵の 1 つであることを検査済み)
+    // The issuing device = the local key (ensureCanIssue already checked it is one of the inviter's device keys)
     const inviterKeys = {
       encPubHex: input.masterKeys.record.encPubHex,
       sigPubHex: input.masterKeys.record.sigPubHex,
@@ -545,9 +577,11 @@ export function inviteCreateOp(input: {
         issueSignatureHex: signed.issueSignatureHex,
       },
     });
-    // 発行ピン(SHOULD): member add 時にサーバー申告の行(link_pub・role)と突合する
-    // 追加材料 + 宛先 login の保持(pins.ts)。種は保存しない。保存失敗で成立済みの
-    // 発行を失敗扱いにしない(リンクは一度しか表示できない)
+    // The issuance pin (SHOULD): extra material cross-checked at member
+    // add against the server's claimed row (link_pub / role) + retaining
+    // the addressee login (pins.ts). The seed is not saved. A save
+    // failure does not fail an already-established issuance (the link can
+    // be shown only once)
     yield* pinStore
       .saveIssuedPin(input.verified.projectId, signed.inviteId, {
         linkPubHex: signed.linkPubHex,
@@ -576,9 +610,10 @@ export function inviteCreateOp(input: {
   });
 }
 
-// createdAtMs / expiresAtMs はサーバー申告の無制限 number(B4): total な共有
-// フォーマッタで表示し、Date 範囲外の値が defect(RangeError)にならないように
-// する(invite create / list を型なしクラッシュで終了させない)
+// createdAtMs / expiresAtMs are the server's declared, unbounded numbers
+// (B4): display them via the total shared formatter so a value outside
+// the Date range cannot become a defect (RangeError) (never let invite
+// create / list end in an untyped crash)
 const formatDateTimeUtc = formatUtcMinutes;
 
 // ---------------------------------------------------------------------------
@@ -590,7 +625,7 @@ export interface InviteAcceptSummary {
   readonly role: InviteRole;
 }
 
-/** 招待者 FP(`ie` ‖ `is` から §3 のとおり導出)。 */
+/** The inviter FP (derived from `ie` ‖ `is` per §3). */
 function inviterFingerprintOf(link: InviteLinkData): Effect.Effect<string, CliError> {
   return Effect.gen(function* () {
     const enc = decodeHex(link.inviterEncPubHex);
@@ -609,11 +644,12 @@ function inviterFingerprintOf(link: InviteLinkData): Effect.Effect<string, CliEr
   });
 }
 
-/** リンク鍵の導出(種 → 鍵ペア + 公開鍵 hex)。 */
+/** Deriving the link key (seed → key pair + public key hex). */
 function resolveLinkKey(link: InviteLinkData) {
   return Effect.gen(function* () {
-    // 剥がす理由: 鍵導出にはバイト列そのものが要る。種はここで消費され、以後は
-    // CryptoKey(非抽出)と公開鍵だけが流れる
+    // Reason for unwrapping: key derivation needs the byte string itself.
+    // The seed is consumed here; from here on only the CryptoKey
+    // (non-extractable) and the public key flow
     const seed = decodeHex(Redacted.value(link.linkSeedHex));
     if (seed === null) {
       return yield* Effect.fail(cliError("The link's key seed (k=) is malformed"));
@@ -630,9 +666,11 @@ function resolveLinkKey(link: InviteLinkData) {
 }
 
 /**
- * 発行署名の検証(CRYPTO_SPEC §6.5 — 受諾者側の最初の検査)。失敗 = 受諾しない
- * (帯域外照合で上書きしない): リンク経路上の改竄か、招待者の公開鍵をゴースト
- * 追加した第三者のリンク。link_pub は種から導出した値を使う(リンクは運ばない)。
+ * Verifying the issue signature (CRYPTO_SPEC §6.5 — the invitee-side
+ * first check). Failure = do not accept (never overridden by the
+ * out-of-band check): either tampering on the link's path or a third
+ * party's link ghost-added with the inviter's public key. link_pub uses
+ * the value derived from the seed (the link is not carried).
  */
 function verifyLinkIssuanceWith(
   link: InviteLinkData,
@@ -671,19 +709,27 @@ function verifyLinkIssuanceWith(
 }
 
 /**
- * 受諾者側の相互確認(§6.5): リンクの招待者鍵から FP のワード列を表示し、
- * 帯域外照合の明示確認を要求する。チェーンとの機械照合は受諾時には**できない**
- * (非メンバーへのチェーン GET は一律 404 — AUTH_SPEC §11-2)ため、add_member
- * 後の初回同期で行う(context.ts のアンカー検査)。
+ * The invitee-side mutual confirmation (§6.5): display the inviter key's
+ * FP words from the link and require an explicit confirmation of the
+ * out-of-band check. A mechanical check against the chain is
+ * **impossible** at acceptance time (a non-member's chain GET is a flat
+ * 404 — AUTH_SPEC §11-2), so it happens at the first sync after
+ * add_member (context.ts's anchor check).
  *
- * - `--inviter-fingerprint <hex>`: 帯域外で控えた招待者 FP をリンクの鍵と機械
- *   照合する(非対話の明示確認 + リンク改竄の第二経路検出)
- * - 対話: 12 語を表示し、最終語の再入力を要求する(server-grant と同じ儀式)
- * - エージェント環境ではフラグなしの儀式代行を拒否する(帳のヒットでも)
- * - 検証済み指紋帳(KF — known-fingerprints.ts): 過去に帯域外確認済みの招待者
- *   (origin × user_id)と指紋が一致すれば、12 語の帯域外読み上げの再実施を
- *   免除する。**受諾そのものの明示確認(yes 入力)はヒット時も要求する**。帳を
- *   使えるのは stdin / stdout が対話端末のときだけ(ADR-0016 決定 7 の一次境界)
+ * - `--inviter-fingerprint <hex>`: mechanically compares the inviter FP
+ *   noted out of band against the link's key (non-interactive explicit
+ *   confirmation + second-path detection of link tampering)
+ * - Interactive: shows the 12 words and requires re-typing the last word
+ *   (the same ceremony as server-grant)
+ * - An agent environment refuses to perform the flagless ceremony on
+ *   one's behalf (even on a ledger hit)
+ * - The verified-fingerprint ledger (KF — known-fingerprints.ts): when an
+ *   inviter (origin × user_id) previously confirmed out of band matches
+ *   the fingerprint, re-running the 12-word out-of-band read-out is
+ *   waived. **The explicit confirmation of the acceptance itself (typing
+ *   yes) is still required on a hit**. The ledger is usable only when
+ *   stdin / stdout are interactive terminals (ADR-0016 decision 7's
+ *   first boundary)
  */
 function confirmInviterFingerprint(input: {
   readonly origin: string;
@@ -702,8 +748,9 @@ function confirmInviterFingerprint(input: {
       userId: input.link.inviterUserId,
       fingerprintHex: input.inviterFingerprintHex,
     });
-    // 帳のヒットを使えるのは対話端末 + フラグなし + 非エージェントの経路だけ
-    // (判定は usableBookHit)。そのときは読み上げ照合の指示 2 行を落とす
+    // A ledger hit is usable only on the path of interactive terminals +
+    // no flag + non-agent (the decision is usableBookHit). In that case
+    // the two instruction lines for the read-out check are dropped
     const hit = yield* usableBookHit({
       book,
       flagProvided: input.expectInviterFingerprintHex !== null,
@@ -739,8 +786,10 @@ function confirmInviterFingerprint(input: {
       return;
     }
     yield* book.warnIfChanged;
-    // AI エージェント環境では儀式を代行させない(server-grant と同じ姿勢。
-    // 帳のヒットも代行の根拠にしない — フラグの明示指定だけが非対話経路)
+    // Do not let the ceremony be performed by an AI agent environment
+    // (the same posture as server-grant. A ledger hit is not grounds for
+    // acting on one's behalf either — only an explicit flag is the
+    // non-interactive path)
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
@@ -769,12 +818,14 @@ function confirmInviterFingerprint(input: {
 }
 
 /**
- * master 鍵の用意(§15-3 の「鍵生成〔未生成時〕」— B1b 裁定 A′ の 3 ガード):
- * (1) エージェント環境では生成しない、(2) リカバリー登録済み = 別デバイスに
- * 既存鍵 → `key recover` へ誘導(旧鍵のリカバリー登録を上書きする事故を防ぐ)、
- * (3) 対話の明示確認 → 既存の keyGenerateOp(生成 → リカバリーコード儀式)を
- * そのまま実行する。生成後に中断しても、再実行は既存鍵を検出して受諾から続行
- * する(冪等な再開)。
+ * Preparing the master key (§15-3's "key generation [when absent]" — B1b
+ * ruling A′'s 3 guards): (1) never generated under an agent environment,
+ * (2) recovery already registered = an existing key on another device →
+ * steer to `key recover` (prevents the accident of overwriting the old
+ * key's recovery registration), (3) explicit interactive confirmation →
+ * run the existing keyGenerateOp (generation → recovery-code ceremony)
+ * as-is. If interrupted after generating, a re-run detects the existing
+ * key and resumes at acceptance (idempotent restart).
  */
 function ensureMasterKeysForAccept(input: {
   readonly session: CliSession;
@@ -831,13 +882,16 @@ function ensureMasterKeysForAccept(input: {
 }
 
 /**
- * 受諾者側の充足形 4(CRYPTO_SPEC §6.5 — IV2): 裏付け元が「招待者の sig 鍵
- * (`is`)はリンクが名指す login(`il`)の署名鍵である」と照合できたとき、
- * 12 語の読み上げは不要で、**受諾者が「その login からの招待を期待していた」
- * ことの表明**(非対話: `--from` の一致 / 対話: login を名指しする yes)で充足
- * する。照合の**不能**(裏付け元 `none`・`il` なし・未登録・取得不能)は
- * false = 充足形 1〜3(confirmInviterFingerprint)へ戻る。`--from` と `il` の
- * 不一致だけは**拒否**(経路で差し替えられた有効な別人のリンクの形)。
+ * The invitee-side sufficiency form 4 (CRYPTO_SPEC §6.5 — IV2): when the
+ * backing source confirms "the inviter's sig key (`is`) is a signing key
+ * of the login (`il`) the link names", the 12-word read-out is unneeded
+ * and **the invitee's declaration that they "were expecting an invite
+ * from that login"** satisfies it (non-interactive: a `--from` match /
+ * interactive: a yes naming the login). A check that is **impossible**
+ * (backing `none`, no `il`, unregistered, unfetchable) is false = fall
+ * back to sufficiency forms 1–3 (confirmInviterFingerprint). Only a
+ * `--from` / `il` mismatch is **refused** (the shape of a valid link for
+ * someone else, swapped in along the path).
  */
 function confirmInviterViaBacking(input: {
   readonly link: InviteLinkData;
@@ -897,8 +951,10 @@ function confirmInviterViaBacking(input: {
 }
 
 /**
- * 充足形 4 の「期待していた」表明(対話形): login を名指しする yes。非対話では
- * フラグ(`--from`)だけが経路 — エージェント環境は拒否、非端末は儀式へ戻る。
+ * Sufficiency form 4's "was expecting it" declaration (interactive): a
+ * yes naming the login. Non-interactive only the flag (`--from`) is the
+ * path — an agent environment is refused, a non-terminal falls back to
+ * the ceremony.
  */
 function confirmExpectedInviter(
   link: InviteLinkData,
@@ -939,16 +995,18 @@ export function inviteAcceptOp(input: {
   readonly session: CliSession;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
-  /** `--from <login>`(裏付け元による充足形 4 の非対話の表明)。 */
+  /** `--from <login>` (the non-interactive declaration of sufficiency form 4 via the backing source). */
   readonly expectedFromLogin: string | null;
   readonly identityBacking: IdentityBacking;
-  /** keyGenerateOp(生成 → リカバリー儀式)そのもの(cli.ts が結線する)。 */
+  /** keyGenerateOp itself (generation → recovery ceremony) (wired by cli.ts). */
   readonly keyGenerate: Effect.Effect<void, CliError, CliServices>;
 }): Effect.Effect<InviteAcceptSummary, CliError, CliServices> {
   return Effect.gen(function* () {
     const { link } = input;
-    // §15-3 の順序: 発行署名の検証(機械)→ 相互確認(充足形 4 → 1〜3)→
-    // 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカーのピン留め(受諾成立後のみ)
+    // §15-3's order: verify the issue signature (mechanical) → mutual
+    // confirmation (sufficiency form 4 → 1–3) → key generation [when
+    // absent] → joint signature → accept → pin the anchor (only after
+    // the acceptance is established)
     const linkKey = yield* resolveLinkKey(link);
     yield* verifyLinkIssuanceWith(link, linkKey.linkPubHex);
     const inviterFingerprintHex = yield* inviterFingerprintOf(link);
@@ -1004,8 +1062,10 @@ export function inviteAcceptOp(input: {
       })
       .pipe(Effect.mapError(acceptErrorToCliError));
 
-    // リンク(発行署名済み)とサーバー応答の突合: p / r の不一致は署名検証を
-    // 通らないはずの応答 = サーバーの自己矛盾か行のすり替え → 拒否
+    // Reconciling the link (issue-signed) with the server's response: a
+    // p / r mismatch is a response that should not have passed signature
+    // verification = the server contradicting itself or a swapped row →
+    // refuse
     if (accepted.projectId !== link.projectId) {
       return yield* Effect.fail(
         cliError(
@@ -1020,8 +1080,9 @@ export function inviteAcceptOp(input: {
         ),
       );
     }
-    // scope(2026-09-14 ES)も発行署名が覆う: 応答の scope が署名済みリンクと食い違えば
-    // 同じくサーバーの自己矛盾 → 拒否(AUTH_SPEC §15-3)
+    // scope (2026-09-14 ES) is also covered by the issue signature: a
+    // response scope disagreeing with the signed link is likewise the
+    // server contradicting itself → refuse (AUTH_SPEC §15-3)
     if (!sameScope(accepted, link)) {
       return yield* Effect.fail(
         cliError(
@@ -1030,7 +1091,7 @@ export function inviteAcceptOp(input: {
       );
     }
 
-    // アンカーのピン留めは受諾の成立(+ 突合)後(pinAnchorAfterAccept 参照)
+    // The anchor pin comes after the acceptance is established (+ reconciled) (see pinAnchorAfterAccept)
     const anchored = yield* pinAnchorAfterAccept(link, inviterFingerprintHex);
 
     yield* reportAcceptOutcome({
@@ -1039,8 +1100,9 @@ export function inviteAcceptOp(input: {
       anchored,
       identityBacking: input.identityBacking,
     });
-    // 登録の導線(補足 21 裁定 G ⑥ (b)): この受諾の中で鍵が生まれたなら、
-    // 招待者が儀式なしで追加できるよう、ここで GitHub 登録を持ちかける
+    // The registration path (supplement 21, ruling G ⑥ (b)): when a key
+    // was born inside this acceptance, offer GitHub registration here so
+    // the inviter can add them ceremony-free
     if (generated && input.identityBacking !== "none") {
       yield* offerGithubRegistration({ session: input.session });
     }
@@ -1049,14 +1111,18 @@ export function inviteAcceptOp(input: {
 }
 
 /**
- * 受諾成立後のアンカーのピン留め(§6.3 (a))。**機械照合に成功済み
- * (verifiedAtSeq ≠ null)の既存アンカーは上書きしない**: チェーンは
- * append-only であり検証済みアンカーの包含検査は以後も常に成立する(古くても
- * 無害・検出力は同等)ため、置換には利得がなく、上書き経路を一切残さない方が
- * 攻撃面が狭い(再招待の新アンカーより検証済みの実績を優先)。未照合アンカーは
- * 最新の受諾で置き換える(最後の正規受諾が勝つ)。
+ * Pinning the anchor after the acceptance is established (§6.3 (a)).
+ * **An existing anchor already machine-checked (verifiedAtSeq ≠ null) is
+ * never overwritten**: the chain is append-only so a verified anchor's
+ * containment check keeps holding forever (old but harmless, detection
+ * power equal), there is no gain in replacing it, and leaving no
+ * overwrite path at all narrows the attack surface (a verified track
+ * record wins over a re-invite's fresh anchor). An unchecked anchor is
+ * replaced by the latest acceptance (the last legitimate acceptance
+ * wins).
  *
- * 戻り値 = アンカーが有効に存在するか(保存成功 or 検証済み維持)。
+ * Return = whether a valid anchor exists (saved successfully or the
+ * verified one kept).
  */
 function pinAnchorAfterAccept(
   link: InviteLinkData,
@@ -1065,10 +1131,12 @@ function pinAnchorAfterAccept(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const pinStore = yield* PinStore;
-    // ここへ来た時点で受諾はサーバー側で成立している。ピンは SHOULD 水準の
-    // ローカル防衛なので、ピン留めの失敗で受諾を失敗扱いにしない — リンクは
-    // 消費済みで、「再実行」は 410(accepted)にしかならない。破損ファイルは
-    // 上書きしない(pins.ts の merge 規律)まま、警告して劣化を明示する
+    // By the time we get here the acceptance is established server-side.
+    // The pin is SHOULD-level local defense, so a pinning failure does
+    // not fail the acceptance — the link is already consumed and
+    // "re-running" can only become 410 (accepted). A corrupt file is left
+    // un-overwritten (pins.ts's merge discipline) while warning to make
+    // the degradation explicit
     const loaded = yield* pinStore
       .load(link.projectId)
       .pipe(
@@ -1094,8 +1162,9 @@ function pinAnchorAfterAccept(
       return true;
     }
     if (existing !== null) {
-      // 未照合アンカーの置換は正規の再招待でも起きるが、痕跡ゼロだと偽リンクに
-      // よる差し替え(DoS 経路)が監査不能になる — 一行で顕在化させる
+      // Replacing an unchecked anchor also happens on a legitimate
+      // re-invite, but with zero trace a substitution by a fake link (a
+      // DoS path) would be unauditable — surface it in one line
       yield* io.log(
         "Replacing the unverified existing anchor with this acceptance's link anchor (the latest legitimate acceptance wins)",
       );
@@ -1116,7 +1185,7 @@ function pinAnchorAfterAccept(
   });
 }
 
-/** 受諾成立後の表示(自 FP ワード = 招待者への読み上げ材料 + 次の段の案内)。 */
+/** The display after the acceptance is established (one's own FP words = the read-out material for the inviter + the next-step guidance). */
 function reportAcceptOutcome(input: {
   readonly accepted: InviteAcceptSummary;
   readonly fingerprintHex: string;
@@ -1135,8 +1204,9 @@ function reportAcceptOutcome(input: {
     yield* io.log("Your key fingerprint (the inviter checks this at member add):");
     yield* io.log(`  hex:  ${input.fingerprintHex}`);
     yield* io.log("  word: " + formatWordList(ownWords));
-    // 完了表示(補足 21 裁定 G ⑥ (a)): 裏付け元があるときは「登録」が第一の
-    // 導線で、12 語の読み上げはその代替
+    // The completion display (supplement 21, ruling G ⑥ (a)): when a
+    // backing source exists, "register" is the primary path and the
+    // 12-word read-out is its fallback
     yield* io.log(
       input.identityBacking === "none"
         ? "Your acceptance is bound to the invite link. Read these 12 words to the inviter out of band (e.g. over a call) (§6.5 mutual confirmation. To show them again later, run `maruhi key show`)"
@@ -1150,7 +1220,7 @@ function reportAcceptOutcome(input: {
   });
 }
 
-/** 410 の理由コードを運用手順に翻訳する。 */
+/** Translating 410's reason code into an operational procedure. */
 function goneErrorToCliError(error: InviteGoneError): CliError {
   switch (error.reason) {
     case "accepted":
@@ -1167,7 +1237,7 @@ function goneErrorToCliError(error: InviteGoneError): CliError {
   }
 }
 
-/** 受諾エラーの文言マップ(理由コードを運用手順に翻訳する)。 */
+/** The acceptance-error wording map (translates reason codes into operational procedures). */
 function acceptErrorToCliError(error: unknown): CliError {
   if (error instanceof InviteNotFoundError) {
     return cliError(
@@ -1200,19 +1270,21 @@ function acceptErrorToCliError(error: unknown): CliError {
 
 export interface InviteListSummary {
   readonly rows: number;
-  /** 署名検証の失敗・発行ピン不一致の件数(> 0 なら exit 1)。 */
+  /** The count of signature-verification failures and issuance-pin mismatches (exit 1 when > 0). */
   readonly integrityFailures: number;
 }
 
-/** 表示上の状態(pending + 期限超過は expired として表示 — 保存状態の導出)。 */
+/** The displayed status (pending past its expiry shows as expired — derived from the stored state). */
 function displayStatus(row: InvitationRow, nowMs: number): string {
   return row.status === "pending" && row.expiresAtMs <= nowMs ? "expired" : row.status;
 }
 
 /**
- * 発行ピン突合(§6.5 の招待者側の追加材料 — SHOULD): サーバー申告の行が発行時の
- * link_pub・role・scope と食い違えば、行のすり替え・role / scope の虚偽申告の兆候。
- * ピンが無い(別端末発行)場合は発行署名の検証だけが行を固定する。
+ * The issuance-pin cross-check (§6.5's inviter-side extra material —
+ * SHOULD): a server-claimed row disagreeing with the issuance-time
+ * link_pub / role / scope is a sign of a swapped row or a false role /
+ * scope claim. With no pin (issued on another device) only the issue
+ * signature's verification pins the row.
  */
 export function pinMismatchOf(
   pins: InvitePins | null,
@@ -1229,7 +1301,7 @@ export function pinMismatchOf(
     : "match";
 }
 
-/** 一覧 1 行の検証と表示(integrity failure の件数を返す)。 */
+/** Verifying and displaying one listing row (returns the integrity-failure count). */
 function listRowChecks(input: {
   readonly verified: VerifiedProject;
   readonly pins: InvitePins | null;
@@ -1257,8 +1329,9 @@ function listRowChecks(input: {
         `the server's claim for invite ${displayText(row.id)} (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,
       );
     }
-    // 「照合して成功」と「照合材料なし」を同じ見た目にしない(S12 — §6.5 の
-    // 追加材料が欠ける行は発行署名だけが固定する)
+    // Do not give "checked and passed" and "no check material" the same
+    // look (S12 — on a row missing §6.5's extra material, only the issue
+    // signature pins it)
     if (pin === "missing") {
       yield* io.log(
         "  issuance pin: none on this machine (this invite may have been issued on another device) — the link key / role / scope cross-check was not performed",

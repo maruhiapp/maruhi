@@ -1,44 +1,57 @@
-// `maruhi sync` の exec ドライバ(integration-options.md §3
-// 補足 10 / 補足 13 / 補足 14 / 補足 16)。
+// `maruhi sync`'s exec driver (integration-options.md §3
+// supplement 10 / supplement 13 / supplement 14 / supplement 16).
 //
-// 導入済み・ログイン済みのベンダー CLI(`wrangler` / `vercel`)を子プロセスと
-// して起動し、値を **stdin だけ**で渡す。argv には名前とオプションしか載らない:
-// 引数テンプレート({@link ArgTemplate})に値のトークンは存在しない(型で禁止)。
-// プリセットは宣言的なデータ(コマンド・引数
-// テンプレート・stdin の形式・1 プロセスあたりの件数・テレメトリ off の環境
-// 変数・値の制約・オプションの宣言)で、追加はデータ + 偽 CLI の検査で済む
-// (`gh secret set NAME` は raw-value / 1 件ずつ / `GH_TELEMETRY=false` の
-// 宣言で載った)。
+// Launches an installed, signed-in vendor CLI (`wrangler` / `vercel`) as
+// a child process and passes the value **on stdin alone**. argv carries
+// only names and options: the argument template ({@link ArgTemplate})
+// has no token for a value (prohibited by the type). A preset is
+// declarative data (the command, the argument template, the stdin
+// format, the per-process item count, telemetry-off environment
+// variables, the value constraints, the options declaration), and
+// adding one takes data + a fake-CLI check (`gh secret set NAME` came
+// in via the declarations raw-value / one-at-a-time /
+// `GH_TELEMETRY=false`).
 //
-// ベンダー CLI の実測(Vercel CLI は `readStandardInput` / `normalizeStdinEnvValue`、
-// gh は `pkg/cmd/secret/set/set.go` で確認):
-//   - wrangler 4.128.0 `secret bulk`: stdin の JSON `{"k":"v"}` を 1 リクエスト、
-//     `null` = 削除、1 回 100 件、空 stdin は「No content found」で exit 0
-//     (→ 空の入力では呼ばない)、`--name` / `--env`、`WRANGLER_SEND_METRICS=false`
-//     (`true` / `false` 厳密)
-//   - Vercel CLI 59.11.7 `env add NAME [env]`: stdin の**最初の data チャンク
-//     1 回分**だけを 500 ms 待って読む(→ 一度に書いて閉じる。Linux の実測は
-//     65,536 バイトまで完全、macOS のパイプは初期 16 KiB → 上限 16 KiB)、
-//     1 行の値からだけ末尾改行 1 つを落とす(→ 末尾改行 1 つで終わる 1 行の値は
-//     表現できないので拒否)、空 stdin は「値なし」= 対話(→ 空値は拒否)、
-//     `--force` = API の upsert(rm → add の窓は無い)、`--non-interactive` で
-//     全プロンプトが失敗に倒れる、`VERCEL_TELEMETRY_DISABLED=1`
-//   - gh 2.100.0 `secret set NAME`: `--body` 省略 + 非対話で stdin を **すべて**読み
-//     `bytes.TrimRight(body, "\r\n")`(→ 末尾の CR / LF を全部落とすので、改行で
-//     終わる値は単行・複数行とも表現できない = 拒否)、空 stdin は空の本文として
-//     封印して送る(API の受理は未確認 — 拒否は gh の文面で見える)、封印
-//     (libsodium sealed box)はクライアント側、上書き、`gh secret delete NAME`
-//     (不在名は API の 404 = 非 0)、`-R OWNER/REPO` / `--env <Environment>` /
-//     `--app {actions|agents|codespaces|dependabot}`(Environment secrets は
-//     actions のみ)、認証は `GH_TOKEN`(次いで `GITHUB_TOKEN`)か `gh auth login`、
-//     未ログインは終了コード 4、`GH_TELEMETRY=false` / `DO_NOT_TRACK=1`。名前は
-//     GitHub 側で英数字と `_`・数字始まり不可・`GITHUB_` 接頭辞不可・**大文字で
-//     保存**(大文字小文字を同一視)— 大小違いの 2 名が 1 つの secret に畳まれる
-//     形を作らないよう、大文字の名前だけを通す(docs.github.com「Secrets
-//     reference」)
+// Measured behavior of the vendor CLIs (Vercel CLI confirmed at
+// `readStandardInput` / `normalizeStdinEnvValue`, gh at
+// `pkg/cmd/secret/set/set.go`):
+//   - wrangler 4.128.0 `secret bulk`: stdin JSON `{"k":"v"}` in one
+//     request, `null` = delete, 100 items per run, empty stdin exits 0
+//     with "No content found" (→ never called with empty input),
+//     `--name` / `--env`, `WRANGLER_SEND_METRICS=false` (strict
+//     `true` / `false`)
+//   - Vercel CLI 59.11.7 `env add NAME [env]`: reads only **the first
+//     data chunk** of stdin after a 500 ms wait (→ write once and
+//     close. Linux measured complete to 65,536 bytes; a macOS pipe has
+//     an initial 16 KiB → cap is 16 KiB), strips exactly one trailing
+//     newline only from a single-line value (→ a single-line value
+//     ending in one newline cannot be represented, so refuse), empty
+//     stdin = "no value" = interactive (→ refuse empty values),
+//     `--force` = the API's upsert (no rm → add window), with
+//     `--non-interactive` every prompt turns into a failure,
+//     `VERCEL_TELEMETRY_DISABLED=1`
+//   - gh 2.100.0 `secret set NAME`: with `--body` omitted and
+//     non-interactive, reads **all** of stdin and
+//     `bytes.TrimRight(body, "\r\n")` (→ strips every trailing CR / LF,
+//     so a value ending in a newline — single-line or multi-line —
+//     cannot be represented = refuse), an empty stdin is sealed and
+//     sent as an empty body (the API's acceptance unconfirmed — the
+//     refusal surfaces in gh's wording), sealing (a libsodium sealed
+//     box) is client-side, overwrites, `gh secret delete NAME` (a
+//     missing name is the API's 404 = nonzero), `-R OWNER/REPO` /
+//     `--env <Environment>` / `--app
+//     {actions|agents|codespaces|dependabot}` (Environment secrets are
+//     actions-only), auth is `GH_TOKEN` (then `GITHUB_TOKEN`) or
+//     `gh auth login`, signed-out is exit code 4, `GH_TELEMETRY=false` /
+//     `DO_NOT_TRACK=1`. Names on the GitHub side must be alphanumerics
+//     and `_`, cannot start with a digit or the `GITHUB_` prefix, and
+//     are **stored in uppercase** (case-identical) — only uppercase
+//     names are passed through so no two differently-cased names fold
+//     into one secret (docs.github.com "Secrets reference")
 //
-// ベンダー CLI の stdout / stderr は値を含みうる前提で扱う: 成功時は捨て、失敗時も
-// 値を伏せた末尾だけを出す({@link scrubVendorOutput})。
+// A vendor CLI's stdout / stderr is treated as able to contain a value:
+// discarded on success, and on failure only the tail is shown with the
+// values scrubbed ({@link scrubVendorOutput}).
 
 import { Redacted } from "effect";
 
@@ -54,11 +67,11 @@ import type { OptionSpec, ResolvedOptions, ValueConstraints } from "./sync-types
 export type ArgTemplate =
   | string
   | { readonly kind: "name" }
-  /** 必須オプションの値をそのまま(位置引数)。 */
+  /** The required option's value verbatim (a positional argument). */
   | { readonly kind: "option"; readonly option: string }
-  /** 任意オプション: 設定されていれば `flag value` の 2 トークン。 */
+  /** An optional option: the 2 tokens `flag value` when set. */
   | { readonly kind: "option"; readonly option: string; readonly flag: string }
-  /** boolean オプションが `equals` のときだけ `flag` を 1 トークン足す。 */
+  /** Adds `flag` as 1 token only when the boolean option equals `equals`. */
   | {
       readonly kind: "switch";
       readonly option: string;
@@ -68,39 +81,44 @@ export type ArgTemplate =
 
 /** A declarative exec preset (data only — no code per vendor). */
 export interface ExecPreset {
-  /** 既定の実行体(PATH 上の導入済み CLI)。 */
+  /** The default executable (the installed CLI on PATH). */
   readonly command: string;
-  /** 子へ足す非機密の環境変数(テレメトリ off)。 */
+  /** The non-secret environment variables added to the child (telemetry off). */
   readonly env: Readonly<Record<string, string>>;
-  /** stdin の形式: 名前 → 値の JSON オブジェクト 1 つ、または値そのもの。 */
+  /** The stdin format: one JSON object of name → value, or the value itself. */
   readonly transport: "json-object" | "raw-value";
-  /** 1 プロセスに載せる最大件数(raw-value は常に 1)。 */
+  /** The maximum item count on one process (raw-value is always 1). */
   readonly batch: number;
-  /** 書き込みの argv(コマンド名を除く)。 */
+  /** The write argv (without the command name). */
   readonly writeArgs: readonly ArgTemplate[];
-  /** 削除: JSON の `null`(同じ書き込みプロセスに同居)か、別コマンドの argv。 */
+  /** The delete: a JSON `null` (living inside the same write process) or another command's argv. */
   readonly delete: "json-null" | { readonly args: readonly ArgTemplate[] };
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
   /**
-   * 同期先の呼び名を組み立てるオプション名(plan / apply のヘッダー行 —
-   * sync-plan.ts の describeDestination)。宣言順に、設定されている文字列の値だけが
-   * 並ぶ。非機密のオプションだけを載せる(トークン系のオプションはそもそも無い)。
+   * The option names that build the destination's label (plan / apply's
+   * header line — sync-plan.ts's describeDestination). Listed in
+   * declaration order; only the set string values appear. Only
+   * non-secret options are listed (token-like options do not exist to
+   * begin with).
    */
   readonly describeOptions: readonly string[];
   /**
-   * オプション同士の整合(1 つの `OptionSpec` では表せない — GitHub の Environment
-   * secrets は actions アプリだけ、など)。設定時に呼ばれ、不整合なら
-   * `<option>: <理由>` の形の文字列を返す(http プリセットの `check` と同じ契約)。
+   * The options' mutual consistency (inexpressible in a single
+   * `OptionSpec` — e.g. GitHub's Environment secrets exist for the
+   * actions app only). Called at config time; on an inconsistency it
+   * returns a string of the form `<option>: <reason>` (the same contract
+   * as the http preset's `check`).
    */
   readonly check?: (options: ResolvedOptions) => string | null;
-  /** `sync init` が添えるサインインの案内(ベンダー CLI の資格の置き場と最小権限)。 */
+  /** The sign-in guidance `sync init` attaches (where the vendor CLI's credential lives and the minimum rights). */
   readonly signInHint?: string;
 }
 
-// macOS のパイプは初期容量 16 KiB(それ以上は書き手がブロックし、Vercel CLI の
-// 「最初のチャンクだけ」読みが切れる)。Linux の実測上限 64 KiB ではなく、
-// 環境差を跨いで安全な側に置く
+// A macOS pipe's initial capacity is 16 KiB (beyond it the writer blocks
+// and Vercel CLI's "first chunk only" read truncates). Not Linux's
+// measured 64 KiB ceiling — kept on the side that's safe across the
+// environment difference
 const VERCEL_MAX_VALUE_BYTES = 16 * 1024;
 
 const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
@@ -118,7 +136,7 @@ export const GH_ENV: Readonly<Record<string, string>> = {
   GH_PROMPT_DISABLED: "1",
 };
 
-// gh 2.100.0 の `--app` の閉集合(shared.GetSecretApp)。省略 = actions
+// gh 2.100.0's `--app` closed set (shared.GetSecretApp). Omitted = actions
 const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as const;
 
 /**
@@ -128,11 +146,12 @@ const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as 
  */
 const GITHUB_SECRET_NAME = /^(?!GITHUB_)[A-Z_][A-Z0-9_]*$/;
 
-// gh の `-R [HOST/]OWNER/REPO`。各区切りの先頭は英数字(先頭 `-` = フラグと読まれる形を
-// 構造で除く: `-x/y` を通さない)
+// gh's `-R [HOST/]OWNER/REPO`. Each segment's first character is
+// alphanumeric (a leading `-` = the shape read as a flag is removed
+// structurally: `-x/y` never passes)
 const GITHUB_REPO = /^(?:[A-Za-z0-9][A-Za-z0-9.-]*\/)?[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/;
 
-// GitHub Environment 名(gh の argv に載る。フラグと読まれる先頭 `-` だけを除く)
+// A GitHub Environment name (lands on gh's argv. Removes only a leading `-`, the shape read as a flag)
 const GITHUB_ENVIRONMENT_NAME = /^[^-\s][^\n\r]*$/;
 
 /**
@@ -161,7 +180,7 @@ export const EXEC_PRESETS = {
       environment: { type: "string", required: false },
       config: { type: "string", required: false },
     },
-    // name 未設定 = wrangler の設定ファイルが持つ(cwd の出力行で見える)
+    // name unset = wrangler's config file holds it (visible on the cwd's output line)
     describeOptions: ["name", "environment"],
   },
   vercel: {
@@ -207,7 +226,7 @@ export const EXEC_PRESETS = {
       scope: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
-    // project 未設定 = Vercel CLI の linked directory が決める(cwd の出力行で見える)
+    // project unset = Vercel CLI's linked directory decides it (visible on the cwd's output line)
     describeOptions: ["project", "environment", "gitBranch"],
   },
   "github-actions": {
@@ -234,12 +253,14 @@ export const EXEC_PRESETS = {
       ],
     },
     constraints: {
-      // GitHub の上限は 48 KB(docs)だが単位と測り方が未確認で、gh は stdin を全部
-      // 読んで API に渡す(切り詰めの経路が無い)= 超過は API の拒否が gh の文面で
-      // 見える。未確認の数に依存させない
+      // GitHub's cap is 48 KB (docs) but the unit and the measurement are
+      // unconfirmed, and gh reads all of stdin and hands it to the API
+      // (no truncation path) = an overage surfaces as the API's refusal
+      // in gh's wording. Don't depend on an unconfirmed number
       maxBytes: null,
-      // gh は空 stdin を空の本文として封印して送る(値なしとは読まない)。
-      // 改行だけの値は trailingNewline が先に拒む
+      // gh seals an empty stdin as an empty body and sends it (never
+      // read as no-value). A value of only newlines is refused earlier
+      // by trailingNewline
       nonEmpty: false,
       trailingNewline: "stripped",
       name: {
@@ -263,10 +284,11 @@ export const EXEC_PRESETS = {
       },
       app: { type: "string", required: false, values: GITHUB_SECRET_APPS },
     },
-    // repo 未設定 = gh が cwd の git remote から解く(cwd の出力行で見える)
+    // repo unset = gh resolves it from cwd's git remote (visible on the cwd's output line)
     describeOptions: ["repo", "environment", "app"],
-    // Environment secrets は actions アプリだけ(gh shared.IsSupportedSecretEntity)。
-    // gh は値を stdin から読んだ**後**にこれを拒むので、設定の段階で止める
+    // Environment secrets exist for the actions app only (gh's
+    // shared.IsSupportedSecretEntity). gh refuses this **after** reading
+    // the value from stdin, so it is stopped at config time
     check: (options) =>
       options["environment"] !== undefined &&
       options["app"] !== undefined &&
@@ -290,7 +312,7 @@ export interface ExecInvocation extends ExecInput {
   readonly names: readonly string[];
 }
 
-/** 1 トークンの展開(値は決して載らない — テンプレートに値のトークンが無い)。 */
+/** One token's expansion (a value never lands — the template has no value token). */
 function renderToken(
   template: ArgTemplate,
   options: Readonly<Record<string, string | boolean>>,
@@ -300,8 +322,9 @@ function renderToken(
     return [template];
   }
   if (template.kind === "name") {
-    // json-object の書き込みでは名前は stdin の JSON 側にあり、テンプレートに
-    // name トークンは現れない(現れたら宣言の誤り = 内部エラー)
+    // In a json-object write the name lives on stdin's JSON side and no
+    // name token appears in the template (if one appears it's a
+    // declaration mistake = internal error)
     if (name === null) {
       throw new Error("preset declares a name token for a batched command");
     }
@@ -317,7 +340,7 @@ function renderToken(
   return "flag" in template ? [template.flag, value] : [value];
 }
 
-/** 引数テンプレートを、名前とオプションから argv に展開する。 */
+/** Expands the argument template into argv from the name and options. */
 function renderArgs(
   templates: readonly ArgTemplate[],
   options: Readonly<Record<string, string | boolean>>,
@@ -326,7 +349,7 @@ function renderArgs(
   return templates.flatMap((template) => renderToken(template, options, name));
 }
 
-/** 1 値の制約検査(文面は変数名だけを運ぶ)。 */
+/** One value's constraint check (the wording carries only the variable name). */
 export function checkValueConstraints(
   driver: { readonly constraints: ValueConstraints; readonly label: string },
   name: string,
@@ -365,13 +388,13 @@ export function checkValueConstraints(
   return null;
 }
 
-/** 末尾が LF か CR か(gh の `TrimRight("\r\n")` が何かを落とす形)。 */
+/** Whether the tail is an LF or a CR (the shape where gh's `TrimRight("\r\n")` drops something). */
 function endsWithNewline(bytes: Uint8Array): boolean {
   const last = bytes[bytes.length - 1];
   return last === 0x0a || last === 0x0d;
 }
 
-/** 「末尾が改行 1 つ(LF / CRLF)で、それ以外に改行を含まない」か。 */
+/** Whether "the tail is exactly one newline (LF / CRLF) and no other newline appears". */
 function endsWithSingleLineNewline(bytes: Uint8Array): boolean {
   if (bytes.length === 0 || bytes[bytes.length - 1] !== 0x0a) {
     return false;
@@ -392,9 +415,10 @@ const encoder = new TextEncoder();
  * Builds the processes to run for one target: writes (and deletes) in the
  * preset's transport, values only on stdin. Pure — nothing is spawned here.
  *
- * 値の UTF-8 検査は呼び出し側(sync-plan.ts)が `checkValueConstraints` と
- * 並べて済ませている前提(JSON 文字列・stdin の raw の両方でテキストである
- * ことが要る)。ここでは Redacted を剥がして stdin のバイト列に**再び包む**。
+ * Assumes the caller (sync-plan.ts) has already done the UTF-8 check of
+ * the value alongside `checkValueConstraints` (it must be text both as a
+ * JSON string and as raw stdin). Here the Redacted is unwrapped and
+ * **wrapped again** as the stdin byte string.
  */
 export function buildInvocations(input: {
   readonly preset: ExecPreset;
@@ -412,15 +436,17 @@ export function buildInvocations(input: {
     extraEnv: preset.env,
   });
   if (preset.transport === "json-object") {
-    // 名前 → 値(削除は null)の JSON を 1 プロセスに `batch` 件ずつ
+    // A JSON of name → value (a delete is null), `batch` items per process
     const entries: (readonly [string, string | null])[] = [
       ...input.writes.map((write) => {
-        // 剥がす理由: stdin の JSON 本文の組み立て(産物は再び Redacted に包む)
+        // Reason for unwrapping: assembling stdin's JSON body (the product is wrapped in Redacted again)
         const text = decodeValueText(Redacted.value(write.value));
         if (text === null) {
-          // prepareWork(sync-plan.ts)が送る前に弾いている前提。到達 = 実装の
-          // 不整合なので、空文字列を黙って書く(最悪の形)のでなく落とす。
-          // 文面は値も変数名も運ばない
+          // Assumes prepareWork (sync-plan.ts) filtered it before
+          // sending. Reaching here = an implementation inconsistency, so
+          // it drops rather than silently writing an empty string (the
+          // worst shape). The wording carries neither the value nor the
+          // variable name
           throw new Error("a value that is not valid UTF-8 reached buildInvocations");
         }
         return [write.name, text] as const;
@@ -444,7 +470,7 @@ export function buildInvocations(input: {
         ...base(renderArgs(preset.writeArgs, input.options, write.name)),
         kind: "write",
         names: [write.name],
-        // 値をそのまま(改行を足さない — 末尾改行の扱いは checkValueConstraints)
+        // The value as-is (no newline is appended — trailing newlines are checkValueConstraints' concern)
         stdin: write.value,
       });
     }
@@ -462,17 +488,18 @@ export function buildInvocations(input: {
   return invocations;
 }
 
-/** 失敗時に見せるベンダー出力の行数(末尾)。 */
+/** The vendor output's line count shown on failure (the tail). */
 const SHOWN_TAIL_LINES = 20;
 
 /**
- * 失敗時に見せるベンダー出力の文字数の上限(UTF-16 の文字数。表示の上限であって
- * 記憶量の上限ではない)。**伏せた後に**掛ける — 伏せる前に切ると、切れ目に
- * かかった値の後半が断片に一致しなくなって漏れる。
+ * The character cap of the vendor output shown on failure (counted in
+ * UTF-16 characters. A display cap, not a memory cap). Applied **after
+ * scrubbing** — cutting before scrubbing would split a value at the
+ * cut, leave its second half matching no fragment, and leak it.
  */
 const SHOWN_TAIL_CHARS = 64 * 1024;
 
-/** 末尾 `cap` 文字ぶんだけを保つ(先頭から捨てる)。伏せた文字列にだけ使う。 */
+/** Keeps only the last `cap` characters (drops from the head). Used only on a scrubbed string. */
 function keepTail(text: string, cap: number): string {
   return text.length <= cap ? text : text.slice(text.length - cap);
 }
@@ -486,13 +513,13 @@ function keepTail(text: string, cap: number): string {
 export function scrubVendorOutput(
   output: string,
   values: readonly SyncWrite[],
-  /** 値のほかに伏せる秘密(http ドライバの統合トークン — 応答に echo されうる)。 */
+  /** Secrets scrubbed besides the values (the http driver's integration token — could be echoed in a response). */
   tokens: readonly Redacted.Redacted<string>[] = [],
 ): string[] {
   let text = output;
   const fragments = new Set<string>();
   for (const token of tokens) {
-    // 剥がす理由: 出力からの伏せ字化(トークンの断片を探して置き換える。産物には残らない)
+    // Reason for unwrapping: scrubbing it out of the output (finds and replaces the token's fragments. It does not remain in the product)
     const secret = Redacted.value(token);
     if (secret.length > 0) {
       fragments.add(secret);
@@ -500,7 +527,7 @@ export function scrubVendorOutput(
     }
   }
   for (const write of values) {
-    // 剥がす理由: 出力からの伏せ字化(値の断片を探して置き換える。産物には残らない)
+    // Reason for unwrapping: scrubbing it out of the output (finds and replaces the value's fragments. It does not remain in the product)
     const plaintext = decodeValueText(Redacted.value(write.value));
     if (plaintext === null) {
       continue;
@@ -510,13 +537,14 @@ export function scrubVendorOutput(
         continue;
       }
       fragments.add(fragment);
-      // wrangler は JSON を受け取るので、失敗時に本文を echo すると値は JSON
-      // 文字列として(`\"` / `\\` / `\n` に逃がされて)現れる。
-      // 逃がした形も断片に加える(素の形と同じなら集合が吸収する)
+      // wrangler receives JSON, so if the body is echoed on failure the
+      // value appears as a JSON string (escaped into `\"` / `\\` /
+      // `\n`). The escaped form is also added to the fragments (if
+      // identical to the raw form the set absorbs it)
       fragments.add(JSON.stringify(fragment).slice(1, -1));
     }
   }
-  // 長い断片から置換する(短い断片が長い断片の一部を先に潰して取りこぼさない)
+  // Replaces from the longest fragment first (a short fragment must not crush part of a longer one and let it slip)
   for (const fragment of [...fragments].toSorted((a, b) => b.length - a.length)) {
     text = text.split(fragment).join("[redacted]");
   }

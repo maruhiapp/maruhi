@@ -1,38 +1,51 @@
-// チェックポイント整合のクライアント規則 2(CRYPTO_SPEC §6.3 — 値の非後退)。
+// Client rule 2 of checkpoint integrity (CRYPTO_SPEC §6.3 — value
+// non-regression).
 //
-// 環境ごとの基準は、検証済みチェーン上で**その環境のエントリを含む最新の
-// `checkpoint`**(history.latestCheckpointFor — サーバー非依存のチェーン導出)。
-// 値付き応答(一括 pull §12-7 / lease §14-2)に同梱される「チェックポイント時点の
-// 値スナップショット列挙」に対して検査する:
+// The per-environment baseline is **the latest `checkpoint` containing an
+// entry of that environment** on the verified chain
+// (history.latestCheckpointFor — a server-independent chain derivation). It
+// checks the "enumeration of the value snapshot at checkpoint time" bundled
+// with a value-bearing response (bulk pull §12-7 / lease §14-2):
 //
-//   1. **基準あり + 列挙なし = 拒否(MUST)** — 列挙の省略を「規則 2 のスキップ」に
-//      落とさせない(基準の有無は検証済みチェーンからサーバー非依存に判定できる)
-//   2. ワイヤの対応 checkpoint seq / hash は **advisory locator**(session-36
-//      裁定 S — 検証の基準は常にチェーン導出)。§6.3-2 のヘッド束縛と同型の
-//      2 分類: 申告 seq > 自ヘッド = 自チェーンが古いだけの可能性(future —
-//      pull は有界再同期、lease は同一応答にチェーンが同梱されるため自己矛盾 =
-//      即時拒否)/ 申告 seq ≤ 自ヘッド = 基準は確定済みで、不一致は硬い証拠
-//   3. 列挙の再計算ダイジェスト(computeEnvValuesDigest — ベクター固定済みの
-//      正規形)が基準の values_digest と一致すること
-//   4. 配布された各変数: version がスナップショット以上・等号なら
-//      value_signed_bytes ハッシュ一致・スナップショットより新しい version の
-//      epoch は基準 epoch 以上(床規則 (c) のチェックポイント版 — 床を持たない
-//      クライアントへの前進注入検出はこれが担う)
-//   5. スナップショットに存在して配布に存在しない変数は、検証済み tombstone
-//      (マニフェスト整合込み — 呼び出し側はマニフェスト段の後に本検査を置く)で
-//      削除が説明されない限り欠落として拒否
-//   6. スナップショットに存在しない配布変数はチェックポイント後の正当な作成で
-//      ありうる(エポック基準 — 床規則 (c) の「version 0 相当」と同型。
-//      マニフェスト整合は前段のダイジェスト再計算が担保済み)
+//   1. **baseline exists + no enumeration = refuse (MUST)** — do not let
+//      omitting the enumeration slide into "rule 2 skipped" (whether a
+//      baseline exists is decidable server-independently from the verified
+//      chain)
+//   2. The wire's corresponding checkpoint seq / hash is an **advisory
+//      locator** (session-36 ruling S — the verification baseline is always
+//      chain-derived). The same two-way classification as §6.3-2's head
+//      binding: declared seq > own head = possibly just a stale local chain
+//      (future — pull resolves it via bounded resync; for lease the same
+//      response bundles the chain, so it is a self-contradiction = refuse
+//      immediately) / declared seq ≤ own head = the baseline is settled and
+//      a mismatch is hard evidence
+//   3. The enumeration's recomputed digest (computeEnvValuesDigest — the
+//      vector-pinned canonical form) equals the baseline's values_digest
+//   4. For each served variable: version at or above the snapshot; on
+//      equality, the value_signed_bytes hash matches; a version newer than
+//      the snapshot has epoch at or above the baseline epoch (the checkpoint
+//      version of floor rule (c) — this is what detects forward injection
+//      into a floorless client)
+//   5. A variable present in the snapshot but absent in the distribution is
+//      refused as an omission unless a verified tombstone (including
+//      manifest consistency — the caller places this check after the
+//      manifest stage) explains the deletion
+//   6. A served variable absent from the snapshot may be a legitimate
+//      post-checkpoint creation (the epoch baseline — isomorphic to floor
+//      rule (c)'s "version 0 equivalent". Manifest consistency is already
+//      guaranteed by the preceding digest recomputation)
 //
-// 基準を持たない環境は本検証の対象外(保証は床・マニフェストのエポック整合のみ —
-// §6.3)。床を持たないクライアント(ワークロード — §9.1)の「基準なし警告」
-// (SHOULD)は lease 経路の呼び出し側が担う(session-36 裁定 V)。
+// An environment without a baseline is outside this verification (the
+// guarantee is only the floor / manifest epoch consistency — §6.3). The
+// "no baseline" warning (SHOULD) for a floorless client (a workload — §9.1)
+// is carried by the lease path's caller (session-36 ruling V).
 //
-// 検査対象の variables / tombstones は §6.3 の署名検証を全通過したデータ、基準は
-// 検証済みチェーンの導出値なので、ここでの不一致は正規署名済みデータとチェーン
-// 公証の矛盾 = サーバーの巻き戻し・前進注入・改竄の証拠であり全件拒否する
-// (呼び出し側は evidence として型付けする — errors.ts)。
+// The inspected variables / tombstones are data that passed all §6.3
+// signature verification and the baseline is a value derived from the
+// verified chain, so a mismatch here is a contradiction between
+// properly-signed data and a chain notarization = evidence of a server
+// rollback, forward injection, or tampering, and everything is refused (the
+// caller types it as evidence — errors.ts).
 
 import type { CheckpointValueSnapshot } from "@maruhi/api-schema";
 import type { ChainHistoryIndex, EnvironmentCheckpointState } from "@maruhi/crypto";
@@ -40,21 +53,23 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 
 import { displayText } from "./display.ts";
 
-/** 配布値のうち規則 2 が見る座標(values.ts の VerifiedPulledValue が満たす)。 */
+/** The coordinates of a served value that rule 2 looks at (satisfied by values.ts's VerifiedPulledValue). */
 export interface CheckpointCheckedValue {
   readonly variableId: string;
   readonly version: number;
   readonly epoch: number;
-  /** 自計算の value_signed_bytes ハッシュ(§4.1 — 申告値ではない)。 */
+  /** The self-computed value_signed_bytes hash (§4.1 — not a claimed value). */
   readonly signedBytesHashHex: string;
 }
 
 /**
- * 規則 2 の判定結果(future = §6.3-2b と同型の「自チェーンが古いだけの可能性」)。
- * rejected の evidence は「検証済みデータとチェーン公証の矛盾 = 再実行では
- * 解消しない証拠」かの型付け(false = 応答の取得ビューより後に基準が前進した
- * 良性競合でも説明できる形 — 再 pull で解消しうるため、rotate の巡末分類が
- * 証拠中断へ格上げしない)。
+ * Rule 2's verdict (future = the §6.3-2b-isomorphic "possibly just a stale
+ * local chain"). rejected's evidence types whether it is "a contradiction
+ * between verified data and a chain notarization = evidence a re-run will
+ * not resolve" (false = a shape also explainable by the benign race where
+ * the baseline advanced after the response's fetch view — resolvable by
+ * re-pulling, so rotate's sweep classification does not escalate it to an
+ * evidence interruption).
  */
 export type CheckpointIntegrityOutcome =
   | { readonly kind: "ok" }
@@ -70,9 +85,11 @@ function retriable(message: string): CheckpointIntegrityOutcome {
 }
 
 /**
- * 基準なしの環境に列挙が配布された形の分類(§6.3-2 と同型の future / 拒否)。
- * 位置が実在エントリ(hash 一致)でも、チェーン導出上そのエントリは当該環境を
- * 覆う checkpoint ではない(覆っていれば基準が導出されている)= 偽装。
+ * Classification of the shape where an enumeration was distributed for an
+ * environment with no baseline (the §6.3-2-isomorphic future / refuse). Even
+ * when the position is a real entry (hash match), on the chain derivation
+ * that entry is not a checkpoint covering the environment (if it covered it,
+ * a baseline would have been derived) = fabrication.
  */
 function noBaselineOutcome(
   history: ChainHistoryIndex,
@@ -93,17 +110,21 @@ function noBaselineOutcome(
 }
 
 /**
- * locator(申告 checkpoint 位置)の分類(裁定 S — §6.3-2 と同型)。null =
- * 位置は基準と一致(検査続行)。
+ * Classification of the locator (the declared checkpoint position) (ruling
+ * S — §6.3-2-isomorphic). null = the position matches the baseline (continue
+ * checking).
  *
- * 有界再同期は**応答を取得し直さず**同じ本文を前進後のビューで再検証する
- * (values.ts の pullWithBoundedResync)ため、「基準」は応答の取得後に前進して
- * いることがある。応答の取得ビュー(fetchedAtHeadSeq)より後に基準が着地した
- * 形は、正直なサーバーの応答でも起きる(取得と再同期の窓に別の checkpoint が
- * 挟まる)— この形だけは evidence にせず retriable として拒否する(再 pull が
- * 新基準の列挙を持ってくる)。基準が取得ビュー以前から存在する形に良性の説明は
- * ない: サーバーは checkpoint 受理と原子的にスナップショットを保存する(§16-2)
- * ため、その応答が古い位置を主張するのは stale 配布・偽装の証拠。
+ * Bounded resync re-verifies **the same body without refetching the
+ * response** under the advanced view (values.ts's pullWithBoundedResync), so
+ * the "baseline" may have advanced after the response was fetched. A shape
+ * where the baseline landed after the response's fetch view
+ * (fetchedAtHeadSeq) can occur with an honest server too (another checkpoint
+ * slips into the window between the fetch and the resync) — only this shape
+ * is refused as retriable rather than evidence (a re-pull brings the new
+ * baseline's enumeration). For a baseline that existed before the fetch view
+ * there is no benign explanation: the server stores the snapshot atomically
+ * with checkpoint acceptance (§16-2), so a response asserting an old
+ * position is evidence of stale distribution or fabrication.
  */
 function locatorOutcome(
   history: ChainHistoryIndex,
@@ -113,8 +134,9 @@ function locatorOutcome(
   fetchedAtHeadSeq: number,
 ): CheckpointIntegrityOutcome | null {
   if (snapshot.chainSeq > history.headSeq) {
-    // 応答生成の直前に checkpoint が着地した可能性(自チェーンが古いだけ)。
-    // pull は有界再同期で解決し、lease は呼び出し側が自己矛盾として拒否する
+    // Possibly a checkpoint landed just before the response was generated
+    // (the local chain is merely stale). pull resolves it via bounded resync;
+    // lease's caller refuses it as a self-contradiction
     return { kind: "future" };
   }
   if (history.entryHashAt(snapshot.chainSeq) !== snapshot.entryHashHex) {
@@ -135,14 +157,14 @@ function locatorOutcome(
   );
 }
 
-/** 配布 1 変数 × スナップショット・基準の per-variable 検査(§6.3 規則 2)。 */
+/** The per-variable check of one served variable x snapshot·baseline (§6.3 rule 2). */
 function servedValueReason(
   value: CheckpointCheckedValue,
   entry: { readonly version: number; readonly valueSigHashHex: string } | undefined,
   baseline: EnvironmentCheckpointState,
 ): string | null {
   if (entry === undefined) {
-    // チェックポイント後の正当な作成でありうる — エポック基準(version 0 相当)
+    // May be a legitimate post-checkpoint creation — the epoch baseline (the version 0 equivalent)
     return value.epoch < baseline.epoch
       ? `Variable ${displayText(value.variableId)} is not in the checkpoint snapshot but was served with epoch ${value.epoch}, below the checkpoint baseline epoch ${baseline.epoch} (evidence of a backdated creation with an old epoch key)`
       : null;
@@ -159,7 +181,7 @@ function servedValueReason(
   return null;
 }
 
-/** スナップショットにあって配布にない変数の欠落検査(tombstone による説明のみ許容)。 */
+/** The omission check for a variable present in the snapshot but absent in the distribution (only a tombstone's explanation is admissible). */
 function omissionReason(
   snapshot: CheckpointValueSnapshot,
   servedIds: ReadonlySet<string>,
@@ -186,16 +208,17 @@ export async function checkCheckpointIntegrity(input: {
   /** Index over the verifier's own fully verified chain snapshot. */
   readonly history: ChainHistoryIndex;
   readonly environmentId: string;
-  /** ワイヤの同梱列挙(§12-7 / §14-2)。undefined = 応答に載っていない。 */
+  /** The wire's bundled enumeration (§12-7 / §14-2). undefined = absent from the response. */
   readonly snapshot: CheckpointValueSnapshot | undefined;
-  /** §6.3 検証を全通過した配布値(値付き応答のアクティブ集合)。 */
+  /** The served values that passed all §6.3 verification (the value-bearing response's active set). */
   readonly variables: readonly CheckpointCheckedValue[];
-  /** 検証済み tombstone の variableId 集合(マニフェスト整合込み)。 */
+  /** The variableId set of verified tombstones (including manifest consistency). */
   readonly tombstoneIds: ReadonlySet<string>;
   /**
-   * 応答を**取得した時点**の検証済みビューのヘッド seq(pull = 取得時ビュー、
-   * lease = 同梱チェーンのヘッド)。有界再同期の再検証で history が応答より
-   * 前進している場合の良性競合の判別に使う(locatorOutcome の doc)。
+   * The head seq of the verified view **at the moment the response was
+   * fetched** (pull = the fetch-time view, lease = the bundled chain's head).
+   * Used to tell the benign race where history has advanced past the
+   * response under bounded-resync re-verification (locatorOutcome's doc).
    */
   readonly fetchedAtHeadSeq: number;
 }): Promise<CheckpointIntegrityOutcome> {
@@ -203,21 +226,26 @@ export async function checkCheckpointIntegrity(input: {
   const baseline = history.latestCheckpointFor(environmentId);
   if (snapshot === undefined) {
     if (baseline === undefined) {
-      // 基準を持たない環境は本検証の対象外(§6.3 — 保証は床・マニフェストの
-      // エポック整合のみ。床なしクライアントの警告は呼び出し側の SHOULD)
+      // An environment without a baseline is outside this verification
+      // (§6.3 — the guarantee is only the floor / manifest epoch
+      // consistency; a floorless client's warning is the caller's SHOULD)
       return { kind: "ok" };
     }
     if (baseline.seq > input.fetchedAtHeadSeq) {
-      // 基準は応答の取得ビューより後に着地した(有界再同期だけが前進した形)。
-      // 応答生成時にサーバーが保存行を持たなかった良性の説明が残る — 再 pull
-      // が新基準の列挙を持ってくる(locatorOutcome の doc と同じ判別)
+      // The baseline landed after the response's fetch view (the shape where
+      // only the bounded resync advanced). A benign explanation remains —
+      // the server may not have had the stored row when it generated the
+      // response; a re-pull brings the new baseline's enumeration (the same
+      // discrimination as locatorOutcome's doc)
       return retriable(
         `A checkpoint covering environment ${displayText(environmentId)} (seq ${baseline.seq}) was accepted after this response's view, and the response carries no snapshot for it. The response may simply predate the checkpoint — retry the pull; if this persists, the server is omitting the checkpoint value snapshot`,
       );
     }
-    // 基準あり + 列挙なし = 拒否(MUST — 省略を規則 2 のスキップに落とさせない)。
-    // サーバーが保存行を持たない形(通常は到達しない — 保存は受理と原子的
-    // §16-2)は新しい checkpoint の発行が基準と保存行を揃え直す
+    // Baseline exists + no enumeration = refuse (MUST — omission must
+    // not slide into skipping rule 2). The shape where the server has no
+    // stored row (normally unreachable — storing is atomic with
+    // acceptance §16-2) gets its baseline and stored row re-aligned by
+    // issuing a fresh checkpoint
     return rejected(
       `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). A project member can re-establish a distributable baseline by issuing a fresh checkpoint: \`maruhi project checkpoint\``,
     );
@@ -235,8 +263,9 @@ export async function checkCheckpointIntegrity(input: {
   if (locator !== null) {
     return locator;
   }
-  // 列挙の正規ダイジェスト再計算(重複 variableId は計算側が拒否する)と
-  // チェーン公証(values_digest)との照合
+  // Recompute the enumeration's canonical digest (the computation refuses
+  // duplicate variableIds) and reconcile it against the chain notarization
+  // (values_digest)
   const digest = await computeEnvValuesDigest(SUITE_ID, snapshot.values);
   if (!digest.ok || digest.value !== baseline.valuesDigestHex) {
     return rejected(

@@ -1,9 +1,10 @@
-// API・crypto の型付きエラーをユーザー向け CliError へ写す。
+// Maps API / crypto typed errors to user-facing CliErrors.
 //
-// 規律: メッセージは識別子(ID・理由コード・上限値・HTTP ステータス)のみで
-// 構成し、平文値・鍵素材・トークン生値を運ばない(CLAUDE.md)。
-// `_tag` への直接アクセスは oxlint が禁止するため、判定は instanceof で行う
-// (Schema.TaggedError は instanceof が使える)。
+// Discipline: messages consist only of identifiers (IDs, reason codes,
+// limit values, HTTP status) and never carry plaintext values, key
+// material, or raw token values (CLAUDE.md). Direct `_tag` access is
+// banned by oxlint, so discrimination is by instanceof
+// (Schema.TaggedError supports instanceof).
 
 import {
   AuditHeadNotReadyError,
@@ -51,7 +52,7 @@ import { CliError, cliError } from "./errors.ts";
 
 type Renderer = (error: unknown) => string | null;
 
-/** ProposalLimit の生存期間(ミリ秒)を日で表示するための換算。 */
+/** The conversion to display ProposalLimit's TTL (milliseconds) in days. */
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function when<T>(guard: (error: unknown) => error is T, render: (error: T) => string): Renderer {
@@ -63,30 +64,38 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
 }
 
 /**
- * スキーマ不一致(`Schema.SchemaError`)。
+ * Schema mismatch (`Schema.SchemaError`).
  *
- * 型付きクライアントの失敗は `HttpApiClient` の宣言どおり
- * 「エンドポイントの宣言済みエラー | `HttpClientError` | `Schema.SchemaError`」
- * の 3 種で、前 2 つは上の写像が受け持つ。**残る 1 種がこれ**。
+ * A typed client's failure is, per `HttpApiClient`'s declaration, one of
+ * three kinds — "the endpoint's declared error | `HttpClientError` |
+ * `Schema.SchemaError`" — and the mapping above handles the first two.
+ * **This is the remaining kind**.
  *
- * **向きは型からは分からない**: 上流は応答の decode だけでなく
- * リクエストの encode(`encodePayload` / `encodeParams` / `encodeHeaders` /
- * `encodeQuery`)も**同じエラーチャネル**へ流すので、`Schema.isSchemaError` は
- * 両方を捕まえる。したがって文面で**サーバー側の異常と断定しない**し、
- * 誘導先も両向きを並べる(リクエスト側 = 指定した値 / 応答側 = バージョン整合。
- * 「バージョン整合」だけだと断定を外した前半と裏腹にサーバーへ誘導する) — 実際、
- * `--token-name` の長すぎる値はここへ encode 失敗として届いていた(現在は
- * 引数層が通信より前に落とす。cli.ts の requireTokenName)。
- * リクエスト側の値は引数層で検査する、が塞ぎ方であって、この写像ではない。
+ * **The direction cannot be told from the type**: upstream sends not only
+ * response decodes but also request encodes (`encodePayload` /
+ * `encodeParams` / `encodeHeaders` / `encodeQuery`) into **the same error
+ * channel**, so `Schema.isSchemaError` catches both. Therefore the
+ * wording **does not assert a server-side fault**, and the guidance lists
+ * both directions (request side = check the values you provided /
+ * response side = version consistency. Listing only "version
+ * consistency" would steer to the server, contradicting the first half
+ * that avoided asserting it) — in fact an over-long `--token-name` value
+ * used to arrive here as an encode failure (today the argument layer
+ * drops it before any communication; cli.ts's requireTokenName).
+ * Checking request-side values at the argument layer is the plug — not
+ * this mapping.
  *
- * `message` を通してよい根拠(実測。rc.109 で 8 形を確認): 上流の整形は
- * **期待した型と場所だけ**を出し、**食い違った値そのものは出さない**
- * (`Expected number at ["variables"][0]["version"]`)。応答本文には変数名も
- * 暗号文も載るので、ここが値を含む整形に変わったら診断が漏洩経路になる —
- * その性質は units.test.ts が**負の検査**で固定する(上流が変えたら落ちる)。
+ * Why `message` may pass through (measured — 8 shapes confirmed on
+ * rc.109): upstream's formatting shows **only the expected type and
+ * location**, **never the mismatching value itself** (`Expected number at
+ * ["variables"][0]["version"]`). A response body can carry variable names
+ * and ciphertexts, so if this ever became value-containing formatting,
+ * diagnostics would become a leak path — that property is pinned by
+ * units.test.ts's **negative check** (it fails if upstream changes it).
  *
- * 改行は 1 行へ畳んでから中和する(`displayText` は改行も置換文字にするため、
- * 畳まないと `Expected number\uFFFD at …` になって読めない)。
+ * Newlines are folded into one line before neutralizing (`displayText`
+ * also replaces newlines with the replacement character — unfolded it
+ * would render `Expected number\uFFFD at …`, unreadable).
  */
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
@@ -94,9 +103,11 @@ function renderSchemaFailure(error: Schema.SchemaError): string {
 }
 
 /**
- * 503 `LeaseUnavailable`(AUTH_SPEC §14-3)の理由別の案内。3 理由とも
- * 「資格情報の異常ではなく、発行できない状態」であり、次の一手が違う —
- * 401 と混ぜず、理由ごとに直す先(再実行 / 管理者 / デプロイ設定)を言う。
+ * Reason-specific guidance for 503 `LeaseUnavailable` (AUTH_SPEC
+ * §14-3). All three reasons mean "not a credential problem — the lease
+ * cannot be issued right now", and the next step differs — not mixed
+ * with 401, the fix target is named per reason (re-run / administrator /
+ * deploy config).
  */
 function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   if (error.reason === "oidc-jwks-unavailable") {
@@ -111,7 +122,7 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   const status = error.response?.status;
   if (status === 413) {
-    // スキーマ外の素の 413(HTTP 生ボディ上限 — session-07 §5 の申し送り分岐)
+    // A raw 413 outside the schema (the HTTP raw-body cap — the handed-down branch of session-07 §5)
     return "The server rejected the request for its size (HTTP 413). The value is too large";
   }
   if (status !== undefined) {
@@ -120,12 +131,13 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   return "Failed to connect to the server (check your network and the server URL)";
 }
 
-// CliError は toCliError の入口でそのまま返す(usage フラグを落とさないため)
+// A CliError is returned as-is at toCliError's entry (so the usage flag is not dropped)
 const renderers: readonly Renderer[] = [
   when(
     isInstanceOf(UnauthorizedError),
-    // 期限切れは失効と同じ 401 に畳まれる(AUTH_SPEC §6 — W3a: 区別をワイヤに
-    // 出さない)ため、案内は両方の可能性を言う
+    // Expiry folds into the same 401 as revocation (AUTH_SPEC §6 — W3a:
+    // the distinction is not put on the wire), so the guidance names both
+    // possibilities
     () =>
       "Authentication failed (the token may be expired or revoked). Log in again with `maruhi login`",
   ),
@@ -134,8 +146,9 @@ const renderers: readonly Renderer[] = [
       ? "Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain. Your local chain view may be stale (the scope may have just been narrowed) — re-run to resync, or ask a project admin to widen your scope (`maruhi member list` shows scopes)"
       : `Insufficient permission (${e.reason})`,
   ),
-  // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが
-  // 自由に埋められる)— reason / op / resource(Literals)と異なり中和が必要
+  // The error Schema's ID / field columns are unconstrained Schema.String
+  // on the wire (the server can fill them freely) — unlike reason / op /
+  // resource (Literals), they need neutralizing
   when(
     isInstanceOf(ProjectNotFoundError),
     (e) =>
@@ -157,8 +170,9 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ChainHeadConflictError),
     (e) => `The chain head conflicted (current head seq=${e.currentHeadSeq}). Re-sync and retry`,
   ),
-  // マニフェスト系(§12-5)。各コマンドが専用の写像を持つ経路(env rotate /
-  // push の 409 再解決)ではここへ来ない — これは残りの経路の受け皿
+  // Manifest-related (§12-5). Paths where a command has its own mapping
+  // (env rotate / push's 409 re-resolution) never arrive here — this is
+  // the catch-all for the rest
   when(
     isInstanceOf(ManifestRejectedError),
     (e) =>
@@ -188,20 +202,21 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
   ),
-  // 端末数の受理ポリシー(AUTH_SPEC §12-3 — 合意規則ではない。DK K3)
+  // The acceptance policy for device count (AUTH_SPEC §12-3 — not a consensus rule. DK K3)
   when(
     isInstanceOf(DeviceLimitError),
     (e) =>
       `This project already has the maximum number of active devices for that member (${e.limit}). Revoke a device first (\`maruhi device revoke\`), then re-run`,
   ),
-  // propose の受理ポリシー(AUTH_SPEC §12-8 — 合意規則ではない。K5)
+  // The acceptance policy for propose (AUTH_SPEC §12-8 — not a consensus rule. K5)
   when(isInstanceOf(ProposalLimitError), (e) =>
     e.reason === "pending-proposals"
       ? `This project already has the maximum number of pending proposals (${e.limit}). Withdraw or complete an existing proposal first (expired proposals do not count)`
       : `The proposal's expiry is too far in the future (server limit: ${Math.round(e.limit / MS_PER_DAY)} days from now)`,
   ),
-  // 専用の有界再試行(checkpoint.ts / audit-reconcile.ts)を通らない残りの
-  // 経路の受け皿。retryable なので再実行を案内する
+  // The catch-all for the remaining paths that do not go through the
+  // dedicated bounded retries (checkpoint.ts / audit-reconcile.ts).
+  // Retryable, so a re-run is suggested
   when(
     isInstanceOf(AuditHeadNotReadyError),
     () =>
@@ -237,9 +252,11 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ValueTooLargeError),
     (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
-  // DO ストレージ総量ガード(AUTH_SPEC §12-8)は resource で見分ける:
-  // 他の数量上限と違い「この要求が足す量」でなく実測量の閾値なので、次の一手
-  // (削除で空ける — 削除・読み取りは拒否下でも通る)を案内する
+  // The DO total-storage guard (AUTH_SPEC §12-8) is told apart by
+  // resource: unlike the other count caps it is a measured-amount
+  // threshold, not "the amount this request adds", so the guidance names
+  // the next step (free space by deleting — deletes and reads still pass
+  // under the rejection)
   when(isInstanceOf(DataLimitExceededError), (e) =>
     e.resource === "project-storage-bytes"
       ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and rotating still work. Delete what you no longer need, then retry`
@@ -249,7 +266,7 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(DekWrapRejectedError),
     (e) => `The DEK-wrap registration was rejected (${e.reason})`,
   ),
-  // recipientUserId はサーバー応答の自由文字列 — 端末へ出す前に中和する
+  // recipientUserId is a free-form string in the server response — neutralize before emitting to the terminal
   when(
     isInstanceOf(DekWrapExistsError),
     (e) =>
@@ -259,8 +276,9 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(DekWrapNotFoundError),
     (e) => `DEK wrap not found (epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
-  // Lease 系(AUTH_SPEC §14-3)。reason は Literals(サーバーが自由に埋め
-  // られない)なのでそのまま載せる。トークン値・外部識別子は運ばない
+  // Lease-related (AUTH_SPEC §14-3). reason is a Literal (the server
+  // cannot fill it freely), so it is shown as-is. Token values and
+  // external identifiers are not carried
   when(
     isInstanceOf(LeaseUnauthorizedError),
     (e) =>
@@ -287,26 +305,29 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(TokenLimitError),
     (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,
   ),
-  // プロジェクト数 / org の受理上限(AUTH_SPEC §11-3)。新規 init のみが
-  // 対象(既存プロジェクトの修復再 init は上限に依らず通る)
+  // The project-count / org acceptance cap (AUTH_SPEC §11-3). Only new
+  // inits are subject (a repair re-init of an existing project passes
+  // regardless of the cap)
   when(
     isInstanceOf(ProjectLimitError),
     (e) =>
       `This organization already holds the maximum number of projects (${e.limit} — AUTH_SPEC §11-3). New projects are rejected until the limit is raised by the server operator; existing projects are unaffected`,
   ),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
-  // 型付きクライアントの失敗の 3 種目(上の 2 種と合わせて宣言を尽くす)
+  // The third kind of typed-client failure (with the two above, the declaration is exhausted)
   when(Schema.isSchemaError, renderSchemaFailure),
 ];
 
 /**
- * サーバーが**自前のエラー本文で拒否した**か(= リクエストは届き、処理されて
- * 拒否されたことが確定している)。これらの本文を返せるのは要求を処理した後の
- * サーバーだけなので、受理の有無が確定する。
+ * Whether the server **rejected with its own error body** (= it is
+ * certain the request arrived, was processed, and was refused). Only a
+ * server that processed the request can return one of these bodies, so
+ * whether it was accepted is settled.
  *
- * ここに載らない失敗(転送エラー・応答の消失・解釈できない 5xx)は
- * **受理されたかどうか不明**である — 既定を「不明」に倒すため、判定は
- * 許可リストで行う(未知のエラーが黙って「確定」側に落ちない)。
+ * Failures not listed here (transport errors, lost responses,
+ * uninterpretable 5xx) are **unknown whether accepted** — to default to
+ * "unknown", the test is an allow-list (an unknown error never silently
+ * falls into the "settled" side).
  */
 export function isServerRejection(error: unknown): boolean {
   return [
@@ -342,11 +363,13 @@ export function isServerRejection(error: unknown): boolean {
 /**
  * Names the *type* of an internal failure (defect) without echoing its message.
  *
- * defect の `message` は打たれた値を埋め込んだ文面(`Invalid value: <平文>`)
- * でも到達しうるので、制御文字の中和だけでは規律(打たれた値を診断に出さない)
- * を守れない。かといって無言で飲むのも禁止(CLAUDE.md)なので、**コード由来の
- * 語彙**である型の名前だけを手掛かりとして残す — argv からは作れず、
- * `bun build --compile` は minify しないので配布バイナリでも潰れない。
+ * A defect's `message` can arrive carrying wording that embeds the typed
+ * value (`Invalid value: <plaintext>`), so neutralizing control
+ * characters alone cannot uphold the discipline (never show typed values
+ * in diagnostics). Yet silently swallowing is also banned (CLAUDE.md), so
+ * only the type name — **vocabulary derived from code** — is kept as a
+ * clue: it cannot be built from argv, and `bun build --compile` does not
+ * minify, so it survives in the distributed binary.
  */
 export function internalErrorKind(failure: unknown): string {
   return displayText(failure instanceof Error ? failure.constructor.name : typeof failure);
@@ -358,7 +381,7 @@ export function internalErrorKind(failure: unknown): string {
  * (see the comment at the fallback).
  */
 export function toCliError(error: unknown): CliError {
-  // 既に CliError なら、usage フラグ(終了コード 2)を落とさずそのまま返す
+  // Already a CliError: return it as-is without dropping the usage flag (exit code 2)
   if (error instanceof CliError) {
     return error;
   }
@@ -368,9 +391,12 @@ export function toCliError(error: unknown): CliError {
       return cliError(message);
     }
   }
-  // ここへ来るのは**宣言を尽くした先の未知**だけ(型付きクライアントの失敗 3 種は
-  // 上で写像済み)。未知の message は素通しにしない — 応答本文の断片や打たれた値を
-  // 含む文面でも到達しうるので、制御文字の中和だけでは規律を守れない。無言でも
-  // 飲まず、型の名前(コード由来の語彙)を手掛かりに残す
+  // Only **the unknown beyond the exhausted declaration** arrives here
+  // (the three kinds of typed-client failure are mapped above). An unknown
+  // message is not passed through — wording may arrive containing
+  // fragments of a response body or a typed value, so control-char
+  // neutralizing alone cannot uphold the discipline. Not swallowed
+  // silently either — the type name (code-derived vocabulary) is kept as
+  // a clue
   return cliError(`Unexpected error (${internalErrorKind(error)})`);
 }

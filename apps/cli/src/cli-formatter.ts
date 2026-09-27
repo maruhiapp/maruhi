@@ -1,24 +1,26 @@
-// maruhi の診断を **Effect の機構(`CliOutput.Formatter`)として**実装する
-// (ADR-0016 決定 3)。文言は英語(ADR-0017)。
+// Implement maruhi's diagnostics **as an Effect mechanism
+// (`CliOutput.Formatter`)** (ADR-0016 decision 3). The wording is English
+// (ADR-0017).
 //
-// なぜ差し替えが要るか: effect/unstable/cli の既定の文面は**打たれた値を
-// そのまま含む**(`Invalid value for flag --env: "  "` /
-// `Unexpected positional argument: "..."`)。位置引数・オプション値には平文が
-// 書かれうる(`maruhi push API_KEY "$SECRET"` の形)ため、既定のままでは
-// stderr → CI / エージェントのログへ平文が流れる。
+// Why a replacement is needed: effect/unstable/cli's default wording
+// **contains the typed value as-is** (`Invalid value for flag --env: "  "` /
+// `Unexpected positional argument: "..."`). A positional argument or option
+// value may hold plaintext (the `maruhi push API_KEY "$SECRET"` shape), so
+// with the default, plaintext would flow to stderr → CI / agent logs.
 //
-// なぜ**ランナー側の自前描画ではなく** Formatter なのか: 描画の呼び出しは
-// effect/unstable/cli 自身が持つ(`showHelp` → `Console`)。Formatter を
-// 差し込めば、その経路に乗ったまま**文面だけ**を maruhi の語彙にできる。
-// ランナーに if 文を書き足す形にすると、上流が描画を増やしたときに
-// 素通りする経路ができる。
+// Why a Formatter and **not runner-side custom rendering**: the rendering
+// call is owned by effect/unstable/cli itself (`showHelp` → `Console`).
+// Plugging in a Formatter keeps that path while putting **only the
+// wording** into maruhi's vocabulary. Adding ifs to the runner leaves a
+// path that slips through whenever upstream adds a rendering.
 //
-// 出してよいのは**こちらの語彙**だけ: 宣言名・候補・個数。危険なのは
-// `UnexpectedArgument.arguments` と `InvalidValue.value`、そして
-// **`InvalidValue.expected`**: 上流の `Param.filter` は `expected: onNone(a)` を
-// 組み立てるので、`onNone` に値を埋め込む書き方(effect 自身の JSDoc 例が
-// `Expected even number, got ${n}`)をすると期待値の側から平文が漏れる。
-// **こちらが書いた文面と一致したときだけ**出す。
+// Only **our own vocabulary** may be shown: declared names, suggestions,
+// counts. The dangerous fields are `UnexpectedArgument.arguments` and
+// `InvalidValue.value`, and **`InvalidValue.expected`**: upstream's
+// `Param.filter` builds `expected: onNone(a)`, so writing `onNone` with the
+// value embedded (effect's own JSDoc example is
+// `Expected even number, got ${n}`) leaks plaintext from the expectation
+// side. Show it **only when it matches wording we wrote**.
 
 import type { HelpDoc } from "effect/unstable/cli";
 import { CliError, CliOutput } from "effect/unstable/cli";
@@ -28,46 +30,50 @@ import { formatNotice } from "./notice.ts";
 import { RUN_COMMAND_REQUIRED } from "./run.ts";
 
 /**
- * 診断の文面を組むためのコマンド宣言(検査そのものは Flag / Argument 側)。
+ * The command declarations used to build diagnostic wording (the check
+ * itself lives on the Flag / Argument side).
  *
- * 中身は effect-cli.ts が**コマンド定義そのものから導く**(手書きの写しを
- * 持たない — 宣言を足したときに診断だけ古いまま残る形を作らない)。
+ * The contents are **derived from the command definitions themselves** by
+ * effect-cli.ts (no hand-written copy — so that adding a declaration never
+ * leaves only the diagnostics stale).
  */
 export interface CommandSpec {
   readonly flags: readonly string[];
   readonly positionals: readonly string[];
-  /** 入れ子サブコマンドを持つ段の、サブコマンド名の一覧(葉は省略)。 */
+  /** The list of subcommand names for a stage with nested subcommands (leaves omit it). */
   readonly subcommands?: readonly string[];
   /**
-   * 余分な位置引数の拒否に添えるコマンド固有の直し方(push の stdin 案内)。
-   * 中身を伏せる以上、直し方を添えないと打ち間違いを直せない(args.test.ts の
-   * 旧ケースが固定していた規律)。
+   * A command-specific fix attached to the rejection of extra positional
+   * arguments (push's stdin guidance). Since the contents are withheld, a
+   * mistyped invocation cannot be fixed without a fix hint (the discipline
+   * the old cases of args.test.ts pinned).
    */
   readonly strayHint?: string;
 }
 
-/** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
+/** The wording of the Schema that refuses an empty or whitespace-only value (the declaration side and here share the same constant). */
 export const NON_BLANK_MESSAGE = "a non-empty value (whitespace-only values are not accepted)";
 
 /**
- * そのまま出してよい `expected` の全体集合。
+ * The complete set of `expected` values that may be shown as-is.
  *
- * ここに無い文面は**こちらが書いたものではない**(= 値を含みうる)ので出さない。
+ * Wording not listed here **was not written by us** (= may contain a
+ * value) and is not shown.
  */
-/** passkey ラベルの受理形の文面(api-schema の PASSKEY_LABEL_PATTERN と対)。 */
+/** The wording of the passkey label's accepted shape (paired with api-schema's PASSKEY_LABEL_PATTERN). */
 export const PASSKEY_LABEL_MESSAGE =
   "1 to 64 characters without control or bidirectional-formatting characters";
 
 const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE, PASSKEY_LABEL_MESSAGE]);
 
-/** 組み込みのグローバルフラグ(CliConfig の builtIns — 宣言の表には現れない)。 */
+/** The built-in global flags (CliConfig's builtIns — absent from the declaration table). */
 const GLOBAL_FLAGS = ["--help", "--version"] as const;
 
 function bareName(name: string): string {
   return name.replace(/^-+/, "");
 }
 
-/** 表示用のコマンド名(root 段 — 空のキー — は `maruhi` 単体)。 */
+/** The command name for display (the root stage — the empty key — is `maruhi` alone). */
 function commandLabel(commandKey: string): string {
   return commandKey === "" ? "maruhi" : `maruhi ${commandKey}`;
 }
@@ -77,30 +83,34 @@ function unrecognizedOptionMessage(
   specs: Readonly<Record<string, CommandSpec>>,
   commandKey: string,
 ): string {
-  // 宣言の選択は**上流が報告した段**(`error.command` — どの段でそのフラグが
-  // 未宣言だったか)を優先する。振り分けのキーは argv からの推定なので、
-  // `maruhi env --new-epoch rotate dev` のように**親の段に書いたフラグ**でも
-  // 葉(`env rotate`)へ解決してしまい、拒否したフラグを「受け付ける一覧」に
-  // 載せる自己矛盾の診断になる。親の段の宣言を引ければ、
-  // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
+  // The declaration choice prefers **the stage upstream reported**
+  // (`error.command` — at which stage the flag was undeclared). The
+  // dispatch key is inferred from argv, so even a flag **written on the
+  // parent stage** like `maruhi env --new-epoch rotate dev` resolves to the
+  // leaf (`env rotate`), producing the self-contradictory diagnostic that
+  // lists a refused flag among "the flags it accepts". When the parent
+  // stage's declaration resolves, the guidance correctly forks to
+  // placement (after the subcommand)
   const errorKey = (error.command ?? []).slice(1).join(" ");
-  // root(errorKey が空)も root の spec(空のキー)で組む: `maruhi --show
-  // pull` のようにフラグをコマンド名より前に書いた形で、振り分けの葉
-  // (commandKey)の宣言へ落とすと「--show を拒否しつつ受け付ける一覧に
-  // --show を載せる」自己矛盾の診断になる。root spec は置き場所(サブコマンド
-  // の後ろ)の案内に分岐する
+  // root (empty errorKey) is also built from root's spec (the empty key):
+  // for the shape where a flag is written before the command name, like
+  // `maruhi --show pull`, falling back to the dispatched leaf's
+  // (commandKey) declaration produces the self-contradictory diagnostic of
+  // "refusing --show while listing it among the accepted". The root spec
+  // forks to the placement guidance (after the subcommand)
   const spec = specs[errorKey] ?? specs[commandKey];
   const errorCommandKey = specs[errorKey] !== undefined ? errorKey : commandKey;
-  // 位置引数の名前をオプションとして書いた形は、直し方が違う
+  // The shape that wrote a positional argument's name as an option needs a different fix
   const option = bareName(error.option);
   if (spec?.positionals.includes(option) === true) {
     return `--${option} is a positional argument (it cannot be written as a flag). Write the value as a positional argument instead`;
   }
-  // 解決済みの段の宣言に**在る**フラグが未宣言として報告された = 書いた位置が
-  // サブコマンドより前(`audit --limit 5 list` — 上流は親のローカルフラグを
-  // サブコマンドへ継承しない)。「存在しない」とも「受け付ける一覧」とも
-  // 言わない — 同じフラグを拒否しつつ一覧に載せる自己矛盾の診断になる。
-  // 置き場所だけを案内する
+  // A flag **present** in the resolved stage's declaration reported as
+  // undeclared = it was written before the subcommand
+  // (`audit --limit 5 list` — upstream does not inherit a parent's local
+  // flags into the subcommand). Say neither "does not exist" nor "the
+  // accepted list" — that is the self-contradictory diagnostic of refusing
+  // a flag while listing it. Guide the placement only
   if (spec?.flags.includes(option) === true) {
     return `Unknown flag position (--${option} belongs after the subcommand — e.g. ${commandLabel(errorCommandKey)} --${option} …)`;
   }
@@ -111,27 +121,29 @@ function unrecognizedOptionMessage(
   return undeclaredFlagMessage(spec, errorCommandKey);
 }
 
-/** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
+/** The wording for an undeclared flag with no suggestion (the fix differs by stage kind — parent / leaf). */
 function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
-  // 入れ子の段(サブコマンドを持つ親)は**普通は**自分のフラグを持たない。
-  // 操作名より前にフラグを書いた利用者に「フラグが存在しない」と嘘をつかず、
-  // **置き場所**を案内する。例外は
-  // 親自身が宣言を持つ段(bare `audit` = list)で、そちらは葉と同じく
-  // 受け付けるフラグの一覧を出す
+  // A nested stage (a parent holding subcommands) **usually** has no flags
+  // of its own. Do not lie "the flag does not exist" to a user who wrote a
+  // flag before the operation name — guide the **placement**. The exception
+  // is a stage where the parent itself has a declaration (bare `audit` =
+  // list); that one lists the accepted flags like a leaf
   const subcommands = (spec?.flags.length ?? 0) === 0 ? (spec?.subcommands ?? []) : [];
   const first = subcommands[0];
   if (first !== undefined) {
     return `Unknown flag (${commandLabel(commandKey)} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. ${commandLabel(commandKey)} ${first} --flag …)`;
   }
-  // 実行時に混ぜられるグローバル(--help / --version)は宣言の表に現れない
-  // ので、ここで補う(無いと、実在するフラグが一覧から抜ける)
+  // The globals admixed at run time (--help / --version) do not appear in
+  // the declaration table, so they are filled in here (otherwise a real
+  // flag falls out of the list)
   const declared = [...(spec?.flags ?? []).map((name) => `--${name}`), ...GLOBAL_FLAGS];
   return `Unknown flag (flags this command accepts: ${declared.join(" ")})`;
 }
 
 /**
- * `atLeast(1)` の command が 0 個だったとき(rc.117 の `MissingArgument`)。
- * 文面は run / ci run と agent で違う。他の欠落引数には使わない。
+ * When an `atLeast(1)` command got 0 arguments (rc.117's
+ * `MissingArgument`). The wording differs between run / ci run and agent.
+ * Not used for other missing arguments.
  */
 function isMissingRunCommand(error: CliError.MissingArgument, commandKey: string): boolean {
   return (
@@ -153,18 +165,20 @@ function unexpectedArgumentMessage(
 }
 
 /**
- * 値の伴う `InvalidValue` を、**値を出さずに**説明する。
+ * Describing a value-carrying `InvalidValue` **without showing the
+ * value**.
  *
- * `expected` は「宣言側の語彙だから安全」とは限らない(上記のとおり
- * `Param.filter` は `onNone(a)` をそのまま `expected` にする)。判定できるのは
- * 上流が組み立てる定型(`at most` / `at least`)と、**こちらが書いた定数**だけ。
+ * `expected` is not necessarily safe just for being the declaration
+ * side's vocabulary (as above, `Param.filter` makes `onNone(a)` itself
+ * the `expected`). Only upstream's fixed phrases (`at most` / `at least`)
+ * and **constants we wrote** can be trusted.
  */
 function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): string {
   const name = bareName(error.option);
   if (error.expected.includes("at most")) {
     return `Flag --${name} was specified more than once. Which occurrence you meant cannot be determined, so the invocation is rejected — write it exactly once`;
   }
-  // 「`--` の後ろに実行対象が無い」は run と agent で同じ形。例は段ごとに違う
+  // "No command after `--`" is the same shape for run and agent. The example differs per stage
   if (
     error.expected.includes("at least") ||
     error.expected === RUN_COMMAND_REQUIRED ||
@@ -180,15 +194,17 @@ function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): 
 }
 
 /**
- * `UserError` は**こちらが書いた `userMessage` のときだけ**出す。
+ * A `UserError` is shown **only when it is our written `userMessage`**.
  *
- * `message` は `userMessage` が空だと **`cause` の message** へ落ちる(上流の
- * 宣言どおり)。`cause` は `Flag.mapEffect` / `Argument.mapEffect` に渡した
- * 任意の失敗なので、打たれた値を含みうる — `InvalidValue.expected` を
- * {@link SAFE_EXPECTATIONS} で塞いだのと同じ理由で、素通しにはしない。
+ * When `userMessage` is empty, `message` falls back to **`cause`'s
+ * message** (per upstream's declaration). `cause` is any failure passed
+ * to `Flag.mapEffect` / `Argument.mapEffect`, so it may contain the typed
+ * value — for the same reason `InvalidValue.expected` is plugged by
+ * {@link SAFE_EXPECTATIONS}, it is not passed through.
  *
- * 現行の宣言(effect-cli.ts)は `mapEffect` を使っていないので到達しないが、
- * **足した瞬間に穴が開く**位置なのでここで縛っておく。
+ * The current declarations (effect-cli.ts) do not use `mapEffect`, so
+ * this is unreachable — but it is a position where **a hole opens the
+ * moment one is added**, so it is bound here.
  */
 function userErrorMessage(error: CliError.UserError): string {
   const authored = error.userMessage ?? "";
@@ -196,8 +212,9 @@ function userErrorMessage(error: CliError.UserError): string {
 }
 
 /**
- * 不明なサブコマンド。候補(編集距離)があればそれを、無ければ**その段が取る
- * サブコマンドの一覧**を出す(打ち間違いの直し先を探させない)。
+ * Unknown subcommand. Show the suggestion (edit distance) if any,
+ * otherwise **the list of subcommands that stage takes** (do not make the
+ * user hunt for where to fix a typo).
  */
 function unknownSubcommandMessage(
   error: CliError.UnknownSubcommand,
@@ -207,7 +224,7 @@ function unknownSubcommandMessage(
   if (guess !== undefined) {
     return `Unknown subcommand (did you mean ${guess}?)`;
   }
-  // 親の段(`["maruhi", "env"]` → `env`)の宣言からサブコマンド一覧を引く
+  // Pull the subcommand list from the parent stage's (`["maruhi", "env"]` → `env`) declaration
   const parentKey = (error.parent ?? []).slice(1).join(" ");
   const known = specs[parentKey]?.subcommands ?? [];
   const listed = known.length === 0 ? "" : ` (expected one of: ${known.join(" | ")})`;
@@ -217,8 +234,8 @@ function unknownSubcommandMessage(
 /**
  * Renders one CLI error in maruhi's vocabulary, never echoing typed values.
  *
- * 判定は instanceof で行う(`_tag` への直接アクセスは oxlint が禁止する —
- * src/failure.ts と同じ規律)。
+ * Discrimination is by instanceof (direct access to `_tag` is banned by
+ * oxlint — the same discipline as src/failure.ts).
  */
 export function describeError(
   error: CliError.CliError,
@@ -236,9 +253,10 @@ export function describeError(
     return invalidValueMessage(error, commandKey);
   }
   if (error instanceof CliError.MissingArgument) {
-    // rc.117: `Argument.atLeast(n)` の 0 個は `InvalidValue`("at least")ではなく
-    // `MissingArgument`。run / ci run / agent の command は「`--` の後ろに
-    // 実行対象が無い」の文面へ戻す。他の位置引数は欠落のまま出す。
+    // rc.117: `Argument.atLeast(n)` with 0 is `MissingArgument`, not
+    // `InvalidValue` ("at least"). run / ci run / agent's command reverts
+    // to the "no command after `--`" wording. Other positional arguments
+    // are shown as missing.
     if (isMissingRunCommand(error, commandKey)) {
       return commandKey === "agent" ? AGENT_COMMAND_REQUIRED : RUN_COMMAND_REQUIRED;
     }
@@ -259,10 +277,11 @@ export function describeError(
 /**
  * Builds the `CliOutput.Formatter` used by maruhi.
  *
- * `helpRequested` で本文の量を変える: `--help` を明示した実行は既定の
- * フォーマッタの全文(ヘルプは maruhi の出力であって診断ではない)、
- * 書き方の誤りに添えるのは**使い方の 1 行だけ**にする。誤りのたびに全文が
- * 出ると、肝心の診断が埋もれる。
+ * `helpRequested` changes the amount of body text: an invocation with
+ * explicit `--help` gets the default formatter's full text (help is
+ * maruhi's output, not a diagnostic); a usage mistake gets **only the
+ * single usage line** attached. A full help dump per mistake would bury
+ * the diagnostic that matters.
  */
 function maruhiFormatter(
   commandKey: string,
@@ -270,25 +289,30 @@ function maruhiFormatter(
   helpRequested: boolean,
   colors: boolean,
 ): CliOutput.Formatter {
-  // 失敗の接頭辞 `maruhi:` の描画は notice.ts と共有(色は接頭辞だけ)
+  // Rendering the failure prefix `maruhi:` is shared with notice.ts (color applies to the prefix only)
   const describe = (error: CliError.CliError): string =>
     formatNotice("error", describeError(error, commandKey, specs), colors);
-  // 全文ヘルプは上流の既定フォーマッタ(見出しの太字・usage / フラグ名の色)に
-  // 乗る。色の可否だけを渡す — 上流の自動判定(`process.stdout.isTTY` と
-  // `NO_COLOR === "1"`)は stdout を見るうえ NO_COLOR の規約(非空で無効)と
-  // 食い違うので使わず、maruhi の判定(shouldUseColor — stderr 基準)で上書きする
+  // Full help rides upstream's default formatter (bold headings, colors
+  // for usage / flag names). Only the color decision is passed — upstream's
+  // auto-detection (`process.stdout.isTTY` and `NO_COLOR === "1"`) looks at
+  // stdout and also disagrees with the NO_COLOR convention (disabled when
+  // non-empty), so it is overridden by maruhi's decision (shouldUseColor —
+  // stderr-based)
   const fallback = CliOutput.defaultFormatter({ colors });
-  // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
-  // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
-  // へ直す。判定は宣言駆動(自身の宣言〔フラグか位置引数〕とサブコマンドの
-  // 両方を持つ段 = ハンドラ付き親〔audit / schema / agent〕だけが該当し、root や
-  // 通常の親 — 宣言が空 — には触れない)
+  // On a parent whose bare invocation runs a handler (audit = list), the
+  // subcommand is not required. Upstream's usage uniformly renders
+  // `<subcommand>` (required), so it is corrected to `[subcommand]`. The
+  // decision is declaration-driven (a stage holding both its own
+  // declaration [flag or positional] and subcommands = only the
+  // handler-bearing parents [audit / schema / agent] qualify; root and
+  // ordinary parents — empty declarations — are untouched)
   const spec = specs[commandKey];
   const ownParams = (spec?.flags.length ?? 0) + (spec?.positionals.length ?? 0);
   const optionalSubcommand = ownParams > 0 && (spec?.subcommands?.length ?? 0) > 0;
-  // `run` は `--` が必須(ADR-0016 決定 8)なのに、上流の usage は可変長の
-  // 位置引数として `<command...>` としか描かない。書き方そのものを usage に
-  // 出す(裁定 F)。置換は usage 行の語だけで、判定は宣言由来のキーで行う
+  // `run` requires `--` (ADR-0016 decision 8), yet upstream's usage
+  // renders it only as a variadic positional `<command...>`. The usage
+  // shows how it is written (ruling F). The substitution touches only the
+  // usage line's word, and the decision uses the declaration-derived key
   const terminatorRequired =
     commandKey === "run" || commandKey === "ci run" || commandKey === "agent";
   const adjustUsage = (text: string): string => {
@@ -300,18 +324,20 @@ function maruhiFormatter(
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
       adjustUsage(helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`),
-    // `--version` は**版番号だけ**を出す(version.test.ts が固定。
-    // `V=$(maruhi --version)` がそのまま使える形)
+    // `--version` prints **the version number only** (pinned by
+    // version.test.ts. The shape usable as-is in `V=$(maruhi --version)`)
     formatVersion: (_name: string, version: string) => version,
     formatError: describe,
     formatCliError: describe,
-    // コマンド名が解決できなかった実行では、フラグは root の宣言と突き合わ
-    // されるため、正しく綴られたフラグまで不明として並ぶ。誤りはコマンド名の
-    // 方なので、綴りの合っているフラグを探させない
+    // On an invocation whose command name did not resolve, flags are
+    // reconciled against root's declarations, so even correctly spelled
+    // flags line up as unknown. The mistake is in the command name — do
+    // not make the user hunt through correctly-spelled flags
     formatErrors: (errors: ReadonlyArray<CliError.CliError>) => {
-      // 抑えるのは **root 段**(コマンド名そのものが解決できなかった実行)
-      // だけ: 深い段の UnknownSubcommand(`server abc` の abc)では、親の段に
-      // 書いたフラグへの置き場所の案内が同時に要る
+      // Suppress only at the **root stage** (an invocation whose command
+      // name itself did not resolve): on a deep-stage UnknownSubcommand
+      // (the abc of `server abc`), placement guidance for flags written on
+      // the parent stage is still needed alongside
       const commandNotFound = errors.some(
         (error) => error instanceof CliError.UnknownSubcommand && (error.parent ?? []).length <= 1,
       );

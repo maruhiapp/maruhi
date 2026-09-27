@@ -1,120 +1,139 @@
-// `.env` / `.env.example` 形式の最小パーサ(`maruhi schema import` の入力層 —
-// 設計文書 §1-3 の (1))。
+// A minimal parser for the `.env` / `.env.example` format (the input
+// layer of `maruhi schema import` — design doc §1-3 (1)).
 //
-// **クライアント側でのみ読む**。値は読み取り直後に Redacted で包み、以降は
-// 型推論(値の**形**の観察 — CRYPTO_SPEC §4.2 の閉集合)と「実値らしさ」の
-// 判定にのみ使う。値・値の断片を端末・ログ・エラーへ出さない(ゼロ知識維持 —
-// 値そのものは観察のみで送信しない。送信は利用者が変数ごとに明示選択した
-// activation の値 push だけで、それは push.ts の既存暗号境界を通る)。
+// **Read only on the client side**. A value is wrapped in Redacted right
+// after being read, and from then on it is used only for type inference
+// (observing the value's **shape** — CRYPTO_SPEC §4.2's closed set) and
+// deciding "real-value-ness". A value or a fragment of one is never
+// emitted to the terminal, logs, or errors (keeping zero-knowledge — the
+// value itself is only observed, never sent. Sending happens only
+// through the value push of an activation the user explicitly selected
+// per variable, which goes through push.ts's existing encryption
+// boundary).
 //
-// 対応する構文は意図的に最小(新規依存を追加しない — CLAUDE.md):
-//   - `KEY=VALUE`(最初の `=` で分割)
-//   - `export KEY=VALUE`(接頭辞を剥がす)
-//   - `#` 始まりのコメント行(**直前の連続コメント** → description 候補。
-//     空行・非コメント行で候補はリセットする)
-//   - 未引用の値のインライン `#` コメント(`PORT=8080 # listen port`)は落とす
-//     (dotenv / `docker --env-file` と同じ線 — コメントを値の一部として
-//     push 経路へ運ばない)
-//   - 値の両端の一致する引用符('…' / "…")は 1 対だけ剥がす。エスケープ・
-//     変数展開・複数行の引用値は**解釈しない**。ここが重要なのは、解釈の単純化が
-//     型推論(観察のみ)だけでなく、利用者が明示選択した場合の**値 push
-//     (activation)にも到達する**ため: 忠実に解釈できたと言えない値
-//     (閉じない引用符・引用値内のエスケープ / 同種引用符)は
-//     `valueFaithful = false` で運び、schema import は push の提案自体を出さない
-//     (fail-closed — 誤読した値を暗号化して黙って保存する経路を作らない。
-//     宣言・型編集は従来どおり利用者の対話承認が正す)
+// The supported syntax is intentionally minimal (no new dependencies —
+// CLAUDE.md):
+//   - `KEY=VALUE` (split at the first `=`)
+//   - `export KEY=VALUE` (strip the prefix)
+//   - `#` comment lines (**the contiguous comments right before** → the
+//     description candidate. A blank or non-comment line resets the
+//     candidate)
+//   - An inline `#` comment on an unquoted value (`PORT=8080 # listen
+//     port`) is dropped (the same line as dotenv / `docker --env-file` —
+//     comments are not carried into the push path as part of the value)
+//   - Matching quotes ('…' / "…") around a value are stripped once.
+//     Escapes, variable expansion, and multi-line quoted values are **not
+//     interpreted**. What matters here is that simplifying interpretation
+//     reaches not only type inference (observation only) but also **the
+//     value push (activation) when the user explicitly selects it**: a
+//     value that cannot be claimed to be interpreted faithfully (unclosed
+//     quotes, escapes inside a quoted value / same-kind quotes) is
+//     carried with `valueFaithful = false`, and schema import does not
+//     propose the push at all (fail-closed — do not create a path that
+//     encrypts and silently stores a misread value. Declarations and type
+//     edits are corrected by the user's interactive approval as before)
 //
-// 受理できない行は**行番号と理由だけ**を持って skipped に落とす(行の内容は
-// 運ばない — 壊れた行は値そのものでありうる)。
+// A line that cannot be accepted is dropped into skipped carrying **only
+// its line number and a reason** (the line's content is not carried — a
+// broken line may be a value itself).
 
 import type { MetaVarType } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
 /**
- * import が候補にする変数名の形式: POSIX 環境変数名(先頭が英字か `_`、以降は
- * 英数字と `_`)。`.env` の名前は子プロセスの環境変数名になる前提であり、
- * サーバーの表示名受理(AUTH_SPEC §12-1 — NFC・256 文字)より狭い集合を要求
- * する。ASCII のみなので NFC 正規形であることは自明に満たす。
+ * The form of variable names import accepts as candidates: a POSIX
+ * environment variable name (leading letter or `_`, then letters, digits,
+ * `_`). An `.env` name is premised on becoming a child process's
+ * environment variable name, so a narrower set is required than the
+ * server's display-name acceptance (AUTH_SPEC §12-1 — NFC, 256 chars).
+ * ASCII-only trivially satisfies being in NFC.
  */
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * 名前の長さ上限(AUTH_SPEC §12-8 の表示名 256 文字と同じ値)。編集(e)での
- * 改名(schema-import.ts)も同じ上限を署名・送信より前に検査する — パーサ
- * だけが検査すると、編集経由の超過がサーバー 400 の遅い失敗点(import ごと
- * 停止)まで素通りする。
+ * The name-length cap (same value as AUTH_SPEC §12-8's 256-char display
+ * name). Renaming via edit (e) (schema-import.ts) also checks the same
+ * cap before signing / sending — if only the parser checked, an over-cap
+ * name arriving via editing would slip through to the server's slow 400
+ * failure point (halting the whole import).
  */
 export const MAX_NAME_LENGTH = 256;
 
-/** 1 行がスキップされた理由(内容は運ばない — 表示は理由と行番号のみ)。 */
+/** Why a line was skipped (the content is not carried — display shows the reason and line number only). */
 export type EnvFileSkipReason = "not-an-assignment" | "invalid-name" | "duplicate-name";
 
-/** スキップされた行(行番号は 1 始まり)。 */
+/** A skipped line (line numbers are 1-based). */
 export interface EnvFileSkippedLine {
   readonly line: number;
   readonly reason: EnvFileSkipReason;
   /**
-   * 名前だけは表示してよい場合に持つ(duplicate-name — 有効な名前の重複)。
-   * invalid-name / not-an-assignment の行内容は値でありうるため運ばない。
+   * Carried only when the name alone may be shown (duplicate-name — a
+   * duplicate of a valid name). The line content of invalid-name /
+   * not-an-assignment may be a value and is not carried.
    */
   readonly name?: string;
 }
 
-/** 解釈できた 1 変数(値は Redacted — 観察以外に使わない)。 */
+/** One variable that could be interpreted (the value is Redacted — never used beyond observation). */
 export interface EnvFileEntry {
-  /** NFC 正規化済みの変数名(ASCII のみなので正規化は恒等)。 */
+  /** The NFC-normalized variable name (ASCII-only, so normalization is identity). */
   readonly name: string;
-  /** 行番号(1 始まり — 承認プロンプトの文脈表示用)。 */
+  /** The line number (1-based — for context display in the approval prompt). */
   readonly line: number;
-  /** 値(読み取り直後に Redacted — 剥がすのは observeValue の観察のみ)。 */
+  /** The value (Redacted right after reading — unwrapped only by observeValue's observation). */
   readonly value: Redacted.Redacted<string>;
   /**
-   * true = この行ベースのパーサが値を忠実に解釈できたと言える(未引用 +
-   * インラインコメント除去、または完結した引用でエスケープ・同種引用符を
-   * 含まない)。false の値は observeValue に掛けず、push の提案も出さない
-   * (fail-closed — ヘッダコメント参照)。
+   * true = this line-based parser can claim to have interpreted the
+   * value faithfully (unquoted + inline comment removed, or a complete
+   * quote containing no escapes / same-kind quotes). A value with false
+   * is not passed through observeValue and no push is proposed
+   * (fail-closed — see the header comment).
    */
   readonly valueFaithful: boolean;
-  /** 直前の連続コメントから組んだ description 候補("" = 候補なし)。 */
+  /** The description candidate assembled from the contiguous comments right before ("" = no candidate). */
   readonly descriptionCandidate: string;
 }
 
-/** parseEnvFile の結果。 */
+/** parseEnvFile's result. */
 export interface ParsedEnvFile {
   readonly entries: readonly EnvFileEntry[];
   readonly skipped: readonly EnvFileSkippedLine[];
 }
 
-/** 値の解釈結果(faithful = false は push 提案の抑制材料 — ヘッダコメント)。 */
+/** The value interpretation result (faithful = false is the material for suppressing the push proposal — header comment). */
 interface ParsedValue {
   readonly text: string;
   readonly faithful: boolean;
 }
 
 /**
- * 値部分の解釈: 引用符 1 対の除去と、未引用値のインライン `#` コメント除去。
- * エスケープ・変数展開・複数行は解釈しない — 忠実と言えない形(閉じない
- * 引用符・引用値内の `\` / 同種引用符)は faithful = false で返す。
+ * Interpreting the value portion: stripping one pair of quotes and
+ * removing an inline `#` comment on an unquoted value. Escapes, variable
+ * expansion, and multi-line values are not interpreted — shapes that
+ * cannot be claimed faithful (unclosed quotes, `\` / same-kind quotes
+ * inside a quoted value) are returned with faithful = false.
  */
 function parseValue(raw: string): ParsedValue {
   const first = raw[0];
   if (first === '"' || first === "'") {
     if (raw.length >= 2 && raw.endsWith(first)) {
       const inner = raw.slice(1, -1);
-      // エスケープ(dotenv の二重引用符は \n 等を展開する)や引用符自身の
-      // 混入は、このパーサでは値を忠実に再構成できない
+      // Escapes (dotenv's double quotes expand \n etc.) or an embedded
+      // quote of the same kind cannot be faithfully reconstructed by this
+      // parser
       return { text: inner, faithful: !inner.includes("\\") && !inner.includes(first) };
     }
-    // 開き引用符が閉じない(複数行の引用値・壊れた行)
+    // The opening quote never closes (a multi-line quoted value / a broken line)
     return { text: raw, faithful: false };
   }
-  // 未引用: 空白に続く `#` 以降はインラインコメント(dotenv / docker --env-file
-  // と同じ線)。値の一部として push 経路へ運ばない
+  // Unquoted: everything after a whitespace-then-`#` is an inline comment
+  // (the same line as dotenv / docker --env-file). It is not carried into
+  // the push path as part of the value
   return { text: raw.replace(/\s+#.*$/, "").trim(), faithful: true };
 }
 
 /**
- * Parses `.env` / `.env.example` text into schema candidates (設計文書 §1-3).
+ * Parses `.env` / `.env.example` text into schema candidates (design doc §1-3).
  * Values are wrapped in `Redacted` immediately; malformed lines carry only
  * their line number and a reason (the content may be a value).
  */
@@ -122,14 +141,14 @@ export function parseEnvFile(content: string): ParsedEnvFile {
   const entries: EnvFileEntry[] = [];
   const skipped: EnvFileSkippedLine[] = [];
   const seen = new Set<string>();
-  /** 直前の連続コメント行(次の代入行の description 候補)。 */
+  /** The contiguous comment lines right before (the next assignment line's description candidate). */
   let comments: string[] = [];
   const lines = content.split(/\r?\n/);
   for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1;
     const line = rawLine.trim();
     if (line === "") {
-      // 空行はコメントブロックの区切り(離れたコメントを候補にしない)
+      // A blank line delimits a comment block (a detached comment is not a candidate)
       comments = [];
       continue;
     }
@@ -151,8 +170,9 @@ export function parseEnvFile(content: string): ParsedEnvFile {
       continue;
     }
     if (seen.has(name)) {
-      // 同名の後勝ち・先勝ちを黙って選ばない — 重複は理由つきでスキップし、
-      // 最初の出現だけを候補にする(名前は有効なので表示してよい)
+      // Do not silently pick last-wins or first-wins for a same name — a
+      // duplicate is skipped with a reason and only the first occurrence
+      // becomes a candidate (the name is valid, so it may be shown)
       skipped.push({ line: lineNumber, reason: "duplicate-name", name });
       comments = [];
       continue;
@@ -162,7 +182,7 @@ export function parseEnvFile(content: string): ParsedEnvFile {
     entries.push({
       name,
       line: lineNumber,
-      // 値はここで包む — 以降は observeValue の観察でしか剥がさない
+      // The value is wrapped here — from here on only observeValue's observation unwraps it
       value: Redacted.make(parsedValue.text, { label: "env-file-value" }),
       valueFaithful: parsedValue.faithful,
       descriptionCandidate: comments.join(" ").trim(),
@@ -173,17 +193,21 @@ export function parseEnvFile(content: string): ParsedEnvFile {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 値の観察(型推論・実値らしさ — 値そのものは外へ出さない)                    */
+/* Observing values (type inference / real-value-ness — the value itself  */
+/* never leaves)                                                        */
 /* -------------------------------------------------------------------------- */
 
-// number の形は run.ts の advisory 型検証と同じ判定(10 進表記のみ — "0x1f" /
-// "Infinity" を number に数えない)。判定器を共有しないのは import 側が
-// Redacted の観察境界の中で完結するため(文字列の正規表現 1 本を重複と数えない)
+// The number shape uses the same test as run.ts's advisory type check
+// (decimal notation only — "0x1f" / "Infinity" do not count as number).
+// The checker is not shared because the import side is self-contained
+// inside Redacted's observation boundary (a single regex on a string does
+// not count as duplication)
 const NUMBER_TEXT = /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
-// プレースホルダらしさ: `.env.example` の慣用形。実値でないと判断した値は
-// activation の提案自体を出さない(送信の既定は常に「しない」であり、これは
-// 提案 UX の絞り込みにすぎない — 誤判定の帰結は「提案が出ない / 出る」のみ)
+// Placeholder-ness: the conventional forms of `.env.example`. A value
+// judged not real is not proposed for activation at all (the send default
+// is always "do not", and this merely narrows the proposal UX — the
+// consequence of a misjudgment is only "proposed / not proposed")
 const PLACEHOLDER_PATTERNS = [
   /^<[^>]*>$/,
   /^\$\{[^}]*\}$/,
@@ -191,11 +215,11 @@ const PLACEHOLDER_PATTERNS = [
   /^your[-_]/i,
 ];
 
-/** 値の観察結果(値そのものを運ばない — 型候補と実値らしさのみ)。 */
+/** The observation result of a value (the value itself is not carried — only the type candidate and real-value-ness). */
 export interface ObservedValue {
-  /** 型推論(値の形の観察 — 自信がなければ "" 未指定)。 */
+  /** Type inference (observing the value's shape — "" unspecified when not confident). */
   readonly varType: MetaVarType;
-  /** 実値らしいか(空・プレースホルダ慣用形は false)。 */
+  /** Whether it looks like a real value (empty / placeholder conventional forms are false). */
   readonly looksReal: boolean;
 }
 
@@ -205,8 +229,9 @@ export interface ObservedValue {
  * only the inferred type and a boolean.
  */
 export function observeValue(value: Redacted.Redacted<string>): ObservedValue {
-  // 剥がす理由: 形の観察(型推論・実値らしさ)。産物は閉集合の型名と真偽値
-  // だけで、値・値の断片はこの関数の外へ出ない
+  // Reason for unwrapping: observing the shape (type inference /
+  // real-value-ness). The product is only a closed-set type name and a
+  // boolean — the value or a fragment of it never leaves this function
   const text = Redacted.value(value).trim();
   if (text === "") {
     return { varType: "", looksReal: false };
@@ -221,7 +246,8 @@ export function observeValue(value: Redacted.Redacted<string>): ObservedValue {
   if (/^https?:\/\/\S+$/.test(text) && URL.canParse(text)) {
     return { varType: "url", looksReal };
   }
-  // どの形にも確信が持てない値は "" 未指定(任意の値は string でありうるため、
-  // string の推論は情報を足さない — 利用者が承認時に編集できる)
+  // A value no shape can be confidently claimed for is "" unspecified
+  // (any value could be a string, so inferring string adds no information
+  // — the user can edit it at approval)
   return { varType: "", looksReal };
 }
