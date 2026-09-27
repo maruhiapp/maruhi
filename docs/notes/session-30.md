@@ -1,119 +1,117 @@
-# セッション 30 メモ(ADR-0018 の再評価と GUI シェル比較 — 改訂 1 の経緯)
+# Session 30 memo (re-evaluating ADR-0018 and comparing GUI shells — the background of revision 1)
 
-日付: 2026-08-18(ADR-0018 = PR #82 マージ後、同日)。形式: 実装なしの
-設計対話の続き。スコープ: ADR-0018 のフラット再評価 → GUI シェル 3 案
-(localhost / IWA / 署名済みデスクトップ)の比較 → 改訂 1 の裁定
-(UI 契約の先行確定・儀式の TTY 固定・シェル選定の先送り)。
-成果物は ADR-0018 改訂 1 と本ノートのみ。
+Date: 2026-08-18 (after ADR-0018 = PR #82 merged, same day). Format: a continuation of the
+implementation-free design dialogue. Scope: a flat re-evaluation of ADR-0018 → comparing the 3 GUI shell
+options (localhost / IWA / signed desktop) → the revision-1 ruling
+(settle the UI contract first, pin ceremonies to the TTY, defer shell selection).
+The deliverables are ADR-0018 revision 1 and this note only.
 
-## 1. 再評価の要点(中核は維持、位置づけを 3 点補正)
+## 1. Key points of the re-evaluation (the core stands; 3 framing corrections)
 
-ADR-0018 の中核(ホステッド Web に復号・ラップ能力を入れない / owner 画面の
-共有禁止 / 値あり GUI の先送り / CLI・TUI 先行)は再評価でも維持。
-補正は次の 3 点:
+ADR-0018's core (no decryption / wrap capability on the hosted Web / no sharing the owner's screen /
+deferring the valued GUI / CLI and TUI first) survived re-evaluation.
+The corrections are 3:
 
-1. **「値なし」=「低リスク」ではない**: 値なし `maruhi ui` でも、UI が
-   鍵保持プロセスに操作を頼む構造上、UI 側の侵害(拡張・XSS)が CLI を
-   **署名オラクル**として使う面が残る(招待受諾・`member add` は署名を
-   伴う)。緩和は操作別の狭い API + 儀式の TTY 固定(→ 改訂 1)
-2. **TTY は人間の認証ではない**: PTY を作れるローカルプロセスは通る。
-   「典型的なエージェント・パイプ誤出力を止める fail-closed の誤操作
-   ガード」が正確な位置づけ(ADR-0016 の変更ではなく明確化)
-3. **CLI 配布でも運営信頼は消えない**: バイナリも npm バンドルも運営が
-   配布する(ADR-0015)。消えるのは「ページを開くたびに更新可能な Web
-   配信」への依存であり、「明示導入・明示更新の成果物」への移行が正確な
-   言い方。checksums の署名・provenance の強化は別途(ADR-0015 の系)
+1. **"Value-free" ≠ "low-risk"**: even with a value-free `maruhi ui`, the structure in which the
+   UI asks the key-holding process to perform operations leaves a surface where a compromised UI
+   (extensions, XSS) uses the CLI as a **signing oracle** (invite acceptance and `member add`
+   involve signatures). Mitigations: narrow per-operation APIs + pinning ceremonies to the TTY (→ revision 1)
+2. **A TTY is not human authentication**: any local process that can create a PTY passes.
+   The accurate framing is "a fail-closed misuse guard that stops typical agent / pipe misoutputs"
+   (a clarification of ADR-0016, not a change)
+3. **CLI distribution does not eliminate operator trust either**: the operator distributes
+   both the binaries and the npm bundle (ADR-0015). What disappears is the dependence on "web
+   delivery updatable on every page open"; the accurate phrasing is a move to "explicitly installed,
+   explicitly updated artifacts". Strengthening checksum signing and provenance is separate (the ADR-0015 line)
 
-申し送り(未裁定 — W0 の論点へ): 決定 1 の許可リストに **API トークン
-管理**が入っているが、トークンの追加発行は credential の生成であり、
-「復号不要」と「低権限」は別物(現状トークンは既定で全プロジェクト
-admin・無期限 — AUTH_SPEC §6 / SECURITY_REVIEW L-2)。生値の発行・表示を
-Web に置くかは W0 で「credential も持たない」側へ狭める選択肢を含めて
-再裁定する。
+Handoff (unruled — a W0 discussion point): decision 1's allowlist includes **API token
+management**, but issuing an additional token is credential generation, and
+"decryption-free" is not "low-privilege" (tokens today are all-project
+admin and non-expiring by default — AUTH_SPEC §6 / SECURITY_REVIEW L-2). Whether issuing and
+displaying raw values belongs on the Web is re-ruled in W0, including the option of narrowing to
+"holds no credentials either".
 
-## 2. GUI シェル 3 案の比較(事実確認込み)
+## 2. Comparing the 3 GUI shells (with fact-checking)
 
-前提: GUI 要求は高確率で来るとの所有者見込み。値まで扱うフル GUI を
-想定した場合の比較。
+Premise: the owner expects GUI demand to arrive with high probability. The comparison assumes
+a full GUI that handles values.
 
-### localhost UI(ブラウザで 127.0.0.1 を開く)
+### localhost UI (open 127.0.0.1 in a browser)
 
-- 実装は最軽量。鍵・暗号・キーチェーン境界は既存 CLI のまま
-- **画面アセットは CLI バイナリに同梱**されて配られる — 「運営が毎回
-  配信する Web」との差はここでも保たれる(この点は当初の比較で
-  過小評価していた補正)
-- 急所は 2 点: **ブラウザ拡張の混入**(LNA の制限は拡張に適用されず、
-  host permission を持つ拡張は localhost ページへ content script を
-  注入できる)と **TCP リスナーの存在**(他ローカルプロセス・DNS
-  rebinding・CSRF 対策一式が必要 — ADR-0018 決定 2 の認証要件)
-- 判定: ドッグフーディング・試作の経路。値を出す本番 GUI として先に
-  固定はしない
+- The lightest implementation. The key / crypto / keychain boundary stays the existing CLI's
+- **The screen assets ship bundled inside the CLI binary** — the difference from "operator-served
+  per-visit web delivery" holds here too (a correction: the initial comparison had undervalued this point)
+- Two pressure points: **browser-extension injection** (LNA's restrictions do not apply to
+  extensions; an extension with host permission can inject a content script into localhost pages)
+  and **the existence of a TCP listener** (other local processes, DNS
+  rebinding, and the full set of CSRF countermeasures are needed — the authentication requirements of ADR-0018 decision 2)
+- Verdict: the path for dogfooding and prototyping. Do not fix it up front as the
+  production valued GUI
 
-### IWA(Isolated Web Apps)
+### IWA (Isolated Web Apps)
 
-- モデルは合う: 署名済み Web Bundle、公開鍵由来の固定 origin
-  (`isolated-app://`)、通常のブラウザ拡張から隔離、バージョン固定・
-  更新管理
-- 不採用の理由(現時点): **Google の allowlist 制**(Chrome 143 以降、
-  パートナー接触前提の early adopter program。一般開発者の配布経路が
-  ない。Developer Mode はテスト用)、Chrome 限定、OS キーチェーンへの
-  自然な経路がない(鍵を IndexedDB に置くと ADR-0018 が避けた構成に戻る)
-- 一般配布可能になった時点で再評価
+- The model fits: a signed Web Bundle, a fixed origin derived from the public key
+  (`isolated-app://`), isolation from ordinary browser extensions, version pinning and
+  update management
+- Why not adopted (for now): **Google's allowlist regime** (from Chrome 143, an
+  early adopter program assuming partner contact; there is no distribution path for
+  general developers. Developer Mode is for testing), Chrome-only, and no natural path to the
+  OS keychain (putting keys in IndexedDB returns to the shape ADR-0018 avoided)
+- Re-evaluate once general distribution becomes possible
 
-### 署名済みデスクトップ(Tauri + CLI sidecar)
+### Signed desktop (Tauri + CLI sidecar)
 
-- 値あり GUI の**現時点の本命**: 拡張機能が入らず、TCP リスナー不要
-  (IPC はプロセス内)、UI は署名済み成果物に固定、OS キーチェーンは
-  sidecar の CLI がそのまま使う。Tauri は外部バイナリ同梱(sidecar)と
-  updater 署名(必須・無効化不可)を公式サポート
-- コスト(このリポジトリでは最大級の依存追加): Rust ツールチェーン =
-  既存品質ゲート(oxlint / tsc / vitest / fallow / ImportLint)の対象外、
-  WebView ランタイムの供給網(Windows = WebView2 が Microsoft 経由で
-  外部更新 / Linux = distro の WebKitGTK で追従が遅い — 「署名で固定」
-  されるのは自分の JS だけ)、updater 秘密鍵の運用(喪失 = 既存ユーザー
-  へ更新を配れない)、3 OS のコード署名・公証・インストーラ QA
-- 着工するなら macOS 公証(ROADMAP — 署名インフラが重なる)完了後が自然
+- **The current front-runner for a valued GUI**: no extensions, no TCP listener
+  (IPC is in-process), the UI is pinned to a signed artifact, and the OS keychain is
+  used by the sidecar CLI as-is. Tauri officially supports bundling external binaries (sidecar) and
+  updater signing (mandatory, cannot be disabled)
+- Costs (the largest dependency addition this repository would take): the Rust toolchain —
+  outside the existing quality gate (oxlint / tsc / vitest / fallow / ImportLint);
+  the WebView runtime's supply chain (Windows = WebView2 updates externally via
+  Microsoft / Linux = the distro's WebKitGTK lags — only your own JS is "pinned by signature");
+  operating the updater's private key (losing it = cannot ship updates to existing users);
+  code-signing, notarization, and installer QA across 3 OSes
+- If started, the natural point is after macOS notarization (ROADMAP — the signing infrastructure overlaps) is done
 
-### 比較の核心(裁定材料)
+### The core of the comparison (ruling material)
 
-- **署名オラクル問題は localhost とデスクトップに共通**(UI が鍵保持
-  プロセスに操作を頼む構造は同一)。緩和も同じ: 操作別の狭い API +
-  儀式の TTY 固定。したがって両者の実質差分は「拡張」と「TCP」の 2 点に
-  縮む — 値なしならさらに縮む
-- 儀式(指紋 12 語)の完全性は「表示された語 = 鍵保持プロセスが計算した
-  語」に依存する。どのシェルでも UI 層は表示をすり替えうるため、
-  **儀式は端末に残す**のがシェル非依存の防御になる
+- **The signing-oracle problem is common to localhost and desktop** (the structure where the UI
+  asks the key-holding process to operate is identical). The mitigation is the same: narrow
+  per-operation APIs + pinning ceremonies to the TTY. Therefore the real difference between the two shrinks
+  to 2 points — "extensions" and "TCP" — and shrinks further when value-free
+- The integrity of the ceremony (the 12 fingerprint words) depends on "the displayed words = the words the
+  key-holding process computed". Since the UI layer could substitute the display under any shell,
+  **keeping ceremonies on the terminal** is the shell-independent defense
 
-## 3. 裁定(改訂 1)
+## 3. Ruling (revision 1)
 
-シェルを今決めず、**契約を決める**:
+Do not choose the shell now; **fix the contract**:
 
-1. UI と鍵保持プロセスの契約(操作別 API・汎用 sign/wrap 禁止・値と
-   鍵素材を UI 層に渡さない)を第 2 段着手の前提として先に確定。
-   フロントはこの契約のクライアントとして書き、シェル差し替え可能に保つ
-2. 儀式は GUI があっても TTY に残す(第 2 段の「指紋 12 語の大きな表示」
-   は撤回)
-3. シェル選定は第 3 段(値あり GUI)の裁定に送る。ドッグフーディングは
-   localhost、値ありの本命は署名済みデスクトップ、IWA は一般配布可能に
-   なったら再評価。第 3 段 ADR の必須論点にシェル比較を追加
+1. Fix the contract between the UI and the key-holding process (per-operation APIs; no generic
+   sign/wrap; never hand values or key material to the UI layer) up front as a stage-2 prerequisite.
+   Write the front-end as a client of this contract and keep the shell replaceable
+2. Ceremonies stay on the TTY even when a GUI exists (stage 2's "large display of the 12
+   fingerprint words" is withdrawn)
+3. Shell selection is deferred to the stage-3 (valued GUI) ruling. Dogfooding uses
+   localhost; the valued front-runner is signed desktop; IWA is re-evaluated once generally
+   distributable. Add the shell comparison as a mandatory topic of the stage-3 ADR
 
-理由: 各段で止まれる形を保つ(ADR-0018 の型)。シェル選定は「値を GUI に
-出す需要」「IWA の配布解放」「macOS 公証の完了」という未確定の事実に
-依存し、いま決めても得るものがない。契約と儀式の置き場は、どのシェルを
-選んでも変わらない普遍の部分であり、ここを先に固定すればフロント実装は
-1 回で済む。
+Rationale: keep a form where each stage can stop (the ADR-0018 pattern). Shell selection depends on
+unfixed facts — "demand for values in a GUI", "IWA distribution opening up", "macOS notarization
+done" — and nothing is gained by deciding now. The contract and where ceremonies live are the
+shell-invariant parts; fixing them first means the front-end is implemented once.
 
-## 4. 参照
+## 4. References
 
-- ADR-0018(本改訂の対象)/ ADR-0015(CLI 配布・公証)/
-  ADR-0016(TTY 一次境界・儀式の適用範囲)
-- docs/notes/session-29.md(ADR-0018 本体の経緯)
-- AUTH_SPEC §6(API トークン)/ SECURITY_REVIEW_2026-08-14 L-2
-  (トークン無期限)— §1 の申し送りの根拠
-- IWA: developer.chrome.com/docs/iwa/(introduction / allowlist /
-  connect-to-extensions / version-management。allowlist は Chrome 143〜、
-  early adopter program 前提)
-- Tauri: v2.tauri.app(develop/sidecar / plugin/updater — updater 署名は
-  必須・無効化不可)
-- LNA(Local Network Access): 拡張には適用されない(WICG
-  local-network-access — host permission を持つ拡張はローカル要求可)
+- ADR-0018 (the object of this revision) / ADR-0015 (CLI distribution and notarization) /
+  ADR-0016 (the TTY primary boundary; ceremonies' scope)
+- docs/notes/session-29.md (the background of ADR-0018 itself)
+- AUTH_SPEC §6 (API tokens) / SECURITY_REVIEW_2026-08-14 L-2
+  (non-expiring tokens) — the basis of §1's handoff
+- IWA: developer.chrome.com/docs/iwa/ (introduction / allowlist /
+  connect-to-extensions / version-management. The allowlist runs from Chrome 143,
+  behind the early adopter program)
+- Tauri: v2.tauri.app (develop/sidecar / plugin/updater — updater signing is
+  mandatory and cannot be disabled)
+- LNA (Local Network Access): does not apply to extensions (WICG
+  local-network-access — an extension with host permission can make local requests)

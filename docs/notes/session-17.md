@@ -1,103 +1,101 @@
-# セッション 17 メモ(裁定済み独立クリーンアップ 2 件 — テスト支援の共有抽出 / crypto 防御的検査)
+# Session 17 memo (2 ruled independent cleanups — shared extraction of test support / crypto defensive checks)
 
-日付: 2026-08-04。前提: PR #34(セッション 16.5 の仕様同期)マージ済みの main から開始。
-スコープ: 既存セッションノートで裁定済み・申し送り済みの負債返済 2 件。性質が違う
-(テスト整理 vs crypto 検査強化)ため別ブランチ・別 PR に分けた。どちらも新しい
-設計判断はない。
+Date: 2026-08-04. Prerequisite: started from main with PR #34 (the session 16.5 spec sync) merged.
+Scope: 2 debt payoffs already ruled on and handed off in existing session notes. Split into separate
+branches / separate PRs because their nature differs (test organization vs crypto check hardening). Neither contains new
+design decisions.
 
-- **PR #35(draft)**: テスト支援の共有抽出(session-11 §5-2 の裁定済み独立 PR。
-  session-15 §6 / session-16 §6 でも申し送り)
-- **PR #36(draft)**: crypto の防御的検査の一貫性(session-15 §6 の独立 PR 候補 —
-  レビュー① minor / ③ nit)。packages/crypto に触るため人間レビュー必須
+- **PR #35 (draft)**: shared extraction of test support (session-11 §5-2's ruled independent PR;
+  also handed off in session-15 §6 / session-16 §6)
+- **PR #36 (draft)**: consistency of crypto's defensive checks (session-15 §6's independent-PR candidate —
+  review ① minor / ③ nit). Touches packages/crypto, so human review is mandatory
 
-## 1. やったこと
+## 1. What was done
 
-1. **テスト支援の共有抽出(PR #35)**: cli / server 両側のテスト支援クローン
-   (fallow dupes 5 群 — session-15 時点の計数では 8 群。fallow 3.10.0 が隣接
-   クローンを併合するため計数が変わった)を
-   `packages/crypto/test/support/fixture.ts` へ機械的に抽出:
-   - 完全同一だった `unwrapResult` / `hexBytes` / `BASE_TIME_MS`
-   - チェーン組立(`buildChainWith` + `BuiltChain` / `ChainBuildStep` /
+1. **Shared extraction of test support (PR #35)**: mechanically extracted the test-support clones
+   on both the cli and server sides (5 fallow dupe groups — 8 groups as counted in session-15;
+   fallow 3.10.0 merges adjacent clones, so the count changed) into
+   `packages/crypto/test/support/fixture.ts`:
+   - The byte-identical `unwrapResult` / `hexBytes` / `BASE_TIME_MS`
+   - Chain assembly (`buildChainWith` + `BuiltChain` / `ChainBuildStep` /
      `LazyChainOperation`)
-   - §4.1 ワイヤ値(`WireEncryptedPayload` / `valueContextOf` /
+   - §4.1 wire values (`WireEncryptedPayload` / `valueContextOf` /
      `valueSignedBytesHashOf`)
-   - 両テスト支援モジュールの公開 API は不変(テストファイル本体は無変更)。
-     fallow dupes ベースラインを再保存(17 群 → 12 群)
-   - **追記: fallow 3.10.0 → 3.14.0**(本 PR に同梱)。恒常原因だった行範囲
-     ベースラインの陳腐化は fallow#2029 / v3.11.0 の fingerprint 照合で直るため、
-     ピン留めを上げて `clone_fingerprints` 付きで再保存。`fallow:baseline` の
-     health 保存に `--baseline-mode identity` を明示(3.14 の上書き拒否対応)。
-     audit の changed-files スコープ依存の偽警告は 3.14 でも残存(§3)
-2. **crypto の防御的検査の一貫性(PR #36)**:
-   - (a) `meta-sign.ts` / `value-sign.ts` の context 検査に projectId /
-     environmentId の非空検査を追加(+ invalid-input チェック 4 件)
-   - (b) `verify_reference.mjs` の署名フィールド順をベクター JSON 由来から
-     仕様(CRYPTO_SPEC §4.2 / §6.1-6.2)ハードコード + JSON 宣言との一致検査へ。
-     chain-entries の `payload_field_order` も同時に(参照 3 箇所すべて)。
-     独立検証は 425 → 428 検査
-   - テストベクター JSON は git diff ゼロ(byte-identical)を機械的に確認
-3. **docs**: 本メモ
+   - Both test-support modules' public APIs are unchanged (the test files themselves untouched).
+     Re-saved the fallow dupes baseline (17 groups → 12 groups)
+   - **Addition: fallow 3.10.0 → 3.14.0** (bundled into this PR). The chronic cause — staleness of
+     the line-range baseline — is fixed by fallow#2029 / v3.11.0's fingerprint matching, so
+     raised the pin and re-saved with `clone_fingerprints`. Passed `--baseline-mode identity`
+     explicitly to `fallow:baseline`'s health save (3.14 refuses overwrites otherwise).
+     The audit's changed-files-scoped false warning persists in 3.14 (§3)
+2. **Consistency of crypto's defensive checks (PR #36)**:
+   - (a) Added projectId / environmentId non-empty checks to `meta-sign.ts` / `value-sign.ts`'s
+     context validation (+ 4 invalid-input checks)
+   - (b) `verify_reference.mjs`'s signature field order changed from vector-JSON-derived to
+     spec (CRYPTO_SPEC §4.2 / §6.1-6.2) hardcoded + consistency-checked against the JSON declaration.
+     chain-entries' `payload_field_order` likewise (all 3 reference sites).
+     Independent verification went 425 → 428 checks
+   - Verified mechanically that the test-vector JSON has a zero git diff (byte-identical)
+3. **docs**: this memo
 
-## 2. 実装の細部
+## 2. Implementation details
 
-- **共有抽出先の置き場**: 裁定どおり `packages/crypto/test/` 配下
-  (`test/support/fixture.ts`)。ImportLint は `*.package` ディレクトリのみが
-  境界のため相対 import 可 — server の `test/checks/chain-vector.ts` 参照と
-  同型の先例。crypto の tsconfig(include: test)/ cli(bun types)/ server
-  (workers-types)の 3 コンパイル文脈すべてで型が通ることを確認
-- **鍵の出所の非対称の吸収**: cli = 都度生成 TestUser / server = ベクター固定鍵
-  のため、チェーン組立の署名手段は共有側に持ち込まず、呼び出し側が
-  `signEntry: (unsigned) => Promise<ChainEntry>` として注入する形にした
-  (機械的抽出 = 挙動変更ゼロの維持)。サーバーテスト都合の `unwrapAndDecrypt`
-  (申告 AAD をそのまま使う)は裁定どおり共有側に持ち込んでいない
-- **cli の `WireEncryptedPayload`**: 共有形は `suite: string`(server の検証系
-  negative が別 suite を作るため)。cli は extends で `suite: "maruhi/v1"` に
-  絞り、従来の型水準を維持
-- **meta-sign の複雑度分割**: 非空検査の追加で `contextInvalidField` が fallow の
-  複雑度しきい値(cyclomatic 10)を超えたため、suite + 座標の検査を
-  `coordinateFieldInvalid` へ分割。判定順・報告フィールド名は不変
+- **Where the shared extraction lives**: under `packages/crypto/test/` per the ruling
+  (`test/support/fixture.ts`). Relative imports are OK because ImportLint's boundary is only
+  `*.package` directories — same shape as the precedent of server referencing
+  `test/checks/chain-vector.ts`. Verified the types compile in all 3 compile contexts: crypto's tsconfig (include: test) / cli (bun types) / server
+  (workers-types)
+- **Absorbing the asymmetry of key provenance**: cli generates a TestUser per run / server uses
+  vector-fixed keys, so the chain assembly's signing means was not carried into the shared side;
+  callers inject it as `signEntry: (unsigned) => Promise<ChainEntry>`
+  (mechanical extraction = zero behavior change preserved). `unwrapAndDecrypt`, which exists for
+  server-test convenience (uses the declared AAD verbatim), was not carried to the shared side per the ruling
+- **cli's `WireEncryptedPayload`**: the shared form is `suite: string` (because server's
+  verification negatives build a different suite). cli narrows it to `suite: "maruhi/v1"` via
+  extends, preserving the previous type level
+- **Splitting meta-sign's complexity**: the non-empty checks pushed `contextInvalidField` over
+  fallow's complexity threshold (cyclomatic 10), so the suite + coordinate checks were split into
+  `coordinateFieldInvalid`. Check order and reported field names unchanged
 
-## 3. 学び(fallow の dupes ベースライン警告は 2 段)
+## 3. Learnings (fallow's dupes-baseline warning has 2 stages)
 
-`bun run check` の「duplication baseline has N entries but matched 0 current
-clone groups」警告(session-15 §6 で「ベースラインのパス不一致」として申し送り)
-の実際の発生条件は 2 段あった:
+The actual trigger of `bun run check`'s "duplication baseline has N entries but matched 0 current
+clone groups" warning (handed off as "baseline path mismatch" in session-15 §6) had 2 stages:
 
-1. **恒常的な原因(PR #35 で解消)**: ベースラインの `path:start-end` 行範囲が
-   現行コードと不一致で、全走査(`fallow dupes --baseline`)でも matched 0。
-   fallow#2029(v3.11.0)の fingerprint 照合 + 3.14.0 ピン留め + 再保存で
-   12/12 一致・警告なしに。行ずれにも耐える
-2. **残余挙動(3.14.0 でも残存・upstream 未修正)**: `fallow audit` は
-   ベースライン照合を **changed files スコープ**で行うため、正確な
-   fingerprint ベースラインでも「ベースライン記載のクローンを含むファイルが
-   変更セットに 1 つもない」PR では同文の警告が出る(クローンを含むファイルを
-   変更セットに入れると消えることを 3.10 / 3.14 の両方で実験確認)。
-   informational でありゲート(exit code)には影響しない
+1. **The chronic cause (resolved in PR #35)**: the baseline's `path:start-end` line ranges
+   no longer match the current code, so even a full scan (`fallow dupes --baseline`) matches 0.
+   fallow#2029 (v3.11.0)'s fingerprint matching + the 3.14.0 pin + re-saving gave
+   12/12 matches with no warning. Now survives line drift
+2. **Residual behavior (still present in 3.14.0, unfixed upstream)**: `fallow audit` performs
+   baseline matching in **changed-files scope**, so even with an accurate
+   fingerprint baseline, a PR whose change set contains none of the files hosting baseline clones
+   gets the same warning (verified experimentally on both 3.10 and 3.14 that it disappears when
+   a clone-hosting file enters the change set). Informational — does not affect the gate (exit code)
 
-また、changed files に既存クローンが含まれる場合(PR #36 の crypto src /
-checks)は「inherited findings」として gate から除外される(`--gate all` で
-なければ落ちない)ことも確認した — 変更ファイルの既存クローンのためだけに
-ベースラインを触る必要はない(PR #35 / #36 間の `dupes.json` 競合を回避)。
+Also confirmed that when an existing clone is inside the changed files (PR #36's crypto src /
+checks), it is excluded from the gate as "inherited findings" (does not fail unless `--gate all`) —
+no need to touch the baseline just for existing clones in changed files (avoids the `dupes.json`
+conflict between PR #35 / #36).
 
-## 4. スコープ外(不変)
+## 4. Out of scope (unchanged)
 
-- 検出規則・暗号仕様の意味変更なし(§6.3 ローカル床等は不変)。PR #36 の変更
-  方向は「受理範囲を狭める」のみで、署名バイト列の構成・検証規則・理由コード
-  語彙は不変
-- 残余クローン 12 群はスコープ外として再ベースライン: server src
-  (handlers ×2 / data-programs ×1)、crypto src(internal.package ×3)、
-  crypto test/checks(metadata-signature ↔ value-signature ×6)。checks の
-  6 群は将来のテスト整理候補(未裁定)
-- session-11 §5 の残り(公開設定エンドポイント / pull メタデータのみモード)・
-  チェーン追記系コマンド + remove_member の全環境 rotate・リカバリーコード等の
-  ROADMAP 新機能・床の毒化回復手順の運用ドキュメント化は未着手のまま有効
+- No change to detection rules or crypto-spec semantics (the §6.3 local floor etc. is unchanged). PR #36's
+  change direction is "narrow the acceptance range" only; signature-byte construction, verification rules, and
+  the reason-code vocabulary are unchanged
+- The remaining 12 clone groups were re-baselined as out of scope: server src
+  (handlers ×2 / data-programs ×1), crypto src (internal.package ×3),
+  crypto test/checks (metadata-signature ↔ value-signature ×6). The checks'
+  6 groups are a future test-organization candidate (not yet ruled)
+- The rest of session-11 §5 (the public-settings endpoint / the pull metadata-only mode) and
+  the ROADMAP new features — chain-append commands + remove_member's all-environment rotate, recovery code etc. —
+  and operational documentation of the poisoned-floor recovery procedure remain valid and untouched
 
-## 5. テスト結果
+## 5. Test results
 
-- **PR #35**: `bun run check` green(867 tests — main と同数。テストの意味不変)。
-  `fallow dupes --baseline`(3.14.0): 警告なし・新規クローン 0。cli/server
-  テスト支援間のクローン 0
-- **PR #36**: `bun run check` green(871 tests = 867 + invalid-input 4)。
-  vectors `bun run verify` 全 428 検査 PASS(既存 425 + 順序一致検査 3)。
-  crypto 4 実行環境 green: node 464 / workerd 464 / browser 464 / Bun 463
-  (vitest の集約 1 件差は従来どおり)。テストベクター JSON は byte-identical
+- **PR #35**: `bun run check` green (867 tests — same count as main; test semantics unchanged).
+  `fallow dupes --baseline` (3.14.0): no warnings, 0 new clones. 0 clones between the cli/server
+  test-support modules
+- **PR #36**: `bun run check` green (871 tests = 867 + 4 invalid-input).
+  vectors `bun run verify` all 428 checks PASS (existing 425 + 3 order-consistency checks).
+  crypto's 4 execution environments green: node 464 / workerd 464 / browser 464 / Bun 463
+  (the vitest aggregation difference of 1 is as before). Test-vector JSON is byte-identical

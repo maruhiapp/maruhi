@@ -1,27 +1,27 @@
-# IV 仕様改訂ドラフト — 招待儀式の軽量化(IV1 リンク束縛 + IV2 身元の裏付け。2026-09-13 起草・所有者承認待ち)
+# IV spec revision drafts — lightening the invite ceremony (IV1 link binding + IV2 identity backing. Drafted 2026-09-13, pending owner approval)
 
-**位置づけ**: IV フェーズ 1(設計セッション)の成果物。設計の全体像・裁定の反復記録・実装分割・承認依頼項目は docs/notes/integration-options.md §3 補足 21。本ファイルは正本 3 文書(CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC)へ反映する**改訂本文の起草**であり、**正本はまだ触っていない**(承認後の IV-K1 で反映し、以後は正本が正。差異が生じた場合は正本が勝つ)。
+**Position**: the deliverable of the IV phase 1 (design session). The overall design, the iterated ruling record, the implementation split, and the approval-request items live in docs/notes/integration-options.md §3 supplement 21. This file is the **drafting of the revision text** to be applied to the three canonical documents (CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC); **the canonical texts have not been touched yet** (applied in IV-K1 after approval; from then on the canonical texts are the source of truth. If a discrepancy arises, the canonical texts win).
 
-各ドラフトは「差し替え」または「追記」で示す。既存本文のうち変えない部分は引用しない。版番号は CRYPTO_SPEC 0.9 → **0.10-draft**、AUTH_SPEC 0.21 → **0.22-draft**、AUDIT_SPEC 1.6 → **1.7-draft**。各 Status 行への追記文(KL3 と同じ書式)は末尾 D に置く。
+Each draft is shown as a "substitution" or an "addition". Parts of the existing text that do not change are not quoted. Version numbers: CRYPTO_SPEC 0.9 → **0.10-draft**, AUTH_SPEC 0.21 → **0.22-draft**, AUDIT_SPEC 1.6 → **1.7-draft**. Sentences to append to each Status line (same format as KL3) are placed in section D at the end.
 
-用語(本ドラフト共通): **リンク鍵** = 招待ごとに招待者クライアントが生成する Ed25519 鍵ペア(種 `k` 32 バイト → `K_priv` / `K_pub`)。**発行署名** `isig` = 招待者のチェーン sig 鍵によるリンク内容の署名。**受諾署名** `asig` = 受諾者のチェーン sig 鍵による受諾文の署名(既存)。**リンク署名** `lsig` = `K_priv` による同じ受諾文への共同署名。**裏付け元** = 受諾鍵 / 招待者鍵が誰のものかを IdP の公開情報で照合する差し替え可能な出所(v1 は `github-signing-keys`)。
+Terminology (common to this draft): **link key** = an Ed25519 key pair the inviter client generates per invite (seed `k` 32 bytes → `K_priv` / `K_pub`). **Issuance signature** `isig` = a signature of the link contents by the inviter's chain sig key. **Acceptance signature** `asig` = a signature of the acceptance text by the invitee's chain sig key (existing). **Link signature** `lsig` = a co-signature of the same acceptance text by `K_priv`. **Backing source** = a replaceable provenance for checking, against an IdP's public information, whose keys the acceptance key / inviter key are (v1 is `github-signing-keys`).
 
 ---
 
-## A. CRYPTO_SPEC の改訂案
+## A. CRYPTO_SPEC revision proposals
 
-### A-1. §6.3 帯域外アンカー (a) の差し替え
+### A-1. Substitution of §6.3 out-of-band anchor (a)
 
-> - **(a) 招待リンクアンカー(2026-09-13 IV 改訂)**: 招待リンク(AUTH_SPEC §15)は、リンク鍵の種(§6.5)に加えて genesis ハッシュ(= project_id)・招待作成時点の招待者の検証済みヘッド(hash + seq)・付与予定 role・招待者の user_id と **enc / sig 公開鍵**を、**クライアント側エンコード(URL フラグメント)**で運び、これら全体に対する招待者の**発行署名**(§6.5)を併載する。リンクは招待者から相手へ人対人チャネルで渡り、サーバーはフラグメントを観測も改変もできない。受諾クライアントは発行署名を招待者の sig 公開鍵で検証してから(失敗 = 受諾しない)、アンカーを非機密ローカル状態(ローカル床と同じクラス)へピン留めし、初回同期では genesis が一致し、**ピン留めヘッドを当該 seq に含み、かつ当該 seq 時点のチェーン上で招待者 user_id に束縛された sig 公開鍵がリンクの `is` と一致する**チェーンのみを受理する(SHOULD)。招待者 FP(`ie` ‖ `is` から §3 のとおり導出)は相互確認(§6.5)の照合材料になる。発行署名により、リンク経路上の改竄(ヘッド・role・招待者鍵の差し替え)と、第三者が招待者の**公開**鍵を自分のチェーンへ追加して招待者名義のリンクを作る形(ゴースト追加)は、いずれも受諾前に検出される
+> - **(a) Invite link anchor (2026-09-13 IV revision)**: in addition to the link-key seed (§6.5), the invite link (AUTH_SPEC §15) carries the genesis hash (= project_id), the inviter's verified head at invite creation (hash + seq), the role to be granted, and the inviter's user_id and **enc / sig public keys**, all transported in a **client-side encoding (URL fragment)**, and carries alongside them the inviter's **issuance signature** (§6.5) over the whole of it. The link passes from inviter to invitee over a person-to-person channel; the server can neither observe nor alter the fragment. The accepting client verifies the issuance signature with the inviter's sig public key first (failure = do not accept), pins the anchor into non-secret local state (the same class as the local floor), and on first sync accepts (SHOULD) only a chain where genesis matches, **the pinned head is contained at that seq, and the sig public key bound to the inviter's user_id on the chain at that seq matches the link's `is`**. The inviter FP (derived from `ie` ‖ `is` per §3) becomes the matching material for mutual confirmation (§6.5). Via the issuance signature, both tampering on the link's path (swapping head, role, inviter keys) and the form where a third party adds the inviter's **public** keys to their own chain to mint a link in the inviter's name (ghost addition) are detected before acceptance
 
-### A-2. §6.5 の差し替え(見出しごと)
+### A-2. Substitution of §6.5 (including the heading)
 
-> ### 6.5 招待の暗号面: リンク鍵・発行署名・受諾の共同署名・相互確認(2026-08-12 起草 — 未決事項 #9 の解消。2026-09-13 IV 改訂)
+> ### 6.5 The cryptographic side of invites: link keys, issuance signatures, co-signed acceptance, mutual confirmation (drafted 2026-08-12 — resolves open item #9. Revised 2026-09-13 IV)
 >
-> 未登録ユーザーの招待(および登録済みユーザーの追加 — 両者は同一機構)の暗号面。リソース・API 面は AUTH_SPEC §15。設計原則: **招待は master 鍵素材・DEK を運ばない**(招待リンクの漏洩が鍵の漏洩にならない — リンクが運ぶ秘密は当該招待だけに効く**リンク鍵の種**であり、漏洩の半径は招待 1 件)。相手鍵の真正性は (1) リンク鍵による受諾の共同署名(本節 — **IV1**)、(2) 発行署名(本節 — IV1)、(3) 裏付け元による鍵の照合(本節 — **IV2**)、(4) 招待リンクアンカー(§6.3)、(5) フォールバックとしての鍵 FP の帯域外相互確認(ワード表示 — §3)が担う。グローバルな公開鍵ディレクトリは**作らない** — user_id を知るだけで相手の合意なく add_member できる構造(同意なき追加)と、ディレクトリという新しい信頼オブジェクトの両方を避け、鍵は常に「この招待への受諾」として文脈付きで運ぶ。裏付け元(IdP の公開鍵一覧)はディレクトリではない: 受諾はリンクの保持と受諾者の能動的な署名を要し、裏付け元は**その受諾の鍵を事後に照合するだけ**で、鍵の取得元にも add_member の入力にもならない。
+> The cryptographic side of inviting unregistered users (and of adding registered users — the two are the same mechanism). The resource / API side is AUTH_SPEC §15. Design principle: **an invite carries no master-key material or DEK** (a leaked invite link does not become a key leak — the only secret a link carries is the **link-key seed**, effective for that invite alone; the blast radius of a leak is one invite). Counterparty-key authenticity is carried by (1) the co-signed acceptance via the link key (this section — **IV1**), (2) the issuance signature (this section — IV1), (3) key matching via a backing source (this section — **IV2**), (4) the invite link anchor (§6.3), and (5) the fallback out-of-band mutual confirmation of key FPs (word display — §3). A global public-key directory is **not built** — this avoids both a structure where merely knowing a user_id enables add_member without the other's consent (addition without consent) and a new trust object called a directory; keys are always carried with context as "acceptance of this invite". A backing source (an IdP's public key list) is not a directory: acceptance requires holding the link and the invitee's active signature, and the backing source **only verifies that acceptance's keys after the fact** — it is neither a source for obtaining keys nor an input to add_member.
 >
-> - **リンク鍵**: 招待者クライアントは招待ごとに招待 id(ULID)を採番し、32 バイトの一様乱数 `k`(種)を生成して Ed25519 鍵ペア `(K_priv, K_pub)` を導出する(§3 の署名鍵と同じ導出 — 種 = 秘密鍵の seed)。`K_pub` は発行文(下記)の一部として発行 API へ渡し(AUTH_SPEC §15-2)、`k` はリンクのフラグメントにのみ載せる。**サーバーは `k` / `K_priv` を一度も受け取らない**。招待者クライアントは `k` を永続化しない(表示 = リンクの組み立て直後に参照を捨てる)
-> - **発行文と発行署名**: 招待者は発行文(招待 id・リンク公開鍵・検証済みヘッド・role・自分の同一性)にチェーン署名鍵(Ed25519)で署名し、**サーバー行とリンクの両方**に載せる:
+> - **Link key**: the inviter client assigns an invite id (ULID) per invite, generates a 32-byte uniform random `k` (seed), and derives an Ed25519 key pair `(K_priv, K_pub)` (the same derivation as §3's signing keys — the seed = the private key's seed). `K_pub` is passed to the issuance API as part of the issuance text (below) (AUTH_SPEC §15-2); `k` rides only in the link's fragment. **The server never receives `k` / `K_priv`, not even once**. The inviter client does not persist `k` (display = the reference is dropped right after assembling the link)
+> - **Issuance text and issuance signature**: the inviter signs the issuance text (invite id, link public key, verified head, role, their own identity) with their chain signing key (Ed25519) and puts it on **both the server row and the link**:
 >
 >   ```
 >   invite_issue_signed_bytes = LP("maruhi/v1/invite-issue",
@@ -29,11 +29,11 @@
 >                                  inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)
 >   ```
 >
->   - エンコーディングは §2.1(バイナリは hex 小文字、数値は 10 進文字列)。検証鍵は署名対象内の `inviter_sig_pub_hex`(自己束縛 — §5.1 / 旧 §6.5 の受諾署名と同型)であり、検証の成立は「`inviter_sig_pub` の秘密鍵の保持者がこの招待(この id・この link_pub・このヘッド・この role)を発行した」ことの帰属。招待者が**誰か**は裏付け元(下記)または帯域外照合が示す
->   - 意味論(受諾者側): リンク経路上の改竄(アンカー・role・招待者鍵の差し替え)を検証失敗に落とす。招待者の公開鍵を自分のチェーンへゴースト追加した第三者は招待者名義のリンクを作れない(逆方向フィッシングの機械的な遮断 — 補足 21 裁定 E)。受諾クライアントは発行署名の検証失敗を**受諾しない**理由とする(帯域外照合で上書きしない)
->   - 意味論(招待者側): サーバー行の発行文 + 発行署名を**自分の sig 公開鍵**で検証できることが、「この行(この link_pub)は自分が発行した」ことの真実源になる。サーバーは発行署名を偽造できず、別の行へ移植すると `invite_id` / `link_pub_hex` の束縛で落ちる。これにより招待者は**発行ピンに依存せず**(別端末でも)受諾を検証できる(補足 21 裁定 A ⑦)。発行ピン(AUTH_SPEC §15-3)は追加の突合と宛先 login の保持を担う SHOULD 水準の材料に留まる
->   - サーバーは発行署名を検証しない(検証者は招待者自身と受諾者 — 二重の真実源を作らない)
-> - **受諾の共同署名**: 招待の受諾は、受諾者のチェーン署名鍵(Ed25519)による**受諾署名**と、リンク鍵 `K_priv` による**リンク署名**の 2 署名を、**同一のバイト列**に対して伴う:
+>   - Encoding is §2.1 (binary as lowercase hex, numbers as decimal strings). The verification key is `inviter_sig_pub_hex` inside the signed content (self-bound — same shape as §5.1 / former §6.5's acceptance signature), and successful verification attributes that "the holder of the `inviter_sig_pub` private key issued this invite (this id, this link_pub, this head, this role)". **Who** the inviter is is shown by a backing source (below) or out-of-band matching
+>   - Semantics (invitee side): tampering on the link's path (swapping the anchor, role, inviter keys) fails verification. A third party who ghost-adds the inviter's public keys to their own chain cannot mint a link in the inviter's name (a mechanical block on reverse-direction phishing — supplement 21 ruling E). The accepting client treats issuance-signature verification failure as a reason to **not accept** (not overridable by out-of-band matching)
+>   - Semantics (inviter side): being able to verify the server row's issuance text + issuance signature with **one's own sig public key** is the source of truth for "this row (this link_pub) was issued by me". The server cannot forge the issuance signature, and transplanting it to another row fails the `invite_id` / `link_pub_hex` binding. This lets the inviter verify an acceptance **without depending on the issuance pin** (even from another device) (supplement 21 ruling A ⑦). The issuance pin (AUTH_SPEC §15-3) remains a SHOULD-level material carrying an extra cross-check and the destination login's retention
+>   - The server does not verify the issuance signature (the verifiers are the inviter themself and the invitee — do not build a double source of truth)
+> - **Co-signed acceptance**: accepting an invite carries two signatures over **the same byte string** — an **acceptance signature** by the invitee's chain signing key (Ed25519) and a **link signature** by the link key `K_priv`:
 >
 >   ```
 >   invite_accept_signed_bytes = LP("maruhi/v1/invite-accept-v2",
@@ -43,140 +43,140 @@
 >   link_signature   = Ed25519(K_priv,           invite_accept_signed_bytes)
 >   ```
 >
->   - ドメイン文字列は `-v2`(旧 `invite-accept` は `invite_token_hash_hex` を束縛した — 旧形式は受け付けない。AUTH_SPEC §12-10 (2) の「旧実装が構造的に拒否する形」)。エンコーディングは §2.1。受諾署名の検証鍵は署名対象内の `invitee_sig_pub_hex`、リンク署名の検証鍵は署名対象内の `link_pub_hex`(いずれも自己束縛)
->   - 意味論: 受諾署名 = 「この鍵ペアの保持者が、この招待に対してこの鍵で参加する意思を表明した」の帰属・文脈束縛(不変)。リンク署名 = 「**リンクを持つ者**がこの鍵での受諾を承認した」。サーバーは `K_priv` を持たないため、**受諾ブロックの鍵を別の鍵に差し替えて有効なリンク署名を作ることが暗号的に不可能**になる。招待は**単回使用**(AUTH_SPEC §15)であるため、リンクを横取りした攻撃者が自分の鍵で先に受諾すると(攻撃者はリンク署名を作れる)、正規の相手の受諾が同一招待上で衝突して**顕在化**する — この残余(リンク経路の読み取り + 先着)は裏付け元の照合(IV2)が事前に閉じ、裏付け元が無い場合は帯域外相互確認が閉じる
->   - サーバーは受諾時に両署名を検証する(AUTH_SPEC §15-2)。招待者クライアントは `add_member` の前に、一覧行の発行文 + 発行署名を自分の sig 公開鍵で検証し(失敗 = 自分の発行ではない / 行のすり替え → 拒否)、発行ピンがあれば `link_pub_hex` / role を突合した上で、両署名を独立に再検証する
-> - **裏付け元(IV2 — クライアント仕様)**: 受諾鍵(招待者側)/ 招待者鍵(受諾者側)が「名指しした相手」のものかを、IdP が公開する鍵一覧で機械照合する出所。差し替え可能な抽象として `github-signing-keys` / `org-directory`(予約 — 組織の鍵台帳。SSO 導入時の同等物)/ `none`(照合しない = 儀式)を持ち、v1 の実装は `github-signing-keys` のみ:
->   - 各ユーザーは自分の maruhi **sig 公開鍵(Ed25519)**を GitHub の **SSH 署名鍵**(コミット署名用の種別。SSH 認証には使えない)として登録する(`maruhi key publish`)。表現は OpenSSH 公開鍵行 `ssh-ed25519 <base64(SSH ワイヤ形式: uint32-BE 長さ ‖ "ssh-ed25519" ‖ uint32-BE 長さ ‖ 32 バイト鍵)>`(RFC 4253 §6.6 / RFC 8709)。**これは相互運用の符号化であり新しい暗号プリミティブではない**(§3 の FP ワード・§8.4 のハンドオフコードと同じ位置づけ。符号化・解析は `packages/crypto` に 1 実装を置きテストベクターで固定する)
->   - 照合するクライアントは GitHub の公開 API(`GET /users/{login}/ssh_signing_keys`、認証不要)で当該 login の署名鍵一覧を取得し、`ssh-ed25519` 種別の鍵に対象の sig 公開鍵が**バイト一致**で含まれるかを見る。照合するのは **sig 鍵のみ**で足りる: enc 鍵は受諾署名 / 発行署名の署名対象に含まれ、sig 鍵の保持者が束縛している
->   - 裏付け元へ送る情報は **login のみ**(プロジェクト・鍵・値・利用状況を送らない)。ホストは固定(`api.github.com`)。応答は公開情報として扱い、照合に**失敗**(鍵が無い)しても**不能**(取得できない・上限・オフライン)でも、下記の充足形 1〜3 へ戻る(fail-closed: 裏付け元は儀式を**省く**根拠にしかならず、儀式を**免除しない**方向へは働かない)。鍵が無い場合、クライアントは儀式へ入る前に「相手に登録(`maruhi key publish`)を頼んで再実行する」選択を提示してよい(儀式の代替ではなく延期 — 補足 21 裁定 D ④)
->   - 登録の導線(クライアント仕様): 受諾クライアントは受諾の完了時に登録を案内し、鍵の生成・再生成・復元の直後に登録(または再登録)を提案する(補足 21 裁定 G ⑥)。登録は利用者の明示の同意(yes)を要し、無断で行わない
->   - 将来の裏付け元候補: 利用者が既に IdP に登録している SSH **認証**鍵で受諾文に SSHSIG 署名する形(`github-ssh-keys` — 登録手順が不要になる)は、SSH 公開鍵と SSHSIG の解析・検証を本仕様に足す改訂として別途提示する(補足 21 裁定 G ⑦)
->   - 同じ鍵でコミット署名もできる副産物は許容する(用途は SSHSIG の名前空間と本仕様の LP ドメイン文字列で分離される)
-> - **相互確認(必須 UX)**: 確認は**双方向**とする。招待者側: `add_member` の実行前。受諾者側: 受諾の実行前。片方向の確認だけでは、偽招待で被害者を攻撃者所有のプロジェクトへ参加させ、本物のシークレットを push させる**逆方向フィッシング**が残る(攻撃者は自プロジェクトの正当な owner であり、チェーン検証は警報を出さない)ため、相互を必須とする
-> - **明示確認の充足形(2026-09-12 改訂 — 検証済み指紋帳の解釈の規範化。2026-09-13 IV 改訂 — 第 4 形の追加と既定化)**: 前項の確認は、招待者側・受諾者側とも次のいずれかで充足する。**既定は 4.**、4. が成立しない場合に 1.〜3. へ戻る:
->   1. **読み上げ儀式**: その実行で FP ワード列を帯域外(通話等)で照合し、最終語を再入力する
->   2. **フラグによる機械照合**(`--expect-fingerprint` / `--inviter-fingerprint`): 帯域外で控えた FP の実行時の明示指定。この受諾 1 件への明示的作為であるため、帯域外の記録を照合済みとして扱う(裏付け元を使わない非対話環境で許される形)
->   3. **検証済み指紋帳のヒット + 受諾単位の明示確認**: 同一 (origin, user_id, FP) を過去に 1. または 2. で確認済み(CLI が非機密設定として記録)であれば、読み上げ照合の**再実施**のみを免除する。対象(相手・role / プロジェクト)を名指しする明示確認(yes 入力)は免除しない。この形を使えるのは stdin / stdout が対話端末のときだけであり、AI エージェント環境では使わない(ADR-0016 決定 7 の一次境界と同じ allow-list)
->   4. **リンク束縛 + 裏付け元の照合(既定 — IV1 + IV2)**:
->      - 招待者側: (i) 一覧行の発行文 + 発行署名が自分の sig 公開鍵で検証でき(発行ピンがあれば `link_pub` / role の突合も成立し)、(ii) リンク署名・受諾署名の検証に成功し、(iii) 裏付け元が「受諾の sig 鍵は、発行時に名指しした相手(`invite create --github <login>` — 発行ピンに保持。無ければ実行時の `--github <login>`。対話入力は設けない — AUTH_SPEC §15-3)の鍵である」と照合できた — このとき **確認入力なしに** `add_member` へ進んでよい。名指しは招待の発行時に行われた明示的作為であり、受諾単位の同意はそこで表明済みである
->      - 受諾者側: (i) 発行署名の検証に成功し、(ii) 裏付け元が「招待者の sig 鍵(リンクの `is`)はリンクが名指す login(`il`)の鍵である」と照合できた — このとき読み上げ照合は不要で、**受諾者が「その login からの招待を期待していた」ことの表明**(非対話: `--from <login>` の一致 / 対話: login を名指しする yes 入力)で充足する。受諾は受諾者の能動的な参加意思の表明であり、この 1 回の表明は省かない(経路で差し替えられた**有効な**別人のリンクを見分ける最後の防衛が「login を読む」ことだから)
->      - (i)(ii) の暗号検証の**失敗**(発行署名・リンク署名・受諾署名の失敗、ピンとの不一致)は充足形 1.〜3. へ**戻さず拒否**する(壊れた署名を人間の読み上げで上書きしない)。(iii) の**不能**(裏付け元 `none`・宛先 login が無い・未登録・取得不能)は 1.〜3. へ戻る
->   - **帳のヒットのみによる無確認の自動通過は認めない**(不変): 招待リンクは受諾者の同一性を運ばず、帳は過去の別文脈の検証記録にすぎないため、この付与 / 受諾への人間の同意を代替できない。第 4 形の無確認は、暗号検証(リンク束縛)と発行時の名指し(裏付け元照合)の**両方**が成立する場合に限る
-> - `add_member` エントリ(§6.2)の形式・意味論は不変: チェーンに載る公開鍵は招待者が確認したものであり、以後の真正性はチェーン署名が担う。発行署名・受諾署名・リンク署名はチェーン外の追加証跡(サーバー検証 + 招待者 / 受諾者クライアント検証 — AUTH_SPEC §15)であり、チェーン有効性の合意規則には含めない
-> - **禁止事項(本節の範囲)**: リンク鍵の種 `k` / `K_priv` をディスク・ログ・エラーメッセージ・監査に出さない(表示はリンクとして 1 回)。サーバーが `k` / `K_priv` を受け取る形の API を作らない。裏付け元の照合結果をサーバーへ報告しない(照合はクライアント内で完結)。裏付け元の login をチェーン・監査・サーバー保存の招待行・署名済み構造に書かない(リンクのフラグメントと招待者のローカルピンにのみ置く)
-> - テストベクター: `test-vectors/invite-accept-signature.json`(v2 — 再生成)/ `test-vectors/invite-link.json`(新規 — §11)
+>   - The domain string is `-v2` (the old `invite-accept` bound `invite_token_hash_hex` — the old format is not accepted. The "shape that old implementations structurally reject" of AUTH_SPEC §12-10 (2)). Encoding is §2.1. The acceptance signature's verification key is `invitee_sig_pub_hex` inside the signed content; the link signature's verification key is `link_pub_hex` inside the signed content (both self-bound)
+>   - Semantics: the acceptance signature = the attribution and context binding of "the holder of this key pair declared intent to join with this key for this invite" (unchanged). The link signature = "**the holder of the link** authorized acceptance with this key". Since the server does not hold `K_priv`, **swapping the acceptance block's keys for different keys and producing a valid link signature is cryptographically impossible**. Because an invite is **single-use** (AUTH_SPEC §15), if an attacker who intercepted the link accepts first with their own key (the attacker can make a link signature), the legitimate party's acceptance collides on the same invite and **surfaces** — this residual (reading the link's path + racing first) is closed beforehand by the backing-source match (IV2), or by out-of-band mutual confirmation when there is no backing source
+>   - The server verifies both signatures at acceptance (AUTH_SPEC §15-2). Before `add_member`, the inviter client verifies the list row's issuance text + issuance signature with its own sig public key (failure = not my issuance / a swapped row → refuse), cross-checks `link_pub_hex` / role against the issuance pin if one exists, then re-verifies both signatures independently
+> - **Backing sources (IV2 — a client spec)**: a provenance that mechanically checks — against the key list the IdP publishes — whether the acceptance key (inviter side) / inviter key (invitee side) belongs to "the person named". As a replaceable abstraction it carries `github-signing-keys` / `org-directory` (reserved — an org key ledger, the equivalent when SSO is introduced) / `none` (no matching = ceremony); v1 implements `github-signing-keys` only:
+>   - Each user registers their maruhi **sig public key (Ed25519)** as a GitHub **SSH signing key** (the kind used for commit signing; cannot be used for SSH authentication) (`maruhi key publish`). The representation is an OpenSSH public-key line `ssh-ed25519 <base64(SSH wire format: uint32-BE length ‖ "ssh-ed25519" ‖ uint32-BE length ‖ 32-byte key)>` (RFC 4253 §6.6 / RFC 8709). **This is an interop encoding, not a new crypto primitive** (same standing as §3's FP words and §8.4's handoff code. Encoding and parsing live as a single implementation in `packages/crypto`, fixed by test vectors)
+>   - The matching client fetches that login's signing-key list via GitHub's public API (`GET /users/{login}/ssh_signing_keys`, no authentication needed) and checks whether the target sig public key is **byte-identical** to one of the `ssh-ed25519` keys. Matching only the **sig key** suffices: the enc key is inside the signed content of the acceptance / issuance signature and is bound by the sig key's holder
+>   - What is sent to the backing source is **the login only** (no project, key, value, or usage is sent). The host is fixed (`api.github.com`). The response is treated as public information; whether the match **fails** (no such key) or is **impossible** (cannot fetch, rate limit, offline), fall back to satisfaction forms 1–3 below (fail-closed: a backing source can only be grounds for **skipping** ceremony steps; it never works in the direction of **waiving** the ceremony). If the key is absent, before entering the ceremony the client may offer the choice "ask the other party to register (`maruhi key publish`) and rerun" (a postponement of the ceremony, not a replacement — supplement 21 ruling D ④)
+>   - The registration path (client spec): the accepting client guides registration when acceptance completes, and proposes registration (or re-registration) right after key generation, regeneration, or restoration (supplement 21 ruling G ⑥). Registration requires the user's explicit consent (yes); it is never done without asking
+>   - Future backing-source candidates: the form where the user SSHSIG-signs the acceptance text with an SSH **authentication** key already registered with the IdP (`github-ssh-keys` — no registration step needed) is to be presented separately as a revision adding SSH public-key and SSHSIG parsing / verification to this spec (supplement 21 ruling G ⑦)
+>   - The byproduct that the same key can also sign commits is acceptable (the uses are separated by SSHSIG's namespace and this spec's LP domain string)
+> - **Mutual confirmation (mandatory UX)**: confirmation is **bidirectional**. Inviter side: before running `add_member`. Invitee side: before running acceptance. With only one direction, **reverse-direction phishing** remains — a fake invite gets the victim to join an attacker-owned project and push real secrets (the attacker is a legitimate owner of their own project, and chain verification raises no alarm) — so mutual is mandatory
+> - **Satisfaction forms of explicit confirmation (revised 2026-09-12 — normalizing the interpretation of the verified fingerprint ledger. 2026-09-13 IV revision — adding form 4 as the default)**: the confirmation of the previous item is satisfied, on both inviter and invitee sides, by one of the following. **The default is 4.**, falling back to 1.–3. when 4. does not hold:
+>   1. **Read-aloud ceremony**: match the FP word sequence out-of-band (a call etc.) during the run, then re-enter the final word
+>   2. **Flag-based mechanical match** (`--expect-fingerprint` / `--inviter-fingerprint`): explicitly specifying, at run time, an FP recorded out-of-band. Because it is an explicit act for this single acceptance, the out-of-band record is treated as already matched (the form allowed in non-interactive environments that cannot use a backing source)
+>   3. **Verified-ledger hit + explicit per-acceptance confirmation**: if the same (origin, user_id, FP) was previously confirmed via 1. or 2. (the CLI records it as non-secret configuration), only the **re-execution** of the read-aloud match is waived. The explicit confirmation (a yes input) naming the target (the counterparty, role / project) is not waived. This form is usable only when stdin / stdout is an interactive terminal, and is not used in AI-agent environments (the same allow-list as ADR-0016 decision 7's primary boundary)
+>   4. **Link binding + backing-source match (the default — IV1 + IV2)**:
+>      - Inviter side: (i) the list row's issuance text + issuance signature verifies under one's own sig public key (and if an issuance pin exists, the `link_pub` / role cross-check holds), (ii) the link signature and acceptance signature verify, and (iii) the backing source matches that "the acceptance's sig key is the key of the party named at issuance (`invite create --github <login>` — held in the issuance pin. If absent, the run-time `--github <login>`. No interactive input is provided — AUTH_SPEC §15-3)" — then one may proceed to `add_member` **with no confirmation input**. The naming was an explicit act at issuance time; per-acceptance consent was already expressed there
+>      - Invitee side: (i) the issuance signature verifies, and (ii) the backing source matches that "the inviter's sig key (the link's `is`) is the key of the login the link names (`il`)" — then no read-aloud match is needed; it is satisfied by **the invitee declaring "I was expecting an invite from that login"** (non-interactive: matching `--from <login>`; interactive: a yes input naming the login). Acceptance is the invitee's expression of active intent to participate, and this one declaration is not skipped (the last line of defense distinguishing a **valid** link of someone else substituted along the path is "reading the login")
+>      - **Failures** of the cryptographic verifications in (i)(ii) (issuance signature, link signature, or acceptance signature failing; mismatch against the pin) **reject without falling back** to forms 1.–3. (a broken signature is not overridden by a human read-aloud). **Impossibility** in (iii) (backing source `none`, no destination login, unregistered, unfetchable) falls back to 1.–3.
+>   - **Unconfirmed automatic pass on a ledger hit alone is not allowed** (unchanged): an invite link does not carry the invitee's identity and the ledger is merely a verification record of a different past context, so it cannot substitute for a human's consent to this grant / acceptance. Form 4's no-confirmation applies only when **both** the cryptographic verification (link binding) and the issuance-time naming (backing-source match) hold
+> - The format and semantics of the `add_member` entry (§6.2) are unchanged: the public keys on the chain are the ones the inviter confirmed, and authenticity thereafter is carried by chain signatures. The issuance, acceptance, and link signatures are additional off-chain evidence (server verification + inviter / invitee client verification — AUTH_SPEC §15) and are not included in the consensus rules of chain validity
+> - **Prohibitions (scope of this section)**: do not emit the link-key seed `k` / `K_priv` to disk, logs, error messages, or audit (it is displayed once, as a link). Do not build an API shape where the server receives `k` / `K_priv`. Do not report backing-source match results to the server (matching completes inside the client). Do not write the backing-source login to the chain, the audit log, the server-stored invite row, or signed structures (it lives only in the link's fragment and the inviter's local pin)
+> - Test vectors: `test-vectors/invite-accept-signature.json` (v2 — regenerated) / `test-vectors/invite-link.json` (new — §11)
 
-### A-3. §11 テストベクターへの追記
+### A-3. Additions to the §11 test vectors
 
-> - 0.10-draft(IV)で改訂・追加されるベクター(**所有者承認後の実装 PR〔IV-K2 — 実装分割は docs/notes/integration-options.md 補足 21〕で、実装より先にコミットする**): `invite-accept-signature.json` の**再生成**(v2 — §6.5: `invite_token_hash_hex` → `link_pub_hex`、ドメイン `invite-accept-v2`。正例は同一 signed_bytes に対する受諾署名とリンク署名の 2 本を併記。負例 = 改竄・別招待〔別 link_pub〕・別プロジェクト・invitee 差し替え・enc / sig 鍵不一致・署名者不一致・**リンク鍵不一致**〔別のリンク鍵で作ったリンク署名 = サーバー偽造の形〕・suite 不一致)。**旧形式(token_hash 束縛)のベクターは残さない** — 互換経路を作らない裁定(2026-09-13)の写しであり、README 規約「既存ベクターは不変」の意図的な例外(規約 26 として明記)。`invite-link.json`(新規 — §6.5): 種 `k` からのリンク鍵導出(`k` → `K_pub`)、発行署名(正例 + 負例 = 改竄・**invite_id 移植**・head 差し替え・role 差し替え・link_pub 移植・inviter 鍵差し替え・署名者不一致・suite 不一致)、OpenSSH 公開鍵行の符号化と解析(正例 = 受諾者 sig 鍵の `ssh-ed25519 …` 行と GitHub 応答形〔`key` フィールドにコメント無し / あり〕の解析。負例 = 種別違い〔`ssh-rsa` / `sk-ssh-ed25519@openssh.com`〕・鍵長違い・base64 破損・種別文字列の大文字)。`chain-entries.json` は変更なし(チェーン形式に触れない)
+> - Vectors revised or added in 0.10-draft (IV) (**committed before the implementation, in the post-owner-approval implementation PR [IV-K2 — the implementation split is docs/notes/integration-options.md supplement 21]**): **regeneration** of `invite-accept-signature.json` (v2 — §6.5: `invite_token_hash_hex` → `link_pub_hex`, domain `invite-accept-v2`. Positive cases list the two signatures — acceptance and link — over the same signed_bytes side by side. Negative cases = tampering, a different invite [different link_pub], a different project, swapped invitee, mismatched enc / sig keys, mismatched signer, **mismatched link key** [a link signature made with a different link key = the server-forgery shape], suite mismatch). **No vectors of the old format (token_hash binding) are kept** — a reflection of the ruling not to build a compat path (2026-09-13), and an intentional exception to the README convention "existing vectors are unchanged" (recorded as convention 26). `invite-link.json` (new — §6.5): link-key derivation from seed `k` (`k` → `K_pub`), the issuance signature (positive + negative = tampering, **invite_id transplant**, head swap, role swap, link_pub transplant, inviter-key swap, signer mismatch, suite mismatch), encoding and parsing of the OpenSSH public-key line (positive = parsing the invitee sig key's `ssh-ed25519 …` line and the GitHub response shape [with and without a comment in the `key` field]. Negative = wrong type [`ssh-rsa` / `sk-ssh-ed25519@openssh.com`], wrong key length, corrupted base64, uppercase in the type string). `chain-entries.json` is unchanged (the chain format is untouched)
 
-### A-4. §13 未決事項への注記
+### A-4. A note on §13 open items
 
-> 9. ~~未登録ユーザーの招待(pending invitation)~~ **解消(2026-08-12 起草)**: … **— 2026-09-13 追記: 招待者側の 12 語儀式の既定廃止(IV1 リンク束縛 + IV2 裏付け元)を §6.5 の改訂として起草。設計録は docs/notes/integration-options.md 補足 21**
+> 9. ~~Inviting unregistered users (pending invitation)~~ **Resolved (drafted 2026-08-12)**: … **— Added 2026-09-13: the abolition of the inviter-side 12-word ceremony as the default (IV1 link binding + IV2 backing source) is drafted as a §6.5 revision. The design record is docs/notes/integration-options.md supplement 21**
 
-### A-5. §14.3 明示的な非保証への追記
+### A-5. Addition to §14.3 explicit non-guarantees
 
-> 9. **招待リンク経路の残余(2026-09-13 — §6.5 IV 改訂)**: リンク鍵によりサーバーは受諾鍵をすり替えられないが、**リンクを渡す経路**(Slack DM 等)を読める攻撃者は正規の相手より先に自分の鍵で受諾できる(受諾衝突として正規の相手側には顕在化する)。裏付け元(`github-signing-keys`)がこれを事前に閉じるが、攻撃者が相手の GitHub アカウントに自分の鍵を置ける(アカウント奪取)場合、または招待者が宛先 login を誤って名指しした場合は閉じない。裏付け元 `none` ではフォールバックの帯域外相互確認が閉じる。経路が**能動的に**差し替えられた場合(攻撃者自身のプロジェクトへの有効なリンク)、受諾者側の防衛は裏付け元が示す招待者 login を受諾者が読むこと(`--from` / yes)である。**招待リンクは信頼できる人対人チャネルで渡す**(規範 — AUTH_SPEC §15-3)。本項は H5 で脅威モデル文書へ移す
+> 9. **The residual of the invite-link path (2026-09-13 — §6.5 IV revision)**: the link key prevents the server from swapping the acceptance key, but an attacker who can read **the path the link travels** (a Slack DM etc.) can accept with their own key before the legitimate party (surfacing to the legitimate party as an acceptance collision). The backing source (`github-signing-keys`) closes this beforehand, except when the attacker can place their own key on the invitee's GitHub account (account takeover), or when the inviter names the wrong destination login. With backing source `none`, the fallback out-of-band mutual confirmation closes it. When the path is **actively** substituted (a valid link to the attacker's own project), the invitee-side defense is the invitee reading the inviter login the backing source shows (`--from` / yes). **Invite links are passed over a trusted person-to-person channel** (a norm — AUTH_SPEC §15-3). This item moves to the threat-model document in H5
 
 ---
 
-## B. AUTH_SPEC の改訂案
+## B. AUTH_SPEC revision proposals
 
-### B-1. §15 前文の差し替え
+### B-1. Substitution of the §15 preamble
 
-> ## 15. 招待 API(2026-08-12 セッション 22 起草 — CRYPTO_SPEC 未決 #9 の解消。2026-09-13 IV 改訂 — リンク鍵・発行署名・受諾の共同署名・裏付け元)
+> ## 15. Invite API (drafted in session 22 on 2026-08-12 — resolves CRYPTO_SPEC open item #9. Revised 2026-09-13 IV — link keys, issuance signatures, co-signed acceptance, backing sources)
 >
-> CRYPTO_SPEC §6.5(リンク鍵・発行署名・受諾の共同署名・相互確認)のリソース・API 面。メンバー追加は登録済み・未登録を問わず**招待 → 受諾 → add_member** の単一機構で行う(同意なき追加を構造的に排除する)。グローバル公開鍵ディレクトリは作らない(同 §6.5)。**本改訂より前の招待(トークン束縛の受諾ブロック・`v=1` リンク)は受け付けない**(2026-09-13 所有者裁定 — 互換経路を作らない。既存の pending 行は受諾不能となり失効を促す)。
+> The resource / API side of CRYPTO_SPEC §6.5 (link keys, issuance signatures, co-signed acceptance, mutual confirmation). Members are added — registered or not — via the single mechanism **invite → accept → add_member** (structurally eliminating addition without consent). No global public-key directory is built (same §6.5). **Invites predating this revision (token-bound acceptance blocks, `v=1` links) are not accepted** (2026-09-13 owner ruling — no compat path. Existing pending rows become unacceptable and are nudged toward revocation).
 
-### B-2. §15-1 リソースモデルの差し替え
+### B-2. Substitution of the §15-1 resource model
 
-> ### 15-1. リソースモデル
+> ### 15-1. Resource model
 >
 > ```sql
 > invitations (
->   id              TEXT PRIMARY KEY,   -- ULID(IV 改訂後は**クライアント採番** — 発行署名が覆う。衝突は 409)
->   project_id      TEXT NOT NULL,      -- genesis ハッシュ。リンク鍵の保持を capability として扱う(§11-2 との整合)
->   link_pub        TEXT,               -- リンク公開鍵(Ed25519、hex 小文字 64)。発行時にクライアントが生成して申告(CRYPTO_SPEC §6.5)。UNIQUE。
->                                       -- IV 改訂前の行は NULL(受諾不能)
->   head_hash       TEXT,               -- 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq(CRYPTO_SPEC §6.5)。公開値
+>   id              TEXT PRIMARY KEY,   -- ULID (after the IV revision, **client-assigned** — covered by the issuance signature. Collisions are 409)
+>   project_id      TEXT NOT NULL,      -- genesis hash. Holding a link key is treated as a capability (consistency with §11-2)
+>   link_pub        TEXT,               -- link public key (Ed25519, lowercase hex 64). Generated and declared by the client at issuance (CRYPTO_SPEC §6.5). UNIQUE.
+>                                       -- Rows predating the IV revision are NULL (unacceptable)
+>   head_hash       TEXT,               -- issuance text: the inviter's verified head at issuance (hex 64) and its seq (CRYPTO_SPEC §6.5). Public value
 >   head_seq        INTEGER,
->   issue_signature TEXT,               -- 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布するだけ
->   token_hash      TEXT NOT NULL,      -- legacy 列(IV 改訂前は招待トークンの SHA-256)。新行は lower_hex(SHA-256(link_pub の 32 バイト))を書く
->                                       -- (NOT NULL を追加型マイグレーションで外せないため)。参照には使わない。将来の表再構築で削除
->   role            TEXT NOT NULL,      -- 'reader' | 'member' | 'admin'(招待経由で owner は付与しない)
+>   issue_signature TEXT,               -- issuance signature (the inviter's chain sig key, hex 128). The server does not verify it; it only stores and distributes it
+>   token_hash      TEXT NOT NULL,      -- legacy column (pre-IV it held the invite token's SHA-256). New rows write lower_hex(SHA-256(the 32 bytes of link_pub))
+>                                       -- (NOT NULL cannot be dropped by an additive migration). Never read. Removed in a future table rebuild
+>   role            TEXT NOT NULL,      -- 'reader' | 'member' | 'admin' (owner is never granted via invite)
 >   inviter_user_id TEXT NOT NULL,
->   status          TEXT NOT NULL,      -- 'pending' | 'accepted' | 'completed' | 'revoked'(期限切れは expires_at からの導出)
->   expires_at      INTEGER NOT NULL,   -- 発行 + 7 日(起草値)
->   -- 受諾ブロック(status が accepted 以降):
+>   status          TEXT NOT NULL,      -- 'pending' | 'accepted' | 'completed' | 'revoked' (expiry is derived from expires_at)
+>   expires_at      INTEGER NOT NULL,   -- issuance + 7 days (drafted value)
+>   -- acceptance block (status accepted and later):
 >   invitee_user_id TEXT, invitee_enc_pub TEXT, invitee_sig_pub TEXT,
->   accept_signature TEXT,              -- CRYPTO_SPEC §6.5 受諾署名(受諾者のチェーン sig 鍵)
->   link_signature  TEXT,               -- CRYPTO_SPEC §6.5 リンク署名(リンク鍵)
+>   accept_signature TEXT,              -- CRYPTO_SPEC §6.5 acceptance signature (the invitee's chain sig key)
+>   link_signature  TEXT,               -- CRYPTO_SPEC §6.5 link signature (the link key)
 >   accepted_at     INTEGER,
 >   created_at      INTEGER NOT NULL
 > )
 > ```
 >
-> - 保存先は D1(受諾はプロジェクト非メンバーからの操作であり、リンク公開鍵 → プロジェクトの解決に全体索引を要するため)。監査イベント(invite.*)も同じ D1 に置き、同一 batch で追記する(AUDIT_SPEC §3.2 / §5.2)
-> - **サーバーは招待の秘密を一切保持・返却しない**: 行に載るのはリンク**公開**鍵・発行文・発行署名で、リンク鍵の種はサーバーを通らない(発行応答にもトークン相当の値は無い)。行が漏れても受諾は偽造できない(旧 token_hash と同じ「検証できるが作れない」性質)。発行文 + 発行署名は招待者クライアントが `add_member` の前に自分の鍵で検証する材料であり、サーバーはこれを偽造・移植できない(CRYPTO_SPEC §6.5)
-> - **単回使用**: 受諾は pending → accepted の CAS。受諾済み・失効・期限切れへの受諾は 410
-> - 招待相手向けの表示名スナップショット・**裏付け元の login**等は招待レコードに**持たせない**: 受諾前の相手に見せるのは role と、リンクが運ぶ検証可能な情報(15-3)のみ。サーバー申告の表示名を信頼させる面を作らない。裏付け元の login はリンクのフラグメント(招待者 → 受諾者)と招待者のローカルピン(宛先)にのみ置く(CRYPTO_SPEC §6.5 禁止事項)
+> - Storage is D1 (acceptance is an operation by a non-member of the project, so resolving link public key → project requires a global index). Audit events (invite.*) live in the same D1 and are appended in the same batch (AUDIT_SPEC §3.2 / §5.2)
+> - **The server never holds or returns any invite secret**: the row carries the link **public** key, the issuance text, and the issuance signature; the link-key seed never passes through the server (the issuance response carries no token-like value either). A leaked row cannot forge an acceptance (the same "verifiable but not manufacturable" property as the old token_hash). The issuance text + issuance signature are material the inviter client verifies under its own key before `add_member`, and the server can neither forge nor transplant them (CRYPTO_SPEC §6.5)
+> - **Single-use**: acceptance is a pending → accepted CAS. Acceptance of an already-accepted, revoked, or expired invite is 410
+> - The invite record does **not** hold a display-name snapshot for the invitee, **the backing-source login**, or the like: what is shown to the invitee before acceptance is only the role and the verifiable information the link carries (15-3). No surface is built that would make a server-declared display name trusted. The backing-source login lives only in the link's fragment (inviter → invitee) and in the inviter's local pin (the destination) (CRYPTO_SPEC §6.5 prohibitions)
 
-### B-3. §15-2 エンドポイントと認可の差し替え
+### B-3. Substitution of §15-2 endpoints and authorization
 
-> ### 15-2. エンドポイントと認可
+> ### 15-2. Endpoints and authorization
 >
-> | op | エンドポイント | 認可 |
+> | op | Endpoint | Authorization |
 > |---|---|---|
-> | 発行 | `POST /projects/:projectId/invites`(body: `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }`。応答: `{ expiresAtMs }`) | トークンスコープ admin × チェーン role admin 以上(**role = admin の招待の発行は owner のみ**)。**セッション主体は拒否**(§5 — 発行はリンク鍵の生成と発行署名を要し、鍵なし Web には置けない — ADR-0018 改訂 2)。`id` は ULID 形式・`linkPubHex` は 32 バイト hex・`headHashHex` は 32 バイト hex・`issueSignatureHex` は 64 バイト hex の**形式検査のみ**(発行署名はサーバーが検証しない — 検証者は招待者自身と受諾者)。`id` / `linkPubHex` の UNIQUE 違反は 409(クライアントは採番・生成し直す) |
-> | 受諾 | `POST /invites/accept`(body: `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`) | **全プロジェクトスコープ(`*`)× admin のトークンのみ**(§13-2 の鍵素材条件と同水準 — 鍵宣言クラスの操作。**セッション主体は拒否**。理由は従前どおり)。リンク鍵の保持(= リンク署名を作れること)が対象招待への capability |
-> | 一覧・失効 | `GET / DELETE /projects/:projectId/invites(/:id)` | トークンスコープ admin × チェーン role admin 以上。**セッション主体も可**(読み取り + 失効系) |
+> | Issue | `POST /projects/:projectId/invites` (body: `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }`. Response: `{ expiresAtMs }`) | token scope admin × chain role admin or above (**issuing an invite with role = admin is owner-only**). **Session principals denied** (§5 — issuance requires generating the link key and producing the issuance signature; it cannot live on key-less Web — ADR-0018 revision 2). `id` is ULID format, `linkPubHex` is 32-byte hex, `headHashHex` is 32-byte hex, `issueSignatureHex` is 64-byte hex — **format checks only** (the server does not verify the issuance signature — the verifiers are the inviter themself and the invitee). UNIQUE violations of `id` / `linkPubHex` are 409 (the client re-assigns / regenerates) |
+> | Accept | `POST /invites/accept` (body: `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`) | **Only a token of all-project scope (`*`) × admin** (the same level as §13-2's key-material condition — a key-declaration-class operation. **Session principals denied**. The reasons are as before). Holding the link key (= being able to make a link signature) is the capability for the target invite |
+> | List / revoke | `GET / DELETE /projects/:projectId/invites(/:id)` | token scope admin × chain role admin or above. **Session principals allowed** (read + revocation kind) |
 >
-> - **受諾のサーバー検証(判定順)**: Schema 400 → 認証 401 → CSRF / 鍵素材条件 403 → 未知の `linkPubHex` 404 → 使用不能 410(`link_pub` が NULL の旧行も 410 `unbound` — 受諾不能)→ **リンク署名の検証**(`link_pub` は保存行、`project_id` は保存行、`invitee_user_id` は呼び出し主体から再構成 — ワイヤ申告値から組まない)422 → **受諾署名の検証**(提示された sig 鍵)422 → CAS(敗北は再読みで 410)。**呼び出し主体の内部 user_id = 署名対象の invitee_user_id** を両署名が強制する。鍵は形式検査(32 バイト hex)のみ行い、**メンバー鍵一意性(CRYPTO_SPEC §6.2)の事前判定はしない**(不変)。サーバーの署名検証は手前の受理検査であり真実源ではない — 真実源は招待者クライアントの発行ピン照合 + 両署名の再検証(CRYPTO_SPEC §6.5)
-> - **受諾はチェーンに影響しない**(不変)。サーバーは add_member 受理時に target = invitee の accepted 招待を completed へ更新する
-> - 受理ポリシー(起草値・不変): pending 招待はプロジェクトあたり 100 まで、発行は固定窓 1 時間 30 回 / プロジェクト。超過は 429。発行・受諾は strict 受理(§12-10 (1) — 列挙済み)
-> - **一覧行**(`InvitationSummary`)は `tokenHashHex` を発行文(`linkPubHex` / `headHashHex` / `headSeq` / `issueSignatureHex` — 旧行は null)に置き換え、受諾ブロックに `linkSignatureHex` を足す。招待者クライアントは発行文 + 発行署名を自分の sig 公開鍵で検証し(失敗 = 自分の発行ではない / 行のすり替え → add_member しない)、発行ピンがあれば `linkPubHex` / role を突合し、両署名を再検証する
+> - **Server verification of acceptance (determination order)**: Schema 400 → authentication 401 → CSRF / key-material condition 403 → unknown `linkPubHex` 404 → unusable 410 (an old row whose `link_pub` is NULL is also 410 `unbound` — unacceptable) → **link-signature verification** (`link_pub` from the stored row, `project_id` from the stored row, `invitee_user_id` reconstructed from the calling principal — not assembled from wire-declared values) 422 → **acceptance-signature verification** (against the presented sig key) 422 → CAS (a lost CAS is re-read as 410). Both signatures enforce **the calling principal's internal user_id = the invitee_user_id of the signed content**. Keys get a format check only (32-byte hex); **no pre-check of member-key uniqueness (CRYPTO_SPEC §6.2)** (unchanged). The server's signature verification is an acceptance check upstream and not a source of truth — the source of truth is the inviter client's issuance-pin match + re-verification of both signatures (CRYPTO_SPEC §6.5)
+> - **Acceptance does not affect the chain** (unchanged). The server updates an accepted invite with target = invitee to completed when add_member is accepted
+> - Acceptance policy (drafted values, unchanged): at most 100 pending invites per project; issuance is a fixed window of 30 per hour per project. Excess is 429. Issuance and acceptance are strict acceptance (§12-10 (1) — enumerated)
+> - **List rows** (`InvitationSummary`) replace `tokenHashHex` with the issuance text (`linkPubHex` / `headHashHex` / `headSeq` / `issueSignatureHex` — null on old rows), and the acceptance block gains `linkSignatureHex`. The inviter client verifies the issuance text + issuance signature under its own sig public key (failure = not my issuance / a swapped row → do not add_member), cross-checks `linkPubHex` / role against the issuance pin if one exists, and re-verifies both signatures
 
-### B-4. §15-3 招待リンクの形式の差し替え
+### B-4. Substitution of the §15-3 invite-link format
 
-> ### 15-3. 招待リンクの形式(クライアント仕様)
+> ### 15-3. The invite-link format (client spec)
 >
 > ```
 > https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>&h=<head_hash_hex>&s=<head_seq>
 >   &iu=<inviter_user_id>&ie=<inviter_enc_pub_hex>&is=<inviter_sig_pub_hex>&r=<role>&il=<inviter_github_login>&sig=<issue_signature_hex>
 > ```
 >
-> - **`v=2`**(2026-09-13 IV 改訂)。`v=1`(`t=` トークン・`if=` FP)は受け付けず、受諾クライアントは「発行者に再発行を依頼」を案内する。**生トークン(リンク以外の入力)による受諾は廃止**(アンカー・発行署名・裏付けを全て失う経路を残さない)
-> - **フラグメント(`#` 以降)はサーバーへ送信されない**(不変): `i` は招待 id(クライアント採番の ULID — 発行署名が覆う)、`k` はリンク鍵の種(CRYPTO_SPEC §6.5 — 受諾クライアントは `K_priv` を導出してリンク署名を作る。永続化しない)、`p` / `h` / `s` は招待リンクアンカー(CRYPTO_SPEC §6.3 (a))、`iu` / `ie` / `is` は招待者の同一性(FP は `ie` ‖ `is` から導出 — 旧 `if` は廃止)、`r` は付与予定 role、`sig` は **発行署名**(`invite_issue_signed_bytes` — `i / p / K_pub / h / s / r / iu / ie / is` を覆う。`k` と `il` は覆わない)。受諾クライアントは `sig` を `is` で検証してから他の何にも進まない(失敗 = 受諾しない)
-> - **`r` は発行署名に含まれる**ため改竄検出の対象になる(2026-08-15 追補の「表示専用・警告」から格上げ)。付与される role の真実源は招待レコードであり、受諾応答の role と食い違えば受諾クライアントは**エラー**として扱う(行のすり替えかリンクの改竄)
-> - **`il` は招待者の GitHub login**(招待者クライアントが `GET /auth/me` の表示用 login から組む。裏付け元 `github-signing-keys` の照合材料 — CRYPTO_SPEC §6.5)。自己申告だが、`is` が `il` の署名鍵一覧に無ければ照合不能として儀式へ戻るだけで、嘘は利得にならない。**受諾クライアントは `il` を永続化しない**(アンカーピンに書かない)。裏付け元が `none` の環境では無視される
-> - CLI: `maruhi invite create [--github <login>]`(招待 id の採番 → リンク鍵の生成 → 発行署名 → 発行〔発行文 + 署名を送る〕→ リンクの組み立てと表示 → 発行ピン〔`linkPubHex` / role / 期限 / 宛先 login〕の保存)/ `maruhi invite accept '<link>' [--from <login>] [--inviter-fingerprint <fp>]`(発行署名の検証 → 相互確認〔CRYPTO_SPEC §6.5 充足形〕→ 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカーのピン留め)/ `maruhi member add [<invite-id>] [--github <login>] [--expect-fingerprint <fp>]`(発行ピン照合 → 両署名の再検証 → 充足形の判定 → add_member)/ `maruhi key publish [--gh]`(自分の sig 公開鍵を OpenSSH 行で表示し、`--gh` で `gh ssh-key add --type signing` を呼ぶ)。裏付け元は CLI の非機密設定 `identityBacking`(`github-signing-keys` 既定 / `none`)
-> - **リンクの着地点(`<web-origin>/invite`)は完全に静的な案内ページ**(不変 — 2026-08-28 W0 裁定・ADR-0018 改訂 2・5 項。スクリプトを持たず、フラグメントを解釈しない。per-path CSP `script-src 'none'`)。招待の発行も受諾も Web には置かない
-> - **招待リンクは信頼できる人対人チャネルで渡す(規範)**: リンクを読める者は正規の相手より先に受諾でき(裏付け元がこれを閉じる — CRYPTO_SPEC §14.3-9)、リンクを差し替えられる者は自分のプロジェクトへ誘える(受諾者が `il` を読むことが防衛)。H5 の脅威モデル文書へ移す
-> - **サインアップ制御(§3)との合成**(不変): サインアップ招待コードは別チャネルで渡す
-> - **発行ピン(招待者側の非機密ローカル状態 — SHOULD)**: `invites/<projectId>.json` の `issued[<invite id>] = { linkPubHex, role, expiresAtMs, expectedGithubLogin? }`。IV1 の検証の真実源はサーバー行の発行文に対する招待者自身の発行署名(CRYPTO_SPEC §6.5)であり、ピンは `linkPubHex` / role の追加突合と宛先 login の保持を担う。ピンの無い端末(別端末発行)でも第 4 形は成立し、宛先 login だけ `--github <login>` で補う(対話入力は設けない — 儀式の再入力プロンプトと同じ経路に混ざり、打ち間違いが別人の login への問い合わせになるため。名指しは発行時かフラグの明示的作為に限る — 2026-09-13 K5 実装裁定・所有者承認)。**リンク鍵の種・秘密鍵はピンに書かない**
-> - **アンカーのピン留めは受諾成功後に行う**(不変)。アンカーに招待者の sig 公開鍵(`is`)を併置し、初回同期の機械照合(CRYPTO_SPEC §6.3 (a))は FP に加えて sig 公開鍵の一致も検査する。機械照合済み(verified)のアンカーは後続の受諾でも上書きしない
+> - **`v=2`** (2026-09-13 IV revision). `v=1` (`t=` token, `if=` FP) is not accepted, and the accepting client guides "ask the issuer to re-issue". **Acceptance by raw token (input other than a link) is abolished** (do not leave a path that loses the anchor, the issuance signature, and the backing all at once)
+> - **The fragment (after `#`) is never sent to the server** (unchanged): `i` is the invite id (a client-assigned ULID — covered by the issuance signature); `k` is the link-key seed (CRYPTO_SPEC §6.5 — the accepting client derives `K_priv` to make the link signature. Not persisted); `p` / `h` / `s` are the invite link anchor (CRYPTO_SPEC §6.3 (a)); `iu` / `ie` / `is` are the inviter's identity (the FP is derived from `ie` ‖ `is` — the old `if` is abolished); `r` is the role to be granted; `sig` is the **issuance signature** (`invite_issue_signed_bytes` — covering `i / p / K_pub / h / s / r / iu / ie / is`. It does not cover `k` or `il`). The accepting client verifies `sig` with `is` before proceeding to anything else (failure = do not accept)
+> - **Because `r` is inside the issuance signature**, it is a tamper-detection target (promoted from the 2026-08-15 addendum's "display-only, warn"). The source of truth for the granted role is the invite record; if it disagrees with the acceptance response's role, the accepting client treats it as an **error** (a swapped row or a tampered link)
+> - **`il` is the inviter's GitHub login** (the inviter client assembles it from the display login of `GET /auth/me`. The matching material for backing source `github-signing-keys` — CRYPTO_SPEC §6.5). It is self-declared, but a lie gains nothing: if `is` is not in `il`'s signing-key list, matching is impossible and it just falls back to the ceremony. **The accepting client does not persist `il`** (does not write it into the anchor pin). In environments where the backing source is `none`, it is ignored
+> - CLI: `maruhi invite create [--github <login>]` (assign invite id → generate link key → issuance signature → issue [send issuance text + signature] → assemble and display the link → store the issuance pin [`linkPubHex` / role / expiry / destination login]) / `maruhi invite accept '<link>' [--from <login>] [--inviter-fingerprint <fp>]` (verify issuance signature → mutual confirmation [CRYPTO_SPEC §6.5 satisfaction forms] → key generation [if none] → co-sign → accept → pin the anchor) / `maruhi member add [<invite-id>] [--github <login>] [--expect-fingerprint <fp>]` (issuance-pin match → re-verify both signatures → decide the satisfaction form → add_member) / `maruhi key publish [--gh]` (display one's own sig public key as an OpenSSH line; `--gh` invokes `gh ssh-key add --type signing`). The backing source is the CLI's non-secret setting `identityBacking` (`github-signing-keys` default / `none`)
+> - **The link's landing point (`<web-origin>/invite`) is a completely static guidance page** (unchanged — 2026-08-28 W0 ruling, ADR-0018 revisions 2 and 5. It holds no script and does not interpret the fragment. Per-path CSP `script-src 'none'`). Neither issuance nor acceptance lives on the Web
+> - **Invite links are passed over a trusted person-to-person channel (a norm)**: whoever can read the link can accept before the legitimate party (the backing source closes this — CRYPTO_SPEC §14.3-9); whoever can swap the link can invite to their own project (the invitee reading `il` is the defense). Moves to the threat-model document in H5
+> - **Composition with sign-up control (§3)** (unchanged): sign-up invite codes are passed over a separate channel
+> - **The issuance pin (the inviter's non-secret local state — SHOULD)**: `issued[<invite id>] = { linkPubHex, role, expiresAtMs, expectedGithubLogin? }` in `invites/<projectId>.json`. The source of truth for IV1 verification is the inviter's own issuance signature over the server row's issuance text (CRYPTO_SPEC §6.5); the pin carries the additional `linkPubHex` / role cross-check and retention of the destination login. Form 4 holds even on a device without the pin (issued elsewhere), and only the destination login is supplied via `--github <login>` (no interactive input is provided — it would mix into the same path as the ceremony's re-entry prompt, and a typo becomes a query for someone else's login. Naming is limited to issuance time or the explicit act of a flag — 2026-09-13 K5 implementation ruling, owner-approved). **The link-key seed and private key are never written to the pin**
+> - **The anchor is pinned after acceptance succeeds** (unchanged). The inviter's sig public key (`is`) is placed alongside the anchor, and the first sync's mechanical match (CRYPTO_SPEC §6.3 (a)) checks the sig public key match in addition to the FP. An anchor already matched mechanically (verified) is not overwritten by later acceptances
 
-### B-5. §15-4 監査イベント(不変の確認)
+### B-5. §15-4 audit events (confirmation of no change)
 
-> 発行 = `invite.created`、受諾 = `invite.accepted`、失効 = `invite.revoked`(AUDIT_SPEC §3.2 — 不変。2026-09-13 IV 改訂で payload は変えない: 受諾は常にリンク束縛であり旗は要らず、裏付け元の login・リンク公開鍵・署名は書かない)
+> Issuance = `invite.created`, acceptance = `invite.accepted`, revocation = `invite.revoked` (AUDIT_SPEC §3.2 — unchanged. The 2026-09-13 IV revision does not change the payload: acceptance is always link-bound so no flag is needed, and the backing-source login, the link public key, and signatures are not written)
 
-### B-6. §5 セッション主体の能力制限(変更なし — 確認)
+### B-6. §5 session-principal capability limits (no change — confirmed)
 
-> 招待の発行・受諾はセッション主体に対して拒否(不変)。一覧・失効は可(不変)。本改訂で列挙に変更はない
-
----
-
-## C. AUDIT_SPEC の改訂案(§3.2 への注記のみ)
-
-> | `invite.accepted` | project_id, 招待 id, target_user_id(受諾者), payload に受諾鍵 FP | **2026-09-13 IV 改訂: 受諾はリンク鍵の共同署名を伴う(AUTH_SPEC §15-2)が payload は不変。裏付け元(GitHub)の login・照合結果・リンク公開鍵・署名は書かない(§1-2 のアイデンティティ規則。照合はクライアント内で完結し、サーバーへ報告されない)** |
-
-> - 版: 1.7-draft(IV)。事件の追加・削除はなく注記のみ。本改訂を含む実装 PR のマージをもって所有者承認とする
+> Issuing and accepting invites are denied to session principals (unchanged). Listing and revoking are allowed (unchanged). This revision makes no change to the enumeration
 
 ---
 
-## D. 各正本の Status 行への追記文(IV-K1 で反映)
+## C. AUDIT_SPEC revision proposals (a note on §3.2 only)
 
-- **CRYPTO_SPEC**: `0.10-draft = IV(招待儀式の軽量化 — 2026-09-13 設計セッション。設計録・裁定の反復記録は docs/notes/integration-options.md 補足 21、起草時のドラフトは docs/notes/iv-spec-drafts.md): §6.3 (a) 招待リンクアンカーの発行署名化 / §6.5 の全面改訂(リンク鍵・発行署名・受諾の共同署名〔invite-accept-v2〕・裏付け元・明示確認の充足形 4 の既定化)/ §11 invite-accept-signature.json の再生成と invite-link.json / §13 #9 の注記 / §14.3 非保証 9。設計の 16 項目は 2026-09-__ に所有者承認済み — **本改訂を含む実装 PR のマージをもって仕様文言の承認とする**`
-- **AUTH_SPEC**: `0.22-draft = IV(招待 API — CRYPTO_SPEC 0.10-draft §6.5。2026-09-13 設計セッション、設計録は docs/notes/integration-options.md 補足 21): §15 の全面改訂(リンク公開鍵の保存・発行 body / 応答・受諾 body の共同署名・リンク形式 v2・生トークン受諾と v=1 の廃止・発行ピン・裏付け元の CLI 面)。監査は不変。設計の 16 項目は 2026-09-__ に所有者承認済み — **本改訂を含む実装 PR のマージをもって仕様文言の承認とする**`
-- **AUDIT_SPEC**: `1.7-draft = IV(2026-09-13。設計録は docs/notes/integration-options.md 補足 21): §3.2 invite.accepted への注記(payload 不変・裏付け元の login を書かない)。事件の追加なし — **本改訂を含む実装 PR のマージをもって仕様文言の承認とする**`
+> | `invite.accepted` | project_id, invite id, target_user_id (the invitee), the acceptance key FP in payload | **2026-09-13 IV revision: acceptance carries the link key's co-signature (AUTH_SPEC §15-2) but the payload is unchanged. The backing source's (GitHub) login, match results, the link public key, and signatures are not written (the §1-2 identity rule. Matching completes inside the client and is not reported to the server)** |
+
+> - Version: 1.7-draft (IV). No events added or removed — the note only. Merging the implementation PR containing this revision constitutes owner approval
+
+---
+
+## D. Sentences appended to each canonical text's Status line (applied in IV-K1)
+
+- **CRYPTO_SPEC**: `0.10-draft = IV (lightening the invite ceremony — 2026-09-13 design session. Design record and iterated ruling record: docs/notes/integration-options.md supplement 21; as-drafted drafts: docs/notes/iv-spec-drafts.md): §6.3 (a) invite link anchor gaining the issuance signature / §6.5 full revision (link keys, issuance signatures, co-signed acceptance [invite-accept-v2], backing sources, making satisfaction form 4 of explicit confirmation the default) / §11 invite-accept-signature.json regeneration and invite-link.json / §13 #9 note / §14.3 non-guarantee 9. The 16 design items were owner-approved on 2026-09-__ — **merging the implementation PR containing this revision constitutes approval of the spec wording**`
+- **AUTH_SPEC**: `0.22-draft = IV (invite API — CRYPTO_SPEC 0.10-draft §6.5. 2026-09-13 design session, design record: docs/notes/integration-options.md supplement 21): §15 full revision (storing link public keys, the issuance body / response, the co-signed acceptance body, link format v2, abolishing raw-token acceptance and v=1, the issuance pin, the backing source's CLI side). Audit unchanged. The 16 design items were owner-approved on 2026-09-__ — **merging the implementation PR containing this revision constitutes approval of the spec wording**`
+- **AUDIT_SPEC**: `1.7-draft = IV (2026-09-13. Design record: docs/notes/integration-options.md supplement 21): a note on §3.2 invite.accepted (payload unchanged, the backing-source login is not written). No events added — **merging the implementation PR containing this revision constitutes approval of the spec wording**`

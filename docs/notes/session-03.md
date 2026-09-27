@@ -1,81 +1,81 @@
-# セッション 03 メモ(実デプロイ検証 + root 統合 + AUDIT_SPEC + テストベクター)
+# Session 03 memo (real deployment verification + root integration + AUDIT_SPEC + test vectors)
 
-日付: 2026-08-01。前提: セッション 02 の全 PR(#2〜#5)は main にマージ済み。Cloudflare 資格情報(アカウント API トークン)は Cloud Agents > Secrets に登録済み。
+Date: 2026-08-01. Prerequisite: all of session 02's PRs (#2–#5) are merged to main. Cloudflare credentials (an account API token) are registered in Cloud Agents > Secrets.
 
-## 1. 実デプロイ検証(ADR-0012 の実証)
+## 1. Real deployment verification (demonstrating ADR-0012)
 
-すべて `DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false` を付けて実行(「言わざる」)。
+All commands were run with `DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false` ("say nothing").
 
-### 資格情報の確認
+### Credential check
 
-- `wrangler whoami`: **アカウント API トークンで認証成功**(account: maruhi)。wrangler の全操作(deploy / delete / API 直叩き)はこのトークンで問題なく動く
-- トークン種別の実測: `/accounts/:id/tokens/verify` → active、`/user/tokens/verify` → `Invalid API Token`。つまり**アカウント所有トークン(Account Owned Token)**であり、`/user/*` 系エンドポイントは一切呼べない
+- `wrangler whoami`: **authentication succeeded with the account API token** (account: maruhi). Every wrangler operation (deploy / delete / direct API calls) works with this token
+- Token-type measurement: `/accounts/:id/tokens/verify` → active, `/user/tokens/verify` → `Invalid API Token`. In other words it is an **account-owned token**, and no `/user/*` endpoint can be called at all
 
-### spike-b: wrangler 経路 — ✅ 成立
+### spike-b: wrangler path — ✅ works
 
-- `wrangler deploy` 成功(Total Upload 1272 KiB / gzip 264 KiB。Worker Startup Time 25 ms)
-- カウンタ API を実 URL で確認: GET 初期値 0 → increment(+3, +2)→ GET 5(**DO SQLite の永続化がエッジ実環境で成立**)。別名カウンタは 0(DO 分離)。不正 payload は 400(Schema バリデーション)
-- `wrangler delete --force` 成功。workers 一覧が空であることを API で確認(残骸なし)
+- `wrangler deploy` succeeded (Total Upload 1272 KiB / gzip 264 KiB; Worker Startup Time 25 ms)
+- Verified the counter API on the real URL: GET initial value 0 → increment (+3, +2) → GET 5 (**DO SQLite persistence works in the real edge environment**). A different-named counter is 0 (DO isolation). An invalid payload is a 400 (Schema validation)
+- `wrangler delete --force` succeeded. Verified via API that the workers list is empty (no residue)
 
-ハマったこと:
+Pitfalls:
 
-1. **wrangler が workers.dev サブドメインを自動登録した**: アカウントにサブドメイン未登録の状態で deploy すると、警告を出しつつ worker 名由来の `spike-b` で登録される(削除 API は存在せず、変更のみ可)。API での `maruhi` への変更はセッションの権限制約で実行できなかったため、**サブドメイン `spike-b` がアカウントに残っている**。所有者がダッシュボード(Workers & Pages → 右ペインの workers.dev)で `maruhi` 等へ変更することを推奨(変更すると旧 URL は即無効。現在 worker は 0 個なので今が変え時)
-2. **新規サブドメインの TLS 証明書発行に約 10 分かかる**。それまで `*.spike-b.workers.dev` への接続は SSL handshake failure になる(HTTP 応答ではないので、デプロイ直後の疎通確認はリトライループが必要)
+1. **wrangler auto-registered a workers.dev subdomain**: deploying with no subdomain registered on the account registers one derived from the worker name, `spike-b`, with a warning (there is no delete API — it can only be changed). Changing it to `maruhi` via API was not possible under this session's permission constraints, so **the `spike-b` subdomain remains on the account**. Recommend the owner change it in the dashboard (Workers & Pages → workers.dev in the right pane) to `maruhi` or similar (changing it invalidates the old URL immediately; there are currently 0 workers so now is the time)
+2. **Issuing the TLS certificate for a new subdomain takes about 10 minutes**. Until then, connections to `*.spike-b.workers.dev` fail with SSL handshake failure (not an HTTP response — verifying right after a deploy needs a retry loop)
 
-### spike-b: Alchemy v2 経路 — ⛔ アカウント API トークン起因でブロック(所有者へ依頼)
+### spike-b: Alchemy v2 path — ⛔ blocked by the account API token (request to the owner)
 
-- `CI=1` での環境変数認証自体は成立(資格情報は読まれ、`AuthError: No credentials configured` は出ない)
-- `alchemy plan` は state store 必須: `Cloudflare State store not found. Run 'alchemy bootstrap cloudflare' ... or pass --yes`
-- `alchemy deploy --yes`(state store ブートストラップ込み)は `alchemy-state-store` worker のデプロイ中に **`Unauthorized: Authentication error`(Cloudflare error 10000)で失敗**
-- 原因の裏取り(alchemy 2.0.0-beta.67 のソース確認): state store のブートストラップは **edge-preview セッション + `/user/tokens` 系エンドポイント**を使う(`src/Cloudflare/StateStore/State.ts`、`src/Cli/commands/cloudflare.ts` は `/user/tokens/verify` を「source of truth」とコメント)。これらは**ユーザー API トークン前提**で、アカウント所有トークンでは 401 になる。wrangler が同一トークンで全部動くこととも整合
-- **→ 指示どおりここで中断。所有者への依頼: `CLOUDFLARE_API_TOKEN` をユーザー API トークン(dash の My Profile → API Tokens で作成。Workers 編集権限)に差し替えてほしい。**差し替え後の別セッションで `alchemy deploy` / `alchemy destroy` を再検証する
-- 失敗はデプロイ前に起きたため**リソースの残骸なし**(workers 一覧空を確認)。ローカルの `spikes/spike-b/.alchemy/log/out` が更新されたのみ(git restore 済み)
+- Env-var authentication under `CI=1` itself works (credentials are read; no `AuthError: No credentials configured`)
+- `alchemy plan` requires a state store: `Cloudflare State store not found. Run 'alchemy bootstrap cloudflare' ... or pass --yes`
+- `alchemy deploy --yes` (with state-store bootstrap) failed while deploying the `alchemy-state-store` worker with **`Unauthorized: Authentication error` (Cloudflare error 10000)**
+- Root-cause substantiation (checked the alchemy 2.0.0-beta.67 source): the state-store bootstrap uses an **edge-preview session + `/user/tokens` endpoints** (`src/Cloudflare/StateStore/State.ts`; `src/Cli/commands/cloudflare.ts` comments `/user/tokens/verify` as the "source of truth"). These assume a **user API token** and return 401 for an account-owned token. Consistent with wrangler working everywhere on the same token
+- **→ Stopped here as instructed. Request to the owner: replace `CLOUDFLARE_API_TOKEN` with a user API token (created in the dash under My Profile → API Tokens, with Workers edit permission).** Re-verify `alchemy deploy` / `alchemy destroy` in a separate session after the swap
+- The failure happened before deploy, so **no resource residue** (workers list verified empty). Only the local `spikes/spike-b/.alchemy/log/out` was updated (git-restored)
 
-**再検証(2026-08-02、ユーザー API トークン差し替え後)— ✅ 成立。ADR-0012 の両経路が実証完了**:
+**Re-verification (2026-08-02, after swapping to a user API token) — ✅ works. Both ADR-0012 paths demonstrated**:
 
-- `/user/tokens/verify` → active、`wrangler whoami` → 「User API Token」表示を確認
-- `CI=1 bun x alchemy deploy --yes`: state store ブートストラップ(`alchemy-state-store` worker + Secrets Store への `AlchemyStateStoreToken` / `AlchemyStateStoreEncryptionKey` 登録)→ SpikeB スタックのデプロイまで一気に成功。**worker 名は alchemy の命名規則で `spike-b-spikeb-dev-unknown-<hash>`**(スタック + リソース + stage 由来。wrangler 経路の `spike-b` とは異なる。Phase 1 で運用側に載せるときは stage / 命名の明示設定が必要)
-- カウンタ API を実 URL(`*.maruhi.workers.dev`)で確認: GET 0 → increment(+3)→ 3、不正 payload 400。TLS はサブドメイン変更(spike-b → maruhi)から時間が経っていたため即時応答
-- 後片付け: `alchemy destroy --yes` で SpikeB 削除 → `wrangler delete --name alchemy-state-store` → Secrets Store 内の alchemy secret 2 件を API で削除 → workers / KV / secrets いずれも空を確認。**Cloudflare の既定 Secrets Store コンテナ(`default_secrets_store`、空)のみ残る**(alchemy ブートストラップが作成。アカウント既定ストアで実害なし)
-- 知見: alchemy の state store は「使うたびにブートストラップで常設 worker + secret を張る」設計。検証のように毎回消す使い方は本来の想定ではなく、Phase 1 で運用採用する場合は state store(worker + secret)を常設リソースとして受け入れるか、`alchemy.run.ts` の `state:` を別ストアに切り替えるかを判断する
+- `/user/tokens/verify` → active; `wrangler whoami` shows "User API Token"
+- `CI=1 bun x alchemy deploy --yes`: state-store bootstrap (the `alchemy-state-store` worker + `AlchemyStateStoreToken` / `AlchemyStateStoreEncryptionKey` registered in Secrets Store) → the SpikeB stack deployed in one go. **The worker name under alchemy's naming rule was `spike-b-spikeb-dev-unknown-<hash>`** (derived from stack + resource + stage; different from the wrangler path's `spike-b`. When putting it into operation in Phase 1, explicit settings for stage / naming are needed)
+- Verified the counter API on the real URL (`*.maruhi.workers.dev`): GET 0 → increment (+3) → 3; invalid payload 400. TLS responded immediately since enough time had passed since the subdomain change (spike-b → maruhi)
+- Cleanup: `alchemy destroy --yes` deleted SpikeB → `wrangler delete --name alchemy-state-store` → deleted the 2 alchemy secrets in Secrets Store via API → verified workers / KV / secrets all empty. **Only Cloudflare's default Secrets Store container (`default_secrets_store`, empty) remains** (created by the alchemy bootstrap; the account-default store, harmless)
+- Learning: alchemy's state store is designed as "bootstrap a permanent worker + secret each time it is used". Deleting it every time, as in verification, is not the intended usage; when adopting it operationally in Phase 1, decide whether to accept the state store (worker + secret) as a permanent resource or switch `alchemy.run.ts`'s `state:` to a different store
 
-### apps/web: Workers Static Assets + _headers(CSP)— ✅ 成立
+### apps/web: Workers Static Assets + _headers (CSP) — ✅ works
 
-- `bun run build`(vite build + write-headers.ts)→ `wrangler deploy` 成功。アセット 11 ファイルアップロード(`_headers` はアセットとしては配信されず、設定として消費される — 期待どおり)
-- **CSP ヘッダの本番反映を確認**: 実 URL のレスポンスに `content-security-policy: default-src 'none'; script-src 'self' 'sha256-…'; …` が付与される(ビルド時計算のインラインブートストラップのハッシュ許可。CLAUDE.md の承認済み例外)。`referrer-policy: no-referrer` / `x-content-type-options: nosniff` も反映
-- index.html / CSS / RSC ペイロード(`funstack__/fun__rsc-payload/*.txt`)の配信を確認。**デプロイ直後の数十秒はアセットが 404 になることがある**(伝播遅延。リトライで解消)
-- **SPA フォールバックの本番挙動は wrangler dev と異なる**: `not_found_handling: "single-page-application"` は本番では `Sec-Fetch-Mode: navigate` 付きリクエストにのみ index.html を返す(素の curl GET `/about` は 404 text/plain)。ブラウザのナビゲーションは常に navigate を送るので実害はないが、ヘルスチェックや curl 検証はヘッダを付けること
-- ブラウザ実測(Playwright での hydration + CSP 違反ゼロ確認)は、このクラウド環境のプロキシが Chromium の外向き CONNECT を通さないため実施不可(curl は OK、Chromium は example.com でも ERR_CONNECTION_RESET)。同一ビルドに対するローカル e2e(wrangler dev + Playwright、CSP 違反ゼロ含む 4 テスト)で担保済み
-- 検証後 `wrangler delete` で削除。workers 一覧空を確認
+- `bun run build` (vite build + write-headers.ts) → `wrangler deploy` succeeded. 11 asset files uploaded (`_headers` is not served as an asset; it is consumed as configuration — as expected)
+- **Confirmed the CSP header is applied in production**: the real URL's response carries `content-security-policy: default-src 'none'; script-src 'self' 'sha256-…'; …` (the build-time-computed hash allowlist for the inline bootstrap — the approved exception in CLAUDE.md). `referrer-policy: no-referrer` / `x-content-type-options: nosniff` are also applied
+- Verified delivery of index.html / CSS / the RSC payload (`funstack__/fun__rsc-payload/*.txt`). **For the first tens of seconds after deploy, assets can 404** (propagation delay; resolves on retry)
+- **SPA fallback behaves differently in production than under wrangler dev**: `not_found_handling: "single-page-application"` returns index.html only for requests carrying `Sec-Fetch-Mode: navigate` in production (a bare curl GET `/about` gets a 404 text/plain). Browser navigations always send navigate, so no real harm — but health checks and curl verification must set the header
+- Real-browser measurement (hydration + zero CSP violations via Playwright) is impossible in this cloud environment because the proxy does not pass Chromium's outbound CONNECT (curl works; Chromium gets ERR_CONNECTION_RESET even for example.com). Covered by local e2e against the same build (wrangler dev + Playwright, 4 tests including zero CSP violations)
+- Deleted with `wrangler delete` after verification. Workers list verified empty
 
-### 環境まわりの知見
+### Environment-related learnings
 
-- クラウド環境の Playwright は `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` のプリインストール Chromium を使う(`bunx playwright install` は不要・禁止)。apps/web の e2e(localhost 向き)はプロキシ除外リストに localhost が入っているため動く
+- Playwright in the cloud environment uses the preinstalled Chromium at `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` (`bunx playwright install` is unnecessary and forbidden). The apps/web e2e (localhost-facing) works because localhost is in the proxy exclusion list
 
-## 2. root 統合 PR
+## 2. Root integration PR
 
-- ci.yml に独立ステップ 3 つを追加: 8. web ビルド(vite + write-headers)、9. web e2e(`bunx playwright install --with-deps chromium` → wrangler dev + Playwright)、10. `doctor:astryx`。**ルート vitest.config.ts の projects には web e2e を入れていない**(ビルド成果物前提のため。spike-a の推奨どおり)
-- e2e のポート固定(8791)を解消: `node:net` の `listen(0)` で OS に空きポートを割り当てさせる方式に変更(並列実行で衝突しない)。CI からの実行用に apps/web に `e2e` スクリプトを追加
-- CI 全体の env に `DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false`(「言わざる」をメンテナ CI にも適用。spike-b の知見)
-- ROADMAP のチェックオフ: 要決定 3 件・検証スパイク 3 本・npm プレースホルダ + org
+- Added 3 independent steps to ci.yml: 8. web build (vite + write-headers), 9. web e2e (`bunx playwright install --with-deps chromium` → wrangler dev + Playwright), 10. `doctor:astryx`. **The web e2e is NOT in the root vitest.config.ts projects** (it requires build artifacts — as spike-a recommended)
+- Removed the fixed e2e port (8791): switched to letting the OS assign a free port via `node:net`'s `listen(0)` (no collisions under parallel runs). Added an `e2e` script to apps/web for running from CI
+- Added `DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false` to CI-wide env (applying "say nothing" to maintainer CI too — a spike-b learning)
+- ROADMAP check-offs: the 3 to-be-decided items, the 3 verification spikes, the npm placeholder + org
 
-## 3. docs/AUDIT_SPEC.md 起草(0.1-draft、人間レビュー待ち)
+## 3. Drafting docs/AUDIT_SPEC.md (0.1-draft, awaiting human review)
 
-- イベント一覧(認証系 / org 系 / データ系 = 変数 × 環境 / チェーンミラー / grant_server 経由のサーバーアクセス)、actor モデル(内部 user_id + 鍵 FP + API トークン id のみ)、CRYPTO_SPEC §7 の要ローテーション検出のクエリ要件(Q1〜Q5)からの逆算でスキーマを設計
-- 保存先: プロジェクト系イベント = プロジェクト DO 内 append-only(チェーンと同一 DO・同一トランザクション、クエリが DO 内で完結)。org / ユーザー系 = 3 案比較の上で **D1 専用テーブル(案 A)を提案**(認証イベントは sessions / tokens と同一トランザクションで書ける・検出クエリに関与しないため DO 併置の利点がない)
-- 判断が要る点(未決 #1〜#5): 閲覧権限モデルの詳細、監査ヘッドのチェーンチェックポイント、プロジェクト削除後の保全、var.read の集約、SIEM エクスポート
+- Designed the schema by working backward from the event list (authentication / org / data = variables × environments / chain mirror / server access via grant_server), the actor model (internal user_id + key FP + API token id only), and the query requirements (Q1–Q5) of CRYPTO_SPEC §7's rotation-needed detection
+- Storage: project-family events = append-only inside the project DO (same DO, same transaction as the chain; queries complete inside the DO). Org / user-family events = **proposal: a dedicated D1 table (option A)** after comparing 3 options (authentication events can be written in the same transaction as sessions / tokens, and they do not participate in detection queries, so there is no benefit to co-locating them in the DO)
+- Points needing a decision (undecided #1–#5): details of the read-permission model, chain checkpoints for audit heads, preservation after project deletion, aggregation of var.read, SIEM export
 
-## 4. 暗号テストベクター(packages/crypto/test-vectors/。実装より先にコミット)
+## 4. Crypto test vectors (packages/crypto/test-vectors/; committed ahead of implementation)
 
-- RFC 9180 公式ベクター(spike-c 抽出分)を `hpke/` へコピー。maruhi 固有部は `encoding.json` / `variable-encryption.json` / `chain-entries.json` / `recovery-wrap.json` / `dek-wrap.json`(固定鍵・固定 nonce + 改竄系 negative)
-- 期待値の算出は独立参照ツール 2 系統: Python 3.11 + pyca/cryptography(`tools/generate_reference.py`)と hpke-js の ekm derandomize(`tools/generate-dek-wrap.mjs`)。さらに第 3 の実装系(Bun WebCrypto + panva hpke の非抽出 KeyPair Open)で全ベクターを突き合わせ検証(`tools/verify_reference.mjs`、全 PASS)
-- **チェーン正規化(CRYPTO_SPEC §6.1「実装はテストベクターで固定する」)の実体をここで定義した**: LP エンコーディングの入れ子(payload は op ごとの固定フィールド順)、バイナリ値は hex 小文字文字列、entry_hash = SHA-256(署名込みエントリバイト列)。鍵 FP は素の連結(固定長 32B×2)とした。**要人間レビュー**(test-vectors/README.md の「特に確認すべき点」参照)
-- fallow の解析対象から `packages/crypto/test-vectors/tools/**` を除外(spikes/ と同じ使い捨てツール扱い)
-- packages/crypto の実装コードは書いていない(仕様承認後・人間レビュー必須)
+- Copied the official RFC 9180 vectors (extracted in spike-c) into `hpke/`. The maruhi-specific parts are `encoding.json` / `variable-encryption.json` / `chain-entries.json` / `recovery-wrap.json` / `dek-wrap.json` (fixed keys and fixed nonces + tamper-type negatives)
+- Expected values computed by two independent reference tools: Python 3.11 + pyca/cryptography (`tools/generate_reference.py`) and hpke-js's ekm derandomize (`tools/generate-dek-wrap.mjs`). Additionally cross-checked all vectors with a third implementation line (Bun WebCrypto + panva hpke's non-extract KeyPair Open) (`tools/verify_reference.mjs` — all PASS)
+- **Defined the substance of chain canonicalization here** (CRYPTO_SPEC §6.1: "implementations pin it down with test vectors"): nested LP encoding (payload fields in a fixed per-op order), binary values as lowercase hex strings, entry_hash = SHA-256(the signed entry bytes). Key FP is a plain concatenation (fixed-length 32B×2). **Human review required** (see "points to check in particular" in test-vectors/README.md)
+- Excluded `packages/crypto/test-vectors/tools/**` from fallow's analysis (same disposable-tool treatment as spikes/)
+- No packages/crypto implementation code written (post-spec-approval, human review mandatory)
 
-## 決定・整理の記録(2026-08-01)
+## Record of decisions / sorting (2026-08-01)
 
-- **ホステッド版は Workers for Platforms を使わない**(所有者との整理): 通常のマルチテナント Workers アプリ + プロジェクト DO 分離で提供する。WfP はテナントのコードを実行するための仕組みであり、maruhi のテナント分離はデータレベル(プロジェクト DO の名前空間分離)で足りる。AUDIT_SPEC §5 の保存先設計(D1 共有テーブル + プロジェクト DO)もこの前提に立つ
-- **funstack-static まわりの upstream 報告は当面見送り**(所有者判断。実害なしのため)。調査結果の記録: ① preload の `as="stylesheet"`(正しくは `style`)はエミッタを追跡した結果 **@vitejs/plugin-rsc 0.5.32 にベンダリングされた react-server-dom のコード**が発生源で、funstack-static 本体ではない。preload が無効化されコンソール警告が出るだけで、CSS 本体は通常の `<link rel="stylesheet">` で読まれるため実害なし。② インラインブートストラップは funstack-static の設計選択(`bootstrapScriptContent`)であり、承認済みのハッシュ許可方式で運用確定。報告する場合は ① は plugin-rsc / React 側へ(facebook/react 原本との突き合わせ確認の上)、② は `bootstrapScripts`(外部 URL)への切り替えオプションとして funstack-static へ提案するのが筋
-- **workers.dev サブドメインを `maruhi` へ変更完了**(所有者がダッシュボードで実施。旧 `spike-b` は無効化。今後のデプロイ URL は `<worker>.maruhi.workers.dev`)
-- **`CLOUDFLARE_API_TOKEN` のユーザー API トークンへの差し替え**を所有者が実施(My Profile → API Tokens、「Edit Cloudflare Workers」テンプレート + D1 Edit、maruhi アカウント限定)。Alchemy 経路の再検証は差し替え後の新セッションで行う(シークレットはコンテナ起動時に注入されるため、既存セッションには反映されない)
+- **The hosted version does not use Workers for Platforms** (sorted with the owner): it is served as a normal multi-tenant Workers app + project-DO isolation. WfP is a mechanism for running tenant code; maruhi's tenant isolation is at the data level (the project DO's namespace separation) and suffices. The AUDIT_SPEC §5 storage design (shared D1 table + project DO) also rests on this premise
+- **Upstream reports around funstack-static are set aside for now** (owner decision; no real harm). Record of findings: ① tracing the emitter of the preload `as="stylesheet"` (correctly `style`) showed the source is **react-server-dom code vendored into @vitejs/plugin-rsc 0.5.32**, not funstack-static itself. The preload is merely disabled with a console warning; the CSS body loads via a normal `<link rel="stylesheet">` — no real harm. ② The inline bootstrap is a funstack-static design choice (`bootstrapScriptContent`), and operation is settled on the approved hash-allowlist scheme. If reported, ① belongs to plugin-rsc / React (after cross-checking against the facebook/react original), and ② belongs as a proposal to funstack-static to switch to `bootstrapScripts` (external URL)
+- **The workers.dev subdomain change to `maruhi` is complete** (done by the owner in the dashboard; the old `spike-b` is disabled. Future deploy URLs are `<worker>.maruhi.workers.dev`)
+- **The owner swapped `CLOUDFLARE_API_TOKEN` for a user API token** (My Profile → API Tokens, "Edit Cloudflare Workers" template + D1 Edit, scoped to the maruhi account). Re-verification of the Alchemy path happens in a new session after the swap (secrets are injected at container start and do not reach existing sessions)

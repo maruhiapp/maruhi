@@ -1,125 +1,126 @@
-# セッション 29 メモ(Web の信頼境界の設計対話 — ADR-0018 の経緯)
+# Session 29 memo (the design dialogue on the Web's trust boundary — the background of ADR-0018)
 
-日付: 2026-08-16〜18。形式: 実装なしの設計対話(所有者との質疑)。
-スコープ: ホステッド Web の TCB 問題への根本対策の探索 → localhost UI /
-Tunnel / 画面共有 / Cloudflare Mesh の検討と却下 → 段階導入案の所有者同意。
-成果物は ADR-0018 と本ノートのみ(コード・仕様本文の変更なし)。
+Date: 2026-08-16–18. Format: a design dialogue with no implementation (Q&A with the owner).
+Scope: exploring a fundamental countermeasure to the hosted Web's TCB problem → considering and
+rejecting localhost UI / Tunnel / screen sharing / Cloudflare Mesh → the owner's consent to a
+staged-adoption plan. The deliverables are ADR-0018 and this note only (no code or spec-body changes).
 
-## 1. 出発点(所有者の基準)
+## 1. The starting point (the owner's criterion)
 
-- **運営としての非を最小にしたい**。サーバー側暗号化を選ばなかった理由、
-  OSS にする理由、個人開発者に安く出したい理由がすべてこの一本につながる
-- ホステッド Web で鍵・平文が「運営配りの JS」に触れることへの強い懸念。
-  E2EE では復号がクライアントで起きるため、Web の XSS = 全シークレット漏洩
-  (CLAUDE.md の TCB 節)
+- **Minimize the operator's potential wrongdoing**. The reasons for not choosing server-side
+  encryption, for going OSS, and for wanting to offer it cheaply to individual developers all
+  connect to this single line
+- Strong concern about keys / plaintext touching "operator-served JS" on the hosted Web.
+  Under E2EE decryption happens on the client, so Web XSS = all secrets leaked
+  (CLAUDE.md's TCB section)
 
-## 2. 緩和技術の調査(いずれも構造を消さない)
+## 2. Research on mitigation techniques (none removes the structure)
 
-- 厳格 CSP / 第三者スクリプト排除: 実施済み方針(spike-a)だが、
-  **自ビルドが悪意を持つ経路**(運営侵害・供給網)には無力
-- 透明性ログ系(WEBCAT / CodeSeal / Code Verify): 検知であり実行前
-  ブロックではない。全員へ配る署名済み悪意ビルドは通る。証人を
-  実行基盤(Cloudflare)と同居させると独立性が死ぬ
-- IWA(Isolated Web Apps): インストール型 = 「毎回サーバーから JS を
-  取る」を消せるが Chrome 系限定・配布の重さがあり、将来の置き場どまり
-- Browser Isolation: 遠隔ブラウザで復号 = E2EE の逆。却下
+- Strict CSP / excluding third-party scripts: already the adopted policy (spike-a), but it is
+  **powerless against a malicious own-build** (operator compromise, supply chain)
+- Transparency-log approaches (WEBCAT / CodeSeal / Code Verify): detection, not
+  pre-execution blocking. A signed malicious build delivered to everyone passes. Co-locating the witness
+  with the execution platform (Cloudflare) kills its independence
+- IWA (Isolated Web Apps): the installable form can eliminate "fetching JS from the server every
+  time", but it is Chrome-family-only and heavyweight to distribute — stays as a future candidate location
+- Browser Isolation: decrypting in a remote browser is the inverse of E2EE. Rejected
 
-## 3. localhost UI と「他端末へ運ぶ」の検討
+## 3. Considering the localhost UI and "carrying it to another device"
 
-- **CLI が 127.0.0.1 で画面を出す**(`maruhi ui`)形は、鍵 = OS キーチェーン・
-  復号 = CLI プロセス・ブラウザ = 描画のみ、で「運営が復号器を配る」を消す
-- 素の Quick Tunnel で値付き画面を他端末へ: **却下**。Tunnel はエッジで TLS
-  終端するため、復号済みの HTML / JSON がエッジを通る = ホステッド Web で
-  避けた「運営経路に平文」を自分で開け直す。Access は「誰が届くか」であり
-  中身の秘匿ではない
-- 自分の他端末(電話)へは 3 案を整理: (a) 値なしリモコン、
-  (b) 私有ネット(Tailscale 等 — 上級者向け文書どまり)、
-  (c) QR 配対 + E2EE セッション(招待の指紋照合と同じ儀式の再利用。
-  やるなら CRYPTO_SPEC 改訂が先)。製品の既定は (a)
+- **The CLI serving a UI on 127.0.0.1** (`maruhi ui`) has keys in the OS keychain,
+  decryption in the CLI process, and the browser doing only rendering — eliminating "the operator distributes the decryptor"
+- Sending a valued screen to another device over a bare Quick Tunnel: **rejected**. A Tunnel
+  terminates TLS at the edge, so already-decrypted HTML / JSON traverses the edge = re-opening
+  yourself the "plaintext on the operator's path" that the hosted Web avoided. Access controls
+  "who can reach it", not the secrecy of the contents
+- For one's own other devices (a phone), 3 options were sorted: (a) a value-free remote control,
+  (b) a private network (Tailscale etc. — stays an advanced-user document),
+  (c) QR pairing + an E2EE session (reusing the same ceremony as invite fingerprint verification.
+  If pursued, a CRYPTO_SPEC revision comes first). The product default is (a)
 
-## 4. チームでの画面共有(owner の localhost を他メンバーへ)— 却下
+## 4. Team screen sharing (the owner's localhost to other members) — rejected
 
-owner / admin の画面を Tunnel 等で他メンバーに見せる案は、E2EE をやめて
-**owner 機を vault サーバーにする**案である:
+The idea of showing an owner / admin's screen to other members via a Tunnel etc. amounts to
+dropping E2EE and **turning the owner's machine into the vault server**:
 
-1. 権限が「見る人の role」でなく「owner の鍵」になる(画面側で隠しても
-   隠しているのは owner のプロセス。破る対象が一台のラップトップに移る)
-2. 可用性がその一台になる(蓋を閉じたらチームの画面が消える)
-3. 監査が嘘になる(actor = 実際に開いた鍵 ≠ 閲覧者。AUDIT_SPEC の
-   actor 規則の意味が消える)
-4. 招待が中途半端になる(視聴者はメンバーでない。run / push には結局
-   各人の鍵が要る)
-5. 経路(Tunnel / Mesh)に平文が乗る
+1. Permission becomes "the owner's key" rather than "the viewer's role" (hiding it on the
+   screen still hides it inside the owner's process; the attack target shifts to one laptop)
+2. Availability becomes that single machine (close the lid and the team's screen disappears)
+3. Auditing becomes a lie (actor = the key that actually opened ≠ the viewer; AUDIT_SPEC's
+   actor rule loses its meaning)
+4. Invites become half-hearted (viewers are not members; run / push still needs
+   each person's own key)
+5. Plaintext rides the path (Tunnel / Mesh)
 
-「CLI を入れたくない人にも見せたい」の答えは、owner 機の中継ではなく、
-その人にも鍵を持たせるか、鍵なしの管理画面を渡すか。
+The answer to "I want people who don't want the CLI to see it" is not relaying through the
+owner's machine, but giving them their own key, or handing them a value-free management view.
 
-## 5. Cloudflare Mesh の調査(2026-04 GA)
+## 5. Cloudflare Mesh research (GA 2026-04)
 
-- 旧 WARP Connector / peer-to-peer 連結の再編。各端末に `100.96.0.0/12` の
-  Mesh IP、同一 Zero Trust アカウントの enrolled 端末同士が TCP/UDP/ICMP で
-  到達可能。Tailscale との概念対応表が公式にある
-- **Tailscale との構造差**: Tailscale は可能なとき端末間 WireGuard 直結
-  (中継は中身を読めない)。Mesh は星型で全トラフィックが Cloudflare 経由、
-  Gateway 検査・記録が設計思想 — 「経路の運営が中身を見られる」形
-- 判定: 「届く相手を狭める」道具としては実在・有用(上級者の自分用)。
-  「誰が復号するか」は変えないため、値付き画面の共有問題は解かない。
-  全員に Cloudflare One Client + Zero Trust enroll を課すのは
-  「最初の 5 分」と正面衝突するため製品の既定にしない
+- A reorganization of the old WARP Connector / peer-to-peer linking. Each device gets a
+  Mesh IP from `100.96.0.0/12`; enrolled devices on the same Zero Trust account can
+  reach each other over TCP/UDP/ICMP. The official docs include a concept-mapping table with Tailscale
+- **Structural difference from Tailscale**: Tailscale direct-connects devices over WireGuard when
+  possible (the relay cannot read the payload). Mesh is star-shaped — all traffic goes via Cloudflare,
+  and Gateway inspection / logging is the design philosophy — the "path operator can see the contents" shape
+- Verdict: real and useful as a tool for "narrowing who can reach it" (advanced users, for
+  themselves). It does not change "who decrypts", so it does not solve the valued-screen sharing problem.
+  Requiring everyone to install the Cloudflare One Client + Zero Trust enroll collides head-on with
+  "the first 5 minutes", so it is not a product default
 
-## 6. 当初のホステッド Web 構想との差分
+## 6. Delta from the original hosted-Web concept
 
-当初構想(CRYPTO_SPEC §3 ブラウザ鍵 = IndexedDB、AUTH_SPEC §15-3 Web 受諾、
-§6 トークン UI、spike-a/c のブラウザ HPKE 検証)は「復号だけブラウザに
-置いた Infisical 型 vault 画面」。`maruhi ui` 案と**機能カタログはほぼ同じ**で、
-変わるのは 3 点のみ:
+The original concept (CRYPTO_SPEC §3 browser keys = IndexedDB, AUTH_SPEC §15-3 Web acceptance,
+§6 token UI, spike-a/c's browser HPKE verification) was "an Infisical-style vault screen with only
+decryption in the browser". The `maruhi ui` plan has **almost the same feature catalog**;
+only 3 things change:
 
-1. 入り方(URL → CLI の入った機械。招待受諾の Web 完結が最も痛い)
-2. 鍵の置き場(IndexedDB → OS キーチェーン。「どのブラウザでも」は当初案
-   でもリカバリー入力が要ったため、正直さが増えただけ)
-3. **誰が JS を配るか(運営 → 自分)** — 運営の非だけが消える
+1. How you get in (a URL → a machine with the CLI. Web-complete invite acceptance hurts the most)
+2. Where keys live (IndexedDB → the OS keychain. Since the original plan already needed
+   recovery-code input for "any browser", this only adds honesty)
+3. **Who serves the JS (the operator → yourself)** — only the operator's potential wrongdoing disappears
 
-## 7. フラット評価(「maruhi ui = CLI 全権」案の楽観 3 点)
+## 7. Flat evaluation (3 optimistic assumptions in the "maruhi ui = full CLI powers" idea)
 
-対話中に一度出した「ui は同じ人の鍵・同じ role なら CLI と同等操作可」は、
-再評価で次の 3 点の楽観を含むと判定:
+The once-floated "ui can do everything the CLI does when it's the same person's key and same role" was
+re-evaluated as containing 3 optimistic assumptions:
 
-1. **ADR-0016 と逆向き**: 値表示の境界を「stdin/stdout の両方が端末」
-   (fail-closed)へ反転させる途中なのに、localhost HTTP は定義上
-   「端末でない」経路で値を運ぶ = 狭めた境界への新しい口。エージェントは
-   ブラウザも curl も使えるため、deny-list 的な遮断では足りない
-2. **ブラウザ拡張が TCB に入る**: 運営配りの JS は消えても、ユーザーが
-   入れた拡張の content script は localhost 画面にも注入される。
-   ターミナルの `pull --show` には拡張が触れない。値を DOM に出した瞬間に
-   この差が生まれる(なお指紋 12 語の表示偽装は、相互・帯域外照合の構造上
-   照合失敗 = 安全側に倒れる)
-3. **需要が未検証**: Phase 1 ドッグフーディングは CLI で回っており、
-   「画面が欲しい」の中身を誰も実測していない。2 成果物の維持コストは
-   個人開発の規模に合わない
+1. **Opposite direction to ADR-0016**: while the value-display boundary is being flipped to
+   "both stdin/stdout are terminals" (fail-closed), localhost HTTP by definition
+   carries values over a "not a terminal" path = a new hole in the boundary being narrowed. Agents
+   can drive both a browser and curl, so deny-list-style blocking is not enough
+2. **Browser extensions enter the TCB**: even though operator-served JS disappears,
+   extension content scripts the user installed still inject into localhost pages.
+   Extensions cannot touch a terminal's `pull --show`. The difference appears the moment a value
+   enters the DOM (note that display spoofing of the 12-word fingerprint fails closed under
+   the mutual / out-of-band verification structure — a failed check fails safe)
+3. **Demand is unverified**: Phase 1 dogfooding runs on the CLI, and
+   nobody has measured what "wanting a screen" actually means. The maintenance cost of
+   2 artifacts does not fit an individual developer's scale
 
-## 8. 裁定(所有者同意 → ADR-0018)
+## 8. Ruling (owner consent → ADR-0018)
 
-- ホステッド / セルフホスト同梱 Web は**鍵・平文を持たない**(復号しない
-  管理画面)。ホステッド用バンドルに復号コードパスを含めない(フラグで
-  隠すだけの形は禁止)
-- 値・鍵の操作は各人の機械。画面は**段階導入**:
-  第 1 段 = TUI 磨き(攻撃面ゼロ増)→ 第 2 段 = `maruhi ui` v1(値なし。
-  招待受諾・指紋表示・鍵生成はここに置ける)→ 第 3 段 = 値あり ui は
-  需要実証 + 独立 ADR(ローカル API 認証 / ADR-0016 との関係 /
-  拡張リスク明示)が前提
-- 画面のチーム共有は作らない。自分の他端末(リモコン / QR 配対)は
-  将来検討。`maruhi ui` は CLI 側(MIT)、テーマは共有・成果物は分離
-  (theme は現状 FSL 被覆下のため、MIT 側への置き直しが第 2 段の前提 —
-  PR #82 レビューで確定)
-- 詳細と帰結(仕様の改訂候補・W0 の始点・ROADMAP 注記)は ADR-0018
+- The hosted / bundled-self-host Web holds **no keys and no plaintext** (a management
+  screen that does not decrypt). The hosted bundle contains no decryption code path (merely
+  hiding it behind a flag is forbidden)
+- Value / key operations happen on each person's own machine. Screens are **staged**:
+  stage 1 = polish the TUI (zero new attack surface) → stage 2 = `maruhi ui` v1 (value-free.
+  Invite acceptance, fingerprint display, key generation can live here) → stage 3 = a valued ui needs
+  demonstrated demand + an independent ADR (local API authentication / the relationship to ADR-0016 /
+  explicit extension risk) as prerequisites
+- No team screen sharing is built. One's own other devices (remote control / QR pairing) are
+  future consideration. `maruhi ui` lives on the CLI side (MIT); the theme is shared but artifacts stay separate
+  (since theme is currently under FSL coverage, re-placing it on the MIT side is a stage-2
+  prerequisite — settled in the PR #82 review)
+- Details and consequences (spec revision candidates, where W0 starts, the ROADMAP note) are in ADR-0018
 
-## 9. 参照
+## 9. References
 
-- ADR-0018(本セッションの成果物)/ ADR-0014 / ADR-0016 / ADR-0003
-- CLAUDE.md「Web ダッシュボードは Trusted Computing Base である」
-- CRYPTO_SPEC §3(鍵の保存先)/ §6.5(招待の相互確認)/ §14.3(非保証)
-- AUTH_SPEC §6(トークン UI の予約)/ §15-3(招待リンク形式と Web 受諾)
-- docs/notes/session-22.md §1(Wave 3 W = W0 画面設計から)
-- docs/SECURITY_REVIEW_2026-08-14.md(値付き pull への CSRF = L-1。2026-08-15 修正済み)
+- ADR-0018 (this session's deliverable) / ADR-0014 / ADR-0016 / ADR-0003
+- CLAUDE.md "The Web dashboard is the Trusted Computing Base"
+- CRYPTO_SPEC §3 (key storage locations) / §6.5 (mutual invite confirmation) / §14.3 (non-guarantees)
+- AUTH_SPEC §6 (the token UI reservation) / §15-3 (the invite link format and Web acceptance)
+- docs/notes/session-22.md §1 (Wave 3 W = starting from W0 screen design)
+- docs/SECURITY_REVIEW_2026-08-14.md (CSRF on the valued pull = L-1. Fixed 2026-08-15)
 - Cloudflare Mesh: developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/
-  (2026-04-14 changelog。全トラフィック CF 経由・Gateway 検査の明記)
+  (the 2026-04-14 changelog. Explicit about all traffic via CF / Gateway inspection)
