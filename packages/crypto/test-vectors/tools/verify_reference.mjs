@@ -412,7 +412,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         );
       } else if (e.op === "revoke_device") {
         // 2026-09-20 DK: nested LP of the revoked-FP list. Positives have
-        // 1+ elements, no duplicates, lowercase 32-byte hex
+        // 1+ elements, no duplicates, 32 lowercase hex chars
         const p = e.payload;
         check(
           `${label}: device fingerprints nested LP`,

@@ -165,7 +165,7 @@ const vector = {
         lpEncode(["maruhi/v1/dek-wrap", projectId, environmentId, epoch, "user-owner-0001"]),
       ),
       must_fail: true,
-      note: "Substituting the recipient (transplanting a member-bound wrap) fails Open",
+      note: "Substituting the recipient (transplanting a wrap addressed to another member) fails Open",
     },
     {
       name: "info-environment-mismatch",

@@ -543,7 +543,7 @@
       {
         "name": "trailing-bytes",
         "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1evvAA==",
-        "note": "a line with extra bytes after the blob is rejected"
+        "note": "a line whose blob has extra trailing bytes is rejected"
       },
       {
         "name": "corrupt-base64",

@@ -1723,7 +1723,7 @@
           "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01"
         }
       },
-      "note": "a standalone checkpoint with member-or-above coverage of all environments (environment entries in byte-ascending order of environment_id — generation SHOULD) is accepted and each environment's latest checkpoint is derived (§6.2 / §6.3; an environment still at epoch 1 = env-stage-0003 can also be attested)"
+      "note": "a standalone checkpoint by a member-or-above covering all environments (environment entries in byte-ascending order of environment_id — generation SHOULD) is accepted and each environment's latest checkpoint is derived (§6.2 / §6.3; an environment still at epoch 1 = env-stage-0003 can also be attested)"
     },
     {
       "name": "checkpoint-empty-environments",
@@ -11273,7 +11273,7 @@
       }
     },
     "checkpoint-boundary-rotate": {
-      "description": "a derived chain advanced to the rotate compound's boundary checkpoint (seq 4 = the creation-boundary share, seq 5 = rotate_epoch (epoch 2), seq 6 = the boundary checkpoint binding manifest-rotate's real hash). The comparison target for manifest-rotate's positive and for checkpoint-binding-mismatch / checkpoint-regressed (env-manifest.json)",
+      "description": "a derived chain advanced to the rotate compound's boundary checkpoint (seq 4 = the creation-boundary checkpoint, seq 5 = rotate_epoch (epoch 2), seq 6 = the boundary checkpoint binding manifest-rotate's real hash). The comparison target for manifest-rotate's positive and for checkpoint-binding-mismatch / checkpoint-regressed (env-manifest.json)",
       "base_seq": 3,
       "entries": [
         {
@@ -13804,7 +13804,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "checkpoint-regression",
       "must_fail": true,
-      "note": "attesting a manifest_version smaller than the latest preceding checkpoint containing the same environment (seq 14 = manifest_version 2) is rejected (blocks a rollback of the floor for floorless clients' detection basis — §6.2)",
+      "note": "attesting a manifest_version smaller than the latest preceding checkpoint containing the same environment (seq 14 = manifest_version 2) is rejected (blocks rolling back the detection baseline used by floor-less clients — §6.2)",
       "chain": "checkpoint-baseline"
     },
     {

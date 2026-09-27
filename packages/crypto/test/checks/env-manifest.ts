@@ -14,8 +14,8 @@
 //   against the derived chains that carry the boundary checkpoint tuples
 //   (checkpoint-boundary-* in chain-entries.json), while the same data
 //   against the canonical chain lacking a checkpoint is rejected by the
-//   composite-head-without-checkpoint-* negatives. Also negative: a binding
-//   with identical match (checkpoint-binding-mismatch), equivocation by
+//   composite-head-without-checkpoint-* negatives. Also negatives: failing
+//   the exact-match binding (checkpoint-binding-mismatch), equivocation by
 //   differing tuples on the same coordinate, and consistency rule 1
 //   (checkpoint-regressed)
 // - epoch-regression (an advanced manifestVersion stamped with the old

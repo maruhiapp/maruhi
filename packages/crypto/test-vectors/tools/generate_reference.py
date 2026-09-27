@@ -1787,7 +1787,7 @@ def gen_chain_entries():
             checkpoint_env_entry("env-prod-0001", 2, 1, values_digest_hex=cp_prod_values),
         ]),
         t0 + 14000, "checkpoint-regression",
-        "attesting a manifest_version smaller than the latest preceding checkpoint containing the same environment (seq 14 = manifest_version 2) is rejected (blocks a rollback of the floor for floorless clients' detection basis — §6.2)",
+        "attesting a manifest_version smaller than the latest preceding checkpoint containing the same environment (seq 14 = manifest_version 2) is rejected (blocks rolling back the detection baseline used by floor-less clients — §6.2)",
         chain="checkpoint-baseline",
     )
     add_checkpoint_authz(
@@ -1922,7 +1922,7 @@ def gen_chain_entries():
                 "env-stage-0003": expected_checkpoint(
                     13, checkpoint_env_entry("env-stage-0003", 1, 1)),
             },
-            "note": "a standalone checkpoint with member-or-above coverage of all environments (environment entries in byte-ascending order of environment_id — generation SHOULD) is accepted and each environment's latest checkpoint is derived (§6.2 / §6.3; an environment still at epoch 1 = env-stage-0003 can also be attested)",
+            "note": "a standalone checkpoint by a member-or-above covering all environments (environment entries in byte-ascending order of environment_id — generation SHOULD) is accepted and each environment's latest checkpoint is derived (§6.2 / §6.3; an environment still at epoch 1 = env-stage-0003 can also be attested)",
         },
         {
             "name": "checkpoint-empty-environments",
@@ -6427,8 +6427,8 @@ def gen_env_manifest():
             "digest_input_hex": variables_digest_input(order_entries).hex(),
             "variables_digest_hex": variables_digest_hex(order_entries),
             "note": "the order is **byte**-ascending by variable_id (UTF-8): 'Zeta-var-0002' (Z = 0x5a) "
-                    "comes before 'alpha-var-0001' (a = 0x61) (pins locale- and "
-                    "case-insensitivity-independence)",
+                    "comes before 'alpha-var-0001' (a = 0x61) (pins independence "
+                    "from locale and letter case)",
         },
         {
             # The surrogate-pair boundary (session-31 M1-T2 — 2026-08-28):
@@ -7096,7 +7096,7 @@ def gen_checkpoint_boundary_chains():
     chain["extended_chains"]["checkpoint-boundary-rotate"] = {
         "description": (
             "a derived chain advanced to the rotate compound's boundary checkpoint (seq 4 = "
-            "the creation-boundary share, seq 5 = rotate_epoch (epoch 2), seq 6 = the boundary "
+            "the creation-boundary checkpoint, seq 5 = rotate_epoch (epoch 2), seq 6 = the boundary "
             "checkpoint binding manifest-rotate's real hash). The comparison target for "
             "manifest-rotate's positive and for checkpoint-binding-mismatch / "
             "checkpoint-regressed (env-manifest.json)"
@@ -7545,7 +7545,7 @@ def gen_invite_link():
             {"name": "uppercase-type", "line": "SSH-ED25519 " + good_blob_b64, "note": "the type string is case-sensitive"},
             {"name": "short-key", "line": "ssh-ed25519 " + short_blob, "note": "a key length of 31 bytes is rejected"},
             {"name": "blob-type-mismatch", "line": "ssh-ed25519 " + type_mismatch_blob, "note": "a line whose outer type disagrees with the type string inside the blob is rejected"},
-            {"name": "trailing-bytes", "line": "ssh-ed25519 " + trailing_blob, "note": "a line with extra bytes after the blob is rejected"},
+            {"name": "trailing-bytes", "line": "ssh-ed25519 " + trailing_blob, "note": "a line whose blob has extra trailing bytes is rejected"},
             {"name": "corrupt-base64", "line": "ssh-ed25519 " + good_blob_b64[:-2] + "!!", "note": "a line that is invalid as base64 is rejected"},
             {"name": "missing-blob", "line": "ssh-ed25519", "note": "a line without a blob is rejected"},
             {"name": "empty-line", "line": "", "note": "an empty line is rejected"},
@@ -7585,7 +7585,7 @@ def gen_invite_link():
 
 
 # ---------------------------------------------------------------------------
-# 3.9b head-attestation.json — the §6.6 head declaration
+# 3.9b head-attestation.json — the §6.6 head attestation
 #     (Ed25519 + §2.1 LP; PR-M4)
 #
 # head_attestation_signed_bytes = LP("<suite>/head-attestation",
@@ -7593,7 +7593,7 @@ def gen_invite_link():
 #                                    chain_head_hash_hex, chain_head_seq)
 #   - no timestamp or nonce (the semantics is attribution, not a
 #     freshness proof — §6.6; chain_head_seq orders recency of
-#     declarations)
+#     attestations)
 #   - burning attester_user_id is the same anti-relabeling measure as
 #     §5.1's signer_user_id
 #   - The verification-rule families that need chain state reference
@@ -7601,12 +7601,12 @@ def gen_invite_link():
 #     as value-signature / metadata-signature)
 #
 # The positives are session-27 §13-3's three forms (basic / a reader's
-# declaration / a past declaration to an in-tenure head by a removed
+# attestation / a past attestation to an in-tenure head by a removed
 # member). The third pins the intent 'it passes §6.6's signature and
 # head-time verification, but is never a distribution or comparison
 # target because the attester is not a current member' (the server
-# deletes the declaration row when accepting remove_member — §6.4 —
-# and a client does not use a declaration by a non-current attester as
+# deletes the attestation row when accepting remove_member — §6.4 —
+# and a client does not use a attestation by a non-current attester as
 # comparison material — §6.6 (1)).
 
 HEAD_ATTESTATION_FIELDS_ORDER = [
@@ -7678,24 +7678,24 @@ def gen_head_attestation():
 
     basic = make_attestation(
         "basic", owner_id, len(entries),
-        "the basic form: the owner declares the current head (seq 24). Passes all §6.6 "
-        "checks (signature, head binding, membership at the declared-head time)",
+        "the basic form: the owner attests the current head (seq 24). Passes all §6.6 "
+        "checks (signature, head binding, membership at the attested-head time)",
     )
     vectors = [
         basic,
         make_attestation(
             "reader-attestation", admin_id, 6,
-            "a reader's declaration: at head 6, user-admin-0003 is a reader (the change_role is "
-            "seq 7). A declaration can be submitted by every member including readers "
+            "a reader's attestation: at head 6, user-admin-0003 is a reader (the change_role is "
+            "seq 7). A attestation can be submitted by every member including readers "
             "(§6.3 head gossip / §6.6 — the lower bound of the required role is reader)",
         ),
         make_attestation(
             "removed-attester-in-tenure", member_id, 4,
-            "a past declaration inside the membership interval (head 4) by an attester removed "
+            "a past attestation inside the membership interval (head 4) by an attester removed "
             "at seq 5. It passes §6.6's signature and head-time verification (the verify "
             "key is the key of that time — the chain keeps key history), but because the "
             "attester is not a current member it is outside the distribution targets (the "
-            "server deletes the declaration row when accepting remove_member — §6.4), and "
+            "server deletes the attestation row when accepting remove_member — §6.4), and "
             "even if distributed a client does not use it as comparison material "
             "(§6.6 (1) — the current-member check). This vector pins that two-layer intent",
         ),
@@ -7731,7 +7731,7 @@ def gen_head_attestation():
         ),
         make_negative(
             "transplant-project", {"project_id": "proj-other-0002"},
-            "transplanting a declaration to another project fails signature verification (project_id's context binding — §6.6)",
+            "transplanting a attestation to another project fails signature verification (project_id's context binding — §6.6)",
         ),
         make_negative(
             "transplant-attester", {"attester_user_id": admin_id},
@@ -7801,8 +7801,8 @@ def gen_head_attestation():
         rule_negative(
             "attester-removed-at-head", member_id, head_hash(len(entries)), len(entries),
             "attester-not-member-at-head",
-            "reject the form where an attester removed at seq 5 declares a post-removal head (24) "
-            "(§6.6 (1)'s membership at the declared-head time — pins the membership-interval "
+            "reject the form where an attester removed at seq 5 attests a post-removal head (24) "
+            "(§6.6 (1)'s membership at the attested-head time — pins the membership-interval "
             "boundary by contrast with removed-attester-in-tenure)",
         ),
     ]
@@ -7810,7 +7810,7 @@ def gen_head_attestation():
 
     # --- The device axis (2026-09-20 DK — §6.6 'device key': the
     #     attester's key = the signing device. Whether a key was valid
-    #     at the declared-head time is judged by the device's validity
+    #     at the attested-head time is judged by the device's validity
     #     interval. The referenced chain is the derived chain
     #     device-ops — convention 28)
     dk_chain = chain["extended_chains"]["device-ops"]["entries"]
@@ -7831,15 +7831,15 @@ def gen_head_attestation():
         make_attestation(
             "phone-attestation", owner_id, 33,
             "a second-device positive: owner-0001's phone P (cap (owner, listed{}) — a vote-only device "
-            "that receives no DEK) declares a head (33) inside its validity interval. "
-            "Declarations are per-device (AUTH_SPEC §16-1)",
+            "that receives no DEK) attests a head (33) inside its validity interval. "
+            "Attestations are per-device (AUTH_SPEC §16-1)",
             key=phone, chain_ref="device-ops", head_hash_hex=dk_head_hash(33),
         ),
         make_attestation(
             "reader-cap-device-attestation", owner3_id, 37,
-            "a declaration of the current head (37) by the cap-(reader, all) device L: the lower bound "
-            "of a declaration's required role is reader, so a device with effective role reader "
-            "can declare",
+            "a attestation of the current head (37) by the cap-(reader, all) device L: the lower bound "
+            "of a attestation's required role is reader, so a device with effective role reader "
+            "can attest",
             key=readercap, chain_ref="device-ops", head_hash_hex=dk_head_hash(37),
         ),
     ]
@@ -7847,7 +7847,7 @@ def gen_head_attestation():
         rule_negative(
             "attester-device-revoked-at-head", owner_id, dk_head_hash(37), 37,
             "attester-key-mismatch-at-head",
-            "a declaration of a post-revocation head (37) by phone P — revoked at seq 35 — is "
+            "a attestation of a post-revocation head (37) by phone P — revoked at seq 35 — is "
             "attester-key-mismatch-at-head (the person [owner-0001] stays enrolled — the end "
             "boundary of the device's validity interval)",
             chain_ref="device-ops", attester_key=phone,
@@ -7857,11 +7857,11 @@ def gen_head_attestation():
     write(
         "head-attestation.json",
         {
-            "description": "CRYPTO_SPEC §6.6: the head declaration (Ed25519). head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical chain (24 entries — only the hashes changed, tracking the full regeneration of 2026-09-14 ES + PF1; the meaning of the positives and negatives is unchanged)",
+            "description": "CRYPTO_SPEC §6.6: the head attestation (Ed25519). head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical chain (24 entries — only the hashes changed, tracking the full regeneration of 2026-09-14 ES + PF1; the meaning of the positives and negatives is unchanged)",
             "signed_fields_order": HEAD_ATTESTATION_FIELDS_ORDER,
             "binary_encoding": "the chain-head hash goes into LP as a lowercase hex string (the same convention as chain-entries.json's binary_encoding). Numbers (chain_head_seq) are decimal-stringified. No timestamp or nonce is signed (§6.6 — the semantics is attribution, not a freshness proof)",
             "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, attester keys = keys",
-            "distribution_note": "removed-attester-in-tenure is a positive that passes §6.6's verification (signature, membership at the declared-head time), but because the attester is not a current member it is outside the distribution targets (the server deletes the declaration row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1)). This current-member check is outside this file's verification vectors (implementation test — session-27 §13-5)",
+            "distribution_note": "removed-attester-in-tenure is a positive that passes §6.6's verification (signature, membership at the attested-head time), but because the attester is not a current member it is outside the distribution targets (the server deletes the attestation row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1)). This current-member check is outside this file's verification vectors (implementation test — session-27 §13-5)",
             "vectors": vectors,
             "negative": negatives + rule_negatives,
         },
