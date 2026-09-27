@@ -1,8 +1,11 @@
-// サーバー側検証(CRYPTO_SPEC §6.4 = verifyChain 再実行)— 認可系 negative
-// ベクターのうち、複合エンドポイント経由(create_environment / rotate_epoch)の
-// 拒否テスト。汎用 append 経由の negative は membership-negatives-append.test.ts。
-// 共有 fixture・ベクター再生ヘルパは support/membership-scenario.ts(分割の
-// 動機はシナリオモジュール冒頭を参照)。
+// Server-side verification (CRYPTO_SPEC §6.4 = verifyChain re-run) —
+// rejection tests for the authorization negative vectors that go
+// through the composite endpoint (create_environment / rotate_epoch).
+// Negatives via generic append live in
+// membership-negatives-append.test.ts.
+// The shared fixture and vector-replay helpers are in
+// support/membership-scenario.ts (for the split's motivation see the
+// top of the scenario module).
 
 import { describe, expect, it } from "vitest";
 
@@ -16,22 +19,27 @@ import {
 
 registerMembershipScenario();
 
-// create_environment / rotate_epoch の negative は複合エンドポイント経由になり、
-// サーバーの判定順(§12-3 / §12-4)が合意規則(verifyChain)より先に働くケースが
-// ある。ベクターの expected_reason(合意規則の理由コード)は crypto 層の 4 実行
-// 環境テストが固定し、ここではサーバー受理面での期待(status + 種別)を固定する:
-// - role 不足は DO の requireRole が verifyChain より先(403 insufficient-role)
-// - 未知環境への rotate はデータ行の不在が先(404 EnvironmentNotFound —
-//   行はチェーンと原子的に作られるため意味論は unknown-environment と一致)
-// - dek_commitment_hex の形式違反は api-schema の hex Schema が先(400)
+// A create_environment / rotate_epoch negative goes through the
+// composite endpoint, where the server's judgment order (§12-3 /
+// §12-4) can act before the consensus rules (verifyChain). The
+// vector's expected_reason (a consensus-rule reason code) is pinned
+// by the crypto layer's 4-runtime tests; here the expectation on the
+// server's acceptance surface (status + kind) is pinned:
+// - insufficient role: the DO's requireRole precedes verifyChain (403
+//   insufficient-role)
+// - rotate on an unknown environment: the absent data row precedes
+//   (404 EnvironmentNotFound — the row is created atomically with the
+//   chain, so the semantics match unknown-environment)
+// - a dek_commitment_hex format violation: api-schema's hex Schema
+//   precedes (400)
 interface CompositeExpectation {
   readonly status: number;
   readonly reason?: string;
 }
 
 const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
-  // 削除済みメンバーは §11-2 の存在秘匿(membership-authz.test.ts の専用テストと
-  // 同じ 404)
+  // A removed member gets §11-2's existence hiding (the same 404 as
+  // the dedicated test in membership-authz.test.ts)
   "authz-nonmember-actor": { status: 404 },
   "authz-reader-rotate-epoch": { status: 403, reason: "insufficient-role" },
   "authz-rotate-role-precedes-unknown": { status: 403, reason: "insufficient-role" },
@@ -50,35 +58,44 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "create-env-commitment-format-precedes-role": { status: 400 },
   "authz-field-too-long": { status: 422, reason: "invalid-payload" },
   "authz-actor-key-mismatch": { status: 422, reason: "actor-key-mismatch" },
-  // 環境スコープ(2026-09-14 ES — CRYPTO_SPEC §6.2 の環境対象 op): K3(2026-09-15)
-  // から受理面が 403 insufficient-scope を先に返す(AUTH_SPEC §12-3 の判定順 —
-  // role 403 → scope 403 → 存在 404 → 意味論 422。設計録 es-design.md §9 K3-C /
-  // K3-G)。合意規則 environment-out-of-scope(422)は多層防御として crypto 層の
-  // 4 実行環境テストが固定する。listed の主体には「未作成の環境」も scope 外なので
-  // 404 より 403 が先(all の主体は従来どおり 404 — data-environment-rotation.test.ts)。
-  // ベクター名の `*-precedes-out-of-scope` は**合意規則層**(verifyChain)の検査順を
-  // 指し、受理面の順(scope 403 が先)とは逆になる。ベクターは K3 では触らない
-  // (再生成は crypto の範囲)ため名前はそのまま
+  // Environment scope (2026-09-14 ES — CRYPTO_SPEC §6.2's
+  // environment-targeted ops): since K3 (2026-09-15) the acceptance
+  // surface returns 403 insufficient-scope first (AUTH_SPEC §12-3's
+  // judgment order — role 403 → scope 403 → existence 404 → semantics
+  // 422. Design record es-design.md §9 K3-C / K3-G). The consensus
+  // rule environment-out-of-scope (422) is pinned as defense in depth
+  // by the crypto layer's 4-runtime tests. For a listed principal an
+  // "uncreated environment" is also out of scope, so 403 precedes 404
+  // (an `all` principal still gets 404 —
+  // data-environment-rotation.test.ts). The vector names
+  // `*-precedes-out-of-scope` refer to the **consensus-rule layer's**
+  // (verifyChain's) check order, which is the reverse of the
+  // acceptance surface's (scope 403 first). The vectors are untouched
+  // in K3 (regeneration is crypto's scope), so the names stay as-is
   "authz-create-env-listed-admin": { status: 403, reason: "insufficient-scope" },
   "authz-create-env-listed-member": { status: 403, reason: "insufficient-scope" },
   "authz-rotate-out-of-scope": { status: 403, reason: "insufficient-scope" },
   "authz-rotate-unknown-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
   "authz-rotate-out-of-scope-precedes-epoch": { status: 403, reason: "insufficient-scope" },
-  // create の scope 判定(403)は verifyChain(duplicate-environment 422)より先:
-  // negative の actor は listed admin なので scope で落ちる
+  // create's scope judgment (403) precedes verifyChain
+  // (duplicate-environment 422): the negative's actor is a listed
+  // admin, so it falls at scope
   "authz-create-env-duplicate-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
-  // 端末鍵(2026-09-19 DK — K3 から受理面が端末の実効権限で判定する。設計録 dk-design.md
-  // §8 K3-1 の第 2 段: 同梱エントリの actor FP が名指す端末の実効 (role, scope) が
-  // verifyChain より先に 403 を返す。合意規則 `insufficient-role` /
-  // `environment-out-of-scope`(422)は crypto 層の 4 実行環境テストが固定する)。
-  // reader cap の端末による rotate = 実効 role reader、listed cap の端末による
-  // rotate / 作成 = 実効 scope の外
+  // Device keys (2026-09-19 DK — since K3 the acceptance surface
+  // judges by the device's effective permissions. Design record
+  // dk-design.md §8 K3-1 stage 2: the effective (role, scope) of the
+  // device named by the bundled entry's actor FP returns a 403 before
+  // verifyChain. The consensus rules `insufficient-role` /
+  // `environment-out-of-scope` (422) are pinned by the crypto layer's
+  // 4-runtime tests). A rotate by a reader-cap device = effective role
+  // reader; a rotate / create by a listed-cap device = outside the
+  // effective scope
   "authz-rotate-by-reader-cap-device": { status: 403, reason: "insufficient-role" },
   "authz-rotate-out-of-device-scope": { status: 403, reason: "insufficient-scope" },
   "authz-create-env-by-listed-device": { status: 403, reason: "insufficient-scope" },
 };
 
-describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合経由)", () => {
+describe("server-side verification (§6.4) — authorization negative vectors (via composite)", () => {
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
     if (op !== "create_environment" && op !== "rotate_epoch") {
@@ -89,10 +106,11 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(複合
       throw new Error(`missing composite expectation for ${negative.name}`);
     }
     it(`rejects ${negative.name} via the composite endpoint with ${expectation.status}${expectation.reason === undefined ? "" : ` (${expectation.reason})`}`, async () => {
-      // 前提チェーン(端末派生チェーンを含む — K3 から汎用 append で再生できる)
+      // The prerequisite chain (device-derived chains included — replayable via generic append since K3)
       const { members, head } = await replayNegativePrefix(negative);
-      // 実ヘッドで再署名する(境界 checkpoint 挿入分の seq / prev のずれを吸収。
-      // op / payload / actor ブロックはベクター negative のまま)
+      // Re-sign at the real head (absorbing the seq / prev shift from
+      // the inserted boundary checkpoints. The op / payload / actor
+      // blocks stay the vector negative's)
       const { entry } = await resignEntryAt(
         toWireEntry(negative.entry),
         head.seq + 1,

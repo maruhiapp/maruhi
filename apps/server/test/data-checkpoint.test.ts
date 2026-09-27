@@ -1,21 +1,27 @@
-// standalone(周期)checkpoint の受理面と GET /audit-head の統合テスト
-// (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1)。
+// Integration tests for the acceptance surface of standalone (periodic)
+// checkpoints and GET /audit-head
+// (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1).
 //
-// - 認可 2 水準(実効権限マトリクス): 空 audit head =
-//   write スコープ × member 以上、非空 = 実効権限 admin(不足 403)
-// - 受理時点突合の 5 理由(manifest-mismatch / values-digest-mismatch /
-//   audit-head-unknown / audit-head-stale / environment-deleted)。
-//   実在しない先行 manifest_version の公証拒否を含む
-// - 原子性(拒否はチェーン・ミラー・スナップショットの何も残さない)と
-//   スナップショット保存規律の経路同一性(A のみ再 checkpoint しても B の
-//   基準は維持 — §16-2「経路によらず同一」)
-// - 監査ヘッド: 遅延 materialize の初期化(既存行からの再計算)・行追記での
-//   前進・位置下限(audit-head-stale)と初回の空虚な真
+// - Two authorization levels (the effective-permission matrix): an empty
+//   audit head = write scope × member or above; a non-empty one =
+//   effective admin (insufficient → 403)
+// - The 5 reasons of acceptance-time cross-checking (manifest-mismatch /
+//   values-digest-mismatch / audit-head-unknown / audit-head-stale /
+//   environment-deleted), including refusing to notarize a
+//   manifest_version that does not exist yet
+// - Atomicity (a rejection leaves nothing behind — no chain, mirror, or
+//   snapshot row) and path-identity of the snapshot preservation
+//   discipline (re-checkpointing only A preserves B's baseline — §16-2
+//   "identical regardless of path")
+// - Audit head: lazy-materialize initialization (recomputation from
+//   existing rows), advancement on row appends, the position floor
+//   (audit-head-stale), and vacuous truth on the first one
 //
-// 合意規則の理由コード・検査順序そのもの(role / audit role / unknown / epoch /
-// regression)は crypto 層の 4 実行環境テスト(chain-entries.json)が固定済みで、
-// ここでは API 到達面の代表(unknown-environment / epoch / reader role)だけを
-// 実データで確認する。
+// The consensus rules' reason codes and check order themselves (role /
+// audit role / unknown / epoch / regression) are already pinned by the
+// crypto layer's 4-runtime tests (chain-entries.json); here we only
+// exercise the representatives of the API-facing surface
+// (unknown-environment / epoch / reader role) against real data.
 
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -54,7 +60,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-// data-fixture.ts の GITHUB_IDS と同じシード値(あちらは非公開のため写す)
+// The same seed values as data-fixture.ts's GITHUB_IDS (copied since that one is private)
 const GITHUB_IDS: Record<string, number> = {
   [OWNER]: 9001,
   [MEMBER]: 9002,
@@ -62,9 +68,10 @@ const GITHUB_IDS: Record<string, number> = {
 };
 
 /**
- * 対象プロジェクト限定の write スコープトークン(実効権限マトリクスの b / d)。
- * fixture の既定トークン(CLI ログインの既定名)を同名ローテーションで失効させ
- * ないよう、別名で発行する。
+ * A write-scope token limited to this project (b / d of the effective-
+ * permission matrix). Issued under a distinct name so same-name rotation
+ * does not revoke the fixture's default token (the default name of CLI
+ * login).
  */
 async function writeScopedToken(userId: string): Promise<string> {
   const githubId = GITHUB_IDS[userId];
@@ -74,7 +81,7 @@ async function writeScopedToken(userId: string): Promise<string> {
   return cliToken(githubId, [{ project: projectId, permission: "write" }], "write-scoped");
 }
 
-/** 保存済み最新マニフェストのタプル座標(受理時点突合の一致側の材料)。 */
+/** The stored latest-manifest tuple coordinates (material for the match side of acceptance-time cross-checking). */
 async function currentManifestTuple(
   environmentId: string,
 ): Promise<{ manifestVersion: number; manifestSigHashHex: string }> {
@@ -92,7 +99,7 @@ async function currentManifestTuple(
   };
 }
 
-/** 受理時点の保存状態と一致するタプル(epoch は既定 1 — rotate を挟まない限り)。 */
+/** A tuple matching the state stored at acceptance time (epoch defaults to 1 — unless a rotate intervenes). */
 async function matchingTuple(
   environmentId: string,
   overrides?: Partial<CheckpointEnvironmentEntry>,
@@ -108,7 +115,7 @@ async function matchingTuple(
   };
 }
 
-/** standalone checkpoint を汎用チェーン追記(§16-2)へ送る。200 ならヘッドを進める。 */
+/** Send a standalone checkpoint to generic chain append (§16-2). On 200 the head advances. */
 async function sendStandaloneCheckpoint(input: {
   readonly actorUserId: string;
   readonly environments: readonly CheckpointEnvironmentEntry[];
@@ -151,7 +158,7 @@ async function auditHeadOk(authToken: string): Promise<string> {
   return body.auditHeadHashHex;
 }
 
-/** chain.checkpointed ミラー行数(原子性・ミラー記録の検証材料)。 */
+/** The number of chain.checkpointed mirror rows (material for checking atomicity / mirror recording). */
 async function checkpointMirrorCount(): Promise<number> {
   const rows = await queryProjectDo(
     projectId,
@@ -176,10 +183,11 @@ async function snapshotRow(
 
 describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", () => {
   it("returns the cumulative hash to effective admin, initializing the derived column from existing rows", async () => {
-    // 初回アクセスが既存監査行(ベースチェーンのミラー)からの再計算 =
-    // §5.1 の導入マイグレーションを兼ねる(遅延 materialize)
+    // The first access recomputes from the existing audit rows (the base
+    // chain's mirrors) = this doubles as the §5.1 introduction migration
+    // (lazy materialize)
     const first = await auditHeadOk(token(OWNER));
-    // 冪等: 再取得は同じヘッド(行が増えていない限り)
+    // Idempotent: a re-fetch returns the same head (as long as no rows were added)
     expect(await auditHeadOk(token(OWNER))).toBe(first);
   });
 
@@ -194,7 +202,7 @@ describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", ()
   it("rejects non-admin chain roles with 403 and strangers with 404 (§11-2 concealment)", async () => {
     expect((await fetchAuditHead(token(MEMBER))).status).toBe(403);
     expect((await fetchAuditHead(token(READER))).status).toBe(403);
-    // スコープ半分の不足(admin role × write トークン)も 403(実効権限の min)
+    // A half-scoped shortfall (admin role × write token) is also a 403 (the min of effective permissions)
     expect((await fetchAuditHead(await writeScopedToken(OWNER))).status).toBe(403);
   });
 
@@ -209,17 +217,18 @@ describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", ()
   });
 });
 
-describe("standalone checkpoint の認可 2 水準(実効権限マトリクス)", () => {
+describe("two authorization levels for standalone checkpoints (the effective-permission matrix)", () => {
   it("(a) admin role × admin token + a fresh audit head is accepted, (d) member × write token + empty head is accepted", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // (d): member role × write スコープ × 空 audit head = データ層 checkpoint
+    // (d): member role × write scope × empty audit head = a data-layer checkpoint
     const memberAttempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
       authToken: await writeScopedToken(MEMBER),
     });
     expect(memberAttempt.response.status).toBe(200);
-    // (a): 実効権限 admin + CAS 親確定後に取得した申告の公証
+    // (a): notarization of an attestation fetched after the CAS parent
+    // settled, at effective permission admin
     const head = await auditHeadOk(token(OWNER));
     const ownerAttempt = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -272,26 +281,27 @@ async function expectMismatch(response: Response, reason: string): Promise<void>
   expect(body.reason).toBe(reason);
 }
 
-describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 理由)", () => {
+describe("acceptance-time cross-checking for standalone checkpoints (the 5 reasons of CRYPTO_SPEC §6.4)", () => {
   it("rejects notarizing a manifest_version that does not exist yet (manifest-mismatch)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const manifest = await currentManifestTuple(ENV);
     const headBefore = fixture.head.seq;
     const mirrorsBefore = await checkpointMirrorCount();
-    // 悪意メンバーが実在しない先の manifest_version を公証して以後の正当な
-    // マニフェストを checkpoint-regressed で詰まらせる形。合意規則
-    // (regression = 非後退)は通るが、受理時点の最新マニフェストとの一致
-    // (§6.4)が落とす
+    // The shape where a malicious member notarizes a future
+    // manifest_version that does not exist, jamming every later
+    // legitimate manifest with checkpoint-regressed. The consensus rule
+    // (regression = non-regression) passes it, but the match against the
+    // latest stored manifest at acceptance (§6.4) drops it
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV, { manifestVersion: manifest.manifestVersion + 5 })],
     });
     await expectMismatch(attempt.response, "manifest-mismatch");
-    // 原子性: 拒否はチェーンにもミラーにも何も残さない(基準の汚染が起きない)
+    // Atomicity: the rejection leaves nothing on the chain or the mirrors (no contamination of the baseline)
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
     expect(await checkpointMirrorCount()).toBe(mirrorsBefore);
-    // 正当な現行版の公証はその後も受理される(詰まっていない)
+    // A notarization of the legitimate current version is still accepted afterwards (not jammed)
     const legitimate = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -302,8 +312,10 @@ describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 �
   it("rejects a stale manifest reference (manifest-mismatch — the issuer's view is behind)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const stale = await matchingTuple(ENV);
-    // メタ操作(変数作成)が manifestVersion を進める → 古い参照は一致しない。
-    // 合意規則の regression(非後退)は等号を許すため、拒否は受理時点突合の側
+    // A meta op (variable creation) advances manifestVersion → the stale
+    // reference no longer matches. Since the consensus rule's regression
+    // (non-regression) allows equality, the rejection is on the
+    // acceptance-time cross-check side
     await createVariableOk(dek, "var-meta-advance-0001", "API_KEY", "sk-alpha");
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -334,8 +346,10 @@ describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 �
 
   it("rejects an attestation older than the previous checkpoint's mirror row (audit-head-stale) and accepts a refetched one", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 位置下限の基準になる「直前 checkpoint のミラー行」を作る前に申告を取る
-    // (CAS 競合後に申告を取り直さなかった発行の形 — §6.4)
+    // Fetch the attestation before creating "the previous checkpoint's
+    // mirror row" that becomes the position floor's reference (the shape
+    // of an issuance that did not re-fetch the attestation after a CAS
+    // race — §6.4)
     const staleHead = await auditHeadOk(token(OWNER));
     const first = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -348,7 +362,7 @@ describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 �
       auditHeadHashHex: staleHead,
     });
     await expectMismatch(attempt.response, "audit-head-stale");
-    // 申告の取り直し(§16-2 の再試行)で受理される
+    // Accepted once the attestation is re-fetched (the §16-2 retry)
     const refetched = await auditHeadOk(token(OWNER));
     const retried = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -358,9 +372,10 @@ describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 �
     expect(retried.response.status).toBe(200);
   });
 
-  it("does not impose the position floor on the project's first checkpoint (空虚に真 — §6.4 の基底ケース)", async () => {
-    // ベースチェーンは環境を持たない = checkpoint がまだ 1 つも無い。
-    // 要素ゼロ(環境ゼロ)+ 公証は合意規則上有効(§6.2)で、位置下限は課されない
+  it("does not impose the position floor on the project's first checkpoint (vacuously true — the §6.4 base case)", async () => {
+    // The base chain has no environments = no checkpoint exists yet. A
+    // zero-element (zero-environment) + notarization is valid under the
+    // consensus rules (§6.2), and no position floor is imposed
     const head = await auditHeadOk(token(OWNER));
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -402,11 +417,11 @@ describe("standalone checkpoint の受理時点突合(CRYPTO_SPEC §6.4 の 5 �
   });
 });
 
-describe("境界 checkpoint の監査ヘッド公証(§16-2 — standalone と同一規則)", () => {
+describe("audit-head notarization on a boundary checkpoint (§16-2 — the same rule as standalone)", () => {
   it("accepts a rotate composite whose boundary checkpoint attests a fresh audit head (effective admin)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const head = await auditHeadOk(token(OWNER));
-    // 受理まで進める正例はラップした DEK 自身のコミットメントを渡す
+    // For the positive case that proceeds to acceptance, pass the wrapped DEK's own commitment
     const next = makeDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -442,7 +457,7 @@ describe("境界 checkpoint の監査ヘッド公証(§16-2 — standalone と�
   });
 });
 
-/** 保存済みスナップショット列挙(配布内容の期待値 — §16-2 の保存行そのもの)。 */
+/** The stored snapshot enumeration (the expectation for distribution — the §16-2 stored rows themselves). */
 async function storedSnapshotEnumeration(
   environmentId: string,
 ): Promise<readonly { variableId: string; version: number; valueSigHashHex: string }[]> {
@@ -477,21 +492,21 @@ async function pullBody(environmentId: string): Promise<PullSnapshotBody> {
   return (await response.json()) as PullSnapshotBody;
 }
 
-describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2)", () => {
+describe("distribution of the value snapshot (AUTH_SPEC §12-7 / §14-2)", () => {
   it("value pull bundles the stored enumeration of the latest covering checkpoint", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // 作成複合の境界 checkpoint(空列挙)が誕生時からの基準(§12-4)
+    // The creation composite's boundary checkpoint (empty enumeration) is the baseline from birth (§12-4)
     const creation = await pullBody(ENV);
     const creationRow = await snapshotRow(ENV);
     expect(creation.checkpointSnapshot).toBeDefined();
     expect(creation.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
     expect(creation.checkpointSnapshot?.values).toEqual([]);
-    // 変数作成は checkpoint を発行しない — 配布される列挙は保存行のまま(空)
+    // Variable creation issues no checkpoint — the distributed enumeration stays the stored row (empty)
     await createVariableOk(dek, "var-m3-0001", "DATABASE_URL", "postgres://alpha");
     const beforeCheckpoint = await pullBody(ENV);
     expect(beforeCheckpoint.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
     expect(beforeCheckpoint.checkpointSnapshot?.values).toEqual([]);
-    // standalone checkpoint の受理後は、受理時に保存した列挙そのものを配布する
+    // After a standalone checkpoint is accepted, the enumeration stored at acceptance is distributed verbatim
     const accepted = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -504,7 +519,7 @@ describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2)", () =
     expect(after.checkpointSnapshot?.values).toEqual(stored);
   });
 
-  it("metadata-only pull does not carry the snapshot (§12-7 — 値を運ばない)", async () => {
+  it("metadata-only pull does not carry the snapshot (§12-7 — carries no values)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const response = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(OWNER));
     expect(response.status).toBe(200);
@@ -513,14 +528,14 @@ describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2)", () =
   });
 });
 
-describe("スナップショット保存規律の経路同一性(§16-2 — 部分集合 checkpoint)", () => {
+describe("path-identity of the snapshot preservation discipline (§16-2 — subset checkpoint)", () => {
   const ENV_B = "env-second-0001";
 
   it("re-checkpointing A alone atomically updates A's baseline and leaves B's untouched", async () => {
     const dekA = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dekA, "var-a-0001", "DATABASE_URL", "postgres://alpha");
     await createEnvironmentOk(fixture, ENV_B, "Batch");
-    // A + B の両方をカバーする standalone checkpoint で基準を確立する
+    // Establish the baseline with a standalone checkpoint covering both A + B
     const both = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV), await matchingTuple(ENV_B)],
@@ -530,23 +545,25 @@ describe("スナップショット保存規律の経路同一性(§16-2 — 部�
     const baselineB = await snapshotRow(ENV_B);
     expect(baselineA?.chainSeq).toBe(both.entry.seq);
     expect(baselineB?.chainSeq).toBe(both.entry.seq);
-    // A のみ再 checkpoint(部分集合は合意規則上有効 — §6.2)
+    // Re-checkpoint A alone (a subset is valid under the consensus rules — §6.2)
     const onlyA = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
     });
     expect(onlyA.response.status).toBe(200);
     expect((await snapshotRow(ENV))?.chainSeq).toBe(onlyA.entry.seq);
-    // B の基準(最新包含 checkpoint)は維持される — payload に含まれない環境の
-    // 既存スナップショットは変更しない(§16-2)
+    // B's baseline (its latest covering checkpoint) is preserved — an
+    // environment not in the payload keeps its existing snapshot
+    // unchanged (§16-2)
     expect(await snapshotRow(ENV_B)).toEqual(baselineB);
-    // 配布(§12-7)も環境ごとの最新包含 checkpoint に対応する:
-    // A は再 checkpoint の位置、B は元の位置の列挙を配る
+    // Distribution (§12-7) also tracks each environment's latest
+    // covering checkpoint: A serves the enumeration at the
+    // re-checkpoint's position, B at the original position
     expect((await pullBody(ENV)).checkpointSnapshot?.chainSeq).toBe(onlyA.entry.seq);
     const pulledB = await pullBody(ENV_B);
     expect(pulledB.checkpointSnapshot?.chainSeq).toBe(both.entry.seq);
     expect(pulledB.checkpointSnapshot?.values).toEqual(await storedSnapshotEnumeration(ENV_B));
-    // ミラー行(chain.checkpointed)は受理ごとに記録される(AUDIT_SPEC §3.4)
+    // A mirror row (chain.checkpointed) is recorded per acceptance (AUDIT_SPEC §3.4)
     const mirrors = await queryProjectDo(
       projectId,
       "SELECT chain_seq FROM audit_events WHERE event = 'chain.checkpointed' AND chain_seq IN (?, ?)",
@@ -557,8 +574,8 @@ describe("スナップショット保存規律の経路同一性(§16-2 — 部�
   });
 });
 
-describe("スナップショット列挙の置換省略(values digest 一致 — §6.4 の保存状態は不変)", () => {
-  /** 環境の列挙行の rowid(置換 = DELETE + 再 INSERT が起きたかの観測材料)。 */
+describe("skipping snapshot-enumeration replacement (values digest match — the §6.4 stored state is unchanged)", () => {
+  /** The rowids of the environment's enumeration rows (material to observe whether replacement = DELETE + re-INSERT happened). */
   async function snapshotRowids(environmentId: string): Promise<readonly number[]> {
     const rows = await queryProjectDo(
       projectId,
@@ -597,8 +614,9 @@ describe("スナップショット列挙の置換省略(values digest 一致 —
     const firstValues = await storedSnapshotEnumeration(ENV);
     expect(firstValues.length).toBe(1);
     const firstTuple = await storedTupleRow(ENV);
-    // 他環境の行で rowid の最大値を押し上げる(置換が起きれば ENV の行は新しい
-    // rowid を得る — 観測を確実にするための標識。最後に消す)
+    // Push the max rowid up with another environment's row (if
+    // replacement happens, ENV's rows get fresh rowids — a marker to make
+    // the observation reliable; deleted at the end)
     await queryProjectDo(
       projectId,
       `INSERT INTO checkpoint_snapshot_values (environment_id, variable_id, version, value_sig_hash_hex)
@@ -606,7 +624,7 @@ describe("スナップショット列挙の置換省略(values digest 一致 —
     );
     const rowidsBefore = await snapshotRowids(ENV);
 
-    // (1) 値が変わらないまま再 checkpoint: 列挙は同一なので置換しない
+    // (1) Re-checkpoint with no value change: the enumeration is identical, so it is not replaced
     const unchanged = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -614,7 +632,7 @@ describe("スナップショット列挙の置換省略(values digest 一致 —
     expect(unchanged.response.status).toBe(200);
     const unchangedTuple = await storedTupleRow(ENV);
     expect(unchangedTuple.valuesDigestHex).toBe(firstTuple.valuesDigestHex);
-    // タプル座標の行は常に更新される(最新包含 checkpoint = 今回の seq / hash)
+    // The tuple-coordinates row is always updated (latest covering checkpoint = this time's seq / hash)
     expect(unchangedTuple.chainSeq).toBe(unchanged.entry.seq);
     expect(unchangedTuple.chainSeq).not.toBe(firstTuple.chainSeq);
     expect(unchangedTuple.entryHashHex).not.toBe(firstTuple.entryHashHex);
@@ -625,7 +643,7 @@ describe("スナップショット列挙の置換省略(values digest 一致 —
     expect(pulled.checkpointSnapshot?.entryHashHex).toBe(unchangedTuple.entryHashHex);
     expect(pulled.checkpointSnapshot?.values).toEqual(firstValues);
 
-    // (2) 値が変わってから再 checkpoint: digest が変わり列挙は全置換される
+    // (2) Re-checkpoint after a value change: the digest changes and the enumeration is fully replaced
     await createVariableOk(dek, "var-skip-0002", "REDIS_URL", "redis://beta");
     const changed = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -640,7 +658,7 @@ describe("スナップショット列挙の置換省略(values digest 一致 —
       "var-skip-0001",
       "var-skip-0002",
     ]);
-    // 保存列挙の digest = タプル行の digest(省略判定の前提となる不変条件)
+    // digest of stored enumeration = the tuple row's digest (the invariant the skip judgment rests on)
     expect(await valuesDigestOf(changedValues)).toBe(changedTuple.valuesDigestHex);
     expect((await pullBody(ENV)).checkpointSnapshot?.values).toEqual(changedValues);
 

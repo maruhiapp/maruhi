@@ -1,26 +1,35 @@
-// strict 受理の実効性の固定テスト(AUTH_SPEC §12-10 (1))。
+// Pinned tests for the effectiveness of strict acceptance
+// (AUTH_SPEC §12-10 (1)).
 //
-// 対象は §12-10 (1) の列挙面のうち実装済みの全エンドポイント payload ルート
-// (packages/api-schema/src/strict.ts の SECURITY_CRITICAL_PAYLOAD_ENDPOINTS)。
-// 各面で「未知フィールドを含むリクエストが実際に 400 で拒否される」ことを
-// workerd 実環境の受理経路で検証する — 注釈の**存在**をテストしない
-// (スキーマ注釈がパーサに読まれなくなった場合も、挙動の側から検出するため)。
-// 強制は payload スキーマのラッパー(`strictPayload`)だけ。エンドポイントの
-// `HttpApi.ParseOptions` は成功・エラーの符号化にも同じ options を渡すため、
-// TaggedError のスタックメタデータが HTTP 500 になる。ここでは使わない。
+// The targets are every implemented endpoint's payload route among
+// the surfaces §12-10 (1) enumerates
+// (SECURITY_CRITICAL_PAYLOAD_ENDPOINTS in
+// packages/api-schema/src/strict.ts). Each surface verifies over
+// the real workerd acceptance path that "a request containing an
+// unknown field is actually rejected with 400" — it does not test
+// the annotation's **presence** (so that if the schema annotation
+// stopped being read by the parser, it is detected from the
+// behavior side).
+// The enforcement is only the payload-schema wrapper
+// (`strictPayload`). The endpoint's `HttpApi.ParseOptions` would
+// pass the same options to success/error encoding, turning a
+// TaggedError's stack metadata into HTTP 500 — not used here.
 //
-// 各テストは同一 body の 2 送信で構成する:
-// 1. probe = clean body + 未知フィールド → 400
-// 2. control = clean body そのもの → 400 以外(decode 通過の証明)
+// Each test is built from two sends of the same body:
+// 1. probe = clean body + an unknown field → 400
+// 2. control = the clean body itself → non-400 (proof the decode
+//    passed)
 //
-// 2 送信の差分は未知フィールドのみなので、probe の 400 は未知フィールド起因で
-// あることが確定する(他フィールド起因の 400 なら control も 400 になる)。
-// Schema 400 の応答本文は空(upstream の HttpApiSchemaError は「empty 400」で
-// レンダリングされる仕様)のため、本文の検査は行わない。正常系の完走は既存
-// スイートが担う。
+// Since the two sends differ only in the unknown field, the probe's
+// 400 is certainly caused by that field (if the 400 had a different
+// cause, the control would be 400 too).
+// A Schema 400's response body is empty (upstream renders
+// HttpApiSchemaError as an "empty 400"), so no body is checked.
+// Happy-path completion is covered by existing suites.
 //
-// 署名検証に到達しない body には data-scenario の unsigned ダミー(形式のみ
-// 有効なゼロ署名)を使う — 400 が Schema 段で確定することの証明には十分。
+// Bodies that must not reach signature verification use
+// data-scenario's unsigned dummy (a zero signature, valid in form
+// only) — enough to prove the 400 settles at the Schema stage.
 
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -45,8 +54,9 @@ registerDataScenario();
 const PROBE_KEY = "__maruhiStrictProbe";
 
 /**
- * probe(clean + 未知フィールド)= 400、control(clean)= 非 400 を固定する。
- * control の実ステータスを返す(呼び出し側でハンドラ段の典型結果を併記できる)。
+ * Pins probe (clean + unknown field) = 400 and control (clean) =
+ * non-400. Returns the control's actual status (the caller can also
+ * assert the handler stage's typical result).
  */
 async function expectStrictReject(
   send: (body: Record<string, unknown>) => Promise<Response>,
@@ -60,8 +70,10 @@ async function expectStrictReject(
 }
 
 /**
- * ネストへの伝播: control(非 400)を通過済みの clean body に対し、ネスト位置に
- * だけ未知フィールドを埋めた形が 400 で落ちること(expectStrictReject の後に呼ぶ)。
+ * Propagation into nesting: for a clean body that already passed as
+ * the control (non-400), the shape with an unknown field embedded
+ * only at a nested position must fail with 400 (call after
+ * expectStrictReject).
  */
 async function expectNestedReject(
   send: (body: Record<string, unknown>) => Promise<Response>,
@@ -80,7 +92,7 @@ const sendJson =
       body: JSON.stringify(body),
     });
 
-// 形式のみ有効なゼロ署名エントリ(署名検証 = 422 に到達する前提の control 用)
+// A zero-signature entry valid in form only (a control on the premise that signature verification = 422 is reached)
 const unsignedEntry = (op: string, payload: Record<string, unknown>): Record<string, unknown> => ({
   suite: "maruhi/v1",
   seq: fixture.head.seq + 1,
@@ -106,7 +118,7 @@ const unsignedEnvStatement = (
   signatureHex: "00".repeat(64),
 });
 
-describe("チェーン追記(§11-4)", () => {
+describe("chain append (§11-4)", () => {
   it("init rejects an unknown field with 400", async () => {
     const send = sendJson("POST", `${BASE}/projects`, bearer(token(OWNER)));
     await expectStrictReject(send, {
@@ -124,7 +136,7 @@ describe("チェーン追記(§11-4)", () => {
     const entry = unsignedEntry("remove_member", { targetUserId: "user-member-0002" });
     const clean = { parentHeadHashHex: fixture.head.hashHex, entry };
     await expectStrictReject(send, clean);
-    // ネスト(entry.payload)への伝播
+    // Propagation into a nested position (entry.payload)
     await expectNestedReject(send, {
       ...clean,
       entry: {
@@ -135,16 +147,17 @@ describe("チェーン追記(§11-4)", () => {
   });
 });
 
-describe("ヘッド申告の提出(§16-1)", () => {
+describe("head-attestation submission (§16-1)", () => {
   it("attest rejects an unknown field with 400", async () => {
     const send = sendJson(
       "PUT",
       `${BASE}/projects/${projectId}/head-attestation`,
       bearer(token(OWNER)),
     );
-    // ゼロ署名の control は Schema を通過して受理検証の 422(signature-invalid)
-    // に落ちる。非 400 だけではエラー符号化の 500 化を見逃すので、宣言どおりの
-    // status まで固定する。
+    // The zero-signature control passes Schema and falls to the
+    // acceptance check's 422 (signature-invalid). A non-400 alone
+    // would miss error-encoding 500s, so pin the declared status
+    // too.
     const status = await expectStrictReject(send, {
       suite: "maruhi/v1",
       chainHeadHashHex: fixture.head.hashHex,
@@ -155,7 +168,7 @@ describe("ヘッド申告の提出(§16-1)", () => {
   });
 });
 
-// 形式のみ有効なゼロ署名の境界 checkpoint(§12-4 の必須同梱)
+// A zero-signature boundary checkpoint valid in form only (§12-4's mandatory bundling)
 const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<string, unknown> =>
   unsignedEntry("checkpoint", {
     environments: [
@@ -170,7 +183,7 @@ const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<stri
     auditHeadHashHex: "",
   });
 
-describe("環境作成・ローテーション複合(§12-4)", () => {
+describe("environment create / rotation composite (§12-4)", () => {
   it("create rejects an unknown field with 400 (root and nested entry payload)", async () => {
     const send = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
     const entryPayload = { environmentId: ENV, dekCommitmentHex: "12".repeat(32) };
@@ -190,7 +203,7 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       entry: unsignedEntry("create_environment", { ...entryPayload, [PROBE_KEY]: true }),
     });
-    // 複合の checkpoint フィールドにも strict が伝播する
+    // strict also propagates into the composite's checkpoint field
     await expectNestedReject(send, {
       ...clean,
       checkpoint: { ...(clean.checkpoint as Record<string, unknown>), [PROBE_KEY]: true },
@@ -221,8 +234,8 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       manifest: { ...(clean.manifest as Record<string, unknown>), [PROBE_KEY]: true },
     });
-    // checkpoint フィールドの内側にも strict が伝播する: エントリ payload と
-    // その環境タプルの両ネスト位置
+    // strict also propagates inside the checkpoint field: both the
+    // entry payload and its environment-tuple nested positions
     const cleanCheckpoint = clean.checkpoint as Record<string, unknown>;
     const checkpointPayload = cleanCheckpoint["payload"] as Record<string, unknown>;
     await expectNestedReject(send, {
@@ -245,13 +258,16 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
     });
   });
 
-  it("rejects a composite without the boundary checkpoint field with 400 (旧 CLI fail-closed)", async () => {
-    // §12-4 の必須同梱: checkpoint を知らない旧 CLI の create / rotate 複合は
-    // Schema 段の 400 で fail-closed になる(session-33 裁定 E-3 の帰結 —
-    // SELF_HOSTING の更新順序が運用面を担う)。冒頭の規約どおり probe / control を
-    // 本テスト内で対にする(先行テストの clean に依存すると、400 が checkpoint
-    // 欠落起因である保証が先行側の変更で黙って失われる): 差分は checkpoint
-    // フィールドの有無のみ
+  it("rejects a composite without the boundary checkpoint field with 400 (fail-closed for older CLIs)", async () => {
+    // §12-4's mandatory bundling: a create / rotate composite from
+    // an old CLI that does not know checkpoint fails closed as a
+    // Schema-stage 400 (the consequence of session-33 ruling E-3 —
+    // SELF_HOSTING's update ordering covers the operational side).
+    // Per the file-top convention, probe / control are paired within
+    // this test (if it depended on a prior test's clean, a change on
+    // the prior side would silently lose the guarantee that the 400
+    // is caused by the missing checkpoint): the only difference is
+    // the presence of the checkpoint field
     const create = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
     const createClean = {
       parentHeadHashHex: fixture.head.hashHex,
@@ -292,7 +308,7 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
   });
 });
 
-describe("メタ操作(§12-5 — 環境)", () => {
+describe("meta operations (§12-5 — environments)", () => {
   it("environment rename rejects an unknown field with 400", async () => {
     const send = sendJson("PATCH", dataUrl(`/environments/${ENV}`), bearer(token(OWNER)));
     await expectStrictReject(send, {
@@ -317,7 +333,7 @@ describe("メタ操作(§12-5 — 環境)", () => {
   });
 });
 
-describe("値 push・メタ操作(§12-5 — 変数)", () => {
+describe("value push / meta operations (§12-5 — variables)", () => {
   it("variable create rejects an unknown field with 400", async () => {
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/variables`), bearer(token(OWNER)));
     await expectStrictReject(send, {
@@ -328,8 +344,9 @@ describe("値 push・メタ操作(§12-5 — 変数)", () => {
   });
 
   it("declared create (union branch — §12-5) rejects an unknown field with 400", async () => {
-    // strict 注釈は Union を越えて伝播する(§12-10 (1))ことの v2 分岐での固定。
-    // control はハンドラ段の 4xx(非 400)= decode 通過の証明
+    // Pinning on the v2 branch that strict annotations propagate
+    // across the Union (§12-10 (1)). The control is the handler
+    // stage's 4xx (non-400) = proof the decode passed
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/variables`), bearer(token(OWNER)));
     const statement = {
       ...unsignedVariableStatement(VAR, "DATABASE_URL"),
@@ -415,7 +432,7 @@ describe("値 push・メタ操作(§12-5 — 変数)", () => {
   });
 });
 
-describe("DEK ラップ登録(§12-6)", () => {
+describe("DEK wrap registration (§12-6)", () => {
   it("register rejects an unknown field with 400 (root and nested wrap)", async () => {
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/deks`), bearer(token(OWNER)));
     const wrap = {
@@ -432,7 +449,7 @@ describe("DEK ラップ登録(§12-6)", () => {
   });
 });
 
-describe("リカバリーブロブ登録(§13-2)", () => {
+describe("recovery-blob registration (§13-2)", () => {
   it("recovery put rejects an unknown field with 400 (clean body still succeeds)", async () => {
     const send = sendJson("PUT", `${BASE}/auth/recovery`, bearer(token(OWNER)));
     const status = await expectStrictReject(send, {
@@ -440,12 +457,13 @@ describe("リカバリーブロブ登録(§13-2)", () => {
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(16),
     });
-    // control は実受理まで通る(probe が状態を変えないことの裏取り込み)
+    // The control passes all the way to real acceptance (a
+    // backcheck that the probe changed no state)
     expect(status).toBe(204);
   });
 });
 
-describe("端末登録簿(§13-11)", () => {
+describe("the device registry (§13-11)", () => {
   it("device register rejects an unknown field with 400 (clean body still succeeds)", async () => {
     const keys = vectorKeyNamed("user-owner-0001@phone");
     const send = sendJson(
@@ -473,9 +491,10 @@ describe("端末登録簿(§13-11)", () => {
   });
 });
 
-describe("リース請求(§14)", () => {
+describe("lease requests (§14)", () => {
   it("lease issue rejects an unknown field with 400", async () => {
-    // 唯一の未認証面(資格情報 = OIDC トークン自体 — §14-1)
+    // The only unauthenticated surface (the credential is the OIDC
+    // token itself — §14-1)
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/lease`), {});
     await expectStrictReject(send, {
       oidcToken: "aa.bb.cc",
@@ -484,7 +503,7 @@ describe("リース請求(§14)", () => {
   });
 });
 
-describe("招待の作成・受諾(§15-2)", () => {
+describe("invite creation / acceptance (§15-2)", () => {
   it("invite issue rejects an unknown field with 400", async () => {
     const send = sendJson("POST", `${BASE}/projects/${projectId}/invites`, bearer(token(OWNER)));
     await expectStrictReject(send, {

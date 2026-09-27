@@ -1,12 +1,13 @@
-// データプレーン統合テスト用の実 crypto ヘルパ(workerd 内で実行)。
+// Real crypto helpers for data-plane integration tests (run inside workerd).
 //
-// packages/crypto の公開 API だけで実データを作る: テストベクターの固定鍵
-// (chain-entries.json の keys)でチェーンエントリをテスト時に署名し、
-// DEK 生成 → HPKE ラップ → AES-GCM 暗号化 → クライアント側復号までを実行する。
-// フェイクの暗号文を使うのは「サーバーが中身を検証できない」ことを利用する
-// 受理ポリシー系テストのみ(各テストに明記)。
-// チェーン組立・ワイヤ値の共通コアは @maruhi/crypto/test-support
-// (cli テスト支援と共有 — session-11 §5 裁定)。
+// Real data is built using only the public API of packages/crypto: chain
+// entries are signed at test time with the test vectors' fixed keys
+// (chain-entries.json's keys), and DEK generation → HPKE wrap → AES-GCM
+// encryption → client-side decryption are all executed for real.
+// Only acceptance-policy tests that rely on "the server cannot verify the
+// contents" use fake ciphertexts (noted in each test).
+// The shared core of chain assembly and wire values lives in
+// @maruhi/crypto/test-support (shared with the cli test support — session-11 §5 ruling).
 
 import type {
   ChainEntry,
@@ -55,20 +56,23 @@ export type { BuiltChain, WireEncryptedPayload };
 export { hexBytes, valueSignedBytesHashOf } from "@maruhi/crypto/test-support";
 
 /**
- * ベクター固定鍵集合に無いユーザー ID の鍵借用。データフィクスチャの reader
- * (user-reader-0003)は 3 本目のベクター鍵(名義 user-admin-0003)を使う —
- * 鍵とユーザー ID の束縛はチェーンの add_member が行うため、ベクター JSON の
- * 名義とテストユーザー ID は独立でよい。
+ * Key borrowing for user IDs not in the fixed vector key set. The data
+ * fixture's reader (user-reader-0003) uses the third vector key (nominally
+ * user-admin-0003) — binding between a key and a user ID is done by the
+ * chain's add_member, so the vector JSON's nominal user and the test user ID
+ * may be independent.
  */
 const VECTOR_KEY_ALIASES: Record<string, string> = {
   "user-reader-0003": "user-admin-0003",
 };
 
 /**
- * 端末鍵の差し替え(2026-09-19 DK — K3 テスト): user_id ごとに「いま署名に使う鍵」を
- * ベクター鍵名(`user-owner-0001@phone` 等)で上書きする。以後の signEntryAt /
- * signValueAs / signMetaStatementAs / signEnvManifestAs / signWrapAs がその端末鍵で
- * 署名する(actor FP もその鍵)。null で解除。data-scenario の beforeEach が全解除する。
+ * Device key substitution (2026-09-19 DK — K3 test): overrides, per user_id,
+ * "the key currently used for signing" with a vector key name
+ * (`user-owner-0001@phone` etc.). Subsequent signEntryAt / signValueAs /
+ * signMetaStatementAs / signEnvManifestAs / signWrapAs sign with that device
+ * key (the actor FP is also that key's). Pass null to clear. data-scenario's
+ * beforeEach clears them all.
  */
 const deviceKeyOverrides = new Map<string, string>();
 
@@ -84,7 +88,7 @@ export function resetDeviceKeys(): void {
   deviceKeyOverrides.clear();
 }
 
-/** ベクター鍵を名前で引く(端末鍵 `<user>@<label>` を含む)。 */
+/** Look up a vector key by name (includes device keys `<user>@<label>`). */
 export function vectorKeyNamed(name: string) {
   const keys = vectorKeys[name];
   if (keys === undefined) {
@@ -93,7 +97,7 @@ export function vectorKeyNamed(name: string) {
   return keys;
 }
 
-/** ベクター固定鍵のユーザー(user-owner-0001 / user-member-0002 / user-admin-0003 + 借用者)。 */
+/** The fixed vector key users (user-owner-0001 / user-member-0002 / user-admin-0003 + borrowers). */
 export function vectorKeyOf(userId: string) {
   const keys = vectorKeys[deviceKeyOverrides.get(userId) ?? VECTOR_KEY_ALIASES[userId] ?? userId];
   if (keys === undefined) {
@@ -102,16 +106,17 @@ export function vectorKeyOf(userId: string) {
   return keys;
 }
 
-/** ベクター鍵を FP で引く(端末鍵を含む全鍵から。無ければ undefined)。 */
+/** Look up a vector key by FP (from all keys including device keys; undefined if none). */
 function vectorKeyByFingerprint(fingerprintHex: string) {
   return Object.values(vectorKeys).find((keys) => keys.key_fingerprint_hex === fingerprintHex);
 }
 
 /**
- * ベクター seed でエントリを署名する。actor ブロックの FP がベクター鍵(端末鍵を含む)
- * のどれかなら、その鍵で署名する(DK 後は同一ユーザーが複数の端末鍵を持つため、
- * 「actor.user_id の鍵」では端末署名を再現できない)。未知の FP は user_id の鍵へ
- * フォールバックする(FP 不一致 negative の意味論を保つ)。
+ * Sign an entry with a vector seed. If the actor block's FP matches any
+ * vector key (including device keys), sign with that key (after DK a single
+ * user can hold multiple device keys, so "actor.user_id's key" cannot
+ * reproduce device signing). Unknown FPs fall back to the user_id's key
+ * (preserving the FP-mismatch negative semantics).
  */
 async function signAs(userId: string, unsigned: UnsignedChainEntry): Promise<ChainEntry> {
   const keys = vectorKeyByFingerprint(unsigned.actor.keyFingerprintHex) ?? vectorKeyOf(userId);
@@ -133,7 +138,7 @@ export interface ChainStep {
   readonly operation: ChainOperation;
 }
 
-/** 既存チェーンの末尾に続く 1 エントリをテスト時署名で作る。 */
+/** Build one entry with a test-time signature to follow the tail of an existing chain. */
 export async function signEntryAt(input: {
   readonly seq: number;
   readonly prevHashHex: string;
@@ -154,11 +159,13 @@ export async function signEntryAt(input: {
 }
 
 /**
- * 既存エントリ(ベクター本編・negative)の op / payload / actor を保ったまま
- * seq / prev を付け替えて再署名する。複合の境界 checkpoint 挿入(AUTH_SPEC §12-4)
- * でヘッドがベクターの固定 seq からずれた後の API 再生用。actor ブロックは原本を
- * 保持する(鍵 FP 不一致 negative の意味論を保つ)。seq / prev / timestamp が原本と
- * 一致する場合は Ed25519 の決定性により原本と同一バイトになる。
+ * Re-sign an existing entry (vector main line or negative) keeping its op /
+ * payload / actor while renumbering seq / prev. For replaying against the API
+ * after the head has drifted from the vector's fixed seq due to a composite
+ * boundary checkpoint insertion (AUTH_SPEC §12-4). The actor block keeps the
+ * original (preserving the key-FP-mismatch negative semantics). When seq /
+ * prev / timestamp match the original, Ed25519 determinism makes the bytes
+ * identical to the original.
  */
 export async function resignEntryAt(
   base: ChainEntry,
@@ -170,15 +177,16 @@ export async function resignEntryAt(
     ...rest,
     seq,
     prevHashHex,
-    // approve の timestamp_ms は合意規則の入力(§6.2 `proposal-expired` — 本仕様で
-    // timestamp を用いる唯一の箇所)なので原本を保つ。他の op は seq 由来の決定値
+    // approve's timestamp_ms is an input to the consensus rule (§6.2
+    // `proposal-expired` — the only place this spec uses a timestamp), so keep
+    // the original. Other ops get the deterministic value derived from seq
     timestampMs: base.op === "approve" ? base.timestampMs : BASE_TIME_MS + seq * 1000,
   };
   const entry = await signAs(base.actor.userId, unsigned);
   return { entry, hash: await computeChainEntryHash(entry) };
 }
 
-/** テスト時署名で有効なチェーンを組み立てる(seq / prev_hash / timestamp は自動)。 */
+/** Assemble a valid chain with test-time signatures (seq / prev_hash / timestamp are automatic). */
 export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChain> {
   return buildChainWith(
     steps.map((step) => ({
@@ -192,7 +200,7 @@ export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChai
   );
 }
 
-/** genesis 用の payload(actor 自身の公開鍵一式)。 */
+/** Payload for genesis (the actor's own public key set). */
 export function genesisOperation(userId: string): ChainOperation {
   const keys = vectorKeyOf(userId);
   return {
@@ -202,12 +210,12 @@ export function genesisOperation(userId: string): ChainOperation {
 }
 
 /**
- * メンバーの scope のテスト表現(CRYPTO_SPEC §6.2 — 2026-09-14 ES): 省略 = all、
- * 配列 = listed(空配列 = listed{})。
+ * Test representation of a member's scope (CRYPTO_SPEC §6.2 — 2026-09-14 ES):
+ * omitted = all, array = listed (empty array = listed{}).
  */
 export type TestScope = readonly string[] | undefined;
 
-/** scope のテスト表現をワイヤの 2 フィールドへ写す。 */
+/** Map the scope test representation onto the wire's two fields. */
 function scopeFieldsOf(scope: TestScope): {
   readonly scopeKind: "all" | "listed";
   readonly scopeEnvironmentIds: readonly string[];
@@ -217,7 +225,7 @@ function scopeFieldsOf(scope: TestScope): {
     : { scopeKind: "listed", scopeEnvironmentIds: scope };
 }
 
-/** add_member 用の payload(対象のベクター公開鍵一式。scope 省略 = all)。 */
+/** Payload for add_member (the target's vector public key set; scope omitted = all). */
 export function addMemberOperation(
   targetUserId: string,
   role: "owner" | "admin" | "member" | "reader",
@@ -236,7 +244,7 @@ export function addMemberOperation(
   };
 }
 
-/** change_role 用の payload(新 (role, scope) の全置換 — CRYPTO_SPEC §6.2。scope 省略 = all)。 */
+/** Payload for change_role (full replacement of (role, scope) — CRYPTO_SPEC §6.2; scope omitted = all). */
 export function changeRoleOperation(
   targetUserId: string,
   newRole: "owner" | "admin" | "member" | "reader",
@@ -248,7 +256,7 @@ export function changeRoleOperation(
   };
 }
 
-/** §5.2 のコミットメント(hex 小文字 64 文字)。 */
+/** The §5.2 commitment (hex lowercase, 64 chars). */
 export async function commitmentOf(
   projectId: string,
   environmentId: string,
@@ -264,7 +272,7 @@ export async function commitmentOf(
   );
 }
 
-/** create_environment 用の payload(エポック 1 のコミットメント込み — §6.2)。 */
+/** Payload for create_environment (with the epoch-1 commitment — §6.2). */
 export function createEnvironmentOperation(
   environmentId: string,
   dekCommitmentHex: string,
@@ -272,15 +280,15 @@ export function createEnvironmentOperation(
   return { op: "create_environment", payload: { environmentId, dekCommitmentHex } };
 }
 
-/** values_digest の正規形計算(§6.2 — active 変数の値レベル最新形。空集合可)。 */
+/** Canonical computation of values_digest (§6.2 — value-level latest form of active variables; empty set allowed). */
 export async function valuesDigestOf(entries: readonly EnvValuesDigestEntry[]): Promise<string> {
   return unwrapResult(await computeEnvValuesDigest(SUITE_ID, entries), "computeEnvValuesDigest");
 }
 
 /**
- * 境界 checkpoint 用の operation(当該環境 1 タプル + 空 audit head —
- * AUTH_SPEC §12-4 / CRYPTO_SPEC §6.3)。negative 用に audit head と複数タプルの
- * 上書きも許す。
+ * Operation for a boundary checkpoint (one tuple for the environment +
+ * empty audit head — AUTH_SPEC §12-4 / CRYPTO_SPEC §6.3). Overriding the
+ * audit head and multiple tuples is allowed for negatives.
  */
 export function checkpointOperation(input: {
   readonly environmentId: string;
@@ -307,7 +315,7 @@ export function checkpointOperation(input: {
   };
 }
 
-/** rotate_epoch 用の payload(新エポックのコミットメント込み — §6.2)。 */
+/** Payload for rotate_epoch (with the new epoch's commitment — §6.2). */
 export function rotateEpochOperation(
   environmentId: string,
   newEpoch: number,
@@ -317,7 +325,7 @@ export function rotateEpochOperation(
   return { op: "rotate_epoch", payload: { environmentId, newEpoch, reason, dekCommitmentHex } };
 }
 
-/** 新しい環境エポック DEK(256-bit 乱数)。 */
+/** A new environment epoch DEK (256-bit random). */
 export function makeDek(): Uint8Array {
   return generateDek();
 }
@@ -325,7 +333,7 @@ export function makeDek(): Uint8Array {
 export interface WireWrappedDek {
   readonly suite: string;
   readonly epoch: number;
-  /** 受信者クラス(AUTH_SPEC §12-6。省略 = member)。 */
+  /** Recipient class (AUTH_SPEC §12-6; omitted = member). */
   readonly recipientClass?: "member" | "server";
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
@@ -335,10 +343,11 @@ export interface WireWrappedDek {
 }
 
 /**
- * 署名なしのワイヤ表現に登録署名(CRYPTO_SPEC §5.1)を付ける。署名者は
- * ベクター固定鍵のユーザー(= API を呼ぶ主体と一致させること — §12-6)。
- * フェイクラップの受理ポリシー系テストにも使う(サーバーは中身を検証できないが
- * 署名は検証するため、フェイクにも呼び出し主体の署名が要る)。
+ * Add a registration signature (CRYPTO_SPEC §5.1) to an unsigned wire
+ * representation. The signer is a fixed-vector-key user (= must match the
+ * caller of the API — §12-6). Also used by fake-wrap acceptance-policy tests
+ * (the server cannot verify the contents but does verify the signature, so
+ * even fakes need the caller's signature).
  */
 export async function signWrapAs(
   signerUserId: string,
@@ -375,9 +384,9 @@ export async function signWrapAs(
 }
 
 /**
- * 配布されたラップの登録署名をクライアント側で検証する(CRYPTO_SPEC §5.1)。
- * 検証鍵は「チェーン上で署名者 user_id に束縛された sig 公開鍵」— テストでは
- * ベクター固定鍵から引く。
+ * Verify a distributed wrap's registration signature on the client side
+ * (CRYPTO_SPEC §5.1). The verification key is "the sig public key bound to
+ * the signer user_id on the chain" — tests pull it from the fixed vector keys.
  */
 export async function verifyDistributedWrapSignature(input: {
   readonly projectId: string;
@@ -416,7 +425,7 @@ export async function verifyDistributedWrapSignature(input: {
   return result.ok;
 }
 
-/** DEK を 1 受信者へ HPKE ラップし、署名者の登録署名付きワイヤ表現(§12-2)で返す。 */
+/** HPKE-wrap a DEK to one recipient and return the wire representation with the signer's registration signature (§12-2). */
 export async function wrapDekTo(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -424,7 +433,7 @@ export async function wrapDekTo(input: {
   readonly dek: Uint8Array;
   readonly recipientUserId: string;
   readonly recipientEncPubHex?: string;
-  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const encPubHex = input.recipientEncPubHex ?? vectorKeyOf(input.recipientUserId).enc_pub_hex;
@@ -456,10 +465,11 @@ export async function wrapDekTo(input: {
 }
 
 /**
- * 受信者クラス server のラップ(AUTH_SPEC §12-6 / CRYPTO_SPEC §9): HPKE info と
- * 登録署名の recipient 位置にサーバー鍵 FP を用いる。ラップ・署名の組み立ては
- * member と同じ経路(recipientUserId 位置の置き換えのみ)で、ワイヤに
- * recipientClass: "server" を付ける。
+ * A wrap with recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9): the
+ * server key FP is used in the HPKE info and in the registration signature's
+ * recipient position. Wrap and signature assembly take the same path as
+ * member (only the recipientUserId position is replaced), and the wire
+ * carries recipientClass: "server".
  */
 export async function wrapDekToServer(input: {
   readonly projectId: string;
@@ -468,7 +478,7 @@ export async function wrapDekToServer(input: {
   readonly dek: Uint8Array;
   readonly serverKeyFingerprintHex: string;
   readonly serverEncPubHex: string;
-  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const wrap = await wrapDekTo({
@@ -483,14 +493,14 @@ export async function wrapDekToServer(input: {
   return { ...wrap, recipientClass: "server" };
 }
 
-/** DEK を複数受信者へラップする(環境作成・ローテーションの完全集合用)。 */
+/** Wrap a DEK to multiple recipients (for the complete set on environment creation / rotation). */
 export async function wrapDekForAll(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly epoch: number;
   readonly dek: Uint8Array;
   readonly recipientUserIds: readonly string[];
-  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek[]> {
   const wraps: WireWrappedDek[] = [];
@@ -500,17 +510,18 @@ export async function wrapDekForAll(input: {
   return wraps;
 }
 
-/** 値署名の宣言ヘッド(署名時点で最後に検証したチェーンヘッド — §4.1)。 */
+/** The declared head of a value signature (the chain head last verified at signing time — §4.1). */
 export interface ValueChainHead {
   readonly seq: number;
   readonly hashHex: string;
 }
 
 /**
- * 署名なしワイヤ値に §4.1 の値署名を付ける(署名者 = API を呼ぶ主体と一致
- * させること — §12-5)。フェイク暗号文の受理ポリシー系テストにも使う
- * (サーバーは中身を復号できないが値署名は検証するため、フェイクにも呼び出し
- * 主体の実鍵による正しい署名が要る)。
+ * Add a §4.1 value signature to an unsigned wire value (the signer must
+ * match the caller of the API — §12-5). Also used by fake-ciphertext
+ * acceptance-policy tests (the server cannot decrypt the contents but does
+ * verify the value signature, so even fakes need a correct signature by the
+ * caller's real key).
  */
 export async function signValueAs(
   writerUserId: string,
@@ -541,7 +552,7 @@ export async function signValueAs(
   return { ...withHead, signatureHex };
 }
 
-/** 変数値を DEK で暗号化し、§4.1 の値署名付きワイヤ表現(§12-2)で返す。 */
+/** Encrypt a variable value with a DEK and return the wire representation with a §4.1 value signature (§12-2). */
 export async function encryptValue(
   dek: Uint8Array,
   context: VariableContext,
@@ -576,13 +587,13 @@ export async function encryptValue(
 }
 
 // ---------------------------------------------------------------------------
-// メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)のテスト時署名
+// Test-time signing of metadata statements (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)
 // ---------------------------------------------------------------------------
 
 /**
- * 変数ステートメントのワイヤ表現(VariableMetaStatement — §12-2)。レイアウト
- * v2 では layoutVersion とスキーマ欄の 4 フィールドが揃って存在する
- * (v1 では全部不在。required はワイヤの boolean)。
+ * Wire representation of a variable statement (VariableMetaStatement —
+ * §12-2). In layout v2, layoutVersion and the four schema fields are all
+ * present together (in v1 all are absent; required is a wire boolean).
  */
 export interface WireVariableMetaStatement {
   readonly suite: string;
@@ -601,7 +612,7 @@ export interface WireVariableMetaStatement {
   readonly signatureHex: string;
 }
 
-/** 環境ステートメントのワイヤ表現(EnvironmentMetaStatement — §12-2。v1 のまま)。 */
+/** Wire representation of an environment statement (EnvironmentMetaStatement — §12-2; stays v1). */
 export type WireEnvironmentMetaStatement = Omit<
   WireVariableMetaStatement,
   "variableId" | "layoutVersion" | "varType" | "required" | "description"
@@ -627,8 +638,8 @@ function metaContextOf(
     target: metaTargetOf(statement),
     name: statement.name,
     status: statement.status,
-    // レイアウト v2 の運搬フィールド → 署名対象(required は "true"/"false" —
-    // CRYPTO_SPEC §4.2 の LP フィールド表現)
+    // Layout-v2 carrier fields → signature target (required is "true"/"false" —
+    // the LP field representation of CRYPTO_SPEC §4.2)
     layoutVersion: statement.layoutVersion,
     ...(statement.layoutVersion === undefined ||
     statement.varType === undefined ||
@@ -651,9 +662,9 @@ function metaContextOf(
 }
 
 /**
- * 署名なしステートメントに §4.2 の author 署名を付ける(署名者 = API を呼ぶ
- * 主体と一致させること — §12-5 のメタ規則)。変数(variableId あり)・環境
- * (なし)の両形を扱う。
+ * Add a §4.2 author signature to an unsigned statement (the signer must
+ * match the caller of the API — the §12-5 meta rule). Handles both shapes:
+ * variable (with variableId) and environment (without).
  */
 export async function signMetaStatementAs<
   T extends Omit<WireVariableMetaStatement, "signatureHex" | "variableId"> & {
@@ -679,8 +690,9 @@ export async function signMetaStatementAs<
 }
 
 /**
- * meta_signed_bytes の SHA-256(次 metaVersion の prevMetaSigHashHex に使う —
- * §4.2 の連鎖)。author はワイヤに載らないため明示指定する。
+ * SHA-256 of meta_signed_bytes (used for the next metaVersion's
+ * prevMetaSigHashHex — the §4.2 chain). author does not appear on the wire,
+ * so it is specified explicitly.
  */
 export async function metaSignedBytesHashOf(
   projectId: string,
@@ -694,10 +706,10 @@ export async function metaSignedBytesHashOf(
 }
 
 // ---------------------------------------------------------------------------
-// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)
+// Environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)
 // ---------------------------------------------------------------------------
 
-/** variables_digest の 1 エントリ(§4.3 — tombstone 込みの全変数の最新形)。 */
+/** One entry of variables_digest (§4.3 — the latest form of every variable, tombstones included). */
 export interface WireDigestEntry {
   readonly variableId: string;
   readonly status: "active" | "deleted" | "declared";
@@ -705,7 +717,7 @@ export interface WireDigestEntry {
   readonly metaSigHashHex: string;
 }
 
-/** 環境マニフェストのワイヤ表現(EnvironmentManifest — §12-2)。 */
+/** Wire representation of an environment manifest (EnvironmentManifest — §12-2). */
 export interface WireEnvironmentManifest {
   readonly suite: typeof SUITE_ID;
   readonly environmentId: string;
@@ -720,7 +732,7 @@ export interface WireEnvironmentManifest {
   readonly signatureHex: string;
 }
 
-/** variables_digest の正規形計算(空集合可 — §4.3)。 */
+/** Canonical computation of variables_digest (empty set allowed — §4.3). */
 export async function digestOf(entries: readonly WireDigestEntry[]): Promise<string> {
   return unwrapResult(await computeVariablesDigest(SUITE_ID, entries), "computeVariablesDigest");
 }
@@ -747,8 +759,8 @@ function manifestContextOf(
 }
 
 /**
- * 署名なしマニフェストに §4.3 の issuer 署名を付ける(署名者 = API を呼ぶ主体と
- * 一致させること — §12-5 (1))。
+ * Add a §4.3 issuer signature to an unsigned manifest (the signer must match
+ * the caller of the API — §12-5 (1)).
  */
 export async function signEnvManifestAs(
   issuerUserId: string,
@@ -774,9 +786,9 @@ export async function signEnvManifestAs(
 }
 
 /**
- * env_manifest_signed_bytes の SHA-256(次 manifestVersion の
- * prevManifestSigHashHex に使う — §4.3 の連鎖)。issuer はワイヤに載らないため
- * 明示指定する。
+ * SHA-256 of env_manifest_signed_bytes (used for the next manifestVersion's
+ * prevManifestSigHashHex — the §4.3 chain). issuer does not appear on the
+ * wire, so it is specified explicitly.
  */
 export async function manifestSignedBytesHashOf(
   projectId: string,
@@ -789,7 +801,7 @@ export async function manifestSignedBytesHashOf(
   );
 }
 
-/** 変数作成に同梱するステートメント(metaVersion 1・active・prev 空)を署名して返す。 */
+/** Sign and return the statement bundled with variable creation (metaVersion 1, active, empty prev). */
 export async function createVariableStatement(input: {
   readonly authorUserId: string;
   readonly projectId: string;
@@ -812,8 +824,9 @@ export async function createVariableStatement(input: {
 }
 
 /**
- * クライアント側の受信経路の前半: 自分宛のラップ済み DEK をベクター固定鍵で
- * Open して DEK を返す(§5.2 のコミットメント照合・復号の材料)。
+ * First half of the client-side receive path: Open the wrapped DEK addressed
+ * to oneself with a fixed vector key and return the DEK (material for the
+ * §5.2 commitment check and decryption).
  */
 export async function unwrapDistributedDek(input: {
   readonly recipientUserId: string;
@@ -852,8 +865,8 @@ export async function unwrapDistributedDek(input: {
 }
 
 /**
- * クライアント側の受信経路: 自分宛のラップ済み DEK を Open し、その DEK で
- * EncryptedPayload を復号する(push→pull→復号のラウンドトリップ検証)。
+ * Client-side receive path: Open the wrapped DEK addressed to oneself and
+ * decrypt the EncryptedPayload with it (push→pull→decrypt round-trip check).
  */
 export async function unwrapAndDecrypt(input: {
   readonly recipientUserId: string;

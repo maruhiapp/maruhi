@@ -1,9 +1,12 @@
-// データプレーン API(AUTH_SPEC §12)の統合テスト — エポックとローテーション
-// (§12-4 複合 / §12-5 / §12-6 / CRYPTO_SPEC §7)・境界 checkpoint の複合内整合
-// (§12-4 / CRYPTO_SPEC §4.3 (2))。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
-// 環境管理・複合作成の DEK ラップ検証は data-environment.test.ts(分割の動機は
-// support/membership-scenario.ts 冒頭を参照)。
+// Integration tests for the data-plane API (AUTH_SPEC §12) — epochs and
+// rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC §7) and the
+// in-composite consistency of boundary checkpoints (§12-4 / CRYPTO_SPEC
+// §4.3 (2)).
+// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
+// (real workerd environment).
+// Environment management and creation-composite DEK-wrap verification
+// live in data-environment.test.ts (for the split's motivation see the
+// top of support/membership-scenario.ts).
 
 import { describe, expect, it } from "vitest";
 
@@ -45,13 +48,13 @@ import {
 } from "./support/data-scenario.ts";
 
 registerDataScenario();
-describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 / CRYPTO_SPEC §7)", () => {
+describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC §7)", () => {
   it("accepts pushes only under the current chain epoch and completes the composite rotation flow", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const varV1 = await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek1, "var-static", "STATIC_KEY", "static-secret");
 
-    // ローテーション前の未来エポック push も拒否
+    // A push under a future epoch before rotation is also rejected
     const early = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -61,8 +64,8 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(early.status).toBe(409);
     await expect(early.json()).resolves.toMatchObject({ currentEpoch: 1 });
 
-    // ローテーションは複合リクエスト(§12-4): 部分集合の同梱は 422 recipient-missing
-    // で、チェーンエントリも追記されない(原子性)
+    // Rotation is a composite request (§12-4): bundling a subset is a
+    // 422 recipient-missing, and no chain entry is appended (atomicity)
     const dek2 = makeDek();
     const headBefore = fixture.head;
     const partial = await wrapDekForAll({
@@ -86,7 +89,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       headBefore.seq,
     );
 
-    // 完全集合の複合ローテーション → エポック 2 へ(チェーン追記 + ラップ登録が原子)
+    // The complete-set composite rotation → epoch 2 (chain append + wrap registration are atomic)
     const complete = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -95,7 +98,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // 受理される正例はラップした DEK 自身のコミットメント
+    // The accepted positive case passes the wrapped DEK's own commitment
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -103,14 +106,14 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
     });
     expect(rotation.status).toBe(200);
-    // 複合は rotate(H+1)+ 境界 checkpoint(H+2)の 2 エントリを追記する(§12-4)
+    // The composite appends two entries: rotate (H+1) + boundary checkpoint (H+2) (§12-4)
     await expect(rotation.clone().json()).resolves.toMatchObject({
       environmentId: ENV,
       currentEpoch: 2,
       headSeq: headBefore.seq + 2,
     });
 
-    // 旧エポックの push は 409(現エポックを返す — クライアントは再暗号化して再試行)
+    // A push under the old epoch is a 409 (returns the current epoch — the client re-encrypts and retries)
     const stale = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -120,7 +123,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ currentEpoch: 2 });
 
-    // 既存 (エポック, 受信者) の上書きは禁止(409 DekWrapExists)
+    // Overwriting an existing (epoch, recipient) is forbidden (409 DekWrapExists)
     const overwrite = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: await wrapDekForAll({
         projectId,
@@ -135,7 +138,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     const overwriteBody = (await overwrite.json()) as { epoch: number; recipientUserId: string };
     expect(overwriteBody).toMatchObject({ epoch: 2, recipientUserId: READER });
 
-    // 未来エポック(3)宛の登録は 422 epoch-out-of-range
+    // Registration addressed to a future epoch (3) is a 422 epoch-out-of-range
     const future = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: await wrapDekForAll({
         projectId,
@@ -149,9 +152,11 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(future.status).toBe(422);
     expect(((await future.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
 
-    // 新エポックで再暗号化した値を push(var-static は当時のエポックのまま保持 — §7)。
-    // 宣言ヘッド = rotate エントリを含む現ヘッド、prev は v1 へ連鎖、エポックは
-    // 単調(1 → 2)— ローテーション実行フローの §4.1 の形
+    // Push the value re-encrypted under the new epoch (var-static is
+    // kept as-is on the epoch of its time — §7). The declared head = the
+    // current head including the rotate entry, prev chains to v1, and the
+    // epoch is monotonic (1 → 2) — the §4.1 shape of a rotation execution
+    // flow
     const v2 = await encryptValue(
       dek2,
       { projectId, environmentId: ENV, epoch: 2, variableId: VAR, version: 2 },
@@ -171,8 +176,9 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(pushed.status).toBe(200);
     await expect(pushed.json()).resolves.toEqual({ variableId: VAR, version: 2, epoch: 2 });
 
-    // pull: 現エポック 2、最新バージョンのエポックは変数ごとに異なる。全エポックの
-    // 自分宛ラップが同梱され、両方のエポックの値をクライアント側で復号できる
+    // pull: the current epoch is 2, and the latest version's epoch
+    // differs per variable. Wraps addressed to the caller for every epoch
+    // are bundled, so values of both epochs are decryptable client-side
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
     const body = (await pull.json()) as {
@@ -211,7 +217,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     ).resolves.toBe("static-secret");
   });
 
-  it("rejects a rotation to a deleted environment with 404 (§12-4: §7 の「全環境」は削除済みを含まない)", async () => {
+  it('rejects a rotation to a deleted environment with 404 (§12-4: §7\'s "all environments" does not include deleted ones)', async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
@@ -234,9 +240,11 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
   });
 
   it("rejects a rotation to an environment that was never created with 404", async () => {
-    // 環境の存在はチェーン導出 + データ行(複合で原子的に作られる)。未作成の
-    // 環境への rotate はデータ行の不在 = 404(unknown-environment の合意規則は
-    // crypto 層のベクターが固定する — サーバーではデータ行検査が先に立つ)
+    // An environment's existence is chain-derived + a data row (created
+    // atomically by the composite). A rotate to a never-created
+    // environment is a missing data row = 404 (the unknown-environment
+    // consensus rule is pinned by the crypto layer's vectors — on the
+    // server the data-row check comes first)
     const deks = await wrapDekForAll({
       projectId,
       environmentId: "env-ghost-9999",
@@ -264,7 +272,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // 現エポック 1 からの rotate は 2 のみ(CRYPTO_SPEC §6.3 — verifyChain が権威)
+    // From current epoch 1, the only valid rotate is to 2 (CRYPTO_SPEC §6.3 — verifyChain is authoritative)
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 3,
@@ -276,7 +284,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
   });
 
   it("rejects a rotation whose URL and entry name different environments (422 PayloadMismatch)", async () => {
-    // 複合内整合検査(§12-4): 別環境のエントリ × 別環境の URL の組を受理しない
+    // The in-composite consistency check (§12-4): an entry for one environment × a URL for another is not accepted
     await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, "env-app-0002", "Staging");
     const deks = await wrapDekForAll({
@@ -299,8 +307,9 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
   });
 
   it("rejects composite wraps whose epoch differs from the entry's new epoch (422 epoch-out-of-range)", async () => {
-    // §12-4 の複合内整合検査: 同梱ラップの epoch = エントリの new_epoch。
-    // エポック 1 宛(登録済みエポック)のラップを rotate 複合に紛れ込ませても拒否
+    // The §12-4 in-composite consistency check: a bundled wrap's epoch =
+    // the entry's new_epoch. Even slipping a wrap addressed to epoch 1
+    // (an already-registered epoch) into a rotate composite is rejected
     await createEnvironmentOk(fixture, ENV, "App");
     const headBefore = fixture.head;
     const deks = await wrapDekForAll({
@@ -319,7 +328,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
-    // 原子性: エントリも追記されない(エポックは 1 のまま)
+    // Atomicity: no entry is appended either (the epoch stays at 1)
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
     const list = await requestJson("GET", "/environments", token(READER));
@@ -327,7 +336,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(listBody.environments[0]?.currentEpoch).toBe(1);
   });
 
-  it("retries a composite rotation after a head CAS conflict (§12-4 の再署名リトライ)", async () => {
+  it("retries a composite rotation after a head CAS conflict (the §12-4 re-sign retry)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = makeDek();
     const deks = await wrapDekForAll({
@@ -343,12 +352,12 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       newEpoch: 2,
       deks,
       dekCommitmentHex: "ab".repeat(32),
-      parentHeadHashHex: projectId, // genesis ハッシュ = 古いヘッド
+      parentHeadHashHex: projectId, // the genesis hash = a stale head
     });
     expect(stale.status).toBe(409);
     const staleBody = (await stale.json()) as { currentHeadHashHex: string };
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
-    // 正しい親ヘッドで作り直したエントリ(再署名)は受理される
+    // The entry rebuilt (re-signed) against the correct parent head is accepted
     const retried = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -360,8 +369,10 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
 });
 
 /**
- * 独自タプルの境界 checkpoint を OWNER 署名で作る(同梱物一致の negative 用)。
- * 一致検査はチェーン受理検証より先に働くため、prev はダミーで良い(到達しない)。
+ * Build a boundary checkpoint with an arbitrary tuple, signed by OWNER
+ * (for the bundled-contents-match negatives). Since the match check runs
+ * before chain acceptance verification, a dummy prev is fine (it is
+ * never reached).
  */
 const shapeCheckpoint = async (tuple: {
   readonly environmentId: string;
@@ -396,7 +407,7 @@ const expectPayloadMismatch = async (response: Response, field: string) => {
   expect(((await response.json()) as { field: string }).field).toBe(field);
 };
 
-describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))", () => {
+describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPEC §4.3 (2))", () => {
   it("rejects a tuple naming another environment (payload-mismatch checkpointEnvironment)", async () => {
     const response = await createWithCheckpoint(
       await shapeCheckpoint({ environmentId: "env-other-0009", epoch: 1, manifestVersion: 1 }),
@@ -419,9 +430,11 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))",
   });
 
   it("rejects a fabricated audit head on a boundary checkpoint (audit-head-unknown)", async () => {
-    // 非空 audit_head_hash は §16-2 の規則(実効権限 admin + §6.4 の存在・位置
-    // 検査)で受理する。
-    // 保存済みの累積ハッシュ列に存在しない申告 = 偽公証は受理段で落ちる
+    // A non-empty audit_head_hash is accepted under the §16-2 rule
+    // (effective-permission admin + the §6.4 existence / position
+    // checks).
+    // An attestation absent from the stored cumulative hash column =
+    // a fabricated notarization is dropped at the acceptance stage
     const response = await createWithCheckpoint(
       await shapeCheckpoint({
         environmentId: ENV,
@@ -435,8 +448,9 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))",
   });
 
   it("rejects a checkpoint whose actor differs from the caller (403 actor-mismatch — §12-4)", async () => {
-    // エントリ・ステートメント・マニフェストは呼び出し主体(OWNER)のまま、
-    // checkpoint だけ MEMBER 署名 → チェーンエントリ両方の actor 厳密一致に反する
+    // The entry, statement, and manifest stay with the calling
+    // principal (OWNER); only the checkpoint is MEMBER-signed → violates
+    // the strict actor equality across both chain entries
     const { entry: checkpoint } = await signEntryAt({
       seq: fixture.head.seq + 2,
       prevHashHex: "ab".repeat(32),
@@ -455,10 +469,13 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))",
   });
 
   it("rejects a binding whose manifest hash differs from the bundled manifest (422 checkpoint-binding-mismatch)", async () => {
-    // 座標(env / epoch / manifestVersion)は同梱物と一致させ、タプルの
-    // manifest_sig_hash だけを別値にする: 形状検査とチェーン受理は通り、
-    // §4.3 (2) の完全一致束縛(acceptEnvManifest — 適用後履歴のタプル)が落とす。
-    // H+1 エントリはフィクスチャと同じ材料の決定的署名で再構成し、prev を接続する
+    // Make the coordinates (env / epoch / manifestVersion) match the
+    // bundled items, and change only the tuple's manifest_sig_hash: the
+    // shape check and chain acceptance pass, but §4.3 (2)'s exact-match
+    // binding (acceptEnvManifest — the tuple in post-application
+    // history) drops it.
+    // The H+1 entry is reconstructed with a deterministic signature from
+    // the same material as the fixture, and prev connects to it
     const commitment = await commitmentOf(projectId, ENV, 1, makeDek());
     const { hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
@@ -489,14 +506,16 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2))",
     expect(((await response.json()) as { reason: string }).reason).toBe(
       "checkpoint-binding-mismatch",
     );
-    // 原子性: 拒否された複合はチェーンに何も残さない
+    // Atomicity: the rejected composite leaves nothing on the chain
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(fixture.head.seq);
   });
 
   it("rejects a rotate checkpoint whose values digest mismatches the stored enumeration (422 values-digest-mismatch)", async () => {
-    // 宣言ヘッド確定後の並行 push と同型の不一致(§12-4): クライアントは再 pull の
-    // 上で有界再試行する。タプルの digest は保存列挙に存在しない変数から構成する
+    // The same kind of mismatch as a push concurrent with a declared
+    // head's finalization (§12-4): the client re-pulls and retries within
+    // bounds. The tuple's digest is built from a variable absent from
+    // the stored enumeration
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await rotateEnvironmentComposite(fixture, {

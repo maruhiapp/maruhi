@@ -1,8 +1,12 @@
-// トークン管理 API + 既定 TTL(AUTH_SPEC §6 — W3a)の統合テスト。
+// Integration tests for the token-management API + the default TTL
+// (AUTH_SPEC §6 — W3a).
 //
-// - TTL は発行時固定(§6: セッション §5 のスライディングと意図的に非対称)
-// - 一覧は本人のメタデータのみ(生値・token_hash は構造ごと返さない)
-// - 指定失効の判定順(裁定 CG): 401 → 403(呼び出し資格のみ)→ 一様 404
+// - the TTL is fixed at issuance (§6: deliberately asymmetric to the
+//   session §5 sliding window)
+// - the list returns only one's own metadata (raw values / token_hash
+//   are never returned — not even the fields)
+// - targeted-revocation judgment order (ruling CG): 401 → 403 (from
+//   caller qualification alone) → uniform 404
 
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -21,7 +25,7 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "__Host-maruhi_session";
 
-/** CLI ハンドオフ(実経路)での発行の完全応答(support の cliIssue の別名)。 */
+/** The full issuance response via the CLI handoff (the real path) — an alias of support's cliIssue. */
 const exchange = cliIssue;
 
 interface TokenRow {
@@ -44,7 +48,7 @@ beforeEach(async () => {
   await resetAuthDb();
 });
 
-describe("既定 TTL(AUTH_SPEC §6)", () => {
+describe("the default TTL (AUTH_SPEC §6)", () => {
   it("fixes expires_at to created_at + 90 days at issuance and reports it in the response", async () => {
     const issued = await exchange(801);
     const row = await tokenRow(issued.tokenId);
@@ -52,7 +56,7 @@ describe("既定 TTL(AUTH_SPEC §6)", () => {
     expect(issued.expiresAtMs).toBe(row.expires_at);
   });
 
-  it("honors an explicit expiresInDays within 1..365 (裁定 CF)", async () => {
+  it("honors an explicit expiresInDays within 1..365 (ruling CF)", async () => {
     const one = await exchange(802, { tokenName: "short", expiresInDays: 1 });
     const oneRow = await tokenRow(one.tokenId);
     expect(oneRow.expires_at).toBe(oneRow.created_at + DAY_MS);
@@ -71,18 +75,19 @@ describe("既定 TTL(AUTH_SPEC §6)", () => {
       });
       expect(response.status, `expiresInDays=${expiresInDays}`).toBe(400);
     }
-    // 形式不正はフロー開始に至らない = トークン発行にも至らない
+    // A malformed value never reaches flow start = never reaches token issuance
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
     expect(count?.n).toBe(0);
   });
 
-  it("self-discloses the presented token's expiry on /auth/me (裁定 CI — 自己資格情報属性)", async () => {
-    // 無人利用(リース非対応環境の PAT — 裁定 CF)が期限を自己観測するための
-    // 経路。スコープ限定トークンでも自分の期限だけは見える(一覧 — 裁定 CH の
-    // `*` × admin 条件 — を開かない)。セッション主体は欠落(トークンを提示して
-    // いない)
+  it("self-discloses the presented token's expiry on /auth/me (ruling CI — a self-credential attribute)", async () => {
+    // The path by which unattended use (a PAT on a lease-less
+    // environment — ruling CF) observes its own expiry. Even a
+    // scope-limited token can see just its own expiry (without
+    // opening the list — ruling CH's `*` × admin condition). The
+    // session principal is absent (it presented no token)
     const issued = await exchange(806);
     const viaToken = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
     expect(viaToken.status).toBe(200);
@@ -109,11 +114,11 @@ describe("既定 TTL(AUTH_SPEC §6)", () => {
   });
 });
 
-describe("GET /auth/tokens(一覧 — AUTH_SPEC §6)", () => {
+describe("GET /auth/tokens (listing — AUTH_SPEC §6)", () => {
   it("returns the caller's own token metadata for a session principal, without raw values or hashes", async () => {
     const session = await loginSession(811);
     const issued = await exchange(811, { tokenName: "inventory" });
-    // 他人のトークンは現れない
+    // Another user's token does not appear
     await exchange(812, { tokenName: "someone-else" });
 
     const response = await SELF.fetch(`${BASE}/auth/tokens`, {
@@ -129,7 +134,7 @@ describe("GET /auth/tokens(一覧 — AUTH_SPEC §6)", () => {
     expect(entry["scopes"]).toEqual([{ project: "*", permission: "admin" }]);
     expect(typeof entry["createdAtMs"]).toBe("number");
     expect(entry["expiresAtMs"]).toBe(issued.expiresAtMs);
-    // 生値・ハッシュは構造ごと存在しない(§6: 返さない)
+    // Raw values / hashes do not exist even as fields (§6: not returned)
     expect(Object.keys(entry).toSorted()).toEqual([
       "createdAtMs",
       "expiresAtMs",
@@ -155,7 +160,7 @@ describe("GET /auth/tokens(一覧 — AUTH_SPEC §6)", () => {
     expect(body.tokens.map((token) => token.id)).toContain(issued.tokenId);
   });
 
-  it("allows a token principal only with a * × admin scope (裁定 CH)", async () => {
+  it("allows a token principal only with a * × admin scope (ruling CH)", async () => {
     const wildcard = await cliToken(814, undefined, "wildcard");
     const allowed = await SELF.fetch(`${BASE}/auth/tokens`, { headers: bearer(wildcard) });
     expect(allowed.status).toBe(200);
@@ -172,7 +177,7 @@ describe("GET /auth/tokens(一覧 — AUTH_SPEC §6)", () => {
   });
 });
 
-describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
+describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)", () => {
   it("lets a session principal revoke an owned token (with CSRF) and records the audit event", async () => {
     const session = await loginSession(821);
     const issued = await exchange(821, { tokenName: "target" });
@@ -181,11 +186,11 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
       headers: sessionHeaders(session),
     });
     expect(response.status).toBe(204);
-    // 失効の実効: 対象トークンは以後 401
+    // The revocation takes effect: the target token is 401 thereafter
     const denied = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
     expect(denied.status).toBe(401);
-    // 監査(AUDIT_SPEC §3.1): actor = 実行主体(セッション — トークン id なし)、
-    // payload.tokenId = 失効対象
+    // Audit (AUDIT_SPEC §3.1): actor = the acting principal (a
+    // session — no token id); payload.tokenId = the revoked target
     const audit = await env.DB.prepare(
       "SELECT actor_user_id, actor_api_token_id, payload FROM user_audit_events WHERE event = 'auth.token_revoked'",
     ).first<{ actor_user_id: string; actor_api_token_id: string | null; payload: string }>();
@@ -209,7 +214,7 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
     expect(body.reason).toBe("csrf-header-required");
   });
 
-  it("returns a uniform 404 for another user's and a nonexistent token id (存在秘匿)", async () => {
+  it("returns a uniform 404 for another user's and a nonexistent token id (existence hiding)", async () => {
     const session = await loginSession(823);
     const foreign = await exchange(824, { tokenName: "foreign" });
 
@@ -223,9 +228,10 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
     });
     expect(foreignResponse.status).toBe(404);
     expect(missingResponse.status).toBe(404);
-    // 応答本文まで一様(id の実在有無を区別できない)
+    // Even the response body is uniform (cannot distinguish whether the id exists)
     expect(await foreignResponse.json()).toEqual(await missingResponse.json());
-    // 他人のトークンは消えていない・監査も記録されない(黙って成功させない規律)
+    // The other user's token is not deleted and no audit is recorded
+    // (the discipline of not letting it silently succeed)
     const row = await env.DB.prepare("SELECT id FROM api_tokens WHERE id = ?")
       .bind(foreign.tokenId)
       .first();
@@ -236,7 +242,7 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
     expect(audits?.n).toBe(0);
   });
 
-  it("allows a * × admin token to revoke a sibling token, and denies a scoped token before target resolution (裁定 CG)", async () => {
+  it("allows a * × admin token to revoke a sibling token, and denies a scoped token before target resolution (ruling CG)", async () => {
     const wildcard = await cliToken(825, undefined, "wildcard");
     const sibling = await exchange(825, { tokenName: "sibling" });
     const scoped = await cliToken(
@@ -245,7 +251,7 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
       "scoped",
     );
 
-    // スコープ限定トークンは対象の実在に関わらず 403(呼び出し資格のみから計算)
+    // A scope-limited token is 403 regardless of the target's existence (computed from caller qualification alone)
     const deniedExisting = await SELF.fetch(`${BASE}/auth/tokens/${sibling.tokenId}`, {
       method: "DELETE",
       headers: bearer(scoped),
@@ -263,7 +269,7 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
       headers: bearer(wildcard),
     });
     expect(revoked.status).toBe(204);
-    // 監査 actor はワイルドカードトークン(実行主体)、対象は payload.tokenId
+    // The audit actor is the wildcard token (the acting principal); the target is payload.tokenId
     const audit = await env.DB.prepare(
       "SELECT actor_api_token_id, payload FROM user_audit_events WHERE event = 'auth.token_revoked'",
     ).first<{ actor_api_token_id: string | null; payload: string }>();
@@ -273,8 +279,9 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
   });
 });
 
-// beforeEach の resetAuthDb が migrations を適用済みであることの明示(応答の
-// 前提を暗黙にしない — applyD1Migrations は冪等)
+// Make explicit that beforeEach's resetAuthDb has applied the
+// migrations (the response's precondition is not left implicit —
+// applyD1Migrations is idempotent)
 it("keeps migrations idempotent for this suite", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });

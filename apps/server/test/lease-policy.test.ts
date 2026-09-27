@@ -1,11 +1,13 @@
-// ワークロードリースの 503 と監査(AUTH_SPEC §14-3 / AUDIT_SPEC §3.5)・
-// サーバー鍵未設定のデプロイメント・受理ポリシーの統合テスト。
-// スイート全体の分担は lease.test.ts 冒頭、共有ヘルパは
-// support/lease-scenario.ts を参照。
+// Integration tests for workload-lease 503s and auditing (AUTH_SPEC
+// §14-3 / AUDIT_SPEC §3.5), deployments with an unset server key, and
+// the acceptance policy.
+// For how the suite is split see the top of lease.test.ts; shared
+// helpers are in support/lease-scenario.ts.
 //
-// このスイートが固定するもの:
-// - 監査(AUDIT_SPEC §3.5): server.dek_unwrapped / server.lease_issued /
-//   server.lease_denied の粒度と、var.read を**記録しない**こと
+// What this suite pins:
+// - auditing (AUDIT_SPEC §3.5): the granularity of
+//   server.dek_unwrapped / server.lease_issued / server.lease_denied,
+//   and that NO var.read is recorded
 
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -43,7 +45,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** 変数 1 本 + エポック 2 まで進め、grant と全エポックのバックフィルを済ませる。 */
+/** One variable + advance to epoch 2, with the grant and every epoch's backfill done. */
 async function twoEpochProject(): Promise<{ readonly fpHex: string }> {
   const dek1 = await createEnvironmentOk(fixture, ENV, "App");
   await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
@@ -54,10 +56,11 @@ async function twoEpochProject(): Promise<{ readonly fpHex: string }> {
   return { fpHex };
 }
 
-describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)", () => {
+describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () => {
   it("returns 503 server-wraps-missing when the grant is valid but the re-wrap is pending", async () => {
-    // grant はあるがバックフィルしていない = CRYPTO_SPEC §7 の再ラップ未了。
-    // これを不透明な失敗にしない(A1 の裁定: リースが最後の砦)
+    // Grant exists but never backfilled = the CRYPTO_SPEC §7 re-wrap
+    // is unfinished. Do not make this an opaque failure (the A1
+    // ruling: the lease is the last line of defense)
     await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] });
     const workload = await workloadKeyPair();
@@ -70,14 +73,16 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
   });
 
   it("returns 503 when the grant backfill covered only some of the existing epochs", async () => {
-    // 有効 grant がある環境のローテーション複合は、サーバー鍵を含むラップ完全
-    // 集合を要求する(§12-4)ため、rotate 経由で欠落は作れない。現実的な発生源は
-    // 「既存エポックのある環境へ grant したあと、バックフィルが一部で漏れた」
-    // ケース(A1 の裁定 4: 照合手段は 409 のみで、リースが最後の砦)
+    // A rotation composite on an environment with a valid grant
+    // requires the complete wrap set including the server key (§12-4),
+    // so a gap cannot be produced via rotate. The realistic source is
+    // "granted an environment that already had epochs, then the
+    // backfill partially missed" (A1 ruling 4: the only reconciliation
+    // means is the 409 — the lease is the last line of defense)
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     await grantServer({ scope: [ENV] });
-    // epoch 1 だけバックフィルし、現エポック 2 を落とす
+    // Backfill only epoch 1, dropping the current epoch 2
     await backfillServerWrap(1, dek1);
     const workload = await workloadKeyPair();
     const response = await requestLease({
@@ -122,14 +127,15 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
       projectId,
       "SELECT variable_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_issued'",
     );
-    // 環境単位 1 行(変数粒度の選択がない — §3.5)
+    // One row per environment (no per-variable granularity option — §3.5)
     expect(issued.length).toBe(1);
     expect(issued[0]?.["variable_id"]).toBeNull();
     expect(issued[0]?.["actor_key_fingerprint"]).toBe(fpHex);
     const payload = JSON.parse(String(issued[0]?.["payload"])) as Record<string, unknown>;
-    // grant_chain_seq はチェーン導出の grant_seq(サーバー側で再実装しない)。
-    // **値で固定する**: 型だけ見ていると誤った seq(再 grant 前の古い seq 等)が
-    // 載っても素通りする
+    // grant_chain_seq is the chain-derived grant_seq (not
+    // re-implemented on the server side). **Pin by value**: watching
+    // only the type would let a wrong seq (e.g. a stale pre-re-grant
+    // seq) slide through
     const granted = await queryProjectDo(
       projectId,
       "SELECT chain_seq FROM audit_events WHERE event = 'chain.server_granted'",
@@ -151,8 +157,9 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
       oidcToken: await makeOidcToken(),
       ephemeralPubHex: workload.publicKeyHex,
     });
-    // var.read は人間 actor の読み取りの証跡であり、ワークロードへの開示は
-    // server.* 系が担う(AUDIT_SPEC §3.3 / §14-4)
+    // var.read is the evidence of a human actor's read; disclosure to
+    // a workload is carried by the server.* events (AUDIT_SPEC §3.3 /
+    // §14-4)
     const after = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
@@ -161,12 +168,14 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
   });
 });
 
-describe("ワークロードリース: サーバー鍵未設定のデプロイメント(§14-3)", () => {
-  // DO は自分の env から keypair を導出する(chain-do.ts)ため、worker へ別 env を
-  // 渡しても DO 側は変わらない。ここはプログラム単位で「鍵なしなら**チェーンを
-  // 読む前に**落ちる」ことを検査する — 順序が崩れると「未知 = 404 / 実在 = 503」の
-  // 差ができ、未認証のリース面がプロジェクトの存在確認に使えてしまう(§11-2)
-  it("fails before touching the chain store (順序が存在秘匿を決める)", async () => {
+describe("workload leases: deployment with an unset server key (§14-3)", () => {
+  // The DO derives its keypair from its own env (chain-do.ts), so
+  // handing the worker a different env changes nothing on the DO side.
+  // What is checked here at the program level is "with no key, fail
+  // BEFORE reading the chain" — if the order breaks, a "unknown = 404
+  // / exists = 503" gap appears, and the unauthenticated lease surface
+  // becomes usable for project-existence probing (§11-2)
+  it("fails before touching the chain store (the order decides existence hiding)", async () => {
     let chainLoads = 0;
     const chainStore = ChainStore.of({
       load: Effect.sync(() => {
@@ -196,13 +205,14 @@ describe("ワークロードリース: サーバー鍵未設定のデプロイ�
           onSuccess: () => ({ ok: true as const }),
           onFailure: (rejection) => ({ ok: false as const, rejection }),
         }),
-        // makeServerKey(undefined) = 未設定デプロイメント。DataStore / AuditStore は
-        // 到達しないため、この経路では参照されないことも同時に固定される
+        // makeServerKey(undefined) = an unset-key deployment.
+        // DataStore / AuditStore are unreachable, so this path also
+        // pins that they are never referenced
         Effect.provideService(ServerKey, makeServerKey(undefined)),
         Effect.provideService(ChainStore, chainStore),
         Effect.provideService(DataStore, undefined as never),
         Effect.provideService(AuditStore, undefined as never),
-        // ストレージガードの観測点(§12-8)は発行直前 = この経路では到達しない
+        // The storage guard's observation point (§12-8) is just before issuance = unreachable on this path
         Effect.provideService(StorageMeter, undefined as never),
       ),
     );
@@ -214,7 +224,7 @@ describe("ワークロードリース: サーバー鍵未設定のデプロイ�
   });
 });
 
-describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
+describe("workload leases: acceptance policy (§14-3)", () => {
   it("rejects an oversized OIDC token at the schema boundary (400)", async () => {
     const workload = await workloadKeyPair();
     const oversized = `${"a".repeat(20_000)}.${"b".repeat(16)}.${"c".repeat(16)}`;
@@ -237,8 +247,9 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
     const { dek } = await readyProject();
     expect(dek.length).toBe(32);
     const workload = await workloadKeyPair();
-    // 窓を直接埋める(300 回の実リクエストは実行時間に見合わない)。カウンタは
-    // DO SQLite の lease_windows 行であり、実装と同じ read-modify-write を通す
+    // Fill the window directly (300 real requests do not justify the
+    // runtime). The counter is the lease_windows row in DO SQLite; go
+    // through the same read-modify-write as the implementation
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', ?, ?) ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, count = excluded.count",
@@ -251,18 +262,21 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
     });
     expect(response.status).toBe(429);
     const body = (await response.json()) as { retryAfterSeconds: number };
-    // 窓は直前に window_start = now で仕込んだので、残りは窓長(1 時間)近傍と
-    // 決まっている。> 0 だけだと桁違いの退行を捕まえられない
+    // Since the window was seeded just now with window_start = now,
+    // the remainder is fixed to near the window length (1 hour).
+    // Checking only > 0 would not catch an order-of-magnitude
+    // regression
     expect(body.retryAfterSeconds).toBeGreaterThan(3500);
     expect(body.retryAfterSeconds).toBeLessThanOrEqual(3600);
   });
 
   it("does not consume the window when the lease cannot be issued (503 stays diagnosable)", async () => {
-    // 窓を 503 経路で消費すると、バックフィル漏れのプロジェクトの CI が再試行の
-    // たびに枠を食い、300 回目以降は「直せる診断」の 503 が無関係な 429 に
-    // 化ける。消費は実際に発行したときだけ
+    // If the 503 path consumed the window, a backfill-missed project's
+    // CI would eat slots on every retry, and past the 300th the
+    // "fixable diagnosis" 503 would mutate into an unrelated 429.
+    // Consumption happens only when a lease is actually issued
     await createEnvironmentOk(fixture, ENV, "App");
-    await grantServer({ scope: [ENV] }); // バックフィルしない = server-wraps-missing
+    await grantServer({ scope: [ENV] }); // never backfilled = server-wraps-missing
     const workload = await workloadKeyPair();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const response = await requestLease({
@@ -296,8 +310,9 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
   });
 
   it("does not let an unauthorized caller consume the project's lease window", async () => {
-    // ポリシー不一致(404)は発行の窓を消費しない — 消費すると第三者が
-    // 正当なワークロードのリースを枯らせてしまう
+    // A policy mismatch (404) does not consume the issuance window —
+    // if it did, a third party could starve a legitimate workload's
+    // leases
     await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV], leasePolicy: [] });
     const workload = await workloadKeyPair();

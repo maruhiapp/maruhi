@@ -1,7 +1,9 @@
-// ワークロードリースの認可と存在秘匿(AUTH_SPEC §14-1 / §11-2 — 一律 404)の
-// 統合テスト。grant なし・ポリシー不一致・スコープ外・環境なし・未初期化プロジェクトが
-// **すべて同じ 404**(理由が漏れない)であることを固定する。共有ヘルパは
-// support/lease-scenario.ts、スイート全体の分担は lease.test.ts 冒頭を参照。
+// Integration tests for workload-lease authorization and existence
+// hiding (AUTH_SPEC §14-1 / §11-2 — a uniform 404). Pin that no grant,
+// a policy mismatch, out-of-scope, a missing environment, and an
+// uninitialized project are ALL the same 404 (no reason leaks). Shared
+// helpers are in support/lease-scenario.ts; for how the suite is split
+// see the top of lease.test.ts.
 
 import { describe, expect, it } from "vitest";
 
@@ -41,8 +43,9 @@ async function expect404(input: {
       scope,
       ...(input.leasePolicy === undefined ? {} : { leasePolicy: input.leasePolicy }),
     });
-    // 開示スコープ外の環境へのサーバー宛ラップは登録自体が 422(§12-6)。
-    // スコープ外ケースでは「ラップは無いが grant はある」状態が正しい前提
+    // Registering a server-directed wrap for an environment outside
+    // the disclosure scope is itself a 422 (§12-6). In the out-of-scope
+    // case, "no wrap but a grant exists" is the right precondition
     if (scope.includes(ENV)) {
       await backfillServerWrap(1, dek);
     }
@@ -56,7 +59,7 @@ async function expect404(input: {
   expect(response.status).toBe(404);
 }
 
-describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 — 一律 404)", () => {
+describe("workload leases: authorization and existence hiding (§14-1 / §11-2 — a uniform 404)", () => {
   it("hides a project with no server grant", async () => {
     await expect404({ skipGrant: true });
   });
@@ -120,13 +123,13 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
       project: other,
     });
     expect(response.status).toBe(404);
-    // 未初期化 DO に監査行を作らない(未認証経路からの肥大 DoS の遮断)
+    // No audit row is created on the uninitialized DO (blocking a bloating DoS from the unauthenticated path)
     const rows = await queryProjectDo(other, "SELECT COUNT(*) AS n FROM audit_events");
     expect(rows[0]?.["n"]).toBe(0);
   });
 
   it("hides a deleted environment that is still inside the disclosure scope", async () => {
-    // スコープには入っているが tombstone 済みの環境
+    // An environment inside the scope but already tombstoned
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -140,15 +143,18 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
     expect(response.status).toBe(404);
   });
 
-  it("returns a byte-identical 404 body for every cause (存在秘匿の中核)", async () => {
-    // ステータスコードしか見ていないと、将来どれか 1 分岐にフィールドが
-    // 増えても検出できない。ボディまで同一であることを 1 本で固定する。
+  it("returns a byte-identical 404 body for every cause (the core of existence hiding)", async () => {
+    // Watching only the status code would not detect a field added to
+    // one branch in the future. Pin that even the bodies are identical,
+    // in a single test.
     //
-    // **4 分岐を別々に踏ませる**: 空 lease_policy にすると policy-mismatch が
-    // 先に成立して scope-out-of-range / environment-not-found に到達せず、
-    // 同じ経路の body を 2 回集めるだけになる。実在するポリシーを張り、
-    // トークンとリクエスト環境の側で分岐を撃ち分ける。踏んだ分岐は
-    // lease_denied の reason で事後確認する(黙って縮退したら落ちる)
+    // **Take the 4 branches separately**: an empty lease_policy makes
+    // policy-mismatch settle first, never reaching
+    // scope-out-of-range / environment-not-found — the same path's body
+    // collected twice. Set a real policy and split the branches on the
+    // token and requested-environment sides. Which branches were taken
+    // is checked after the fact via lease_denied's reason (a silent
+    // degeneration fails)
     const workload = await workloadKeyPair();
     const bodyOf = async (
       input: {
@@ -169,28 +175,29 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
       return response.text();
     };
 
-    // (a) 未知プロジェクト。**別 DO** を引くので監査は残らない(下の突合対象外)
+    // (a) An unknown project. **A different DO** is hit, so no audit remains (excluded from the comparison below)
     const unknownProject = "f".repeat(64);
     const bodies = [await bodyOf({ project: unknownProject })];
 
-    // (b) grant なし
+    // (b) No grant
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     bodies.push(await bodyOf());
 
-    // 実在ポリシー + スコープに「ENV と、未作成の環境 ID」を入れる
+    // A real policy + a scope containing "ENV and an uncreated environment ID"
     const uncreated = "env-in-scope-uncreated";
     await grantServer({ scope: [ENV, uncreated] });
     await backfillServerWrap(1, dek);
 
-    // (c) ポリシー不一致(別ブランチの subject)
+    // (c) A policy mismatch (a subject on a different branch)
     bodies.push(await bodyOf({ subject: "repo:maruhi-test/demo:ref:refs/heads/feature-x" }));
-    // (d) スコープ外の環境(ポリシーは一致する)
+    // (d) An out-of-scope environment (the policy does match)
     bodies.push(await bodyOf({ environmentId: "env-out-of-scope-0009" }));
-    // (e) スコープ内だが未作成の環境
+    // (e) An in-scope but uncreated environment
     bodies.push(await bodyOf({ environmentId: uncreated }));
 
-    // ボディが運ぶのは呼び出し元自身の入力(projectId)の反響のみ。(a) だけは
-    // 入力した ID が違うので、その 1 点を除いて全ケースが同一であることを見る
+    // The body carries only the echo of the caller's own input
+    // (projectId). Only (a) used a different ID, so check that every
+    // case but that one is identical
     expect(JSON.parse(bodies[0] ?? "{}")).toEqual({
       _tag: "ProjectNotFound",
       projectId: unknownProject,
@@ -198,7 +205,7 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
     expect(new Set(bodies.slice(1)).size).toBe(1);
     expect(JSON.parse(bodies[1] ?? "{}")).toEqual({ _tag: "ProjectNotFound", projectId });
 
-    // 4 分岐を本当に別々に踏んだことを監査で裏取りする
+    // Confirm via the audit that the 4 branches really were taken separately
     const denied = await queryProjectDo(
       projectId,
       "SELECT payload FROM audit_events WHERE event = 'server.lease_denied' ORDER BY seq",
@@ -215,7 +222,7 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   });
 
   it("authorizes when any policy element matches (existential — §14-1)", async () => {
-    // 一致しない要素が先頭にあっても、後続の一致する要素で認可される
+    // Even with a non-matching element first, a later matching element authorizes
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({
       scope: [ENV],
@@ -265,7 +272,7 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
     });
   });
 
-  it("stops leasing after revoke_server (§7 の失効)", async () => {
+  it("stops leasing after revoke_server (the §7 revocation)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -297,14 +304,14 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
       "SELECT actor_type, actor_user_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_denied'",
     );
     expect(rows.length).toBe(1);
-    // actor は system(外部ワークロードは maruhi 上の識別を持たない — §3.5)
+    // The actor is system (an external workload holds no identity on maruhi — §3.5)
     expect(rows[0]?.["actor_type"]).toBe("system");
     expect(rows[0]?.["actor_user_id"]).toBeNull();
     expect(rows[0]?.["actor_key_fingerprint"]).toBeNull();
     const payload = JSON.parse(String(rows[0]?.["payload"])) as Record<string, unknown>;
     expect(payload["reason"]).toBe("policy-mismatch");
     expect(typeof payload["claimsDigest"]).toBe("string");
-    // 外部識別子(sub / repo 名)は書かない(§14-4 / AUDIT_SPEC §1-2)
+    // External identifiers (sub / repo name) are not written (§14-4 / AUDIT_SPEC §1-2)
     expect(JSON.stringify(payload)).not.toContain("maruhi-test/demo");
   });
 });
