@@ -137,7 +137,7 @@ export function formatUtcDate(ms: number): string {
 
 /**
  * English count phrase with a regular plural: `countNoun(1, "variable")` →
- * "1 variable"、`countNoun(2, "variable")` → "2 variables"。
+ * "1 variable", `countNoun(2, "variable")` → "2 variables".
  *
  * ADR-0017's switch to English increased the places that embed a count in
  * the wording. Writing the plural directly into a template yields "1

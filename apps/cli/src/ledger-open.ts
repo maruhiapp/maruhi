@@ -123,8 +123,9 @@ export function settleLedgerKeyForChange(input: {
 }
 
 /**
- * 台帳の鍵の失効を確かめられなかった範囲を Note で名指す(DK K16-6: 確かめられないプロジェクトが
- * あっても止めない — その代わり黙らない)。
+ * Names, in a Note, the range where the ledger key's revocation could not be checked
+ * (DK K16-6: unverifiable projects do not stop the operation — but they are not
+ * passed over in silence).
  */
 export function noteUncheckedLedgerKey(
   fingerprintHex: string,
