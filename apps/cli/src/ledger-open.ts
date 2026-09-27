@@ -109,7 +109,32 @@ export function settleLedgerKeyForChange(input: {
         ),
       );
     }
+    yield* noteUncheckedLedgerKey(fingerprintHex, verdict);
     yield* recordReserveLocally(input.session, reserve);
     yield* logNote(`opened the reserve key (fingerprint ${fingerprintHex}) for this change`);
   });
+}
+
+/**
+ * 台帳の鍵の失効を確かめられなかった範囲を Note で名指す(DK K16-6: 確かめられないプロジェクトが
+ * あっても止めない — その代わり黙らない)。
+ */
+export function noteUncheckedLedgerKey(
+  fingerprintHex: string,
+  verdict: ReserveVerdict,
+): Effect.Effect<void, never, CliIo> {
+  if (verdict.kind !== "usable") {
+    return Effect.void;
+  }
+  if (verdict.listFailure !== null) {
+    return logNote(
+      `your projects could not be listed (${verdict.listFailure}), so whether the key ${fingerprintHex} is revoked on any of them was not checked`,
+    );
+  }
+  if (verdict.uncheckedProjectIds.length > 0) {
+    return logNote(
+      `${describeProjects(verdict.uncheckedProjectIds)} could not be synced, so whether the key ${fingerprintHex} is revoked there was not checked`,
+    );
+  }
+  return Effect.void;
 }
