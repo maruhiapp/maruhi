@@ -89,6 +89,7 @@ function chainHandler(built: {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -99,6 +100,8 @@ function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
+    // 2100-01-01 (outside the near-expiry warning window)
+    expiresAtMs: 4_102_444_800_000,
   };
   env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
 }
@@ -1407,6 +1410,8 @@ describe("maruhi invite list / revoke", () => {
           [INVITE_ID]: {
             linkPubHex: "ee".repeat(32),
             role: "member",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
             expiresAtMs: 1755993600000,
             expectedGithubLogin: null,
           },
@@ -1416,6 +1421,52 @@ describe("maruhi invite list / revoke", () => {
 
     expect(await runCli(["invite", "list"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not match the local record from issuance");
+  });
+
+  it("an issuance pin whose scope disagrees with the server's declaration is a mismatch; a pin with no scope is treated as corrupt", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const issued = await issuedFor(built);
+    const server = await start([
+      chainHandler(built),
+      onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+        status: 200,
+        json: { invitations: [listRow(built.projectId, issued, null)] },
+      })),
+    ]);
+    const pinWith = (scope: object) =>
+      JSON.stringify({
+        v: 1,
+        anchor: null,
+        issued: {
+          [INVITE_ID]: {
+            linkPubHex: issued.linkPubHex,
+            role: "member",
+            ...scope,
+            expiresAtMs: 1755993600000,
+            expectedGithubLogin: null,
+          },
+        },
+      });
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    await mkdir(env.pinsDir, { recursive: true });
+    const pinPath = join(env.pinsDir, `${built.projectId}.json`);
+    // The link key and role match; only the scope differs (the row is all)
+    await writeFile(pinPath, pinWith({ scopeKind: "listed", scopeEnvironmentIds: ["prod"] }));
+    expect(await runCli(["invite", "list"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not match the local record from issuance");
+
+    const missing = await makeTestEnv();
+    seedSession(missing, server.origin, inviter);
+    await seedConfig(missing, { server: server.origin, defaultProject: built.projectId });
+    await mkdir(missing.pinsDir, { recursive: true });
+    await writeFile(join(missing.pinsDir, `${built.projectId}.json`), pinWith({}));
+    await runCli(["invite", "list"], missing.layer);
+    expect(missing.errors.join("\n")).not.toContain(
+      "does not match the local record from issuance",
+    );
+    expect(missing.errors.join("\n")).toContain("(it is corrupt)");
   });
 
   it("revoke: successful revocation, and a 410 against completed, guides to member remove", async () => {

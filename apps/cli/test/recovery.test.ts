@@ -1,7 +1,7 @@
 // Tests for recovery-code issuance, save verification, restore, and re-issuance
 // (the client side of CRYPTO_SPEC §8 / AUTH_SPEC §13 — 2026-09-19 DK: what is
 // sealed into the ledger is not the device key but a **reserve key**). Wrapping and decryption use real crypto; the server is a wire-level mock
-// (support/server.ts)。
+// (support/server.ts).
 
 import { unwrapMasterSecret, wrapMasterSecret } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -44,7 +44,12 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   await seedConfig(env, { server: origin });
   env.keychain.set(
     tokenEntryName(origin),
-    JSON.stringify({ token: "maruhi_pat_stored", userId, tokenId: "tok_1" }),
+    JSON.stringify({
+      token: "maruhi_pat_stored",
+      userId,
+      tokenId: "tok_1",
+      expiresAtMs: 4_102_444_800_000,
+    }),
   );
   return env;
 }
@@ -412,39 +417,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     expect([...env.keychain.values()].join("\n")).not.toContain(reserveUser.encSkHex);
   });
 
-  it("generates a reserve key to split when the ledger holds a device-key copy (pre-DK)", async () => {
-    const user = await makeTestUser("user-0001");
-    const { handler, code } = await ledgerHandlerFor(
-      storedMasterRecord(user),
-      user.userId,
-      crypto.getRandomValues(new Uint8Array(32)),
-    );
-    let put: PutBody | null = null;
-    const maruhi = await start([
-      statusHandler(true),
-      handler,
-      putHandler((body) => {
-        put = body;
-      }),
-    ]);
-    const env = await loggedInEnv(maruhi.origin, user.userId);
-    seedSession(env, maruhi.origin, user);
-    env.setPromptResponses([code, lastGroupOf(env)]);
-    expect(await runCli(["key", "recovery"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain(
-      `The recovery ledger holds a copy of this device's key (${user.fingerprintHex}) — an install from before device keys. Separating: creating a reserve key and sealing it instead`,
-    );
-    expect(env.errors.join("\n")).toContain("`maruhi device add --replace`");
-    // The ledger now holds a new reserve key that is not the device key, and it is recorded
-    const reserve = await unwrapWithDisplayedCode(env, put as PutBody | null, user.userId);
-    expect(reserve.encPubHex).not.toBe(user.encPubHex);
-    const reserves = await recordedReservesOf(env, maruhi.origin, user.userId);
-    expect(reserves.map((entry) => entry.encPubHex)).toEqual([reserve.encPubHex]);
-    expect(reserves[0]?.keyFingerprintHex).not.toBe(user.fingerprintHex);
-    // The device key is left as-is
-    expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).toBe(user.encPubHex);
-  });
-
   it("--replace substitutes without opening the ledger (the escape hatch for a lost code)", async () => {
     const user = await makeTestUser("user-0001");
     let fetched = false;
@@ -681,7 +653,7 @@ describe("maruhi key recover (restore)", () => {
     expect(env.prompts).toEqual(["Enter your recovery code: "]);
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
     expect(env.errors.join("\n")).toContain(
-      `Note: recorded ${user.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
+      `Note: recorded ${user.fingerprintHex} on this machine as your reserve key`,
     );
     // A new device key was issued (the ledger key itself is not stored)
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).not.toBe(user.encPubHex);

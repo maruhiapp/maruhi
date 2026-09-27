@@ -141,6 +141,7 @@ function chainHandlerOf(heads: readonly number[]): MockHandler {
         entries: chain.entries.slice(0, headSeq),
         headSeq,
         headHashHex: chain.hashes[headSeq - 1],
+        attestations: [],
       },
     };
   });
@@ -183,6 +184,7 @@ function pullMetadataHandlerOf(
           envStatement: statement,
           statements: variables,
         }),
+        schemaPolicy: "enabled" as const,
       },
     }),
   );

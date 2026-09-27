@@ -115,6 +115,7 @@ function chainHandlerOf(chains: readonly BuiltChain[]): MockHandler {
         entries: built.entries,
         headSeq: built.entries.length,
         headHashHex: built.hashes[built.hashes.length - 1],
+        attestations: [],
       },
     };
   });
@@ -179,6 +180,7 @@ async function pullJsonOf(
       manifestVersion,
       prevManifestSigHashHex,
     ),
+    schemaPolicy: "enabled" as const,
   };
 }
 
@@ -285,6 +287,7 @@ function pullMetadataHandlerOf(
               issuerUserId: owner.userId,
               issuerKeyFingerprintHex: owner.fingerprintHex,
             },
+            schemaPolicy: "enabled" as const,
           },
         };
       }
@@ -302,6 +305,7 @@ function pullMetadataHandlerOf(
           // A variant advance = one meta operation by another member, modeled.
           // manifestVersion advances with it (consistent with the floor's monotonicity)
           manifest: await manifestAt(index),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -558,6 +562,7 @@ describe("maruhi push", () => {
               variables: created === null ? [] : [distributedStatementOf(created)],
               deletedVariables: [],
               manifest: await manifestOf([], 1, 1),
+              schemaPolicy: "enabled" as const,
             },
           };
         },
@@ -647,6 +652,7 @@ describe("maruhi push", () => {
                 variables: [],
                 deletedVariables: [],
                 manifest: await manifestOf([], 1, 1),
+                schemaPolicy: "enabled" as const,
               },
             };
           }
@@ -663,6 +669,7 @@ describe("maruhi push", () => {
               // different signed bytes. prev chains correctly to v1 (a shape
               // that passes the adjacent prev check — to pin the hash comparison)
               manifest: await manifestOf(statements, 1, 2, await manifestHashAt([])),
+              schemaPolicy: "enabled" as const,
             },
           };
         },

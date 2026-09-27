@@ -9,10 +9,7 @@
 // §4.3)へ委譲する。
 //
 // **マニフェスト欠落 = 一律拒否**(§6.3 — 「未初期化なら警告」の分岐は攻撃者が
-// 選べる緩和経路になるため置かない)。唯一の例外は移行経路(session-27 §14):
-// マニフェスト導入前に作成された環境の manifest_version 1 初期化は
-// `maruhi env rotate --init-manifest` の明示操作でのみ、**欠落の許容**(検証の
-// 緩和ではない — マニフェストが配布された場合は通常どおり全検証する)を許す。
+// 選べる緩和経路になるため置かない)。
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
@@ -54,7 +51,7 @@ export interface VerifiedManifest {
 /** variables_digest の入力(検証済みステートメントの最新形 — tombstone 込み §4.3)。 */
 export type ManifestDigestEntry = VariablesDigestEntry;
 
-/** 発行の入力: 直前マニフェスト(なし = 移行経路の v1 初期化)と発行後のメタ状態。 */
+/** 発行の入力: 直前マニフェスト(なし = env create の v1)と発行後のメタ状態。 */
 export interface SignManifestInput {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -287,12 +284,10 @@ export async function verifyDistributedManifest(input: {
   };
 }
 
-/** マニフェスト欠落の一律拒否メッセージ(§6.3 — 唯一の許容は --init-manifest の移行経路)。 */
+/** マニフェスト欠落の一律拒否メッセージ(§6.3)。 */
 export function missingManifestMessage(environmentId: string): string {
   return (
     `The server did not distribute an environment manifest for ${environmentId}. ` +
-    "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected. " +
-    "If this environment was created before manifests were introduced, a member must initialize it once with: `maruhi env rotate` " +
-    `${environmentId} --init-manifest --reason "manifest initialization"`
+    "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected"
   );
 }

@@ -177,7 +177,6 @@ export {
 } from "./rotation-api.ts";
 export {
   ActivationRequiredError,
-  ApprovalNotAcceptedError,
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,
@@ -205,7 +204,6 @@ export {
   DeviceFingerprintMismatchError,
   DeviceLimitError,
   DeviceNotFoundError,
-  DeviceOpsNotAcceptedError,
   DeviceRegistryConflictError,
   DeviceRegistryConflictReasonSchema,
   DeviceRegistryLimitError,

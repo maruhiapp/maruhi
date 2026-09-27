@@ -817,7 +817,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)。端末失効の変種は
     // "device revoked: <userId> (chain seq N)"(K5-5 — seq で Audit のミラー行へ辿れる)、
-    // trigger の無い旧行は従来の推定のまま
+    // remove_member は除名の字面
     await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
     await expect(
@@ -994,7 +994,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
+  it("lists tokens with server-reported expiry: Expired, never (S9)", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await routeSession(page);
@@ -1004,14 +1004,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
-    // 期限切れ(過去)+ 移行前 null 行(fail-closed — 裁定 CQ)の両方が Expired
-    await expect(page.getByText("Expired", { exact: true }).count()).resolves.toBe(2);
-    await expect(page.getByText("no expiry recorded", { exact: true }).count()).resolves.toBe(1);
-    // lastUsedAtMs null は "never"(2 行)
-    await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(2);
+    // 期限切れ(過去)は Expired(裁定 CQ)
+    await expect(page.getByText("Expired", { exact: true }).count()).resolves.toBe(1);
+    // lastUsedAtMs null は "never"
+    await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(1);
     // 行の Revoke は見える文言 "Revoke" のまま、読み上げ名に行の同定(トークン名)を含む
     const table = page.getByTestId("token-table");
-    for (const name of ["ci", "old-laptop", "legacy"]) {
+    for (const name of ["ci", "old-laptop"]) {
       const button = table.getByRole("button", { name: `Revoke token "${name}"`, exact: true });
       await expect(button.count()).resolves.toBe(1);
       await expect(button.textContent()).resolves.toBe("Revoke");
@@ -1458,14 +1457,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
     await page.getByTestId("device-empty").waitFor();
     await expect(page.getByText("No devices registered").count()).resolves.toBe(1);
-    // 旧サーバー(devices グループ無し)の 404 は空状態に畳まず、登録簿の名詞で写す(K5-9)
+    // 404 は空状態に畳まず、登録簿の名詞で写す(K5-9)
     mode = "not-found";
     await page.reload({ waitUntil: "networkidle" });
-    await page
-      .getByText(
-        "The server reports no device registry for your account (older servers do not have one).",
-      )
-      .waitFor();
+    await page.getByText("The server reports no device registry for your account.").waitFor();
     // 401 はシェルがその場でサインイン画面へ
     mode = "unauthorized";
     await page.reload({ waitUntil: "networkidle" });

@@ -178,7 +178,12 @@ function masterRecordJson(overrides: Record<string, string>): string {
 describe("the keychain round trip is not broken by redacted serialization", () => {
   it("serializeStoredToken writes the raw value (it has not stepped into JSON.stringify's redacted save)", () => {
     const record = parseStoredToken(
-      JSON.stringify({ token: "maruhi_pat_real", userId: "u1", tokenId: "t1" }),
+      JSON.stringify({
+        token: "maruhi_pat_real",
+        userId: "u1",
+        tokenId: "t1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     if (record === null) throw new Error("expected a parsed record");
     const serialized = serializeStoredToken(record);
@@ -292,7 +297,14 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     // and the true cause (the save side) is never reached
     for (const placeholder of ["<redacted>", "<redacted:maruhi-token>"]) {
       expect(
-        parseStoredToken(JSON.stringify({ token: placeholder, userId: "u1", tokenId: "t1" })),
+        parseStoredToken(
+          JSON.stringify({
+            token: placeholder,
+            userId: "u1",
+            tokenId: "t1",
+            expiresAtMs: 4_102_444_800_000,
+          }),
+        ),
       ).toBeNull();
     }
     expect(
@@ -304,7 +316,14 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     // A normal record passes (the positive control — the detection is not over-eager)
     expect(parseStoredMasterKey(masterRecordJson({}))).not.toBeNull();
     expect(
-      parseStoredToken(JSON.stringify({ token: "maruhi_pat_x", userId: "u1", tokenId: "t1" })),
+      parseStoredToken(
+        JSON.stringify({
+          token: "maruhi_pat_x",
+          userId: "u1",
+          tokenId: "t1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
+      ),
     ).not.toBeNull();
   });
 
@@ -314,7 +333,12 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     // may heal via overwrite / a master key is blocked by the overwrite guard), so the wording splits there too
     expect(
       hasRedactedPlaceholder(
-        JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+        JSON.stringify({
+          token: "<redacted:maruhi-token>",
+          userId: "u1",
+          tokenId: "t1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       ),
     ).toBe(true);
     expect(hasRedactedPlaceholder(masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }))).toBe(
@@ -327,7 +351,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     // in again, so it guides toward that; a master key is blocked by the
     // overwrite guard, so it guides toward manual deletion
     expect(redactedPlaceholderTokenMessage("os-keychain")).toContain(
-      "`maruhi login` overwrites it correctly",
+      "`maruhi login` overwrites it",
     );
     expect(redactedPlaceholderTokenMessage("os-keychain")).toContain("The keychain record");
     // On an agent session it never points at a nonexistent keychain (the fix is the same)
@@ -424,7 +448,12 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     // Reproduces a forgotten unwrap at serialization (= a save-side bug)
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+      JSON.stringify({
+        token: "<redacted:maruhi-token>",
+        userId: "u1",
+        tokenId: "t1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     const exit = await Effect.runPromiseExit(
       resolveSession(maruhi.origin).pipe(Effect.provide(env.layer)),
@@ -638,7 +667,12 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
       tokenEntryName(maruhi.origin),
-      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_stored",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     // Answers the save-confirmation prompt (the displayed code's final group) lazily
     env.setPromptResponses([

@@ -3,8 +3,6 @@
 // - TTL は発行時固定(§6: セッション §5 のスライディングと意図的に非対称)
 // - 一覧は本人のメタデータのみ(生値・token_hash は構造ごと返さない)
 // - 指定失効の判定順(裁定 CG): 401 → 403(呼び出し資格のみ)→ 一様 404
-// - 旧無期限行(expires_at NULL)は検証で fail-closed に 401(裁定 CE)。
-//   移行 SQL(token_ttl_reanchor)は TEST_MIGRATIONS の実物を再実行して検証する
 
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -28,7 +26,7 @@ const exchange = cliIssue;
 
 interface TokenRow {
   readonly id: string;
-  readonly expires_at: number | null;
+  readonly expires_at: number;
   readonly created_at: number;
 }
 
@@ -80,22 +78,6 @@ describe("既定 TTL(AUTH_SPEC §6)", () => {
     expect(count?.n).toBe(0);
   });
 
-  it("treats a legacy NULL expires_at as expired (fail-closed) and re-login self-heals (裁定 CE)", async () => {
-    const issued = await exchange(804);
-    await env.DB.prepare("UPDATE api_tokens SET expires_at = NULL WHERE id = ?")
-      .bind(issued.tokenId)
-      .run();
-    const denied = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
-    expect(denied.status).toBe(401);
-
-    // 再ログイン(同名ローテーション)は expires_at 付きの行を発行して復旧する
-    const reissued = await exchange(804);
-    const row = await tokenRow(reissued.tokenId);
-    expect(row.expires_at).not.toBeNull();
-    const ok = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(reissued.token) });
-    expect(ok.status).toBe(200);
-  });
-
   it("self-discloses the presented token's expiry on /auth/me (裁定 CI — 自己資格情報属性)", async () => {
     // 無人利用(リース非対応環境の PAT — 裁定 CF)が期限を自己観測するための
     // 経路。スコープ限定トークンでも自分の期限だけは見える(一覧 — 裁定 CH の
@@ -124,33 +106,6 @@ describe("既定 TTL(AUTH_SPEC §6)", () => {
     });
     expect(viaSession.status).toBe(200);
     expect(Object.hasOwn((await viaSession.json()) as object, "tokenExpiresAtMs")).toBe(false);
-  });
-
-  it("re-anchors legacy NULL rows to apply-time + 90 days (migration token_ttl_reanchor)", async () => {
-    const issued = await exchange(805);
-    await env.DB.prepare("UPDATE api_tokens SET expires_at = NULL WHERE id = ?")
-      .bind(issued.tokenId)
-      .run();
-    // 実物の移行 SQL を TEST_MIGRATIONS から取り出して再実行する(SQL の複製を
-    // テストに持たない)。既適用の記録とは無関係に UPDATE 文として冪等に効く
-    const migration = env.TEST_MIGRATIONS.find((entry) =>
-      entry.name.includes("token_ttl_reanchor"),
-    );
-    if (migration === undefined) {
-      throw new Error("expected the token_ttl_reanchor migration in TEST_MIGRATIONS");
-    }
-    const before = Date.now();
-    for (const query of migration.queries) {
-      await env.DB.prepare(query).run();
-    }
-    const row = await tokenRow(issued.tokenId);
-    expect(row.expires_at).not.toBeNull();
-    // unixepoch() は秒精度なので ±1s の丸めを許す
-    expect(row.expires_at ?? 0).toBeGreaterThanOrEqual(before - 1000 + 90 * DAY_MS);
-    expect(row.expires_at ?? 0).toBeLessThanOrEqual(Date.now() + 1000 + 90 * DAY_MS);
-    // 再アンカー後のトークンは再び使える(90 日の再ログイン猶予)
-    const ok = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
-    expect(ok.status).toBe(200);
   });
 });
 

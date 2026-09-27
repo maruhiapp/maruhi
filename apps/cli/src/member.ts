@@ -841,11 +841,8 @@ interface MemberBackfillResult {
  * 再追加メンバーは当該エポックを復号できない(409 を登録済み扱いにすると
  * 不可視化する)ため、旧鍵ラップと判定したら §12-6 の修復経路(削除 → 再登録)で
  * 新鍵ラップへ置換する。判定は 409 応答の保存済み受信者 enc 公開鍵
- * (`storedRecipientEncPubHex` — AUTH_SPEC §12-6)と受諾鍵の**厳密比較**を優先し
- * (復号可能性 = enc 鍵一致そのもの)、応答に無い場合(追補以前のセルフホスト
- * サーバー)に限り従来の鍵履歴ヒューリスティック(`staleWrapSuspected`)へ
- * フォールバックする。ヒューリスティック経路で占有ラップが実は現行鍵だった
- * としても、削除 → 再登録は同内容への収束であり安全。
+ * (`storedRecipientEncPubHex` — AUTH_SPEC §12-6)と受諾鍵の**厳密比較**で行う
+ * (復号可能性 = enc 鍵一致そのもの)。
  */
 function backfillMemberEnvironment(input: {
   readonly client: MaruhiClient;
@@ -853,7 +850,6 @@ function backfillMemberEnvironment(input: {
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
@@ -884,7 +880,6 @@ function backfillMemberDevice(input: {
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
   readonly targetDevice: ChainDevice;
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
@@ -901,17 +896,13 @@ function backfillMemberDevice(input: {
     signingKeyPair: input.signingKeyPair,
     onSlotConflict: (wrap, storedRecipientEncPubHex) =>
       Effect.gen(function* () {
-        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
-        // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
-        const staleWrap =
-          storedRecipientEncPubHex === null
-            ? input.staleWrapSuspected
-            : storedRecipientEncPubHex !== targetDevice.encPubHex;
-        if (!staleWrap) {
+        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較
+        // (一致 = 現行鍵で登録済み = 冪等)
+        if (storedRecipientEncPubHex === targetDevice.encPubHex) {
           return "already-registered" as const;
         }
         // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する。参照は
-        // 端末の enc 鍵まで名指しする(複数端末では省略が 422 duplicate-recipient)
+        // 端末の enc 鍵まで名指しする
         yield* input.client.deks
           .remove({
             params: { projectId: input.verified.projectId, environmentId: input.environmentId },
@@ -920,7 +911,7 @@ function backfillMemberDevice(input: {
                 {
                   epoch: wrap.epoch,
                   recipientUserId: input.target.userId,
-                  recipientEncPubHex: storedRecipientEncPubHex ?? targetDevice.encPubHex,
+                  recipientEncPubHex: storedRecipientEncPubHex,
                 },
               ],
             },
@@ -1061,7 +1052,6 @@ function backfillAllEnvironments(input: {
   readonly target: ChainMember;
   /** バックフィルする環境(省略 = 対象の scope の全環境)。指定も scope で再度絞る。 */
   readonly environments?: readonly string[];
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<
@@ -1122,18 +1112,16 @@ export function backfillNewMember(input: {
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 再追加(過去在籍が別鍵)の検出: 鍵履歴に現在の鍵と異なる束縛があるか。
-    // 409 の判定は応答の保存済み enc 公開鍵との厳密比較が優先で(AUTH_SPEC
-    // §12-6 追補)、このヒューリスティックは応答にフィールドが無い旧サーバー
-    // への 409 だけに使うフォールバックである。なお追補済みサーバーは
-    // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
+    // 再追加(過去在籍が別鍵)の案内: 鍵履歴に現在の鍵と異なる束縛があるか。409 の判定は
+    // 応答の保存済み enc 公開鍵との厳密比較(AUTH_SPEC §12-6 追補)で、これは案内だけ。
+    // サーバーは add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
     // 409 自体が「現行鍵で登録済み」しか意味しない
     // 「別鍵」= 履歴の束縛のうち、対象の現端末集合のどれとも一致しないもの(端末が
     // 複数でも、現端末の鍵は旧鍵ではない — DK K4)
-    const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
+    const readdedWithNewKey = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
       (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
     );
-    if (staleWrapSuspected) {
+    if (readdedWithNewKey) {
       yield* io.log(
         "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
       );
@@ -1143,7 +1131,6 @@ export function backfillNewMember(input: {
       verified: input.verified,
       recipient: input.recipient,
       target: input.target,
-      staleWrapSuspected,
       signerUserId: input.signerUserId,
       signingKeyPair: input.signingKeyPair,
     });
@@ -2004,7 +1991,6 @@ export function fulfilRoleChange<R>(input: {
             recipient: input.recipient,
             target: input.target,
             environments: widened,
-            staleWrapSuspected: false,
             signerUserId: input.signerUserId,
             signingKeyPair: input.signingKeyPair,
           });

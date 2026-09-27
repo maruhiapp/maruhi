@@ -68,7 +68,7 @@ describe("maruhi token list", () => {
               scopes: [{ project: "*", permission: "admin" }],
               createdAtMs: T0,
               lastUsedAtMs: null,
-              expiresAtMs: null,
+              expiresAtMs: T0 + 90 * 24 * HOUR,
             },
           ],
         },
@@ -78,7 +78,7 @@ describe("maruhi token list", () => {
     expect(await runCli(["token", "list"], env.layer)).toBe(0);
     expect(env.logs).toEqual([
       "id\tname\tprefix\tscopes\tcreated\tlast used\texpires",
-      "tok_older\tcli:laptop\tmaruhi_pat_Ab\t*:admin\t2026-01-02 03:04 UTC\tnever\tnever",
+      "tok_older\tcli:laptop\tmaruhi_pat_Ab\t*:admin\t2026-01-02 03:04 UTC\tnever\t2026-04-02 03:04 UTC",
       `tok_newer\tci\tmaruhi_pat_Zz\t${PROJECT_A}:read,*:write\t2026-01-02 05:04 UTC\t2026-01-02 06:04 UTC\t2026-01-03 03:04 UTC`,
     ]);
   });

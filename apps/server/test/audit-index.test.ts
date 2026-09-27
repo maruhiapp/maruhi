@@ -15,6 +15,7 @@
 // 共有しない。audit-store のクエリ文は SqlStorage を薄く包んで捕捉し、同じ文を
 // EXPLAIN に流す(文の複製による検証器ドリフトを避ける)。
 
+import { auditReadPayload } from "@maruhi/core";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -82,7 +83,7 @@ function planOf(sql: SqlStorage, captured: CapturedQuery): string {
     .join("\n");
 }
 
-/** var.read 1 行(対象・鍵 FP が全て NULL — 支配的な行種の形)。 */
+/** 集約形 var.read 1 行(対象・鍵 FP が全て NULL — 支配的な行種の形。§3.3)。 */
 function readEvent(index: number): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000 + index,
@@ -90,9 +91,9 @@ function readEvent(index: number): AuditEventInput {
     actorType: "user",
     actorUserId: "user-reader-0001",
     environmentId: "env-density-0001",
-    variableId: `var-density-${String(index % 100).padStart(4, "0")}`,
-    epoch: 1,
-    version: 1,
+    payload: auditReadPayload([
+      { variableId: `var-density-${String(index % 100).padStart(4, "0")}`, epoch: 1, version: 1 },
+    ]),
   };
 }
 

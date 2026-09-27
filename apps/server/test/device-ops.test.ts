@@ -12,7 +12,7 @@
 // - DeviceLimit(16 / member / project — 受理ポリシー、422)
 // - トークン水準(add_device = write、他人の revoke_device = admin)
 // - reader の自己バックフィル(自分の端末宛のみ)
-// - 端末軸の削除参照(`recipientEncPubHex` 省略時は唯一スロットのみ)
+// - 端末軸の削除参照(`recipientEncPubHex` 必須 — 名指しした端末のスロットだけを消す)
 // - バージョン skew: 端末 1 つ(K2 以前のクライアント相当入力)の経路は不変
 
 import {
@@ -629,7 +629,9 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
 
     // 他人宛は member 以上(reader は 403)
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: MEMBER }],
+      wraps: [
+        { epoch: 1, recipientUserId: MEMBER, recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     const other = await wrapDekTo({
@@ -690,7 +692,7 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
     expect(primary.status).toBe(200);
   });
 
-  it("refuses an ambiguous device-less delete reference when the member has two slots (422 duplicate-recipient)", async () => {
+  it("deletes only the named device slot when the member has two slots", async () => {
     const phone = vectorDevice(PHONE);
     await addDevice(OWNER, phone);
     const created = await createEnvironmentWithSlots(ENV, [
@@ -698,12 +700,6 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
       { userId: OWNER, encPubHex: phone.encPubHex },
     ]);
     expect(created.response.status).toBe(200);
-
-    const ambiguous = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: OWNER }],
-    });
-    expect(ambiguous.status).toBe(422);
-    expect(await errorBody(ambiguous)).toMatchObject({ reason: "duplicate-recipient" });
     expect(await wrapRows()).toHaveLength(4);
 
     const precise = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
@@ -713,11 +709,14 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
     expect(
       (await wrapRows()).map((row) => [row["recipient_user_id"], row["recipient_enc_pub_hex"]]),
     ).not.toContainEqual([OWNER, phone.encPubHex]);
-    // 端末 1 つに戻れば省略形は唯一スロットを指す
-    const sole = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: OWNER }],
+    expect(await wrapRows()).toHaveLength(3);
+    // 第 1 鍵のスロットは別の参照(第 1 鍵の enc 公開鍵)で消える
+    const primary = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [
+        { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+      ],
     });
-    expect(sole.status).toBe(204);
+    expect(primary.status).toBe(204);
     expect((await wrapRows()).map((row) => row["recipient_user_id"])).toEqual([MEMBER, READER]);
     // 無い参照は 404(端末指定でも同じ)
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
@@ -728,7 +727,7 @@ describe("2 段認可 — 端末の実効権限(設計録 §8 K3-1 / CRYPTO_SPEC
 });
 
 describe("バージョン skew — 端末 1 つのチェーン(K2 以前のクライアント相当入力)は不変", () => {
-  it("accepts single-device wrap sets, device-less references, attestations and pushes exactly as before", async () => {
+  it("accepts single-device wrap sets, device-keyed delete references, attestations and pushes exactly as before", async () => {
     // 環境作成: 3 メンバー × 端末 1 つ = 3 ラップ(K2 以前の CLI が送る形)
     const dek = makeDek();
     const deks = await wrapDekForAll({
@@ -751,9 +750,11 @@ describe("バージョン skew — 端末 1 つのチェーン(K2 以前のク�
     expect(mine).toHaveLength(1);
     expect(mine[0]?.recipientEncPubHex).toBe(vectorKeyOf(READER).enc_pub_hex);
 
-    // 端末を指定しない削除参照 → 唯一スロット
+    // 唯一スロットを端末鍵で指す削除参照
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     // 端末を指定しないバックフィル(K2 以前の追記経路)→ 204

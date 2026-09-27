@@ -115,7 +115,7 @@ let reader: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 let dek3: Uint8Array;
-/** genesis + create_environment(epoch 1)。 */
+/** genesis + create_environment (epoch 1). */
 let chainBase: BuiltChain;
 /** The shape with rotate_epoch (epoch 2, DEK = dek2) stacked onto the same genesis. */
 let chainRotated: BuiltChain;
@@ -390,6 +390,7 @@ function makeServer(options: ServerOptions): ServerState {
       deks.push({
         suite: wrap.suite,
         epoch: wrap.epoch,
+        recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
         signatureHex: wrap.signatureHex,
@@ -479,6 +480,7 @@ function makeServer(options: ServerOptions): ServerState {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         }
       );
@@ -499,6 +501,7 @@ function makeServer(options: ServerOptions): ServerState {
             manifest: await serveManifest(),
             // Whenever a stored row for the base checkpoint exists, it is always bundled (§12-7 — the material of rule 2)
             ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
+            schemaPolicy: "enabled" as const,
           },
         }
       );
@@ -1639,6 +1642,7 @@ describe("maruhi env rotate", () => {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         };
       }),
@@ -1660,6 +1664,7 @@ describe("maruhi env rotate", () => {
             envStatement,
             statements: [],
           }),
+          schemaPolicy: "enabled" as const,
         },
       })),
       onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/rotate`, (request) => {
@@ -2087,6 +2092,7 @@ describe("maruhi env rotate", () => {
             entries: granted.entries.slice(0, count),
             headSeq: count,
             headHashHex: granted.hashes[count - 1],
+            attestations: [],
           },
         };
       }),
@@ -2108,6 +2114,7 @@ describe("maruhi env rotate", () => {
             envStatement: futureEnvStatement,
             statements: variables.map((variable) => variable.statement),
           }),
+          schemaPolicy: "enabled" as const,
         },
       })),
       (request) => {
@@ -2325,6 +2332,7 @@ describe("maruhi env rotate", () => {
             entries: built.entries,
             headSeq: built.entries.length,
             headHashHex: built.hashes[built.hashes.length - 1],
+            attestations: [],
           },
         };
       }),
@@ -2349,6 +2357,7 @@ describe("maruhi env rotate", () => {
               envStatement,
               statements: variables.map((variable) => variable.statement),
             }),
+            schemaPolicy: "enabled" as const,
           },
         }),
       ),
@@ -2614,97 +2623,6 @@ describe("maruhi env rotate", () => {
       epoch: 2,
     });
     expect(floor?.intents).toEqual([]);
-  });
-
-  it("a resume-only run with an unneeded --init-manifest never claims the next version will be re-issued (M1-B2)", async () => {
-    // The interruption-recovery shape (epoch 2 · latest values still on epoch
-    // 1) + an unneeded --init-manifest. The path is resume = no rotate
-    // composite is sent = saying "the next version will be re-issued" is a lie
-    const variables = [
-      await variableAt({
-        built: chainRotated,
-        variableId: "vaa",
-        name: "DATABASE_URL",
-        dek: dek1,
-        epoch: 1,
-        version: 1,
-        plaintext: "postgres://example",
-        headSeq: 2,
-      }),
-    ];
-    const wraps = [
-      await wrapDekFor({
-        projectId: chainBase.projectId,
-        environmentId: ENV_ID,
-        epoch: 1,
-        dek: dek1,
-        recipient: owner,
-        signer: owner,
-      }),
-      await wrapDekFor({
-        projectId: chainBase.projectId,
-        environmentId: ENV_ID,
-        epoch: 2,
-        dek: dek2,
-        recipient: owner,
-        signer: owner,
-      }),
-    ];
-    const state = makeServer({
-      built: chainRotated,
-      variables,
-      deks: wraps,
-      currentEpoch: 2,
-    });
-    const env = await startEnv(state.handlers, owner);
-
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("The flag is not needed");
-    expect(errors).toContain(
-      "only resumes the incomplete re-encryption and issues no new manifest",
-    );
-    expect(errors).not.toContain("re-issues the next manifestVersion");
-    // No rotate composite was actually sent (resume only pushes)
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("a check-only run with an unneeded --init-manifest says nothing is issued (M1-B2)", async () => {
-    const variables = [
-      await variableAt({
-        built: chainBase,
-        variableId: "vaa",
-        name: "DATABASE_URL",
-        dek: dek1,
-        epoch: 1,
-        version: 1,
-        plaintext: "postgres://example",
-        headSeq: 2,
-      }),
-    ];
-    const state = makeServer({
-      built: chainBase,
-      variables,
-      deks: [
-        await wrapDekFor({
-          projectId: chainBase.projectId,
-          environmentId: ENV_ID,
-          epoch: 1,
-          dek: dek1,
-          recipient: owner,
-          signer: owner,
-        }),
-      ],
-      currentEpoch: 1,
-    });
-    const env = await startEnv(state.handlers, owner);
-
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("The flag is not needed");
-    expect(errors).toContain("issues nothing");
-    expect(errors).not.toContain("re-issues the next manifestVersion");
-    expect(state.rotateBodies).toHaveLength(0);
   });
 
   it("a rotate onto a deleted environment (404) is treated as a definite rejection — it never suggests re-running", async () => {
@@ -3763,7 +3681,7 @@ function output(env: TestEnv): string {
 
 describe("maruhi env rotate --config (advancing the sync receipt — M1)", () => {
   let dekReceipts: Uint8Array;
-  /** genesis + create dev(epoch 1、dek1)+ create ops(epoch 1、dekReceipts)。 */
+  /** genesis + create dev (epoch 1, dek1) + create ops (epoch 1, dekReceipts). */
   let chainWithReceipts: BuiltChain;
   let receiptsStatement: WireDistributedEnvironmentStatement;
   let wrapReceipts: WireRecipientDek;
@@ -4407,6 +4325,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
                   entries: chainBase.entries,
                   headSeq: chainBase.entries.length,
                   headHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                  attestations: [],
                 },
               }
             : undefined,

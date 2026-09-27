@@ -87,8 +87,8 @@ interface WireFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
-  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES。旧サーバーは載せない)。 */
-  readonly trigger?: "remove_member" | "change_role" | "revoke_server";
+  /** AUDIT_SPEC §3.3 の trigger(2026-09-14 ES)。 */
+  readonly trigger: "remove_member" | "change_role" | "revoke_server";
 }
 
 interface RotationServerState {
@@ -158,6 +158,7 @@ async function makeRotationServer(input: {
         entries: input.built.entries as readonly ChainEntry[],
         headSeq: input.built.entries.length,
         headHashHex: input.built.hashes[input.built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments`, () =>
@@ -167,6 +168,7 @@ async function makeRotationServer(input: {
             status: 200,
             json: {
               environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
+              schemaPolicy: "enabled",
             },
           },
     ),
@@ -182,6 +184,7 @@ async function makeRotationServer(input: {
               variables: [activeStatement],
               deletedVariables: [deletedStatement],
               manifest,
+              schemaPolicy: "enabled" as const,
             },
           },
     ),
@@ -227,6 +230,7 @@ function flagFor(overrides: Partial<WireFlag> & { readonly variableId: string })
     targetUserId: target.userId,
     recommendedAtMs: 1_700_000_000_000,
     triggerChainSeq: 4,
+    trigger: "remove_member",
     ...overrides,
   };
 }
@@ -248,7 +252,7 @@ describe("maruhi rotation list", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("Rotation flags: 2 active flags");
     // trigger = change_role(降格 / 縮小 — 2026-09-14 ES)は削除と言い分ける。
-    // trigger なし(旧サーバー)は従来の member: 表示
+    // remove_member は member: 表示
     expect(logs).toContain(`member (role/scope changed):${target.userId}`);
     // 名前解決: active はステートメント、削除済みは tombstone の name(§4.2)
     expect(logs).toContain("ALPHA (va)");

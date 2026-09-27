@@ -141,9 +141,9 @@ async function makeAddServer(input: {
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
   /**
-   * Slot → the stored recipient enc public key (hex). A 409 on a listed slot
-   * carries `storedRecipientEncPubHex` (the post-supplement AUTH_SPEC §12-6
-   * server). An unlisted slot's 409 has no field (the pre-supplement server).
+   * Slot → the stored recipient enc public key (hex — the 409's
+   * `storedRecipientEncPubHex`, AUTH_SPEC §12-6). An unlisted slot is the shape
+   * where the same key as the one being registered occupies it.
    */
   readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
@@ -183,6 +183,7 @@ async function makeAddServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -219,6 +220,7 @@ async function makeAddServer(input: {
           currentEpoch: input.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     onDeksRoute(projectId, "GET", () => ({ status: 200, json: { deks: input.ownDeks } })),
@@ -241,8 +243,7 @@ async function makeAddServer(input: {
             _tag: "DekWrapExists",
             epoch: conflict.epoch,
             recipientUserId: conflict.recipientUserId,
-            // Only a post-supplement AUTH_SPEC §12-6 server carries this (optional field)
-            ...(storedEncPub === undefined ? {} : { storedRecipientEncPubHex: storedEncPub }),
+            storedRecipientEncPubHex: storedEncPub ?? conflict.recipientEncPubHex,
           },
         };
       }
@@ -575,6 +576,7 @@ describe("maruhi member add", () => {
         }),
       ],
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
+      occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
       // Call order: 0 = batch (409) → 1 = epoch-1 single (409) → delete → 2 = re-register
       onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
     });
@@ -678,7 +680,7 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
-    // Membership under the same key never triggers delete (repair) — the key-history gate
+    // Membership under the same key never triggers delete (repair) (the 409's stored key = the acceptance key)
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("already a member with the same key");
@@ -719,6 +721,7 @@ describe("maruhi member add", () => {
       ],
       // The old-key wrap from the past membership occupies the epoch-1 slot
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
+      occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
     });
     const env = await startAddEnv(state, built.projectId);
 
@@ -752,9 +755,9 @@ describe("maruhi member add", () => {
 
   it("does not delete when the 409's stored enc public key matches the acceptance key — even with a different-key membership history (blocks mis-deletion)", async () => {
     // A rerun of "past membership under another key + the immediately preceding
-    // member add partially completed under the current key". The key-history
-    // heuristic suspects stale (the old check would mis-delete), but the 409
-    // carries the stored enc public key (= the current key), so an exact comparison detects already-registered (AUTH_SPEC §12-6 supplement)
+    // member add partially completed under the current key". The 409 carries the
+    // stored enc public key (= the current key), so an exact comparison detects
+    // already-registered (AUTH_SPEC §12-6 supplement)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -804,10 +807,10 @@ describe("maruhi member add", () => {
     expect(logs).not.toContain("old-key wraps repaired");
   });
 
-  it("repairs when the 409's stored enc public key mismatches the acceptance key, regardless of key history (the field wins)", async () => {
-    // The key history has no other key (the heuristic does not suspect stale),
-    // but the 409's field declares another key. Pins that the field **wins over**
-    // the heuristic (a mutation dropping the comparison for estimation fails only this test)
+  it("repairs when the 409's stored enc public key mismatches the acceptance key, regardless of key history", async () => {
+    // The key history has no other key, but the 409's field declares another
+    // key. The verdict does not depend on the key history: it is decided by an
+    // exact comparison with the field
     const strangerKeys = await makeTestUser("user-someone-else");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -956,6 +959,8 @@ describe("maruhi member add", () => {
           [INVITE_ID]: {
             linkPubHex: "ee".repeat(32),
             role: "member",
+            scopeKind: "all",
+            scopeEnvironmentIds: [],
             expiresAtMs: 1755993600000,
             expectedGithubLogin: null,
           },
@@ -1093,6 +1098,8 @@ describe("maruhi member add", () => {
             [INVITE_ID]: {
               linkPubHex: issued.linkPubHex,
               role: "member",
+              scopeKind: "all",
+              scopeEnvironmentIds: [],
               expiresAtMs: 1755993600000,
               expectedGithubLogin: "bob",
             },
@@ -1273,10 +1280,12 @@ describe("maruhi member add", () => {
       await writeFile(
         env.fingerprintBookPath,
         JSON.stringify({
-          v: 1,
+          v: 2,
           known: {
             [env.serverOrigin]: {
-              [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+              [acceptor.userId]: {
+                fingerprints: { ["00".repeat(16)]: { verifiedAtMs: 1700000000000 } },
+              },
             },
           },
         }),
@@ -1335,10 +1344,12 @@ describe("maruhi member add", () => {
     await writeFile(
       env.fingerprintBookPath,
       JSON.stringify({
-        v: 1,
+        v: 2,
         known: {
           [env.serverOrigin]: {
-            [acceptor.userId]: { fingerprintHex: "00".repeat(16), verifiedAtMs: 1700000000000 },
+            [acceptor.userId]: {
+              fingerprints: { ["00".repeat(16)]: { verifiedAtMs: 1700000000000 } },
+            },
           },
         },
       }),

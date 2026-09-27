@@ -8,10 +8,6 @@
 //  2. Manifest extension of the floor: rules (a) regression, (b) same-version
 //     difference, (c) old-epoch burn-in on an advancing version
 //     (persistent detection across sessions)
-//  3. Migration path (session-27 §14 PR-M1): operations against a server with
-//     an uninitialized manifest are refused by default, and only
-//     `env rotate --init-manifest` tolerates the absence to issue
-//     manifestVersion 1 (verification of a distributed manifest is not relaxed)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -54,7 +50,7 @@ let reader: TestUser;
 let member2: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** [genesis, add reader, add member2, create ENV](epoch 1)。 */
+/** [genesis, add reader, add member2, create ENV] (epoch 1). */
 let chain1: BuiltChain;
 /** chain1 + rotate_epoch(2) (a strict extension of chain1). */
 let chain2: BuiltChain;
@@ -140,6 +136,7 @@ function chainHandler(built: BuiltChain): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -173,6 +170,7 @@ function pullHandler(payload: PullJson): MockHandler {
       ...(payload.checkpointSnapshot === undefined
         ? {}
         : { checkpointSnapshot: payload.checkpointSnapshot }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -231,7 +229,7 @@ function manifestV1(
 }
 
 describe("manifest distribution-time verification (§6.3 — wiring into crypto's shared implementation)", () => {
-  it("absence is uniformly refused and the migration procedure (--init-manifest) is shown", async () => {
+  it("absence is uniformly refused", async () => {
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
@@ -240,7 +238,6 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
     const errors = env.errors.join("\n");
     expect(errors).toContain("did not distribute an environment manifest");
     expect(errors).toContain("manifest suppression");
-    expect(errors).toContain("--init-manifest");
   });
 
   it("refuses a missing variable (distributing a variable that is not in the digest = the carriage form of an omission in reverse)", async () => {
@@ -527,6 +524,7 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     });
@@ -581,6 +579,7 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
         variables: [alphaStatement],
         deletedVariables: [],
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     }));
   }
@@ -732,6 +731,7 @@ interface RotateBody {
     readonly suite: "maruhi/v1";
     readonly epoch: number;
     readonly recipientUserId: string;
+    readonly recipientEncPubHex: string;
     readonly encHex: string;
     readonly ciphertextHex: string;
     readonly signatureHex: string;
@@ -783,6 +783,7 @@ function makeLegacyServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -796,6 +797,7 @@ function makeLegacyServer(input: {
         deks,
         ...(manifest === null ? {} : { manifest }),
         ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
+        schemaPolicy: "enabled" as const,
       },
     })),
     (request) => {
@@ -854,6 +856,7 @@ function makeLegacyServer(input: {
         deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,
@@ -923,170 +926,5 @@ describe("rollback detection after rotate acceptance (§6.3 / §4.3 (4))", () =>
     const errors = env.errors.join("\n");
     expect(errors).toContain("could not be recorded in the local floor");
     expect(errors).toContain("checkpoint-regressed");
-  });
-});
-
-describe("--init-manifest (migration path — session-27 §14 PR-M1)", () => {
-  it("rotate against a manifest-uninitialized server is refused by default (absence = refusal stays even under migration)", async () => {
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "pre-migration"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("did not distribute an environment manifest");
-    // The refusal precedes composite submission (the stage of the pull that detected the absence)
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest tolerates only the absence and bundles manifestVersion 1 (empty prev · new_epoch)", async () => {
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(
-        ["env", "rotate", ENV_ID, "--init-manifest", "--reason", "migration"],
-        env.layer,
-      ),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(1);
-    const body = state.rotateBodies[0];
-    if (body === undefined) throw new Error("rotate body missing");
-    // Initialization is v1 with empty prev. The epoch is after applying the
-    // bundled entry = new_epoch (§12-5 (4)); the declared head is the current
-    // head before the append (§12-4)
-    expect(body.manifest.manifestVersion).toBe(1);
-    expect(body.manifest.prevManifestSigHashHex).toBe("");
-    expect(body.manifest.epoch).toBe(2);
-    expect(body.manifest.chainHeadSeq).toBe(chain1.entries.length);
-    expect(body.manifest.chainHeadHashHex).toBe(chain1.hashes[chain1.hashes.length - 1]);
-    // The explicit warning that this is a migration (down to saying that after initialization, absence = refusal)
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("no manifest yet");
-    expect(errors).toContain("initializes manifestVersion 1");
-  });
-
-  it("in an environment where a manifest is distributed, --init-manifest relaxes nothing (a warned no-op)", async () => {
-    // A server already initialized (distributing v1)
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(
-        ["env", "rotate", ENV_ID, "--init-manifest", "--reason", "initialization"],
-        env.layer,
-      ),
-    ).toBe(0);
-
-    // Second run: even with --init-manifest while v1 is distributed, it becomes
-    // a normal issuance of the next version (v2, prev = hash of v1's signed bytes)
-    expect(
-      await runCli(
-        ["env", "rotate", ENV_ID, "--init-manifest", "--reason", "re-rotation"],
-        env.layer,
-      ),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(2);
-    const second = state.rotateBodies[1];
-    if (second === undefined) throw new Error("second rotate body missing");
-    expect(second.manifest.manifestVersion).toBe(2);
-    expect(second.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
-    expect(second.manifest.epoch).toBe(3);
-    expect(env.errors.join("\n")).toContain("The flag is not needed");
-  });
-
-  it("an absence in an environment whose floor holds a manifest record is refused as a swallow even with --init-manifest", async () => {
-    // Phase 1: establish the floor (with the manifest record) via a manifest-bearing pull
-    const env = await makeTestEnv();
-    await startPhase(env, [
-      chainHandler(chain1),
-      pullHandler({
-        currentEpoch: 1,
-        variables: [],
-        deks: [wrap1],
-        manifest: await manifestV1({ statements: [] }),
-      }),
-    ]);
-    expect(await runCli(["pull"], env.layer)).toBe(0);
-
-    // Phase 2: rotate a server that no longer distributes a manifest, with
-    // --init-manifest. An absence against an already-established manifest
-    // floor is outside migration tolerance (an initialized manifest never
-    // disappears — if it did, that is evidence of a swallow)
-    const state = makeLegacyServer({});
-    const server = await MockServer.start(state.handlers);
-    servers.push(server);
-    seedSession(env, server.origin, owner);
-    await seedConfig(env, {
-      server: server.origin,
-      defaultProject: projectId,
-      defaultEnvironment: ENV_ID,
-    });
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "swallow"], env.layer),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("omission of the environment manifest");
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest does not take the 'just checking' early completion (no --reason is a usage error)", async () => {
-    // Uninitialized environment + nothing pending + no --reason = conventionally
-    // an up-to-date early return. Taking it on a run that needs initialization
-    // looks like success while no v1 is issued. Collapse into the composite-submission path and require a reason
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest does not take interruption recovery (resume without a composite); it issues v1 via a new-epoch composite", async () => {
-    // The shape where the epoch has advanced to 2 while a stale epoch-1 value
-    // remains (the interruption-recovery entry). The conventional resume path
-    // sends no composite, so no v1 is issued. A run that needs initialization
-    // collapses into a new-epoch composite, same as --new-epoch
-    const staleEntry = {
-      variableId: "va",
-      statement: alphaStatement,
-      value: alphaValue1,
-    };
-    const state = makeLegacyServer({
-      built: chain2,
-      currentEpoch: 2,
-      variables: [staleEntry],
-      initialDeks: [wrap1, wrap2],
-    });
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(
-        ["env", "rotate", ENV_ID, "--init-manifest", "--reason", "migration"],
-        env.layer,
-      ),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(1);
-    const body = state.rotateBodies[0];
-    if (body === undefined) throw new Error("rotate body missing");
-    expect(body.entry.payload.newEpoch).toBe(3);
-    expect(body.manifest.manifestVersion).toBe(1);
-    expect(body.manifest.prevManifestSigHashHex).toBe("");
-    expect(body.manifest.epoch).toBe(3);
-    // The stale value is re-encrypted into the new epoch (the same all-at-once alignment as --new-epoch)
-    expect(state.pushes).toEqual(["va"]);
-  });
-
-  it("verification of a distributed manifest is not relaxed even with --init-manifest", async () => {
-    // A server distributing a malformed manifest (digest mismatch) is refused
-    // even with --init-manifest (tolerating absence ≠ relaxing verification)
-    const env = await startEnv([
-      chainHandler(chain1),
-      pullHandler({
-        currentEpoch: 1,
-        variables: [alphaEntry()],
-        deks: [wrap1],
-        manifest: await manifestV1({ statements: [] }),
-      }),
-    ]);
-    expect(
-      await runCli(
-        ["env", "rotate", ENV_ID, "--init-manifest", "--reason", "tampering"],
-        env.layer,
-      ),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("reason=variables-digest-mismatch");
   });
 });

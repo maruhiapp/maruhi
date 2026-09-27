@@ -45,7 +45,7 @@ const ENV_ID = "prod";
 let owner: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** chain1 = [genesis, create_environment](epoch 1)。 */
+/** chain1 = [genesis, create_environment] (epoch 1). */
 let chain1: BuiltChain;
 /** chain2 = chain1 + rotate_epoch(2) (a strict extension of chain1 via deterministic builds). */
 let chain2: BuiltChain;
@@ -218,6 +218,7 @@ function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
         entries: built.entries,
         headSeq: built.entries.length,
         headHashHex: built.hashes[built.hashes.length - 1],
+        attestations: [],
       },
     };
   });
@@ -237,6 +238,7 @@ function pullHandlerFor(payload: PullPayload): MockHandler {
         ...payload,
         variables: payload.variables.map((variable) => variable.statement),
       }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -262,6 +264,7 @@ function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
         variables: payload.variables,
         deletedVariables: payload.deletedVariables ?? [],
         manifest: await manifestOf(payload),
+        schemaPolicy: "enabled" as const,
       },
     }),
   );

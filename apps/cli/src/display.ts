@@ -146,15 +146,7 @@ export function describeListedScope(count: number): string {
 
 /** 予備鍵の印の無い台帳の鍵の句(DK K16-6 — CRYPTO_SPEC §8)。 */
 export function describeUnmarkedLedgerKey(): string {
-  return "was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one)";
-}
-
-/**
- * この端末の観測の記録にある「最初の鍵だった」の句(DK K15-1 — 判定の値 `recorded-first-key`)。
- * 出所(この端末の記録)と、今のチェーンが示さないことを言う。
- */
-export function describeRecordedFirstKey(projectId: string): string {
-  return `was your first key on project ${displayText(projectId)} (the key you created or joined that project with) when this machine synced that project's verified chain, although the projects the server lists for you now do not show it`;
+  return "was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it is not used as your reserve key";
 }
 
 /**

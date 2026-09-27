@@ -217,6 +217,7 @@ async function makeRevokeServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
@@ -227,6 +228,7 @@ async function makeRevokeServer(input: {
           currentEpoch: environments[statement.environmentId]?.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     async (request) => {
@@ -276,6 +278,7 @@ async function makeRevokeServer(input: {
           manifest: await serveManifest(environmentId, environment, statement),
           // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
           ...snapshotFieldOf(environmentId),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -320,6 +323,7 @@ async function makeRevokeServer(input: {
         environment.deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,

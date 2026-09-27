@@ -77,7 +77,7 @@ describe("total timestamp formatters", () => {
 
 describe("keychain record codecs", () => {
   it("round-trips token / device key records and detects corruption", () => {
-    const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1" };
+    const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1", expiresAtMs: 1 };
     const parsed = parseStoredToken(JSON.stringify(token));
     if (parsed === null) throw new Error("expected a parsed token record");
     // Always unwrap before comparing raw values (toEqual on wrapped values does not inspect the contents)
@@ -93,6 +93,10 @@ describe("keychain record codecs", () => {
     expect(Redacted.value(reparsed.token)).toBe("maruhi_pat_x");
     expect(parseStoredToken("not json")).toBeNull();
     expect(parseStoredToken(JSON.stringify({ token: "x" }))).toBeNull();
+    // The expiry is required (absence = corruption)
+    expect(
+      parseStoredToken(JSON.stringify({ token: "maruhi_pat_x", userId: "u1", tokenId: "t1" })),
+    ).toBeNull();
     expect(parseStoredMasterKey(JSON.stringify({ suite: "maruhi/v1" }))).toBeNull();
   });
 
@@ -849,7 +853,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
     expect(env.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
-  it("the keychain path warns without network from the record's stored expiry; old records (no expiry) behave as before", async () => {
+  it("the keychain path warns without network from the record's stored expiry", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([]);
     servers.push(server);
@@ -871,16 +875,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     expect(nearErrors).toContain("Sign in again with `maruhi login`");
     // The warning needs no communication to decide (not a single request goes out)
     expect(server.requests).toHaveLength(0);
-
-    // Old records written by pre-W3a logins (no expiresAtMs) work without a warning
-    const legacyEnv = await makeTestEnv();
-    await seedConfig(legacyEnv, { server: server.origin });
-    legacyEnv.keychain.set(
-      tokenEntryName(server.origin),
-      JSON.stringify({ token: "maruhi_pat_keychain", userId: "user-0001", tokenId: "tok_1" }),
-    );
-    await runCli(["key", "show"], legacyEnv.layer);
-    expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the API token expires");
   });
 
   it("the env var takes precedence over the keychain", async () => {
@@ -897,7 +891,12 @@ describe("the MARUHI_TOKEN env-var path", () => {
     await seedConfig(env, { server: server.origin });
     env.keychain.set(
       tokenEntryName(server.origin),
-      JSON.stringify({ token: "maruhi_pat_keychain", userId: user.userId, tokenId: "tok_1" }),
+      JSON.stringify({
+        token: "maruhi_pat_keychain",
+        userId: user.userId,
+        tokenId: "tok_1",
+        expiresAtMs: 4_102_444_800_000,
+      }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
