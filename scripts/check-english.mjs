@@ -23,9 +23,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ALL = process.argv.includes("--all");
 
 // Hiragana, katakana, halfwidth katakana, CJK ext-A, unified + compat
-// ideographs, and CJK punctuation. U+3299 (the maruhi mark glyph) is
-// intentionally out of range.
-const CJK = /[　-〿぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿]/;
+// ideographs, CJK punctuation, and fullwidth ASCII forms (U+FF00-FF60).
+// U+3299 (the maruhi mark glyph) is intentionally out of range.
+const CJK = /[　-〿぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿＀-｠]/;
 
 function git(args) {
   return execSync(`git ${args}`, {
@@ -73,7 +73,7 @@ function fileLines(path) {
   } catch {
     return [];
   }
-  if (text.includes("")) return [];
+  if (text.includes("\0")) return [];
   return text.split("\n").map((line, i) => ({ path, line: i + 1, text: line }));
 }
 
@@ -110,6 +110,13 @@ function allLines() {
 
 const lines = ALL ? allLines() : addedLines();
 const exemptions = exemptPaths();
+
+// Regression guard: --all scanning zero lines means fileLines() silently
+// dropped every file (e.g. an over-broad binary guard), not a clean repo.
+if (ALL && lines.length === 0) {
+  console.error("check-english: --all scanned 0 lines — file collection is broken");
+  process.exit(2);
+}
 
 const offenders = [];
 for (const { path, line, text } of lines) {

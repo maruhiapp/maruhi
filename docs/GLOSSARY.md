@@ -16,6 +16,7 @@ uses that identifier's wording rather than this table.
 | 台帳 | ledger | |
 | 証跡 | evidence | |
 | 鍵 | key | 端末鍵 = device key、予備鍵 = reserve key (DK K7-5)。`master key` は永続化された名前にのみ残す(oxlint 規則と同じ語彙) |
+| 台帳の鍵 | ledger key | the key recorded in the recovery ledger (`ledgerKeyVerdictOf`); not the same as 予備鍵 = reserve key (DK K16) |
 | 端末 | device | |
 | 検査 | check | 被覆検査 = coverage check |
 | 被覆 | coverage | |
