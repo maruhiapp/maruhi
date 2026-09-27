@@ -545,11 +545,11 @@ re-implement them.
 | Residual (§14.3) | Client class | Existing mechanism | This design's addition | Level reached |
 |---|---|---|---|---|
 | -3 view rollback (chain) | floor-holding | floor (detect) | — | detected by existing |
-| 〃 | no floor + invite anchor | anchor (detect) | — | detected by existing |
-| 〃 | no floor + repository anchor | anchor (detect) | — | detected by existing |
-| 〃 | no floor + no anchor | none | gossip (attestation reconciliation — avoidable by omission) | stops at evidencing (**residual**) |
+| (same) | no floor + invite anchor | anchor (detect) | — | detected by existing |
+| (same) | no floor + repository anchor | anchor (detect) | — | detected by existing |
+| (same) | no floor + no anchor | none | gossip (attestation reconciliation — avoidable by omission) | stops at evidencing (**residual**) |
 | -3 data-layer rollback · omission (chain is new) | floor-holding | floor (detect) | — | detected by existing |
-| 〃 | no floor + anchor | epoch non-regression only (partial) | **checkpoint** (manifest · value-snapshot consistency) | **detect** (up to the checkpoint point) |
+| (same) | no floor + anchor | epoch non-regression only (partial) | **checkpoint** (manifest · value-snapshot consistency) | **detect** (up to the checkpoint point) |
 | -4 split view | all classes | evidencing (prev chaining · head binding) | **gossip** (cross-reconciliation of attestations) + repository anchor (external meeting point) | detectability + evidencing (avoidable by omission — **no guarantee**) |
 | -5 value forward injection | floor-holding | epoch monotonicity + floor (c) (detect) | — | detected by existing |
 | -5 meta forward injection | floor-holding | **none** (evidencing only) | **manifest** (epoch consistency + the manifest version of floor (c)) | **detect** (shrinks to the value-symmetric residual (i)(ii)(iii)) |
@@ -557,7 +557,7 @@ re-implement them.
 | -5 (ii) the remove → rotate-complete window | all classes | §7's operational obligation | — (the observation material grows via manifest bundling into the rotate composite) | **residual** (mechanization is session-12 §10-7 = a separate task) |
 | -5 (iii) a returning client with a stale epoch floor | floor-holding | none | noted that the manifest has a same-shaped residual | **residual** (value-symmetric) |
 | G6 variable-set omission | floor-holding | floor union (detect) | — | detected by existing |
-| 〃 | no floor + anchor | none | **manifest** (digest recomputation) | **detect** |
+| (same) | no floor + anchor | none | **manifest** (digest recomputation) | **detect** |
 | audit-log post-hoc tampering | admin (all-rows viewer) | seq gaps only | **checkpoint** (pinning the accumulated hash + position checks in admin reconciliation — the notarization point advances monotonically up to the immediately preceding checkpoint's mirror row. Loop-3 round-2 finding 1) | **detect** (rows in the notarized prefix — prefix freezing by staleness replay is also detected on reconciliation. **Prefix advancement depends on issuance frequency of effective-permission admin** [round 5 — mitigated by trigger (iii)'s admin reference split]. Falsehood at record time remains unguaranteed) |
 
 ## 11. Positioning of existing handoffs (answer to trap 8)
