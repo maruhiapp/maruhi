@@ -1,271 +1,325 @@
-# セッション 24 メモ(OIDC トークンの有効期間内リプレイの裁定)
+# Session 24 notes (ruling on in-lifetime replay of OIDC tokens)
 
-日付: 2026-08-15。前提: PR #66 まで入った main(`39a3371`)。
-ブランチ: `claude/maruhi-oidc-replay-ruling-jiwfhb`。
-スコープ: PR #65(Wave 2 A2)が明示的に申し送り、`docs/SECURITY_REVIEW_2026-08-14.md`
-追補 2 が「裁定待ち」とした **OIDC トークンの有効期間内リプレイ**の所有者裁定
-(同レビュー「推奨する対応順序」4 番。A3 = CI クライアント実装の前提)。
-番号について: session-22.md がファイルとしては最後だが、PR #65 が本文で
-「セッション 23」を名乗っているため、本ノートは 24 とする。
+Date: 2026-08-15. Prerequisites: main with PR #66 in (`39a3371`).
+Branch: `claude/maruhi-oidc-replay-ruling-jiwfhb`.
+Scope: the owner ruling on **in-lifetime replay of OIDC tokens**, which PR #65
+(Wave 2 A2) explicitly handed off and `docs/SECURITY_REVIEW_2026-08-14.md`
+supplement 2 marked "awaiting ruling" (item 4 of that review's "recommended
+response order". The precondition for A3 = CI client implementation).
+On numbering: session-22.md is the last file on disk, but since PR #65 calls
+itself "session 23" in its body, this note is 24.
 
-## 1. 問題の定義
+## 1. Problem definition
 
-リース経路(CRYPTO_SPEC §9.1 / AUTH_SPEC §14)の `claims_digest` は
-issuer / subject / audience のみを束縛し、ワークロードの一時公開鍵も nonce も
-含まない。よって**有効期間内の OIDC トークンのコピーを入手した者**
-(ネットワーク捕捉・悪意あるワークフローステップ・ログ流出)は、**自分の
-一時鍵**でリースを要求し、正当に再ラップされた DEK を受け取れる。露出窓 =
-`exp - iat`。§9.1 の保証は「別のワークロード同一性への転用不可」であり、
-同一同一性でのベアラーリプレイの防止ではない(A2 マージ時点で非保証として
-明文化済み)。リプレイの獲物が「環境の全暗号文 + チェーン + DEK リース」で
-ある点が、獲物が一時 credential に留まる AWS 型フェデレーションとの決定的な
-非対称(→ §2 の先例の二分)。
+The `claims_digest` on the lease path (CRYPTO_SPEC §9.1 / AUTH_SPEC §14) binds
+only issuer / subject / audience — neither the workload's ephemeral public key
+nor a nonce. So **anyone who obtains a copy of an in-lifetime OIDC token**
+(network capture, a malicious workflow step, log leakage) can request a lease
+with **their own ephemeral key** and receive a legitimately re-wrapped DEK.
+Exposure window = `exp - iat`. §9.1's guarantee is "cannot be redirected to a
+different workload identity", not prevention of bearer replay under the same
+identity (already documented as a non-guarantee at A2 merge). The replay's loot
+being "all environment ciphertexts + the chain + a DEK lease" is the decisive
+asymmetry versus AWS-style federation, where the loot stays an ephemeral
+credential (→ the precedent split in §2).
 
-## 2. 外部事実(裁定の入力。実 API・一次情報で確認)
+## 2. External facts (ruling inputs. Verified against real APIs / primary sources)
 
-### issuer の能力差
+### Issuer capability differences
 
-| issuer | 発行タイミング | aud のランタイム制御 | jti | exp − iat |
+| issuer | Issuance timing | Runtime control of aud | jti | exp − iat |
 |---|---|---|---|---|
-| GitHub Actions | ジョブ実行中に都度(`ACTIONS_ID_TOKEN_REQUEST_URL` + `&audience=`) | ✓ 任意文字列(**文字種・長さ制約は非文書化**) | ✓ | 実測 約 5 分(300 秒の報告。文書化された保証なし) |
-| GitLab CI | **ジョブ開始時に事前発行**(`.gitlab-ci.yml` の `id_tokens:`) | ✗ 設定時固定(CI 変数展開可。**ジョブ内生成値は不可**) | ✓ | ジョブ timeout(時間単位になりうる) |
-| CircleCI | 既定は環境変数で事前注入(aud = org ID 固定) | △ `circleci run oidc get --claims` でランタイム発行可 | 未確認 | 未確認 |
-| Kubernetes | projected volume は事前 / TokenRequest API はランタイム | △(TokenRequest 権限がある場合のみ) | ✓(1.32 GA) | 既定 1h |
+| GitHub Actions | Per-request during the job (`ACTIONS_ID_TOKEN_REQUEST_URL` + `&audience=`) | ✓ arbitrary string (**charset/length constraints undocumented**) | ✓ | Measured ~5 min (300 s reported; no documented guarantee) |
+| GitLab CI | **Pre-issued at job start** (`id_tokens:` in `.gitlab-ci.yml`) | ✗ fixed at config time (CI variable expansion allowed. **Job-generated values are not**) | ✓ | Job timeout (can be hours) |
+| CircleCI | Pre-injected via env var by default (aud = org ID, fixed) | △ runtime issuance possible via `circleci run oidc get --claims` | unverified | unverified |
+| Kubernetes | projected volume is pre-issued / TokenRequest API is runtime | △ (only with TokenRequest permission) | ✓ (GA in 1.32) | 1h default |
 
-含意: **「トークン内に何かを埋めさせる」系の緩和は GitLab で構造的に成立しない**
-(事前発行 + 設定時固定 aud)。issuer 汎用性(session-22 §2 R1)を保てるのは
-サーバー側の状態だけで完結する緩和のみ。
+Implication: **"have something embedded into the token" mitigations are
+structurally impossible on GitLab** (pre-issued + config-time-fixed aud). Only
+mitigations completed by server-side state alone preserve issuer generality
+(session-22 §2 R1).
 
-### 先例(mint 系エンドポイントのリプレイの扱い)
+### Precedents (how mint-type endpoints handle replay)
 
-- **PyPI trusted publishing(最も近い同型)**: mint-token エンドポイントで
-  **jti の単回使用制を実装済み**(Redis に exp+5 秒で記録)。さらに 2026 年の
-  第 2 回監査が「JWT 検証の leeway 30 秒 > リプレイキャッシュ余命 5 秒」の
-  不整合(exp+5〜exp+30 の 25 秒間はリプレイが通る)を指摘・修正済み。
-  **教訓: 重複記録の生存期間は署名検証の受理窓以上に取る**(採用仕様に反映)
-- **AWS AssumeRoleWithWebIdentity / Vault JWT auth / Infisical / Doppler**:
-  単回使用制なし(有効期間内ベアラー受理)。ただしこれらは「交換で得るのは
-  行使が別途記録される一時 credential」の認可ゲート型。**秘密・能力の直接
-  配布型で最も近い PyPI だけが (c) 系を選んでいる**
-- **Sigstore Fulcio**: challenge = 「OIDC トークンの sub への一時鍵署名」=
-  **一時鍵の所持証明であってトークン↔鍵の束縛ではない**(盗んだトークン +
-  自分の鍵で通る)。リプレイ残余は透明性ログ(CT)での事後検知に倒している —
-  本裁定の (d) の罠を実運用システムが意図的に受け入れた形
-- **エコシステム動向**: W. Woodruff(PyPI trusted publishing 設計者)が
-  2026-08-10 に「GitHub の**ランタイム任意 audience 自体が欠陥**であり、
-  `id-token: [aud]` の静的許可リストへ制約すべき」と公開提案。動的 audience に
-  依存する設計(下記 (b))は、この強化方向と正面衝突する
-- **IETF WIMSE(標準化中)**: WIT(鍵束縛トークン)+ WPT(リクエスト毎の
-  所持証明)= (b) の標準化版。**issuer 側の対応が前提**で、CI issuer は未対応。
-  将来 issuer が対応した時点での追加裁定の対象(§7)
+- **PyPI trusted publishing (the closest isomorph)**: implements **single-use
+  jti** on its mint-token endpoint (recorded in Redis with exp+5 s). Then the
+  2026 second audit found and fixed the inconsistency "JWT verification leeway
+  30 s > replay-cache residual 5 s" (replays pass during exp+5 to exp+30's 25
+  s). **Lesson: keep the duplicate record alive at least as long as the
+  signature-verification acceptance window** (reflected in the adopted spec)
+- **AWS AssumeRoleWithWebIdentity / Vault JWT auth / Infisical / Doppler**: no
+  single-use (bearer accepted for its lifetime). But these are
+  authorization-gate types where "what the exchange yields is an ephemeral
+  credential whose exercise is separately recorded". **Only PyPI — the closest
+  secret/capability direct-distribution type — chose the (c) family**
+- **Sigstore Fulcio**: challenge = "ephemeral-key signature over the OIDC
+  token's sub" = **a proof of ephemeral-key possession, not a token↔key
+  binding** (a stolen token + your own key passes). Its replay residue is left
+  to post-hoc detection via the transparency log (CT) — the (d) trap, knowingly
+  accepted by a production system
+- **Ecosystem direction**: W. Woodruff (designer of PyPI trusted publishing)
+  publicly proposed on 2026-08-10 that "GitHub's **runtime arbitrary audience
+  is itself a defect** and `id-token: [aud]` should be constrained to a static
+  allowlist". A design depending on dynamic audience ((b) below) collides
+  head-on with this hardening direction
+- **IETF WIMSE (standardizing)**: WIT (key-bound token) + WPT (per-request
+  proof of possession) = the standardized version of (b). **It presumes
+  issuer-side support**, which CI issuers lack. A topic for an additional
+  ruling when issuers do support it (§7)
 
-## 3. (d) サーバー発行 nonce の反証(事前見立ての検証 — 結論: 見立てどおり不成立)
+## 3. Refutation of (d) server-issued nonce (checking the prior estimate — conclusion: does not work, as estimated)
 
-- 素朴な形(nonce を一時鍵で署名して返す)が証明するのは**一時鍵の所持だけ**。
-  一時鍵は攻撃者の自由選択であり、トークンと鍵の間に暗号学的束縛がない。
-  盗んだトークン + 自分の鍵 + 自分の鍵での nonce 署名で通る(Fulcio の
-  challenge と同型 — §2)
-- nonce を意味あるものにする唯一の方法は「署名済みトークンの**内部**に nonce を
-  入れさせる」= 発行者に新規発行させる能力の証明。ワークロードが発行時に
-  制御できるフィールドは実 API 上 **aud のみ**(§2)。つまり (d) は独立案では
-  なく (b) の変種に収斂する
-- その変種が (b) に足すのは「nonce 取得後の発行」という鮮度のみで、閉じる
-  攻撃は「一時的ワークロード侵害中の買いだめトークンの事後使用(GitHub では
-  最大 ~5 分)」だけ。対価は**未認証の nonce エンドポイント新設**(存在秘匿
-  設計 + SELF_HOSTING per-IP 表への行追加が必要になる唯一の案)+ nonce 状態 +
-  2 往復。却下
+- The naive form (sign a nonce with the ephemeral key and return it) proves
+  **only possession of the ephemeral key**. The ephemeral key is the attacker's
+  free choice, and there's no cryptographic binding between token and key. A
+  stolen token + your key + your key's nonce signature passes (same shape as
+  Fulcio's challenge — §2)
+- The only way to make a nonce meaningful is "have the nonce placed **inside**
+  the signed token" = proof of the ability to make the issuer issue anew. The
+  only field the workload can control at issuance on real APIs is **aud** (§2).
+  So (d) is not an independent option — it converges to a (b) variant
+- What that variant adds over (b) is only the freshness of "issuance after
+  nonce fetch"; the only attack it closes is "post-hoc use of tokens stockpiled
+  during a temporary workload compromise (max ~5 min on GitHub)". The cost is a
+  **new unauthenticated nonce endpoint** (the only option that would force a
+  row addition to the existence-concealment design + SELF_HOSTING's per-IP
+  table) + nonce state + an extra round trip. Rejected
 
-## 4. 案の比較(要旨。第 1〜3 巡の探索の集約)
+## 4. Option comparison (summary. Aggregated from exploration rounds 1–3)
 
-判定軸: 何を防ぐか(先着使用・可視化・露出窓)/ lease_policy 照合意味論 /
-claims_digest と AUDIT §3.5 の同定前提 / issuer 汎用性 / 仕様差分 / A2 追随
-実装の規模とベクター再生成 / A3 手順 / SELF_HOSTING の per-IP 表。
+Judgment axes: what it prevents (first-use wins / visibility / exposure
+window) / lease_policy matching semantics / the identification premise of
+claims_digest and AUDIT §3.5 / issuer generality / spec delta / size of A2
+follow-up implementation and vector regeneration / A3 procedure / SELF_HOSTING's
+per-IP table.
 
-### (a) 現状維持(非保証として文書化のみ)
+### (a) Status quo (documented as a non-guarantee only)
 
-防御追加なし。露出窓 = exp−iat 全幅(GitLab を足すと時間単位)。リプレイは
-同一 claims_digest の `lease_issued` 重複としてしか現れず、matrix 並列・
-リトライと区別できない = **不可視**。先例(AWS/Vault)はあるが認可ゲート型で
-あり(§2)、同型の PyPI は (c) 側。全項目影響ゼロが唯一の長所。
+No added defense. Exposure window = the full exp−iat (adding GitLab makes it
+hour-scale). Replays only appear as duplicate `lease_issued` under the same
+claims_digest, indistinguishable from matrix parallelism / retries =
+**invisible**. Precedents exist (AWS/Vault) but they're authorization-gate
+types (§2), and the isomorphic PyPI chose (c). Zero impact everywhere is the
+sole merit.
 
-### (b) 要求 aud への一時公開鍵ハッシュの束縛(所持証明)
+### (b) Binding an ephemeral public-key hash into the requested aud (proof of possession)
 
-トークン盗難系を**先着含め全遮断**(発行時点で正規ジョブの鍵に束縛される)。
-残余はワークロード侵害のみ(全案共通・原理的に不可避 — 発行能力 =
-ワークロード同一性そのもの)。ただし:
+**Blocks all token theft including first-use races** (the token is bound to the
+legitimate job's key at issuance time). Residue is workload compromise only
+(shared across all options, principled and unavoidable — issuance capability =
+the workload identity itself). However:
 
-- **GitLab で構造的に不可能**(§2)→ per-issuer 要件にしかならず、
-  「issuer を足しても扱いを変えない」(R1)の精神を崩す
-- 依存する動的 audience 機構自体が静的制約方向にある(§2 の Woodruff 提案)
-- GitHub の audience 制約(文字種・長さ)が非文書化 = A3 に実測リスク
-- lease_policy 照合が「suffix を剥がして基底を完全一致」になる(チェーン
-  形式・ポリシーの書き方は不変)。claims_digest の audience 入力は**基底**を
-  使えば §3.5 の同定前提は不変(フル aud を入れる変種はジョブごとに digest が
-  変わり監査の同定を壊すため却下)
-- **後方互換で後から足せる**(ポリシーは基底のみを持つため、suffix 付き aud の
-  追加受理 → per-issuer 必須化の 2 段で導入可能)= 今決め切る必然性がない
+- **Structurally impossible on GitLab** (§2) → becomes a per-issuer
+  requirement, breaking the spirit of R1's "adding an issuer changes nothing"
+- The dynamic-audience mechanism it depends on is itself headed toward static
+  constraints (§2's Woodruff proposal)
+- GitHub's audience constraints (charset, length) are undocumented = a measured
+  risk for A3
+- lease_policy matching becomes "strip the suffix and exact-match the base"
+  (chain format and policy notation unchanged). Using the **base** as
+  claims_digest's audience input keeps §3.5's identification premise unchanged
+  (the variant putting the full aud in was rejected — it changes the digest
+  per job and breaks audit identification)
+- **Can be added later with backward compatibility** (policies carry only the
+  base, so it can land in two stages: additionally accepting suffixed aud →
+  making it per-issuer mandatory) = no need to decide now
 
-### (c) jti 単回使用 → 採用形 (c′) トークンハッシュの先着束縛
+### (c) single-use jti → adopted form (c′) first-binding of a token hash
 
-素の (c) に 2 つの修正を入れた形:
+The naive (c) with two fixes:
 
-1. 重複キーは jti ではなく **SHA-256(JWS signing input = `header.payload`)**
-   (jti の有無・意味論が issuer 依存 — §2 表。signing input ハッシュは issuer に
-   何も要求しない)。**当初は「SHA-256(トークン生バイト列)」で起草したが、
-   レビューで生トークンの署名セグメントの可鍛性により破れることが判明し、
-   signing input へ修正した(§9)**
-2. 厳密単回使用ではなく**先着束縛**: 発行時に「トークンハッシュ → 一時
-   公開鍵」を記録し、同一トークンの再要求は**同一鍵なら冪等に許可**
-   (応答喪失後の正規リトライ。トークンを再発行できない事前発行型 issuer を
-   壊さない)、**別鍵なら 401 `token-replayed`**
+1. The duplicate key is **SHA-256(JWS signing input = `header.payload`)**, not
+   jti (jti presence/semantics vary by issuer — §2 table. A signing-input hash
+   asks nothing of the issuer). **Initially drafted as "SHA-256(raw token
+   bytes)", but review found the raw token's signature segment is malleable,
+   so it was changed to the signing input (§9)**
+2. Not strict single-use but **first-binding**: at issuance record
+   "token hash → ephemeral public key"; a repeat request under the same token
+   is **idempotently allowed if the same key** (legitimate retry after losing
+   the response — doesn't break pre-issuing issuers that can't re-issue a
+   token), and **401 `token-replayed` under a different key**
 
-防ぐ: **使用後のリプレイ全部**(ログ・事後流出という現実の盗難面のほぼ全部。
-露出窓は「初回使用まで」に縮小 — A3 は要求直前に発行するため実質秒単位)。
-防がない: 初回使用前の窃取 + 先着(実質 TLS を破る MITM 級。正規ジョブが
-`token-replayed` で失敗して検出される)、クロスプロジェクト先着(§7)。
-可視化: 攻撃者の後着 = 401 + `lease_denied`(claims_digest が正規と同一なので
-**どのワークロードのトークンが盗まれたかまで特定可能**)。
-影響: lease_policy 照合・claims_digest・AUDIT §3.5・チェーン・crypto・
-ベクター・A3 手順・SELF_HOSTING 表 = **すべて不変**。実装はサーバーのみ小規模
-(DO テーブル 1 + 判定 1 段 + GC)。
+Prevents: **all post-use replay** (logs, post-hoc leakage — almost the whole
+realistic theft surface. The exposure window shrinks to "until first use" —
+since A3 issues just before requesting, effectively seconds). Doesn't prevent:
+theft + first-use win before first legitimate use (effectively TLS-breaking
+MITM class; the legitimate job fails with `token-replayed`, which is detected),
+cross-project first-binding (§7). Visibility: the attacker's later attempt =
+401 + `lease_denied` (and since claims_digest is identical to the legitimate
+one, **it identifies which workload's token was stolen**). Impact: lease_policy
+matching, claims_digest, AUDIT §3.5, the chain, crypto, vectors, A3 procedure,
+the SELF_HOSTING table = **all unchanged**. Implementation is server-only and
+small (1 DO table + 1 decision stage + GC).
 
-### (e) 併用 (b)+(c′)
+### (e) Combine (b)+(c′)
 
-先着レースまで閉じる最強形だが、(b) の per-issuer 分岐・動的 audience の
-将来性リスク・A3 実測リスクを今払う。(b) が後置き可能である以上、v1 で払う
-必然性が薄い。
+The strongest form — closes even the first-use race — but pays (b)'s
+per-issuer branching, dynamic-audience future risk, and A3 measurement risk
+now. As long as (b) can be added later, there's little necessity to pay it in
+v1.
 
-## 5. その他の検討・却下案(再検討の記録)
+## 5. Other considered & rejected options (re-consideration record)
 
-- **iat 鮮度上限(発行から N 秒以内のみ受理)**: 窓は縮むが消えず、GitLab の
-  事前発行 + 長時間ジョブと非互換。(c′) 採用下では利得がほぼ消滅
-- **検知のみ(Fulcio CT 方式: 同一 digest の異常検知を監査 UI に足す)**:
-  (c′) が遮断 + 検知の両方を包含するため劣後
-- **claims_digest 単位の単回使用**: matrix 並列ジョブ(同一 iss/sub/aud)を
-  誤って弾く。重複キーは**トークン単位**でなければならない
-- **リポジトリアンカーへの PoP 公開鍵埋め込み**(§6.3 (b) への相乗り):
-  対応する秘密鍵の置き場所が GitHub secrets しかなく、R1 の「GitHub 側の
-  保存物ゼロ」の放棄になる。アンカーは非機密という設計前提にも反する
-- **GitHub Actions run 状態の照会**(トークンの run_id でジョブ実行中かを
-  GitHub API に確認): 私有リポジトリで credential が要る(R1 違反)・
-  未認証 API はレート制限で実用不能・issuer 固有。却下
-- **ZK-JWT(zkLogin 型: トークンを送らず所持を ZK 証明し、証明を一時鍵に
-  束縛)**: 理論上の銀の弾丸だが、ZK 回路という新暗号プリミティブの導入で
-  あり CLAUDE.md の絶対規則(WebCrypto + 選定済み HPKE のみ)に真っ向から
-  抵触。**規則が正しく禁じる種類の解**として記録
-- **DPoP / RFC 7800 cnf / WIMSE WIT+WPT**: いずれも issuer がトークンに鍵を
-  束縛できることが前提。CI issuer 未対応(対応した時点で §7 の追加裁定)
-- **mTLS / クライアント証明書**: CI ランナーに長期資格情報を置けない
-  (ディスクレス/保存物ゼロの原則)
+- **iat freshness cap (accept only within N seconds of issuance)**: shrinks but
+  doesn't close the window, and is incompatible with GitLab's pre-issuance +
+  long-running jobs. Under (c′) the gain mostly vanishes
+- **Detection only (Fulcio CT style: surface same-digest anomalies in the audit
+  UI)**: inferior because (c′) already includes both blocking and detection
+- **Single-use keyed by claims_digest**: would wrongly reject matrix-parallel
+  jobs (same iss/sub/aud). The duplicate key must be **per-token**
+- **Embedding the PoP public key in the repository anchor** (riding on §6.3
+  (b)): the corresponding private key could only live in GitHub secrets,
+  abandoning R1's "nothing stored on the GitHub side". Also contradicts the
+  design premise that anchors are non-sensitive
+- **Querying GitHub Actions run state** (verify via GitHub API that the token's
+  run_id job is running): needs a credential for private repositories (violates
+  R1), the unauthenticated API is rate-limited into uselessness, issuer-
+  specific. Rejected
+- **ZK-JWT (zkLogin style: never send the token, prove possession in ZK, bind
+  the proof to the ephemeral key)**: the theoretical silver bullet, but it's
+  introducing a new crypto primitive — ZK circuits — and collides head-on with
+  CLAUDE.md's absolute rule (WebCrypto + the selected HPKE only). **Recorded as
+  the kind of solution the rule rightly forbids**
+- **DPoP / RFC 7800 cnf / WIMSE WIT+WPT**: all presume the issuer can bind keys
+  into the token. CI issuers don't support it (additional ruling in §7 when
+  they do)
+- **mTLS / client certificates**: CI runners can't hold long-term credentials
+  (the diskless / nothing-stored principle)
 
-## 6. 裁定と採用仕様の要点
+## 6. Ruling and key points of the adopted spec
 
-**裁定(2026-08-15 所有者)**: **(c′) 先着束縛を採用**。探索は 3 巡(各巡とも
-所有者の指示で「より良い案がないか」を再調査 — 第 2 巡で PyPI 先例・Fulcio の
-(d) 同型・Woodruff 提案を、第 3 巡で WIMSE・GitLab 動向・競合 secrets manager を
-確認。上位互換案は出ず、(c′) の根拠が巡を追って強化された)。
+**Ruling (2026-08-15, owner)**: **adopt (c′) first-binding**. Exploration ran
+3 rounds (each at the owner's direction to re-check "is there a better option"
+— round 2 surfaced the PyPI precedent, Fulcio's (d) isomorphism, and the
+Woodruff proposal; round 3 covered WIMSE, GitLab direction, and competing
+secrets managers). No strictly-better option emerged, and (c′)'s grounds
+strengthened across rounds).
 
-採用仕様(AUTH_SPEC §14-1 / §14-3、CRYPTO_SPEC §9.1 に反映):
+Adopted spec (reflected in AUTH_SPEC §14-1 / §14-3 and CRYPTO_SPEC §9.1):
 
-- 発行時に「SHA-256(JWS signing input = `header.payload`) → 一時公開鍵」を
-  プロジェクト DO に記録。同一キー + 同一鍵 = 冪等許可 / 同一キー + 別鍵 =
-  401 `token-replayed`(**生トークンではなく signing input をハッシュする理由は
-  §9** — 生トークンは可鍛)
-- 判定は認可(lease_policy・スコープ)の直後・環境存在判定より前(束縛状態の
-  観測に認可未満の資格で到達させない。環境の実在によらず一様 401 =
-  ポリシー一致済みコピー保持者に環境の存在情報を与えない)。読み取りは
-  レート窓を消費しない
-- 記録は発行・監査・レート窓消費と同一の原子的ブロック(DO permit 直列化)
-- **保持期間の整合(必須)**: 束縛行の生存期間 ≥ exp + clock skew(PyPI 監査の
-  教訓 — §2)。GC は生存期間経過後
-- 401 の意味論: `token-replayed` は「提示資格情報に帰属する失敗」として 401
-  (認可通過後のみ到達 = 存在秘匿と両立。404 に畳むと正規ジョブの失敗が
-  診断不能になり可視化の目的を打ち消す)
-- 監査: `server.lease_denied` reason `token-replayed`(署名検証通過後の拒否 ✓。
-  固定窓 100 行/時の対象)
+- At issuance, record "SHA-256(JWS signing input = `header.payload`) →
+  ephemeral public key" on the project DO. Same key + same token = idempotent
+  allow / same key + different key = 401 `token-replayed` (**the reason for
+  hashing the signing input rather than the raw token is §9** — the raw token
+  is malleable)
+- The check runs right after authorization (lease_policy, scope) and before
+  environment-existence checks (don't let the binding state be observable with
+  less-than-authorized standing. Uniform 401 regardless of the environment's
+  actual existence = a holder of a policy-matching copy learns nothing about
+  the environment's existence). Reads consume no rate window
+- The record lives in the same atomic block as issuance, audit, and
+  rate-window consumption (DO permit serialization)
+- **Retention consistency (required)**: binding rows live ≥ exp + clock skew
+  (the PyPI audit lesson — §2). GC runs after that lifetime
+- 401 semantics: `token-replayed` is a 401 as "a failure attributable to the
+  presented credentials" (reachable only after authorization passes =
+  compatible with existence concealment. Folding it into 404 would make the
+  legitimate job's failure undiagnosable, defeating the visibility purpose)
+- Audit: `server.lease_denied` reason `token-replayed` (a rejection after
+  signature verification passes ✓. Counted in the fixed window of 100
+  rows/hour)
 
-## 7. 残余と将来の追加裁定条件
+## 7. Residue and conditions for future additional rulings
 
-- **初回使用前の先着**(CRYPTO_SPEC §9.1 非保証 (1)): 閉じるには所持証明
-  ((b) / WIMSE)が要る。追加裁定の条件 = (i) 対象 issuer がトークンへの
-  鍵束縛(cnf / WIMSE WIT)を提供する、または (ii) 動的 audience の静的
-  制約化が進まず (b) の将来性リスクが解消する、のいずれか
-- **クロスプロジェクト先着**(同 (2)): 同一ワークロード同一性を複数
-  プロジェクトの lease_policy が許可している場合のみ成立。束縛の大域化は
-  cross-DO 状態が要り v1 の複雑性に見合わない(構成で回避可能: プロジェクト
-  ごとに audience を変える運用も可)
-- ワークロード自体の侵害(発行能力の奪取)は全案共通で原理的に防げない —
-  §14.2 の保証(偽値注入不可)と帯域外アンカー(§6.3 (b))は影響を受けない
+- **First-use win before first legitimate use** (CRYPTO_SPEC §9.1
+  non-guarantee (1)): closing it needs proof of possession ((b) / WIMSE).
+  Conditions for an additional ruling = either (i) the target issuer provides
+  key binding into the token (cnf / WIMSE WIT), or (ii) the move toward static
+  constraints on dynamic audience stalls and (b)'s future risk resolves
+- **Cross-project first-binding** (same (2)): only possible when multiple
+  projects' lease_policies allow the same workload identity. Globalizing the
+  binding needs cross-DO state and isn't worth v1's complexity (avoidable by
+  configuration: vary audience per project)
+- Compromising the workload itself (stealing issuance capability) is shared by
+  all options and can't be prevented in principle — §14.2's guarantee (no
+  forged-value injection) and the out-of-band anchor (§6.3 (b)) are unaffected
 
-## 8. 実装への申し送り
+## 8. Handoff to implementation
 
-- A3 クライアントの必須変更なし。SHOULD/MUST:
-  - (SHOULD) トークンは lease 要求の直前に発行する(先着窓の最小化)
-  - (SHOULD) GitHub(ランタイム発行型)は `token-replayed` に対し新規トークンで
-    1 回だけ自動再試行してよい
-  - (**MUST** — レビュー反映 §9): 1 つのトークンで複数環境をリースするジョブは
-    全リクエストで**同一の一時鍵**を提示する(束縛はトークン単位・環境横断で
-    鍵固定 — 鍵をローテーションすると 2 本目以降が `token-replayed`)。事前発行型
-    issuer(GitLab / k8s)は鍵固定でのトークン使い回しが唯一の選択肢
-- サーバー実装は lease_windows と同じ DO テーブル追記パターン
-  (`lease_bindings`)。行数は発行レート窓(300/h)で上界、GC は exp + skew 後。
-  **束縛キー列は `binding_key_hex`**(`token_hash_hex` にしない — §9 の取り違え防止)
-- ベクター再生成なし(crypto 層は不変 — claims_digest の定義・リースラップの
-  info 構成に変更がない)
-- lease-wrap.ts のヘッダー参照(セキュリティレビュー A-5 の 3)は本セッションで
-  実施済み — crypto 層がリプレイを防がない事実は裁定後も変わらない(束縛は
-  サーバー状態が担う)ため、参照文言は裁定に依存しない形にしてある
+- No required change to the A3 client. SHOULD/MUST:
+  - (SHOULD) issue the token immediately before the lease request (minimizes
+    the first-use window)
+  - (SHOULD) GitHub (runtime-issuance type) may auto-retry `token-replayed`
+    once with a fresh token
+  - (**MUST** — review-reflected §9): a job leasing multiple environments on
+    one token must present **the same ephemeral key** on every request (the
+    binding is per-token and pins the key across environments — rotating the
+    key makes the second request onward `token-replayed`). For pre-issuing
+    issuers (GitLab / k8s), reusing the token with a fixed key is the only
+    option
+- Server implementation follows the lease_windows DO-table append pattern
+  (`lease_bindings`). Row count is bounded by the issuance rate window
+  (300/h); GC runs after exp + skew. **The binding key column is
+  `binding_key_hex`** (not `token_hash_hex` — prevents the §9 mix-up)
+- No vector regeneration (the crypto layer is unchanged — claims_digest's
+  definition and the lease wrap's info construction are untouched)
+- The lease-wrap.ts header reference (security review A-5's item 3) was done
+  this session — since the crypto layer's non-prevention of replay is
+  unchanged by the ruling (the binding is carried by server state), the
+  reference wording was written ruling-independent
 
-## 9. レビュー反映(2026-08-15 pullfrog — PR #67)
+## 9. Review reflections (2026-08-15 pullfrog — PR #67)
 
-初回実装(コミット abbd392)に対し、pullfrog レビューが 1 件の CAUTION と
-2 件の副次指摘を出した。うち 1 件は防御を無効化する実バグで、修正した。
+Against the initial implementation (commit abbd392), the pullfrog review
+produced 1 CAUTION and 2 secondary findings. One was a real bug that disabled
+the defense; it was fixed.
 
-- **🚨 束縛キーの可鍛性(実バグ — 修正済み)**: 初回実装は束縛キーを
-  **生トークン文字列の SHA-256** にしていた。生トークンは第 3 セグメント
-  (署名)を含むが、そこは署名の**保護外**であり base64url 末尾グループの
-  未使用ビット(WHATWG forgiving-base64 decode が捨てる)と ES256 の
-  `s`-malleability で可鍛 — **デコード結果のバイト列・署名検証・claims_digest を
-  一切変えずに生トークン文字列だけを変える**ことができる(RS256 の末尾 1 文字は
-  15 通りの同値。実測: OidcTokenSchema の正規表現も decodeBase64Url も atob も
-  すべて通過する)。生トークンをキーにすると、盗んだトークンの末尾 1 文字を
-  差し替えるだけで束縛照合が空振りし、攻撃者の一時鍵へリースが発行される =
-  本裁定の防御が丸ごと無効。**修正**: 束縛キーを **JWS signing input
-  (`header.payload`)の SHA-256** に変更(verifier が署名検証通過後に計算し
-  VerifiedOidcToken.signingInputHashHex で公開)。signing input は issuer が実際に
-  署名したバイト列で、妥当性を保つ変異に対して不変。ES256 の s-malleability も
-  signing input が不変なので同じキーに落ちて捕捉される。ワイヤ形・claims_digest・
-  ベクターは不変(ハッシュ**対象**を生トークン → 署名対象バイト列に替えただけ)。
-  列名も `token_hash_hex` → `binding_key_hex` に改名し「何をハッシュするか」の
-  取り違えを名前段階で防ぐ。リグレッションテスト追加(署名末尾を同値変異した
-  トークンが署名検証を通過しつつ `token-replayed` になることを固定)
-- **⚠️ 未文書のクライアント義務(文書追加)**: 束縛はトークン単位で
-  environment_id をキーに含まないため、1 トークンで N 環境をリースするジョブは
-  全リクエストで同一の一時鍵を使う必要がある。鍵をリクエストごとにローテーション
-  すると 2 本目で `token-replayed`。これは意図(トークンを最初の鍵にロックする =
-  盗難トークンで未束縛の別環境を引く経路も同時に塞ぐ)だが未文書だった —
-  AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1 / 本ノート §8 に義務として明記。正の
-  テスト(同一トークン + 同一鍵で複数環境 OK / 別環境で鍵ローテーションは 401)
-  を追加
-- **ℹ️ 判定順記述の追随漏れ(文書修正)**: `programs-lease.ts` モジュール
-  ヘッダーと `packages/api-schema/src/lease-api.ts` の判定順列挙が旧 4 段の
-  ままだった(§14-3 と test ヘッダーは更新済みだった)。両所に先着束縛の段を追記
+- **🚨 Binding-key malleability (real bug — fixed)**: the first implementation
+  used **SHA-256 of the raw token string** as the binding key. The raw token
+  includes the third segment (the signature), which lies **outside** the
+  signature's protection and is malleable via unused bits in the trailing
+  base64url group (which WHATWG forgiving-base64 decode discards) and ES256's
+  `s`-malleability — **you can change the raw token string without changing
+  the decoded bytes, the signature verification, or claims_digest at all**
+  (the RS256 trailing character has 15 equivalent values. Measured: it passes
+  OidcTokenSchema's regex, decodeBase64Url, and atob alike). Keying on the raw
+  token means swapping the last character of a stolen token makes the binding
+  check miss and a lease gets issued to the attacker's ephemeral key = this
+  ruling's entire defense voided. **Fix**: the binding key is now **SHA-256 of
+  the JWS signing input (`header.payload`)** (computed by the verifier after
+  signature verification passes, exposed as
+  VerifiedOidcToken.signingInputHashHex). The signing input is the byte string
+  the issuer actually signed and is invariant under validity-preserving
+  mutation. ES256 s-malleability lands on the same key too since the signing
+  input is unchanged. Wire shape, claims_digest, and vectors are unchanged
+  (only the hash **input** changed: raw token → signed bytes). The column was
+  also renamed `token_hash_hex` → `binding_key_hex` to prevent mix-ups about
+  "what is hashed" at the naming level. Added a regression test (a token whose
+  signature tail is mutated to an equivalent value passes signature
+  verification yet yields `token-replayed`)
+- **⚠️ Undocumented client obligation (docs added)**: the binding is per-token
+  and doesn't key environment_id, so a job leasing N environments on one token
+  must use the same ephemeral key on every request. Rotating the key per
+  request makes the second one `token-replayed`. This is intentional (locking
+  the token to its first key simultaneously closes the path of pulling an
+  unbound other environment with a stolen token) but undocumented — now stated
+  as an obligation in AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1 / this note's §8.
+  Added positive tests (same token + same key across multiple environments OK /
+  key rotation on another environment → 401)
+- **ℹ️ Missed follow-through on the check-order description (docs fixed)**:
+  the `programs-lease.ts` module header and
+  `packages/api-schema/src/lease-api.ts`'s check-order enumeration still had
+  the old 4 stages (§14-3 and the test header were already updated). Added the
+  first-binding stage to both
 
-なお本裁定の核(先着束縛の採用・非保証の縮小・判定位置・保持期間導出)は
-レビューでも妥当と評価され、変更していない。修正は「束縛キーに何を使うか」
-という実装レベルの 1 点(+ 文書 2 点)であって、裁定そのものではない。
+Note the core of this ruling (adopting first-binding, shrinking the
+non-guarantee, the check position, the retention derivation) was judged sound
+in review and is unchanged. The fix is a single implementation-level point
+("what to use as the binding key") + 2 documentation points — not the ruling
+itself.
 
-再レビュー(feab660)で approve。追加の ℹ️ 2 点への対応:
-- **マイグレーション step 4 の in-place 編集**: 列名の修正(token_hash_hex →
-  binding_key_hex)を step 4 の DDL 直接編集で行った。これは末尾追記のみの規則
-  (do-schema.ts)への例外だが、step 4 は本 PR 内で新設・未マージ・未デプロイで
-  あり、適用済みの外部 DO が存在しないため許容される(rename ステップを足すと
-  誰も持たないテーブルのために恒久的なノイズを残す — レビューも in-place を
-  「正しい判断」と評価)。**マージ前の確認事項**: abbd392(中間コミット)を
-  適用して version 4 を記録した DO があると、修正後 DDL は `IF NOT EXISTS` で
-  スキップされ実行時に `no such column: binding_key_hex` になる。本ブランチは
-  どこにもデプロイしていない(CI は毎回新規 DO)ため該当する永続 DO はない。
-  ローカル `wrangler dev` で中間コミットを走らせた場合のみ、その永続ストレージの
-  破棄が必要(マイグレーションではなく削除で対処)
-- §9 挿入時に §8 末尾の項目(lease-wrap.ts 参照)が §9 の末尾へ流れていた —
-  §8 内へ戻した(本コミット)
+Re-review (feab660) approved. Handling the additional 2 ℹ️:
+- **In-place edit of migration step 4**: the column-name fix (token_hash_hex →
+  binding_key_hex) was done by editing step 4's DDL directly. It's an exception
+  to the append-only rule (do-schema.ts), but step 4 was created inside this
+  PR, is unmerged and undeployed, and no external DO has applied it — so it's
+  acceptable (adding a rename step would leave permanent noise for a table
+  nobody holds — the review also judged in-place "the right call").
+  **Pre-merge check item**: if a DO applied abbd392 (the intermediate commit)
+  and recorded version 4, the fixed DDL is skipped by `IF NOT EXISTS` and
+  runtime hits `no such column: binding_key_hex`. This branch was deployed
+  nowhere (CI creates a fresh DO every run), so no such persistent DO exists.
+  Only if the intermediate commit was run under local `wrangler dev` would that
+  persistent storage need discarding (handle by deletion, not migration)
+- When §9 was inserted, §8's trailing item (the lease-wrap.ts reference) had
+  flowed to the end of §9 — moved back inside §8 (this commit)

@@ -1,224 +1,269 @@
-# セッション 34 メモ(PR-F4 実装 — test hardening / cross-layer 回帰)
+# Session 34 notes (PR-F4 implementation — test hardening / cross-layer regression)
 
-日付: 2026-08-28。対象: session-31 §6 の PR-F4(M1-T1 / M1-T2 の残り /
-F1×F2×F3 の cross-layer 回帰)。前提: PR-F1(#87)・F2(#88)・F3(#96 / #97)は
-main へマージ済みで、main は 2-G′ の「境界 checkpoint 必須」世代
-(実装裁定は docs/notes/session-33.md)。本 PR はテストの修正・追加が本分で、
-プロダクションコードの挙動変更は含まない(テストが実装バグを露呈した場合のみ
-最小修正可 — 結果として今回は 0 件)。裁定プロセスは goal の指示どおり
-「複数案 → 上位互換探索 → 3 周の比較 → 自律選択」で行い、各周の棄却理由を記録する。
+Date: 2026-08-28. Target: session-31 §6's PR-F4 (M1-T1 / the rest of M1-T2 /
+F1×F2×F3 cross-layer regression). Prerequisites: PR-F1 (#87), F2 (#88), F3
+(#96 / #97) are merged to main, and main is the 2-G′ "boundary-checkpoint
+required" generation (implementation rulings in docs/notes/session-33.md).
+This PR's substance is fixing and adding tests; it contains no production-code
+behavior change (minimal fixes allowed only where a test exposes an
+implementation bug — as it turned out, 0 this time). The ruling process
+followed the goal's instruction "multiple options → strictly-better search →
+3 rounds of comparison → autonomous choice", recording each round's rejection
+reasons.
 
-## 1. 裁定 G: M1-T2 の固定手段の分担(JSON ベクター vs ハーネス invalid-input)
+## 1. Ruling G: how M1-T2's pinning is split (JSON vectors vs harness invalid-input)
 
-M1-T2 の残り 3 点 — (i) BMP × astral の UTF-8 バイト順、(ii) 非整数(1.5)と
-`Number.MAX_SAFE_INTEGER + 1` の数値入力、(iii) 同じ長さの大文字 hex — を
-どこで固定するか。
+Where to pin M1-T2's remaining 3 items — (i) BMP × astral UTF-8 byte order,
+(ii) non-integer (1.5) and `Number.MAX_SAFE_INTEGER + 1` numeric inputs,
+(iii) uppercase hex of the same length.
 
-### 第 1 周
+### Round 1
 
-- **案 G-a: すべて JSON ベクター化** — 1.5 も 2^53 も JSON では表現可能
-  (float64 で正確)。利点: 全部が「実装より先にコミットされる固定物」になる。
-  欠点: 拒否ケースには参照生成器(generate_reference.py)が算出する期待暗号値が
-  **存在しない**(期待値が「拒否」だけ)— 独立実装間の突合という
-  ベクターの存在理由が立たない
-- **案 G-b: すべてハーネス側** — 欠点: 順序ケース(i)は期待ダイジェストという
-  暗号値を持ち、Python 参照生成との突合が本質的(UTF-16 順の実装は JS 側の
-  自己整合テストだけでは落とせても、独立実装との固定にならない)。ベクターに
-  できるものをハーネスへ落とす理由がない
-- **案 G-c: 分担** — 順序(i)= JSON ベクター(参照生成器の期待値と突合)、
-  拒否(ii)(iii)= ハーネスの invalid-input チェック(4 実行環境で走る)
+- **Option G-a: make everything JSON vectors** — 1.5 and 2^53 are both
+  representable in JSON (exact in float64). Advantage: all become "fixed
+  artifacts committed before the implementation". Drawback: for rejection
+  cases the reference generator (generate_reference.py) has **no expected
+  crypto value to compute** (the expectation is just "reject") — the vectors'
+  raison d'être, cross-checking between independent implementations, doesn't
+  apply
+- **Option G-b: everything on the harness side** — drawback: the ordering case
+  (i) carries a crypto value — an expected digest — where matching against the
+  Python reference generation is essential (a UTF-16-order implementation
+  could be caught by JS-side self-consistency tests, but it wouldn't be pinned
+  against an independent implementation). No reason to push vector-able
+  material down to the harness
+- **Option G-c: split the work** — ordering (i) = JSON vectors (matched against
+  the reference generator's expectations), rejections (ii)(iii) = the
+  harness's invalid-input checks (run on 4 runtimes)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 G-d: negative セクションへ新 kind(例: "invalid-input")を導入し、
-  拒否も JSON で運ぶ** — 棄却: (1) 参照生成器に生成物がなく、JSON が運ぶのは
-  入力の列挙だけ(ハーネス定数と等価)。(2) env-manifest.json の kind 語彙は
-  signature / authorization の 2 値で網羅チェックされており(session-13 の教訓)、
-  第 3 の値の導入は既存の分担線 —「暗号検証・検証規則の拒否 = ベクター、
-  InvalidInput(構造不正)= ハーネス」— を崩す拡張で、加法価値に見合わない。
-  (3) 数値フィールドに非整数が混ざる JSON は、oxfmt・パーサ間の数値往復という
-  新しいリスク面をゼロ利得で作る
+- **Option G-d: introduce a new kind into the negative section (e.g.
+  "invalid-input") and carry rejections in JSON too** — rejected: (1) the
+  reference generator has nothing to generate; the JSON would carry only an
+  enumeration of inputs (equivalent to harness constants). (2)
+  env-manifest.json's kind vocabulary is exhaustively checked at 2 values —
+  signature / authorization (the session-13 lesson) — and introducing a third
+  value would break the existing split line — "crypto-verification /
+  verification-rule rejections = vectors, InvalidInput (structural
+  malformation) = harness" — an extension not worth its additive value.
+  (3) JSON mixing non-integers into numeric fields creates a new risk surface
+  (numeric round-tripping across oxfmt and parsers) for zero gain
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- F3a が checkpoint の values_digest に対して既に同じ分担を敷いている先例を確認:
-  正規形の期待値は `values_digests` セクション(ベクター)、fractional /
-  uppercase の拒否は `test/checks/checkpoint.ts` の invalid-input チェック
-  (ハーネス)。G-c はこの既存線の延長であり新しい規約を作らない
-- 順序ケースの判別力を再点検: 既存の byte-ascending ケースは ASCII / BMP
-  低位止まりで、**UTF-16 コード単位比較(JS の素の文字列比較)と UTF-8 バイト
-  比較が食い違う対**を含まない。食い違いはサロゲート境界にのみ現れる —
-  BMP 高位 U+E000〜U+FFFF(UTF-8 リード 0xEE/0xEF)× astral(0xF0〜。UTF-16 では
-  サロゲート 0xD800〜0xDBFF)。U+FFE5(EF BF A5)< U+1F511(F0 9F 94 91)が
-  バイト昇順、UTF-16 では逆転する — この対を両ダイジェスト(§4.3
-  variables_digest / §6.2 values_digest)の JSON ベクターに固定する
+- Confirmed the precedent that F3a already laid the same split for
+  checkpoint's values_digest: canonical-form expectations live in the
+  `values_digests` section (vectors), fractional / uppercase rejections live
+  in `test/checks/checkpoint.ts`'s invalid-input checks (harness). G-c extends
+  this existing line and creates no new convention
+- Re-inspected the ordering case's discriminating power: the existing
+  byte-ascending cases stop at ASCII / low BMP and contain **no pair where
+  UTF-16 code-unit comparison (JS's raw string comparison) and UTF-8 byte
+  comparison disagree**. The disagreement appears only at the surrogate
+  boundary — BMP-high U+E000–U+FFFF (UTF-8 leads 0xEE/0xEF) × astral
+  (0xF0–; UTF-16 surrogates 0xD800–0xDBFF). U+FFE5 (EF BF A5) < U+1F511
+  (F0 9F 94 91) in byte ascending order, reversed under UTF-16 — this pair is
+  pinned in the JSON vectors of both digests (§4.3 variables_digest / §6.2
+  values_digest)
 
-**選択: 案 G-c**。実装:
+**Choice: option G-c**. Implementation:
 
-- ベクター(加法のみ — 先行コミット): `env-manifest.json` digests
-  `surrogate-boundary-order`(ASCII / BMP 低位 / BMP 高位 / astral の 4 本立て、
-  tombstone 1 本混在)+ `chain-entries.json` values_digests
-  `surrogate-boundary-order`(同型)。生成は generate_reference.py の拡張
-  (独立 venv)、oxfmt 後の git diff で挿入のみを確認、verify_reference.mjs
-  全 PASS(663 件)。規約は test-vectors/README.md の 21 に記録
-- ハーネス(4 実行環境): `test/checks/encoding.ts` — §2.1 の最下層で
-  1.5 / MAX_SAFE_INTEGER + 1 / 負数の TypeError と MAX_SAFE_INTEGER 自身の受理
-  (上界の内側)を固定。`env-manifest.ts` — ダイジェストエントリ(fractional /
-  unsafe integer metaVersion・大文字 metaSigHashHex)と署名 context(fractional
-  epoch・unsafe integer manifestVersion・大文字 digest / head hash)の
-  InvalidInput。`checkpoint.ts` — unsafe integer version を既存の fractional /
-  uppercase 系へ追加
-- UTF-16 判別性のメタチェック(「ベクターが本当に判別対か」)は env-manifest 側に
-  1 箇所だけ置く: 正規形実装は sorted-digest.ts の 1 実装で、両 JSON ベクターが
-  両呼び出し面(§4.3 / §6.2)のダイジェスト値を独立に固定しているため、
-  メタチェックの重複は不要
+- Vectors (additions only — committed first): `env-manifest.json` digests
+  `surrogate-boundary-order` (a 4-lineup of ASCII / low BMP / high BMP /
+  astral, with 1 tombstone mixed in) + `chain-entries.json` values_digests
+  `surrogate-boundary-order` (same shape). Generated by extending
+  generate_reference.py (independent venv), confirmed insertion-only via git
+  diff after oxfmt, verify_reference.mjs all PASS (663 checks). The convention
+  is recorded as item 21 in test-vectors/README.md
+- Harness (4 runtimes): `test/checks/encoding.ts` — pins at §2.1's lowest
+  level the TypeError for 1.5 / MAX_SAFE_INTEGER + 1 / negatives and the
+  acceptance of MAX_SAFE_INTEGER itself (inside the upper bound).
+  `env-manifest.ts` — InvalidInput for digest entries (fractional / unsafe
+  integer metaVersion, uppercase metaSigHashHex) and signature context
+  (fractional epoch, unsafe integer manifestVersion, uppercase digest / head
+  hash). `checkpoint.ts` — unsafe-integer version added to the existing
+  fractional / uppercase family
+- The UTF-16-discrimination meta-check ("does the vector really carry a
+  discriminating pair") lives in exactly one place on the env-manifest side:
+  the canonical-form implementation is sorted-digest.ts's single
+  implementation, and both JSON vectors independently pin the digest values of
+  both call surfaces (§4.3 / §6.2), so duplicating the meta-check is
+  unnecessary
 
-## 2. 裁定 I: §2.1 数値境界の最小仕様追記
+## 2. Ruling I: a minimal spec addition for §2.1's numeric boundary
 
-§2.1 は「数値フィールドは 10 進文字列化」とだけ規定し、非整数・2^53 以上の
-入力の扱いが明文化されていない(実装は一貫して `Number.isSafeInteger` で拒否)。
+§2.1 specifies only "numeric fields are decimal-stringified" and doesn't spell
+out the treatment of non-integers and inputs ≥ 2^53 (the implementation
+uniformly rejects via `Number.isSafeInteger`).
 
-- 第 1 周: 案 I-1 = 追記しない(テストだけで固定)。案 I-2 = 最小 1 項の追記
-  (「非負の安全整数のみ。非整数・2^53 以上は拒否」)
-- 第 2 周(上位互換探索): 案 I-3 = 任意精度整数(BigInt / 文字列運搬)を許す
-  方向の一般化 — 棄却: 現行の全数値フィールド(epoch / version / seq)は実運用で
-  2^53 に近づくことがなく、ワイヤ・実装・他言語実装の複雑化だけが増える。
-  公開前に「安全整数のみ」で確定する方が §12-10 の構造的 fail-closed と整合
-- 第 3 周: 拒否の**根拠**を仕様に置く価値を確認 — float64 の精度喪失域では
-  10 進文字列化が値と一対一にならず(9007199254740993 が表現不能)、同一
-  「値」に対する signed bytes の一意性という §2.1 の眼目そのものが壊れる。
-  これは実装詳細ではなく仕様の帰結であり、1 項の追記が適切
+- Round 1: option I-1 = don't add (pin by tests only). Option I-2 = a minimal
+  1-line addition ("non-negative safe integers only. Non-integers and ≥ 2^53
+  are rejected")
+- Round 2 (strictly-better search): option I-3 = generalize toward arbitrary-
+  precision integers (BigInt / string carriage) — rejected: none of the
+  current numeric fields (epoch / version / seq) come anywhere near 2^53 in
+  practice, and it would only add complexity to the wire, the implementation,
+  and other-language implementations. Deciding "safe integers only" before
+  release is consistent with §12-10's structural fail-closed
+- Round 3: confirmed the value of putting the rejection's **grounds** in the
+  spec — in float64's precision-loss region, decimal stringification is no
+  longer one-to-one with the value (9007199254740993 is unrepresentable),
+  breaking §2.1's very point of unique signed bytes per "value". This is a
+  spec consequence, not an implementation detail, and a 1-line addition is
+  appropriate
 
-**選択: 案 I-2**(CRYPTO_SPEC §2.1 へ 1 項追記。goal の事前承認に基づき本 PR に
-同梱 — 承認は PR レビューで行う)。挙動の変更はない(既存実装の明文化)。
+**Choice: option I-2** (1-line addition to CRYPTO_SPEC §2.1. Bundled into this
+PR under the goal's advance approval — approval happens at PR review). No
+behavior change (documenting the existing implementation).
 
-## 3. 裁定 H: cross-layer 回帰で何を固定するか
+## 3. Ruling H: what the cross-layer regression pins
 
-F1(strict 受理 + 受理後照合 1-E′)× F2(manifest floor / intent 3-F)×
-F3(境界 checkpoint 2-G′)の層間相互作用のうち、既存テストが固定していない
-交点を列挙して選ぶ。
+Enumerate and pick the intersections of the inter-layer interactions among F1
+(strict acceptance + post-acceptance matching 1-E′) × F2 (manifest floor /
+intent 3-F) × F3 (boundary checkpoint 2-G′) that existing tests don't pin.
 
-### 第 1 周(候補の列挙)
+### Round 1 (enumerating candidates)
 
-- **H-1: F1 strict × F3 checkpoint フィールド** — 複合 payload の `checkpoint`
-  は F1 の strict テスト(#87)より後に F3b が追加したネスト構造で、strict の
-  伝播(checkpoint エントリ root / payload / 環境タプル内の未知フィールド =
-  400)が未固定
-- **H-2: F3 checkpoint 配布の握り潰し × F1-E′ 受理後照合(CLI)** — 受理した
-  境界 checkpoint を配布チェーンへ追記しないサーバー(チェーン合意規則上は
-  有効なまま §4.3 (2) の束縛タプルだけが消える)。session-33 F-7 は「モックが
-  2 エントリを追記**しないと**受理後の再 pull 検証が strict で落ちる」ことを
-  観測しながら、その fail-closed 自体はテスト化していない — 旧 H+1 例外の廃止の
-  end-to-end 固定として本質
-- **H-3: F3 有界再試行(F-2)× F2 intent 規律(3-F)** — CheckpointStateMismatch
-  の再試行は試行ごとに intent を積む。422 = 確定拒否(isServerRejection)が
-  各 intent を閉じることで、打ち切り後に未解決 intent が残らない(次の実行へ
-  照合義務を漏らさない)ことが未固定
-- **H-4: F3 チェーン基準線 × F2 床規則 (a) の粒度** — メタ操作は checkpoint を
-  発行しないため、チェーン基準線(mv1)は床(v3)より遅れて進む。基準線以上・
-  床未満の v2 配布を checkpoint-regressed が素通しし、床規則 (a) が落とすこと
-  (粗い共有基準が細かいローカル基準を短絡しない)が未固定
-- **H-5: checkpoint 欠落複合の 400** — 旧 CLI(checkpoint を知らない)の
-  create / rotate が Schema 段で fail-closed になるという session-33 裁定 E-3 の
-  承認済み帰結が未固定
-- H-6: checkpoint-regressed と床規則 (a) の優先順(両層が同時に武装した場合) —
-  **棄却(重複)**: F-7 の 2 テスト(manifest.test.ts「rotate 受理後の巻き戻し
-  検出」)が固定済み
-- H-7: 移行経路(stripTrailingCheckpoint)× 床 — **棄却(重複)**: CLI 側は
-  「床にマニフェスト記録がある環境の欠落は --init-manifest でも拒否」等、
-  サーバー側は data-manifest の移行経路 2 テストが固定済み
+- **H-1: F1 strict × F3 checkpoint field** — the composite payload's
+  `checkpoint` is a nested structure F3b added after F1's strict tests (#87),
+  and strictness propagation (unknown fields = 400 at the checkpoint entry
+  root / payload / inside environment tuples) is unpinned
+- **H-2: F3 checkpoint-distribution suppression × F1-E′ post-acceptance
+  matching (CLI)** — a server that accepts a boundary checkpoint but never
+  appends it to the distributed chain (the entry stays consensus-valid while
+  only the §4.3 (2) binding tuple vanishes). session-33 F-7 observed "the mock
+  **must** append the 2 entries or the post-acceptance re-pull verification
+  fails strict" but never test-ified that fail-closed itself — essential as
+  the end-to-end pin of abolishing the old H+1 exception
+- **H-3: F3 bounded retry (F-2) × F2 intent discipline (3-F)** — the
+  CheckpointStateMismatch retry stacks an intent per attempt. Unpinned: that a
+  422 = definitive rejection (isServerRejection) closes each intent so no
+  unresolved intent survives after giving up (no match obligation leaks into
+  the next run)
+- **H-4: F3 chain baseline × F2 floor rule (a) granularity** — meta ops don't
+  issue checkpoints, so the chain baseline (mv1) advances behind the floor
+  (v3). Unpinned: that a v2 distribution at-or-above the baseline but below
+  the floor slips through checkpoint-regressed and gets caught by floor rule
+  (a) (a coarse shared baseline mustn't short-circuit a finer local one)
+- **H-5: 400 on a checkpoint-missing composite** — the approved consequence of
+  session-33 ruling E-3 that an old CLI (which doesn't know checkpoints) has
+  create / rotate fail-closed at the Schema stage is unpinned
+- H-6: priority order between checkpoint-regressed and floor rule (a) (when
+  both layers are armed) — **rejected (duplicate)**: F-7's 2 tests
+  (manifest.test.ts "rollback detection after rotate acceptance") already pin
+  it
+- H-7: migration path (stripTrailingCheckpoint) × floor — **rejected
+  (duplicate)**: on the CLI side, pins like "absence on an environment with a
+  manifest record in the floor is rejected even with --init-manifest", and on
+  the server side data-manifest's 2 migration-path tests already cover it
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **H-8: workerd 実サーバー × 実 CLI の直結 full-stack 回帰** — 棄却:
-  テスト基盤が別系統(vitest-pool-workers の SELF と CLI の MockServer)で、
-  接続には HTTP ブリッジの新設が要る。各交点は既に両側からピン留めできており
-  (サーバー側 = 受理面、CLI 側 = 配布検証面)、基盤新設のコストに対する増分が
-  ない。将来の統合テスト基盤の提案としてのみ記録
-- **H-9: property-based(fast-check 等)の層間状態空間探索** — 棄却: 新規依存
-  最小の規律(CLAUDE.md)に反し、固定すべき交点は既知の具体形で列挙できている。
-  ランダム探索が要る規模の状態空間ではない
+- **H-8: full-stack regression wiring a real workerd server × real CLI** —
+  rejected: the test infrastructures are different lineages
+  (vitest-pool-workers' SELF vs the CLI's MockServer), and connecting them
+  needs a new HTTP bridge. Each intersection is already pinnable from both
+  sides (server = acceptance surface, CLI = distribution-verification
+  surface), so there's no increment for the cost of new infrastructure.
+  Recorded only as a proposal for a future integration-test base
+- **H-9: property-based (fast-check etc.) exploration of the inter-layer state
+  space** — rejected: contrary to the minimal-new-dependency discipline
+  (CLAUDE.md), and the intersections to pin are already enumerable as known
+  concrete shapes. The state space isn't large enough to need random
+  exploration
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- H-2 の期待理由コードを再点検: 検出は検証順 D-2(prev → チェックポイント束縛
-  エポック整合 → 内容 → 基準線)の strict 経路で `epoch-not-current-at-head`。
-  タプル不在の複合形マニフェストは他のどの検査でも救済されない(それが 2-G′ の
-  眼目)ため、理由コードまで固定してよい。あわせて「受理の確認(チェーン上の
-  自 commitment 一致)は checkpoint の有無と独立に成立する」ため、床の
-  自己発行マニフェスト昇格(M1-A4)は起きる — これも固定点に含める
-  (握り潰しサーバーでも自分の受理の証拠は床に残る)
-- H-3 の成功側(2 試行目で受理)も固定対象に含める: 1 試行目の intent が
-  rejected で閉じ、2 試行目が受理確認で閉じる — 成功経路でも積み残しゼロ
-- H-4 のフィクスチャ形を再点検: チェーンの checkpoint タプルは実マニフェスト
-  ハッシュ(manifestHashOf(v1))と結線する(F-6 と同じ規律 — ダミーだと
-  「タプル内容はどうせ照合されない」という誤前提をテストに持ち込む)。
-  values_digest はチェーン合意規則が形式のみ検査する位置なのでダミー 64-hex
+- Re-inspected H-2's expected reason code: detection is
+  `epoch-not-current-at-head` on verification order D-2's strict path (prev →
+  checkpoint-binding epoch consistency → content → baseline). A composite-form
+  manifest missing the tuple is rescued by no other check (that's 2-G′'s
+  point), so pinning down to the reason code is sound. Additionally, since
+  "confirmation of acceptance (matching the self commitment on the chain)
+  holds independently of checkpoint presence", the floor's self-issued
+  manifest promotion (M1-A4) does happen — include that in the pinned points
+  too (even under a suppressing server, the evidence of one's own acceptance
+  remains in the floor)
+- Include H-3's success side (accepted on attempt 2) in the pinned set: the
+  first attempt's intent closes as rejected and the second closes via the
+  acceptance confirmation — zero leftover intents even on the success path
+- Re-inspected H-4's fixture shape: the chain's checkpoint tuple wires to the
+  real manifest hash (manifestHashOf(v1)) (same discipline as F-6 — a dummy
+  would import the wrong assumption "tuple content never gets matched anyway"
+  into the test). values_digest sits where the chain consensus rules check
+  only the format, so a dummy 64-hex is fine
 
-**選択: H-1 + H-2 + H-3 + H-4 + H-5**。実装:
+**Choice: H-1 + H-2 + H-3 + H-4 + H-5**. Implementation:
 
-- H-1 / H-5 → `apps/server/test/strict-payload.test.ts`(create へ checkpoint
-  root プローブ、rotate へ payload / 環境タプルプローブ、checkpoint 欠落 400 の
-  独立テスト)
-- H-2 / H-3 → `apps/cli/test/env-rotate.test.ts`(makeServer へ
-  `dropCheckpointFromChain` を追加。既存の有界再試行 2 テストへ intent / 床の
-  assertion を追加)
-- H-4 → `apps/cli/test/manifest.test.ts`(checkpoint エントリ入りチェーンの
-  2 フェーズ床テスト。期待 = `environment-manifest rollback` が出て
-  `checkpoint-regressed` が出ない)
+- H-1 / H-5 → `apps/server/test/strict-payload.test.ts` (checkpoint root probe
+  on create, payload / environment-tuple probes on rotate, an independent test
+  for checkpoint-missing 400)
+- H-2 / H-3 → `apps/cli/test/env-rotate.test.ts` (add
+  `dropCheckpointFromChain` to makeServer. Add intent / floor assertions to
+  the existing 2 bounded-retry tests)
+- H-4 → `apps/cli/test/manifest.test.ts` (a 2-phase floor test on a chain
+  containing a checkpoint entry. Expectation = `environment-manifest rollback`
+  appears and `checkpoint-regressed` does not)
 
-## 4. M1-T1 の実装と横断確認の結果
+## 4. M1-T1 implementation and the cross-check results
 
-### 4-1. 移行経路正例の修正(主対象)
+### 4-1. Fixing the migration-path positive (the main target)
 
-`apps/server/test/data-manifest.test.ts` の移行経路正例は wrapDekForAll と
-commitmentOf に**別々の** makeDek() を渡していた — サーバーは member 宛ラップの
-平文を開けないため受理するが、「配布される新エポック DEK がチェーンの
-コミットメントと一致せず peer CLI が拒否する」状態を正例が固定していた。修正:
+The migration-path positive in `apps/server/test/data-manifest.test.ts` passed
+**separate** makeDek()s to wrapDekForAll and commitmentOf — the server can't
+open a member-addressed wrap's plaintext so it accepts, but the positive was
+pinning the state "the distributed new-epoch DEK doesn't match the chain's
+commitment and peer CLIs reject it". Fix:
 
-- 単一の `nextDek` をラップとコミットメントの両方に使用
-- サーバーの 200 で終わらせず、受信者(READER)として配布ラップを Open →
-  §5.2 のコミットメント再計算 → **チェーンが配布した rotate_epoch エントリの
-  dek_commitment_hex** との一致まで検証(data-crypto.ts へ
-  `unwrapDistributedDek` を追加 — unwrapAndDecrypt の前半の切り出し)
+- Use a single `nextDek` for both the wrap and the commitment
+- Don't stop at the server's 200 — as the recipient (READER), Open the
+  distributed wrap → recompute the §5.2 commitment → verify match against
+  **the dek_commitment_hex of the rotate_epoch entry the chain distributed**
+  (added `unwrapDistributedDek` to data-crypto.ts — the first half of
+  unwrapAndDecrypt extracted)
 
-### 4-2. 同型パターンの横断確認
+### 4-2. Cross-checking the same-shape pattern
 
-全サーバーテストの makeDek() 使用箇所を走査した結果:
+Scanning every makeDek() use across all server tests:
 
-- **修正した正例(受理 200/204 まで進み、ラップ集合とコミットメントの不一致が
-  受理後状態として残るもの)**:
-  - data-environment「creates an environment atomically」(createEnvironmentWith
-    の使い捨てコミットメント)
-  - data-environment「retries a composite creation after a head CAS conflict」
-    (ダミー "ab"×32 — 再試行の 200)
-  - data-environment「enforces display-name uniqueness」(second の 200)
-  - data-environment エポックライフサイクルの複合ローテーション 200
-    (ダミー "ab"×32)
-  - data-dek「accepts the original signer re-registering the identical wrap」
-    (createEnvironmentWith の 200)
-- **ヘルパの変更**: `createEnvironmentWith` に省略可能な `dekCommitmentHex` を
-  追加(既定 = 使い捨て DEK — negative 用の従来挙動)。doc コメントに
-  「受理まで進める正例はラップした DEK 自身のコミットメントを渡す」を明記
-- **対象外と裁定したもの**:
-  - negative(4xx で受理されない)全般 — data-fixture.ts の既存コメントどおり、
-    使い捨ては受理判定に影響しない
-  - data-dek の削除意味論テスト(cross-class 404)内の server 宛ラップ登録
-    (makeDek 使い捨て)— 登録は削除 API の対象を作るためだけの配管で、
-    ラップ内容はテストの固定対象でなく、コミットメントとの照合面も持たない
-  - data-scenario の `wrapsFor`(ダミー DEK の完全ラップ集合)— negative /
-    配管用ヘルパで、正例では使われない(境界 checkpoint 整合テスト等の
-    422 系のみ)
+- **Positives fixed (ones that proceed to a 200/204 acceptance and leave a
+  wrap-set / commitment mismatch in the post-acceptance state)**:
+  - data-environment "creates an environment atomically"
+    (createEnvironmentWith's disposable commitment)
+  - data-environment "retries a composite creation after a head CAS conflict"
+    (dummy "ab"×32 — the retried 200)
+  - data-environment "enforces display-name uniqueness" (second's 200)
+  - data-environment epoch-lifecycle composite-rotation 200 (dummy "ab"×32)
+  - data-dek "accepts the original signer re-registering the identical wrap"
+    (createEnvironmentWith's 200)
+- **Helper change**: added optional `dekCommitmentHex` to
+  `createEnvironmentWith` (default = disposable DEK — the previous behavior
+  for negatives). The doc comment now states "a positive that proceeds to
+  acceptance passes the commitment of the wrapped DEK itself"
+- **Ruled out of scope**:
+  - Negatives in general (not accepted with 4xx) — per data-fixture.ts's
+    existing comment, a disposable DEK doesn't affect the acceptance decision
+  - The server-addressed wrap registration inside data-dek's deletion-semantics
+    test (cross-class 404) (disposable makeDek) — the registration is plumbing
+    that only creates a target for the deletion API; the wrap content isn't a
+    pinned target of the test and has no commitment-matching surface
+  - data-scenario's `wrapsFor` (a complete wrap set over dummy DEKs) — a
+    negative / plumbing helper, unused in positives (only 422-class tests like
+    boundary-checkpoint consistency)
 
-## 5. 実装内容の要約
+## 5. Summary of what was implemented
 
-- ベクター(先行コミット): §1 裁定 G のとおり(surrogate-boundary-order ×2、
-  加法のみ、verify_reference.mjs 全 PASS)
-- crypto ハーネス: encoding / env-manifest / checkpoint の invalid-input
-  チェック追加(§1)。4 実行環境(node / Bun / workerd / Chromium)で実行
-- CRYPTO_SPEC §2.1: 数値境界の 1 項追記(§2 裁定 I — 挙動変更なし)
-- M1-T1: §4 のとおり(プロダクション変更なし — サーバーの受理挙動は不変で、
-  テストが固定する状態だけが「peer CLI が受理できる整合形」へ変わった)
-- cross-layer 回帰: §3 のとおり 5 本(server 2 面 + CLI 3 面)
-- スコープ外(M2 本体・standalone checkpoint 受理・先行 manifest_version 公証の
-  negative)は session-33 §5「M2 への申し送り」のまま持ち越し
+- Vectors (committed first): per §1 ruling G (surrogate-boundary-order ×2,
+  additions only, verify_reference.mjs all PASS)
+- crypto harness: added invalid-input checks to encoding / env-manifest /
+  checkpoint (§1). Run on 4 runtimes (node / Bun / workerd / Chromium)
+- CRYPTO_SPEC §2.1: a 1-line addition on the numeric boundary (§2 ruling I —
+  no behavior change)
+- M1-T1: per §4 (no production change — the server's acceptance behavior is
+  unchanged; only the state the tests pin changed to "a consistent shape a
+  peer CLI can accept")
+- cross-layer regression: 5 tests per §3 (2 server surfaces + 3 CLI surfaces)
+- Out of scope (M2 proper, standalone checkpoint acceptance, a negative for
+  notarizing an ahead manifest_version) carries over per session-33 §5
+  "handoff to M2"

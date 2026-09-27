@@ -1,291 +1,361 @@
-# セッション 38 メモ(admin 監査突合 CLI + 監査ヘッド遅延拡張の有界化)
+# Session 38 notes (admin audit-matching CLI + bounding the audit-head lazy extension)
 
-日付: 2026-08-28。対象: PR-M2(#99)の残余 2 件 — (1) AUDIT_SPEC §6 の admin
-監査突合(`maruhi audit reconcile`)、(2) `ensureHeadCurrent`(監査ヘッド遅延
-拡張)の bounded contract 化(`AuditHeadNotReady` — PR #99 レビュースレッド
-r3877856076 の申し送り、提案形は r3877888910 の返信)。前提: session-27 §14 の
-実装分割(PR-M1〜M4・PR-F1〜F4、最終 = #101)は全マージ済み。裁定プロセスは
-goal の指示どおり「複数案 → 上位互換探索 → 3 周の比較 → 自律選択」。裁定記号は
-session-37(X〜AE)の続番(AF〜)。仕様追記は 2 点(AUDIT_SPEC §5.1 の有界伸長
-許容・AUTH_SPEC §16-2 の `AuditHeadNotReady` — goal が最小追記を事前承認、確定は
-PR レビュー)。
+Date: 2026-08-28. Target: the 2 remaining items of PR-M2 (#99) — (1)
+AUDIT_SPEC §6's admin audit matching (`maruhi audit reconcile`), (2) turning
+`ensureHeadCurrent` (audit-head lazy extension) into a bounded contract
+(`AuditHeadNotReady` — the handoff of PR #99 review thread r3877856076; the
+proposal shape is r3877888910's reply). Prerequisites: session-27 §14's
+implementation split (PR-M1–M4, PR-F1–F4, final = #101) is fully merged. The
+ruling process followed the goal's instruction "multiple options →
+strictly-better search → 3 rounds of comparison → autonomous choice". Ruling
+letters continue from session-37's X–AE (AF onward). 2 spec additions
+(bounded-extension tolerance in AUDIT_SPEC §5.1, `AuditHeadNotReady` in
+AUTH_SPEC §16-2 — the goal pre-approves minimal additions; finalization is at
+PR review).
 
-## 1. 裁定 AF: 伸長上限の単位と値
+## 1. Ruling AF: the extension cap's unit and value
 
-### 第 1 周
+### Round 1
 
-- **案 AF-a: wall-clock / CPU 時間の予算** — 棄却: 非決定的で、テストが値を
-  固定できない(実行環境の速度で合否が変わる)。「1 呼び出しの仕事量」の契約と
-  して観測不能
-- **案 AF-b: 行数上限** — チャンク(50 行)の整数倍でないと端数チャンクの扱いが
-  混ざる。実装の永続化粒度はチャンク単位(タスクごとの原子コミット)なので、
-  契約の単位も同じにするのが素直
-- **案 AF-c: チャンク数上限(PR #99 返信の提案形)** — 永続化粒度と同じ単位。
-  値は 200 チャンク = 10,000 行
+- **Option AF-a: a wall-clock / CPU-time budget** — rejected: non-
+  deterministic; tests can't pin the value (pass/fail varies with the
+  runtime's speed). Unobservable as a contract of "one call's work"
+- **Option AF-b: a row-count cap** — unless it's an integer multiple of the
+  chunk size (50 rows), fractional-chunk handling creeps in. The
+  implementation's persistence granularity is chunks (atomic commit per
+  task), so the natural contract uses the same unit
+- **Option AF-c: a chunk-count cap (the proposal shape of the PR #99 reply)**
+  — same unit as the persistence granularity. The value is 200 chunks =
+  10,000 rows
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AF-d: 呼び出し経路ごとに別の上限(GET は小さく・受理は大きく等)** —
-  棄却: 契約が 2 本になり、テスト・仕様記述・クライアントの再試行予算の見積りが
-  全て倍になる。経路差を正当化する負荷差の実測もない(どの経路も同じ permit 下の
-  同じ計算)
+- **Option AF-d: different caps per call path (smaller for GET, larger for
+  acceptance, etc.)** — rejected: two contracts, and tests, spec description,
+  and the client's retry-budget estimate all double. There's also no measured
+  load difference to justify a per-path difference (every path runs the same
+  computation under the same permit)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 値 10,000 行の根拠を既存の仕様量に接続: §12-8 の 1 リクエスト最大監査行数
-  (appendManySync の一括 var.read 上限)と同値。定常状態(読むたびに伸ばす)の
-  バックログは「直前の読み以降の追記」で、最大の単発バーストでも 1 呼び出しで
-  解消する — 上限に達しうるのは巨大な既存ログの初回実体化だけ
-- 1 呼び出しの仕事量の上限を確認: 10,000 行 × SHA-256 × 2(row_digest + h_n)は
-  workerd の実行時間・permit 保持時間として十分小さい(実測 1〜3 秒オーダー)。
-  ちょうど上限で完了した呼び出しに余計な "more-remains" を返さないため、上限
-  到達時のみ軽い存在検査(`SELECT 1 ... LIMIT 1`)で残量の有無を確定する
-- テスト可能性: 本番値の縮小注入(`makeAuditStore` の options)で単体意味論を
-  固定し、統合(3 経路の 503)は本番値のまま直接シードで到達させる
+- Connected the 10,000-row value's basis to an existing spec quantity: equal
+  to §12-8's max audit rows per request (appendManySync's bulk var.read
+  limit). The steady-state backlog (extend on every read) is "appends since
+  the previous read", and even the largest single burst resolves in one call
+  — hitting the cap is only possible on the first materialization of a huge
+  existing log
+- Confirmed the bound on one call's work: 10,000 rows × SHA-256 × 2
+  (row_digest + h_n) is small enough as workerd execution / permit-holding
+  time (measured on the order of 1–3 seconds). So a call completing exactly
+  at the cap doesn't return a spurious "more-remains": only on hitting the
+  cap does it settle remaining-work presence with a cheap existence check
+  (`SELECT 1 ... LIMIT 1`)
+- Testability: pin the unit semantics by injecting a shrunken production
+  value (`makeAuditStore` options), and reach integration (the 3 paths' 503)
+  with direct seeding at the production value
 
-**選択: 案 AF-c**。`MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200`(× 50 行/チャンク
-= 10,000 行/呼び出し)。
+**Choice: option AF-c**. `MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200` (× 50
+rows/chunk = 10,000 rows/call).
 
-## 2. 裁定 AG: AuditHeadNotReady のステータスコードとエラー形
+## 2. Ruling AG: AuditHeadNotReady's status code and error shape
 
-### 第 1 周
+### Round 1
 
-- **案 AG-a: 422(CheckpointStateMismatch の新 reason)** — 棄却: (1) 意味論が
-  違う — 422 は「申告内容と保存状態の突合失敗」で、こちらは「サーバー側導出の
-  未完了」でありクライアントの内容は正しいまま。(2) GET /audit-head には申告
-  内容がなく 422 の語彙が成立しない。(3) reason(Literals)への値追加は旧
-  クライアントの Schema 検査を壊す(加法にならない)
-- **案 AG-b: 409** — 棄却: CAS 競合(ChainHeadConflict)の意味論と衝突する。
-  再同期・再署名を促す既存の 409 処理に誤って乗ると無駄な再構築が走る
-- **案 AG-c: 503 + 型付き `AuditHeadNotReady`(本文なし)** — 一時的な
-  server-side readiness の標準的表現で、GET / POST 両経路に自然。型付き本文が
-  「障害の 503」との判別を担う
+- **Option AG-a: 422 (a new reason on CheckpointStateMismatch)** — rejected:
+  (1) wrong semantics — 422 is "matching declared content against stored
+  state failed", whereas this is "a server-side derivation incomplete", with
+  the client's content still correct. (2) GET /audit-head has no declared
+  content, so 422 vocabulary can't form. (3) Adding a value to the reason
+  Literals breaks old clients' Schema checks (not additive)
+- **Option AG-b: 409** — rejected: collides with the CAS-conflict semantics
+  (ChainHeadConflict). Riding the existing 409 handling that prompts re-sync
+  / re-sign would trigger pointless rebuilds
+- **Option AG-c: 503 + typed `AuditHeadNotReady` (no body)** — the standard
+  expression of transient server-side readiness, natural on both the GET and
+  POST paths. The typed body distinguishes it from "a 503 of an outage"
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AG-d: 503 + Retry-After ヘッダ / 残量フィールド** — 棄却: 残量・進捗は
-  監査行数の序数情報であり、§7 の件数非漏洩に反する(受け手は実効 admin 限定
-  だが、本文を空にすれば漏洩面の検討自体が不要)。Retry-After も不要 — 失敗
-  応答の処理中にサーバーは既に上限いっぱい前進しており、即時再試行が生産的
-  (待つ理由がない)
+- **Option AG-d: 503 + Retry-After header / remaining-work field** —
+  rejected: remaining work / progress is ordinal information about the audit
+  row count and violates §7's non-leakage of counts (recipients are limited
+  to effective admin, but making the body empty removes the need to consider
+  a leakage surface at all). Retry-After is also unneeded — while processing
+  the failed response the server has already advanced to its cap, so an
+  immediate retry is productive (no reason to wait)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- §11-2 の存在秘匿との両立を確認: 拒否は認可判定(非メンバー 404 / 権限不足
-  403)より後にのみ発生する(DO 内の判定は requireMemberState / requireRole の
-  後、複合では worker のスコープ検査の後)
-- 旧 CLI × 新サーバー: 宣言外エラーは一般エラーになる — 発生条件が「巨大ログの
-  初回実体化」だけで、再実行で解消することを SELF_HOSTING.md に明記(goal の
-  指示)。新 CLI × 旧サーバーは従来挙動(このエラーは来ない)
-- CLI の再試行予算: 10 回。予算 × サーバー上限 = 1 コマンド実行あたり 10 万行の
-  伸長保証。枯渇時は発生条件と再実行での解消を案内する(進捗は保存済みなので
-  再実行が必ず続きから前進する)。取得(GET)と受理(送信)で予算は独立 —
-  受理段の未完了は「申告と受理の間の大量追記」という別の稀な形であり、混ぜると
-  どちらの枯渇か文面で判別できない
+- Confirmed compatibility with §11-2's existence concealment: the rejection
+  fires only after the authorization decision (non-member 404 / insufficient
+  permission 403) (inside the DO the judgment comes after requireMemberState
+  / requireRole; on composites, after the worker's scope check)
+- Old CLI × new server: an undeclared error becomes a generic error — per the
+  goal's instruction, SELF_HOSTING.md notes that it fires only on "first
+  materialization of a huge log" and resolves on re-run. New CLI × old
+  server = the previous behavior (this error never arrives)
+- The CLI's retry budget: 10 attempts. Budget × server cap = 100,000 rows of
+  guaranteed extension per command run. On exhaustion it guides the
+  triggering condition and the re-run resolution (progress is saved, so a
+  re-run always continues forward). The budget is independent between fetch
+  (GET) and acceptance (send) — acceptance-stage incompleteness is a
+  different rare shape ("mass appends between declare and accept"), and
+  mixing them would make it impossible to tell from the message which budget
+  was exhausted
 
-**選択: 案 AG-c**。api-schema の `AuditHeadNotReadyError`(httpApiStatus 503・
-フィールドなし)。契約宣言への追加は 4 endpoint(auditHead / membership append /
-environments create・rotate)への加法のみ、payload スキーマ不変(§12-10 (1) の
-strict 分類に変更なし)。
+**Choice: option AG-c**. api-schema's `AuditHeadNotReadyError`
+(httpApiStatus 503, no fields). Additions to the contract declarations are
+only additive on 4 endpoints (auditHead / membership append / environments
+create / rotate); payload Schemas unchanged (no change to §12-10 (1)'s
+strict classification).
 
-## 3. 裁定 AH: 仕様追記の置き場
+## 3. Ruling AH: where the spec addition lives
 
-### 第 1 周
+### Round 1
 
-- **案 AH-a: CRYPTO_SPEC §6.4 に追記** — 棄却: §6.4 は合意規則と受理ポリシー
-  (内容突合)の置き場で、これは内容の判定ではなく導出列の readiness。暗号仕様に
-  可用性応答を混ぜない
-- **案 AH-b: AUDIT_SPEC §5.1 のみ** — 遅延実体化の許容がある場所なので有界化も
-  ここ、は自然。ただしワイヤ応答(503 / 型名 / 位置)は API 仕様の領分で、§5.1
-  に HTTP を書き込むのは越境
-- **案 AH-c: AUDIT_SPEC §5.1(ストレージ契約: 有界伸長の許容 + fail-closed)+
-  AUTH_SPEC §16-2(API 面: 503 `AuditHeadNotReady`・空本文・認可判定より後・
-  retryable)の 2 点最小** — 既存の分業(§5.1 が列の意味論、§16-2 が
-  checkpoint 支援 API)どおりに割る
+- **Option AH-a: add to CRYPTO_SPEC §6.4** — rejected: §6.4 is the home of
+  consensus rules and the acceptance policy (content matching); this is a
+  derived column's readiness, not a content judgment. Don't mix an
+  availability response into the crypto spec
+- **Option AH-b: AUDIT_SPEC §5.1 only** — natural in that lazy
+  materialization's tolerance lives there, so bounding lives there too. But
+  the wire response (503 / type name / position) is API-spec territory, and
+  writing HTTP into §5.1 is out of bounds
+- **Option AH-c: AUDIT_SPEC §5.1 (storage contract: allowing bounded
+  extension + fail-closed) + AUTH_SPEC §16-2 (the API surface: 503
+  `AuditHeadNotReady`, empty body, after the authorization decision,
+  retryable) — the minimal 2 points** — split per the existing division of
+  labor (§5.1 owns the column's semantics, §16-2 owns the checkpoint-support
+  APIs)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AH-d: AH-c + CRYPTO_SPEC §6.4 に相互参照 1 文** — 棄却: §6.4 の受理検証は
-  「保存済みの累積ハッシュ列(AUDIT_SPEC §5.1)」を参照しており、列の実体化
-  規律は参照先の §5.1 が既に担っている。3 文書目への追記は同期負担だけ増える
+- **Option AH-d: AH-c + 1 cross-reference sentence in CRYPTO_SPEC §6.4** —
+  rejected: §6.4's acceptance verification already references "the stored
+  cumulative-hash column (AUDIT_SPEC §5.1)", and the column's
+  materialization discipline is already carried by the referenced §5.1.
+  Adding to a third document only increases the sync burden
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- fail-closed の明文化を §5.1 側に置くことを確認: 「古い列で §6.4 の検査・
-  ヘッド応答を行ってはならない」は列の観測契約であり、どの API がそれを運ぶかに
-  依存しない(将来の読み手が増えても効く)
+- Confirmed the fail-closed statement goes on the §5.1 side: "§6.4's checks
+  and head responses must not run on a stale column" is the column's
+  observation contract and doesn't depend on which API carries it (it holds
+  even if more readers appear in the future)
 
-**選択: 案 AH-c**。
+**Choice: option AH-c**.
 
-## 4. 裁定 AI: 突合コマンドの置き場(verify 統合か新設か)
+## 4. Ruling AI: where the matching command lives (integrate into verify or create new)
 
-### 第 1 周
+### Round 1
 
-- **案 AI-a: `maruhi audit verify` に統合(admin なら突合も走る)** — 棄却:
-  verify は全メンバー実行可能(クラス 1 のみ)が設計上の主張で、テストもそれを
-  固定している。権限で挙動が変わると「OK」の意味が実行者依存になり、reader の
-  OK と admin の OK が別物になる(監査コマンドの出力が証拠として引用される
-  ことを考えると、意味の一意性は文面より重要)
-- **案 AI-b: 新設 `maruhi audit reconcile`(実効 admin 必須)** — §6 の呼称
-  (admin の突合)にも一致。検査対象も異なる(verify = ミラー全単射、reconcile =
-  累積ハッシュ列と公証の整合)
-- **案 AI-c: `maruhi project reconcile`** — 棄却: 検査対象は監査ログ(AUDIT_SPEC
-  §6)であり、audit 系列(list / invites / self / verify)の下が発見可能性の
-  置き場。project 側は checkpoint 発行(書く側)の置き場で、読む側の検証を
-  混ぜない
+- **Option AI-a: integrate into `maruhi audit verify` (matching also runs
+  when admin)** — rejected: verify's design claim is that every member can
+  run it (class 1 only), and the tests pin that. If behavior changes by
+  permission, the meaning of "OK" becomes runner-dependent — a reader's OK
+  and an admin's OK would differ (given that an audit command's output gets
+  quoted as evidence, uniqueness of meaning matters more than wording)
+- **Option AI-b: create `maruhi audit reconcile` (effective admin required)**
+  — matches §6's name (admin matching) too. What it checks also differs
+  (verify = mirror bijection; reconcile = consistency of the cumulative-hash
+  column with notarizations)
+- **Option AI-c: `maruhi project reconcile`** — rejected: the subject is the
+  audit log (AUDIT_SPEC §6), and the audit family (list / invites / self /
+  verify) is the discoverability home. The project side is where checkpoint
+  issuance (the writing side) lives — don't mix the reading side's
+  verification in
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AI-d: AI-b + verify から admin に reconcile を案内する導線** — 棄却:
-  verify の成功出力に恒常的な案内を足すと、全メンバー向けの出力が admin 専用
-  操作を毎回宣伝する形になる。--help と docs の説明で足りる
+- **Option AI-d: AI-b + a path where verify guides admins to reconcile** —
+  rejected: adding permanent guidance to verify's success output would make
+  output for all members advertise an admin-only operation every time.
+  --help and docs explanations suffice
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 報告様式: 違反は §6 の 2 区分をラベルで明示する —
-  `Row-tampering evidence`(所属違反 (a) = 行改竄の証拠)と
-  `Acceptance-policy violation (stale-replay risk)`((b)(c) = 受理ポリシー
-  不執行のサーバー = 陳腐化リプレイ可能状態の証拠)。総括文で両区分の含意を
-  §6 の語彙で説明し、exit 1。正例は行数・公証数の要約 + OK で exit 0
-- seq 欠番(削除の痕跡)は検出したら**打ち切る**: 欠番以降の h_n 連鎖は全て
-  食い違い、続行すると全公証が「所属違反」に見える派生誤報を量産する。最強の
-  証拠(削除)だけを報告する fail-closed
-- 実効 admin の事前判定は checkpoint 発行と同じ規律(チェーン role = 検証済み
-  ビュー、スコープ = /auth/me の tokenScopes。403 を踏まない)。未満は突合を
-  始めずに明確なエラー — admin 未満で走らせると可視性の穴(クラス 2 秘匿)を
-  欠番と誤断する
+- Report format: violations are explicitly labeled with §6's 2 classes —
+  `Row-tampering evidence` (membership violation (a) = evidence of row
+  tampering) and `Acceptance-policy violation (stale-replay risk)` ((b)(c) =
+  a server not enforcing its acceptance policy = evidence of a
+  stale-replay-capable state). A summary sentence explains both classes'
+  implications in §6 vocabulary, exit 1. A positive reports a row-count /
+  notarization-count summary + OK, exit 0
+- A seq gap (a trace of deletion), once detected, **aborts**: the h_n chain
+  disagrees for everything after the gap, and continuing would mass-produce
+  derived false positives where every notarization looks like a "membership
+  violation". Fail-closed reporting only the strongest evidence (deletion)
+- The effective-admin pre-judgment follows the same discipline as checkpoint
+  issuance (chain role = verified view, scope = /auth/me's tokenScopes; don't
+  trip a 403). Below it, a clear error before matching starts — running it
+  below admin would misjudge a visibility hole (class-2 concealment) as a
+  gap
 
-**選択: 案 AI-b**。
+**Choice: option AI-b**.
 
-## 5. 裁定 AJ: 全行取得の整合戦略
+## 5. Ruling AJ: the consistency strategy for fetching all rows
 
-### 第 1 周
+### Round 1
 
-- **案 AJ-a: verify の規律の丸写し(重複 id 検出 + 静的ページ上限)** — 棄却:
-  verify の静的上限(100 ページ)はチェーン受理ポリシー(10,000 エントリ)から
-  導出した理論最大で、監査行にはその種の上限がない(保持は無期限 — §5.3)。
-  任意の静的上限は巨大ログの正当な突合を人工的に不能にする
-- **案 AJ-b: ページングエンジンは共有し、停止性は admin 可視 `seq` の厳密減少で
-  担保** — admin 応答の `seq` は正の整数。ページ内・ページ間で厳密減少を強制
-  すれば、総行数は先頭ページの最大 seq に束縛され、ページングは必ず停止する
-  (カーソル非前進・重複配布・順序違反はすべて応答の自己矛盾として中止)
+- **Option AJ-a: copy verify's discipline verbatim (duplicate-id detection +
+  a static page cap)** — rejected: verify's static cap (100 pages) was
+  derived from the chain acceptance policy (10,000 entries) as a theoretical
+  maximum, and audit rows have no such cap (retention is indefinite — §5.3).
+  Any static cap would artificially disable legitimate matching of huge logs
+- **Option AJ-b: share the paging engine, and guarantee termination by strict
+  decrease of the admin-visible `seq`** — an admin response's `seq` is a
+  positive integer. Enforcing strict decrease within and across pages bounds
+  the total row count by the first page's max seq, so paging always
+  terminates (non-advancing cursor, duplicate distribution, or order
+  violation all abort as self-contradictions of the response)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AJ-c: AJ-b + スナップショット専用 API(一貫読み取り)** — 棄却: 新
-  エンドポイントはスコープ外の API 拡張。既存ページングでもスナップショット
-  一貫性は成立する — 取得中の追記は先頭ページのカーソルより新しく以後の
-  ページに現れないため、取得集合は先頭ページ時点で閉じる
+- **Option AJ-c: AJ-b + a snapshot-dedicated API (consistent read)** —
+  rejected: a new endpoint is an out-of-scope API extension. Snapshot
+  consistency holds with existing paging anyway — appends during the fetch
+  are newer than the first page's cursor and never appear on later pages, so
+  the fetched set closes at the first page's point in time
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 欠番検査との接続: 厳密減少 + 正の整数で重複は構造的に排除され、欠番検査は
-  「1..maxSeq の完全被覆」の一方向だけを見ればよい
-- 再計算の入力(payloadText)の前提を明文化: ワイヤ payload の JSON.stringify。
-  保存 TEXT はサーバー自身の JSON.stringify が書いたもの(書き手はサーバーのみ)
-  で、識別子キーのみのオブジェクトは parse → stringify のラウンドトリップで
-  バイト安定。食い違いは「受信行 ≠ サーバーが列計算に使った行」= 応答の自己
-  矛盾で、監査ログはサーバー管理データ(§6)なので改竄・破損の証拠として
-  扱ってよい(コード内コメントに固定。非 ASCII payload〔㊙〕はテストで実計算)
-- 進捗の可視化: 50 ページごとに取得行数を表示(巨大ログ・非前進サーバーでの
-  無反応を可視化する)
+- Connection to the gap check: strict decrease + positive integers
+  structurally exclude duplicates, so the gap check only needs to look one
+  way — "complete coverage of 1..maxSeq"
+- Documented the premise of the recomputation input (payloadText): the wire
+  payload's JSON.stringify. The stored TEXT is what the server's own
+  JSON.stringify wrote (only the server writes), and an object containing
+  only identifier keys is byte-stable across a parse → stringify round-trip.
+  A disagreement means "received row ≠ the row the server used for column
+  computation" = a self-contradiction of the response, and since the audit
+  log is server-managed data (§6) it may be treated as evidence of
+  tampering/corruption (pinned in a code comment. A non-ASCII payload [㊙] is
+  actually computed in a test)
+- Progress visibility: print the fetched row count every 50 pages (surfacing
+  no-response situations on huge logs / a non-advancing server)
 
-**選択: 案 AJ-b**。エンジン(`paginateAuditEvents`)は audit.ts で verify と
-共有し、重複実装を作らない。
+**Choice: option AJ-b**. The engine (`paginateAuditEvents`) is shared with
+verify in audit.ts — no duplicate implementation.
 
-## 6. 裁定 AK: GET /audit-head 申告値との照合の要否
+## 6. Ruling AK: whether to match against GET /audit-head's declared value
 
-### 第 1 周
+### Round 1
 
-- **案 AK-a: 照合しない(公証の検査だけで足りる)** — 棄却寄り: 公証されて
-  いない期間の虚偽申告(実在しないヘッドを admin に返し続け、公証前に列を
-  作り直す)は次の公証まで検出材料がない。照合は GET 1 回 + Map lookup 1 回で
-  ほぼ無料
-- **案 AK-b: 照合する(申告値の再計算列への所属)** — 「サーバーがいま申告して
-  いる値」と「サーバーがいま返す行」の整合という、公証を待たない即時の検査に
-  なる
+- **Option AK-a: don't match (checking notarizations suffices)** — leaning
+  rejected: for false declarations in un-notarized periods (keep returning a
+  nonexistent head to the admin, then rebuild the column before
+  notarization), no detection material exists until the next notarization.
+  The match costs 1 GET + 1 Map lookup — nearly free
+- **Option AK-b: match (the declared value's membership in the recomputed
+  column)** — becomes an immediate check, without waiting for notarization,
+  of consistency between "the value the server is declaring now" and "the
+  rows the server is returning now"
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AK-c: AK-b + 申告値の位置の非後退も床レコードで追跡** — 棄却: 申告の
-  位置追跡はローカル状態(床)の新設で、スコープ外。公証済みの非後退は (b)(c)
-  が担い、未公証分の継続追跡は次回の reconcile / 公証が拾う
+- **Option AK-c: AK-b + also track non-regression of the declared value's
+  position via a floor record** — rejected: tracking the declaration's
+  position means new local state (floor), which is out of scope. (b)(c)
+  carry non-regression for notarized positions, and the next reconcile /
+  notarization picks up continued tracking of the un-notarized part
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 取得順を固定: 申告は全行取得の**前**。申告時点の列は取得スナップショットの
-  接頭辞になるため、所属検査の母集合がスナップショットで必ず覆われる(逆順だと
-  申告が取得後の追記を指し、正直なサーバーで偽陽性が出る)
-- 空申告の意味を固定: 空文字列は監査行ゼロのときだけ正しい(行があるのに空を
-  申告 = 矛盾として報告)
+- Pinned the fetch order: the declaration comes **before** the all-rows
+  fetch. The column as of the declaration time becomes a prefix of the fetch
+  snapshot, so the membership check's universe is always covered by the
+  snapshot (in reverse order the declaration could point at post-fetch
+  appends, producing false positives on an honest server)
+- Pinned the meaning of an empty declaration: an empty string is correct only
+  when there are zero audit rows (declaring empty when rows exist = reported
+  as a contradiction)
 
-**選択: 案 AK-b**。違反は宣言と行の相互矛盾 = 改竄・虚偽申告側の区分で報告する。
+**Choice: option AK-b**. Violations are reported under the tampering /
+false-declaration class as a mutual contradiction of the declaration and the
+rows.
 
-## 7. 裁定 AL: 突合結果の証拠保存の要否
+## 7. Ruling AL: whether matching results get evidence preservation
 
-### 第 1 周
+### Round 1
 
-- **案 AL-a: 証拠ファイル(JSON レポート)を書き出す** — 棄却: CLI の永続化
-  許容リスト(CLAUDE.md — トークン / master 鍵 / 非機密設定のみ)の外に新しい
-  ファイル種別を作る。突合の入力(検証済みチェーン・監査行)はいずれも再取得・
-  再計算可能で、証拠として最強なのは署名済みチェーン自体(既に永続)
-- **案 AL-b: 保存しない(stdout / stderr の報告 + 終了コードのみ)** — 再実行で
-  同じ結論が再現でき、保存が必要ならユーザーがリダイレクトすればよい(明示
-  操作)
+- **Option AL-a: write an evidence file (JSON report)** — rejected: it would
+  create a new file kind outside the CLI's persistence allowlist (CLAUDE.md —
+  token / master key / non-secret config only). The matching inputs (verified
+  chain, audit rows) are all re-fetchable / recomputable, and the strongest
+  evidence is the signed chain itself (already persisted)
+- **Option AL-b: don't save (stdout / stderr report + exit code only)** — a
+  re-run reproduces the same conclusion, and if preservation is needed the
+  user can redirect (an explicit operation)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 AL-c: --json フラグで構造化出力(保存はしない)** — 棄却(今回は):
-  機械可読出力は audit 系列全体の一貫した設計(list / verify を含む)として
-  やるべきで、reconcile だけ先行させると形式が既成事実化する。必要になった
-  時点で系列ごと設計する(申し送り)
+- **Option AL-c: a --json flag for structured output (still not saved)** —
+  rejected (this time): machine-readable output should be designed
+  consistently across the whole audit family (including list / verify);
+  letting only reconcile go first would fossilize the format as a fait
+  accompli. Design it family-wide when it becomes needed (handoff)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- ヘッド申告の矛盾証拠保存(session-37 裁定 Z — 床レコード)との整合: あちらは
-  「後で否認不能性の材料になる署名済み申告」の保存で、対象が署名付きデータ。
-  reconcile の違反は再計算で何度でも導出できる導出結果であり、保存する固有の
-  価値がない — 区別は「再現可能か」で一貫している
+- Consistency with the head-declaration contradiction-evidence preservation
+  (session-37 ruling Z — a floor record): that one preserves "a signed
+  declaration that later becomes non-repudiation material" — the subject is
+  signed data. A reconcile violation is a derived result re-derivable by
+  recomputation any number of times — no intrinsic value in storing it. The
+  distinction stays consistent at "reproducible or not"
 
-**選択: 案 AL-b**。
+**Choice: option AL-b**.
 
-## 8. 実装内容の要約
+## 8. Summary of what was implemented
 
-- **api-schema**: `AuditHeadNotReadyError`(503・フィールドなし)。宣言追加は
-  auditHead / membership append / environments create・rotate の 4 契約(加法
-  のみ。payload スキーマ不変)
-- **server**: `ensureHeadCurrent` を `Effect<AuditHeadExtensionOutcome>`
-  ("current" | "more-remains")化 + `MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200`
-  (テスト用に `makeAuditStore` options で縮小注入可)。読む 3 経路
-  (`auditHeadProgram` / `ensureAuditHeadAcceptable`〔standalone と境界複合で
-  共有〕)は "more-remains" で `audit-head-not-ready` 拒否 — 古い列で
-  unknown / stale を判定しない(fail-closed)。DataRejection / data-http の
-  写像は契約宣言から自動導出(unwrapDataOutcome)
-- **CLI(再試行)**: `fetchAuditHead`(checkpoint.ts — reconcile と共有)に
-  AuditHeadNotReady の有界再試行(10 回・即時)。`issueCheckpoint` の送信段は
-  独立予算 10 回で申告を取り直して再送。枯渇時は発生条件(巨大ログの初回
-  実体化)と再実行での解消を案内。複合(env create / rotate)の retryOnConflict
-  にも retryable として分類(CLI の境界 checkpoint は公証しない〔裁定 M-b〕ため
-  現行サーバーからは到達しない防御的分類)。isServerRejection に追加(503 でも
-  型付き本文 = 受理されていないことが確定)
-- **CLI(突合)**: `maruhi audit reconcile`(audit-reconcile.ts)— 実効 admin
-  事前判定 → 申告取得 → 全行取得(共有ページングエンジン + seq 厳密減少)→
-  欠番検査 → @maruhi/crypto の正規実装で累積列を再計算 → 公証あり checkpoint の
-  所属 (a) / 非後退 (b) / 位置下限 (c)(ミラー行の欠落・重複は改竄側の証拠)→
-  申告値の所属(裁定 AK)→ 2 区分の報告
-- **docs**: AUDIT_SPEC §5.1(有界伸長の許容 + fail-closed)、AUTH_SPEC §16-2
-  (503 `AuditHeadNotReady` の API 面)、SELF_HOSTING.md(更新順影響: 旧 CLI ×
-  新サーバーは一般エラーになりうる — 初回実体化時のみ・再実行で解消)
+- **api-schema**: `AuditHeadNotReadyError` (503, no fields). Declaration
+  additions on 4 contracts: auditHead / membership append / environments
+  create / rotate (additive only; payload Schemas unchanged)
+- **server**: `ensureHeadCurrent` became `Effect<AuditHeadExtensionOutcome>`
+  ("current" | "more-remains") + `MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200`
+  (shrink-injectable via `makeAuditStore` options for tests). The 3 read
+  paths (`auditHeadProgram` / `ensureAuditHeadAcceptable` [shared by
+  standalone and boundary composites]) reject with `audit-head-not-ready` on
+  "more-remains" — never judge unknown / stale on a stale column
+  (fail-closed). The DataRejection / data-http mapping is auto-derived from
+  the contract declaration (unwrapDataOutcome)
+- **CLI (retries)**: `fetchAuditHead` (checkpoint.ts — shared with
+  reconcile) got a bounded retry on AuditHeadNotReady (10 attempts,
+  immediate). `issueCheckpoint`'s send stage re-fetches the declaration and
+  resends under an independent budget of 10. On exhaustion it guides the
+  triggering condition (first materialization of a huge log) and resolution
+  by re-run. Composites' (env create / rotate) retryOnConflict also
+  classifies it as retryable (the CLI's boundary checkpoints don't notarize
+  [ruling M-b], so this is a defensive classification unreachable from the
+  current server). Added to isServerRejection (even on 503, a typed body =
+  certainly not accepted)
+- **CLI (matching)**: `maruhi audit reconcile` (audit-reconcile.ts) —
+  effective-admin pre-judgment → declaration fetch → all-rows fetch (shared
+  paging engine + strict seq decrease) → gap check → recompute the
+  cumulative column with @maruhi/crypto's canonical implementation →
+  membership (a) / non-regression (b) / position floor (c) of notarizing
+  checkpoints (missing or duplicated mirror rows are tampering-side
+  evidence) → the declared value's membership (ruling AK) → a report in the
+  2 classes
+- **docs**: AUDIT_SPEC §5.1 (allowing bounded extension + fail-closed),
+  AUTH_SPEC §16-2 (the API surface of 503 `AuditHeadNotReady`),
+  SELF_HOSTING.md (update-order impact: old CLI × new server can yield a
+  generic error — only on first materialization, resolves on re-run)
 
-## 9. テストの固定点(要約)
+## 9. What the tests pin (summary)
 
-- サーバー(vitest-pool-workers): 有界伸長の単体意味論(縮小上限で
-  more-remains → 保存済み末尾から再開 → 収束、ちょうど上限は current)、
-  GET /audit-head の 503 → 進捗保存 → 再試行で 200、standalone の fail-closed
-  (偽ヘッドもバックログ中は 503 — 列到達後にはじめて 422 audit-head-unknown =
-  完了後の受理意味論不変)、境界複合(rotate)の 503 → 再送で受理
-- CLI(vitest + ローカル HTTP モック): 申告取得の 503 吸収(3 回目で発行)、
-  受理段の 503(申告を取り直して再送)、枯渇時の案内文言(発生条件 + 再実行)、
-  reconcile の正例(公証 2 個の前進 — ㊙ payload の round-trip 込み)・所属違反
-  (a)・位置違反 (b)(c)・欠番(打ち切り)・申告値矛盾・2 区分の報告文言・503
-  吸収・実効 admin 未満の事前エラー(行取得 0 回)・seq 欠落応答の中止
+- Server (vitest-pool-workers): unit semantics of bounded extension (with a
+  shrunken cap: more-remains → resume from the stored tail → converge;
+  exactly-at-cap is current), GET /audit-head's 503 → progress saved → retry
+  gets 200, standalone fail-closed (a forged head is also 503 while
+  backlogged — 422 audit-head-unknown only after the column arrives =
+  post-completion acceptance semantics unchanged), boundary composite
+  (rotate) 503 → accepted on resend
+- CLI (vitest + local HTTP mock): 503 absorption on declaration fetch
+  (issued on the 3rd attempt), a 503 at the acceptance stage (re-fetch the
+  declaration and resend), the exhaustion guidance wording (condition +
+  re-run), reconcile's positive (advancing through 2 notarizations —
+  including a ㊙ payload's round-trip), membership violation (a), position
+  violations (b)(c), gap (aborts), declared-value contradiction, the 2
+  classes' report wording, 503 absorption, the effective-admin-below early
+  error (0 row fetches), abort on a seq-missing response

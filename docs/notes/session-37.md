@@ -1,270 +1,344 @@
-# セッション 37 メモ(PR-M4 実装 — ヘッド申告・ゴシップ = split view の検出可能性)
+# Session 37 notes (PR-M4 implementation — head declarations / gossip = making split views detectable)
 
-日付: 2026-08-28。対象: session-27 §14 の PR-M4(実装分割の最終ピース — M1〜M3 と
-独立)。前提: PR-M1・PR-F1〜F4・PR-M2(#99)・PR-M3(#100)マージ済み。本 PR は
-CRYPTO_SPEC §6.6(ヘッド申告)・§6.3 ヘッドゴシップ・§6.4 の受理・配布、
-AUTH_SPEC §16-1 を「ベクター先行 → crypto → api-schema → server → CLI」の層順で
-実装する。裁定プロセスは goal の指示どおり「複数案 → 上位互換探索 → 3 周の比較 →
-自律選択」。裁定記号は session-36(R〜W)の続番(X〜)。仕様本文の改訂は不要
-(PR-M4 は Wave 3 D 承認済み文言〔PR #80/#81〕への実装追随)と判定した —
-最小の仕様追記を要する論点は見つからなかった(§16-1 の起草値 60/時をそのまま採用)。
+Date: 2026-08-28. Target: session-27 §14's PR-M4 (the final piece of the
+implementation split — independent of M1–M3). Prerequisites: PR-M1, PR-F1–F4,
+PR-M2 (#99), PR-M3 (#100) merged. This PR implements CRYPTO_SPEC §6.6 (head
+declarations), §6.3 head gossip, §6.4 acceptance / distribution, and
+AUTH_SPEC §16-1 in the layer order "vectors first → crypto → api-schema →
+server → CLI". The ruling process followed the goal's instruction "multiple
+options → strictly-better search → 3 rounds of comparison → autonomous
+choice". Ruling letters continue from session-36's R–W (X onward). Judged
+that no spec-body revision is needed (PR-M4 is implementation-following of the
+Wave 3 D approved wording [PR #80/#81]) — no point requiring a minimal spec
+addition was found (adopted §16-1's drafted 60/hour as-is).
 
-## 1. 裁定 X: 提出契機の実装位置(どの同期経路に接続するか)
+## 1. Ruling X: the submission trigger's implementation location (which sync path to wire into)
 
-### 第 1 周
+### Round 1
 
-- **案 X-a: syncProject(sync.ts)内で同期成功のたびに提出** — 棄却:
-  syncProject は lease 同梱チェーン検証(verifyChainSnapshot)と実装を共有し、
-  床検査・照合より**前**に完了する。提出は「チェーン同期 + 検証の成功後」
-  (§6.3)であり、床検査・アンカー照合・ゴシップ照合を通過していないビューを
-  申告すると、直後に硬い証拠で中断されるビューへ自分の署名を残す形になる。
-  また署名鍵は sync.ts の関心の外(検証専用モジュールに鍵を持ち込まない)
-- **案 X-b: コマンド前段 attachProject(context.ts)に接続** — attachProject は
-  全データ系コマンド共通の単一同期点(床・アンカー・intent 照合の一本化点 —
-  「2 系統に割ると、いずれ黙って食い違う」の既存規律)であり、床検査・照合を
-  すべて通過した最終ビューだけを申告できる。署名鍵は openProjectWith が
-  master 鍵から渡す(attester 引数 — 鍵なし前段 openMetadataProjectWith は
-  渡さない = 照合のみ)
+- **Option X-a: submit on every successful sync inside syncProject
+  (sync.ts)** — rejected: syncProject shares its implementation with lease's
+  bundled-chain verification (verifyChainSnapshot) and completes **before**
+  floor checks and matching. Submission happens "after chain sync +
+  verification succeed" (§6.3); declaring a view that hasn't passed floor
+  checks, anchor matching, or gossip matching would leave your signature on a
+  view that's interrupted on hard evidence right after. Also, the signing key
+  is outside sync.ts's concern (don't bring keys into a verification-only
+  module)
+- **Option X-b: wire into the pre-command attachProject (context.ts)** —
+  attachProject is the single sync point shared by all data commands (the
+  unified point for floor / anchor / intent matching — the existing
+  discipline that "splitting into 2 lineages means they'll silently diverge"),
+  so only the final view that passed every floor check and match can be
+  declared. The signing key is passed by openProjectWith from the master key
+  (the attester argument — the keyless pre-stage openMetadataProjectWith
+  doesn't pass it = match only)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 X-c: X-b + 全 pull / push 成功時にも追加提出** — 棄却: 前段が毎コマンド
-  同期するため、コマンド内の再同期(CAS リトライ等)への追加接続は提出頻度を
-  上げるだけで検出可能性を足さない(申告の粒度は「同期の到達点」であり、
-  1 コマンド 1 申告で十分)。レート窓(60/時)の消費も無駄に増える
+- **Option X-c: X-b + additional submissions on every pull / push success** —
+  rejected: since the pre-stage syncs on every command, additionally wiring
+  into in-command re-syncs (CAS retries etc.) only raises submission frequency
+  without adding detectability (declaration granularity is "a sync's reached
+  point"; 1 declaration per command suffices). It also wastefully consumes
+  the rate window (60/hour)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- metadata-only 前段(env diff・invite 系)が提出しないことの整合: 提出は
-  SHOULD であり、MARUHI_TOKEN 実行(キーチェーンなし)を提出のために壊さない
-  線を優先する。照合(検出側)は鍵を要さないため両前段で走る — 「検出は全経路・
-  提出は鍵を持つ経路」の非対称は §6.6 の意味論(申告は署名必須)の帰結
-- `project verify` は attachProject を通らない(openSession + 直接同期)ため、
-  照合を個別に接続する(verify は検証コマンドそのものであり、ゴシップ照合を
-  欠くと「verify は通るが pull は中断する」不整合になる)。提出はしない
-  (master 鍵を要求しない読み取りコマンドの線を保つ)
-- ci run(lease 経路)は非参加のまま(§6.6 / §14-2 — lease 応答は申告を同梱
-  しない。goal の固定条件)
+- Consistency of metadata-only pre-stages (env diff, invite family) not
+  submitting: submission is a SHOULD, and the line that doesn't break
+  MARUHI_TOKEN execution (no keychain) for the sake of submission takes
+  precedence. Matching (the detection side) needs no key and runs on both
+  pre-stages — the "detection on all paths, submission only on key-holding
+  paths" asymmetry is a consequence of §6.6's semantics (declarations require
+  a signature)
+- `project verify` doesn't pass through attachProject (openSession + direct
+  sync), so matching is wired separately (verify is the verification command
+  itself — without gossip matching you'd get the inconsistency "verify passes
+  but pull aborts"). It does not submit (keeping the line that read commands
+  don't require the master key)
+- ci run (the lease path) stays non-participating (§6.6 / §14-2 — the lease
+  response doesn't bundle declarations. The goal's pinned condition)
 
-**選択: 案 X-b + project verify への照合接続**。
+**Choice: option X-b + a matching connection for project verify**.
 
-## 2. 裁定 Y: 「前回申告」の追跡形(床レコード追加の要否)
+## 2. Ruling Y: how "previous declaration" is tracked (whether a floor record is needed)
 
-### 第 1 周
+### Round 1
 
-- **案 Y-a: 床ログに新レコード種(attested)を追加し fold で導出** — 棄却:
-  床の格子は「検証済み観測の単調 join」(§6.3)であり、自分の送信記録は観測では
-  ない(検証済みヘッド自体は head レコードが既に join している — 二重記録)。
-  また旧 CLI は未知レコード種を torn 行として警告するため、ダウングレード時に
-  恒常警告のノイズを作る(intent のような「要照合義務」も持たない — 申告は
-  SHOULD で、送信の証跡義務がない)
-- **案 Y-b: 格子外の可変 JSON(<projectId>.attested.json)** — 追跡は重複提出の
-  抑制のみで安全性を担わない: 喪失・破損の帰結は「同一 seq の再提出」であり、
-  サーバーの冪等 204(§16-1)が吸収する。自ビューの後退による誤提出はサーバーの
-  seq 単調検査(409)が権威で、ローカル追跡は権威にならない。tmp → rename の
-  置換書き(部分書き込みを読み手に見せない)で十分
+- **Option Y-a: add a new record kind (attested) to the floor log and derive
+  via fold** — rejected: the floor's lattice is "a monotonic join of verified
+  observations" (§6.3), and your own submission record isn't an observation
+  (the verified head itself is already joined by the head record — double
+  recording). Also, an old CLI warns on unknown record kinds as torn lines,
+  so a downgrade would create permanent warning noise (and unlike an intent
+  it carries no "must-match obligation" — declaration is a SHOULD with no
+  submission-evidence duty)
+- **Option Y-b: a mutable JSON outside the lattice
+  (<projectId>.attested.json)** — tracking only suppresses duplicate
+  submissions and carries no safety: the consequence of loss / corruption is
+  "re-submitting the same seq", absorbed by the server's idempotent 204
+  (§16-1). Mis-submission from a regressed self view is governed by the
+  server's seq-monotonic check (409) as the authority — local tracking is
+  never the authority. A tmp → rename replace-write (readers never see a
+  partial write) suffices
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 Y-c: 追跡なし(毎回提出)** — 棄却: 同一ヘッドの再提出はサーバー側
-  冪等だが、SHOULD の契機は「前進していれば」(§6.3)であり、毎コマンドの
-  無条件提出はレート窓(60/時)を対話的な連続実行で消費しうる(pull を 60 回
-  叩くだけで窓が尽き、真に前進した申告が 429 になる)。1 ファイルの追跡で
-  回避できる劣化を受け入れる理由がない
+- **Option Y-c: no tracking (submit every time)** — rejected: re-submitting
+  the same head is idempotent server-side, but the SHOULD's trigger is "when
+  it advanced" (§6.3), and unconditional per-command submission could drain
+  the rate window (60/hour) under interactive continuous runs (just 60 pulls
+  exhausts the window and a genuinely advanced declaration hits 429). No
+  reason to accept a degradation a single tracking file avoids
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 検証済み観測の join との整合(goal の論点): attested.json は join の入力に
-  しない(fold は読まない)。床の chainHead と attested head が乖離しても検出
-  規則に影響しない(前者は検出材料、後者は提出抑制のみ)ことを確認した
+- Consistency with the verified-observation join (the goal's point):
+  attested.json is never an input to the join (fold doesn't read it).
+  Confirmed that divergence between the floor's chainHead and the attested
+  head doesn't affect detection rules (the former is detection material; the
+  latter is submission suppression only)
 
-**選択: 案 Y-b**(FloorStore サービスに loadAttestedHead / saveAttestedHead を
-追加 — 置き場は床と同じ非機密ローカル状態ディレクトリ)。
+**Choice: option Y-b** (add loadAttestedHead / saveAttestedHead to the
+FloorStore service — located in the same non-secret local-state directory as
+the floor).
 
-## 3. 裁定 Z: 矛盾申告の証拠保存形式
+## 3. Ruling Z: the evidence-storage format for contradicting declarations
 
-### 第 1 周
+### Round 1
 
-- **案 Z-a: 床ログの chain-head 観測として join(conflict 化)** — 棄却:
-  申告は「他メンバーの署名済み宣言」であって自分の §6.3 検証済み観測ではない。
-  格子に入れると床 conflict の意味論(自分が検証した 2 観測の矛盾 = 全コマンド
-  恒久拒否)に合流し、**鍵漏洩した 1 メンバー(または攻撃者化した内部者)の
-  偽ヘッド申告 1 通で他の全メンバーの CLI を恒久停止**できる DoS 面になる。
-  §6.6 の照合 (a) が求めるのは「当該同期の成果物の使用中断 + 証拠保存」で
-  あり、恒久拒否ではない(矛盾申告が配布され続ける限り毎回中断するので、
-  検出の継続性は配布自体が担う)
-- **案 Z-b: 専用の追記専用 JSONL(<projectId>.attestation-evidence.jsonl)** —
-  申告全文(署名込み — 否認不能性の本体)+ 自ビューのチェーンダイジェスト
-  (headSeq / headHash / 申告 seq 位置のエントリハッシュ)+ 検出種別
-  (head-mismatch / unresolved-after-resync)+ ローカル検出時刻を 1 レコードで
-  追記する。床ログと同じ物理規律(O_APPEND・改行前置・datasync・0600)
+- **Option Z-a: join as a chain-head observation in the floor log (turning it
+  into a conflict)** — rejected: a declaration is "another member's signed
+  claim", not your own §6.3 verified observation. Putting it on the lattice
+  merges it into floor-conflict semantics (a contradiction between 2
+  observations you verified = permanent rejection of all commands), becoming
+  a DoS surface where **one leaked member key (or an insider gone attacker)
+  permanently halts every other member's CLI with a single fake-head
+  declaration**. What §6.6's matching (a) asks for is "stop using that
+  sync's artifacts + preserve evidence", not permanent rejection (as long as
+  the contradicting declaration keeps being distributed, every sync aborts —
+  the distribution itself carries detection continuity)
+- **Option Z-b: a dedicated append-only JSONL
+  (<projectId>.attestation-evidence.jsonl)** — each record appends: the full
+  declaration (signature included — the substance of non-repudiation) + the
+  self view's chain digest (headSeq / headHash / the entry hash at the
+  declared seq position) + detection kind (head-mismatch /
+  unresolved-after-resync) + local detection time. Same physical discipline
+  as the floor log (O_APPEND, newline-first, datasync, 0600)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 Z-c: Z-b + 床ログへの参照レコード** — 棄却: 参照の消費者が存在しない
-  (fold は証拠ファイルを読まない)。2 ファイルの整合という新しい不変条件だけが
-  増える
+- **Option Z-c: Z-b + a reference record in the floor log** — rejected: no
+  consumer of the reference exists (fold doesn't read the evidence file).
+  Only adds a new invariant of keeping 2 files consistent
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 証拠保存自体の失敗(ディスク不能)時も中断・警告は行う(保存は追加の保全で
-  あり、検出を保存可否に依存させない)。警告本文が証拠の全材料(申告・署名・
-  両ハッシュ)を含むため、出力の保全だけでも第三者提示が成立する
-- floor-evidence 様式(goal の指定)は整形関数 formatAttestationEvidence を
-  floor-evidence.ts に置く形で充足(座標 + 両側の signed 材料 + 保全案内という
-  既存の証拠表示規律に合流)
+- Even when evidence saving itself fails (disk unavailable), the abort and
+  warning still happen (saving is extra preservation; detection must not
+  depend on savability). Since the warning text contains all evidence
+  material (the declaration, signature, both hashes), preserving just the
+  output suffices for third-party presentation
+- The floor-evidence format (the goal's specification) is satisfied by
+  placing the formatting function formatAttestationEvidence in
+  floor-evidence.ts (joining the existing evidence-display discipline:
+  coordinates + both sides' signed material + preservation guidance)
 
-**選択: 案 Z-b**。
+**Choice: option Z-b**.
 
-## 4. 裁定 AA: (b) の再同期の有界形(既存機構との共有)
+## 4. Ruling AA: the bounded shape of (b)'s re-sync (sharing an existing mechanism)
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- 既存の resyncExtended(sync.ts — §6.3-2b / session-14 裁定 G の 1 回再同期 +
-  延長検査)をそのまま共有する(案 AA-a)。専用のリトライループ(案 AA-b —
-  N 回・バックオフ)は棄却: 値署名・床ヘッドの future 分岐が確立した「1 回で
-  解決しなければ証拠側」の意味論と揃え、悪意サーバーが future 申告で再同期を
-  引き延ばす面を作らない
-- 再同期後の照合対象は「新ビュー自身の申告集合 + 未解決だった future 申告」の
-  和とする: 新集合だけだと、future 申告を配布後に配布から消す(omission)ことで
-  「解決しなければ (a)」の判定を回避できる。元申告を持ち越して新ビューで再検証
-  すれば、延長で解決(ハッシュ一致)か証拠(不一致 / 依然 future)かが必ず確定
-  する。新ビューの申告集合も照合するのは「使用するビューは照合済み」の不変条件
-  のため(2 回目の再同期はしない — 有界)
+- Share the existing resyncExtended as-is (option AA-a) (sync.ts — §6.3-2b /
+  session-14 ruling G's one re-sync + extension checks). A dedicated retry
+  loop (option AA-b — N times with backoff) is rejected: align with the
+  established semantics of value signatures' and floor heads' future branches
+  ("if it doesn't resolve in one shot, it's evidence"), and don't create a
+  surface where a malicious server stretches re-syncs with future declarations
+- The match target after re-sync is the union of "the new view's own
+  declaration set + the unresolved future declarations": matching only the
+  new set would let omission (distributing a future declaration, then
+  removing it from distribution) dodge the "unresolved → (a)" judgment.
+  Carrying the original declarations over and re-verifying them on the new
+  view always settles each into either resolved-on-extension (hash match) or
+  evidence (mismatch / still future). The new view's declaration set is also
+  matched to keep the invariant "a view in use is matched" (no second
+  re-sync — bounded)
 
-**選択: resyncExtended の共有 + 和集合の再照合(1 回で打ち切り)**。
+**Choice: sharing resyncExtended + union re-matching (cut off after one)**.
 
-## 5. 裁定 AB: 照合を行う経路の範囲
+## 5. Ruling AB: the range of paths that perform matching
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- 対象は「チェーン取得応答(§16-1 の配布面)を受ける全経路」= attachProject
-  (全データ系コマンド前段 — 裁定 X)と project verify。コマンド内の再同期
-  (resyncExtended を使う CAS リトライ等)は照合しない(案 AB-b の全再同期
-  照合は棄却): 再同期は「前段で照合済みのビューの延長検査付き取得」であり、
-  その応答の申告集合は次回コマンドの前段が照合する。前段 1 点に置くことで
-  「照合とビュー採用の順序」(照合を通過したビューだけを使う)が構造的に保たれる
-- lease(ci run)は仕様どおり非参加(応答に申告がなく、verifyChainSnapshot へ
-  渡す申告は常に空 — 欠落拒否の分岐は存在しない)
-- 検証に失敗した申告・現メンバーでない attester の申告は黙って照合対象外にする
-  (§6.6 — 偽申告による警告誘発 DoS の排除。ログも出さない: 悪意サーバーが
-  無効申告を混ぜて警告ノイズを作る面を残さない)
+- The target is "every path that receives a chain-fetch response (§16-1's
+  distribution surface)" = attachProject (the pre-stage of all data
+  commands — ruling X) and project verify. In-command re-syncs (CAS retries
+  using resyncExtended etc.) do not match (option AB-b's match-all-resyncs is
+  rejected): a re-sync is "an extension-checked fetch of a view already
+  matched at the pre-stage", and that response's declaration set is matched
+  by the next command's pre-stage. Placing it at the single pre-stage point
+  structurally preserves "the order of matching vs view adoption" (only
+  matched views get used)
+- lease (ci run) stays non-participating per spec (the response carries no
+  declarations — what verifyChainSnapshot receives is always empty, so no
+  missing-rejection branch exists)
+- Declarations that fail verification and declarations whose attester isn't a
+  current member are silently excluded from matching (§6.6 — eliminating a
+  warning-triggering DoS via fake declarations. No logging either: don't
+  leave a surface where a malicious server injects invalid declarations to
+  create warning noise)
 
-**選択: attachProject + project verify の 2 点(= チェーン取得の全経路)**。
+**Choice: 2 points — attachProject + project verify (= every chain-fetch
+path)**.
 
-## 6. 裁定 AC: 提出への §12-10 (3)(効果確認)の適用要否
+## 6. Ruling AC: whether §12-10 (3) (effect confirmation) applies to submission
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- 適用しない(案 AC-a)。§12-10 (3) の効果確認は「検証可能な配布物で効果を
-  確認できる」mutation に成功の定義を与えるが、申告の配布はサーバーが選択的に
-  省略できる**規範的非保証**(§6.3 — omission = G8)であり、「次回チェーン取得の
-  attestations に自分の申告が現れること」を成功の定義にすると、正直な省略・
-  他メンバー未同期と悪意の省略を区別できない確認義務(常に失敗しうるが失敗の
-  意味がない)を作る。申告は SHOULD の advisory であり、§12-10 (3) の対象列挙
-  (チェーン追記・複合・メタ操作)が守る「効果が保証の前提になる mutation」に
-  該当しない — 値 push を適用外とした同節の線引き(確認材料が存在しない/
-  意味を持たない mutation は対象外)と同じ側に置く
-- strict 受理(§12-10 (1))は適用する(goal の固定条件 — 列挙へ追加済み)。
-  提出の失敗方向は fail-closed(旧サーバー 404 / 新旧不整合 400)+ 非失敗の
-  警告 1 行(黙殺しない — goal の裁定枠)
+- Not applied (option AC-a). §12-10 (3)'s effect confirmation defines success
+  for mutations "whose effect is confirmable in a verifiable distributed
+  artifact", but declaration distribution is a **normative non-guarantee**
+  the server may selectively omit (§6.3 — omission = G8); making "my
+  declaration appears in the next chain fetch's attestations" the definition
+  of success would create a confirmation duty that can't distinguish honest
+  omission / other members not yet synced from malicious omission (a check
+  that can always fail where failure means nothing). Declarations are a
+  SHOULD-level advisory and don't fall under the "mutations whose effect
+  grounds a guarantee" that §12-10 (3)'s target enumeration (chain appends,
+  composites, meta ops) protects — they sit on the same side as this
+  section's own line that excluded value pushes (mutations without
+  confirmation material, or where it means nothing, are out of scope)
+- strict acceptance (§12-10 (1)) applies (the goal's pinned condition —
+  already added to the enumeration). The submission's failure direction is
+  fail-closed (old server 404 / mixed old-new 400) + one line of non-failing
+  warning (don't silently swallow — the goal's ruling frame)
 
-**選択: (3) は適用外、(1) は適用**。intent レコード(§6.3 記録規律 (ii))も
-書かない — intent は効果確認義務とセットの機構であり、確認しない mutation に
-未解決 intent を積むと「要照合」の表面化だけが恒久的に残る。
+**Choice: (3) doesn't apply, (1) does**. No intent record either (§6.3
+recording discipline (ii)) — an intent is a mechanism bundled with the
+effect-confirmation duty; stacking an unresolved intent on a mutation you
+don't confirm would leave a permanent "needs matching" surface.
 
-## 7. 裁定 AD: サーバー受理検証の実装形
+## 7. Ruling AD: the implementation shape of server acceptance verification
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- §6.4 の受理列挙(呼び出し主体 = attester・現メンバー sig 鍵での署名検証・
-  申告ヘッドの自チェーン一致・seq 単調)を個別実装する(案 AD-a)のではなく、
-  クライアントと同一の verifyDistributedHeadAttestation を受理時点の履歴索引へ
-  適用する(案 AD-b — verify-value.ts が §12-5 で確立した形の踏襲)。帰結として
-  「申告ヘッド時点(inclusive)の在籍・鍵束縛」検査(§6.6 のクライアント検証
-  (1) 後半・(2))が受理面にも加わる — これは仕様列挙の上位互換: 配布された
-  申告は必ず §6.6 クライアント検証を通るべきで(§6.4 の両輪 — クライアントが
-  全拒否するデータをサーバーが保存しない)、正直なクライアントの申告(自分が
-  メンバーとして同期・検証したヘッドは自分の add 位置以降にしかない)は常に
-  満たすため、正当な提出を拒否する方向の逸脱はない
-- 理由コードの畳み込みは値署名と同一(3 語彙 — 新理由コードを作らない)。
-  chain-head-future はサーバーでは chain-head-unknown(再同期分岐はサーバーに
-  ない — VALUE_REJECT_REASONS と同じ写像)
+- Rather than implementing §6.4's acceptance enumeration separately (option
+  AD-a — caller = attester, signature verification under a current-member sig
+  key, declared-head consistency with own chain, seq monotonicity), apply the
+  client-identical verifyDistributedHeadAttestation to the acceptance-time
+  history index (option AD-b — following the shape verify-value.ts
+  established in §12-5). The consequence: the "membership and key binding as
+  of the declared head (inclusive)" check (the second half of §6.6 client
+  verification (1), and (2)) is added to the acceptance surface too — this is
+  a strictly-better superset of the spec's enumeration: a distributed
+  declaration should always pass §6.6 client verification (§6.4's two wheels
+  — the server doesn't store data all clients would reject), and an honest
+  client's declaration (a head it synced and verified as a member can only be
+  at positions after its own add) always satisfies it, so there's no
+  deviation toward rejecting legitimate submissions
+- Reason-code folding is identical to value signatures (3 vocabulary items —
+  no new reason codes). chain-head-future maps to chain-head-unknown on the
+  server (the server has no re-sync branch — same mapping as
+  VALUE_REJECT_REASONS)
 
-**選択: 案 AD-b(検証機構を二重実装しない)**。
+**Choice: option AD-b (don't implement a verification mechanism twice)**.
 
-## 8. 裁定 AE: レート窓の位置・粒度・消費規律
+## 8. Ruling AE: the rate window's position / granularity / consumption discipline
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- 位置: メンバーシップ判定(404)の後・署名検証の前。前者は §11-2(429 が
-  非メンバーへ存在を漏らさない — lease 窓の「認可の後段」と同じ論法)、後者は
-  Ed25519 検証の作業量をレートで有界にするため(拒否される提出の反復も窓を
-  消費する — 消費を受理成功に限る lease と違い、申告の窓が守る資源は検証計算
-  そのもの)
-- 粒度はメンバー単位(§16-1 の文言どおり)。行数はメンバー数で有界、
-  remove_member 受理時に申告行と一緒に窓行も削除(ストレージ収束)
-- 冪等 204(同一 seq 再提出)も窓を消費する: 「同一 seq はカウント外」とすると
-  検証を通る再送で窓を貫通できる。正直なクライアントは追跡(裁定 Y)により
-  同一ヘッドを再提出しないため、実害は追跡喪失時の 1 回分に閉じる
+- Position: after the membership check (404), before signature verification.
+  The former follows §11-2 (429 must not leak existence to non-members — the
+  same argument as the lease window's "behind authorization"); the latter
+  bounds Ed25519 verification work by rate (repeated rejected submissions
+  also consume the window — unlike the lease where consumption is limited to
+  successful acceptance, the resource the declaration window protects is the
+  verification computation itself)
+- Granularity is per member (per §16-1's wording). Rows are bounded by member
+  count, and remove_member acceptance deletes the window row together with
+  the declaration rows (storage convergence)
+- Idempotent 204 (re-submitting the same seq) also consumes the window:
+  exempting "same seq" would let verification-passing resends pierce the
+  window. An honest client doesn't re-submit the same head thanks to tracking
+  (ruling Y), so the real cost closes at 1 hit on tracking loss
 
-**選択: 上記のとおり(起草値 60/時をそのまま採用 — 調整は PR レビュー)**。
+**Choice: as above (adopted the drafted 60/hour as-is — adjustment is for PR
+review)**.
 
-## 9. 実装内容の要約
+## 9. Summary of what was implemented
 
-- **test-vectors**(先行コミット f5abc69): head-attestation.json — 正例 3
-  (basic / reader / removed-attester-in-tenure〔検証は通るが配布対象外の意図
-  固定〕)+ 署名系 negative 6 + 検証規則系 negative 3(chain-head-mismatch /
-  chain-head-future の 2 種区別と在籍境界)。生成器の全再実行で既存ベクターの
-  バイト一致再現を確認(加法のみ)。README 規約 23 を追記
-- **crypto**: head-attestation.ts — §2.1 LP + ドメイン分離の signed_bytes、
-  Ed25519 sign / raw verify、履歴ベース verifyDistributedHeadAttestation
-  (validate.ts の共有コア — value / meta と同一の検査順)。現メンバー選別は
-  意図的に呼び出し側(removed-attester positive と整合)。4 実行環境ハーネス
-  全 PASS
-- **api-schema / core**: PUT /projects/:projectId/head-attestation(204・strict
-  §12-10 (1))、AttestationRegression(409 + storedSeq)/ AttestationRejected
-  (422・3 理由)/ AttestationRateLimited(429)、チェーン取得応答へ
-  attestations を optionalKey で加法追加(欠落 = 拒否しない)
-- **server**: attestation-accept.ts(裁定 AD/AE の受理列)+ head_attestations /
-  attestation_windows の DO マイグレーション + remove_member 受理副作用の行削除
-  (chain-accept.ts — 旧鍵ラップ掃除と同型)+ 配布側の現メンバー絞り込み
-  (独立の防衛層)。受理時刻は保存するが配布しない(配布材料の型が持たない)
-- **CLI**: attestation.ts(照合 + 提出 — 裁定 X/Y/Z/AA/AB)、sync.ts の
-  attestations 運搬(未検証)、floor.ts / floor-log.ts の追跡・証拠ストア、
-  attachProject / project verify への接続
-- **docs**: SELF_HOSTING.md に更新順(新 CLI × 旧サーバー = 提出は非失敗の
-  警告・attestations 欠落 = 空扱いで拒否しない)を追記
+- **test-vectors** (advance commit f5abc69): head-attestation.json — 3
+  positives (basic / reader / removed-attester-in-tenure [pins the intent
+  that verification passes but it's excluded from distribution]) + 6
+  signature-family negatives + 3 verification-rule negatives (the 2-way
+  distinction of chain-head-mismatch / chain-head-future, and a membership
+  boundary). Confirmed byte-identical reproduction of existing vectors on a
+  full generator re-run (additions only). Recorded as README convention 23
+- **crypto**: head-attestation.ts — §2.1 LP + domain-separated signed_bytes,
+  Ed25519 sign / raw verify, history-based verifyDistributedHeadAttestation
+  (validate.ts's shared core — the same check order as value / meta).
+  Current-member selection is intentionally the caller's job (consistent with
+  the removed-attester positive). 4-runtime harness all PASS
+- **api-schema / core**: PUT /projects/:projectId/head-attestation (204,
+  strict §12-10 (1)), AttestationRegression (409 + storedSeq) /
+  AttestationRejected (422, 3 reasons) / AttestationRateLimited (429),
+  attestations added to the chain-fetch response via optionalKey (absence is
+  not rejected)
+- **server**: attestation-accept.ts (the acceptance row of rulings AD/AE) +
+  DO migrations for head_attestations / attestation_windows + row deletion as
+  a remove_member acceptance side effect (chain-accept.ts — same shape as old
+  key-wrap cleanup) + current-member narrowing on the distribution side (an
+  independent defense layer). Acceptance time is stored but not distributed
+  (the distributed material's type doesn't carry it)
+- **CLI**: attestation.ts (matching + submission — rulings X/Y/Z/AA/AB),
+  attestations carriage in sync.ts (unverified), the tracking / evidence
+  stores in floor.ts / floor-log.ts, wiring into attachProject / project
+  verify
+- **docs**: SELF_HOSTING.md gained the update order (new CLI × old server =
+  submission is a non-failing warning, missing attestations = treated as
+  empty and not rejected)
 
-## 10. テストの固定点(要約 — session-27 §13-5 の申告項)
+## 10. What the tests pin (summary — session-27 §13-5's declaration items)
 
-- crypto(4 環境): ベクター全件(正例の決定論的再署名・配布検証、negative の
-  理由コード固定)+ removed attester の現メンバー選別材料 + invalid-input 境界
-- サーバー(vitest-pool-workers): reader の read スコープ提出可 + 配布の
-  attester 情報 + 受理時刻非配布(ワイヤのキー集合で固定)/ 単調受理(前進
-  upsert・冪等 204・後退 409 + storedSeq)/ 検証拒否(署名壊れ・未知ヘッド・
-  future)/ 呼び出し主体 = attester の構造的強制 / 非メンバー・未初期化 404 /
-  メンバー単位レート窓 429(他メンバー独立)/ remove 時の行削除と配布からの
-  消失 / strict 受理(未知フィールド 400 — strict-payload.test.ts)
-- CLI: 選別(偽署名・履歴外・非現メンバー・削除済みの在籍中過去申告)/ 照合の
-  2 種区別((a) 即時証拠・(b) 再同期解決・(b) 未解決 = 証拠)/ 証拠 JSONL の
-  内容(申告 + 自ビューダイジェスト)/ runCli(project verify)経由の中断 /
-  提出契機(前進時のみ — 追跡の永続化)/ 提出失敗の非失敗警告(旧サーバー
-  404)/ 409 の区別警告
+- crypto (4 runtimes): all vectors (deterministic re-signing of positives,
+  distribution verification, reason codes of negatives) + current-member
+  selection material for removed attester + invalid-input boundaries
+- Server (vitest-pool-workers): a reader submitting with read scope +
+  distributed attester info + acceptance time not distributed (pinned by the
+  wire's key set) / monotonic acceptance (advancing upsert, idempotent 204,
+  regression 409 + storedSeq) / verification rejections (broken signature,
+  unknown head, future) / structural enforcement of caller = attester /
+  non-member & uninitialized 404 / per-member rate window 429 (independent
+  across members) / row deletion on remove + disappearance from distribution
+  / strict acceptance (unknown field 400 — strict-payload.test.ts)
+- CLI: selection (fake signature, outside history, non-current-member,
+  in-tenure past declaration by a removed member) / matching's 2-way
+  distinction ((a) immediate evidence, (b) resolved-by-resync, (b) unresolved
+  = evidence) / evidence JSONL's content (declaration + self-view digest) /
+  abort via runCli(project verify) / submission triggers (only on advance —
+  tracking persistence) / non-failing warning on submission failure (old
+  server 404) / distinct warning on 409
 
-## 11. PR #101 レビュー対応(マージ前追記)
+## 11. PR #101 review response (pre-merge addendum)
 
-- **pullfrog**: (1) 提出抑制を seq のみ → ヘッド同一性(seq + hash)へ —
-  床 fail-open 下の同一 seq・異ハッシュ equivocation で申告経路を閉じない。
-  (2) 再照合和集合の重複排除を導入し、キーはワイヤ全 6 フィールド — 部分キー
-  だと悪意あるサーバーが 1 フィールドだけ書き換えたレコードで持ち越し分
-  (first.future)をキー衝突で捨てさせられ、裁定 AA の omission bypass 封鎖が
-  無効化される(偽側は署名検証の無言 skip に落ちるため痕跡も残らない)
-- **Cursor Security Agent(HIGH)**: 床ヘッドの前進が loadCheckedFloor の中
-  (ゴシップ照合より前)にあり、照合が硬い証拠で中断したビューのヘッドが床の
-  恒久記録になっていた。拒否した fork が床になると、以後の正直なチェーンが
-  床のハッシュ不一致で恒久拒否される(検出済み equivocation を wedge に転化
-  できる)。修正: 床前進を loadCheckedFloor から reconcileGossip の末尾
-  (床・アンカー・ゴシップの全検査通過後)へ移動し、project verify も同じ
-  reconcileGossip を通す形に一本化。中断時に床が前進しないこと・成功時は
-  従来どおり前進することをコマンド水準のテストで固定
+- **pullfrog**: (1) changed submission suppression from seq-only to head
+  identity (seq + hash) — don't close the declaration path on same-seq
+  different-hash equivocation under floor fail-open. (2) introduced
+  deduplication in the re-match union, keyed on all 6 wire fields — with a
+  partial key a malicious server could rewrite just 1 field of a record and
+  make the carried-over one (first.future) be dropped on a key collision,
+  nullifying ruling AA's omission-bypass closure (the forged side falls into
+  the silent skip of signature verification, leaving no trace)
+- **Cursor Security Agent (HIGH)**: floor-head advancement was inside
+  loadCheckedFloor (before gossip matching), so a view aborted on hard
+  evidence had its head recorded permanently in the floor. Once a rejected
+  fork becomes the floor, every subsequent honest chain is permanently
+  rejected on floor hash mismatch (a detected equivocation converts into a
+  wedge). Fix: moved floor advancement from loadCheckedFloor to the end of
+  reconcileGossip (after all floor / anchor / gossip checks pass), and
+  unified project verify to go through the same reconcileGossip. Pinned by
+  command-level tests that the floor doesn't advance on abort and advances as
+  before on success

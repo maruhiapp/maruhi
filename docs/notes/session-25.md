@@ -1,186 +1,214 @@
-# セッション 25 メモ(Phase 2 Wave 2 A3 — CLI の CI モード + setup-maruhi action)
+# Session 25 notes (Phase 2 Wave 2 A3 — CLI CI mode + setup-maruhi action)
 
-日付: 2026-08-17。前提: Wave 2 の A1(PR #63)/ A2(PR #65)/ リプレイ先着束縛
-(PR #67)/ B1a(#68)/ B1b(#69)/ B2(#70)/ C1(#71)マージ済みの main。
-スコープ: A3 = ワークロードリースの CI クライアント(`maruhi ci run`)+
-リポジトリ内 setup-maruhi action。Wave 2 の最終ピースであり、ROADMAP Phase 2
-「GitHub Actions 同期」の仕上げ。仕様は CRYPTO_SPEC §9.1 / AUTH_SPEC §14 /
-session-24 §8 / セキュリティレビュー A-5 に従い、**本セッションで仕様変更はない**
-(クライアント実装のみ。crypto 層・ワイヤ形・ベクターは不変)。
+Date: 2026-08-17. Prerequisites: main with Wave 2's A1 (PR #63) / A2 (PR #65) /
+replay first-binding (PR #67) / B1a (#68) / B1b (#69) / B2 (#70) / C1 (#71)
+merged.
+Scope: A3 = the CI client for workload leases (`maruhi ci run`) + the in-repo
+setup-maruhi action. The final piece of Wave 2 and the finishing of ROADMAP
+Phase 2 "GitHub Actions sync". Per CRYPTO_SPEC §9.1 / AUTH_SPEC §14 /
+session-24 §8 / security review A-5, **no spec changes in this session**
+(client implementation only. Crypto layer, wire shapes, and vectors unchanged).
 
-## 1. コマンド形: `maruhi ci run -- <cmd>`(新グループ `ci`)
+## 1. Command shape: `maruhi ci run -- <cmd>` (new group `ci`)
 
-検討した形と判断:
+Shapes considered and the judgment:
 
-- **採用: `maruhi ci run`(グループ `ci` + サブコマンド `run`)**。CI モードは
-  `run` の変種ではなく**前提構造がまるごと別**である: 認証 = OIDC のみ
-  (maruhi トークン・キーチェーン・セッション文脈を一切使わない — AUTH_SPEC
-  §14-1)、設定 = 明示フラグのみ(config ファイル非依存 — §2)、床・ピン =
-  持たない(使い捨てランナー)、検証材料 = lease 応答に同梱(他 API を呼ばない
-  — §14-2)。宣言(必須フラグの集合・`--audience` / `--anchor` の存在)も
-  まるごと別になる
-- **却下: `run --ci`**。1 つのフラグが「他のどのフラグが必須・禁止か」を反転
-  させる形は、ADR-0016 決定 6 が入れ子サブコマンド化で廃止した「その操作に
-  適用されないオプションの拒否機構」を引数層へ逆輸入する。宣言が分かれて
-  いれば機構は要らない
-- **却下: `lease run`**。「リース」はプロトコル語彙で、利用者の語彙は
-  「CI で走らせる」。grant 側(管理者)の語彙に lease-policy が既に居るのとは
-  対象ユーザーが違う
-- グループにするのは、Phase 3 のエージェントリース(ROADMAP)や将来の
-  ワークロード系コマンドが同じ前提構造(OIDC・非対話・キーチェーンなし)を
-  共有する見込みのため。v1 の葉は `run` の 1 つだけ
+- **Adopted: `maruhi ci run` (group `ci` + subcommand `run`)**. CI mode is not
+  a variant of `run` — its **whole premise structure is different**: auth =
+  OIDC only (never touches a maruhi token, keychain, or session context —
+  AUTH_SPEC §14-1), config = explicit flags only (no config-file dependence —
+  §2), floor & pinning = none (disposable runner), verification material =
+  bundled in the lease response (no other API called — §14-2). The declaration
+  (the required-flag set, the existence of `--audience` / `--anchor`) is also
+  entirely different
+- **Rejected: `run --ci`**. A form where one flag inverts "which other flags
+  are required / forbidden" re-imports into the argument layer the
+  "reject options that don't apply to this operation" mechanism that ADR-0016
+  decision 6 abolished by going to nested subcommands. With separate
+  declarations, no mechanism is needed
+- **Rejected: `lease run`**. "Lease" is protocol vocabulary; the user's
+  vocabulary is "run it in CI". The grant side (admins) already having
+  lease-policy in its vocabulary is a different audience
+- It's a group because Phase 3's agent lease (ROADMAP) and future workload
+  commands are expected to share the same premise structure (OIDC,
+  non-interactive, no keychain). v1 has only one leaf: `run`
 
-## 2. 設定の運搬: すべて明示フラグ(env 変数・設定ファイルは使わない)
+## 2. Carrying configuration: explicit flags only (no env vars or config files)
 
-`--server <url>` / `--project <genesis>` / `--env <id>` は必須、
-`--audience <value>`(既定 = server の正規化 origin — AUTH_SPEC §14-1 の推奨値)と
-`--anchor <path>`(§4)は任意。
+`--server <url>` / `--project <genesis>` / `--env <id>` are required;
+`--audience <value>` (default = the server's normalized origin — the
+recommended value in AUTH_SPEC §14-1) and `--anchor <path>` (§4) are optional.
 
-- **フラグを採る理由**: 4 値はすべて非機密で、置き場所はワークフロー YAML =
-  **コードレビューを通るリポジトリ内容**である。§9.1 の検証義務 (1) は
-  「genesis をワークロード設定に事前固定する」ことを要求しており、
-  `--project`(プロジェクト ID = genesis ハッシュ — CRYPTO_SPEC §6.4)を
-  YAML に書かせる形はこの「固定」を最も見えやすい場所(diff レビュー)に置く。
-  フラグは grep 可能で、workflow の見た目 = 実行時の値
-- **却下: 設定ファイル**。CI ランナーに永続 config は無く、ジョブ内で config を
-  書くのは「ディスク上の状態」を 1 つ増やすだけで、genesis 固定をレビューから
-  隠す。既存 config(`~/.config/maruhi`)への依存は「ログイン・キーチェーン
-  非依存」の規律とも混線する(defaultProject へ黙ってフォールバックする事故面)
-- **却下: MARUHI_* env 変数フォールバック**。env はワークフローの見た目から
-  値の出所が消える(親ステップ・複合 action・runner 設定のどこからでも注入
-  できる)。genesis 固定の意義が「レビューされた値であること」にある以上、
-  既定経路にしない。将来 setup action が env を export する形を足す場合も、
-  フラグ明示を既定に保つ
-- **例外 = ランナー供給の env**: `ACTIONS_ID_TOKEN_REQUEST_URL` /
-  `ACTIONS_ID_TOKEN_REQUEST_TOKEN` は GitHub Actions ランナーが供給する
-  OIDC 発行エンドポイントで、ユーザー設定ではない。読み出しは `CliIo.envVar`
-  (Effect サービス境界)経由 — 計画時に見込んだ「CliServices の拡張」は
-  不要だった: `CliIo` が既に envVar を提供しており(本番 = process.env、
-  テスト = 差し替え Map)、`process.env` を直接読まない規律はそのまま満たせる
+- **Why flags**: all 4 values are non-sensitive, and their home is the workflow
+  YAML = **repository content that goes through code review**. §9.1's
+  verification duty (1) requires "pinning the genesis into the workload
+  configuration in advance", and making `--project` (project ID = genesis hash
+  — CRYPTO_SPEC §6.4) be written in the YAML puts that "pinning" in the most
+  visible place (diff review). Flags are greppable, and a workflow's appearance
+  = its runtime values
+- **Rejected: a config file**. CI runners have no persistent config, and
+  writing a config inside the job just adds one more "on-disk state" while
+  hiding the genesis pinning from review. Depending on the existing config
+  (`~/.config/maruhi`) would also tangle with the "no login / keychain"
+  discipline (the accident surface of silently falling back to
+  defaultProject)
+- **Rejected: MARUHI_* env-var fallback**. With env, the workflow's appearance
+  loses where the value came from (it can be injected from a parent step, a
+  composite action, or runner config). Since the point of pinning genesis is
+  "the value was reviewed", it's not a default path. Even if a future setup
+  action adds an env-exporting form, flag-explicit stays the default
+- **Exception = runner-supplied env**: `ACTIONS_ID_TOKEN_REQUEST_URL` /
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are the OIDC issuance endpoint supplied by
+  the GitHub Actions runner, not user configuration. Reads go through
+  `CliIo.envVar` (the Effect service boundary) — the anticipated "extend
+  CliServices" turned out unnecessary: `CliIo` already provides envVar
+  (production = process.env, tests = a swapped Map), so the discipline of not
+  reading `process.env` directly is already satisfied
 
-## 3. OIDC トークンと一時鍵の取り扱い
+## 3. Handling the OIDC token and ephemeral key
 
-- **一時 X25519 鍵は起動ごとにメモリ内生成**(WebCrypto、秘密鍵は非抽出)。
-  ディスクにも応答にも現れず、プロセス終了とともに消える(§9.1)
-- **トークンは lease 要求の直前に発行**(session-24 §8 SHOULD — 先着窓の
-  最小化)。`ACTIONS_ID_TOKEN_REQUEST_URL` に `&audience=` を付けて GET、
-  Bearer は `ACTIONS_ID_TOKEN_REQUEST_TOKEN`。env 変数が無ければ
-  「GitHub Actions 外か `permissions: id-token: write` の欠落」を名指しして
-  通信前に落とす
-- **トークンはベアラー資格情報として `Redacted` で包む**。剥がすのは
-  (a) claims 読み出し(base64url decode + JSON.parse — 署名検証はサーバーの
-  仕事でクライアントは自トークンの iss / sub / aud を読むだけ。JWT ライブラリは
-  足さない)、(b) lease リクエストの payload 組み立て、の 2 か所のみ
-  (redacted.test.ts の棚卸しに登録)。ログ・エラー・診断には出さない
-- **claims_digest は `computeLeaseClaimsDigest`**(A-5-1 — builder 直接使用は
-  空フィールドガードを迂回する)。`aud` が配列で要素数 ≠ 1 のトークンは
-  クライアント側でも拒否する(サーバーの `ambiguous-audience` と同じ判定 —
-  digest が一意に決まらない)
-- **1 呼び出し = 1 トークン = 1 一時鍵**。lease エンドポイントは環境単位で、
-  `ci run` も環境単位なので、§14-1 の MUST(1 トークンで複数環境をリースする
-  なら全リクエストで同一鍵)は構成上満たされる。1 ジョブで複数環境を使う場合は
-  `ci run` を環境ごとに実行する = 環境ごとに新規トークン + 新規鍵(GitHub は
-  ランタイム発行型なのでこの形が許される)。トークンを跨いで使い回す経路は
-  作らない
-- **`token-replayed` は新規トークンで 1 回だけ自動再試行**(session-24 §8 MAY —
-  上限 1 回)。一時鍵は同じものを提示する(新トークンは未束縛なので自鍵に
-  束縛される。鍵を替える理由がなく、生成コストも無駄)。再試行後も
-  `token-replayed` なら、トークン漏洩の兆候として案内を出して失敗する
-- **429 は自動再試行しない**: 窓は固定 1 時間(§14-3)で、ジョブ内リトライは
-  窓を消費するだけ。`retryAfterSeconds` を表示して失敗させ、リトライの判断は
-  CI 側(re-run)に委ねる
-- **503 は理由別の案内で失敗**(§14-3 の 2 理由 + server-wraps-missing):
-  `oidc-jwks-unavailable` = 一過性(ジョブ再実行を案内)、
-  `server-key-unconfigured` = デプロイ設定の欠落(SELF_HOSTING.md へ誘導)、
-  `server-wraps-missing` = grant 済みだが再ラップ未了(管理者の rotate /
-  バックフィルへ誘導)。いずれも資格情報の異常ではないことを文面で区別する
-  (401 と混ぜない — §14-3 が区分を分けた意図の伝達)
+- **The ephemeral X25519 key is generated in memory per invocation** (WebCrypto,
+  private key non-extractable). It appears neither on disk nor in responses and
+  dies with the process (§9.1)
+- **The token is issued immediately before the lease request** (session-24 §8
+  SHOULD — minimizes the first-use window). GET `ACTIONS_ID_TOKEN_REQUEST_URL`
+  with `&audience=` appended, Bearer is `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. If
+  the env vars are absent, it fails before any communication, naming "outside
+  GitHub Actions or missing `permissions: id-token: write`"
+- **The token is wrapped in `Redacted` as a bearer credential**. It's unwrapped
+  at only two points: (a) reading claims (base64url decode + JSON.parse —
+  signature verification is the server's job; the client only reads its own
+  token's iss / sub / aud. No JWT library is added), (b) assembling the lease
+  request payload (registered in redacted.test.ts's inventory). Never appears
+  in logs, errors, or diagnostics
+- **claims_digest uses `computeLeaseClaimsDigest`** (A-5-1 — using the builder
+  directly bypasses the empty-field guard). A token whose `aud` is an array
+  with ≠1 elements is rejected client-side too (same check as the server's
+  `ambiguous-audience` — the digest wouldn't be uniquely determined)
+- **1 invocation = 1 token = 1 ephemeral key**. The lease endpoint is
+  per-environment and `ci run` is per-environment, so §14-1's MUST (when
+  leasing multiple environments on one token, present the same key on every
+  request) is satisfied by construction. To use multiple environments in one
+  job, run `ci run` per environment = a fresh token + fresh key per
+  environment (GitHub is a runtime-issuing type so this shape is allowed).
+  There is no path that reuses a token across calls
+- **`token-replayed` auto-retries once with a fresh token** (session-24 §8 MAY
+  — cap 1). The same ephemeral key is presented (a fresh token is unbound, so
+  it binds to your key. There's no reason to change the key, and generation
+  cost would be wasted). If it's still `token-replayed` after retrying, the
+  command fails with guidance treating it as a sign of token leakage
+- **429 is not auto-retried**: the window is a fixed 1 hour (§14-3) and a
+  in-job retry only spends the window. It shows `retryAfterSeconds` and fails;
+  the retry decision is delegated to the CI side (re-run)
+- **503 fails with reason-specific guidance** (§14-3's 2 reasons +
+  server-wraps-missing): `oidc-jwks-unavailable` = transient (advise re-running
+  the job), `server-key-unconfigured` = a deploy-config gap (point at
+  SELF_HOSTING.md), `server-wraps-missing` = granted but re-wraps incomplete
+  (point at admin rotate / backfill). The wording distinguishes all of these
+  from credential abnormalities (don't conflate with 401 — conveying §14-3's
+  intent in separating the categories)
 
-## 4. 検証義務の実装(CRYPTO_SPEC §9.1 の (1)〜(4))
+## 4. Implementing the verification duties (CRYPTO_SPEC §9.1 (1)–(4))
 
-lease 応答は自己完結(AUTH_SPEC §14-2)— 検証材料を他のエンドポイントへ
-取りに行かない。実装は既存のクライアント検証部品を再利用する:
+The lease response is self-contained (AUTH_SPEC §14-2) — it doesn't fetch
+verification material from other endpoints. The implementation reuses existing
+client-verification parts:
 
-- **(1) チェーン検証**: `sync.ts` から `verifyChainSnapshot`(全再検証 +
-  genesis ハッシュ = `--project` の固定値との一致 + 申告ヘッドと導出ヘッドの
-  整合)を切り出し、`syncProject`(取得 + 検証)と lease 応答(同梱チェーンの
-  検証)の両方が同じ実装を通る。応答の `projectId` / `currentEpoch` 申告値も
-  検証済み導出値との一致を検査する(申告値を信用しない — 既存の姿勢)
-- **(2) リポジトリアンカー(SHOULD)**: **実装する**。生成側 =
-  `maruhi project anchor`(メンバーが検証済みビューからアンカー JSON を
-  stdout へ出力し、リポジトリへコミットする)、検査側 = `ci run --anchor
-  <path>`(genesis 一致・ピン留めヘッドの包含・環境ごとのエポック非後退)。
-  「rotate / push 成功時に更新を提案する」の SHOULD は今回見送る(検出の
-  安全性はアンカーの鮮度に単調で、更新提案は UX 改善であって性質を変えない。
-  運用は rotate 後に `project anchor` を再実行して commit — action の README に
-  明記)。`--anchor` 自体も任意(SHOULD)だが、README のテンプレートには含める
-- **(3) DEK コミットメント照合**: `unwrapLeaseDek` で開封した DEK は
-  `verifyDekCommitment`(チェーン導出の (environment, epoch) コミットメント)を
-  通るまで使わない(§5.2)。DEK 長の検査を開封層で二重に発明しない(A-5-2 —
-  32 バイト以外を Seal した悪意サーバーはコミットメント照合で落ちる)。
-  リースラップは §5.1 登録署名を**持たない**(サーバー生成・応答スコープ —
-  ワイヤ型 `LeasedDek` が構造的に区別する)ため、deks.ts の署名検証段は
-  適用されず、エポック上限(チェーン導出現エポック以下)・重複拒否・
-  コミットメント存在の検査を lease 専用の開封層に置く
-- **(4) 値署名・メタステートメント検証**: values.ts の検証骨格
-  (`verifyAllCommon` — 環境ステートメント → アクティブ集合 → tombstone →
-  名前検査)を lease 用入口 `verifyLeaseDistribution` として公開する。
-  pull と違う点は 1 つだけ: **future head(宣言 seq > 同梱チェーンのヘッド)は
-  再同期せず即時拒否**する。チェーンは同じ応答に同梱されており、「自分の
-  チェーンが古いだけ」という正直な説明が存在しない(応答が自己矛盾している)
-- **床は持たない**: ランナーは使い捨てで、床の永続化は意味を持たない
-  (§14.3-3 の床なし初回同期クラス)。その主要な緩和が (2) のアンカーである
+- **(1) Chain verification**: extracted `verifyChainSnapshot` from `sync.ts`
+  (full re-verification + genesis hash = the pinned `--project` value +
+  declared-head vs derived-head consistency) so both `syncProject` (fetch +
+  verify) and the lease response (verify the bundled chain) go through the
+  same implementation. The response's `projectId` / `currentEpoch` declared
+  values are also checked against verified derived values (declared values are
+  not trusted — the existing posture)
+- **(2) Repository anchor (SHOULD)**: **implemented**. The producing side =
+  `maruhi project anchor` (a member prints anchor JSON to stdout from a
+  verified view and commits it to the repository); the checking side =
+  `ci run --anchor <path>` (genesis match, inclusion of the pinned head,
+  per-environment epoch non-regression). The second half of the SHOULD —
+  "offer an update on rotate / push success" — is deferred (detection safety is
+  monotonic in anchor freshness; an update offer is a UX improvement and
+  doesn't change the property. Operationally: re-run `project anchor` after
+  rotating and commit — noted in the action's README). `--anchor` itself is
+  also optional (SHOULD) but is included in the README template
+- **(3) DEK commitment matching**: a DEK unwrapped by `unwrapLeaseDek` is not
+  used until it passes `verifyDekCommitment` (the chain-derived
+  (environment, epoch) commitment) (§5.2). No DEK-length check is invented
+  twice at the unwrap layer (A-5-2 — a malicious server Sealing something
+  other than 32 bytes is caught by the commitment match). Lease wraps carry
+  **no** §5.1 registration signature (server-generated, response-scoped — the
+  wire type `LeasedDek` distinguishes them structurally), so deks.ts's
+  signature-verification stage doesn't apply; the lease-specific unwrap layer
+  carries the epoch-cap (≤ chain-derived current epoch), duplicate rejection,
+  and commitment-existence checks
+- **(4) Value-signature / meta-statement verification**: values.ts's
+  verification skeleton (`verifyAllCommon` — environment statement → active
+  set → tombstone → name check) is exported as the lease entry point
+  `verifyLeaseDistribution`. One difference from pull: **a future head
+  (declared seq > the bundled chain's head) is rejected immediately without
+  re-syncing**. The chain is bundled in the same response, so no honest
+  explanation of "my chain is just stale" exists (the response would be
+  self-contradictory)
+- **No floor**: the runner is disposable and floor persistence means nothing
+  (the floor-less first-sync class of §14.3-3). Its main mitigation is (2)'s
+  anchor
 
-## 5. 実装配置
+## 5. Implementation layout
 
-- `apps/cli/src/oidc-github.ts` — OIDC トークン取得(CliIo.envVar + fetch)と
-  claims 読み出し(Redacted 剥がし 1 箇所)
-- `apps/cli/src/lease-client.ts` — lease 応答の検証・開封・復号(§4 の
-  (1)(3)(4) + アンカー検査)。産物は `DecryptedVariable[]`(run と同じ型)
-- `apps/cli/src/ci-run.ts` — オーケストレーション(鍵生成 → トークン →
-  issue〔token-replayed 1 回再試行〕→ 検証 → `runOp`)。注入境界は run と同じ
-  `buildInjectionEnv` / `ProcessRunner`(ディスクレス不変条件)
-- `apps/cli/src/anchor.ts` — アンカー形式(JSON)の生成・解釈・検査
-- 引数層は ADR-0016 の様式(宣言 + GROUP_CONFIGS + COMMAND_SPECS +
-  cli-formatter)。`ci run` は `run` と同じ `--` 規律(commandAfterTerminator)
-- `failure.ts` に Lease 系 3 エラーの写像を追加(理由コードのみ — トークン値・
-  外部識別子を運ばない)
-- agent-gate には触れない: `ci run` は値の表示ではなく注入(run と同じ
-  サンクションされた消費経路)。isAgent ゲートは 9 箇所のまま
+- `apps/cli/src/oidc-github.ts` — OIDC token fetch (CliIo.envVar + fetch) and
+  claims readout (the 1 Redacted-unwrap site)
+- `apps/cli/src/lease-client.ts` — verify, unwrap, decrypt the lease response
+  (§4's (1)(3)(4) + anchor check). The product is `DecryptedVariable[]` (the
+  same type as run)
+- `apps/cli/src/ci-run.ts` — orchestration (key generation → token →
+  issue[1 retry on token-replayed]→ verify → `runOp`). The injection
+  boundary is the same as run: `buildInjectionEnv` / `ProcessRunner` (the
+  diskless invariant)
+- `apps/cli/src/anchor.ts` — generate / parse / check the anchor format (JSON)
+- The argument layer follows ADR-0016's format (declarations + GROUP_CONFIGS +
+  COMMAND_SPECS + cli-formatter). `ci run` shares `run`'s `--` discipline
+  (commandAfterTerminator)
+- `failure.ts` gains mappings for the 3 Lease errors (reason codes only — no
+  token values or external identifiers carried)
+- agent-gate is untouched: `ci run` is value injection, not value display (the
+  same sanctioned consumption path as run). The isAgent gates stay at 9 places
 
 ## 6. setup-maruhi action
 
-- 置き場所は `actions/setup-maruhi/`(composite)。`uses:
-  maruhiapp/maruhi/actions/setup-maruhi@<ref>` で参照する(action の checkout は
-  リポジトリ全体を含むため、`packaging/install.sh` の検証ロジック —
-  checksums.txt の SHA-256 必須検証・検証前にインストール先へ書かない — を
-  そのまま再利用する)。マーケットプレイス公開は Phase 2 の public 化と同時
-  (現時点ではリポジトリ内 + README)
-- inputs: `version`(タグ。プレリリース期間は必須 — install.sh と同じ理由で
-  latest 解決が存在しない)。インストール先はランナーのツールディレクトリで、
-  `$GITHUB_PATH` へ追記する
-- README(英語)に `permissions: id-token: write` の必須を明記し、
-  `maruhi ci run` のワークフロー例(アンカー込み)を載せる
+- Lives at `actions/setup-maruhi/` (composite). Referenced as `uses:
+  maruhiapp/maruhi/actions/setup-maruhi@<ref>` (an action's checkout includes
+  the whole repository, so `packaging/install.sh`'s verification logic —
+  mandatory SHA-256 check of checksums.txt, never writing to the install
+  destination before verification — is reused as-is). Marketplace publication
+  happens together with Phase 2's going-public (for now: in-repo + README)
+- inputs: `version` (a tag. Required during the pre-release period — for the
+  same reason as install.sh, no `latest` resolution exists). The install
+  destination is the runner's tool directory, appended to `$GITHUB_PATH`
+- The README (English) documents that `permissions: id-token: write` is
+  required and shows a `maruhi ci run` workflow example (with the anchor)
 
-## 7. テスト方針
+## 7. Test approach
 
-lease エンドポイント = MockServer 偽装(実 crypto フィクスチャで応答を組み、
-リクエストの `ephemeralPubHex` へ動的に `wrapLeaseDek` する)。OIDC 発行 =
-MockServer の別パス(署名はダミー — クライアントは検証しない)、env 読み =
-テスト層の `setEnvVar`。負例で固定するもの: 改竄チェーン / genesis 不一致 /
-コミットメント不一致(毒ラップ)/ 値署名不正 / claims_digest 不一致(別ジョブ
-文脈向けラップの転用)/ token-replayed(1 回で回復・2 回で打ち切り、一時鍵の
-同一性と新規トークンの発行)/ 503 の 2 理由 / 429 / OIDC env 欠落 / アンカー
-違反(ヘッド不包含・エポック後退)。サーバー側の判定は apps/server/test/
-lease.test.ts が既に固定しており重複させない(クライアント挙動に集中する)。
+lease endpoint = MockServer impersonation (responses built from real crypto
+fixtures, dynamically `wrapLeaseDek`ing to the request's `ephemeralPubHex`).
+OIDC issuance = a separate MockServer path (signature is a dummy — the client
+doesn't verify it); env reads = the test layer's `setEnvVar`. What the
+negatives pin: tampered chain / genesis mismatch / commitment mismatch (poison
+wrap) / bad value signature / claims_digest mismatch (reuse of a wrap meant
+for another job context) / token-replayed (recovers in 1, gives up at 2,
+ephemeral-key identity and fresh-token issuance) / 503's 2 reasons / 429 /
+missing OIDC env / anchor violations (head not included, epoch regression).
+Server-side decisions are already pinned by apps/server/test/lease.test.ts and
+aren't duplicated (focus on client behavior).
 
-## 8. 申し送り
+## 8. Handoff
 
-- アンカー更新の提案(rotate / push 成功時 — CRYPTO_SPEC §6.3 (b) の SHOULD の
-  後半)は未実装。運用は `maruhi project anchor` の手動再実行。UX 改善として
-  独立 PR の候補
-- setup-maruhi のマーケットプレイス公開・タグ運用(`v1` メジャータグ)は
-  Phase 2 public 化と同時に判断する
-- 事前発行型 issuer(GitLab / k8s)対応は、トークンの供給経路(env / file)を
-  差し替えるだけで `ci run` の検証・開封層はそのまま使える構造にしてある
-  (oidc-github.ts の分離が差し替え点)
+- The anchor-update offer (on rotate / push success — the second half of
+  CRYPTO_SPEC §6.3 (b)'s SHOULD) is unimplemented. Operational practice is
+  manually re-running `maruhi project anchor`. A candidate for an independent
+  UX-improvement PR
+- Marketplace publication and tag operation (`v1` major tag) for setup-maruhi
+  is decided together with Phase 2 going-public
+- Supporting pre-issuing issuers (GitLab / k8s): the structure lets you swap
+  only the token-supply path (env / file) while the `ci run` verify/unwrap
+  layer stays reusable (oidc-github.ts's separation is the substitution point)
