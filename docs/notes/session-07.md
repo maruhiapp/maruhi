@@ -1,309 +1,314 @@
-# セッション 07 メモ(変数値 API + 監査ログ — AUTH_SPEC §12 / AUDIT_SPEC 実装)
+# Session 07 notes (variable-value API + audit log — AUTH_SPEC §12 / AUDIT_SPEC implementation)
 
-日付: 2026-08-02。前提: PR #16 / #17 マージ済み(D1 + 認証基盤 + チェーン API 認可)。
-スコープ: 環境・変数・DEK ラップのデータプレーン API(仕様裁定 → AUTH_SPEC §12 →
-実装)と、監査ログの project DO 側(AUDIT_SPEC §3.3 / §3.4 / §5.1)。
+Date: 2026-08-02. Prerequisites: PR #16 / #17 merged (D1 + auth foundation + chain API authorization).
+Scope: the data-plane API for environments, variables, and DEK wraps (spec ruling → AUTH_SPEC §12 →
+implementation) plus the project-DO side of the audit log (AUDIT_SPEC §3.3 / §3.4 / §5.1).
 
-## 0. AUDIT_SPEC の承認の扱い(最初の確認事項)
+## 0. How AUDIT_SPEC approval was handled (first thing to confirm)
 
-AskUserQuestion への実時間応答が得られない実行環境だったため、判断プロトコルの
-「不可逆を避けた推奨案で仮進行」を適用した:
+Because this execution environment couldn't get real-time responses to AskUserQuestion, the
+"proceed provisionally on the recommended option that avoids irreversibility" decision protocol was applied:
 
-- **仮進行の内容**: AUDIT_SPEC は所有者自身の起草(PR #10)でマージ済み・Status
-  のみドラフトだったため、「本 PR のレビュー承認をもって所有者承認とする」条件付き
-  で Status を承認済みへ更新し、project DO 側(§3.3 データ系 + §3.4 チェーンミラー
-  + §5.1 スキーマ)を変数 API と同時実装した
-- **確定条件**: 本セッション PR のレビュー承認。承認されない場合は AUDIT_SPEC の
-  Status 変更と監査ログ実装のコミットを差し戻す(追記 API は公開しておらず、
-  D1 側スキーマにも触れていないため差し戻しは局所的)
+- **What proceeded provisionally**: AUDIT_SPEC was already merged as the owner's own draft (PR #10) with
+  only its Status left as draft, so Status was updated to approved conditionally on "owner approval =
+  review approval of this PR", and the project DO side (§3.3 data family + §3.4 chain mirror
+  + §5.1 schema) was implemented together with the variable API
+- **Confirmation condition**: review approval of this session's PR. If not approved, the AUDIT_SPEC
+  Status change and the audit-log implementation commits get reverted (the append API is not exposed
+  and the D1-side schema is untouched, so the revert stays local)
 
-## 1. やったこと(コミット順 = 層順)
+## 1. What was done (commit order = layer order)
 
-1. **spec**: AUTH_SPEC v0.3 — §12(変数値・環境・DEK API との接続)を新設。
-   CRYPTO_SPEC は**無変更**(全規則を API 受理ポリシーとして規定し、合意規則・
-   暗号仕様に触れない — 暗号仕様変更の事前承認要件を回避する構成)。AUDIT_SPEC に
-   ミラーのバックフィル裁定を追記
-2. **core/api-schema**: EnvironmentId / VariableId(§12-1)、セッション主体への
-   authMethod 追加、EncryptedPayload / WrappedDek / RecipientDek のワイヤ表現
-   (§12-2)、environments / variables / deks の 3 グループ + 型付きエラー
-3. **server(DO)**: do-schema.ts(DDL 集約 + PROJECT_DO_TABLES)、chain-store.ts
-   (導出キャッシュの共有抽出)、data-store / data-plane / data-programs、
-   audit-store(§5.1 + §3.4 ミラー)。チェーン追記の受理とミラー追記は同じ
-   Semaphore(1) 直列化の下で書く
-4. **server(HTTP)**: handlers-{environments,variables,deks} + data-http
-   (callProjectData 共通経路、DataRejection → 型付きエラー写像)
-5. **テスト**: 34 件追加(294 件 green)。実 crypto(テスト時署名チェーン・実 HPKE
-   ラップ・実 AES-GCM)でラウンドトリップまで検証
-6. **docs**: 本メモ
+1. **spec**: AUTH_SPEC v0.3 — added §12 (connection to the variable-value / environment / DEK APIs).
+   CRYPTO_SPEC **unchanged** (all rules specified as API acceptance policy; consensus rules and
+   crypto spec untouched — a structure that avoids the pre-approval requirement for crypto-spec changes). Added the
+   mirror backfill ruling to AUDIT_SPEC
+2. **core/api-schema**: EnvironmentId / VariableId (§12-1), authMethod added to session principals,
+   wire representations of EncryptedPayload / WrappedDek / RecipientDek (§12-2), the 3 groups
+   environments / variables / deks + typed errors
+3. **server (DO)**: do-schema.ts (DDL consolidation + PROJECT_DO_TABLES), chain-store.ts
+   (shared extraction of derived caches), data-store / data-plane / data-programs,
+   audit-store (§5.1 + §3.4 mirror). Chain-append acceptance and mirror appends are written under the
+   same Semaphore(1) serialization
+4. **server (HTTP)**: handlers-{environments,variables,deks} + data-http
+   (callProjectData common path, DataRejection → typed-error mapping)
+5. **tests**: 34 added (294 green). Verified through round-trips with real crypto (test-time signing
+   chains, real HPKE wraps, real AES-GCM)
+6. **docs**: this memo
 
-## 2. 裁定事項(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認)
+## 2. Rulings (multi-option comparison → proceeded on the recommendation; confirmation = PR review approval)
 
-### 裁定 1: environment_id / variable_id の採番主体
+### Ruling 1: who assigns environment_id / variable_id
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| A: サーバー採番(ULID) | 作成 API が ID を返す | AAD / HPKE info に入る値を暗号化前に確定できず、「ID 取得 → ラップ → 登録」の 2 往復と「環境はあるが DEK がない」中間状態が生まれる |
-| **B: クライアント採番(採用)** | 形式は受理ポリシー `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` | 作成リクエストにエポック 1 のラップ完全集合を同梱でき**原子的**。E2EE では暗号文脈の確定はクライアントにしかできない |
-| C: 名前 = ID | 追加フィールドなし | 改名で暗号文脈が壊れる(CRYPTO_SPEC §3 の安定識別子要件に反する) |
-| D: サーバー採番 + 事前予約 API | 2 段階を API で明示 | B と等価の結果に往復とサーバー状態(予約テーブル)を余計に払う |
+| A: server-assigned (ULID) | the create API returns the ID | the value entering AAD / HPKE info can't be fixed before encryption, producing a 2-round-trip "get ID → wrap → register" flow and an intermediate state of "environment exists but no DEK" |
+| **B: client-assigned (adopted)** | format is acceptance policy `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` | the create request can carry the complete epoch-1 wrap set, making it **atomic**. Under E2EE only the client can fix the encryption context |
+| C: name = ID | no extra field | renaming breaks the encryption context (violates CRYPTO_SPEC §3's stable-identifier requirement) |
+| D: server-assigned + pre-reservation API | the two stages made explicit in the API | pays extra round-trips and server state (a reservation table) for a result equivalent to B |
 
-### 裁定 2: rotate_epoch と環境メタデータの整合(未知の environment_id)
+### Ruling 2: consistency between rotate_epoch and environment metadata (unknown environment_id)
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| A: 未知 ID の rotate_epoch を拒否 | チェーン受理をメタデータと突合 | チェーン受理規則が可変のサーバーローカル状態に依存し、クライアントが検証できない受理条件になる。環境削除との競合も生む。既存テストベクター(env をメタデータ登録せず rotate)とも矛盾 |
-| **B: 突合しない(採用)** | rotate は §6.4 の規則のみで受理。メタデータに対応しない rotate はデータ層に効果なし | チェーンの自己完結性を維持。ジャンク rotate は当該 ID を「使用済み」に焼却するだけ(ID 空間は実質無限、member 権限が必要、チェーン容量ポリシーで有界) |
-| C: rotate 受理時に環境を自動作成 | メタデータをチェーンに追従 | 名前のない環境が生まれ、ラップ完全集合の同梱(裁定 1)と両立しない |
-| D: 環境作成もチェーン op にする | 単一の真実源 | 平文メタデータ(CRYPTO_SPEC §4)を署名対象にする必要はなく、合意規則の肥大とチェーン容量の消費に見合わない |
+| A: reject rotate_epoch on unknown IDs | check chain acceptance against metadata | chain acceptance rules would depend on mutable server-local state, giving clients an acceptance condition they can't verify. Also races with environment deletion. Contradicts existing test vectors (rotate without registering env metadata) |
+| **B: no cross-check (adopted)** | rotate is accepted on §6.4 rules alone. A rotate without matching metadata has no data-layer effect | keeps the chain self-contained. A junk rotate just burns the ID as "used" (the ID space is effectively infinite, member privileges are required, chain capacity policy bounds it) |
+| C: auto-create the environment on rotate acceptance | metadata follows the chain | creates nameless environments, incompatible with bundling the complete wrap set (ruling 1) |
+| D: make environment creation a chain op | single source of truth | plaintext metadata (CRYPTO_SPEC §4) need not be signed; doesn't justify consensus-rule bloat and chain-capacity consumption |
 
-併せて: **環境作成はチェーン観測済み ID(environmentEpochs に存在)を拒否**する。
-これにより作成時の現エポックは常に 1 で、「エポック >1 での作成」という
-複合ケースが構造的に消える。
+Alongside: **environment creation rejects chain-observed IDs (present in environmentEpochs)**.
+This keeps the epoch at creation always 1, structurally eliminating the composite case of
+"creation at epoch >1".
 
-### 裁定 3: 削除の意味論と ID 再利用
+### Ruling 3: deletion semantics and ID reuse
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| A: 行ごと削除・ID 再利用可 | 実装最小 | epoch / version が AAD に入るため、再利用で同一 AAD 座標の暗号文が世代をまたいで二重に存在しうる(クライアントのキャッシュ・監査の存在区間が曖昧化) |
-| **B: tombstone + 再利用禁止(採用)** | 環境・変数の行は deleted_at で残し、暗号文・ラップは即時削除 | AAD 座標の一意性を構造的に維持。監査の存在区間(var.created〜var.deleted)とも整合。tombstone の肥大は行数ポリシー(§12-8)で有界 |
-| C: 論理削除のみ(データも残す) | 復元可能 | 「削除したのに暗号文が残る」はシークレット管理の期待に反する。復元要件は v1 にない |
+| A: delete rows, IDs reusable | minimal implementation | since epoch / version enter the AAD, reuse could leave ciphertexts at the same AAD coordinates existing twice across generations (client caches and audit existence intervals get ambiguous) |
+| **B: tombstone + no reuse (adopted)** | environment/variable rows stay with deleted_at; ciphertext and wraps are deleted immediately | structurally preserves AAD-coordinate uniqueness. Consistent with audit existence intervals (var.created–var.deleted). Tombstone growth is bounded by the row-count policy (§12-8) |
+| C: logical delete only (data also kept) | restorable | "deleted but ciphertext remains" contradicts secrets-management expectations. No restore requirement exists in v1 |
 
-### 裁定 4: push が参照できるエポックと version(CAS)
+### Ruling 4: which epoch and version a push may reference (CAS)
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| **A: 現エポック × latest+1 のみ受理(採用)** | 不一致は 409 で現在値を返す | version は AAD の一部でサーバーが採番できない以上、CAS が唯一の整合手段。ローテーション競合は 409 currentEpoch でクライアントが新 DEK 取得 → 再暗号化 → 再試行 |
-| B: 旧エポックの push も受理 | 猶予期間 | 削除済みメンバーが保持する旧 DEK で新しい値を書ける(巻き戻し攻撃の変種)。§7 の「過去バージョンは当時のエポックのまま**保持**」は保存済みデータの話であり、新規受理の緩和を意味しない |
-| C: サーバーが version を採番 | クライアント単純 | 採番すると申告 AAD とずれ、復号不能な値を保存してしまう(E2EE の構造上不可能) |
-| D: 楽観 CAS でなくヘッドゴシップ流用 | チェーンと同型 | 変数はチェーンではない(署名なし)。ヘッド概念の導入は複雑さだけ増す |
+| **A: accept only current-epoch × latest+1 (adopted)** | mismatches return 409 with the current value | since version is part of the AAD and the server can't assign it, CAS is the only consistency mechanism. On rotation races, 409 currentEpoch lets the client fetch the new DEK → re-encrypt → retry |
+| B: also accept pushes on old epochs | grace period | a removed member could write new values with a retained old DEK (a rollback-attack variant). §7's "past versions are **kept** at the epoch of their time" is about stored data, not a relaxation of new acceptance |
+| C: server assigns version | simpler client | the assigned value would diverge from the declared AAD, storing undecryptable values (structurally impossible under E2EE) |
+| D: head gossip instead of optimistic CAS | isomorphic to the chain | variables aren't a chain (no signatures). Introducing a head concept only adds complexity |
 
-### 裁定 5: DEK ラップの受信者の同定と受理検証
+### Ruling 5: identifying DEK-wrap recipients and acceptance verification
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| A: user_id のみ | HPKE info(§5)と同じ | チェーン上の鍵と**異なる鍵**へのラップ(実質ゴーストメンバー)を検出できない |
-| B: enc 公開鍵のみ | 鍵で照合 | info の recipient_user_id と照合できず、取得 API(本人宛)の索引も歪む |
-| **C: 両方の厳密一致(採用)** | user_id + enc 公開鍵がチェーン導出メンバーと一致 | §6.3 のサーバー側を最も強く実装。冗長フィールドは 32 バイトのみ |
+| A: user_id only | same as HPKE info (§5) | can't detect wraps to **keys different from** the one on the chain (effectively ghost members) |
+| B: enc public key only | match by key | can't cross-check against info's recipient_user_id, and distorts the index of the fetch API (addressed to self) |
+| **C: strict match of both (adopted)** | user_id + enc public key must match the chain-derived member | the strongest implementation of §6.3's server side. The redundant field is only 32 bytes |
 
-集合検証: **(環境, エポック) の初回登録は現メンバー集合と完全一致**(欠落 =
-recipient-missing で拒否)、以後は**不足分の追記のみ**(add_member 後のバック
-フィル経路)、**既存タプルの上書きは禁止**(ラップの中身はサーバーに検証不能
-なので、上書き許可は「有効なラップを復号不能ブロブで潰す」可用性攻撃になる)。
-エポックは 1〜現エポック(未来宛は拒否)。
+Set verification: **the first registration for (environment, epoch) must match the current member set exactly** (a miss =
+recipient-missing rejection); afterwards **only appends for the deficit** (the backfill
+path after add_member); **overwriting existing tuples is forbidden** (wrap contents are
+unverifiable by the server, so allowing overwrites is an availability attack: "crush a valid wrap with
+an undecryptable blob").
+Epochs range 1–current epoch (future-addressed wraps are rejected).
 
-### 裁定 6: EncryptedPayload のワイヤ表現
+### Ruling 6: EncryptedPayload wire representation
 
 `{ suite, aad: {projectId, environmentId, epoch, variableId, version}, nonceHex,
-ciphertextHex }`(hex 小文字)。base64 は 25% 小さいが、チェーン(§6.1)と表現を
-揃える一貫性を優先(値サイズ上限 64 KiB では差が実害にならない)。申告 AAD の
-座標成分は worker が URL と照合(422)、状態依存成分(epoch / version)は DO が
-照合(409)。**サーバーは AAD を暗号学的に検証できない**ため、これは一致検査 +
-構造検査であり、文脈束縛の強制は復号失敗(crypto のテストベクターが固定)。
+ciphertextHex }` (lowercase hex). base64 is 25% smaller, but consistency with the chain (§6.1)
+representation wins (at the 64 KiB value-size cap the difference isn't harmful). The declared AAD's
+coordinate components are checked by the worker against the URL (422); state-dependent components
+(epoch / version) are checked by the DO (409). **The server cannot cryptographically verify the AAD**,
+so this is equality + structure checking; enforcement of context binding falls to decryption failure
+(pinned by crypto test vectors).
 
-### 裁定 7: op 別必要権限(AUTH_SPEC §6 の表の拡張 = §12-3)
+### Ruling 7: required privileges per op (extension of the AUTH_SPEC §6 table = §12-3)
 
-pull・一覧・自分宛 DEK 取得 = read × reader / 変数の作成・push・改名・削除、
-環境の作成・改名、DEK 登録 = write × member / 環境の削除 = admin × admin。
-環境削除だけ admin なのは、配下の全変数・全バージョンの暗号文を不可逆に消す
-唯一のデータ操作のため(変数削除は member — push で値を潰せる主体と同水準)。
+pull / list / fetch own DEK = read × reader; variable create / push / rename / delete,
+environment create / rename, DEK registration = write × member; environment delete = admin × admin.
+Only environment deletion requires admin because it's the sole data operation that irreversibly
+erases ciphertexts of every variable and version under it (variable deletion is member — the same
+level as a principal who can crush values via push).
 
-### 裁定 8: 受理ポリシー(§12-8。前回レビュー最頻出の DoS 観点)
+### Ruling 8: acceptance policy (§12-8. DoS considerations were the most frequent point in the last review)
 
-値の暗号文 64 KiB / 環境 100(行 1,000)/ 変数 1,000(行 5,000)/ バージョン
-1,000 / プロジェクト累積暗号文 1 GiB(DO SQLite 10 GB への資源保護。削除で解放)
-/ DEK ラップ 10,000/リクエスト(チェーン容量が束縛するメンバー数上限以上に取り、
-初回登録の完全一致要件で登録不能なプロジェクトが生じないように)/ 表示名 256 文字
-(Schema 強制)。いずれも合意規則ではなくセルフホストで引き上げ可。
+Value ciphertext 64 KiB / environments 100 (1,000 rows) / variables 1,000 (5,000 rows) / versions
+1,000 / project cumulative ciphertext 1 GiB (resource protection of DO SQLite's 10 GB; freed on
+deletion) / DEK wraps 10,000 per request (taken above the member-count cap the chain capacity binds,
+so the exact-match requirement on first registration can't make a project unregistrable) / display
+names 256 chars (Schema-enforced). None of these are consensus rules; self-hosters may raise them.
 
-### 裁定 9: チェーンミラーのバックフィル(AUDIT_SPEC §3.4 追記)
+### Ruling 9: chain-mirror backfill (AUDIT_SPEC §3.4 addition)
 
-不要。監査実装導入前に受理されたチェーンを持つ DO は存在しない(未リリース)。
-将来必要になれば §1-5(ミラーは再構築可能)に基づく再構築処理として設計する。
+Not needed. No DO holding chains accepted before the audit implementation exists (unreleased).
+If it ever becomes necessary, design it as a rebuild procedure grounded in §1-5 (the mirror is
+reconstructible).
 
-### 裁定 10: DO テーブルの Drizzle(drizzle-orm/durable-sqlite)再評価
+### Ruling 10: re-evaluating Drizzle (drizzle-orm/durable-sqlite) for DO tables
 
-**見送り継続**(セッション 05 の判断を維持)。理由: (1) クエリは全て単純なキー
-参照で ORM の利得が薄い、(2) DO のマイグレーションは実質「コンストラクタでの
-DDL 適用」でありフォルダ形式 migration の管理機構が余計、(3) Store サービス境界
-(ChainStore と同型)が確立済みで隔離は達成されている。D1 側(db.package)は
-引き続き Drizzle。再評価トリガー: 集計・join が増える、または DO スキーマの
-後方互換マイグレーションが必要になった時。
+**Still passed over** (session 05's judgment stands). Reasons: (1) all queries are simple key
+lookups, so an ORM's gain is thin; (2) DO migrations are effectively "apply DDL in the constructor",
+so a folder-format migration machinery would be surplus; (3) the Store service boundary
+(same shape as ChainStore) is already established and isolation is achieved. The D1 side (db.package)
+keeps Drizzle. Re-evaluation triggers: when aggregation/joins grow, or when DO schema needs
+backward-compatible migrations.
 
-### その他の設計判断(機械的・可逆)
+### Other design decisions (mechanical, reversible)
 
-- **監査 seq の採番**: `INSERT ... SELECT COALESCE(MAX(seq),0)+1` の単文同期 SQL。
-  await 境界をまたがないため、書き込みロック外(pull の var.read)でも無欠番が保てる
-- **読み取りも permit 下で直列化**(ループ 3 = Bugbot 指摘で当初のロック外読み取り
-  から変更。§3.5 参照)。var.read は「実際に返した行」に対して記録するので、
-  行とイベントは常に一致する
-- **セッション主体に authMethod を追加**(core の AuthenticatedPrincipal)。
-  AUDIT_SPEC §2 の actor.auth_method を §5.1 の方針どおり payload JSON に記録する
-  ため。データ操作は署名を伴わないので actor_key_fingerprint は NULL(FP を持つ
-  のはチェーンミラーのみ)
-- **環境削除は残存変数ぶんの var.deleted を先に記録**(存在区間 Q2 を閉じる。
-  §4.1 の候補集合算出が env.deleted の特別扱いを必要としないように)
-- **AAD 座標の自己整合検査(422)はメンバーシップ判定(404)より先**: 応答が
-  リクエスト内容のみに依存し、プロジェクトの存在情報を運ばないため §11-2 と
-  両立する(§12-3 に明記)
+- **Audit seq assignment**: single-statement synchronous SQL `INSERT ... SELECT COALESCE(MAX(seq),0)+1`.
+  It doesn't span an await boundary, so gap-free numbering holds even outside the write lock (pull's var.read)
+- **Reads also serialized under the permit** (loop 3 = changed from the original lock-free reads
+  per Bugbot. See §3.5). var.read records against "the rows actually returned", so
+  rows and events always match
+- **authMethod added to session principals** (core's AuthenticatedPrincipal).
+  To record AUDIT_SPEC §2's actor.auth_method in the payload JSON per §5.1's policy.
+  Data operations carry no signature, so actor_key_fingerprint is NULL (only the chain mirror
+  holds an FP)
+- **Environment deletion records var.deleted for remaining variables first** (closes existence
+  interval Q2. So §4.1's candidate-set computation doesn't need special handling of env.deleted)
+- **AAD-coordinate self-consistency check (422) precedes membership determination (404)**: the response
+  depends only on request content and carries no project-existence information, so it's compatible
+  with §11-2 (stated in §12-3)
 
-## 3. ハマったこと・環境知見
+## 3. Sticking points & environment findings
 
-- **HttpApi の型付きエラーのワイヤ表現は `_tag` を含む**。エラーボディの
-  アサーションは `toEqual` でなく `toMatchObject` か個別フィールドで行う
-- **`Schema.TaggedErrorClass` の instanceof はそのまま使える**: DataRejection →
-  型付きエラーの写像で「契約(エンドポイントのエラー宣言)外の拒否を defect に
-  落とす」フィルタを instanceof の列で実装した(oxlint の `_tag` 直接アクセス
-  禁止とも整合)。「T は明示・エラークラス列は推論」はカリー形
-  `callProjectData<T>()({...})` で両立させる(TS は型引数の部分適用不可)
-- **SQLite の `ROWS` は予約語**。`COUNT(*) AS rows` は使えない(total_rows に改名)
-- **`decodeHex`(crypto)は不信データ境界用に null を返す**。テストの整形済み hex
-  には throw するラッパ(hexBytes)を挟む
-- **DO の DDL はコンストラクタ適用に集約すると、テストの beforeEach が
-  CREATE IF NOT EXISTS を持ち歩かなくてよくなる**(runInDurableObject が
-  インスタンス化 = DDL 適用を保証する)。リセット対象は src の
-  PROJECT_DO_TABLES を唯一の定義とし、テスト側で名指し DELETE する
-- **fallow は今回も cyclomatic > 12 と新規クローンを検出**。監査 INSERT の
-  `?? null` 列は bindings 生成関数へ、ハンドラの共通形は callProjectData へ抽出
-  して解消。`unused-export` はテスト専用エクスポートにも及ぶ(使う予定がないなら
-  export しない)
-- vitest-pool-workers のテストファイルはトップレベル await が使える(fixture の
-  チェーン署名を module スコープで 1 回だけ実行)
+- **HttpApi typed errors include `_tag` on the wire**. Assert error bodies with
+  `toMatchObject` or per-field, not `toEqual`
+- **`Schema.TaggedErrorClass`'s instanceof works as-is**: the DataRejection →
+  typed-error mapping implemented the "drop out-of-contract (endpoint error declarations)
+  rejections to defect" filter as an instanceof list (also consistent with oxlint's ban on
+  direct `_tag` access). "T explicit, error-class list inferred" is reconciled with the curried
+  `callProjectData<T>()({...})` form (TS can't partially apply type arguments)
+- **SQLite's `ROWS` is a reserved word**. `COUNT(*) AS rows` doesn't work (renamed to total_rows)
+- **`decodeHex` (crypto) returns null for the untrusted-data boundary**. Wrap it in a throwing
+  wrapper (hexBytes) for pre-formatted hex in tests
+- **Consolidating DO DDL into constructor application means test beforeEach doesn't have to carry
+  CREATE IF NOT EXISTS around** (runInDurableObject guarantees instantiation = DDL application).
+  The reset target takes src's PROJECT_DO_TABLES as its single definition, and the test side
+  DELETEs by name
+- **fallow again detected cyclomatic > 12 and new clones**. Resolved by extracting the audit
+  INSERT's `?? null` list into a bindings-builder function and the handlers' common shape into
+  callProjectData. `unused-export` also covers test-only exports (don't export what won't be used)
+- vitest-pool-workers test files can use top-level await (run fixture chain signing once at
+  module scope)
 
-## 3.5 レビュー→修正ループ(PR #18 内。3 観点の並行レビュー → 修正)
+## 3.5 Review→fix loops (inside PR #18. 3 parallel review perspectives → fixes)
 
-### ループ 1 の採用・修正済み指摘(重要度順)
+### Loop 1 adopted/fixed findings (by severity)
 
-1. **空の `deks` で環境作成の完全集合要件をバイパス(高。セキュリティ・正しさの
-   両レビューが独立検出)**: エポック単位の集合検査(checkWrapSets)はリクエストに
-   現れたエポックしか見ないため、`deks: []` が素通りして「誰も DEK を持てない環境」
-   を作れた(workerd 実挙動でも確認)。作成時に「エポック 1 のラップ数 = 現メンバー
-   数」の明示検査を追加(受信者・重複・範囲は検査済みなので個数一致 = 完全一致)。
-   空集合の 422 を negative テスト化
-2. **書き込み列のクラッシュ原子性(中)**: Effect のファイバーは 2048 ops ごとに
-   macrotask で yield するため、複数の Effect.sync にまたがる書き込み列(最大
-   10,000 件のラップ挿入ループ等)はタスク境界で分割され、クラッシュ時に部分
-   コミットが残り得た(最悪: 環境行のない孤児ラップ → 同 ID 再作成が恒久 500)。
-   全ストアに**同期書き込み関数**(DataStore.write / AuditStore.appendSync /
-   ChainStore.insertSync)を設け、各操作の書き込みフェーズ(データ + 監査)を
-   **単一の Effect.sync = 同一イベントループタスク**に集約した(DO SQLite の
-   書き込みはタスク単位で原子コミット)。チェーン挿入とミラー追記も同一タスク化
-3. **チェーンミラー 4 種のテスト欠落(高)**: member_removed / role_changed /
-   server_granted / server_revoked の行内容(target_user_id / target_key_fingerprint
-   / payload — §4.1 の Q1/Q6 が依存する列)を検証するテストを追加
-4. **§12-8 の数量上限 5 種が未テスト(中)**: environments / environment-rows /
-   variables / variable-rows / dek-wraps-per-request の 422(resource / limit 込み)
-   を WITH RECURSIVE の行シードで固定
-5. **判定順の契約と実装の不一致(中)**: AAD 座標検査(422)がスコープ検査(404)
-   より先に走ることを AUTH_SPEC §12-3 の例外規定として明文化(自己整合検査は
-   存在情報を運ばない)し、「非メンバー + AAD 不整合 = 422 / 自己整合 = 404」を
-   テストで固定
-6. **`env.renamed` が §3.3 で唯一未検証(中)** → ライフサイクルテストに追加
-7. **WrappedDek の recipientUserId 上限(256)がチェーン合意規則(1024 バイト)
-   より狭い(低)**: チェーン上の正当なメンバー宛ラップが登録不能になり、初回
-   登録の完全一致要件と衝突しうるため 1024 に整合。理論極値ではボディ上限が先に
-   束縛することを §12-8 に注記
-8. **その他(低)**: 変数 rename の duplicate-name / create 側の AAD 不一致 /
-   ID・EncryptedPayload の Schema 負例(400)テストを追加。表示名超過が Schema の
-   400 になることを §12-8 に注記。監査 §1-2 検査を部分文字列ベースに強化
+1. **Environment creation's complete-set requirement bypassed with empty `deks` (High. Security and
+   correctness reviews detected it independently)**: the per-epoch set check (checkWrapSets) only
+   looks at epochs present in the request, so `deks: []` slipped through and could create
+   "an environment no one can hold a DEK for" (confirmed under real workerd behavior). Added an
+   explicit check at creation that "wrap count for epoch 1 = current member count" (since recipient /
+   duplicates / range are already checked, count equality = exact match). Pinned the empty-set 422
+   as a negative test
+2. **Crash atomicity of write sequences (Medium)**: Effect fibers yield on a macrotask every 2048 ops,
+   so write sequences spanning multiple Effect.syncs (e.g. the up-to-10,000 wrap-insert loop) get split
+   at task boundaries and a crash could leave a partial commit (worst case: orphan wraps with no
+   environment row → recreating the same ID fails permanently with 500).
+   All stores got **synchronous write functions** (DataStore.write / AuditStore.appendSync /
+   ChainStore.insertSync), and each operation's write phase (data + audit) was consolidated into
+   **a single Effect.sync = the same event-loop task** (DO SQLite writes commit atomically per task).
+   Chain insert and mirror append were also made the same task
+3. **Missing tests for the 4 chain-mirror kinds (High)**: added tests verifying row contents of
+   member_removed / role_changed / server_granted / server_revoked (target_user_id /
+   target_key_fingerprint / payload — the columns §4.1's Q1/Q6 depend on)
+4. **The 5 quantity caps of §12-8 untested (Medium)**: pinned environments / environment-rows /
+   variables / variable-rows / dek-wraps-per-request 422s (incl. resource / limit) with a
+   WITH RECURSIVE row seed
+5. **Contract vs implementation mismatch on check order (Medium)**: documented in AUTH_SPEC §12-3 as
+   an exception that the AAD-coordinate check (422) runs before the scope check (404) (a
+   self-consistency check carries no existence information), and pinned "non-member + AAD mismatch =
+   422 / self-consistent = 404" in tests
+6. **`env.renamed` was the only §3.3 event unverified (Medium)** → added to the lifecycle test
+7. **WrappedDek's recipientUserId cap (256) is narrower than the chain consensus rule (1024 bytes)
+   (Low)**: wraps addressed to legitimate on-chain members could become unregistrable, colliding with
+   the first-registration exact-match requirement — aligned to 1024. Noted in §12-8 that at the
+   theoretical extreme the body cap binds first
+8. **Others (Low)**: added tests for variable rename duplicate-name / create-side AAD mismatch /
+   ID & EncryptedPayload Schema negative cases (400). Noted in §12-8 that over-long display names
+   become a Schema 400. Strengthened the audit §1-2 check to substring-based
 
-### ループ 2(修正の再検証)
+### Loop 2 (re-verification of the fixes)
 
-3 観点とも**指摘ゼロ**を確認(セキュリティ観点は空 deks 修正の同値性(検査済み
-集合に対する個数一致 = 全単射)とバイパス残経路の不在、正しさ観点は同期書き込み
-フェーズの完全移行(Effect 版書き込みの残存なし・sync ブロック内の await 混入
-なし・最悪 10,001 文の同期実行が DO の CPU 制限に対し 3 桁の余裕)、契約観点は
-9 対応の充足とテスト品質を検証)。CI(check)も green。Bugbot はドラフト PR の
-ため未起動(ready 化後に指摘があれば対応する)。
+All 3 perspectives confirmed **zero findings** (the security perspective verified the equivalence of
+the empty-deks fix — count equality against an already-checked set = bijection — and the absence of
+remaining bypass paths; the correctness perspective verified the full migration to the synchronous
+write phase — no Effect-version writes remain, no awaits inside sync blocks, and synchronous execution
+of up to 10,001 statements has 3 orders of magnitude of headroom against DO CPU limits; the contract
+perspective verified coverage of the 9 items and test quality). CI (check) also green. Bugbot didn't
+run because the PR was a draft (will address any findings after marking ready).
 
-### ループ 3(PR ready 化後の Bugbot。High 1 件 → 修正)
+### Loop 3 (Bugbot after marking the PR ready. 1 High → fixed)
 
-- **削除直後のメンバーが permit 外の読み取りで値を取得しうる(High。採用・修正)**:
-  読み取り系(pull / 一覧 / DEK 取得 / チェーン snapshot)は permit を取らずに
-  走っていたため、「メンバーシップ判定(チェーン導出)→ データ読み」の間に
-  remove_member の受理が割り込む TOCTOU があった(削除**後**に受理された
-  バージョンの値まで配布しうる — §11-2 違反。E2EE 上、削除後に登録された
-  新エポック DEK は受け取れないため復号可能な漏洩は旧エポック値に限られるが、
-  §7 のローテーション義務前の新値がこれに含まれる)。**全 DO 操作(読み取り
-  含む)を同一 permit で直列化**し、認可とデータ読みをチェーン書き込みに対して
-  線形化した。DO は元来シングルスレッドで、permit は await 境界(チェーン導出の
-  crypto.subtle)の交錯のみを塞ぐため、読み取り性能への実影響は軽微。
-  これによりループ 1 の v1 許容(pull と削除の交錯)も同時に解消
+- **A just-removed member could fetch values via reads outside the permit (High. Adopted & fixed)**:
+  read operations (pull / list / DEK fetch / chain snapshot) ran without the permit, so there was a
+  TOCTOU where a remove_member acceptance could interpose between "membership check (chain-derived) →
+  data read" (could even distribute versions of values accepted **after** removal — a §11-2 violation.
+  Under E2EE, decryptable leakage is limited to old-epoch values since a member removed can't receive
+  new-epoch DEKs registered after removal, but new values written before §7's rotation obligation
+  fall in this). **All DO operations (reads included) were serialized on the same permit**,
+  linearizing authorization and data reads against chain writes. The DO is inherently
+  single-threaded and the permit only closes await-boundary (crypto.subtle in chain derivation)
+  interleavings, so the real impact on read performance is minor.
+  This also resolved loop 1's v1-tolerated item (pull/removal interleaving) at the same time
 
-### 採用せず所有者裁定に回した指摘 → **裁定済み(2026-08-02。次セッションで実装)**
+### Findings not adopted and escalated to owner ruling → **ruled (2026-08-02. Implemented next session)**
 
-3 件とも複数案比較の上で所有者が実時間裁定した。**本 PR では実装しない**
-(独立 PR で対応。CLI / Web 着手前 = ワイヤ形式変更が無料のうちに行う):
+All 3 were ruled on by the owner in real time after comparing multiple options. **Not implemented in
+this PR** (handled in a separate PR. Done before CLI / Web work starts = while wire-format changes
+are free):
 
-1. **dek_wraps の資源保護 → 案 B + F 予告を採用**: プロジェクト累積の
-   **行数上限**を §12-8 に追加(値は実装時に提案。現実的利用の 3 桁上、
-   例: 100 万行)。DO ストレージ総量ガード(`databaseSize` 閾値の型付き
-   エラー化 — audit_events の無期限保持も覆う唯一の防衛線)は Phase 2 の
-   運用ガードとして仕様に予告する
-2. **毒ラップの帰属・修復 → 案 E を軸に D 併設、B 維持を採用(所有者裁定:
-   長期の本命 E を未リリースの今やる)**:
-   - **E**: ラップ登録にチェーン署名鍵(Ed25519)によるクライアント署名を
-     必須化。帰属がサーバー不信で成立する(B の監査行はサーバー管理データで
-     偽造可能)。CRYPTO_SPEC の改訂を伴う**暗号層の変更**なので、仕様改訂 →
-     テストベクター先行 → packages/crypto の人間レビューの順を厳守。
-     主な裁定事項: 署名単位(配布時に受信者が単体検証できる**ラップごと**が
-     有力)/ 署名対象の正規化(§2.1 LP + ドメイン分離。suite・project・env・
-     epoch・受信者・enc・ct を束縛)/ リプレイの扱い / 「登録時点の鍵」での
-     検証規則
-   - **D**: admin 限定の「ラップ削除 → 不足分再登録」の修復経路(E は帰属で
-     あって予防・修復ではない。毒スロットの修復手段は現状ゼロで、エポック
-     ローテーションでも当該エポックの履歴は救えない)。削除は監査イベント化
-   - **B**: `dek.registered` 監査イベントは維持(§3.3 体系との一様性。
-     E の署名者 FP を写して突合可能にする)
-3. **suite の保存 → 案 D を採用**: variable_versions **と dek_wraps の両方**に
-   suite 列を追加し、**WrappedDek のワイヤにも suite を追加**(CRYPTO_SPEC §2
-   設計原則 4「すべての永続データ構造はスイート識別子を持つ」との現状ギャップ
-   の解消)。API スキーマは Literal "maruhi/v1" でピン留めしたまま。suite と
-   エポックの結合(v2 移行の形)は v2 設計時まで判断を保留する
+1. **dek_wraps resource protection → adopted option B + F advance notice**: add a **row-count cap**
+   on project accumulation to §12-8 (value proposed at implementation time; 3 orders of magnitude
+   above realistic use, e.g. 1M rows). The DO total-storage guard (`databaseSize` threshold turned
+   into a typed error — the only line of defense also covering audit_events' indefinite retention) is
+   announced in the spec as a Phase 2 operational guard
+2. **Poisoned-wrap attribution & repair → adopted option E as the axis with D alongside, keeping B
+   (owner ruling: do the long-term front-runner E now, while unreleased)**:
+   - **E**: require wrap registration to carry a client signature with the chain signing key
+     (Ed25519). Attribution holds under server distrust (B's audit rows are server-managed data and
+     forgeable). This is a **crypto-layer change** involving a CRYPTO_SPEC revision, so strictly
+     follow the order: spec revision → test vectors first → human review of packages/crypto.
+     Main ruling points: signing unit (**per-wrap**, so recipients can verify individually on
+     distribution, is likely) / canonicalization of the signed payload (§2.1 LP + domain separation.
+     binding suite, project, env, epoch, recipient, enc, ct) / replay handling / verification rules
+     keyed on "the key at registration time"
+   - **D**: an admin-only repair path of "delete wrap → re-register the deficit" (E is attribution,
+     not prevention or repair. There is currently zero means of repairing a poisoned slot, and epoch
+     rotation can't save that epoch's history). Deletion becomes an audit event
+   - **B**: keep the `dek.registered` audit event (uniformity with the §3.3 system.
+     Copy E's signer FP into it so they can be cross-checked)
+3. **suite storage → adopted option D**: add a suite column to **both** variable_versions **and
+   dek_wraps**, and **add suite to WrappedDek's wire form too** (closes the current gap against
+   CRYPTO_SPEC §2 design principle 4 "every persistent data structure carries a suite identifier").
+   The API schema stays pinned at Literal "maruhi/v1". Judgment on binding suite to epoch (the shape
+   of a v2 migration) is deferred until v2 design
 
-**PR 分割**: PR A(暗号層に触れない: 1-B + 3-D + 2 の B/D)→ PR B(暗号層:
-2-E。3-D の suite が署名対象に入るため PR A の後が自然)。
-- ~~pull(permit 外)と削除の交錯で「変数はあるが deks が空」の応答があり得る~~
-  → **ループ 3(Bugbot)で読み取りの permit 直列化により解消**(§3.5)
+**PR split**: PR A (doesn't touch the crypto layer: 1-B + 3-D + 2's B/D) → PR B (crypto layer:
+2-E. Natural after PR A since 3-D's suite enters the signed payload).
+- ~~A pull (outside the permit) interleaving with deletion could answer "variable exists but deks is
+  empty"~~ → **resolved in loop 3 (Bugbot) by serializing reads under the permit** (§3.5)
 
-## 4. 既知の制約・v1 許容
+## 4. Known constraints / v1 tolerances
 
-- **監査ログの読み取り API は未実装**(意図的スコープ外)。AUDIT_SPEC §6 の閲覧
-  権限モデルの詳細が未決(未決 #1)のため、Phase 2 の監査ログ UI と同時に設計
-  する。現状の検証手段は DO SQLite 直接参照のみ
-- **AUDIT_SPEC §3.1〜§3.2(認証・org 系 = D1 側)は未実装**(タスクの線引き
-  どおり。イベント構造は §5.1 と同型なので追補は独立 PR で可能)
-- **要ローテーション検出の算出(§4.1)と rotation.recommended / dismissed は
-  Phase 2**。今回のスキーマ・イベントは §4.2 のクエリ要件(Q1〜Q6 の索引)を
-  満たす形で記録している
-- grant_server 済みプロジェクトのサーバー鍵宛 DEK ラップは §12-6 の改訂事項
-  (CRYPTO_SPEC §9 の MVP 線引きどおり未実装)
-- 変数バージョンの間引き・圧縮はなし(1,000 版で頭打ち。CI の高頻度 push が
-  実測で問題になったら §12-8 の改訂で扱う)
-- `var.read` の集約(AUDIT_SPEC 未決 #4)は素直な 1 変数 1 行のまま(仕様どおり
-  ドッグフーディング実測待ち)
+- **The audit-log read API is unimplemented** (intentionally out of scope). AUDIT_SPEC §6's
+  view-permission model details are undecided (open item #1), so it's designed together with the
+  Phase 2 audit-log UI. The current verification means is direct DO SQLite inspection only
+- **AUDIT_SPEC §3.1–§3.2 (auth & org family = the D1 side) are unimplemented** (per the task's
+  line-drawing. The event structure is isomorphic to §5.1, so a supplement can be an independent PR)
+- **Computing what needs rotation (§4.1) and rotation.recommended / dismissed are Phase 2**.
+  This round's schema and events record in a form that satisfies §4.2's query requirements
+  (the Q1–Q6 indexes)
+- Server-key-addressed DEK wraps for grant_server'd projects are a §12-6 revision item
+  (unimplemented per CRYPTO_SPEC §9's MVP line-drawing)
+- No thinning/compression of variable versions (capped at 1,000 versions. If high-frequency CI pushes
+  become a measured problem, handle it via a §12-8 revision)
+- `var.read` aggregation (AUDIT_SPEC open item #4) stays at the naive 1-variable-1-row (awaiting
+  dogfooding measurement, per spec)
 
-## 5. 次セッションへの申し送り
+## 5. Handoff to the next session
 
-- **PR マージ後**: ROADMAP Phase 1 の注記更新(独立 PR): 「サーバー: プロジェクト
-  DO、D1、HttpApi、監査ログ(append-only)」→ 変数値・環境・DEK API と監査ログ
-  (project DO 側)まで完了
-- **§3.5 の裁定済み 3 件の実装**(PR A → PR B の 2 本。詳細・裁定理由は §3.5):
-  CLI / Web 着手前に行うこと(ワイヤ形式変更 = WrappedDek への suite / 署名の
-  追加を無料で済ませる最後のタイミング)
-- **AUDIT_SPEC の Status 更新(承認済み)は本 PR のレビュー承認が確定条件**(§0)
-- CLI 実装時(`maruhi run`): 一括 pull は `GET /projects/:id/environments/:envId/pull`
-  1 発で最新値 + 自分宛の全エポック DEK が揃う。EpochConflict / VersionConflict
-  (409)は「再同期 → 再暗号化 → 再試行」のリトライループを実装すること。
-  transport 413(スキーマ外の素の応答)のハンドリング分岐も忘れない(セッション
-  06 の申し送りの再掲)
-- クライアント同期実装時: §6.3 のクライアント側検査(DEK ラップ先一致・ヘッド
-  ゴシップ)は未着手。サーバー側の受信者検証(§12-6)はあくまで補助線であり、
-  クライアント検証が本線(サーバー不信の防衛)
-- 未回収の optional 項目(継続): リカバリーブロブ取得のレート制限設計
-  (CRYPTO_SPEC §8)。エンドポイント自体が未実装のため、実装時に「認証必須 +
-  ユーザー単位の固定窓(例: 10 回/時。DO かレートリミッタ binding)」を起点に
-  設計する
-- Web ダッシュボード実装時: データ書き込み系はセッション + `x-maruhi-csrf: 1` で
-  そのまま通る(テスト済み)。pull 応答の EncryptedPayload は aad 込みで自己記述的
-  だが、**クライアントは申告 AAD を信用せず自分の座標で復号文脈を組み立てる**こと
-  (サーバー改竄時は復号失敗に落ちるのが正しい挙動)
+- **After PR merge**: update the ROADMAP Phase 1 note (independent PR): "server: project DO, D1,
+  HttpApi, audit log (append-only)" → done through variable-value / environment / DEK APIs and the
+  audit log (project DO side)
+- **Implement the 3 ruled items of §3.5** (2 PRs, A → B; details and ruling rationale in §3.5):
+  do it before CLI / Web work starts (wire-format changes = last chance to add suite / signatures
+  to WrappedDek for free)
+- **AUDIT_SPEC's Status update (approved) is conditioned on this PR's review approval** (§0)
+- When implementing the CLI (`maruhi run`): a bulk pull via `GET /projects/:id/environments/:envId/pull`
+  in one shot gets the latest values + all-epoch DEKs addressed to self. Implement a retry loop of
+  "re-sync → re-encrypt → retry" for EpochConflict / VersionConflict (409).
+  Don't forget the transport-413 handling branch (a bare response outside the schema) (re-posted
+  from session 06's handoff)
+- When implementing client sync: §6.3's client-side checks (DEK wrap-target consistency, head
+  gossip) are untouched. The server's recipient verification (§12-6) is only an auxiliary line;
+  client verification is the main line (the defense under server distrust)
+- Uncollected optional items (continuing): rate-limit design for recovery-blob retrieval
+  (CRYPTO_SPEC §8). Since the endpoint itself is unimplemented, start the design at implementation
+  time from "auth required + per-user fixed window (e.g. 10/hr; DO or rate-limiter binding)"
+- When implementing the Web dashboard: data-write operations pass as-is with session +
+  `x-maruhi-csrf: 1` (tested). The pull response's EncryptedPayload is self-describing with aad
+  included, but **the client must not trust the declared AAD — build the decryption context from its
+  own coordinates** (under server tampering, falling to decryption failure is the correct behavior)

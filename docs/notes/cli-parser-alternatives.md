@@ -1,328 +1,328 @@
-# CLI 引数パーサの再選定(gunshi の代替調査)
+# Re-selecting the CLI argument parser (gunshi alternative survey)
 
-**日付**: 2026-08-16 / **状態**: 決定済み(→ **ADR-0016**)。本メモは実測の記録であり、決定そのものは ADR を正とする
+**Date**: 2026-08-16 / **Status**: decided (→ **ADR-0016**). This memo records the measurements; the decision itself lives in the ADR as the source of truth
 
-## 0. 背景
+## 0. Background
 
-gunshi 0.37.1 は「宣言と食い違う書き方を黙って通し、**書いたことと逆の結果**になる」形を複数持つ。
-maruhi はそれを `apps/cli/src/args.ts`(911 行)+ 各コマンドのテストで外側から塞いでいるが、
-レビュー 7〜10 巡目まで新しい抜けが出続けた(コミット 08b8a98 / 0ea3a34 / ef7cba1)。
-特に ef7cba1 の形(`maruhi pull --no-show $FLAGS` が **全シークレットを端末へ出す**)は、
-パーサの沈黙がそのまま秘密の漏洩に化ける。修正の反復コストが高いため、代替を実測で比較した。
+gunshi 0.37.1 has several shapes where it silently accepts input that disagrees with the declaration and **produces the opposite of what was written**.
+maruhi has been closing those holes from the outside with `apps/cli/src/args.ts` (911 lines) + per-command tests,
+but new escapes kept appearing through review rounds 7–10 (commits 08b8a98 / 0ea3a34 / ef7cba1).
+The ef7cba1 shape in particular (`maruhi pull --no-show $FLAGS` **prints all secrets to the terminal**)
+turns the parser's silence directly into a secret leak. Since the iteration cost of fixes was high, we compared alternatives by measurement.
 
-## 1. 測り方
+## 1. How we measured
 
-gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて挙動を記録した(2026-08-16 実測)。
-比較対象のコマンド定義はいずれも同型: `pull`(boolean `--show` / string `--env`(別名 `-e`)/ integer `--limit`)、
-`run`(可変長 positional)、`env create <environment-id>`。
+We fed each candidate the same argv for the 12 shapes actually hit with gunshi and recorded the behavior (measured 2026-08-16).
+The compared command definitions are all isomorphic: `pull` (boolean `--show` / string `--env` (alias `-e`) / integer `--limit`),
+`run` (variadic positional), `env create <environment-id>`.
 
-- 環境: Bun 1.3.14 / effect 4.0.0-beta.107 と **4.0.0-rc.109 の両方**(下記 §5)/ @stricli/core 1.3.0 / gunshi 0.37.1
-- 判定: 「拒否」= パース段階で型付きエラー、「沈黙」= エラーなしで**書いたのと違う値**が通る
-- effect は beta.107 と rc.109 で **12 形すべて同一の挙動**。プローブのソースも無改修で通った
+- Environment: Bun 1.3.14 / effect 4.0.0-beta.107 and **4.0.0-rc.109 both** (see §5) / @stricli/core 1.3.0 / gunshi 0.37.1
+- Verdict: "reject" = typed error at parse time; "silence" = **a value different from what was written** passes with no error
+- effect behaves **identically on all 12 shapes** under beta.107 and rc.109. The probe sources also ran unmodified
 
-## 2. 結果
+## 2. Results
 
-| # | 形 | gunshi 0.37.1 | effect/unstable/cli | @stricli/core | util.parseArgs(Bun 内蔵) |
+| # | Shape | gunshi 0.37.1 | effect/unstable/cli | @stricli/core | util.parseArgs (Bun built-in) |
 |---|---|---|---|---|---|
-| 1 | 未宣言オプション `pull --shwo` | 黙って無視(`strict: true` で拒否可) | 拒否 `UnrecognizedOption` | 拒否 + 候補提示 | 拒否 |
-| 2 | `--show=false` | **読まずに true** | `false` として解釈 | `false` として解釈 | 拒否(値を取らない) |
-| 3 | `--show false` | フラグ true + 余分な位置引数 | `false` として消費 | **拒否** | true + 位置引数 "false" |
-| 4 | 同一オプションの重複 `--env prod -e dev` | **last-wins で沈黙** | **first-wins で沈黙** | **拒否** | last-wins で沈黙 |
-| 5 | `--` の後ろの空文字列 | rest から落ちる | 保持 | 保持 | 保持 |
-| 6 | 先頭の空位置引数 `"" pull` | 読み飛ばし + positionals に残存 | 拒否 `UnknownSubcommand` | 拒否 + 候補提示 | 保持(解決は自前) |
-| 7 | `-- run printenv` のコマンド解決 | **`--` を跨いで解決** | 跨がない `UnexpectedArgument` | 跨がない | 該当機構なし |
-| 8 | 必須位置引数の欠落 | optional は未検証 | 拒否 `MissingArgument` | 拒否 | 自前 |
-| 9 | 値の無い number オプション | **素の TypeError** | 拒否 `InvalidValue`(型付き) | 拒否(型付き) | 拒否(エラーコード付き) |
-| 10 | 位置引数名をオプションで書く | 値を捨てる | 拒否 `UnrecognizedOption` | 拒否 | 拒否 |
-| 11 | オプションへ空文字列 | undefined に潰れる | `""` を保持 | `""` を保持 | `""` を保持 |
-| 12 | stdout 汚染 | ヘッダーが stdout(`renderHeader: null` で停止) | ヘルプが stdout(Console 差し替えで **実測 0B**) | 既定で stderr のみ(**実測 0B**) | 出力機構なし |
+| 1 | Undeclared option `pull --shwo` | silently ignored (rejects with `strict: true`) | rejects `UnrecognizedOption` | rejects + suggests candidates | rejects |
+| 2 | `--show=false` | **read as true without reading** | interpreted as `false` | interpreted as `false` | rejects (takes no value) |
+| 3 | `--show false` | flag true + extra positional | consumed as `false` | **rejects** | true + positional "false" |
+| 4 | Duplicate option `--env prod -e dev` | **silent last-wins** | **silent first-wins** | **rejects** | silent last-wins |
+| 5 | Empty string after `--` | dropped from rest | preserved | preserved | preserved |
+| 6 | Leading empty positional `"" pull` | skipped + remains in positionals | rejects `UnknownSubcommand` | rejects + suggests candidates | preserved (resolution is manual) |
+| 7 | Command resolution of `-- run printenv` | **resolves across `--`** | does not cross, `UnexpectedArgument` | does not cross | no such mechanism |
+| 8 | Missing required positional | optional ones not verified | rejects `MissingArgument` | rejects | manual |
+| 9 | Number option with no value | **bare TypeError** | rejects `InvalidValue` (typed) | rejects (typed) | rejects (with error code) |
+| 10 | Writing a positional name as an option | discards the value | rejects `UnrecognizedOption` | rejects | rejects |
+| 11 | Empty string to an option | collapses to undefined | preserves `""` | preserves `""` | preserves `""` |
+| 12 | stdout pollution | header goes to stdout (stopped by `renderHeader: null`) | help goes to stdout (**measured 0B** with Console swapped) | stderr only by default (**measured 0B**) | no output mechanism |
 
-補足(実測値):
+Notes (measured values):
 
-- effect/unstable/cli は失敗を `ShowHelp` で包み、`ShowHelp.errors` に**型付きエラーを配列で**持つ。
-  gunshi のように 1 件ずつではなく、複数の書き方の誤りを一度に返せる。
-  exit code は errors 非空で 1(maruhi の usage=2 は `Runtime.errorExitCode` をエラー型に持たせて表す — §7)
-- effect/unstable/cli の `DuplicateOption` は**宣言の衝突**(親子コマンドで同名フラグ)を指すもので、
-  ユーザーが同じオプションを 2 回打った場合は発火しない。#4 は「first-wins の沈黙」のまま
-- ヘルプは `Console.log` 経由なので、`Console` サービスを差し替えれば stdout を汚さない
-  (`pull --shwo` / `pull --help` の両方で stdout 0 バイトを実測。コマンド出力のみ stdout に残る)
+- effect/unstable/cli wraps failures in `ShowHelp`, which carries **typed errors as an array** on `ShowHelp.errors`.
+  Unlike gunshi's one-at-a-time reporting, it can return multiple usage mistakes at once.
+  exit code is 1 when errors is non-empty (maruhi's usage=2 is expressed by giving the error type `Runtime.errorExitCode` — §7)
+- effect/unstable/cli's `DuplicateOption` refers to **declaration conflicts** (same-named flags on parent/child commands);
+  it does not fire when the user types the same option twice. #4 remains "silent first-wins"
+- Help goes through `Console.log`, so swapping the `Console` service keeps stdout clean
+  (measured 0 bytes on stdout for both `pull --shwo` and `pull --help`; only command output remains on stdout)
 
-### 依存・サイズ・保守
+### Dependencies, size, maintenance
 
-| 候補 | 実行時依存 | 最小 CLI のバンドル | 最終更新 |
+| Candidate | Runtime deps | Minimal CLI bundle | Last update |
 |---|---|---|---|
-| gunshi 0.37.1 | **0**(全てバンドル済み) | 31 KB | 2026-07-19 |
-| effect/unstable/cli | effect 本体に同梱 + `@effect/platform-bun`(→ `@effect/platform-node-shared`)の 2 パッケージ | 274 KB(うち effect 基盤 86 KB = 既に支払済み。実質増分 ≈ 190 KB) | effect と同一リリース |
+| gunshi 0.37.1 | **0** (all bundled) | 31 KB | 2026-07-19 |
+| effect/unstable/cli | shipped with effect + the 2 packages `@effect/platform-bun` (→ `@effect/platform-node-shared`) | 274 KB (of which effect foundation 86 KB = already paid; effective delta ≈ 190 KB) | same release as effect |
 | @stricli/core 1.3.0 | **0** | 36 KB | 2026-07-16 |
-| util.parseArgs | **0**(Bun 内蔵) | — | — |
+| util.parseArgs | **0** (Bun built-in) | — | — |
 
-`@effect/platform-bun` は effect と同じ版番号で出ており(beta.107 / rc.109 の両方が存在)、
-`FileSystem` / `Path` / `Stdio` / `Terminal` / `ChildProcessSpawner` を `BunServices.layer` で供給する。
+`@effect/platform-bun` is released with the same version number as effect (both beta.107 / rc.109 exist),
+and supplies `FileSystem` / `Path` / `Stdio` / `Terminal` / `ChildProcessSpawner` via `BunServices.layer`.
 
-### エージェント検出は gunshi のロックインではない(→ §8 で再設計)
+### Agent detection is not a gunshi lock-in (→ redesigned in §8)
 
-`gunshi/agent` の実体は **std-env 4.1.0 の `agentInfo` の薄いラッパ**(`lib/agent.js` は std-env をインライン化したもの)。
-検出は環境変数表(`CLAUDECODE` / `CLAUDE_CODE` / `CURSOR_AGENT` / `CODEX_SANDBOX` / `GEMINI_CLI` /
-`OPENCODE` / `AUGMENT_AGENT` / `GOOSE_PROVIDER` / `REPL_ID` / `AI_AGENT` ほか)の走査にすぎない。
+`gunshi/agent` is actually **a thin wrapper over std-env 4.1.0's `agentInfo`** (`lib/agent.js` inlines std-env).
+Detection is just a scan of an environment-variable table (`CLAUDECODE` / `CLAUDE_CODE` / `CURSOR_AGENT` / `CODEX_SANDBOX` / `GEMINI_CLI` /
+`OPENCODE` / `AUGMENT_AGENT` / `GOOSE_PROVIDER` / `REPL_ID` / `AI_AGENT` and others).
 
-したがって乗り換え時の選択肢は「std-env を直接依存に入れる」か「同等の表を自前で持つ(30 行程度)」。
-後者は**検出規則が上流の更新で黙って変わらなくなる**という利点がある(現状は安全境界の定義が上流依存)。
-対価は新しいエージェントへの追随を自前で行うこと。ディスクレス不変条件の実装なので、
-どちらを採るかは人間の裁定事項。
+So when migrating, the choices are "add std-env as a direct dependency" or "keep an equivalent table in-house (~30 lines)".
+The latter has the advantage that **detection rules no longer silently change on upstream updates** (today the security boundary's definition depends on upstream).
+The cost is tracking new agents ourselves. Since this is the implementation of the diskless invariant,
+which to adopt is a human ruling.
 
-## 3. 評価
+## 3. Evaluation
 
-### 本命: `effect/unstable/cli`(effect v4 同梱)
+### Front-runner: `effect/unstable/cli` (bundled with effect v4)
 
-- gunshi 由来の 12 形のうち **10 形が構造的に消える**。残るのは #4(重複の沈黙)と #12(要 Console 差し替え)
-- **Effect ネイティブ**: 現在の `runCli` にある `Execute` ブリッジ、`Effect.runPromise` の往復、
-  defect を usage エラーに化けさせない防御(`Effect.catchDefect`)がほぼ不要になる。
-  エラーは `Schema.TaggedError` なので `failure.ts` の写像に素直に載る
-- 追加依存は `@effect/platform-bun` のみで、版は effect と歩調が揃う。実バイナリ増分はサイズ上ほぼ誤差
-- リスク: **unstable モジュール**(effect v4 の位置づけ)。API 変更は beta → rc → stable で起こりうる。
-  ただし maruhi は既に `effect/unstable/http` / `effect/unstable/httpapi` で同じリスクを取っている
+- Of the 12 gunshi-derived shapes, **10 disappear structurally**. What remains is #4 (silent duplicates) and #12 (needs a Console swap)
+- **Effect-native**: the `Execute` bridge on the current `runCli`, the `Effect.runPromise` round-trip,
+  and the guard that keeps defects from turning into usage errors (`Effect.catchDefect`) become almost unnecessary.
+  Errors are `Schema.TaggedError`, so they map cleanly onto `failure.ts`
+- The only added dependency is `@effect/platform-bun`, versioned in lockstep with effect. The real binary delta is noise-level in size
+- Risk: **unstable module** (that is its status in effect v4). API changes can happen across beta → rc → stable.
+  However, maruhi already takes the same risk with `effect/unstable/http` / `effect/unstable/httpapi`
 
-### 対抗: `@stricli/core`
+### Contender: `@stricli/core`
 
-- **測った中で唯一、#4(重複)と #3(boolean への空白区切り)をパーサ自身が拒否する**。
-  診断は既定で stderr のみ、stdout は全形で 0 バイト。依存ゼロ・36 KB
-- 弱点: Effect との結線は今と同じく自前(`execute` 相当のブリッジが残る)。
-  エラーは Effect の型付きエラーではないので `failure.ts` へ手で写す必要がある
-- 「パーサの強さ」だけを見るならこれが最良。「コード全体の単純さ」では effect/unstable/cli が上
+- **The only measured candidate where the parser itself rejects #4 (duplicates) and #3 (space-separated boolean)**.
+  Diagnostics go to stderr only by default; stdout is 0 bytes on all shapes. Zero deps, 36 KB
+- Weakness: wiring to Effect stays in-house as today (an `execute`-equivalent bridge remains).
+  Errors are not Effect typed errors, so they must be hand-mapped into `failure.ts`
+- Looking only at "parser strength" this is the best. On "overall code simplicity" effect/unstable/cli wins
 
-### 見送り
+### Passed over
 
-- **util.parseArgs**(Bun 内蔵): #2 を拒否するなど素性は良いが、サブコマンド・ヘルプ・補完が全て自前。
-  14 サブコマンドの maruhi には土台が薄すぎる。ただし #4 の検査は tokens で容易なので、
-  「どの候補を採っても重複検査は自前で書ける」ことの傍証にはなる
-- **clipanion**: 4.0.0-rc.4 の最終更新が **2024-09**。安全境界に置く依存としては停滞が重い
-- **commander / cac / citty**: 保守は活発だが、上表の #2〜#4 で gunshi 以上の強さを持たず、乗り換える理由がない
+- **util.parseArgs** (Bun built-in): decent pedigree — it rejects #2 — but subcommands, help, and completion are all in-house.
+  Too thin a foundation for maruhi's 14 subcommands. That said, checking #4 is easy with tokens,
+  which corroborates that "duplicate checking can be written in-house under any candidate"
+- **clipanion**: 4.0.0-rc.4 last updated **2024-09**. Stagnation is heavy for a dependency sitting on the security boundary
+- **commander / cac / citty**: actively maintained, but no stronger than gunshi on #2–#4 above — no reason to switch
 
-## 4. 推奨
+## 4. Recommendation
 
-1. **`effect/unstable/cli` への移行を第一候補とする**。理由は「gunshi 由来の穴が 10/12 消える」ことに加え、
-   引数層が Effect の型付きエラーに統一され、`args.ts` の相当部分と `runCli` のブリッジが不要になること
-2. 検査は**すべて Effect の宣言に載せる**(§6 の 2 巡目で実測)。自前で残るのは
-   診断文の組み直し(値を出さないため)と、`maruhi run` の `--` 必須(方針)だけ
-3. **`@stricli/core` は「Effect 結線より引数の厳密さを優先する」場合の対抗案**として残す
-4. エージェント検出は**一次境界を TTY に置き換える**(§8)。env の名前表は二次層に降り、
-   ライブラリ選択は安全境界を決める選択ではなくなる
+1. **Migrate to `effect/unstable/cli` as the first choice**. Beyond "10/12 gunshi holes disappear",
+   the argument layer unifies on Effect typed errors, and most of `args.ts` plus the `runCli` bridge become unnecessary
+2. Put **all checks on Effect declarations** (measured in §6 round 2). What stays in-house is only
+   diagnostic re-wording (to avoid printing values) and the `--` requirement on `maruhi run` (policy)
+3. **Keep `@stricli/core` as the counter-proposal** for "prioritize argument strictness over Effect wiring"
+4. Replace the primary boundary of agent detection **with TTY** (§8). The env name table drops to a secondary layer,
+   and library choice is no longer a decision that defines the security boundary
 
-### 見積もりと段取り(提案)
+### Estimate and staging (proposal)
 
-1. **effect を rc.109 へ上げる**(§5。本メモと同時に実施済み)。移行先を rc の API に固定してから書く
-2. `pull` / `run` / `env create`(= 危険な形が集中する 3 コマンド)だけを移植する spike PR で、
-   args.ts のどれだけが消えるかを実測する。全 14 サブコマンドの一括移行はレビュー単位として大きすぎる
-3. ADR 化はその実測の後(ADR-0011「未安定依存」の下に CLI 引数層の決定として追記する形を想定)
+1. **Upgrade effect to rc.109** (§5; already done alongside this memo). Pin the migration target to the rc API before writing
+2. In a spike PR porting only `pull` / `run` / `env create` (= the 3 commands where dangerous shapes concentrate),
+   measure how much of args.ts disappears. Migrating all 14 subcommands at once is too large a review unit
+3. Write the ADR after that measurement (envisioned as an addition under ADR-0011 "unstable dependencies" as the CLI argument-layer decision)
 
-## 5. effect 4.0.0-beta.107 → 4.0.0-rc.109(実測)
+## 5. effect 4.0.0-beta.107 → 4.0.0-rc.109 (measured)
 
-effect v4 は 2026-08 に rc へ入った(`rc.108` / `rc.109`。beta の最終は `beta.107` = 本リポジトリのピン)。
-CLI 移行を書く前に上げておくべきかを判断するため、全ワークスペースの `effect` を rc.109 に差し替えて品質ゲートを回した。
+effect v4 entered rc in 2026-08 (`rc.108` / `rc.109`; the last beta is `beta.107` = this repo's pin).
+To decide whether to upgrade before writing the CLI migration, we swapped `effect` to rc.109 in every workspace and ran the quality gate.
 
-| 検査 | 結果 |
+| Check | Result |
 |---|---|
-| `tsc --noEmit`(全 7 ワークスペース) | 通過(**ソース変更ゼロ**) |
-| `vitest run`(全体) | 48 ファイル / **1488 件すべて通過**(workerd 実環境のサーバー / DO テストを含む) |
-| oxlint / ImportLint / fallow audit | 通過 |
-| `effect/unstable/cli` の 12 形プローブ | beta.107 と**完全に同一** |
+| `tsc --noEmit` (all 7 workspaces) | pass (**zero source changes**) |
+| `vitest run` (whole suite) | 48 files / **all 1488 pass** (including server / DO tests in real workerd) |
+| oxlint / ImportLint / fallow audit | pass |
+| `effect/unstable/cli` 12-shape probe | **completely identical** to beta.107 |
 
-特筆すべきは `apps/server/test/data-policy.test.ts` の**ドリフト検出器が green のまま通ったこと**。
-これは「全 14 エンドポイント × 全エラー種で `Schema.is` / `endpoint.error` 由来の fail/die 判定が宣言と厳密一致するか」を
-見るもので、PR #49 で beta.107 に対して手動検証した契約導出の自動再実行にあたる。
-つまり **rc.109 でも HttpApi のエラー契約の意味は変わっていない**(手動再検証は不要)。
+Notably, the **drift detector in `apps/server/test/data-policy.test.ts` stayed green**.
+It checks "for all 14 endpoints × every error kind, do `Schema.is` / `endpoint.error`-derived fail/die verdicts match the declaration exactly" —
+an automated re-run of the contract derivation manually verified against beta.107 in PR #49.
+In other words **the HttpApi error contract semantics are unchanged on rc.109** (no manual re-verification needed).
 
-判断: **rc へ上げてから CLI を移行する**。beta のまま移行すると、移行直後に rc 追随の差分を
-同じファイル群へもう一度かける二度手間になる。上げる代償は実測上ゼロだった。
+Judgment: **upgrade to rc, then migrate the CLI**. Migrating on beta means re-applying the rc-followup diff
+to the same file set right after migrating — duplicated effort. The measured cost of upgrading was zero.
 
-## 6. 移行スパイク(pull / run / env create)の実測
+## 6. Migration spike (pull / run / env create) — measured
 
-`apps/cli/test/support/effect-cli-spike.ts` に 3 コマンドを effect/unstable/cli で組み、
-`apps/cli/test/effect-cli-spike.test.ts`(32 件)で maruhi の規律が保たれるかを固定した。
-本番の `src/cli.ts` は gunshi のまま(スパイクは測定用。採用時に src へ昇格させる)。
+We built the 3 commands on effect/unstable/cli in `apps/cli/test/support/effect-cli-spike.ts`,
+and pinned whether maruhi's discipline holds in `apps/cli/test/effect-cli-spike.test.ts` (32 cases).
+Production `src/cli.ts` stays on gunshi (the spike is for measurement; promoted to src on adoption).
 
-### 分かったこと
+### What we learned
 
-1. **12 形すべてで期待どおりの終了コードと診断になった**(32/32 green)。
-   `--show=false` / `--show false` は書いたとおり `false` として読まれ、
-   `--` の後ろの空文字列は保たれ、`--no-show --show` は落ちる
-2. **`env` が真のサブコマンドになる**。gunshi は 1 段しか組めないため maruhi は
-   create / rotate / diff を**位置引数**にしており、1 つの引数表に全操作のフラグが
-   同居していた。その結果必要だった「その操作に適用されないオプション」の拒否
-   (`cli.ts` の `ENV_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection` /
-   `envActionFlagRejection` / `withoutPositionals`。server / invite / member にも同型が
-   ある)は、入れ子のサブコマンドにすると**機構ごと不要**になる
-3. **既定の英文をそのまま出してはいけない**(重要)。`UnexpectedArgument.arguments` と
-   `InvalidValue.value` は**打たれた値そのもの**を持つ。`maruhi push API_KEY "$SECRET"`
-   の余分な位置引数は平文なので、`renderErrors: false` にしたうえで**構造化フィールドの
-   うち安全なものだけ**(宣言名・候補・個数)から診断を組み直す必要がある。
-   スパイクではこれをテストで固定した(値が stderr に出ないことの検査)
-4. `Console` を差し替えるとヘルプ・診断が stdout を汚さない(`--help` でも stdout 0 行)
-5. `ShowHelp.errors` は**複数の誤りを配列で**返す。gunshi のように 1 件ずつではない
-6. **`Flag.atMost(1)` は boolean にも要る**(レビュー指摘で判明): 素の `Flag.boolean` は
-   重複を沈黙で解決し、**打った順で結果が変わる**(実測: `--show --no-show` は first-wins で
-   `true`、`--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の形は順序に依存
-   させてはいけないので、値を取るフラグと同じく `atMost(1)` を付ける
-7. **「stdout はコマンドの出力だけ」は 3 経路を分離して初めて検査できる**(レビュー指摘):
-   `Console` の出力だけを見る形だと検査が空振りし、逆に陽性対照を
-   `process.stdout.write` の直叩きで作ると、スパイクが実証すべき規律(出力も Effect の
-   サービス経由)自体を破る。現行のスパイクは 3 つに分けている —
-   **コマンドの出力** = `Stdio` の stdout Sink(ハーネスは `Stdio.layerTest({ stdout })` で捕捉)、
-   **ヘルプ・診断** = `Console`(全メソッドを stderr へ)、
-   **迂回された書き込み** = `process.stdout.write` の差し替え(`SpikeOutcome.bypassed`)。
-   混線するとテストが落ちる(実測: 陽性対照を外すと 1 件 fail)
-8. **`InvalidValue.expected` も値を含みうる**(レビュー指摘): 上流の `Param.filter` は
-   `expected: onNone(a)` を組み立てる(effect 自身の JSDoc 例が `Expected even number, got ${n}`)。
-   危険なフィールドは `UnexpectedArgument.arguments` / `InvalidValue.value` の 2 つではなく **3 つ**。
-   Formatter は**こちらが書いた文面と一致した expected だけ**を出す
-9. **終了コードは teardown に載せないと本番で崩れる**(レビュー指摘): 上流は
-   `ShowHelp[Runtime.errorExitCode] = errors.length ? 1 : 0` を宣言しているので、既定のままだと
-   **書き方の誤りが exit 1**。`makeRunMain({ teardown })` が上流の唯一のフック
-   (`CliConfig` は builtIns しか持たない)なので、そこで 2 へ読み替える。
-   ハーネスで手計算すると本番の起動経路を検査できない
-10. **既定では組み込みグローバルフラグが勝手に生える**(実測): `--help` / `--version` に加えて
-   `--wizard` / `--completions` / `--log-level` が全コマンドに付き、**`maruhi pull --wizard` は
-   対話ウィザードが実際に起動する**。`CliConfig.layer({ builtIns: [Help, Version] })` で
-   絞ると `UnrecognizedOption` になることを確認し、スパイクではそう設定した(ADR-0016 決定 5)
+1. **All 12 shapes produced the expected exit codes and diagnostics** (32/32 green).
+   `--show=false` / `--show false` are read as `false` as written,
+   empty strings after `--` are preserved, and `--no-show --show` fails
+2. **`env` becomes a true subcommand**. Since gunshi only nests one level, maruhi made
+   create / rotate / diff **positional arguments**, so one argument table held the flags for
+   every operation. The machinery that became necessary as a result — rejecting "options not applicable
+   to that operation" (`cli.ts`'s `ENV_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection` /
+   `envActionFlagRejection` / `withoutPositionals`; the same shape exists for server / invite / member)
+   — becomes **unnecessary as a mechanism** once subcommands nest
+3. **Default English text must not be emitted as-is** (important). `UnexpectedArgument.arguments` and
+   `InvalidValue.value` carry **the typed-in value itself**. The extra positional of `maruhi push API_KEY "$SECRET"`
+   is plaintext, so with `renderErrors: false` we must rebuild diagnostics **only from safe structured fields**
+   (declaration names, candidates, counts). The spike pins this in a test
+   (a check that values never reach stderr)
+4. Swapping `Console` keeps help/diagnostics off stdout (0 stdout lines even with `--help`)
+5. `ShowHelp.errors` returns **multiple mistakes as an array**. Not one at a time like gunshi
+6. **`Flag.atMost(1)` is needed even for booleans** (found in review): a bare `Flag.boolean`
+   resolves duplicates silently and **the result changes with the order typed** (measured: `--show --no-show` is
+   `true` first-wins, `--no-show --show` is `false`). The `maruhi pull --no-show $FLAGS` shape must not be
+   order-dependent, so attach `atMost(1)` as with value-taking flags
+7. **"stdout carries only command output" can only be checked by separating 3 paths** (review point):
+   a test that only watches `Console` output misses the mark, while building the positive control by
+   hitting `process.stdout.write` directly breaks the very discipline the spike is meant to prove (output goes through
+   Effect services too). The current spike splits three ways —
+   **command output** = `Stdio`'s stdout Sink (the harness captures it with `Stdio.layerTest({ stdout })`),
+   **help & diagnostics** = `Console` (every method routed to stderr),
+   **bypassed writes** = `process.stdout.write` replaced (`SpikeOutcome.bypassed`).
+   Cross the wires and a test fails (measured: removing the positive control fails 1 case)
+8. **`InvalidValue.expected` can also contain the value** (review point): upstream `Param.filter`
+   builds `expected: onNone(a)` (effect's own JSDoc example is `Expected even number, got ${n}`).
+   The dangerous fields are **3**, not the 2 of `UnexpectedArgument.arguments` / `InvalidValue.value`.
+   The Formatter only emits expected values **matching wording we wrote**
+9. **Exit codes break in production unless put on teardown** (review point): upstream declares
+   `ShowHelp[Runtime.errorExitCode] = errors.length ? 1 : 0`, so by default
+   **a usage mistake exits 1**. `makeRunMain({ teardown })` is upstream's only hook
+   (`CliConfig` only holds builtIns), so that's where we remap to 2.
+   Computing it by hand in the harness can't check the real boot path
+10. **Built-in global flags appear by default** (measured): on top of `--help` / `--version`,
+   `--wizard` / `--completions` / `--log-level` attach to every command, and **`maruhi pull --wizard`
+   actually launches an interactive wizard**. Narrowing via `CliConfig.layer({ builtIns: [Help, Version] })`
+   was confirmed to make them `UnrecognizedOption`, and the spike sets it that way (ADR-0016 decision 5)
 
-### 残る自前検査 → **ほぼ全部 Effect の宣言に置き換わった**(2 巡目の実測)
+### Remaining in-house checks → **nearly all replaced by Effect declarations** (round-2 measurement)
 
-1 巡目のスパイクでは重複・空の値・rest 必須を自前の `preflight` で書いていたが、
-Effect の機構で宣言できることが分かったので**全部消した**(32 件 green)。
+In round 1 of the spike, duplicates / blank values / required rest were written as an in-house `preflight`,
+but once we learned they can be declared in Effect's mechanisms we **deleted all of it** (32 cases green).
 
-| maruhi の規律 | 1 巡目(自前) | 2 巡目(Effect の宣言) |
+| maruhi discipline | Round 1 (in-house) | Round 2 (Effect declaration) |
 |---|---|---|
-| 同じオプションの重複 | 宣言名で数える走査 | `Flag.atMost(1)` |
-| 空 / 空白だけの値 | `isBlank` の走査 | `Flag.withSchema(NonBlank)`(Schema) |
-| 実行対象のない `run` | rest の自前検査 | `Argument.atLeast(1)` |
-| 実行対象が空文字列(`run -- "$CMD"` の未設定形) | 同上 | `Argument.filter`(2 つ目以降の空文字列は子プロセスの引数として保つ) |
-| usage=2 / 失敗=1 | ランナー内の写像 | `Runtime.errorExitCode` をエラー型が持つ(`runMain` の既定 teardown が読む) |
+| Duplicate same option | scan counting by declaration name | `Flag.atMost(1)` |
+| Empty / whitespace-only value | `isBlank` scan | `Flag.withSchema(NonBlank)` (Schema) |
+| `run` with nothing to execute | in-house rest check | `Argument.atLeast(1)` |
+| Empty-string execution target (`run -- "$CMD"` unset form) | same as above | `Argument.filter` (empty strings from the second one on are kept as child-process args) |
+| usage=2 / failure=1 | mapping inside the runner | error type carries `Runtime.errorExitCode` (read by `runMain`'s default teardown) |
 
-**診断も `--` 必須も Effect の機構に載せた**(3 巡目):
+**Diagnostics and the `--` requirement also went onto Effect mechanisms** (round 3):
 
-| 残っていた自前 | Effect の機構 | 置き場所 |
+| Remaining in-house | Effect mechanism | Location |
 |---|---|---|
-| 診断文の組み直し(ランナー内の描画ループ) | **`CliOutput.Formatter`** を実装して `CliOutput.layer` で差し込む | `test/support/cli-formatter.ts` |
-| `maruhi run` の `--` 必須(ランナーの事前走査) | **`Stdio.args`** を読む Effect + `Runtime.errorExitCode = 2` を持つ型付きエラー | `TerminatorRequired`(コマンド本体の先頭で `yield*`) |
+| Diagnostic re-wording (render loop in the runner) | implement **`CliOutput.Formatter`** and inject via `CliOutput.layer` | `test/support/cli-formatter.ts` |
+| `--` required for `maruhi run` (runner pre-scan) | Effect reading **`Stdio.args`** + typed error carrying `Runtime.errorExitCode = 2` | `TerminatorRequired` (`yield*` at the head of the command body) |
 
-Formatter にした利点は「文面だけを差し替えて、**描画の呼び出しは上流に残す**」こと。
-ランナーに if 文を足す形だと、上流が描画経路を増やしたときに素通りする穴ができる。
-`formatHelpDoc` は `--help` を明示した実行では既定フォーマッタの全文、
-書き方の誤りに添えるときは使い方の 1 行だけ、と出し分ける。
+The benefit of a Formatter is "swap only the wording, **leave the rendering call upstream**".
+An if-statement added to the runner leaves a hole when upstream adds rendering paths.
+`formatHelpDoc` emits the full default formatter text when `--help` was explicit,
+and only the one-line usage when attached to a usage error.
 
-**自前として残るのは「文面そのもの」だけ**になった(値を出さない語彙は maruhi 固有の要件で、
-どのライブラリも肩代わりしない)。
+**What remains in-house is only "the wording itself"** (the no-values vocabulary is a maruhi-specific
+requirement no library covers).
 
-### args.ts 911 行の帰属(関数単位の概算)
+### Attribution of args.ts's 911 lines (per-function estimate)
 
-| 区分 | 関数数 | 行数 |
+| Category | Functions | Lines |
 |---|---|---|
-| パーサが構造的に塞ぐため**不要**(boolean の値・rest の再構築・位置引数の数え直し・候補生成・gunshi のエラー写像) | 27 | **525** |
-| maruhi の方針として**残る**(重複・空の値・空の位置引数・rest 必須・値を出さない診断) | 12 | 222 |
+| **Unneeded** — the parser blocks structurally (boolean values, rest reconstruction, positional recounting, candidate generation, gunshi error mapping) | 27 | **525** |
+| **Stay** as maruhi policy (duplicates, blank values, blank positionals, required rest, no-value diagnostics) | 12 | 222 |
 
-`restArguments`(gunshi が `--` の後ろの空文字列を落とす回避)・`editDistance` / `nearest` /
-`suggestionText`(候補生成 — effect は `suggestions` を構造化して返す)・
-`booleanSpellings` 系 5 関数(boolean への値の検出)・`usageErrorMessages` 系 3 関数
-(gunshi の `AggregateError` の解体)がまとめて消える。
-これは**関数単位の帰属による概算**であって、実際に削除して測った数字ではない。
+`restArguments` (workaround for gunshi dropping empty strings after `--`), `editDistance` / `nearest` /
+`suggestionText` (candidate generation — effect returns structured `suggestions`),
+the `booleanSpellings` family of 5 functions (detecting values on booleans), and the `usageErrorMessages` family of 3 functions
+(unpacking gunshi's `AggregateError`) all disappear together.
+This is a **per-function attribution estimate**, not a number measured by actually deleting.
 
-## 7. Effect の機構で賄える箇所の棚卸し(CLI 全体)
+## 7. Inventory of what Effect mechanisms cover (whole CLI)
 
-引数層以外も洗い出した。いずれも実在を確認済み(effect 4.0.0-rc.109 / `@effect/platform-bun`)。
+We also listed things beyond the argument layer. All verified to exist (effect 4.0.0-rc.109 / `@effect/platform-bun`).
 
-| 今の自前実装 | Effect の機構 | 効果 |
+| Current in-house implementation | Effect mechanism | Effect |
 |---|---|---|
-| トークン・master 鍵・復号値を素の `string` / `Uint8Array` で持つ | **`Redacted`**(`toString` / `toJSON` が伏字を返す。`Redacted.value` で明示的に取り出す。`wipeUnsafe` で破棄も可) | 「平文をログ・エラーに出さない」が**型で担保**される。今は人手のレビューとテスト頼み。`Flag.redacted` もあるので値を取るフラグは最初から包める |
-| `live.ts` の `stdin.setRawMode(true)` 手書きノーエコー入力(リカバリーコード) | **`Prompt.password` / `Prompt.hidden`** | 端末制御を持たなくてよい |
-| `run.ts` の `Bun.spawn` ラッパ(`ProcessRunner` サービス) | **`effect/unstable/process`**(`ChildProcess` + `BunChildProcessSpawner`)。`env` / `extendEnv: false` / `stdio: "inherit"` を宣言で持つ | 子プロセス env の注入が Effect の API に載る。`extendEnv: false` は maruhi の denylist の考え方と同型 |
-| `config.ts` / `floor.ts` / `pins.ts` の `node:fs/promises` 直呼び | **`FileSystem` / `Path`**(+ `BunFileSystem`) | テストが一時ディレクトリ不要に(`FileSystem.layerNoop`) |
-| `io.ts` の `envVar`(`MARUHI_TOKEN` 等の env 読み) | **`Config` / `ConfigProvider`** | 設定の出所が 1 つになる |
-| `io.ts` の `stdin.isTTY` 直読み | **`Stdio.stdinIsTerminal` / `stdoutIsTerminal`** | 端末判定がサービス化され、テストで偽装できる(§8 の一次境界) |
-| `device-flow.ts` のポーリング間隔(下限固定) | **`Schedule`** | 間隔・上限・ジッタが宣言になる |
-| `config.json` のパース | **`Schema`** | api-schema と同じ語彙に揃う |
+| Tokens, master key, decrypted values held as bare `string` / `Uint8Array` | **`Redacted`** (`toString` / `toJSON` return redactions; `Redacted.value` retrieves explicitly; `wipeUnsafe` can also discard) | "no plaintext in logs/errors" is **type-guaranteed**. Today it relies on manual review and tests. `Flag.redacted` also exists, so value-taking flags can be wrapped from the start |
+| `live.ts`'s hand-rolled `stdin.setRawMode(true)` no-echo input (recovery code) | **`Prompt.password` / `Prompt.hidden`** | No terminal control needed |
+| `run.ts`'s `Bun.spawn` wrapper (`ProcessRunner` service) | **`effect/unstable/process`** (`ChildProcess` + `BunChildProcessSpawner`). `env` / `extendEnv: false` / `stdio: "inherit"` are declarations | Child-process env injection rides Effect's API. `extendEnv: false` is isomorphic to maruhi's denylist thinking |
+| Direct `node:fs/promises` calls in `config.ts` / `floor.ts` / `pins.ts` | **`FileSystem` / `Path`** (+ `BunFileSystem`) | Tests no longer need temp dirs (`FileSystem.layerNoop`) |
+| `io.ts`'s `envVar` (reading env like `MARUHI_TOKEN`) | **`Config` / `ConfigProvider`** | Config has a single source |
+| `io.ts`'s direct `stdin.isTTY` read | **`Stdio.stdinIsTerminal` / `stdoutIsTerminal`** | Terminal detection becomes a service, fakeable in tests (§8's primary boundary) |
+| `device-flow.ts` polling interval (fixed floor) | **`Schedule`** | Interval, cap, and jitter become declarations |
+| `config.json` parsing | **`Schema`** | Aligns vocabulary with api-schema |
 
-**置き換わらないもの**(正直に記録する):
+**What does not get replaced** (recorded honestly):
 
-- `retry.ts` の `retryOnConflict` — CAS 競合の「分類 → 回復(再同期・再署名の材料づくり)→ 再試行」で、
-  回復がドメイン固有。`Effect.retry` + `Schedule` には落ちない。**残す**
-- 診断文の組み直し(§6 の 3)
-- `keychain.ts`(`Bun.secrets`)— Effect に鍵ストアの抽象はない
+- `retry.ts`'s `retryOnConflict` — CAS conflicts go "classify → recover (re-sync, re-sign material prep) → retry",
+  and recovery is domain-specific. Doesn't fit `Effect.retry` + `Schedule`. **Keep**
+- Diagnostic re-wording (§6 item 3)
+- `keychain.ts` (`Bun.secrets`) — Effect has no key-store abstraction
 
-## 8. エージェント検出の再設計(徹底調査の結果)
+## 8. Agent-detection redesign (result of the deep dive)
 
-### 8-1. 分かったこと
+### 8-1. What we learned
 
-- **Effect には無い**。effect 4.0.0-rc.109 のソース全体に `CLAUDECODE` / `isAgent` 等は 0 件で、
-  CLI モジュールにも該当機能はない。CLI ライブラリ一般の機能でもない
-- **Bun の `isAIAgent()` は内部実装(Zig)であって公開 JS API ではない**。
-  `src/output.zig` の `Output.isAIAgent()` で、**`bun test` の出力を減らす**ために使われている
-  (PR #21135。2025-07-18 マージ。`CLAUDECODE=1` / `REPL_ID=1` / `IS_CODE_AGENT=1` を見る。
-  後に `AGENT=1` も追加)。`Bun.isAIAgent` は 1.3.14 で `undefined`(実測)、公式ドキュメントにも記載なし。
-  **Bun 1.4 の公開情報は 2026-08-16 時点で見つからない**(npm の latest は 1.3.14 / 2026-05-13、
-  canary は 1.3.13-canary。ブログにも 1.4 のアナウンスなし)。
-  リリースされたら「JS へ露出したか」を確認する価値はあるが、
-  仮に露出しても**検出範囲は std-env より狭い**(Bun は 4 変数、std-env は 12 種)。
-  いずれにせよ二次層なので設計は依存しない
-- **専用パッケージが複数ある**(いずれも依存ゼロ):
-  `@vercel/detect-agent` 1.2.5(cursor / claude / cowork / devin / replit / gemini / codex / antigravity /
-  augment-cli / opencode / github-copilot / v0)、`std-env` 4.2.0(`agentInfo`)、`ai-agent-detect`、`is-ai-agent`
-- **環境変数の標準化は進行中で未確定**。`AGENT` を推す提案(agentsmd/agents.md #136。Goose / Amp が実装済み)と
-  `AI_AGENT`(std-env / @vercel/detect-agent が読む)が併存し、Claude Code は `CLAUDECODE=1`、
-  Cursor は `CURSOR_AGENT=1`、Gemini CLI は `GEMINI_CLI=1` と各社独自。
-  VS Code / Copilot は「エージェントはユーザーと同一環境で動くべき」として**反対**している
-- 各ライブラリの検出範囲は**互いに部分集合ではない**(std-env は kiro / pi / auggie を持ち、
-  vercel は cowork / antigravity / v0 / github-copilot を持つ)。`@vercel/detect-agent` は
-  `/opt/.devin` のようなファイル存在も見るため **async** で、セキュリティ判定としては重い
+- **Effect does not have it**. Across all of effect 4.0.0-rc.109's source, `CLAUDECODE` / `isAgent` etc. occur 0 times,
+  and the CLI module has no such feature. It is not a general CLI-library feature either
+- **Bun's `isAIAgent()` is an internal implementation (Zig), not a public JS API**.
+  It's `Output.isAIAgent()` in `src/output.zig`, used to **reduce `bun test` output**
+  (PR #21135, merged 2025-07-18; checks `CLAUDECODE=1` / `REPL_ID=1` / `IS_CODE_AGENT=1`,
+  later adding `AGENT=1`). `Bun.isAIAgent` is `undefined` on 1.3.14 (measured), with no official docs mention.
+  **No public info on Bun 1.4 was found as of 2026-08-16** (npm latest is 1.3.14 / 2026-05-13,
+  canary is 1.3.13-canary; no 1.4 announcement on the blog).
+  Worth checking "did it get exposed to JS" when released,
+  but even if exposed **its detection range is narrower than std-env** (Bun checks 4 variables, std-env 12 kinds).
+  Either way it's a secondary layer, so the design doesn't depend on it
+- **Several dedicated packages exist** (all zero-dep):
+  `@vercel/detect-agent` 1.2.5 (cursor / claude / cowork / devin / replit / gemini / codex / antigravity /
+  augment-cli / opencode / github-copilot / v0), `std-env` 4.2.0 (`agentInfo`), `ai-agent-detect`, `is-ai-agent`
+- **Env-var standardization is in progress but unsettled**. A proposal pushing `AGENT` (agentsmd/agents.md #136; Goose / Amp already implement)
+  coexists with `AI_AGENT` (read by std-env / @vercel/detect-agent), while Claude Code uses `CLAUDECODE=1`,
+  Cursor `CURSOR_AGENT=1`, Gemini CLI `GEMINI_CLI=1` — each vendor has its own.
+  VS Code / Copilot **oppose** it on the grounds that "agents should run in the same environment as the user"
+- The libraries' detection ranges are **not subsets of each other** (std-env has kiro / pi / auggie,
+  vercel has cowork / antigravity / v0 / github-copilot). `@vercel/detect-agent` is
+  **async** because it also checks file existence like `/opt/.devin` — heavy for a security check
 
-### 8-2. 核心: deny-list は fail-open である
+### 8-2. Core: a deny-list is fail-open
 
-現行の `gunshi/agent` は「**既知の**エージェントの環境変数に一致したら拒否」する deny-list で、
-**境界の定義が上流のリストに依存**する。リストに無い新しいエージェント・自作ハーネス・
-CI・ログ収集経路は**素通り**する。上の調査のとおり標準化は未確定で、各社独自変数が乱立しており、
-「リストが常に正しい」という前提自体が持たない。
+The current `gunshi/agent` is a deny-list that "rejects when it matches a **known** agent's env var",
+so **the boundary's definition depends on upstream's list**. New agents not on the list, custom harnesses,
+CI, log-collection paths **all pass through**. As the survey above shows, standardization is unsettled
+and vendor-specific variables are multiplying — the premise "the list is always right" doesn't hold.
 
-### 8-3. 再設計: 一次境界を「人間の対話端末か」にする(fail-closed)
+### 8-3. Redesign: make the primary boundary "is it a human interactive terminal" (fail-closed)
 
-maruhi の要件は元々「**値を見てよいのは人間が対話端末で実行したときだけ**」である。
-それをそのまま判定にする:
+maruhi's requirement was always "**values may only be seen when a human runs it on an interactive terminal**".
+Make that the check itself:
 
-1. **一次境界 = TTY**: `stdin` と `stdout` の**両方**が端末か(`Stdio.stdinIsTerminal` /
-   `stdoutIsTerminal`。Effect のサービスなのでテストで偽装できる)。
-   エージェント・CI・パイプ・リダイレクトはすべて**既定で拒否**になる
-2. **二次層 = 既知エージェントの env**: 名前が分かると診断が親切になり、
-   PTY を割り当てて実行するエージェントも捕まえられる
+1. **Primary boundary = TTY**: are **both** `stdin` and `stdout` terminals (`Stdio.stdinIsTerminal` /
+   `stdoutIsTerminal`; Effect services, so fakeable in tests).
+   Agents, CI, pipes, redirects are all **rejected by default**
+2. **Secondary layer = known-agent env**: knowing the name makes diagnostics friendlier,
+   and it also catches agents that allocate a PTY to run
 
-**実測(このセッション = 実際に Claude Code の中)**: `stdin/stdout/stderr の isTTY はすべて false`。
-一方で環境変数は `CLAUDECODE` と `AI_AGENT` の両方が立っていた。
-つまり**どちらの信号でも捕まる**が、**未知のエージェントを止められるのは TTY 側だけ**である。
+**Measured (this session = actually inside Claude Code)**: `isTTY` is false for all of stdin/stdout/stderr.
+Meanwhile both `CLAUDECODE` and `AI_AGENT` env vars were set.
+So **either signal catches it**, but **only the TTY side can stop an unknown agent**.
 
-副次的な効果として `maruhi pull --show > secrets.txt` も拒否される。
-これは平文をディスクへ落とす操作であり、ディスクレス不変条件からは**拒否が正しい**。
+As a side effect, `maruhi pull --show > secrets.txt` is also rejected.
+That operation writes plaintext to disk, and under the diskless invariant **rejecting is correct**.
 
-スパイクでは `apps/cli/test/support/agent-gate.ts` にこの設計を実装し、
-「未知のエージェント(`isAgent: false`)でも stdout が端末でなければ拒否」をテストで固定した。
+The spike implements this design in `apps/cli/test/support/agent-gate.ts`,
+and pins in a test that "even an unknown agent (`isAgent: false`) is rejected if stdout isn't a terminal".
 
-### 8-4. ライブラリ選択の格が下がる
+### 8-4. Library choice drops a rank
 
-一次境界が TTY になると、env の名前表は**二次層**に降りる。したがって
-「どのライブラリを使うか」はもはや安全境界を決める選択ではなくなり、次の順で薄く扱える:
+Once the primary boundary is TTY, the env name table drops to a **secondary layer**. So
+"which library to use" no longer decides the security boundary, and can be treated thinly, in this order:
 
-1. **`@vercel/detect-agent`**(依存ゼロ・検出範囲が広い・Vercel 保守)。ただし
-   `determineAgent()` が async でファイル存在も見る
-2. **`std-env`**(依存ゼロ・同期・現行 `gunshi/agent` と同一実体 = 挙動が変わらない)
-3. 将来 `Bun.isAIAgent()` が入ったら依存ゼロで置き換える
+1. **`@vercel/detect-agent`** (zero deps, wide detection, Vercel-maintained). However
+   `determineAgent()` is async and also checks file existence
+2. **`std-env`** (zero deps, synchronous, same entity as the current `gunshi/agent` = behavior unchanged)
+3. Replace with zero-dep `Bun.isAIAgent()` if it ever ships
 
-**推奨は 2(std-env・同期・現行と同一挙動)を厳密ピンで直接依存**。二次層なので
-検出漏れが即座に境界の穴にはならない。加えて検出表のスナップショットテストを置けば、
-上流が縮小したときに CI で気づける。
+**Recommendation: 2 (std-env, synchronous, identical behavior to today) as a strictly-pinned direct dependency**. As a secondary layer,
+a detection miss doesn't immediately become a boundary hole. Plus a snapshot test of the detection table
+lets CI notice when upstream shrinks it.
 
-## 9. 再現手順
+## 9. Reproduction steps
 
 ```bash
 mkdir probe && cd probe && bun init -y
 bun add effect@4.0.0-rc.109 @effect/platform-bun@4.0.0-rc.109 gunshi@0.37.1 @stricli/core@1.3.0
-# 各候補に同じ argv(上表の 12 形)を食わせ、値・エラー・stdout バイト数を記録する
+# Feed each candidate the same argv (the 12 shapes above) and record values, errors, stdout byte counts
 ```
 
-測定に使ったスクリプトはリポジトリに含めていない(調査用の使い捨て)。
-再測が必要なら上表の argv 一覧から組み直せる。
+The scripts used for measurement aren't in the repo (throwaway, for survey only).
+If re-measurement is needed, rebuild from the argv list in the table above.
