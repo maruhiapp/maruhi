@@ -161,7 +161,7 @@ client-verification parts:
   (§4's (1)(3)(4) + anchor check). The product is `DecryptedVariable[]` (the
   same type as run)
 - `apps/cli/src/ci-run.ts` — orchestration (key generation → token →
-  issue〔1 retry on token-replayed〕→ verify → `runOp`). The injection
+  issue[1 retry on token-replayed]→ verify → `runOp`). The injection
   boundary is the same as run: `buildInjectionEnv` / `ProcessRunner` (the
   diskless invariant)
 - `apps/cli/src/anchor.ts` — generate / parse / check the anchor format (JSON)

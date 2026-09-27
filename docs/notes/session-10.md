@@ -242,8 +242,8 @@ comment.
 All 3 angles confirmed **zero findings** (security = the prohibited side,
 allowed side, and ordering are pinned entirely at the vector layer /
 correctness = closed through the reference verifier's completeness / tests &
-contract = the 5-point mutual constraint〔spec, generation tool, vectors,
-implementation, both test layers〕is complete). Progression: loop 1 = 1 high, 5
+contract = the 5-point mutual constraint[spec, generation tool, vectors,
+implementation, both test layers]is complete). Progression: loop 1 = 1 high, 5
 low → loop 2 = 1 low, 2 info → loop 3 = zero. `bun run check` (363 cases) +
 `wrangler deploy --dry-run` + all crypto tests passing on 4 runtimes. Next: mark
 ready → merge on owner instruction (merge = owner approval of the §6.2

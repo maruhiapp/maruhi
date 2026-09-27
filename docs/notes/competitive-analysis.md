@@ -1,6 +1,6 @@
 # Competitive comparison — maruhi vs Phase / Infisical / Doppler / Shelve / Keyway
 
-Status: 2026-09-04 draft (internal memo. The competitor roundup in ADR-0014 Context〔2026-08-07〕re-verified against each company's public information and updated).
+Status: 2026-09-04 draft (internal memo. The competitor roundup in ADR-0014 Context[2026-08-07]re-verified against each company's public information and updated).
 Competitor facts were checked on each company's official site, docs, and GitHub as of 2026-09-04. Items marked **[unverified]** could not be confirmed from public information.
 maruhi-side facts are based on the current state of CRYPTO_SPEC / AUTH_SPEC / ADR / ROADMAP / SELF_HOSTING (pre-release; before the invite-only beta).
 
@@ -45,7 +45,7 @@ On the other hand, maruhi clearly lags in feature breadth (sync targets, SDKs, r
 - Crypto: **server-side envelope encryption** (`ENCRYPTION_KEY` → KMS root → org / project data keys → AES-256-GCM). External KMS supported (AWS KMS / CloudHSM / GCP KMS). **E2EE became opt-out in 2023-06, and the current security docs describe only the server-side model** ("E2EE was received as a nice-to-have, not a must-have")
 - Self-host: single Docker / Compose / Helm / ECS Fargate / GKE. **PostgreSQL 14+ and Redis required** (refuses to start without Redis). Recommended 2–4 vCPU / 4–8 GB. EE phones home to a license server (offline license available)
 - CLI: `infisical run -- <cmd>` (`--watch` restarts), **`infisical export --output-file` (writes dotenv etc. to disk)**, **Infisical Agent (a sidecar renders secrets to files from templates)**
-- Integrations: the widest. Machine-ID auth (Universal / K8s / AWS / Azure / GCP / **OIDC〔GitHub Actions documented〕** / SPIFFE), K8s Operator, many Secret Syncs, SDKs in 9 languages, Terraform / Pulumi / Ansible
+- Integrations: the widest. Machine-ID auth (Universal / K8s / AWS / Azure / GCP / **OIDC[GitHub Actions documented]** / SPIFFE), K8s Operator, many Secret Syncs, SDKs in 9 languages, Terraform / Pulumi / Ansible
 - Team: RBAC, approval workflows, temporary access, SAML / LDAP / SCIM, audit logs, PITR, **rotation, dynamic secrets**, PKI (ACME), SSH certificates, KMS, PAM (session recording)
 - Agent: **MCP server** (`get-secret` returns plaintext), **Agent Vault** (OSS, HTTPS_PROXY-style MITM credential proxy, 2026-04), **Agent Proxy** (GA 2026-07-30. A broker that substitutes real values for dummy credentials at the communication boundary. Available on all plans)
 - License: MIT + `ee/` under a proprietary Enterprise license (open-core). CLI MIT, MCP Apache-2.0
@@ -57,7 +57,7 @@ On the other hand, maruhi clearly lags in feature breadth (sync targets, SDKs, r
 - Crypto: **server-side encryption**. AES-256-GCM, workspace keys wrapped by GCP KMS (HSM), a tokenization service separates keys from the Web tier. The backend decrypts, and the dashboard, API, CLI, and all sync targets receive plaintext. Enterprise EKM can route through customer KMS. Only Doppler Share (one-off sharing) is browser E2EE
 - Self-host: historically cloud-only. **"Doppler On-prem" announced 2026-06-08, Enterprise-only** (packaging undisclosed)
 - CLI (Apache-2.0): `doppler run -- <cmd>`, `--mount` (named pipe). **`doppler secrets download --format=env|json|yaml` (writes `.env` to disk)**. **`doppler run` writes an encrypted snapshot to `~/.doppler/fallback` by default** (PBKDF2 + AES-256-GCM. The default passphrase is derived from the token etc.)
-- Integrations: among the most (GitHub Actions / GitLab / CircleCI, AWS / GCP / Azure, Vercel / Netlify / Heroku / Railway / Render / Fly / Cloudflare Pages, K8s Operator, Terraform〔OIDC auth 2026-06〕). OIDC Service Account Identities (GitHub Actions / K8s / GitLab / AWS)
+- Integrations: among the most (GitHub Actions / GitLab / CircleCI, AWS / GCP / Azure, Vercel / Netlify / Heroku / Railway / Render / Fly / Cloudflare Pages, K8s Operator, Terraform[OIDC auth 2026-06]). OIDC Service Account Identities (GitHub Actions / K8s / GitLab / AWS)
 - Team: RBAC (custom roles are Enterprise), Change Requests (diff review + approval), rotation (via Lambda), dynamic secrets (Enterprise), activity log + rollback, SIEM forwarding
 - Agent: official MCP server (experimental. Can read and write plaintext. Tags MCP operations in the audit log). `/agents` page (branch config + read-only expiring tokens). **No agent detection / refusal mode**
 - Pricing: Developer (free up to 3 users, then $8) / Team $21/user/mo / Enterprise
@@ -114,9 +114,9 @@ Legend: ● = present / default, ◐ = conditional / partial, ○ = absent, — 
 |---|---|---|---|---|---|---|
 | `run -- <cmd>` memory injection | ● | ● | ● | ● | ● | ● |
 | **No `.env` generation / export feature in the product** | **● (invariant. In future only explicit SOPS-compatible operations)** | ○ `secrets export` 10 formats | ○ `export --output-file` + Agent renders files | ○ `secrets download` | ○ `pull` writes plaintext `.env` | ○ `pull` writes `.env` by default |
-| No plaintext / encrypted cache on disk | ● (persistent state is only tokens, master key〔OS keychain〕, non-sensitive config) | ○ encrypted cache in offline mode | ◐ (CLI has a backup-deletion function [unverified]) | ○ encrypted snapshot at `~/.doppler/fallback` by default | ○ `~/.shelve/cache/` for 24h | ● [unverified] |
+| No plaintext / encrypted cache on disk | ● (persistent state is only tokens, master key[OS keychain], non-sensitive config) | ○ encrypted cache in offline mode | ◐ (CLI has a backup-deletion function [unverified]) | ○ encrypted snapshot at `~/.doppler/fallback` by default | ○ `~/.shelve/cache/` for 24h | ● [unverified] |
 | Default for value display | `pull` is metadata-only. `pull --show` is a 2-layer fail-closed: TTY primary boundary + agent detection | Masked by default (under agent detection) | Shows | Shows | JSON output has no values | `diff --show-values` |
-| "Contract" features that work without values | ● Value-free schema (`maruhi schema` / `schema export`〔JSON Schema〕/ `verify-snapshot` / `lint`). Required-ness fulfillment verifiable from signatures | ○ | ○ | ○ | ◐ `generate` (`.env.example`) | ○ |
+| "Contract" features that work without values | ● Value-free schema (`maruhi schema` / `schema export`[JSON Schema]/ `verify-snapshot` / `lint`). Required-ness fulfillment verifiable from signatures | ○ | ○ | ○ | ◐ `generate` (`.env.example`) | ○ |
 | CLI implementation / distribution | Bun-compiled single binary (linux / darwin. Windows experimental) + npm (Bun required). Homebrew from v0.1.0 | Go | Go | Go | Node (Citty) | Go + npm + brew |
 | CLI telemetry | **None ("say nothing")** | None | PostHog built in (default unverified) | **On by default** (opt-out) | No traces | **On by default** (opt-out) |
 
