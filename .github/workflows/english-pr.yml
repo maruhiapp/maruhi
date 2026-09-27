@@ -1,0 +1,35 @@
+# ADR-0019 decision 5: PR titles, PR descriptions and commit messages are
+# English. Kept out of ci.yml so editing a PR description re-runs only this
+# lightweight check, not the full quality gate
+name: english-pr
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: english-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-text:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit range BASE_SHA..HEAD_SHA needs the full history
+          fetch-depth: 0
+          persist-credentials: false
+      # Event fields are passed through env (never interpolated into the
+      # script) so a PR title or description cannot inject shell
+      - name: English PR title, description and commit messages
+        run: node scripts/check-english-pr.mjs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}

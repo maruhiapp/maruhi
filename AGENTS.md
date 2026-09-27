@@ -3,6 +3,12 @@
 For the repository-wide development guide (absolute rules, tech stack, quality
 gate), see `CLAUDE.md`.
 
+**Language rule (ADR-0019):** everything written to this repository or to
+GitHub is English — code, comments, docs, commit messages, PR titles and
+descriptions, issues, review comments and replies. Japanese is used only when
+talking with the owner directly, and in the files listed in
+`scripts/english-exemptions.txt`.
+
 ## Claude Code on the web specific instructions
 
 - Setup is handled by the SessionStart hook (`.claude/hooks/session-start.sh`):
