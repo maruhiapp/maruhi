@@ -1,17 +1,22 @@
-// AUTH_SPEC §2 の D1 スキーマ(Drizzle。ADR-0006)。
+// The D1 schema of AUTH_SPEC §2 (Drizzle; ADR-0006).
 //
-// この境界(db.package)の外に Drizzle の型を出さない: テーブル定義・select 結果型は
-// リポジトリサービスの実装専用で、公開 API はドメイン型と Effect 型のみ(index.ts 参照)。
+// Drizzle types never leave this boundary (db.package): table definitions
+// and select-result types are for the repository services' implementation
+// only; the public API is domain types and Effect types only (see
+// index.ts).
 //
-// 規則(AUTH_SPEC §2):
-// - 他のあらゆる構造からの参照は users.id(内部 ULID)のみ。provider_user_id を
-//   外部キーとして使用禁止
-// - ルックアップは (provider, provider_user_id) でのみ行う。メールでの検索を作らない
-// - memberships.role(org ロール)はプロジェクトアクセスに関与しない(§9-2)
-// - projects は org 帰属のメタデータであり、プロジェクト内権限の真実源ではない
-//   (真実源はメンバーシップチェーン。CRYPTO_SPEC §6.4 の 2 つの真実源の禁止)
+// Rules (AUTH_SPEC §2):
+// - Every reference from any other structure goes through users.id (the
+//   internal ULID) only. provider_user_id must not be used as a foreign key
+// - Lookups happen only on (provider, provider_user_id). Build no lookup by
+//   email
+// - memberships.role (the org role) does not participate in project access
+//   (§9-2)
+// - projects is org-belonging metadata, not the source of truth of
+//   in-project permissions (the source of truth is the membership chain —
+//   the ban on two sources of truth, CRYPTO_SPEC §6.4)
 //
-// 時刻はすべて unix ms の INTEGER。
+// All times are INTEGER unix ms.
 
 import {
   index,
@@ -23,9 +28,9 @@ import {
 } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
-  /** 内部 user_id(ULID)。全システムの主体識別子 */
+  /** The internal user_id (ULID). The principal identifier across the whole system */
   id: text("id").primaryKey(),
-  /** 表示・通知用。識別子として使用禁止。GitHub 側で verified なもののみ保存 */
+  /** For display and notifications. Must not be used as an identifier. Only GitHub-verified ones are stored */
   email: text("email"),
   emailVerified: integer("email_verified").notNull().default(0),
   createdAt: integer("created_at").notNull(),
@@ -38,11 +43,11 @@ export const linkedIdentities = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    /** 'github'(将来: 'workos' 等) */
+    /** 'github' (future: 'workos' etc.) */
     provider: text("provider").notNull(),
-    /** GitHub の数値 ID の文字列化(login 名ではない。login は変更可能) */
+    /** GitHub's numeric ID as a string (not the login name — a login can change) */
     providerUserId: text("provider_user_id").notNull(),
-    /** 表示用スナップショット */
+    /** Display snapshot */
     providerLogin: text("provider_login"),
     linkedAt: integer("linked_at").notNull(),
   },
@@ -56,7 +61,7 @@ export const organizations = sqliteTable(
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     createdAt: integer("created_at").notNull(),
-    // 将来カラム(今は作らない): sso_connection_id, allowed_domains, enforce_sso
+    // Future columns (not created now): sso_connection_id, allowed_domains, enforce_sso
   },
   (t) => [uniqueIndex("org_slug").on(t.slug)],
 );
@@ -70,7 +75,7 @@ export const memberships = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    /** org ロール: 'owner' | 'admin' | 'member'(プロジェクトアクセスには関与しない) */
+    /** The org role: 'owner' | 'admin' | 'member' (does not participate in project access) */
     role: text("role").notNull(),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.userId] }), index("mem_user").on(t.userId)],
@@ -79,12 +84,12 @@ export const memberships = sqliteTable(
 export const sessions = sqliteTable(
   "sessions",
   {
-    /** ランダム 256-bit セッション値の SHA-256(hex)。生値は保存しない */
+    /** SHA-256 (hex) of the random 256-bit session value. The raw value is never stored */
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    /** 'github_oauth'(将来: 'sso' 等)。SSO 強制ポリシーに必要 */
+    /** 'github_oauth' (future: 'sso' etc.). Needed for the SSO-enforcement policy */
     authMethod: text("auth_method").notNull(),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
@@ -101,11 +106,11 @@ export const apiTokens = sqliteTable(
       .notNull()
       .references(() => users.id),
     name: text("name").notNull(),
-    /** SHA-256(hex)。生トークンは発行時に一度だけ返す */
+    /** SHA-256 (hex). The raw token is returned only once at issuance */
     tokenHash: text("token_hash").notNull(),
-    /** 表示用(例: maruhi_pat_Ab12…) */
+    /** For display (e.g. maruhi_pat_Ab12…) */
     tokenPrefix: text("token_prefix").notNull(),
-    /** TokenScope の JSON 配列(AUTH_SPEC §6 のスコープ表現) */
+    /** A JSON array of TokenScope (the scope representation of AUTH_SPEC §6) */
     scopes: text("scopes").notNull(),
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
@@ -114,17 +119,18 @@ export const apiTokens = sqliteTable(
   (t) => [
     uniqueIndex("tok_hash").on(t.tokenHash),
     index("tok_user").on(t.userId),
-    // 同名トークンはローテーション(AUTH_SPEC §6)。並行発行でも 1 本を DB 制約で保証
+    // A same-named token is a rotation (AUTH_SPEC §6). One row guaranteed by a DB constraint even under concurrent issuance
     uniqueIndex("tok_user_name").on(t.userId, t.name),
   ],
 );
 
 /**
- * デプロイメント単位のサーバー設定(AUTH_SPEC §3)。現状の
- * キーは `signup_policy`('open' | 'invite' | 'closed'。行なし = 'open')のみ。
- * 書き込み経路はコードに存在しない — 変更は運営の wrangler / SQL 経路のみ
- * (docs/SELF_HOSTING.md。管理 UI・設定 API は作らない)。読み手は未知の値を
- * 'closed' として扱う(fail-closed — repos.ts の readSignupPolicy)。
+ * Per-deployment server settings (AUTH_SPEC §3). The only key today is
+ * `signup_policy` ('open' | 'invite' | 'closed'; no row = 'open').
+ * No write path exists in code — changes go through the operator's wrangler
+ * / SQL path only (docs/SELF_HOSTING.md; no admin UI or settings API will
+ * be built). Readers treat an unknown value as 'closed' (fail-closed —
+ * readSignupPolicy in repos.ts).
  */
 export const deploymentSettings = sqliteTable("deployment_settings", {
   key: text("key").primaryKey(),
@@ -133,30 +139,33 @@ export const deploymentSettings = sqliteTable("deployment_settings", {
 });
 
 /**
- * サインアップ招待コード(AUTH_SPEC §3)。256-bit 乱数 bearer
- * (`maruhi_sgn_` + Base62)の SHA-256 ハッシュのみ保存・単回(消費 CAS)・
- * 期限つき(§15 invitations の型の踏襲)。コードはアカウント作成の許可だけを
- * 運ぶ — プロジェクト・org・role・プロバイダ識別子と結びつけない。
+ * Signup invite codes (AUTH_SPEC §3). Only the SHA-256 hash of a 256-bit
+ * random bearer (`maruhi_sgn_` + Base62) is stored; single-use (consumption
+ * CAS); expires (following the §15 invitations shape). A code carries only
+ * permission to create an account — it is not bound to a project, org,
+ * role, or provider identifier.
  *
- * - 発行は運営操作(scripts/issue-signup-invite.ts + wrangler d1)— サーバーに
- *   発行経路はない
- * - 消費(status 'pending' → 'used')はアカウント作成と同一 D1 batch 内の
- *   CAS(repos.ts — 作成失敗でコードだけ燃える形・作成成功でコードが残る形の
- *   両方を排除)
- * - used_by_user_id に FK を張らない: 消費 UPDATE は同一 batch 内で users 行の
- *   挿入**より前**に実行される(CAS の changes() を作成側の条件が読む)ため、
- *   参照整合は構造的に張れない(invitations と同じ「FK なし」判断)
+ * - Issuance is an operator operation (scripts/issue-signup-invite.ts +
+ *   wrangler d1) — the server has no issuance path
+ * - Consumption (status 'pending' → 'used') is a CAS inside the same D1
+ *   batch as the account creation (repos.ts — eliminates both "creation
+ *   failed but the code burned" and "creation succeeded but the code
+ *   survives")
+ * - No FK on used_by_user_id: the consumption UPDATE runs **before** the
+ *   users row insert in the same batch (the creation side reads the CAS's
+ *   changes()), so referential integrity is structurally impossible (the
+ *   same "no FK" decision as invitations)
  */
 export const signupInvites = sqliteTable(
   "signup_invites",
   {
-    /** ULID(発行スクリプトが採番)。監査 payload の signupInviteId と同じ値 */
+    /** ULID (issued by the issuance script). Same value as the audit payload's signupInviteId */
     id: text("id").primaryKey(),
-    /** 提示文字列全体(maruhi_sgn_…)の SHA-256(hex)。生値は発行時のみ */
+    /** SHA-256 (hex) of the whole presented string (maruhi_sgn_…). The raw value exists only at issuance */
     tokenHash: text("token_hash").notNull(),
-    /** 'pending' | 'used'(期限切れは expires_at からの導出 — §15 と同じ) */
+    /** 'pending' | 'used' (expiry is derived from expires_at — same as §15) */
     status: text("status").notNull(),
-    /** 発行 + 7 日(起草値 — 発行スクリプトが計算) */
+    /** Issued + 7 days (drafting value — the issuance script computes it) */
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
     usedByUserId: text("used_by_user_id"),
@@ -166,83 +175,89 @@ export const signupInvites = sqliteTable(
 );
 
 /**
- * フロー署名鍵(AUTH_SPEC §4-2)。CLI ログインの flowToken / vsig を検証する
- * HMAC-SHA-256 鍵で、初回使用時に自動生成して保存する(冪等 — insert の先勝ち +
- * 読み戻し)。auth 層の資格情報保護であり CRYPTO_SPEC の対象外(E2EE 特性に
- * 一切依拠されない)。行は固定 id の高々 1 行。
+ * The flow signing key (AUTH_SPEC §4-2). The HMAC-SHA-256 key that verifies
+ * a CLI login's flowToken / vsig; auto-generated and stored on first use
+ * (idempotent — first-to-insert wins + read back). It is credential
+ * protection of the auth layer and outside CRYPTO_SPEC's scope (no E2EE
+ * property relies on it). At most one row under a fixed id.
  */
 export const flowSigningKeys = sqliteTable("flow_signing_keys", {
-  /** 固定識別子(現状 'v1' の 1 行のみ) */
+  /** A fixed identifier (currently only one row, 'v1') */
   id: text("id").primaryKey(),
-  /** HMAC-SHA-256 鍵(256-bit、hex 小文字 64 文字) */
+  /** The HMAC-SHA-256 key (256-bit, 64 lowercase hex chars) */
   keyHex: text("key_hex").notNull(),
   createdAt: integer("created_at").notNull(),
 });
 
 /**
- * CLI ログインのフロー行(AUTH_SPEC §4-1 (4) (iii))。start は無記録(裁定 DH)
- * で、行は callback の create-or-match CAS で**初めて**生まれる — 生まれた時点で
- * 認証済み user_id・発行パラメータ(vsig 済み URL 由来)・期限・承認チケットが
- * 確定している(中間状態が存在しない)。
+ * A CLI login flow row (AUTH_SPEC §4-1 (4) (iii)). start is unrecorded
+ * (ruling DH); a row is born **for the first time** at the callback's
+ * create-or-match CAS — at birth the authenticated user_id, the issuance
+ * parameters (from the vsig'd URL), the expiry, and the approval ticket
+ * are all fixed (no intermediate state exists).
  *
- * - status: 'awaiting' | 'approved' | 'denied' | 'consumed'。承認 / 拒否は
- *   awaiting からの CAS、PAT 発行は approved → consumed の CAS 勝者のみ(§4-1 (5))
- * - ticket_hash: 承認チケット(256-bit 乱数)の SHA-256(hex)。生値はページに
- *   のみ埋め、常に最新 1 枚(同一 user_id の再到達で置換)
- * - consumed / denied の行も期限 + 余裕までは削除しない(先に消すと poll が
- *   「行なし = pending」と誤読する — §4-1 (5))。掃除は期限経過後の日和見削除のみ
+ * - status: 'awaiting' | 'approved' | 'denied' | 'consumed'. Approve /
+ *   deny is a CAS from awaiting; PAT issuance is only for the winner of
+ *   the approved → consumed CAS (§4-1 (5))
+ * - ticket_hash: SHA-256 (hex) of the approval ticket (256-bit random).
+ *   The raw value is embedded only in the page; always the latest one
+ *   (replaced when the same user_id arrives again)
+ * - consumed / denied rows are not deleted until expiry + slack (deleting
+ *   earlier would make poll misread "no row = pending" — §4-1 (5)).
+ *   Cleanup is only an opportunistic delete after expiry
  */
 export const cliLoginFlows = sqliteTable(
   "cli_login_flows",
   {
-    /** 公開相関子 flowId(128-bit 乱数 hex 小文字 32 文字) */
+    /** The public correlator flowId (128-bit random, 32 lowercase hex chars) */
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
     status: text("status").notNull(),
-    /** 発行パラメータ(start で既定値を解決済み — vsig が覆う確定値) */
+    /** Issuance parameter (its default resolved at start — a final value the vsig covers) */
     tokenName: text("token_name").notNull(),
-    /** TokenScope の JSON 配列(api_tokens.scopes と同じ表現) */
+    /** A JSON array of TokenScope (same representation as api_tokens.scopes) */
     scopes: text("scopes").notNull(),
     expiresInDays: integer("expires_in_days").notNull(),
-    /** 照合用の短い表示コード(秘密ではない — §4-1 (2)) */
+    /** A short display code for comparison (not a secret — §4-1 (2)) */
     userCode: text("user_code").notNull(),
-    /** 承認チケット(生値 256-bit 乱数)の SHA-256(hex)。 */
+    /** SHA-256 (hex) of the approval ticket (raw 256-bit random). */
     ticketHash: text("ticket_hash").notNull(),
-    /** フローの期限(unix ms — flowToken / vsig の署名済み期限と同値) */
+    /** The flow's expiry (unix ms — same value as the signed expiry of flowToken / vsig) */
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
   },
-  // 日和見削除(期限 + 余裕を過ぎた行の掃除)用
+  // For the opportunistic delete (sweeping rows past expiry + slack)
   (t) => [index("clf_expires").on(t.expiresAt)],
 );
 
 export const recoveryWraps = sqliteTable("recovery_wraps", {
-  /** user 単位で高々 1 つ(AUTH_SPEC §13-1) */
+  /** At most one per user (AUTH_SPEC §13-1) */
   userId: text("user_id")
     .primaryKey()
     .references(() => users.id),
-  /** スイート識別子(CRYPTO_SPEC §2 設計原則 4) */
+  /** The suite identifier (CRYPTO_SPEC §2 design principle 4) */
   suite: text("suite").notNull(),
-  /** 96-bit nonce(hex 小文字 24 文字) */
+  /** A 96-bit nonce (24 lowercase hex chars) */
   nonceHex: text("nonce_hex").notNull(),
-  /** AES-256-GCM の ct || tag(hex 小文字)。サーバーは復号・解釈しない */
+  /** AES-256-GCM ct || tag (lowercase hex). The server never decrypts or interprets it */
   ciphertextHex: text("ciphertext_hex").notNull(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
 
 // ---------------------------------------------------------------------------
-// master 鍵ラップ台帳(AUTH_SPEC §13-6 — KL3。CRYPTO_SPEC §8 のクラス S / G / H)。
-// すべて user 単位で、ラップ・分片はサーバーから見て不透明な暗号文。
+// The master-key wrap ledger (AUTH_SPEC §13-6 — KL3. Classes S / G / H of
+// CRYPTO_SPEC §8). All per-user; a wrap or a segment is an opaque
+// ciphertext as far as the server is concerned.
 // ---------------------------------------------------------------------------
 
-/** クラス S の新経路(passkey-prf)。recovery-code は recovery_wraps のまま。 */
+/** Class S's new path (passkey-prf). recovery-code stays on recovery_wraps. */
 export const masterKeyWraps = sqliteTable(
   "master_key_wraps",
   {
-    /** wrap_id(ULID) */
+    /** wrap_id (ULID) */
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
@@ -250,7 +265,7 @@ export const masterKeyWraps = sqliteTable(
     /** 'passkey-prf' */
     kind: text("kind").notNull(),
     suite: text("suite").notNull(),
-    /** JSON(公開パラメータ: credentialIdHex / prfSaltHex / rpId / label)。サーバーは解釈しない */
+    /** JSON (public parameters: credentialIdHex / prfSaltHex / rpId / label). The server does not interpret it */
     params: text("params").notNull(),
     nonceHex: text("nonce_hex").notNull(),
     ciphertextHex: text("ciphertext_hex").notNull(),
@@ -260,11 +275,11 @@ export const masterKeyWraps = sqliteTable(
   (t) => [index("mkw_user").on(t.userId)],
 );
 
-/** クラス G: 保護者グループ(グループ KEK による B のラップ)。 */
+/** Class G: guardian groups (a wrap of B under the group KEK). */
 export const guardianGroups = sqliteTable(
   "guardian_groups",
   {
-    /** group_id(ULID) */
+    /** group_id (ULID) */
     id: text("id").primaryKey(),
     /** ward */
     userId: text("user_id")
@@ -281,12 +296,16 @@ export const guardianGroups = sqliteTable(
 );
 
 /**
- * クラス G: 分片(保護者の enc 公開鍵への HPKE Seal)。**保護者の端末ごとに 1 行**
- * (2026-09-19 DK — AUTH_SPEC §13-6: 同じ論理分片 share_index を保護者の各有効端末鍵へ
- * 封印する。info は端末を含まないが受信者鍵が異なるため相互に開けない — CRYPTO_SPEC §8.3)。
- * 主キーは (group_id, share_index, guardian_key_fingerprint_hex)、同一保護者の同一端末は
- * 1 行(UNIQUE)。論理分片(share_index ↔ 保護者)の一意性は受理段(handlers-key-wraps.ts)が
- * 検査する(設計録 dk-design.md §8 K3-10)。
+ * Class G: a segment (an HPKE Seal to the guardian's enc public key).
+ * **One row per guardian device** (2026-09-19 DK — AUTH_SPEC §13-6: the
+ * same logical segment share_index is sealed to each of the guardian's
+ * valid device keys. info contains no device, but the recipient keys
+ * differ so they cannot open each other's — CRYPTO_SPEC §8.3).
+ * The primary key is (group_id, share_index,
+ * guardian_key_fingerprint_hex); one row (UNIQUE) per same-guardian
+ * same-device. The uniqueness of a logical segment (share_index ↔
+ * guardian) is checked at the acceptance stage (handlers-key-wraps.ts)
+ * (design record dk-design.md §8 K3-10).
  */
 export const guardianShares = sqliteTable(
   "guardian_shares",
@@ -294,17 +313,17 @@ export const guardianShares = sqliteTable(
     groupId: text("group_id")
       .notNull()
       .references(() => guardianGroups.id, { onDelete: "cascade" }),
-    /** 1..n(論理分片 — 保護者 1 人につき 1 つ) */
+    /** 1..n (a logical segment — one per guardian) */
     shareIndex: integer("share_index").notNull(),
     guardianUserId: text("guardian_user_id")
       .notNull()
       .references(() => users.id),
-    /** 封印先(ward クライアントが確認済みの鍵) */
+    /** The seal target (a key the ward client has confirmed) */
     guardianEncPubHex: text("guardian_enc_pub_hex").notNull(),
-    /** 封印先の端末鍵 FP(保護者の各端末に 1 行 — DK) */
+    /** The seal target's device key FP (one row per guardian device — DK) */
     guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex").notNull(),
     encHex: text("enc_hex").notNull(),
-    /** 32 バイト分片 + 16 バイトタグ = 48 バイト */
+    /** A 32-byte segment + a 16-byte tag = 48 bytes */
     ciphertextHex: text("ciphertext_hex").notNull(),
   },
   (t) => [
@@ -319,15 +338,19 @@ export const guardianShares = sqliteTable(
 );
 
 /**
- * 端末登録簿(AUTH_SPEC §13-11 — 2026-09-19 DK。**advisory**: 表示名・トークンの対応・
- * 公開鍵の置き場であり、いかなる検証・認可の入力にもならない。真実源は各プロジェクトの
- * チェーンの `add_device` / `revoke_device`)。user あたり 32 行(受理ポリシー)。
- * 監査イベントは持たない(§6 のトークン一覧と同じ規律)。
+ * The device registry (AUTH_SPEC §13-11 — 2026-09-19 DK. **Advisory**: a
+ * store of display names, token associations, and public keys; never an
+ * input to any verification or authorization. The source of truth is each
+ * project's chain's `add_device` / `revoke_device`). Up to 32 rows per
+ * user (acceptance policy). Carries no audit events (the same discipline
+ * as the §6 token list).
  */
 /**
- * 端末登録簿・端末追加要求に共通の列: 所有者 + 端末鍵 FP(CRYPTO_SPEC §3 — enc ‖ sig の
- * SHA-256 先頭 16 バイト。body の公開鍵から再計算して照合)+ 公開鍵 + 表示名(§6 の
- * トークン名と同じ受理規律 — 制御文字・bidi 禁止・128 文字以下)。
+ * The columns shared by the device registry and device-add requests:
+ * owner + device key FP (CRYPTO_SPEC §3 — the first 16 bytes of SHA-256
+ * of enc ‖ sig; recomputed from the body's public keys and matched) +
+ * public keys + a display name (the same acceptance discipline as the §6
+ * token name — no control characters, no bidi, ≤128 chars).
  */
 const deviceKeyColumns = () => ({
   userId: text("user_id")
@@ -344,17 +367,21 @@ export const devices = sqliteTable(
   "devices",
   {
     ...deviceKeyColumns(),
-    /** 任意: この端末の API トークン id(§6 — advisory。認可の入力にしない) */
+    /** Optional: this device's API token id (§6 — advisory; never an input to authorization) */
     tokenId: text("token_id"),
   },
   (t) => [primaryKey({ columns: [t.userId, t.keyFingerprintHex] })],
 );
 
 /**
- * 端末追加要求(AUTH_SPEC §13-11): 新端末の公開鍵を承認端末へ渡す要求行(TTL 15 分)。
- * 状態列は持たない(行 = 未消費の要求。承認後はクライアントが削除、失効行は日和見削除 —
- * 設計録 §8 K3-8)。承認クライアントは応答の公開鍵から FP を再計算し、人が運んだ FP と
- * 一致するもの以外を無視する(サーバーによる公開鍵のすり替えは FP 照合で落ちる)。
+ * A device-add request (AUTH_SPEC §13-11): a request row that hands the
+ * new device's public key to an approving device (TTL 15 minutes). No
+ * state column (a row = an unconsumed request; after approval the client
+ * deletes it, and an expired row is deleted opportunistically — design
+ * record §8 K3-8). The approving client recomputes the FP from the
+ * response's public keys and ignores anything that does not match the FP
+ * a human carried (server-side public-key substitution is caught by the
+ * FP comparison).
  */
 export const deviceAddRequests = sqliteTable(
   "device_add_requests",
@@ -365,33 +392,33 @@ export const deviceAddRequests = sqliteTable(
   (t) => [primaryKey({ columns: [t.userId, t.keyFingerprintHex] })],
 );
 
-/** クラス H: ハンドオフ要求(E.pub は保存しない — request_id はその導出値)。 */
+/** Class H: a handoff request (E.pub is not stored — request_id is its derived value). */
 export const keyHandoffRequests = sqliteTable(
   "key_handoff_requests",
   {
-    /** request_id(CRYPTO_SPEC §8.4 — SHA-256 hex) */
+    /** request_id (CRYPTO_SPEC §8.4 — SHA-256 hex) */
     id: text("id").primaryKey(),
-    /** ward(要求者) */
+    /** The ward (the requester) */
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
     createdAt: integer("created_at").notNull(),
-    /** 発行 + 15 分 */
+    /** Issued + 15 minutes */
     expiresAt: integer("expires_at").notNull(),
-    /** 要求者が 1 件以上の承認を初めて取得した時刻(auth.key_handoff_collected を 1 回だけ記録する) */
+    /** When the requester first obtained at least one approval (auth.key_handoff_collected is recorded exactly once) */
     collectedAt: integer("collected_at"),
   },
   (t) => [index("khr_user").on(t.userId), index("khr_expires").on(t.expiresAt)],
 );
 
-/** クラス H: 承認(要求とともに消える応答スコープ)。 */
+/** Class H: an approval (a response scope that dies with its request). */
 export const keyHandoffApprovals = sqliteTable(
   "key_handoff_approvals",
   {
     requestId: text("request_id")
       .notNull()
       .references(() => keyHandoffRequests.id, { onDelete: "cascade" }),
-    /** group_id(保護者グループ。旧端末経路 'device' は 2026-09-19 DK K4 で撤去) */
+    /** group_id (a guardian group. The old device-path 'device' was removed in 2026-09-19 DK K4) */
     source: text("source").notNull(),
     shareIndex: integer("share_index").notNull(),
     approverUserId: text("approver_user_id").notNull(),
@@ -404,9 +431,10 @@ export const keyHandoffApprovals = sqliteTable(
 );
 
 /**
- * §13-8 の固定窓(監査行ではない可変状態 — login_failed_windows と同じ性格)。
- * kind = 'blob-fetch'(ブロブ取得の種別合算 — recovery-code を含む)/
- * 'handoff-request' / 'approval'。
+ * The §13-8 fixed windows (mutable state, not an audit row — same
+ * character as login_failed_windows). kind = 'blob-fetch' (the summed
+ * kinds of blob fetches — includes recovery-code) / 'handoff-request' /
+ * 'approval'.
  */
 export const keyWrapWindows = sqliteTable(
   "key_wrap_windows",
@@ -422,9 +450,9 @@ export const keyWrapWindows = sqliteTable(
 export const projects = sqliteTable(
   "projects",
   {
-    /** プロジェクト ID = genesis エントリハッシュ(hex 小文字 64。CRYPTO_SPEC §6.4) */
+    /** Project ID = genesis entry hash (64 lowercase hex chars; CRYPTO_SPEC §6.4) */
     id: text("id").primaryKey(),
-    /** org 帰属(AUTH_SPEC §11-3。NOT NULL = org なしプロジェクトは存在しない) */
+    /** Org belonging (AUTH_SPEC §11-3. NOT NULL = a project without an org does not exist) */
     orgId: text("org_id")
       .notNull()
       .references(() => organizations.id),
@@ -434,30 +462,35 @@ export const projects = sqliteTable(
 );
 
 /**
- * チェーン導出 membership の D1 投影(AUTH_SPEC §11-5)。
+ * The D1 projection of chain-derived membership (AUTH_SPEC §11-5).
  *
- * **発見(discovery)専用の候補索引**であり、いかなる認可判定にも使わない
- * (プロジェクトアクセスの真実源はメンバーシップチェーン — CRYPTO_SPEC §6.4 の
- * 「2 つの真実源の禁止」。一覧応答は読取時に各プロジェクト DO の membership
- * 確認を通過した行のみで、stale 行は読取時に削除されて収束する)。role・状態
- * 列を意図的に持たない: role は読取時確認が返す現在値を使うため、change_role の
- * 投影追随が構造的に不要(session-42 裁定 BI 第 2 周)。
+ * **A candidate index for discovery only**; never used for any
+ * authorization decision (the source of truth of project access is the
+ * membership chain — the "ban on two sources of truth" of CRYPTO_SPEC
+ * §6.4. The listing response contains only rows that passed each project
+ * DO's membership confirmation at read time; a stale row is deleted at
+ * read time and converges). Intentionally carries no role or state
+ * column: the role uses the current value the read-time confirmation
+ * returns, so projection-following of change_role is structurally
+ * unnecessary (session-42 ruling BI, second pass).
  *
- * FK を張らない(invitations と同じ理由: 導出キャッシュは参照整合で受理・修復を
- * 阻害しない — §11-3 の部分失敗窓とも干渉させない)。
+ * No FKs (same reason as invitations: a derived cache must not impede
+ * acceptance or repair via referential integrity — and must not
+ * interfere with the §11-3 partial-failure window).
  */
 export const projectMembers = sqliteTable(
   "project_members",
   {
-    /** genesis ハッシュ(hex 小文字 64) */
+    /** The genesis hash (64 lowercase hex chars) */
     projectId: text("project_id").notNull(),
-    /** 内部 user_id(ULID) */
+    /** The internal user_id (ULID) */
     userId: text("user_id").notNull(),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.projectId, t.userId] }),
-    // 一覧の候補列挙(user 軸・project_id 昇順のカーソルページング — §11-5)
+    // Candidate enumeration for the listing (cursor paging on the user
+    // axis, ascending project_id — §11-5)
     index("pm_user_project").on(t.userId, t.projectId),
   ],
 );
@@ -468,112 +501,125 @@ export const invitations = sqliteTable(
     /** ULID */
     id: text("id").primaryKey(),
     /**
-     * genesis ハッシュ(AUTH_SPEC §15-1)。projects への FK は張らない: 招待は
-     * チェーン(DO)の role で認可され、projects 行は org 帰属メタデータに
-     * すぎない(§11-3 の部分失敗修復中でも招待は成立してよい)
+     * The genesis hash (AUTH_SPEC §15-1). No FK to projects: an invite is
+     * authorized by the chain (DO)'s role, and the projects row is only
+     * org-belonging metadata (an invite may well come into being while a
+     * §11-3 partial-failure repair is in progress)
      */
     projectId: text("project_id").notNull(),
     /**
-     * リンク公開鍵(Ed25519、hex 小文字 64 — CRYPTO_SPEC §6.5)。発行時に
-     * クライアントが生成して申告する。受諾の解決キー(UNIQUE)
+     * The link public key (Ed25519, 64 lowercase hex chars — CRYPTO_SPEC
+     * §6.5). The client generates and declares it at issuance. The
+     * acceptance resolution key (UNIQUE)
      */
     linkPub: text("link_pub").notNull(),
-    /** 発行文: 発行時点の招待者の検証済みヘッド(hex 64)と seq。公開値 */
+    /** Issuance statement: the inviter's verified head at issuance (64 hex chars) and seq. A public value */
     headHash: text("head_hash").notNull(),
     headSeq: integer("head_seq").notNull(),
-    /** 発行署名(招待者のチェーン sig 鍵、hex 128)。サーバーは検証せず保存・配布する */
+    /** The issuance signature (the inviter's chain sig key, 128 hex chars). The server stores and serves it without verifying */
     issueSignature: text("issue_signature").notNull(),
-    /** 'reader' | 'member' | 'admin'(招待経由で owner は付与しない — §15-1) */
+    /** 'reader' | 'member' | 'admin' (owner is never granted via an invite — §15-1) */
     role: text("role").notNull(),
-    /** 付与予定 scope の kind('all' | 'listed' — AUTH_SPEC §15-2、2026-09-14 ES) */
+    /** The kind of the scope to be granted ('all' | 'listed' — AUTH_SPEC §15-2, 2026-09-14 ES) */
     scopeKind: text("scope_kind").notNull(),
     /**
-     * 付与予定 scope の environment_id リスト(JSON 配列の文字列。`all` なら `[]`)。
-     * 発行文の一部(発行署名が覆う)であり、サーバーは検証せず保存・配布する
+     * The list of environment_ids of the scope to be granted (a JSON
+     * array as a string; `[]` for `all`). Part of the issuance statement
+     * (covered by the issuance signature); the server stores and serves
+     * it without verifying
      */
     scopeEnvironments: text("scope_environments").notNull(),
     inviterUserId: text("inviter_user_id").notNull(),
-    /** 'pending' | 'accepted' | 'completed' | 'revoked'(期限切れは expires_at からの導出) */
+    /** 'pending' | 'accepted' | 'completed' | 'revoked' (expiry is derived from expires_at) */
     status: text("status").notNull(),
-    /** 発行 + 7 日(§15-1 起草値) */
+    /** Issued + 7 days (§15-1 drafting value) */
     expiresAt: integer("expires_at").notNull(),
-    // 受諾ブロック(status が accepted 以降 — §15-1)
+    // The acceptance block (status is accepted-or-later — §15-1)
     inviteeUserId: text("invitee_user_id"),
     inviteeEncPub: text("invitee_enc_pub"),
     inviteeSigPub: text("invitee_sig_pub"),
-    /** CRYPTO_SPEC §6.5 の受諾署名(hex)。招待者クライアントの独立検証の材料 */
+    /** The acceptance signature of CRYPTO_SPEC §6.5 (hex). Input for the inviter client's independent verification */
     acceptSignature: text("accept_signature"),
-    /** CRYPTO_SPEC §6.5 のリンク署名(hex)。同じバイト列へのリンク鍵の共同署名 */
+    /** The link signature of CRYPTO_SPEC §6.5 (hex). The link key's joint signature over the same byte string */
     linkSignature: text("link_signature"),
     acceptedAt: integer("accepted_at"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
-    // 受諾の解決キー(§15-2)
+    // The acceptance resolution key (§15-2)
     uniqueIndex("inv_link_pub").on(t.linkPub),
-    // pending 上限(status 条件)と一覧
+    // The pending cap (the status condition) and the listing
     index("inv_project_status").on(t.projectId, t.status),
-    // 発行の固定窓レート制限(created_at 範囲)
+    // The issuance fixed-window rate limit (the created_at range)
     index("inv_project_created").on(t.projectId, t.createdAt),
   ],
 );
 
 // ---------------------------------------------------------------------------
-// D1 側監査イベント(AUDIT_SPEC §3.1〜§3.2。保存先の裁定は §5.2 案 A)
+// The D1-side audit events (AUDIT_SPEC §3.1-§3.2; the storage ruling is
+// §5.2 option A)
 //
-// - 列構成は project DO の audit_events(§5.1)と同じ設計(頻出属性の列昇格 +
-//   payload JSON)。DO 専用列(チェーン・変数座標・鍵 FP)は D1 側イベントに
-//   現れないため持たず、org 系の横断クエリ用に org_id / project_id を昇格する
-// - seq は autoincrement(§5.2。DO の無欠番保証はない — D1 で実用上足りる)
-// - append-only(§1-4): このテーブルへ UPDATE / DELETE を発行するコードを
-//   書かない。読み取り API は Phase 2 の監査ログ UI と同時に設計する(§6)
-// - users への FK を張らない: 監査行は記録対象の行より長生きし、参照整合で
-//   追記が阻害されてはならない(§1-4 の append-only を守る側に倒す)
+// - The column layout is the same design as the project DO's
+//   audit_events (§5.1) (frequent attributes promoted to columns + a
+//   payload JSON). It does not carry the DO-only columns (chain and
+//   variable coordinates, key FPs) because they never appear on D1-side
+//   events; org_id / project_id are promoted for org-family cross queries
+// - seq is autoincrement (§5.2. There is no DO gapless guarantee —
+//   practically sufficient in D1)
+// - append-only (§1-4): write no code that issues UPDATE / DELETE against
+//   this table. The read API is designed together with the Phase 2 audit
+//   log UI (§6)
+// - No FK to users: an audit row outlives the row it records, and
+//   referential integrity must not impede the append (fail toward keeping
+//   §1-4's append-only)
 // ---------------------------------------------------------------------------
 
-/** user / org 監査テーブルの共通列(Drizzle の列オブジェクト共有パターン)。 */
+/** The common columns of the user / org audit tables (Drizzle's shared-column-object pattern). */
 const auditEventColumns = {
   seq: integer("seq").primaryKey({ autoIncrement: true }),
-  /** ワイヤ行識別子(16 バイト乱数 hex — AUDIT_SPEC §5.1 / §7。seq はワイヤに出さない) */
+  /** The wire row identifier (16-byte random hex — AUDIT_SPEC §5.1 / §7. seq never goes on the wire) */
   rowId: text("row_id").notNull(),
-  /** サーバー受理時刻(unix ms) */
+  /** The server's acceptance time (unix ms) */
   serverTs: integer("server_ts").notNull(),
-  /** AUDIT_SPEC §3 のイベント名(`領域.動詞`) */
+  /** The AUDIT_SPEC §3 event name (`domain.verb`) */
   event: text("event").notNull(),
-  /** §2 アクター種別。D1 側は現状 'user' のみ(login_failed は user_id なしの user) */
+  /** The §2 actor kind. On the D1 side, currently only 'user' (login_failed is a user with no user_id) */
   actorType: text("actor_type").notNull(),
   actorUserId: text("actor_user_id"),
   actorApiTokenId: text("actor_api_token_id"),
-  /** メンバー操作の対象 */
+  /** The target of a member operation */
   targetUserId: text("target_user_id"),
   orgId: text("org_id"),
   projectId: text("project_id"),
-  /** JSON。auth_method・スナップショット等の補足。§1-2/1-3 の禁止情報を含めない */
+  /** JSON. Supplements such as auth_method and snapshots. Contains nothing §1-2/1-3 forbids */
   payload: text("payload"),
 };
 
 /**
- * `auth.login_failed` の記録窓カウンタ(AUDIT_SPEC §3.1)。
+ * The recording-window counter for `auth.login_failed` (AUDIT_SPEC §3.1).
  *
- * 監査行ではなく可変のカウンタ状態(§1-4 の append-only は監査テーブルの規律)。
- * 窓内件数を監査ログの走査で求めると、append-only で伸び続けるテーブルを未認証
- * 経路の追記ごとに走査することになり、有界にしたい洪水がコスト増幅器になる。
+ * A mutable counter state, not an audit row (the §1-4 append-only is the
+ * audit tables' discipline). If the in-window count were computed by
+ * scanning the audit log, every unauthenticated-path append would scan an
+ * ever-growing append-only table — the very flood we want to bound would
+ * become a cost amplifier.
  *
- * 行の粒度 = バケット(現状 `auth_method`)。発信元識別子は**持たない**
- * (§1-2 の線引き — 発信元単位の別枠計数を採らない理由は §3.1)。
+ * Row granularity = bucket (currently `auth_method`). Carries **no
+ * source identifier** (the §1-2 line — the reason for not counting per
+ * source is §3.1).
  */
 export const loginFailedWindows = sqliteTable("login_failed_windows", {
-  /** 計数バケット。現状は auth_method 種別名(github_oauth / cli_handoff) */
+  /** The counting bucket. Currently an auth_method kind name (github_oauth / cli_handoff) */
   bucket: text("bucket").primaryKey(),
-  /** 固定窓の開始(unix ms) */
+  /** The fixed window's start (unix ms) */
   windowStart: integer("window_start").notNull(),
-  /** この窓で監査行として記録した件数(上限まで) */
+  /** Count recorded as audit rows in this window (up to the cap) */
   recordedCount: integer("recorded_count").notNull().default(0),
-  /** この窓で上限により落とした件数(抑制マーカーの根拠) */
+  /** Count dropped by the cap in this window (the basis of the suppression marker) */
   suppressedCount: integer("suppressed_count").notNull().default(0),
 });
 
-/** 認証系イベント(AUDIT_SPEC §3.1)。 */
+/** The auth-family events (AUDIT_SPEC §3.1). */
 export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumns, (t) => [
   uniqueIndex("uae_row_id").on(t.rowId),
   index("uae_actor").on(t.actorUserId, t.seq),
@@ -581,34 +627,38 @@ export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumn
   index("uae_event").on(t.event, t.seq),
 ]);
 
-/** org 系イベント(AUDIT_SPEC §3.2)。 */
+/** The org-family events (AUDIT_SPEC §3.2). */
 export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns, (t) => [
   uniqueIndex("oae_row_id").on(t.rowId),
   index("oae_actor").on(t.actorUserId, t.seq),
   index("oae_target").on(t.targetUserId, t.seq),
   index("oae_event").on(t.event, t.seq),
   index("oae_org").on(t.orgId, t.seq),
-  // invite.* の project_id スコープ読み取り(AUDIT_SPEC §7)のページング用
+  // For paging the project_id-scoped read of invite.* (AUDIT_SPEC §7)
   index("oae_project").on(t.projectId, t.seq),
 ]);
 
 // ---------------------------------------------------------------------------
-// 運用(docs/notes/hosted-ops.md §6)。監査ログではない**運営限定の可変状態**
-// (hosted-design.md §5-5 — 監査と運用ログを混ぜない)。いずれの表もリクエスト
-// 由来の識別子のうちプロジェクト ID 以外を持たない(ops_backups の project_id は
-// `projects` 表と同じ運営ストア内の参照で、退避オブジェクトのキーには載せない)。
+// Operations (docs/notes/hosted-ops.md §6). **Operator-only mutable
+// state**, not an audit log (hosted-design.md §5-5 — never mix audit and
+// ops logs). None of the tables carries any request-derived identifier
+// other than the project ID (ops_backups' project_id is a reference
+// inside the same operator store as the `projects` table and is never
+// placed on an evacuation object's key).
 // ---------------------------------------------------------------------------
 
 /**
- * 運用カウンタ(固定窓 — hosted-ops.md §2-A)。metric = `github_token_requests`
- * (GitHub token 請求の自前計数)/ `cli_flow_capacity`(ログインフロー行の作成
- * 上限到達)。窓は 1 時間、行は評価時に 7 日超を削除する(有界)。
+ * Ops counters (fixed windows — hosted-ops.md §2-A). metric =
+ * `github_token_requests` (our own counting of GitHub token requests) /
+ * `cli_flow_capacity` (the login-flow row creation cap reached). The
+ * window is one hour; rows older than 7 days are deleted at evaluation
+ * time (bounded).
  */
 export const opsCounters = sqliteTable(
   "ops_counters",
   {
     metric: text("metric").notNull(),
-    /** 固定窓の開始(unix ms、1 時間境界) */
+    /** The fixed window's start (unix ms, on an hour boundary) */
     windowStart: integer("window_start").notNull(),
     count: integer("count").notNull().default(0),
   },
@@ -616,9 +666,11 @@ export const opsCounters = sqliteTable(
 );
 
 /**
- * DO → R2 退避の記録(hosted-ops.md §4-2)。プロジェクトごと 1 行。do_id_hex は
- * `idFromName(projectId)` の像(一方向)で、R2 のキーと突合するために持つ。
- * storage_level は退避時の census(AUTH_SPEC §12-8 の判定 — admit / warn / reject)。
+ * The record of DO → R2 evacuations (hosted-ops.md §4-2). One row per
+ * project. do_id_hex is the (one-way) image of `idFromName(projectId)`
+ * and is kept to cross-check against the R2 key. storage_level is the
+ * census at evacuation time (the §12-8 judgment of AUTH_SPEC — admit /
+ * warn / reject).
  */
 export const opsBackups = sqliteTable("ops_backups", {
   projectId: text("project_id").primaryKey(),
@@ -629,15 +681,15 @@ export const opsBackups = sqliteTable("ops_backups", {
   lastBytes: integer("last_bytes"),
   lastAuditSeq: integer("last_audit_seq"),
   lastChainSeq: integer("last_chain_seq"),
-  /** ヘッド申告の最新受理時刻(skip 規則の第三成分 — do-snapshot.ts readWatermarks) */
+  /** The latest acceptance time of a head attestation (the skip rule's third component — do-snapshot.ts readWatermarks) */
   lastAttestationMark: integer("last_attestation_mark"),
   storageLevel: text("storage_level"),
   consecutiveFailures: integer("consecutive_failures").notNull().default(0),
-  /** 静的な失敗コードのみ(エラーメッセージ本文は書かない) */
+  /** A static failure code only (never an error message body) */
   lastFailureCode: text("last_failure_code"),
 });
 
-/** 運用の小さな状態 kv(スイープのカーソル・アラート状態 — JSON 文字列)。 */
+/** A small ops-state kv (sweep cursors, alert states — JSON strings). */
 export const opsState = sqliteTable("ops_state", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

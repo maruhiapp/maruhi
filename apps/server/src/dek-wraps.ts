@@ -1,11 +1,14 @@
-// DEK ラップの受理検証(AUTH_SPEC §12-6 = CRYPTO_SPEC §6.3 ゴーストメンバー対策の
-// サーバー側)と dek.registered イベントの組み立て(AUDIT_SPEC §3.3)。
+// Acceptance verification of DEK wraps (AUTH_SPEC §12-6 = the server side of
+// the CRYPTO_SPEC §6.3 ghost-member countermeasure) and assembly of the
+// dek.registered event (AUDIT_SPEC §3.3).
 //
-// 端末軸(2026-09-19 DK — K3。設計録 dk-design.md §8 K3-1 / K3-4 / K3-5): 受信者
-// 集合 R(E) は (人, 端末) の対 × 実効 scope に展開し、スロット主キーは受信者の
-// enc 公開鍵を含む。登録署名の署名者(呼び出し主体の端末)は先頭のラップから
-// 解決し(FP 昇順の試行 — 鍵の一意性により検証できる端末は高々 1 つ)、残りの
-// ラップはその鍵だけで検証する。
+// Device-axis (2026-09-19 DK — K3; design record dk-design.md §8 K3-1 / K3-4 /
+// K3-5): the recipient set R(E) expands into (person, device) pairs ×
+// effective scope, and the slot primary key includes the recipient's enc
+// public key. The signer of the registration signature (the calling
+// principal's device) is resolved from the first wrap (tried in ascending FP
+// order — key uniqueness means at most one device can verify), and the
+// remaining wraps are verified with that key alone.
 
 import type { ChainMember, ChainState } from "@maruhi/crypto";
 import {
@@ -30,7 +33,7 @@ import { DataStore } from "./data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
 
-/** ワイヤ・RPC 境界で省略された受信者クラスの既定は member(AUTH_SPEC §12-6)。 */
+/** A recipient class omitted at the wire / RPC boundary defaults to member (AUTH_SPEC §12-6). */
 export function wrapRecipientClass(ref: {
   readonly recipientClass?: DekRecipientClass;
 }): DekRecipientClass {
@@ -38,9 +41,10 @@ export function wrapRecipientClass(ref: {
 }
 
 /**
- * (epoch × 受信者クラス × recipient × 端末鍵) の重複検出キー(削除経路 —
- * programs-dek)。クラスの真実源は保存行の recipient_class 列であり、削除経路は
- * このキーの重複検出に加えて保存値とのクラス突合で守る。
+ * Duplicate-detection key of (epoch × recipient class × recipient × device
+ * key) — the deletion path (programs-dek). The class's source of truth is the
+ * stored row's recipient_class column; beyond duplicate detection on this key,
+ * the deletion path is guarded by matching the class against the stored value.
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
@@ -52,15 +56,17 @@ export function wrapRefKey(ref: {
 }
 
 /**
- * **登録経路**の重複検出キー = 保存行の一意性単位 (environment, epoch,
- * recipient_user_id, recipient_enc_pub_hex) と同粒度(クラスを含まない)。
- * member の user_id(ULID)と server の FP(hex 小文字 32 文字)は実際上形式が
- * 交わらないが、add_member の対象 user_id は意図的に存在検証されない自由文字列
- * (AUTH_SPEC §11-1)なので型も合意規則もそれを保証しない。クラス込みのキーで
- * 検査すると「member の user_id = 有効 grant のサーバー鍵 FP かつ同じ鍵」の
- * 衝突集合が受理段を通過し、書き込みフェーズの主キー違反 = defect(500)で
- * 当該環境のローテーション・作成が塞がる(A-1)。受理前にここで
- * 422(duplicate-recipient)に倒す。
+ * The **registration path**'s duplicate-detection key = same granularity as
+ * the stored row's uniqueness unit (environment, epoch, recipient_user_id,
+ * recipient_enc_pub_hex) — no class. A member's user_id (ULID) and a server's
+ * FP (32 lowercase hex characters) never actually collide in format, but
+ * add_member's target user_id is an intentionally unvalidated free-form string
+ * (AUTH_SPEC §11-1), so neither the type nor the consensus rules guarantee it.
+ * Checking a class-inclusive key would let the collision set "a member's
+ * user_id = a valid grant's server key FP, with the same key" pass the
+ * acceptance stage, hit a primary-key violation in the write phase = defect
+ * (500), and block that environment's rotations and creations (A-1). Here we
+ * fail it to a 422 (duplicate-recipient) before acceptance.
  */
 function wrapStorageKey(ref: {
   readonly epoch: number;
@@ -71,11 +77,14 @@ function wrapStorageKey(ref: {
 }
 
 /**
- * 受信者集合 R(E) の member 側の所属述語(CRYPTO_SPEC §6.2 — 端末軸。2026-09-19
- * DK): E ∈ 端末の実効 scope(人の scope ∩ 端末の scope — `effectivePermissionOf` が
- * 唯一の計算点)。grant 側の `scopeEnvironmentIds.includes(E)` と対にして、期待数
- * (下)と受信者判定(checkWrapRecipient)が同じ述語を使う —「判定は受信者クラス
- * を跨いで『同定(id + 鍵)∧ E ∈ 実効 scope』の 1 述語」(§6.2 / AUTH_SPEC §12-6)。
+ * The member-side membership predicate of recipient set R(E) (CRYPTO_SPEC §6.2
+ * — device axis; 2026-09-19 DK): E ∈ the device's effective scope (the
+ * person's scope ∩ the device's scope — `effectivePermissionOf` is the only
+ * computation point). Paired with the grant side's
+ * `scopeEnvironmentIds.includes(E)`, the expected count (below) and the
+ * recipient check (checkWrapRecipient) use the same predicate — "the check is,
+ * across recipient classes, the single predicate 'identification (id + key) ∧
+ * E ∈ effective scope'" (§6.2 / AUTH_SPEC §12-6).
  */
 function deviceReceivesEnvironment(
   member: ChainMember,
@@ -86,18 +95,22 @@ function deviceReceivesEnvironment(
 }
 
 /**
- * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6) =
- * 受信者集合 R(E)(CRYPTO_SPEC §6.2 — 端末軸): 実効 scope に E を含む現メンバーの
- * 各端末 + 当該環境が開示スコープに含まれる有効な grant_server のサーバー鍵。
- * 初回登録の完全一致と複合リクエストの個数検査の両方がこの 1 定義を使う
- * (受理境界をズラさない)。
+ * The expected recipient count of a complete wrap set for (environment, epoch)
+ * (AUTH_SPEC §12-4 / §12-6) = recipient set R(E) (CRYPTO_SPEC §6.2 — device
+ * axis): every device of each current member whose effective scope contains E,
+ * plus the server keys of valid grant_servers whose disclosure scope contains
+ * the environment. Both the exact match of initial registration and the count
+ * check of composite requests use this single definition (the acceptance
+ * boundary does not shift).
  */
 export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
-  // 保存キー(= 登録経路の重複検出キー wrapStorageKey)は受信者クラスを含まない
-  // ため、member の user_id と有効 grant のサーバー鍵 FP が同じ鍵で衝突した場合、
-  // その 2 受信者は 1 スロットしか占められない。期待数も保存キーと同じ粒度 —
-  // 識別子 + 鍵の重複除去済み和集合 — で数える(A-1 の残余の線引きは不変。
-  // 端末軸で鍵が主キーに入ったため、衝突は「同じ id かつ同じ鍵」に縮んだ)
+  // Because the storage key (= the registration path's duplicate-detection key
+  // wrapStorageKey) carries no recipient class, if a member's user_id and a
+  // valid grant's server key FP collide on the same key, those two recipients
+  // can only occupy one slot. The expected count uses the same granularity as
+  // the storage key — the deduplicated union of identifier + key (the residual
+  // boundary of A-1 is unchanged. With the key inside the primary key on the
+  // device axis, a collision shrank to "same id and same key")
   const recipients = new Set<string>();
   for (const [userId, member] of state.members) {
     for (const device of member.devices.values()) {
@@ -114,7 +127,7 @@ export function expectedWrapRecipientCount(state: ChainState, environmentId: str
   return recipients.size;
 }
 
-/** 1 リクエストのラップ件数上限(登録・削除の両経路で共通)。ok なら null。 */
+/** Per-request wrap-count limit (shared by the registration and deletion paths). Returns null when ok. */
 export function checkWrapRequestCount(count: number): DataRejection | null {
   if (count > MAX_DEK_WRAPS_PER_REQUEST) {
     return {
@@ -127,15 +140,18 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
 }
 
 /**
- * 受信者の同定(クラス別 — AUTH_SPEC §12-6)。member = user_id が現メンバー、
- * enc 公開鍵がその人の**有効な端末鍵**と厳密一致、かつ対象環境がその端末の
- * **実効 scope** に含まれること(scope 外は 422 `scope-out-of-range` — 2026-09-15 ES
- * K3 / 2026-09-19 DK。CRYPTO_SPEC §6.3 の「失効した端末・端末 scope 外の端末宛の
- * ラップの受理は禁止」= ゴーストメンバー対策の端末軸版)。
- * server = recipientUserId 位置のサーバー鍵 FP + enc 公開鍵の両方がチェーン導出の
- * 有効 grant_server の payload と厳密一致し、かつ対象環境が開示スコープに
- * 含まれること(スコープ外は同じ 422)。理由コードの順(同定 → 鍵 → scope)は
- * クラスを跨いで同一。
+ * Recipient identification (per class — AUTH_SPEC §12-6). member = the user_id
+ * is a current member, the enc public key strictly equals one of that person's
+ * **live device keys**, and the target environment is inside that device's
+ * **effective scope** (out of scope is 422 `scope-out-of-range` — 2026-09-15
+ * ES K3 / 2026-09-19 DK; the device-axis version of CRYPTO_SPEC §6.3's
+ * "accepting a wrap addressed to a revoked device or a device outside its
+ * scope is forbidden" = the ghost-member countermeasure).
+ * server = both the server key FP at the recipientUserId position and the enc
+ * public key strictly match the payload of a chain-derived valid grant_server,
+ * and the target environment is inside the disclosure scope (out of scope is
+ * the same 422). The reason-code order (identify → key → scope) is the same
+ * across classes.
  */
 function checkWrapRecipient(
   state: ChainState,
@@ -159,8 +175,9 @@ function checkWrapRecipient(
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
-  // 受信者の鍵 = その人の有効な端末鍵のいずれか(R(E) の端末展開 — AUTH_SPEC §12-6)。
-  // 失効済み・未登録の鍵宛は一致しない側へ倒す
+  // The recipient's key = one of that person's live device keys (the device
+  // expansion of R(E) — AUTH_SPEC §12-6). A wrap addressed to a revoked or
+  // unregistered key falls to the non-matching side
   const device = [...member.devices.values()].find(
     (candidate) => candidate.encPubHex === wrap.recipientEncPubHex,
   );
@@ -174,10 +191,12 @@ function checkWrapRecipient(
 }
 
 /**
- * reader の自己バックフィルの述語(AUTH_SPEC §12-3 — 2026-09-19 DK。設計録 §8 K3-5):
- * 全ラップが受信者クラス member、受信者 = 呼び出し主体、かつ enc 公開鍵が呼び出し
- * 主体の有効な端末鍵のいずれか。1 つでも外れれば従来どおり member 以上を要する。
- * 判定は id + 鍵(id だけでは他人の鍵宛を「自分宛」と誤る)。
+ * The predicate for a reader's self-backfill (AUTH_SPEC §12-3 — 2026-09-19 DK;
+ * design record §8 K3-5): every wrap has recipient class member, recipient =
+ * the calling principal, and an enc public key that is one of the calling
+ * principal's live device keys. If any wrap deviates, member-or-higher is
+ * required as before. The check is id + key (id alone would mistake a wrap
+ * addressed to someone else's key for "addressed to me").
  */
 export function allRecipientsAreOwnDevices(
   caller: ChainMember,
@@ -192,7 +211,7 @@ export function allRecipientsAreOwnDevices(
   );
 }
 
-/** 1 ラップの検査(認知的複雑度の分割)。ok なら null。 */
+/** Per-wrap check (split for cognitive complexity). Returns null when ok. */
 function checkOneWrap(
   state: ChainState,
   environmentId: string,
@@ -207,8 +226,9 @@ function checkOneWrap(
   if (recipientRejection !== null) {
     return recipientRejection;
   }
-  // 保存粒度(クラス無視)での重複検出。クラス違いの同一 (epoch, recipient, 鍵) も
-  // 保存行としては共存できないため、同一クラスの重複と同じ理由で拒否する
+  // Duplicate detection at storage granularity (class-agnostic). The same
+  // (epoch, recipient, key) in different classes cannot coexist as stored rows
+  // either, so they are rejected for the same reason as same-class duplicates
   const key = wrapStorageKey(wrap);
   if (seen.has(key)) {
     return { kind: "dek-wrap-rejected", reason: "duplicate-recipient" };
@@ -237,7 +257,7 @@ function checkWrapRecipients(
   return null;
 }
 
-/** 1 ラップの登録署名を 1 つの鍵で検証する(署名対象の署名者 = 呼び出し主体 — §12-6)。 */
+/** Verify one wrap's registration signature with one key (the signed signer = the calling principal — §12-6). */
 const verifyOneWrapSignature = (
   projectId: string,
   environmentId: string,
@@ -257,9 +277,10 @@ const verifyOneWrapSignature = (
           recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
-          // 署名対象の署名者 = 呼び出し主体(§12-6)。鍵重複メンバーは
-          // チェーン層(CRYPTO_SPEC §6.2)が禁止するが、仮に存在しても
-          // 帰属付け替えはここで落ちる(§5.1 の独立防衛層)
+          // The signed signer = the calling principal (§12-6). Key-duplicated
+          // members are forbidden by the chain layer (CRYPTO_SPEC §6.2), but
+          // even if one existed, reattribution is caught here (an independent
+          // defense layer of §5.1)
           signerUserId: signer.userId,
         },
         signatureHex: wrap.signatureHex,
@@ -267,20 +288,22 @@ const verifyOneWrapSignature = (
       }),
     );
     if (!verified.ok) {
-      // InvalidInput(構造不正)も含めて署名不受理に畳む(Schema 検証済みの
-      // ワイヤでは実質 DekWrapSignatureInvalid のみ到達する)
+      // Fold everything including InvalidInput (structural badness) into
+      // signature-rejected (on a Schema-validated wire, effectively only
+      // DekWrapSignatureInvalid reaches here)
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" });
     }
   });
 
-/** 検証済みチェーン由来の sig 公開鍵のインポート(失敗はストレージ / 検証器のバグ = defect)。 */
+/** Import a sig public key derived from a verified chain (failure is a storage / verifier bug = defect). */
 const importSignerKey = (signer: MemberWithDevice) =>
   Effect.gen(function* () {
-    // 注: 後段のインポート成功は「WebCrypto の raw Ed25519 インポートは長さ検査のみ」
-    // という現行ランタイム挙動にも依拠する(add_member / add_device の対象鍵は
-    // チェーン受理時にインポートされないため)。ランタイムが点検証を導入した場合、
-    // 不正な 32 バイト鍵を持つメンバー自身のリクエストが defect になる(自傷のみ・
-    // 攻撃には使えない)
+    // Note: the import succeeding below also relies on the current runtime
+    // behavior that "WebCrypto's raw Ed25519 import only checks length" (the
+    // target keys of add_member / add_device are not imported at chain
+    // acceptance). If the runtime introduces point validation, requests from a
+    // member who holds a bad 32-byte key become defects (self-harm only;
+    // unusable as an attack)
     const signerKeyBytes = decodeHex(signer.sigPubHex);
     if (signerKeyBytes === null) {
       return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
@@ -293,14 +316,17 @@ const importSignerKey = (signer: MemberWithDevice) =>
   });
 
 /**
- * §12-6 / CRYPTO_SPEC §5.1: 全ラップの登録署名を検証し、署名した端末を返す。
- * 署名者 = API 呼び出し主体の厳密一致が受理条件なので、検証鍵は呼び出し主体の
- * **受理時点のチェーン導出 sig 公開鍵**(= 登録時点の鍵。全操作は permit 下で
- * 直列化されている)。端末は先頭のラップで解決し(`withSigningDevice` — 設計録 §8
- * K3-1)、残りはその鍵だけで検証する(全件 × 全端末にしない)。他人が署名した
- * ラップの持ち込み(削除済みスロットへの第三者再投入を含む)はここで
- * signature-invalid に落ちる。ラップが無ければ null(端末は決まらない —
- * 呼び出し側の個数検査が recipient-missing で拒む)。
+ * §12-6 / CRYPTO_SPEC §5.1: verify every wrap's registration signature and
+ * return the signing device. Since signer = the API calling principal is an
+ * exact-match acceptance condition, the verification key is the calling
+ * principal's **chain-derived sig public key at acceptance time** (= the key
+ * at registration time; all operations are serialized under the permit). The
+ * device is resolved on the first wrap (`withSigningDevice` — design record §8
+ * K3-1) and the rest are verified with that key alone (not all-wraps ×
+ * all-devices). A wrap signed by someone else (including a third party
+ * re-injecting into a deleted slot) falls to signature-invalid here. With no
+ * wraps, returns null (the device is undetermined — the caller's count check
+ * rejects with recipient-missing).
  */
 const ensureWrapSignatures = (
   projectId: string,
@@ -329,11 +355,13 @@ const ensureWrapSignatures = (
   });
 
 /**
- * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は受信者集合 R(E)
- * (実効 scope に E を含む現メンバーの各端末 + 開示スコープ内の有効 grant_server の
- * サーバー鍵)との完全一致(受信者検査済みなので個数一致 = 完全 — 判定は受信者
- * クラスを跨いで同一に適用する)、既存エポックへの追記は既存 (エポック, 受信者,
- * 端末鍵) との重複を拒否する。
+ * Per-epoch set check (§12-6): initial registration (no existing wraps)
+ * requires an exact match against the recipient set R(E) (every device of each
+ * current member whose effective scope contains E + the server keys of valid
+ * grant_servers inside the disclosure scope) — recipients are already checked,
+ * so a count match = complete; the check is applied identically across
+ * recipient classes. Appending to an existing epoch rejects duplicates of an
+ * existing (epoch, recipient, device key).
  */
 const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly DekWrapInput[]) =>
   Effect.gen(function* () {
@@ -349,8 +377,10 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
         continue;
       }
       for (const wrap of epochWraps) {
-        // 存在検査は保存キー (environment, epoch, recipient_user_id, recipient_enc_pub_hex)
-        // と同粒度 — class 違いの同一 (ID, 鍵) も挿入すれば主キー衝突なので、ここで 409 に倒す
+        // The existence check is at the same granularity as the storage key
+        // (environment, epoch, recipient_user_id, recipient_enc_pub_hex) — an
+        // identical (ID, key) in a different class would still be a primary-key
+        // collision on insert, so fail it to a 409 here
         const stored = yield* store.wrapStoredRecipient(
           environmentId,
           epoch,
@@ -358,10 +388,12 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
           wrap.recipientEncPubHex,
         );
         if (stored !== null) {
-          // 占有ラップの保存済み受信者 enc 公開鍵を載せる(AUTH_SPEC §12-6)。
-          // 端末軸の主キーでは送った鍵と常に一致する(旧鍵ラップは別スロット =
-          // 新鍵の登録を塞がない)ので、材料としての役目は「登録済み = 冪等」の
-          // 判定に縮む — ワイヤは不変(設計録 §8 K3-3)
+          // Return the occupying wrap's stored recipient enc public key
+          // (AUTH_SPEC §12-6). Under the device-axis primary key it always
+          // equals the key that was sent (an old-key wrap is a separate slot =
+          // it does not block registration of the new key), so its role as
+          // material shrinks to the "already registered = idempotent" decision
+          // — the wire is unchanged (design record §8 K3-3)
           return yield* rejectData({
             kind: "dek-wrap-exists",
             epoch,
@@ -374,14 +406,18 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
   });
 
 /**
- * ラップ集合の受理検証(§12-6)+ 数量ポリシー(§12-8)+ 登録署名の検証
- * (CRYPTO_SPEC §5.1)。挿入は呼び出し側の同期書き込みフェーズで行う。
- * ラップ挿入の全経路 — 独立登録 API(バックフィル・修復再登録)と複合リクエスト
- * (環境作成・ローテーション — composite-programs.ts)— がここを通るため、
- * 累積行数上限と署名必須の結線はこの 1 箇所でよい。署名検証(Ed25519 × 件数)は
- * 最も高価なため、安価な検査(件数・受信者・重複・集合)がすべて通った後に行う。
- * 返り値 = 署名した端末(呼び出し側が第 2 段の認可 — ensureDevicePermission — と
- * 書き込み・監査の署名者 FP に使う。ラップが無ければ null)。
+ * Acceptance verification of a wrap set (§12-6) + quantity policy (§12-8) +
+ * registration-signature verification (CRYPTO_SPEC §5.1). Insertion happens in
+ * the caller's synchronous write phase. Every wrap-insertion path — the
+ * standalone registration API (backfill, repair re-registration) and composite
+ * requests (environment creation, rotation — composite-programs.ts) — passes
+ * through here, so wiring the cumulative-row limit and signature requirement
+ * once in this place suffices. Signature verification (Ed25519 × count) is the
+ * most expensive step, so it runs after all the cheap checks (count,
+ * recipients, duplicates, sets) pass.
+ * Return value = the signing device (the caller uses it for the second-stage
+ * authorization — ensureDevicePermission — and as the signer FP for writes and
+ * audit. null when there are no wraps).
  */
 export const ensureWrapSetAcceptable = (
   projectId: string,
@@ -402,14 +438,16 @@ export const ensureWrapSetAcceptable = (
   });
 
 /**
- * dek.registered(AUDIT_SPEC §3.3): 1 受信者 1 行(§5.1 の列構造 = 1 行 1
- * target)。member 受信者は target_user_id に載せ、(target_user_id, seq) の
- * 索引で「この受信者宛のラップの登録履歴」をそのまま引けるようにする。
- * server 受信者は user_id を持たない(§2 のアクターモデル)ため、サーバー鍵
- * FP を target_key_fingerprint に載せる(chain.server_granted — §3.4 — と
- * 同じ列。user_id 列にプロバイダ外識別子を混ぜない)。
- * actor_key_fingerprint には登録署名の署名者 FP(署名した端末)を写す(§3.3 —
- * セッション 07 裁定 B「E の署名者 FP を写して突合可能にする」)。
+ * dek.registered (AUDIT_SPEC §3.3): one row per recipient (the §5.1 column
+ * structure = one target per row). A member recipient goes on target_user_id,
+ * so the (target_user_id, seq) index directly yields "the registration history
+ * of wraps addressed to this recipient". A server recipient has no user_id
+ * (the §2 actor model), so the server key FP goes on target_key_fingerprint
+ * (the same column as chain.server_granted — §3.4 — ; do not mix
+ * non-provider identifiers into the user_id column).
+ * actor_key_fingerprint carries the signer FP of the registration signature
+ * (the signing device) (§3.3 — session 07 ruling B, "record E's signer FP so
+ * it can be cross-checked").
  */
 export function dekRegisteredEvent(
   actor: DataActor,
