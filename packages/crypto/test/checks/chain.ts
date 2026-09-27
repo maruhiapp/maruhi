@@ -1,5 +1,6 @@
-// CRYPTO_SPEC §6 のチェック(positive): 正規化バイト列・決定論的署名・
-// ハッシュ連鎖・チェーン検証と状態導出(expected_head_states)。
+// Checks for CRYPTO_SPEC §6 (positive): canonical byte strings, deterministic
+// signatures, hash chaining, chain verification, and state derivation
+// (expected_head_states).
 
 import {
   canonicalChainEntryBytes,
@@ -27,9 +28,10 @@ import {
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 async function canonicalizationChecks(c: Checks): Promise<void> {
-  // 正規 24 エントリに加えて valid_appends / extended_chains の追記エントリも
-  // 同水準で正規化を固定する(checkpoint op は正規チェーンに現れないため、
-  // 追記エントリのバイト一致が checkpoint 正規化の唯一の直接固定点になる)
+  // In addition to the canonical 24 entries, the appended entries of
+  // valid_appends / extended_chains pin canonicalization to the same level
+  // (the checkpoint op never appears in the canonical chain, so byte-equality
+  // of an appended entry is the only direct pin of checkpoint canonicalization)
   const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
     ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
     ...vectorValidAppends.map(
@@ -60,9 +62,11 @@ async function canonicalizationChecks(c: Checks): Promise<void> {
 }
 
 async function deterministicSigningChecks(c: Checks): Promise<void> {
-  // WebCrypto Ed25519 は RFC 8032 の決定論的署名なので、ベクターの seed で
-  // 署名し直すと signature_hex が完全一致するはず(正規化 + 署名の同時固定)。
-  // 派生チェーンの端末鍵エントリ(device-ops — 署名者は (user_id, FP) で選ぶ)も同水準で固定する
+  // WebCrypto Ed25519 is the RFC 8032 deterministic signature, so re-signing
+  // with the vector's seed must match signature_hex exactly (pins
+  // canonicalization + signing together). The device key entries of the derived
+  // chains (device-ops — the signer is chosen by (user_id, FP)) are pinned to
+  // the same level
   const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
     ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
     ...Object.entries(vectorExtendedChains).flatMap(([name, extended]) =>
@@ -126,18 +130,19 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
   if (expected === undefined) {
     return false;
   }
-  // メンバー集合は role + scope(§6.2 — 2026-09-14 ES)
+  // The member set is role + scope (§6.2 — 2026-09-14 ES)
   const membersMatch = membersMatchVector(state.members, expected.members);
-  // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
+  // lease_policy (§6.2) is also part of the derived state (matches including order — as-signed order)
   const grantsMatch = serverGrantsMatchVector(state.serverGrants, expected.server_grants);
-  // 環境集合はチェーン導出(§6.2): 期待に無い環境が導出されてもならない
-  // (「未観測なら初期値 1」の既定値は存在しない)
+  // The environment set is chain-derived (§6.2): no environment absent from
+  // the expectation may be derived (there is no default of "initial value 1 if
+  // unobserved")
   const environmentsMatch =
     state.environments.size === Object.keys(expected.environments).length &&
     Object.entries(expected.environments).every(([environmentId, environment]) =>
       environmentMatches(state, environmentId, environment),
     );
-  // 四眼(§6.2 — PF1): 方針(null = オフ)と pending 提案も導出状態の一部
+  // Four-eyes (§6.2 — PF1): the policy (null = off) and pending proposals are also part of the derived state
   const approvalMatch =
     policyMatchesVector(state.approvalPolicy, expected.approval_policy) &&
     pendingMatchesVector(state.pendingProposals, expected.pending_proposals);
@@ -145,7 +150,7 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
 }
 
 async function verificationChecks(c: Checks): Promise<void> {
-  // 正規チェーン全エントリ(24)の検証 + ヘッド情報
+  // Verification of all entries (24) of the canonical chain + head info
   const full = await verifyChain(typedEntries);
   const lastVector = vectorEntries[vectorEntries.length - 1];
   c.push(
@@ -155,7 +160,7 @@ async function verificationChecks(c: Checks): Promise<void> {
       full.value.headHashHex === lastVector?.entry_hash_hex,
   );
 
-  // expected_head_states の各時点(プレフィックス検証 = 差分同期の基礎)
+  // Each point of expected_head_states (prefix verification = the basis of incremental sync)
   for (const [index, expected] of vectorHeadStates.entries()) {
     const prefix = typedEntries.slice(0, expected.after_seq);
     const result = await verifyChain(prefix);

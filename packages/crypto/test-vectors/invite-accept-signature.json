@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §6.5(2026-09-13 IV 改訂 — v2): 受諾の共同署名(Ed25519)。signed_bytes = LP(\"<suite>/invite-accept-v2\", project_id, link_pub_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)。同一バイト列に受諾署名(検証鍵 = 署名対象内の invitee_sig_pub_hex)とリンク署名(検証鍵 = 署名対象内の link_pub_hex)の 2 つを付ける。旧 v1(invite_token_hash_hex 束縛)のベクターは残さない",
+  "description": "CRYPTO_SPEC §6.5 (2026-09-13 IV revision — v2): joint signature of acceptance (Ed25519). signed_bytes = LP(\"<suite>/invite-accept-v2\", project_id, link_pub_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex). The same byte string carries two signatures: the acceptance signature (verification key = invitee_sig_pub_hex inside the signed payload) and the link signature (verification key = link_pub_hex inside the signed payload). No vectors for the old v1 (invite_token_hash_hex binding) are kept",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -8,7 +8,7 @@
     "invitee_enc_pub_hex",
     "invitee_sig_pub_hex"
   ],
-  "binary_encoding": "リンク公開鍵・invitee の enc/sig 公開鍵は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+  "binary_encoding": "The link public key and the invitee's enc/sig public keys are placed on the LP as lowercase hex strings (same convention as binary_encoding in chain-entries.json)",
   "invitee": {
     "user_id": "user-invitee-0004",
     "enc_seed_hex": "a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3",
@@ -16,23 +16,23 @@
     "enc_pub_hex": "20f999985e197e2df77c0b21c4348620937d4bcf649ea2d2b4bcaff560ed574d",
     "sig_pub_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
     "key_fingerprint_hex": "27b7f9a4b0a2c932ddf6e7bbf3e8839c",
-    "note": "未登録ユーザーの新規ダミー鍵(チェーン外)。受諾署名の署名者"
+    "note": "A fresh dummy key for an unregistered user (outside the chain). Signer of the acceptance signature"
   },
   "other_signer": {
     "user_id": "user-member-0002",
     "enc_pub_hex": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
     "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
-    "note": "鍵すり替え・署名者不一致の negative 用(chain-entries.json の user-member-0002 と同一のダミー鍵)"
+    "note": "For the key-substitution / signer-mismatch negatives (same dummy key as user-member-0002 in chain-entries.json)"
   },
   "link_key": {
     "seed_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
     "pub_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
-    "note": "リンク鍵(招待ごとの Ed25519 鍵ペア)。種はリンクのフラグメントにのみ載る(invite-link.json の link_key と同一)。リンク署名の署名者"
+    "note": "The link key (a per-invite Ed25519 key pair). The seed rides only on the link fragment (identical to link_key in invite-link.json). Signer of the link signature"
   },
   "other_link_key": {
     "seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
     "pub_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
-    "note": "別招待のリンク鍵(移植・サーバー偽造の negative 用)"
+    "note": "Link key of a different invite (for the transplant / server-forgery negatives)"
   },
   "vectors": [
     {
@@ -66,7 +66,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2303",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "Flipping the last bit of the signature bytes themselves fails verification"
     },
     {
       "name": "transplant-link-pub",
@@ -84,7 +84,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "別招待(別リンク公開鍵)への受諾署名の移植は検証に失敗する(単回使用の同一招待上の衝突顕在化 — §6.5 — を署名面で支える)"
+      "note": "Transplanting the acceptance signature to a different invite (a different link public key) fails verification (supports on the signature side the surfacing of colliding single-use accepts on the same invite — §6.5)"
     },
     {
       "name": "transplant-project",
@@ -102,7 +102,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "別プロジェクトの招待への移植は検証に失敗する(project_id はサーバーが保存行から再構成する — AUTH_SPEC §15-2)"
+      "note": "Transplanting to an invite of a different project fails verification (the server reconstructs project_id from the stored row — AUTH_SPEC §15-2)"
     },
     {
       "name": "transplant-invitee",
@@ -120,7 +120,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "受諾者 user_id の差し替えは同一鍵でも検証に失敗する(呼び出し主体 = invitee_user_id の受理条件を署名側でも束縛する)"
+      "note": "Swapping the invitee user_id fails verification even with the same key (binds the acceptance condition caller = invitee_user_id on the signature side too)"
     },
     {
       "name": "enc-key-mismatch",
@@ -138,7 +138,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "enc 公開鍵のすり替えは検証に失敗する(鍵すり替えの署名面の遮断)"
+      "note": "Substituting the enc public key fails verification (blocks key substitution on the signature side)"
     },
     {
       "name": "sig-key-mismatch",
@@ -156,7 +156,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "must_fail": true,
-      "note": "sig 公開鍵のすり替えは検証に失敗する(検証鍵は署名対象内の宣言鍵 — すり替えた鍵では正規受諾者の署名は通らない)"
+      "note": "Substituting the sig public key fails verification (the verification key is the declared key inside the signed payload — a substituted key cannot pass a legitimate invitee's signature)"
     },
     {
       "name": "wrong-signer-key",
@@ -174,7 +174,7 @@
       "signature_hex": "93f281bb217808ba92ac50da6bf143a41b7b978719afa9b6af1dfeb5e0c2a7bab38cba32d4061630272d8026e642b1171786b964eda428c40ccdfd04b99c1904",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "invitee_sig_pub 以外の鍵で作った署名は検証に失敗する(署名者不一致)"
+      "note": "A signature made with a key other than invitee_sig_pub fails verification (signer mismatch)"
     },
     {
       "name": "suite-mismatch",
@@ -192,7 +192,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "A different suite means a different domain string, so transplanting a signature across suites fails verification"
     },
     {
       "name": "legacy-domain",
@@ -210,7 +210,7 @@
       "signature_hex": "82ef2169aa2db36222a1a876297f60a6a867247bba715cad8da379da95421aa815a14b1f41c53400d443c91059e1495fa3019a498ef5aed89fef460974a69d04",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "旧ドメイン文字列(v1 = token_hash 束縛の形)で作った有効な受諾署名は、v2 のドメイン文字列で組み直す検証器では検証に失敗する(旧形式は構造的に拒否 — AUTH_SPEC §12-10 (2))"
+      "note": "A valid acceptance signature made with the old domain string (v1 = the token_hash-bound form) fails verification under a verifier rebuilt with the v2 domain string (the old format is structurally rejected — AUTH_SPEC §12-10 (2))"
     }
   ],
   "link_negative": [
@@ -230,7 +230,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737201",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "リンク署名の末尾 1 bit 反転は検証に失敗する"
+      "note": "Flipping the last bit of the link signature fails verification"
     },
     {
       "name": "link-wrong-link-key",
@@ -248,7 +248,7 @@
       "signature_hex": "0cf302f99947c81199a1f4b8299315f307be46e332ad7530319f648c6d93190adc2dcd6dad0ed7cbd97ee8f7a0720c2c8815f0c699903d07d2a71ec77aa76d03",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "別のリンク鍵で作ったリンク署名は検証に失敗する(サーバーが自分のリンク鍵で受諾を偽造する形 — サーバーは正規のリンク秘密鍵を持たない)"
+      "note": "A link signature made with a different link key fails verification (the shape of a server forging an acceptance with its own link key — the server does not hold the real link private key)"
     },
     {
       "name": "link-transplant-link-pub",
@@ -266,7 +266,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
       "must_fail": true,
-      "note": "別招待への移植は、検証鍵が署名対象内の link_pub_hex なので検証に失敗する"
+      "note": "Transplanting to a different invite fails verification because the verification key is the link_pub_hex inside the signed payload"
     },
     {
       "name": "link-enc-key-mismatch",
@@ -284,7 +284,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "受諾者 enc 鍵のすり替えはリンク署名でも落ちる(鍵すり替えを暗号的に不可能にする本体)"
+      "note": "Substituting the invitee enc key also fails the link signature (the body that makes key substitution cryptographically impossible)"
     },
     {
       "name": "link-sig-key-mismatch",
@@ -302,7 +302,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "受諾者 sig 鍵のすり替えはリンク署名でも落ちる"
+      "note": "Substituting the invitee sig key also fails the link signature"
     },
     {
       "name": "link-transplant-invitee",
@@ -320,7 +320,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "受諾者 user_id の差し替えはリンク署名でも落ちる"
+      "note": "Swapping the invitee user_id also fails the link signature"
     },
     {
       "name": "link-transplant-project",
@@ -338,7 +338,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "別プロジェクトへの移植はリンク署名でも落ちる"
+      "note": "Transplanting to a different project also fails the link signature"
     },
     {
       "name": "link-suite-mismatch",
@@ -356,7 +356,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、リンク署名も移植できない"
+      "note": "A different suite means a different domain string, so the link signature cannot be transplanted either"
     }
   ]
 }

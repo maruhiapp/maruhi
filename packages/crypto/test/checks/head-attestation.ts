@@ -1,16 +1,21 @@
-// CRYPTO_SPEC §6.6(ヘッド申告)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// 検証規則系(kind = "authorization")は「署名は有効だが §6.6 / §6.3-2 の履歴検証で
-// expected_reason により拒否される」ことを、verifyChainWithHistory で構築した
-// 履歴索引に対する verifyDistributedHeadAttestation で固定する。
+// Checks for CRYPTO_SPEC §6.6 (head declaration).
+// Ed25519 is the RFC 8032 deterministic signature, so the sign direction is
+// also verified to match the vector exactly.
+// The verification-rule family (kind = "authorization") pins that "the
+// signature is valid, but the §6.6 / §6.3-2 history verification rejects it
+// with expected_reason", via verifyDistributedHeadAttestation against a
+// history index built by verifyChainWithHistory.
 //
-// 申告固有の固定点(value / meta との差):
-// - removed-attester-in-tenure は **positive**(削除済み attester の在籍区間内
-//   過去申告は検証を通る)だが、attester は現メンバーでない — 配布・照合の
-//   選別ゲート(§6.6 (1) 前半)が実装テスト側の責務であることをここで固定する
-// - 必要 role の下限は reader(reader-attestation が positive)
-// - chain-head-mismatch は「拒否して捨てる」ではなく照合 (a) の硬い証拠の入口
-//   (扱いは CLI 実装テストの領分 — ここでは理由コードの固定まで)
+// Pinning points unique to declarations (the difference from value / meta):
+// - removed-attester-in-tenure is **positive** (a past declaration inside the
+//   removed attester's membership interval passes verification), but the
+//   attester is not a current member — this pins that the distribution /
+//   comparison selection gate (§6.6 (1), first half) is the implementation
+//   test's responsibility
+// - The minimum required role is reader (reader-attestation is positive)
+// - chain-head-mismatch is not "reject and discard" but the entry to the
+//   strict evidence of comparison (a) (handling it is the CLI implementation
+//   test's domain — here we pin only the reason code)
 
 import type { ChainHistoryIndex, HeadAttestationContext } from "../../src/index.ts";
 import {
@@ -37,7 +42,7 @@ interface VectorContext {
 
 interface AttestationVector {
   readonly name: string;
-  /** 照合先チェーン(無指定 = canonical。device-ops = 端末鍵派生 — 2026-09-19 DK)。 */
+  /** The chain to compare against (unspecified = canonical. device-ops = device key derivation — 2026-09-19 DK). */
   readonly chain?: string;
   readonly context: VectorContext;
   readonly attester_key_fingerprint_hex: string;
@@ -71,7 +76,7 @@ function contextOf(v: VectorContext): HeadAttestationContext {
 
 const positives: readonly AttestationVector[] = vectors.vectors;
 
-/** 照合先チェーン(名前 → 検証済み履歴索引)。ベクターの `chain` 無指定は canonical。 */
+/** Chains to compare against (name → verified history index). An unspecified `chain` in a vector means canonical. */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 function historyFor(
@@ -81,7 +86,7 @@ function historyFor(
   return histories[chain ?? "canonical"];
 }
 
-/** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
+/** The two checks of the sign direction (deterministic re-signing) and the low-level verify direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -89,7 +94,7 @@ async function signAndVerifyChecks(
   signatureHex: string,
   attesterKeyFingerprintHex: string,
 ): Promise<void> {
-  // attester の端末(user_id, FP)の seed で署名する(2026-09-19 DK — 署名者は端末単位)
+  // Sign with the seed of the attester's device (user_id, FP) (2026-09-19 DK — the signer is per device)
   const signer = await importVectorSigner(context.attesterUserId, attesterKeyFingerprintHex);
   if (signer === null) {
     c.push(
@@ -137,7 +142,7 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.attester_key_fingerprint_hex,
     );
 
-    // 履歴ベースの複合検証(§6.6): removed-attester-in-tenure も positive
+    // History-based compound verification (§6.6): removed-attester-in-tenure is also positive
     const distributed = await verifyDistributedHeadAttestation({
       history,
       context,
@@ -153,8 +158,9 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
 }
 
 /**
- * 配布対象の選別ゲート(§6.6 (1) 前半 = 現メンバー検査)の材料の固定:
- * removed-attester-in-tenure の attester は検証は通るが現メンバーではない
+ * Pins the material of the distribution-target selection gate (§6.6 (1), first
+ * half = the current-member check): the attester of removed-attester-in-tenure
+ * passes verification but is not a current member
  */
 function distributionGateChecks(c: Checks, canonical: ChainHistoryIndex): void {
   const removed = positives.find((vector) => vector.name === "removed-attester-in-tenure");
@@ -168,7 +174,7 @@ function distributionGateChecks(c: Checks, canonical: ChainHistoryIndex): void {
   );
 }
 
-/** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
+/** Verification-rule negative: the signature is valid, but the history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: AttestationNegative,
@@ -198,7 +204,7 @@ async function ruleNegativeCheck(
   );
 }
 
-/** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
+/** Tamper / transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(c: Checks, negative: AttestationNegative): Promise<void> {
   const context = contextOf(negative.context);
   const bytesMatch =
@@ -232,7 +238,7 @@ async function negativeChecks(c: Checks, histories: Histories): Promise<void> {
       await tamperNegativeCheck(c, negative);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
+  // Pins the kind vocabulary (introducing a third value would slip past both sieves)
   c.push(
     "head-attestation negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),

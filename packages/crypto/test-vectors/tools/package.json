@@ -2,7 +2,7 @@
   "name": "maruhi-test-vector-tools",
   "version": "0.0.0",
   "private": true,
-  "description": "テストベクターの参照生成・検証ツール(使い捨て。製品コードではない)。ワークスペース外の独立プロジェクトとして bun install する(bunfig.toml 参照)",
+  "description": "Reference generation / verification tools for the test vectors (throwaway; not product code). bun install as an independent project outside the workspace (see bunfig.toml)",
   "type": "module",
   "scripts": {
     "generate": "bun run generate-dek-wrap.mjs && bun run generate-lease-wrap.mjs && python3 generate_reference.py && bun run generate-master-key-wrap.mjs",

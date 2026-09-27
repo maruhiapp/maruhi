@@ -1,12 +1,12 @@
-// Bun ランタイム実環境での全チェック実行(CRYPTO_SPEC §11)。
-// vitest は Node 上で走るため、Bun(CLI の実行環境)は直接実行で検証する。
-// 実行: bun run test/run-in-bun.ts(packages/crypto で)
+// Runs all checks under the real Bun runtime (CRYPTO_SPEC §11).
+// vitest runs on Node, so Bun (the CLI's runtime environment) is verified by direct execution.
+// Usage: bun run test/run-in-bun.ts (inside packages/crypto)
 import { runAllChecks } from "./all-checks.ts";
 
 declare const Bun: { readonly version: string } | undefined;
 
 if (typeof Bun === "undefined") {
-  throw new Error("このスクリプトは Bun で実行すること(bun run test/run-in-bun.ts)");
+  throw new Error("Run this script with Bun (bun run test/run-in-bun.ts)");
 }
 
 console.log(`runtime: Bun ${Bun.version}`);
