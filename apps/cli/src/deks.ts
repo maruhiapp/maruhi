@@ -186,13 +186,8 @@ function verifyAndUnwrapDeks(input: {
     // Open only the rows addressed to my devices (AUTH_SPEC §12-6's
     // device axis — one response carries all devices of the same person.
     // DK K4-16: read → verify signature → unwrap. Rows for other devices
-    // are not poisoned wraps). Rows from an old server that does not carry
-    // `recipientEncPubHex` (pre-K3 = one device) are all addressed to me
-    const mine = input.deks.filter(
-      (wrap) =>
-        wrap.recipientEncPubHex === undefined ||
-        wrap.recipientEncPubHex === input.recipient.encPubHex,
-    );
+    // are not poisoned wraps)
+    const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
     for (const wrap of mine) {
       if (wrap.suite !== SUITE_ID) {
         // Currently unreachable because of the Schema Literal pin, but

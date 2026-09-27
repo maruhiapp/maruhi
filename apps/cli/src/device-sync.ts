@@ -18,10 +18,9 @@
 //       observed on other projects) are `add_device`'d with this
 //       device's signature and backfilled. Rows that cannot be added
 //       by the pre-flight judgment (cap monotonicity, existence of
-//       `listed` environments), the server's acceptance policy
-//       (DeviceLimit), and old servers (DeviceOpsNotAccepted — K4-14)
-//       become Notes and continue. It does not change the command's
-//       success (an adjunct of a SHOULD)
+//       `listed` environments) and the server's acceptance policy
+//       (DeviceLimit) become Notes and continue. It does not change
+//       the command's success (an adjunct of a SHOULD)
 //   (d) Warning of a missing reserve key (K4-9): when this device is
 //       my only device and the record has no reserve key
 //
@@ -42,7 +41,6 @@ import {
   findOwnDevice,
   reAddDeviceRoute,
   revokedFingerprintsOf,
-  wasFirstKeyOf,
 } from "./device-key.ts";
 import { appendAddDevice, backfillToDevice } from "./device-ops.ts";
 import { countNoun, displayText } from "./display.ts";
@@ -166,7 +164,7 @@ function warnReserveMissing(input: {
     return Effect.void;
   }
   return logWarning(
-    "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery` to create a reserve key and seal it — on installs from before device keys, the recovery ledger keeps a copy of this device's key and `maruhi key recovery` replaces it with a separate reserve key. Without a reserve key, losing this device means losing access",
+    "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery` to create a reserve key and seal it. Without a reserve key, losing this device means losing access",
   );
 }
 
@@ -216,12 +214,9 @@ function observeDevices(input: {
         );
       }
     }
-    // The witness rewrite is written from the rows before the sync
-    // (`records`), so it is placed before this same sync's revocation
-    // marks (b) (placed later it would clear the marks — a cleared
-    // mark permits re-registering a revoked key. K4-3)
-    yield* recordFirstKeyWitnesses({ context, records, store });
-    // (b): write this chain's revocations into the record (among the revoked FPs not the current device, those whose record is active)
+    // (b): write this chain's revocations into the record (among
+    // the revoked FPs not the current device, those whose record is
+    // active)
     const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
     const toMark = records
       .filter(
@@ -240,44 +235,6 @@ function observeDevices(input: {
       );
     }
   });
-}
-
-/**
- * (a′) Recording witnesses (DK K15-11 / K15-12): when the key of a
- * row first observed as `add_device` (provenance observed, provenance
- * device present) was that person's first key in some membership on
- * this chain (the same predicate as the reserve-key judgment,
- * `wasFirstKeyOf` — regardless of active / revoked / previous
- * membership), rewrite it to no provenance device and observed
- * project = this project. The witness no longer depends on the order
- * of observations. Only the witness reads it, and only in the
- * stopping direction. The revocation mark, the record's timestamps,
- * and the cap are preserved (no new row is created).
- */
-function recordFirstKeyWitnesses(input: {
-  readonly context: ProjectContext;
-  readonly records: readonly OwnDeviceEntry[];
-  readonly store: OwnDeviceStoreShape;
-}): Effect.Effect<void, never, CliIo> {
-  const { context, records, store } = input;
-  const { session } = context;
-  return Effect.forEach(
-    records.filter(
-      (record) =>
-        record.source === "observed" &&
-        record.addedByFingerprintHex !== null &&
-        wasFirstKeyOf(context.verified, session.userId, record),
-    ),
-    (record) =>
-      store
-        .record(session.origin, session.userId, {
-          ...record,
-          addedByFingerprintHex: null,
-          observedProjectId: context.projectId,
-        })
-        .pipe(Effect.catch((error) => noteWriteFailure(error))),
-    { discard: true },
-  );
 }
 
 function describeAdder(provenance: {
@@ -351,10 +308,8 @@ function registerRecorded(input: {
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
     });
-    // This is the only point where the record's cap works, so the
-    // added (found) cap is reported from the chain (DK K10-3 — even if
-    // a cap recorded by a pre-K10 CLI's overwrite disagrees with the
-    // chain, it becomes visible here)
+    // The only point where the record's cap works, so the added
+    // (found) cap is reported from the chain (DK K10-3)
     yield* logNote(
       `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${describeFailedBackfill(context.projectId, backfill.failed)}`,
     );

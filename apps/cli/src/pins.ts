@@ -57,14 +57,9 @@ export interface IssuedInvitePin {
   /** The link public key (hex 64). Collated against the row's link_pub of the server declaration (SHOULD). */
   readonly linkPubHex: string;
   readonly role: "reader" | "member" | "admin";
-  /**
-   * The scope to be granted (2026-09-15 ES K4 — extra collation
-   * material of the same standing as role. The source of truth is
-   * the issue signature). Pins issued before K4 lack it (both
-   * missing = skip the collation).
-   */
-  readonly scopeKind?: ScopeKind;
-  readonly scopeEnvironmentIds?: readonly string[];
+  /** The scope to be granted (2026-09-15 ES K4 — extra collation material of the same standing as role. The source of truth is the issue signature). */
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly string[];
   readonly expiresAtMs: number;
   /**
    * The destination's GitHub login (`invite create --github` —
@@ -152,34 +147,21 @@ function positiveIntField(record: Record<string, unknown>, key: string): number 
   return isPositiveInteger(value) ? value : null;
 }
 
-/**
- * An optional string field: missing / null = null, pattern match
- * = the value, otherwise = "invalid" (distinguishes missing from
- * malformed — a pin of the old format is missing, tampering /
- * corruption is malformed).
- */
-function optionalPatternField(
+/** A nullable string field: null = null, pattern match = the value, otherwise (including missing) = "invalid". */
+function nullablePatternField(
   record: Record<string, unknown>,
   key: string,
   pattern: RegExp,
 ): string | null | "invalid" {
-  const raw = record[key];
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  return patternField(record, key, pattern) ?? "invalid";
+  return record[key] === null ? null : (patternField(record, key, pattern) ?? "invalid");
 }
 
-/** An optional positive-integer field (missing / null = null, malformed = "invalid"). */
-function optionalPositiveIntField(
+/** A nullable positive-integer field (null = null, other malformed/missing = "invalid"). */
+function nullablePositiveIntField(
   record: Record<string, unknown>,
   key: string,
 ): number | null | "invalid" {
-  const raw = record[key];
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  return positiveIntField(record, key) ?? "invalid";
+  return record[key] === null ? null : (positiveIntField(record, key) ?? "invalid");
 }
 
 function decodeAnchor(value: unknown): InviteAnchor | null {
@@ -190,7 +172,7 @@ function decodeAnchor(value: unknown): InviteAnchor | null {
   const headHashHex = patternField(value, "headHashHex", HEX_64);
   const inviterUserId = patternField(value, "inviterUserId", /^.{1,1024}$/s);
   const inviterKeyFingerprintHex = patternField(value, "inviterKeyFingerprintHex", HEX_32);
-  const verifiedAtSeq = optionalPositiveIntField(value, "verifiedAtSeq");
+  const verifiedAtSeq = nullablePositiveIntField(value, "verifiedAtSeq");
   const inviterSigPubHex = patternField(value, "inviterSigPubHex", HEX_64);
   if (
     headSeq === null ||
@@ -219,8 +201,8 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   const linkPubHex = patternField(value, "linkPubHex", HEX_64);
   const role = ROLES.find((known) => known === value["role"]) ?? null;
   const expiresAtMs = positiveIntField(value, "expiresAtMs");
-  const expectedGithubLogin = optionalPatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
-  const scope = optionalScopeFields(value);
+  const expectedGithubLogin = nullablePatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
+  const scope = scopeFields(value);
   if (
     linkPubHex === null ||
     role === null ||
@@ -233,23 +215,12 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   return { linkPubHex, role, ...scope, expiresAtMs, expectedGithubLogin };
 }
 
-/**
- * The optional scope pair (both missing = an old pin → empty;
- * only one present or a structural-rule violation = "invalid").
- * The structural rules are CRYPTO_SPEC §6.2's (kind's closed set,
- * all ⇒ empty, at most 256, no duplicates, id format).
- */
-function optionalScopeFields(
+/** The scope pair (a structural-rule violation = "invalid"). The structural rules are CRYPTO_SPEC §6.2's (kind's closed set, all ⇒ empty, at most 256, no duplicates, id format). */
+function scopeFields(
   record: Record<string, unknown>,
-):
-  | { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] }
-  | "invalid"
-  | {} {
+): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | "invalid" {
   const kind = record["scopeKind"];
   const ids = record["scopeEnvironmentIds"];
-  if (kind === undefined && ids === undefined) {
-    return {};
-  }
   if (
     (kind !== "all" && kind !== "listed") ||
     !isScopeIdList(ids) ||

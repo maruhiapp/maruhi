@@ -47,10 +47,6 @@ export function sweepRotateFor(
         recipient: context.recipient,
         reason: mode === "force" ? reason : undefined,
         forceNewEpoch: mode === "force",
-        // A whole-environment sweep is not a migration operation —
-        // tolerating a missing manifest is limited to the explicit
-        // `maruhi env rotate <env> --init-manifest` (session-27 §14)
-        initManifest: false,
         signerUserId: context.session.userId,
         signingKeyPair: context.masterKeys.sigKeyPair,
         resync: context.resync,

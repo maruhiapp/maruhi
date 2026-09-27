@@ -293,8 +293,7 @@ describe("guardian groups(クラス G — §13-7)", () => {
         wardUserId: aId,
         mode: "all",
         shareIndex: 1,
-        encHex: HPKE_ENC,
-        ciphertextHex: SHARE_CT,
+        deviceShares: [expect.objectContaining({ encHex: HPKE_ENC, ciphertextHex: SHARE_CT })],
       }),
     );
     // 分片は当該保護者以外(ward 本人を含む)には 404

@@ -6,9 +6,6 @@
 //     エポック整合・issuer の役割不足(crypto の共有実装への結線)
 //  2. 床のマニフェスト拡張: 規則 (a) 後退・(b) 同版相違・(c) 前進 version の
 //     旧エポック焼き込み(セッションを跨ぐ永続検出)
-//  3. 移行経路(session-27 §14 PR-M1): マニフェスト未初期化サーバーへの操作は
-//     既定で拒否され、`env rotate --init-manifest` だけが欠落を許容して
-//     manifestVersion 1 を発行する(配布された場合の検証は緩和しない)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -137,6 +134,7 @@ function chainHandler(built: BuiltChain): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -170,6 +168,7 @@ function pullHandler(payload: PullJson): MockHandler {
       ...(payload.checkpointSnapshot === undefined
         ? {}
         : { checkpointSnapshot: payload.checkpointSnapshot }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -228,7 +227,7 @@ function manifestV1(
 }
 
 describe("マニフェスト配布時検証(§6.3 — crypto の共有実装への結線)", () => {
-  it("欠落は一律拒否し、移行手順(--init-manifest)を案内する", async () => {
+  it("欠落は一律拒否する", async () => {
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
@@ -237,7 +236,6 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     const errors = env.errors.join("\n");
     expect(errors).toContain("did not distribute an environment manifest");
     expect(errors).toContain("manifest suppression");
-    expect(errors).toContain("--init-manifest");
   });
 
   it("変数の欠落(ダイジェストにない変数の配布 = 逆に言えば省略の運搬形)を拒否する", async () => {
@@ -518,6 +516,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     });
@@ -571,6 +570,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
         variables: [alphaStatement],
         deletedVariables: [],
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     }));
   }
@@ -720,6 +720,7 @@ interface RotateBody {
     readonly suite: "maruhi/v1";
     readonly epoch: number;
     readonly recipientUserId: string;
+    readonly recipientEncPubHex: string;
     readonly encHex: string;
     readonly ciphertextHex: string;
     readonly signatureHex: string;
@@ -771,6 +772,7 @@ function makeLegacyServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -784,6 +786,7 @@ function makeLegacyServer(input: {
         deks,
         ...(manifest === null ? {} : { manifest }),
         ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
+        schemaPolicy: "enabled" as const,
       },
     })),
     (request) => {
@@ -842,6 +845,7 @@ function makeLegacyServer(input: {
         deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,
@@ -910,152 +914,5 @@ describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("could not be recorded in the local floor");
     expect(errors).toContain("checkpoint-regressed");
-  });
-});
-
-describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
-  it("マニフェスト未初期化サーバーへの rotate は既定で拒否される(欠落 = 拒否は移行でも例外にしない)", async () => {
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "移行前"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("did not distribute an environment manifest");
-    // 拒否は複合送信より前(欠落を検出した pull の段階)
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest は欠落だけを許容し、manifestVersion 1(prev 空・new_epoch)を同梱する", async () => {
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "移行"], env.layer),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(1);
-    const body = state.rotateBodies[0];
-    if (body === undefined) throw new Error("rotate body missing");
-    // 初期化は v1・prev 空。エポックは同梱エントリ適用後 = new_epoch(§12-5 (4))、
-    // 宣言ヘッドは追記前の現ヘッド(§12-4)
-    expect(body.manifest.manifestVersion).toBe(1);
-    expect(body.manifest.prevManifestSigHashHex).toBe("");
-    expect(body.manifest.epoch).toBe(2);
-    expect(body.manifest.chainHeadSeq).toBe(chain1.entries.length);
-    expect(body.manifest.chainHeadHashHex).toBe(chain1.hashes[chain1.hashes.length - 1]);
-    // 移行であることの明示警告(初期化後は欠落 = 拒否に入ることまで伝える)
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("no manifest yet");
-    expect(errors).toContain("initializes manifestVersion 1");
-  });
-
-  it("マニフェストが配布されている環境では --init-manifest は何も緩和しない(警告つき no-op)", async () => {
-    // 既に初期化済み(v1 を配布する)サーバー
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "初期化"], env.layer),
-    ).toBe(0);
-
-    // 2 回目: v1 が配布されている状態で --init-manifest を付けても、次 version
-    // (v2・prev = v1 の signed bytes ハッシュ)の通常発行になる
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "再回転"], env.layer),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(2);
-    const second = state.rotateBodies[1];
-    if (second === undefined) throw new Error("second rotate body missing");
-    expect(second.manifest.manifestVersion).toBe(2);
-    expect(second.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
-    expect(second.manifest.epoch).toBe(3);
-    expect(env.errors.join("\n")).toContain("The flag is not needed");
-  });
-
-  it("床にマニフェスト記録がある環境の欠落は --init-manifest でも握り潰しとして拒否する", async () => {
-    // フェーズ 1: マニフェスト付き pull で床(マニフェスト記録込み)を確立
-    const env = await makeTestEnv();
-    await startPhase(env, [
-      chainHandler(chain1),
-      pullHandler({
-        currentEpoch: 1,
-        variables: [],
-        deks: [wrap1],
-        manifest: await manifestV1({ statements: [] }),
-      }),
-    ]);
-    expect(await runCli(["pull"], env.layer)).toBe(0);
-
-    // フェーズ 2: マニフェストを配布しないサーバーに --init-manifest で rotate。
-    // 一度確立したマニフェスト床に対する欠落は移行許容の対象外(初期化済みの
-    // マニフェストは消えない — 消えたなら握り潰しの証拠)
-    const state = makeLegacyServer({});
-    const server = await MockServer.start(state.handlers);
-    servers.push(server);
-    seedSession(env, server.origin, owner);
-    await seedConfig(env, {
-      server: server.origin,
-      defaultProject: projectId,
-      defaultEnvironment: ENV_ID,
-    });
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "握り潰し"], env.layer),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("omission of the environment manifest");
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest は「確認だけ」の早期完了を取らない(--reason なしは usage エラー)", async () => {
-    // 未初期化環境 + 未完了なし + --reason なし = 従来なら up-to-date の
-    // 早期 return。初期化が必要な実行でこれを取ると、成功に見えるのに v1 が
-    // 発行されない。複合送信経路へ倒し、理由を要求する
-    const state = makeLegacyServer({});
-    const env = await startEnv(state.handlers);
-    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
-    expect(state.rotateBodies).toHaveLength(0);
-  });
-
-  it("--init-manifest は中断復旧(複合なしの再開)を取らず、新エポックの複合で v1 を発行する", async () => {
-    // エポックは 2 まで進んでいるが epoch 1 の stale 値が残る形(中断復旧の
-    // 入口)。従来の再開経路は複合を送らないため v1 が発行されない。初期化が
-    // 必要な実行は --new-epoch と同じく新エポックの複合へ倒す
-    const staleEntry = {
-      variableId: "va",
-      statement: alphaStatement,
-      value: alphaValue1,
-    };
-    const state = makeLegacyServer({
-      built: chain2,
-      currentEpoch: 2,
-      variables: [staleEntry],
-      initialDeks: [wrap1, wrap2],
-    });
-    const env = await startEnv(state.handlers);
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "移行"], env.layer),
-    ).toBe(0);
-    expect(state.rotateBodies).toHaveLength(1);
-    const body = state.rotateBodies[0];
-    if (body === undefined) throw new Error("rotate body missing");
-    expect(body.entry.payload.newEpoch).toBe(3);
-    expect(body.manifest.manifestVersion).toBe(1);
-    expect(body.manifest.prevManifestSigHashHex).toBe("");
-    expect(body.manifest.epoch).toBe(3);
-    // stale 値は新エポックへ再暗号化される(--new-epoch と同じ一気の揃え)
-    expect(state.pushes).toEqual(["va"]);
-  });
-
-  it("配布されたマニフェストの検証は --init-manifest でも緩和されない", async () => {
-    // 不正なマニフェスト(ダイジェスト不一致)を配布するサーバーに
-    // --init-manifest を付けても拒否される(欠落の許容 ≠ 検証の緩和)
-    const env = await startEnv([
-      chainHandler(chain1),
-      pullHandler({
-        currentEpoch: 1,
-        variables: [alphaEntry()],
-        deks: [wrap1],
-        manifest: await manifestV1({ statements: [] }),
-      }),
-    ]);
-    expect(
-      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "改竄"], env.layer),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("reason=variables-digest-mismatch");
   });
 });

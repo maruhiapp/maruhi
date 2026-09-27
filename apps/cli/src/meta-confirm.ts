@@ -15,11 +15,11 @@
 //   random-issued ID's presence; activation / schema re-issuance = a
 //   statement at or above the issued metaVersion) → confirmed (the
 //   form of being overtaken by a concurrent meta operation)
-// - Manifest missing (an old server silently dropping it), a
-//   different manifest (same version, different hash), or the
-//   effect absent → failure. **The floor does NOT advance to the
-//   self-issued manifest** (do not write my assumption onto the
-//   floor — only verified observations are recorded)
+// - Manifest missing, a different manifest (same version,
+//   different hash), or the effect absent → failure. **The floor
+//   does NOT advance to the self-issued manifest** (do not write
+//   my assumption onto the floor — only verified observations are
+//   recorded)
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";

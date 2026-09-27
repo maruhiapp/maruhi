@@ -697,22 +697,14 @@ function sendApproval(input: {
 /** Among the my-addressed segment rows, selects the row sealed to this device's key (K3-10 — `deviceShares`). */
 function ownDeviceShare(
   share: {
-    readonly encHex: string;
-    readonly ciphertextHex: string;
-    readonly deviceShares?:
-      | readonly {
-          readonly guardianKeyFingerprintHex: string;
-          readonly encHex: string;
-          readonly ciphertextHex: string;
-        }[]
-      | undefined;
+    readonly deviceShares: readonly {
+      readonly guardianKeyFingerprintHex: string;
+      readonly encHex: string;
+      readonly ciphertextHex: string;
+    }[];
   },
   masterKeys: MasterKeys,
 ): { readonly encHex: string; readonly ciphertextHex: string } | null {
-  if (share.deviceShares === undefined) {
-    // Old server (one device = the only row)
-    return { encHex: share.encHex, ciphertextHex: share.ciphertextHex };
-  }
   const mine = share.deviceShares.find(
     (row) => row.guardianKeyFingerprintHex === masterKeys.fingerprintHex,
   );

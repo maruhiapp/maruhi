@@ -97,8 +97,7 @@ export interface VerifiedProject {
   readonly applied: readonly AppliedOperation[];
   /**
    * Other members' head declarations bundled in the same
-   * response (§6.6 — **unverified**). Absent in an old server's
-   * response (absence = empty; omission is §6.3's normative
+   * response (§6.6 — **unverified**. omission is §6.3's normative
    * non-guarantee, not refused). Always empty in a
    * lease-response-derived view (§14-2 — not bundled).
    */
@@ -293,10 +292,7 @@ export function syncProject(
       entries: snapshot.entries,
       claimedHeadSeq: snapshot.headSeq,
       claimedHeadHashHex: snapshot.headHashHex,
-      // An old server's response has no attestations (absence is
-      // accepted as empty — §6.3's normative non-guarantee. No
-      // refuse-on-absence branch is built)
-      attestations: snapshot.attestations ?? [],
+      attestations: snapshot.attestations,
     });
   });
 }

@@ -45,9 +45,8 @@ interface RotationFlagView {
    * AUDIT_SPEC §3.3's trigger (2026-09-14 ES. `revoke_device` is
    * 2026-09-19 DK K3's device-revocation variant — a mechanical
    * follow of the wire type. The CLI's 5th sweep kind is K4).
-   * Absent in an old server's response.
    */
-  readonly trigger?: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
+  readonly trigger: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
 }
 
 /** Fetches the flag view (the shared entry of display, count reporting, and dismiss-target resolution). */
@@ -118,8 +117,7 @@ function describeTarget(flag: RotationFlagView): string {
   if (flag.targetUserId !== undefined) {
     // The change_role variant (demotion / scope shrinking —
     // AUDIT_SPEC §4.1) is not a deletion, so distinguish it by
-    // trigger. A response without trigger (an old server) shows
-    // the traditional wording
+    // trigger
     const prefix =
       flag.trigger === "change_role"
         ? "member (role/scope changed)"

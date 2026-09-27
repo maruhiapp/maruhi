@@ -126,12 +126,6 @@ interface RotateInput {
    * する呼び出し(退職者の削除に伴う全環境ローテーション — §7)のための保証。
    */
   readonly forceNewEpoch: boolean;
-  /**
-   * マニフェスト**欠落**の許容(`--init-manifest` — 移行経路)。
-   * マニフェスト導入前に作成された環境の manifest_version 1 初期化に
-   * 限る明示操作。配布された場合の検証は緩和しない(manifest.ts の規約)。
-   */
-  readonly initManifest: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   /** 再同期(チェーン全再検証)。CAS 競合・受理後の確認に使う。 */
@@ -485,15 +479,14 @@ function appendRotation(
     readonly dek: Redacted.Redacted<Uint8Array>;
     readonly dekCommitmentHex: string;
     /**
-     * 同梱マニフェスト(§12-4)の材料: 検証済み pull 由来の直前マニフェスト
-     * (null = 移行経路の v1 初期化)・現在のメタ集合(tombstone 込み)・
+     * 同梱マニフェスト(§12-4)の材料: 検証済み pull 由来の直前マニフェスト・現在のメタ集合(tombstone 込み)・
      * 環境メタの最新形。メタ集合は rotate で不変(§4.3 — エポック前進の反映のみ)。
      */
     readonly manifestBase: {
       readonly previous: {
         readonly manifestVersion: number;
         readonly signedBytesHashHex: string;
-      } | null;
+      };
       readonly entries: readonly ManifestDigestEntry[];
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
@@ -2107,44 +2100,10 @@ function resumeReencryption(input: {
 }
 
 /**
- * `--init-manifest` が不要だった実行の警告文言。
- * **rotatePathOf の結果確定後に選ぶ**: path が resume / up-to-date の実行は
- * rotate 複合を送らない = 次 manifestVersion を発行しないので、「この rotation は
- * 次版を再発行する」という文言は嘘になる(フラグを渡した利用者に、発行されて
- * いない再発行を信じさせる)。
+ * rotate 前の状況警告(床なし)。pull 警告の直後 = 後続の失敗(DEK 検証など)より前に積む。
  */
-function initManifestWarning(
-  environmentId: string,
-  manifestVersion: number,
-  path: "resume" | "up-to-date" | "rotate",
-): string {
-  const base = `--init-manifest was passed, but environment ${displayText(environmentId)} already has a verified manifest (manifestVersion ${manifestVersion}). The flag is not needed`;
-  switch (path) {
-    case "rotate":
-      return `${base} — this rotation re-issues the next manifestVersion as usual`;
-    case "resume":
-      return `${base} — this run only resumes the incomplete re-encryption and issues no new manifest`;
-    case "up-to-date":
-      return `${base} — this run issues nothing (it only confirms the environment is up to date)`;
-  }
-}
-
-/**
- * rotate 前の状況警告(マニフェスト移行 + 床なし)のうち、経路(path)に
- * 依存しないもの。pull 警告の直後 = 後続の失敗(DEK 検証など)より前に積む。
- * --init-manifest の不要フラグ文言だけは経路の確定を待つ(initManifestWarning)。
- */
-function rotateSituationWarnings(
-  input: RotateInput,
-  pulled: VerifiedEnvironmentPull,
-  floorless: boolean,
-): readonly string[] {
+function rotateSituationWarnings(input: RotateInput, floorless: boolean): readonly string[] {
   const warnings: string[] = [];
-  if (pulled.manifest === null) {
-    warnings.push(
-      `Environment ${displayText(input.environmentId)} has no manifest yet (created before manifests were introduced). This rotation initializes manifestVersion 1 — after it succeeds, every distribution of this environment is manifest-verified and a missing manifest is rejected (CRYPTO_SPEC §6.3)`,
-    );
-  }
   if (floorless) {
     warnings.push(
       `This environment has no local floor yet, so variables the server keeps omitting from responses (ones that exist but never appear in listings) are not covered by re-encryption, and the omission cannot be detected (omission detection in CRYPTO_SPEC §6.3 presumes a floor). For revocation-purpose rotations, re-run from a machine that has a floor and confirm the variable listing for ${displayText(input.environmentId)} matches`,
@@ -2155,17 +2114,14 @@ function rotateSituationWarnings(
 
 /**
  * 経路選択: 複合を送るか(rotate)、複合なしの再開(resume)か、確認だけ
- * (up-to-date)か。--new-epoch と「初期化が実際に必要な --init-manifest」は
- * 必ず複合を送る — manifestVersion 1 の発行はメタ操作への同梱でしか起きない
- * (§12-5)ため、早期 return を取ると成功に見えるのに未初期化のまま残る。
+ * (up-to-date)か。--new-epoch は必ず複合を送る。
  */
 function rotatePathOf(input: {
   readonly staleCount: number;
   readonly reason: string | null;
   readonly forceNewEpoch: boolean;
-  readonly mustInitialize: boolean;
 }): "resume" | "up-to-date" | "rotate" {
-  if (input.forceNewEpoch || input.mustInitialize) {
+  if (input.forceNewEpoch) {
     return "rotate";
   }
   if (input.staleCount > 0) {
@@ -2182,18 +2138,15 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
   readonly previous: {
     readonly manifestVersion: number;
     readonly signedBytesHashHex: string;
-  } | null;
+  };
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
 } {
   return {
-    previous:
-      pulled.manifest === null
-        ? null
-        : {
-            manifestVersion: pulled.manifest.manifestVersion,
-            signedBytesHashHex: pulled.manifest.signedBytesHashHex,
-          },
+    previous: {
+      manifestVersion: pulled.manifest.manifestVersion,
+      signedBytesHashHex: pulled.manifest.signedBytesHashHex,
+    },
     entries: [
       ...pulled.variables.map((value) => ({
         variableId: value.variableId,
@@ -2259,13 +2212,10 @@ function rotateWithWarnings(
       environmentId: input.environmentId,
       resync: input.resync,
       floor: input.floor,
-      // --init-manifest(移行経路)のみマニフェストの
-      // **欠落**を許容する。配布された場合の検証はフラグに関わらず全て行う
-      allowMissingManifest: input.initManifest,
     });
     // 警告は後続の失敗(DEK 検証など)より**前**に sink へ入れる: 失敗経路の
     // flush に含まれなければ、失敗時にだけ消えるという round 8 と同じ穴になる
-    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, pulled, floorless));
+    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, floorless));
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified: pulled.verified,
@@ -2279,12 +2229,7 @@ function rotateWithWarnings(
       staleCount: stale.length,
       reason,
       forceNewEpoch: input.forceNewEpoch,
-      // 初期化が実際に必要(欠落を確認した)実行は rotate 複合を必ず送る
-      mustInitialize: input.initManifest && pulled.manifest === null,
     });
-    // --init-manifest の不要フラグ文言は経路の確定後に選ぶ(resume /
-    // up-to-date の実行は複合を送らない = 「次版を再発行する」とは言わない)
-    warnings.push(...initManifestNotices(input, pulled.manifest, path));
 
     // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
     if (path === "resume") {
@@ -2411,17 +2356,6 @@ function rotateWithWarnings(
       warnings: dedupeWarnings(warnings),
     };
   });
-}
-
-/** --init-manifest が実際には不要だった実行の案内(文言は経路確定後に選ぶ)。 */
-function initManifestNotices(
-  input: RotateInput,
-  manifest: { readonly manifestVersion: number } | null,
-  path: "resume" | "up-to-date" | "rotate",
-): readonly string[] {
-  return input.initManifest && manifest !== null
-    ? [initManifestWarning(input.environmentId, manifest.manifestVersion, path)]
-    : [];
 }
 
 /** 新エポック DEK のコミットメント計算(CRYPTO_SPEC §5.2)。失敗は CliError。 */

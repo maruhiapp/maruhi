@@ -336,8 +336,8 @@ interface DataStoreShape {
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
   /**
-   * 最新の環境マニフェスト(配布形 — §12-7 の同梱材料)。マニフェスト導入前に
-   * 作成された環境は初期化(最初のメタ操作 / rotate)まで null(移行の過渡状態)。
+   * 最新の環境マニフェスト(配布形 — §12-7 の同梱材料)。保存行が無ければ null
+   * (環境作成は manifest_version 1 を同梱するので、作成済みの環境では起きない)。
    */
   readonly environmentManifest: (
     environmentId: string,

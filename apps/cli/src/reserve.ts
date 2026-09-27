@@ -24,9 +24,6 @@
 import { ALL_SCOPE, type EncryptionKeyPair, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { deviceProvenanceOf } from "./device-key.ts";
-import type { ReserveVerdict, StandingGroups } from "./device-standing.ts";
-import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { CliIo } from "./io.ts";
 import { generateKeyRecord } from "./key-record.ts";
@@ -129,87 +126,37 @@ export function recordedReserves(
 }
 
 /**
- * When the ledger's key is found not to work as a reserve key, fix
- * this device's wrong reserve row (DK K14-4 4-g). The only writable
- * facts are the existing ones (K4-3): `first-key` → replace with a
- * row observed as the first key on the verified chain (provenance
- * observed). `revoked` → attach the mark that revocation was
- * observed. No row = do nothing. A write failure does not fail the
+ * When the ledger's key is found to be revoked and this device has
+ * it recorded as reserve, attach the revocation mark (DK K14-4
+ * 4-g). No row = do nothing. A write failure does not fail the
  * command — it becomes a Warning.
  */
-export function retractReserveRecord(input: {
-  readonly session: CliSession;
-  readonly fingerprintHex: string;
-  readonly verdict: ReserveVerdict;
-  readonly groups: StandingGroups;
-}): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
+export function markRevokedReserveRecord(
+  session: CliSession,
+  fingerprintHex: string,
+): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
   return Effect.gen(function* () {
-    const { session, fingerprintHex } = input;
     const store = yield* OwnDeviceStore;
     const loaded = yield* store.load(session.origin, session.userId);
     const recorded =
-      loaded.state === "loaded"
-        ? loaded.devices.find(
-            (row) =>
-              row.keyFingerprintHex === fingerprintHex &&
-              row.source === "reserve" &&
-              row.revokedAtMs === null,
-          )
-        : undefined;
-    if (recorded === undefined) {
-      return;
-    }
-    if (input.verdict.kind === "revoked") {
-      yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
-      yield* logNote(
-        `this machine had recorded ${fingerprintHex} as your reserve key; it is revoked, so the record now says so`,
+      loaded.state === "loaded" &&
+      loaded.devices.some(
+        (row) =>
+          row.keyFingerprintHex === fingerprintHex &&
+          row.source === "reserve" &&
+          row.revokedAtMs === null,
       );
+    if (!recorded) {
       return;
     }
-    if (input.verdict.kind !== "first-key") {
-      return;
-    }
-    // The observation row's material comes from a valid standing
-    // (preferring the project where it is the first key). If it is
-    // already revoked on the project where it was the first key and
-    // valid nowhere, attach the revocation mark (K14-18). When a
-    // project cannot be synced, "valid nowhere" cannot be claimed,
-    // so the row is untouched (K14-19 — the gate keeps guarding the
-    // key)
-    const first =
-      input.groups.active.find((entry) => entry.standing.firstKey) ?? input.groups.active[0];
-    if (first === undefined && input.groups.unsynced.length > 0) {
-      return;
-    }
-    if (first === undefined) {
-      yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
-      yield* logNote(
-        `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")} and is registered nowhere now, so the record now says it is revoked`,
-      );
-      return;
-    }
-    const { device, context } = first.standing;
-    yield* store.record(session.origin, session.userId, {
-      keyFingerprintHex: fingerprintHex,
-      encPubHex: device.encPubHex,
-      sigPubHex: device.sigPubHex,
-      roleCap: device.roleCap,
-      scope: device.scope,
-      source: "observed",
-      label: null,
-      addedByFingerprintHex: deviceProvenanceOf(context.verified, session.userId, device)
-        .addedByFingerprintHex,
-      observedProjectId: first.projectId,
-      recordedAtMs: Date.now(),
-      revokedAtMs: null,
-    });
+    yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
     yield* logNote(
-      `this machine had recorded ${fingerprintHex} as your reserve key; it is your first key on ${input.verdict.projectIds.map(displayText).join(", ")}, so the record now lists it as an observed device key (it is no longer revoked by \`maruhi key reserve rotate\` or \`maruhi key recovery --replace\`)`,
+      `this machine had recorded ${fingerprintHex} as your reserve key; it is revoked, so the record now says so`,
     );
   }).pipe(
     Effect.catch((error) =>
       logWarning(
-        `could not correct this machine's record of ${input.fingerprintHex} (${error.message}); check it with \`maruhi key show\``,
+        `could not correct this machine's record of ${fingerprintHex} (${error.message}); check it with \`maruhi key show\``,
       ),
     ),
   );

@@ -171,7 +171,7 @@ const TOKEN_EXPIRY_WARNING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  *
  * - stderr に出すのは stdout の機械可読性を守るため(値・JSON を pipe する
  *   コマンドの出力へ混ぜない — nextStepHint と同じ規律)
- * - 期限不明(undefined — 旧サーバー / 旧レコード)と、既にローカル判定で
+ * - 期限不明(undefined — 申告なし)と、既にローカル判定で
  *   過去(次のリクエストが 401 で言う — 二重に言わない)は何も出さない
  * - 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number)
  */

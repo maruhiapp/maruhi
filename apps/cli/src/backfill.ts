@@ -23,12 +23,11 @@ import type { VerifiedProject } from "./sync.ts";
 /**
  * Result of a registration attempt (409 = existing slot).
  * `storedRecipientEncPubHex` is the stored recipient enc public key of the
- * occupying wrap carried by the 409 (AUTH_SPEC §12-6; servers from before
- * the supplement do not carry it = null).
+ * occupying wrap carried by the 409 (AUTH_SPEC §12-6).
  */
 export type RegisterOutcome =
   | { readonly kind: "ok" }
-  | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string | null };
+  | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string };
 
 /** Resolution of a per-epoch 409 (the caller's semantics). */
 export type SlotConflictResolution = "already-registered" | "repaired";
@@ -105,12 +104,11 @@ export function backfillEnvironmentFor(input: {
    * Resolution of a per-epoch 409 (omitted = treat as registered). member
    * add's re-add repair performs delete → re-register here (the §12-6
    * repair path). The second argument is the stored recipient enc public
-   * key of the occupying wrap carried by the 409 (null on old servers —
-   * input to fallback detection).
+   * key of the occupying wrap carried by the 409.
    */
   readonly onSlotConflict?: (
     wrap: WrappedDek,
-    storedRecipientEncPubHex: string | null,
+    storedRecipientEncPubHex: string,
   ) => Effect.Effect<SlotConflictResolution, CliError>;
   /**
    * The epochs to wrap (omitted = all of 1 through the current epoch).
@@ -221,7 +219,7 @@ export function registerWraps(
         error instanceof DekWrapExistsError
           ? Effect.succeed<RegisterOutcome>({
               kind: "exists",
-              storedRecipientEncPubHex: error.storedRecipientEncPubHex ?? null,
+              storedRecipientEncPubHex: error.storedRecipientEncPubHex,
             })
           : Effect.fail(toCliError(error)),
       ),

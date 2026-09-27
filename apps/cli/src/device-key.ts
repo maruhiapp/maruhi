@@ -226,33 +226,6 @@ export function deviceProvenanceOf(
 }
 
 /**
- * The device's keys were the first key of `userId` in some tenure on this chain
- * (an applied genesis or `add_member` carrying them). Applied operations outlive
- * the tenure, so a key re-added with `add_device` after a re-invite still counts.
- * One predicate shared by judging reserve keys (device-standing.ts —
- * DK K14-1 1-f / K14-18) and by the witness of the observation record
- * (device-sync.ts — DK K15-12).
- */
-export function wasFirstKeyOf(
-  verified: VerifiedProject,
-  userId: string,
-  device: { readonly encPubHex: string; readonly sigPubHex: string },
-): boolean {
-  const carries = (keys: { readonly encPubHex: string; readonly sigPubHex: string }) =>
-    keys.encPubHex === device.encPubHex && keys.sigPubHex === device.sigPubHex;
-  return verified.applied.some(({ operation, actorUserId }) => {
-    if (operation.op === "genesis") {
-      return actorUserId === userId && carries(operation.payload);
-    }
-    return (
-      operation.op === "add_member" &&
-      operation.payload.targetUserId === userId &&
-      carries(operation.payload)
-    );
-  });
-}
-
-/**
  * The fingerprints revoked for `userId` on this verified chain (the union of
  * applied `revoke_device` entries). One predicate shared by the
  * candidates-exclusion of registration from the record

@@ -34,12 +34,9 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
   if (record === null || !constantTimeEqual(tokenHash, record.tokenHash)) {
     return anonymousPrincipal;
   }
-  // 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)。null(旧無期限行)は**期限切れとして
-  // 扱う**(fail-closed): 移行(既存 NULL 行への expires_at 再アンカー)を適用
-  // せず新コードだけをデプロイした場合でも、無期限トークンが復活しない。
-  // 再ログイン = 同名ローテーションが expires_at 付きの行を発行して自己回復する
+  // 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)
   const expiresAtMs = record.expiresAtMs;
-  if (expiresAtMs === null || expiresAtMs <= nowMs) {
+  if (expiresAtMs <= nowMs) {
     return anonymousPrincipal;
   }
   // 判定を通過した主体は常に非 null の期限を持つ(W3a 裁定 CI — /auth/me の自己開示)

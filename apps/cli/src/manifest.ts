@@ -14,13 +14,7 @@
 //
 // **Missing manifest = uniform refusal** (§6.3 — the "warn if
 // uninitialized" branch is a relaxation path an attacker can
-// choose, so it does not exist). The only exception is the
-// migration path (session-27 §14): manifest_version 1
-// initialization of an environment created before manifests were
-// introduced may **tolerate the absence** (not a relaxation of
-// verification — when a manifest is distributed it is verified
-// normally), and only via the explicit `maruhi env rotate
-// --init-manifest` operation.
+// choose, so it does not exist).
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
@@ -64,7 +58,7 @@ export interface VerifiedManifest {
 /** The input of variables_digest (the latest form of verified statements — tombstones included, §4.3). */
 export type ManifestDigestEntry = VariablesDigestEntry;
 
-/** Issuance input: the previous manifest (none = the migration path's v1 initialization) and the post-issuance meta state. */
+/** Issuance input: the previous manifest (none = env create's v1) and the post-issuance meta state. */
 export interface SignManifestInput {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -308,12 +302,10 @@ export async function verifyDistributedManifest(input: {
   };
 }
 
-/** The uniform refusal message for a missing manifest (§6.3 — the only tolerance is --init-manifest's migration path). */
+/** The uniform refusal message for a missing manifest (§6.3). */
 export function missingManifestMessage(environmentId: string): string {
   return (
     `The server did not distribute an environment manifest for ${environmentId}. ` +
-    "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected. " +
-    "If this environment was created before manifests were introduced, a member must initialize it once with: `maruhi env rotate` " +
-    `${environmentId} --init-manifest --reason "manifest initialization"`
+    "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected"
   );
 }

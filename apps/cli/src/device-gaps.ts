@@ -63,12 +63,10 @@ interface OwnDeviceGap {
 }
 
 /**
- * From the bundled rows, derive the epochs among 1 through the current
- * epoch with no row, for each of the same person's other valid devices
- * that is a recipient of this environment (`deviceReceivesEnvironment`
- * — effective scope). If even one row lacks `recipientEncPubHex` (an
- * old pre-K3 server = one device), nothing is derived because
- * attribution is unknowable.
+ * From the bundled rows, derive the epochs among 1 through the
+ * current epoch with no row, for each of the same person's other
+ * valid devices that is a recipient of this environment
+ * (`deviceReceivesEnvironment` — effective scope).
  */
 function ownDeviceGapsOf(input: {
   readonly verified: VerifiedProject;
@@ -78,13 +76,15 @@ function ownDeviceGapsOf(input: {
   readonly rows: readonly RecipientDek[];
 }): readonly OwnDeviceGap[] {
   const self = input.verified.state.members.get(input.recipient.userId);
-  if (self === undefined || input.rows.some((row) => row.recipientEncPubHex === undefined)) {
+  if (self === undefined) {
     return [];
   }
   const held = new Map<string, Set<number>>();
   for (const row of input.rows) {
-    const key = row.recipientEncPubHex ?? "";
-    held.set(key, (held.get(key) ?? new Set()).add(row.epoch));
+    held.set(
+      row.recipientEncPubHex,
+      (held.get(row.recipientEncPubHex) ?? new Set()).add(row.epoch),
+    );
   }
   return devicesOf(self).flatMap((device) => {
     if (
