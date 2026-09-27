@@ -197,11 +197,12 @@ export type ReserveVerdict =
   | {
       readonly kind: "usable";
       /**
-       * 同期できず確かめられなかったプロジェクト(そこで失効していても見えない)。止めはしない
-       * (DK K16-6)が、報告側が Note で名指す。
+       * Projects that could not be synced and so were not checked (a revocation there
+       * would be invisible). They do not stop the operation (DK K16-6), but the
+       * reporting side names them in a Note.
        */
       readonly uncheckedProjectIds: readonly string[];
-      /** プロジェクト一覧の取得の失敗(null = 取れた)。取れなければどこも確かめていない。 */
+      /** Failure to fetch the project list (null = fetched). If it failed, no project was checked. */
       readonly listFailure: string | null;
     };
 

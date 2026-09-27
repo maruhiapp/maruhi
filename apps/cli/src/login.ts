@@ -259,7 +259,7 @@ function pollOnce(
   );
 }
 
-/** `maruhi login`: start → browser approval → poll → keychain(AUTH_SPEC §4)。 */
+/** `maruhi login`: start → browser approval → poll → keychain (AUTH_SPEC §4). */
 export function loginOp(input: {
   readonly origin: string;
   readonly tokenName: string;

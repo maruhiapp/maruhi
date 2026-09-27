@@ -140,7 +140,7 @@ export const GH_ENV: Readonly<Record<string, string>> = {
 const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as const;
 
 /**
- * GitHub secret names (docs.github.com「Secrets reference」): alphanumerics and `_`,
+ * GitHub secret names (docs.github.com "Secrets reference"): alphanumerics and `_`,
  * not starting with a digit, not starting with `GITHUB_`, stored in uppercase. Only
  * uppercase names are accepted so that no two maruhi names fold into one secret.
  */

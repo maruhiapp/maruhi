@@ -248,7 +248,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
       set: (name, value) =>
         Effect.suspend(() => {
           if (!keychainWritable) {
-            return Effect.fail(cliError("キーチェーンに書き込めません(テスト注入)")); // english-exempt: asserts literal text owned by apps/cli/test/login.test.ts
+            return Effect.fail(cliError("cannot write to the keychain (test injection)"));
           }
           keychain.set(name, value);
           return Effect.void;
