@@ -2781,6 +2781,8 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       readonly mode: "unavailable";
     }[];
     readonly unlistedProjects?: readonly BuiltChain[];
+    /** プロジェクト一覧 GET の応答コード(既定 200)。 */
+    readonly projectsStatus?: number;
     /** 追加のハンドラ(隠す前の同期に使う invite create の発行など)。 */
     readonly extra?: readonly MockHandler[];
   }): Promise<{ env: TestEnv; state: ServerState; origin: string; ledgerPuts: unknown[] }> {
@@ -2817,6 +2819,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       ...(input.extraProjects === undefined ? {} : { extraProjects: input.extraProjects }),
       ...(input.brokenProjects === undefined ? {} : { brokenProjects: input.brokenProjects }),
       ...(input.unlistedProjects === undefined ? {} : { unlistedProjects: input.unlistedProjects }),
+      ...(input.projectsStatus === undefined ? {} : { projectsStatus: input.projectsStatus }),
     });
     const env = await startEnv(server.origin, input.built.projectId, input.device);
     env.setPromptResponses([
@@ -3093,6 +3096,26 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `Note: 1 project (${broken.projectId}) could not be synced, so whether the key ${reserve.fingerprintHex} is revoked there was not checked`,
     );
     expect(env.logs.join("\n")).not.toContain("cannot serve as your reserve key");
+  });
+
+  it("rotate: プロジェクト一覧が取れなければ、どこも確かめていないことを Note で名指す(同期できない所の Note より優先)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env } = await recoveryFixture({
+      device: owner,
+      ledgerKey: reserve,
+      built,
+      projectsStatus: 500,
+    });
+    await runCli(["key", "reserve", "rotate"], env.layer);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `, so whether the key ${reserve.fingerprintHex} is revoked on any of them was not checked`,
+    );
+    expect(errors).toContain("Note: your projects could not be listed (");
+    expect(errors).not.toContain("could not be synced, so whether the key");
   });
 
   it("rotate: 確かめたプロジェクトがすべて同期できれば、確かめられなかった範囲の Note は出さない", async () => {
