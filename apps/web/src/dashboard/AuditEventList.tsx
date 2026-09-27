@@ -48,6 +48,7 @@ import {
   aggregatedReadVariables,
   listedReadVariableLabel,
   payloadWithoutVariables,
+  lineageLabel,
   readSummaryLabel,
 } from "./audit-read.ts";
 import {
@@ -101,8 +102,10 @@ function detailFragments(event: AuditEvent): Fragment[] {
     fragment("target key", event.targetKeyFingerprintHex),
     fragment("env", event.environmentId),
     fragment("var", event.variableId),
-    fragment("epoch", event.epoch),
+    // A rotation.recommended row's epoch is its exposure bound (AUDIT_SPEC §3.3 — VH)
+    fragment(event.event === "rotation.recommended" ? "exposure epoch" : "epoch", event.epoch),
     fragment("v", event.version),
+    fragment("value", lineageLabel(event) ?? undefined),
     fragment("chain seq", event.chainSeq),
   ].filter(isPresent);
 }
@@ -158,7 +161,7 @@ function EventSummary({ event }: { event: AuditEvent }): ReactNode {
         <Fragments items={detailFragments(event)} />
         {listed === null ? null : (
           <Text type="supporting" size="sm">
-            {readSummaryLabel(listed.length)}
+            {readSummaryLabel(listed)}
           </Text>
         )}
       </HStack>
@@ -219,10 +222,13 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   // no duplicates — usable as keys
   return (
     <VStack gap={2}>
-      <Text weight="semibold">{readSummaryLabel(listed.length)}</Text>
+      <Text weight="semibold">{readSummaryLabel(listed)}</Text>
       <List density="compact">
         {listed.map((variable) => (
-          <ListItem key={variable.variableId} label={listedReadVariableLabel(variable)} />
+          <ListItem
+            key={`${variable.variableId}:${variable.version}`}
+            label={listedReadVariableLabel(variable)}
+          />
         ))}
       </List>
     </VStack>

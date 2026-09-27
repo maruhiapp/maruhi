@@ -740,8 +740,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     );
     // The defense line against a broken enumeration spinning freely
     // (an unconditional pass). Update this count when endpoints are
-    // added (membership 5 / environments 5 / variables 7 / deks 3 /
-    // rotation 2 / schemaPolicy 2 / audit 4)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(28);
+    // added (membership 5 / environments 5 / variables 9 [+ history /
+    // versionValues — VH] / deks 3 / rotation 2 / schemaPolicy 2 / audit 4)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(30);
   });
 });

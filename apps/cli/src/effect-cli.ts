@@ -265,6 +265,7 @@ import { decidePushSync, loadPushSyncConfig, syncAfterPush } from "./sync-push.t
 import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "./sync-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { tokenListOp, tokenRevokeOp } from "./token.ts";
+import { formatVarHistory, varHistoryJson, varHistoryOp, varRollbackOp } from "./var-history.ts";
 import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
 
@@ -1186,6 +1187,44 @@ const varRmConfig = {
   ),
 };
 
+/** `maruhi var history <NAME>` (the version history — AUTH_SPEC §12-7, 2026-09-27 VH). */
+const varHistoryConfig = {
+  ...commonFlags(),
+  json: singleFlag(
+    "json",
+    "Print the history as JSON (server-declared metadata: version, epoch, writer, time, lineage, flag count)",
+  ),
+  name: Argument.String("name").pipe(
+    Argument.withDescription("Variable name whose version history to show"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+/** `maruhi var rollback <NAME> --to <VERSION>` (restoring an old value as a new version — VH). */
+const varRollbackConfig = {
+  ...commonFlags(),
+  to: Flag.Int("to").pipe(
+    Flag.withDescription(
+      "The version whose value to restore (see `maruhi var history`); pushed as a new version",
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  force: singleFlag("force", "Skip the interactive confirmation (the only non-interactive path)"),
+  config: singleValued(
+    "config",
+    `Path to the sync config whose "onPush" targets are synced after the rollback (default: ${DEFAULT_SYNC_CONFIG_PATH} in the working directory, when it exists and names this project)`,
+  ),
+  "no-sync": singleFlag(
+    "no-sync",
+    "Skip the sync after the rollback (the default sync config is not read)",
+  ),
+  name: Argument.String("name").pipe(
+    Argument.withDescription("Variable name to roll back"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The
  * environment is decided not by a flag but by the repository config (the
@@ -1368,7 +1407,7 @@ const GROUP_CONFIGS: Readonly<
     "verify-snapshot": schemaVerifySnapshotConfig,
     lint: schemaLintConfig,
   },
-  var: { rm: varRmConfig },
+  var: { rm: varRmConfig, history: varHistoryConfig, rollback: varRollbackConfig },
   sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
 };
 
@@ -4546,9 +4585,98 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const varHistory = Command.make("history", varHistoryConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      // Metadata only (§12-7): keyless, scope-agnostic, no value is read —
+      // the agent gate does not apply (zero values — the permissive side)
+      const context = yield* openMetadataEnvironment(values);
+      const result = yield* varHistoryOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        name: values.name,
+        resync: context.resync,
+        floor: context.floorHandle,
+      });
+      yield* logWarnings(result.warnings);
+      if (values.json) {
+        yield* io.log(varHistoryJson(result, context.environmentId));
+        return;
+      }
+      for (const line of formatVarHistory(result, context.environmentId)) {
+        yield* io.log(line);
+      }
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Show a variable's version history (metadata only: version, epoch, writer, time, rollbacks, rotation-flag exposure — never a value)",
+    ),
+  );
+
+  const varRollback = Command.make("rollback", varRollbackConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      const toVersion = values.to;
+      if (toVersion === undefined || toVersion < 1) {
+        return yield* Effect.fail(
+          usageError(
+            "--to <version> is required and must be a positive version number (see `maruhi var history <name>`)",
+          ),
+        );
+      }
+      // The sync config is read before any network (same order as push)
+      const syncSetup = yield* loadPushSyncConfig({
+        config: values.config,
+        noSync: values["no-sync"],
+      });
+      const context = yield* openEnvironment(values);
+      const syncDecision =
+        syncSetup === null
+          ? null
+          : yield* decidePushSync(syncSetup, {
+              projectId: context.projectId,
+              environmentId: context.environmentId,
+              name: values.name,
+            });
+      const result = yield* varRollbackOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        recipient: context.recipient,
+        name: values.name,
+        toVersion,
+        force: values.force,
+        resync: context.resync,
+        floor: context.floorHandle,
+        writerUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+      });
+      yield* logWarnings(result.warnings);
+      yield* io.log(
+        `Rolled back ${displayText(result.name)} to the value of version ${result.toVersion} (new version=${result.pushed.version}, epoch=${result.pushed.epoch}; was version ${result.fromVersion})`,
+      );
+      if (result.flagsIfCurrent > 0) {
+        yield* logNote(
+          `The restored value was readable by the subject of ${countNoun(result.flagsIfCurrent, "rotation flag")} — see \`maruhi rotation list\``,
+        );
+      }
+      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      if (syncSetup !== null && syncDecision !== null) {
+        yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
+      }
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Restore a previous version's value as a new version (verifies the old version against the latest first; asks for confirmation unless --force). Never displays the value",
+    ),
+  );
+
   const varGroup = Command.make("var").pipe(
-    Command.withDescription("Manage variables (rm). push / pull / run operate on values directly"),
-    Command.withSubcommands([varRm]),
+    Command.withDescription(
+      "Manage variables (rm, history, rollback). push / pull / run operate on values directly",
+    ),
+    Command.withSubcommands([varRm, varHistory, varRollback]),
   );
 
   const envCreate = Command.make("create", envCreateConfig, (values) =>

@@ -1,6 +1,6 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
-Version: 1.9-draft
+Version: 1.10-draft
 Status: through 0.6, owner-approved (0.3 approved by the PR #18 merge on
 2026-08-02. Adding the signer key FP to §3.3's `dek.registered` was approved as
 CRYPTO_SPEC §5.1 in PR #21. §3.3's actor key FP extension to signed data
@@ -101,7 +101,19 @@ descriptions converted to reserve key (event names unchanged) / §3.4's
 no FP. A partial correction of approved item 8, design record dk-design.md §6
 K1-12) / §4.2 Q1's enumeration / §6's classes unchanged. The design's 16 items
 are owner-approved as of 2026-09-20 (design record §4) — **approval of the spec
-wording is by the merge of this revision PR**
+wording is by the merge of this revision PR**. 1.10-draft = VH (value history and rollback —
+2026-09-27. AUTH_SPEC 0.25-draft. Design record docs/notes/vh-design.md): §3.3's
+re-encryption marker generalized into the value-lineage payload `{ sameValueAs }`
+(ruling V1) and `var.read`'s enumeration order generalized to (variableId,
+version) for the version value range (ruling V3) / §4.1 procedure 5's
+resolution rule replaced by the lineage derivation — a flag is effective while
+the live value was first encrypted within its exposure bound (the
+environment's epoch at the end of the subject's window, now in
+`rotation.recommended`'s epoch column); re-exposure by rollback re-opens a resolved flag; a dismissal covers
+the flags effective at the time and stays sticky (ruling V2 as corrected by
+the design record's §9) / §7's flag view gains `reopenedByVersion`. Both open points were delegated to the designer by
+the owner on 2026-09-27 — **approval of the spec wording is by the merge of
+this revision PR**
 
 This document defines the design of maruhi's audit log (what / who / when).
 It presumes CRYPTO_SPEC (especially §6 membership log, §7 rotation-needed
@@ -340,7 +352,7 @@ CRYPTO_SPEC §4 identifiers.
 | `var.read` ★ | environment_id, payload = { variables: [{ variableId, epoch, version }, …] } | Recorded for **ciphertext distribution** (pull / web fetch). **1 row per environment per with-values bulk pull** (2026-09-02 revision — aggregate form. Old form: 1 row per variable. The variable_id / epoch / version columns are NULL, and the payload enumerates the returned variables — recording rules below). **Metadata-only mode (AUTH_SPEC §12-7) distributes no ciphertext and is not recorded** (don't record as read what was not read — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id (recipient), **actor_key_fingerprint (signer key FP)** | DEK-wrap registration (AUTH_SPEC §12-6. **Includes the bundled part of composite requests — epoch 1 of environment creation, the new epoch of rotation (same §12-4. 2026-08-03)**). actor_key_fingerprint copies the signer key FP of the registration signature (CRYPTO_SPEC §5.1) (for cross-check against the signature. Session 07 ruling B) |
 | `dek.deleted` | environment_id, epoch, target_user_id (recipient) | Deletion of a poisoned wrap by an admin (AUTH_SPEC §12-6's repair path) |
-| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, payload = { basis, triggerChainSeq, **trigger** } | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
+| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, **epoch = the exposure bound** (the environment's epoch at the end of the subject's last window on it — 2026-09-27 VH; §4.1 step 5. Displayed as the exposure epoch, not a value's epoch), payload = { basis, triggerChainSeq, **trigger** } | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
 | `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). One row per (variable × environment) |
 | `project.schema_policy_changed` | payload = { old value, new value } | Change of the project setting `schemaPolicy` (AUTH_SPEC §12-11. 2026-08-30). The actor is the changer themself (type=user — a setting operation with no signature, so no FP). The setting value itself is distributed to all members advisory-ly in pull responses, so class 1 |
 
@@ -358,9 +370,12 @@ CRYPTO_SPEC §4 identifiers.
     response. epoch / version are the coordinates of the latest versions
     returned (material for rotation-needed detection's per-variable matching
     and for incident response [which version was fetched]). The enumeration is
-    in **ascending order of `variableId` (code-unit comparison), no
-    duplicates** (one pull returns each active variable at most once — no form
-    exists where the same variable appears twice in one pull), and each
+    in **ascending order of (`variableId` [code-unit comparison], `version`),
+    no duplicate pair** (one bulk pull returns each active variable at most
+    once, so its enumeration has one entry per variable; the version value
+    range read [AUTH_SPEC §12-7 — 2026-09-27 VH ruling V3] is the one read
+    that returns several versions of one variable, one entry each — every
+    returned version is a distributed ciphertext the reader can decrypt), and each
     element's key order is fixed at `variableId` → `epoch` → `version` (the
     stored byte string is the input of row_digest — §5.1. The only writer is
     the server, and this fixity is for the stability of recomputation [the
@@ -432,21 +447,26 @@ CRYPTO_SPEC §4 identifiers.
   environments), but it preserves the evidence of "who received which epoch's
   DEK"
 - "New version push" is also the resolution condition of the rotation-needed
-  flag (§4 — **except pushes bearing the re-encryption marker** — below)
-- **`var.version_pushed`'s re-encryption marker (2026-08-15 session 25 owner
-  ruling — Wave 2 B2)**: the push request's `reencryption` declaration
-  (AUTH_SPEC §12-5 — the writer's self-declaration; the server cannot verify
-  it) is copied into the payload (`{ reencryption: true }`. Undeclared or
-  false is not copied). §4.1 step 5's resolution derivation does not treat a
-  marker-bearing push as resolution — CRYPTO_SPEC §7's mandatory rotation is a
-  re-encryption of all active variables = comes with ordinary pushes, so
-  without this exclusion the mandatory sweep run right after `remove_member`
-  would auto-resolve all flags just recorded, breaking detection's purpose
-  (prompting upstream credential rotation). Verifying "the upstream was
-  actually rotated" is impossible in principle under E2EE (the server never
-  sees plaintext), so the resolution signal is inherently a writer declaration
-  — the marker corrects that declaration's granularity from "pushed" to
-  "pushed a new value". The false direction is the safe side (§12-5)
+  flag (§4 — **judged by the value lineage** — below)
+- ~~**`var.version_pushed`'s re-encryption marker (2026-08-15 session 25 owner
+  ruling — Wave 2 B2)**: `{ reencryption: true }`~~ **`var.version_pushed`'s
+  value-lineage payload (2026-09-27 VH — docs/notes/vh-design.md ruling V1;
+  generalizes and replaces the 2026-08-15 re-encryption marker)**: the push
+  request's `sameValueAs` declaration (AUTH_SPEC §12-5 — the writer's
+  self-declaration "this version's plaintext is version k's"; the server
+  cannot verify it) is copied into the payload as `{ sameValueAs: k }`
+  (undeclared is not copied). Re-encryption (CRYPTO_SPEC §7's mandatory
+  rotation) is `k = version − 1`; a rollback (`maruhi var rollback`) is any
+  older k — readers derive the kind, no second field exists. §4.1 step 5 uses
+  it to give every version a **plaintext origin**: without the declaration,
+  mandatory rotation's re-encryption (a re-push of every active variable)
+  would auto-resolve every flag just recorded, and a rollback to a value a
+  departed subject knew would look like a fresh value. Verifying "the upstream
+  was actually rotated" is impossible in principle under E2EE (the server
+  never sees plaintext), so the resolution signal is inherently a writer
+  declaration — the lineage corrects that declaration's granularity from
+  "pushed" to "pushed a value never seen before". The false direction is the
+  safe side (§12-5)
 - **`rotation.recommended` recording rules (2026-08-15 session 25 owner
   ruling)**: actor is `{ type: "system" }` (detection is a server-side
   derivation accompanying acceptance of a removal / revocation entry, not the
@@ -575,16 +595,53 @@ On acceptance of `remove_member(M)`, inside the same project DO:
    fetchable**: all other candidates. The UI / CLI highlights (a)
 4. **Persist the result**: append as `rotation.recommended` events; the UI /
    CLI shows them as "rotation needed" flags
-5. **Flag resolution**: resolved by a `var.version_pushed` to the target
-   (variable × environment) (= upstream rotated and a new value stored.
-   **Excluding pushes bearing the re-encryption marker — §3.3**: mandatory
-   rotation's re-encryption is a re-push of the same plaintext, not an
-   upstream revocation; without the exclusion the mandatory sweep running
-   right after step 4 would auto-resolve every flag — 2026-08-15 session 25
-   owner ruling) or by `rotation.dismissed`. Resolution is judged in event
-   seq order (only resolution events whose seq is **after** that of the
-   `rotation.recommended` event take effect). Resolution state is derived from the event sequence (the flag itself is not
-   kept in a mutable store)
+5. **Flag resolution — the lineage derivation (2026-09-27 VH ruling V2 —
+   docs/notes/vh-design.md §3 as corrected by §9's re-check round; replaces
+   the 2026-08-15 "a push without the re-encryption marker after the
+   recommended row resolves" rule)**: each `rotation.recommended` row R
+   carries its **exposure bound** in the epoch column — the environment's
+   epoch at the end of the subject's last window on it (§3.3; derived at
+   detection from the chain mirror's `chain.environment_created` /
+   `chain.epoch_rotated` rows): the subject held the DEKs of every epoch up to
+   it (all-epoch backfill) and of none after it (§6.2's R(E)). For a window
+   that closes at the trigger this is the current epoch; for one closed
+   earlier — a past shrink, a revoked device's narrower scope — it is that
+   earlier epoch. Over the pair's `var.version_pushed` rows in seq
+   order, each version gets a **plaintext origin epoch** — its own epoch when
+   the push declares no `sameValueAs`, otherwise the origin epoch of the
+   version it names (a named version with no row → 0, the safe side). R is
+   **effective** iff (i) no `rotation.dismissed` of the pair was recorded
+   while R was effective (a dismissal covers exactly the flags effective at
+   that point — what the dismissing admin saw and accepted), and (ii) the pair
+   has no pushed version yet, or `originEpoch(live) ≤ bound(R)` where live =
+   the pair's latest pushed version (so a flag whose bound is already below
+   the live value's origin — an old window on an environment rotated and
+   re-pushed since — is resolved from the start) — i.e. "the value in use now was first
+   encrypted under a key the flag's subject held". Consequences: a fresh push
+   at an epoch after the bound — after the mandated rotation (CRYPTO_SPEC §7)
+   — resolves R (= upstream rotated and a new value stored under a key the
+   subject never held — for a demotion, "a value replaced after the demotion":
+   the demoted reader keeps receiving DEKs by design, CRYPTO_SPEC §7);
+   **a fresh push before that rotation does not** (the
+   value is still encrypted under a DEK the subject holds — for a revoked
+   device whose token is not yet revoked, or a revoked server key, it is
+   directly readable; for a removed member, under a colluding server. A
+   tightening of the 2026-08-15 rule in the safe direction; the CLI's
+   `member remove` / `device revoke` / scope-narrowing flows rotate before
+   anyone pushes, so the ordinary sequence is unchanged); mandatory rotation's
+   re-encryption inherits the origin and neither resolves nor un-resolves
+   (the 2026-08-15 session 25 purpose, preserved); **a rollback to a value
+   whose origin epoch is within the bound re-opens a resolved R**
+   (re-exposure — no new event, no new trigger kind) while a rollback among
+   values first encrypted after the bound changes nothing; a later fresh push
+   resolves it again. **Dismissal is sticky** — a later restore does not
+   re-open a dismissed R: the dismissal accepted that the subject knows this
+   variable's value, the class of risk a restore brings back. Resolution state
+   is derived from the event sequence (the flag itself is not kept in a
+   mutable store). The derived view marks an effective R that had been
+   resolved and was re-opened by a restore with the version whose push
+   re-opened it (§7 `reopenedByVersion`). A recommended row without an epoch
+   (corruption) never resolves by a push
 
 **`revoke_server` variant**: same skeleton with these substitutions — step 1's
 interval is the target server-key FP's `chain.server_granted` to
@@ -988,7 +1045,14 @@ The read API is not built per §6–§7 (Phase 2).
   autoincrement is a deployment-wide shared numbering; ordinals would leak
   activity volume across tenants and users). For the same reason, **the
   rotation-needed-flag derived view (§4.1 step 5) also carries no audit seq**
-  (ordering by recommendedAtMs suffices — revision from the B2 implementation)
+  (ordering by recommendedAtMs suffices — revision from the B2 implementation).
+  **Re-opened flags (2026-09-27 VH ruling V2)**: an effective flag that had
+  been resolved and was re-opened by a restore (§4.1 step 5) carries
+  `reopenedByVersion` — the version whose push restored a value from before the
+  flag (a later re-encryption of that value keeps it) — so a flag that
+  reappears is never unexplained. The per-version count the rollback warning
+  needs is derived server-side as the history's `flagsIfCurrent` (AUTH_SPEC
+  §12-7) for the same no-seq reason
 - **Dismissal operation endpoint (2026-08-15 session 25 owner ruling — Wave 2
   B2)**: `rotation.dismissed` is not an exception to the append API but a
   **dedicated operation endpoint** (`POST

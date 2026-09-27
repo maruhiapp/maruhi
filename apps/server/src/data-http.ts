@@ -62,6 +62,7 @@ import type {
   EnvironmentPullValue,
   EnvManifestInput,
   MetaStatementInput,
+  PulledVariableValue,
   ValueInput,
 } from "./data-plane.ts";
 import { roleAtLeast } from "./data-plane.ts";
@@ -258,24 +259,29 @@ export function toWireVariable(
   return {
     variableId: row.variableId,
     statement: row.statement,
-    value: {
-      suite: row.suite,
-      aad: {
-        projectId,
-        environmentId,
-        epoch: row.epoch,
-        variableId: row.variableId,
-        version: row.version,
-      },
-      nonceHex: row.nonceHex,
-      ciphertextHex: row.ciphertextHex,
-      prevValueSigHashHex: row.prevValueSigHashHex,
-      chainHeadHashHex: row.chainHeadHashHex,
-      chainHeadSeq: row.chainHeadSeq,
-      signatureHex: row.signatureHex,
-      writerUserId: row.writerUserId,
-      writerKeyFingerprintHex: row.writerKeyFingerprintHex,
+    value: toWireValue(projectId, environmentId, row),
+  };
+}
+
+/** A stored value → the distributed wire form (§12-2 — the AAD is rebuilt from the coordinates). */
+export function toWireValue(projectId: string, environmentId: string, row: PulledVariableValue) {
+  return {
+    suite: row.suite,
+    aad: {
+      projectId,
+      environmentId,
+      epoch: row.epoch,
+      variableId: row.variableId,
+      version: row.version,
     },
+    nonceHex: row.nonceHex,
+    ciphertextHex: row.ciphertextHex,
+    prevValueSigHashHex: row.prevValueSigHashHex,
+    chainHeadHashHex: row.chainHeadHashHex,
+    chainHeadSeq: row.chainHeadSeq,
+    signatureHex: row.signatureHex,
+    writerUserId: row.writerUserId,
+    writerKeyFingerprintHex: row.writerKeyFingerprintHex,
   };
 }
 

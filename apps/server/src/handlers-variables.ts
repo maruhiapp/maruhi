@@ -32,6 +32,7 @@ import {
   toManifestInput,
   toMetaStatementInput,
   toValueInput,
+  toWireValue,
   toWireVariable,
 } from "./data-http.ts";
 import type {
@@ -39,6 +40,25 @@ import type {
   EnvironmentPullValue,
   VariableVersionValue,
 } from "./data-plane.ts";
+import type {
+  VariableVersionHistoryValue,
+  VariableVersionValuesValue,
+} from "./programs-history.ts";
+
+/**
+ * A GET that carries state — the var.read audit record (§12-7 / AUDIT_SPEC
+ * §3.3) of the with-values pull and the version value range — requires the
+ * CSRF header from session principals: blocks pollution of the audit trail
+ * by a third-party site stamping fake var.reads with the victim's session
+ * (rationale in the JSDoc of statefulGetCsrfViolated).
+ */
+const ensureStatefulGetCsrf = (headers: Parameters<typeof statefulGetCsrfViolated>[1]) =>
+  Effect.gen(function* () {
+    const principal = yield* (yield* RequestAuth).principal;
+    if (statefulGetCsrfViolated(principal, headers)) {
+      return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
+    }
+  });
 
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
   handlers
@@ -97,10 +117,46 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toValueInput(payload.value),
-              // Re-encryption marker (AUTH_SPEC §12-5 — omission means false)
-              payload.reencryption === true,
+              // The value-lineage declaration (AUTH_SPEC §12-5 — VH)
+              payload.sameValueAs,
             ),
         });
+      }),
+    )
+    // Version history (§12-7 — VH): metadata only, reader, scope-agnostic;
+    // no var.read (same row as pullMetadata)
+    .handle("history", ({ params, endpoint }) =>
+      callProjectData<VariableVersionHistoryValue>()({
+        endpoint,
+        projectId: params.projectId,
+        permission: "read",
+        invoke: (stub, actor) =>
+          stub.variableHistory(actor, params.environmentId, params.variableId),
+      }),
+    )
+    .handle("versionValues", ({ params, query, endpoint, request }) =>
+      Effect.gen(function* () {
+        // A GET that records var.read (§12-7 — VH)
+        yield* ensureStatefulGetCsrf(request.headers);
+        const range = yield* callProjectData<VariableVersionValuesValue>()({
+          endpoint,
+          projectId: params.projectId,
+          permission: "read",
+          invoke: (stub, actor) =>
+            stub.variableVersionValues(
+              actor,
+              params.environmentId,
+              params.variableId,
+              query.fromVersion,
+            ),
+        });
+        return {
+          variableId: range.variableId,
+          latestVersion: range.latestVersion,
+          values: range.values.map((row) =>
+            toWireValue(params.projectId, params.environmentId, row),
+          ),
+        };
       }),
     )
     .handle("activate", ({ params, payload, endpoint }) =>
@@ -178,16 +234,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     )
     .handle("pull", ({ params, endpoint, request }) =>
       Effect.gen(function* () {
-        // A GET, but it carries state: the per-variable var.read audit
-        // record (§12-7 / AUDIT_SPEC §3.3) — blocks pollution of the
-        // audit trail by a third-party site stamping fake var.reads with
-        // the victim's session (rationale in the JSDoc of
-        // statefulGetCsrfViolated). The metadata-only mode
-        // (pullMetadata) records no audit and is out of scope
-        const principal = yield* (yield* RequestAuth).principal;
-        if (statefulGetCsrfViolated(principal, request.headers)) {
-          return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
-        }
+        // The metadata-only mode (pullMetadata) records no audit and is
+        // out of scope
+        yield* ensureStatefulGetCsrf(request.headers);
         const pulled = yield* callProjectData<EnvironmentPullValue>()({
           endpoint,
           projectId: params.projectId,

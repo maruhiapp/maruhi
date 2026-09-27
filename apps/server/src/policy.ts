@@ -61,6 +61,14 @@ export const MAX_VARIABLE_ROWS_PER_ENVIRONMENT = 5_000;
 export const MAX_VERSIONS_PER_VARIABLE = 1_000;
 
 /**
+ * §12-7 (VH): the ciphertext byte budget of one version value range page. A
+ * page stops before the version that would exceed it (always at least one
+ * version), so a page of 64 KiB values stays near 1 MiB instead of the
+ * 100-version cap's ~6.4 MiB (~12.8 MiB as hex). The client pages on.
+ */
+export const MAX_VERSION_VALUES_PAGE_BYTES = 1024 * 1024;
+
+/**
  * §12-8: limit on the schema description (variables — layout v2) in Unicode
  * code points. Together with the rejection of control characters (newlines
  * included), excess is rejected with 422 (deliberately a different class from

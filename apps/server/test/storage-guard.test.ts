@@ -287,10 +287,12 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
         const cache: StateCache = { current: null, chain: null };
         const outcomes = {
           push: rejectionOf(
-            await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), false, cache)),
+            await run(
+              pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, cache),
+            ),
           ),
-          reencryptionPush: rejectionOf(
-            await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), true, cache)),
+          lineagePush: rejectionOf(
+            await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), 1, cache)),
           ),
           createVariable: rejectionOf(
             await run(
@@ -733,7 +735,9 @@ describe("the warning threshold (§12-8 — operations log)", () => {
         // The guard passes with an admit verdict; the dummies fall later (at value-signature verification)
         for (let i = 0; i < 3; i += 1) {
           const rejection = rejectionOf(
-            await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), false, cache)),
+            await run(
+              pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, cache),
+            ),
           );
           expect(rejection?.kind).toBe("value-rejected");
         }
@@ -800,7 +804,7 @@ describe("the warning threshold (§12-8 — operations log)", () => {
       await runInProject(DO_STORAGE_WARN_BYTES - 1, async (run) => {
         const rejection = rejectionOf(
           await run(
-            pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), false, {
+            pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, {
               current: null,
               chain: null,
             }),

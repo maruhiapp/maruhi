@@ -497,16 +497,18 @@ export type AuditReadPayload = {
 };
 
 /**
- * Builds the payload of an aggregated `var.read` row: the variables whose
- * ciphertext one value pull returned, sorted by `variableId` in code-unit
- * order with the key order fixed to variableId → epoch → version. A pull
- * returns each active variable at most once, so the list has no duplicates.
- * The stored JSON bytes feed the audit row digest (AUDIT_SPEC §5.1), which is
- * why the shape is fixed here rather than left to the caller.
+ * Builds the payload of an aggregated `var.read` row: the values whose
+ * ciphertext one read returned, sorted by (`variableId` in code-unit order,
+ * `version`) with the key order fixed to variableId → epoch → version. A bulk
+ * pull returns each active variable at most once (one entry per variable);
+ * the version value range (AUTH_SPEC §12-7 — 2026-09-27 VH) returns several
+ * versions of one variable (one entry per version). No pair repeats. The
+ * stored JSON bytes feed the audit row digest (AUDIT_SPEC §5.1), which is why
+ * the shape is fixed here rather than left to the caller.
  */
 export function auditReadPayload(variables: readonly AuditReadVariable[]): AuditReadPayload {
   const sorted = variables.toSorted((a, b) =>
-    a.variableId < b.variableId ? -1 : a.variableId > b.variableId ? 1 : 0,
+    a.variableId < b.variableId ? -1 : a.variableId > b.variableId ? 1 : a.version - b.version,
   );
   return {
     variables: sorted.map(({ variableId, epoch, version }) => ({ variableId, epoch, version })),

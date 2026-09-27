@@ -290,6 +290,26 @@ function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = 
 }
 
 describe("maruhi audit (list)", () => {
+  it("a version value range read (several versions of one variable — VH) is counted as versions", async () => {
+    const built = await baseChain();
+    const base = aggregatedReadRow(4);
+    const rangeRead = {
+      ...base,
+      payload: {
+        variables: [
+          { variableId: "va", epoch: 1, version: 1 },
+          { variableId: "va", epoch: 1, version: 2 },
+          { variableId: "va", epoch: 2, version: 3 },
+        ],
+      },
+    };
+    const rows = [...(await mirrorRowsOf(built)), rangeRead];
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit"], env.layer)).toBe(0);
+    const readLine = env.logs.find((line) => line.startsWith("seq=4\t"));
+    expect(readLine).toContain("read=3 versions of 1 variable");
+  });
+
   it("an aggregated var.read shows a count summary; --expand-reads expands it to one line per variable", async () => {
     const built = await baseChain();
     // seq=5 carries a payload (authMethod) other than the variable list

@@ -882,8 +882,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "oidc-github.ts": 1,
   // The decryption key input (a cryptographic boundary)
   "pull.ts": 1,
-  // The encryption key input and plaintext input (a cryptographic boundary)
-  "push.ts": 2,
+  // The encryption key input and plaintext input (a cryptographic boundary) 2 +
+  // the in-memory equality check of two plaintexts (VH — the lineage of an
+  // identical re-push and `var rollback`'s no-op refusal; no display) 1
+  "push.ts": 3,
   // Base32-encoding input (the product is wrapped again)
   "recovery-code.ts": 1,
   // The encode input for an explicitly chosen value push (the product is

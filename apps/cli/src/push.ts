@@ -73,6 +73,7 @@ import {
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
+import { decryptVerifiedValue } from "./pull.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema-statement.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
@@ -421,7 +422,7 @@ function classifyPushConflict(error: unknown): PushConflict | null {
   return null;
 }
 
-interface PushInput {
+export interface PushInput {
   readonly client: MaruhiClient;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
@@ -435,6 +436,24 @@ interface PushInput {
   readonly signingKey: CryptoKey;
   /** The local floor (§6.3 — the check and commit of internal pulls, and the variable-floor advance after acceptance). */
   readonly floor: FloorHandle;
+  /**
+   * A rollback (`maruhi var rollback` — 2026-09-27 VH): the value is version
+   * `sameValueAs`'s plaintext, restored into this existing variable. The push
+   * declares the lineage (AUTH_SPEC §12-5), and every attempt — including a
+   * conflict retry that re-resolves the name — must land as a normal push to
+   * exactly this variable: a concurrent delete / rename / re-create never
+   * turns a rollback into a creation or a push elsewhere. It also lands only
+   * on top of the exact version the user confirmed rolling back from
+   * (`fromVersion` + its signed-bytes hash): a concurrent push by another
+   * member is never silently overwritten with the restored value — the
+   * rollback is refused and the user re-runs it against the new state.
+   */
+  readonly restore?: {
+    readonly variableId: string;
+    readonly sameValueAs: number;
+    readonly fromVersion: number;
+    readonly fromSignedBytesHashHex: string;
+  };
 }
 
 interface PushState {
@@ -476,9 +495,99 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   });
 }
 
+/**
+ * A rollback lands only as a normal push to the variable whose history was
+ * verified, directly on top of the version the user confirmed (VH): a
+ * (re-)resolution to a creation, an activation, another variable, or a newer
+ * latest (a concurrent push — including the winner a 409 retry adopts) is
+ * refused before anything is signed.
+ */
+function ensureRestoreTarget(input: PushInput, state: PushState): Effect.Effect<void, CliError> {
+  const restore = input.restore;
+  if (restore === undefined) {
+    return Effect.void;
+  }
+  const target = state.target;
+  if (target.kind !== "push" || target.variableId !== restore.variableId) {
+    return Effect.fail(
+      cliError(
+        `The rollback target ${displayText(input.name)} no longer resolves to the variable whose history was verified (a concurrent delete, rename, or re-creation). Nothing was pushed — re-run the command`,
+      ),
+    );
+  }
+  if (
+    target.latest.version !== restore.fromVersion ||
+    target.latest.signedBytesHashHex !== restore.fromSignedBytesHashHex
+  ) {
+    return Effect.fail(
+      cliError(
+        `${displayText(input.name)} changed while the rollback was being prepared (the latest is now version ${target.latest.version}, not the confirmed version ${restore.fromVersion}). Nothing was pushed — check \`maruhi var history\` and re-run the command`,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
+/**
+ * Whether two in-memory plaintexts are byte-identical. Reason for
+ * unwrapping: an equality check only — nothing is displayed and the bytes
+ * never leave this comparison (shared by the lineage detection below and
+ * `var rollback`'s no-op refusal).
+ */
+export function sameRedactedBytes(
+  a: Redacted.Redacted<Uint8Array>,
+  b: Redacted.Redacted<Uint8Array>,
+): boolean {
+  const [left, right] = [a, b].map(Redacted.value);
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.length === right.length &&
+    left.every((byte, index) => byte === right[index])
+  );
+}
+
+/**
+ * The value-lineage declaration of a normal push (AUTH_SPEC §12-5 — SHOULD):
+ * a rollback declares the version it restores; otherwise, a value identical
+ * to the verified latest declares that version (2026-09-27 VH re-check round
+ * — re-pushing the same value, e.g. one first pushed before a mandated
+ * rotation, is not a new value and must not look like one to rotation-needed
+ * detection). The comparison runs only when this device holds the latest's
+ * DEK; without it the push declares nothing (the pre-VH behaviour).
+ */
+function lineageOf(
+  input: PushInput,
+  state: PushState,
+  latest: VerifiedPulledValue,
+): Effect.Effect<number | undefined, CliError> {
+  if (input.restore !== undefined) {
+    return Effect.succeed(input.restore.sameValueAs);
+  }
+  if (!state.deks.has(latest.epoch)) {
+    return Effect.succeed(undefined);
+  }
+  return Effect.map(
+    decryptVerifiedValue({
+      verified: state.verified,
+      environmentId: input.environmentId,
+      variable: latest,
+      deksByEpoch: state.deks,
+      chainEpoch: state.epoch,
+    }),
+    (current) => (sameRedactedBytes(current, input.value) ? latest.version : undefined),
+  );
+}
+
+/** A normal push's body with the lineage declaration when there is one (AUTH_SPEC §12-5). */
+function withLineage<T>(value: T, sameValueAs: number | undefined) {
+  return sameValueAs === undefined ? { value } : { value, sameValueAs };
+}
+
 /** One attempt (encrypt, sign, send). The conflict classification is retryOnConflict's classify's job. */
 function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AcceptedPush, unknown> {
   return Effect.gen(function* () {
+    yield* ensureRestoreTarget(input, state);
     const dek = state.deks.get(state.epoch);
     if (dek === undefined) {
       return yield* Effect.fail(
@@ -689,9 +798,10 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     // confirmation is a value pull, which would bring var.read auditing
     // into the write path). Success is carried by the server's CAS + value
     // signature verification and our own floor's commitPush, as before
+    const sameValueAs = yield* lineageOf(input, state, latest);
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
-      payload: { value: signed.payload },
+      payload: withLineage(signed.payload, sameValueAs),
     });
     return {
       accepted,

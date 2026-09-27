@@ -800,7 +800,19 @@ function flagTrigger(flag: RotationFlag): string {
       : flag.targetServerKeyFingerprintHex !== undefined
         ? `server revoked: ${flag.targetServerKeyFingerprintHex}`
         : "";
-  return subject === "" ? "" : `${subject} (chain seq ${flag.triggerChainSeq})`;
+  return subject === ""
+    ? ""
+    : `${subject} (chain seq ${flag.triggerChainSeq})${reopenedSuffix(flag)}`;
+}
+
+/**
+ * A re-opened flag says why it came back: a rollback restored a value from
+ * before the flag (AUDIT_SPEC §4.1-5 / §7 — 2026-09-27 VH).
+ */
+function reopenedSuffix(flag: RotationFlag): string {
+  return flag.reopenedByVersion === undefined
+    ? ""
+    : `; re-opened by the rollback in v${flag.reopenedByVersion}`;
 }
 
 function toFlagRow(flag: RotationFlag): FlagRow {

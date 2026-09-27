@@ -31,7 +31,7 @@ SUBCOMMANDS
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
-  var         Manage variables (rm). push / pull / run operate on values directly
+  var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
 $ maruhi --help
@@ -67,7 +67,7 @@ SUBCOMMANDS
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
-  var         Manage variables (rm). push / pull / run operate on values directly
+  var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
 $ maruhi login --help
@@ -1530,7 +1530,7 @@ GLOBAL FLAGS
 
 $ maruhi var --help
 DESCRIPTION
-  Manage variables (rm). push / pull / run operate on values directly
+  Manage variables (rm, history, rollback). push / pull / run operate on values directly
 
 USAGE
   maruhi var <subcommand> [flags]
@@ -1540,7 +1540,9 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  rm    Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables
+  rm          Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables
+  history     Show a variable's version history (metadata only: version, epoch, writer, time, rollbacks, rotation-flag exposure — never a value)
+  rollback    Restore a previous version's value as a new version (verifies the old version against the latest first; asks for confirmation unless --force). Never displays the value
 
 $ maruhi var rm --help
 DESCRIPTION
@@ -1557,6 +1559,49 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
   --force             Skip the interactive confirmation (the only non-interactive path; deletion is permanent)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi var history --help
+DESCRIPTION
+  Show a variable's version history (metadata only: version, epoch, writer, time, rollbacks, rotation-flag exposure — never a value)
+
+USAGE
+  maruhi var history [flags] <name>
+
+ARGUMENTS
+  name string    Variable name whose version history to show
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --json              Print the history as JSON (server-declared metadata: version, epoch, writer, time, lineage, flag count)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi var rollback --help
+DESCRIPTION
+  Restore a previous version's value as a new version (verifies the old version against the latest first; asks for confirmation unless --force). Never displays the value
+
+USAGE
+  maruhi var rollback [flags] <name>
+
+ARGUMENTS
+  name string    Variable name to roll back
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --to integer        The version whose value to restore (see `maruhi var history`); pushed as a new version
+  --force             Skip the interactive confirmation (the only non-interactive path)
+  --config string     Path to the sync config whose "onPush" targets are synced after the rollback (default: maruhi.sync.json in the working directory, when it exists and names this project)
+  --no-sync           Skip the sync after the rollback (the default sync config is not read)
 
 GLOBAL FLAGS
   --help, -h       Show help information

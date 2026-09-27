@@ -47,6 +47,8 @@ interface RotationFlagView {
    * follow of the wire type. The CLI's 5th sweep kind is K4).
    */
   readonly trigger: "remove_member" | "change_role" | "revoke_server" | "revoke_device";
+  /** The restore that re-opened a resolved flag (AUDIT_SPEC §4.1-5 / §7 — 2026-09-27 VH). */
+  readonly reopenedByVersion?: number;
 }
 
 /** Fetches the flag view (the shared entry of display, count reporting, and dismiss-target resolution). */
@@ -171,13 +173,19 @@ export function rotationListOp(
           name === undefined
             ? displayText(flag.variableId)
             : `${displayText(name)} (${displayText(flag.variableId)})`;
+        // A re-opened flag says why it came back (a rollback restored a
+        // value from before the flag — AUDIT_SPEC §4.1-5)
+        const reopened =
+          flag.reopenedByVersion === undefined
+            ? ""
+            : `\treopened by the rollback in version ${flag.reopenedByVersion}`;
         yield* io.log(
-          `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}`,
+          `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}${reopened}`,
         );
       }
     }
     yield* io.log(
-      "To resolve: rotate the upstream credential and save the new value with `maruhi push` (the mandated re-encryption alone does not resolve a flag). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
+      "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
     return 0;
   });

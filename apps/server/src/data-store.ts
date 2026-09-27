@@ -72,6 +72,16 @@ export interface ValueWriterInfo {
   readonly keyFingerprintHex: string;
 }
 
+/** One version-history row (metadata only — §12-7, 2026-09-27 VH). */
+export interface StoredVersionMeta {
+  readonly version: number;
+  readonly epoch: number;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
+  /** The acceptance time (the row's created_at). */
+  readonly pushedAtMs: number;
+}
+
 /**
  * The verification anchor of a stored version: the server-recomputed
  * signed_bytes hash and the epoch at the time. The input of the next
@@ -463,6 +473,25 @@ interface DataStoreShape {
   ) => Effect.Effect<
     readonly (PulledVariableValue & { statement: DistributedVariableMetaStatementValue })[]
   >;
+  /**
+   * Every stored version of one variable, ascending — metadata only (the
+   * version history — §12-7, 2026-09-27 VH). No ciphertext is selected.
+   */
+  readonly versionHistory: (
+    environmentId: string,
+    variableId: string,
+  ) => Effect.Effect<readonly StoredVersionMeta[]>;
+  /**
+   * The distributed form of versions fromVersion … fromVersion + limit − 1
+   * of one variable, ascending (the version value range — §12-7, 2026-09-27
+   * VH). Same columns as the bulk pull's value part.
+   */
+  readonly versionRange: (
+    environmentId: string,
+    variableId: string,
+    fromVersion: number,
+    limit: number,
+  ) => Effect.Effect<readonly PulledVariableValue[]>;
   /** The stored version's verification anchor (the prev check — §12-5's 5). */
   readonly versionAnchor: (
     environmentId: string,
@@ -1225,6 +1254,28 @@ const makeVariableQueries = (sql: SqlStorage) => ({
     ),
 });
 
+/**
+ * A variable_versions row's distributed value columns (§12-7 — shared by the
+ * bulk pull and the version value range). signed_bytes_hash_hex is never
+ * selected = never distributed (AUTH_SPEC §12-2).
+ */
+function pulledValueColumns(row: StoredRow, variableId: string): PulledVariableValue {
+  return {
+    variableId,
+    version: numberColumn(row, "version"),
+    suite: storedSuite(columnValue(row, "suite")),
+    epoch: numberColumn(row, "epoch"),
+    nonceHex: stringColumn(row, "nonce_hex"),
+    ciphertextHex: stringColumn(row, "ciphertext_hex"),
+    prevValueSigHashHex: stringColumn(row, "prev_value_sig_hash_hex"),
+    chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
+    chainHeadSeq: numberColumn(row, "chain_head_seq"),
+    signatureHex: stringColumn(row, "signature_hex"),
+    writerUserId: stringColumn(row, "writer_user_id"),
+    writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+  };
+}
+
 const makeVersionQueries = (sql: SqlStorage) => ({
   // Distribution (§12-7) returns the stored signature block and the
   // writer / author as-is (never re-derived from the current member
@@ -1263,18 +1314,7 @@ const makeVersionQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          variableId: stringColumn(row, "variable_id"),
-          version: numberColumn(row, "version"),
-          suite: storedSuite(columnValue(row, "suite")),
-          epoch: numberColumn(row, "epoch"),
-          nonceHex: stringColumn(row, "nonce_hex"),
-          ciphertextHex: stringColumn(row, "ciphertext_hex"),
-          prevValueSigHashHex: stringColumn(row, "prev_value_sig_hash_hex"),
-          chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
-          chainHeadSeq: numberColumn(row, "chain_head_seq"),
-          signatureHex: stringColumn(row, "signature_hex"),
-          writerUserId: stringColumn(row, "writer_user_id"),
-          writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+          ...pulledValueColumns(row, stringColumn(row, "variable_id")),
           // The statement part reads the ms_* aliased columns as-is
           // (statementColumns's prefix). The environment ID is the
           // WHERE-clause argument; the variable ID is the row's value
@@ -1285,6 +1325,45 @@ const makeVersionQueries = (sql: SqlStorage) => ({
             ...variableStatementV2Fields(row, "ms_"),
           },
         })),
+    ),
+  versionHistory: (environmentId: string, variableId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT version, epoch, writer_user_id, writer_key_fingerprint, created_at
+           FROM variable_versions
+           WHERE environment_id = ? AND variable_id = ?
+           ORDER BY version`,
+          environmentId,
+          variableId,
+        )
+        .toArray()
+        .map((row): StoredVersionMeta => ({
+          version: numberColumn(row, "version"),
+          epoch: numberColumn(row, "epoch"),
+          writerUserId: stringColumn(row, "writer_user_id"),
+          writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+          pushedAtMs: numberColumn(row, "created_at"),
+        })),
+    ),
+  versionRange: (environmentId: string, variableId: string, fromVersion: number, limit: number) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT version, suite, epoch, nonce_hex, ciphertext_hex, prev_value_sig_hash_hex,
+                  chain_head_hash_hex, chain_head_seq, signature_hex,
+                  writer_user_id, writer_key_fingerprint
+           FROM variable_versions
+           WHERE environment_id = ? AND variable_id = ? AND version >= ?
+           ORDER BY version
+           LIMIT ?`,
+          environmentId,
+          variableId,
+          fromVersion,
+          limit,
+        )
+        .toArray()
+        .map((row) => pulledValueColumns(row, variableId)),
     ),
   versionAnchor: (environmentId: string, variableId: string, version: number) =>
     Effect.sync(() => {

@@ -1204,11 +1204,12 @@ function pushReencrypted(input: {
           environmentId: environmentId,
           variableId: latest.variableId,
         },
-        // reencryption = the re-encryption marker (AUTH_SPEC §12-5 —
-        // SHOULD): this push is a new-epoch re-encryption of the same
-        // plaintext and must never count as clearing the needs-rotation
-        // flag (an upstream credential update — AUDIT_SPEC §4.1-5)
-        payload: { value: signed.payload, reencryption: true },
+        // sameValueAs = the value-lineage declaration (AUTH_SPEC §12-5 —
+        // SHOULD): this push is a new-epoch re-encryption of the latest
+        // version's plaintext, so it inherits that value's origin and never
+        // counts as clearing the needs-rotation flag (an upstream
+        // credential update — AUDIT_SPEC §4.1-5)
+        payload: { value: signed.payload, sameValueAs: latest.version },
       })
       .pipe(
         Effect.map(() => ({ kind: "pushed" }) as const),

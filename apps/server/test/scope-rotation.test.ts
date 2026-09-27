@@ -33,11 +33,16 @@ import {
 import {
   addMemberOperation,
   changeRoleOperation,
+  commitmentOf,
   createVariableStatement,
   encryptValue,
+  makeDek,
   metaSignedBytesHashOf,
+  valueSignedBytesHashOf,
+  wrapDekForAll,
 } from "./support/data-crypto.ts";
 import {
+  ALL_MEMBERS,
   appendOperation,
   createEnvironmentOk,
   manifestForVariableOp,
@@ -45,6 +50,7 @@ import {
   projectId,
   READER,
   requestJson,
+  rotateEnvironmentComposite,
   seedMemberToken,
 } from "./support/data-fixture.ts";
 import { ENV, fixture, registerDataScenario, token } from "./support/data-scenario.ts";
@@ -84,7 +90,7 @@ async function createVariableAsOwner(input: {
   readonly dek: Uint8Array;
   readonly variableId: string;
   readonly name: string;
-}): Promise<void> {
+}): Promise<Awaited<ReturnType<typeof encryptValue>>> {
   const value = await encryptValue(
     input.dek,
     {
@@ -123,6 +129,7 @@ async function createVariableAsOwner(input: {
   );
   expect(response.status).toBe(200);
   fixture.manifests.set(input.environmentId, state);
+  return value;
 }
 
 /**
@@ -192,6 +199,82 @@ describe("rotation-needed detection: per-environment access windows (§4.1 step 
     );
     expect(other).toHaveLength(2);
     expect(flags.filter((flag) => flag.variableId === VAR_ENV)).toHaveLength(1);
+  });
+});
+
+describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subject's window", () => {
+  it("a removal's flag on an environment the member lost earlier is bounded at that earlier epoch, so the value pushed after that environment's rotation keeps it resolved", async () => {
+    const envDek = await createEnvironmentOk(fixture, ENV, "App");
+    const otherDek = await createEnvironmentOk(fixture, OTHER, "Other");
+    await createVariableAsOwner({
+      environmentId: ENV,
+      dek: envDek,
+      variableId: VAR_ENV,
+      name: "E",
+    });
+    const otherV1 = await createVariableAsOwner({
+      environmentId: OTHER,
+      dek: otherDek,
+      variableId: VAR_OTHER,
+      name: "O",
+    });
+    await seedMemberToken(fixture, DEV, 9010);
+    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [ENV, OTHER]));
+    // Narrowing out OTHER at its epoch 1, then OTHER's mandated rotation to 2
+    await changeRole("member", [ENV]);
+    const otherDek2 = makeDek();
+    const rotated = await rotateEnvironmentComposite(fixture, {
+      environmentId: OTHER,
+      newEpoch: 2,
+      deks: await wrapDekForAll({
+        projectId,
+        environmentId: OTHER,
+        epoch: 2,
+        dek: otherDek2,
+        recipientUserIds: ALL_MEMBERS,
+        signerUserId: OWNER,
+      }),
+      dekCommitmentHex: await commitmentOf(projectId, OTHER, 2, otherDek2),
+      actorUserId: OWNER,
+    });
+    expect(rotated.status).toBe(200);
+    // A fresh value at OTHER's epoch 2 resolves the narrowing's flag
+    const fresh = await encryptValue(
+      otherDek2,
+      { projectId, environmentId: OTHER, epoch: 2, variableId: VAR_OTHER, version: 2 },
+      "rotated-upstream",
+      {
+        writerUserId: OWNER,
+        head: fixture.head,
+        prevValueSigHashHex: await valueSignedBytesHashOf(otherV1, OWNER),
+      },
+    );
+    const pushed = await requestJson(
+      "POST",
+      `/environments/${OTHER}/variables/${VAR_OTHER}/versions`,
+      token(OWNER),
+      { value: fresh },
+    );
+    expect(pushed.status).toBe(200);
+    expect((await readFlags()).filter((flag) => flag.variableId === VAR_OTHER)).toHaveLength(0);
+
+    // The later removal also flags OTHER (the old window), but bounded at
+    // epoch 1 — the member never held OTHER's epoch 2 key — so it is
+    // resolved by the value already pushed; ENV's flag is bounded at ENV's
+    // current epoch and stays effective
+    await removeDev();
+    const flags = await readFlags();
+    expect(flags.filter((flag) => flag.variableId === VAR_OTHER)).toHaveLength(0);
+    expect(flags.filter((flag) => flag.variableId === VAR_ENV)).toHaveLength(1);
+    const bounds = (await readAuditEvents(projectId))
+      .filter(
+        (event) =>
+          event["event"] === "rotation.recommended" &&
+          event["target_user_id"] === DEV &&
+          event["variable_id"] === VAR_OTHER,
+      )
+      .map((event) => Number(event["epoch"]));
+    expect(bounds).toEqual([1, 1]);
   });
 });
 
@@ -312,7 +395,9 @@ function fakeRead(input: {
     variableLifecycles: () => input.lifecycles,
     variableReadsBy: () => input.reads ?? [],
     serverAccessEventsBy: () => [],
+    environmentEpochEvents: () => [],
     rotationFlagEvents: () => [],
+    rotationFlagEventsFor: () => [],
   };
 }
 
@@ -335,7 +420,9 @@ const grantRead = (
   variableReadsBy: () => [],
   serverAccessEventsBy: () =>
     access.map((row) => ({ ...row, event: "server.lease_issued", variableId: null })),
+  environmentEpochEvents: () => [],
   rotationFlagEvents: () => [],
+  rotationFlagEventsFor: () => [],
 });
 
 describe("the window derivation's fail-safes and trigger checks (pure functions)", () => {
@@ -606,6 +693,8 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           event: "rotation.recommended",
           environmentId: "env-a",
           variableId: "v",
+          version: null,
+          epoch: 1,
           targetUserId: "u",
           targetKeyFingerprintHex: null,
           payload: { basis: "read", triggerChainSeq: 3 },
